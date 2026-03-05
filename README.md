@@ -2,14 +2,14 @@
 
 **A dynamic, AI-friendly UI language and runtime for building applications -- desktop and web.**
 
-SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 78 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation.
+SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 86 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation.
 
 ---
 
 ## Key Features
 
 - **AI-Friendly DSL** -- Clean, consistent `.ui` syntax optimized for AI code generation
-- **78 Built-in Components** -- Comprehensive library across 12 categories including 3D, charts, and animation
+- **86 Built-in Components** -- Comprehensive library across 12 categories including 3D, charts, and animation
 - **Smart Components** -- Auto-configured, data-driven components with search, sort, pagination, and CRUD
 - **FormLogic VM** -- Sandboxed bytecode-compiled scripting engine written in Rust, running in WebAssembly (no `eval`, no `new Function`)
 - **XDB Database** -- Local-first database with CRDT-based P2P synchronization
@@ -30,7 +30,7 @@ softn.com/
 +-- packages/
 |   +-- @softn/
 |       +-- core/              # Core engine (parser, renderer, runtime)
-|       +-- components/        # Built-in component library (78 components)
+|       +-- components/        # Built-in component library (86 components)
 |       +-- vite-plugin/       # Vite plugin for .softn files
 +-- apps/
 |   +-- softn-web/             # Web runtime (browser-based bundle runner)
@@ -100,7 +100,7 @@ Open `http://localhost:1422` and drag-drop a `.softn` bundle to run it.
                                     |
                                     v
                             Component Registry
-                           (78 built-in + custom)
+                           (86 built-in + custom)
 
 .logic Source
       |
@@ -177,19 +177,19 @@ Before each FormLogic function call, all React state is synced to VM globals. Af
 
 ---
 
-## Component Library (78 Components)
+## Component Library (86 Components)
 
 | Category | Count | Components |
 |----------|-------|-----------|
 | Layout | 15 | `App`, `Box`, `Stack`, `Grid`, `Card`, `Container`, `Center`, `Layout`, `Header`, `Content`, `Section`, `Sidebar`, `Split`, `Spacer`, `Divider` |
-| Form | 11 | `Button`, `Input`, `TextArea`, `Select`, `Checkbox`, `Radio`, `Switch`, `Form`, `Slider`, `DatePicker`, `ColorPicker` |
-| Display | 8 | `Text`, `Heading`, `Badge`, `Tag`, `Avatar`, `Progress`, `Spinner`, `Image` |
+| Form | 12 | `Button`, `Input`, `TextArea`, `Select`, `Checkbox`, `Radio`, `Switch`, `Form`, `Slider`, `DatePicker`, `ColorPicker`, `FileChooser` |
+| Display | 9 | `Text`, `Heading`, `Badge`, `Tag`, `Avatar`, `Progress`, `Spinner`, `Image`, `Icon` |
 | Feedback | 6 | `Alert`, `Modal`, `Toast`, `Drawer`, `Popover`, `EmptyState` |
 | Data | 6 | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination` |
 | Navigation | 4 | `Tabs`, `Breadcrumb`, `Menu`, `NavItem` |
-| Utility | 5 | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid` |
+| Utility | 9 | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `QRCode`, `QRReader`, `Camera`, `DPad` |
 | Charts | 6 | `LineChart`, `BarChart`, `PieChart`, `AreaChart`, `RadarChart`, `GaugeChart` |
-| Animation | 6 | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList` |
+| Animation | 8 | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList`, `Sprite`, `TileMap` |
 | Editors | 3 | `CodeEditor`, `MarkdownEditor`, `RichTextEditor` |
 | 3D | 1 | `Scene3D` (Three.js with GLTF, OBJ, FBX, STL) |
 | Smart | 7 | `SmartGrid`, `SmartView`, `SmartForm`, `SmartCards`, `SmartList`, `SmartTimeline`, `SmartStats` |
