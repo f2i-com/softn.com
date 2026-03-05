@@ -66,20 +66,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app: [softn-loader, softn-builder]
         include:
-          - platform: ubuntu-22.04
-            app: softn-loader
-          - platform: windows-latest
-            app: softn-loader
-          - platform: macos-latest
-            app: softn-loader
-          - platform: ubuntu-22.04
-            app: softn-builder
-          - platform: windows-latest
-            app: softn-builder
-          - platform: macos-latest
-            app: softn-builder
+          - app: softn-loader
+            platform: ubuntu-22.04
+          - app: softn-loader
+            platform: windows-latest
+          - app: softn-loader
+            platform: macos-latest
+          - app: softn-builder
+            platform: ubuntu-22.04
+          - app: softn-builder
+            platform: windows-latest
+          - app: softn-builder
+            platform: macos-latest
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
