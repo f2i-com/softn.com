@@ -1,0 +1,325 @@
+  let maze = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,0,0,0,0,0,1,0,0,0,1,1,0,1,0,1,0,1,1,1,0,1,0,1,0,1,1,0,1,0,0,0,0,0,1,0,0,0,1,0,1,1,0,1,1,1,1,0,1,1,1,1,0,1,0,1,1,0,0,0,0,1,0,0,0,0,1,0,0,0,1,1,1,1,1,0,1,1,1,0,1,1,1,1,0,1,1,0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,0,1,1,1,1,1,0,1,1,1,0,1,0,1,1,0,1,0,0,0,0,0,1,0,0,0,0,0,1,1,0,1,0,1,1,1,1,1,0,1,1,1,1,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,1,1,1,1,0,1,0,1,1,1,1,1,1,1,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+  let mRows = 15
+  let mCols = 15
+  let objects = []
+  let lights = []
+  let cameraPos = {x: 2, y: 1.5, z: 2}
+  let cameraLookAt = {x: 7, y: 1.5, z: 2}
+  let playerX = 2
+  let playerZ = 2
+  let playerAngle = Math.PI / 2
+  let running = false
+  let gameState = "idle"
+  let statusText = "Press Start to begin"
+  let startTime = 0
+  let timerDisplay = "0:00"
+  let staticObjs = []
+
+  function _init() {
+    // Clean up any previous listeners before registering new ones
+    if (window.__mazeCleanup) {
+      window.__mazeCleanup()
+    }
+
+    window.__mazeKeys = {w: false, a: false, s: false, d: false}
+    window.__mazeGameActive = true
+
+    function isLeftTurnKey(e) {
+      let k = e.key || ""
+      let c = e.code || ""
+      return k === "a" || k === "A" || k === "ArrowLeft" || c === "KeyA" || c === "ArrowLeft"
+    }
+
+    function isRightTurnKey(e) {
+      let k = e.key || ""
+      let c = e.code || ""
+      return k === "d" || k === "D" || k === "ArrowRight" || c === "KeyD" || c === "ArrowRight"
+    }
+
+    function isForwardKey(e) {
+      let k = e.key || ""
+      let c = e.code || ""
+      return k === "w" || k === "W" || k === "ArrowUp" || c === "KeyW" || c === "ArrowUp"
+    }
+
+    function isBackKey(e) {
+      let k = e.key || ""
+      let c = e.code || ""
+      return k === "s" || k === "S" || k === "ArrowDown" || c === "KeyS" || c === "ArrowDown"
+    }
+
+    function onKeyDown(e) {
+      if (!window.__mazeGameActive) return
+      if (isForwardKey(e)) { e.preventDefault(); window.__mazeKeys.w = true }
+      if (isLeftTurnKey(e)) { e.preventDefault(); window.__mazeKeys.a = true }
+      if (isBackKey(e)) { e.preventDefault(); window.__mazeKeys.s = true }
+      if (isRightTurnKey(e)) { e.preventDefault(); window.__mazeKeys.d = true }
+    }
+    function onKeyUp(e) {
+      if (isForwardKey(e)) { window.__mazeKeys.w = false }
+      if (isLeftTurnKey(e)) { window.__mazeKeys.a = false }
+      if (isBackKey(e)) { window.__mazeKeys.s = false }
+      if (isRightTurnKey(e)) { window.__mazeKeys.d = false }
+    }
+    function onBlur() {
+      window.__mazeKeys = {w: false, a: false, s: false, d: false}
+    }
+
+    // Bind on window only (FormLogic runtime exposes window, not document).
+    window.addEventListener("keydown", onKeyDown, true)
+    window.addEventListener("keyup", onKeyUp, true)
+    window.addEventListener("blur", onBlur)
+
+    window.__mazeCleanup = function() {
+      window.removeEventListener("keydown", onKeyDown, true)
+      window.removeEventListener("keyup", onKeyUp, true)
+      window.removeEventListener("blur", onBlur)
+      window.__mazeGameActive = false
+      window.__mazeCleanup = null
+    }
+
+    buildMaze()
+    buildScene()
+  }
+
+  function buildMaze() {
+    let walls = []
+    let row = 0
+    while (row < mRows) {
+      let col = 0
+      while (col < mCols) {
+        if (maze[row * mCols + col] === 1) {
+          let shade = ((row + col) % 3 === 0) ? "#7c8594" : ((row + col) % 3 === 1 ? "#6b7280" : "#8b95a5")
+          walls.push({
+            id: "w" + row + "_" + col,
+            type: "box",
+            position: {x: col * 2, y: 1.25, z: row * 2},
+            width: 2,
+            height: 2.5,
+            depth: 2,
+            color: shade,
+            metalness: 0.1,
+            roughness: 0.85,
+            receiveShadow: true
+          })
+        }
+        col = col + 1
+      }
+      row = row + 1
+    }
+
+    walls.push({
+      id: "floor",
+      type: "plane",
+      position: {x: 14, y: 0, z: 14},
+      rotation: {x: -Math.PI / 2, y: 0, z: 0},
+      width: 32,
+      height: 32,
+      color: "#2d3748",
+      roughness: 0.9,
+      receiveShadow: true
+    })
+
+    walls.push({
+      id: "ceiling",
+      type: "plane",
+      position: {x: 14, y: 2.5, z: 14},
+      rotation: {x: Math.PI / 2, y: 0, z: 0},
+      width: 32,
+      height: 32,
+      color: "#374151",
+      roughness: 0.9
+    })
+
+    walls.push({
+      id: "exit",
+      type: "torus",
+      position: {x: 26, y: 1.2, z: 26},
+      radius: 0.7,
+      color: "#fbbf24",
+      emissive: "#f59e0b",
+      emissiveIntensity: 1.5,
+      animate: {rotateY: 0.03, rotateX: 0.015}
+    })
+
+    walls.push({
+      id: "exitlight",
+      type: "sphere",
+      position: {x: 26, y: 0.1, z: 26},
+      radius: 0.6,
+      color: "#fbbf24",
+      emissive: "#f59e0b",
+      emissiveIntensity: 0.6,
+      opacity: 0.25
+    })
+
+    staticObjs = walls
+  }
+
+  function buildScene() {
+    let objs = []
+    let i = 0
+    while (i < staticObjs.length) {
+      objs.push(staticObjs[i])
+      i = i + 1
+    }
+
+    objects = objs
+
+    lights = [
+      {id: "ambient", type: "ambient", color: "#99aacc", intensity: 1.2},
+      {id: "hemi", type: "hemisphere", color: "#aabbdd", groundColor: "#556677", intensity: 0.6},
+      {id: "torch", type: "point", color: "#ffcc88", intensity: 3.5, position: {x: playerX, y: 2.0, z: playerZ}},
+      {id: "exitglow", type: "point", color: "#fbbf24", intensity: 2.5, position: {x: 26, y: 2, z: 26}}
+    ]
+
+    updateCamera()
+  }
+
+  function updateCamera() {
+    cameraPos = {x: playerX, y: 1.5, z: playerZ}
+    // Keep look direction derived from current yaw so keyboard turning works
+    // even when Scene3D mouse-look extensions are unavailable.
+    let lookDist = 5
+    cameraLookAt = {
+      x: playerX + Math.sin(playerAngle) * lookDist,
+      y: 1.5,
+      z: playerZ + Math.cos(playerAngle) * lookDist
+    }
+  }
+
+  function checkCollision(px, pz) {
+    let pr = 0.35
+    let minCol = Math.floor((px - pr) / 2) - 1
+    let maxCol = Math.floor((px + pr) / 2) + 1
+    let minRow = Math.floor((pz - pr) / 2) - 1
+    let maxRow = Math.floor((pz + pr) / 2) + 1
+
+    let row = minRow
+    while (row <= maxRow) {
+      let col = minCol
+      while (col <= maxCol) {
+        if (row >= 0 && row < mRows && col >= 0 && col < mCols) {
+          if (maze[row * mCols + col] === 1) {
+            let wMinX = col * 2 - 1
+            let wMaxX = col * 2 + 1
+            let wMinZ = row * 2 - 1
+            let wMaxZ = row * 2 + 1
+            if (px + pr > wMinX && px - pr < wMaxX && pz + pr > wMinZ && pz - pr < wMaxZ) {
+              return true
+            }
+          }
+        }
+        col = col + 1
+      }
+      row = row + 1
+    }
+    return false
+  }
+
+  function tick() {
+    if (gameState !== "playing") return
+
+    let secs = Math.floor((Date.now() - startTime) / 1000)
+    let mins = Math.floor(secs / 60)
+    let remainSecs = secs - mins * 60
+    let pad = ""
+    if (remainSecs < 10) { pad = "0" }
+    timerDisplay = mins + ":" + pad + remainSecs
+    statusText = "Time: " + timerDisplay
+
+    let keys = window.__mazeKeys
+    if (!keys) return
+
+    let moveSpeed = 0.12
+    let turnSpeed = 0.055
+
+    // Sync angle with Scene3D mouse look yaw (updated at 60fps)
+    if (window.__scene3dYaw !== undefined) {
+      playerAngle = window.__scene3dYaw
+    }
+
+    // Keyboard turning writes directly to the shared yaw
+    let turned = false
+    if (keys.a) {
+      playerAngle = playerAngle + turnSpeed
+      window.__scene3dYaw = playerAngle
+      turned = true
+    }
+    if (keys.d) {
+      playerAngle = playerAngle - turnSpeed
+      window.__scene3dYaw = playerAngle
+      turned = true
+    }
+
+    let dx = 0
+    let dz = 0
+    if (keys.w) {
+      dx = Math.sin(playerAngle) * moveSpeed
+      dz = Math.cos(playerAngle) * moveSpeed
+    }
+    if (keys.s) {
+      dx = dx - Math.sin(playerAngle) * moveSpeed
+      dz = dz - Math.cos(playerAngle) * moveSpeed
+    }
+
+    if (dx === 0 && dz === 0) {
+      if (turned) {
+        updateCamera()
+      }
+      return
+    }
+
+    let newX = playerX + dx
+    if (!checkCollision(newX, playerZ)) {
+      playerX = newX
+    }
+
+    let newZ = playerZ + dz
+    if (!checkCollision(playerX, newZ)) {
+      playerZ = newZ
+    }
+
+    let distSq = (playerX - 26) * (playerX - 26) + (playerZ - 26) * (playerZ - 26)
+    if (distSq < 2.25) {
+      gameState = "won"
+      running = false
+      statusText = "You Escaped! Time: " + timerDisplay
+    }
+
+    updateCamera()
+    lights = [
+      {id: "ambient", type: "ambient", color: "#99aacc", intensity: 1.2},
+      {id: "hemi", type: "hemisphere", color: "#aabbdd", groundColor: "#556677", intensity: 0.6},
+      {id: "torch", type: "point", color: "#ffcc88", intensity: 3.5, position: {x: playerX, y: 2.0, z: playerZ}},
+      {id: "exitglow", type: "point", color: "#fbbf24", intensity: 2.5, position: {x: 26, y: 2, z: 26}}
+    ]
+  }
+
+  function handleDPad(direction) {
+    if (direction === "up") { window.__mazeKeys.w = true }
+    if (direction === "down") { window.__mazeKeys.s = true }
+    if (direction === "left") { window.__mazeKeys.a = true }
+    if (direction === "right") { window.__mazeKeys.d = true }
+  }
+
+  function handleDPadRelease(direction) {
+    if (direction === "up") { window.__mazeKeys.w = false }
+    if (direction === "down") { window.__mazeKeys.s = false }
+    if (direction === "left") { window.__mazeKeys.a = false }
+    if (direction === "right") { window.__mazeKeys.d = false }
+  }
+
+  function startGame() {
+    playerX = 2
+    playerZ = 2
+    playerAngle = Math.PI / 2
+    startTime = Date.now()
+    timerDisplay = "0:00"
+    gameState = "playing"
+    statusText = "Time: 0:00"
+    running = true
+    window.__scene3dYaw = playerAngle
+    window.__scene3dPitch = 0
+    buildScene()
+  }

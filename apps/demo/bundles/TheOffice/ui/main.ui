@@ -1,0 +1,133 @@
+<logic src="../logic/main.logic" />
+
+<data>
+  <collection name="characters" as="characters" />
+  <collection name="office_chat" as="messages" sort="timestamp:desc" limit={50} />
+</data>
+
+<style>
+@keyframes office-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes office-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes msg-slide {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.office-speaking { animation: office-bounce 0.6s ease-in-out infinite; }
+.office-thinking { animation: office-pulse 1.2s ease-in-out infinite; }
+.msg-enter { animation: msg-slide 0.3s ease-out; }
+.chat-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99,179,237,0.3) transparent;
+}
+.chat-scroll::-webkit-scrollbar { width: 5px; }
+.chat-scroll::-webkit-scrollbar-track { background: transparent; }
+.chat-scroll::-webkit-scrollbar-thumb { background: rgba(99,179,237,0.3); border-radius: 3px; }
+</style>
+
+<App theme="dark">
+  <Box style={{ display: "flex", width: "100%", height: "100vh", overflow: "hidden", background: "#0d1117", fontFamily: "'Inter', 'Segoe UI', sans-serif" }}>
+
+    <!-- Left Panel: Office Scene -->
+    <Box style={{ flex: "1 1 70%", position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: "#1a1d23" }}>
+
+      <!-- Tilemap container -->
+      <Box style={{ position: "relative", transformOrigin: "center center" }}>
+        <!-- TileMap renders floor + furniture -->
+        <TileMap
+          src={asset("assets/office_32x32.png")}
+          tileSize={32}
+          tilesetColumns={16}
+          layers={[bgLayer, objLayer]}
+          mapWidth={28}
+          mapHeight={20}
+          scale={1.25}
+          style={{ display: "block", borderRadius: "4px" }}
+        />
+
+        <!-- Character overlays (renderTick forces re-render each movement tick) -->
+        <Box data-tick={renderTick} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
+          #each (char, charIdx in characters)
+            <Box style={{ position: "absolute", width: "77px", height: "77px", left: (getCharX(charIdx) * 1.25) + "px", top: (getCharY(charIdx) * 1.25) + "px", transform: "translate(-50%, -75%)", pointerEvents: "none", transition: "left 50ms linear, top 50ms linear" }}>
+              <!-- Name label (just above sprite head) -->
+              <Text style={{ position: "absolute", top: "-2px", left: "50%", transform: "translateX(-50%)", color: "#e2e8f0", fontSize: "9px", fontWeight: 700, letterSpacing: "0.5px", textShadow: "0 1px 4px rgba(0,0,0,0.9)", whiteSpace: "nowrap", zIndex: 20, background: "rgba(13,17,23,0.75)", padding: "1px 5px", borderRadius: "3px", border: "1px solid rgba(99,179,237,0.2)" }}>{char.data.name}</Text>
+
+              <!-- Speech/thought bubble -->
+              <Text if={speakingCharId === char.id} className="office-speaking" style={{ position: "absolute", top: "-18px", left: "50%", transform: "translateX(-50%)", fontSize: "16px", zIndex: 25, filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.8))" }}>💬</Text>
+              <Text if={thinkingCharId === char.id} className="office-thinking" style={{ position: "absolute", top: "-18px", left: "50%", transform: "translateX(-50%)", fontSize: "16px", zIndex: 25, filter: "drop-shadow(0 1px 3px rgba(0,0,0,0.8))" }}>💭</Text>
+
+              <!-- Sprite layers: body, eyes, pants, lower legs, outfit, shoes, hair -->
+              <Sprite src={asset("assets/character/" + char.data.base + "_walk.png")} frameWidth={32} frameHeight={32} columns={8} rows={4} row={getCharDir(charIdx)} colOffset={0} playing={isCharMoving(charIdx)} fps={10} scale={2.4} style={{ zIndex: 10 }} />
+              <Sprite src={asset("assets/character/eyes/eyes_walk.png")} frameWidth={32} frameHeight={32} columns={8} rows={4} row={getCharDir(charIdx)} colOffset={0} playing={isCharMoving(charIdx)} fps={10} scale={2.4} style={{ zIndex: 11 }} />
+              <Sprite src={asset("assets/character/clothes/basic_walk.png")} frameWidth={32} frameHeight={32} columns={8} rows={4} row={getCharDir(charIdx)} colOffset={char.data.pantsColor * 8} playing={isCharMoving(charIdx)} fps={10} scale={2.4} style={{ zIndex: 12 }} />
+              <Sprite src={asset("assets/character/clothes/pants_suit_walk.png")} frameWidth={32} frameHeight={32} columns={8} rows={4} row={getCharDir(charIdx)} colOffset={char.data.pantsColor * 8} playing={isCharMoving(charIdx)} fps={10} scale={2.4} style={{ zIndex: 13 }} />
+              <Sprite src={asset("assets/character/clothes/" + char.data.clothes + "_walk.png")} frameWidth={32} frameHeight={32} columns={8} rows={4} row={getCharDir(charIdx)} colOffset={char.data.clothesColor * 8} playing={isCharMoving(charIdx)} fps={10} scale={2.4} style={{ zIndex: 14 }} />
+              <Sprite src={asset("assets/character/clothes/shoes_walk.png")} frameWidth={32} frameHeight={32} columns={8} rows={4} row={getCharDir(charIdx)} colOffset={char.data.pantsColor * 8} playing={isCharMoving(charIdx)} fps={10} scale={2.4} style={{ zIndex: 15 }} />
+              <Sprite src={asset("assets/character/hair/" + char.data.hair + "_walk.png")} frameWidth={32} frameHeight={32} columns={8} rows={4} row={getCharDir(charIdx)} colOffset={char.data.hairColor * 8} playing={isCharMoving(charIdx)} fps={10} scale={2.4} style={{ zIndex: 16 }} />
+            </Box>
+          #end
+        </Box>
+      </Box>
+
+      <!-- Controls overlay -->
+      <Box style={{ position: "absolute", top: "12px", left: "12px", display: "flex", gap: "8px", zIndex: 30 }}>
+        <Button if={!modelLoaded} @click={loadModel} size="sm" style={{ background: modelLoading ? "rgba(74,85,104,0.9)" : "rgba(99,179,237,0.9)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.1)", color: "#fff", padding: "6px 16px", borderRadius: "8px", fontSize: "11px", fontWeight: 600, cursor: modelLoading ? "wait" : "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}>
+          {modelLoading ? "Loading Model..." : "Load AI Model"}
+        </Button>
+        <Button if={modelLoaded} @click={toggleSim} size="sm" style={{ background: simRunning ? "rgba(229,62,62,0.9)" : "rgba(56,161,105,0.9)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.1)", color: "#fff", padding: "6px 16px", borderRadius: "8px", fontSize: "11px", fontWeight: 600, boxShadow: "0 2px 8px rgba(0,0,0,0.3)" }}>
+          {simRunning ? "Pause" : "Start Sim"}
+        </Button>
+      </Box>
+
+      <!-- Status bar -->
+      <Box style={{ position: "absolute", bottom: "12px", left: "12px", right: "30%", zIndex: 30, background: "rgba(13,17,23,0.8)", backdropFilter: "blur(8px)", padding: "5px 12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.06)" }}>
+        <Text style={{ color: "#8b949e", fontSize: "10px", fontWeight: 500 }}>{statusText}</Text>
+      </Box>
+    </Box>
+
+    <!-- Right Panel: Chat Log -->
+    <Box style={{ flex: "0 0 30%", display: "flex", flexDirection: "column", background: "#161b22", borderLeft: "1px solid rgba(48,54,61,0.8)" }}>
+      <!-- Header -->
+      <Box style={{ padding: "16px 18px", borderBottom: "1px solid rgba(48,54,61,0.8)", background: "rgba(22,27,34,0.95)" }}>
+        <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <Box>
+            <Text style={{ color: "#e6edf3", fontSize: "14px", fontWeight: 700, letterSpacing: "-0.3px" }}>Office Chat</Text>
+            <Text style={{ color: "#484f58", fontSize: "10px", marginTop: "2px" }}>{messageCount} messages</Text>
+          </Box>
+          <Box style={{ width: "8px", height: "8px", borderRadius: "50%", background: simRunning ? "#3fb950" : "#484f58", boxShadow: simRunning ? "0 0 8px rgba(63,185,80,0.4)" : "none" }} />
+        </Box>
+      </Box>
+
+      <!-- Messages -->
+      <Box className="chat-scroll" style={{ flex: 1, overflowY: "auto", padding: "8px 12px", display: "flex", flexDirection: "column-reverse", gap: "6px" }}>
+        #each (msg in messages)
+          <Box className="msg-enter" style={{ background: "rgba(30,37,46,0.8)", borderRadius: "10px", padding: "10px 12px", border: "1px solid rgba(48,54,61,0.5)" }}>
+            <Box style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px" }}>
+              <Text style={{ color: "#58a6ff", fontSize: "11px", fontWeight: 700 }}>{msg.data.speaker}</Text>
+              <Text style={{ color: "#30363d", fontSize: "9px" }}>→</Text>
+              <Text style={{ color: "#8b949e", fontSize: "10px" }}>{msg.data.listener}</Text>
+            </Box>
+            <Text style={{ color: "#c9d1d9", fontSize: "12px", lineHeight: "1.5" }}>{msg.data.content}</Text>
+          </Box>
+        #empty
+          <Box style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", padding: "24px" }}>
+            <Box style={{ textAlign: "center" }}>
+              <Text style={{ color: "#484f58", fontSize: "24px", marginBottom: "8px" }}>💬</Text>
+              <Text style={{ color: "#484f58", fontSize: "11px", lineHeight: "1.5" }}>No conversations yet.</Text>
+              <Text style={{ color: "#30363d", fontSize: "10px", marginTop: "4px" }}>Load the AI model and start the simulation</Text>
+            </Box>
+          </Box>
+        #end
+      </Box>
+    </Box>
+  </Box>
+
+  <!-- Loops -->
+  <Loop interval={50} running={simRunning} @tick={movementTick} />
+  <Loop interval={10000} running={simRunning} @tick={simulationTick} />
+</App>

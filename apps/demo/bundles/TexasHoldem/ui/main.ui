@@ -1,0 +1,172 @@
+// main.ui - Texas Hold'em Poker
+// Multiplayer poker with P2P sync via Yjs + WebRTC
+
+<logic src="../logic/main.logic" />
+
+// Import pages FIRST (so their content is in the source before component replacements)
+<import Lobby from="./pages/Lobby.ui" />
+<import Table from="./pages/Table.ui" />
+
+// Import attribute-less components AFTER pages (these get inlined into page content)
+<import CommunityCards from="./components/CommunityCards.ui" />
+<import ActionPanel from="./components/ActionPanel.ui" />
+<import PotDisplay from="./components/PotDisplay.ui" />
+
+// Import modals
+<import SyncModal from="./modals/SyncModal.ui" />
+
+<data>
+  <collection name="poker_table" as="pokerTable" />
+  <collection name="poker_players" as="pokerPlayers" />
+  <collection name="poker_actions" as="pokerActions" limit={20} sort="timestamp:desc" />
+</data>
+
+<style>
+@keyframes card-deal {
+  from { opacity: 0; transform: translateY(-20px) scale(0.8); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes hole-deal {
+  0% { opacity: 0; transform: translateY(-120px) scale(0.78) rotate(-8deg); filter: blur(0.6px); }
+  65% { opacity: 1; transform: translateY(2px) scale(1.03) rotate(1deg); filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1) rotate(0deg); filter: blur(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(200, 170, 110, 0); }
+  50% { box-shadow: 0 0 20px 4px rgba(200, 170, 110, 0.3); }
+}
+
+@keyframes chip-slide {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes board-reveal {
+  0% { opacity: 0; transform: translateY(-14px) rotate(-8deg) scale(0.86); }
+  70% { opacity: 1; transform: translateY(1px) rotate(2deg) scale(1.02); }
+  100% { opacity: 1; transform: translateY(0) rotate(0deg) scale(1); }
+}
+
+@keyframes flop-reveal {
+  0% { opacity: 0; transform: translateY(-26px) scale(0.86) rotate(-7deg); filter: blur(0.8px); }
+  70% { opacity: 1; transform: translateY(2px) scale(1.03) rotate(1deg); filter: blur(0); }
+  100% { opacity: 1; transform: translateY(0) scale(1) rotate(0deg); filter: blur(0); }
+}
+
+@keyframes turn-reveal {
+  0% { opacity: 0; transform: translateX(-20px) translateY(-14px) scale(0.9) rotate(-4deg); }
+  75% { opacity: 1; transform: translateX(0) translateY(1px) scale(1.02) rotate(0.5deg); }
+  100% { opacity: 1; transform: translateX(0) translateY(0) scale(1) rotate(0deg); }
+}
+
+@keyframes river-reveal {
+  0% { opacity: 0; transform: translateX(20px) translateY(-14px) scale(0.9) rotate(4deg); }
+  75% { opacity: 1; transform: translateX(0) translateY(1px) scale(1.02) rotate(-0.5deg); }
+  100% { opacity: 1; transform: translateX(0) translateY(0) scale(1) rotate(0deg); }
+}
+
+@keyframes chip-bet-pop {
+  0% { transform: translateY(10px) scale(0.86); opacity: 0; }
+  70% { transform: translateY(-1px) scale(1.04); opacity: 1; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+@keyframes pot-pulse {
+  0% { transform: translateY(4px) scale(0.92); filter: brightness(1); }
+  55% { transform: translateY(-1px) scale(1.05); filter: brightness(1.12); }
+  100% { transform: translateY(0) scale(1); filter: brightness(1); }
+}
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(200, 170, 110, 0.2); border-radius: 4px; }
+::selection { background: rgba(200, 170, 110, 0.25); }
+
+button, [role="button"] {
+  transition: all 180ms ease !important;
+}
+button:hover, [role="button"]:hover {
+  filter: brightness(1.1);
+}
+button:active, [role="button"]:active {
+  transform: scale(0.97) !important;
+}
+
+@media (max-height: 500px) {
+  /* Top bar: compact single line, scrollable */
+  .poker-topbar {
+    padding: 4px 8px !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    gap: 4px !important;
+  }
+  /* Hide non-essential top bar items */
+  .poker-topbar-hide-mobile {
+    display: none !important;
+  }
+
+  /* Felt table: allow smaller minimum height */
+  .poker-felt {
+    min-height: 200px !important;
+  }
+
+  /* Seats: more compact */
+  .poker-seat-occupied {
+    width: 72px !important;
+    height: 110px !important;
+    padding-bottom: 44px !important;
+  }
+  .poker-seat-empty {
+    width: 72px !important;
+  }
+  .poker-seat-avatar {
+    width: 30px !important;
+    height: 30px !important;
+    min-width: 30px !important;
+    min-height: 30px !important;
+  }
+  .poker-seat-card {
+    width: 20px !important;
+    height: 30px !important;
+  }
+  .poker-seat-cards {
+    min-height: 34px !important;
+  }
+
+  /* Action panel: compact, hide verbose info */
+  .poker-action-panel {
+    padding: 6px 8px !important;
+    gap: 4px !important;
+  }
+  .poker-action-info {
+    display: none !important;
+  }
+  .poker-action-raise-detail {
+    display: none !important;
+  }
+  .poker-action-mycards {
+    display: flex !important;
+  }
+
+  /* Host controls: position higher */
+  .poker-host-controls {
+    bottom: 56px !important;
+  }
+  .poker-rebuy {
+    bottom: 36px !important;
+  }
+}
+</style>
+
+<Loop interval={pollIntervalMs()} running={currentPage === "table"} @tick={pollGameState} />
+
+<App theme="dark">
+  <Box style={{ width: "100%", height: "100%", overflow: "hidden", background: "#0d1b0e" }}>
+    <Lobby />
+    <Table />
+  </Box>
+  <SyncModal />
+  <Toast if={toastMessage} message={toastMessage} type={toastType} />
+</App>

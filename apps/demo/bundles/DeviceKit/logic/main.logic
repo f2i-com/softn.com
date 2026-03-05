@@ -1,0 +1,64 @@
+let currentPage = "api"
+let apiUrl = "https://jsonplaceholder.typicode.com/todos/1"
+let apiResult = ""
+let apiLoading = false
+let qrValue = "https://softn.dev"
+let scannedCode = ""
+let capturedPhoto = ""
+let liveFrameCount = 0
+let selectedFiles = []
+let fileContent = ""
+let fileIsImage = false
+let filePreviewUrl = ""
+
+function fetchApi() {
+  apiLoading = true
+  softn.net.fetch(apiUrl, { method: "GET" }, function(response) {
+    apiResult = response.body
+    apiLoading = false
+  })
+}
+
+function setPage(page) {
+  currentPage = page
+}
+
+function handleScan(data) {
+  scannedCode = data
+}
+
+function handleCapture(data) {
+  capturedPhoto = data.dataUrl
+}
+
+function handleFrame(data) {
+  liveFrameCount = liveFrameCount + 1
+}
+
+function handleFileSelect(files) {
+  selectedFiles = files
+  fileContent = ""
+  fileIsImage = false
+  filePreviewUrl = ""
+  if (files.length > 0) {
+    let type = files[0].type
+    if (type.indexOf("image/") === 0) {
+      fileIsImage = true
+      softn.files.readBase64(files[0].ref, function(dataUrl) {
+        filePreviewUrl = dataUrl
+      })
+    } else {
+      softn.files.readText(files[0].ref, function(content) {
+        fileContent = content
+      })
+    }
+  }
+}
+
+function updateQrValue(val) {
+  qrValue = val
+}
+
+function updateApiUrl(val) {
+  apiUrl = val
+}

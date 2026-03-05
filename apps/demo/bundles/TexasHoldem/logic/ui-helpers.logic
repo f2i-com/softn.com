@@ -1,0 +1,509 @@
+﻿  // --- UI Helpers ---
+
+  function isMyTurn() {
+    return currentTurnSeat === mySeat && mySeat >= 0
+  }
+
+  function canCheck() {
+    let me = getMyPlayerRecord()
+    if (!me) return false
+    return me.data.bet >= currentBet
+  }
+
+  function getCallAmount() {
+    let me = getMyPlayerRecord()
+    if (!me) return 0
+    let diff = currentBet - me.data.bet
+    if (diff < 0) return 0
+    return diff
+  }
+
+  function getMinRaise() {
+    if (currentBet <= 0) return bigBlind
+    if (lastFullRaise > bigBlind) return lastFullRaise
+    return bigBlind
+  }
+
+  function getMyBet() {
+    let me = getMyPlayerRecord()
+    if (!me) return 0
+    return me.data.bet || 0
+  }
+
+  function getMyChips() {
+    let me = getMyPlayerRecord()
+    if (!me) return 0
+    return me.data.chips || 0
+  }
+
+  function getMaxTotalBet() {
+    return getMyBet() + getMyChips()
+  }
+
+  function getRaiseIncrementInput() {
+    let parsed = parseInt(raiseAmount)
+    if (!parsed || parsed < 0) return getMinRaise()
+    return parsed
+  }
+
+  function getRaiseTargetBet() {
+    let meBet = getMyBet()
+    let maxTotal = getMaxTotalBet()
+    let target = currentBet + getRaiseIncrementInput()
+    if (target < meBet) target = meBet
+    if (target > maxTotal) target = maxTotal
+    return target
+  }
+
+  function getRaisePutInAmount() {
+    let meBet = getMyBet()
+    let putIn = getRaiseTargetBet() - meBet
+    if (putIn < 0) return 0
+    return putIn
+  }
+
+  function canRaiseNow() {
+    if (!isMyTurn()) return false
+    if (!TableStateClass.isLiveHandPhase(gamePhase)) return false
+    if (getMyChips() <= 0) return false
+    if (isActionBusy()) return false
+    return true
+  }
+
+  function isActionBusy() {
+    return actionBusyUntilMs > Date.now()
+  }
+
+  function raiseActionLabel() {
+    if (currentBet <= 0) return "Bet"
+    return "Raise"
+  }
+
+  function setRaiseMin() {
+    setRaiseAmount("" + getMinRaise())
+  }
+
+  function setRaiseHalfPot() {
+    let half = Math.floor(pot / 2)
+    if (half < getMinRaise()) half = getMinRaise()
+    setRaiseAmount("" + half)
+  }
+
+  function setRaisePot() {
+    let full = pot
+    if (full < getMinRaise()) full = getMinRaise()
+    setRaiseAmount("" + full)
+  }
+
+  function setRaiseAllIn() {
+    let meBet = getMyBet()
+    let meChips = getMyChips()
+    let allInTarget = meBet + meChips
+    let neededIncrement = allInTarget - currentBet
+    if (neededIncrement < getMinRaise()) neededIncrement = getMinRaise()
+    setRaiseAmount("" + neededIncrement)
+  }
+
+  function seatIsBot(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return false
+    let pid = p.data.peerId || ""
+    return pid.charAt(0) === "b" && pid.charAt(1) === "o" && pid.charAt(2) === "t" && pid.charAt(3) === "-"
+  }
+
+  function seatPositionStyle(seatNum) {
+    // 6 positions around elliptical table
+    if (seatNum === 0) return { bottom: "20px", left: "50%", transform: "translateX(-50%)" }
+    if (seatNum === 1) return { bottom: "100px", right: "30px" }
+    if (seatNum === 2) return { top: "60px", right: "30px" }
+    if (seatNum === 3) return { top: "20px", left: "50%", transform: "translateX(-50%)" }
+    if (seatNum === 4) return { top: "60px", left: "30px" }
+    if (seatNum === 5) return { bottom: "100px", left: "30px" }
+    return {}
+  }
+
+  function tableWidthStyle() {
+    // Use CSS viewport units so resize responds immediately without poll-delay.
+    return "min(98vw, 940px)"
+  }
+
+  function tableHeightStyle() {
+    // CSS-driven height adapts instantly as viewport changes.
+    return "clamp(200px, 64vh, 560px)"
+  }
+
+  function isNarrowViewport() {
+    return false
+  }
+
+  function isShortViewport() {
+    return false
+  }
+
+  function tableTranslateYStyle() {
+    return "translate(-50%, -52%)"
+  }
+
+  function hostControlsBottomStyle() {
+    return "clamp(74px, 9vh, 90px)"
+  }
+
+  function rebuyBottomStyle() {
+    return "clamp(44px, 6vh, 60px)"
+  }
+
+  function topBarWrapStyle() {
+    return "wrap"
+  }
+
+  function isDealerSeat(seatNum) {
+    return dealerSeat === seatNum && gamePhase !== TableStateClass.phaseWaiting()
+  }
+
+  function isCurrentTurn(seatNum) {
+    return currentTurnSeat === seatNum
+  }
+
+  function playerDisplayCards(p) {
+    // Only show hole cards for own hand; show card-back for others
+    if (p.data.peerId === peerId || (mySeat >= 0 && p.data.seat === mySeat)) {
+      return p.data.holeCards || []
+    }
+    // At showdown, reveal cards for players that reached showdown.
+    if (gamePhase === TableStateClass.phaseShowdown()) {
+      if (p.data.showCardsAtShowdown) {
+        return p.data.holeCards || []
+      }
+      let st = p.data.status || ""
+      if (TableStateClass.isShowdownEligibleStatus(st)) {
+        return p.data.holeCards || []
+      }
+    }
+    // Return placeholder to indicate cards exist but hidden
+    if (p.data.holeCards && p.data.holeCards.length === 2 && p.data.status !== TableStateClass.statusFolded() && p.data.status !== TableStateClass.statusWaiting() && p.data.status !== TableStateClass.statusSittingOut()) {
+      return [-1, -1]
+    }
+    return []
+  }
+
+  function gamePhaseDisplay() {
+    if (gamePhase === TableStateClass.phaseWaiting()) return "Waiting for Players"
+    if (gamePhase === TableStateClass.phasePreflop()) return "Pre-Flop"
+    if (gamePhase === TableStateClass.phaseFlop()) return "Flop"
+    if (gamePhase === TableStateClass.phaseTurn()) return "Turn"
+    if (gamePhase === TableStateClass.phaseRiver()) return "River"
+    if (gamePhase === TableStateClass.phaseShowdown()) return "Showdown"
+    return gamePhase
+  }
+
+  function turnIndicator() {
+    if (!TableStateClass.isLiveHandPhase(gamePhase)) return ""
+    if (currentTurnSeat < 0) return ""
+    if (currentTurnSeat === mySeat) return "Your Turn"
+    let turnPlayer = getPlayerAtSeat(currentTurnSeat)
+    if (turnPlayer) return turnPlayer.data.name + "'s Turn"
+    return ""
+  }
+
+  function showdownCountdown() {
+    if (gamePhase !== TableStateClass.phaseShowdown() || !isHost) return ""
+    if (countSeatedPlayers() < 2) return ""
+    let secs = showdownAutoDelay
+    if (secs <= 0) return ""
+    return "Next hand in " + secs + "s..."
+  }
+
+  function topStatusMain() {
+    let turn = turnIndicator()
+    if (turn) return turn
+    return gamePhaseDisplay()
+  }
+
+  function topStatusSub() {
+    let cd = showdownCountdown()
+    if (cd) return cd
+    if (gamePhase === TableStateClass.phaseWaiting()) return "Take a seat and deal when ready"
+    return "Pot $" + pot
+  }
+
+  function statusBadgeColor(status) {
+    if (status === TableStateClass.statusActive()) return "#22c55e"
+    if (status === TableStateClass.statusAllIn()) return "#f59e0b"
+    if (status === TableStateClass.statusFolded()) return "#6b7280"
+    if (status === TableStateClass.statusSittingOut()) return "#6b7280"
+    return "#a1a1aa"
+  }
+
+  // --- Per-Seat Display Helpers (for inline rendering) ---
+
+  function seatHasPlayer(n) {
+    return getPlayerAtSeat(n) !== null
+  }
+
+  function seatName(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return ""
+    return p.data.name || ""
+  }
+
+  function seatDisplayName(n) {
+    let name = seatName(n)
+    if (!name) return ""
+    if (name.length <= 8) return name
+    return name.substring(0, 8) + "..."
+  }
+
+  function seatInitial(n) {
+    let name = seatName(n)
+    if (!name) return "?"
+    return name.charAt(0).toUpperCase()
+  }
+
+  function seatChips(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return 0
+    return p.data.chips || 0
+  }
+
+  function seatBet(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return 0
+    return p.data.bet || 0
+  }
+
+  function seatBetAnim(n) {
+    if ((animSeatBetPulseTicks[n] || 0) > 0 && seatBet(n) > 0) {
+      return "chip-bet-pop 340ms cubic-bezier(0.22, 0.61, 0.36, 1)"
+    }
+    return "none"
+  }
+
+  function seatStatus(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return ""
+    return p.data.status || ""
+  }
+
+  function seatShowStatus(n) {
+    let s = seatStatus(n)
+    return s === TableStateClass.statusFolded() || s === TableStateClass.statusAllIn() || s === TableStateClass.statusSittingOut()
+  }
+
+  function seatContribution(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return 0
+    return p.data.handContribution || 0
+  }
+
+  function seatCanAct(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p || !p.data) return false
+    return p.data.status === TableStateClass.statusActive() && !p.data.hasActed
+  }
+
+  function totalContributions() {
+    let total = 0
+    let i = 0
+    while (i < players.length) {
+      if (players[i].data) {
+        total = total + (players[i].data.handContribution || 0)
+      }
+      i = i + 1
+    }
+    return total
+  }
+
+  function totalPlayerChips() {
+    let total = 0
+    let i = 0
+    while (i < players.length) {
+      if (players[i].data) {
+        total = total + (players[i].data.chips || 0)
+      }
+      i = i + 1
+    }
+    return total
+  }
+
+  function bankrollNow() {
+    return totalPlayerChips() + pot
+  }
+
+  function bankrollDelta() {
+    if (debugHandBankrollBaseline <= 0) return 0
+    return bankrollNow() - debugHandBankrollBaseline
+  }
+
+  function potAnim() {
+    if (animPotPulseTicksRemaining > 0) {
+      return "pot-pulse 420ms cubic-bezier(0.22, 0.61, 0.36, 1)"
+    }
+    return "none"
+  }
+
+  function seatCard1(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return -99
+    let cards = playerDisplayCards(p)
+    if (cards.length > 0) return cards[0]
+    return -99
+  }
+
+  function seatCard2(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return -99
+    let cards = playerDisplayCards(p)
+    if (cards.length > 1) return cards[1]
+    return -99
+  }
+
+  function seatAvatarBg(n) {
+    if (isCurrentTurn(n)) return "linear-gradient(135deg, #c8aa6e, #a08040)"
+    return "linear-gradient(135deg, #374151, #1f2937)"
+  }
+
+  function seatBorder(n) {
+    if (isDealerSeat(n)) return "3px solid #fbbf24"
+    if (isCurrentTurn(n)) return "3px solid #c8aa6e"
+    return "2px solid rgba(255,255,255,0.15)"
+  }
+
+  function seatShadow(n) {
+    if (isCurrentTurn(n)) return "0 0 16px rgba(200,170,110,0.4)"
+    return "0 2px 8px rgba(0,0,0,0.3)"
+  }
+
+  function seatGlow(n) {
+    if (isCurrentTurn(n)) return "pulse-glow 1.5s infinite"
+    return "none"
+  }
+
+  // Card display helpers for inline rendering
+  function ccCard(index) {
+    if (index < communityCards.length) return communityCards[index]
+    return -99
+  }
+
+  function seatCardsAnim(seatNum) {
+    if (holeDealAnimTicksRemaining <= 0) return "none"
+    let p = getPlayerAtSeat(seatNum)
+    if (!p || !p.data) return "none"
+    let hc = p.data.holeCards || []
+    if (hc.length !== 2) return "none"
+    let delayMs = seatNum * 65
+    return "hole-deal 420ms cubic-bezier(0.22, 0.61, 0.36, 1) " + delayMs + "ms both"
+  }
+
+  function seatAnimPosX(seatNum) {
+    if (seatNum === 0) return 0
+    if (seatNum === 1) return 220
+    if (seatNum === 2) return 220
+    if (seatNum === 3) return 0
+    if (seatNum === 4) return -220
+    if (seatNum === 5) return -220
+    return 0
+  }
+
+  function seatAnimPosY(seatNum) {
+    if (seatNum === 0) return 140
+    if (seatNum === 1) return 80
+    if (seatNum === 2) return -80
+    if (seatNum === 3) return -140
+    if (seatNum === 4) return -80
+    if (seatNum === 5) return 80
+    return 0
+  }
+
+  function seatCardsTransform(seatNum) {
+    if (holeDealAnimTicksRemaining <= 0) return "translate(0px, 0px) scale(1) rotate(0deg)"
+    let p = getPlayerAtSeat(seatNum)
+    if (!p || !p.data) return "translate(0px, 0px) scale(1) rotate(0deg)"
+    let hc = p.data.holeCards || []
+    if (hc.length !== 2) return "translate(0px, 0px) scale(1) rotate(0deg)"
+
+    let progress = holeDealAnimTicksRemaining / 6
+    if (progress < 0) progress = 0
+    if (progress > 1) progress = 1
+    // ease-out cubic so cards leave dealer quickly and settle smoothly
+    let inv = 1 - progress
+    let eased = 1 - (inv * inv * inv)
+
+    let fromX = seatAnimPosX(dealerSeat)
+    let fromY = seatAnimPosY(dealerSeat)
+    let toX = seatAnimPosX(seatNum)
+    let toY = seatAnimPosY(seatNum)
+    let dx = fromX - toX
+    let dy = fromY - toY
+    let tx = Math.floor(dx * eased)
+    let ty = Math.floor(dy * eased)
+
+    let rot = 8
+    if (dx < 0) rot = -8
+    rot = rot * eased
+
+    let scale = 1 - (0.2 * eased)
+    return "translate(" + tx + "px, " + ty + "px) scale(" + scale + ") rotate(" + rot + "deg)"
+  }
+
+  function seatCardsOpacity(seatNum) {
+    if (holeDealAnimTicksRemaining <= 0) return 1
+    let p = getPlayerAtSeat(seatNum)
+    if (!p || !p.data) return 1
+    let hc = p.data.holeCards || []
+    if (hc.length !== 2) return 1
+    let progress = holeDealAnimTicksRemaining / 6
+    if (progress < 0) progress = 0
+    if (progress > 1) progress = 1
+    // Ghost cards should be brightest near dealer and fade out as they arrive.
+    return 0.9 * progress
+  }
+
+  function seatRealCardsOpacity(seatNum) {
+    return 1
+  }
+
+  function seatDealGhostVisible(seatNum) {
+    // Keep hole cards fully static at each seat; disable ghost travel overlay.
+    return false
+  }
+
+  function seatRealCardsVisibility(seatNum) {
+    if (seatDealGhostVisible(seatNum)) return "hidden"
+    return "visible"
+  }
+
+  function communityCardAnim(index) {
+    if (index >= communityCards.length) return "none"
+    if (boardRevealAnimTicksRemaining <= 0) return "none"
+    if (boardRevealFromIndex < 0) return "none"
+    if (index < boardRevealFromIndex) return "none"
+    let offset = index - boardRevealFromIndex
+    let delayMs = offset * 95
+    if (communityCards.length === 3) {
+      return "flop-reveal 480ms cubic-bezier(0.22, 0.61, 0.36, 1) " + delayMs + "ms both"
+    }
+    if (communityCards.length === 4) {
+      return "turn-reveal 360ms cubic-bezier(0.22, 0.61, 0.36, 1) " + delayMs + "ms both"
+    }
+    if (communityCards.length >= 5) {
+      return "river-reveal 360ms cubic-bezier(0.22, 0.61, 0.36, 1) " + delayMs + "ms both"
+    }
+    return "none"
+  }
+
+  function cardRankDisplay(idx) {
+    if (idx < 0) return ""
+    return rankName(cardRank(idx))
+  }
+
+  function cardSuitDisplay(idx) {
+    if (idx < 0) return ""
+    return suitSymbol(cardSuit(idx))
+  }
+
+  function cardColorVal(idx) {
+    if (idx < 0) return "#1e293b"
+    return cardColor(idx)
+  }
+
+

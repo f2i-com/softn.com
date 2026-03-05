@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "gpu": {
+      "enabled": true,
+      "maxBufferMemoryMB": 256,
+      "allowedShaderSources": ["bundle", "inline"]
+    }
+  }
+}

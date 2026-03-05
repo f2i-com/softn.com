@@ -1,0 +1,16 @@
+{
+  "name": "MazeEscape3D",
+  "version": "1.0.0",
+  "description": "3D maze escape game — navigate corridors to reach the golden portal",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": { "title": "Maze Escape 3D", "width": 900, "height": 750 },
+    "theme": { "primary": "#4ade80", "mode": "dark" }
+  }
+}

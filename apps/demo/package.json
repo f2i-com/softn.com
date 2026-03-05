@@ -1,0 +1,11 @@
+{
+  "name": "@softn/demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Demo .softn applications for SoftN Loader",
+  "scripts": {
+    "bundle": "node scripts/build-bundle.cjs",
+    "bundle:glamour": "node scripts/build-bundle.cjs",
+    "test": "node scripts/test-texasholdem-gameplay.cjs"
+  }
+}

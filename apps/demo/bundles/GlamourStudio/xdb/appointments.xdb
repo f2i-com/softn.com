@@ -1,0 +1,75 @@
+{
+  "collection": "appointments",
+  "records": [
+    {
+      "id": "appointments_1",
+      "collection": "appointments",
+      "data": {
+        "client": "Jennifer Adams",
+        "stylist": "Sarah Johnson",
+        "service": "Full Color",
+        "time": "09:00",
+        "status": "completed",
+        "price": 150
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "appointments_2",
+      "collection": "appointments",
+      "data": {
+        "client": "Amanda Garcia",
+        "stylist": "David Martinez",
+        "service": "Balayage",
+        "time": "09:30",
+        "status": "in-progress",
+        "price": 200
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "appointments_3",
+      "collection": "appointments",
+      "data": {
+        "client": "James Wilson",
+        "stylist": "Michael Chen",
+        "service": "Men's Haircut",
+        "time": "10:00",
+        "status": "completed",
+        "price": 35
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "appointments_4",
+      "collection": "appointments",
+      "data": {
+        "client": "Robert Brown",
+        "stylist": "Emma Williams",
+        "service": "Blowout",
+        "time": "11:00",
+        "status": "scheduled",
+        "price": 45
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "appointments_5",
+      "collection": "appointments",
+      "data": {
+        "client": "Michelle Lee",
+        "stylist": "Sarah Johnson",
+        "service": "Highlights",
+        "time": "14:00",
+        "status": "scheduled",
+        "price": 120
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    }
+  ]
+}

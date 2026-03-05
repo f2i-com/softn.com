@@ -1,0 +1,1594 @@
+  // --- State Variables ---
+  let currentPage = "lobby"
+  let peerId = ""
+  let playerName = ""
+  let syncRoom = ""
+  let syncConnected = false
+  let syncConnecting = false
+  let syncPeers = 0
+  let showSyncModal = false
+  let showResultsModal = false
+  let toastMessage = ""
+  let toastType = "info"
+  let showDebugOverlay = false
+  let debugTraceEnabled = false
+  let debugLastStateSig = ""
+  let soundEnabled = false
+  let soundWatchInitialized = false
+  let soundLastHandNumber = 0
+  let soundLastCommunityCount = 0
+  let soundLastActionKey = ""
+  let soundLastActionScanSig = ""
+  let soundCtx = null
+  let soundAudioDeal = null
+  let soundAudioCheck = null
+  let soundAudioCall = null
+  let soundAudioRaise = null
+  let soundPlaySrc = ""
+  let soundPlayNonce = 0
+  let soundDiag = ""
+  let soundLastError = ""
+
+  // Game state (from XDB poker_table)
+  let gamePhase = "waiting"
+  let handNumber = 0
+  let dealerSeat = 0
+  let currentTurnSeat = -1
+  let currentBet = 0
+  let pot = 0
+  let communityCards = []
+  let tableId = ""
+  let smallBlind = 10
+  let bigBlind = 20
+  let lastFullRaise = 20
+
+  // Local player state
+  let mySeat = -1
+  let myHoleCards = []
+  let myChips = 0
+  let myBet = 0
+  let myStatus = "waiting"
+  let myRecordMissingTicks = 0
+
+  // Players array (from XDB poker_players)
+  let players = []
+  let isHost = false
+
+  // Results
+  let resultWinnerName = ""
+  let resultHandName = ""
+  let resultPotAmount = 0
+  let resultDetails = ""
+  let debugHandBankrollBaseline = 0
+
+  // Raise input
+  let raiseAmount = ""
+  let actionBusyUntilMs = 0
+
+  // Hand evaluation display
+  let myHandName = ""
+  let lastHandEvalSig = ""
+
+  // Bot mode
+  let botSeats = []
+  let botActionDelay = 0
+  let hostAutomationPauseUntilMs = 0
+  let wasHostLastTick = false
+
+  // Toast auto-clear timer
+  let toastClearDelay = 0
+
+  // Polling/performance controls
+  let slowLaneTickCounter = 0
+  let hostRepairCooldownMs = 250
+  let lastHostRepairAtMs = 0
+  let perfTickCount = 0
+  let perfTickTotalMs = 0
+  let perfTickMaxMs = 0
+  let perfTickWindowStartMs = 0
+  let perfLastSummary = ""
+
+  // Auto-advance timer (auto-start next hand after showdown)
+  let showdownAutoDelay = 0
+  let showdownAutoDeadlineMs = 0
+  let showdownStartedAtMs = 0
+  // UI animation timing
+  let animLastSeenHand = 0
+  let animLastSeenCommunityCount = 0
+  let holeDealAnimTicksRemaining = 0
+  let boardRevealFromIndex = -1
+  let boardRevealAnimTicksRemaining = 0
+  let animLastSeenPot = 0
+  let animPotPulseTicksRemaining = 0
+  let animSeatBetLast = [0, 0, 0, 0, 0, 0]
+  let animSeatBetPulseTicks = [0, 0, 0, 0, 0, 0]
+  let animCommunityCardTicks = [0, 0, 0, 0, 0]
+  let animCommunityCardMaxTicks = [0, 0, 0, 0, 0]
+
+  import "./cards.logic"
+  import "./engine.logic"
+  import "./game.logic"
+  import "./actions.logic"
+  import "./bot.logic"
+  import "./ui-helpers.logic"
+  // --- Room / Sync Management ---
+
+  function pollIntervalMs() {
+    // Fast poll only when bots are acting; slow down for human turns and idle phases.
+    if (TableStateClass.isLiveHandPhase(gamePhase)) {
+      if (isHost && currentTurnSeat >= 0 && isBotSeat(currentTurnSeat)) return 200
+      return 500
+    }
+    return 1000
+  }
+
+  function shouldRunSlowLane() {
+    if (slowLaneTickCounter <= 0) {
+      slowLaneTickCounter = 1
+      return true
+    }
+    slowLaneTickCounter = slowLaneTickCounter + 1
+    if (slowLaneTickCounter >= 4) {
+      slowLaneTickCounter = 0
+      return true
+    }
+    return false
+  }
+
+  function perfTickStart() {
+    return Date.now()
+  }
+
+  function perfTickEnd(startMs) {
+    let elapsed = Date.now() - startMs
+    if (elapsed < 0) elapsed = 0
+    perfTickCount = perfTickCount + 1
+    perfTickTotalMs = perfTickTotalMs + elapsed
+    if (elapsed > perfTickMaxMs) perfTickMaxMs = elapsed
+    if (perfTickWindowStartMs <= 0) {
+      perfTickWindowStartMs = Date.now()
+      return
+    }
+    let windowElapsed = Date.now() - perfTickWindowStartMs
+    if (windowElapsed >= 5000) {
+      let avg = 0
+      if (perfTickCount > 0) {
+        avg = Math.floor((perfTickTotalMs * 10) / perfTickCount) / 10
+      }
+      perfLastSummary = "tick avg=" + avg + "ms max=" + perfTickMaxMs + "ms"
+      perfTickWindowStartMs = Date.now()
+      perfTickCount = 0
+      perfTickTotalMs = 0
+      perfTickMaxMs = 0
+    }
+  }
+
+  function _init() {
+    // Restore or generate peerId so rejoins reclaim the same seat
+    let savedPeerId = localStorage.getItem("poker-peer-id")
+    if (savedPeerId) {
+      peerId = savedPeerId
+    } else {
+      peerId = "peer-" + Math.floor(Math.random() * 1000000)
+      localStorage.setItem("poker-peer-id", peerId)
+    }
+    let savedName = localStorage.getItem("poker-player-name")
+    if (savedName) {
+      playerName = savedName
+    }
+    // Stop any sync adapter left over from a previous session to prevent
+    // stale sync events from re-hydrating data we're about to delete
+    let savedRoom = db.getSavedSyncRoom()
+    if (savedRoom) {
+      syncRoom = savedRoom
+      db.stopSync(savedRoom)
+    }
+    // Clean out stale poker data from previous sessions
+    let oldTables = db.query("poker_table")
+    let oti = 0
+    while (oti < oldTables.length) {
+      db.hardDelete("poker_table", oldTables[oti].id)
+      oti = oti + 1
+    }
+    let oldPlayers = db.query("poker_players")
+    let opi = 0
+    while (opi < oldPlayers.length) {
+      db.hardDelete("poker_players", oldPlayers[opi].id)
+      opi = opi + 1
+    }
+    let oldActions = db.query("poker_actions")
+    let oai = 0
+    while (oai < oldActions.length) {
+      db.hardDelete("poker_actions", oldActions[oai].id)
+      oai = oai + 1
+    }
+  }
+
+  function generateRoomCode() {
+    let chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    let code = "poker-"
+    let i = 0
+    while (i < 6) {
+      code = code + chars.charAt(Math.floor(Math.random() * chars.length))
+      i = i + 1
+    }
+    syncRoom = code
+  }
+
+  function setPlayerName(value) {
+    if (value && value.target) {
+      playerName = value.target.value
+    } else {
+      playerName = value
+    }
+  }
+
+  function setSyncRoom(value) {
+    if (value && value.target) {
+      syncRoom = (value.target.value || "").trim()
+    } else {
+      syncRoom = (value || "").trim()
+    }
+  }
+
+  function setRaiseAmount(value) {
+    if (value && value.target) {
+      raiseAmount = value.target.value
+    } else {
+      raiseAmount = value
+    }
+  }
+
+  function createRoom() {
+    if (!playerName) {
+      toastMessage = "Please enter your name"
+      toastType = "warning"
+      return
+    }
+    localStorage.setItem("poker-player-name", playerName)
+    // Stop any existing sync before starting a new room
+    let existingRoom = db.getSavedSyncRoom()
+    if (existingRoom) {
+      db.stopSync(existingRoom)
+    } else if (syncRoom) {
+      db.stopSync(syncRoom)
+    }
+    generateRoomCode()
+    syncConnecting = true
+    syncConnected = false
+    db.startSync(syncRoom)
+
+    // Clean up ALL stale records from previous sessions
+    let oldTables = db.query("poker_table")
+    let oti = 0
+    while (oti < oldTables.length) {
+      db.hardDelete("poker_table", oldTables[oti].id)
+      oti = oti + 1
+    }
+    let oldPlayers = db.query("poker_players")
+    let opi = 0
+    while (opi < oldPlayers.length) {
+      db.hardDelete("poker_players", oldPlayers[opi].id)
+      opi = opi + 1
+    }
+    let oldActions = db.query("poker_actions")
+    let oai = 0
+    while (oai < oldActions.length) {
+      db.hardDelete("poker_actions", oldActions[oai].id)
+      oai = oai + 1
+    }
+
+    // Reset local state
+    mySeat = -1
+    myRecordMissingTicks = 0
+    botSeats = []
+    players = []
+    tableId = ""
+    showdownAutoDelay = 0
+    showdownAutoDeadlineMs = 0
+    showdownStartedAtMs = 0
+    soundWatchInitialized = false
+    soundLastHandNumber = 0
+    soundLastCommunityCount = 0
+    soundLastActionKey = ""
+    soundLastActionScanSig = ""
+    slowLaneTickCounter = 0
+    lastHostRepairAtMs = 0
+
+    // Create initial table record
+    let tableData = {
+      gamePhase: TableStateClass.phaseWaiting(),
+      handNumber: 0,
+      dealerSeat: 0,
+      currentTurnSeat: -1,
+      currentBet: 0,
+      pot: 0,
+      deck: [],
+      deckPosition: 0,
+      communityCards: [],
+      smallBlind: 10,
+      bigBlind: 20,
+      lastFullRaise: 20,
+      lastBigBlindSeat: -1
+    }
+    db.create("poker_table", tableData)
+
+    currentPage = "table"
+  }
+
+  function joinRoom() {
+    if (!playerName) {
+      toastMessage = "Please enter your name"
+      toastType = "warning"
+      return
+    }
+    if (!syncRoom) {
+      toastMessage = "Please enter a room code"
+      toastType = "warning"
+      return
+    }
+    let existingRoom = db.getSavedSyncRoom()
+    if (existingRoom && existingRoom !== syncRoom) {
+      db.stopSync(existingRoom)
+    }
+    localStorage.setItem("poker-player-name", playerName)
+    // Clean stale local data before joining another room
+    let oldTables = db.query("poker_table")
+    let oti = 0
+    while (oti < oldTables.length) {
+      db.hardDelete("poker_table", oldTables[oti].id)
+      oti = oti + 1
+    }
+    let oldPlayers = db.query("poker_players")
+    let opi = 0
+    while (opi < oldPlayers.length) {
+      db.hardDelete("poker_players", oldPlayers[opi].id)
+      opi = opi + 1
+    }
+    let oldActions = db.query("poker_actions")
+    let oai = 0
+    while (oai < oldActions.length) {
+      db.hardDelete("poker_actions", oldActions[oai].id)
+      oai = oai + 1
+    }
+    mySeat = -1
+    myRecordMissingTicks = 0
+    botSeats = []
+    players = []
+    tableId = ""
+    showdownAutoDelay = 0
+    showdownAutoDeadlineMs = 0
+    showdownStartedAtMs = 0
+    soundWatchInitialized = false
+    soundLastHandNumber = 0
+    soundLastCommunityCount = 0
+    soundLastActionKey = ""
+    soundLastActionScanSig = ""
+    if (existingRoom === syncRoom) {
+      syncConnecting = false
+      syncConnected = true
+    } else {
+      syncConnecting = true
+      syncConnected = false
+      db.startSync(syncRoom)
+    }
+    slowLaneTickCounter = 0
+    lastHostRepairAtMs = 0
+    currentPage = "table"
+  }
+
+  function leaveTable() {
+    // Clean up our seat + bots (only host owns bots)
+    let wasHost = isHost
+    let allPlayers = db.query("poker_players")
+    let lpi = 0
+    while (lpi < allPlayers.length) {
+      if (allPlayers[lpi].data) {
+        let lpid = allPlayers[lpi].data.peerId || ""
+        if (lpid === peerId) {
+          db.hardDelete("poker_players", allPlayers[lpi].id)
+        }
+        // Only remove bots if we were the host (we created them)
+        if (wasHost) {
+          let lIsBot = lpid.charAt(0) === "b" && lpid.charAt(1) === "o" && lpid.charAt(2) === "t" && lpid.charAt(3) === "-"
+          if (lIsBot) {
+            db.hardDelete("poker_players", allPlayers[lpi].id)
+          }
+        }
+      }
+      lpi = lpi + 1
+    }
+    db.stopSync(syncRoom)
+    // Reset ALL state to prevent stale UI on rejoin
+    syncConnected = false
+    syncConnecting = false
+    syncPeers = 0
+    currentPage = "lobby"
+    mySeat = -1
+    myRecordMissingTicks = 0
+    gamePhase = TableStateClass.phaseWaiting()
+    handNumber = 0
+    dealerSeat = 0
+    currentTurnSeat = -1
+    currentBet = 0
+    pot = 0
+    communityCards = []
+    tableId = ""
+    myHoleCards = []
+    myChips = 0
+    myBet = 0
+    myStatus = TableStateClass.statusWaiting()
+    players = []
+    isHost = false
+    botSeats = []
+    hostAutomationPauseUntilMs = 0
+    wasHostLastTick = false
+    showResultsModal = false
+    resultWinnerName = ""
+    resultHandName = ""
+    resultPotAmount = 0
+    resultDetails = ""
+    debugHandBankrollBaseline = 0
+    showDebugOverlay = false
+    debugTraceEnabled = false
+    debugLastStateSig = ""
+    soundWatchInitialized = false
+    soundLastHandNumber = 0
+    soundLastCommunityCount = 0
+    soundLastActionKey = ""
+    soundLastActionScanSig = ""
+    raiseAmount = ""
+    myHandName = ""
+    showdownAutoDelay = 0
+    showdownAutoDeadlineMs = 0
+    showdownStartedAtMs = 0
+    toastClearDelay = 0
+    toastMessage = ""
+    slowLaneTickCounter = 0
+    lastHostRepairAtMs = 0
+  }
+
+  function copySyncRoom() {
+    if (syncRoom) {
+      navigator.clipboard.writeText(syncRoom)
+      toastMessage = "Room code copied!"
+      toastType = "success"
+    }
+  }
+
+  function buildDebugSnapshotText() {
+    let out = ""
+    out = out + "Host Debug\n"
+    out = out + "Phase: " + gamePhase + " | Hand: " + handNumber + "\n"
+    out = out + "Turn seat: " + currentTurnSeat + " | Current bet: " + currentBet + "\n"
+    out = out + "Min raise increment: " + getMinRaise() + " | Last full raise: " + lastFullRaise + "\n"
+    out = out + "Pot: " + pot + " | Contributions: " + totalContributions() + "\n"
+    out = out + "Bankroll now: " + bankrollNow() + " | baseline: " + debugHandBankrollBaseline + " | delta: " + bankrollDelta() + "\n"
+    out = out + "Perf: " + perfLastSummary + "\n"
+    out = out + "Sound diag: " + soundDiag + "\n"
+    if (soundLastError) {
+      out = out + "Sound error: " + soundLastError + "\n"
+    }
+    out = out + "Trace: " + (debugTraceEnabled ? "ON" : "OFF") + "\n"
+    out = out + "Seat snapshots\n"
+    let s = 0
+    while (s < 6) {
+      if (seatHasPlayer(s)) {
+        out = out + "S" + (s + 1) + " " + seatName(s) + " | st:" + seatStatus(s) + " | chips:" + seatChips(s) + " | bet:" + seatBet(s) + " | contrib:" + seatContribution(s) + " | canAct:" + seatCanAct(s) + "\n"
+      } else {
+        out = out + "S" + (s + 1) + " empty\n"
+      }
+      s = s + 1
+    }
+    return out
+  }
+
+  function copyDebugSnapshot() {
+    if (!isHost) return
+    let txt = buildDebugSnapshotText()
+    if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt)
+      toastMessage = "Debug log copied"
+      toastType = "success"
+      return
+    }
+    toastMessage = "Clipboard unavailable"
+    toastType = "warning"
+  }
+
+  function openSyncModal() {
+    showSyncModal = true
+    refreshSyncStatus()
+  }
+
+  function closeSyncModal() {
+    showSyncModal = false
+  }
+
+  function toggleDebugOverlay() {
+    showDebugOverlay = !showDebugOverlay
+  }
+
+  function toggleDebugTrace() {
+    debugTraceEnabled = !debugTraceEnabled
+    if (!debugTraceEnabled) {
+      debugLastStateSig = ""
+    }
+  }
+
+  function toggleSound() {
+    soundEnabled = !soundEnabled
+    if (!soundEnabled) {
+      soundWatchInitialized = false
+      soundLastActionScanSig = ""
+      toastMessage = "Sound off"
+      toastType = "info"
+      return
+    }
+    initSound()
+    // Immediate user-gesture confirmation sound.
+    playActionSound("check")
+    toastMessage = "Sound on (test played)"
+    toastType = "success"
+    soundWatchInitialized = false
+    soundLastActionScanSig = ""
+  }
+
+  function initSound() {
+    if (!soundEnabled) return
+    soundLastError = ""
+    soundDiag = "BridgeAudio+Element fallback"
+    initWavSounds()
+  }
+
+  function resolveSoundAsset(path) {
+    if (typeof window !== "undefined" && window.__softnAsset) {
+      return window.__softnAsset(path)
+    }
+    return path
+  }
+
+  function initWavSounds() {
+    if (typeof window === "undefined") return
+    if (!window.preloadSoundFromAsset) return
+    let sounds = ["assets/sounds/deal.wav", "assets/sounds/check.wav", "assets/sounds/call.wav", "assets/sounds/raise.wav"]
+    let i = 0
+    while (i < sounds.length) {
+      let pre = window.preloadSoundFromAsset(sounds[i])
+      if (pre && pre.diag) {
+        soundDiag = pre.diag
+      }
+      if (pre && !pre.ok && pre.error) {
+        soundLastError = pre.error
+      }
+      i = i + 1
+    }
+  }
+
+  function playWavSound(kind) {
+    if (!soundEnabled) return false
+    let src = ""
+    if (kind === "deal") src = "assets/sounds/deal.wav"
+    if (kind === "check") src = "assets/sounds/check.wav"
+    if (kind === "call") src = "assets/sounds/call.wav"
+    if (kind === "raise") src = "assets/sounds/raise.wav"
+    if (!src) return false
+
+    // Prefer direct bridge playback (real window audio), then fallback to UI <audio>.
+    if (typeof window !== "undefined" && window.playSoundFromAsset) {
+      let bridgeRes = window.playSoundFromAsset(src)
+      if (bridgeRes && bridgeRes.diag) {
+        soundDiag = bridgeRes.diag
+      }
+      if (bridgeRes && bridgeRes.ok) {
+        soundLastError = ""
+        return true
+      }
+      if (bridgeRes && bridgeRes.error) {
+        soundLastError = bridgeRes.error
+      }
+    }
+
+    soundPlaySrc = src
+    soundPlayNonce = soundPlayNonce + 1
+    return true
+  }
+
+  function playTone(freq, durationMs, vol) {
+    if (!soundEnabled) return
+    initSound()
+    if (!soundCtx) return
+    let now = soundCtx.currentTime
+    let osc = soundCtx.createOscillator()
+    let gain = soundCtx.createGain()
+    osc.type = "triangle"
+    osc.frequency.setValueAtTime(freq, now)
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(vol, now + 0.01)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + (durationMs / 1000))
+    osc.connect(gain)
+    gain.connect(soundCtx.destination)
+    osc.start(now)
+    osc.stop(now + (durationMs / 1000) + 0.01)
+  }
+
+  function playDealSound() {
+    if (!playWavSound("deal")) {
+      playTone(840, 30, 0.14)
+      playTone(680, 45, 0.1)
+    }
+  }
+
+  function playStreetSound(countNow) {
+    if (countNow === 3) {
+      if (!playWavSound("deal")) {
+        playTone(520, 50, 0.15)
+      }
+    } else if (countNow === 4) {
+      if (!playWavSound("call")) {
+        playTone(600, 55, 0.15)
+      }
+    } else if (countNow === 5) {
+      if (!playWavSound("raise")) {
+        playTone(700, 60, 0.16)
+      }
+    }
+  }
+
+  function playActionSound(actionType) {
+    if (actionType === "raise" || actionType === "allin") {
+      if (!playWavSound("raise")) {
+        playTone(740, 36, 0.13)
+      }
+    } else if (actionType === "call") {
+      if (!playWavSound("call")) {
+        playTone(620, 26, 0.11)
+      }
+    } else if (actionType === "fold") {
+      playTone(320, 40, 0.1)
+    } else if (actionType === "check") {
+      if (!playWavSound("check")) {
+        playTone(500, 18, 0.12)
+      }
+    }
+  }
+
+  function testSoundNow() {
+    initSound()
+    let playedWav = playWavSound("raise")
+    if (playedWav) {
+      toastMessage = "Sound test triggered"
+      toastType = "success"
+    } else {
+      toastMessage = "Sound test failed"
+      toastType = "warning"
+    }
+  }
+
+  function refreshSyncStatus() {
+    let status = db.getSyncStatus(syncRoom)
+    if (status) {
+      syncConnected = status.connected
+      syncPeers = status.peers
+      if (status.connected) {
+        syncConnecting = false
+      }
+    } else if (syncConnecting) {
+      syncConnecting = false
+    }
+  }
+  // --- State Refresh Helper ---
+  // After mutating XDB, call this to update module-level state so the UI reflects changes immediately
+  // (otherwise UI waits up to 250ms for the next pollGameState tick)
+
+  function refreshFromDB() {
+    let tables = db.query("poker_table")
+    if (tables.length > 0) {
+      let t = TableRepositoryClass.selectCurrentTableRecord(tables, tableId)
+      applyTableSnapshotSafe(t)
+    }
+    players = db.query("poker_players")
+    // Update local player state from the best matching peer record.
+    let bestMyRec = selectBestPeerRecord(players, peerId, gamePhase)
+    if (bestMyRec) {
+      applyMyRecord(bestMyRec)
+      myRecordMissingTicks = 0
+    } else if (mySeat >= 0) {
+      myRecordMissingTicks = myRecordMissingTicks + 1
+      if (myRecordMissingTicks >= 10) {
+        mySeat = -1
+        myHoleCards = []
+        myBet = 0
+        myStatus = TableStateClass.statusWaiting()
+      }
+    } else {
+      myRecordMissingTicks = 0
+    }
+    // Rebuild botSeats
+    botSeats = []
+    let rbi = 0
+    while (rbi < players.length) {
+      if (players[rbi].data && players[rbi].data.peerId) {
+        let rpid = players[rbi].data.peerId
+        if (rpid.charAt(0) === "b" && rpid.charAt(1) === "o" && rpid.charAt(2) === "t" && rpid.charAt(3) === "-") {
+          botSeats.push(players[rbi].data.seat)
+        }
+      }
+      rbi = rbi + 1
+    }
+    // Update isHost (lowest non-bot seat)
+    isHost = false
+    if (players.length > 0 && mySeat >= 0) {
+      let rLowest = 99
+      let rhi = 0
+      while (rhi < players.length) {
+        if (players[rhi].data && players[rhi].data.seat < rLowest) {
+          let rhpid = players[rhi].data.peerId || ""
+          let rhIsBot = rhpid.charAt(0) === "b" && rhpid.charAt(1) === "o" && rhpid.charAt(2) === "t" && rhpid.charAt(3) === "-"
+          if (!rhIsBot) {
+            rLowest = players[rhi].data.seat
+          }
+        }
+        rhi = rhi + 1
+      }
+      if (rLowest === mySeat) {
+        isHost = true
+      }
+    }
+    // Evaluate player's current hand
+    evaluateMyHand()
+  }
+
+  function evaluateMyHand() {
+    if (myHoleCards.length !== 2 || communityCards.length < 3) {
+      myHandName = ""
+      lastHandEvalSig = ""
+      return
+    }
+    // Skip expensive hand evaluation if cards haven't changed
+    let sig = "" + myHoleCards[0] + "," + myHoleCards[1] + ":" + communityCards.length
+    if (sig === lastHandEvalSig) return
+    lastHandEvalSig = sig
+    let strength = HandEvaluatorClass.strengthFromHoleAndBoard(myHoleCards, communityCards)
+    if (strength) {
+      myHandName = handRankName(strength.rank)
+    }
+  }
+
+  function phaseOrder(phase) {
+    if (phase === TableStateClass.phaseWaiting()) return 0
+    if (phase === TableStateClass.phasePreflop()) return 1
+    if (phase === TableStateClass.phaseFlop()) return 2
+    if (phase === TableStateClass.phaseTurn()) return 3
+    if (phase === TableStateClass.phaseRiver()) return 4
+    if (phase === TableStateClass.phaseShowdown()) return 5
+    return 0
+  }
+
+  function applyTableSnapshotSafe(t) {
+    if (!t || !t.data) return false
+    let nextPhase = t.data.gamePhase || TableStateClass.phaseWaiting()
+    let nextHand = t.data.handNumber || 0
+    let nextCommunity = t.data.communityCards || []
+
+    // Ignore stale regressive snapshots for the same hand.
+    if (handNumber > 0) {
+      if (nextHand < handNumber) {
+        return false
+      }
+      if (nextHand === handNumber) {
+        let currLiveOrShow = TableStateClass.isLiveHandPhase(gamePhase) || gamePhase === TableStateClass.phaseShowdown()
+        let nextLiveOrShow = TableStateClass.isLiveHandPhase(nextPhase) || nextPhase === TableStateClass.phaseShowdown()
+        if (currLiveOrShow && nextLiveOrShow) {
+          let currRank = phaseOrder(gamePhase)
+          let nextRank = phaseOrder(nextPhase)
+          if (nextRank < currRank) {
+            return false
+          }
+          if (nextRank === currRank && nextCommunity.length < communityCards.length) {
+            return false
+          }
+        }
+      }
+    }
+
+    tableId = t.id
+    gamePhase = nextPhase
+    handNumber = nextHand
+    dealerSeat = t.data.dealerSeat || 0
+    currentTurnSeat = t.data.currentTurnSeat !== undefined ? t.data.currentTurnSeat : -1
+    currentBet = t.data.currentBet || 0
+    pot = t.data.pot || 0
+    communityCards = nextCommunity
+    smallBlind = t.data.smallBlind || 10
+    bigBlind = t.data.bigBlind || 20
+    lastFullRaise = t.data.lastFullRaise || bigBlind
+    showdownStartedAtMs = t.data.showdownStartedAtMs || 0
+    return true
+  }
+  // --- Seat Management ---
+
+  function takeSeat(seatNum) {
+    if (mySeat >= 0) return
+    // Claim seat immediately to prevent double-seat on rapid clicks
+    mySeat = seatNum
+    // Re-read latest players before checking seat availability
+    players = db.query("poker_players")
+    // Check if seat is taken
+    let si = 0
+    while (si < players.length) {
+      if (players[si].data && players[si].data.seat === seatNum) {
+        mySeat = -1
+        toastMessage = "Seat is taken"
+        toastType = "warning"
+        return
+      }
+      si = si + 1
+    }
+    db.create("poker_players", {
+      peerId: peerId,
+      name: playerName,
+      seat: seatNum,
+      chips: 1000,
+      holeCards: [],
+      bet: 0,
+      handContribution: 0,
+      status: TableStateClass.statusWaiting(),
+      hasActed: false
+    })
+    toastMessage = "Took seat " + (seatNum + 1)
+    toastType = "success"
+    refreshFromDB()
+  }
+
+  function leaveSeat() {
+    if (mySeat < 0) return
+    let pi = 0
+    while (pi < players.length) {
+      if (players[pi].data && players[pi].data.peerId === peerId) {
+        db.hardDelete("poker_players", players[pi].id)
+      }
+      pi = pi + 1
+    }
+    mySeat = -1
+    myRecordMissingTicks = 0
+    refreshFromDB()
+  }
+
+  function rebuy() {
+    if (mySeat < 0) return
+    if (myChips > 0) return
+    if (gamePhase !== TableStateClass.phaseWaiting() && gamePhase !== TableStateClass.phaseShowdown()) return
+    let me = getMyPlayerRecord()
+    if (!me) return
+    db.update(me.id, { chips: 1000, status: TableStateClass.statusWaiting() })
+    toastMessage = "Rebuy: $1000"
+    toastType = "success"
+    refreshFromDB()
+  }
+
+  function canRebuy() {
+    return mySeat >= 0 && myChips <= 0 && (gamePhase === TableStateClass.phaseWaiting() || gamePhase === TableStateClass.phaseShowdown())
+  }
+  // --- Polling ---
+
+  function pollGameState() {
+    let tickStartMs = perfTickStart()
+    let runSlowLane = shouldRunSlowLane()
+    if (syncConnecting || !syncConnected) {
+      runSlowLane = true
+    }
+    if (runSlowLane) {
+      refreshSyncStatus()
+    }
+    // Read table state - dedup if multiple tables exist
+    let tables = db.query("poker_table")
+    if (tables.length > 1) {
+      // Keep one canonical table record to avoid flicker from stale duplicates.
+      let keepRec = TableRepositoryClass.selectCurrentTableRecord(tables, tableId)
+      let di = 0
+      while (di < tables.length) {
+        if (tables[di].id !== keepRec.id) {
+          db.hardDelete("poker_table", tables[di].id)
+        }
+        di = di + 1
+      }
+      // Use the kept table
+      tables = [keepRec]
+    }
+    if (tables.length > 0) {
+      let t = tables[0]
+      applyTableSnapshotSafe(t)
+    }
+
+    // Animation state tracking (fast poll tick)
+    if (handNumber < animLastSeenHand) {
+      animLastSeenHand = handNumber
+      animLastSeenCommunityCount = communityCards.length
+      holeDealAnimTicksRemaining = 0
+      boardRevealFromIndex = -1
+      boardRevealAnimTicksRemaining = 0
+      let aci0 = 0
+      while (aci0 < 5) {
+        animCommunityCardTicks[aci0] = 0
+        animCommunityCardMaxTicks[aci0] = 0
+        aci0 = aci0 + 1
+      }
+    } else {
+      if (handNumber > animLastSeenHand) {
+        animLastSeenHand = handNumber
+        animLastSeenCommunityCount = communityCards.length
+        holeDealAnimTicksRemaining = 6
+        boardRevealFromIndex = -1
+        boardRevealAnimTicksRemaining = 0
+        let aci1 = 0
+        while (aci1 < 5) {
+          animCommunityCardTicks[aci1] = 0
+          animCommunityCardMaxTicks[aci1] = 0
+          aci1 = aci1 + 1
+        }
+      } else {
+        if (communityCards.length > animLastSeenCommunityCount) {
+          boardRevealFromIndex = animLastSeenCommunityCount
+          boardRevealAnimTicksRemaining = 10
+          let ci = animLastSeenCommunityCount
+          while (ci < communityCards.length && ci < 5) {
+            let delayTicks = (ci - animLastSeenCommunityCount) * 2
+            let maxTicks = 10 + delayTicks
+            animCommunityCardTicks[ci] = maxTicks
+            animCommunityCardMaxTicks[ci] = maxTicks
+            ci = ci + 1
+          }
+          animLastSeenCommunityCount = communityCards.length
+        } else if (communityCards.length < animLastSeenCommunityCount) {
+          let ci2 = communityCards.length
+          while (ci2 < 5) {
+            animCommunityCardTicks[ci2] = 0
+            animCommunityCardMaxTicks[ci2] = 0
+            ci2 = ci2 + 1
+          }
+          animLastSeenCommunityCount = communityCards.length
+        }
+      }
+    }
+    if (holeDealAnimTicksRemaining > 0) {
+      holeDealAnimTicksRemaining = holeDealAnimTicksRemaining - 1
+    }
+    if (boardRevealAnimTicksRemaining > 0) {
+      boardRevealAnimTicksRemaining = boardRevealAnimTicksRemaining - 1
+    } else {
+      boardRevealFromIndex = -1
+    }
+    let nowMs = Date.now()
+    if (actionBusyUntilMs > 0 && nowMs >= actionBusyUntilMs) {
+      actionBusyUntilMs = 0
+    }
+    let acd = 0
+    while (acd < 5) {
+      if ((animCommunityCardTicks[acd] || 0) > 0) {
+        animCommunityCardTicks[acd] = animCommunityCardTicks[acd] - 1
+      } else {
+        animCommunityCardMaxTicks[acd] = 0
+      }
+      acd = acd + 1
+    }
+
+    // Read players
+    players = db.query("poker_players")
+
+    // Host invariant: active players with zero chips cannot act; mark all-in.
+    if (isHost && TableStateClass.isLiveHandPhase(gamePhase)) {
+      let zci = 0
+      let zcChanged = false
+      while (zci < players.length) {
+        if (players[zci].data && players[zci].data.status === TableStateClass.statusActive() && (players[zci].data.chips || 0) <= 0) {
+          db.update(players[zci].id, { status: TableStateClass.statusAllIn(), hasActed: true })
+          zcChanged = true
+        }
+        zci = zci + 1
+      }
+      if (zcChanged) {
+        players = db.query("poker_players")
+      }
+    }
+
+    // Select local player record robustly instead of first-match (handles stale duplicates).
+    let bestMyRec = selectBestPeerRecord(players, peerId, gamePhase)
+    if (bestMyRec) {
+      applyMyRecord(bestMyRec)
+      myRecordMissingTicks = 0
+    } else if (mySeat >= 0) {
+      myRecordMissingTicks = myRecordMissingTicks + 1
+      if (myRecordMissingTicks >= 10) {
+        mySeat = -1
+        myHoleCards = []
+        myBet = 0
+        myStatus = TableStateClass.statusWaiting()
+      }
+    } else {
+      myRecordMissingTicks = 0
+    }
+
+    // Rebuild botSeats from XDB
+    botSeats = []
+    let bi = 0
+    while (bi < players.length) {
+      if (players[bi].data && players[bi].data.peerId) {
+        let bpid = players[bi].data.peerId
+        if (bpid.charAt(0) === "b" && bpid.charAt(1) === "o" && bpid.charAt(2) === "t" && bpid.charAt(3) === "-") {
+          botSeats.push(players[bi].data.seat)
+        }
+      }
+      bi = bi + 1
+    }
+
+    // Determine host (lowest non-bot seat among seated players)
+    isHost = false
+    if (players.length > 0 && mySeat >= 0) {
+      let lowestSeat = 99
+      let hi = 0
+      while (hi < players.length) {
+        if (players[hi].data && players[hi].data.seat < lowestSeat) {
+          let hpid = players[hi].data.peerId || ""
+          let hIsBot = hpid.charAt(0) === "b" && hpid.charAt(1) === "o" && hpid.charAt(2) === "t" && hpid.charAt(3) === "-"
+          if (!hIsBot) {
+            lowestSeat = players[hi].data.seat
+          }
+        }
+        hi = hi + 1
+      }
+      if (lowestSeat === mySeat) {
+        isHost = true
+      }
+    }
+
+    // On host transition, briefly pause host automation to let synced state settle.
+    if (isHost && !wasHostLastTick) {
+      hostAutomationPauseUntilMs = nowMs + 1500
+      showdownAutoDelay = 0
+      showdownAutoDeadlineMs = 0
+    }
+    if (!isHost) {
+      hostAutomationPauseUntilMs = 0
+    }
+    wasHostLastTick = isHost
+
+    // Host-only safety: resolve duplicate peer/seat claims deterministically.
+    if (isHost) {
+      let removeIds = []
+
+      // Dedup by peer first (rejoin artifacts).
+      let bestIdxByPeer = {}
+      let pdi = 0
+      while (pdi < players.length) {
+        let pr = players[pdi]
+        if (pr && pr.data) {
+          let pid = pr.data.peerId || ""
+          if (pid) {
+            let prevIdx = bestIdxByPeer[pid]
+            if (prevIdx === undefined || prevIdx === null) {
+              bestIdxByPeer[pid] = pdi
+            } else {
+              let prevRec = players[prevIdx]
+              if (playerRecordScore(pr, gamePhase) > playerRecordScore(prevRec, gamePhase)) {
+                if (!arrayHasString(removeIds, prevRec.id)) {
+                  removeIds.push(prevRec.id)
+                }
+                bestIdxByPeer[pid] = pdi
+              } else {
+                if (!arrayHasString(removeIds, pr.id)) {
+                  removeIds.push(pr.id)
+                }
+              }
+            }
+          }
+        }
+        pdi = pdi + 1
+      }
+
+      // Dedup by seat for remaining rows.
+      let bestIdxBySeat = [-1, -1, -1, -1, -1, -1]
+      let sdi = 0
+      while (sdi < players.length) {
+        let sr = players[sdi]
+        if (sr && sr.data && !arrayHasString(removeIds, sr.id)) {
+          let ss = sr.data.seat
+          if (ss >= 0 && ss < 6) {
+            let prevSeatIdx = bestIdxBySeat[ss]
+            if (prevSeatIdx < 0) {
+              bestIdxBySeat[ss] = sdi
+            } else {
+              let prevSeatRec = players[prevSeatIdx]
+              if (playerRecordScore(sr, gamePhase) > playerRecordScore(prevSeatRec, gamePhase)) {
+                if (!arrayHasString(removeIds, prevSeatRec.id)) {
+                  removeIds.push(prevSeatRec.id)
+                }
+                bestIdxBySeat[ss] = sdi
+              } else {
+                if (!arrayHasString(removeIds, sr.id)) {
+                  removeIds.push(sr.id)
+                }
+              }
+            }
+          }
+        }
+        sdi = sdi + 1
+      }
+
+      if (removeIds.length > 0) {
+        let rdi = 0
+        while (rdi < removeIds.length) {
+          db.hardDelete("poker_players", removeIds[rdi])
+          rdi = rdi + 1
+        }
+        players = db.query("poker_players")
+        // Re-apply local player snapshot immediately after host dedup so
+        // cards/turn UI never lags a tick behind record reconciliation.
+        let bestMyRecAfterDedup = selectBestPeerRecord(players, peerId, gamePhase)
+        if (bestMyRecAfterDedup) {
+          applyMyRecord(bestMyRecAfterDedup)
+          myRecordMissingTicks = 0
+        }
+      }
+    }
+
+    // Host invariant: table pot must match total player hand contributions.
+    let contribTotal = 0
+    let cti = 0
+    while (cti < players.length) {
+      if (players[cti].data) {
+        contribTotal = contribTotal + (players[cti].data.handContribution || 0)
+      }
+      cti = cti + 1
+    }
+    // Host invariant repairs (throttled): keep pot/currentBet aligned with player state
+    if (isHost && tableId && nowMs - lastHostRepairAtMs >= hostRepairCooldownMs) {
+      let repairPatch = {}
+      let repairedPot = false
+      let repairedBet = false
+
+      if (gamePhase !== TableStateClass.phaseWaiting() && pot !== contribTotal) {
+        repairPatch.pot = contribTotal
+        pot = contribTotal
+        repairedPot = true
+      }
+
+      if (TableStateClass.isLiveHandPhase(gamePhase)) {
+        let maxBet = 0
+        let mbi = 0
+        while (mbi < players.length) {
+          if (players[mbi].data) {
+            let st = players[mbi].data.status
+            if (st === TableStateClass.statusActive() || st === TableStateClass.statusAllIn()) {
+              let b = players[mbi].data.bet || 0
+              if (b > maxBet) {
+                maxBet = b
+              }
+            }
+          }
+          mbi = mbi + 1
+        }
+        if (currentBet !== maxBet) {
+          repairPatch.currentBet = maxBet
+          currentBet = maxBet
+          repairedBet = true
+        }
+      }
+
+      if (repairedPot || repairedBet) {
+        db.update(tableId, repairPatch)
+        lastHostRepairAtMs = nowMs
+        if (debugTraceEnabled) {
+          if (repairedPot) TableEventClass.logDebug("Pot repaired to contributions", -1, contribTotal, handNumber)
+          if (repairedBet) TableEventClass.logDebug("currentBet repaired to max live bet", -1, currentBet, handNumber)
+        }
+      }
+    }
+
+    // Chip-flow UI animation tracking.
+    // Pulse the pot when it increases, and pulse seat bet badges when a seat bet increases.
+    if (pot > animLastSeenPot) {
+      animPotPulseTicksRemaining = 8
+    }
+    animLastSeenPot = pot
+    let as = 0
+    while (as < 6) {
+      let seatRec = selectBestSeatRecord(players, as, gamePhase)
+      let seatBetNow = 0
+      if (seatRec && seatRec.data) {
+        seatBetNow = seatRec.data.bet || 0
+      }
+      if (seatBetNow > (animSeatBetLast[as] || 0)) {
+        animSeatBetPulseTicks[as] = 7
+      }
+      animSeatBetLast[as] = seatBetNow
+      as = as + 1
+    }
+    if (animPotPulseTicksRemaining > 0) {
+      animPotPulseTicksRemaining = animPotPulseTicksRemaining - 1
+    }
+    let ast = 0
+    while (ast < 6) {
+      if ((animSeatBetPulseTicks[ast] || 0) > 0) {
+        animSeatBetPulseTicks[ast] = animSeatBetPulseTicks[ast] - 1
+      }
+      ast = ast + 1
+    }
+
+    // Optional host trace: log state transitions to poker_actions for diagnosis.
+    if (isHost && debugTraceEnabled) {
+      let traceSig = "h=" + handNumber + "|ph=" + gamePhase + "|turn=" + currentTurnSeat + "|bet=" + currentBet + "|pot=" + pot + "|contrib=" + contribTotal + "|n=" + players.length
+      if (traceSig !== debugLastStateSig) {
+        TableEventClass.logDebug(traceSig, currentTurnSeat, pot, handNumber)
+        debugLastStateSig = traceSig
+      }
+    }
+
+    // Local sounds: play subtle SFX for deal/streets/actions.
+    if (soundEnabled) {
+      if (!soundWatchInitialized) {
+        soundLastHandNumber = handNumber
+        soundLastCommunityCount = communityCards.length
+        let initActions = db.query("poker_actions")
+        let iai = 0
+        let initKey = ""
+        while (iai < initActions.length) {
+          if (initActions[iai].data) {
+            let itype = initActions[iai].data.type || ""
+            if (!TableEvent_isDebug(itype)) {
+              let its = initActions[iai].data.timestamp || ""
+              let iak = its + "|" + (initActions[iai].id || "")
+              if (iak > initKey) {
+                initKey = iak
+              }
+            }
+          }
+          iai = iai + 1
+        }
+        soundLastActionKey = initKey
+        soundLastActionScanSig = "h=" + handNumber + "|ph=" + gamePhase + "|turn=" + currentTurnSeat + "|pot=" + pot + "|cb=" + currentBet + "|cc=" + communityCards.length
+        soundWatchInitialized = true
+      } else {
+        if (handNumber > soundLastHandNumber) {
+          playDealSound()
+          soundLastHandNumber = handNumber
+        }
+        if (communityCards.length > soundLastCommunityCount) {
+          playStreetSound(communityCards.length)
+          soundLastCommunityCount = communityCards.length
+        } else if (communityCards.length < soundLastCommunityCount) {
+          soundLastCommunityCount = communityCards.length
+        }
+        let actionScanSig = "h=" + handNumber + "|ph=" + gamePhase + "|turn=" + currentTurnSeat + "|pot=" + pot + "|cb=" + currentBet + "|cc=" + communityCards.length
+        if (runSlowLane && actionScanSig !== soundLastActionScanSig) {
+          let allActions = db.query("poker_actions")
+          let sai = 0
+          let latestKey = soundLastActionKey
+          let latestType = ""
+          while (sai < allActions.length) {
+            if (allActions[sai].data) {
+              let stype = allActions[sai].data.type || ""
+              if (!TableEvent_isDebug(stype)) {
+                let sts = allActions[sai].data.timestamp || ""
+                let sak = sts + "|" + (allActions[sai].id || "")
+                if (sak > latestKey) {
+                  latestKey = sak
+                  latestType = stype
+                }
+              }
+            }
+            sai = sai + 1
+          }
+          if (latestKey !== soundLastActionKey && latestType) {
+            playActionSound(latestType)
+            soundLastActionKey = latestKey
+          }
+          soundLastActionScanSig = actionScanSig
+        }
+      }
+    } else {
+      soundWatchInitialized = false
+      soundLastActionScanSig = ""
+    }
+
+    // Auto-advance after showdown (host only)
+    // Start next hand automatically after ~3s
+    let hostAutomationReady = !isHost || Date.now() >= hostAutomationPauseUntilMs
+
+    if (isHost && hostAutomationReady && gamePhase === TableStateClass.phaseShowdown()) {
+      if (countSeatedPlayers() >= 2) {
+        if (showdownAutoDeadlineMs <= 0) {
+          if (showdownStartedAtMs > 0) {
+            let startedAge = Date.now() - showdownStartedAtMs
+            if (startedAge > 10000) {
+              // Stale showdown timestamp (often after reconnect); restart countdown from now.
+              showdownAutoDeadlineMs = Date.now() + 3000
+            } else {
+              showdownAutoDeadlineMs = showdownStartedAtMs + 3000
+            }
+          } else {
+            showdownAutoDeadlineMs = Date.now() + 3000
+          }
+        }
+        let remainingMs = showdownAutoDeadlineMs - Date.now()
+        if (remainingMs < 0) remainingMs = 0
+        showdownAutoDelay = Math.ceil(remainingMs / 1000)
+        if (remainingMs <= 0) {
+          showdownAutoDelay = 0
+          showdownAutoDeadlineMs = 0
+          showdownStartedAtMs = 0
+          startHand()
+          refreshFromDB()
+            perfTickEnd(tickStartMs)
+            return
+        }
+      } else {
+        showdownAutoDelay = 0
+        showdownAutoDeadlineMs = 0
+        showdownStartedAtMs = 0
+      }
+    } else if (gamePhase !== TableStateClass.phaseShowdown()) {
+      showdownAutoDelay = 0
+      showdownAutoDeadlineMs = 0
+      showdownStartedAtMs = 0
+    }
+
+
+    // Host safeguard: if river has no pending active actions, resolve showdown now.
+    if (isHost && hostAutomationReady && gamePhase === TableStateClass.phaseRiver()) {
+      let riverPending = 0
+      let rpi = 0
+      while (rpi < players.length) {
+        if (players[rpi].data && players[rpi].data.status === TableStateClass.statusActive() && !players[rpi].data.hasActed) {
+          riverPending = riverPending + 1
+        }
+        rpi = rpi + 1
+      }
+      if (riverPending <= 0) {
+        advancePhase()
+        refreshFromDB()
+        perfTickEnd(tickStartMs)
+        return
+      }
+    }
+    // Bot turn logic - host drives bot decisions
+    // Host recovery: if current turn seat is stale/invalid, move to next actor.
+    if (isHost && hostAutomationReady && TableStateClass.isLiveHandPhase(gamePhase)) {
+      let turnPlayer = null
+      if (currentTurnSeat >= 0) {
+        turnPlayer = getPlayerAtSeat(currentTurnSeat)
+      }
+      let turnValid = false
+      if (turnPlayer && turnPlayer.data && turnPlayer.data.status === TableStateClass.statusActive() && !turnPlayer.data.hasActed) {
+        turnValid = true
+      }
+      if (!turnValid) {
+        let scanFrom = currentTurnSeat
+        if (scanFrom < 0) scanFrom = dealerSeat
+        let recovered = nextActiveSeatFresh(scanFrom, players)
+        if (recovered >= 0) {
+          db.update(tableId, { currentTurnSeat: recovered })
+          currentTurnSeat = recovered
+        } else {
+          // If no pending actor is found, let core turn logic resolve phase/progression.
+          advanceTurn()
+          refreshFromDB()
+        }
+      }
+    }
+
+    if (isHost && hostAutomationReady && currentTurnSeat >= 0 && isBotSeat(currentTurnSeat)) {
+      // Process ONE bot per tick so each action renders visibly to the player.
+      botActionDelay = 0
+      let botSeatNow = currentTurnSeat
+      let botActed = botAct(currentTurnSeat)
+      refreshFromDB()
+      if (!botActed) {
+        // Fallback: if turn remains on a bot that can't act, skip forward.
+        if (currentTurnSeat === botSeatNow && isBotSeat(currentTurnSeat)) {
+          let stalledBot = getPlayerAtSeat(currentTurnSeat)
+          if (!stalledBot || stalledBot.data.status !== TableStateClass.statusActive() || stalledBot.data.hasActed) {
+            advanceTurn()
+            refreshFromDB()
+          }
+        }
+      }
+      perfTickEnd(tickStartMs)
+      return
+    } else {
+      botActionDelay = 0
+    }
+
+    // Auto-advance when all remaining players are all-in (no one can act)
+    // Uses already-read state from top of pollGameState (no extra DB queries needed)
+    if (isHost && hostAutomationReady && TableStateClass.isLiveHandPhase(gamePhase)) {
+      let canActCount = 0
+      let activeCount = 0
+      let aliveCount = 0
+      let fpi = 0
+      while (fpi < players.length) {
+        if (players[fpi].data) {
+          let fps = players[fpi].data.status
+          if (fps === TableStateClass.statusActive()) {
+            activeCount = activeCount + 1
+            aliveCount = aliveCount + 1
+            if (!players[fpi].data.hasActed) {
+              canActCount = canActCount + 1
+            }
+          }
+          if (fps === TableStateClass.statusAllIn()) {
+            aliveCount = aliveCount + 1
+          }
+        }
+        fpi = fpi + 1
+      }
+      // All-in runout: if 0 or 1 active players remain and at least two players are still in the hand,
+      // betting is closed and remaining streets should be dealt automatically.
+      if (aliveCount >= 2 && activeCount <= 1) {
+        let loopGuard = 0
+        while (loopGuard < 4) {
+          advancePhase()
+          let ft2 = getFreshTableRecord()
+          if (!ft2) {
+            loopGuard = 4
+          } else {
+            let fp2 = ft2.data.gamePhase
+            if (fp2 === TableStateClass.phaseShowdown() || fp2 === TableStateClass.phaseWaiting()) {
+              loopGuard = 4
+            }
+          }
+          loopGuard = loopGuard + 1
+        }
+        refreshFromDB()
+      perfTickEnd(tickStartMs)
+      return
+      }
+    }
+
+    // Auto-clear toast messages after ~3 seconds
+    if (toastMessage) {
+      toastClearDelay = toastClearDelay + 1
+      if (toastClearDelay >= 30) {
+        toastMessage = ""
+        toastClearDelay = 0
+      }
+    } else {
+      toastClearDelay = 0
+    }
+
+    // Evaluate player's hand for display
+    evaluateMyHand()
+    perfTickEnd(tickStartMs)
+  }
+  // --- Helper Lookups ---
+
+  function applyMyRecord(rec) {
+    if (!rec || !rec.data) return
+    mySeat = rec.data.seat
+    myHoleCards = rec.data.holeCards || []
+    myChips = rec.data.chips || 0
+    myBet = rec.data.bet || 0
+    myStatus = rec.data.status || TableStateClass.statusWaiting()
+  }
+
+  function playerRecordScore(rec, phase) {
+    if (!rec || !rec.data) return -100000
+    let d = rec.data
+    let score = 0
+    let st = d.status || ""
+    if (st === TableStateClass.statusActive()) score = score + 500
+    else if (st === TableStateClass.statusAllIn()) score = score + 450
+    else if (st === TableStateClass.statusFolded()) score = score + 350
+    else if (st === TableStateClass.statusWaiting()) score = score + 200
+    else if (st === TableStateClass.statusSittingOut()) score = score + 100
+    if (d.holeCards && d.holeCards.length === 2) score = score + 300
+    if (phase === TableStateClass.phaseShowdown()) {
+      if (TableStateClass.isShowdownEligibleStatus(st)) score = score + 120
+    } else if (TableStateClass.isLiveHandPhase(phase)) {
+      if (st === TableStateClass.statusActive() || st === TableStateClass.statusAllIn()) score = score + 120
+    }
+    if (d.chips > 0) score = score + Math.min(100, Math.floor(d.chips / 20))
+    score = score + Math.min(60, d.handContribution || 0)
+    score = score + Math.min(20, d.bet || 0)
+    if (d.hasActed) score = score + 1
+    return score
+  }
+
+  function selectBestPeerRecord(allPlayers, targetPeerId, phase) {
+    if (!targetPeerId) return null
+    let best = null
+    let bestScore = -100000
+    let i = 0
+    while (i < allPlayers.length) {
+      let r = allPlayers[i]
+      if (r && r.data && r.data.peerId === targetPeerId) {
+        let sc = playerRecordScore(r, phase)
+        if (!best || sc > bestScore) {
+          best = r
+          bestScore = sc
+        }
+      }
+      i = i + 1
+    }
+    return best
+  }
+
+  function selectBestSeatRecord(allPlayers, seatNum, phase) {
+    let best = null
+    let bestScore = -100000
+    let i = 0
+    while (i < allPlayers.length) {
+      let r = allPlayers[i]
+      if (r && r.data && r.data.seat === seatNum) {
+        let sc = playerRecordScore(r, phase)
+        if (!best || sc > bestScore) {
+          best = r
+          bestScore = sc
+        }
+      }
+      i = i + 1
+    }
+    return best
+  }
+
+  function arrayHasString(arr, value) {
+    let i = 0
+    while (i < arr.length) {
+      if (arr[i] === value) return true
+      i = i + 1
+    }
+    return false
+  }
+
+  function getPlayerAtSeat(seatNum) {
+    return selectBestSeatRecord(players, seatNum, gamePhase)
+  }
+
+  function getMyPlayerRecord() {
+    return selectBestPeerRecord(players, peerId, gamePhase)
+  }
+
+  function countSeatedPlayers() {
+    // Count players who can actually play (have chips or are bots who get auto-replenished)
+    let count = 0
+    let csi = 0
+    while (csi < players.length) {
+      if (players[csi].data) {
+        let cpid = players[csi].data.peerId || ""
+        let cIsBot = cpid.charAt(0) === "b" && cpid.charAt(1) === "o" && cpid.charAt(2) === "t" && cpid.charAt(3) === "-"
+        if (players[csi].data.chips > 0 || cIsBot) {
+          count = count + 1
+        }
+      }
+      csi = csi + 1
+    }
+    return count
+  }
+
+  function countActivePlayers() {
+    let count = 0
+    let i = 0
+    while (i < players.length) {
+      if (players[i].data) {
+        let s = players[i].data.status
+        if (s === TableStateClass.statusActive() || s === TableStateClass.statusAllIn()) {
+          count = count + 1
+        }
+      }
+      i = i + 1
+    }
+    return count
+  }
+
+  function countPlayersCanAct() {
+    let count = 0
+    let i = 0
+    while (i < players.length) {
+      if (players[i].data && players[i].data.status === TableStateClass.statusActive()) {
+        count = count + 1
+      }
+      i = i + 1
+    }
+    return count
+  }
+

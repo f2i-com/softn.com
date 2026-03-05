@@ -1,0 +1,12 @@
+// EditStaffModal.ui - Modal for editing existing staff
+
+<Modal open={showEditStaffModal} onClose={closeEditStaffModal} title="Edit Staff Member" size=md>
+  <SmartForm
+    fields="name:text, role:text, email:email"
+    data={editingStaff ? editingStaff.data : null}
+    onSubmit={saveEditStaff}
+    submitText="Save Changes"
+    showCancel={true}
+    onCancel={closeEditStaffModal}
+  />
+</Modal>

@@ -1,0 +1,13 @@
+// AddAppointmentModal.ui - Modal for creating new appointments
+
+<Modal open={showAddModal} onClose={closeAddModal} title="New Appointment" size=md>
+  <SmartForm
+    collection="appointments"
+    fields="client:text:required, stylist:text:required, service:text:required, time:text:required, status:text, price:number"
+    defaults={{ status: "scheduled", price: 0 }}
+    onSaved={onAppointmentSaved}
+    submitText="Create Appointment"
+    showCancel={true}
+    onCancel={closeAddModal}
+  />
+</Modal>

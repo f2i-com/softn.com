@@ -1,0 +1,136 @@
+// QRTools.ui - QR code generation and scanning
+// Input for QR text, QRCode display, QRReader for scanning
+
+<Stack direction=vertical gap=lg if={currentPage === "qr"}>
+  // Header
+  <Stack direction=vertical gap=sm>
+    <Heading level={2} style={{ fontSize: "1.375rem", fontWeight: 600, color: "#0f172a" }}>QR Tools</Heading>
+    <Text style={{ color: "#64748b", fontSize: "0.875rem" }}>Generate QR codes from text and scan QR codes with your camera.</Text>
+  </Stack>
+
+  <Grid columns={{ sm: 1, lg: 2 }} gap=lg>
+    // QR Generator Card
+    <Card padding=lg style={{ background: "#ffffff", borderRadius: "14px", border: "1px solid #e2e8f0" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=semibold size=sm style={{ color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.75rem" }}>Generate QR Code</Text>
+
+        // QR Value Input
+        <Input
+          value={qrValue}
+          @change={updateQrValue}
+          placeholder="Enter text or URL..."
+          style={{
+            padding: "0.625rem 0.875rem",
+            borderRadius: "8px",
+            border: "1px solid #e2e8f0",
+            fontSize: "0.8125rem"
+          }}
+        />
+
+        // Quick Value Buttons
+        <Stack direction=horizontal gap=sm style={{ flexWrap: "wrap" }}>
+          <Button variant=ghost size=sm @click={updateQrValue("https://softn.dev")} style={{
+            fontSize: "0.6875rem",
+            padding: "0.25rem 0.625rem",
+            borderRadius: "6px",
+            background: "#f1f5f9",
+            color: "#475569"
+          }}>
+            softn.dev
+          </Button>
+          <Button variant=ghost size=sm @click={updateQrValue("Hello from DeviceKit!")} style={{
+            fontSize: "0.6875rem",
+            padding: "0.25rem 0.625rem",
+            borderRadius: "6px",
+            background: "#f1f5f9",
+            color: "#475569"
+          }}>
+            Hello text
+          </Button>
+          <Button variant=ghost size=sm @click={updateQrValue("softn://app/devicekit")} style={{
+            fontSize: "0.6875rem",
+            padding: "0.25rem 0.625rem",
+            borderRadius: "6px",
+            background: "#f1f5f9",
+            color: "#475569"
+          }}>
+            Deep link
+          </Button>
+        </Stack>
+
+        // QR Code Display
+        <Box style={{
+          display: "flex",
+          justifyContent: "center",
+          padding: "1.5rem",
+          background: "#ffffff",
+          borderRadius: "12px",
+          border: "1px solid #f1f5f9"
+        }}>
+          <QRCode value={qrValue} size={200} />
+        </Box>
+
+        // Current Value Display
+        <Box style={{
+          background: "#f8fafc",
+          borderRadius: "8px",
+          padding: "0.75rem",
+          border: "1px solid #e2e8f0"
+        }}>
+          <Text size=xs style={{ color: "#94a3b8", marginBottom: "0.25rem" }} block>Encoded value:</Text>
+          <Text style={{ fontFamily: "monospace", fontSize: "0.75rem", color: "#334155", wordBreak: "break-all" }}>{qrValue}</Text>
+        </Box>
+      </Stack>
+    </Card>
+
+    // QR Scanner Card
+    <Card padding=lg style={{ background: "#ffffff", borderRadius: "14px", border: "1px solid #e2e8f0" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=semibold size=sm style={{ color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.75rem" }}>Scan QR Code</Text>
+
+        // Scanner Area
+        <Box style={{
+          borderRadius: "12px",
+          overflow: "hidden",
+          border: "1px solid #e2e8f0",
+          minHeight: "200px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#f8fafc"
+        }}>
+          <QRReader onScan={handleScan} />
+        </Box>
+
+        // Scanned Result
+        <Box if={scannedCode} style={{
+          background: "#f0fdf4",
+          borderRadius: "10px",
+          padding: "1rem",
+          border: "1px solid #bbf7d0"
+        }}>
+          <Text size=xs style={{ color: "#15803d", marginBottom: "0.375rem", fontWeight: 600 }} block>Scanned Result:</Text>
+          <Text style={{ fontFamily: "monospace", fontSize: "0.8125rem", color: "#166534", wordBreak: "break-all" }}>{scannedCode}</Text>
+        </Box>
+
+        // No scan yet placeholder
+        <Box if={!scannedCode} style={{
+          background: "#f8fafc",
+          borderRadius: "10px",
+          padding: "1rem",
+          border: "1px solid #e2e8f0",
+          textAlign: "center"
+        }}>
+          <Text size=sm style={{ color: "#94a3b8" }}>Point your camera at a QR code to scan it.</Text>
+        </Box>
+      </Stack>
+    </Card>
+  </Grid>
+
+  // Permission Info
+  <Card padding=md style={{ background: "#fefce8", borderRadius: "14px", border: "1px solid #fde68a" }}>
+    <Stack direction=horizontal gap=sm align=center>
+      <Text style={{ fontSize: "0.8125rem", color: "#92400e" }}>Permission: qr.enabled allows QR code generation and scanning. Camera access required for scanning.</Text>
+    </Stack>
+  </Card>
+</Stack>

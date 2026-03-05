@@ -1,0 +1,116 @@
+// Sidebar.ui - Navigation sidebar component
+// This component handles both expanded and collapsed states
+
+// Expanded Sidebar
+<Box
+  if={!sidebarCollapsed}
+  className="softn-app-sidebar softn-mobile-hide"
+  width="260px"
+  minWidth="260px"
+  height="100%"
+  style={{
+    background: getSidebarBg(),
+    borderRight: "1px solid " + getBorderColor(),
+    display: "flex",
+    flexDirection: "column",
+    flexShrink: 0,
+    transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)"
+  }}
+>
+  <Stack direction=vertical gap=md height="100%" padding=md>
+    // Logo Header
+    <Stack direction=horizontal gap=md align=center style={{ padding: "0.5rem 0.25rem", marginBottom: "0.5rem" }}>
+      <Image src={appIconUrl} alt="Glamour Studio" width="42px" height="42px" objectFit="contain" borderRadius="md" style={{
+        boxShadow: "0 4px 14px " + getAccentMuted() + ", 0 2px 6px " + getAccentMuted(),
+        flexShrink: 0
+      }} />
+      <Stack direction=vertical gap=xs>
+        <Text style={{ fontSize: "1.125rem", fontWeight: "600", letterSpacing: "-0.01em", color: getTextColor(), lineHeight: "1.2", fontFamily: "'Cormorant Garamond', serif" }}>Glamour</Text>
+        <Text size=xs style={{ opacity: 0.5, color: getMutedColor(), letterSpacing: "0.1em", textTransform: "uppercase", fontSize: "0.625rem" }}>Studio Manager</Text>
+      </Stack>
+    </Stack>
+
+    <Divider style={{ borderColor: getBorderColor() }} />
+
+    // Navigation Menu
+    <Stack direction=vertical gap=xs style={{ flex: 1, marginTop: "0.5rem" }}>
+      <Text size=xs color=muted fontWeight=medium style={{ padding: "0.25rem 0.75rem", textTransform: "uppercase", letterSpacing: "0.12em", opacity: 0.4, fontSize: "0.625rem" }}>Menu</Text>
+      <NavItem icon=dashboard label="Dashboard" active={currentPage === "dashboard"} @click={navigate("dashboard")} />
+      <NavItem icon=calendar label="Appointments" active={currentPage === "appointments"} @click={navigate("appointments")} />
+      <NavItem icon=users label="Clients" active={currentPage === "clients"} @click={navigate("clients")} />
+      <NavItem icon=scissors label="Staff" active={currentPage === "staff"} @click={navigate("staff")} />
+      <NavItem icon=list label="Services" active={currentPage === "services"} @click={navigate("services")} />
+
+      <Box style={{ marginTop: "auto" }} />
+      <Divider style={{ borderColor: getBorderColor() }} />
+
+      // Theme Toggle
+      <Button variant=ghost size=sm @click=toggleTheme style={{ justifyContent: "flex-start", gap: "0.75rem", padding: "0.75rem 1rem" }}>
+        <Text size=sm style={{ color: getMutedColor() }}>{darkMode ? "Light Mode" : "Dark Mode"}</Text>
+      </Button>
+
+      <NavItem icon=settings label="Settings" @click=openDataModal />
+    </Stack>
+
+    // User Profile Card
+    <Card padding=sm style={{ background: darkMode ? "rgba(212, 165, 116, 0.04)" : "rgba(28, 25, 23, 0.02)", border: "1px solid " + getBorderColor(), borderRadius: "10px" }}>
+      <Stack direction=horizontal gap=sm align=center>
+        <Avatar name="Admin User" size=sm status=online />
+        <Stack direction=vertical gap=xs flex={1}>
+          <Text size=sm fontWeight=medium style={{ color: getTextColor() }}>Admin</Text>
+          <Text size=xs style={{ opacity: 0.5, color: getMutedColor() }}>Manager</Text>
+        </Stack>
+        <Button variant=ghost size=sm @click=toggleSidebar style={{ padding: "0.4rem", opacity: 0.5 }}>
+          <Text size=sm style={{ color: getMutedColor() }}>«</Text>
+        </Button>
+      </Stack>
+    </Card>
+  </Stack>
+</Box>
+
+// Collapsed Sidebar
+<Box
+  if={sidebarCollapsed}
+  className="softn-app-sidebar softn-mobile-hide"
+  width="64px"
+  minWidth="64px"
+  height="100%"
+  style={{
+    background: getSidebarBg(),
+    borderRight: "1px solid " + getBorderColor(),
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    flexShrink: 0,
+    transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)"
+  }}
+>
+  <Stack direction=vertical gap=sm height="100%" style={{ padding: "1rem 0.5rem", alignItems: "center" }}>
+    // Mini Logo
+    <Image src={appIconUrl} alt="Glamour Studio" width="36px" height="36px" objectFit="contain" borderRadius="sm" style={{
+      boxShadow: "0 4px 14px " + getAccentMuted() + ", 0 2px 6px " + getAccentMuted(),
+      marginBottom: "1rem",
+      flexShrink: 0
+    }} />
+
+    // Navigation Icons
+    <Stack direction=vertical gap=xs style={{ flex: 1 }}>
+      <NavItem icon=dashboard label="Dashboard" active={currentPage === "dashboard"} collapsed={true} @click={navigate("dashboard")} />
+      <NavItem icon=calendar label="Appointments" active={currentPage === "appointments"} collapsed={true} @click={navigate("appointments")} />
+      <NavItem icon=users label="Clients" active={currentPage === "clients"} collapsed={true} @click={navigate("clients")} />
+      <NavItem icon=scissors label="Staff" active={currentPage === "staff"} collapsed={true} @click={navigate("staff")} />
+      <NavItem icon=list label="Services" active={currentPage === "services"} collapsed={true} @click={navigate("services")} />
+    </Stack>
+
+    // Bottom Actions
+    <Stack direction=vertical gap=sm style={{ marginTop: "auto" }}>
+      <Button variant=ghost size=sm @click=toggleTheme style={{ padding: "0.5rem" }} title={darkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}>
+        <Text size=xs style={{ color: getMutedColor(), fontSize: "1rem" }}>{darkMode ? "Light" : "Dark"}</Text>
+      </Button>
+      <NavItem icon=settings label="Settings" collapsed={true} @click=openDataModal />
+      <Button variant=ghost size=sm @click=toggleSidebar style={{ padding: "0.5rem", opacity: 0.5 }}>
+        <Text size=sm style={{ color: getMutedColor() }}>»</Text>
+      </Button>
+    </Stack>
+  </Stack>
+</Box>

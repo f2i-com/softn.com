@@ -1,0 +1,19 @@
+{
+  "name": "DeviceKit",
+  "version": "1.0.0",
+  "description": "Demo app showcasing SoftN capabilities: network, camera, QR, files",
+  "author": "SoftN",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": [
+      "ui/main.ui",
+      "ui/pages/ApiExplorer.ui",
+      "ui/pages/QRTools.ui",
+      "ui/pages/CameraDemo.ui",
+      "ui/pages/FileBrowser.ui"
+    ],
+    "logic": ["logic/main.logic"],
+    "assets": ["assets/icon.svg"]
+  }
+}

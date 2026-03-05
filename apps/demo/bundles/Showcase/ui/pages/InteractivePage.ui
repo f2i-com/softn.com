@@ -1,0 +1,117 @@
+// InteractivePage.ui - Demonstrates drag, sort, and interaction components
+
+<Stack direction=vertical gap=lg if={currentPage === "interactive"}>
+  <Stack direction=vertical gap=xs>
+    <Heading level={2} style={{ color: getTextColor(), fontSize: "1.5rem" }}>Interactive</Heading>
+    <Text style={{ color: getMutedColor(), fontSize: "0.875rem" }}>Draggable elements, sortable lists, and component interaction.</Text>
+  </Stack>
+
+  // Draggable boxes
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>Draggable</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Drag the boxes freely. Supports axis locking and bounds.</Text>
+      <Box style={{ position: "relative", height: "200px", background: darkMode ? "#09090b" : "#f4f4f5", borderRadius: "10px", overflow: "hidden" }}>
+        <Draggable bounds="parent" style={{ position: "absolute", top: "10px", left: "10px" }}>
+          <Box style={{ width: "100px", height: "60px", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)" }}>
+            <Text size=xs style={{ color: "#fff", fontWeight: 600 }}>Free</Text>
+          </Box>
+        </Draggable>
+        <Draggable axis="x" bounds="parent" style={{ position: "absolute", top: "70px", left: "120px" }}>
+          <Box style={{ width: "100px", height: "60px", background: "linear-gradient(135deg, #10b981, #34d399)", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(16, 185, 129, 0.3)" }}>
+            <Text size=xs style={{ color: "#fff", fontWeight: 600 }}>X Only</Text>
+          </Box>
+        </Draggable>
+        <Draggable axis="y" bounds="parent" style={{ position: "absolute", top: "10px", left: "240px" }}>
+          <Box style={{ width: "100px", height: "60px", background: "linear-gradient(135deg, #f59e0b, #fbbf24)", borderRadius: "10px", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(245, 158, 11, 0.3)" }}>
+            <Text size=xs style={{ color: "#fff", fontWeight: 600 }}>Y Only</Text>
+          </Box>
+        </Draggable>
+      </Box>
+    </Stack>
+  </Card>
+
+  // SortableList
+  <Grid columns={{ sm: 1, lg: 2 }} gap=lg>
+    <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>SortableList</Text>
+        <Text size=xs style={{ color: getMutedColor() }}>Drag items to reorder. Grab the handle on the left.</Text>
+        <SortableList
+          items={sortableItems}
+          renderKey="id"
+          primary="name"
+          secondary="category"
+          gap={6}
+          onReorder={updateSortableItems}
+        />
+      </Stack>
+    </Card>
+
+    // Interactive chart + animated number
+    <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>Interactive Chart</Text>
+        <Text size=xs style={{ color: getMutedColor() }}>Hover over the chart to see tooltips. Click randomize to update the counter.</Text>
+        <Box style={{ textAlign: "center", padding: "0.5rem 0" }}>
+          <AnimatedNumber value={counterValue} prefix="$" separator={true} duration={800} style={{ fontSize: "2.5rem", fontWeight: 700, color: "#6366f1" }} />
+        </Box>
+        <BarChart
+          width={420}
+          height={200}
+          interactive={true}
+          series={[
+            {
+              name: "Sales",
+              color: "#6366f1",
+              data: [
+                { label: "Mon", value: 320 },
+                { label: "Tue", value: 450 },
+                { label: "Wed", value: 380 },
+                { label: "Thu", value: 520 },
+                { label: "Fri", value: 610 }
+              ]
+            }
+          ]}
+        />
+        <Button size=sm @click=randomizeCounter style={{ alignSelf: "center" }}>Randomize Counter</Button>
+      </Stack>
+    </Card>
+  </Grid>
+
+  // Grouped BarChart comparison
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>BarChart (Grouped)</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Grouped bars with interactive hover</Text>
+      <BarChart
+        width={600}
+        height={250}
+        interactive={true}
+        grouped={true}
+        series={[
+          {
+            name: "2024",
+            color: "#6366f1",
+            data: [
+              { label: "Jan", value: 400 },
+              { label: "Feb", value: 520 },
+              { label: "Mar", value: 480 },
+              { label: "Apr", value: 610 }
+            ]
+          },
+          {
+            name: "2025",
+            color: "#10b981",
+            data: [
+              { label: "Jan", value: 450 },
+              { label: "Feb", value: 580 },
+              { label: "Mar", value: 540 },
+              { label: "Apr", value: 700 }
+            ]
+          }
+        ]}
+      />
+    </Stack>
+  </Card>
+</Stack>

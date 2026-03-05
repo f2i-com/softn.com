@@ -1,0 +1,271 @@
+  // --- Card Utilities ---
+
+  function cardSuit(idx) {
+    return Math.floor(idx / 13)
+  }
+
+  function cardRank(idx) {
+    return (idx % 13) + 2
+  }
+
+  function suitSymbol(s) {
+    if (s === 0) return "\u2660"
+    if (s === 1) return "\u2665"
+    if (s === 2) return "\u2666"
+    if (s === 3) return "\u2663"
+    return "?"
+  }
+
+  function suitIsRed(s) {
+    return s === 1 || s === 2
+  }
+
+  function rankName(r) {
+    if (r === 14) return "A"
+    if (r === 13) return "K"
+    if (r === 12) return "Q"
+    if (r === 11) return "J"
+    if (r === 10) return "10"
+    return "" + r
+  }
+
+  function cardDisplay(idx) {
+    return rankName(cardRank(idx)) + suitSymbol(cardSuit(idx))
+  }
+
+  function cardColor(idx) {
+    if (suitIsRed(cardSuit(idx))) return "#dc2626"
+    return "#1e293b"
+  }
+  // --- Deck & Shuffle ---
+
+  function buildDeck() {
+    let d = []
+    let i = 0
+    while (i < 52) {
+      d.push(i)
+      i = i + 1
+    }
+    return d
+  }
+
+  function shuffleDeck(d) {
+    let i = d.length - 1
+    while (i > 0) {
+      let j = Math.floor(Math.random() * (i + 1))
+      let tmp = d[i]
+      d[i] = d[j]
+      d[j] = tmp
+      i = i - 1
+    }
+    return d
+  }
+  // --- Hand Evaluation ---
+
+  // All 21 combinations of choosing 5 from 7 cards (indices 0-6)
+  function getCombinations7Choose5() {
+    return [
+      [0,1,2,3,4],[0,1,2,3,5],[0,1,2,3,6],[0,1,2,4,5],[0,1,2,4,6],
+      [0,1,2,5,6],[0,1,3,4,5],[0,1,3,4,6],[0,1,3,5,6],[0,1,4,5,6],
+      [0,2,3,4,5],[0,2,3,4,6],[0,2,3,5,6],[0,2,4,5,6],[0,3,4,5,6],
+      [1,2,3,4,5],[1,2,3,4,6],[1,2,3,5,6],[1,2,4,5,6],[1,3,4,5,6],
+      [2,3,4,5,6]
+    ]
+  }
+
+  function sortDesc(arr) {
+    // Simple bubble sort descending
+    let i = 0
+    while (i < arr.length) {
+      let j = i + 1
+      while (j < arr.length) {
+        if (arr[j] > arr[i]) {
+          let tmp = arr[i]
+          arr[i] = arr[j]
+          arr[j] = tmp
+        }
+        j = j + 1
+      }
+      i = i + 1
+    }
+    return arr
+  }
+
+  function evaluateHand5(cards) {
+    // cards is array of 5 card indices
+    let ranks = []
+    let suits = []
+    let i = 0
+    while (i < 5) {
+      ranks.push(cardRank(cards[i]))
+      suits.push(cardSuit(cards[i]))
+      i = i + 1
+    }
+    ranks = sortDesc(ranks)
+
+    // Check flush
+    let isFlush = true
+    let fi = 1
+    while (fi < 5) {
+      if (suits[fi] !== suits[0]) {
+        isFlush = false
+      }
+      fi = fi + 1
+    }
+
+    // Check straight
+    let isStraight = false
+    let isAceLowStraight = false
+    if (ranks[0] - ranks[4] === 4) {
+      let unique = true
+      let si = 1
+      while (si < 5) {
+        if (ranks[si] === ranks[si - 1]) {
+          unique = false
+        }
+        si = si + 1
+      }
+      if (unique) {
+        isStraight = true
+      }
+    }
+    // Ace-low straight: A-2-3-4-5 => ranks sorted: [14, 5, 4, 3, 2]
+    if (ranks[0] === 14 && ranks[1] === 5 && ranks[2] === 4 && ranks[3] === 3 && ranks[4] === 2) {
+      isStraight = true
+      isAceLowStraight = true
+    }
+
+    // Count rank frequencies
+    let freqs = []
+    let fi2 = 0
+    while (fi2 < 5) {
+      let found = false
+      let fi3 = 0
+      while (fi3 < freqs.length) {
+        if (freqs[fi3].rank === ranks[fi2]) {
+          freqs[fi3].count = freqs[fi3].count + 1
+          found = true
+        }
+        fi3 = fi3 + 1
+      }
+      if (!found) {
+        freqs.push({rank: ranks[fi2], count: 1})
+      }
+      fi2 = fi2 + 1
+    }
+
+    // Sort freqs by count desc, then rank desc
+    let fsi = 0
+    while (fsi < freqs.length) {
+      let fsj = fsi + 1
+      while (fsj < freqs.length) {
+        let swap = false
+        if (freqs[fsj].count > freqs[fsi].count) {
+          swap = true
+        }
+        if (freqs[fsj].count === freqs[fsi].count && freqs[fsj].rank > freqs[fsi].rank) {
+          swap = true
+        }
+        if (swap) {
+          let tmp = freqs[fsi]
+          freqs[fsi] = freqs[fsj]
+          freqs[fsj] = tmp
+        }
+        fsj = fsj + 1
+      }
+      fsi = fsi + 1
+    }
+
+    let numGroups = freqs.length
+
+    // Royal flush
+    if (isFlush && isStraight && ranks[0] === 14 && !isAceLowStraight) {
+      return {rank: 10, kickers: [14]}
+    }
+    // Straight flush
+    if (isFlush && isStraight) {
+      let high = isAceLowStraight ? 5 : ranks[0]
+      return {rank: 9, kickers: [high]}
+    }
+    // Four of a kind
+    if (numGroups === 2 && freqs[0].count === 4) {
+      return {rank: 8, kickers: [freqs[0].rank, freqs[1].rank]}
+    }
+    // Full house
+    if (numGroups === 2 && freqs[0].count === 3) {
+      return {rank: 7, kickers: [freqs[0].rank, freqs[1].rank]}
+    }
+    // Flush
+    if (isFlush) {
+      return {rank: 6, kickers: ranks}
+    }
+    // Straight
+    if (isStraight) {
+      let high = isAceLowStraight ? 5 : ranks[0]
+      return {rank: 5, kickers: [high]}
+    }
+    // Three of a kind
+    if (freqs[0].count === 3) {
+      return {rank: 4, kickers: [freqs[0].rank, freqs[1].rank, freqs[2].rank]}
+    }
+    // Two pair
+    if (numGroups === 3 && freqs[0].count === 2 && freqs[1].count === 2) {
+      return {rank: 3, kickers: [freqs[0].rank, freqs[1].rank, freqs[2].rank]}
+    }
+    // One pair
+    if (freqs[0].count === 2) {
+      return {rank: 2, kickers: [freqs[0].rank, freqs[1].rank, freqs[2].rank, freqs[3].rank]}
+    }
+    // High card
+    return {rank: 1, kickers: ranks}
+  }
+
+  function compareKickers(a, b) {
+    let i = 0
+    while (i < a.length && i < b.length) {
+      if (a[i] > b[i]) return 1
+      if (a[i] < b[i]) return -1
+      i = i + 1
+    }
+    return 0
+  }
+
+  function evaluateBestHand(sevenCards) {
+    let combos = getCombinations7Choose5()
+    let bestResult = null
+    let ci = 0
+    while (ci < combos.length) {
+      let combo = combos[ci]
+      let hand = [
+        sevenCards[combo[0]], sevenCards[combo[1]], sevenCards[combo[2]],
+        sevenCards[combo[3]], sevenCards[combo[4]]
+      ]
+      let result = evaluateHand5(hand)
+      if (!bestResult) {
+        bestResult = result
+      } else {
+        if (result.rank > bestResult.rank) {
+          bestResult = result
+        } else if (result.rank === bestResult.rank) {
+          if (compareKickers(result.kickers, bestResult.kickers) > 0) {
+            bestResult = result
+          }
+        }
+      }
+      ci = ci + 1
+    }
+    return bestResult
+  }
+
+  function handRankName(rank) {
+    if (rank === 10) return "Royal Flush"
+    if (rank === 9) return "Straight Flush"
+    if (rank === 8) return "Four of a Kind"
+    if (rank === 7) return "Full House"
+    if (rank === 6) return "Flush"
+    if (rank === 5) return "Straight"
+    if (rank === 4) return "Three of a Kind"
+    if (rank === 3) return "Two Pair"
+    if (rank === 2) return "Pair"
+    return "High Card"
+  }

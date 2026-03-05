@@ -1,0 +1,174 @@
+  let objects = []
+  let lights = []
+  let cameraPos = {x: 0, y: 3, z: 8}
+  let showWireframe = false
+  let selectedId = ""
+  let objectCount = 0
+
+  let initialObjects = []
+
+  function _init() {
+    let colors = ["#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#22d3ee"]
+    let types = ["box", "sphere", "torus", "cone", "dodecahedron", "icosahedron", "octahedron"]
+    let objs = []
+    let i = 0
+    let count = 7
+    while (i < count) {
+      let angle = (i / count) * Math.PI * 2
+      let x = Math.cos(angle) * 3
+      let z = Math.sin(angle) * 3
+      let obj = {
+        id: "shape-" + i,
+        type: types[i],
+        position: {x: x, y: 0, z: z},
+        color: colors[i],
+        metalness: 0.3,
+        roughness: 0.4,
+        wireframe: false,
+        castShadow: true,
+        animate: {
+          rotateY: 0.005 + (i * 0.003),
+          floatAmplitude: 0.3 + (i * 0.05),
+          floatSpeed: 0.8 + (i * 0.15)
+        }
+      }
+      if (types[i] === "torus") {
+        obj.radius = 0.6
+      }
+      if (types[i] === "cone") {
+        obj.radius = 0.5
+        obj.height = 1.2
+      }
+      objs.push(obj)
+      i = i + 1
+    }
+
+    let ground = {
+      id: "ground",
+      type: "plane",
+      position: {x: 0, y: -1.5, z: 0},
+      rotation: {x: -Math.PI / 2, y: 0, z: 0},
+      width: 20,
+      height: 20,
+      color: "#1e1b4b",
+      metalness: 0.1,
+      roughness: 0.9,
+      receiveShadow: true,
+      opacity: 0.5
+    }
+    objs.push(ground)
+
+    objects = objs
+    objectCount = objs.length
+
+    let saved = []
+    let si = 0
+    while (si < objs.length) {
+      saved.push(objs[si])
+      si = si + 1
+    }
+    initialObjects = saved
+
+    lights = [
+      {id: "ambient", type: "ambient", color: "#404060", intensity: 0.6},
+      {id: "dir1", type: "directional", color: "#ffffff", intensity: 1.2, position: {x: 5, y: 8, z: 5}, castShadow: true},
+      {id: "point1", type: "point", color: "#818cf8", intensity: 0.8, position: {x: -3, y: 4, z: -3}}
+    ]
+  }
+
+  function toggleWireframe() {
+    showWireframe = !showWireframe
+    let newObjs = []
+    let i = 0
+    while (i < objects.length) {
+      let obj = objects[i]
+      let copy = {}
+      let keys = Object.keys(obj)
+      let k = 0
+      while (k < keys.length) {
+        copy[keys[k]] = obj[keys[k]]
+        k = k + 1
+      }
+      copy.wireframe = showWireframe
+      newObjs.push(copy)
+      i = i + 1
+    }
+    objects = newObjs
+  }
+
+  function randomizeColors() {
+    let palette = ["#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#22d3ee", "#a3e635", "#fb923c", "#38bdf8"]
+    let newObjs = []
+    let i = 0
+    while (i < objects.length) {
+      let obj = objects[i]
+      let copy = {}
+      let keys = Object.keys(obj)
+      let k = 0
+      while (k < keys.length) {
+        copy[keys[k]] = obj[keys[k]]
+        k = k + 1
+      }
+      if (obj.id !== "ground") {
+        copy.color = palette[Math.floor(Math.random() * palette.length)]
+      }
+      newObjs.push(copy)
+      i = i + 1
+    }
+    objects = newObjs
+  }
+
+  function addShape() {
+    let types = ["box", "sphere", "torus", "cone", "dodecahedron", "icosahedron", "octahedron", "cylinder"]
+    let colors = ["#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#22d3ee", "#a3e635"]
+    let t = types[Math.floor(Math.random() * types.length)]
+    let c = colors[Math.floor(Math.random() * colors.length)]
+    let x = (Math.random() - 0.5) * 6
+    let z = (Math.random() - 0.5) * 6
+    let y = Math.random() * 2
+
+    let newObj = {
+      id: "shape-" + Date.now(),
+      type: t,
+      position: {x: x, y: y, z: z},
+      color: c,
+      metalness: 0.3,
+      roughness: 0.4,
+      wireframe: showWireframe,
+      castShadow: true,
+      animate: {
+        rotateY: 0.005 + Math.random() * 0.02,
+        floatAmplitude: 0.2 + Math.random() * 0.3,
+        floatSpeed: 0.8 + Math.random() * 0.5
+      }
+    }
+
+    let newObjs = []
+    let i = 0
+    while (i < objects.length) {
+      newObjs.push(objects[i])
+      i = i + 1
+    }
+    newObjs.push(newObj)
+    objects = newObjs
+    objectCount = newObjs.length
+  }
+
+  function resetScene() {
+    showWireframe = false
+    selectedId = ""
+    let objs = []
+    let i = 0
+    while (i < initialObjects.length) {
+      objs.push(initialObjects[i])
+      i = i + 1
+    }
+    objects = objs
+    objectCount = objs.length
+  }
+
+  function handleClick(info) {
+    if (info && info.objectId) {
+      selectedId = info.objectId
+    }
+  }

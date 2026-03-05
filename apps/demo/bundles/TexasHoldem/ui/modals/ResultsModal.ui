@@ -1,0 +1,77 @@
+// ResultsModal.ui - Hand results / winner announcement
+
+<Modal open={showResultsModal} onClose={closeResultsModal} title="Hand Complete" size=sm>
+  <Stack direction=vertical gap=lg style={{ padding: "1rem 0", alignItems: "center", textAlign: "center" }}>
+
+    // Trophy icon
+    <Box style={{
+      width: "64px",
+      height: "64px",
+      borderRadius: "50%",
+      background: "linear-gradient(135deg, #c8aa6e, #a08040)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      boxShadow: "0 4px 20px rgba(200,170,110,0.3)"
+    }}>
+      <Text style={{ fontSize: "28px" }}>★</Text>
+    </Box>
+
+    // Winner name
+    <Stack direction=vertical gap=xs style={{ alignItems: "center" }}>
+      <Text style={{ color: "#c8aa6e", fontSize: "14px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>Winner</Text>
+      <Text style={{ color: "#fff", fontSize: "24px", fontWeight: "bold" }}>
+        {resultWinnerName}
+      </Text>
+    </Stack>
+
+    // Hand name
+    <Box style={{
+      background: "rgba(200,170,110,0.1)",
+      borderRadius: "8px",
+      padding: "8px 20px",
+      border: "1px solid rgba(200,170,110,0.2)"
+    }}>
+      <Text style={{ color: "#c8aa6e", fontSize: "16px", fontWeight: "600" }}>
+        {resultHandName}
+      </Text>
+    </Box>
+
+    // Pot amount (main pot focus)
+    <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: "14px" }}>
+      {"Main Pot $" + resultPotAmount}
+    </Text>
+
+    // Extra showdown details (e.g. side-pot winners)
+    <Text if={resultDetails} style={{ color: "rgba(255,255,255,0.72)", fontSize: "12px", maxWidth: "300px" }}>
+      {resultDetails}
+    </Text>
+
+    // Actions
+    <Stack direction=horizontal gap=sm>
+      <Button @click={closeResultsModal} style={{
+        background: "rgba(255,255,255,0.08)",
+        color: "rgba(255,255,255,0.6)",
+        border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: "8px",
+        padding: "10px 20px",
+        fontSize: "14px",
+        cursor: "pointer"
+      }}>
+        Close
+      </Button>
+      <Button if={isHost} @click={nextHand} style={{
+        background: "linear-gradient(135deg, #c8aa6e, #a08040)",
+        color: "#1c1917",
+        border: "none",
+        borderRadius: "8px",
+        padding: "10px 24px",
+        fontSize: "14px",
+        fontWeight: "700",
+        cursor: "pointer"
+      }}>
+        Next Hand
+      </Button>
+    </Stack>
+  </Stack>
+</Modal>

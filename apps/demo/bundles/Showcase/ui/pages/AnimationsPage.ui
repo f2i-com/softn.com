@@ -1,0 +1,149 @@
+// AnimationsPage.ui - Demonstrates animation components
+
+<Stack direction=vertical gap=lg if={currentPage === "animations"}>
+  <Stack direction=vertical gap=xs>
+    <Heading level={2} style={{ color: getTextColor(), fontSize: "1.5rem" }}>Animations</Heading>
+    <Text style={{ color: getMutedColor(), fontSize: "0.875rem" }}>Animation primitives: entrance effects, counters, marquee, and typewriter.</Text>
+  </Stack>
+
+  // AnimatedBox presets
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>AnimatedBox — Entrance Presets</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Each box animates in when it enters the viewport (scroll to trigger)</Text>
+      <Grid columns={{ sm: 2, md: 3, lg: 4 }} gap=md>
+        <AnimatedBox animation="fadeIn" trigger="visible" duration={600}>
+          <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
+            <Text size=sm style={{ color: getTextColor() }}>fadeIn</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="fadeUp" trigger="visible" duration={600} delay={100}>
+          <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
+            <Text size=sm style={{ color: getTextColor() }}>fadeUp</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="fadeDown" trigger="visible" duration={600} delay={200}>
+          <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
+            <Text size=sm style={{ color: getTextColor() }}>fadeDown</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="fadeLeft" trigger="visible" duration={600} delay={300}>
+          <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
+            <Text size=sm style={{ color: getTextColor() }}>fadeLeft</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="fadeRight" trigger="visible" duration={600} delay={400}>
+          <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
+            <Text size=sm style={{ color: getTextColor() }}>fadeRight</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="scaleIn" trigger="visible" duration={600} delay={500}>
+          <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
+            <Text size=sm style={{ color: getTextColor() }}>scaleIn</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="slideUp" trigger="visible" duration={600} delay={600}>
+          <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
+            <Text size=sm style={{ color: getTextColor() }}>slideUp</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="bounceIn" trigger="visible" duration={700} delay={700}>
+          <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
+            <Text size=sm style={{ color: getTextColor() }}>bounceIn</Text>
+          </Box>
+        </AnimatedBox>
+      </Grid>
+    </Stack>
+  </Card>
+
+  // AnimatedNumber
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>AnimatedNumber</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Numbers animate from previous value. Click the button to randomize.</Text>
+      <Grid columns={{ sm: 2, lg: 4 }} gap=lg>
+        <Box style={{ textAlign: "center" }}>
+          <AnimatedNumber value={counterValue} prefix="$" separator={true} duration={1200} style={{ fontSize: "2rem", fontWeight: 700, color: "#6366f1" }} />
+          <Text size=xs block style={{ color: getMutedColor(), marginTop: "4px" }}>Revenue</Text>
+        </Box>
+        <Box style={{ textAlign: "center" }}>
+          <AnimatedNumber value={counterValue * 3} duration={1500} style={{ fontSize: "2rem", fontWeight: 700, color: "#10b981" }} />
+          <Text size=xs block style={{ color: getMutedColor(), marginTop: "4px" }}>Users</Text>
+        </Box>
+        <Box style={{ textAlign: "center" }}>
+          <AnimatedNumber value={counterValue / 100} decimals={1} suffix="%" duration={1000} style={{ fontSize: "2rem", fontWeight: 700, color: "#f59e0b" }} />
+          <Text size=xs block style={{ color: getMutedColor(), marginTop: "4px" }}>Conversion</Text>
+        </Box>
+        <Box style={{ textAlign: "center" }}>
+          <AnimatedNumber value={Math.floor(counterValue / 10)} suffix=" ms" duration={800} style={{ fontSize: "2rem", fontWeight: 700, color: "#ef4444" }} />
+          <Text size=xs block style={{ color: getMutedColor(), marginTop: "4px" }}>Latency</Text>
+        </Box>
+      </Grid>
+      <Button size=sm @click=randomizeCounter style={{ alignSelf: "center" }}>Randomize Values</Button>
+    </Stack>
+  </Card>
+
+  // Marquee
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>Marquee</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Scrolling content that pauses on hover</Text>
+      <Marquee speed={40} pauseOnHover={true} gap={32}>
+        <Stack direction=horizontal gap=lg style={{ padding: "0.5rem 0" }}>
+          <Badge color="purple">React</Badge>
+          <Badge color="green">TypeScript</Badge>
+          <Badge color="blue">SoftN</Badge>
+          <Badge color="orange">Charts</Badge>
+          <Badge color="red">Animation</Badge>
+          <Badge color="purple">Draggable</Badge>
+          <Badge color="green">Sortable</Badge>
+          <Badge color="blue">Interactive</Badge>
+        </Stack>
+      </Marquee>
+    </Stack>
+  </Card>
+
+  // Typewriter
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>Typewriter</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Text typed character by character, cycling through messages</Text>
+      <Box style={{ padding: "1.5rem", background: darkMode ? "#09090b" : "#f4f4f5", borderRadius: "10px" }}>
+        <Typewriter
+          text={["Build beautiful UIs with SoftN", "Charts, animations, and more", "No external dependencies needed", "Pure React component library"]}
+          speed={60}
+          deleteSpeed={25}
+          pauseDuration={2000}
+          loop={true}
+          cursorChar="|"
+          style={{ fontSize: "1.25rem", fontWeight: 500, color: getTextColor() }}
+        />
+      </Box>
+    </Stack>
+  </Card>
+
+  // Hover-triggered animation
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>Hover Animations</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Hover over each card to trigger the animation</Text>
+      <Grid columns={{ sm: 2, lg: 3 }} gap=md>
+        <AnimatedBox animation="scaleIn" trigger="hover">
+          <Box padding=lg style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)", borderRadius: "12px", textAlign: "center" }}>
+            <Text style={{ color: "#fff", fontWeight: 600 }}>Scale In</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="fadeUp" trigger="hover">
+          <Box padding=lg style={{ background: "linear-gradient(135deg, #10b981, #34d399)", borderRadius: "12px", textAlign: "center" }}>
+            <Text style={{ color: "#fff", fontWeight: 600 }}>Fade Up</Text>
+          </Box>
+        </AnimatedBox>
+        <AnimatedBox animation="bounceIn" trigger="hover">
+          <Box padding=lg style={{ background: "linear-gradient(135deg, #f59e0b, #fbbf24)", borderRadius: "12px", textAlign: "center" }}>
+            <Text style={{ color: "#fff", fontWeight: 600 }}>Bounce In</Text>
+          </Box>
+        </AnimatedBox>
+      </Grid>
+    </Stack>
+  </Card>
+</Stack>

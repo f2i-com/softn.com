@@ -1,0 +1,125 @@
+{
+  "collection": "characters",
+  "records": [
+    {
+      "id": "characters_1",
+      "collection": "characters",
+      "data": {
+        "name": "Michael",
+        "personality": "Enthusiastic awkward boss who loves movie references, always tries too hard to be liked, thinks he's hilarious",
+        "base": "char1",
+        "hair": "gentleman",
+        "hairColor": 0,
+        "pantsColor": 1,
+        "clothes": "suit",
+        "clothesColor": 1,
+        "hasGlasses": false,
+        "x": 144,
+        "y": 112,
+        "row": 0
+      },
+      "createdAt": "2026-03-01T00:00:00.000Z",
+      "updatedAt": "2026-03-01T00:00:00.000Z"
+    },
+    {
+      "id": "characters_2",
+      "collection": "characters",
+      "data": {
+        "name": "Diane",
+        "personality": "Kind artistic receptionist who loves painting, always supportive, a bit naive but warmhearted",
+        "base": "char3",
+        "hair": "ponytail",
+        "hairColor": 2,
+        "pantsColor": 1,
+        "clothes": "dress",
+        "clothesColor": 1,
+        "hasGlasses": false,
+        "x": 432,
+        "y": 208,
+        "row": 2
+      },
+      "createdAt": "2026-03-01T00:00:00.000Z",
+      "updatedAt": "2026-03-01T00:00:00.000Z"
+    },
+    {
+      "id": "characters_3",
+      "collection": "characters",
+      "data": {
+        "name": "Jimmy",
+        "personality": "Witty sarcastic salesman who loves pranks, always has a deadpan comeback, secretly sweet",
+        "base": "char2",
+        "hair": "buzzcut",
+        "hairColor": 0,
+        "pantsColor": 2,
+        "clothes": "stripe",
+        "clothesColor": 3,
+        "hasGlasses": false,
+        "x": 272,
+        "y": 400,
+        "row": 0
+      },
+      "createdAt": "2026-03-01T00:00:00.000Z",
+      "updatedAt": "2026-03-01T00:00:00.000Z"
+    },
+    {
+      "id": "characters_4",
+      "collection": "characters",
+      "data": {
+        "name": "Angela",
+        "personality": "Strict judgmental accountant who loves cats, very proper, disapproves of everything fun",
+        "base": "char4",
+        "hair": "bob",
+        "hairColor": 4,
+        "pantsColor": 0,
+        "clothes": "suit",
+        "clothesColor": 0,
+        "hasGlasses": false,
+        "x": 560,
+        "y": 400,
+        "row": 1
+      },
+      "createdAt": "2026-03-01T00:00:00.000Z",
+      "updatedAt": "2026-03-01T00:00:00.000Z"
+    },
+    {
+      "id": "characters_5",
+      "collection": "characters",
+      "data": {
+        "name": "Kevin",
+        "personality": "Lovable food-obsessed accountant, speaks slowly, surprisingly good at poker, always hungry",
+        "base": "char5",
+        "hair": "curly",
+        "hairColor": 1,
+        "pantsColor": 3,
+        "clothes": "sporty",
+        "clothesColor": 5,
+        "hasGlasses": false,
+        "x": 752,
+        "y": 368,
+        "row": 2
+      },
+      "createdAt": "2026-03-01T00:00:00.000Z",
+      "updatedAt": "2026-03-01T00:00:00.000Z"
+    },
+    {
+      "id": "characters_6",
+      "collection": "characters",
+      "data": {
+        "name": "Raj",
+        "personality": "Ambitious trendy temp who is always scheming to climb the ladder, name-drops constantly, desperately wants to fit in",
+        "base": "char6",
+        "hair": "long_straight",
+        "hairColor": 3,
+        "pantsColor": 1,
+        "clothes": "pants_suit",
+        "clothesColor": 0,
+        "hasGlasses": false,
+        "x": 432,
+        "y": 560,
+        "row": 0
+      },
+      "createdAt": "2026-03-01T00:00:00.000Z",
+      "updatedAt": "2026-03-01T00:00:00.000Z"
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+// DataModal.ui - Settings and data management modal
+
+<Modal open={showDataModal} onClose={closeDataModal} title="Settings" size=lg>
+  <Stack direction=vertical gap=lg padding=sm>
+    <Text color=muted size=sm>Export, import, or manage your Glamour Studio data.</Text>
+
+    // Export Section
+    <Stack direction=vertical gap=md>
+      <Text size=sm fontWeight=medium style={{ color: getHeadingColor() }}>Export Data</Text>
+      <Stack direction=horizontal gap=md style={{ flexWrap: "wrap" }}>
+        <Button variant=primary size=sm @click=exportAllData style={{ flex: 1, minWidth: "120px", background: "linear-gradient(135deg, " + getAccentColor() + ", " + getAccentHover() + ")", color: darkMode ? "#1c1917" : "#ffffff", border: "none", fontWeight: 600 }}>Export Data</Button>
+        <Button variant=secondary size=sm @click=copyToClipboard style={{ flex: 1, minWidth: "120px" }}>Copy to Clipboard</Button>
+      </Stack>
+    </Stack>
+
+    <Box
+      if={exportedData}
+      style={{
+        background: getRaisedBg(),
+        borderRadius: "8px",
+        padding: "1rem",
+        maxHeight: "150px",
+        overflow: "auto",
+        fontFamily: "monospace",
+        fontSize: "0.7rem",
+        border: "1px solid " + getBorderColor()
+      }}
+    >
+      <Text size=xs style={{ whiteSpace: "pre-wrap", color: getMutedColor() }}>{exportedData}</Text>
+    </Box>
+
+    <Divider style={{ borderColor: getBorderColor() }} />
+
+    // Import Section
+    <Stack direction=vertical gap=md>
+      <Text size=sm fontWeight=medium style={{ color: getHeadingColor() }}>Import Data</Text>
+      <Text color=muted size=xs>Paste exported JSON data below to import records.</Text>
+      <TextArea
+        value={importData}
+        @change=setImportData
+        placeholder="Paste exported JSON data here..."
+        rows={5}
+        fullWidth
+        style={{
+          fontFamily: "monospace",
+          fontSize: "0.75rem",
+          width: "100%",
+          minWidth: 0
+        }}
+      />
+      <Button variant=secondary size=sm @click=importAllData fullWidth>Import Data</Button>
+    </Stack>
+
+    <Divider style={{ borderColor: getBorderColor() }} />
+
+    // Danger Zone
+    <Stack direction=vertical gap=md if={!confirmClearData}>
+      <Stack direction=horizontal justify="space-between" align=center style={{ flexWrap: "wrap", gap: "0.5rem" }}>
+        <Stack direction=vertical gap=xs>
+          <Text color=error size=sm fontWeight=medium>Danger Zone</Text>
+          <Text color=muted size=xs>This action cannot be undone</Text>
+        </Stack>
+        <Button variant=danger size=sm @click=clearAllData>Clear All Data</Button>
+      </Stack>
+    </Stack>
+
+    <Card padding=md style={{ background: darkMode ? "rgba(239, 68, 68, 0.1)" : "rgba(239, 68, 68, 0.05)", border: "1px solid rgba(239, 68, 68, 0.3)", borderRadius: "8px" }} if={confirmClearData}>
+      <Stack direction=vertical gap=md>
+        <Text color=error size=sm fontWeight=medium>Are you sure you want to delete all data?</Text>
+        <Text color=muted size=xs>This will permanently delete all clients, staff, services, appointments, and activity records.</Text>
+        <Stack direction=horizontal gap=sm justify=end>
+          <Button variant=ghost size=sm @click=cancelClearData>Cancel</Button>
+          <Button variant=danger size=sm @click=clearAllData>Yes, Delete Everything</Button>
+        </Stack>
+      </Stack>
+    </Card>
+  </Stack>
+</Modal>

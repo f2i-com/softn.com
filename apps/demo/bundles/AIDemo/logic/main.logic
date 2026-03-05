@@ -1,0 +1,233 @@
+let currentPage = "capabilities"
+
+// Capabilities state
+let capsLoading = false
+let capsResult = ""
+let hasWebGPU = false
+let hasWebGL = false
+let hasWasm = false
+let maxModelMB = 0
+
+// Sentiment analysis state
+let sentimentText = "I absolutely love this new feature! It works perfectly."
+let sentimentResult = ""
+let sentimentLoading = false
+let sentimentPipelineId = ""
+let sentimentModelLoaded = false
+
+// Text generation state
+let genPrompt = "The future of AI is"
+let genResult = ""
+let genLoading = false
+let genPipelineId = ""
+let genModelLoaded = false
+
+// Embedding state
+let embedTextA = "The cat sat on the mat"
+let embedTextB = "A feline rested on the rug"
+let embedResult = ""
+let embedLoading = false
+let embedPipelineId = ""
+let embedModelLoaded = false
+
+// Qwen3.5 state
+let qwenPrompt = "Explain quantum computing in one paragraph."
+let qwenResult = ""
+let qwenLoading = false
+let qwenModelHandle = ""
+let qwenModelLoaded = false
+
+// Status log
+let statusLog = "Ready. Click 'Detect Capabilities' to start."
+
+function setPage(page) {
+  currentPage = page
+}
+
+function log(msg) {
+  statusLog = msg
+}
+
+// ── Capabilities ──
+
+function detectCapabilities() {
+  capsLoading = true
+  log("Detecting AI capabilities...")
+  softn.ai.getCapabilities(function(caps) {
+    hasWebGPU = caps.webgpu
+    hasWebGL = caps.webgl
+    hasWasm = caps.wasm
+    maxModelMB = caps.maxModelSizeMB
+    capsResult = "WebGPU: " + (caps.webgpu ? "YES" : "no") + " | WebGL: " + (caps.webgl ? "YES" : "no") + " | WASM: " + (caps.wasm ? "YES" : "no") + " | Max model: " + caps.maxModelSizeMB + " MB"
+    capsLoading = false
+    log("Capabilities detected successfully.")
+  })
+}
+
+// ── Sentiment Analysis ──
+
+function loadSentimentModel() {
+  sentimentLoading = true
+  log("Loading sentiment model (Xenova/distilbert-base-uncased-finetuned-sst-2-english)...")
+  softn.ai.pipeline("sentiment-analysis", "Xenova/distilbert-base-uncased-finetuned-sst-2-english", {}, function(result) {
+    sentimentPipelineId = result.pipelineId
+    sentimentModelLoaded = true
+    sentimentLoading = false
+    log("Sentiment model loaded: " + result.pipelineId)
+  })
+}
+
+function runSentiment() {
+  if (!sentimentModelLoaded) {
+    log("Load the sentiment model first!")
+    return
+  }
+  sentimentLoading = true
+  log("Classifying sentiment...")
+  softn.ai.classify(sentimentPipelineId, sentimentText, function(result) {
+    let str = JSON.stringify(result)
+    sentimentResult = str
+    sentimentLoading = false
+    log("Sentiment classification complete.")
+  })
+}
+
+function updateSentimentText(val) {
+  sentimentText = val
+}
+
+// ── Text Generation ──
+
+function loadGenModel() {
+  genLoading = true
+  log("Loading text generation model (Xenova/distilgpt2)... this may take a moment.")
+  softn.ai.pipeline("text-generation", "Xenova/distilgpt2", {}, function(result) {
+    genPipelineId = result.pipelineId
+    genModelLoaded = true
+    genLoading = false
+    log("Text generation model loaded: " + result.pipelineId)
+  })
+}
+
+function runGenerate() {
+  if (!genModelLoaded) {
+    log("Load the generation model first!")
+    return
+  }
+  genLoading = true
+  log("Generating text...")
+  softn.ai.generate(genPipelineId, genPrompt, { max_new_tokens: 50, temperature: 0.8 }, function(result) {
+    let str = JSON.stringify(result)
+    genResult = str
+    genLoading = false
+    log("Text generation complete.")
+  })
+}
+
+function updateGenPrompt(val) {
+  genPrompt = val
+}
+
+// ── Embeddings ──
+
+function loadEmbedModel() {
+  embedLoading = true
+  log("Loading embedding model (Xenova/all-MiniLM-L6-v2)...")
+  softn.ai.pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2", {}, function(result) {
+    embedPipelineId = result.pipelineId
+    embedModelLoaded = true
+    embedLoading = false
+    log("Embedding model loaded: " + result.pipelineId)
+  })
+}
+
+function runEmbed() {
+  if (!embedModelLoaded) {
+    log("Load the embedding model first!")
+    return
+  }
+  embedLoading = true
+  log("Computing embeddings and similarity...")
+  softn.ai.embed(embedPipelineId, [embedTextA, embedTextB], function(result) {
+    let str = JSON.stringify(result)
+    embedResult = "Embedding result (truncated): " + str.substring(0, 200) + "..."
+    embedLoading = false
+    log("Embedding computation complete.")
+  })
+}
+
+function updateEmbedTextA(val) {
+  embedTextA = val
+}
+
+function updateEmbedTextB(val) {
+  embedTextB = val
+}
+
+// ── Qwen3.5 (direct model) ──
+
+function loadQwenModel() {
+  qwenLoading = true
+  log("Loading Qwen3.5-0.8B (Q4 quantized)... this downloads ~500MB on first run, then cached.")
+  softn.ai.model.load("onnx-community/Qwen3.5-0.8B-ONNX", {
+    modelClass: "Qwen3_5ForConditionalGeneration",
+    dtype: {
+      embed_tokens: "q4",
+      vision_encoder: "q4",
+      decoder_model_merged: "q4"
+    }
+  }, function(result) {
+    qwenModelHandle = result.modelHandle
+    qwenModelLoaded = true
+    qwenLoading = false
+    log("Qwen3.5 loaded: " + result.modelHandle)
+  })
+}
+
+function runQwen() {
+  if (!qwenModelLoaded) {
+    log("Load the Qwen3.5 model first!")
+    return
+  }
+  qwenLoading = true
+  log("Generating with Qwen3.5...")
+  let messages = [
+    { role: "user", content: qwenPrompt }
+  ]
+  softn.ai.model.generate(qwenModelHandle, messages, {
+    max_new_tokens: 256,
+    temperature: 0.7,
+    top_p: 0.8,
+    top_k: 20,
+    do_sample: true
+  }, function(result) {
+    qwenResult = result.text
+    qwenLoading = false
+    log("Qwen3.5 generation complete.")
+  })
+}
+
+function updateQwenPrompt(val) {
+  qwenPrompt = val
+}
+
+// ── Cleanup ──
+
+function releaseAll() {
+  log("Releasing all AI resources...")
+  softn.ai.releaseAll(function() {
+    sentimentModelLoaded = false
+    sentimentPipelineId = ""
+    sentimentResult = ""
+    genModelLoaded = false
+    genPipelineId = ""
+    genResult = ""
+    embedModelLoaded = false
+    embedPipelineId = ""
+    embedResult = ""
+    qwenModelLoaded = false
+    qwenModelHandle = ""
+    qwenResult = ""
+    log("All AI resources released.")
+  })
+}

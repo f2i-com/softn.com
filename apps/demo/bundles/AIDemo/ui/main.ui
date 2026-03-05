@@ -1,0 +1,387 @@
+// main.ui - AI Demo
+// Tests softn.ai.* capabilities: detection, sentiment, generation, embeddings
+
+<logic src="../logic/main.logic" />
+
+<style>
+@keyframes ai-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+.ai-loading {
+  animation: ai-pulse 1.2s ease-in-out infinite;
+}
+.ai-result-box {
+  background: #1e1b2e;
+  border: 1px solid #2d2640;
+  border-radius: 8px;
+  padding: 1rem;
+  font-family: monospace;
+  font-size: 0.8125rem;
+  color: #c4b5fd;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-height: 2.5rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.ai-card {
+  background: #1a1625;
+  border: 1px solid #2d2640;
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+</style>
+
+<App theme="dark">
+  <Box style={{
+    display: "flex",
+    flexDirection: "column",
+    width: "100%",
+    height: "100%",
+    overflow: "hidden",
+    background: "#0f0b1a"
+  }}>
+    // Header
+    <Box style={{
+      padding: "1rem 1.5rem",
+      borderBottom: "1px solid #2d2640",
+      background: "#1a1625",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      flexShrink: 0
+    }}>
+      <Stack direction=horizontal gap=sm align=center>
+        <Box style={{
+          width: "36px",
+          height: "36px",
+          borderRadius: "10px",
+          background: "linear-gradient(135deg, #8b5cf6, #a78bfa)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center"
+        }}>
+          <Text style={{ color: "#fff", fontWeight: 700, fontSize: "0.8rem" }}>AI</Text>
+        </Box>
+        <Stack direction=vertical gap=xs>
+          <Text style={{ fontSize: "1rem", fontWeight: 600, color: "#e2e0ea" }}>AI Inference Demo</Text>
+          <Text style={{ fontSize: "0.6875rem", color: "#7c6fa0" }}>softn.ai.* capabilities test</Text>
+        </Stack>
+      </Stack>
+      <Button variant=ghost @click={releaseAll} style={{
+        fontSize: "0.75rem",
+        color: "#ef4444",
+        padding: "0.5rem 0.75rem"
+      }}>Release All</Button>
+    </Box>
+
+    // Tab Navigation
+    <Box style={{
+      display: "flex",
+      gap: 0,
+      borderBottom: "1px solid #2d2640",
+      background: "#1a1625",
+      padding: "0 1rem",
+      flexShrink: 0
+    }}>
+      <Button variant=ghost @click={setPage("capabilities")} style={{
+        padding: "0.625rem 1rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "capabilities" ? 600 : 400,
+        color: currentPage === "capabilities" ? "#a78bfa" : "#7c6fa0",
+        borderBottom: currentPage === "capabilities" ? "2px solid #a78bfa" : "2px solid transparent"
+      }}>Capabilities</Button>
+      <Button variant=ghost @click={setPage("sentiment")} style={{
+        padding: "0.625rem 1rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "sentiment" ? 600 : 400,
+        color: currentPage === "sentiment" ? "#a78bfa" : "#7c6fa0",
+        borderBottom: currentPage === "sentiment" ? "2px solid #a78bfa" : "2px solid transparent"
+      }}>Sentiment</Button>
+      <Button variant=ghost @click={setPage("generate")} style={{
+        padding: "0.625rem 1rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "generate" ? 600 : 400,
+        color: currentPage === "generate" ? "#a78bfa" : "#7c6fa0",
+        borderBottom: currentPage === "generate" ? "2px solid #a78bfa" : "2px solid transparent"
+      }}>Generate</Button>
+      <Button variant=ghost @click={setPage("embeddings")} style={{
+        padding: "0.625rem 1rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "embeddings" ? 600 : 400,
+        color: currentPage === "embeddings" ? "#a78bfa" : "#7c6fa0",
+        borderBottom: currentPage === "embeddings" ? "2px solid #a78bfa" : "2px solid transparent"
+      }}>Embeddings</Button>
+      <Button variant=ghost @click={setPage("qwen")} style={{
+        padding: "0.625rem 1rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "qwen" ? 600 : 400,
+        color: currentPage === "qwen" ? "#f59e0b" : "#7c6fa0",
+        borderBottom: currentPage === "qwen" ? "2px solid #f59e0b" : "2px solid transparent"
+      }}>Qwen3.5</Button>
+    </Box>
+
+    // Page Content
+    <Box style={{ flex: 1, overflow: "auto", padding: "1.25rem 1.5rem", minHeight: 0 }}>
+
+      // ── Capabilities Page ──
+      <Box if={currentPage === "capabilities"}>
+        <Stack direction=vertical gap=md>
+          <Box className="ai-card">
+            <Stack direction=vertical gap=sm>
+              <Text style={{ fontSize: "1rem", fontWeight: 600, color: "#e2e0ea" }}>GPU / Runtime Detection</Text>
+              <Text style={{ fontSize: "0.8125rem", color: "#7c6fa0" }}>Checks WebGPU, WebGL, and WASM availability on this device.</Text>
+              <Button @click={detectCapabilities} style={{
+                background: "#8b5cf6",
+                color: "#fff",
+                padding: "0.625rem 1.25rem",
+                borderRadius: "8px",
+                fontSize: "0.8125rem",
+                fontWeight: 500,
+                alignSelf: "flex-start"
+              }}>
+                {capsLoading ? "Detecting..." : "Detect Capabilities"}
+              </Button>
+              <Box if={capsResult !== ""} className="ai-result-box">{capsResult}</Box>
+            </Stack>
+          </Box>
+        </Stack>
+      </Box>
+
+      // ── Sentiment Page ──
+      <Box if={currentPage === "sentiment"}>
+        <Stack direction=vertical gap=md>
+          <Box className="ai-card">
+            <Stack direction=vertical gap=sm>
+              <Text style={{ fontSize: "1rem", fontWeight: 600, color: "#e2e0ea" }}>Sentiment Analysis</Text>
+              <Text style={{ fontSize: "0.8125rem", color: "#7c6fa0" }}>Uses Transformers.js (distilbert) to classify text sentiment.</Text>
+
+              <Box if={!sentimentModelLoaded}>
+                <Button @click={loadSentimentModel} style={{
+                  background: "#8b5cf6",
+                  color: "#fff",
+                  padding: "0.625rem 1.25rem",
+                  borderRadius: "8px",
+                  fontSize: "0.8125rem",
+                  fontWeight: 500,
+                  alignSelf: "flex-start"
+                }}>
+                  {sentimentLoading ? "Loading model..." : "Load Sentiment Model"}
+                </Button>
+              </Box>
+
+              <Box if={sentimentModelLoaded}>
+                <Stack direction=vertical gap=sm>
+                  <Text style={{ fontSize: "0.75rem", color: "#4ade80" }}>Model loaded: {sentimentPipelineId}</Text>
+                  <Input value={sentimentText} @change={updateSentimentText} placeholder="Enter text to analyze..." style={{
+                    background: "#0f0b1a",
+                    border: "1px solid #2d2640",
+                    color: "#e2e0ea",
+                    borderRadius: "8px",
+                    padding: "0.625rem"
+                  }} />
+                  <Button @click={runSentiment} style={{
+                    background: "#6d28d9",
+                    color: "#fff",
+                    padding: "0.625rem 1.25rem",
+                    borderRadius: "8px",
+                    fontSize: "0.8125rem",
+                    fontWeight: 500,
+                    alignSelf: "flex-start"
+                  }}>
+                    {sentimentLoading ? "Classifying..." : "Classify Sentiment"}
+                  </Button>
+                </Stack>
+              </Box>
+
+              <Box if={sentimentResult !== ""} className="ai-result-box">{sentimentResult}</Box>
+            </Stack>
+          </Box>
+        </Stack>
+      </Box>
+
+      // ── Generate Page ──
+      <Box if={currentPage === "generate"}>
+        <Stack direction=vertical gap=md>
+          <Box className="ai-card">
+            <Stack direction=vertical gap=sm>
+              <Text style={{ fontSize: "1rem", fontWeight: 600, color: "#e2e0ea" }}>Text Generation</Text>
+              <Text style={{ fontSize: "0.8125rem", color: "#7c6fa0" }}>Uses Transformers.js (distilgpt2) to generate text from a prompt.</Text>
+
+              <Box if={!genModelLoaded}>
+                <Button @click={loadGenModel} style={{
+                  background: "#8b5cf6",
+                  color: "#fff",
+                  padding: "0.625rem 1.25rem",
+                  borderRadius: "8px",
+                  fontSize: "0.8125rem",
+                  fontWeight: 500,
+                  alignSelf: "flex-start"
+                }}>
+                  {genLoading ? "Loading model..." : "Load Generation Model"}
+                </Button>
+              </Box>
+
+              <Box if={genModelLoaded}>
+                <Stack direction=vertical gap=sm>
+                  <Text style={{ fontSize: "0.75rem", color: "#4ade80" }}>Model loaded: {genPipelineId}</Text>
+                  <Input value={genPrompt} @change={updateGenPrompt} placeholder="Enter prompt..." style={{
+                    background: "#0f0b1a",
+                    border: "1px solid #2d2640",
+                    color: "#e2e0ea",
+                    borderRadius: "8px",
+                    padding: "0.625rem"
+                  }} />
+                  <Button @click={runGenerate} style={{
+                    background: "#6d28d9",
+                    color: "#fff",
+                    padding: "0.625rem 1.25rem",
+                    borderRadius: "8px",
+                    fontSize: "0.8125rem",
+                    fontWeight: 500,
+                    alignSelf: "flex-start"
+                  }}>
+                    {genLoading ? "Generating..." : "Generate Text"}
+                  </Button>
+                </Stack>
+              </Box>
+
+              <Box if={genResult !== ""} className="ai-result-box">{genResult}</Box>
+            </Stack>
+          </Box>
+        </Stack>
+      </Box>
+
+      // ── Embeddings Page ──
+      <Box if={currentPage === "embeddings"}>
+        <Stack direction=vertical gap=md>
+          <Box className="ai-card">
+            <Stack direction=vertical gap=sm>
+              <Text style={{ fontSize: "1rem", fontWeight: 600, color: "#e2e0ea" }}>Text Embeddings</Text>
+              <Text style={{ fontSize: "0.8125rem", color: "#7c6fa0" }}>Uses Transformers.js (all-MiniLM-L6-v2) to compute text embeddings.</Text>
+
+              <Box if={!embedModelLoaded}>
+                <Button @click={loadEmbedModel} style={{
+                  background: "#8b5cf6",
+                  color: "#fff",
+                  padding: "0.625rem 1.25rem",
+                  borderRadius: "8px",
+                  fontSize: "0.8125rem",
+                  fontWeight: 500,
+                  alignSelf: "flex-start"
+                }}>
+                  {embedLoading ? "Loading model..." : "Load Embedding Model"}
+                </Button>
+              </Box>
+
+              <Box if={embedModelLoaded}>
+                <Stack direction=vertical gap=sm>
+                  <Text style={{ fontSize: "0.75rem", color: "#4ade80" }}>Model loaded: {embedPipelineId}</Text>
+                  <Input value={embedTextA} @change={updateEmbedTextA} placeholder="Text A..." style={{
+                    background: "#0f0b1a",
+                    border: "1px solid #2d2640",
+                    color: "#e2e0ea",
+                    borderRadius: "8px",
+                    padding: "0.625rem"
+                  }} />
+                  <Input value={embedTextB} @change={updateEmbedTextB} placeholder="Text B..." style={{
+                    background: "#0f0b1a",
+                    border: "1px solid #2d2640",
+                    color: "#e2e0ea",
+                    borderRadius: "8px",
+                    padding: "0.625rem"
+                  }} />
+                  <Button @click={runEmbed} style={{
+                    background: "#6d28d9",
+                    color: "#fff",
+                    padding: "0.625rem 1.25rem",
+                    borderRadius: "8px",
+                    fontSize: "0.8125rem",
+                    fontWeight: 500,
+                    alignSelf: "flex-start"
+                  }}>
+                    {embedLoading ? "Computing..." : "Compute Embeddings"}
+                  </Button>
+                </Stack>
+              </Box>
+
+              <Box if={embedResult !== ""} className="ai-result-box">{embedResult}</Box>
+            </Stack>
+          </Box>
+        </Stack>
+      </Box>
+
+      // ── Qwen3.5 Page ──
+      <Box if={currentPage === "qwen"}>
+        <Stack direction=vertical gap=md>
+          <Box className="ai-card">
+            <Stack direction=vertical gap=sm>
+              <Stack direction=horizontal gap=sm align=center>
+                <Text style={{ fontSize: "1rem", fontWeight: 600, color: "#e2e0ea" }}>Qwen3.5-0.8B</Text>
+                <Text style={{ fontSize: "0.6875rem", color: "#f59e0b", background: "#2d2215", padding: "2px 8px", borderRadius: "4px" }}>VLM</Text>
+              </Stack>
+              <Text style={{ fontSize: "0.8125rem", color: "#7c6fa0" }}>0.8B parameter vision-language model from onnx-community. Uses Q4 quantization for browser inference via Transformers.js direct model loading (from_pretrained).</Text>
+              <Text style={{ fontSize: "0.75rem", color: "#7c6fa0", fontStyle: "italic" }}>First load downloads ~500MB (cached in browser after).</Text>
+
+              <Box if={!qwenModelLoaded}>
+                <Button @click={loadQwenModel} style={{
+                  background: "linear-gradient(135deg, #f59e0b, #d97706)",
+                  color: "#fff",
+                  padding: "0.625rem 1.25rem",
+                  borderRadius: "8px",
+                  fontSize: "0.8125rem",
+                  fontWeight: 500,
+                  alignSelf: "flex-start"
+                }}>
+                  {qwenLoading ? "Loading Qwen3.5..." : "Load Qwen3.5-0.8B (Q4)"}
+                </Button>
+              </Box>
+
+              <Box if={qwenModelLoaded}>
+                <Stack direction=vertical gap=sm>
+                  <Text style={{ fontSize: "0.75rem", color: "#4ade80" }}>Model loaded: {qwenModelHandle}</Text>
+                  <Input value={qwenPrompt} @change={updateQwenPrompt} placeholder="Enter your prompt..." style={{
+                    background: "#0f0b1a",
+                    border: "1px solid #2d2640",
+                    color: "#e2e0ea",
+                    borderRadius: "8px",
+                    padding: "0.625rem"
+                  }} />
+                  <Button @click={runQwen} style={{
+                    background: "linear-gradient(135deg, #d97706, #b45309)",
+                    color: "#fff",
+                    padding: "0.625rem 1.25rem",
+                    borderRadius: "8px",
+                    fontSize: "0.8125rem",
+                    fontWeight: 500,
+                    alignSelf: "flex-start"
+                  }}>
+                    {qwenLoading ? "Generating..." : "Generate"}
+                  </Button>
+                </Stack>
+              </Box>
+
+              <Box if={qwenResult !== ""} className="ai-result-box" style={{ color: "#fde68a", maxHeight: "20rem" }}>{qwenResult}</Box>
+            </Stack>
+          </Box>
+        </Stack>
+      </Box>
+    </Box>
+
+    // Status bar
+    <Box style={{
+      padding: "0.5rem 1.5rem",
+      borderTop: "1px solid #2d2640",
+      background: "#1a1625",
+      flexShrink: 0
+    }}>
+      <Text style={{ fontSize: "0.75rem", color: "#7c6fa0" }}>{statusLog}</Text>
+    </Box>
+  </Box>
+</App>

@@ -1,0 +1,75 @@
+{
+  "collection": "clients",
+  "records": [
+    {
+      "id": "clients_1",
+      "collection": "clients",
+      "data": {
+        "name": "Jennifer Adams",
+        "email": "jennifer@email.com",
+        "phone": "555-1001",
+        "visits": 12,
+        "totalSpent": 890,
+        "vip": true
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "clients_2",
+      "collection": "clients",
+      "data": {
+        "name": "Robert Brown",
+        "email": "robert@email.com",
+        "phone": "555-1002",
+        "visits": 5,
+        "totalSpent": 320,
+        "vip": false
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "clients_3",
+      "collection": "clients",
+      "data": {
+        "name": "Amanda Garcia",
+        "email": "amanda@email.com",
+        "phone": "555-1003",
+        "visits": 24,
+        "totalSpent": 2150,
+        "vip": true
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "clients_4",
+      "collection": "clients",
+      "data": {
+        "name": "James Wilson",
+        "email": "james@email.com",
+        "phone": "555-1004",
+        "visits": 8,
+        "totalSpent": 480,
+        "vip": false
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "clients_5",
+      "collection": "clients",
+      "data": {
+        "name": "Michelle Lee",
+        "email": "michelle@email.com",
+        "phone": "555-1005",
+        "visits": 3,
+        "totalSpent": 175,
+        "vip": false
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    }
+  ]
+}

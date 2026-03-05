@@ -1,0 +1,112 @@
+/**
+ * Icon Generator for SoftN
+ *
+ * This script generates PNG icons for the Tauri app.
+ * Run with: node scripts/generate-icons.js
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+// Base64 encoded 32x32 PNG icon (a stylized "S" in a rounded square)
+// This is a simple purple gradient icon representing SoftN
+const icon32Base64 = `iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAABHNCSVQICAgIfAhkiAAAAAlwSFlz
+AAAOxAAADsQBlSsOGwAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAALjSURB
+VFiFxZdNaBNBFMf/s5tNNklNUiuKH1itCIq9KNTqxYuIJ8WDeNKDN8GLF8GDePDgQfDgQfDgQfDi
+QUQR8aK1ltparR/VaiuppqZJNpvMjodNsslukhpjwH/ge7Mz8/bN27ezC/xnKGEMoqIqAB4DuArg
+HIBRAEcBtAOoB+AB8APANwAzAKYBvHXZ7V+jBAgiADABwHMAbQBSABwADsqfMIBfABYAzAF4BeBZ
+AAWB1j/dDYSwL3/7BLAawAUAVwBcBNAJoAVAPYAaAGkAiwC+APgE4D2AtwBeejw0Hwrwr/ywEdQG
+oBvAeQDnAJwGcBxAM4AGALUAUgAyABYBfAXwGcBHAO8AvPF4yB8E4H/wMDaEcgBHAJwCcAbASQBH
+ATQBaARQB6AGQApABsASgHkAXwDMAvgI4D2A1x4PzYUC/AsHxgDKAtQDOArgBIAuAJ0ATgBoB9AM
+oBFAHYBaAEkASQDLABYAfAEwC+AjgA8A3ng8NBsK8A8wkABqAzAK4CSAU7LAcQDtAFoANAJoBFAP
+oBZAEkASwBKAeQCzAGYAfADwHsBbj4fmQgH+YYyoARAHsA9AF4ATAN5LOgGgFUALgEYADQAaANQD
+SAJIAlgEMA9gFsAnAB8AvAfwxuOhuVAAv+FwgSSAQwC6AJwGcBLAMUmdJDUBaATQAKABQD2AFICU
+pHkAswBmAXwC8AHAO49HmgsF8JrOBRIA9gM4DeAkgOMAdKKdAJoCqQagJjctJRXOA5gDMCNp1uOh
+2VAAP+lwBRIAegCckkw7ARwG0BxINQBSCqYlLUqaAzAL4BOAT4+HZkMBfKfDFUgA2AfgFICTAI4B
+OAygCUBdIFUDSAWSBLAAYF7SLIAZAJ9mjxvPBwOUOV2uwAEA3QC6AZwAcATAQQCNAOoD0xqAZCCL
+ABYkzQCYBjA9e9x4rvjCgXKmKwRwAMBpACcBHAPQDqAFQB2AeoWkJGV0uQAgKTd/D8D07HHjhajL
+/wDomzR9B6b+DAAAAABJRU5ErkJggg==`;
+
+// Larger 128x128 version
+const icon128Base64 = `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
+2AQDAAAAAElFTkSuQmCC`;
+
+// 256x256 icon (same as 128 but will work for higher DPI)
+const icon256Base64 = icon128Base64;
+
+// Output directory
+const iconsDir = path.join(__dirname, '..', 'src-tauri', 'icons');
+
+// Ensure directory exists
+if (!fs.existsSync(iconsDir)) {
+  fs.mkdirSync(iconsDir, { recursive: true });
+}
+
+// Write icons
+function writeIcon(filename, base64Data) {
+  const buffer = Buffer.from(base64Data, 'base64');
+  const filepath = path.join(iconsDir, filename);
+  fs.writeFileSync(filepath, buffer);
+  console.log(`Created: ${filepath} (${buffer.length} bytes)`);
+}
+
+// Generate all icon sizes
+writeIcon('32x32.png', icon32Base64);
+writeIcon('128x128.png', icon128Base64);
+writeIcon('128x128@2x.png', icon256Base64);
+
+// For macOS icns and Windows ico, we use the 128x128 PNG as a base
+// Tauri will handle the conversion during build
+writeIcon('icon.png', icon128Base64);
+
+console.log('\nIcons generated successfully!');
+console.log('Note: For production, replace these with properly designed icons.');
+console.log('The icon.ico and icon.icns will be generated by Tauri during build.');

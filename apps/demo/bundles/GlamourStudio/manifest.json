@@ -1,0 +1,52 @@
+{
+  "name": "Glamour Studio",
+  "version": "2.0.0",
+  "description": "Professional salon management with multi-file modular structure",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": [
+      "ui/main.ui",
+      "ui/components/Sidebar.ui",
+      "ui/components/Header.ui",
+      "ui/pages/Dashboard.ui",
+      "ui/pages/Appointments.ui",
+      "ui/pages/Clients.ui",
+      "ui/pages/Staff.ui",
+      "ui/pages/Services.ui",
+      "ui/modals/AddAppointmentModal.ui",
+      "ui/modals/AddClientModal.ui",
+      "ui/modals/AddStaffModal.ui",
+      "ui/modals/AddServiceModal.ui",
+      "ui/modals/EditAppointmentModal.ui",
+      "ui/modals/EditClientModal.ui",
+      "ui/modals/EditStaffModal.ui",
+      "ui/modals/EditServiceModal.ui",
+      "ui/modals/DataModal.ui",
+      "ui/modals/SyncModal.ui"
+    ],
+    "logic": ["logic/main.logic"],
+    "xdb": [
+      "xdb/staff.xdb",
+      "xdb/clients.xdb",
+      "xdb/services.xdb",
+      "xdb/appointments.xdb",
+      "xdb/activity.xdb"
+    ],
+    "assets": ["assets/icon.svg"]
+  },
+  "server": {
+    "main": "server/backend.logic"
+  },
+  "config": {
+    "window": {
+      "title": "Glamour Studio",
+      "width": 1200,
+      "height": 800
+    },
+    "theme": {
+      "primary": "#d4a574",
+      "mode": "system"
+    }
+  }
+}

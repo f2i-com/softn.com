@@ -1,0 +1,16 @@
+{
+  "name": "AIDemo",
+  "version": "1.0.0",
+  "description": "AI Inference Demo — test softn.ai.* capabilities",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": { "title": "AI Demo", "width": 800, "height": 700 },
+    "theme": { "primary": "#8b5cf6", "mode": "dark" }
+  }
+}

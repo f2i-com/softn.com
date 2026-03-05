@@ -1,0 +1,27 @@
+<logic src="../logic/main.logic" />
+
+<Stack direction=vertical gap=md align=center style={{ padding: "2rem", minHeight: "100vh", background: "#0f0f23" }}>
+  <Heading level={2} style={{ color: "#e4e4e7", fontFamily: "monospace", letterSpacing: "2px" }}>Snake Game</Heading>
+  <Stack direction=horizontal gap=lg align=center>
+    <Text style={{ color: "#a1a1aa", fontFamily: "monospace", fontSize: "18px" }}>Score: {score}</Text>
+    <Text style={{ color: "#525270", fontFamily: "monospace", fontSize: "14px" }}>Best: {highScore}</Text>
+  </Stack>
+  <Loop interval={speed} running={running} @tick={tick} />
+  <PixelGrid
+    rows={20}
+    cols={20}
+    cellSize={15}
+    items={gridItems}
+    overlay={overlayText}
+    background="#16213e"
+  />
+  <DPad
+    @press={handleDPad}
+    @release={handleDPadRelease}
+    style={{ marginTop: "1rem" }}
+  />
+  <Button @click={startGame} style={{ marginTop: "1rem", padding: "0.6rem 2rem", fontSize: "16px", fontFamily: "monospace", background: "#4ade80", color: "#0f0f23", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}>
+    {gameOver ? "Play Again" : (running ? "Restart" : "Start Game")}
+  </Button>
+  <Text style={{ color: "#525270", fontFamily: "monospace", fontSize: "12px", marginTop: "0.5rem" }}>Use arrow keys or D-pad to move</Text>
+</Stack>

@@ -1,0 +1,9 @@
+{
+  "app": { "id": "com.softn.devicekit", "name": "DeviceKit", "version": "1.0.0" },
+  "permissions": {
+    "net": { "enabled": true, "allowed_hosts": ["jsonplaceholder.typicode.com"], "allow_http": false },
+    "camera": { "enabled": true, "modes": ["photo", "video"] },
+    "files": { "enabled": true, "scopes": ["user_selected"] },
+    "qr": { "enabled": true }
+  }
+}

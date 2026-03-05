@@ -1,0 +1,113 @@
+// CameraDemo.ui - Camera access with photo capture and live feed
+// Camera component with photo/live mode toggle, captured photo display
+
+<Stack direction=vertical gap=lg if={currentPage === "camera"}>
+  // Header
+  <Stack direction=vertical gap=sm>
+    <Heading level={2} style={{ fontSize: "1.375rem", fontWeight: 600, color: "#0f172a" }}>Camera Demo</Heading>
+    <Text style={{ color: "#64748b", fontSize: "0.875rem" }}>Access the device camera for photo capture and live video feed.</Text>
+  </Stack>
+
+  <Grid columns={{ sm: 1, lg: 2 }} gap=lg>
+    // Camera Viewfinder Card
+    <Card padding=lg style={{ background: "#ffffff", borderRadius: "14px", border: "1px solid #e2e8f0" }}>
+      <Stack direction=vertical gap=md>
+        <Stack direction=horizontal justify="space-between" align=center>
+          <Text fontWeight=semibold size=sm style={{ color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.75rem" }}>Viewfinder</Text>
+          <Badge variant=info size=sm>Photo Mode</Badge>
+        </Stack>
+
+        // Camera Component
+        <Camera
+          mode="photo"
+          onCapture={handleCapture}
+          style={{ width: "100%", borderRadius: "12px" }}
+        />
+
+        // Live Frame Counter
+        <Box style={{
+          background: "#f8fafc",
+          borderRadius: "8px",
+          padding: "0.625rem 0.875rem",
+          border: "1px solid #e2e8f0",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center"
+        }}>
+          <Text size=xs style={{ color: "#64748b" }}>Live frames processed:</Text>
+          <Badge variant=secondary size=sm>{liveFrameCount}</Badge>
+        </Box>
+      </Stack>
+    </Card>
+
+    // Captured Photo Card
+    <Card padding=lg style={{ background: "#ffffff", borderRadius: "14px", border: "1px solid #e2e8f0" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=semibold size=sm style={{ color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.75rem" }}>Captured Photo</Text>
+
+        // Photo Display
+        <Box if={capturedPhoto} style={{
+          borderRadius: "12px",
+          overflow: "hidden",
+          border: "1px solid #e2e8f0",
+          minHeight: "280px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#f8fafc"
+        }}>
+          <Image src={capturedPhoto} alt="Captured photo" style={{
+            maxWidth: "100%",
+            maxHeight: "400px",
+            borderRadius: "8px",
+            objectFit: "contain"
+          }} />
+        </Box>
+
+        // No photo placeholder
+        <Box if={!capturedPhoto} style={{
+          borderRadius: "12px",
+          border: "2px dashed #e2e8f0",
+          minHeight: "280px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#f8fafc"
+        }}>
+          <Stack direction=vertical gap=sm align=center>
+            <Box style={{
+              width: "48px",
+              height: "48px",
+              borderRadius: "12px",
+              background: "#e2e8f0",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center"
+            }}>
+              <Text style={{ fontSize: "1.25rem", color: "#94a3b8" }}>O</Text>
+            </Box>
+            <Text size=sm style={{ color: "#94a3b8" }}>No photo captured yet</Text>
+            <Text size=xs style={{ color: "#cbd5e1" }}>Use the camera to capture a photo</Text>
+          </Stack>
+        </Box>
+
+        // Photo info
+        <Box if={capturedPhoto} style={{
+          background: "#f0fdf4",
+          borderRadius: "8px",
+          padding: "0.75rem",
+          border: "1px solid #bbf7d0"
+        }}>
+          <Text size=xs style={{ color: "#15803d", fontWeight: 500 }}>Photo captured successfully. Data URL stored in capturedPhoto variable.</Text>
+        </Box>
+      </Stack>
+    </Card>
+  </Grid>
+
+  // Permission Info
+  <Card padding=md style={{ background: "#fefce8", borderRadius: "14px", border: "1px solid #fde68a" }}>
+    <Stack direction=horizontal gap=sm align=center>
+      <Text style={{ fontSize: "0.8125rem", color: "#92400e" }}>Permission: camera.enabled with modes ["photo", "video"]. Browser will prompt for camera access.</Text>
+    </Stack>
+  </Card>
+</Stack>

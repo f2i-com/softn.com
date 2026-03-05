@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <linearGradient id="dk-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="22" fill="url(#dk-bg)" />
+  <!-- Device / phone outline -->
+  <rect x="32" y="18" width="36" height="64" rx="6" fill="none" stroke="white" stroke-width="4" />
+  <!-- Screen area -->
+  <rect x="36" y="26" width="28" height="44" rx="2" fill="rgba(255,255,255,0.2)" />
+  <!-- Home button -->
+  <circle cx="50" cy="76" r="3" fill="rgba(255,255,255,0.6)" />
+  <!-- Signal waves -->
+  <path d="M 68 30 Q 74 26 74 34" fill="none" stroke="rgba(255,255,255,0.7)" stroke-width="2.5" stroke-linecap="round" />
+  <path d="M 71 27 Q 79 22 79 37" fill="none" stroke="rgba(255,255,255,0.5)" stroke-width="2.5" stroke-linecap="round" />
+  <!-- Gear/tool indicator -->
+  <circle cx="30" cy="72" r="8" fill="rgba(255,255,255,0.25)" />
+  <circle cx="30" cy="72" r="4" fill="rgba(255,255,255,0.5)" />
+</svg>

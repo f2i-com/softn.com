@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  WASM_BINDGEN_VERSION: "0.2.114"
+
+jobs:
+  compile-wasm:
+    name: Compile FormLogic WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout formlogic-rust
+        uses: actions/checkout@v4
+        with:
+          repository: f2i-com/formlogic-rust
+          path: formlogic-rust
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            formlogic-rust/target/
+          key: wasm-cargo-${{ hashFiles('formlogic-rust/Cargo.lock') }}
+          restore-keys: wasm-cargo-
+
+      - name: Install wasm-bindgen-cli
+        run: |
+          if ! command -v wasm-bindgen &> /dev/null || [[ "$(wasm-bindgen --version)" != *"$WASM_BINDGEN_VERSION"* ]]; then
+            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+          fi
+
+      - name: Build WASM
+        working-directory: formlogic-rust
+        run: |
+          cargo build -p formlogic-wasm --target wasm32-unknown-unknown --release
+          wasm-bindgen --target web --out-dir dist-wasm ./target/wasm32-unknown-unknown/release/formlogic_wasm.wasm
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: formlogic-wasm
+          path: formlogic-rust/dist-wasm/
+          retention-days: 1
+
+  release:
+    name: Release ${{ matrix.app }} (${{ matrix.platform }})
+    needs: compile-wasm
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [softn-loader, softn-builder]
+        include:
+          - platform: ubuntu-22.04
+            app: softn-loader
+          - platform: windows-latest
+            app: softn-loader
+          - platform: macos-latest
+            app: softn-loader
+          - platform: ubuntu-22.04
+            app: softn-builder
+          - platform: windows-latest
+            app: softn-builder
+          - platform: macos-latest
+            app: softn-builder
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone xdb.org (needed by softn-loader Cargo dependency)
+        if: matrix.app == 'softn-loader'
+        run: git clone --depth 1 https://github.com/f2i-com/xdb.org.git "$GITHUB_WORKSPACE/../xdb-org"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            apps/${{ matrix.app }}/src-tauri/target/
+          key: tauri-${{ matrix.app }}-${{ matrix.platform }}-${{ hashFiles('apps/**/Cargo.lock') }}
+          restore-keys: tauri-${{ matrix.app }}-${{ matrix.platform }}-
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: formlogic-wasm
+          path: wasm-dist
+
+      - name: Integrate WASM into core
+        run: |
+          cp wasm-dist/* packages/@softn/core/src/runtime/wasm/
+          cp wasm-dist/* packages/@softn/core/wasm/
+
+      - name: Install dependencies
+        run: |
+          rm -f package-lock.json
+          npm install --legacy-peer-deps
+
+      - name: Build shared packages
+        run: |
+          npm run build:core
+          npm run build:components
+
+      - name: Build Tauri app and attach to release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/${{ matrix.app }}
+          tagName: ${{ github.ref_name }}
+          releaseName: 'SoftN ${{ github.ref_name }}'
+          releaseBody: |
+            ## SoftN ${{ github.ref_name }}
+
+            ### Downloads
+
+            | App | Description |
+            |-----|-------------|
+            | **SoftN Loader** | Desktop runtime for running `.softn` bundles |
+            | **SoftN Builder** | Visual IDE for creating SoftN applications |
+
+            **Platforms:** Windows (.exe, .msi), macOS (.dmg), Linux (.AppImage, .deb)
+          releaseDraft: false
+          prerelease: false

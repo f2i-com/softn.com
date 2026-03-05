@@ -1,0 +1,23 @@
+{
+  "name": "SnakeGame",
+  "version": "1.0.0",
+  "description": "Classic Snake game built with SoftN utility components",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": {
+      "title": "Snake Game",
+      "width": 600,
+      "height": 700
+    },
+    "theme": {
+      "primary": "#4ade80",
+      "mode": "dark"
+    }
+  }
+}

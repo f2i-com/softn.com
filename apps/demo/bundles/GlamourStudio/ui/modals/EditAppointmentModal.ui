@@ -1,0 +1,12 @@
+// EditAppointmentModal.ui - Modal for editing existing appointments
+
+<Modal open={showEditAppointmentModal} onClose={closeEditAppointmentModal} title="Edit Appointment" size=md>
+  <SmartForm
+    fields="client:text, stylist:text, service:text, time:text, status:text, price:number"
+    data={editingAppointment ? editingAppointment.data : null}
+    onSubmit={saveEditAppointment}
+    submitText="Save Changes"
+    showCancel={true}
+    onCancel={closeEditAppointmentModal}
+  />
+</Modal>

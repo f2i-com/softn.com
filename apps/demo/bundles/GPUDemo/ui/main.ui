@@ -1,0 +1,92 @@
+// main.ui - GPU Compute Demo
+
+<logic src="../logic/main.logic" />
+
+<style>
+.gpu-card {
+  background: #0f1a14;
+  border: 1px solid #1a3a2a;
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+.gpu-result {
+  background: #0a1510;
+  border: 1px solid #1a3a2a;
+  border-radius: 8px;
+  padding: 1rem;
+  font-family: monospace;
+  font-size: 0.875rem;
+  color: #6ee7b7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-height: 2.5rem;
+  max-height: 10rem;
+  overflow-y: auto;
+}
+.gpu-status {
+  background: #0a1510;
+  border: 1px solid #1a3a2a;
+  border-radius: 6px;
+  padding: 0.625rem 0.875rem;
+  font-family: monospace;
+  font-size: 0.75rem;
+  color: #34d399;
+}
+@keyframes gpu-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+.gpu-running {
+  animation: gpu-pulse 0.8s ease-in-out infinite;
+}
+</style>
+
+<Box direction="column" gap="0" padding="1.5rem" style={{ background: "#071210", minHeight: "100vh" }}>
+
+  // Header
+  <Box direction="column" gap="0.25rem" padding="0 0 1rem 0">
+    <Text variant="h5" style={{ color: "#10b981", fontWeight: "700" }}>GPU Compute Demo</Text>
+    <Text variant="caption" style={{ color: "#6b7280" }}>Raw WebGPU compute shaders via softn.ai.gpu.*</Text>
+  </Box>
+
+  // Status
+  <Box className={running ? "gpu-status gpu-running" : "gpu-status"} padding="0.625rem 0.875rem" style={{ marginBottom: "1rem" }}>
+    <Text variant="caption">{status}</Text>
+  </Box>
+
+  // Input card
+  <Box className="gpu-card" direction="column" gap="0.75rem">
+    <Text variant="subtitle2" style={{ color: "#a7f3d0" }}>Input Data</Text>
+    <Box direction="column" gap="0.5rem">
+      <Text variant="caption" style={{ color: "#6ee7b7" }}>Vector A:</Text>
+      <Input value={inputA || ""} onInput="inputA = $value" placeholder="1, 2, 3, 4" style={{ background: "#0a1510", color: "#e2e8f0", border: "1px solid #1a3a2a", borderRadius: "6px", padding: "0.5rem", fontFamily: "monospace", fontSize: "0.8125rem" }} />
+    </Box>
+    <Box direction="column" gap="0.5rem">
+      <Text variant="caption" style={{ color: "#6ee7b7" }}>Vector B:</Text>
+      <Input value={inputB || ""} onInput="inputB = $value" placeholder="10, 20, 30, 40" style={{ background: "#0a1510", color: "#e2e8f0", border: "1px solid #1a3a2a", borderRadius: "6px", padding: "0.5rem", fontFamily: "monospace", fontSize: "0.8125rem" }} />
+    </Box>
+  </Box>
+
+  // Actions
+  <Box direction="row" gap="0.5rem" style={{ flexWrap: "wrap", marginBottom: "1rem" }}>
+    <Button @click={runAddition} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#10b981", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>
+      Add Vectors (Bundle Shader)
+    </Button>
+    <Button @click={runInlineShader} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#059669", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>
+      Multiply x2 (Inline Shader)
+    </Button>
+    <Button @click={cleanup} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#1f2937", color: "#9ca3af", border: "1px solid #374151", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>
+      Release All
+    </Button>
+  </Box>
+
+  // Result
+  <Box className="gpu-card" direction="column" gap="0.5rem">
+    <Text variant="subtitle2" style={{ color: "#a7f3d0" }}>Result</Text>
+    <Box className="gpu-result">
+      <Text style={{ color: "#ffffff" }}>{result || "Run a compute operation to see results"}</Text>
+    </Box>
+  </Box>
+
+</Box>

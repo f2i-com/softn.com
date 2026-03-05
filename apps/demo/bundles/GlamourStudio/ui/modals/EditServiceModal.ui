@@ -1,0 +1,12 @@
+// EditServiceModal.ui - Modal for editing existing services
+
+<Modal open={showEditServiceModal} onClose={closeEditServiceModal} title="Edit Service" size=md>
+  <SmartForm
+    fields="name:text, category:text, price:number, duration:number"
+    data={editingService ? editingService.data : null}
+    onSubmit={saveEditService}
+    submitText="Save Changes"
+    showCancel={true}
+    onCancel={closeEditServiceModal}
+  />
+</Modal>

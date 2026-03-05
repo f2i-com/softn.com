@@ -1,0 +1,555 @@
+  let currentPage = "dashboard"
+  let selectedItem = null
+  let sidebarCollapsed = false
+  let showAddModal = false
+  let showAddClientModal = false
+  let showAddStaffModal = false
+  let showAddServiceModal = false
+  let showEditClientModal = false
+  let editingClient = null
+  let showEditStaffModal = false
+  let editingStaff = null
+  let showEditServiceModal = false
+  let editingService = null
+  let showEditAppointmentModal = false
+  let editingAppointment = null
+  let showDataModal = false
+  let exportedData = ""
+  let darkMode = (function() { try { var v = localStorage.getItem("softn-theme-preference"); if (v === "light") return false; if (v === "dark") return true; } catch(e) {} return true; })()
+  let confirmClearData = false
+  let importData = ""
+  let showSyncModal = false
+  let syncRoom = ""
+  let syncConnected = false
+  let syncConnecting = false
+  let syncPeers = 0
+
+  // App icon as inline SVG data URL (cached to avoid Image component resetting on re-render)
+  let appIconUrl = "data:image/svg+xml," + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='bg-grad' x1='0%' y1='0%' x2='100%' y2='100%'><stop offset='0%' stop-color='#b08d60'/><stop offset='100%' stop-color='#9a7a52'/></linearGradient><mask id='g-mask'><rect width='100' height='100' fill='black'/><circle cx='50' cy='50' r='34' fill='white'/><circle cx='50' cy='50' r='20' fill='black'/><path d='M 50 50 L 75 -10 L 110 -10 L 110 44 L 40 44 Z' fill='black'/><rect x='46' y='44' width='40' height='14' fill='white'/><circle cx='50' cy='50' r='68' stroke='black' stroke-width='68' fill='none'/></mask></defs><rect width='100' height='100' rx='22' fill='url(#bg-grad)'/><rect width='100' height='100' fill='white' mask='url(#g-mask)'/></svg>")
+
+  // Theme colors — warm luxury palette
+  function getBgColor() {
+    return darkMode ? "#0c0a09" : "#faf9f7"
+  }
+
+  function getSidebarBg() {
+    return darkMode ? "#211f1d" : "#ffffff"
+  }
+
+  function getCardBg() {
+    return darkMode ? "#1c1917" : "#ffffff"
+  }
+
+  function getRaisedBg() {
+    return darkMode ? "#292524" : "#f5f5f4"
+  }
+
+  function getBorderColor() {
+    return darkMode ? "rgba(214, 191, 167, 0.10)" : "rgba(28, 25, 23, 0.08)"
+  }
+
+  function getSubtleBorder() {
+    return darkMode ? "rgba(214, 191, 167, 0.06)" : "rgba(28, 25, 23, 0.05)"
+  }
+
+  function getTextColor() {
+    return darkMode ? "#faf9f7" : "#1c1917"
+  }
+
+  function getMutedColor() {
+    return darkMode ? "#a8a29e" : "#78716c"
+  }
+
+  function getHeadingColor() {
+    return darkMode ? "#faf9f7" : "#1c1917"
+  }
+
+  function getAccentColor() {
+    return darkMode ? "#d4a574" : "#b08d60"
+  }
+
+  function getAccentHover() {
+    return darkMode ? "#c2956a" : "#9a7a52"
+  }
+
+  function getAccentMuted() {
+    return darkMode ? "rgba(212, 165, 116, 0.15)" : "rgba(176, 141, 96, 0.12)"
+  }
+
+  // Get greeting based on time of day
+  function getGreeting() {
+    let hour = new Date().getHours()
+    if (hour < 12) return "Good morning"
+    if (hour < 17) return "Good afternoon"
+    return "Good evening"
+  }
+
+  // Activity logging helper
+  function logActivity(title, description, status, actor) {
+    db.create("activity", {
+      title: title,
+      description: description,
+      time: new Date().toISOString(),
+      status: status || "info",
+      actor: actor || "Admin"
+    })
+  }
+
+  // Theme toggle
+  function toggleTheme() {
+    darkMode = !darkMode
+    try { localStorage.setItem("softn-theme-preference", darkMode ? "dark" : "light") } catch(e) {}
+  }
+
+  // Navigation
+  function navigate(page) {
+    currentPage = page
+    selectedItem = null
+  }
+
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed
+  }
+
+  function selectItem(item) {
+    selectedItem = item
+  }
+
+  function clearSelection() {
+    selectedItem = null
+  }
+
+  // Navigate to page AND select item (for dashboard clicks)
+  function viewAppointment(item) {
+    selectedItem = item
+    currentPage = "appointments"
+  }
+
+  function viewStaff(item) {
+    selectedItem = item
+    currentPage = "staff"
+  }
+
+  function viewClient(item) {
+    selectedItem = item
+    currentPage = "clients"
+  }
+
+  function viewService(item) {
+    selectedItem = item
+    currentPage = "services"
+  }
+
+  // CRUD handlers using XDB
+  function addClient(data) {
+    db.create("clients", {
+      name: data.name,
+      email: data.email,
+      phone: data.phone,
+      visits: 0,
+      totalSpent: 0,
+      vip: false
+    })
+    logActivity("New client added", data.name + " was added as a client", "success")
+    showAddClientModal = false
+  }
+
+  function editClient(row) {
+    editingClient = row
+    showEditClientModal = true
+  }
+
+  function saveEditClient(data) {
+    if (editingClient) {
+      db.update(editingClient.id, {
+        name: data.name || editingClient.data.name,
+        email: data.email || editingClient.data.email,
+        phone: data.phone || editingClient.data.phone
+      })
+      logActivity("Client updated", data.name + " was updated", "info")
+    }
+    showEditClientModal = false
+    editingClient = null
+  }
+
+  function closeEditClientModal() {
+    showEditClientModal = false
+    editingClient = null
+  }
+
+  function deleteClient(row) {
+    db.delete(row.id)
+    logActivity("Client removed", row.data.name + " was removed", "warning")
+  }
+
+  function addStaff(data) {
+    db.create("staff", {
+      name: data.name,
+      role: data.role,
+      email: data.email,
+      status: "online",
+      rating: 0,
+      appointments: 0
+    })
+    logActivity("New staff added", data.name + " joined as " + data.role, "success")
+    showAddStaffModal = false
+  }
+
+  function editStaff(row) {
+    editingStaff = row
+    showEditStaffModal = true
+  }
+
+  function saveEditStaff(data) {
+    if (editingStaff) {
+      db.update(editingStaff.id, {
+        name: data.name || editingStaff.data.name,
+        role: data.role || editingStaff.data.role,
+        email: data.email || editingStaff.data.email
+      })
+      logActivity("Staff updated", data.name + " was updated", "info")
+    }
+    showEditStaffModal = false
+    editingStaff = null
+  }
+
+  function closeEditStaffModal() {
+    showEditStaffModal = false
+    editingStaff = null
+  }
+
+  function deleteStaff(row) {
+    db.delete(row.id)
+    logActivity("Staff removed", row.data.name + " was removed", "warning")
+  }
+
+  function addService(data) {
+    db.create("services", {
+      name: data.name,
+      category: data.category,
+      price: data.price || 0,
+      duration: data.duration || 30
+    })
+    logActivity("New service added", data.name + " (" + data.category + ")", "success")
+    showAddServiceModal = false
+  }
+
+  function editService(row) {
+    editingService = row
+    showEditServiceModal = true
+  }
+
+  function saveEditService(data) {
+    if (editingService) {
+      db.update(editingService.id, {
+        name: data.name || editingService.data.name,
+        category: data.category || editingService.data.category,
+        price: data.price || editingService.data.price,
+        duration: data.duration || editingService.data.duration
+      })
+      logActivity("Service updated", data.name + " was updated", "info")
+    }
+    showEditServiceModal = false
+    editingService = null
+  }
+
+  function closeEditServiceModal() {
+    showEditServiceModal = false
+    editingService = null
+  }
+
+  function deleteService(row) {
+    db.delete(row.id)
+    logActivity("Service removed", row.data.name + " was removed", "warning")
+  }
+
+  function addAppointment(data) {
+    db.create("appointments", {
+      client: data.client,
+      stylist: data.stylist,
+      service: data.service,
+      time: data.time,
+      status: "scheduled",
+      price: data.price || 0
+    })
+    logActivity("Appointment booked", data.client + " - " + data.service + " at " + data.time, "success")
+    showAddModal = false
+  }
+
+  function editAppointment(row) {
+    editingAppointment = row
+    showEditAppointmentModal = true
+  }
+
+  function saveEditAppointment(data) {
+    if (editingAppointment) {
+      db.update(editingAppointment.id, {
+        client: data.client || editingAppointment.data.client,
+        stylist: data.stylist || editingAppointment.data.stylist,
+        service: data.service || editingAppointment.data.service,
+        time: data.time || editingAppointment.data.time,
+        status: data.status || editingAppointment.data.status,
+        price: data.price || editingAppointment.data.price
+      })
+      logActivity("Appointment updated", data.client + " appointment was updated", "info")
+    }
+    showEditAppointmentModal = false
+    editingAppointment = null
+  }
+
+  function closeEditAppointmentModal() {
+    showEditAppointmentModal = false
+    editingAppointment = null
+  }
+
+  function deleteAppointment(row) {
+    db.delete(row.id)
+    logActivity("Appointment cancelled", row.data.client + " - " + row.data.service, "warning")
+  }
+
+  // SmartForm onSaved callbacks (called when SmartForm creates records directly)
+  function onAppointmentSaved() {
+    logActivity("Appointment booked", "New appointment created", "success")
+    showAddModal = false
+  }
+
+  function onClientSaved() {
+    logActivity("New client added", "Client registered", "success")
+    showAddClientModal = false
+  }
+
+  function onStaffSaved() {
+    logActivity("New staff added", "Staff member added", "success")
+    showAddStaffModal = false
+  }
+
+  function onServiceSaved() {
+    logActivity("New service added", "Service created", "success")
+    showAddServiceModal = false
+  }
+
+  function openAddModal() {
+    showAddModal = true
+  }
+
+  function closeAddModal() {
+    showAddModal = false
+  }
+
+  function openAddClientModal() {
+    showAddClientModal = true
+  }
+
+  function closeAddClientModal() {
+    showAddClientModal = false
+  }
+
+  function openAddStaffModal() {
+    showAddStaffModal = true
+  }
+
+  function closeAddStaffModal() {
+    showAddStaffModal = false
+  }
+
+  function openAddServiceModal() {
+    showAddServiceModal = true
+  }
+
+  function closeAddServiceModal() {
+    showAddServiceModal = false
+  }
+
+  function viewAllAppointments() {
+    navigate("appointments")
+  }
+
+  function viewAllClients() {
+    navigate("clients")
+  }
+
+  function viewAllStaff() {
+    navigate("staff")
+  }
+
+  function viewAllServices() {
+    navigate("services")
+  }
+
+  // Data Management Modal
+  function openDataModal() {
+    showDataModal = true
+  }
+
+  function closeDataModal() {
+    showDataModal = false
+    exportedData = ""
+    importData = ""
+    confirmClearData = false
+  }
+
+  // XDB Data Export/Import
+  function exportAllData() {
+    let data = {
+      clients: db.query("clients"),
+      staff: db.query("staff"),
+      services: db.query("services"),
+      appointments: db.query("appointments"),
+      activity: db.query("activity")
+    }
+    exportedData = JSON.stringify(data, null, 2)
+  }
+
+  function copyToClipboard() {
+    if (exportedData) {
+      navigator.clipboard.writeText(exportedData)
+    }
+  }
+
+  function setImportData(value) {
+    importData = value
+  }
+
+  function importAllData() {
+    if (!importData) return
+
+    try {
+      let parsed = JSON.parse(importData)
+      let count = 0
+
+      if (parsed.clients) {
+        parsed.clients.forEach(function(r) {
+          db.create("clients", r.data || r)
+          count = count + 1
+        })
+      }
+      if (parsed.staff) {
+        parsed.staff.forEach(function(r) {
+          db.create("staff", r.data || r)
+          count = count + 1
+        })
+      }
+      if (parsed.services) {
+        parsed.services.forEach(function(r) {
+          db.create("services", r.data || r)
+          count = count + 1
+        })
+      }
+      if (parsed.appointments) {
+        parsed.appointments.forEach(function(r) {
+          db.create("appointments", r.data || r)
+          count = count + 1
+        })
+      }
+      if (parsed.activity) {
+        parsed.activity.forEach(function(r) {
+          db.create("activity", r.data || r)
+          count = count + 1
+        })
+      }
+
+      logActivity("Data imported", count + " records imported", "success")
+      importData = ""
+    } catch (e) {
+      logActivity("Import failed", "Invalid JSON data", "error")
+    }
+  }
+
+  function clearAllData() {
+    if (!confirmClearData) {
+      confirmClearData = true
+      return
+    }
+
+    let clients = db.query("clients")
+    let staff = db.query("staff")
+    let services = db.query("services")
+    let appointments = db.query("appointments")
+    let activity = db.query("activity")
+
+    clients.forEach(function(r) { db.delete(r.id) })
+    staff.forEach(function(r) { db.delete(r.id) })
+    services.forEach(function(r) { db.delete(r.id) })
+    appointments.forEach(function(r) { db.delete(r.id) })
+    activity.forEach(function(r) { db.delete(r.id) })
+
+    confirmClearData = false
+    closeDataModal()
+  }
+
+  function cancelClearData() {
+    confirmClearData = false
+  }
+
+  // Auto-init: resume sync from localStorage if previously connected
+  function _init() {
+    let savedRoom = db.getSavedSyncRoom()
+    if (savedRoom) {
+      syncRoom = savedRoom
+      syncConnecting = true
+      db.startSync(savedRoom)
+    }
+  }
+
+  // P2P Sync functions
+  function openSyncModal() {
+    showSyncModal = true
+    refreshSyncStatus()
+  }
+
+  function closeSyncModal() {
+    showSyncModal = false
+  }
+
+  function setSyncRoom(value) {
+    if (value && value.target) {
+      syncRoom = value.target.value
+    } else {
+      syncRoom = value
+    }
+  }
+
+  function copySyncRoom() {
+    if (syncRoom) {
+      navigator.clipboard.writeText(syncRoom)
+    }
+  }
+
+  function generateRoomCode() {
+    let chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+    let code = "glamour-"
+    let i = 0
+    while (i < 6) {
+      code = code + chars.charAt(Math.floor(Math.random() * chars.length))
+      i = i + 1
+    }
+    syncRoom = code
+  }
+
+  function joinSync() {
+    if (!syncRoom) return
+    syncConnecting = true
+    syncConnected = false
+    db.startSync(syncRoom)
+  }
+
+  function leaveSync() {
+    db.stopSync(syncRoom)
+    syncConnected = false
+    syncConnecting = false
+    syncPeers = 0
+  }
+
+  function refreshSyncStatus() {
+    let status = db.getSyncStatus(syncRoom)
+    if (status) {
+      syncConnected = status.connected
+      syncPeers = status.peers
+      if (status.connected) {
+        syncConnecting = false
+      }
+    } else if (syncConnecting) {
+      // No status returned — sync likely failed to initialize
+      syncConnecting = false
+    }
+  }

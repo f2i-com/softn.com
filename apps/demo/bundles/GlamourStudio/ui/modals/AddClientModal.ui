@@ -1,0 +1,13 @@
+// AddClientModal.ui - Modal for adding new clients
+
+<Modal open={showAddClientModal} onClose={closeAddClientModal} title="Add New Client" size=md>
+  <SmartForm
+    collection="clients"
+    fields="name:text:required, email:email:required, phone:text"
+    defaults={{ visits: 0, totalSpent: 0, vip: false }}
+    onSaved={onClientSaved}
+    submitText="Add Client"
+    showCancel={true}
+    onCancel={closeAddClientModal}
+  />
+</Modal>

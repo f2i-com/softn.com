@@ -1,0 +1,489 @@
+  // Poker engine-style helpers inspired by poker666 class boundaries.
+  // FormLogic doesn't expose class syntax, so we model "objects" via
+  // structured records plus functions operating on them.
+  // Runtime now also supports classes, so we provide class-based wrappers too.
+
+  class HandEvaluatorClass {
+    static compareTwoHands(first, second) {
+      return HandEvaluator_compareTwoHands(first, second)
+    }
+    static strengthFromCards(cards) {
+      return HandEvaluator_strengthFromCards(cards)
+    }
+    static strengthFromHoleAndBoard(holeCards, boardCards) {
+      return HandEvaluator_strengthFromHoleAndBoard(holeCards, boardCards)
+    }
+  }
+
+  class TableRepositoryClass {
+    static selectCurrentTableRecord(tables, preferredTableId) {
+      return TableRepository_selectCurrentTableRecord(tables, preferredTableId)
+    }
+    static getCurrentTableRecord(preferredTableId) {
+      return TableRepository_getCurrentTableRecord(preferredTableId)
+    }
+    static getCurrentTableData(preferredTableId) {
+      return TableRepository_getCurrentTableData(preferredTableId)
+    }
+  }
+
+  class TableEventClass {
+    static typeDebug() { return TableEvent_typeDebug() }
+    static typeFold() { return TableEvent_typeFold() }
+    static typeCheck() { return TableEvent_typeCheck() }
+    static typeCall() { return TableEvent_typeCall() }
+    static typeRaise() { return TableEvent_typeRaise() }
+    static typeAllIn() { return TableEvent_typeAllIn() }
+    static typeShowdown() { return TableEvent_typeShowdown() }
+    static create(eventType, playerName, seat, amount, handNo, details) {
+      return TableEvent_create(eventType, playerName, seat, amount, handNo, details)
+    }
+    static logAction(eventType, playerName, seat, amount, handNo, details) {
+      return TableEvent_logAction(eventType, playerName, seat, amount, handNo, details)
+    }
+    static logDebug(details, seat, amount, handNo) {
+      return TableEvent_logDebug(details, seat, amount, handNo)
+    }
+  }
+
+  class TableStateClass {
+    static phaseWaiting() { return TableState_phaseWaiting() }
+    static phasePreflop() { return TableState_phasePreflop() }
+    static phaseFlop() { return TableState_phaseFlop() }
+    static phaseTurn() { return TableState_phaseTurn() }
+    static phaseRiver() { return TableState_phaseRiver() }
+    static phaseShowdown() { return TableState_phaseShowdown() }
+    static statusWaiting() { return TableState_statusWaiting() }
+    static statusActive() { return TableState_statusActive() }
+    static statusAllIn() { return TableState_statusAllIn() }
+    static statusFolded() { return TableState_statusFolded() }
+    static statusSittingOut() { return TableState_statusSittingOut() }
+    static isLiveHandPhase(phase) { return TableState_isLiveHandPhase(phase) }
+    static isShowdownEligibleStatus(status) { return TableState_isShowdownEligibleStatus(status) }
+  }
+
+  function HandEvaluator_create() {
+    return { name: "HandEvaluator" }
+  }
+
+  function RankingMediator_create() {
+    return { name: "RankingMediator" }
+  }
+
+  function HandEvaluator_compareTwoHands(first, second) {
+    if (!first && !second) return 0
+    if (!first) return 1
+    if (!second) return -1
+    if (first.rank > second.rank) return -1
+    if (first.rank < second.rank) return 1
+    let cmp = compareKickers(first.kickers || [], second.kickers || [])
+    if (cmp > 0) return -1
+    if (cmp < 0) return 1
+    return 0
+  }
+
+  // Returns positive when first is stronger, negative when second is stronger, 0 on tie.
+  function HandStrength_compare(first, second) {
+    if (!first && !second) return 0
+    if (!first) return -1
+    if (!second) return 1
+    if (first.rank > second.rank) return 1
+    if (first.rank < second.rank) return -1
+    return compareKickers(first.kickers || [], second.kickers || [])
+  }
+
+  function HandEvaluator_strengthFromCards(cards) {
+    if (!cards || cards.length < 5) return null
+    if (cards.length === 5) {
+      return evaluateHand5(cards)
+    }
+    if (cards.length >= 7) {
+      return evaluateBestHand([cards[0], cards[1], cards[2], cards[3], cards[4], cards[5], cards[6]])
+    }
+    // Exactly 6 cards: evaluate all 5-card subsets.
+    let best = null
+    let i = 0
+    while (i < 6) {
+      let hand = []
+      let j = 0
+      while (j < 6) {
+        if (j !== i) {
+          hand.push(cards[j])
+        }
+        j = j + 1
+      }
+      let res = evaluateHand5(hand)
+      if (!best || HandEvaluator_compareTwoHands(res, best) < 0) {
+        best = res
+      }
+      i = i + 1
+    }
+    return best
+  }
+
+  function HandEvaluator_strengthFromHoleAndBoard(holeCards, boardCards) {
+    if (!holeCards || holeCards.length !== 2) return null
+    if (!boardCards || boardCards.length < 3) return null
+    if (boardCards.length >= 5) {
+      return HandEvaluator_strengthFromCards([
+        holeCards[0], holeCards[1],
+        boardCards[0], boardCards[1], boardCards[2], boardCards[3], boardCards[4]
+      ])
+    }
+    if (boardCards.length === 4) {
+      return HandEvaluator_strengthFromCards([
+        holeCards[0], holeCards[1],
+        boardCards[0], boardCards[1], boardCards[2], boardCards[3]
+      ])
+    }
+    return HandEvaluator_strengthFromCards([
+      holeCards[0], holeCards[1], boardCards[0], boardCards[1], boardCards[2]
+    ])
+  }
+
+  function RankingMediator_getRanking(cards) {
+    let strength = HandEvaluator_strengthFromCards(cards)
+    if (!strength) return 0
+    return strength.rank || 0
+  }
+
+  function RankingMediator_getRankCardsValues(cards) {
+    let strength = HandEvaluator_strengthFromCards(cards)
+    if (!strength) return []
+    return strength.kickers || []
+  }
+
+  function RankingMediator_getKickers(cards) {
+    let strength = HandEvaluator_strengthFromCards(cards)
+    if (!strength) return []
+    return strength.kickers || []
+  }
+
+  function Table_isShowdownEligibleStatus(status) {
+    return TableState_isShowdownEligibleStatus(status)
+  }
+
+  function TableState_phaseWaiting() { return "waiting" }
+  function TableState_phasePreflop() { return "preflop" }
+  function TableState_phaseFlop() { return "flop" }
+  function TableState_phaseTurn() { return "turn" }
+  function TableState_phaseRiver() { return "river" }
+  function TableState_phaseShowdown() { return "showdown" }
+
+  function TableState_statusWaiting() { return "waiting" }
+  function TableState_statusActive() { return "active" }
+  function TableState_statusAllIn() { return "allin" }
+  function TableState_statusFolded() { return "folded" }
+  function TableState_statusSittingOut() { return "sitting-out" }
+
+  function TableState_isLiveHandPhase(phase) {
+    return phase === TableState_phasePreflop() || phase === TableState_phaseFlop() || phase === TableState_phaseTurn() || phase === TableState_phaseRiver()
+  }
+
+  function TableState_isShowdownEligibleStatus(status) {
+    return status === TableState_statusActive() || status === TableState_statusAllIn()
+  }
+
+  function Table_buildContenders(allPlayers, communityCards) {
+    let contenders = []
+    if (!communityCards || communityCards.length < 5) return contenders
+    let i = 0
+    while (i < allPlayers.length) {
+      let p = allPlayers[i]
+      if (p && p.data) {
+        let st = p.data.status || ""
+        if (Table_isShowdownEligibleStatus(st)) {
+          let hc = p.data.holeCards || []
+          if (hc.length === 2) {
+            let strength = HandEvaluator_strengthFromHoleAndBoard(hc, communityCards)
+            if (strength) {
+              contenders.push({ player: p, handResult: strength })
+            }
+          }
+        }
+      }
+      i = i + 1
+    }
+    return contenders
+  }
+
+  function Table_collectContributors(allPlayers) {
+    let contributors = []
+    let totalPot = 0
+    let i = 0
+    while (i < allPlayers.length) {
+      if (allPlayers[i] && allPlayers[i].data) {
+        let contrib = allPlayers[i].data.handContribution || 0
+        if (contrib > 0) {
+          contributors.push(allPlayers[i])
+          totalPot = totalPot + contrib
+        }
+      }
+      i = i + 1
+    }
+    return { contributors: contributors, totalPot: totalPot }
+  }
+
+  function Table_sortContendersBySeat(contenders) {
+    let i = 0
+    while (i < contenders.length) {
+      let j = i + 1
+      while (j < contenders.length) {
+        if (contenders[j].player.data.seat < contenders[i].player.data.seat) {
+          let tmp = contenders[i]
+          contenders[i] = contenders[j]
+          contenders[j] = tmp
+        }
+        j = j + 1
+      }
+      i = i + 1
+    }
+    return contenders
+  }
+
+  function Table_seatDistanceFromLeftOfDealer(seat, dealerSeat) {
+    let start = dealerSeat
+    if (start === undefined || start === null || start < 0) {
+      start = 0
+    }
+    let dist = seat - start
+    if (dist <= 0) {
+      dist = dist + 6
+    }
+    return dist
+  }
+
+  function Table_sortWinnersForOddChip(winners, dealerSeat) {
+    let ordered = []
+    let i = 0
+    while (i < winners.length) {
+      ordered.push(winners[i])
+      i = i + 1
+    }
+    let oi = 0
+    while (oi < ordered.length) {
+      let oj = oi + 1
+      while (oj < ordered.length) {
+        let aSeat = ordered[oi].player.data.seat
+        let bSeat = ordered[oj].player.data.seat
+        let aDist = Table_seatDistanceFromLeftOfDealer(aSeat, dealerSeat)
+        let bDist = Table_seatDistanceFromLeftOfDealer(bSeat, dealerSeat)
+        if (bDist < aDist) {
+          let tmp = ordered[oi]
+          ordered[oi] = ordered[oj]
+          ordered[oj] = tmp
+        }
+        oj = oj + 1
+      }
+      oi = oi + 1
+    }
+    return ordered
+  }
+
+  function Table_selectBestContenders(contenders) {
+    if (!contenders || contenders.length === 0) return []
+    let winners = [contenders[0]]
+    let i = 1
+    while (i < contenders.length) {
+      let cmp = HandStrength_compare(contenders[i].handResult, winners[0].handResult)
+      if (cmp > 0) {
+        winners = [contenders[i]]
+      } else if (cmp === 0) {
+        winners.push(contenders[i])
+      }
+      i = i + 1
+    }
+    return Table_sortContendersBySeat(winners)
+  }
+
+  function Table_buildContributionLevels(contributors) {
+    let levels = []
+    let i = 0
+    while (i < contributors.length) {
+      let lv = contributors[i].data.handContribution || 0
+      let seen = false
+      let j = 0
+      while (j < levels.length) {
+        if (levels[j] === lv) {
+          seen = true
+        }
+        j = j + 1
+      }
+      if (!seen) {
+        levels.push(lv)
+      }
+      i = i + 1
+    }
+    let si = 0
+    while (si < levels.length) {
+      let sj = si + 1
+      while (sj < levels.length) {
+        if (levels[sj] < levels[si]) {
+          let tmp = levels[si]
+          levels[si] = levels[sj]
+          levels[sj] = tmp
+        }
+        sj = sj + 1
+      }
+      si = si + 1
+    }
+    return levels
+  }
+
+  function Table_awardSplit(awardsById, winners, potAmount, dealerSeat) {
+    if (!winners || winners.length === 0 || potAmount <= 0) return
+    let orderedWinners = Table_sortWinnersForOddChip(winners, dealerSeat)
+    let share = Math.floor(potAmount / orderedWinners.length)
+    let remainder = potAmount - (share * orderedWinners.length)
+    let i = 0
+    while (i < orderedWinners.length) {
+      let award = share
+      if (i < remainder) {
+        award = award + 1
+      }
+      let pid = orderedWinners[i].player.id
+      awardsById[pid] = (awardsById[pid] || 0) + award
+      i = i + 1
+    }
+  }
+
+  // TableEvent helper object, inspired by poker666's TableEvent logger flow.
+  function TableEvent_typeDebug() { return "debug" }
+  function TableEvent_typeFold() { return "fold" }
+  function TableEvent_typeCheck() { return "check" }
+  function TableEvent_typeCall() { return "call" }
+  function TableEvent_typeRaise() { return "raise" }
+  function TableEvent_typeAllIn() { return "allin" }
+  function TableEvent_typeShowdown() { return "showdown" }
+  function TableEvent_maxStored() { return 300 }
+  let tableEventLogCounter = 0
+
+  function TableEvent_isDebug(eventType) {
+    return eventType === TableEvent_typeDebug()
+  }
+
+  function TableEvent_create(eventType, playerName, seat, amount, handNo, details) {
+    return {
+      type: eventType,
+      playerName: playerName,
+      seat: seat,
+      amount: amount,
+      handNumber: handNo,
+      details: details || "",
+      timestamp: new Date().toISOString()
+    }
+  }
+
+  function TableEvent_logAction(eventType, playerName, seat, amount, handNo, details) {
+    db.create("poker_actions", TableEvent_create(eventType, playerName, seat, amount, handNo, details))
+    tableEventLogCounter = tableEventLogCounter + 1
+    if (tableEventLogCounter >= 20) {
+      tableEventLogCounter = 0
+      TableEvent_pruneOld()
+    }
+  }
+
+  function TableEvent_pruneOld() {
+    let all = db.query("poker_actions")
+    let keep = TableEvent_maxStored()
+    if (all.length <= keep) return
+
+    // Prefer pruning debug traces first.
+    let excess = all.length - keep
+    let i = 0
+    while (i < all.length && excess > 0) {
+      let t = ""
+      if (all[i].data) {
+        t = all[i].data.type || ""
+      }
+      if (TableEvent_isDebug(t)) {
+        db.hardDelete("poker_actions", all[i].id)
+        excess = excess - 1
+      }
+      i = i + 1
+    }
+
+    if (excess <= 0) return
+
+    // Delete oldest remaining records by timestamp/id key.
+    while (excess > 0) {
+      let oldestIdx = -1
+      let oldestKey = ""
+      let j = 0
+      while (j < all.length) {
+        let rec = all[j]
+        if (rec && rec.data) {
+          let key = (rec.data.timestamp || "") + "|" + (rec.id || "")
+          if (oldestIdx < 0 || key < oldestKey) {
+            oldestIdx = j
+            oldestKey = key
+          }
+        }
+        j = j + 1
+      }
+      if (oldestIdx < 0) return
+      let rid = all[oldestIdx].id
+      db.hardDelete("poker_actions", rid)
+      all[oldestIdx].data = null
+      excess = excess - 1
+    }
+  }
+
+  function TableEvent_logDebug(details, seat, amount, handNo) {
+    TableEvent_logAction(TableEvent_typeDebug(), "TRACE", seat, amount || 0, handNo || 0, details || "")
+  }
+
+  function TableRepository_selectCurrentTableRecord(tables, preferredTableId) {
+    if (!tables || tables.length === 0) return null
+    let bestIdx = 0
+    let bestScore = TableRepository_tableScore(tables[0], preferredTableId)
+    let i = 1
+    while (i < tables.length) {
+      let sc = TableRepository_tableScore(tables[i], preferredTableId)
+      if (sc > bestScore) {
+        bestScore = sc
+        bestIdx = i
+      }
+      i = i + 1
+    }
+    return tables[bestIdx]
+  }
+
+  function TableRepository_phaseScore(phase) {
+    if (phase === TableState_phaseWaiting()) return 0
+    if (phase === TableState_phasePreflop()) return 1
+    if (phase === TableState_phaseFlop()) return 2
+    if (phase === TableState_phaseTurn()) return 3
+    if (phase === TableState_phaseRiver()) return 4
+    if (phase === TableState_phaseShowdown()) return 5
+    return 0
+  }
+
+  function TableRepository_tableScore(tableRec, preferredTableId) {
+    if (!tableRec || !tableRec.data) return -100000
+    let d = tableRec.data
+    let score = 0
+    score = score + ((d.handNumber || 0) * 100000)
+    score = score + (TableRepository_phaseScore(d.gamePhase || "") * 1000)
+    score = score + ((d.communityCards || []).length * 100)
+    score = score + Math.min(99, d.pot || 0)
+    if (d.currentTurnSeat !== undefined && d.currentTurnSeat >= 0) {
+      score = score + 1
+    }
+    // Keep current table sticky when records are effectively equivalent.
+    if (preferredTableId && tableRec.id === preferredTableId) {
+      score = score + 5
+    }
+    return score
+  }
+
+  function TableRepository_getCurrentTableRecord(preferredTableId) {
+    let tables = db.query("poker_table")
+    return TableRepository_selectCurrentTableRecord(tables, preferredTableId)
+  }
+
+  function TableRepository_getCurrentTableData(preferredTableId) {
+    let rec = TableRepository_getCurrentTableRecord(preferredTableId)
+    if (!rec) return null
+    return rec.data
+  }

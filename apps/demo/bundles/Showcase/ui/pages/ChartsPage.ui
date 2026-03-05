@@ -1,0 +1,346 @@
+// ChartsPage.ui - Demonstrates all chart types
+
+<Stack direction=vertical gap=lg if={currentPage === "charts"}>
+  <Stack direction=vertical gap=xs>
+    <Heading level={2} style={{ color: getTextColor(), fontSize: "1.5rem" }}>Charts</Heading>
+    <Text style={{ color: getMutedColor(), fontSize: "0.875rem" }}>All 6 chart types with interactive crosshair tooltips.</Text>
+  </Stack>
+
+  // LineChart — full width, multi-series with 12 data points
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>LineChart</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Smooth curves with crosshair tooltips — 12 months of revenue vs expenses</Text>
+      <LineChart
+        width={900}
+        height={340}
+        interactive={true}
+        series={[
+          {
+            name: "Revenue",
+            color: "#6366f1",
+            smooth: true,
+            fill: true,
+            fillOpacity: 0.06,
+            data: [
+              { x: "Jan", y: 4200 },
+              { x: "Feb", y: 5100 },
+              { x: "Mar", y: 4800 },
+              { x: "Apr", y: 6300 },
+              { x: "May", y: 5900 },
+              { x: "Jun", y: 7200 },
+              { x: "Jul", y: 6800 },
+              { x: "Aug", y: 7500 },
+              { x: "Sep", y: 8100 },
+              { x: "Oct", y: 7900 },
+              { x: "Nov", y: 8600 },
+              { x: "Dec", y: 9200 }
+            ]
+          },
+          {
+            name: "Expenses",
+            color: "#ef4444",
+            smooth: true,
+            data: [
+              { x: "Jan", y: 2800 },
+              { x: "Feb", y: 3200 },
+              { x: "Mar", y: 2900 },
+              { x: "Apr", y: 3500 },
+              { x: "May", y: 3100 },
+              { x: "Jun", y: 3800 },
+              { x: "Jul", y: 3600 },
+              { x: "Aug", y: 4000 },
+              { x: "Sep", y: 3700 },
+              { x: "Oct", y: 4200 },
+              { x: "Nov", y: 3900 },
+              { x: "Dec", y: 4500 }
+            ]
+          },
+          {
+            name: "Profit",
+            color: "#10b981",
+            smooth: true,
+            strokeWidth: 1.5,
+            dotSize: 2.5,
+            data: [
+              { x: "Jan", y: 1400 },
+              { x: "Feb", y: 1900 },
+              { x: "Mar", y: 1900 },
+              { x: "Apr", y: 2800 },
+              { x: "May", y: 2800 },
+              { x: "Jun", y: 3400 },
+              { x: "Jul", y: 3200 },
+              { x: "Aug", y: 3500 },
+              { x: "Sep", y: 4400 },
+              { x: "Oct", y: 3700 },
+              { x: "Nov", y: 4700 },
+              { x: "Dec", y: 4700 }
+            ]
+          }
+        ]}
+      />
+    </Stack>
+  </Card>
+
+  // AreaChart with gradient — full width
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>AreaChart (Gradient)</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Smooth area with gradient fill and crosshair tooltips — weekly traffic</Text>
+      <AreaChart
+        width={900}
+        height={300}
+        gradient={true}
+        interactive={true}
+        series={[
+          {
+            name: "Users",
+            color: "#6366f1",
+            data: [
+              { x: "Mon", y: 120 },
+              { x: "Tue", y: 180 },
+              { x: "Wed", y: 150 },
+              { x: "Thu", y: 220 },
+              { x: "Fri", y: 280 },
+              { x: "Sat", y: 190 },
+              { x: "Sun", y: 160 }
+            ]
+          },
+          {
+            name: "Sessions",
+            color: "#10b981",
+            data: [
+              { x: "Mon", y: 200 },
+              { x: "Tue", y: 280 },
+              { x: "Wed", y: 250 },
+              { x: "Thu", y: 340 },
+              { x: "Fri", y: 420 },
+              { x: "Sat", y: 310 },
+              { x: "Sun", y: 240 }
+            ]
+          }
+        ]}
+      />
+    </Stack>
+  </Card>
+
+  // AreaChart stacked — full width
+  <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+    <Stack direction=vertical gap=md>
+      <Text fontWeight=medium style={{ color: getTextColor() }}>AreaChart (Stacked)</Text>
+      <Text size=xs style={{ color: getMutedColor() }}>Stacked areas showing cumulative traffic sources</Text>
+      <AreaChart
+        width={900}
+        height={300}
+        stacked={true}
+        gradient={true}
+        interactive={true}
+        series={[
+          {
+            name: "Organic",
+            color: "#6366f1",
+            data: [
+              { x: "W1", y: 80 },
+              { x: "W2", y: 95 },
+              { x: "W3", y: 110 },
+              { x: "W4", y: 105 },
+              { x: "W5", y: 120 },
+              { x: "W6", y: 135 }
+            ]
+          },
+          {
+            name: "Paid",
+            color: "#f59e0b",
+            data: [
+              { x: "W1", y: 40 },
+              { x: "W2", y: 55 },
+              { x: "W3", y: 60 },
+              { x: "W4", y: 75 },
+              { x: "W5", y: 80 },
+              { x: "W6", y: 90 }
+            ]
+          },
+          {
+            name: "Referral",
+            color: "#10b981",
+            data: [
+              { x: "W1", y: 20 },
+              { x: "W2", y: 25 },
+              { x: "W3", y: 30 },
+              { x: "W4", y: 35 },
+              { x: "W5", y: 28 },
+              { x: "W6", y: 40 }
+            ]
+          }
+        ]}
+      />
+    </Stack>
+  </Card>
+
+  // Row: BarChart and PieChart side by side
+  <Grid columns={{ sm: 1, lg: 2 }} gap=lg>
+    // BarChart - stacked
+    <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>BarChart (Stacked)</Text>
+        <Text size=xs style={{ color: getMutedColor() }}>Stacked bars with hover highlighting</Text>
+        <BarChart
+          width={520}
+          height={280}
+          interactive={true}
+          stacked={true}
+          series={[
+            {
+              name: "Desktop",
+              color: "#6366f1",
+              data: [
+                { label: "Q1", value: 420 },
+                { label: "Q2", value: 510 },
+                { label: "Q3", value: 480 },
+                { label: "Q4", value: 620 }
+              ]
+            },
+            {
+              name: "Mobile",
+              color: "#10b981",
+              data: [
+                { label: "Q1", value: 280 },
+                { label: "Q2", value: 350 },
+                { label: "Q3", value: 410 },
+                { label: "Q4", value: 380 }
+              ]
+            },
+            {
+              name: "Tablet",
+              color: "#f59e0b",
+              data: [
+                { label: "Q1", value: 90 },
+                { label: "Q2", value: 120 },
+                { label: "Q3", value: 110 },
+                { label: "Q4", value: 140 }
+              ]
+            }
+          ]}
+        />
+      </Stack>
+    </Card>
+
+    // PieChart - donut style
+    <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>PieChart (Donut)</Text>
+        <Text size=xs style={{ color: getMutedColor() }}>Interactive donut with pull-out hover effect</Text>
+        <Box style={{ display: "flex", justifyContent: "center" }}>
+          <PieChart
+            width={280}
+            height={280}
+            innerRadius={55}
+            interactive={true}
+            centerLabel="Frameworks"
+            data={[
+              { label: "React", value: 42, color: "#6366f1" },
+              { label: "Vue", value: 28, color: "#10b981" },
+              { label: "Angular", value: 18, color: "#ef4444" },
+              { label: "Svelte", value: 8, color: "#f59e0b" },
+              { label: "Other", value: 4, color: "#8b5cf6" }
+            ]}
+          />
+        </Box>
+      </Stack>
+    </Card>
+  </Grid>
+
+  // Row: RadarChart and GaugeChart
+  <Grid columns={{ sm: 1, lg: 2 }} gap=lg>
+    // RadarChart
+    <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>RadarChart</Text>
+        <Text size=xs style={{ color: getMutedColor() }}>Multi-axis comparison with hover interaction</Text>
+        <Box style={{ display: "flex", justifyContent: "center" }}>
+          <RadarChart
+            width={320}
+            height={300}
+            interactive={true}
+            axes={["Speed", "Reliability", "Comfort", "Safety", "Efficiency", "Design"]}
+            series={[
+              {
+                name: "Model A",
+                color: "#6366f1",
+                data: [
+                  { axis: "Speed", value: 85 },
+                  { axis: "Reliability", value: 90 },
+                  { axis: "Comfort", value: 70 },
+                  { axis: "Safety", value: 95 },
+                  { axis: "Efficiency", value: 80 },
+                  { axis: "Design", value: 75 }
+                ]
+              },
+              {
+                name: "Model B",
+                color: "#ef4444",
+                data: [
+                  { axis: "Speed", value: 92 },
+                  { axis: "Reliability", value: 75 },
+                  { axis: "Comfort", value: 88 },
+                  { axis: "Safety", value: 82 },
+                  { axis: "Efficiency", value: 70 },
+                  { axis: "Design", value: 95 }
+                ]
+              }
+            ]}
+          />
+        </Box>
+      </Stack>
+    </Card>
+
+    // GaugeChart variants
+    <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
+      <Stack direction=vertical gap=md>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>GaugeChart</Text>
+        <Text size=xs style={{ color: getMutedColor() }}>Semicircle, arc, and full variants with color thresholds</Text>
+        <Stack direction=horizontal gap=xl align=center justify=center style={{ flexWrap: "wrap", padding: "0.5rem 0" }}>
+          <Box style={{ textAlign: "center" }}>
+            <GaugeChart
+              value={73}
+              variant="semicircle"
+              label="CPU"
+              width={140}
+              thresholds={[
+                { value: 0, color: "#10b981" },
+                { value: 60, color: "#f59e0b" },
+                { value: 85, color: "#ef4444" }
+              ]}
+            />
+          </Box>
+          <Box style={{ textAlign: "center" }}>
+            <GaugeChart
+              value={42}
+              variant="arc"
+              label="Memory"
+              width={140}
+              thresholds={[
+                { value: 0, color: "#6366f1" },
+                { value: 50, color: "#f59e0b" },
+                { value: 80, color: "#ef4444" }
+              ]}
+            />
+          </Box>
+          <Box style={{ textAlign: "center" }}>
+            <GaugeChart
+              value={88}
+              variant="full"
+              label="Disk"
+              width={110}
+              thresholds={[
+                { value: 0, color: "#10b981" },
+                { value: 70, color: "#f59e0b" },
+                { value: 90, color: "#ef4444" }
+              ]}
+            />
+          </Box>
+        </Stack>
+      </Stack>
+    </Card>
+  </Grid>
+</Stack>

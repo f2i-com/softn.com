@@ -1,0 +1,44 @@
+{
+  "name": "softn",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SoftN UI Language and Engine",
+  "workspaces": [
+    "packages/@softn/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:core": "npm run build -w @softn/core",
+    "build:components": "npm run build -w @softn/components",
+    "build:cli": "npm run build -w @softn/cli",
+    "dev": "npm run tauri dev -w @softn/loader",
+    "bundle:demo": "npm run bundle -w @softn/demo",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf node_modules packages/**/node_modules apps/**/node_modules packages/**/dist apps/**/dist"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.33.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "prettier": "^3.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.0.0-next.5",
+    "@rc-component/qrcode": "^1.1.1"
+  }
+}

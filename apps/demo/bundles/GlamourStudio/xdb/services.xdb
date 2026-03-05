@@ -1,0 +1,77 @@
+{
+  "collection": "services",
+  "records": [
+    {
+      "id": "services_1",
+      "collection": "services",
+      "data": {
+        "name": "Women's Haircut",
+        "duration": 45,
+        "price": 65,
+        "category": "Haircut"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "services_2",
+      "collection": "services",
+      "data": {
+        "name": "Men's Haircut",
+        "duration": 30,
+        "price": 35,
+        "category": "Haircut"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "services_3",
+      "collection": "services",
+      "data": {
+        "name": "Full Color",
+        "duration": 120,
+        "price": 150,
+        "category": "Color"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "services_4",
+      "collection": "services",
+      "data": {
+        "name": "Highlights",
+        "duration": 90,
+        "price": 120,
+        "category": "Color"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "services_5",
+      "collection": "services",
+      "data": {
+        "name": "Balayage",
+        "duration": 150,
+        "price": 200,
+        "category": "Color"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "services_6",
+      "collection": "services",
+      "data": {
+        "name": "Blowout",
+        "duration": 30,
+        "price": 45,
+        "category": "Styling"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    }
+  ]
+}
