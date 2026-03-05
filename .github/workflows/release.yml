@@ -80,6 +80,9 @@ jobs:
           - app: softn-builder
             platform: macos-latest
     runs-on: ${{ matrix.platform }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
