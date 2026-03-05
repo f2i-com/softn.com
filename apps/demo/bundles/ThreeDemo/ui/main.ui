@@ -1,0 +1,29 @@
+<logic src="../logic/main.logic" />
+
+<Stack direction=vertical gap=md align=center style={{ padding: "2rem", minHeight: "100vh", background: "#0a0a1a" }}>
+  <Heading level={2} style={{ color: "#e4e4e7" }}>3D Scene Demo</Heading>
+  <Text style={{ color: "#a1a1aa" }}>Objects: {objectCount} | Selected: {selectedId ? selectedId : "none"}</Text>
+
+  <Scene3D
+    width={600}
+    height={380}
+    objects={objects}
+    lights={lights}
+    camera={{ position: cameraPos, fov: 50 }}
+    alpha={true}
+    antialias={true}
+    shadows={true}
+    orbitControls={true}
+    autoRotate={true}
+    autoRotateSpeed={1}
+    @click={handleClick}
+    style={{ borderRadius: "12px", border: "1px solid rgba(255,255,255,0.1)" }}
+  />
+
+  <Stack direction=horizontal gap=sm style={{ flexWrap: "wrap", justifyContent: "center" }}>
+    <Button @click={randomizeColors} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#6366f1", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>Randomize Colors</Button>
+    <Button @click={toggleWireframe} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#8b5cf6", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>Toggle Wireframe</Button>
+    <Button @click={addShape} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#14b8a6", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>Add Shape</Button>
+    <Button @click={resetScene} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#64748b", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>Reset</Button>
+  </Stack>
+</Stack>

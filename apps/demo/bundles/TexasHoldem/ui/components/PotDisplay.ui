@@ -1,0 +1,22 @@
+// PotDisplay.ui - Pot amount displayed in center of table
+
+<Box if={pot > 0 || gamePhase !== "waiting"} style={{
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: "4px"
+}}>
+  <Box style={{
+    background: "linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.82))",
+    borderRadius: "16px",
+    padding: "7px 18px",
+    backdropFilter: "blur(8px)",
+    border: "1px solid rgba(200,170,110,0.3)",
+    boxShadow: "0 6px 20px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.06)",
+    animation: potAnim()
+  }}>
+    <Text style={{ color: "#fbbf24", fontSize: "18px", fontWeight: "bold", letterSpacing: "0.5px" }}>
+      {"Pot: $" + pot}
+    </Text>
+  </Box>
+</Box>

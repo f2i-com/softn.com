@@ -1,0 +1,112 @@
+// Lobby.ui - Create or join a poker room
+
+<Box if={currentPage === "lobby"} style={{
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  minHeight: "100vh",
+  background: "linear-gradient(180deg, #0d1b0e 0%, #1a2e1a 50%, #0d1b0e 100%)",
+  padding: "2rem"
+}}>
+  // Title
+  <Box style={{ textAlign: "center", marginBottom: "2rem" }}>
+    <Text style={{ color: "#c8aa6e", fontSize: "42px", fontWeight: "bold", fontFamily: "Georgia, serif", letterSpacing: "2px" }}>
+      Texas Hold'em
+    </Text>
+    <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: "14px", marginTop: "4px", letterSpacing: "3px", textTransform: "uppercase" }}>
+      Multiplayer Poker
+    </Text>
+  </Box>
+
+  // Main card
+  <Card padding=lg style={{
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(200,170,110,0.15)",
+    borderRadius: "16px",
+    width: "100%",
+    maxWidth: "400px",
+    backdropFilter: "blur(12px)"
+  }}>
+    <Stack direction=vertical gap=lg>
+      // Player name
+      <Stack direction=vertical gap=sm>
+        <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>Your Name</Text>
+        <Input
+          :bind={playerName}
+          placeholder="Enter your name"
+          style={{
+            background: "rgba(255,255,255,0.06)",
+            border: "1px solid rgba(200,170,110,0.2)",
+            borderRadius: "10px",
+            padding: "12px 16px",
+            color: "#fff",
+            fontSize: "15px"
+          }}
+        />
+      </Stack>
+
+      // Create room
+      <Button @click={createRoom} style={{
+        width: "100%",
+        background: "linear-gradient(135deg, #c8aa6e, #a08040)",
+        color: "#1c1917",
+        border: "none",
+        borderRadius: "10px",
+        padding: "14px",
+        fontSize: "16px",
+        fontWeight: "700",
+        cursor: "pointer",
+        letterSpacing: "0.5px"
+      }}>
+        Create Room
+      </Button>
+
+      // Divider
+      <Box style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
+        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "12px", textTransform: "uppercase", letterSpacing: "2px" }}>or join</Text>
+        <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
+      </Box>
+
+      // Join room
+      <Stack direction=vertical gap=sm>
+        <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>Room Code</Text>
+        <Stack direction=horizontal gap=sm>
+          <Input
+            :bind={syncRoom}
+            placeholder="e.g. poker-x9km2p"
+            style={{
+              flex: 1,
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(200,170,110,0.2)",
+              borderRadius: "10px",
+              padding: "12px 16px",
+              color: "#fff",
+              fontSize: "15px",
+              fontFamily: "monospace"
+            }}
+          />
+          <Button @click={joinRoom} style={{
+            background: "rgba(200,170,110,0.15)",
+            color: "#c8aa6e",
+            border: "1px solid rgba(200,170,110,0.3)",
+            borderRadius: "10px",
+            padding: "12px 20px",
+            fontSize: "14px",
+            fontWeight: "600",
+            cursor: "pointer",
+            flexShrink: 0
+          }}>
+            Join
+          </Button>
+        </Stack>
+      </Stack>
+    </Stack>
+  </Card>
+
+  // Footer
+  <Text style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px", marginTop: "2rem" }}>
+    Built with SoftN — P2P sync via Yjs + WebRTC
+  </Text>
+</Box>

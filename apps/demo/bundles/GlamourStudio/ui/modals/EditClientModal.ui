@@ -1,0 +1,12 @@
+// EditClientModal.ui - Modal for editing existing clients
+
+<Modal open={showEditClientModal} onClose={closeEditClientModal} title="Edit Client" size=md>
+  <SmartForm
+    fields="name:text, email:email, phone:text"
+    data={editingClient ? editingClient.data : null}
+    onSubmit={saveEditClient}
+    submitText="Save Changes"
+    showCancel={true}
+    onCancel={closeEditClientModal}
+  />
+</Modal>

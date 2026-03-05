@@ -1,0 +1,164 @@
+  let gridItems = []
+  let score = 0
+  let highScore = 0
+  let running = false
+  let speed = 150
+  let overlayText = "Press Start"
+  let snake = []
+  let food = null
+  let direction = "right"
+  let gameOver = false
+
+  function _init() {
+    snake = [{x: 10, y: 10}, {x: 9, y: 10}, {x: 8, y: 10}]
+    food = {x: 15, y: 10}
+    direction = "right"
+    window.__snakeNextDir = null
+
+    let stored = localStorage.getItem("softn-snake-highscore")
+    if (stored) { highScore = parseInt(stored) || 0 }
+
+    buildGridItems()
+
+    if (!window.__snakeKeyListenerAdded) {
+      window.__snakeKeyListenerAdded = true
+      window.addEventListener("keydown", function(e) {
+        if (e.key === "ArrowUp") { e.preventDefault(); window.__snakeNextDir = "up" }
+        if (e.key === "ArrowDown") { e.preventDefault(); window.__snakeNextDir = "down" }
+        if (e.key === "ArrowLeft") { e.preventDefault(); window.__snakeNextDir = "left" }
+        if (e.key === "ArrowRight") { e.preventDefault(); window.__snakeNextDir = "right" }
+      })
+    }
+  }
+
+  function buildGridItems() {
+    let items = []
+    let i = 0
+    while (i < snake.length) {
+      let seg = snake[i]
+      let c = i === 0 ? "#86efac" : "#4ade80"
+      items.push({x: seg.x, y: seg.y, color: c, borderRadius: "3px"})
+      i = i + 1
+    }
+    if (food) {
+      items.push({x: food.x, y: food.y, color: "#ef4444", borderRadius: "50%"})
+    }
+    gridItems = items
+  }
+
+  function spawnFood() {
+    if (snake.length >= 400) {
+      food = null
+      return
+    }
+    let attempts = 0
+    let placed = false
+    while (!placed && attempts < 1000) {
+      let fx = Math.floor(Math.random() * 20)
+      let fy = Math.floor(Math.random() * 20)
+      let onSnake = false
+      let j = 0
+      while (j < snake.length) {
+        if (snake[j].x === fx && snake[j].y === fy) {
+          onSnake = true
+        }
+        j = j + 1
+      }
+      if (!onSnake) {
+        food = {x: fx, y: fy}
+        placed = true
+      }
+      attempts = attempts + 1
+    }
+  }
+
+  function tick() {
+    if (gameOver || !running) return
+
+    let nextDir = window.__snakeNextDir
+    if (nextDir) {
+      if (nextDir === "up" && direction !== "down") { direction = nextDir }
+      if (nextDir === "down" && direction !== "up") { direction = nextDir }
+      if (nextDir === "left" && direction !== "right") { direction = nextDir }
+      if (nextDir === "right" && direction !== "left") { direction = nextDir }
+      window.__snakeNextDir = null
+    }
+
+    let head = snake[0]
+    let nx = head.x
+    let ny = head.y
+    if (direction === "up") { ny = ny - 1 }
+    if (direction === "down") { ny = ny + 1 }
+    if (direction === "left") { nx = nx - 1 }
+    if (direction === "right") { nx = nx + 1 }
+
+    if (nx < 0 || nx >= 20 || ny < 0 || ny >= 20) {
+      gameOver = true
+      running = false
+      if (score > highScore) {
+        highScore = score
+        localStorage.setItem("softn-snake-highscore", String(highScore))
+      }
+      overlayText = "Game Over — Score: " + score
+      buildGridItems()
+      return
+    }
+
+    let si = 0
+    while (si < snake.length) {
+      if (snake[si].x === nx && snake[si].y === ny) {
+        gameOver = true
+        running = false
+        if (score > highScore) {
+          highScore = score
+          localStorage.setItem("softn-snake-highscore", String(highScore))
+        }
+        overlayText = "Game Over — Score: " + score
+        buildGridItems()
+        return
+      }
+      si = si + 1
+    }
+
+    let newHead = {x: nx, y: ny}
+    let newSnake = [newHead]
+    let ci = 0
+    while (ci < snake.length) {
+      newSnake.push(snake[ci])
+      ci = ci + 1
+    }
+
+    if (food && nx === food.x && ny === food.y) {
+      score = score + 1
+      spawnFood()
+      if (speed > 60) {
+        speed = speed - 5
+      }
+    } else {
+      newSnake = newSnake.slice(0, newSnake.length - 1)
+    }
+
+    snake = newSnake
+    buildGridItems()
+  }
+
+  function handleDPad(direction) {
+    window.__snakeNextDir = direction
+  }
+
+  function handleDPadRelease(direction) {
+    // Snake only needs direction on press, no release handling needed
+  }
+
+  function startGame() {
+    snake = [{x: 10, y: 10}, {x: 9, y: 10}, {x: 8, y: 10}]
+    direction = "right"
+    window.__snakeNextDir = null
+    score = 0
+    speed = 150
+    gameOver = false
+    overlayText = ""
+    spawnFood()
+    running = true
+    buildGridItems()
+  }

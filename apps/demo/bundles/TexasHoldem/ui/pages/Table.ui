@@ -1,0 +1,448 @@
+<Box if={currentPage === "table"} style={{
+  width: "100%",
+  height: "100vh",
+  background: "linear-gradient(180deg, #0d1b0e 0%, #14261a 50%, #0d1b0e 100%)",
+  position: "relative",
+  overflow: "hidden"
+}}>
+  <audio if={soundEnabled && soundPlaySrc} key={soundPlayNonce} src={asset(soundPlaySrc)} autoPlay={true} style={{ display: "none" }} />
+  // Top bar
+  <Box className="poker-topbar" style={{
+    position: "absolute", top: 0, left: 0, right: 0,
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    flexWrap: topBarWrapStyle(), rowGap: "6px",
+    padding: "clamp(8px, 1.4vw, 10px) clamp(10px, 2.6vw, 20px)", zIndex: 50,
+    position: "relative", pointerEvents: "auto",
+    background: "rgba(0,0,0,0.3)", backdropFilter: "blur(8px)"
+  }}>
+    <Stack direction=horizontal gap=sm align=center>
+      <Button @click={leaveTable} style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.6)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", padding: "6px 14px", fontSize: "12px", cursor: "pointer" }}>Leave</Button>
+      <Button @click={openSyncModal} style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.6)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", padding: "6px 10px", fontSize: "clamp(10px, 1.5vw, 11px)", cursor: "pointer" }}>Room</Button>
+      <Text className="poker-topbar-hide-mobile" style={{ color: "rgba(255,255,255,0.4)", fontSize: "12px", fontFamily: "monospace" }}>{syncRoom}</Text>
+      <Button className="poker-topbar-hide-mobile" @click={copySyncRoom} style={{ background: "none", color: "rgba(255,255,255,0.4)", border: "none", padding: "4px 8px", fontSize: "clamp(10px, 1.5vw, 11px)", cursor: "pointer" }}>Copy</Button>
+    </Stack>
+    <Stack direction=horizontal gap=sm align=center>
+      <Box style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-end",
+        background: "rgba(0,0,0,0.35)",
+        border: "1px solid rgba(255,255,255,0.12)",
+        borderRadius: "8px",
+        padding: "4px 10px"
+      }}>
+        <Text style={{ color: isMyTurn() ? "#c8aa6e" : "rgba(255,255,255,0.75)", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "700" }}>{topStatusMain()}</Text>
+        <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: "10px" }}>{topStatusSub()}</Text>
+      </Box>
+      <Button @click={toggleSound} style={{ background: soundEnabled ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.08)", color: soundEnabled ? "#86efac" : "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>{soundEnabled ? "Sound On" : "Sound Off"}</Button>
+      <Button className="poker-topbar-hide-mobile" if={soundEnabled} @click={testSoundNow} style={{ background: "rgba(250,204,21,0.18)", color: "#fde68a", border: "1px solid rgba(250,204,21,0.35)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Test Sound</Button>
+      <Button className="poker-topbar-hide-mobile" if={isHost} @click={toggleDebugOverlay} style={{ background: showDebugOverlay ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.08)", color: showDebugOverlay ? "#22c55e" : "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Debug</Button>
+      <Button className="poker-topbar-hide-mobile" if={isHost} @click={toggleDebugTrace} style={{ background: debugTraceEnabled ? "rgba(59,130,246,0.22)" : "rgba(255,255,255,0.08)", color: debugTraceEnabled ? "#93c5fd" : "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Trace</Button>
+      <Button className="poker-topbar-hide-mobile" if={isHost && gamePhase !== "waiting"} @click={forceReset} style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "6px", padding: "4px 10px", fontSize: "10px", fontWeight: "600", cursor: "pointer" }}>Reset</Button>
+      <Box style={{ width: "8px", height: "8px", borderRadius: "50%", background: syncConnected ? "#22c55e" : (syncConnecting ? "#eab308" : "#ef4444"), boxShadow: syncConnected ? "0 0 6px rgba(34,197,94,0.5)" : "none" }} />
+      <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{syncConnected ? syncPeers + " peers" : (syncConnecting ? "connecting..." : "offline")}</Text>
+      <Text className="poker-topbar-hide-mobile" if={handNumber > 0} style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)", marginLeft: "8px" }}>{"Hand #" + handNumber}</Text>
+    </Stack>
+  </Box>
+
+  // Felt table
+  <Box className="poker-felt" style={{
+    position: "absolute", top: "50%", left: "50%",
+    transform: tableTranslateYStyle(),
+    width: tableWidthStyle(), height: tableHeightStyle(), minHeight: "320px",
+    borderRadius: "50% / 40%", zIndex: 10,
+    background: "radial-gradient(ellipse at center, #1a5c2a 0%, #14472a 50%, #0d3518 100%)",
+    border: "8px solid #5c3a1e",
+    boxShadow: "inset 0 0 60px rgba(0,0,0,0.3), 0 0 40px rgba(0,0,0,0.5), 0 0 0 4px #3d2815, 0 0 0 8px rgba(0,0,0,0.3)"
+  }}>
+    // Community cards center
+    <Box style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -60%)", zIndex: 40, pointerEvents: "none" }}>
+      <CommunityCards />
+    </Box>
+
+    // Pot display
+    <Box style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, 30%)", zIndex: 45, pointerEvents: "none" }}>
+      <PotDisplay />
+    </Box>
+
+    // === SEAT 0 - bottom center ===
+    <Box style={{ position: "absolute", bottom: "clamp(-28px, -3vw, -16px)", left: "50%", transform: "translateX(-50%)" }}>
+      // Empty seat
+      <Box className="poker-seat-empty" if={!seatHasPlayer(0)} @click={takeSeat(0)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", cursor: mySeat === -1 ? "pointer" : "default", opacity: mySeat === -1 ? 0.7 : 0.3 }}>
+        <Box style={{ width: "clamp(38px, 5.3vw, 46px)", height: "clamp(38px, 5.3vw, 46px)", minWidth: "38px", minHeight: "38px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: "rgba(255,255,255,0.06)", border: "2px dashed rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Text style={{ color: "rgba(255,255,255,0.25)", fontSize: "20px" }}>+</Text>
+        </Box>
+        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)", marginTop: "4px" }}>Seat 1</Text>
+      </Box>
+      // Occupied seat
+      <Box className="poker-seat-occupied" if={seatHasPlayer(0)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", animation: seatGlow(0), borderRadius: "12px", padding: "6px 6px clamp(56px, 8.4vw, 72px) 6px", height: "clamp(136px, 20vw, 164px)", justifyContent: "flex-start", position: "relative" }}>
+        <Box className="poker-seat-cards" style={{ position: "absolute", left: "50%", bottom: "clamp(2px, 0.6vw, 6px)", transform: "translateX(-50%)", display: "flex", gap: "4px", minHeight: "44px", transformOrigin: "50% 20%", opacity: seatRealCardsOpacity(0), visibility: seatRealCardsVisibility(0), transition: "opacity 90ms linear" }}>
+          <Box className="poker-seat-card" if={seatCard1(0) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard1(0)) }}>{cardRankDisplay(seatCard1(0))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard1(0)) }}>{cardSuitDisplay(seatCard1(0))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard1(0) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+          <Box className="poker-seat-card" if={seatCard2(0) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard2(0)) }}>{cardRankDisplay(seatCard2(0))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard2(0)) }}>{cardSuitDisplay(seatCard2(0))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard2(0) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+        </Box>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(0), border: seatBorder(0), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(0) }}>
+          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(0)}</Text>
+        </Box>
+        <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px", textAlign: "center" }}>{seatDisplayName(0)}</Text>
+        <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(0)}</Text>
+        <Box if={seatBet(0) > 0} style={{ background: "rgba(0,0,0,0.6)", borderRadius: "10px", padding: "2px 8px", marginTop: "2px", animation: seatBetAnim(0) }}>
+          <Text style={{ color: "#fbbf24", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"Bet: $" + seatBet(0)}</Text>
+        </Box>
+        <Box if={seatShowStatus(0)} style={{ background: statusBadgeColor(seatStatus(0)), borderRadius: "8px", padding: "1px 6px", marginTop: "2px" }}>
+          <Text style={{ color: "#fff", fontSize: "9px", fontWeight: "bold", textTransform: "uppercase" }}>{seatStatus(0)}</Text>
+        </Box>
+        <Box if={isDealerSeat(0)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
+          <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
+        </Box>
+        <Box if={seatIsBot(0)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
+          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        </Box>
+        <Box if={seatIsBot(0) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(0)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    // === SEAT 1 - bottom right ===
+    <Box style={{ position: "absolute", bottom: "clamp(8px, 1.8vw, 16px)", right: "clamp(-24px, -2.5vw, -12px)" }}>
+      <Box className="poker-seat-empty" if={!seatHasPlayer(1)} @click={takeSeat(1)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", cursor: mySeat === -1 ? "pointer" : "default", opacity: mySeat === -1 ? 0.7 : 0.3 }}>
+        <Box style={{ width: "clamp(38px, 5.3vw, 46px)", height: "clamp(38px, 5.3vw, 46px)", minWidth: "38px", minHeight: "38px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: "rgba(255,255,255,0.06)", border: "2px dashed rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Text style={{ color: "rgba(255,255,255,0.25)", fontSize: "20px" }}>+</Text>
+        </Box>
+        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)", marginTop: "4px" }}>Seat 2</Text>
+      </Box>
+      <Box className="poker-seat-occupied" if={seatHasPlayer(1)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", animation: seatGlow(1), borderRadius: "12px", padding: "6px 6px clamp(56px, 8.4vw, 72px) 6px", height: "clamp(136px, 20vw, 164px)", justifyContent: "flex-start", position: "relative" }}>
+        <Box className="poker-seat-cards" style={{ position: "absolute", left: "50%", bottom: "clamp(2px, 0.6vw, 6px)", transform: "translateX(-50%)", display: "flex", gap: "4px", minHeight: "44px", transformOrigin: "50% 20%", opacity: seatRealCardsOpacity(1), visibility: seatRealCardsVisibility(1), transition: "opacity 90ms linear" }}>
+          <Box className="poker-seat-card" if={seatCard1(1) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard1(1)) }}>{cardRankDisplay(seatCard1(1))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard1(1)) }}>{cardSuitDisplay(seatCard1(1))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard1(1) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+          <Box className="poker-seat-card" if={seatCard2(1) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard2(1)) }}>{cardRankDisplay(seatCard2(1))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard2(1)) }}>{cardSuitDisplay(seatCard2(1))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard2(1) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+        </Box>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(1), border: seatBorder(1), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(1) }}>
+          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(1)}</Text>
+        </Box>
+        <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(1)}</Text>
+        <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(1)}</Text>
+        <Box if={seatBet(1) > 0} style={{ background: "rgba(0,0,0,0.6)", borderRadius: "10px", padding: "2px 8px", marginTop: "2px", animation: seatBetAnim(1) }}>
+          <Text style={{ color: "#fbbf24", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"Bet: $" + seatBet(1)}</Text>
+        </Box>
+        <Box if={seatShowStatus(1)} style={{ background: statusBadgeColor(seatStatus(1)), borderRadius: "8px", padding: "1px 6px", marginTop: "2px" }}>
+          <Text style={{ color: "#fff", fontSize: "9px", fontWeight: "bold", textTransform: "uppercase" }}>{seatStatus(1)}</Text>
+        </Box>
+        <Box if={isDealerSeat(1)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
+          <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
+        </Box>
+        <Box if={seatIsBot(1)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
+          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        </Box>
+        <Box if={seatIsBot(1) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(1)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    // === SEAT 2 - top right ===
+    <Box style={{ position: "absolute", top: "clamp(-10px, -1vw, -4px)", right: "clamp(-24px, -2.5vw, -12px)" }}>
+      <Box className="poker-seat-empty" if={!seatHasPlayer(2)} @click={takeSeat(2)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", cursor: mySeat === -1 ? "pointer" : "default", opacity: mySeat === -1 ? 0.7 : 0.3 }}>
+        <Box style={{ width: "clamp(38px, 5.3vw, 46px)", height: "clamp(38px, 5.3vw, 46px)", minWidth: "38px", minHeight: "38px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: "rgba(255,255,255,0.06)", border: "2px dashed rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Text style={{ color: "rgba(255,255,255,0.25)", fontSize: "20px" }}>+</Text>
+        </Box>
+        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)", marginTop: "4px" }}>Seat 3</Text>
+      </Box>
+      <Box className="poker-seat-occupied" if={seatHasPlayer(2)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", animation: seatGlow(2), borderRadius: "12px", padding: "6px 6px clamp(56px, 8.4vw, 72px) 6px", height: "clamp(136px, 20vw, 164px)", justifyContent: "flex-start", position: "relative" }}>
+        <Box className="poker-seat-cards" style={{ position: "absolute", left: "50%", bottom: "clamp(2px, 0.6vw, 6px)", transform: "translateX(-50%)", display: "flex", gap: "4px", minHeight: "44px", transformOrigin: "50% 20%", opacity: seatRealCardsOpacity(2), visibility: seatRealCardsVisibility(2), transition: "opacity 90ms linear" }}>
+          <Box className="poker-seat-card" if={seatCard1(2) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard1(2)) }}>{cardRankDisplay(seatCard1(2))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard1(2)) }}>{cardSuitDisplay(seatCard1(2))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard1(2) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+          <Box className="poker-seat-card" if={seatCard2(2) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard2(2)) }}>{cardRankDisplay(seatCard2(2))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard2(2)) }}>{cardSuitDisplay(seatCard2(2))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard2(2) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+        </Box>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(2), border: seatBorder(2), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(2) }}>
+          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(2)}</Text>
+        </Box>
+        <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(2)}</Text>
+        <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(2)}</Text>
+        <Box if={seatBet(2) > 0} style={{ background: "rgba(0,0,0,0.6)", borderRadius: "10px", padding: "2px 8px", marginTop: "2px", animation: seatBetAnim(2) }}>
+          <Text style={{ color: "#fbbf24", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"Bet: $" + seatBet(2)}</Text>
+        </Box>
+        <Box if={seatShowStatus(2)} style={{ background: statusBadgeColor(seatStatus(2)), borderRadius: "8px", padding: "1px 6px", marginTop: "2px" }}>
+          <Text style={{ color: "#fff", fontSize: "9px", fontWeight: "bold", textTransform: "uppercase" }}>{seatStatus(2)}</Text>
+        </Box>
+        <Box if={isDealerSeat(2)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
+          <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
+        </Box>
+        <Box if={seatIsBot(2)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
+          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        </Box>
+        <Box if={seatIsBot(2) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(2)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    // === SEAT 3 - top center ===
+    <Box style={{ position: "absolute", top: "-34px", left: "50%", transform: "translateX(-50%)" }}>
+      <Box className="poker-seat-empty" if={!seatHasPlayer(3)} @click={takeSeat(3)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", cursor: mySeat === -1 ? "pointer" : "default", opacity: mySeat === -1 ? 0.7 : 0.3 }}>
+        <Box style={{ width: "clamp(38px, 5.3vw, 46px)", height: "clamp(38px, 5.3vw, 46px)", minWidth: "38px", minHeight: "38px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: "rgba(255,255,255,0.06)", border: "2px dashed rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Text style={{ color: "rgba(255,255,255,0.25)", fontSize: "20px" }}>+</Text>
+        </Box>
+        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)", marginTop: "4px" }}>Seat 4</Text>
+      </Box>
+      <Box className="poker-seat-occupied" if={seatHasPlayer(3)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", animation: seatGlow(3), borderRadius: "12px", padding: "6px 6px clamp(56px, 8.4vw, 72px) 6px", height: "clamp(136px, 20vw, 164px)", justifyContent: "flex-start", position: "relative" }}>
+        <Box className="poker-seat-cards" style={{ position: "absolute", left: "50%", bottom: "clamp(2px, 0.6vw, 6px)", transform: "translateX(-50%)", display: "flex", gap: "4px", minHeight: "44px", transformOrigin: "50% 20%", opacity: seatRealCardsOpacity(3), visibility: seatRealCardsVisibility(3), transition: "opacity 90ms linear" }}>
+          <Box className="poker-seat-card" if={seatCard1(3) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard1(3)) }}>{cardRankDisplay(seatCard1(3))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard1(3)) }}>{cardSuitDisplay(seatCard1(3))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard1(3) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+          <Box className="poker-seat-card" if={seatCard2(3) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard2(3)) }}>{cardRankDisplay(seatCard2(3))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard2(3)) }}>{cardSuitDisplay(seatCard2(3))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard2(3) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+        </Box>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(3), border: seatBorder(3), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(3) }}>
+          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(3)}</Text>
+        </Box>
+        <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(3)}</Text>
+        <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(3)}</Text>
+        <Box if={seatBet(3) > 0} style={{ background: "rgba(0,0,0,0.6)", borderRadius: "10px", padding: "2px 8px", marginTop: "2px", animation: seatBetAnim(3) }}>
+          <Text style={{ color: "#fbbf24", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"Bet: $" + seatBet(3)}</Text>
+        </Box>
+        <Box if={seatShowStatus(3)} style={{ background: statusBadgeColor(seatStatus(3)), borderRadius: "8px", padding: "1px 6px", marginTop: "2px" }}>
+          <Text style={{ color: "#fff", fontSize: "9px", fontWeight: "bold", textTransform: "uppercase" }}>{seatStatus(3)}</Text>
+        </Box>
+        <Box if={isDealerSeat(3)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
+          <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
+        </Box>
+        <Box if={seatIsBot(3)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
+          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        </Box>
+        <Box if={seatIsBot(3) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(3)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    // === SEAT 4 - top left ===
+    <Box style={{ position: "absolute", top: "clamp(-10px, -1vw, -4px)", left: "clamp(-24px, -2.5vw, -12px)" }}>
+      <Box className="poker-seat-empty" if={!seatHasPlayer(4)} @click={takeSeat(4)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", cursor: mySeat === -1 ? "pointer" : "default", opacity: mySeat === -1 ? 0.7 : 0.3 }}>
+        <Box style={{ width: "clamp(38px, 5.3vw, 46px)", height: "clamp(38px, 5.3vw, 46px)", minWidth: "38px", minHeight: "38px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: "rgba(255,255,255,0.06)", border: "2px dashed rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Text style={{ color: "rgba(255,255,255,0.25)", fontSize: "20px" }}>+</Text>
+        </Box>
+        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)", marginTop: "4px" }}>Seat 5</Text>
+      </Box>
+      <Box className="poker-seat-occupied" if={seatHasPlayer(4)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", animation: seatGlow(4), borderRadius: "12px", padding: "6px 6px clamp(56px, 8.4vw, 72px) 6px", height: "clamp(136px, 20vw, 164px)", justifyContent: "flex-start", position: "relative" }}>
+        <Box className="poker-seat-cards" style={{ position: "absolute", left: "50%", bottom: "clamp(2px, 0.6vw, 6px)", transform: "translateX(-50%)", display: "flex", gap: "4px", minHeight: "44px", transformOrigin: "50% 20%", opacity: seatRealCardsOpacity(4), visibility: seatRealCardsVisibility(4), transition: "opacity 90ms linear" }}>
+          <Box className="poker-seat-card" if={seatCard1(4) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard1(4)) }}>{cardRankDisplay(seatCard1(4))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard1(4)) }}>{cardSuitDisplay(seatCard1(4))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard1(4) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+          <Box className="poker-seat-card" if={seatCard2(4) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard2(4)) }}>{cardRankDisplay(seatCard2(4))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard2(4)) }}>{cardSuitDisplay(seatCard2(4))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard2(4) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+        </Box>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(4), border: seatBorder(4), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(4) }}>
+          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(4)}</Text>
+        </Box>
+        <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(4)}</Text>
+        <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(4)}</Text>
+        <Box if={seatBet(4) > 0} style={{ background: "rgba(0,0,0,0.6)", borderRadius: "10px", padding: "2px 8px", marginTop: "2px", animation: seatBetAnim(4) }}>
+          <Text style={{ color: "#fbbf24", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"Bet: $" + seatBet(4)}</Text>
+        </Box>
+        <Box if={seatShowStatus(4)} style={{ background: statusBadgeColor(seatStatus(4)), borderRadius: "8px", padding: "1px 6px", marginTop: "2px" }}>
+          <Text style={{ color: "#fff", fontSize: "9px", fontWeight: "bold", textTransform: "uppercase" }}>{seatStatus(4)}</Text>
+        </Box>
+        <Box if={isDealerSeat(4)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
+          <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
+        </Box>
+        <Box if={seatIsBot(4)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
+          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        </Box>
+        <Box if={seatIsBot(4) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(4)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    // === SEAT 5 - bottom left ===
+    <Box style={{ position: "absolute", bottom: "clamp(8px, 1.8vw, 16px)", left: "clamp(-24px, -2.5vw, -12px)" }}>
+      <Box className="poker-seat-empty" if={!seatHasPlayer(5)} @click={takeSeat(5)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", cursor: mySeat === -1 ? "pointer" : "default", opacity: mySeat === -1 ? 0.7 : 0.3 }}>
+        <Box style={{ width: "clamp(38px, 5.3vw, 46px)", height: "clamp(38px, 5.3vw, 46px)", minWidth: "38px", minHeight: "38px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: "rgba(255,255,255,0.06)", border: "2px dashed rgba(255,255,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Text style={{ color: "rgba(255,255,255,0.25)", fontSize: "20px" }}>+</Text>
+        </Box>
+        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)", marginTop: "4px" }}>Seat 6</Text>
+      </Box>
+      <Box className="poker-seat-occupied" if={seatHasPlayer(5)} style={{ width: "clamp(84px, 13vw, 108px)", display: "flex", flexDirection: "column", alignItems: "center", animation: seatGlow(5), borderRadius: "12px", padding: "6px 6px clamp(56px, 8.4vw, 72px) 6px", height: "clamp(136px, 20vw, 164px)", justifyContent: "flex-start", position: "relative" }}>
+        <Box className="poker-seat-cards" style={{ position: "absolute", left: "50%", bottom: "clamp(2px, 0.6vw, 6px)", transform: "translateX(-50%)", display: "flex", gap: "4px", minHeight: "44px", transformOrigin: "50% 20%", opacity: seatRealCardsOpacity(5), visibility: seatRealCardsVisibility(5), transition: "opacity 90ms linear" }}>
+          <Box className="poker-seat-card" if={seatCard1(5) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard1(5)) }}>{cardRankDisplay(seatCard1(5))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard1(5)) }}>{cardSuitDisplay(seatCard1(5))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard1(5) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+          <Box className="poker-seat-card" if={seatCard2(5) >= 0} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Text style={{ fontSize: "14px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard2(5)) }}>{cardRankDisplay(seatCard2(5))}</Text>
+            <Text style={{ fontSize: "12px", lineHeight: 1, marginTop: "3px", color: cardColorVal(seatCard2(5)) }}>{cardSuitDisplay(seatCard2(5))}</Text>
+          </Box>
+          <Box className="poker-seat-card" if={seatCard2(5) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
+        </Box>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(5), border: seatBorder(5), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(5) }}>
+          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(5)}</Text>
+        </Box>
+        <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(5)}</Text>
+        <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(5)}</Text>
+        <Box if={seatBet(5) > 0} style={{ background: "rgba(0,0,0,0.6)", borderRadius: "10px", padding: "2px 8px", marginTop: "2px", animation: seatBetAnim(5) }}>
+          <Text style={{ color: "#fbbf24", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"Bet: $" + seatBet(5)}</Text>
+        </Box>
+        <Box if={seatShowStatus(5)} style={{ background: statusBadgeColor(seatStatus(5)), borderRadius: "8px", padding: "1px 6px", marginTop: "2px" }}>
+          <Text style={{ color: "#fff", fontSize: "9px", fontWeight: "bold", textTransform: "uppercase" }}>{seatStatus(5)}</Text>
+        </Box>
+        <Box if={isDealerSeat(5)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
+          <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
+        </Box>
+        <Box if={seatIsBot(5)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
+          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        </Box>
+        <Box if={seatIsBot(5) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(5)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
+        </Box>
+      </Box>
+    </Box>
+  </Box>
+
+  // Host controls (deal cards + add bot)
+  <Box className="poker-host-controls" if={isHost && mySeat >= 0} style={{
+    position: "absolute", bottom: hostControlsBottomStyle(), left: "50%", transform: "translateX(-50%)", zIndex: 60,
+    display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", justifyContent: "center",
+    width: "min(94vw, 640px)"
+  }}>
+    <Button if={gamePhase === "waiting" && countSeatedPlayers() >= 2} @click={startHand} style={{
+      background: "linear-gradient(135deg, #c8aa6e, #a08040)", color: "#1c1917", border: "none",
+      borderRadius: "10px", padding: "12px 32px", fontSize: "16px", fontWeight: "700",
+      cursor: "pointer", boxShadow: "0 4px 16px rgba(200,170,110,0.3)"
+    }}>
+      Deal Cards
+    </Button>
+    <Button if={(gamePhase === "waiting" || gamePhase === "showdown") && countSeatedPlayers() < 6} @click={addBot} style={{
+      background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)",
+      borderRadius: "10px", padding: "10px 20px", fontSize: "13px", fontWeight: "600",
+      cursor: "pointer"
+    }}>
+      + Add Bot
+    </Button>
+  </Box>
+
+  // Rebuy button (when player is out of chips between hands)
+  <Box className="poker-rebuy" if={canRebuy()} style={{
+    position: "absolute", bottom: rebuyBottomStyle(), left: "50%", transform: "translateX(-50%)", zIndex: 60
+  }}>
+    <Button @click={rebuy} style={{
+      background: "linear-gradient(135deg, #22c55e, #16a34a)", color: "#fff", border: "none",
+      borderRadius: "10px", padding: "10px 24px", fontSize: "14px", fontWeight: "700",
+      cursor: "pointer", boxShadow: "0 4px 16px rgba(34,197,94,0.3)"
+    }}>
+      Rebuy $1000
+    </Button>
+  </Box>
+
+  // Action panel
+  <ActionPanel />
+
+  // Host debug overlay
+  <Box if={isHost && showDebugOverlay} style={{
+    position: "absolute", top: "58px", right: "12px", zIndex: 200,
+    width: "min(88vw, 350px)", maxHeight: "50vh", overflowY: "auto",
+    background: "rgba(0,0,0,0.78)", backdropFilter: "blur(10px)",
+    border: "1px solid rgba(255,255,255,0.16)", borderRadius: "10px", padding: "10px"
+  }}>
+    <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
+      <Text style={{ color: "#22c55e", fontSize: "12px", fontWeight: "800" }}>Host Debug</Text>
+      <Button @click={copyDebugSnapshot} style={{ background: "rgba(59,130,246,0.2)", color: "#93c5fd", border: "1px solid rgba(147,197,253,0.35)", borderRadius: "6px", padding: "2px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Copy Debug</Button>
+    </Box>
+    <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"Phase: " + gamePhase + " | Hand: " + handNumber}</Text>
+    <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"Turn seat: " + currentTurnSeat + " | Current bet: " + currentBet}</Text>
+    <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"Min raise increment: " + getMinRaise() + " | Last full raise: " + lastFullRaise}</Text>
+    <Text style={{ color: "rgba(255,255,255,0.75)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"Pot: " + pot + " | Contributions: " + totalContributions()}</Text>
+    <Text style={{ color: bankrollDelta() === 0 ? "rgba(134,239,172,0.9)" : "#fca5a5", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"Bankroll now: " + bankrollNow() + " | baseline: " + debugHandBankrollBaseline + " | delta: " + bankrollDelta()}</Text>
+    <Text style={{ color: "rgba(255,255,255,0.7)", fontSize: "10px" }}>{"Sound diag: " + soundDiag}</Text>
+    <Text if={soundLastError} style={{ color: "#fca5a5", fontSize: "10px" }}>{"Sound error: " + soundLastError}</Text>
+    <Text style={{ color: debugTraceEnabled ? "#93c5fd" : "rgba(255,255,255,0.45)", fontSize: "10px", marginTop: "2px" }}>{"Trace: " + (debugTraceEnabled ? "ON" : "OFF")}</Text>
+    <Text style={{ color: "rgba(255,255,255,0.55)", fontSize: "10px", marginTop: "6px", marginBottom: "4px" }}>Seat snapshots</Text>
+
+    <Box if={seatHasPlayer(0)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"S1 " + seatName(0) + " | st:" + seatStatus(0) + " | chips:" + seatChips(0) + " | bet:" + seatBet(0) + " | contrib:" + seatContribution(0) + " | canAct:" + seatCanAct(0)}</Text>
+    </Box>
+    <Box if={!seatHasPlayer(0)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "rgba(255,255,255,0.45)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>S1 empty</Text>
+    </Box>
+    <Box if={seatHasPlayer(1)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"S2 " + seatName(1) + " | st:" + seatStatus(1) + " | chips:" + seatChips(1) + " | bet:" + seatBet(1) + " | contrib:" + seatContribution(1) + " | canAct:" + seatCanAct(1)}</Text>
+    </Box>
+    <Box if={!seatHasPlayer(1)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "rgba(255,255,255,0.45)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>S2 empty</Text>
+    </Box>
+    <Box if={seatHasPlayer(2)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"S3 " + seatName(2) + " | st:" + seatStatus(2) + " | chips:" + seatChips(2) + " | bet:" + seatBet(2) + " | contrib:" + seatContribution(2) + " | canAct:" + seatCanAct(2)}</Text>
+    </Box>
+    <Box if={!seatHasPlayer(2)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "rgba(255,255,255,0.45)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>S3 empty</Text>
+    </Box>
+    <Box if={seatHasPlayer(3)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"S4 " + seatName(3) + " | st:" + seatStatus(3) + " | chips:" + seatChips(3) + " | bet:" + seatBet(3) + " | contrib:" + seatContribution(3) + " | canAct:" + seatCanAct(3)}</Text>
+    </Box>
+    <Box if={!seatHasPlayer(3)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "rgba(255,255,255,0.45)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>S4 empty</Text>
+    </Box>
+    <Box if={seatHasPlayer(4)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"S5 " + seatName(4) + " | st:" + seatStatus(4) + " | chips:" + seatChips(4) + " | bet:" + seatBet(4) + " | contrib:" + seatContribution(4) + " | canAct:" + seatCanAct(4)}</Text>
+    </Box>
+    <Box if={!seatHasPlayer(4)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "rgba(255,255,255,0.45)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>S5 empty</Text>
+    </Box>
+    <Box if={seatHasPlayer(5)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"S6 " + seatName(5) + " | st:" + seatStatus(5) + " | chips:" + seatChips(5) + " | bet:" + seatBet(5) + " | contrib:" + seatContribution(5) + " | canAct:" + seatCanAct(5)}</Text>
+    </Box>
+    <Box if={!seatHasPlayer(5)} style={{ padding: "4px 0", borderTop: "1px solid rgba(255,255,255,0.08)" }}>
+      <Text style={{ color: "rgba(255,255,255,0.45)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>S6 empty</Text>
+    </Box>
+  </Box>
+</Box>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

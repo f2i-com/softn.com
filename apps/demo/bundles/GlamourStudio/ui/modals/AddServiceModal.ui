@@ -1,0 +1,13 @@
+// AddServiceModal.ui - Modal for adding new services
+
+<Modal open={showAddServiceModal} onClose={closeAddServiceModal} title="Add New Service" size=md>
+  <SmartForm
+    collection="services"
+    fields="name:text:required, category:text:required, price:number:required, duration:number"
+    defaults={{ duration: 30 }}
+    onSaved={onServiceSaved}
+    submitText="Add Service"
+    showCancel={true}
+    onCancel={closeAddServiceModal}
+  />
+</Modal>

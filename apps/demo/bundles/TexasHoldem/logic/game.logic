@@ -1,0 +1,845 @@
+  // --- Host Game Flow ---
+
+  function getFreshTableRecord() {
+    let rec = TableRepositoryClass.getCurrentTableRecord(tableId)
+    if (!rec) return null
+    tableId = rec.id
+    return rec
+  }
+
+  function startHand() {
+    if (!isHost) return
+    if (TableStateClass.isLiveHandPhase(gamePhase)) return
+    // Re-read table to ensure tableId is valid (could be stale after ID swap)
+    let tableRec = getFreshTableRecord()
+    if (!tableRec) return
+    // Re-read players for accurate count
+    players = db.query("poker_players")
+    if (countSeatedPlayers() < 2) {
+      toastMessage = "Need at least 2 players"
+      toastType = "warning"
+      return
+    }
+
+    // Clear stale UI state from previous hand
+    myHandName = ""
+    showResultsModal = false
+    resultDetails = ""
+    showdownAutoDelay = 0
+    showdownAutoDeadlineMs = 0
+    showdownStartedAtMs = 0
+
+    // Auto-replenish busted bots so games can continue
+    let rbi = 0
+    while (rbi < players.length) {
+      if (players[rbi].data && players[rbi].data.chips <= 0) {
+        let rpid = players[rbi].data.peerId || ""
+        if (rpid.charAt(0) === "b" && rpid.charAt(1) === "o" && rpid.charAt(2) === "t" && rpid.charAt(3) === "-") {
+          db.update(players[rbi].id, { chips: 1000 })
+        }
+      }
+      rbi = rbi + 1
+    }
+    // Re-read after replenish
+    players = db.query("poker_players")
+
+    // Check at least 2 players have chips to play
+    let playable = 0
+    let pci = 0
+    while (pci < players.length) {
+      if (players[pci].data && players[pci].data.chips > 0) {
+        playable = playable + 1
+      }
+      pci = pci + 1
+    }
+    if (playable < 2) {
+      toastMessage = "Need at least 2 players with chips"
+      toastType = "warning"
+      return
+    }
+
+    // Debug invariant baseline for this hand: sum of all player chips before blinds.
+    let baseline = 0
+    let bsi = 0
+    while (bsi < players.length) {
+      if (players[bsi].data) {
+        baseline = baseline + (players[bsi].data.chips || 0)
+      }
+      bsi = bsi + 1
+    }
+    debugHandBankrollBaseline = baseline
+
+    // Clean up old action logs to prevent XDB bloat
+    let oldActions = db.query("poker_actions")
+    let oai = 0
+    while (oai < oldActions.length) {
+      db.hardDelete("poker_actions", oldActions[oai].id)
+      oai = oai + 1
+    }
+
+    // Shuffle deck
+    let newDeck = shuffleDeck(buildDeck())
+    let tableHandNumber = tableRec.data.handNumber || 0
+    let newHandNumber = tableHandNumber + 1
+    let dp = 0
+
+    // Deal 2 hole cards to each player (ordered by seat)
+    let seatOrder = []
+    let si = 0
+    while (si < 6) {
+      let p = getPlayerAtSeat(si)
+      if (p) {
+        seatOrder.push(p)
+      }
+      si = si + 1
+    }
+
+    // Reset player hand state first.
+    let di = 0
+    while (di < seatOrder.length) {
+      let p = seatOrder[di]
+      if (p.data.chips <= 0) {
+        db.update(p.id, {
+          holeCards: [],
+          bet: 0,
+          handContribution: 0,
+          showCardsAtShowdown: false,
+          status: TableStateClass.statusSittingOut(),
+          hasActed: false
+        })
+      } else {
+        db.update(p.id, {
+          holeCards: [],
+          bet: 0,
+          handContribution: 0,
+          showCardsAtShowdown: false,
+          status: TableStateClass.statusActive(),
+          hasActed: false
+        })
+      }
+      di = di + 1
+    }
+
+    // Deal hole cards round-robin: collect both cards per player, then write once.
+    // Pass 1: first card to each active player
+    let dealtCards = []
+    let rri = 0
+    while (rri < seatOrder.length) {
+      if (seatOrder[rri].data.chips > 0) {
+        dealtCards.push(newDeck[dp])
+        dp = dp + 1
+      } else {
+        dealtCards.push(-99)
+      }
+      rri = rri + 1
+    }
+    // Pass 2: second card to each active player
+    rri = 0
+    while (rri < seatOrder.length) {
+      if (seatOrder[rri].data.chips > 0) {
+        let both = [dealtCards[rri], newDeck[dp]]
+        dp = dp + 1
+        db.update(seatOrder[rri].id, { holeCards: both })
+        seatOrder[rri].data.holeCards = both
+      }
+      rri = rri + 1
+    }
+
+    // Refresh players so postBlinds sees updated statuses ("active" not "waiting")
+    players = db.query("poker_players")
+
+    // Advance dealer (skip sitting-out players)
+    let baseDealerSeat = tableRec.data.dealerSeat
+    if (baseDealerSeat === undefined || baseDealerSeat === null) {
+      baseDealerSeat = dealerSeat
+    }
+    let newDealerSeat = nextActiveSeat(baseDealerSeat)
+
+    // Update table
+    db.update(tableId, {
+      gamePhase: TableStateClass.phasePreflop(),
+      handNumber: newHandNumber,
+      dealerSeat: newDealerSeat,
+      currentBet: 0,
+      lastFullRaise: bigBlind,
+      showdownStartedAtMs: 0,
+      pot: 0,
+      deck: newDeck,
+      deckPosition: dp,
+      communityCards: []
+    })
+
+    // Post blinds
+    postBlinds(newDealerSeat, seatOrder)
+    refreshFromDB()
+  }
+
+  function nextOccupiedSeat(afterSeat) {
+    let check = 1
+    while (check <= 6) {
+      let s = (afterSeat + check) % 6
+      if (getPlayerAtSeat(s)) {
+        return s
+      }
+      check = check + 1
+    }
+    return afterSeat
+  }
+
+  function nextActiveSeat(afterSeat) {
+    let check = 1
+    while (check <= 6) {
+      let s = (afterSeat + check) % 6
+      let p = getPlayerAtSeat(s)
+      if (p && p.data.status === TableStateClass.statusActive()) {
+        return s
+      }
+      check = check + 1
+    }
+    return -1
+  }
+
+  function previousActiveSeat(beforeSeat) {
+    let check = 1
+    while (check <= 6) {
+      let s = (beforeSeat - check + 60) % 6
+      let p = getPlayerAtSeat(s)
+      if (p && p.data.status === TableStateClass.statusActive()) {
+        return s
+      }
+      check = check + 1
+    }
+    return -1
+  }
+
+  function postBlinds(dlrSeat, seatOrder) {
+    // Count active players for heads-up determination
+    let activeCount = 0
+    let aci = 0
+    while (aci < players.length) {
+      if (players[aci].data && players[aci].data.status === TableStateClass.statusActive()) {
+        activeCount = activeCount + 1
+      }
+      aci = aci + 1
+    }
+
+    let sbSeat = -1
+    let bbSeat = -1
+
+    if (activeCount === 2) {
+      // Heads-up: dealer posts SB, other posts BB
+      let dlrP = getPlayerAtSeat(dlrSeat)
+      if (dlrP && dlrP.data.status === TableStateClass.statusActive()) {
+        sbSeat = dlrSeat
+      } else {
+        sbSeat = nextActiveSeat(dlrSeat)
+      }
+      bbSeat = nextActiveSeat(sbSeat)
+    } else {
+      let tableRec = getFreshTableRecord()
+      let prevBbSeat = -1
+      if (tableRec && tableRec.data && tableRec.data.lastBigBlindSeat !== undefined) {
+        prevBbSeat = tableRec.data.lastBigBlindSeat
+      }
+      if (prevBbSeat >= 0) {
+        bbSeat = nextActiveSeat(prevBbSeat)
+        if (bbSeat < 0) {
+          sbSeat = nextActiveSeat(dlrSeat)
+          bbSeat = nextActiveSeat(sbSeat)
+        } else {
+          sbSeat = previousActiveSeat(bbSeat)
+          if (sbSeat < 0 || sbSeat === bbSeat) {
+            sbSeat = nextActiveSeat(dlrSeat)
+          }
+        }
+      } else {
+        sbSeat = nextActiveSeat(dlrSeat)
+        bbSeat = nextActiveSeat(sbSeat)
+      }
+    }
+
+    let totalBlinds = 0
+    let sbPosted = 0
+    let bbPosted = 0
+
+    // Post small blind
+    let sbPlayer = getPlayerAtSeat(sbSeat)
+    if (sbPlayer && sbPlayer.data.status === TableStateClass.statusActive()) {
+      let sbAmount = Math.min(smallBlind, sbPlayer.data.chips)
+      let sbUpdate = { bet: sbAmount, chips: sbPlayer.data.chips - sbAmount }
+      sbUpdate.handContribution = (sbPlayer.data.handContribution || 0) + sbAmount
+      if (sbUpdate.chips === 0) {
+        sbUpdate.status = TableStateClass.statusAllIn()
+      }
+      db.update(sbPlayer.id, sbUpdate)
+      totalBlinds = totalBlinds + sbAmount
+      sbPosted = sbAmount
+    }
+
+    // Post big blind
+    let bbPlayer = getPlayerAtSeat(bbSeat)
+    if (bbPlayer && bbPlayer.data.status === TableStateClass.statusActive()) {
+      let bbAmount = Math.min(bigBlind, bbPlayer.data.chips)
+      let bbUpdate = { bet: bbAmount, chips: bbPlayer.data.chips - bbAmount }
+      bbUpdate.handContribution = (bbPlayer.data.handContribution || 0) + bbAmount
+      if (bbUpdate.chips === 0) {
+        bbUpdate.status = TableStateClass.statusAllIn()
+      }
+      db.update(bbPlayer.id, bbUpdate)
+      totalBlinds = totalBlinds + bbAmount
+      bbPosted = bbAmount
+    }
+
+    // Refresh players so nextActiveSeat sees allin status from blind posting
+    players = db.query("poker_players")
+
+    // First to act is after BB (preflop)
+    let firstAct = nextActiveSeat(bbSeat)
+    let openingBet = bbPosted
+    if (sbPosted > openingBet) {
+      openingBet = sbPosted
+    }
+
+    db.update(tableId, {
+      currentBet: openingBet,
+      lastFullRaise: openingBet > bigBlind ? openingBet : bigBlind,
+      pot: totalBlinds,
+      lastBigBlindSeat: bbSeat,
+      currentTurnSeat: firstAct
+    })
+  }
+  // --- Turn Management ---
+
+  function advanceTurn() {
+    // Re-read state once for both players and table
+    let freshPlayers = db.query("poker_players")
+    players = freshPlayers
+    let freshTableRec = getFreshTableRecord()
+    if (!freshTableRec) return
+    let freshCurrentBet = freshTableRec.data.currentBet || 0
+    let freshTurnSeat = currentTurnSeat
+    if (freshTableRec.data.currentTurnSeat !== undefined) {
+      freshTurnSeat = freshTableRec.data.currentTurnSeat
+    }
+
+    // Check if only 1 player remains (all others folded)
+    let activePlayers = []
+    let ai = 0
+    while (ai < freshPlayers.length) {
+      if (freshPlayers[ai].data) {
+        let st = freshPlayers[ai].data.status
+        if (st === TableStateClass.statusActive() || st === TableStateClass.statusAllIn()) {
+          activePlayers.push(freshPlayers[ai])
+        }
+      }
+      ai = ai + 1
+    }
+
+    if (activePlayers.length <= 1) {
+      // Last player standing wins
+      if (activePlayers.length === 1) {
+        awardLastStanding(activePlayers[0])
+      }
+      return
+    }
+
+    // Check if betting round is complete
+    if (isBettingRoundComplete(freshPlayers, freshCurrentBet)) {
+      advancePhase()
+      return
+    }
+
+    // Find next player to act (use fresh turn seat from DB)
+    let next = nextActiveSeatFresh(freshTurnSeat, freshPlayers)
+    if (next >= 0) {
+      db.update(tableId, { currentTurnSeat: next })
+      currentTurnSeat = next
+    } else {
+      advancePhase()
+    }
+  }
+
+  function nextActiveSeatFresh(afterSeat, freshPlayers) {
+    let check = 1
+    while (check <= 6) {
+      let s = (afterSeat + check) % 6
+      let fi = 0
+      while (fi < freshPlayers.length) {
+        if (freshPlayers[fi].data && freshPlayers[fi].data.seat === s && freshPlayers[fi].data.status === TableStateClass.statusActive() && !freshPlayers[fi].data.hasActed) {
+          return s
+        }
+        fi = fi + 1
+      }
+      check = check + 1
+    }
+    return -1
+  }
+
+  function isBettingRoundComplete(freshPlayers, cb) {
+    let i = 0
+    while (i < freshPlayers.length) {
+      if (freshPlayers[i].data && freshPlayers[i].data.status === TableStateClass.statusActive()) {
+        if (!freshPlayers[i].data.hasActed) {
+          return false
+        }
+        if (freshPlayers[i].data.bet < cb && freshPlayers[i].data.chips > 0) {
+          return false
+        }
+      }
+      i = i + 1
+    }
+    return true
+  }
+  // --- Phase Advancement ---
+
+  function advancePhase() {
+    let t = getFreshTableRecord()
+    if (!t) return
+    let phase = t.data.gamePhase
+    let dp = t.data.deckPosition
+    let dk = t.data.deck
+    let cc = t.data.communityCards || []
+    let dlr = t.data.dealerSeat
+
+    // Reset bets and hasActed for new round
+    let allPlayers = db.query("poker_players")
+    // Update module-level players so nextActiveSeat sees fresh statuses
+    players = allPlayers
+    let pi = 0
+    while (pi < allPlayers.length) {
+      if (allPlayers[pi].data && (allPlayers[pi].data.status === TableStateClass.statusActive() || allPlayers[pi].data.status === TableStateClass.statusAllIn())) {
+        db.update(allPlayers[pi].id, { bet: 0, hasActed: false })
+      } else if (allPlayers[pi].data && allPlayers[pi].data.status === TableStateClass.statusFolded() && (allPlayers[pi].data.bet || 0) > 0) {
+        // Folded players keep their contribution in handContribution; clear per-street bet display.
+        db.update(allPlayers[pi].id, { bet: 0 })
+      }
+      pi = pi + 1
+    }
+    // Re-read players so module-level array reflects the hasActed reset
+    players = db.query("poker_players")
+
+    if (phase === TableStateClass.phasePreflop()) {
+      // Burn 1, deal 3 (flop)
+      dp = dp + 1
+      cc = [dk[dp], dk[dp + 1], dk[dp + 2]]
+      dp = dp + 3
+      let firstAct = nextActiveSeat(dlr)
+      db.update(tableId, {
+        gamePhase: TableStateClass.phaseFlop(),
+        communityCards: cc,
+        deckPosition: dp,
+        currentBet: 0,
+        lastFullRaise: bigBlind,
+        currentTurnSeat: firstAct
+      })
+    } else if (phase === TableStateClass.phaseFlop()) {
+      // Burn 1, deal 1 (turn) - build new array (push may not work on XDB arrays)
+      dp = dp + 1
+      cc = [cc[0], cc[1], cc[2], dk[dp]]
+      dp = dp + 1
+      let firstAct = nextActiveSeat(dlr)
+      db.update(tableId, {
+        gamePhase: TableStateClass.phaseTurn(),
+        communityCards: cc,
+        deckPosition: dp,
+        currentBet: 0,
+        lastFullRaise: bigBlind,
+        currentTurnSeat: firstAct
+      })
+    } else if (phase === TableStateClass.phaseTurn()) {
+      // Burn 1, deal 1 (river) - build new array (push may not work on XDB arrays)
+      dp = dp + 1
+      cc = [cc[0], cc[1], cc[2], cc[3], dk[dp]]
+      dp = dp + 1
+      let firstAct = nextActiveSeat(dlr)
+      db.update(tableId, {
+        gamePhase: TableStateClass.phaseRiver(),
+        communityCards: cc,
+        deckPosition: dp,
+        currentBet: 0,
+        lastFullRaise: bigBlind,
+        currentTurnSeat: firstAct
+      })
+    } else if (phase === TableStateClass.phaseRiver()) {
+      // Showdown - resolveShowdown handles all DB updates (gamePhase, pot, currentTurnSeat)
+      resolveShowdown()
+    }
+  }
+  // --- Showdown ---
+
+  function resolveShowdown() {
+    let allPlayers = db.query("poker_players")
+    let t = getFreshTableRecord()
+    if (!t) return
+    let cc = t.data.communityCards || []
+    let showdownDealerSeat = t.data.dealerSeat
+
+    // Evaluate players and gather contributions through engine helpers.
+    let contenders = Table_buildContenders(allPlayers, cc)
+    let potData = Table_collectContributors(allPlayers)
+    let contributors = potData.contributors || []
+    let totalPot = potData.totalPot || 0
+
+    // Default hide all seat cards at showdown until explicitly marked.
+    let sdi = 0
+    while (sdi < allPlayers.length) {
+      db.update(allPlayers[sdi].id, { showCardsAtShowdown: false })
+      sdi = sdi + 1
+    }
+    // Reveal only contenders (players still in the hand at showdown).
+    let csi = 0
+    while (csi < contenders.length) {
+      db.update(contenders[csi].player.id, { showCardsAtShowdown: true })
+      csi = csi + 1
+    }
+
+    if (contenders.length === 0) {
+      let fallbackWinner = null
+      let fbi = 0
+      while (fbi < allPlayers.length) {
+        if (allPlayers[fbi].data) {
+          let fbs = allPlayers[fbi].data.status
+          if (fbs === TableStateClass.statusActive() || fbs === TableStateClass.statusAllIn()) {
+            fallbackWinner = allPlayers[fbi]
+            fbi = allPlayers.length
+          }
+        }
+        fbi = fbi + 1
+      }
+      // Safety fallback: if no active/allin contender is evaluable,
+      // award the pot to a deterministic contributor so chips never vanish.
+      if (!fallbackWinner && contributors.length > 0) {
+        // Prefer active/allin contributors, otherwise lowest-seat contributor.
+        let cwi = 0
+        while (cwi < contributors.length) {
+          let cst = contributors[cwi].data.status || ""
+          if (cst === TableStateClass.statusActive() || cst === TableStateClass.statusAllIn()) {
+            if (!fallbackWinner || contributors[cwi].data.seat < fallbackWinner.data.seat) {
+              fallbackWinner = contributors[cwi]
+            }
+          }
+          cwi = cwi + 1
+        }
+        if (!fallbackWinner) {
+          fallbackWinner = contributors[0]
+          let cwj = 1
+          while (cwj < contributors.length) {
+            if (contributors[cwj].data.seat < fallbackWinner.data.seat) {
+              fallbackWinner = contributors[cwj]
+            }
+            cwj = cwj + 1
+          }
+        }
+      }
+      if (fallbackWinner) {
+        db.update(fallbackWinner.id, { chips: fallbackWinner.data.chips + totalPot })
+        db.update(fallbackWinner.id, { showCardsAtShowdown: true })
+        resultWinnerName = fallbackWinner.data.name
+        resultHandName = "Awarded"
+        resultPotAmount = totalPot
+        resultDetails = ""
+        toastMessage = fallbackWinner.data.name + " wins $" + totalPot + " (Awarded)"
+        toastType = "success"
+      }
+      db.update(tableId, { gamePhase: TableStateClass.phaseShowdown(), currentTurnSeat: -1, currentBet: 0, showdownStartedAtMs: Date.now() })
+      return
+    }
+
+    // Build sorted unique contribution levels
+    let levels = Table_buildContributionLevels(contributors)
+
+    // Accumulate awards by player id
+    let awardsById = {}
+    let ai = 0
+    while (ai < allPlayers.length) {
+      awardsById[allPlayers[ai].id] = 0
+      ai = ai + 1
+    }
+
+    let prevLevel = 0
+    let mainPotWinners = []
+    let mainPotAmount = 0
+    let mainPotRank = 0
+    let sidePotCount = 0
+    let sidePotSummary = ""
+    let lvi = 0
+    while (lvi < levels.length) {
+      let level = levels[lvi]
+      let step = level - prevLevel
+      if (step > 0) {
+        let inPotCount = 0
+        let ipi = 0
+        while (ipi < contributors.length) {
+          if ((contributors[ipi].data.handContribution || 0) >= level) {
+            inPotCount = inPotCount + 1
+          }
+          ipi = ipi + 1
+        }
+        let potAmount = step * inPotCount
+        if (potAmount > 0) {
+          let eligible = []
+          let ei = 0
+          while (ei < contenders.length) {
+            if ((contenders[ei].player.data.handContribution || 0) >= level) {
+              eligible.push(contenders[ei])
+            }
+            ei = ei + 1
+          }
+          if (eligible.length > 0) {
+            let winners = Table_selectBestContenders(eligible)
+            Table_awardSplit(awardsById, winners, potAmount, showdownDealerSeat)
+            if (prevLevel === 0 && mainPotWinners.length === 0) {
+              mainPotWinners = winners
+              mainPotAmount = potAmount
+              if (winners.length > 0 && winners[0].handResult) {
+                mainPotRank = winners[0].handResult.rank || 0
+              }
+            } else {
+              sidePotCount = sidePotCount + 1
+              let sideNames = ""
+              let swn = 0
+              while (swn < winners.length) {
+                if (sideNames) {
+                  sideNames = sideNames + ", "
+                }
+                sideNames = sideNames + winners[swn].player.data.name
+                swn = swn + 1
+              }
+              let sideLine = "$" + potAmount + " -> "
+              if (winners.length > 1) {
+                sideLine = sideLine + "split " + sideNames
+              } else {
+                sideLine = sideLine + sideNames
+              }
+              if (sidePotSummary) {
+                sidePotSummary = sidePotSummary + "; "
+              }
+              sidePotSummary = sidePotSummary + sideLine
+            }
+          }
+        }
+      }
+      prevLevel = level
+      lvi = lvi + 1
+    }
+
+    // Reconcile any unawarded chips (e.g., pathological contribution patterns)
+    // so total payouts always match total contributions.
+    let awardedTotal = 0
+    let ati = 0
+    while (ati < allPlayers.length) {
+      let apid = allPlayers[ati].id
+      awardedTotal = awardedTotal + (awardsById[apid] || 0)
+      ati = ati + 1
+    }
+    let payoutRemainder = totalPot - awardedTotal
+    if (payoutRemainder > 0 && contenders.length > 0) {
+      let bonusWinners = Table_selectBestContenders(contenders)
+      Table_awardSplit(awardsById, bonusWinners, payoutRemainder, showdownDealerSeat)
+    }
+
+    // Apply awards
+    let uai = 0
+    while (uai < allPlayers.length) {
+      let pid = allPlayers[uai].id
+      let award = awardsById[pid] || 0
+      if (award > 0) {
+        db.update(pid, { chips: allPlayers[uai].data.chips + award })
+      }
+      uai = uai + 1
+    }
+
+    // Main winner label for UI/toast
+    let bestRank = 0
+    let bi = 0
+    while (bi < contenders.length) {
+      if (contenders[bi].handResult.rank > bestRank) {
+        bestRank = contenders[bi].handResult.rank
+      }
+      bi = bi + 1
+    }
+    let winnerNames = ""
+    let wni = 0
+    while (wni < contenders.length) {
+      let pid = contenders[wni].player.id
+      if ((awardsById[pid] || 0) > 0) {
+        if (winnerNames) {
+          winnerNames = winnerNames + ", "
+        }
+        winnerNames = winnerNames + contenders[wni].player.data.name
+      }
+      wni = wni + 1
+    }
+    if (!winnerNames && contenders.length > 0) {
+      winnerNames = contenders[0].player.data.name
+    }
+    let showdownWinners = Table_selectBestContenders(contenders)
+    let showdownWinnerNames = ""
+    let sgi = 0
+    while (sgi < showdownWinners.length) {
+      if (showdownWinnerNames) {
+        showdownWinnerNames = showdownWinnerNames + ", "
+      }
+      showdownWinnerNames = showdownWinnerNames + showdownWinners[sgi].player.data.name
+      sgi = sgi + 1
+    }
+    if (!showdownWinnerNames) {
+      showdownWinnerNames = winnerNames
+    }
+
+    let mainWinnerNames = ""
+    let mwi = 0
+    while (mwi < mainPotWinners.length) {
+      if (mainWinnerNames) {
+        mainWinnerNames = mainWinnerNames + ", "
+      }
+      mainWinnerNames = mainWinnerNames + mainPotWinners[mwi].player.data.name
+      mwi = mwi + 1
+    }
+    if (!mainWinnerNames) {
+      mainWinnerNames = winnerNames
+    }
+    let winningRank = mainPotRank
+    if (winningRank <= 0) {
+      winningRank = bestRank
+    }
+    let displayMainPot = mainPotAmount
+    if (displayMainPot <= 0) {
+      displayMainPot = totalPot
+    }
+
+    resultWinnerName = mainWinnerNames
+    resultHandName = handRankName(winningRank)
+    resultPotAmount = displayMainPot
+    resultDetails = ""
+    if (sidePotCount > 0) {
+      if (sidePotSummary) {
+        resultDetails = "Main pot $" + displayMainPot + ". Side pots: " + sidePotSummary + "."
+      } else {
+        resultDetails = "Main pot $" + displayMainPot + ". " + sidePotCount + " side pot(s) settled."
+      }
+    }
+
+    if (mainWinnerNames.indexOf(",") >= 0) {
+      toastMessage = mainWinnerNames + " split showdown with " + handRankName(winningRank) + " | Main pot $" + displayMainPot
+      if (sidePotCount > 0) {
+        if (sidePotSummary) {
+          toastMessage = toastMessage + " | Side: " + sidePotSummary
+        } else {
+          toastMessage = toastMessage + " (" + sidePotCount + " side pot(s) settled)"
+        }
+      }
+    } else {
+      toastMessage = mainWinnerNames + " won showdown with " + handRankName(winningRank) + " | Main pot $" + displayMainPot
+      if (sidePotCount > 0) {
+        if (sidePotSummary) {
+          toastMessage = toastMessage + " | Side: " + sidePotSummary
+        } else {
+          toastMessage = toastMessage + " (" + sidePotCount + " side pot(s) settled)"
+        }
+      }
+    }
+    toastType = "success"
+
+    db.update(tableId, {
+      gamePhase: TableStateClass.phaseShowdown(),
+      currentTurnSeat: -1,
+      currentBet: 0,
+      showdownStartedAtMs: Date.now()
+    })
+  }
+
+  function awardLastStanding(winner) {
+    let allP = db.query("poker_players")
+    let totalPot = 0
+    let api = 0
+    while (api < allP.length) {
+      if (allP[api].data) {
+        totalPot = totalPot + (allP[api].data.handContribution || 0)
+      }
+      api = api + 1
+    }
+
+    db.update(winner.id, {
+      chips: winner.data.chips + totalPot,
+      showCardsAtShowdown: true
+    })
+
+    resultWinnerName = winner.data.name
+    resultHandName = "Last Standing"
+    resultPotAmount = totalPot
+    resultDetails = ""
+    toastMessage = winner.data.name + " wins $" + totalPot + " (Last Standing)"
+    toastType = "success"
+
+    db.update(tableId, {
+      gamePhase: TableStateClass.phaseShowdown(),
+      currentTurnSeat: -1,
+      currentBet: 0,
+      showdownStartedAtMs: Date.now()
+    })
+  }
+
+  function closeResultsModal() {
+    showResultsModal = false
+  }
+
+  function nextHand() {
+    showResultsModal = false
+    showdownAutoDelay = 0
+    showdownAutoDeadlineMs = 0
+    showdownStartedAtMs = 0
+    // Re-read fresh state before starting - the auto-advance timer may have
+    // already changed gamePhase, or polling may not have run yet
+    refreshFromDB()
+    if (isHost && (gamePhase === TableStateClass.phaseWaiting() || gamePhase === TableStateClass.phaseShowdown())) {
+      startHand()
+    }
+  }
+
+  function forceReset() {
+    if (!isHost) return
+    // Re-read fresh table ID
+    let resetTable = getFreshTableRecord()
+    if (!resetTable) return
+    // Emergency reset: return all bets to players, reset table to waiting
+    let allP = db.query("poker_players")
+    let fri = 0
+    while (fri < allP.length) {
+      if (allP[fri].data) {
+        db.update(allP[fri].id, {
+          chips: allP[fri].data.chips + (allP[fri].data.handContribution || 0),
+          bet: 0,
+          handContribution: 0,
+          holeCards: [],
+          showCardsAtShowdown: false,
+          status: TableStateClass.statusWaiting(),
+          hasActed: false
+        })
+      }
+      fri = fri + 1
+    }
+    db.update(tableId, {
+      gamePhase: TableStateClass.phaseWaiting(),
+      currentTurnSeat: -1,
+      currentBet: 0,
+      lastFullRaise: bigBlind,
+      showdownStartedAtMs: 0,
+      pot: 0,
+      communityCards: [],
+      deck: [],
+      deckPosition: 0,
+      lastBigBlindSeat: -1
+    })
+    showResultsModal = false
+    myHandName = ""
+    resultDetails = ""
+    showdownAutoDelay = 0
+    showdownAutoDeadlineMs = 0
+    showdownStartedAtMs = 0
+    debugHandBankrollBaseline = 0
+    toastClearDelay = 0
+    toastMessage = "Hand reset"
+    toastType = "info"
+    refreshFromDB()
+  }

@@ -1,0 +1,342 @@
+// main.ui - Glamour Studio
+// Professional salon management with SoftN's smart components and XDB persistence
+
+<logic src="../logic/main.logic" />
+
+// Import components
+<import Sidebar from="./components/Sidebar.ui" />
+<import Header from="./components/Header.ui" />
+
+// Import pages
+<import Dashboard from="./pages/Dashboard.ui" />
+<import Appointments from="./pages/Appointments.ui" />
+<import Clients from="./pages/Clients.ui" />
+<import Staff from="./pages/Staff.ui" />
+<import Services from="./pages/Services.ui" />
+
+// Import modals
+<import AddAppointmentModal from="./modals/AddAppointmentModal.ui" />
+<import AddClientModal from="./modals/AddClientModal.ui" />
+<import AddStaffModal from="./modals/AddStaffModal.ui" />
+<import AddServiceModal from="./modals/AddServiceModal.ui" />
+<import EditAppointmentModal from="./modals/EditAppointmentModal.ui" />
+<import EditClientModal from="./modals/EditClientModal.ui" />
+<import EditStaffModal from="./modals/EditStaffModal.ui" />
+<import EditServiceModal from="./modals/EditServiceModal.ui" />
+<import DataModal from="./modals/DataModal.ui" />
+<import SyncModal from="./modals/SyncModal.ui" />
+
+<data>
+  <collection name="clients" as="clients" />
+  <collection name="staff" as="staff" />
+  <collection name="services" as="services" />
+  <collection name="appointments" as="appointments" sort="time:asc" />
+  <collection name="activity" as="recentActivity" limit={5} sort="time:desc" />
+</data>
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+
+/* ─── Keyframe Animations ─── */
+@keyframes glamour-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes glamour-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes glamour-scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes glamour-slide-left {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes glamour-indicator-grow {
+  from { transform: translateY(-50%) scaleY(0); }
+  to { transform: translateY(-50%) scaleY(1); }
+}
+@keyframes glamour-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes glamour-glow-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(212, 165, 116, 0); }
+  50% { box-shadow: 0 0 20px 2px rgba(212, 165, 116, 0.08); }
+}
+
+/* ─── Custom Scrollbar ─── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(214, 191, 167, 0.12); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(214, 191, 167, 0.22); }
+
+/* ─── Selection ─── */
+::selection { background: rgba(212, 165, 116, 0.25); color: inherit; }
+
+/* ─── Focus Rings ─── */
+*:focus-visible {
+  outline: 2px solid rgba(212, 165, 116, 0.4);
+  outline-offset: 2px;
+  transition: outline-offset 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ─── Page Content Entrance ─── */
+.softn-page-content > * {
+  animation: glamour-fade-up 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ─── NavItem Active Indicator ─── */
+.softn-nav-item { position: relative; transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1); }
+.softn-nav-item:hover { transform: translateX(2px); }
+.softn-nav-item[data-active="true"]::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 60%;
+  background: linear-gradient(180deg, #d4a574, #c2956a);
+  border-radius: 0 3px 3px 0;
+  animation: glamour-indicator-grow 300ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* ─── Card Hover Effects ─── */
+.softn-page-content [class*="card"],
+.softn-page-content [style*="borderRadius: \"14px\""] {
+  transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 200ms cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 200ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+/* ─── Smart Component Stagger Entrance ─── */
+.softn-smart-list > div,
+.softn-smart-cards > div,
+.softn-smart-timeline > div {
+  animation: glamour-fade-up 350ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.softn-smart-list > div:nth-child(1) { animation-delay: 0ms; }
+.softn-smart-list > div:nth-child(2) { animation-delay: 40ms; }
+.softn-smart-list > div:nth-child(3) { animation-delay: 80ms; }
+.softn-smart-list > div:nth-child(4) { animation-delay: 120ms; }
+.softn-smart-list > div:nth-child(5) { animation-delay: 160ms; }
+.softn-smart-cards > div:nth-child(1) { animation-delay: 0ms; }
+.softn-smart-cards > div:nth-child(2) { animation-delay: 50ms; }
+.softn-smart-cards > div:nth-child(3) { animation-delay: 100ms; }
+.softn-smart-cards > div:nth-child(4) { animation-delay: 150ms; }
+.softn-smart-timeline > div:nth-child(1) { animation-delay: 0ms; }
+.softn-smart-timeline > div:nth-child(2) { animation-delay: 60ms; }
+.softn-smart-timeline > div:nth-child(3) { animation-delay: 120ms; }
+.softn-smart-timeline > div:nth-child(4) { animation-delay: 180ms; }
+.softn-smart-timeline > div:nth-child(5) { animation-delay: 240ms; }
+
+/* ─── Stat Card Grid Stagger ─── */
+.softn-grid > div:nth-child(1) { animation: glamour-scale-in 350ms cubic-bezier(0.16, 1, 0.3, 1) 50ms both; }
+.softn-grid > div:nth-child(2) { animation: glamour-scale-in 350ms cubic-bezier(0.16, 1, 0.3, 1) 100ms both; }
+.softn-grid > div:nth-child(3) { animation: glamour-scale-in 350ms cubic-bezier(0.16, 1, 0.3, 1) 150ms both; }
+.softn-grid > div:nth-child(4) { animation: glamour-scale-in 350ms cubic-bezier(0.16, 1, 0.3, 1) 200ms both; }
+
+/* ─── Stat Card Hover Feedback ─── */
+.softn-grid > div {
+  transition: transform 250ms cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 250ms cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 250ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+.softn-grid > div:hover {
+  transform: translateY(-3px) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(212, 165, 116, 0.1) !important;
+  border-color: rgba(212, 165, 116, 0.18) !important;
+}
+.softn-grid > div:active {
+  transform: translateY(-1px) scale(0.98) !important;
+}
+
+/* ─── Button Micro-interactions ─── */
+button, [role="button"] {
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+button:active, [role="button"]:active {
+  transform: scale(0.97) !important;
+}
+
+/* ─── Badge Polish ─── */
+[style*="borderRadius: \"9999px\""][style*="padding"] {
+  animation: glamour-fade-in 250ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ─── Warm Dividers ─── */
+hr, [class*="divider"] {
+  border-color: rgba(214, 191, 167, 0.06) !important;
+  transition: border-color 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ─── Smooth Theme Transition ─── */
+*, *::before, *::after {
+  transition-property: background-color, border-color, color, fill, stroke;
+  transition-duration: 0ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+.softn-app-sidebar,
+.softn-page-content,
+.softn-page-content > * > * {
+  transition-duration: 300ms !important;
+}
+
+/* ─── Mobile Utilities ─── */
+.softn-mobile-only {
+  display: none;
+}
+
+/* ─── Mobile Responsive ─── */
+@media (max-width: 640px) {
+  .softn-mobile-stack {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .softn-mobile-hide {
+    display: none !important;
+  }
+  .softn-mobile-only {
+    display: flex !important;
+  }
+  .softn-page-content {
+    padding: 1rem !important;
+    padding-bottom: 5rem !important;
+  }
+}
+
+/* ─── Mobile Bottom Nav Polish ─── */
+.softn-mobile-only button {
+  transition: all 200ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+</style>
+
+// Main App Layout
+<App key={darkMode ? "theme-dark" : "theme-light"} theme={darkMode ? "dark" : "light"}>
+  <Box style={{
+    display: "flex",
+    width: "100%",
+    height: "100%",
+    overflow: "hidden",
+    background: getBgColor(),
+    transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
+    "--color-bg": getBgColor(),
+    "--color-surface": getCardBg(),
+    "--color-surface-hover": getRaisedBg(),
+    "--color-surface-raised": getRaisedBg(),
+    "--color-border": getBorderColor(),
+    "--color-border-hover": darkMode ? "rgba(214, 191, 167, 0.18)" : "rgba(28, 25, 23, 0.16)",
+    "--color-text": getTextColor(),
+    "--color-text-muted": getMutedColor(),
+    "--color-gray-50": darkMode ? "#211f1d" : "#f5f5f4",
+    "--color-gray-100": darkMode ? "#292524" : "#ece8e2",
+    "--color-gray-200": darkMode ? "#3a3432" : "#ded7cf",
+    "--color-gray-400": darkMode ? "#a8a29e" : "#8a8178",
+    "--color-gray-500": darkMode ? "#a8a29e" : "#78716c",
+    "--color-gray-600": darkMode ? "#d6bfa7" : "#5d554d",
+    "--color-gray-900": darkMode ? "#faf9f7" : "#1c1917",
+    "--btn-ghost-text": getTextColor(),
+    "--btn-ghost-bg-hover": darkMode ? "rgba(214, 191, 167, 0.10)" : "rgba(28, 25, 23, 0.06)",
+    "--btn-ghost-bg-active": darkMode ? "rgba(214, 191, 167, 0.16)" : "rgba(28, 25, 23, 0.12)"
+  }}>
+    // Sidebar Component (hidden on mobile via CSS)
+    <Sidebar />
+
+    // Main Content Area
+    <Box style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0, minHeight: 0 }}>
+      // Header Component
+      <Header />
+
+      // Page Content
+      <Box className="softn-page-content" style={{ flex: 1, overflow: "auto", padding: "2rem 2.5rem", minHeight: 0, background: getBgColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+        // Page Components
+        <Dashboard />
+        <Appointments />
+        <Clients />
+        <Staff />
+        <Services />
+      </Box>
+    </Box>
+  </Box>
+
+  // Mobile Bottom Navigation (shown only on mobile via CSS)
+  <Box className="softn-mobile-only" style={{
+    position: "fixed",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: "4rem",
+    background: darkMode ? "rgba(12, 10, 9, 0.97)" : "rgba(255, 255, 255, 0.97)",
+    borderTop: "1px solid " + getBorderColor(),
+    backdropFilter: "blur(12px)",
+    alignItems: "center",
+    justifyContent: "space-around",
+    zIndex: 1000,
+    padding: "0"
+  }}>
+    <Button variant=ghost @click={navigate("dashboard")} style={{
+      flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+      gap: "2px", padding: "0.5rem 0", borderRadius: 0, minWidth: 0,
+      color: currentPage === "dashboard" ? getAccentColor() : getMutedColor(),
+      borderTop: currentPage === "dashboard" ? "2px solid " + getAccentColor() : "2px solid transparent",
+      opacity: currentPage === "dashboard" ? 1 : 0.5
+    }}>
+      <Text style={{ fontSize: "0.65rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}>Home</Text>
+    </Button>
+
+    <Button variant=ghost @click={navigate("appointments")} style={{
+      flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+      gap: "2px", padding: "0.5rem 0", borderRadius: 0, minWidth: 0,
+      color: currentPage === "appointments" ? getAccentColor() : getMutedColor(),
+      borderTop: currentPage === "appointments" ? "2px solid " + getAccentColor() : "2px solid transparent",
+      opacity: currentPage === "appointments" ? 1 : 0.5
+    }}>
+      <Text style={{ fontSize: "0.65rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}>Appts</Text>
+    </Button>
+
+    <Button variant=ghost @click={navigate("clients")} style={{
+      flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+      gap: "2px", padding: "0.5rem 0", borderRadius: 0, minWidth: 0,
+      color: currentPage === "clients" ? getAccentColor() : getMutedColor(),
+      borderTop: currentPage === "clients" ? "2px solid " + getAccentColor() : "2px solid transparent",
+      opacity: currentPage === "clients" ? 1 : 0.5
+    }}>
+      <Text style={{ fontSize: "0.65rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}>Clients</Text>
+    </Button>
+
+    <Button variant=ghost @click={navigate("staff")} style={{
+      flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+      gap: "2px", padding: "0.5rem 0", borderRadius: 0, minWidth: 0,
+      color: currentPage === "staff" ? getAccentColor() : getMutedColor(),
+      borderTop: currentPage === "staff" ? "2px solid " + getAccentColor() : "2px solid transparent",
+      opacity: currentPage === "staff" ? 1 : 0.5
+    }}>
+      <Text style={{ fontSize: "0.65rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}>Staff</Text>
+    </Button>
+
+    <Button variant=ghost @click={navigate("services")} style={{
+      flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+      gap: "2px", padding: "0.5rem 0", borderRadius: 0, minWidth: 0,
+      color: currentPage === "services" ? getAccentColor() : getMutedColor(),
+      borderTop: currentPage === "services" ? "2px solid " + getAccentColor() : "2px solid transparent",
+      opacity: currentPage === "services" ? 1 : 0.5
+    }}>
+      <Text style={{ fontSize: "0.65rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}>Services</Text>
+    </Button>
+  </Box>
+
+  // Modal Components
+  <AddAppointmentModal />
+  <AddClientModal />
+  <AddStaffModal />
+  <AddServiceModal />
+  <EditAppointmentModal />
+  <EditClientModal />
+  <EditStaffModal />
+  <EditServiceModal />
+  <DataModal />
+  <SyncModal />
+</App>

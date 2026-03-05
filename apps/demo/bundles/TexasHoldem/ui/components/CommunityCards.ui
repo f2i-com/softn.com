@@ -1,0 +1,45 @@
+<Stack direction=horizontal gap=sm style={{
+  justifyContent: "center",
+  alignItems: "center",
+  minHeight: "90px",
+  padding: "8px 16px",
+  background: "linear-gradient(180deg, rgba(2,6,23,0.18), rgba(2,6,23,0.28))",
+  borderRadius: "12px",
+  backdropFilter: "blur(4px)",
+  border: "1px solid rgba(255,255,255,0.08)",
+  boxShadow: "inset 0 1px 8px rgba(0,0,0,0.2)"
+}}>
+  // Card 1
+  <Box if={communityCards.length > 0} style={{ width: "56px", height: "80px", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 14px rgba(0,0,0,0.24)", flexShrink: 0, animation: communityCardAnim(0) }}>
+    <Text style={{ fontSize: "20px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(ccCard(0)) }}>{cardRankDisplay(ccCard(0))}</Text>
+    <Text style={{ fontSize: "16px", lineHeight: 1, marginTop: "4px", color: cardColorVal(ccCard(0)) }}>{cardSuitDisplay(ccCard(0))}</Text>
+  </Box>
+  // Card 2
+  <Box if={communityCards.length > 1} style={{ width: "56px", height: "80px", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 14px rgba(0,0,0,0.24)", flexShrink: 0, animation: communityCardAnim(1) }}>
+    <Text style={{ fontSize: "20px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(ccCard(1)) }}>{cardRankDisplay(ccCard(1))}</Text>
+    <Text style={{ fontSize: "16px", lineHeight: 1, marginTop: "4px", color: cardColorVal(ccCard(1)) }}>{cardSuitDisplay(ccCard(1))}</Text>
+  </Box>
+  // Card 3
+  <Box if={communityCards.length > 2} style={{ width: "56px", height: "80px", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 14px rgba(0,0,0,0.24)", flexShrink: 0, animation: communityCardAnim(2) }}>
+    <Text style={{ fontSize: "20px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(ccCard(2)) }}>{cardRankDisplay(ccCard(2))}</Text>
+    <Text style={{ fontSize: "16px", lineHeight: 1, marginTop: "4px", color: cardColorVal(ccCard(2)) }}>{cardSuitDisplay(ccCard(2))}</Text>
+  </Box>
+  // Card 4
+  <Box if={communityCards.length > 3} style={{ width: "56px", height: "80px", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 14px rgba(0,0,0,0.24)", flexShrink: 0, animation: communityCardAnim(3) }}>
+    <Text style={{ fontSize: "20px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(ccCard(3)) }}>{cardRankDisplay(ccCard(3))}</Text>
+    <Text style={{ fontSize: "16px", lineHeight: 1, marginTop: "4px", color: cardColorVal(ccCard(3)) }}>{cardSuitDisplay(ccCard(3))}</Text>
+  </Box>
+  // Card 5
+  <Box if={communityCards.length > 4} style={{ width: "56px", height: "80px", borderRadius: "6px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 14px rgba(0,0,0,0.24)", flexShrink: 0, animation: communityCardAnim(4) }}>
+    <Text style={{ fontSize: "20px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(ccCard(4)) }}>{cardRankDisplay(ccCard(4))}</Text>
+    <Text style={{ fontSize: "16px", lineHeight: 1, marginTop: "4px", color: cardColorVal(ccCard(4)) }}>{cardSuitDisplay(ccCard(4))}</Text>
+  </Box>
+  // Empty slots
+  <Box if={!(communityCards.length >= 1) && gamePhase !== "waiting"} style={{ width: "56px", height: "80px", borderRadius: "6px", border: "2px dashed rgba(255,255,255,0.1)", flexShrink: 0 }} />
+  <Box if={!(communityCards.length >= 2) && gamePhase !== "waiting"} style={{ width: "56px", height: "80px", borderRadius: "6px", border: "2px dashed rgba(255,255,255,0.1)", flexShrink: 0 }} />
+  <Box if={!(communityCards.length >= 3) && gamePhase !== "waiting"} style={{ width: "56px", height: "80px", borderRadius: "6px", border: "2px dashed rgba(255,255,255,0.1)", flexShrink: 0 }} />
+  <Box if={!(communityCards.length >= 4) && gamePhase !== "waiting"} style={{ width: "56px", height: "80px", borderRadius: "6px", border: "2px dashed rgba(255,255,255,0.1)", flexShrink: 0 }} />
+  <Box if={!(communityCards.length >= 5) && gamePhase !== "waiting"} style={{ width: "56px", height: "80px", borderRadius: "6px", border: "2px dashed rgba(255,255,255,0.1)", flexShrink: 0 }} />
+  // Waiting
+  <Text if={gamePhase === "waiting"} style={{ color: "rgba(255,255,255,0.3)", fontSize: "14px", fontStyle: "italic" }}>Waiting for game to start...</Text>
+</Stack>

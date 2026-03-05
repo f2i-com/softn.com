@@ -1,0 +1,40 @@
+<logic src="../logic/main.logic" />
+
+<Stack direction=vertical gap=md align=center style={{ padding: "1.5rem", minHeight: "100vh", background: "#0f1117" }}>
+  <Heading level={2} style={{ color: "#e4e4e7", fontFamily: "monospace", letterSpacing: "2px", margin: "0" }}>Maze Escape 3D</Heading>
+
+  <Stack direction=horizontal gap=lg align=center>
+    <Text style={{ color: "#4ade80", fontFamily: "monospace", fontSize: "16px" }}>{statusText}</Text>
+  </Stack>
+
+  <Loop interval={33} running={running} @tick={tick} />
+
+  <Scene3D
+    width={600}
+    height={400}
+    objects={objects}
+    lights={lights}
+    camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 75 }}
+    antialias={true}
+    shadows={false}
+    expandable={true}
+    mouseLook={true}
+    background="#111827"
+
+    style={{ borderRadius: "12px", border: "1px solid rgba(100,200,100,0.15)" }}
+  />
+
+  <DPad
+    @press={handleDPad}
+    @release={handleDPadRelease}
+    style={{ marginTop: "0.5rem" }}
+  />
+
+  <Stack direction=horizontal gap=sm>
+    <Button @click={startGame} style={{ padding: "0.5rem 1.5rem", fontSize: "14px", fontFamily: "monospace", background: "#4ade80", color: "#0a0a1a", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "bold" }}>
+      {gameState === "won" ? "Play Again" : (gameState === "playing" ? "Restart" : "Start Game")}
+    </Button>
+  </Stack>
+
+  <Text style={{ color: "#525270", fontFamily: "monospace", fontSize: "12px" }}>Use D-pad or WASD to move. Drag to look around. Find the golden portal!</Text>
+</Stack>

@@ -1,0 +1,60 @@
+  let currentPage = "charts"
+  let darkMode = (function() { try { var v = localStorage.getItem("softn-theme-preference"); if (v === "light") return false; if (v === "dark") return true; } catch(e) {} return true; })()
+
+  // Sortable list items for interactive page
+  let sortableItems = [
+    { id: "1", name: "Design System", category: "Frontend" },
+    { id: "2", name: "API Integration", category: "Backend" },
+    { id: "3", name: "Database Migration", category: "DevOps" },
+    { id: "4", name: "User Testing", category: "QA" },
+    { id: "5", name: "Performance Audit", category: "Engineering" }
+  ]
+
+  // Counter value for animated number demo
+  let counterValue = 0
+
+  // Theme helpers
+  function getBgColor() {
+    return darkMode ? "#09090b" : "#fafafa"
+  }
+
+  function getCardBg() {
+    return darkMode ? "#18181b" : "#ffffff"
+  }
+
+  function getBorderColor() {
+    return darkMode ? "rgba(255, 255, 255, 0.08)" : "rgba(0, 0, 0, 0.08)"
+  }
+
+  function getTextColor() {
+    return darkMode ? "#fafafa" : "#09090b"
+  }
+
+  function getMutedColor() {
+    return darkMode ? "#a1a1aa" : "#71717a"
+  }
+
+  function getSidebarBg() {
+    return darkMode ? "#18181b" : "#ffffff"
+  }
+
+  function navigate(page) {
+    currentPage = page
+  }
+
+  function toggleTheme() {
+    darkMode = !darkMode
+    try { localStorage.setItem("softn-theme-preference", darkMode ? "dark" : "light") } catch(e) {}
+  }
+
+  function updateSortableItems(newItems) {
+    sortableItems = newItems
+  }
+
+  function randomizeCounter() {
+    counterValue = Math.floor(Math.random() * 10000)
+  }
+
+  function _init() {
+    counterValue = 8742
+  }

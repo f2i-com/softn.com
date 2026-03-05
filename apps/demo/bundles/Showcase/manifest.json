@@ -1,0 +1,30 @@
+{
+  "name": "SoftN Showcase",
+  "version": "1.0.0",
+  "description": "Interactive showcase of SoftN charts, animations, and interactive components",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": [
+      "ui/main.ui",
+      "ui/components/Nav.ui",
+      "ui/pages/ChartsPage.ui",
+      "ui/pages/AnimationsPage.ui",
+      "ui/pages/InteractivePage.ui"
+    ],
+    "logic": ["logic/main.logic"],
+    "xdb": [],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": {
+      "title": "SoftN Showcase",
+      "width": 1200,
+      "height": 800
+    },
+    "theme": {
+      "primary": "#6366f1",
+      "mode": "system"
+    }
+  }
+}

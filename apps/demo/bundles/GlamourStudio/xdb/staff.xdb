@@ -1,0 +1,61 @@
+{
+  "collection": "staff",
+  "records": [
+    {
+      "id": "staff_1",
+      "collection": "staff",
+      "data": {
+        "name": "Sarah Johnson",
+        "role": "Senior Stylist",
+        "status": "online",
+        "email": "sarah@glamour.com",
+        "rating": 4.9,
+        "appointments": 8
+      },
+      "createdAt": "2026-01-23T03:34:21.584Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "staff_2",
+      "collection": "staff",
+      "data": {
+        "name": "Michael Chen",
+        "role": "Stylist",
+        "status": "busy",
+        "email": "michael@glamour.com",
+        "rating": 4.7,
+        "appointments": 6
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "staff_3",
+      "collection": "staff",
+      "data": {
+        "name": "Emma Williams",
+        "role": "Junior Stylist",
+        "status": "online",
+        "email": "emma@glamour.com",
+        "rating": 4.5,
+        "appointments": 5
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "staff_4",
+      "collection": "staff",
+      "data": {
+        "name": "David Martinez",
+        "role": "Colorist",
+        "status": "away",
+        "email": "david@glamour.com",
+        "rating": 4.8,
+        "appointments": 7
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    }
+  ]
+}

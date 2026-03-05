@@ -1,0 +1,87 @@
+// SyncModal.ui - P2P data sync configuration modal
+
+<Modal open={showSyncModal} onClose={closeSyncModal} title="Share Data" size=md>
+  <Stack direction=vertical gap=lg style={{ padding: "0.5rem 0" }}>
+
+    // Connection status
+    <Card padding=md style={{ background: syncConnected ? "rgba(34, 197, 94, 0.08)" : (syncConnecting ? "rgba(234, 179, 8, 0.08)" : getRaisedBg()), borderRadius: "12px", border: "1px solid " + (syncConnected ? "rgba(34, 197, 94, 0.2)" : (syncConnecting ? "rgba(234, 179, 8, 0.2)" : getBorderColor())) }}>
+      <Stack direction=horizontal align=center gap=md>
+        <Box style={{ width: "10px", height: "10px", borderRadius: "50%", background: syncConnected ? "#22c55e" : (syncConnecting ? "#eab308" : "#78716c"), boxShadow: syncConnected ? "0 0 8px rgba(34, 197, 94, 0.4)" : (syncConnecting ? "0 0 8px rgba(234, 179, 8, 0.3)" : "none"), flexShrink: 0 }} />
+        <Stack direction=vertical gap=xs style={{ flex: 1 }}>
+          <Text fontWeight=semibold size=sm style={{ color: getTextColor() }}>
+            {syncConnected ? "Connected" : (syncConnecting ? "Connecting..." : "Not connected")}
+          </Text>
+          <Text size=xs color=muted>
+            {syncConnected ? syncPeers + " peer(s) online" : (syncConnecting ? "Establishing WebRTC connection..." : "Enter a room code to start sharing data")}
+          </Text>
+        </Stack>
+        <Button variant=ghost size=sm @click=refreshSyncStatus if={syncConnected || syncConnecting} style={{ padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}>
+          Refresh
+        </Button>
+      </Stack>
+    </Card>
+
+    // Room code input
+    <Stack direction=vertical gap=sm if={!syncConnected && !syncConnecting}>
+      <Text size=sm fontWeight=medium style={{ color: getTextColor() }}>Room Code</Text>
+      <Stack direction=horizontal gap=sm>
+        <Input
+          value={syncRoom}
+          @change=setSyncRoom
+          placeholder="e.g. glamour-x9km2p"
+          style={{ flex: 1 }}
+        />
+        <Button variant=secondary size=md @click=generateRoomCode style={{ flexShrink: 0, fontSize: "0.8rem" }}>
+          Generate
+        </Button>
+        <Button variant=ghost size=sm @click=copySyncRoom if={syncRoom} style={{ flexShrink: 0, padding: "0.4rem 0.6rem", fontSize: "0.75rem" }}>
+          Copy
+        </Button>
+      </Stack>
+      <Text size=xs color=muted>
+        Share this code with others to sync data in real-time. All devices with the same room code will share data automatically.
+      </Text>
+    </Stack>
+
+    // Connected room info
+    <Stack direction=vertical gap=sm if={syncConnected || syncConnecting}>
+      <Text size=sm fontWeight=medium style={{ color: getTextColor() }}>Active Room</Text>
+      <Stack direction=horizontal gap=sm align=center>
+        <Card padding=sm style={{ background: getRaisedBg(), borderRadius: "8px", border: "1px solid " + getBorderColor(), flex: 1 }}>
+          <Text size=sm fontWeight=bold style={{ color: getTextColor(), fontFamily: "monospace", letterSpacing: "0.05em" }}>
+            {syncRoom}
+          </Text>
+        </Card>
+        <Button variant=secondary size=sm @click=copySyncRoom style={{ padding: "0.4rem 0.6rem", fontSize: "0.75rem", flexShrink: 0 }}>
+          Copy
+        </Button>
+      </Stack>
+      <Text size=xs color=muted>
+        Data is syncing in real-time with all connected peers via WebRTC.
+      </Text>
+    </Stack>
+
+    // How it works
+    <Card padding=md style={{ background: getAccentMuted(), borderRadius: "12px", border: "1px solid " + (darkMode ? "rgba(212, 165, 116, 0.1)" : "rgba(176, 141, 96, 0.08)") }}>
+      <Stack direction=vertical gap=sm>
+        <Text size=xs fontWeight=semibold style={{ color: getAccentColor() }}>How it works</Text>
+        <Text size=xs color=muted style={{ lineHeight: 1.5 }}>
+          Data syncs peer-to-peer using WebRTC — no server needed. Changes are merged automatically using CRDTs, so there are no conflicts even when multiple people edit at the same time. Works across browsers, devices, and platforms.
+        </Text>
+      </Stack>
+    </Card>
+
+    // Actions
+    <Stack direction=horizontal gap=sm justify=end>
+      <Button variant=secondary size=md @click=closeSyncModal>
+        Close
+      </Button>
+      <Button variant=primary size=md @click=joinSync if={!syncConnected && !syncConnecting} style={{ background: "linear-gradient(135deg, " + getAccentColor() + ", " + getAccentHover() + ")", color: darkMode ? "#1c1917" : "#ffffff", border: "none", boxShadow: "0 2px 8px " + getAccentMuted(), fontWeight: 600 }}>
+        Join Room
+      </Button>
+      <Button variant=secondary size=md @click=leaveSync if={syncConnected || syncConnecting} style={{ color: "#ef4444", borderColor: "rgba(239, 68, 68, 0.3)" }}>
+        Disconnect
+      </Button>
+    </Stack>
+  </Stack>
+</Modal>

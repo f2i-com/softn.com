@@ -1,0 +1,16 @@
+{
+  "name": "GPUDemo",
+  "version": "1.0.0",
+  "description": "GPU Compute Demo — WebGPU compute shaders via softn.ai.gpu.*",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "assets": ["assets/icon.svg", "assets/shaders/add.wgsl"]
+  },
+  "config": {
+    "window": { "title": "GPU Compute", "width": 700, "height": 600 },
+    "theme": { "primary": "#10b981", "mode": "dark" }
+  }
+}

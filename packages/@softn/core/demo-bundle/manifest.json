@@ -1,0 +1,44 @@
+{
+  "name": "Todo App Demo",
+  "version": "1.0.0",
+  "description": "A demo todo application showcasing the .softn bundle format",
+  "author": {
+    "name": "SoftN Team"
+  },
+  "main": "main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["main.ui", "components/header.ui", "components/todo-item.ui", "components/footer.ui"],
+    "logic": ["app.logic", "utils.logic"],
+    "xdb": ["todos.xdb"],
+    "assets": ["assets/icon.svg", "assets/styles.css"]
+  },
+  "imports": {
+    "Header": "components/header.ui",
+    "TodoItem": "components/todo-item.ui",
+    "Footer": "components/footer.ui",
+    "utils": "utils.logic"
+  },
+  "config": {
+    "window": {
+      "width": 600,
+      "height": 800,
+      "title": "Todo App",
+      "resizable": true
+    },
+    "theme": {
+      "primary": "#3b82f6",
+      "mode": "system"
+    },
+    "xdb": {
+      "sync": true,
+      "collections": ["todos"]
+    }
+  },
+  "permissions": {
+    "filesystem": false,
+    "network": true,
+    "clipboard": true,
+    "notifications": true
+  }
+}

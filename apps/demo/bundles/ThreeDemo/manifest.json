@@ -1,0 +1,16 @@
+{
+  "name": "ThreeDemo",
+  "version": "1.0.0",
+  "description": "3D Scene demo with animated shapes powered by formlogic",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": { "title": "3D Demo", "width": 900, "height": 750 },
+    "theme": { "primary": "#6366f1", "mode": "dark" }
+  }
+}

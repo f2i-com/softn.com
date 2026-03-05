@@ -1,0 +1,197 @@
+// Dashboard.ui - Main dashboard with stats, appointments, and quick actions
+
+<Stack direction=vertical gap=lg if={currentPage === "dashboard"}>
+  // Welcome Banner
+  <Card padding=lg style={{ background: darkMode ? "linear-gradient(135deg, #1c1917 0%, #292524 50%, #1c1917 100%)" : "linear-gradient(135deg, #faf9f7 0%, #f5f5f4 50%, #faf9f7 100%)", borderRadius: "16px", border: "1px solid " + (darkMode ? "rgba(212, 165, 116, 0.15)" : "rgba(176, 141, 96, 0.12)"), boxShadow: darkMode ? "0 4px 24px rgba(0, 0, 0, 0.3)" : "0 4px 24px rgba(28, 25, 23, 0.06)" }}>
+    <Stack className="softn-mobile-stack" direction=horizontal justify="space-between" align=center style={{ gap: "1.5rem" }}>
+      <Stack direction=vertical gap=sm style={{ minWidth: 0 }}>
+        <Text size=sm style={{ opacity: 0.6, fontWeight: 500, color: getAccentColor(), textTransform: "uppercase", letterSpacing: "0.08em", fontSize: "0.7rem" }}>{getGreeting()}</Text>
+        <Heading level={2} style={{ color: getTextColor(), fontSize: "1.5rem", marginTop: "0.125rem", fontFamily: "'Cormorant Garamond', serif", fontWeight: 600 }}>Welcome back</Heading>
+        <Text style={{ opacity: 0.5, marginTop: "0.25rem", fontSize: "0.875rem", lineHeight: 1.5, color: getMutedColor() }}>Here's what's happening at Glamour Studio today.</Text>
+      </Stack>
+      <Box className="softn-mobile-hide" style={{ display: "flex", gap: "1rem", flexShrink: 0 }}>
+        <Box padding=md borderRadius=lg style={{ textAlign: "center", minWidth: "90px", background: getAccentMuted(), border: "1px solid " + (darkMode ? "rgba(212, 165, 116, 0.1)" : "rgba(176, 141, 96, 0.08)") }}>
+          <Text size=xl fontWeight=bold block style={{ color: getAccentColor(), fontFamily: "'Cormorant Garamond', serif" }}>{appointments.length}</Text>
+          <Text size=xs style={{ opacity: 0.6, marginTop: "0.25rem", color: getMutedColor() }} block>Bookings</Text>
+        </Box>
+        <Box padding=md borderRadius=lg style={{ textAlign: "center", minWidth: "90px", background: getAccentMuted(), border: "1px solid " + (darkMode ? "rgba(212, 165, 116, 0.1)" : "rgba(176, 141, 96, 0.08)") }}>
+          <Text size=xl fontWeight=bold block style={{ color: getAccentColor(), fontFamily: "'Cormorant Garamond', serif" }}>{clients.length}</Text>
+          <Text size=xs style={{ opacity: 0.6, marginTop: "0.25rem", color: getMutedColor() }} block>Clients</Text>
+        </Box>
+      </Box>
+    </Stack>
+  </Card>
+
+  // Stats Overview Cards
+  <Grid columns={{ sm: 2, lg: 4 }} gap=md>
+    <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), cursor: "pointer" }} @click={navigate("appointments")}>
+      <Stack direction=vertical gap=sm>
+        <Stack direction=horizontal justify="space-between" align=center>
+          <Text style={{ color: getMutedColor(), fontSize: "0.8125rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>Appointments</Text>
+          <Box style={{ width: "32px", height: "32px", borderRadius: "8px", background: getAccentMuted(), display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Text size=sm style={{ color: getAccentColor(), fontWeight: 700, fontFamily: "'Cormorant Garamond', serif" }}>A</Text>
+          </Box>
+        </Stack>
+        <Text size=xl fontWeight=bold style={{ color: getTextColor(), fontFamily: "'Cormorant Garamond', serif" }}>{appointments.length}</Text>
+        <Text size=xs color=success>Active bookings</Text>
+      </Stack>
+    </Card>
+
+    <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), cursor: "pointer" }} @click={navigate("clients")}>
+      <Stack direction=vertical gap=sm>
+        <Stack direction=horizontal justify="space-between" align=center>
+          <Text style={{ color: getMutedColor(), fontSize: "0.8125rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>Clients</Text>
+          <Box style={{ width: "32px", height: "32px", borderRadius: "8px", background: getAccentMuted(), display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Text size=sm style={{ color: getAccentColor(), fontWeight: 700, fontFamily: "'Cormorant Garamond', serif" }}>C</Text>
+          </Box>
+        </Stack>
+        <Text size=xl fontWeight=bold style={{ color: getTextColor(), fontFamily: "'Cormorant Garamond', serif" }}>{clients.length}</Text>
+        <Text size=xs color=muted>Registered</Text>
+      </Stack>
+    </Card>
+
+    <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), cursor: "pointer" }} @click={navigate("staff")}>
+      <Stack direction=vertical gap=sm>
+        <Stack direction=horizontal justify="space-between" align=center>
+          <Text style={{ color: getMutedColor(), fontSize: "0.8125rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>Staff</Text>
+          <Box style={{ width: "32px", height: "32px", borderRadius: "8px", background: getAccentMuted(), display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Text size=sm style={{ color: getAccentColor(), fontWeight: 700, fontFamily: "'Cormorant Garamond', serif" }}>S</Text>
+          </Box>
+        </Stack>
+        <Text size=xl fontWeight=bold style={{ color: getTextColor(), fontFamily: "'Cormorant Garamond', serif" }}>{staff.length}</Text>
+        <Text size=xs color=muted>Team members</Text>
+      </Stack>
+    </Card>
+
+    <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), cursor: "pointer" }} @click={navigate("services")}>
+      <Stack direction=vertical gap=sm>
+        <Stack direction=horizontal justify="space-between" align=center>
+          <Text style={{ color: getMutedColor(), fontSize: "0.8125rem", textTransform: "uppercase", letterSpacing: "0.04em" }}>Services</Text>
+          <Box style={{ width: "32px", height: "32px", borderRadius: "8px", background: getAccentMuted(), display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <Text size=sm style={{ color: getAccentColor(), fontWeight: 700, fontFamily: "'Cormorant Garamond', serif" }}>Sv</Text>
+          </Box>
+        </Stack>
+        <Text size=xl fontWeight=bold style={{ color: getTextColor(), fontFamily: "'Cormorant Garamond', serif" }}>{services.length}</Text>
+        <Text size=xs color=muted>Available</Text>
+      </Stack>
+    </Card>
+  </Grid>
+
+  // Two Column Layout
+  <Grid columns={{ sm: 1, lg: 2 }} gap=lg>
+    // Left Column
+    <Stack direction=vertical gap=lg>
+      // Today's Appointments List
+      <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+        <Stack direction=vertical gap=md>
+          <Stack direction=horizontal justify="space-between" align=center>
+            <Text fontWeight=semibold size=sm style={{ color: getHeadingColor(), textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.8125rem" }}>Today's Appointments</Text>
+            <Button variant=ghost size=sm @click=viewAllAppointments style={{ opacity: 0.6, fontSize: "0.75rem", color: getAccentColor() }}>View All</Button>
+          </Stack>
+          <SmartList
+            data={appointments}
+            primary=client
+            secondary=service
+            tertiary=time
+            badge=status
+            avatar=client
+            maxItems={4}
+            onSelect={viewAppointment}
+            onViewAll={viewAllAppointments}
+            variant=minimal
+            emptyMessage="No appointments scheduled"
+          />
+        </Stack>
+      </Card>
+
+      // Staff Overview
+      <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+        <Stack direction=vertical gap=md>
+          <Stack direction=horizontal justify="space-between" align=center>
+            <Text fontWeight=semibold size=sm style={{ color: getHeadingColor(), textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.8125rem" }}>Staff Overview</Text>
+            <Badge variant=info size=sm>{staff.length + " members"}</Badge>
+          </Stack>
+          <SmartCards
+            data={staff}
+            title=name
+            subtitle=role
+            badges=status
+            meta="appointments, rating"
+            columns={2}
+            variant=compact
+            onSelect={viewStaff}
+            emptyMessage="No staff members yet"
+          />
+        </Stack>
+      </Card>
+    </Stack>
+
+    // Right Column
+    <Stack direction=vertical gap=lg>
+      // Quick Actions
+      <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+        <Stack direction=vertical gap=md>
+          <Text fontWeight=semibold size=sm style={{ color: getHeadingColor(), textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.8125rem" }}>Quick Actions</Text>
+          <Stack direction=vertical gap=sm>
+            <Stack direction=horizontal gap=sm>
+              <Button variant=secondary size=md @click={openAddModal()} style={{ flex: 1, justifyContent: "center", gap: "0.5rem", fontSize: "0.8rem", borderRadius: "10px" }}>
+                New Appointment
+              </Button>
+              <Button variant=secondary size=md @click={openAddClientModal()} style={{ flex: 1, justifyContent: "center", gap: "0.5rem", fontSize: "0.8rem", borderRadius: "10px" }}>
+                Add Client
+              </Button>
+            </Stack>
+            <Stack direction=horizontal gap=sm>
+              <Button variant=secondary size=md @click={openAddStaffModal()} style={{ flex: 1, justifyContent: "center", gap: "0.5rem", fontSize: "0.8rem", borderRadius: "10px" }}>
+                Add Staff
+              </Button>
+              <Button variant=secondary size=md @click={openAddServiceModal()} style={{ flex: 1, justifyContent: "center", gap: "0.5rem", fontSize: "0.8rem", borderRadius: "10px" }}>
+                Add Service
+              </Button>
+            </Stack>
+          </Stack>
+        </Stack>
+      </Card>
+
+      // Activity Timeline
+      <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+        <Stack direction=vertical gap=md>
+          <Text fontWeight=semibold size=sm style={{ color: getHeadingColor(), textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.8125rem" }}>Recent Activity</Text>
+          <SmartTimeline
+            data={recentActivity}
+            title=title
+            description=description
+            time=time
+            status=status
+            actor=actor
+            maxItems={5}
+            variant=minimal
+            emptyMessage="No recent activity"
+          />
+        </Stack>
+      </Card>
+
+      // Top Clients
+      <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+        <Stack direction=vertical gap=md>
+          <Stack direction=horizontal justify="space-between" align=center>
+            <Text fontWeight=semibold size=sm style={{ color: getHeadingColor(), textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.8125rem" }}>Top Clients</Text>
+            <Badge variant=warning size=sm>By Visits</Badge>
+          </Stack>
+          <SmartList
+            data={clients}
+            primary=name
+            secondary=email
+            tertiary=visits
+            avatar=name
+            variant=minimal
+            maxItems={4}
+            onSelect={viewClient}
+            onViewAll={viewAllClients}
+            emptyMessage="No clients yet"
+          />
+        </Stack>
+      </Card>
+    </Stack>
+  </Grid>
+</Stack>

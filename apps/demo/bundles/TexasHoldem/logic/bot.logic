@@ -1,0 +1,364 @@
+  // --- Bot Mode ---
+
+  function isBotSeat(seatNum) {
+    let i = 0
+    while (i < botSeats.length) {
+      if (botSeats[i] === seatNum) return true
+      i = i + 1
+    }
+    return false
+  }
+
+  function addBot() {
+    if (!isHost) return
+    if (TableStateClass.isLiveHandPhase(gamePhase)) return
+    // Re-read latest players so we do not place bots on newly occupied seats
+    players = db.query("poker_players")
+    // Find first empty seat
+    let s = 0
+    while (s < 6) {
+      if (!getPlayerAtSeat(s)) {
+        db.create("poker_players", {
+          peerId: "bot-" + s,
+          name: "Bot " + (s + 1),
+          seat: s,
+          chips: 1000,
+          holeCards: [],
+          bet: 0,
+          handContribution: 0,
+          status: TableStateClass.statusWaiting(),
+          hasActed: false
+        })
+        botSeats.push(s)
+        toastMessage = "Bot added to seat " + (s + 1)
+        toastType = "success"
+        refreshFromDB()
+        return
+      }
+      s = s + 1
+    }
+    toastMessage = "No empty seats"
+    toastType = "warning"
+  }
+
+  function removeBot(seatNum) {
+    if (!isHost) return
+    if (TableStateClass.isLiveHandPhase(gamePhase)) return
+    let i = 0
+    while (i < players.length) {
+      if (players[i].data && players[i].data.seat === seatNum) {
+        let pid = players[i].data.peerId
+        if (pid.charAt(0) === "b" && pid.charAt(1) === "o" && pid.charAt(2) === "t" && pid.charAt(3) === "-") {
+          db.hardDelete("poker_players", players[i].id)
+          // Remove from botSeats
+          let newBotSeats = []
+          let j = 0
+          while (j < botSeats.length) {
+            if (botSeats[j] !== seatNum) {
+              newBotSeats.push(botSeats[j])
+            }
+            j = j + 1
+          }
+          botSeats = newBotSeats
+          toastMessage = "Bot removed from seat " + (seatNum + 1)
+          toastType = "info"
+          refreshFromDB()
+          return
+        }
+      }
+      i = i + 1
+    }
+  }
+
+  function botHoleCardStrength(hc) {
+    // Rate preflop hand quality 0-100
+    if (hc.length !== 2) return 30
+    let r1 = cardRank(hc[0])
+    let r2 = cardRank(hc[1])
+    let s1 = cardSuit(hc[0])
+    let s2 = cardSuit(hc[1])
+    let high = r1
+    let low = r2
+    if (r2 > r1) {
+      high = r2
+      low = r1
+    }
+    let suited = s1 === s2
+    let gap = high - low
+    let score = 0
+    // Pocket pairs
+    if (r1 === r2) {
+      score = 50 + high * 3
+      if (high >= 10) score = score + 15
+      return score
+    }
+    // High cards
+    score = high + low
+    if (high >= 14) score = score + 16
+    if (high >= 13) score = score + 10
+    if (high >= 12) score = score + 6
+    if (suited) score = score + 8
+    // Connectedness
+    if (gap === 1) score = score + 6
+    if (gap === 2) score = score + 3
+    if (gap >= 5) score = score - 6
+    return score
+  }
+
+  function getFreshTableDataBot() {
+    let rec = TableRepositoryClass.getCurrentTableRecord(tableId)
+    if (!rec) return null
+    tableId = rec.id
+    return rec.data
+  }
+
+  function botRankScore(rank) {
+    if (rank >= 8) return 97
+    if (rank >= 7) return 94
+    if (rank >= 6) return 90
+    if (rank >= 5) return 82
+    if (rank >= 4) return 72
+    if (rank >= 3) return 62
+    if (rank >= 2) return 48
+    if (rank >= 1) return 30
+    return 18
+  }
+
+  function botPotOdds(callAmount, potNow) {
+    if (callAmount <= 0) return 0
+    let denom = potNow + callAmount
+    if (denom <= 0) return 1
+    return callAmount / denom
+  }
+
+  function botChooseRaiseSize(botPlayer, callAmount, strengthScore) {
+    let base = Math.max(bigBlind, Math.floor(pot / 2))
+    if (strengthScore >= 85) {
+      base = Math.max(base, pot)
+    } else if (strengthScore >= 65) {
+      base = Math.max(base, Math.floor((pot * 3) / 4))
+    }
+    if (callAmount > 0 && callAmount > base) {
+      base = callAmount
+    }
+    // Avoid oversized raises when short and preserve legal sizing path.
+    let maxPutIn = botPlayer.data.chips
+    if (base > maxPutIn) {
+      base = maxPutIn
+    }
+    if (base < bigBlind) base = bigBlind
+    return base
+  }
+
+  function botAct(seatNum) {
+    // Host poll loop already refreshed state; avoid extra full refresh for speed.
+    if (!TableStateClass.isLiveHandPhase(gamePhase)) return false
+    if (currentTurnSeat !== seatNum) return false
+    // Find the bot's player record
+    let botPlayer = getPlayerAtSeat(seatNum)
+    if (!botPlayer) return false
+    if (botPlayer.data.status !== TableStateClass.statusActive()) return false
+    if (botPlayer.data.hasActed) return false
+
+    let botChips = botPlayer.data.chips
+    let botBet = botPlayer.data.bet
+    if (botChips <= 0) {
+      // Defensive: if a bot has no chips but is still marked active, close out
+      // its action so turn flow cannot stall.
+      db.update(botPlayer.id, {
+        status: TableStateClass.statusAllIn(),
+        hasActed: true
+      })
+      advanceTurn()
+      return true
+    }
+    let callAmount = currentBet - botBet
+    if (callAmount < 0) callAmount = 0
+
+    // Evaluate hand strength
+    let handStrength = 0
+    let hc = botPlayer.data.holeCards || []
+    let preScore = botHoleCardStrength(hc)
+    let botStrength = HandEvaluatorClass.strengthFromHoleAndBoard(hc, communityCards)
+    if (botStrength) {
+      handStrength = botStrength.rank
+    }
+    let strengthScore = preScore
+    if (communityCards.length > 0) {
+      strengthScore = botRankScore(handStrength)
+    }
+    let odds = botPotOdds(callAmount, pot)
+    let commit = 0
+    if (botChips > 0) {
+      commit = callAmount / botChips
+    }
+    let noise = Math.floor(Math.random() * 13) - 6
+    let aggression = strengthScore - (odds * 32) - (commit * 40) + noise
+    let raiseSize = botChooseRaiseSize(botPlayer, callAmount, strengthScore)
+    let rand = Math.floor(Math.random() * 100)
+
+    if (callAmount <= 0) {
+      if (aggression >= 78) {
+        botDoRaise(botPlayer, seatNum, raiseSize)
+      } else if (aggression >= 52 && rand < 34) {
+        botDoRaise(botPlayer, seatNum, raiseSize)
+      } else {
+        botDoCheck(botPlayer, seatNum)
+      }
+      return true
+    }
+
+    if (aggression < 26) {
+      if (callAmount <= Math.floor(bigBlind / 2) && rand < 30) {
+        botDoCall(botPlayer, seatNum, callAmount)
+      } else {
+        botDoFold(botPlayer, seatNum)
+      }
+      return true
+    }
+
+    if (aggression < 55) {
+      if (commit > 0.45 && rand < 30) {
+        botDoFold(botPlayer, seatNum)
+      } else {
+        botDoCall(botPlayer, seatNum, callAmount)
+      }
+      return true
+    }
+
+    if (aggression < 82) {
+      if (rand < 28) {
+        botDoRaise(botPlayer, seatNum, raiseSize)
+      } else {
+        botDoCall(botPlayer, seatNum, callAmount)
+      }
+      return true
+    }
+
+    botDoRaise(botPlayer, seatNum, raiseSize)
+    return true
+  }
+
+  function botDoFold(botPlayer, seatNum) {
+    db.update(botPlayer.id, { status: TableStateClass.statusFolded(), hasActed: true })
+    logAction(TableEventClass.typeFold(), botPlayer.data.name, seatNum, 0)
+    advanceTurn()
+  }
+
+  function botDoCheck(botPlayer, seatNum) {
+    let tableData = getFreshTableDataBot()
+    if (tableData) {
+      let needed = (tableData.currentBet || 0) - (botPlayer.data.bet || 0)
+      if (needed > 0) {
+        botDoCall(botPlayer, seatNum, needed)
+        return
+      }
+    }
+    db.update(botPlayer.id, { hasActed: true })
+    logAction(TableEventClass.typeCheck(), botPlayer.data.name, seatNum, 0)
+    advanceTurn()
+  }
+
+  function botDoCall(botPlayer, seatNum, callAmount) {
+    let tableData = getFreshTableDataBot()
+    if (!tableData) return
+    let neededNow = (tableData.currentBet || 0) - (botPlayer.data.bet || 0)
+    if (neededNow < 0) neededNow = 0
+    if (neededNow <= 0) {
+      botDoCheck(botPlayer, seatNum)
+      return
+    }
+    if (callAmount !== neededNow) {
+      callAmount = neededNow
+    }
+    let freshPot = tableData.pot || 0
+    if (callAmount >= botPlayer.data.chips) {
+      let allInAmount = botPlayer.data.chips
+      db.update(botPlayer.id, {
+        bet: botPlayer.data.bet + allInAmount,
+        chips: 0,
+        handContribution: (botPlayer.data.handContribution || 0) + allInAmount,
+        status: TableStateClass.statusAllIn(),
+        hasActed: true
+      })
+      db.update(tableId, { pot: freshPot + allInAmount })
+      logAction(TableEventClass.typeAllIn(), botPlayer.data.name, seatNum, allInAmount)
+    } else {
+      db.update(botPlayer.id, {
+        bet: botPlayer.data.bet + callAmount,
+        chips: botPlayer.data.chips - callAmount,
+        handContribution: (botPlayer.data.handContribution || 0) + callAmount,
+        hasActed: true
+      })
+      db.update(tableId, { pot: freshPot + callAmount })
+      logAction(TableEventClass.typeCall(), botPlayer.data.name, seatNum, callAmount)
+    }
+    advanceTurn()
+  }
+
+  function botDoRaise(botPlayer, seatNum, amount) {
+    let tableData = getFreshTableDataBot()
+    if (!tableData) return
+    let freshCurrentBet = tableData.currentBet || 0
+    let freshPot = tableData.pot || 0
+    let freshLastFullRaise = tableData.lastFullRaise || bigBlind
+    let minIncrement = bigBlind
+    if (freshCurrentBet > 0 && freshLastFullRaise > minIncrement) {
+      minIncrement = freshLastFullRaise
+    }
+    // Ensure raise increment meets min-reopen rules
+    if (amount < minIncrement) amount = minIncrement
+    let newBet = freshCurrentBet + amount
+    let needed = newBet - botPlayer.data.bet
+    let callNeeded = freshCurrentBet - botPlayer.data.bet
+    if (callNeeded < 0) callNeeded = 0
+    if (needed <= 0) {
+      botDoCheck(botPlayer, seatNum)
+      return
+    }
+    // If chips cannot even cover the call, this is an all-in call (not a raise).
+    if (botPlayer.data.chips <= callNeeded) {
+      botDoCall(botPlayer, seatNum, callNeeded)
+      return
+    }
+    if (needed >= botPlayer.data.chips) {
+      let allInAmount = botPlayer.data.chips
+      db.update(botPlayer.id, {
+        bet: botPlayer.data.bet + allInAmount,
+        chips: 0,
+        handContribution: (botPlayer.data.handContribution || 0) + allInAmount,
+        status: TableStateClass.statusAllIn(),
+        hasActed: true
+      })
+      let newCurrentBet = botPlayer.data.bet + allInAmount
+      let raiseDelta = newCurrentBet - freshCurrentBet
+      let isFullRaise = raiseDelta >= minIncrement
+      if (newCurrentBet > freshCurrentBet && isFullRaise) {
+        resetHasActed(seatNum)
+      }
+      let tableUpdate = {
+        pot: freshPot + allInAmount,
+        currentBet: newCurrentBet > freshCurrentBet ? newCurrentBet : freshCurrentBet
+      }
+      if (newCurrentBet > freshCurrentBet && isFullRaise) {
+        tableUpdate.lastFullRaise = raiseDelta
+      }
+      db.update(tableId, tableUpdate)
+      logAction(TableEventClass.typeAllIn(), botPlayer.data.name, seatNum, allInAmount)
+    } else {
+      db.update(botPlayer.id, {
+        bet: newBet,
+        chips: botPlayer.data.chips - needed,
+        handContribution: (botPlayer.data.handContribution || 0) + needed,
+        hasActed: true
+      })
+      resetHasActed(seatNum)
+      db.update(tableId, {
+        pot: freshPot + needed,
+        currentBet: newBet,
+        lastFullRaise: amount
+      })
+      logAction(TableEventClass.typeRaise(), botPlayer.data.name, seatNum, amount)
+    }
+    advanceTurn()
+  }

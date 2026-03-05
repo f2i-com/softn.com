@@ -1,0 +1,838 @@
+// TheOffice - Local AI Sim Game
+// Dynamic tilemap, pathfinding, autonomous AI chat
+
+// Tile indices (from office_32x32.png, 16 cols wide)
+// Wall tiles
+let WALL = 1035
+let WALL_ALT = 1035
+
+// Floor tiles
+let FLOOR_CARPET = 1025
+let FLOOR_CARPET2 = 1025
+let FLOOR_STONE = 1025
+let FLOOR_STONE2 = 1025
+
+// Furniture tiles
+let DESK_TL = 65
+let DESK_TR = 67
+let DESK_BL = 97
+let DESK_BR = 99
+let CHAIR_D_T = 162
+let CHAIR_D_B = 178
+let CHAIR_L_T = 164
+let CHAIR_L_B = 180
+let CHAIR_R_T = 165
+let CHAIR_R_B = 181
+let PLANT_T = 166
+let PLANT_B = 182
+let CHAIR_U_T = 163
+let CHAIR_U_B = 179
+let PLANT = 68 // fallback
+let MONITOR = 70
+let FILING_L = 70
+let FILING_R = 70
+let BOOKSHELF_L = 70
+let BOOKSHELF_R = 70
+let BUSH = 69
+let WB_TL = 70
+let WB_TR = 70
+let WB_BL = 70
+let WB_BR = 70
+let FLAT_SCREEN = 70
+let PICTURE_A = 70
+let PICTURE_B = 70
+let COUCH_TL = 144
+let COUCH_TR = 145
+let COUCH_BL = 160
+let COUCH_BR = 161
+let WATER_COOLER = 70
+let PRINTER = 70
+let BLINDS_L = 1035
+let BLINDS_R = 1035
+
+// Map config
+let MAP_W = 28
+let MAP_H = 20
+let TILE_SZ = 32
+
+// Tilemap layers (set in _init)
+let bgLayer = []
+let objLayer = []
+let collisionGrid = []
+
+// Floor plan string (28 wide x 20 tall)
+// 0 = wall, C = carpet, S = stone
+let floorPlan = "0000000000000000000000000000" + "0CCCCCC0CCCCCCCCCC0CCCCCCCC0" + "0CCCCCC0CCCCCCCCCC0CCCCCCCC0" + "0CCCCCC0CCCCCCCCCC0CCCCCCCC0" + "0CCCCCC0CCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCC0SSSSSS0" + "0CCCCCCCCCCCCCCCCCCC0SSSSSS0" + "0CCCCCCCCCCCCCCCCCCC0SSSSSS0" + "0CCCCCCCCCCCCCCCCCCCCSSSSSS0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0CCCCCCCCCCCCCCCCCCCCCCCCCC0" + "0000000000000000000000000000"
+
+// AI / Simulation state
+let modelHandle = null
+let modelLoaded = false
+let modelLoading = false
+let simRunning = false
+let generating = false
+let statusText = "Load AI model to begin"
+let messageCount = 0
+let speakingCharId = null
+let thinkingCharId = null
+
+// Character data
+let charNames = []
+let charIds = []
+let charPersonalities = []
+let charPositions = []
+let charTargets = []
+let charPaths = []
+let charPathSteps = []
+let charDirs = []
+let charMoving = []
+let charBases = []
+let charHairs = []
+let charHairColors = []
+let charClothes = []
+let charClothesColors = []
+
+// Movement speed (pixels per tick at 50ms interval)
+let MOVE_SPEED = 2.5
+
+// Delay counters (ticks until action)
+let charDelays = []
+let speakingDelay = 0
+
+// Render tick counter — forces React re-render each movement tick
+// (charPositions/charDirs/charMoving are only accessed via sync functions,
+// so they don't trigger re-renders on their own)
+let renderTick = 0
+
+// Waypoints (tile coords)
+let waypoints = []
+
+function _init() {
+  buildMap()
+  setupWaypoints()
+
+  let chars = db.query("characters")
+  let i = 0
+  while (i < chars.length) {
+    let c = chars[i]
+    charNames.push(c.data.name)
+    charIds.push(c.id)
+    charPersonalities.push(c.data.personality)
+    charPositions.push([c.data.x, c.data.y])
+    charTargets.push(null)
+    charPaths.push([])
+    charPathSteps.push(0)
+    charDirs.push(c.data.row)
+    charMoving.push(false)
+    charBases.push(c.data.base)
+    charHairs.push(c.data.hair)
+    charHairColors.push(c.data.hairColor)
+    charClothes.push(c.data.clothes)
+    charClothesColors.push(c.data.clothesColor)
+    charDelays.push(0)
+    i = i + 1
+  }
+
+  let msgs = db.query("office_chat")
+  messageCount = msgs.length
+
+  if (chars.length > 0) {
+    statusText = chars.length + " characters ready"
+  }
+
+  // Characters start idle — movement begins when sim is started
+}
+
+// Map Building
+
+function buildMap() {
+  let bg = []
+  let obj = []
+  let col = []
+  let r = 0
+  while (r < MAP_H) {
+    let bgRow = []
+    let objRow = []
+    let colRow = []
+    let c = 0
+    while (c < MAP_W) {
+      let idx = r * MAP_W + c
+      let ch = floorPlan.charAt(idx)
+      if (ch == "C") {
+        // Carpet with subtle tile variation
+        if ((r + c) % 2 == 0) {
+          bgRow.push(FLOOR_CARPET)
+        } else {
+          bgRow.push(FLOOR_CARPET2)
+        }
+        colRow.push(1)
+      } else if (ch == "S") {
+        if ((r + c) % 2 == 0) {
+          bgRow.push(FLOOR_STONE)
+        } else {
+          bgRow.push(FLOOR_STONE2)
+        }
+        colRow.push(1)
+      } else {
+        let isVertical = false
+        if (c == 0 || c == MAP_W - 1) {
+          isVertical = true
+        } else if (r > 0 && r < MAP_H - 1) {
+          let upIdx = (r - 1) * MAP_W + c
+          let dnIdx = (r + 1) * MAP_W + c
+          if (floorPlan.charAt(upIdx) == "0" && floorPlan.charAt(dnIdx) == "0") {
+            isVertical = true
+          }
+        }
+        
+        if (isVertical) {
+          bgRow.push(1035) // Vertical wall line
+        } else {
+          bgRow.push(1035) // Horizontal wall line
+        }
+        colRow.push(0)
+      }
+      objRow.push(-1)
+      c = c + 1
+    }
+    bg.push(bgRow)
+    obj.push(objRow)
+    col.push(colRow)
+    r = r + 1
+  }
+
+  // === Boss Office (cols 1-6, rows 1-4) ===
+  placeDeskAt(obj, col, 2, 1)
+  place1x2At(obj, col, 2, 3, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 1, 0, PLANT_T, PLANT_B)
+
+  // === Conference Room (cols 19-26, rows 1-3) ===
+  placeDeskAt(obj, col, 21, 1)
+  place1x2At(obj, col, 20, 1, CHAIR_R_T, CHAIR_R_B)
+  place1x2At(obj, col, 23, 1, CHAIR_L_T, CHAIR_L_B)
+  place1x2At(obj, col, 26, 0, PLANT_T, PLANT_B)
+
+  // === Windows (blinds on top wall) ===
+  setTile(obj, col, 9, 0, BLINDS_L)
+  setTile(obj, col, 10, 0, BLINDS_R)
+  setTile(obj, col, 13, 0, BLINDS_L)
+  setTile(obj, col, 14, 0, BLINDS_R)
+  setTile(obj, col, 16, 0, BLINDS_L)
+  setTile(obj, col, 17, 0, BLINDS_R)
+
+  // === Open Plan - Top Row Workstations (cols 8-17) ===
+  place1x2At(obj, col, 9, 2, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 12, 2, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 15, 2, CHAIR_D_T, CHAIR_D_B)
+
+  // === Open Plan - Middle Desk Clusters ===
+  placeDeskAt(obj, col, 5, 8)
+  place1x2At(obj, col, 5, 10, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 6, 10, CHAIR_D_T, CHAIR_D_B)
+
+  placeDeskAt(obj, col, 10, 8)
+  place1x2At(obj, col, 10, 10, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 11, 10, CHAIR_D_T, CHAIR_D_B)
+
+  placeDeskAt(obj, col, 15, 8)
+  place1x2At(obj, col, 15, 10, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 16, 10, CHAIR_D_T, CHAIR_D_B)
+
+  // === Open Plan - Bottom Desk Row ===
+  placeDeskAt(obj, col, 3, 15)
+  place1x2At(obj, col, 3, 17, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 4, 17, CHAIR_D_T, CHAIR_D_B)
+
+  placeDeskAt(obj, col, 9, 15)
+  place1x2At(obj, col, 9, 17, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 10, 17, CHAIR_D_T, CHAIR_D_B)
+
+  placeDeskAt(obj, col, 15, 15)
+  place1x2At(obj, col, 15, 17, CHAIR_D_T, CHAIR_D_B)
+  place1x2At(obj, col, 16, 17, CHAIR_D_T, CHAIR_D_B)
+
+  // === Break Room (cols 21-26, rows 9-12) ===
+  placeDeskAt(obj, col, 22, 10)
+  place1x2At(obj, col, 22, 8, CHAIR_U_T, CHAIR_U_B)
+  place1x2At(obj, col, 23, 8, CHAIR_U_T, CHAIR_U_B)
+
+  // === Lounge Corner (bottom-right) ===
+  place1x2At(obj, col, 23, 13, PLANT_T, PLANT_B)
+
+  // === Wall Decoration & Plants ===
+  place1x2At(obj, col, 17, 5, PLANT_T, PLANT_B)
+  place1x2At(obj, col, 26, 4, PLANT_T, PLANT_B)
+  place1x2At(obj, col, 1, 17, PLANT_T, PLANT_B)
+  place1x2At(obj, col, 26, 17, PLANT_T, PLANT_B)
+
+  bgLayer = bg
+  objLayer = obj
+  collisionGrid = col
+}
+
+function setTile(obj, col, x, y, tile) {
+  let oRow = obj[y]
+  oRow[x] = tile
+  let cRow = col[y]
+  cRow[x] = 0
+}
+
+function placeDeskAt(obj, col, x, y) {
+  let oRow1 = obj[y]
+  oRow1[x] = DESK_TL
+  oRow1[x + 1] = DESK_TR
+  let oRow2 = obj[y + 1]
+  oRow2[x] = DESK_BL
+  oRow2[x + 1] = DESK_BR
+  let cRow1 = col[y]
+  cRow1[x] = 0
+  cRow1[x + 1] = 0
+  let cRow2 = col[y + 1]
+  cRow2[x] = 0
+  cRow2[x + 1] = 0
+}
+
+function place1x2At(obj, col, x, y, tileTop, tileBot) {
+  let oRow1 = obj[y]
+  oRow1[x] = tileTop
+  let oRow2 = obj[y + 1]
+  oRow2[x] = tileBot
+  let cRow1 = col[y]
+  cRow1[x] = 0
+  let cRow2 = col[y + 1]
+  cRow2[x] = 0
+}
+
+function setupWaypoints() {
+  // Boss office
+  waypoints.push([3, 3])
+  waypoints.push([5, 3])
+  // Near boss door
+  waypoints.push([4, 5])
+  // Conference room
+  waypoints.push([24, 2])
+  waypoints.push([19, 4])
+  // Top corridor (open plan)
+  waypoints.push([9, 3])
+  waypoints.push([13, 3])
+  waypoints.push([17, 3])
+  waypoints.push([21, 3])
+  waypoints.push([25, 3])
+  // Middle area
+  waypoints.push([3, 6])
+  waypoints.push([8, 6])
+  waypoints.push([13, 6])
+  waypoints.push([18, 6])
+  waypoints.push([25, 6])
+  // Between desk rows
+  waypoints.push([3, 11])
+  waypoints.push([8, 11])
+  waypoints.push([13, 11])
+  waypoints.push([18, 11])
+  // South area
+  waypoints.push([3, 13])
+  waypoints.push([8, 13])
+  waypoints.push([13, 13])
+  waypoints.push([18, 13])
+  waypoints.push([25, 13])
+  // Bottom row
+  waypoints.push([7, 18])
+  waypoints.push([13, 18])
+  waypoints.push([19, 18])
+  waypoints.push([25, 18])
+  // Break room
+  waypoints.push([21, 11])
+  waypoints.push([22, 12])
+}
+
+// Pathfinding (BFS with front pointer)
+
+function findPath(sx, sy, ex, ey) {
+  let startX = Math.floor(sx / TILE_SZ)
+  let startY = Math.floor(sy / TILE_SZ)
+  let endX = ex
+  let endY = ey
+
+  // Clamp to bounds
+  if (startX < 0) startX = 0
+  if (startX >= MAP_W) startX = MAP_W - 1
+  if (startY < 0) startY = 0
+  if (startY >= MAP_H) startY = MAP_H - 1
+  if (endX < 0 || endX >= MAP_W || endY < 0 || endY >= MAP_H) return []
+
+  let colRowEnd = collisionGrid[endY]
+  if (colRowEnd[endX] == 0) return []
+
+  // If start is on a blocked tile, try neighbors
+  let colRowStart = collisionGrid[startY]
+  if (colRowStart[startX] == 0) {
+    let found = false
+    let dx2 = [1, -1, 0, 0]
+    let dy2 = [0, 0, 1, -1]
+    let s = 0
+    while (s < 4) {
+      let nx2 = startX + dx2[s]
+      let ny2 = startY + dy2[s]
+      if (nx2 >= 0 && nx2 < MAP_W && ny2 >= 0 && ny2 < MAP_H) {
+        let cCheck = collisionGrid[ny2]
+        if (cCheck[nx2] == 1) {
+          startX = nx2
+          startY = ny2
+          found = true
+          break
+        }
+      }
+      s = s + 1
+    }
+    if (!found) return []
+  }
+
+  if (startX == endX && startY == endY) return []
+
+  // BFS with front pointer (no array copying)
+  let queue = []
+  let front = 0
+  let visited = []
+  let parentMap = []
+  let r = 0
+  while (r < MAP_H) {
+    let vRow = []
+    let pRow = []
+    let c = 0
+    while (c < MAP_W) {
+      vRow.push(0)
+      pRow.push(-1)
+      c = c + 1
+    }
+    visited.push(vRow)
+    parentMap.push(pRow)
+    r = r + 1
+  }
+
+  let vRowS = visited[startY]
+  vRowS[startX] = 1
+  queue.push(startX + startY * MAP_W)
+
+  let dx = [0, 1, 0, -1]
+  let dy = [-1, 0, 1, 0]
+
+  let found2 = false
+  while (front < queue.length && front < 3000) {
+    let curr = queue[front]
+    front = front + 1
+
+    let cx = curr % MAP_W
+    let cy = Math.floor(curr / MAP_W)
+
+    if (cx == endX && cy == endY) {
+      found2 = true
+      break
+    }
+
+    let d = 0
+    while (d < 4) {
+      let nx = cx + dx[d]
+      let ny = cy + dy[d]
+      if (nx >= 0 && nx < MAP_W && ny >= 0 && ny < MAP_H) {
+        let vRow = visited[ny]
+        let cRow = collisionGrid[ny]
+        if (cRow[nx] == 1 && vRow[nx] == 0) {
+          vRow[nx] = 1
+          let pRow = parentMap[ny]
+          pRow[nx] = cx + cy * MAP_W
+          queue.push(nx + ny * MAP_W)
+        }
+      }
+      d = d + 1
+    }
+  }
+
+  if (!found2) return []
+
+  // Trace path back
+  let path = []
+  let px = endX
+  let py = endY
+  let pathSafety = 0
+  while ((px != startX || py != startY) && pathSafety < 500) {
+    pathSafety = pathSafety + 1
+    path.push([px, py])
+    let pRow = parentMap[py]
+    let prev = pRow[px]
+    if (prev == -1) break
+    px = prev % MAP_W
+    py = Math.floor(prev / MAP_W)
+  }
+
+  // Reverse
+  let reversed = []
+  let pi = path.length - 1
+  while (pi >= 0) {
+    reversed.push(path[pi])
+    pi = pi - 1
+  }
+  return reversed
+}
+
+// Character Movement
+
+// Check if a tile is occupied by another character (excludes charIdx)
+function tileOccupied(tx, ty, excludeIdx) {
+  let j = 0
+  while (j < charPositions.length) {
+    if (j != excludeIdx) {
+      let op = charPositions[j]
+      let otx = Math.floor(op[0] / TILE_SZ)
+      let oty = Math.floor(op[1] / TILE_SZ)
+      if (otx == tx && oty == ty) {
+        return true
+      }
+    }
+    j = j + 1
+  }
+  return false
+}
+
+function pickNewTarget(charIdx) {
+  let attempts = 0
+  while (attempts < 30) {
+    let wpIdx = Math.floor(Math.random() * waypoints.length)
+    let wp = waypoints[wpIdx]
+    let pos = charPositions[charIdx]
+    let curTX = Math.floor(pos[0] / TILE_SZ)
+    let curTY = Math.floor(pos[1] / TILE_SZ)
+    if (wp[0] != curTX || wp[1] != curTY) {
+      let p = findPath(pos[0], pos[1], wp[0], wp[1])
+      if (p.length > 0) {
+        charPaths[charIdx] = p
+        charPathSteps[charIdx] = 0
+        charMoving[charIdx] = true
+        charTargets[charIdx] = wp
+        return
+      }
+    }
+    attempts = attempts + 1
+  }
+  // If no path found, just wait and try again
+  charDelays[charIdx] = 75 + Math.floor(Math.random() * 150)
+}
+
+function movementTick() {
+  // Handle speaking indicator countdown
+  if (speakingDelay > 0) {
+    speakingDelay = speakingDelay - 1
+    if (speakingDelay == 0) {
+      speakingCharId = null
+      if (simRunning) statusText = "Simulation running..."
+    }
+  }
+
+  let i = 0
+  while (i < charPositions.length) {
+    // Handle delay countdown for idle characters
+    if (charDelays[i] > 0) {
+      charDelays[i] = charDelays[i] - 1
+      if (charDelays[i] == 0) {
+        // If character still has a path (was waiting for blocked tile), resume
+        let existingPath = charPaths[i]
+        if (existingPath.length > 0 && charPathSteps[i] < existingPath.length) {
+          charMoving[i] = true
+        } else {
+          pickNewTarget(i)
+        }
+      }
+      i = i + 1
+      continue
+    }
+
+    if (charMoving[i]) {
+      let curPath = charPaths[i]
+      if (curPath.length == 0) {
+        // Safety: charMoving but no path — reset to idle
+        charMoving[i] = false
+        charDelays[i] = 20 + Math.floor(Math.random() * 40)
+      } else if (curPath.length > 0) {
+        let step = charPathSteps[i]
+        if (step >= curPath.length) {
+          charMoving[i] = false
+          charPaths[i] = []
+          charDelays[i] = 80 + Math.floor(Math.random() * 160)
+        } else {
+          let target = curPath[step]
+          let targetTX = target[0]
+          let targetTY = target[1]
+
+          // Check collision: is the target tile occupied by another character?
+          if (tileOccupied(targetTX, targetTY, i)) {
+            // Wait — don't move, just face toward the blocking tile
+            let pos = charPositions[i]
+            let bdx = targetTX * TILE_SZ + TILE_SZ / 2 - pos[0]
+            let bdy = targetTY * TILE_SZ + TILE_SZ / 2 - pos[1]
+            if (Math.abs(bdx) > Math.abs(bdy)) {
+              if (bdx > 0) { charDirs[i] = 2 }
+              else { charDirs[i] = 1 }
+            } else {
+              if (bdy > 0) { charDirs[i] = 0 }
+              else { charDirs[i] = 3 }
+            }
+            // Stop walking animation while waiting
+            charMoving[i] = false
+            charDelays[i] = 10 + Math.floor(Math.random() * 20)
+            // Keep path so we resume after delay
+            // charMoving will be set to true again when delay expires
+          } else {
+            let targetPx = targetTX * TILE_SZ + TILE_SZ / 2
+            let targetPy = targetTY * TILE_SZ + TILE_SZ / 2
+            let pos = charPositions[i]
+            let pdx = targetPx - pos[0]
+            let pdy = targetPy - pos[1]
+            let dist = Math.sqrt(pdx * pdx + pdy * pdy)
+
+            if (dist < MOVE_SPEED + 1) {
+              charPositions[i] = [targetPx, targetPy]
+              charPathSteps[i] = step + 1
+            } else {
+              let nx = pos[0] + (pdx / dist) * MOVE_SPEED
+              let ny = pos[1] + (pdy / dist) * MOVE_SPEED
+              charPositions[i] = [nx, ny]
+            }
+
+            // Update facing direction
+            if (Math.abs(pdx) > Math.abs(pdy)) {
+              if (pdx > 0) { charDirs[i] = 2 }
+              else { charDirs[i] = 1 }
+            } else {
+              if (pdy > 0) { charDirs[i] = 0 }
+              else { charDirs[i] = 3 }
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+
+  // Force React re-render by changing a state variable referenced in the template
+  renderTick = renderTick + 1
+}
+
+// AI Model
+
+function loadModel() {
+  if (modelLoading || modelLoaded) return
+  modelLoading = true
+  statusText = "Downloading Qwen3.5-0.8B..."
+
+  softn.ai.model.load("onnx-community/Qwen3.5-0.8B-ONNX", {
+    modelClass: "Qwen3_5ForConditionalGeneration",
+    dtype: {
+      embed_tokens: "q4",
+      vision_encoder: "q4",
+      decoder_model_merged: "q4"
+    }
+  }, function(result) {
+    modelHandle = result.modelHandle
+    modelLoaded = true
+    modelLoading = false
+    statusText = "Qwen3.5-0.8B ready!"
+  })
+}
+
+function toggleSim() {
+  simRunning = !simRunning
+  if (simRunning) {
+    statusText = "Simulation running..."
+    // Kick-start character movement
+    let i = 0
+    while (i < charIds.length) {
+      if (!charMoving[i] && charDelays[i] == 0) {
+        charDelays[i] = 10 + Math.floor(Math.random() * 40)
+      }
+      i = i + 1
+    }
+  } else {
+    statusText = "Simulation paused"
+    speakingCharId = null
+    thinkingCharId = null
+  }
+}
+
+function simulationTick() {
+  if (!modelLoaded || generating) return
+  if (charIds.length < 2) return
+
+  generating = true
+
+  let pair = pickConversationPair()
+  let speakerIdx = pair[0]
+  let listenerIdx = pair[1]
+
+  // Face each other
+  let speakerPos = charPositions[speakerIdx]
+  let listenerPos = charPositions[listenerIdx]
+  let dx = listenerPos[0] - speakerPos[0]
+  let dy = listenerPos[1] - speakerPos[1]
+  if (Math.abs(dx) > Math.abs(dy)) {
+    if (dx > 0) {
+      charDirs[speakerIdx] = 2
+      charDirs[listenerIdx] = 1
+    } else {
+      charDirs[speakerIdx] = 1
+      charDirs[listenerIdx] = 2
+    }
+  } else {
+    if (dy > 0) {
+      charDirs[speakerIdx] = 0
+      charDirs[listenerIdx] = 3
+    } else {
+      charDirs[speakerIdx] = 3
+      charDirs[listenerIdx] = 0
+    }
+  }
+
+  // Pause movement while having a conversation
+  charMoving[speakerIdx] = false
+  charMoving[listenerIdx] = false
+  charPaths[speakerIdx] = []
+  charPaths[listenerIdx] = []
+  charDelays[speakerIdx] = 80
+  charDelays[listenerIdx] = 80
+
+  let speakerName = charNames[speakerIdx]
+  let listenerName = charNames[listenerIdx]
+  let speakerPersonality = charPersonalities[speakerIdx]
+
+  thinkingCharId = charIds[speakerIdx]
+  statusText = speakerName + " is thinking..."
+
+  let recentContext = getRecentContext(speakerName, listenerName, 4)
+
+  let systemPrompt = "You are " + speakerName + " from The Office. " + speakerPersonality + ". You are talking to " + listenerName + " in the office. Keep responses short (1-2 sentences), casual, and in character. Do not use quotation marks."
+
+  let aiMessages = []
+  aiMessages.push({ role: "system", content: systemPrompt })
+
+  let c = 0
+  while (c < recentContext.length) {
+    let ctx = recentContext[c]
+    if (ctx.speaker == speakerName) {
+      aiMessages.push({ role: "assistant", content: ctx.content })
+    } else {
+      aiMessages.push({ role: "user", content: ctx.content })
+    }
+    c = c + 1
+  }
+
+  aiMessages.push({ role: "user", content: listenerName + " is nearby. Say something to them." })
+
+  softn.ai.model.generate(modelHandle, aiMessages, {
+    max_new_tokens: 64,
+    temperature: 0.9,
+    top_p: 0.9
+  }, function(result) {
+    let text = cleanModelOutput(result.text, speakerName)
+
+    if (text.length > 0) {
+      db.create("office_chat", {
+        speaker: speakerName,
+        listener: listenerName,
+        content: text,
+        timestamp: new Date().toISOString()
+      })
+      messageCount = messageCount + 1
+
+      thinkingCharId = null
+      speakingCharId = charIds[speakerIdx]
+      statusText = speakerName + " > " + listenerName
+      speakingDelay = 190
+    } else {
+      thinkingCharId = null
+      if (simRunning) statusText = "Simulation running..."
+    }
+
+    generating = false
+  })
+}
+
+function pickConversationPair() {
+  let a = Math.floor(Math.random() * charIds.length)
+  let b = Math.floor(Math.random() * (charIds.length - 1))
+  if (b >= a) {
+    b = b + 1
+  }
+  return [a, b]
+}
+
+function getRecentContext(speakerName, listenerName, count) {
+  let allMsgs = db.query("office_chat")
+  let relevant = []
+  let i = allMsgs.length - 1
+  while (i >= 0 && relevant.length < count) {
+    let msg = allMsgs[i]
+    if ((msg.data.speaker == speakerName && msg.data.listener == listenerName) || (msg.data.speaker == listenerName && msg.data.listener == speakerName)) {
+      relevant.push({ speaker: msg.data.speaker, content: msg.data.content })
+    }
+    i = i - 1
+  }
+  let reversed = []
+  let ri = relevant.length - 1
+  while (ri >= 0) {
+    reversed.push(relevant[ri])
+    ri = ri - 1
+  }
+  return reversed
+}
+
+function cleanModelOutput(text, speakerName) {
+  let cleaned = text
+  let prefix1 = speakerName + ":"
+  let prefix2 = speakerName + " says"
+  if (cleaned.indexOf(prefix1) == 0) {
+    cleaned = cleaned.substring(prefix1.length)
+  }
+  if (cleaned.indexOf(prefix2) == 0) {
+    cleaned = cleaned.substring(prefix2.length)
+  }
+  cleaned = cleaned.trim()
+  if (cleaned.length > 0) {
+    let first = cleaned.charAt(0)
+    if (first == "\"" || first == "'") {
+      cleaned = cleaned.substring(1)
+    }
+  }
+  if (cleaned.length > 0) {
+    let last = cleaned.charAt(cleaned.length - 1)
+    if (last == "\"" || last == "'") {
+      cleaned = cleaned.substring(0, cleaned.length - 1)
+    }
+  }
+  cleaned = cleaned.trim()
+  let nlIdx = cleaned.indexOf("\n")
+  if (nlIdx > 0) {
+    cleaned = cleaned.substring(0, nlIdx)
+  }
+  return cleaned
+}
+
+// Helper getters for UI
+
+function getCharX(idx) {
+  if (idx < 0 || idx >= charPositions.length) return 0
+  let pos = charPositions[idx]
+  return pos[0]
+}
+
+function getCharY(idx) {
+  if (idx < 0 || idx >= charPositions.length) return 0
+  let pos = charPositions[idx]
+  return pos[1]
+}
+
+function getCharDir(idx) {
+  if (idx < 0 || idx >= charDirs.length) return 0
+  return charDirs[idx]
+}
+
+function isCharMoving(idx) {
+  if (idx < 0 || idx >= charMoving.length) return false
+  return charMoving[idx]
+}

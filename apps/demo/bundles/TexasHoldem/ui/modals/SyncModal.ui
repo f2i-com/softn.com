@@ -1,0 +1,61 @@
+// SyncModal.ui - Room connection info
+
+<Modal open={showSyncModal} onClose={closeSyncModal} title="Room Info" size=md>
+  <Stack direction=vertical gap=lg style={{ padding: "0.5rem 0" }}>
+
+    // Connection status
+    <Card padding=md style={{
+      background: syncConnected ? "rgba(34, 197, 94, 0.08)" : (syncConnecting ? "rgba(234, 179, 8, 0.08)" : "rgba(255,255,255,0.04)"),
+      borderRadius: "12px",
+      border: "1px solid " + (syncConnected ? "rgba(34, 197, 94, 0.2)" : (syncConnecting ? "rgba(234, 179, 8, 0.2)" : "rgba(255,255,255,0.1)"))
+    }}>
+      <Stack direction=horizontal align=center gap=md>
+        <Box style={{
+          width: "10px",
+          height: "10px",
+          borderRadius: "50%",
+          background: syncConnected ? "#22c55e" : (syncConnecting ? "#eab308" : "#78716c"),
+          boxShadow: syncConnected ? "0 0 8px rgba(34, 197, 94, 0.4)" : "none",
+          flexShrink: 0
+        }} />
+        <Stack direction=vertical gap=xs style={{ flex: 1 }}>
+          <Text fontWeight=semibold size=sm style={{ color: "#fff" }}>
+            {syncConnected ? "Connected" : (syncConnecting ? "Connecting..." : "Not connected")}
+          </Text>
+          <Text size=xs style={{ color: "rgba(255,255,255,0.5)" }}>
+            {syncConnected ? syncPeers + " peer(s) online" : (syncConnecting ? "Establishing WebRTC connection..." : "Not in a room")}
+          </Text>
+        </Stack>
+      </Stack>
+    </Card>
+
+    // Room code display
+    <Stack direction=vertical gap=sm if={syncRoom}>
+      <Text size=sm fontWeight=medium style={{ color: "#fff" }}>Room Code</Text>
+      <Stack direction=horizontal gap=sm align=center>
+        <Card padding=sm style={{
+          background: "rgba(255,255,255,0.06)",
+          borderRadius: "8px",
+          border: "1px solid rgba(200,170,110,0.2)",
+          flex: 1
+        }}>
+          <Text size=sm fontWeight=bold style={{ color: "#c8aa6e", fontFamily: "monospace", letterSpacing: "0.05em" }}>
+            {syncRoom}
+          </Text>
+        </Card>
+        <Button variant=secondary size=sm @click=copySyncRoom style={{ padding: "0.4rem 0.6rem", fontSize: "0.75rem", flexShrink: 0 }}>
+          Copy
+        </Button>
+      </Stack>
+      <Text size=xs style={{ color: "rgba(255,255,255,0.4)" }}>
+        Share this code with friends to play together.
+      </Text>
+    </Stack>
+
+    <Stack direction=horizontal gap=sm justify=end>
+      <Button variant=secondary size=md @click=closeSyncModal>
+        Close
+      </Button>
+    </Stack>
+  </Stack>
+</Modal>

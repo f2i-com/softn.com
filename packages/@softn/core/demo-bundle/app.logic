@@ -1,0 +1,143 @@
+/**
+ * App Logic - Todo Application Business Logic
+ *
+ * This file contains all the state and functions for the todo app.
+ * It's separate from the UI for better organization and reusability.
+ */
+
+import { generateId, formatDate } from "./utils.logic"
+
+// ============================================================================
+// State
+// ============================================================================
+
+// Current todos (loaded from XDB)
+let todos = []
+
+// Input for new todo
+let newTodoText = ""
+
+// Current filter
+let filter = "all"  // "all" | "active" | "completed"
+
+// ============================================================================
+// Computed Values
+// ============================================================================
+
+// Active todos (not completed)
+const activeTodos = $computed(() => {
+  return todos.filter(t => !t.data.completed)
+})
+
+// Completed todos
+const completedTodos = $computed(() => {
+  return todos.filter(t => t.data.completed)
+})
+
+// Filtered todos based on current filter
+const filteredTodos = $computed(() => {
+  switch (filter) {
+    case "active":
+      return activeTodos
+    case "completed":
+      return completedTodos
+    default:
+      return todos
+  }
+})
+
+// ============================================================================
+// Actions
+// ============================================================================
+
+/**
+ * Handle form submission to add new todo
+ */
+async function handleAddTodo(event) {
+  event.preventDefault()
+
+  const text = newTodoText.trim()
+  if (!text) return
+
+  // Create todo in XDB
+  await xdb.create("todos", {
+    text: text,
+    completed: false,
+    createdAt: new Date().toISOString()
+  })
+
+  // Clear input
+  newTodoText = ""
+
+  // Refresh list
+  await refreshTodos()
+}
+
+/**
+ * Toggle todo completion status
+ */
+async function toggleTodo(id) {
+  const todo = todos.find(t => t.id === id)
+  if (!todo) return
+
+  await xdb.update(id, {
+    completed: !todo.data.completed,
+    completedAt: !todo.data.completed ? new Date().toISOString() : null
+  })
+
+  await refreshTodos()
+}
+
+/**
+ * Delete a todo
+ */
+async function deleteTodo(id) {
+  await xdb.delete(id)
+  await refreshTodos()
+}
+
+/**
+ * Edit a todo's text
+ */
+async function editTodo(id, newText) {
+  const text = newText.trim()
+  if (!text) return
+
+  await xdb.update(id, {
+    text: text,
+    updatedAt: new Date().toISOString()
+  })
+
+  await refreshTodos()
+}
+
+/**
+ * Clear all completed todos
+ */
+async function clearCompleted() {
+  for (const todo of completedTodos) {
+    await xdb.delete(todo.id)
+  }
+  await refreshTodos()
+}
+
+/**
+ * Set the current filter
+ */
+function setFilter(newFilter) {
+  filter = newFilter
+}
+
+/**
+ * Refresh todos from XDB
+ */
+async function refreshTodos() {
+  todos = xdb.getAll("todos")
+}
+
+// ============================================================================
+// Initialize
+// ============================================================================
+
+// Load todos on startup
+refreshTodos()

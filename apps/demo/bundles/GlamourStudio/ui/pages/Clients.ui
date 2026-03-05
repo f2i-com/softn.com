@@ -1,0 +1,55 @@
+// Clients.ui - Client management page with list and detail views
+
+<Stack direction=vertical gap=lg if={currentPage === "clients"}>
+  // Detail View - shown when a client is selected
+  <Stack direction=vertical gap=lg if={selectedItem}>
+    <Button variant=ghost size=sm @click=clearSelection style={{ alignSelf: "flex-start", gap: "0.375rem", color: getAccentColor(), fontSize: "0.8rem" }}>
+      ← Back to list
+    </Button>
+
+    // Client Header Card
+    <Card padding=lg style={{ background: darkMode ? "linear-gradient(135deg, #1c1917 0%, #292524 100%)" : "linear-gradient(135deg, #ffffff 0%, #faf9f7 100%)", borderRadius: "16px", border: "1px solid " + getBorderColor() }}>
+      <Stack className="softn-mobile-stack" direction=horizontal gap=lg align=center style={{ flexWrap: "wrap" }}>
+        <Avatar name={selectedItem.data.name} size=xl />
+        <Stack direction=vertical gap=xs style={{ flex: 1, minWidth: 0 }}>
+          <Stack direction=horizontal gap=md align=center style={{ flexWrap: "wrap" }}>
+            <Heading level={3} style={{ fontSize: "1.25rem", fontFamily: "'Cormorant Garamond', serif" }}>{selectedItem.data.name}</Heading>
+            <Badge variant=warning if={selectedItem.data.vip}>VIP</Badge>
+          </Stack>
+          <Text color=muted size=sm>{selectedItem.data.email}</Text>
+          <Text color=muted size=xs if={selectedItem.data.phone}>{selectedItem.data.phone}</Text>
+        </Stack>
+        <Stack direction=vertical align=end gap=xs style={{ flexShrink: 0 }}>
+          <Text color=muted size=xs>Total Spent</Text>
+          <Text size=lg fontWeight=bold style={{ color: getAccentColor(), fontFamily: "'Cormorant Garamond', serif" }}>{"$" + Number(selectedItem.data.totalSpent).toFixed(2)}</Text>
+        </Stack>
+      </Stack>
+    </Card>
+
+    // Client Details
+    <Grid columns={{ sm: 1, md: 2 }} gap=lg>
+      <SmartView data={selectedItem.data} fields="name, email, phone" layout=card title="Contact Information" />
+      <SmartView data={selectedItem.data} fields="visits, totalSpent, vip" layout=card title="Client Statistics" />
+    </Grid>
+  </Stack>
+
+  // List View - shown when no client is selected
+  <Stack direction=vertical gap=lg if={!selectedItem}>
+    <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)", overflow: "auto" }}>
+      <SmartGrid
+        data={clients}
+        columns="name, email, phone, visits, totalSpent, vip"
+        searchable
+        sortable
+        pageable
+        pageSize={10}
+        editable
+        delete
+        onSelect={selectItem}
+        onEdit={editClient}
+        onDelete={deleteClient}
+        emptyMessage="No clients yet. Click '+ Client' to add your first client."
+      />
+    </Card>
+  </Stack>
+</Stack>

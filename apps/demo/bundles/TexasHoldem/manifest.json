@@ -1,0 +1,48 @@
+{
+  "name": "Texas Hold'em",
+  "version": "1.0.0",
+  "description": "Multiplayer Texas Hold'em Poker with P2P sync",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": [
+      "ui/main.ui",
+      "ui/components/CommunityCards.ui",
+      "ui/components/ActionPanel.ui",
+      "ui/components/PotDisplay.ui",
+      "ui/pages/Lobby.ui",
+      "ui/pages/Table.ui",
+      "ui/modals/SyncModal.ui",
+      "ui/modals/ResultsModal.ui"
+    ],
+    "logic": [
+      "logic/main.logic",
+      "logic/cards.logic",
+      "logic/engine.logic",
+      "logic/game.logic",
+      "logic/actions.logic",
+      "logic/bot.logic",
+      "logic/ui-helpers.logic"
+    ],
+    "xdb": [
+      "xdb/poker_table.xdb",
+      "xdb/poker_players.xdb",
+      "xdb/poker_actions.xdb"
+    ],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": {
+      "title": "Texas Hold'em Poker",
+      "width": 1100,
+      "height": 750
+    },
+    "theme": {
+      "primary": "#c8aa6e",
+      "mode": "dark"
+    },
+    "mobile": {
+      "orientation": "landscape"
+    }
+  }
+}

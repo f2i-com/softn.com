@@ -1,0 +1,63 @@
+// Header.ui - Top navigation bar with breadcrumb and action buttons
+
+<Box style={{
+  background: darkMode ? "rgba(28, 25, 23, 0.97)" : "rgba(255, 255, 255, 0.97)",
+  borderBottom: "1px solid " + getBorderColor(),
+  backdropFilter: "blur(12px)",
+  padding: "0.625rem 1rem",
+  flexShrink: 0,
+  transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)"
+}}>
+  <Stack direction=horizontal align=center justify="space-between" style={{ flexWrap: "wrap", gap: "0.5rem" }}>
+    // Breadcrumb
+    <Stack direction=horizontal gap=sm align=center style={{ minWidth: 0 }}>
+      <Button variant=ghost size=sm @click={navigate("dashboard")} className="softn-mobile-hide" if={currentPage !== "dashboard"} style={{ padding: "0.25rem 0.5rem", opacity: 0.6, fontSize: "0.8rem" }}>
+        Home
+      </Button>
+      <Text color=muted size=sm className="softn-mobile-hide" if={currentPage !== "dashboard"}>/</Text>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "dashboard"}>Dashboard</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "appointments"}>Appointments</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "clients"}>Clients</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "staff"}>Staff</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "services"}>Services</Heading>
+    </Stack>
+
+    // Action Buttons
+    <Stack direction=horizontal gap=xs align=center>
+      <Button variant=primary size=sm @click=openAddModal if={currentPage === "dashboard" || currentPage === "appointments"} style={{ background: "linear-gradient(135deg, " + getAccentColor() + ", " + getAccentHover() + ")", color: darkMode ? "#1c1917" : "#ffffff", border: "none", boxShadow: "0 2px 8px " + getAccentMuted(), fontWeight: 600 }}>
+        + Appointment
+      </Button>
+      <Button variant=primary size=sm @click=openAddClientModal if={currentPage === "clients"} style={{ background: "linear-gradient(135deg, " + getAccentColor() + ", " + getAccentHover() + ")", color: darkMode ? "#1c1917" : "#ffffff", border: "none", boxShadow: "0 2px 8px " + getAccentMuted(), fontWeight: 600 }}>
+        + Client
+      </Button>
+      <Button variant=primary size=sm @click=openAddStaffModal if={currentPage === "staff"} style={{ background: "linear-gradient(135deg, " + getAccentColor() + ", " + getAccentHover() + ")", color: darkMode ? "#1c1917" : "#ffffff", border: "none", boxShadow: "0 2px 8px " + getAccentMuted(), fontWeight: 600 }}>
+        + Staff
+      </Button>
+      <Button variant=primary size=sm @click=openAddServiceModal if={currentPage === "services"} style={{ background: "linear-gradient(135deg, " + getAccentColor() + ", " + getAccentHover() + ")", color: darkMode ? "#1c1917" : "#ffffff", border: "none", boxShadow: "0 2px 8px " + getAccentMuted(), fontWeight: 600 }}>
+        + Service
+      </Button>
+      <Button variant=ghost size=sm @click=openSyncModal style={{ padding: "0.4rem 0.6rem", gap: "0.35rem" }} className="softn-mobile-hide">
+        <Box style={{ width: "7px", height: "7px", borderRadius: "50%", background: syncConnected ? "#22c55e" : "#78716c", boxShadow: syncConnected ? "0 0 6px rgba(34, 197, 94, 0.4)" : "none", flexShrink: 0 }} />
+        <Text size=xs style={{ color: getMutedColor(), fontSize: "0.7rem" }}>Sync</Text>
+      </Button>
+      <Button
+        variant=ghost
+        size=sm
+        @click=toggleTheme
+        style={{
+          padding: "0.4rem 0.6rem",
+          background: darkMode ? "rgba(214, 191, 167, 0.10)" : "rgba(28, 25, 23, 0.06)",
+          border: "1px solid " + getBorderColor(),
+          color: getTextColor()
+        }}
+      >
+        <Text size=xs style={{ color: getTextColor(), fontSize: "0.7rem", fontWeight: 600 }}>
+          {darkMode ? "Dark" : "Light"}
+        </Text>
+      </Button>
+      <Button variant=ghost size=sm @click=openDataModal style={{ padding: "0.4rem 0.6rem" }} className="softn-mobile-hide">
+        <Text size=xs style={{ color: getMutedColor(), fontSize: "0.7rem" }}>Settings</Text>
+      </Button>
+    </Stack>
+  </Stack>
+</Box>

@@ -1,0 +1,52 @@
+<!-- Footer Component -->
+
+<footer class="footer">
+  <div class="footer-content">
+    <span class="stats">
+      {totalCount} {totalCount === 1 ? "item" : "items"} total
+      #if (completedCount > 0)
+        · {completedCount} completed
+      #end
+    </span>
+
+    #if (completedCount > 0)
+      <Button variant="ghost" size="sm" @click={() => $emit("clearCompleted")}>
+        Clear completed
+      </Button>
+    #end
+  </div>
+
+  <div class="footer-meta">
+    <span>Double-click to edit a todo</span>
+  </div>
+</footer>
+
+<style>
+  .footer {
+    background: white;
+    border-top: 1px solid #e5e7eb;
+    padding: 1rem 1.5rem;
+    margin-top: auto;
+  }
+
+  .footer-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  .stats {
+    font-size: 0.875rem;
+    color: #6b7280;
+  }
+
+  .footer-meta {
+    max-width: 600px;
+    margin: 0.5rem auto 0;
+    font-size: 0.75rem;
+    color: #9ca3af;
+    text-align: center;
+  }
+</style>

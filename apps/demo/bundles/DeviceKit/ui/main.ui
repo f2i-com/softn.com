@@ -1,0 +1,141 @@
+// main.ui - DeviceKit
+// Demo app showcasing SoftN capabilities: network, camera, QR, files
+
+<logic src="../logic/main.logic" />
+
+// Import pages
+<import ApiExplorer from="./pages/ApiExplorer.ui" />
+<import QRTools from="./pages/QRTools.ui" />
+<import CameraDemo from="./pages/CameraDemo.ui" />
+<import FileBrowser from="./pages/FileBrowser.ui" />
+
+<style>
+@keyframes dk-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes dk-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.dk-page-content > * {
+  animation: dk-fade-up 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+button, [role="button"] {
+  transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+button:active, [role="button"]:active {
+  transform: scale(0.97) !important;
+}
+</style>
+
+// Main App Layout
+<App theme="light">
+  <Box style={{
+    display: "flex",
+    flexDirection: "column",
+    width: "100%",
+    height: "100%",
+    overflow: "hidden",
+    background: "#f8fafc"
+  }}>
+    // Top Header
+    <Box style={{
+      padding: "1rem 2rem",
+      borderBottom: "1px solid #e2e8f0",
+      background: "#ffffff",
+      display: "flex",
+      alignItems: "center",
+      gap: "1rem",
+      flexShrink: 0
+    }}>
+      <Box style={{
+        width: "36px",
+        height: "36px",
+        borderRadius: "10px",
+        background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0
+      }}>
+        <Text style={{ color: "#ffffff", fontWeight: 700, fontSize: "0.875rem" }}>DK</Text>
+      </Box>
+      <Stack direction=vertical gap=xs>
+        <Text style={{ fontSize: "1.125rem", fontWeight: 600, color: "#0f172a", letterSpacing: "-0.01em" }}>DeviceKit</Text>
+        <Text size=xs style={{ color: "#94a3b8", fontSize: "0.6875rem" }}>SoftN Capabilities Demo</Text>
+      </Stack>
+    </Box>
+
+    // Tab Navigation
+    <Box style={{
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "0",
+      borderBottom: "1px solid #e2e8f0",
+      background: "#ffffff",
+      padding: "0 1.5rem",
+      flexShrink: 0
+    }}>
+      <Button variant=ghost @click={setPage("api")} style={{
+        padding: "0.75rem 1.25rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "api" ? 600 : 400,
+        color: currentPage === "api" ? "#3b82f6" : "#64748b",
+        borderBottom: currentPage === "api" ? "2px solid #3b82f6" : "2px solid transparent",
+        transition: "all 150ms ease"
+      }}>
+        API Explorer
+      </Button>
+      <Button variant=ghost @click={setPage("qr")} style={{
+        padding: "0.75rem 1.25rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "qr" ? 600 : 400,
+        color: currentPage === "qr" ? "#3b82f6" : "#64748b",
+        borderBottom: currentPage === "qr" ? "2px solid #3b82f6" : "2px solid transparent",
+        transition: "all 150ms ease"
+      }}>
+        QR Tools
+      </Button>
+      <Button variant=ghost @click={setPage("camera")} style={{
+        padding: "0.75rem 1.25rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "camera" ? 600 : 400,
+        color: currentPage === "camera" ? "#3b82f6" : "#64748b",
+        borderBottom: currentPage === "camera" ? "2px solid #3b82f6" : "2px solid transparent",
+        transition: "all 150ms ease"
+      }}>
+        Camera
+      </Button>
+      <Button variant=ghost @click={setPage("files")} style={{
+        padding: "0.75rem 1.25rem",
+        borderRadius: 0,
+        fontSize: "0.8125rem",
+        fontWeight: currentPage === "files" ? 600 : 400,
+        color: currentPage === "files" ? "#3b82f6" : "#64748b",
+        borderBottom: currentPage === "files" ? "2px solid #3b82f6" : "2px solid transparent",
+        transition: "all 150ms ease"
+      }}>
+        Files
+      </Button>
+    </Box>
+
+    // Page Content
+    <Box className="dk-page-content" style={{
+      flex: 1,
+      overflow: "auto",
+      padding: "1.5rem 2rem",
+      minHeight: 0
+    }}>
+      <ApiExplorer />
+      <QRTools />
+      <CameraDemo />
+      <FileBrowser />
+    </Box>
+  </Box>
+</App>

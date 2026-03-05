@@ -1,0 +1,148 @@
+// ActionPanel.ui - Fold/Check/Call/Raise buttons (only visible on your turn)
+
+<Box className="poker-action-panel" if={isMyTurn() && gamePhase !== "waiting" && gamePhase !== "showdown" && !isActionBusy()} style={{
+  position: "absolute",
+  bottom: "max(4px, env(safe-area-inset-bottom))",
+  left: "50%",
+  transform: "translateX(-50%)",
+  width: "min(980px, calc(100vw - 8px))",
+  background: "rgba(8,12,18,0.88)",
+  backdropFilter: "blur(12px)",
+  border: "1px solid rgba(200,170,110,0.22)",
+  borderRadius: "12px",
+  padding: "clamp(8px, 1.2vw, 10px) clamp(8px, 1.5vw, 12px)",
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "stretch",
+  justifyContent: "space-between",
+  gap: "clamp(6px, 1vw, 8px)",
+  zIndex: 100,
+  animation: "card-deal 0.3s ease-out",
+  opacity: 1
+}}>
+  <Box className="poker-action-mycards" style={{ display: "none", alignItems: "center", gap: "8px", flex: "0 0 auto" }}>
+    <Box style={{ display: "flex", gap: "3px" }}>
+      <Box if={seatCard1(mySeat) >= 0} style={{ width: "28px", height: "40px", borderRadius: "4px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <Text style={{ fontSize: "13px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard1(mySeat)) }}>{cardRankDisplay(seatCard1(mySeat))}</Text>
+        <Text style={{ fontSize: "11px", lineHeight: 1, color: cardColorVal(seatCard1(mySeat)) }}>{cardSuitDisplay(seatCard1(mySeat))}</Text>
+      </Box>
+      <Box if={seatCard2(mySeat) >= 0} style={{ width: "28px", height: "40px", borderRadius: "4px", background: "#fff", border: "2px solid #d4d4d8", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        <Text style={{ fontSize: "13px", fontWeight: "bold", lineHeight: 1, color: cardColorVal(seatCard2(mySeat)) }}>{cardRankDisplay(seatCard2(mySeat))}</Text>
+        <Text style={{ fontSize: "11px", lineHeight: 1, color: cardColorVal(seatCard2(mySeat)) }}>{cardSuitDisplay(seatCard2(mySeat))}</Text>
+      </Box>
+    </Box>
+    <Box style={{ display: "flex", flexDirection: "column" }}>
+      <Text if={myHandName} style={{ color: "#c8aa6e", fontSize: "11px", fontWeight: "700" }}>{myHandName}</Text>
+      <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: "10px" }}>{"$" + getCallAmount() + " to call | $" + getMyChips()}</Text>
+    </Box>
+  </Box>
+
+  <Box className="poker-action-info" style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: "min(260px, 100%)", flex: "1 1 220px" }}>
+    <Text style={{ color: "#e5e7eb", fontSize: "12px", fontWeight: "700" }}>Your turn</Text>
+    <Text if={myHandName} style={{ color: "#c8aa6e", fontSize: "11px", fontWeight: "600", marginTop: "2px" }}>{myHandName}</Text>
+    <Text style={{ color: "rgba(255,255,255,0.62)", fontSize: "11px", marginTop: "2px" }}>{"To call: $" + getCallAmount() + " | Stack: $" + getMyChips()}</Text>
+  </Box>
+
+  <Box style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", justifyContent: "center", flex: "1 1 220px" }}>
+    <Button @click={doFold} style={{
+      background: "rgba(239,68,68,0.15)",
+      color: "#ef4444",
+      border: "1px solid rgba(239,68,68,0.3)",
+      borderRadius: "8px",
+      padding: "8px 14px",
+      fontSize: "13px",
+      fontWeight: "700",
+      cursor: isActionBusy() ? "default" : "pointer",
+      opacity: isActionBusy() ? 0.65 : 1
+    }}>
+      Fold
+    </Button>
+
+    <Button if={canCheck()} @click={doCheck} style={{
+      background: "rgba(34,197,94,0.15)",
+      color: "#22c55e",
+      border: "1px solid rgba(34,197,94,0.3)",
+      borderRadius: "8px",
+      padding: "8px 14px",
+      fontSize: "13px",
+      fontWeight: "700",
+      cursor: isActionBusy() ? "default" : "pointer",
+      opacity: isActionBusy() ? 0.65 : 1
+    }}>
+      Check
+    </Button>
+
+    <Button if={!canCheck()} @click={doCall} style={{
+      background: "rgba(59,130,246,0.15)",
+      color: "#3b82f6",
+      border: "1px solid rgba(59,130,246,0.3)",
+      borderRadius: "8px",
+      padding: "8px 14px",
+      fontSize: "13px",
+      fontWeight: "700",
+      cursor: isActionBusy() ? "default" : "pointer",
+      opacity: isActionBusy() ? 0.65 : 1
+    }}>
+      {"Call $" + getCallAmount()}
+    </Button>
+  </Box>
+
+  <Box style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: "6px", minWidth: "min(320px, 100%)", flex: "2 1 280px" }}>
+    <Box style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", justifyContent: "flex-start" }}>
+      <Button @click={setRaiseMin} style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.82)", border: "1px solid rgba(255,255,255,0.16)", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", fontWeight: "700", cursor: "pointer" }}>Min</Button>
+      <Button @click={setRaiseHalfPot} style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.82)", border: "1px solid rgba(255,255,255,0.16)", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", fontWeight: "700", cursor: "pointer" }}>1/2 Pot</Button>
+      <Button @click={setRaisePot} style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.82)", border: "1px solid rgba(255,255,255,0.16)", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", fontWeight: "700", cursor: "pointer" }}>Pot</Button>
+      <Button @click={setRaiseAllIn} style={{ background: "rgba(245,158,11,0.16)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.28)", borderRadius: "6px", padding: "5px 8px", fontSize: "11px", fontWeight: "700", cursor: "pointer" }}>All-in</Button>
+    </Box>
+
+    <Box style={{ display: "flex", alignItems: "center", gap: "6px", justifyContent: "space-between", width: "100%" }}>
+      <Text style={{ color: "rgba(255,255,255,0.62)", fontSize: "11px" }}>+ $</Text>
+      <Input
+        type="number"
+        :bind={raiseAmount}
+        placeholder={getMinRaise()}
+        style={{
+          width: "clamp(74px, 18vw, 96px)",
+          padding: "8px",
+          borderRadius: "8px",
+          border: "1px solid rgba(200,170,110,0.3)",
+          background: "rgba(255,255,255,0.08)",
+          color: "#fff",
+          fontSize: "14px",
+          textAlign: "center"
+        }}
+      />
+      <Button @click={doRaise} style={{
+        background: "linear-gradient(135deg, #c8aa6e, #a08040)",
+        color: "#1c1917",
+        border: "none",
+        borderRadius: "8px",
+        padding: "8px 16px",
+        fontSize: "13px",
+        fontWeight: "800",
+        cursor: canRaiseNow() ? "pointer" : "default",
+        opacity: canRaiseNow() ? 1 : 0.6
+      }}>
+        {raiseActionLabel()}
+      </Button>
+    </Box>
+
+    <Text className="poker-action-raise-detail" style={{ color: "rgba(255,255,255,0.62)", fontSize: "11px" }}>
+      {"You put in $" + getRaisePutInAmount() + " (target bet $" + getRaiseTargetBet() + ")"}
+    </Text>
+  </Box>
+</Box>
+
+<Box if={isMyTurn() && gamePhase !== "waiting" && gamePhase !== "showdown" && isActionBusy()} style={{
+  position: "absolute",
+  bottom: "max(8px, env(safe-area-inset-bottom))",
+  left: "50%",
+  transform: "translateX(-50%)",
+  zIndex: 105,
+  padding: "8px 14px",
+  borderRadius: "999px",
+  background: "rgba(15,23,42,0.88)",
+  border: "1px solid rgba(147,197,253,0.35)"
+}}>
+  <Text style={{ color: "#93c5fd", fontSize: "11px", fontWeight: "700" }}>Processing...</Text>
+</Box>

@@ -1,0 +1,126 @@
+<!-- Main UI - Todo Application Entry Point -->
+
+<import Header from "./components/header.ui" />
+<import TodoItem from "./components/todo-item.ui" />
+<import Footer from "./components/footer.ui" />
+
+<!-- Link to app logic -->
+<logic src="./app.logic" />
+
+<div class="app">
+  <Header title="My Todos" />
+
+  <main class="main-content">
+    <!-- Add new todo form -->
+    <form class="add-todo-form" @submit={handleAddTodo}>
+      <Input
+        type="text"
+        placeholder="What needs to be done?"
+        :value={newTodoText}
+        class="todo-input"
+      />
+      <Button type="submit" variant="primary">Add</Button>
+    </form>
+
+    <!-- Filter tabs -->
+    <div class="filter-tabs">
+      <Button
+        variant={filter === 'all' ? 'primary' : 'ghost'}
+        @click={() => setFilter('all')}
+      >
+        All ({count(todos)})
+      </Button>
+      <Button
+        variant={filter === 'active' ? 'primary' : 'ghost'}
+        @click={() => setFilter('active')}
+      >
+        Active ({count(activeTodos)})
+      </Button>
+      <Button
+        variant={filter === 'completed' ? 'primary' : 'ghost'}
+        @click={() => setFilter('completed')}
+      >
+        Completed ({count(completedTodos)})
+      </Button>
+    </div>
+
+    <!-- Todo list -->
+    <div class="todo-list">
+      #each (todo in filteredTodos)
+        <TodoItem
+          todo={todo}
+          @toggle={() => toggleTodo(todo.id)}
+          @delete={() => deleteTodo(todo.id)}
+          @edit={(newText) => editTodo(todo.id, newText)}
+        />
+      #empty
+        <div class="empty-state">
+          <p>No todos yet!</p>
+          <p class="hint">Add one above to get started.</p>
+        </div>
+      #end
+    </div>
+  </main>
+
+  <Footer
+    totalCount={count(todos)}
+    completedCount={count(completedTodos)}
+    @clearCompleted={clearCompleted}
+  />
+</div>
+
+<style>
+  .app {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-color, #f5f5f5);
+  }
+
+  .main-content {
+    flex: 1;
+    max-width: 600px;
+    margin: 0 auto;
+    padding: 1.5rem;
+    width: 100%;
+  }
+
+  .add-todo-form {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .todo-input {
+    flex: 1;
+  }
+
+  .filter-tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .todo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: #6b7280;
+  }
+
+  .empty-state p {
+    margin: 0;
+  }
+
+  .empty-state .hint {
+    font-size: 0.875rem;
+    margin-top: 0.5rem;
+  }
+</style>

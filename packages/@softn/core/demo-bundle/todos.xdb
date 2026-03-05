@@ -1,0 +1,71 @@
+{
+  "schema": {
+    "name": "todos",
+    "version": 1,
+    "collections": {
+      "todos": {
+        "fields": {
+          "text": {
+            "type": "string",
+            "required": true
+          },
+          "completed": {
+            "type": "boolean",
+            "default": false
+          },
+          "createdAt": {
+            "type": "datetime",
+            "default": "now"
+          },
+          "completedAt": {
+            "type": "datetime",
+            "nullable": true
+          },
+          "updatedAt": {
+            "type": "datetime",
+            "nullable": true
+          }
+        },
+        "indexes": [
+          {
+            "fields": ["completed"],
+            "name": "by_status"
+          },
+          {
+            "fields": ["createdAt"],
+            "name": "by_created"
+          }
+        ]
+      }
+    }
+  },
+  "data": {
+    "todos": [
+      {
+        "id": "demo_1",
+        "text": "Welcome to Todo App!",
+        "completed": false,
+        "createdAt": "2024-01-01T00:00:00.000Z"
+      },
+      {
+        "id": "demo_2",
+        "text": "Try adding a new todo above",
+        "completed": false,
+        "createdAt": "2024-01-01T00:00:01.000Z"
+      },
+      {
+        "id": "demo_3",
+        "text": "Double-click to edit",
+        "completed": false,
+        "createdAt": "2024-01-01T00:00:02.000Z"
+      },
+      {
+        "id": "demo_4",
+        "text": "Check me off when done!",
+        "completed": true,
+        "createdAt": "2024-01-01T00:00:03.000Z",
+        "completedAt": "2024-01-01T00:01:00.000Z"
+      }
+    ]
+  }
+}

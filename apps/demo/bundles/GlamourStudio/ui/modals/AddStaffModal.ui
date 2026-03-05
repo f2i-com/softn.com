@@ -1,0 +1,13 @@
+// AddStaffModal.ui - Modal for adding new staff members
+
+<Modal open={showAddStaffModal} onClose={closeAddStaffModal} title="Add New Staff Member" size=md>
+  <SmartForm
+    collection="staff"
+    fields="name:text:required, role:text:required, email:email:required"
+    defaults={{ status: "online", rating: 0, appointments: 0 }}
+    onSaved={onStaffSaved}
+    submitText="Add Staff"
+    showCancel={true}
+    onCancel={closeAddStaffModal}
+  />
+</Modal>

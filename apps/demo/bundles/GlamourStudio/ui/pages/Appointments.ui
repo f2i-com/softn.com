@@ -1,0 +1,52 @@
+// Appointments.ui - Appointments management page with list and detail views
+
+<Stack direction=vertical gap=lg if={currentPage === "appointments"}>
+  // Detail View - shown when an appointment is selected
+  <Stack direction=vertical gap=lg if={selectedItem}>
+    <Button variant=ghost size=sm @click=clearSelection style={{ alignSelf: "flex-start", gap: "0.375rem", color: getAccentColor(), fontSize: "0.8rem" }}>
+      ← Back to list
+    </Button>
+
+    // Appointment Header Card
+    <Card padding=lg style={{ background: darkMode ? "linear-gradient(135deg, #1c1917 0%, #292524 100%)" : "linear-gradient(135deg, #ffffff 0%, #faf9f7 100%)", borderRadius: "16px", border: "1px solid " + getBorderColor() }}>
+      <Stack className="softn-mobile-stack" direction=horizontal gap=lg align=center style={{ flexWrap: "wrap" }}>
+        <Box style={{ padding: "0.75rem 1rem", background: "linear-gradient(135deg, " + getAccentColor() + ", " + getAccentHover() + ")", borderRadius: "12px", minWidth: "60px", textAlign: "center", flexShrink: 0, boxShadow: "0 2px 10px " + getAccentMuted() }}>
+          <Text size=lg fontWeight=bold style={{ color: darkMode ? "#1c1917" : "#ffffff" }}>{selectedItem.data.time}</Text>
+        </Box>
+        <Stack direction=vertical gap=xs style={{ flex: 1, minWidth: 0 }}>
+          <Heading level={3} style={{ fontSize: "1.25rem", fontFamily: "'Cormorant Garamond', serif" }}>{selectedItem.data.client}</Heading>
+          <Text color=muted size=sm>{selectedItem.data.service + " with " + selectedItem.data.stylist}</Text>
+        </Stack>
+        <Badge variant={selectedItem.data.status === "completed" ? "success" : selectedItem.data.status === "in-progress" ? "info" : "warning"} size=md>
+          {selectedItem.data.status}
+        </Badge>
+      </Stack>
+    </Card>
+
+    // Appointment Details
+    <Grid columns={{ sm: 1, md: 2 }} gap=lg>
+      <SmartView data={selectedItem.data} fields="client, stylist, service" layout=card title="Appointment Info" />
+      <SmartView data={selectedItem.data} fields="time, status, price" layout=card title="Booking Details" />
+    </Grid>
+  </Stack>
+
+  // List View - shown when no appointment is selected
+  <Stack direction=vertical gap=lg if={!selectedItem}>
+    <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)", overflow: "auto" }}>
+      <SmartGrid
+        data={appointments}
+        columns="time, client, service, stylist, status, price"
+        searchable
+        sortable
+        pageable
+        pageSize={10}
+        editable
+        delete
+        onSelect={selectItem}
+        onEdit={editAppointment}
+        onDelete={deleteAppointment}
+        emptyMessage="No appointments yet. Click '+ Appointment' to create one."
+      />
+    </Card>
+  </Stack>
+</Stack>

@@ -1,0 +1,31 @@
+<!-- Header Component -->
+
+<header class="header">
+  <h1 class="title">{title}</h1>
+  <div class="header-actions">
+    <slot name="actions" />
+  </div>
+</header>
+
+<style>
+  .header {
+    background: linear-gradient(135deg, var(--primary-color, #3b82f6), #1d4ed8);
+    color: white;
+    padding: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  }
+
+  .title {
+    margin: 0;
+    font-size: 1.5rem;
+    font-weight: 600;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+</style>

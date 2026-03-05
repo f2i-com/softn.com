@@ -1,0 +1,265 @@
+// GPU Compute Demo — flat state machine (avoids deep callback nesting)
+
+let status = "Ready"
+let result = ""
+let deviceReady = false
+let running = false
+
+// Input data
+let inputA = "1, 2, 3, 4, 5, 6, 7, 8"
+let inputB = "10, 20, 30, 40, 50, 60, 70, 80"
+
+// State machine storage (all globals — no closure vars across callbacks)
+let _step = ""
+let _bufAId = ""
+let _bufBId = ""
+let _bufOutId = ""
+let _shaderId = ""
+let _pipeId = ""
+let _len = 0
+let _dataA = []
+let _dataB = []
+
+function log(msg) {
+  status = msg
+}
+
+function _checkError(res) {
+  if (res && res.error) {
+    log("Error: " + res.error)
+    running = false
+    return true
+  }
+  return false
+}
+
+function parseNumbers(str) {
+  let parts = str.split(",")
+  let nums = []
+  let i = 0
+  while (i < parts.length) {
+    let n = parseFloat(parts[i].trim())
+    if (!isNaN(n)) {
+      nums.push(n)
+    }
+    i = i + 1
+  }
+  return nums
+}
+
+// ── Vector Addition (bundle shader) ──
+
+function runAddition() {
+  if (running) return
+  running = true
+  result = ""
+  log("Starting GPU vector addition...")
+
+  let a = parseNumbers(inputA)
+  let b = parseNumbers(inputB)
+
+  if (a.length === 0 || b.length === 0) {
+    log("Error: enter comma-separated numbers")
+    running = false
+    return
+  }
+  if (a.length !== b.length) {
+    log("Error: arrays must be same length")
+    running = false
+    return
+  }
+
+  _len = a.length
+  _step = "add"
+  _dataA = a
+  _dataB = b
+  softn.ai.gpu.requestDevice(function(dev) {
+    if (_checkError(dev)) return
+    _addStep2()
+  })
+}
+
+function _addStep2() {
+  log("Creating buffers (" + _len + " floats each)...")
+  softn.ai.gpu.createBuffer({ data: _dataA }, "storage", function(res) {
+    if (_checkError(res)) return
+    _bufAId = res.bufferId
+    _addStep3()
+  })
+}
+
+function _addStep3() {
+  softn.ai.gpu.createBuffer({ data: _dataB }, "storage", function(res) {
+    if (_checkError(res)) return
+    _bufBId = res.bufferId
+    _addStep4()
+  })
+}
+
+function _addStep4() {
+  softn.ai.gpu.createBuffer({ size: _len * 4 }, "storage", function(res) {
+    if (_checkError(res)) return
+    _bufOutId = res.bufferId
+    _addStep5()
+  })
+}
+
+function _addStep5() {
+  log("Loading shader...")
+  let code = "@group(0) @binding(0) var<storage, read> a : array<f32>;\n"
+  code = code + "@group(0) @binding(1) var<storage, read> b : array<f32>;\n"
+  code = code + "@group(0) @binding(2) var<storage, read_write> result : array<f32>;\n"
+  code = code + "@compute @workgroup_size(64)\n"
+  code = code + "fn main(@builtin(global_invocation_id) gid : vec3u) {\n"
+  code = code + "  let i = gid.x;\n"
+  code = code + "  if (i < arrayLength(&a)) {\n"
+  code = code + "    result[i] = a[i] + b[i];\n"
+  code = code + "  }\n"
+  code = code + "}\n"
+  softn.ai.gpu.createShader({ code: code }, function(res) {
+    if (_checkError(res)) return
+    _shaderId = res.shaderId
+    _addStep6()
+  })
+}
+
+function _addStep6() {
+  log("Creating pipeline...")
+  softn.ai.gpu.createPipeline({ shader: _shaderId }, function(res) {
+    if (_checkError(res)) return
+    _pipeId = res.pipelineId
+    _addStep7()
+  })
+}
+
+function _addStep7() {
+  log("Dispatching compute...")
+  let wgCount = Math.ceil(_len / 64)
+  softn.ai.gpu.dispatch(_pipeId, [
+    { binding: 0, buffer: _bufAId },
+    { binding: 1, buffer: _bufBId },
+    { binding: 2, buffer: _bufOutId }
+  ], [wgCount, 1, 1], function(res) {
+    if (_checkError(res)) return
+    _addStep8()
+  })
+}
+
+function _addStep8() {
+  log("Reading results...")
+  softn.ai.gpu.readBuffer(_bufOutId, function(res) {
+    if (_checkError(res)) return
+    result = JSON.stringify(res.data)
+    log("Done! GPU computed " + _len + " additions.")
+    running = false
+    _cleanupResources()
+  })
+}
+
+function _cleanupResources() {
+  if (_bufAId !== "") { softn.ai.gpu.release(_bufAId, function(r) {}) }
+  if (_bufBId !== "") { softn.ai.gpu.release(_bufBId, function(r) {}) }
+  if (_bufOutId !== "") { softn.ai.gpu.release(_bufOutId, function(r) {}) }
+  if (_shaderId !== "") { softn.ai.gpu.release(_shaderId, function(r) {}) }
+  if (_pipeId !== "") { softn.ai.gpu.release(_pipeId, function(r) {}) }
+  _bufAId = ""
+  _bufBId = ""
+  _bufOutId = ""
+  _shaderId = ""
+  _pipeId = ""
+}
+
+// ── Inline Multiply Shader ──
+
+function runInlineShader() {
+  if (running) return
+  running = true
+  result = ""
+  log("Running inline multiply shader...")
+
+  let a = parseNumbers(inputA)
+  _len = a.length
+  if (_len === 0) {
+    log("Error: enter comma-separated numbers in A")
+    running = false
+    return
+  }
+
+  _step = "mul"
+  _dataA = a
+  softn.ai.gpu.requestDevice(function(dev) {
+    if (_checkError(dev)) return
+    _mulStep2()
+  })
+}
+
+function _mulStep2() {
+  softn.ai.gpu.createBuffer({ data: _dataA }, "storage", function(res) {
+    if (_checkError(res)) return
+    _bufAId = res.bufferId
+    _mulStep3()
+  })
+}
+
+function _mulStep3() {
+  softn.ai.gpu.createBuffer({ size: _len * 4 }, "storage", function(res) {
+    if (_checkError(res)) return
+    _bufOutId = res.bufferId
+    _mulStep4()
+  })
+}
+
+function _mulStep4() {
+  let code = "@group(0) @binding(0) var<storage, read> input : array<f32>;\n"
+  code = code + "@group(0) @binding(1) var<storage, read_write> output : array<f32>;\n"
+  code = code + "@compute @workgroup_size(64)\n"
+  code = code + "fn main(@builtin(global_invocation_id) gid : vec3u) {\n"
+  code = code + "  let i = gid.x;\n"
+  code = code + "  if (i < arrayLength(&input)) {\n"
+  code = code + "    output[i] = input[i] * 2.0;\n"
+  code = code + "  }\n"
+  code = code + "}\n"
+
+  softn.ai.gpu.createShader({ code: code }, function(res) {
+    if (_checkError(res)) return
+    _shaderId = res.shaderId
+    _mulStep5()
+  })
+}
+
+function _mulStep5() {
+  softn.ai.gpu.createPipeline({ shader: _shaderId }, function(res) {
+    if (_checkError(res)) return
+    _pipeId = res.pipelineId
+    _mulStep6()
+  })
+}
+
+function _mulStep6() {
+  let wgCount = Math.ceil(_len / 64)
+  softn.ai.gpu.dispatch(_pipeId, [
+    { binding: 0, buffer: _bufAId },
+    { binding: 1, buffer: _bufOutId }
+  ], [wgCount, 1, 1], function(res) {
+    if (_checkError(res)) return
+    _mulStep7()
+  })
+}
+
+function _mulStep7() {
+  softn.ai.gpu.readBuffer(_bufOutId, function(res) {
+    if (_checkError(res)) return
+    result = JSON.stringify(res.data)
+    log("Done! Multiplied " + _len + " values by 2.")
+    running = false
+    _cleanupResources()
+  })
+}
+
+function cleanup() {
+  softn.ai.gpu.releaseAll(function(res) {
+    deviceReady = false
+    result = ""
+    log("All GPU resources released")
+  })
+}

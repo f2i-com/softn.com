@@ -1,0 +1,398 @@
+// AI Chat — Qwen3.5-0.8B powered chat with conversation history
+
+// Model state
+let modelLoaded = false
+let modelHandle = ""
+let modelLoading = false
+let statusText = "Model not loaded"
+
+// Conversation state
+let conversations = []
+let activeConversationId = ""
+let chatMessages = []
+
+// Input state
+let inputText = ""
+let attachedImage = ""
+let attachedImageName = ""
+let generating = false
+
+// Settings
+let showSettings = false
+let temperature = 0.7
+let maxTokens = 256
+let topP = 0.8
+
+// UI state
+let showSidebar = false
+let isMobile = false
+
+// ── Helpers ──
+
+function refreshConversations() {
+  let rows = db.query("conversations")
+  if (!rows) rows = []
+  rows.sort(function(a, b) {
+    let ta = a.data.updatedAt || a.updatedAt || ""
+    let tb = b.data.updatedAt || b.updatedAt || ""
+    if (ta > tb) return -1
+    if (ta < tb) return 1
+    return 0
+  })
+  conversations = rows
+}
+
+function reloadChatMessages() {
+  let allMsgs = db.query("messages")
+  chatMessages = []
+  if (allMsgs) {
+    let i = 0
+    while (i < allMsgs.length) {
+      if (allMsgs[i].data.conversationId === activeConversationId) {
+        chatMessages.push(allMsgs[i])
+      }
+      i = i + 1
+    }
+    chatMessages.sort(function(a, b) {
+      let ta = a.data.timestamp || ""
+      let tb = b.data.timestamp || ""
+      if (ta < tb) return -1
+      if (ta > tb) return 1
+      return 0
+    })
+  }
+}
+
+// ── Init ──
+
+function _init() {
+  refreshConversations()
+  // Detect mobile on init
+  try {
+    isMobile = window.innerWidth < 640
+    showSidebar = !isMobile
+  } catch(e) {
+    showSidebar = true
+  }
+}
+
+// ── Model Management ──
+
+function loadModel() {
+  if (modelLoading || modelLoaded) return
+  modelLoading = true
+  statusText = "Downloading Qwen3.5-0.8B..."
+  softn.ai.model.load("onnx-community/Qwen3.5-0.8B-ONNX", {
+    modelClass: "Qwen3_5ForConditionalGeneration",
+    dtype: {
+      embed_tokens: "q4",
+      vision_encoder: "q4",
+      decoder_model_merged: "q4"
+    }
+  }, function(result) {
+    modelHandle = result.modelHandle
+    modelLoaded = true
+    modelLoading = false
+    statusText = "Qwen3.5-0.8B ready"
+  })
+}
+
+function unloadModel() {
+  if (!modelLoaded) return
+  softn.ai.model.release(modelHandle, function() {
+    modelLoaded = false
+    modelHandle = ""
+    statusText = "Model unloaded"
+  })
+}
+
+// ── Conversation CRUD ──
+
+function newConversation() {
+  let now = new Date().toISOString()
+  db.create("conversations", {
+    title: "New chat",
+    createdAt: now,
+    updatedAt: now
+  })
+  refreshConversations()
+  if (conversations.length > 0) {
+    activeConversationId = conversations[0].id
+  }
+  chatMessages = []
+  inputText = ""
+  attachedImage = ""
+  attachedImageName = ""
+  // Close sidebar on mobile after creating
+  if (isMobile) showSidebar = false
+}
+
+function selectConversation(conv) {
+  let id = ""
+  if (typeof conv === "string") {
+    id = conv
+  } else if (conv && conv.id) {
+    id = conv.id
+  }
+  if (!id || id === activeConversationId) {
+    // On mobile, just close sidebar if tapping same conversation
+    if (isMobile) showSidebar = false
+    return
+  }
+  activeConversationId = id
+  reloadChatMessages()
+  inputText = ""
+  attachedImage = ""
+  attachedImageName = ""
+  // Close sidebar on mobile after selecting
+  if (isMobile) showSidebar = false
+}
+
+function deleteConversation(id) {
+  if (!id) return
+  let allMsgs = db.query("messages")
+  if (allMsgs) {
+    let i = 0
+    while (i < allMsgs.length) {
+      if (allMsgs[i].data.conversationId === id) {
+        db.delete(allMsgs[i].id)
+      }
+      i = i + 1
+    }
+  }
+  db.delete(id)
+  refreshConversations()
+  if (activeConversationId === id) {
+    activeConversationId = ""
+    chatMessages = []
+  }
+}
+
+// ── Message Handling ──
+
+function sendMessage() {
+  if (!inputText && !attachedImage) return
+  if (!modelLoaded) {
+    statusText = "Load the model first"
+    return
+  }
+  if (generating) return
+
+  // Save input before newConversation() clears it
+  let userContent = inputText
+  let userImage = attachedImage
+
+  // Auto-create conversation if none active
+  if (!activeConversationId) {
+    newConversation()
+  }
+
+  let now = new Date().toISOString()
+
+  db.create("messages", {
+    conversationId: activeConversationId,
+    role: "user",
+    content: userContent,
+    imageDataUrl: userImage,
+    timestamp: now
+  })
+
+  // Auto-title from first user message
+  let convRows = db.query("conversations")
+  let i = 0
+  while (i < convRows.length) {
+    if (convRows[i].id === activeConversationId) {
+      if (convRows[i].data.title === "New chat" && userContent) {
+        let title = userContent
+        if (title.length > 40) {
+          title = title.substring(0, 37) + "..."
+        }
+        db.update(activeConversationId, { title: title, updatedAt: now })
+      } else {
+        db.update(activeConversationId, { updatedAt: now })
+      }
+      break
+    }
+    i = i + 1
+  }
+
+  refreshConversations()
+  reloadChatMessages()
+
+  inputText = ""
+  attachedImage = ""
+  attachedImageName = ""
+
+  generating = true
+  statusText = "Generating..."
+
+  let aiMessages = []
+  let j = 0
+  while (j < chatMessages.length) {
+    let m = chatMessages[j]
+    if (m.data.imageDataUrl && m.data.role === "user") {
+      let parts = []
+      parts.push({ type: "image", image: m.data.imageDataUrl })
+      if (m.data.content) {
+        parts.push({ type: "text", text: m.data.content })
+      }
+      aiMessages.push({ role: "user", content: parts })
+    } else {
+      aiMessages.push({ role: m.data.role, content: m.data.content })
+    }
+    j = j + 1
+  }
+
+  softn.ai.model.generate(modelHandle, aiMessages, {
+    max_new_tokens: maxTokens,
+    temperature: temperature,
+    top_p: topP,
+    top_k: 20,
+    do_sample: true
+  }, function(result) {
+    let responseText = result.text || ""
+    let respNow = new Date().toISOString()
+    db.create("messages", {
+      conversationId: activeConversationId,
+      role: "assistant",
+      content: responseText,
+      imageDataUrl: "",
+      timestamp: respNow
+    })
+    reloadChatMessages()
+    generating = false
+    statusText = "Qwen3.5-0.8B ready"
+  })
+}
+
+// Start a conversation with a pre-filled prompt (for suggestion cards)
+function startWithPrompt(text) {
+  if (!modelLoaded || generating) return
+  inputText = text
+  sendMessage()
+}
+
+// Check if send is possible
+function canSend() {
+  return (inputText || attachedImage) && modelLoaded && !generating
+}
+
+// ── Input Handlers ──
+
+function updateInput(val) {
+  inputText = val
+}
+
+function attachImage() {
+  softn.files.pickFile({ accept: "image/*" }, function(files) {
+    if (files && files.length > 0) {
+      attachedImageName = files[0].name || "image"
+      softn.files.readBase64(files[0].ref, function(dataUrl) {
+        attachedImage = dataUrl
+      })
+    }
+  })
+}
+
+function removeImage() {
+  attachedImage = ""
+  attachedImageName = ""
+}
+
+// ── Settings ──
+
+function toggleSettings() {
+  showSettings = !showSettings
+}
+
+function setTemperature(val) {
+  let n = parseFloat(val)
+  if (!isNaN(n) && n >= 0 && n <= 2) temperature = n
+}
+
+function setMaxTokens(val) {
+  let n = parseInt(val)
+  if (!isNaN(n) && n >= 1 && n <= 8192) maxTokens = n
+}
+
+function setTopP(val) {
+  let n = parseFloat(val)
+  if (!isNaN(n) && n >= 0 && n <= 1) topP = n
+}
+
+// ── UI ──
+
+function toggleSidebar() {
+  showSidebar = !showSidebar
+}
+
+function closeSidebar() {
+  showSidebar = false
+}
+
+// ── Template Helpers ──
+
+function isActiveConv(conv) {
+  return conv.id === activeConversationId
+}
+
+function getConvTitle(conv) {
+  return conv.data.title || "Untitled"
+}
+
+function getConvTime(conv) {
+  let ts = conv.data.updatedAt || conv.updatedAt || ""
+  if (!ts) return ""
+  try {
+    let d = new Date(ts)
+    let now = new Date()
+    let diff = now.getTime() - d.getTime()
+    let mins = Math.floor(diff / 60000)
+    if (mins < 1) return "now"
+    if (mins < 60) return mins + "m"
+    let hrs = Math.floor(mins / 60)
+    if (hrs < 24) return hrs + "h"
+    let days = Math.floor(hrs / 24)
+    if (days < 7) return days + "d"
+    return d.getMonth() + 1 + "/" + d.getDate()
+  } catch(e) {
+    return ""
+  }
+}
+
+function getMsgTime(msg) {
+  let ts = msg.data.timestamp || ""
+  if (!ts) return ""
+  try {
+    let d = new Date(ts)
+    let h = d.getHours()
+    let m = d.getMinutes()
+    let ampm = h >= 12 ? "PM" : "AM"
+    h = h % 12
+    if (h === 0) h = 12
+    let mStr = m < 10 ? "0" + m : "" + m
+    return h + ":" + mStr + " " + ampm
+  } catch(e) {
+    return ""
+  }
+}
+
+function isUserMsg(msg) {
+  return msg.data.role === "user"
+}
+
+function isAssistantMsg(msg) {
+  return msg.data.role === "assistant"
+}
+
+function hasImage(msg) {
+  return msg.data.imageDataUrl && msg.data.imageDataUrl !== ""
+}
+
+function hasContent(msg) {
+  return msg.data.content && msg.data.content !== ""
+}
+
+function msgCount() {
+  return chatMessages.length
+}

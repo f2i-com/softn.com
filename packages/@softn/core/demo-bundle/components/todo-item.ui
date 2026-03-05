@@ -1,0 +1,145 @@
+<!-- Todo Item Component -->
+
+<import { formatRelativeTime } from "../utils.logic" />
+
+<logic>
+  // Local state for editing
+  let isEditing = false
+  let editText = ""
+
+  // Start editing
+  function startEdit() {
+    editText = todo.data.text
+    isEditing = true
+  }
+
+  // Save edit
+  function saveEdit() {
+    if (editText.trim()) {
+      $emit("edit", editText.trim())
+    }
+    isEditing = false
+  }
+
+  // Cancel edit
+  function cancelEdit() {
+    isEditing = false
+    editText = ""
+  }
+
+  // Handle key press in edit mode
+  function handleKeyDown(event) {
+    if (event.key === "Enter") {
+      saveEdit()
+    } else if (event.key === "Escape") {
+      cancelEdit()
+    }
+  }
+</logic>
+
+<div class="todo-item" class:completed={todo.data.completed}>
+  #if (isEditing)
+    <div class="edit-mode">
+      <Input
+        type="text"
+        :value={editText}
+        @keydown={handleKeyDown}
+        class="edit-input"
+        autofocus
+      />
+      <Button variant="ghost" size="sm" @click={saveEdit}>
+        <Icon name="check" />
+      </Button>
+      <Button variant="ghost" size="sm" @click={cancelEdit}>
+        <Icon name="x" />
+      </Button>
+    </div>
+  #else
+    <div class="view-mode">
+      <Checkbox
+        :checked={todo.data.completed}
+        @change={() => $emit("toggle")}
+        class="todo-checkbox"
+      />
+      <span class="todo-text" @dblclick={startEdit}>
+        {todo.data.text}
+      </span>
+      <div class="todo-meta">
+        <span class="created-at">{formatRelativeTime(todo.data.createdAt)}</span>
+      </div>
+      <div class="todo-actions">
+        <Button variant="ghost" size="sm" @click={startEdit}>
+          <Icon name="edit" />
+        </Button>
+        <Button variant="ghost" size="sm" @click={() => $emit("delete")}>
+          <Icon name="trash" />
+        </Button>
+      </div>
+    </div>
+  #end
+</div>
+
+<style>
+  .todo-item {
+    background: white;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    transition: all 0.2s ease;
+  }
+
+  .todo-item:hover {
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  }
+
+  .todo-item.completed {
+    opacity: 0.7;
+    background: #f9fafb;
+  }
+
+  .view-mode {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .todo-checkbox {
+    flex-shrink: 0;
+  }
+
+  .todo-text {
+    flex: 1;
+    cursor: pointer;
+  }
+
+  .todo-item.completed .todo-text {
+    text-decoration: line-through;
+    color: #9ca3af;
+  }
+
+  .todo-meta {
+    font-size: 0.75rem;
+    color: #9ca3af;
+  }
+
+  .todo-actions {
+    display: flex;
+    gap: 0.25rem;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+
+  .todo-item:hover .todo-actions {
+    opacity: 1;
+  }
+
+  .edit-mode {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .edit-input {
+    flex: 1;
+  }
+</style>

@@ -1,0 +1,202 @@
+  // --- Player Actions ---
+
+  function getFreshTableData() {
+    let rec = TableRepositoryClass.getCurrentTableRecord(tableId)
+    if (!rec) return null
+    tableId = rec.id
+    return rec.data
+  }
+  function lockActionUI() {
+    // Keep this short so action UI feels immediate while still preventing
+    // accidental double-submit on the same click burst.
+    actionBusyUntilMs = Date.now() + 180
+  }
+
+  function doFold() {
+    // Re-read fresh state so IDs are current
+    refreshFromDB()
+    if (isActionBusy()) return
+    if (!TableStateClass.isLiveHandPhase(gamePhase)) return
+    if (currentTurnSeat !== mySeat) return
+    let me = getMyPlayerRecord()
+    if (!me) return
+    lockActionUI()
+    db.update(me.id, {
+      status: TableStateClass.statusFolded(),
+      hasActed: true
+    })
+    logAction(TableEventClass.typeFold(), playerName, mySeat, 0)
+    playActionSound("fold")
+    advanceTurn()
+    refreshFromDB()
+  }
+
+  function doCheck() {
+    refreshFromDB()
+    if (isActionBusy()) return
+    if (!TableStateClass.isLiveHandPhase(gamePhase)) return
+    if (currentTurnSeat !== mySeat) return
+    let me = getMyPlayerRecord()
+    if (!me) return
+    let tableData = getFreshTableData()
+    if (!tableData) return
+    let freshCurrentBet = tableData.currentBet || 0
+    if (freshCurrentBet > me.data.bet) {
+      toastMessage = "Cannot check, must call or raise"
+      toastType = "warning"
+      return
+    }
+    lockActionUI()
+    db.update(me.id, {
+      hasActed: true
+    })
+    logAction(TableEventClass.typeCheck(), playerName, mySeat, 0)
+    playActionSound("check")
+    advanceTurn()
+    refreshFromDB()
+  }
+
+  function doCall() {
+    refreshFromDB()
+    if (isActionBusy()) return
+    if (!TableStateClass.isLiveHandPhase(gamePhase)) return
+    if (currentTurnSeat !== mySeat) return
+    let me = getMyPlayerRecord()
+    if (!me) return
+    let tableData = getFreshTableData()
+    if (!tableData) return
+    let freshCurrentBet = tableData.currentBet || 0
+    let callAmount = freshCurrentBet - me.data.bet
+    if (callAmount <= 0) {
+      doCheck()
+      return
+    }
+    lockActionUI()
+    let freshPot = tableData.pot || 0
+    if (callAmount >= me.data.chips) {
+      // All-in
+      let allInAmount = me.data.chips
+      db.update(me.id, {
+        bet: me.data.bet + allInAmount,
+        chips: 0,
+        handContribution: (me.data.handContribution || 0) + allInAmount,
+        status: TableStateClass.statusAllIn(),
+        hasActed: true
+      })
+      db.update(tableId, {
+        pot: freshPot + allInAmount
+      })
+      logAction(TableEventClass.typeAllIn(), playerName, mySeat, allInAmount)
+      playActionSound("allin")
+    } else {
+      db.update(me.id, {
+        bet: me.data.bet + callAmount,
+        chips: me.data.chips - callAmount,
+        handContribution: (me.data.handContribution || 0) + callAmount,
+        hasActed: true
+      })
+      db.update(tableId, {
+        pot: freshPot + callAmount
+      })
+      logAction(TableEventClass.typeCall(), playerName, mySeat, callAmount)
+      playActionSound("call")
+    }
+    advanceTurn()
+    refreshFromDB()
+  }
+
+  function doRaise() {
+    refreshFromDB()
+    if (isActionBusy()) return
+    if (!TableStateClass.isLiveHandPhase(gamePhase)) return
+    if (currentTurnSeat !== mySeat) return
+    let me = getMyPlayerRecord()
+    if (!me) return
+    if (me.data.chips <= 0) return
+    let totalRaise = parseInt(raiseAmount) || bigBlind
+    if (totalRaise < bigBlind) {
+      totalRaise = bigBlind
+    }
+    let tableData = getFreshTableData()
+    if (!tableData) return
+    let freshCurrentBet = tableData.currentBet || 0
+    let freshPot = tableData.pot || 0
+    let freshLastFullRaise = tableData.lastFullRaise || bigBlind
+    let minIncrement = bigBlind
+    if (freshCurrentBet > 0 && freshLastFullRaise > minIncrement) {
+      minIncrement = freshLastFullRaise
+    }
+    if (totalRaise < minIncrement) {
+      totalRaise = minIncrement
+    }
+    let newBet = freshCurrentBet + totalRaise
+    let needed = newBet - me.data.bet
+    if (needed <= 0) {
+      doCheck()
+      return
+    }
+    lockActionUI()
+    if (needed >= me.data.chips) {
+      // All-in
+      let allInAmount = me.data.chips
+      db.update(me.id, {
+        bet: me.data.bet + allInAmount,
+        chips: 0,
+        handContribution: (me.data.handContribution || 0) + allInAmount,
+        status: TableStateClass.statusAllIn(),
+        hasActed: true
+      })
+      let newCurrentBet = me.data.bet + allInAmount
+      let raiseDelta = newCurrentBet - freshCurrentBet
+      let isFullRaise = raiseDelta >= minIncrement
+      if (newCurrentBet > freshCurrentBet && isFullRaise) {
+        // Reset hasActed for others
+        resetHasActed(mySeat)
+      }
+      let tableUpdate = {
+        pot: freshPot + allInAmount,
+        currentBet: newCurrentBet > freshCurrentBet ? newCurrentBet : freshCurrentBet
+      }
+      if (newCurrentBet > freshCurrentBet && isFullRaise) {
+        tableUpdate.lastFullRaise = raiseDelta
+      }
+      db.update(tableId, tableUpdate)
+      logAction(TableEventClass.typeAllIn(), playerName, mySeat, allInAmount)
+      playActionSound("allin")
+    } else {
+      db.update(me.id, {
+        bet: newBet,
+        chips: me.data.chips - needed,
+        handContribution: (me.data.handContribution || 0) + needed,
+        hasActed: true
+      })
+      // Reset hasActed for other active players
+      resetHasActed(mySeat)
+      db.update(tableId, {
+        pot: freshPot + needed,
+        currentBet: newBet,
+        lastFullRaise: totalRaise
+      })
+      logAction(TableEventClass.typeRaise(), playerName, mySeat, totalRaise)
+      playActionSound("raise")
+    }
+    raiseAmount = ""
+    advanceTurn()
+    refreshFromDB()
+  }
+
+  function resetHasActed(exceptSeat) {
+    // Re-read players to get fresh IDs (avoid stale optimistic IDs)
+    let freshP = db.query("poker_players")
+    let i = 0
+    while (i < freshP.length) {
+      if (freshP[i].data && freshP[i].data.seat !== exceptSeat && freshP[i].data.status === TableStateClass.statusActive()) {
+        db.update(freshP[i].id, { hasActed: false })
+      }
+      i = i + 1
+    }
+  }
+
+  function logAction(actionType, pName, seat, amount) {
+    TableEventClass.logAction(actionType, pName, seat, amount, handNumber, "")
+  }

@@ -1,0 +1,93 @@
+/**
+ * Utility Functions
+ *
+ * Reusable utility functions for the application.
+ */
+
+// ============================================================================
+// ID Generation
+// ============================================================================
+
+/**
+ * Generate a unique ID
+ */
+export function generateId() {
+  return Date.now().toString(36) + Math.random().toString(36).substr(2)
+}
+
+// ============================================================================
+// Date Formatting
+// ============================================================================
+
+/**
+ * Format a date as a relative time string
+ */
+export function formatRelativeTime(dateString) {
+  const date = new Date(dateString)
+  const now = new Date()
+  const diff = now - date
+
+  const seconds = Math.floor(diff / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
+
+  if (days > 0) {
+    return days === 1 ? "yesterday" : days + " days ago"
+  }
+  if (hours > 0) {
+    return hours === 1 ? "1 hour ago" : hours + " hours ago"
+  }
+  if (minutes > 0) {
+    return minutes === 1 ? "1 minute ago" : minutes + " minutes ago"
+  }
+  return "just now"
+}
+
+/**
+ * Format a date for display
+ */
+export function formatDate(dateString) {
+  const date = new Date(dateString)
+  return date.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric"
+  })
+}
+
+// ============================================================================
+// String Utilities
+// ============================================================================
+
+/**
+ * Truncate a string to a maximum length
+ */
+export function truncate(str, maxLength) {
+  if (str.length <= maxLength) return str
+  return str.slice(0, maxLength - 3) + "..."
+}
+
+/**
+ * Capitalize the first letter of a string
+ */
+export function capitalize(str) {
+  if (!str) return str
+  return str.charAt(0).toUpperCase() + str.slice(1)
+}
+
+// ============================================================================
+// Array Utilities
+// ============================================================================
+
+/**
+ * Shuffle an array
+ */
+export function shuffle(array) {
+  const result = [...array]
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[result[i], result[j]] = [result[j], result[i]]
+  }
+  return result
+}

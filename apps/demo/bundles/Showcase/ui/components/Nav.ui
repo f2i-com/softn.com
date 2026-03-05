@@ -1,0 +1,44 @@
+// Nav.ui - Left sidebar navigation
+
+<Box
+  className="softn-app-sidebar softn-mobile-hide"
+  width="220px"
+  minWidth="220px"
+  height="100%"
+  style={{
+    background: getSidebarBg(),
+    borderRight: "1px solid " + getBorderColor(),
+    display: "flex",
+    flexDirection: "column",
+    flexShrink: 0
+  }}
+>
+  <Stack direction=vertical gap=md height="100%" padding=md>
+    // Logo Header
+    <Stack direction=horizontal gap=sm align=center style={{ padding: "0.5rem 0.25rem", marginBottom: "0.25rem" }}>
+      <Box style={{ width: "36px", height: "36px", borderRadius: "10px", background: "linear-gradient(135deg, #6366f1, #8b5cf6)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+        <Text style={{ color: "#fff", fontWeight: 700, fontSize: "1.1rem" }}>S</Text>
+      </Box>
+      <Stack direction=vertical gap=xs>
+        <Text style={{ fontSize: "1rem", fontWeight: 600, color: getTextColor(), lineHeight: "1.2" }}>SoftN</Text>
+        <Text size=xs style={{ opacity: 0.5, color: getMutedColor(), letterSpacing: "0.08em", textTransform: "uppercase", fontSize: "0.6rem" }}>Showcase</Text>
+      </Stack>
+    </Stack>
+
+    <Divider style={{ borderColor: getBorderColor() }} />
+
+    // Navigation
+    <Stack direction=vertical gap=xs style={{ flex: 1, marginTop: "0.25rem" }}>
+      <Text size=xs color=muted style={{ padding: "0.25rem 0.75rem", textTransform: "uppercase", letterSpacing: "0.1em", opacity: 0.4, fontSize: "0.625rem" }}>Pages</Text>
+      <NavItem icon=chart label="Charts" active={currentPage === "charts"} @click={navigate("charts")} />
+      <NavItem icon=star label="Animations" active={currentPage === "animations"} @click={navigate("animations")} />
+      <NavItem icon=settings label="Interactive" active={currentPage === "interactive"} @click={navigate("interactive")} />
+    </Stack>
+
+    // Theme Toggle
+    <Divider style={{ borderColor: getBorderColor() }} />
+    <Button variant=ghost size=sm @click=toggleTheme style={{ justifyContent: "flex-start", gap: "0.5rem", padding: "0.5rem 0.75rem" }}>
+      <Text size=sm style={{ color: getMutedColor() }}>{darkMode ? "Light Mode" : "Dark Mode"}</Text>
+    </Button>
+  </Stack>
+</Box>

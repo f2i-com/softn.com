@@ -1,0 +1,231 @@
+// GlamourStudio Backend API
+// REST API for the salon management demo app.
+// Routes: /clients, /staff, /services, /appointments, /activity, /stats
+
+function handleRequest(req) {
+  let method = req["method"]
+  let path = req["path"]
+  let body = req["body"]
+  let query = req["query"]
+
+  // Parse path: /{resource} or /{resource}/{id}
+  let parts = splitPath(path)
+  let resource = ""
+  let id = ""
+  if (parts.length > 0) {
+    resource = parts[0]
+  }
+  if (parts.length > 1) {
+    id = parts[1]
+  }
+
+  // Route: /stats
+  if (resource == "stats" && method == "GET") {
+    return handleStats()
+  }
+
+  // Resource CRUD routing
+  let collections = ["clients", "staff", "services", "appointments", "activity"]
+  let found = false
+  let i = 0
+  while (i < collections.length) {
+    if (collections[i] == resource) {
+      found = true
+    }
+    i = i + 1
+  }
+
+  if (!found) {
+    return { "status": 404, "body": { "error": "Not found: /" + resource } }
+  }
+
+  return handleResource(resource, method, id, body, query)
+}
+
+function handleResource(collection, method, id, body, query) {
+  if (method == "GET" && id != "") {
+    // GET /{resource}/{id}
+    let record = db.get(collection, id)
+    if (record == null) {
+      return { "status": 404, "body": { "error": "Not found" } }
+    }
+    return { "status": 200, "body": record }
+  }
+
+  if (method == "GET") {
+    // GET /{resource} — list with optional ?search= filter
+    let search = ""
+    if (query != null && query["search"] != null) {
+      search = query["search"]
+    }
+
+    let records = db.query(collection)
+    if (search != "") {
+      records = filterBySearch(records, search)
+    }
+    return { "status": 200, "body": records }
+  }
+
+  if (method == "POST") {
+    // POST /{resource} — create
+    if (body == null) {
+      return { "status": 400, "body": { "error": "Missing request body" } }
+    }
+    let record = db.create(collection, body)
+    return { "status": 201, "body": record }
+  }
+
+  if (method == "PUT" && id != "") {
+    // PUT /{resource}/{id} — update
+    if (body == null) {
+      return { "status": 400, "body": { "error": "Missing request body" } }
+    }
+    let record = db.update(id, body)
+    if (record == null) {
+      return { "status": 404, "body": { "error": "Not found" } }
+    }
+    return { "status": 200, "body": record }
+  }
+
+  if (method == "DELETE" && id != "") {
+    // DELETE /{resource}/{id}
+    let result = db.delete(id)
+    if (result["success"]) {
+      return { "status": 200, "body": { "success": true } }
+    }
+    return { "status": 404, "body": { "error": "Not found" } }
+  }
+
+  return { "status": 405, "body": { "error": "Method not allowed" } }
+}
+
+function handleStats() {
+  let clientCount = db.count("clients")
+  let staffCount = db.count("staff")
+  let serviceCount = db.count("services")
+  let appointmentCount = db.count("appointments")
+
+  // Calculate revenue from completed appointments
+  let appointments = db.query("appointments")
+  let revenue = 0
+  let i = 0
+  while (i < appointments.length) {
+    let appt = appointments[i]
+    if (appt["data"]["status"] == "completed") {
+      revenue = revenue + appt["data"]["price"]
+    }
+    i = i + 1
+  }
+
+  // Count VIP clients
+  let clients = db.query("clients")
+  let vipCount = 0
+  i = 0
+  while (i < clients.length) {
+    if (clients[i]["data"]["vip"] == true) {
+      vipCount = vipCount + 1
+    }
+    i = i + 1
+  }
+
+  return {
+    "status": 200,
+    "body": {
+      "clients": clientCount,
+      "staff": staffCount,
+      "services": serviceCount,
+      "appointments": appointmentCount,
+      "revenue": revenue,
+      "vipClients": vipCount
+    }
+  }
+}
+
+function filterBySearch(records, search) {
+  let result = []
+  let term = lowercase(search)
+  let i = 0
+  while (i < records.length) {
+    let data = records[i]["data"]
+    let match = false
+    if (data["name"] != null && contains(lowercase(data["name"]), term)) {
+      match = true
+    }
+    if (data["email"] != null && contains(lowercase(data["email"]), term)) {
+      match = true
+    }
+    if (data["client"] != null && contains(lowercase(data["client"]), term)) {
+      match = true
+    }
+    if (data["title"] != null && contains(lowercase(data["title"]), term)) {
+      match = true
+    }
+    if (match) {
+      result.push(records[i])
+    }
+    i = i + 1
+  }
+  return result
+}
+
+// -- Utility helpers --
+
+function splitPath(path) {
+  let parts = []
+  let current = ""
+  let i = 0
+  while (i < path.length) {
+    let ch = path[i]
+    if (ch == "/") {
+      if (current != "") {
+        parts.push(current)
+        current = ""
+      }
+    } else {
+      current = current + ch
+    }
+    i = i + 1
+  }
+  if (current != "") {
+    parts.push(current)
+  }
+  return parts
+}
+
+function lowercase(s) {
+  let result = ""
+  let i = 0
+  while (i < s.length) {
+    let c = s.charCodeAt(i)
+    if (c >= 65 && c <= 90) {
+      result = result + String.fromCharCode(c + 32)
+    } else {
+      result = result + s[i]
+    }
+    i = i + 1
+  }
+  return result
+}
+
+function contains(haystack, needle) {
+  if (needle.length == 0) {
+    return true
+  }
+  let i = 0
+  while (i <= haystack.length - needle.length) {
+    let found = true
+    let j = 0
+    while (j < needle.length) {
+      if (haystack[i + j] != needle[j]) {
+        found = false
+        j = needle.length  // break
+      }
+      j = j + 1
+    }
+    if (found) {
+      return true
+    }
+    i = i + 1
+  }
+  return false
+}

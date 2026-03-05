@@ -1,0 +1,27 @@
+{
+  "name": "AI Chat",
+  "version": "1.0.0",
+  "description": "AI Chat powered by Qwen3.5-0.8B — runs entirely in the browser",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "xdb": [
+      "xdb/conversations.xdb",
+      "xdb/messages.xdb"
+    ],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": {
+      "title": "AI Chat",
+      "width": 1000,
+      "height": 700
+    },
+    "theme": {
+      "primary": "#10b981",
+      "mode": "dark"
+    }
+  }
+}

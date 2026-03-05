@@ -1,0 +1,70 @@
+{
+  "collection": "activity",
+  "records": [
+    {
+      "id": "activity_1",
+      "collection": "activity",
+      "data": {
+        "title": "Appointment completed",
+        "description": "Jennifer Adams - Full Color with Sarah Johnson",
+        "time": "09:45",
+        "status": "completed",
+        "actor": "Sarah Johnson"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "activity_2",
+      "collection": "activity",
+      "data": {
+        "title": "Payment received",
+        "description": "$150.00 via Credit Card",
+        "time": "09:46",
+        "status": "payment",
+        "actor": "Jennifer Adams"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "activity_3",
+      "collection": "activity",
+      "data": {
+        "title": "Appointment started",
+        "description": "Amanda Garcia - Balayage with David Martinez",
+        "time": "09:30",
+        "status": "in-progress",
+        "actor": "David Martinez"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "activity_4",
+      "collection": "activity",
+      "data": {
+        "title": "New booking",
+        "description": "Michelle Lee booked Highlights for 2:00 PM",
+        "time": "09:15",
+        "status": "scheduled",
+        "actor": "Michelle Lee"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    },
+    {
+      "id": "activity_5",
+      "collection": "activity",
+      "data": {
+        "title": "Client check-in",
+        "description": "James Wilson arrived for Men's Haircut",
+        "time": "09:55",
+        "status": "user",
+        "actor": "James Wilson"
+      },
+      "createdAt": "2026-01-23T03:34:21.585Z",
+      "updatedAt": "2026-01-23T03:34:21.585Z"
+    }
+  ]
+}
