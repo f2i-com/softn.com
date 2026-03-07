@@ -942,6 +942,9 @@ export function evaluateExpression(
 
       switch (expr.operator) {
         case '+':
+          if (typeof left === 'string' || typeof right === 'string') {
+            return String(left ?? '') + String(right ?? '');
+          }
           return (left as number) + (right as number);
         case '-':
           return (left as number) - (right as number);

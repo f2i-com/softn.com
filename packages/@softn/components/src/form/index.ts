@@ -13,3 +13,4 @@ export * from './Radio';
 export * from './DatePicker';
 export * from './ColorPicker';
 export * from './Slider';
+export * from './FileChooser';

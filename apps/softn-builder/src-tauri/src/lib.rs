@@ -1,37 +1,59 @@
 use std::path::PathBuf;
 
+/// Validate that a path does not contain traversal sequences and is absolute.
+/// The builder should only operate on user-chosen file paths (from save/open dialogs).
+fn validate_path(path: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(path);
+    // Reject paths containing traversal components
+    for component in p.components() {
+        if let std::path::Component::ParentDir = component {
+            return Err("Path traversal not allowed".to_string());
+        }
+    }
+    // Require absolute paths (from file dialogs)
+    if !p.is_absolute() {
+        return Err("Only absolute paths are allowed".to_string());
+    }
+    Ok(p)
+}
+
 #[tauri::command]
 async fn save_project(path: String, data: Vec<u8>) -> Result<(), String> {
-    std::fs::write(&path, &data).map_err(|e| e.to_string())
+    let p = validate_path(&path)?;
+    std::fs::write(&p, &data).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn load_project(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|e| e.to_string())
+    let p = validate_path(&path)?;
+    std::fs::read(&p).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn export_bundle(path: String, data: Vec<u8>) -> Result<(), String> {
-    std::fs::write(&path, &data).map_err(|e| e.to_string())
+    let p = validate_path(&path)?;
+    std::fs::write(&p, &data).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn read_file(path: String) -> Result<Vec<u8>, String> {
-    std::fs::read(&path).map_err(|e| e.to_string())
+    let p = validate_path(&path)?;
+    std::fs::read(&p).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn write_file(path: String, data: Vec<u8>) -> Result<(), String> {
-    // Create parent directories if they don't exist
-    if let Some(parent) = PathBuf::from(&path).parent() {
+    let p = validate_path(&path)?;
+    if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&path, &data).map_err(|e| e.to_string())
+    std::fs::write(&p, &data).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn file_exists(path: String) -> Result<bool, String> {
-    Ok(PathBuf::from(&path).exists())
+    let p = validate_path(&path)?;
+    Ok(p.exists())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

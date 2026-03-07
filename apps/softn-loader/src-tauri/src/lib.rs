@@ -56,6 +56,10 @@ fn get_opened_file(state: State<'_, OpenedFile>) -> Option<String> {
 /// Read a cached .softn bundle from the app cache directory (for Android intent-opened files)
 #[tauri::command]
 fn read_cached_bundle(app: tauri::AppHandle, filename: String) -> Result<Vec<u8>, String> {
+    // Reject filenames with path separators or traversal
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return Err("Invalid filename".to_string());
+    }
     let cache_dir = app.path().app_cache_dir()
         .map_err(|e| format!("Failed to get cache dir: {}", e))?;
     let path = cache_dir.join(&filename);

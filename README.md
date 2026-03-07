@@ -78,12 +78,12 @@ npm install
 # Build all packages (core must build before apps)
 npm run build
 
-# Run the web runtime (dev server on port 1422)
+# Run the web runtime (dev server on port 1420)
 cd apps/softn-web
 npm run dev
 ```
 
-Open `http://localhost:1422` and drag-drop a `.softn` bundle to run it.
+Open `http://localhost:1420` and drag-drop a `.softn` bundle to run it.
 
 ---
 
@@ -328,7 +328,7 @@ npm run build      # Build all packages
 ### Running Apps
 
 ```bash
-# Web runtime (port 1422)
+# Web runtime (port 1420)
 cd apps/softn-web && npm run dev
 
 # Desktop loader (requires Rust)

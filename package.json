@@ -11,7 +11,7 @@
     "build": "npm run build --workspaces --if-present",
     "build:core": "npm run build -w @softn/core",
     "build:components": "npm run build -w @softn/components",
-    "build:cli": "npm run build -w @softn/cli",
+
     "dev": "npm run tauri dev -w @softn/loader",
     "bundle:demo": "npm run bundle -w @softn/demo",
     "test": "npm run test --workspaces --if-present",

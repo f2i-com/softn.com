@@ -152,11 +152,8 @@ function generateAttributes(
     // Skip undefined/null values
     if (value === undefined || value === null) continue;
 
-    // Skip default values if not including them
-    if (!options.includeDefaults && meta) {
-      const propMeta = meta.propSchema.find((p) => p.name === key);
-      if (propMeta && propMeta.default === value) continue;
-    }
+    // Always include props that are explicitly set on the element — stripping
+    // default-matching values causes data loss on round-trip serialization.
 
     // Skip empty strings
     if (value === '') continue;
