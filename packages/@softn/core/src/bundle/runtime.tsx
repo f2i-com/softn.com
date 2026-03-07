@@ -104,7 +104,17 @@ export function createBundleRuntime(bundle: SoftNBundle): BundleRuntime {
 
     // For text content, create a data URL
     const mimeType = getMimeType(normalizedPath);
-    const dataUrl = `data:${mimeType};base64,${btoa(content as string)}`;
+    let base64: string;
+    try {
+      base64 = btoa(content as string);
+    } catch {
+      // btoa fails on non-Latin1 chars; encode via TextEncoder + Uint8Array
+      const bytes = new TextEncoder().encode(content as string);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      base64 = btoa(binary);
+    }
+    const dataUrl = `data:${mimeType};base64,${base64}`;
     assetUrls.set(normalizedPath, dataUrl);
     return dataUrl;
   }

@@ -8,7 +8,8 @@
     "check:components": "node ./scripts/check-component-registry.mjs",
     "build": "npm run check:components && tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "vitest run"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",

@@ -82,7 +82,7 @@ export default defineConfig({
     }),
   ],
   server: {
-    port: 1422,
+    port: 1420,
     strictPort: true,
   },
   build: {
