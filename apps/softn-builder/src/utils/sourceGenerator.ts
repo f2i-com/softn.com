@@ -138,8 +138,8 @@ function generateElement(
  */
 function generateAttributes(
   element: CanvasElement,
-  meta: ReturnType<typeof getComponentMeta>,
-  options: GeneratorOptions
+  _meta: ReturnType<typeof getComponentMeta>,
+  _options: GeneratorOptions
 ): string {
   const attrs: string[] = [];
   const expressionPropSet = new Set(element.expressionProps || []);
