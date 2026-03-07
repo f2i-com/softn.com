@@ -1,52 +1,28 @@
 /**
  * Generate SoftN Loader Icons
  *
- * Creates proper PNG icons using canvas text rendering.
+ * Resizes Square310x310Logo.png source to all required icon sizes.
  */
 
 const fs = require('fs');
 const path = require('path');
-const { createCanvas } = require('@napi-rs/canvas');
+const { createCanvas, loadImage } = require('@napi-rs/canvas');
+
+const iconsDir = path.join(__dirname, '..', 'src-tauri', 'icons');
+const sourceFile = path.join(iconsDir, 'Square310x310Logo.png');
+
+let sourceImg;
 
 function createIcon(size) {
   const canvas = createCanvas(size, size);
   const ctx = canvas.getContext('2d');
-
-  // Clear with transparency
   ctx.clearRect(0, 0, size, size);
-
-  // Match the HTML example proportions:
-  // 80x80 container, 20px border-radius (25%), 2.5rem font (50%)
-  const padding = size * 0.05; // Small padding from edge
-  const rectSize = size - padding * 2;
-  const cornerRadius = rectSize * 0.25; // 25% of rect size like the HTML
-  const offset = padding;
-
-  // Create gradient (pink to purple) - matching the HTML gradient
-  const gradient = ctx.createLinearGradient(0, 0, size, size);
-  gradient.addColorStop(0, '#be185d');
-  gradient.addColorStop(1, '#9333ea');
-
-  // Draw rounded rect
-  ctx.beginPath();
-  ctx.roundRect(offset, offset, rectSize, rectSize, cornerRadius);
-  ctx.fillStyle = gradient;
-  ctx.fill();
-
-  // Draw the "S" letter - 50% of container size like the HTML (2.5rem in 80px = ~50%)
-  const fontSize = rectSize * 0.5;
-  ctx.font = `700 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif`;
-  ctx.fillStyle = 'white';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  // Center the S in the rounded rect
-  ctx.fillText('S', size / 2, size / 2);
-
+  ctx.drawImage(sourceImg, 0, 0, size, size);
   return canvas.toBuffer('image/png');
 }
 
-// Output directory
-const iconsDir = path.join(__dirname, '..', 'src-tauri', 'icons');
+async function main() {
+sourceImg = await loadImage(sourceFile);
 
 if (!fs.existsSync(iconsDir)) {
   fs.mkdirSync(iconsDir, { recursive: true });
@@ -55,9 +31,19 @@ if (!fs.existsSync(iconsDir)) {
 // Generate all icon sizes
 const sizes = [
   { name: '32x32.png', size: 32 },
+  { name: '64x64.png', size: 64 },
   { name: '128x128.png', size: 128 },
   { name: '128x128@2x.png', size: 256 },
   { name: 'icon.png', size: 256 },
+  { name: 'Square30x30Logo.png', size: 30 },
+  { name: 'Square44x44Logo.png', size: 44 },
+  { name: 'Square71x71Logo.png', size: 71 },
+  { name: 'Square89x89Logo.png', size: 89 },
+  { name: 'Square107x107Logo.png', size: 107 },
+  { name: 'Square142x142Logo.png', size: 142 },
+  { name: 'Square150x150Logo.png', size: 150 },
+  { name: 'Square284x284Logo.png', size: 284 },
+  { name: 'StoreLogo.png', size: 50 },
 ];
 
 for (const { name, size } of sizes) {
@@ -189,4 +175,56 @@ const icns = createIcns();
 fs.writeFileSync(path.join(iconsDir, 'icon.icns'), icns);
 console.log(`Created: icon.icns (${icns.length} bytes)`);
 
+// Generate Android icons
+const androidSizes = [
+  { dir: 'mipmap-mdpi', size: 48 },
+  { dir: 'mipmap-hdpi', size: 72 },
+  { dir: 'mipmap-xhdpi', size: 96 },
+  { dir: 'mipmap-xxhdpi', size: 144 },
+  { dir: 'mipmap-xxxhdpi', size: 192 },
+];
+
+for (const { dir, size } of androidSizes) {
+  const dirPath = path.join(iconsDir, 'android', dir);
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+  for (const name of ['ic_launcher.png', 'ic_launcher_foreground.png', 'ic_launcher_round.png']) {
+    const png = createIcon(size);
+    fs.writeFileSync(path.join(dirPath, name), png);
+  }
+  console.log(`Created: android/${dir}/ icons (${size}x${size})`);
+}
+
+// Generate iOS icons
+const iosSizes = [
+  { name: 'AppIcon-20x20@1x.png', size: 20 },
+  { name: 'AppIcon-20x20@2x.png', size: 40 },
+  { name: 'AppIcon-20x20@2x-1.png', size: 40 },
+  { name: 'AppIcon-20x20@3x.png', size: 60 },
+  { name: 'AppIcon-29x29@1x.png', size: 29 },
+  { name: 'AppIcon-29x29@2x.png', size: 58 },
+  { name: 'AppIcon-29x29@2x-1.png', size: 58 },
+  { name: 'AppIcon-29x29@3x.png', size: 87 },
+  { name: 'AppIcon-40x40@1x.png', size: 40 },
+  { name: 'AppIcon-40x40@2x.png', size: 80 },
+  { name: 'AppIcon-40x40@2x-1.png', size: 80 },
+  { name: 'AppIcon-40x40@3x.png', size: 120 },
+  { name: 'AppIcon-60x60@2x.png', size: 120 },
+  { name: 'AppIcon-60x60@3x.png', size: 180 },
+  { name: 'AppIcon-76x76@1x.png', size: 76 },
+  { name: 'AppIcon-76x76@2x.png', size: 152 },
+  { name: 'AppIcon-83.5x83.5@2x.png', size: 167 },
+  { name: 'AppIcon-512@2x.png', size: 1024 },
+];
+
+const iosDir = path.join(iconsDir, 'ios');
+if (!fs.existsSync(iosDir)) fs.mkdirSync(iosDir, { recursive: true });
+for (const { name, size } of iosSizes) {
+  const png = createIcon(size);
+  fs.writeFileSync(path.join(iosDir, name), png);
+  console.log(`Created: ios/${name} (${size}x${size})`);
+}
+
 console.log('\nIcons generated successfully!');
+}
+
+main().catch(err => { console.error(err); process.exit(1); });
