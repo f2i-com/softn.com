@@ -88,7 +88,7 @@ jobs:
 
       - name: Clone xdb.org (needed by softn-loader Cargo dependency)
         if: matrix.app == 'softn-loader'
-        run: git clone --depth 1 https://github.com/f2i-com/xdb.org.git "$GITHUB_WORKSPACE/../xdb-org"
+        run: git clone --depth 1 https://github.com/f2i-com/xdb.org.git "$GITHUB_WORKSPACE/../xdb.org"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
