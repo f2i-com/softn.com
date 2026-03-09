@@ -25,10 +25,16 @@ enum ScriptRequest {
 }
 
 /// Wraps FormLogicEngine instances behind a pool of dedicated OS threads.
-/// Uses a shared MPMC channel so idle workers pull tasks automatically,
-/// eliminating head-of-line blocking from round-robin dispatch.
+///
+/// Architecture:
+/// - Each worker has a **dedicated** init channel (guarantees 1:1 delivery).
+/// - After init, workers pull Call requests from a **shared** MPMC channel
+///   so idle workers pick up tasks automatically.
+/// - Pool is sized for I/O-bound workloads (scripts may block on HTTP/DB).
 pub struct ServerRuntime {
     work_tx: crossbeam_channel::Sender<ScriptRequest>,
+    /// One per worker — used only during init() for guaranteed 1:1 delivery.
+    init_txs: Vec<crossbeam_channel::Sender<ScriptRequest>>,
     worker_count: usize,
     /// Global names extracted during init for lock-free has_function lookups.
     known_globals: std::sync::OnceLock<HashSet<String>>,
@@ -41,36 +47,45 @@ impl ServerRuntime {
     where
         F: Fn() -> BridgeSet + Send + Sync + 'static,
     {
+        // Size the pool for I/O-bound workloads: scripts may block on ureq HTTP
+        // calls (up to 20s) or SQLite disk I/O, so we need more threads than CPUs.
         let worker_count = std::thread::available_parallelism()
-            .map(|n| n.get().min(8))
-            .unwrap_or(4);
+            .map(|n| n.get().max(16).min(50))
+            .unwrap_or(16);
 
         let factory = Arc::new(bridge_factory);
         let (work_tx, work_rx) = crossbeam_channel::unbounded::<ScriptRequest>();
+        let mut init_txs = Vec::with_capacity(worker_count);
 
         for i in 0..worker_count {
             let factory_clone = factory.clone();
             let work_rx_clone = work_rx.clone();
+            // Each worker gets a dedicated bounded(1) init channel
+            let (init_tx, init_rx) = crossbeam_channel::bounded::<ScriptRequest>(1);
 
             std::thread::Builder::new()
                 .name(format!("softn-worker-{}", i))
                 .spawn(move || {
-                    Self::script_thread(work_rx_clone, &*factory_clone);
+                    Self::script_thread(init_rx, work_rx_clone, &*factory_clone);
                 })
                 .expect("Failed to spawn worker thread");
+
+            init_txs.push(init_tx);
         }
 
         tracing::info!("Script worker pool: {} threads", worker_count);
 
         Arc::new(Self {
             work_tx,
+            init_txs,
             worker_count,
             known_globals: std::sync::OnceLock::new(),
         })
     }
 
     fn script_thread<F>(
-        rx: crossbeam_channel::Receiver<ScriptRequest>,
+        init_rx: crossbeam_channel::Receiver<ScriptRequest>,
+        work_rx: crossbeam_channel::Receiver<ScriptRequest>,
         bridge_factory: &F,
     )
     where
@@ -80,30 +95,36 @@ impl ServerRuntime {
         let mut state: Option<ScriptState> = None;
         let mut init_source: Option<String> = None;
 
+        // Phase 1: Wait for Init on dedicated channel (guaranteed 1:1 delivery).
+        match init_rx.recv() {
+            Ok(req) => {
+                if let ScriptRequest::Init { ref source, .. } = req {
+                    init_source = Some(source.clone());
+                }
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Self::handle_request(req, &engine, &mut state, bridge_factory);
+                }));
+                if let Err(panic_info) = result {
+                    Self::log_panic(&panic_info);
+                    state = None;
+                }
+            }
+            Err(_) => return,
+        }
+
+        // Phase 2: Process Call requests from the shared MPMC queue.
         loop {
-            let req = match rx.recv() {
+            let req = match work_rx.recv() {
                 Ok(r) => r,
                 Err(_) => break,
             };
-
-            // Save source on Init for potential re-init after panic
-            if let ScriptRequest::Init { ref source, .. } = req {
-                init_source = Some(source.clone());
-            }
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::handle_request(req, &engine, &mut state, bridge_factory);
             }));
 
             if let Err(panic_info) = result {
-                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic".to_string()
-                };
-                tracing::error!("Worker caught panic: {}", msg);
+                Self::log_panic(&panic_info);
 
                 // State is potentially corrupted — attempt re-init from stored source
                 state = None;
@@ -120,6 +141,17 @@ impl ServerRuntime {
                 }
             }
         }
+    }
+
+    fn log_panic(panic_info: &Box<dyn std::any::Any + Send>) {
+        let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        tracing::error!("Worker caught panic: {}", msg);
     }
 
     /// Compile source, attach bridges, and configure execution limits.
@@ -202,17 +234,18 @@ impl ServerRuntime {
     }
 
     /// Initialize all workers with the same source code.
-    /// Sends one Init per worker via the shared MPMC channel and waits for all replies.
+    /// Uses per-worker dedicated channels to guarantee 1:1 delivery.
     pub fn init(&self, source: String) -> Result<(), String> {
         let mut reply_rxs = Vec::with_capacity(self.worker_count);
-        for _ in 0..self.worker_count {
+
+        for (i, init_tx) in self.init_txs.iter().enumerate() {
             let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-            self.work_tx
+            init_tx
                 .send(ScriptRequest::Init {
                     source: source.clone(),
                     reply: reply_tx,
                 })
-                .map_err(|_| "All workers died during init".to_string())?;
+                .map_err(|_| format!("Worker {} died during init", i))?;
             reply_rxs.push(reply_rx);
         }
 
