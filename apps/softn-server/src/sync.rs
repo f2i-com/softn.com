@@ -57,7 +57,11 @@ pub struct SyncManager {
     db: SharedDb,
     broadcast_tx: broadcast::Sender<(String, ServerMessage)>,
     runtime: Option<Arc<ServerRuntime>>,
+    /// Batch hook: validates all ops in a single RPC call (preferred).
+    has_before_sync_batch: bool,
+    /// Per-op hook: fallback if batch hook is not defined.
     has_before_sync: bool,
+    has_after_sync_batch: bool,
     has_after_sync: bool,
     auth_token: Option<String>,
 }
@@ -70,20 +74,32 @@ impl SyncManager {
     ) -> Arc<Self> {
         let (broadcast_tx, _) = broadcast::channel(256);
 
+        let has_before_sync_batch = runtime
+            .as_ref()
+            .map(|r| r.has_function("onBeforeSyncBatch"))
+            .unwrap_or(false);
         let has_before_sync = runtime
             .as_ref()
             .map(|r| r.has_function("onBeforeSync"))
+            .unwrap_or(false);
+        let has_after_sync_batch = runtime
+            .as_ref()
+            .map(|r| r.has_function("onAfterSyncBatch"))
             .unwrap_or(false);
         let has_after_sync = runtime
             .as_ref()
             .map(|r| r.has_function("onAfterSync"))
             .unwrap_or(false);
 
-        if has_before_sync {
-            tracing::info!("onBeforeSync hook detected");
+        if has_before_sync_batch {
+            tracing::info!("onBeforeSyncBatch hook detected (batch mode)");
+        } else if has_before_sync {
+            tracing::info!("onBeforeSync hook detected (per-op mode)");
         }
-        if has_after_sync {
-            tracing::info!("onAfterSync hook detected");
+        if has_after_sync_batch {
+            tracing::info!("onAfterSyncBatch hook detected (batch mode)");
+        } else if has_after_sync {
+            tracing::info!("onAfterSync hook detected (per-op mode)");
         }
 
         if auth_token.is_some() {
@@ -98,7 +114,9 @@ impl SyncManager {
             db,
             broadcast_tx,
             runtime,
+            has_before_sync_batch,
             has_before_sync,
+            has_after_sync_batch,
             has_after_sync,
             auth_token,
         })
@@ -177,11 +195,13 @@ impl SyncManager {
         client_id: &str,
     ) -> Vec<ServerMessage> {
         let mut responses = Vec::new();
-        let mut validated_ops = Vec::new();
 
         // Phase 1: Validate and run onBeforeSync hooks (no DB lock held).
         // This ensures hooks don't block the database and all validation
         // completes before we touch storage.
+
+        // First pass: basic validation (no RPC needed)
+        let mut basic_valid_ops = Vec::new();
         for mut op in ops {
             op.client_id = client_id.to_string();
 
@@ -193,7 +213,15 @@ impl SyncManager {
                 continue;
             }
 
-            if self.has_before_sync {
+            basic_valid_ops.push(op);
+        }
+
+        // Second pass: run hooks — batch mode (1 RPC) preferred over per-op (N RPCs)
+        let validated_ops = if self.has_before_sync_batch {
+            self.call_before_sync_batch(basic_valid_ops, &mut responses)
+        } else if self.has_before_sync {
+            let mut accepted = Vec::new();
+            for op in basic_valid_ops {
                 match self.call_before_sync(&op) {
                     Ok(false) => {
                         tracing::info!("onBeforeSync rejected op {}", op.id);
@@ -201,7 +229,6 @@ impl SyncManager {
                             op_id: op.id.clone(),
                             reason: "Rejected by onBeforeSync hook".into(),
                         });
-                        continue;
                     }
                     Err(e) => {
                         tracing::warn!("onBeforeSync error (fail-closed): {}", e);
@@ -209,14 +236,14 @@ impl SyncManager {
                             op_id: op.id.clone(),
                             reason: format!("onBeforeSync hook error: {}", e),
                         });
-                        continue;
                     }
-                    _ => {}
+                    _ => accepted.push(op),
                 }
             }
-
-            validated_ops.push(op);
-        }
+            accepted
+        } else {
+            basic_valid_ops
+        };
 
         // Phase 2: Apply all validated ops atomically under a single DB lock.
         // This prevents interleaving from concurrent client batches.
@@ -272,10 +299,17 @@ impl SyncManager {
         }
 
         // Phase 3: Run onAfterSync hooks outside the DB lock.
-        if self.has_after_sync {
-            for op in &accepted_ops {
-                if let Err(e) = self.call_after_sync(op) {
-                    tracing::warn!("onAfterSync error: {}", e);
+        // Batch mode (1 RPC) preferred over per-op (N RPCs).
+        if !accepted_ops.is_empty() {
+            if self.has_after_sync_batch {
+                if let Err(e) = self.call_after_sync_batch(&accepted_ops) {
+                    tracing::warn!("onAfterSyncBatch error: {}", e);
+                }
+            } else if self.has_after_sync {
+                for op in &accepted_ops {
+                    if let Err(e) = self.call_after_sync(op) {
+                        tracing::warn!("onAfterSync error: {}", e);
+                    }
                 }
             }
         }
@@ -296,6 +330,68 @@ impl SyncManager {
         responses
     }
 
+    /// Batch before-sync hook: passes all ops in a single RPC call.
+    /// Returns an array of rejected op IDs, or an object `{ rejected: ["id1", ...] }`.
+    /// Ops not in the rejected list are accepted.
+    fn call_before_sync_batch(
+        &self,
+        ops: Vec<SyncOp>,
+        responses: &mut Vec<ServerMessage>,
+    ) -> Vec<SyncOp> {
+        let rt = match self.runtime.as_ref() {
+            Some(r) => r,
+            None => return ops,
+        };
+
+        let ops_json: Vec<serde_json::Value> = ops.iter().map(Self::op_to_json).collect();
+        let result = match rt.call("onBeforeSyncBatch", vec![serde_json::Value::Array(ops_json)]) {
+            Ok(r) => r,
+            Err(e) => {
+                // Fail-closed: reject all ops on hook error
+                tracing::warn!("onBeforeSyncBatch error (fail-closed): {}", e);
+                for op in &ops {
+                    responses.push(ServerMessage::SyncReject {
+                        op_id: op.id.clone(),
+                        reason: format!("onBeforeSyncBatch hook error: {}", e),
+                    });
+                }
+                return Vec::new();
+            }
+        };
+
+        // Parse rejected IDs from the result.
+        // Supported formats:
+        //   - ["id1", "id2"]          (array of rejected IDs)
+        //   - { rejected: ["id1"] }   (object with rejected field)
+        //   - null / undefined        (accept all)
+        let rejected_ids: std::collections::HashSet<String> = match &result {
+            serde_json::Value::Array(arr) => {
+                arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+            }
+            serde_json::Value::Object(obj) => {
+                obj.get("rejected")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default()
+            }
+            _ => std::collections::HashSet::new(),
+        };
+
+        let mut accepted = Vec::new();
+        for op in ops {
+            if rejected_ids.contains(&op.id) {
+                tracing::info!("onBeforeSyncBatch rejected op {}", op.id);
+                responses.push(ServerMessage::SyncReject {
+                    op_id: op.id.clone(),
+                    reason: "Rejected by onBeforeSyncBatch hook".into(),
+                });
+            } else {
+                accepted.push(op);
+            }
+        }
+        accepted
+    }
+
     fn call_before_sync(&self, op: &SyncOp) -> Result<bool, String> {
         let rt = self.runtime.as_ref().ok_or("No runtime")?;
         let op_json = Self::op_to_json(op);
@@ -305,6 +401,14 @@ impl SyncManager {
             serde_json::Value::Bool(false) => Ok(false),
             _ => Ok(true),
         }
+    }
+
+    /// Batch after-sync hook: passes all accepted ops in a single RPC call.
+    fn call_after_sync_batch(&self, ops: &[SyncOp]) -> Result<(), String> {
+        let rt = self.runtime.as_ref().ok_or("No runtime")?;
+        let ops_json: Vec<serde_json::Value> = ops.iter().map(Self::op_to_json).collect();
+        let _ = rt.call("onAfterSyncBatch", vec![serde_json::Value::Array(ops_json)]);
+        Ok(())
     }
 
     fn call_after_sync(&self, op: &SyncOp) -> Result<(), String> {
