@@ -10,18 +10,19 @@ impl NativeFsBridge {
         Self { root_dir }
     }
 
-    /// Resolve a path relative to root, rejecting traversal.
+    /// Resolve a path relative to root, rejecting traversal and absolute paths.
     /// Does NOT create directories — callers must do that after validation.
     fn resolve(&self, path: &str) -> Result<PathBuf, String> {
-        // Reject obvious traversal patterns before any filesystem interaction
-        if path.contains("..") {
-            return Err("Path traversal rejected".into());
+        // Reject traversal patterns and absolute paths before any filesystem interaction.
+        // Absolute paths would cause join() to ignore the root entirely.
+        if path.contains("..") || std::path::Path::new(path).is_absolute() {
+            return Err("Path traversal or absolute path rejected".into());
         }
 
         let joined = self.root_dir.join(path);
 
-        // Normalize without touching the filesystem: ensure it stays under root
-        // We check both the logical path and (if it exists) the canonical path
+        // Normalize without touching the filesystem: ensure it stays under root.
+        // We check both the logical path and (if it exists) the canonical path.
         let canonical_root = std::fs::canonicalize(&self.root_dir)
             .map_err(|e| format!("Root resolve error: {}", e))?;
 
@@ -33,16 +34,26 @@ impl NativeFsBridge {
             }
             Ok(canonical)
         } else {
-            // File doesn't exist yet — validate the parent
-            let parent = joined.parent().ok_or("Invalid path")?;
-            if parent.exists() {
-                let canonical_parent = std::fs::canonicalize(parent)
-                    .map_err(|e| format!("Path resolve error: {}", e))?;
-                if !canonical_parent.starts_with(&canonical_root) {
-                    return Err("Path traversal rejected".into());
+            // File doesn't exist yet — walk up to find the nearest existing ancestor
+            // and verify it's within root. This prevents the exploit where both the
+            // file and its parent don't exist, skipping canonicalization entirely.
+            let mut ancestor = joined.parent();
+            while let Some(dir) = ancestor {
+                if dir.exists() {
+                    let canonical_ancestor = std::fs::canonicalize(dir)
+                        .map_err(|e| format!("Path resolve error: {}", e))?;
+                    if !canonical_ancestor.starts_with(&canonical_root) {
+                        return Err("Path traversal rejected".into());
+                    }
+                    break;
                 }
+                ancestor = dir.parent();
             }
-            // Return the logical path (caller will create parent dirs if needed)
+            // If no ancestor exists at all (shouldn't happen since root exists),
+            // reject as a safety measure
+            if ancestor.is_none() {
+                return Err("Path resolve error: no valid ancestor".into());
+            }
             Ok(joined)
         }
     }

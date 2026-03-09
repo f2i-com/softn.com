@@ -152,7 +152,10 @@ impl ServerRuntime {
                             tracing::info!("Worker re-initialized after panic");
                         }
                         Err(e) => {
-                            tracing::error!("Worker failed to re-init after panic: {}", e);
+                            tracing::error!("Worker failed to re-init after panic, exiting: {}", e);
+                            // Exit the loop — a permanently broken worker draining
+                            // requests and failing them all is worse than a reduced pool.
+                            break;
                         }
                     }
                 }
@@ -267,8 +270,9 @@ impl ServerRuntime {
         }
 
         let mut errors = Vec::new();
+        let init_timeout = std::time::Duration::from_secs(30);
         for (i, reply_rx) in reply_rxs.iter().enumerate() {
-            match reply_rx.recv() {
+            match reply_rx.recv_timeout(init_timeout) {
                 Ok(Ok(globals)) => {
                     // Store global names from the first successful worker
                     let _ = self.known_globals.set(globals.into_iter().collect());
