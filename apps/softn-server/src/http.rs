@@ -2,13 +2,14 @@ use crate::app::AppContext;
 use crate::bundle;
 use crate::ws;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{Request, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
 use axum::Router;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 pub async fn serve(ctx: Arc<AppContext>, port: u16) -> Result<(), String> {
@@ -74,7 +75,7 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                         uri: axum::http::Uri,
                         headers: axum::http::HeaderMap,
                         query: axum::extract::Query<std::collections::HashMap<String, String>>,
-                        body: String,
+                        body: axum::body::Bytes,
                     | {
                         api_handler(ctx, name, method, uri, headers, query, body)
                     }
@@ -104,13 +105,97 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
         }
     }
 
-    // Serve client bundle files as a fallback (e.g. /ui/main.ui, /assets/icon.svg)
-    router = router.fallback(get(serve_bundle_file));
+    // Serve client bundle files via tower-http ServeDir.
+    // This handles ETag, Last-Modified, and correct MIME types automatically.
+    // We wrap it in a security filter that blocks server/ and data/ paths.
+    let bundle_path = ctx.bundle_path.clone();
+    let serve_dir = ServeDir::new(&bundle_path);
+
+    // Use a fallback handler that validates paths before delegating to ServeDir
+    let bundle_path_for_fallback = bundle_path.clone();
+    router = router.fallback(move |req: axum::extract::Request| {
+        let serve_dir = serve_dir.clone();
+        let bundle_path = bundle_path_for_fallback.clone();
+        async move {
+            let path = req.uri().path().trim_start_matches('/');
+
+            // Security: reject path traversal (both literal and URL-decoded).
+            // percent_decode handles %2e%2e%2f → ../
+            let decoded = percent_decode(path);
+            if decoded.contains("..") || path.contains("..") {
+                return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+            }
+
+            // Blacklist: never serve server-side or data files.
+            let normalized = decoded.replace('\\', "/");
+            if normalized.starts_with("server/") || normalized.starts_with("data/") {
+                return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+            }
+
+            // Whitelist: file must be in an allowed directory AND have an allowed extension
+            let in_allowed_dir = ALLOWED_PREFIXES.iter().any(|p| path.starts_with(p));
+            let has_allowed_ext = path.rsplit('.').next()
+                .map(|ext| ALLOWED_EXTENSIONS.contains(&ext))
+                .unwrap_or(false);
+
+            if !in_allowed_dir || !has_allowed_ext {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+
+            // Extra safety: verify the resolved path stays within the bundle
+            let file_path = bundle_path.join(path);
+            if file_path.exists() {
+                if let (Ok(canonical), Ok(canonical_bundle)) = (
+                    std::fs::canonicalize(&file_path),
+                    std::fs::canonicalize(&bundle_path),
+                ) {
+                    if !canonical.starts_with(&canonical_bundle) {
+                        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+                    }
+                }
+            }
+
+            // Delegate to ServeDir for proper ETag, Last-Modified, Content-Type
+            use tower::ServiceExt;
+            match serve_dir.oneshot(req).await {
+                Ok(resp) => resp.into_response(),
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+    });
 
     router
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(ctx)
+}
+
+/// Decode percent-encoded path segments for security validation.
+fn percent_decode(s: &str) -> String {
+    let mut result = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                result.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 async fn health() -> &'static str {
@@ -136,7 +221,7 @@ async fn api_handler(
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
-    body: String,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
     let runtime = match &ctx.runtime {
         Some(r) => r.clone(),
@@ -158,19 +243,36 @@ async fn api_handler(
         })
         .collect();
 
-    // Build request object with body, query params, headers, method, and path
+    // Build request object with body, query params, headers, method, and path.
+    // Attempt to parse body as UTF-8 text/JSON; binary payloads get a size marker.
+    let body_json = if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        match std::str::from_utf8(&body) {
+            Ok(text) => serde_json::from_str(text)
+                .unwrap_or_else(|_| serde_json::Value::String(text.to_string())),
+            Err(_) => {
+                // Binary payload — scripts don't handle raw bytes yet
+                serde_json::json!({
+                    "__binary": true,
+                    "size": body.len(),
+                })
+            }
+        }
+    };
+
     let query_json = serde_json::to_value(&query.0).unwrap_or_default();
     let request = serde_json::json!({
         "method": method.as_str(),
         "path": uri.path(),
-        "body": if body.is_empty() { serde_json::Value::Null } else {
-            serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body.clone()))
-        },
+        "body": body_json,
         "query": query_json,
         "headers": headers_json,
     });
 
-    // Run the blocking runtime.call() off the tokio reactor (30s timeout)
+    // Run the blocking runtime.call() off the tokio reactor (30s timeout).
+    // Note: if all 50 script workers are busy, this queues in the crossbeam
+    // channel until a worker is free. The 30s timeout covers total wait+exec.
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         tokio::task::spawn_blocking(move || {
@@ -235,94 +337,6 @@ const ALLOWED_EXTENSIONS: &[&str] = &[
     "mp3", "wav", "mp4", "webm",
     "pdf", "xml", "txt", "softn",
 ];
-
-/// Serve client bundle files from the bundle directory.
-/// Uses a whitelist of allowed prefixes and file extensions.
-async fn serve_bundle_file(
-    State(ctx): State<Arc<AppContext>>,
-    request: Request,
-) -> impl IntoResponse {
-    let path = request.uri().path().trim_start_matches('/');
-
-    // Reject path traversal
-    if path.contains("..") {
-        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
-    }
-
-    // Blacklist: never serve server-side or data files regardless of extension.
-    // Normalize backslashes to forward slashes before checking (Windows compat).
-    let normalized = path.replace('\\', "/");
-    if normalized.starts_with("server/") || normalized.starts_with("data/") {
-        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
-    }
-
-    // Whitelist: file must be in an allowed directory AND have an allowed extension
-    let in_allowed_dir = ALLOWED_PREFIXES.iter().any(|p| path.starts_with(p));
-    let has_allowed_ext = path.rsplit('.').next()
-        .map(|ext| ALLOWED_EXTENSIONS.contains(&ext))
-        .unwrap_or(false);
-
-    if !in_allowed_dir || !has_allowed_ext {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-
-    let file_path = ctx.bundle_path.join(path);
-
-    // Verify file exists and stays inside the bundle directory
-    if file_path.exists() {
-        if let (Ok(canonical), Ok(canonical_bundle)) = (
-            std::fs::canonicalize(&file_path),
-            std::fs::canonicalize(&ctx.bundle_path),
-        ) {
-            if !canonical.starts_with(&canonical_bundle) {
-                return (StatusCode::FORBIDDEN, "Forbidden").into_response();
-            }
-        } else {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-    } else {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-
-    // Read the file
-    match std::fs::read(&file_path) {
-        Ok(content) => {
-            let mime = mime_from_ext(path);
-            ([(axum::http::header::CONTENT_TYPE, mime)], content).into_response()
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// Map file extensions to MIME types.
-fn mime_from_ext(path: &str) -> &'static str {
-    match path.rsplit('.').next().unwrap_or("") {
-        "html" | "htm" => "text/html; charset=utf-8",
-        "css" => "text/css; charset=utf-8",
-        "js" | "mjs" => "application/javascript; charset=utf-8",
-        "json" => "application/json; charset=utf-8",
-        "ui" | "logic" => "text/plain; charset=utf-8",
-        "svg" => "image/svg+xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "webp" => "image/webp",
-        "ico" => "image/x-icon",
-        "woff" => "font/woff",
-        "woff2" => "font/woff2",
-        "ttf" => "font/ttf",
-        "otf" => "font/otf",
-        "mp3" => "audio/mpeg",
-        "wav" => "audio/wav",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        "pdf" => "application/pdf",
-        "xml" => "application/xml",
-        "txt" => "text/plain; charset=utf-8",
-        "softn" => "application/octet-stream",
-        _ => "application/octet-stream",
-    }
-}
 
 async fn shutdown_signal() {
     match tokio::signal::ctrl_c().await {

@@ -9,7 +9,8 @@ xdb = { path = "../../../xdb.org/crates/xdb", default-features = false }
 
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
