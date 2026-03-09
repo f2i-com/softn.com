@@ -433,6 +433,7 @@ export class XDBService {
       const coll = this.getOrCreateCollection(collection);
       coll.set(optimisticRecord.id, optimisticRecord);
       this.pendingCreateIds.add(optimisticRecord.id);
+      this.notifyMutation('create', collection, optimisticRecord.id, data);
 
       // Create in backend asynchronously
       tauriInvoke<XDBRecord>('create_record', this.tauriArgs({
@@ -494,6 +495,7 @@ export class XDBService {
     this.setCollectionData(collection, records);
 
     this.emit({ type: 'create', collection, record });
+    this.notifyMutation('create', collection, record.id, data);
 
     return record;
   }
@@ -731,6 +733,7 @@ export class XDBService {
           };
           coll.set(record.id, updatedRecord);
           this.emit({ type: 'update', collection, record: updatedRecord });
+          this.notifyMutation('update', collection, record.id, updatedRecord.data);
           return updatedRecord;
         }
       }
@@ -756,6 +759,7 @@ export class XDBService {
         this.setCollectionData(collection, records);
 
         this.emit({ type: 'update', collection, record: updatedRecord });
+        this.notifyMutation('update', collection, id, updatedRecord.data);
 
         return updatedRecord;
       }
@@ -872,6 +876,7 @@ export class XDBService {
           };
           coll.set(lookupId, deletedRecord);
           this.emit({ type: 'delete', collection, record: deletedRecord });
+          this.notifyMutation('delete', collection, lookupId);
           break;
         }
       }
@@ -894,6 +899,7 @@ export class XDBService {
         this.setCollectionData(collection, records);
 
         this.emit({ type: 'delete', collection, record });
+        this.notifyMutation('delete', collection, id);
 
         return true;
       }
@@ -1060,6 +1066,81 @@ export class XDBService {
 
   emitEvent(event: XDBEvent): void {
     this.emit(event);
+  }
+
+  // --------------------------------------------------------------------------
+  // Server Sync API (used by XDBServerSync)
+  // --------------------------------------------------------------------------
+
+  /** Mutation listeners for server sync — called on local creates/updates/deletes. */
+  private mutationListeners: Set<(event: {
+    type: string;
+    collection: string;
+    recordId: string;
+    data?: Record<string, unknown>;
+    source?: string;
+  }) => void> = new Set();
+
+  /** Whether the current mutation originates from the server (to avoid re-push). */
+  private _mutationSource: string | undefined;
+
+  /**
+   * Subscribe to all local mutations (create/update/delete).
+   * Used by XDBServerSync to push local changes to the server.
+   * Returns an unsubscribe function.
+   */
+  onMutation(listener: (event: {
+    type: string;
+    collection: string;
+    recordId: string;
+    data?: Record<string, unknown>;
+    source?: string;
+  }) => void): () => void {
+    this.mutationListeners.add(listener);
+    return () => { this.mutationListeners.delete(listener); };
+  }
+
+  /** Notify mutation listeners (called internally after create/update/delete). */
+  private notifyMutation(type: string, collection: string, recordId: string, data?: Record<string, unknown>): void {
+    if (this.mutationListeners.size === 0) return;
+    const event = { type, collection, recordId, data, source: this._mutationSource };
+    for (const listener of this.mutationListeners) {
+      try { listener(event); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Upsert a record from the server (doesn't trigger push back to server).
+   */
+  upsertFromServer(collection: string, record: {
+    id: string;
+    collection: string;
+    data: Record<string, unknown>;
+    createdAt: string;
+    updatedAt: string;
+  }): void {
+    const xdbRecord: XDBRecord = {
+      id: record.id,
+      collection: record.collection,
+      data: record.data,
+      created_at: record.createdAt || new Date().toISOString(),
+      updated_at: record.updatedAt || new Date().toISOString(),
+      deleted: false,
+    };
+    this._mutationSource = 'server';
+    this.writeRecord(collection, xdbRecord);
+    this.notifyMutation('upsert', collection, record.id, record.data);
+    this._mutationSource = undefined;
+  }
+
+  /**
+   * Delete a record from the server (doesn't trigger push back to server).
+   */
+  deleteFromServer(collection: string, recordId: string): void {
+    this._mutationSource = 'server';
+    this.removeRecord(collection, recordId);
+    this.notifyMutation('delete', collection, recordId);
+    this._mutationSource = undefined;
   }
 
   // --------------------------------------------------------------------------
