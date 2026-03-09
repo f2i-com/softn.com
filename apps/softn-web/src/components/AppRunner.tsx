@@ -11,6 +11,9 @@ interface AppRunnerProps {
   importResolver?: (path: string) => Promise<string | null>;
   logicBasePath?: string;
   onPageChange?: (page: string) => void;
+  serverUrl?: string;
+  serverToken?: string;
+  serverCollections?: string[];
 }
 
 interface ErrorBoundaryState {
@@ -154,7 +157,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, active, initialPage, permissions, importResolver, logicBasePath, onPageChange }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ source, appName, active, initialPage, permissions, importResolver, logicBasePath, onPageChange, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
   // Build initial state: page from URL + saved sync room from localStorage
   const initialState = useMemo(() => {
     const state: Record<string, unknown> = {};
@@ -226,6 +229,9 @@ export function AppRunner({ source, appName, active, initialPage, permissions, i
             logicBasePath={logicBasePath}
             appId={appName}
             onPageChange={onPageChange}
+            serverUrl={serverUrl}
+            serverToken={serverToken}
+            serverCollections={serverCollections}
             loading={
               <Box
                 className="softn-runner-loading"

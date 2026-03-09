@@ -102,6 +102,9 @@ interface OpenTab {
   permissionConfig?: PermissionConfig;
   importResolver?: (path: string) => Promise<string | null>;
   logicBasePath?: string;
+  serverUrl?: string;
+  serverToken?: string;
+  serverCollections?: string[];
 }
 
 // ── App Component ────────────────────────────────────────────────
@@ -291,6 +294,26 @@ function App(): React.ReactElement {
         setApps(updatedApps);
 
         // Create or update the tab
+        // Build server sync URL (convert http(s) to ws(s) if needed)
+        const serverConfig = manifest.config?.server;
+        let serverUrl: string | undefined;
+        if (serverConfig?.url) {
+          const url = serverConfig.url;
+          if (url.startsWith('ws://') || url.startsWith('wss://')) {
+            serverUrl = url;
+          } else if (url.startsWith('http://')) {
+            serverUrl = url.replace('http://', 'ws://');
+          } else if (url.startsWith('https://')) {
+            serverUrl = url.replace('https://', 'wss://');
+          } else {
+            serverUrl = url;
+          }
+          // Ensure /sync path
+          if (!serverUrl.endsWith('/sync')) {
+            serverUrl = serverUrl.replace(/\/$/, '') + '/sync';
+          }
+        }
+
         const newTab: OpenTab = {
           id: tabId,
           name: appName,
@@ -301,6 +324,9 @@ function App(): React.ReactElement {
           permissionConfig: permissionConfig || undefined,
           importResolver,
           logicBasePath,
+          serverUrl,
+          serverToken: serverConfig?.token,
+          serverCollections: serverConfig?.collections,
         };
         setOpenTabs((prev) => {
           const idx = prev.findIndex((t) => t.id === tabId);
@@ -682,6 +708,9 @@ function App(): React.ReactElement {
               importResolver={tab.importResolver}
               logicBasePath={tab.logicBasePath}
               onPageChange={(page) => handlePageChange(tab.id, page)}
+              serverUrl={tab.serverUrl}
+              serverToken={tab.serverToken}
+              serverCollections={tab.serverCollections}
             />
           ))}
         </div>

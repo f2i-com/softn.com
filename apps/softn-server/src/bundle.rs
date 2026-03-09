@@ -137,6 +137,10 @@ pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
             .collect();
         val["files"] = serde_json::to_value(filtered).unwrap_or_default();
     }
+    // Include config (contains server URL, theme, etc. needed by clients)
+    if let Some(config) = &manifest.config {
+        val["config"] = config.clone();
+    }
     val
 }
 

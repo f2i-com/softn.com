@@ -2,7 +2,7 @@ use crate::app::AppContext;
 use crate::bundle;
 use crate::ws;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
@@ -111,6 +111,9 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
         }
     }
 
+    // Serve client bundle files as a fallback (e.g. /ui/main.ui, /assets/icon.svg)
+    router = router.fallback(get(serve_bundle_file));
+
     router
         .layer(cors)
         .layer(TraceLayer::new_for_http())
@@ -209,6 +212,82 @@ async fn api_handler(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e})),
         ),
+    }
+}
+
+/// Serve client bundle files from the bundle directory.
+/// Rejects path traversal and maps file extensions to MIME types.
+async fn serve_bundle_file(
+    State(ctx): State<Arc<AppContext>>,
+    request: Request,
+) -> impl IntoResponse {
+    let path = request.uri().path().trim_start_matches('/');
+
+    // Reject path traversal
+    if path.contains("..") || path.starts_with("server/") || path.starts_with("server\\") {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+
+    // Don't serve data directory files
+    if path.starts_with("data/") || path.starts_with("data\\") {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+
+    let file_path = ctx.bundle_path.join(path);
+
+    // Verify it stays inside the bundle directory
+    if file_path.exists() {
+        if let (Ok(canonical), Ok(canonical_bundle)) = (
+            std::fs::canonicalize(&file_path),
+            std::fs::canonicalize(&ctx.bundle_path),
+        ) {
+            if !canonical.starts_with(&canonical_bundle) {
+                return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+            }
+        } else {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    } else {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Read the file
+    match std::fs::read(&file_path) {
+        Ok(content) => {
+            let mime = mime_from_ext(path);
+            ([(axum::http::header::CONTENT_TYPE, mime)], content).into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Map file extensions to MIME types.
+fn mime_from_ext(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "ui" | "logic" => "text/plain; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "pdf" => "application/pdf",
+        "xml" => "application/xml",
+        "txt" => "text/plain; charset=utf-8",
+        "softn" => "application/octet-stream",
+        _ => "application/octet-stream",
     }
 }
 
