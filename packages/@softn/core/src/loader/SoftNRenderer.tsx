@@ -1546,11 +1546,30 @@ export interface SoftNWithXDBProps extends SoftNRendererProps {
    * Callback when XDB data changes
    */
   onDataChange?: (data: Record<string, import('../types').XDBRecord[]>) => void;
+
+  /**
+   * Server sync URL (e.g. "ws://localhost:3000/sync").
+   * When provided, connects to a softn-server instance for real-time data sync.
+   */
+  serverUrl?: string;
+
+  /**
+   * Auth token for server sync.
+   */
+  serverToken?: string;
+
+  /**
+   * Collections to sync with the server.
+   */
+  serverCollections?: string[];
 }
 
 export function SoftNWithXDB({
   source,
   onDataChange,
+  serverUrl,
+  serverToken,
+  serverCollections,
   ...props
 }: SoftNWithXDBProps): React.ReactElement | null {
   // Parse the document to get data block
@@ -1570,6 +1589,29 @@ export function SoftNWithXDB({
       }
     });
   }, [xdb]);
+
+  // Server sync: connect to softn-server when serverUrl is provided
+  useEffect(() => {
+    if (!serverUrl) return;
+    let sync: import('../runtime/xdb-server-sync').XDBServerSync | null = null;
+    import('../runtime/xdb-server-sync').then(({ XDBServerSync }) => {
+      sync = new XDBServerSync(xdb, {
+        wsUrl: serverUrl,
+        appVersion: '1.0.0',
+        token: serverToken,
+        collections: serverCollections,
+      });
+      sync.connect();
+      sync.on('error', (err: unknown) => {
+        console.warn('[SoftN] Server sync error:', err);
+      });
+    }).catch(() => {
+      // Server sync module not available
+    });
+    return () => {
+      sync?.disconnect();
+    };
+  }, [xdb, serverUrl, serverToken, serverCollections]);
 
   // Auto-resume sync from localStorage on mount
   const syncResumedRef = useRef(false);

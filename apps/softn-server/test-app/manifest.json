@@ -1,6 +1,16 @@
 {
   "name": "TestApp",
   "version": "1.0.0",
+  "main": "ui/main.ui",
+  "files": {
+    "ui": ["ui/main.ui"]
+  },
+  "config": {
+    "server": {
+      "url": "ws://localhost:3001/sync",
+      "collections": ["notes"]
+    }
+  },
   "server": {
     "entry": "server/main.logic",
     "routes": [

@@ -1,0 +1,12 @@
+<app>
+  <state>
+    <let name="title" value="'Server-Connected App'" />
+    <let name="status" value="'ready'" />
+  </state>
+
+  <view padding="20">
+    <text style="font-size: 24px; font-weight: bold;">{title}</text>
+    <text>Status: {status}</text>
+    <text>This app is served by softn-server.</text>
+  </view>
+</app>

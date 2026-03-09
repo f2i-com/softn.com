@@ -34,6 +34,11 @@ export interface BundleManifest {
       primary?: string;
       mode?: 'light' | 'dark' | 'system';
     };
+    server?: {
+      url?: string;
+      token?: string;
+      collections?: string[];
+    };
   };
   permissions?: import('@softn/core').AppPermissions;
 }
