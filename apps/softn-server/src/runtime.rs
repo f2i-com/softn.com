@@ -49,6 +49,11 @@ impl ServerRuntime {
     {
         // Size the pool for I/O-bound workloads: scripts may block on ureq HTTP
         // calls (up to 20s) or SQLite disk I/O, so we need more threads than CPUs.
+        // All native bridges have bounded execution time:
+        // - HTTP bridge: ureq with 20s timeout (< 25s VM wall-time limit)
+        // - FS bridge: OS filesystem calls return or error, cannot hang indefinitely
+        // - DB bridge: SharedDb uses Mutex (no deadlock; contention bounded by pool size)
+        // This ensures spawn_blocking tasks always terminate.
         let worker_count = std::thread::available_parallelism()
             .map(|n| n.get().max(16).min(50))
             .unwrap_or(16);
@@ -297,7 +302,17 @@ impl ServerRuntime {
 
 // ── JSON ↔ Object conversion ──
 
+/// Maximum nesting depth for JSON → Object conversion to prevent stack overflow.
+const MAX_JSON_DEPTH: usize = 64;
+
 fn json_to_object(val: serde_json::Value, heap: &mut Heap) -> Object {
+    json_to_object_inner(val, heap, 0)
+}
+
+fn json_to_object_inner(val: serde_json::Value, heap: &mut Heap, depth: usize) -> Object {
+    if depth > MAX_JSON_DEPTH {
+        return Object::Null;
+    }
     match val {
         serde_json::Value::Null => Object::Null,
         serde_json::Value::Bool(b) => Object::Boolean(b),
@@ -313,7 +328,7 @@ fn json_to_object(val: serde_json::Value, heap: &mut Heap) -> Object {
             let items: Vec<Value> = arr
                 .into_iter()
                 .map(|v| {
-                    let child = json_to_object(v, heap);
+                    let child = json_to_object_inner(v, heap, depth + 1);
                     value::obj_into_val(child, heap)
                 })
                 .collect();
@@ -322,7 +337,7 @@ fn json_to_object(val: serde_json::Value, heap: &mut Heap) -> Object {
         serde_json::Value::Object(map) => {
             let mut hash = HashObject::default();
             for (k, v) in map {
-                let child = json_to_object(v, heap);
+                let child = json_to_object_inner(v, heap, depth + 1);
                 let val = value::obj_into_val(child, heap);
                 hash.insert_pair(HashKey::from_owned_string(k), val);
             }

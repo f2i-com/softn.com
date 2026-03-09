@@ -256,13 +256,13 @@ async fn serve_bundle_file(
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
 
-    // Whitelist: file must be in an allowed directory or have an allowed extension
+    // Whitelist: file must be in an allowed directory AND have an allowed extension
     let in_allowed_dir = ALLOWED_PREFIXES.iter().any(|p| path.starts_with(p));
     let has_allowed_ext = path.rsplit('.').next()
         .map(|ext| ALLOWED_EXTENSIONS.contains(&ext))
         .unwrap_or(false);
 
-    if !in_allowed_dir && !has_allowed_ext {
+    if !in_allowed_dir || !has_allowed_ext {
         return StatusCode::NOT_FOUND.into_response();
     }
 
