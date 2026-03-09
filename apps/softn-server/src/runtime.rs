@@ -63,15 +63,18 @@ impl ServerRuntime {
         // - DB bridge: SharedDb uses Mutex (no deadlock; contention bounded by pool size)
         // This ensures spawn_blocking tasks always terminate.
         let worker_count = configured_workers
-            .map(|n| n.max(1).min(200))
+            .map(|n| n.clamp(1, 200))
             .unwrap_or_else(|| {
                 std::thread::available_parallelism()
-                    .map(|n| n.get().max(16).min(50))
+                    .map(|n| n.get().clamp(16, 50))
                     .unwrap_or(16)
             });
 
         let factory = Arc::new(bridge_factory);
-        let (work_tx, work_rx) = crossbeam_channel::unbounded::<ScriptRequest>();
+        // Bounded queue prevents memory exhaustion from request floods.
+        // 2x worker_count gives enough headroom for burst absorption while
+        // applying backpressure when all workers are saturated.
+        let (work_tx, work_rx) = crossbeam_channel::bounded::<ScriptRequest>(worker_count * 2);
         let mut init_txs = Vec::with_capacity(worker_count);
 
         for i in 0..worker_count {
@@ -85,7 +88,10 @@ impl ServerRuntime {
                 .spawn(move || {
                     Self::script_thread(init_rx, work_rx_clone, &*factory_clone);
                 })
-                .expect("Failed to spawn worker thread");
+                .unwrap_or_else(|e| {
+                    tracing::error!("Failed to spawn worker thread {}: {}", i, e);
+                    panic!("Cannot start server: failed to spawn worker thread {}", i);
+                });
 
             init_txs.push(init_tx);
         }
@@ -233,15 +239,16 @@ impl ServerRuntime {
             ScriptRequest::Call { name, args, reply } => {
                 let result = match state.as_mut() {
                     Some(s) => {
-                        let obj_args: Vec<Object> = args
+                        let obj_args: Result<Vec<Object>, String> = args
                             .into_iter()
                             .map(|v| json_to_object(v, s.heap_mut()))
                             .collect();
-
-                        match s.call_function(&name, &obj_args) {
-                            Ok(result) => {
-                                let json = object_to_json(&result, s.heap());
-                                Ok(json)
+                        match obj_args {
+                            Ok(obj_args) => {
+                                match s.call_function(&name, &obj_args) {
+                                    Ok(result) => object_to_json(&result, s.heap()),
+                                    Err(e) => Err(e),
+                                }
                             }
                             Err(e) => Err(e),
                         }
@@ -321,71 +328,67 @@ impl ServerRuntime {
 /// Maximum nesting depth for JSON → Object conversion to prevent stack overflow.
 const MAX_JSON_DEPTH: usize = 64;
 
-fn json_to_object(val: serde_json::Value, heap: &mut Heap) -> Object {
+fn json_to_object(val: serde_json::Value, heap: &mut Heap) -> Result<Object, String> {
     json_to_object_inner(val, heap, 0)
 }
 
-fn json_to_object_inner(val: serde_json::Value, heap: &mut Heap, depth: usize) -> Object {
+fn json_to_object_inner(val: serde_json::Value, heap: &mut Heap, depth: usize) -> Result<Object, String> {
     if depth > MAX_JSON_DEPTH {
-        return Object::Null;
+        return Err(format!("JSON nesting depth exceeds maximum of {}", MAX_JSON_DEPTH));
     }
     match val {
-        serde_json::Value::Null => Object::Null,
-        serde_json::Value::Bool(b) => Object::Boolean(b),
+        serde_json::Value::Null => Ok(Object::Null),
+        serde_json::Value::Bool(b) => Ok(Object::Boolean(b)),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Object::Integer(i)
+                Ok(Object::Integer(i))
             } else {
-                Object::Float(n.as_f64().unwrap_or(0.0))
+                Ok(Object::Float(n.as_f64().unwrap_or(0.0)))
             }
         }
-        serde_json::Value::String(s) => Object::String(s.into()),
+        serde_json::Value::String(s) => Ok(Object::String(s.into())),
         serde_json::Value::Array(arr) => {
-            let items: Vec<Value> = arr
-                .into_iter()
-                .map(|v| {
-                    let child = json_to_object_inner(v, heap, depth + 1);
-                    value::obj_into_val(child, heap)
-                })
-                .collect();
-            object::make_array(items)
+            let mut items: Vec<Value> = Vec::with_capacity(arr.len());
+            for v in arr {
+                let child = json_to_object_inner(v, heap, depth + 1)?;
+                items.push(value::obj_into_val(child, heap));
+            }
+            Ok(object::make_array(items))
         }
         serde_json::Value::Object(map) => {
             let mut hash = HashObject::default();
             for (k, v) in map {
-                let child = json_to_object_inner(v, heap, depth + 1);
+                let child = json_to_object_inner(v, heap, depth + 1)?;
                 let val = value::obj_into_val(child, heap);
                 hash.insert_pair(HashKey::from_owned_string(k), val);
             }
-            object::make_hash(hash)
+            Ok(object::make_hash(hash))
         }
     }
 }
 
-fn object_to_json(obj: &Object, heap: &Heap) -> serde_json::Value {
+fn object_to_json(obj: &Object, heap: &Heap) -> Result<serde_json::Value, String> {
     object_to_json_inner(obj, heap, 0)
 }
 
-fn object_to_json_inner(obj: &Object, heap: &Heap, depth: usize) -> serde_json::Value {
+fn object_to_json_inner(obj: &Object, heap: &Heap, depth: usize) -> Result<serde_json::Value, String> {
     if depth > MAX_JSON_DEPTH {
-        return serde_json::Value::Null;
+        return Err(format!("Object nesting depth exceeds maximum of {}", MAX_JSON_DEPTH));
     }
     match obj {
-        Object::Null | Object::Undefined => serde_json::Value::Null,
-        Object::Boolean(b) => serde_json::Value::Bool(*b),
-        Object::Integer(n) => serde_json::json!(*n),
-        Object::Float(f) => serde_json::json!(*f),
-        Object::String(s) => serde_json::Value::String(s.to_string()),
+        Object::Null | Object::Undefined => Ok(serde_json::Value::Null),
+        Object::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
+        Object::Integer(n) => Ok(serde_json::json!(*n)),
+        Object::Float(f) => Ok(serde_json::json!(*f)),
+        Object::String(s) => Ok(serde_json::Value::String(s.to_string())),
         Object::Array(arr) => {
             let items = arr.borrow();
-            let vals: Vec<serde_json::Value> = items
-                .iter()
-                .map(|v| {
-                    let child = value::val_to_obj(*v, heap);
-                    object_to_json_inner(&child, heap, depth + 1)
-                })
-                .collect();
-            serde_json::Value::Array(vals)
+            let mut vals: Vec<serde_json::Value> = Vec::with_capacity(items.len());
+            for v in items.iter() {
+                let child = value::val_to_obj(*v, heap);
+                vals.push(object_to_json_inner(&child, heap, depth + 1)?);
+            }
+            Ok(serde_json::Value::Array(vals))
         }
         Object::Hash(hash) => {
             let borrowed = hash.borrow_mut();
@@ -394,23 +397,23 @@ fn object_to_json_inner(obj: &Object, heap: &Heap, depth: usize) -> serde_json::
             for (key, val) in borrowed.pairs.iter() {
                 let k = key.display_key();
                 let child = value::val_to_obj(*val, heap);
-                map.insert(k, object_to_json_inner(&child, heap, depth + 1));
+                map.insert(k, object_to_json_inner(&child, heap, depth + 1)?);
             }
-            serde_json::Value::Object(map)
+            Ok(serde_json::Value::Object(map))
         }
         Object::Instance(inst) => {
             let mut map = serde_json::Map::new();
             for (k, v) in &inst.fields {
-                map.insert(k.clone(), object_to_json_inner(v, heap, depth + 1));
+                map.insert(k.clone(), object_to_json_inner(v, heap, depth + 1)?);
             }
-            serde_json::Value::Object(map)
+            Ok(serde_json::Value::Object(map))
         }
         Object::Error(err) => {
-            serde_json::json!({
+            Ok(serde_json::json!({
                 "name": err.name.to_string(),
                 "message": err.message.to_string(),
-            })
+            }))
         }
-        _ => serde_json::Value::Null,
+        _ => Ok(serde_json::Value::Null),
     }
 }

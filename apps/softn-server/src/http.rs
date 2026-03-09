@@ -42,10 +42,13 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
 
     // Explicit body limit for API routes (2MB default).
     // Configurable via manifest config.server.maxBodySize if needed.
+    // Cap at 256MB to prevent unreasonable values from exhausting memory.
+    const MAX_BODY_CEILING: u64 = 256 * 1024 * 1024;
     let max_body = ctx.manifest.config.as_ref()
         .and_then(|c| c.get("server"))
         .and_then(|s| s.get("maxBodySize"))
         .and_then(|v| v.as_u64())
+        .map(|n| n.min(MAX_BODY_CEILING))
         .unwrap_or(2 * 1024 * 1024) as usize;
 
     // Register custom API routes from manifest

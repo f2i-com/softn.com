@@ -22,11 +22,21 @@ const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Send a direct response (sync_pull/sync_push result) to the writer task.
 /// Uses an async send with a timeout — these are responses the client is
 /// actively waiting for, so we must not silently drop them.
-/// Returns false if the channel is closed or the send times out.
+///
+/// Returns false if the channel is closed or the send times out, signaling
+/// the caller to **drop the connection immediately**. A failed send means the
+/// client is irrecoverably slow; dropping forces a reconnect and fresh sync.
 async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage) -> bool {
     match tokio::time::timeout(SEND_TIMEOUT, out_tx.send(msg)).await {
         Ok(Ok(())) => true,
-        _ => false, // Channel closed or client too slow
+        Ok(Err(_)) => {
+            tracing::warn!("WebSocket outbound channel closed — dropping connection");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("WebSocket send timed out ({}s) — dropping connection to force re-sync", SEND_TIMEOUT.as_secs());
+            false
+        }
     }
 }
 

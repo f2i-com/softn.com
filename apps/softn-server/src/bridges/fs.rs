@@ -59,7 +59,7 @@ impl NativeFsBridge {
     }
 
     /// Ensure parent directory exists for a write operation.
-    fn ensure_parent(&self, path: &PathBuf) -> Result<(), String> {
+    fn ensure_parent(&self, path: &std::path::Path) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("mkdir failed: {}", e))?;
@@ -104,10 +104,8 @@ impl FsBridge for NativeFsBridge {
         let entries = std::fs::read_dir(&resolved)
             .map_err(|e| format!("List error: {}", e))?;
         let mut names = Vec::new();
-        for entry in entries {
-            if let Ok(e) = entry {
-                names.push(e.file_name().to_string_lossy().to_string());
-            }
+        for e in entries.flatten() {
+            names.push(e.file_name().to_string_lossy().to_string());
         }
         Ok(names)
     }
