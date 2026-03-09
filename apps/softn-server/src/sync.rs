@@ -154,8 +154,10 @@ impl SyncManager {
         if let Some(expected) = &self.auth_token {
             match token {
                 Some(t) if t.as_bytes().ct_eq(expected.as_bytes()).into() => {}
-                Some(_) => return Err("Invalid auth token".into()),
-                None => return Err("Auth token required".into()),
+                // Generic error prevents token enumeration (attacker can't
+                // distinguish "no token" from "wrong token").
+                Some(_) => return Err("Authentication failed".into()),
+                None => return Err("Authentication failed".into()),
             }
         }
 
@@ -179,11 +181,9 @@ impl SyncManager {
             // SQLite reads are fast and don't block pending writes at the filesystem level.
             let db = match self.db.lock() {
                 Ok(db) => db,
-                Err(e) => {
-                    messages.push(ServerMessage::Error {
-                        message: format!("Database lock error: {}", e),
-                    });
-                    continue;
+                Err(poisoned) => {
+                    tracing::error!("Database lock poisoned in sync_pull, recovering: {}", poisoned);
+                    poisoned.into_inner()
                 }
             };
             let records = match db.get_collection(collection) {
@@ -299,14 +299,12 @@ impl SyncManager {
         if !validated_ops.is_empty() {
             let mut db = match self.db.lock() {
                 Ok(db) => db,
-                Err(e) => {
-                    // DB lock poisoned — transient, client should retry
-                    let op_ids: Vec<String> = validated_ops.iter().map(|op| op.id.clone()).collect();
-                    responses.push(ServerMessage::SyncRetry {
-                        op_ids,
-                        reason: format!("Database lock error: {}", e),
-                    });
-                    return responses;
+                Err(poisoned) => {
+                    // Lock poisoned = a writer panicked while holding the lock.
+                    // Recover the inner value (still usable) rather than permanently
+                    // failing all future sync operations.
+                    tracing::error!("Database lock poisoned, recovering: {}", poisoned);
+                    poisoned.into_inner()
                 }
             };
 

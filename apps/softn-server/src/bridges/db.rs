@@ -25,7 +25,7 @@ fn xdb_to_fl(r: xdb::Record) -> DbRecord {
 impl DbBridge for NativeDbBridge {
     fn query(&self, collection: &str) -> Result<Vec<DbRecord>, String> {
         let db = self.db.lock()
-            .map_err(|e| format!("db.query lock error: {}", e))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let records = db.get_collection(collection)
             .map_err(|e| format!("db.query failed: {}", e))?;
         Ok(records.into_iter().map(xdb_to_fl).collect())
@@ -33,7 +33,7 @@ impl DbBridge for NativeDbBridge {
 
     fn create(&mut self, collection: &str, data: &str) -> Result<DbRecord, String> {
         let mut db = self.db.lock()
-            .map_err(|e| format!("db.create lock error: {}", e))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let json: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
         let (record, _update) = db.create_record(collection, json)
             .map_err(|e| format!("db.create failed: {}", e))?;
@@ -42,7 +42,7 @@ impl DbBridge for NativeDbBridge {
 
     fn update(&mut self, id: &str, data: &str) -> Result<Option<DbRecord>, String> {
         let mut db = self.db.lock()
-            .map_err(|e| format!("db.update lock error: {}", e))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let json: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
         match db.update_record(id, json) {
             Ok((r, _)) => Ok(Some(xdb_to_fl(r))),
@@ -53,7 +53,7 @@ impl DbBridge for NativeDbBridge {
 
     fn delete(&mut self, id: &str) -> Result<(), String> {
         let mut db = self.db.lock()
-            .map_err(|e| format!("db.delete lock error: {}", e))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         db.delete_record(id)
             .map_err(|e| format!("db.delete failed: {}", e))?;
         Ok(())
@@ -62,7 +62,7 @@ impl DbBridge for NativeDbBridge {
     fn hard_delete(&mut self, _collection: &str, id: &str) -> Result<(), String> {
         // XDB only supports soft delete (sets deleted=1 for CRDT sync)
         let mut db = self.db.lock()
-            .map_err(|e| format!("db.hard_delete lock error: {}", e))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         db.delete_record(id)
             .map_err(|e| format!("db.hard_delete failed: {}", e))?;
         Ok(())
@@ -70,7 +70,7 @@ impl DbBridge for NativeDbBridge {
 
     fn get(&self, _collection: &str, id: &str) -> Result<Option<DbRecord>, String> {
         let db = self.db.lock()
-            .map_err(|e| format!("db.get lock error: {}", e))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match db.get_record(id) {
             Ok(r) => Ok(Some(xdb_to_fl(r))),
             Err(xdb::DbError::NotFound(_)) => Ok(None),

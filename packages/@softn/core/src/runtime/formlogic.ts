@@ -667,9 +667,14 @@ export class SoftNScriptRuntime {
     console.log(`[SoftN] Script loaded: ${functionNames.length} functions, ${stateVarNames.length} state vars`);
 
     // 7. Create async function wrappers (propagate state changes to React)
+    // Rapid-fire event handlers (mousemove, scroll, etc.) are marked droppable —
+    // safe to skip under queue saturation since they'll be superseded by the next
+    // event. All other functions (clicks, submits, etc.) are critical and will
+    // queue up to a hard limit to guarantee execution.
+    const DROPPABLE_PATTERN = /^on_?(mouse_?move|pointer_?move|scroll|touch_?move|wheel)|^(tick|update|animate|render)/i;
     const functions: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
     for (const name of functionNames) {
-      functions[name] = this.createVMFunction(name);
+      functions[name] = this.createVMFunction(name, { droppable: DROPPABLE_PATTERN.test(name) });
     }
 
     // 8. Create sync function wrappers (for template expressions, no state propagation)
@@ -707,12 +712,21 @@ export class SoftNScriptRuntime {
   private _perfSyncToVMMs = 0;
   private _perfChangedVars = 0;
 
-  private createVMFunction(name: string): (...args: unknown[]) => Promise<unknown> {
+  private createVMFunction(name: string, options?: { droppable?: boolean }): (...args: unknown[]) => Promise<unknown> {
+    const droppable = options?.droppable ?? false;
+    // Droppable calls (rapid-fire events) are dropped at the soft limit.
+    // Critical calls (user interactions) are only dropped at the hard limit.
+    const QUEUE_SOFT_LIMIT = 32;
+    const QUEUE_HARD_LIMIT = 128;
+
     return async (...args: unknown[]): Promise<unknown> => {
       // Guard against unbounded queue growth from rapid async events.
-      // If the queue is too deep, drop the call to prevent memory pressure and input lag.
-      if (this.vmCallQueueDepth >= 32) {
-        console.warn(`[SoftN] Dropping VM call to ${name}: queue depth ${this.vmCallQueueDepth} exceeds limit`);
+      if (droppable && this.vmCallQueueDepth >= QUEUE_SOFT_LIMIT) {
+        // Safe to drop: rapid-fire events are superseded by the next one
+        return undefined;
+      }
+      if (this.vmCallQueueDepth >= QUEUE_HARD_LIMIT) {
+        console.error(`[SoftN] Dropping VM call to ${name}: hard queue limit reached (${this.vmCallQueueDepth})`);
         return undefined;
       }
       this.vmCallQueueDepth++;
