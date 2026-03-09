@@ -359,6 +359,13 @@ fn json_to_object_inner(val: serde_json::Value, heap: &mut Heap, depth: usize) -
 }
 
 fn object_to_json(obj: &Object, heap: &Heap) -> serde_json::Value {
+    object_to_json_inner(obj, heap, 0)
+}
+
+fn object_to_json_inner(obj: &Object, heap: &Heap, depth: usize) -> serde_json::Value {
+    if depth > MAX_JSON_DEPTH {
+        return serde_json::Value::Null;
+    }
     match obj {
         Object::Null | Object::Undefined => serde_json::Value::Null,
         Object::Boolean(b) => serde_json::Value::Bool(*b),
@@ -371,7 +378,7 @@ fn object_to_json(obj: &Object, heap: &Heap) -> serde_json::Value {
                 .iter()
                 .map(|v| {
                     let child = value::val_to_obj(*v, heap);
-                    object_to_json(&child, heap)
+                    object_to_json_inner(&child, heap, depth + 1)
                 })
                 .collect();
             serde_json::Value::Array(vals)
@@ -383,14 +390,14 @@ fn object_to_json(obj: &Object, heap: &Heap) -> serde_json::Value {
             for (key, val) in borrowed.pairs.iter() {
                 let k = key.display_key();
                 let child = value::val_to_obj(*val, heap);
-                map.insert(k, object_to_json(&child, heap));
+                map.insert(k, object_to_json_inner(&child, heap, depth + 1));
             }
             serde_json::Value::Object(map)
         }
         Object::Instance(inst) => {
             let mut map = serde_json::Map::new();
             for (k, v) in &inst.fields {
-                map.insert(k.clone(), object_to_json(v, heap));
+                map.insert(k.clone(), object_to_json_inner(v, heap, depth + 1));
             }
             serde_json::Value::Object(map)
         }

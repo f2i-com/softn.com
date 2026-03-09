@@ -74,7 +74,8 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
 
 /// Validate a script path stays within the bundle directory.
 fn validate_script_path(bundle_path: &Path, relative: &str) -> Result<PathBuf, String> {
-    if relative.contains("..") {
+    // Reject path traversal and absolute paths (which would overwrite the base in join())
+    if relative.contains("..") || Path::new(relative).is_absolute() {
         return Err(format!("Path traversal rejected in script path: {}", relative));
     }
     let full = bundle_path.join(relative);
