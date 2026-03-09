@@ -23,98 +23,59 @@ fn xdb_to_fl(r: xdb::Record) -> DbRecord {
 }
 
 impl DbBridge for NativeDbBridge {
-    fn query(&self, collection: &str) -> Vec<DbRecord> {
-        let db = match self.db.lock() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("db.query lock error: {}", e);
-                return Vec::new();
-            }
-        };
-        db.get_collection(collection)
-            .unwrap_or_default()
-            .into_iter()
-            .map(xdb_to_fl)
-            .collect()
+    fn query(&self, collection: &str) -> Result<Vec<DbRecord>, String> {
+        let db = self.db.lock()
+            .map_err(|e| format!("db.query lock error: {}", e))?;
+        let records = db.get_collection(collection)
+            .map_err(|e| format!("db.query failed: {}", e))?;
+        Ok(records.into_iter().map(xdb_to_fl).collect())
     }
 
-    fn create(&mut self, collection: &str, data: &str) -> DbRecord {
-        let mut db = match self.db.lock() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("db.create lock error: {}", e);
-                return DbRecord {
-                    id: String::new(),
-                    collection: collection.to_string(),
-                    data: data.to_string(),
-                    created_at: String::new(),
-                    updated_at: String::new(),
-                    data_parsed: None,
-                };
-            }
-        };
+    fn create(&mut self, collection: &str, data: &str) -> Result<DbRecord, String> {
+        let mut db = self.db.lock()
+            .map_err(|e| format!("db.create lock error: {}", e))?;
         let json: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
-        match db.create_record(collection, json) {
-            Ok((record, _update)) => xdb_to_fl(record),
-            Err(e) => {
-                tracing::error!("db.create failed: {}", e);
-                DbRecord {
-                    id: String::new(),
-                    collection: collection.to_string(),
-                    data: data.to_string(),
-                    created_at: String::new(),
-                    updated_at: String::new(),
-                    data_parsed: None,
-                }
-            }
+        let (record, _update) = db.create_record(collection, json)
+            .map_err(|e| format!("db.create failed: {}", e))?;
+        Ok(xdb_to_fl(record))
+    }
+
+    fn update(&mut self, id: &str, data: &str) -> Result<Option<DbRecord>, String> {
+        let mut db = self.db.lock()
+            .map_err(|e| format!("db.update lock error: {}", e))?;
+        let json: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
+        match db.update_record(id, json) {
+            Ok((r, _)) => Ok(Some(xdb_to_fl(r))),
+            Err(xdb::DbError::NotFound(_)) => Ok(None),
+            Err(e) => Err(format!("db.update failed: {}", e)),
         }
     }
 
-    fn update(&mut self, id: &str, data: &str) -> Option<DbRecord> {
-        let mut db = match self.db.lock() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("db.update lock error: {}", e);
-                return None;
-            }
-        };
-        let json: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
-        db.update_record(id, json).ok().map(|(r, _)| xdb_to_fl(r))
+    fn delete(&mut self, id: &str) -> Result<(), String> {
+        let mut db = self.db.lock()
+            .map_err(|e| format!("db.delete lock error: {}", e))?;
+        db.delete_record(id)
+            .map_err(|e| format!("db.delete failed: {}", e))?;
+        Ok(())
     }
 
-    fn delete(&mut self, id: &str) {
-        let mut db = match self.db.lock() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("db.delete lock error: {}", e);
-                return;
-            }
-        };
-        let _ = db.delete_record(id);
-    }
-
-    fn hard_delete(&mut self, _collection: &str, id: &str) {
+    fn hard_delete(&mut self, _collection: &str, id: &str) -> Result<(), String> {
         // XDB only supports soft delete (sets deleted=1 for CRDT sync)
-        tracing::warn!("hard_delete called but XDB only supports soft delete (id={})", id);
-        let mut db = match self.db.lock() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("db.hard_delete lock error: {}", e);
-                return;
-            }
-        };
-        let _ = db.delete_record(id);
+        let mut db = self.db.lock()
+            .map_err(|e| format!("db.hard_delete lock error: {}", e))?;
+        db.delete_record(id)
+            .map_err(|e| format!("db.hard_delete failed: {}", e))?;
+        Ok(())
     }
 
-    fn get(&self, _collection: &str, id: &str) -> Option<DbRecord> {
-        let db = match self.db.lock() {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::error!("db.get lock error: {}", e);
-                return None;
-            }
-        };
-        db.get_record(id).ok().map(xdb_to_fl)
+    fn get(&self, _collection: &str, id: &str) -> Result<Option<DbRecord>, String> {
+        let db = self.db.lock()
+            .map_err(|e| format!("db.get lock error: {}", e))?;
+        match db.get_record(id) {
+            Ok(r) => Ok(Some(xdb_to_fl(r))),
+            Err(xdb::DbError::NotFound(_)) => Ok(None),
+            Err(e) => Err(format!("db.get failed: {}", e)),
+        }
     }
 
     // Server IS the authority — sync methods are no-ops
