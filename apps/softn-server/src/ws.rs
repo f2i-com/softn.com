@@ -187,10 +187,11 @@ pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("Client {} lagged, missed {} messages", cid_for_broadcast, n);
+                        tracing::warn!("Client {} lagged, missed {} messages — disconnecting to force re-sync", cid_for_broadcast, n);
                         send_msg(&mut ws_tx, &ServerMessage::Error {
-                            message: format!("Missed {} messages, consider re-syncing", n),
+                            message: format!("Missed {} messages, reconnect to re-sync", n),
                         }).await;
+                        break;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         tracing::info!("Broadcast channel closed, disconnecting client {}", cid_for_broadcast);
