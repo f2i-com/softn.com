@@ -26,10 +26,20 @@ pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let mut broadcast_rx = sync.subscribe();
 
-    // Auth phase: expect first message to be auth
-    let auth_msg = match ws_rx.next().await {
-        Some(Ok(Message::Text(text))) => text,
-        _ => return,
+    // Auth phase: expect first message to be a text auth message.
+    // Skip non-text frames (ping/pong/binary) and wait for text.
+    let auth_msg = loop {
+        match ws_rx.next().await {
+            Some(Ok(Message::Text(text))) => break text,
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+            Some(Ok(_)) => {
+                send_msg(&mut ws_tx, &ServerMessage::Error {
+                    message: "Expected text auth message".into(),
+                }).await;
+                return;
+            }
+            _ => return,
+        }
     };
 
     let parsed: serde_json::Value = match serde_json::from_str(&auth_msg) {

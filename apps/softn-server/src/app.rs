@@ -24,9 +24,14 @@ impl AppContext {
         let manifest = bundle::load_manifest(&bundle_path)?;
         tracing::info!("Loaded app: {} v{}", manifest.name, manifest.version);
 
-        // Data directory
+        // Data directory: prefer explicit --data-dir, then platform data dir,
+        // then fall back to bundle_path/data for local development.
         let data_dir = data_dir.unwrap_or_else(|| {
-            bundle_path.join("data")
+            if let Some(base) = dirs::data_dir() {
+                base.join("softn").join(&manifest.name)
+            } else {
+                bundle_path.join("data")
+            }
         });
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| format!("Failed to create data dir: {}", e))?;
@@ -50,19 +55,22 @@ impl AppContext {
             let source = bundle::load_server_scripts(&bundle_path, server)?;
             tracing::info!("Loaded server scripts ({} bytes)", source.len());
 
-            let db_clone = db.clone();
+            let db_for_factory = db.clone();
             let fs_root = data_dir.join("files");
             std::fs::create_dir_all(&fs_root)
                 .map_err(|e| format!("Failed to create files dir: {}", e))?;
+            let fs_root_for_factory = fs_root.clone();
 
+            // bridge_factory is Fn (not FnOnce) — called once per worker thread.
+            // Each worker gets its own bridge instances but shares the same DB (Arc).
             let rt = ServerRuntime::new(move || BridgeSet {
-                db: Some(Box::new(NativeDbBridge::new(db_clone))),
+                db: Some(Box::new(NativeDbBridge::new(db_for_factory.clone()))),
                 http: Some(Box::new(NativeHttpBridge::new())),
-                fs: Some(Box::new(NativeFsBridge::new(fs_root))),
+                fs: Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))),
                 env: Some(Box::new(NativeEnvBridge)),
             });
 
-            // Initialize scripts
+            // Initialize all worker threads with the same source
             rt.init(source)?;
             tracing::info!("Server scripts initialized");
 

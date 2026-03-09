@@ -60,59 +60,35 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
 
                 tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
 
+                // All methods use the same extractor pattern
+                let make_handler = |name: String| {
+                    move |
+                        State(ctx): State<Arc<AppContext>>,
+                        method: axum::http::Method,
+                        uri: axum::http::Uri,
+                        headers: axum::http::HeaderMap,
+                        query: axum::extract::Query<std::collections::HashMap<String, String>>,
+                        body: String,
+                    | {
+                        api_handler(ctx, name, method, uri, headers, query, body)
+                    }
+                };
+
                 match method.as_str() {
                     "GET" => {
-                        let name = handler_name.clone();
-                        router = router.route(
-                            &path,
-                            get(move |State(ctx): State<Arc<AppContext>>, query: axum::extract::Query<std::collections::HashMap<String, String>>, body: String| {
-                                api_handler(ctx, name, query, body)
-                            }),
-                        );
+                        router = router.route(&path, get(make_handler(handler_name.clone())));
                     }
                     "POST" => {
-                        let name = handler_name.clone();
-                        router = router.route(
-                            &path,
-                            axum::routing::post(
-                                move |State(ctx): State<Arc<AppContext>>, query: axum::extract::Query<std::collections::HashMap<String, String>>, body: String| {
-                                    api_handler(ctx, name, query, body)
-                                },
-                            ),
-                        );
+                        router = router.route(&path, axum::routing::post(make_handler(handler_name.clone())));
                     }
                     "PUT" => {
-                        let name = handler_name.clone();
-                        router = router.route(
-                            &path,
-                            axum::routing::put(
-                                move |State(ctx): State<Arc<AppContext>>, query: axum::extract::Query<std::collections::HashMap<String, String>>, body: String| {
-                                    api_handler(ctx, name, query, body)
-                                },
-                            ),
-                        );
+                        router = router.route(&path, axum::routing::put(make_handler(handler_name.clone())));
                     }
                     "DELETE" => {
-                        let name = handler_name.clone();
-                        router = router.route(
-                            &path,
-                            axum::routing::delete(
-                                move |State(ctx): State<Arc<AppContext>>, query: axum::extract::Query<std::collections::HashMap<String, String>>, body: String| {
-                                    api_handler(ctx, name, query, body)
-                                },
-                            ),
-                        );
+                        router = router.route(&path, axum::routing::delete(make_handler(handler_name.clone())));
                     }
                     "PATCH" => {
-                        let name = handler_name.clone();
-                        router = router.route(
-                            &path,
-                            axum::routing::patch(
-                                move |State(ctx): State<Arc<AppContext>>, query: axum::extract::Query<std::collections::HashMap<String, String>>, body: String| {
-                                    api_handler(ctx, name, query, body)
-                                },
-                            ),
-                        );
+                        router = router.route(&path, axum::routing::patch(make_handler(handler_name.clone())));
                     }
                     _ => {
                         tracing::warn!("Unsupported method: {}", method);
@@ -150,6 +126,9 @@ async fn ws_upgrade(
 async fn api_handler(
     ctx: Arc<AppContext>,
     handler_name: String,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
     body: String,
 ) -> impl IntoResponse {
@@ -163,13 +142,26 @@ async fn api_handler(
         }
     };
 
-    // Build request object with body and query params
+    // Build headers map (only include safe, non-binary headers)
+    let headers_json: serde_json::Map<String, serde_json::Value> = headers
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str().ok().map(|val| {
+                (k.as_str().to_lowercase(), serde_json::Value::String(val.to_string()))
+            })
+        })
+        .collect();
+
+    // Build request object with body, query params, headers, method, and path
     let query_json = serde_json::to_value(&query.0).unwrap_or_default();
     let request = serde_json::json!({
+        "method": method.as_str(),
+        "path": uri.path(),
         "body": if body.is_empty() { serde_json::Value::Null } else {
             serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body.clone()))
         },
         "query": query_json,
+        "headers": headers_json,
     });
 
     // Run the blocking runtime.call() off the tokio reactor (30s timeout)
@@ -251,10 +243,10 @@ async fn serve_bundle_file(
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
 
-    // Blacklist: never serve server-side or data files regardless of extension
-    if path.starts_with("server/") || path.starts_with("server\\")
-        || path.starts_with("data/") || path.starts_with("data\\")
-    {
+    // Blacklist: never serve server-side or data files regardless of extension.
+    // Normalize backslashes to forward slashes before checking (Windows compat).
+    let normalized = path.replace('\\', "/");
+    if normalized.starts_with("server/") || normalized.starts_with("data/") {
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
 
