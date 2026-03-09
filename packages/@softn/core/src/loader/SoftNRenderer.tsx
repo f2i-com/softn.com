@@ -817,12 +817,17 @@ export function SoftNRenderer({
             });
         }
 
-        // Set the document immediately (functions/state arrive asynchronously via loadScript)
+        // Set the document immediately (functions/state arrive asynchronously via loadScript).
+        // Clear old script functions to prevent stale closures from calling a cleaned-up
+        // runtime's vmEngine (which is null) during the gap before loadScript resolves.
         setState((prev) => ({
           ...prev,
           document: doc,
           loading: false,
           error: null,
+          scriptFunctions: codeBlock ? {} : prev.scriptFunctions,
+          scriptSyncFunctions: codeBlock ? {} : prev.scriptSyncFunctions,
+          scriptComputed: codeBlock ? {} : prev.scriptComputed,
         }));
         onLoad?.(doc);
       } catch (err) {

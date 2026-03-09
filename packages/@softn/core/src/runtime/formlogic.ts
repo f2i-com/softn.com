@@ -853,7 +853,8 @@ export class SoftNScriptRuntime {
 
         if (this.syncCallCache.has(cacheKey)) return this.syncCallCache.get(cacheKey);
 
-        const result = this.vmEngine!.callFunctionSync(name, args);
+        if (!this.vmEngine) return undefined;
+        const result = this.vmEngine.callFunctionSync(name, args);
         this.syncCallCache.set(cacheKey, result);
         return result;
       } catch (error) {
