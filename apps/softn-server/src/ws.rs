@@ -6,6 +6,9 @@ use tokio::sync::{broadcast, mpsc};
 
 const HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_OPS_PER_PUSH: usize = 1000;
+/// If no data is received from the client within this period, assume the
+/// connection is dead (e.g. mobile lost signal, laptop asleep) and clean up.
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// Outbound channel capacity — large enough to absorb burst from sync_pull
 /// responses without blocking the reader task.
 const OUT_CHANNEL_SIZE: usize = 512;
@@ -173,6 +176,8 @@ async fn writer_task(
 
 /// Reader task: reads from the WebSocket and dispatches sync operations.
 /// Sends responses through out_tx to the writer task.
+/// Enforces an idle timeout to detect zombie connections (e.g. mobile losing
+/// signal without sending a Close frame).
 async fn reader_task(
     ws_rx: &mut futures_util::stream::SplitStream<WebSocket>,
     sync: &Arc<SyncManager>,
@@ -180,7 +185,20 @@ async fn reader_task(
     out_tx: &mpsc::Sender<ServerMessage>,
 ) {
     loop {
-        match ws_rx.next().await {
+        // Idle timeout: if no data arrives within IDLE_TIMEOUT, assume the
+        // connection is dead and break to trigger cleanup.
+        let next = tokio::time::timeout(IDLE_TIMEOUT, ws_rx.next()).await;
+        let msg = match next {
+            Ok(msg) => msg,
+            Err(_) => {
+                tracing::info!("Client {} idle timeout ({}s) — disconnecting", cid, IDLE_TIMEOUT.as_secs());
+                let _ = send_response(out_tx, ServerMessage::Error {
+                    message: "Idle timeout".into(),
+                }).await;
+                break;
+            }
+        };
+        match msg {
             Some(Ok(Message::Text(text))) => {
                 let parsed: serde_json::Value = match serde_json::from_str(&text) {
                     Ok(v) => v,

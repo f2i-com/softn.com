@@ -148,7 +148,9 @@ impl SyncManager {
         let mut messages = Vec::new();
 
         for collection in collections {
-            // Lock per-collection so we don't block other operations across all collections
+            // Lock the database for the duration of the query, then release immediately.
+            // SharedDb is a single Mutex — this serializes access, but WAL mode ensures
+            // SQLite reads are fast and don't block pending writes at the filesystem level.
             let db = match self.db.lock() {
                 Ok(db) => db,
                 Err(e) => {
