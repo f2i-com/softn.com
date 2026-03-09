@@ -49,6 +49,14 @@ pub enum ServerMessage {
         op_id: String,
         reason: String,
     },
+    /// Transient failure — client should retry (e.g. worker pool overloaded,
+    /// DB lock contention). Distinct from SyncReject which is permanent.
+    #[serde(rename = "sync_retry")]
+    SyncRetry {
+        #[serde(rename = "opIds")]
+        op_ids: Vec<String>,
+        reason: String,
+    },
     #[serde(rename = "error")]
     Error { message: String },
 }
@@ -233,10 +241,11 @@ impl SyncManager {
                         });
                     }
                     Err(e) => {
+                        // Hook execution error — transient, client should retry
                         tracing::warn!("onBeforeSync error (fail-closed): {}", e);
-                        responses.push(ServerMessage::SyncReject {
-                            op_id: op.id.clone(),
-                            reason: format!("onBeforeSync hook error: {}", e),
+                        responses.push(ServerMessage::SyncRetry {
+                            op_ids: vec![op.id.clone()],
+                            reason: format!("Hook error (retryable): {}", e),
                         });
                     }
                     _ => accepted.push(op),
@@ -254,12 +263,12 @@ impl SyncManager {
             let mut db = match self.db.lock() {
                 Ok(db) => db,
                 Err(e) => {
-                    for op in &validated_ops {
-                        responses.push(ServerMessage::SyncReject {
-                            op_id: op.id.clone(),
-                            reason: format!("Database lock error: {}", e),
-                        });
-                    }
+                    // DB lock poisoned — transient, client should retry
+                    let op_ids: Vec<String> = validated_ops.iter().map(|op| op.id.clone()).collect();
+                    responses.push(ServerMessage::SyncRetry {
+                        op_ids,
+                        reason: format!("Database lock error: {}", e),
+                    });
                     return responses;
                 }
             };
@@ -349,14 +358,15 @@ impl SyncManager {
         let result = match rt.call("onBeforeSyncBatch", vec![serde_json::Value::Array(ops_json)]) {
             Ok(r) => r,
             Err(e) => {
-                // Fail-closed: reject all ops on hook error
+                // Fail-closed: reject all ops on hook error.
+                // Use SyncRetry — this is a transient infrastructure failure
+                // (worker pool overloaded, script timeout), not a validation rejection.
                 tracing::warn!("onBeforeSyncBatch error (fail-closed): {}", e);
-                for op in &ops {
-                    responses.push(ServerMessage::SyncReject {
-                        op_id: op.id.clone(),
-                        reason: format!("onBeforeSyncBatch hook error: {}", e),
-                    });
-                }
+                let op_ids: Vec<String> = ops.iter().map(|op| op.id.clone()).collect();
+                responses.push(ServerMessage::SyncRetry {
+                    op_ids,
+                    reason: format!("Hook error (retryable): {}", e),
+                });
                 return Vec::new();
             }
         };

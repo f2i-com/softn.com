@@ -28,6 +28,9 @@ enum Commands {
         /// Data directory for XDB and files
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Number of script worker threads (default: auto-detect based on CPU count)
+        #[arg(long)]
+        workers: Option<usize>,
     },
     /// Show bundle info
     Info {
@@ -45,8 +48,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { path, port, data_dir } => {
-            let ctx = app::AppContext::load(path, data_dir)?;
+        Commands::Run { path, port, data_dir, workers } => {
+            let ctx = app::AppContext::load(path, data_dir, workers)?;
             http::serve(ctx, port).await?;
         }
         Commands::Info { path } => {

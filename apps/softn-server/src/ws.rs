@@ -300,15 +300,14 @@ async fn reader_task(
                     _ => {}
                 }
             }
-            Some(Ok(Message::Ping(data))) => {
-                // Send pong via the out channel — writer handles ws_tx
-                // Pong needs raw Message access, so we handle it specially
-                // by sending it as a text-encoded signal. Actually, we need
-                // to handle ping/pong at the websocket layer. Since axum's
-                // WebSocket auto-responds to pings, we don't need manual handling.
-                let _ = data; // axum handles pong automatically
+            Some(Ok(Message::Ping(_))) => {
+                // Axum/tungstenite auto-responds to Pings with Pongs.
+                // This match arm counts as activity and resets the IDLE_TIMEOUT,
+                // so protocol-level keepalive pings keep the connection alive.
             }
-            Some(Ok(Message::Pong(_))) => {}
+            Some(Ok(Message::Pong(_))) => {
+                // Pong responses also reset the idle timer.
+            }
             Some(Ok(Message::Close(_))) | None => break,
             _ => {}
         }

@@ -17,7 +17,7 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    pub fn load(bundle_path: PathBuf, data_dir: Option<PathBuf>) -> Result<Arc<Self>, String> {
+    pub fn load(bundle_path: PathBuf, data_dir: Option<PathBuf>, workers: Option<usize>) -> Result<Arc<Self>, String> {
         let bundle_path = std::fs::canonicalize(&bundle_path)
             .map_err(|e| format!("Invalid bundle path: {}", e))?;
 
@@ -69,12 +69,21 @@ impl AppContext {
 
             // bridge_factory is Fn (not FnOnce) — called once per worker thread.
             // Each worker gets its own bridge instances but shares the same DB (Arc).
+            // Worker count: prefer CLI --workers, then manifest config, then auto-detect.
+            let configured_workers = workers.or_else(|| {
+                manifest.config.as_ref()
+                    .and_then(|c| c.get("server"))
+                    .and_then(|s| s.get("workers"))
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize)
+            });
+
             let rt = ServerRuntime::new(move || BridgeSet {
                 db: Some(Box::new(NativeDbBridge::new(db_for_factory.clone()))),
                 http: Some(Box::new(NativeHttpBridge::new())),
                 fs: Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))),
                 env: Some(Box::new(NativeEnvBridge)),
-            });
+            }, configured_workers);
 
             // Initialize all worker threads with the same source
             rt.init(source)?;

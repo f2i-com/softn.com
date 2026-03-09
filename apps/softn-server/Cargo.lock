@@ -3136,6 +3136,7 @@ dependencies = [
  "dirs",
  "formlogic-core",
  "futures-util",
+ "percent-encoding",
  "serde",
  "serde_json",
  "subtle",
