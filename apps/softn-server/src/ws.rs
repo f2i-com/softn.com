@@ -8,14 +8,20 @@ const HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_OPS_PER_PUSH: usize = 1000;
 /// Outbound channel capacity — large enough to absorb burst from sync_pull
 /// responses without blocking the reader task.
-const OUT_CHANNEL_SIZE: usize = 256;
+const OUT_CHANNEL_SIZE: usize = 512;
+/// Timeout for sending direct responses (sync_pull/sync_push results).
+/// If the writer can't drain within this, the client is irrecoverably slow.
+const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Send a ServerMessage as JSON over the outbound channel.
-/// Returns false if the channel is closed (writer task exited).
-fn send_to_out(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage) -> bool {
-    // Use try_send to avoid blocking the reader task. If the channel is full
-    // the client is too slow — drop the message and let broadcast lag handle it.
-    out_tx.try_send(msg).is_ok()
+/// Send a direct response (sync_pull/sync_push result) to the writer task.
+/// Uses an async send with a timeout — these are responses the client is
+/// actively waiting for, so we must not silently drop them.
+/// Returns false if the channel is closed or the send times out.
+async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage) -> bool {
+    match tokio::time::timeout(SEND_TIMEOUT, out_tx.send(msg)).await {
+        Ok(Ok(())) => true,
+        _ => false, // Channel closed or client too slow
+    }
 }
 
 pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
@@ -179,9 +185,9 @@ async fn reader_task(
                 let parsed: serde_json::Value = match serde_json::from_str(&text) {
                     Ok(v) => v,
                     Err(_) => {
-                        if !send_to_out(out_tx, ServerMessage::Error {
+                        if !send_response(out_tx, ServerMessage::Error {
                             message: "Invalid JSON".into(),
-                        }) {
+                        }).await {
                             break;
                         }
                         continue;
@@ -218,7 +224,7 @@ async fn reader_task(
                             }
                         };
                         for resp in responses {
-                            if !send_to_out(out_tx, resp) {
+                            if !send_response(out_tx, resp).await {
                                 return;
                             }
                         }
@@ -235,9 +241,9 @@ async fn reader_task(
                             continue;
                         }
                         if ops.len() > MAX_OPS_PER_PUSH {
-                            if !send_to_out(out_tx, ServerMessage::Error {
+                            if !send_response(out_tx, ServerMessage::Error {
                                 message: format!("Too many ops ({}, max {})", ops.len(), MAX_OPS_PER_PUSH),
-                            }) {
+                            }).await {
                                 return;
                             }
                             continue;
@@ -265,7 +271,7 @@ async fn reader_task(
                             }
                         };
                         for resp in responses {
-                            if !send_to_out(out_tx, resp) {
+                            if !send_response(out_tx, resp).await {
                                 return;
                             }
                         }

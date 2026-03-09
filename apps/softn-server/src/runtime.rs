@@ -31,6 +31,13 @@ enum ScriptRequest {
 /// - After init, workers pull Call requests from a **shared** MPMC channel
 ///   so idle workers pick up tasks automatically.
 /// - Pool is sized for I/O-bound workloads (scripts may block on HTTP/DB).
+///
+/// **Important for script authors:** Worker threads may be re-initialized after
+/// a panic, which resets all in-memory global state to its post-init value.
+/// Additionally, requests are dispatched to any idle worker, so different calls
+/// may execute on different threads with independent global state. Scripts must
+/// not rely on in-memory globals persisting across operations — always flush
+/// state to the database (via `db.*` APIs) for durability.
 pub struct ServerRuntime {
     work_tx: crossbeam_channel::Sender<ScriptRequest>,
     /// One per worker — used only during init() for guaranteed 1:1 delivery.
