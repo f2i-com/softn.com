@@ -8,7 +8,18 @@ impl EnvBridge for NativeEnvBridge {
     }
 
     fn keys(&self) -> Vec<String> {
-        std::env::vars().map(|(k, _)| k).collect()
+        // Only expose vars with app-relevant prefixes to prevent
+        // scripts from enumerating secrets (AWS_SECRET_*, GITHUB_TOKEN, etc.).
+        std::env::vars()
+            .map(|(k, _)| k)
+            .filter(|k| {
+                let upper = k.to_ascii_uppercase();
+                upper.starts_with("SOFTN_")
+                    || upper.starts_with("APP_")
+                    || upper == "NODE_ENV"
+                    || upper == "PORT"
+            })
+            .collect()
     }
 
     fn log(&self, level: &str, message: &str) {

@@ -245,8 +245,17 @@ async fn api_handler(
 
     // Build request object with body, query params, headers, method, and path.
     // Attempt to parse body as UTF-8 text/JSON; binary payloads get a size marker.
+    // Cap JSON parsing at 10MB to prevent memory exhaustion from large DOM trees —
+    // serde_json::Value can use 5-10x the input size in RAM.
+    const MAX_JSON_PARSE_SIZE: usize = 10 * 1024 * 1024;
     let body_json = if body.is_empty() {
         serde_json::Value::Null
+    } else if body.len() > MAX_JSON_PARSE_SIZE {
+        // Too large to safely parse as JSON — report as oversized
+        serde_json::json!({
+            "__oversized": true,
+            "size": body.len(),
+        })
     } else {
         match std::str::from_utf8(&body) {
             Ok(text) => serde_json::from_str(text)
