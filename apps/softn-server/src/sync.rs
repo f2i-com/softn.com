@@ -1,6 +1,7 @@
 use crate::runtime::ServerRuntime;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
 use xdb::SharedDb;
 
@@ -85,6 +86,14 @@ impl SyncManager {
             tracing::info!("onAfterSync hook detected");
         }
 
+        if auth_token.is_some() {
+            tracing::warn!(
+                "Auth token is configured but the server does not enforce TLS. \
+                 Tokens will be transmitted in plaintext unless a TLS-terminating \
+                 reverse proxy (e.g. nginx, Caddy) is placed in front of this server."
+            );
+        }
+
         Arc::new(Self {
             db,
             broadcast_tx,
@@ -107,7 +116,7 @@ impl SyncManager {
         // Check auth token if configured (constant-time comparison)
         if let Some(expected) = &self.auth_token {
             match token {
-                Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => {}
+                Some(t) if t.as_bytes().ct_eq(expected.as_bytes()).into() => {}
                 Some(_) => return Err("Invalid auth token".into()),
                 None => return Err("Auth token required".into()),
             }
@@ -304,16 +313,4 @@ impl SyncManager {
             "clientId": op.client_id,
         })
     }
-}
-
-/// Constant-time byte comparison to prevent timing attacks on auth tokens.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
