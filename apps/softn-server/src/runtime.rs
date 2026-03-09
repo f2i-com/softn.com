@@ -50,7 +50,8 @@ pub struct ServerRuntime {
 impl ServerRuntime {
     /// Create a new runtime with a worker pool.
     /// `bridge_factory` is called once per worker thread to create isolated bridges.
-    pub fn new<F>(bridge_factory: F) -> Arc<Self>
+    /// `configured_workers` overrides the auto-detected pool size if provided.
+    pub fn new<F>(bridge_factory: F, configured_workers: Option<usize>) -> Arc<Self>
     where
         F: Fn() -> BridgeSet + Send + Sync + 'static,
     {
@@ -61,9 +62,13 @@ impl ServerRuntime {
         // - FS bridge: OS filesystem calls return or error, cannot hang indefinitely
         // - DB bridge: SharedDb uses Mutex (no deadlock; contention bounded by pool size)
         // This ensures spawn_blocking tasks always terminate.
-        let worker_count = std::thread::available_parallelism()
-            .map(|n| n.get().max(16).min(50))
-            .unwrap_or(16);
+        let worker_count = configured_workers
+            .map(|n| n.max(1).min(200))
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| n.get().max(16).min(50))
+                    .unwrap_or(16)
+            });
 
         let factory = Arc::new(bridge_factory);
         let (work_tx, work_rx) = crossbeam_channel::unbounded::<ScriptRequest>();

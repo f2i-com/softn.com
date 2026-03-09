@@ -2,7 +2,7 @@ use crate::app::AppContext;
 use crate::bundle;
 use crate::ws;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
@@ -39,6 +39,14 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
         .route("/health", get(health))
         .route("/manifest.json", get(serve_manifest))
         .route("/sync", get(ws_upgrade));
+
+    // Explicit body limit for API routes (2MB default).
+    // Configurable via manifest config.server.maxBodySize if needed.
+    let max_body = ctx.manifest.config.as_ref()
+        .and_then(|c| c.get("server"))
+        .and_then(|s| s.get("maxBodySize"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2 * 1024 * 1024) as usize;
 
     // Register custom API routes from manifest
     if let Some(server) = &ctx.manifest.server {
@@ -121,8 +129,9 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
 
             // Security: reject path traversal (both literal and URL-decoded).
             // percent_decode handles %2e%2e%2f → ../
-            let decoded = percent_decode(path);
-            if decoded.contains("..") || path.contains("..") {
+            let decoded = decode_uri_path(path);
+            if decoded.contains("..") || path.contains("..")
+                || decoded.contains('\0') {
                 return (StatusCode::FORBIDDEN, "Forbidden").into_response();
             }
 
@@ -165,37 +174,19 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
     });
 
     router
+        .layer(DefaultBodyLimit::max(max_body))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(ctx)
 }
 
 /// Decode percent-encoded path segments for security validation.
-fn percent_decode(s: &str) -> String {
-    let mut result = Vec::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                result.push(hi << 4 | lo);
-                i += 3;
-                continue;
-            }
-        }
-        result.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&result).into_owned()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+/// Uses the `percent-encoding` crate for correct handling of malformed
+/// UTF-8, null bytes, and other edge cases that manual parsers can miss.
+fn decode_uri_path(s: &str) -> String {
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 async fn health() -> &'static str {
