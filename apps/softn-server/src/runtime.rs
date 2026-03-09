@@ -75,6 +75,12 @@ impl ServerRuntime {
                                     s.set_env(env);
                                 }
                             }
+                            // Server scripts get a 30s wall-time limit per call
+                            // to prevent infinite loops from blocking the script thread
+                            s.set_execution_limits(
+                                Some(100_000_000), // 100M instructions
+                                Some(30_000),      // 30 seconds wall time
+                            );
                             state = Some(s);
                             let _ = reply.send(Ok(()));
                         }
