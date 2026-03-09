@@ -1,0 +1,14 @@
+{
+  "name": "TestApp",
+  "version": "1.0.0",
+  "server": {
+    "entry": "server/main.logic",
+    "routes": [
+      { "method": "GET", "path": "/api/hello", "handler": "hello" },
+      { "method": "GET", "path": "/api/notes", "handler": "getNotes" },
+      { "method": "POST", "path": "/api/notes", "handler": "createNote" },
+      { "method": "GET", "path": "/api/error", "handler": "errorHandler" },
+      { "method": "GET", "path": "/api/echo-query", "handler": "echoQuery" }
+    ]
+  }
+}
