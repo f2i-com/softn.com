@@ -195,7 +195,12 @@ impl SyncManager {
                         continue;
                     }
                     Err(e) => {
-                        tracing::warn!("onBeforeSync error: {}", e);
+                        tracing::warn!("onBeforeSync error (fail-closed): {}", e);
+                        responses.push(ServerMessage::SyncReject {
+                            op_id: op.id.clone(),
+                            reason: format!("onBeforeSync hook error: {}", e),
+                        });
+                        continue;
                     }
                     _ => {}
                 }

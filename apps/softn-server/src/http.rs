@@ -47,6 +47,17 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                 let method = route.method.to_uppercase();
                 let path = route.path.clone();
 
+                // Validate path: must start with '/' and not conflict with builtins
+                let path = if !path.starts_with('/') {
+                    format!("/{}", path)
+                } else {
+                    path
+                };
+                if path == "/health" || path == "/manifest.json" || path == "/sync" {
+                    tracing::warn!("Skipping route {} {} -> {}: conflicts with built-in route", method, path, handler_name);
+                    continue;
+                }
+
                 tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
 
                 match method.as_str() {
