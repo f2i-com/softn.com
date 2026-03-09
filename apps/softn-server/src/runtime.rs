@@ -1,9 +1,10 @@
 use formlogic_core::engine::{FormLogicEngine, ScriptState};
 use formlogic_core::object::{self, HashKey, HashObject, Object};
 use formlogic_core::value::{self, Heap, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// Collection of bridge factories, created on the script thread.
+/// Collection of bridge instances, created per worker thread.
 pub struct BridgeSet {
     pub db: Option<Box<dyn formlogic_core::db_bridge::DbBridge>>,
     pub http: Option<Box<dyn formlogic_core::http_bridge::HttpBridge>>,
@@ -27,53 +28,74 @@ enum ScriptRequest {
     },
 }
 
-/// Wraps a FormLogicEngine + ScriptState behind a dedicated OS thread.
+/// Wraps FormLogicEngine instances behind a pool of dedicated OS threads.
+/// API calls are distributed round-robin across workers for concurrent execution.
+/// Sync hooks and stateful calls can be pinned to worker 0 if needed.
 pub struct ServerRuntime {
-    tx: std::sync::mpsc::Sender<ScriptRequest>,
+    workers: Vec<std::sync::mpsc::Sender<ScriptRequest>>,
+    next_worker: AtomicUsize,
 }
 
 impl ServerRuntime {
-    /// Create a new runtime. `bridge_factory` is called on the script thread.
+    /// Create a new runtime with a worker pool.
+    /// `bridge_factory` is called once per worker thread to create isolated bridges.
     pub fn new<F>(bridge_factory: F) -> Arc<Self>
     where
-        F: FnOnce() -> BridgeSet + Send + 'static,
+        F: Fn() -> BridgeSet + Send + Sync + 'static,
     {
-        let (tx, rx) = std::sync::mpsc::channel::<ScriptRequest>();
+        let worker_count = std::thread::available_parallelism()
+            .map(|n| n.get().min(8))
+            .unwrap_or(4);
 
-        std::thread::spawn(move || {
-            Self::script_thread(rx, bridge_factory);
-        });
+        let factory = Arc::new(bridge_factory);
+        let mut workers = Vec::with_capacity(worker_count);
 
-        Arc::new(Self { tx })
+        for i in 0..worker_count {
+            let (tx, rx) = std::sync::mpsc::channel::<ScriptRequest>();
+            let factory_clone = factory.clone();
+
+            std::thread::Builder::new()
+                .name(format!("softn-worker-{}", i))
+                .spawn(move || {
+                    Self::script_thread(rx, &*factory_clone);
+                })
+                .expect("Failed to spawn worker thread");
+
+            workers.push(tx);
+        }
+
+        tracing::info!("Script worker pool: {} threads", worker_count);
+
+        Arc::new(Self {
+            workers,
+            next_worker: AtomicUsize::new(0),
+        })
     }
 
-    fn script_thread<F>(rx: std::sync::mpsc::Receiver<ScriptRequest>, bridge_factory: F)
+    fn script_thread<F>(rx: std::sync::mpsc::Receiver<ScriptRequest>, bridge_factory: &F)
     where
-        F: FnOnce() -> BridgeSet,
+        F: Fn() -> BridgeSet,
     {
         let engine = FormLogicEngine::default();
         let mut state: Option<ScriptState> = None;
-        let mut bridges = Some(bridge_factory());
 
         while let Ok(req) = rx.recv() {
             match req {
                 ScriptRequest::Init { source, reply } => {
                     match engine.init_script(&source) {
                         Ok(mut s) => {
-                            // Set all bridges (consumed once during init)
-                            if let Some(b) = bridges.take() {
-                                if let Some(db) = b.db {
-                                    s.set_db(db);
-                                }
-                                if let Some(http) = b.http {
-                                    s.set_http(http);
-                                }
-                                if let Some(fs) = b.fs {
-                                    s.set_fs(fs);
-                                }
-                                if let Some(env) = b.env {
-                                    s.set_env(env);
-                                }
+                            let bridges = bridge_factory();
+                            if let Some(db) = bridges.db {
+                                s.set_db(db);
+                            }
+                            if let Some(http) = bridges.http {
+                                s.set_http(http);
+                            }
+                            if let Some(fs) = bridges.fs {
+                                s.set_fs(fs);
+                            }
+                            if let Some(env) = bridges.env {
+                                s.set_env(env);
                             }
                             // VM wall-time (25s) must be lower than the HTTP/WS
                             // timeout (30s) so the engine terminates gracefully
@@ -93,7 +115,6 @@ impl ServerRuntime {
                 ScriptRequest::Call { name, args, reply } => {
                     let result = match state.as_mut() {
                         Some(s) => {
-                            // Convert JSON args to Objects
                             let obj_args: Vec<Object> = args
                                 .into_iter()
                                 .map(|v| json_to_object(v, s.heap_mut()))
@@ -129,7 +150,6 @@ impl ServerRuntime {
     fn flush_server_log(state: &mut ScriptState) {
         if let Ok(log_obj) = state.get_global("__server_log") {
             if let Object::Array(arr) = &log_obj {
-                // Collect messages first, then clear — avoids overlapping borrow/borrow_mut
                 let messages: Vec<String> = {
                     let borrowed = arr.borrow();
                     borrowed
@@ -160,40 +180,60 @@ impl ServerRuntime {
         }
     }
 
-    pub fn init(&self, source: String) -> Result<(), String> {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        self.tx
-            .send(ScriptRequest::Init {
-                source,
-                reply: reply_tx,
-            })
-            .map_err(|_| "Script thread died".to_string())?;
-        reply_rx
-            .recv()
-            .map_err(|_| "Script thread died".to_string())?
+    /// Pick the next worker using round-robin.
+    fn next_worker_tx(&self) -> &std::sync::mpsc::Sender<ScriptRequest> {
+        let idx = self.next_worker.fetch_add(1, Ordering::Relaxed) % self.workers.len();
+        &self.workers[idx]
     }
 
+    /// Initialize all workers with the same source code.
+    pub fn init(&self, source: String) -> Result<(), String> {
+        let mut errors = Vec::new();
+        for (i, worker) in self.workers.iter().enumerate() {
+            let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+            worker
+                .send(ScriptRequest::Init {
+                    source: source.clone(),
+                    reply: reply_tx,
+                })
+                .map_err(|_| format!("Worker {} died during init", i))?;
+            if let Err(e) = reply_rx
+                .recv()
+                .map_err(|_| format!("Worker {} died during init", i))?
+            {
+                errors.push(format!("Worker {}: {}", i, e));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    /// Call a function on the next available worker (round-robin).
     pub fn call(
         &self,
         name: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        self.tx
+        self.next_worker_tx()
             .send(ScriptRequest::Call {
                 name: name.to_string(),
                 args,
                 reply: reply_tx,
             })
-            .map_err(|_| "Script thread died".to_string())?;
+            .map_err(|_| "Script worker died".to_string())?;
         reply_rx
             .recv()
-            .map_err(|_| "Script thread died".to_string())?
+            .map_err(|_| "Script worker died".to_string())?
     }
 
+    /// Check if a function exists (queries worker 0).
     pub fn has_function(&self, name: &str) -> bool {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        let _ = self.tx.send(ScriptRequest::HasFunction {
+        let _ = self.workers[0].send(ScriptRequest::HasFunction {
             name: name.to_string(),
             reply: reply_tx,
         });
