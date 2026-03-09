@@ -1,6 +1,7 @@
 use formlogic_core::engine::{FormLogicEngine, ScriptState};
 use formlogic_core::object::{self, HashKey, HashObject, Object};
 use formlogic_core::value::{self, Heap, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Collection of bridge instances, created per worker thread.
@@ -14,16 +15,12 @@ pub struct BridgeSet {
 enum ScriptRequest {
     Init {
         source: String,
-        reply: std::sync::mpsc::Sender<Result<(), String>>,
+        reply: std::sync::mpsc::Sender<Result<Vec<String>, String>>,
     },
     Call {
         name: String,
         args: Vec<serde_json::Value>,
         reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
-    },
-    HasFunction {
-        name: String,
-        reply: std::sync::mpsc::Sender<bool>,
     },
 }
 
@@ -32,9 +29,9 @@ enum ScriptRequest {
 /// eliminating head-of-line blocking from round-robin dispatch.
 pub struct ServerRuntime {
     work_tx: crossbeam_channel::Sender<ScriptRequest>,
-    /// Dedicated channel to worker 0 for has_function queries.
-    worker0_tx: crossbeam_channel::Sender<ScriptRequest>,
     worker_count: usize,
+    /// Global names extracted during init for lock-free has_function lookups.
+    known_globals: std::sync::OnceLock<HashSet<String>>,
 }
 
 impl ServerRuntime {
@@ -51,42 +48,29 @@ impl ServerRuntime {
         let factory = Arc::new(bridge_factory);
         let (work_tx, work_rx) = crossbeam_channel::unbounded::<ScriptRequest>();
 
-        // Worker 0 gets a dedicated side channel for has_function queries
-        let (worker0_tx, worker0_side_rx) = crossbeam_channel::unbounded::<ScriptRequest>();
-        let mut side_rx_slot = Some(worker0_side_rx);
-
         for i in 0..worker_count {
             let factory_clone = factory.clone();
             let work_rx_clone = work_rx.clone();
-            let side_rx = if i == 0 {
-                side_rx_slot.take()
-            } else {
-                None
-            };
 
             std::thread::Builder::new()
                 .name(format!("softn-worker-{}", i))
                 .spawn(move || {
-                    Self::script_thread(work_rx_clone, side_rx, &*factory_clone);
+                    Self::script_thread(work_rx_clone, &*factory_clone);
                 })
                 .expect("Failed to spawn worker thread");
         }
-
-        // Drop our copy so worker0_side_rx moves into thread 0
-        // (already moved above via Option)
 
         tracing::info!("Script worker pool: {} threads", worker_count);
 
         Arc::new(Self {
             work_tx,
-            worker0_tx,
             worker_count,
+            known_globals: std::sync::OnceLock::new(),
         })
     }
 
     fn script_thread<F>(
         rx: crossbeam_channel::Receiver<ScriptRequest>,
-        side_rx: Option<crossbeam_channel::Receiver<ScriptRequest>>,
         bridge_factory: &F,
     )
     where
@@ -94,29 +78,81 @@ impl ServerRuntime {
     {
         let engine = FormLogicEngine::default();
         let mut state: Option<ScriptState> = None;
+        let mut init_source: Option<String> = None;
 
         loop {
-            // Worker 0 also checks its dedicated side channel (for has_function).
-            let req = if let Some(ref side) = side_rx {
-                crossbeam_channel::select! {
-                    recv(rx) -> msg => match msg {
-                        Ok(r) => r,
-                        Err(_) => break,
-                    },
-                    recv(side) -> msg => match msg {
-                        Ok(r) => r,
-                        Err(_) => break,
-                    },
-                }
-            } else {
-                match rx.recv() {
-                    Ok(r) => r,
-                    Err(_) => break,
-                }
+            let req = match rx.recv() {
+                Ok(r) => r,
+                Err(_) => break,
             };
 
-            Self::handle_request(req, &engine, &mut state, bridge_factory);
+            // Save source on Init for potential re-init after panic
+            if let ScriptRequest::Init { ref source, .. } = req {
+                init_source = Some(source.clone());
+            }
+
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Self::handle_request(req, &engine, &mut state, bridge_factory);
+            }));
+
+            if let Err(panic_info) = result {
+                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                tracing::error!("Worker caught panic: {}", msg);
+
+                // State is potentially corrupted — attempt re-init from stored source
+                state = None;
+                if let Some(ref source) = init_source {
+                    match Self::init_state(&engine, source, bridge_factory) {
+                        Ok(s) => {
+                            state = Some(s);
+                            tracing::info!("Worker re-initialized after panic");
+                        }
+                        Err(e) => {
+                            tracing::error!("Worker failed to re-init after panic: {}", e);
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    /// Compile source, attach bridges, and configure execution limits.
+    fn init_state<F>(
+        engine: &FormLogicEngine,
+        source: &str,
+        bridge_factory: &F,
+    ) -> Result<ScriptState, String>
+    where
+        F: Fn() -> BridgeSet,
+    {
+        let mut s = engine.init_script(source)?;
+        let bridges = bridge_factory();
+        if let Some(db) = bridges.db {
+            s.set_db(db);
+        }
+        if let Some(http) = bridges.http {
+            s.set_http(http);
+        }
+        if let Some(fs) = bridges.fs {
+            s.set_fs(fs);
+        }
+        if let Some(env) = bridges.env {
+            s.set_env(env);
+        }
+        // VM wall-time (25s) must be lower than the HTTP/WS
+        // timeout (30s) so the engine terminates gracefully
+        // and sends a clean error before the outer timeout fires.
+        s.set_execution_limits(
+            Some(100_000_000), // 100M instructions
+            Some(25_000),      // 25s wall time (< 30s HTTP timeout)
+        );
+        Ok(s)
     }
 
     fn handle_request<F>(
@@ -130,30 +166,12 @@ impl ServerRuntime {
     {
         match req {
             ScriptRequest::Init { source, reply } => {
-                match engine.init_script(&source) {
-                    Ok(mut s) => {
-                        let bridges = bridge_factory();
-                        if let Some(db) = bridges.db {
-                            s.set_db(db);
-                        }
-                        if let Some(http) = bridges.http {
-                            s.set_http(http);
-                        }
-                        if let Some(fs) = bridges.fs {
-                            s.set_fs(fs);
-                        }
-                        if let Some(env) = bridges.env {
-                            s.set_env(env);
-                        }
-                        // VM wall-time (25s) must be lower than the HTTP/WS
-                        // timeout (30s) so the engine terminates gracefully
-                        // and sends a clean error before the outer timeout fires.
-                        s.set_execution_limits(
-                            Some(100_000_000), // 100M instructions
-                            Some(25_000),      // 25s wall time (< 30s HTTP timeout)
-                        );
+                match Self::init_state(engine, &source, bridge_factory) {
+                    Ok(s) => {
+                        let globals: Vec<String> =
+                            s.globals_table().keys().cloned().collect();
                         *state = Some(s);
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.send(Ok(globals));
                     }
                     Err(e) => {
                         let _ = reply.send(Err(e));
@@ -184,23 +202,21 @@ impl ServerRuntime {
                 };
                 let _ = reply.send(result);
             }
-            ScriptRequest::HasFunction { name, reply } => {
-                let has = state
-                    .as_ref()
-                    .map(|s| s.globals_table().contains_key(&name))
-                    .unwrap_or(false);
-                let _ = reply.send(has);
-            }
         }
     }
+
+    /// Cap at 10 000 entries to match the SERVER_SHIM limit.
+    const MAX_LOG_ENTRIES: usize = 10_000;
 
     fn flush_server_log(state: &mut ScriptState) {
         if let Ok(log_obj) = state.get_global("__server_log") {
             if let Object::Array(arr) = &log_obj {
+                let len = arr.borrow().len();
                 let messages: Vec<String> = {
                     let borrowed = arr.borrow();
                     borrowed
                         .iter()
+                        .take(Self::MAX_LOG_ENTRIES)
                         .map(|item| {
                             let obj = value::val_to_obj(*item, state.heap());
                             match &obj {
@@ -211,6 +227,14 @@ impl ServerRuntime {
                         .collect()
                 };
                 arr.borrow_mut().clear();
+
+                if len > Self::MAX_LOG_ENTRIES {
+                    tracing::warn!(
+                        target: "softn_script",
+                        "Truncated server log: {} entries (max {})",
+                        len, Self::MAX_LOG_ENTRIES,
+                    );
+                }
 
                 for msg in &messages {
                     if msg.starts_with("WARN ") {
@@ -245,7 +269,10 @@ impl ServerRuntime {
         let mut errors = Vec::new();
         for (i, reply_rx) in reply_rxs.iter().enumerate() {
             match reply_rx.recv() {
-                Ok(Ok(())) => {}
+                Ok(Ok(globals)) => {
+                    // Store global names from the first successful worker
+                    let _ = self.known_globals.set(globals.into_iter().collect());
+                }
                 Ok(Err(e)) => errors.push(format!("Worker {}: {}", i, e)),
                 Err(_) => errors.push(format!("Worker {} died during init", i)),
             }
@@ -276,16 +303,12 @@ impl ServerRuntime {
             .map_err(|_| "Script worker died".to_string())?
     }
 
-    /// Check if a function exists (queries worker 0 via its dedicated channel).
+    /// Instant lock-free check using global names extracted during init.
     pub fn has_function(&self, name: &str) -> bool {
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        if self.worker0_tx.send(ScriptRequest::HasFunction {
-            name: name.to_string(),
-            reply: reply_tx,
-        }).is_err() {
-            return false;
-        }
-        reply_rx.recv().unwrap_or(false)
+        self.known_globals
+            .get()
+            .map(|set| set.contains(name))
+            .unwrap_or(false)
     }
 }
 

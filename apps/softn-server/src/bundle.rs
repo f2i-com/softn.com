@@ -35,6 +35,7 @@ pub struct ServerConfig {
 }
 
 /// Console shim prepended to server scripts so `console.log` etc. work.
+/// Log entries are capped at 10 000 per call to prevent OOM from runaway logging.
 pub const SERVER_SHIM: &str = r#"
 let __server_log = [];
 function __fmt(a, b, c, d, e, f) {
@@ -46,11 +47,12 @@ function __fmt(a, b, c, d, e, f) {
     if (f !== undefined) { s = s + ' ' + f; }
     return s;
 }
+function __log(msg) { if (__server_log.length < 10000) __server_log.push(msg); }
 let console = {
-    log: function(a, b, c, d, e, f) { __server_log.push('INFO ' + __fmt(a, b, c, d, e, f)); },
-    warn: function(a, b, c, d, e, f) { __server_log.push('WARN ' + __fmt(a, b, c, d, e, f)); },
-    error: function(a, b, c, d, e, f) { __server_log.push('ERROR ' + __fmt(a, b, c, d, e, f)); },
-    info: function(a, b, c, d, e, f) { __server_log.push('INFO ' + __fmt(a, b, c, d, e, f)); },
+    log: function(a, b, c, d, e, f) { __log('INFO ' + __fmt(a, b, c, d, e, f)); },
+    warn: function(a, b, c, d, e, f) { __log('WARN ' + __fmt(a, b, c, d, e, f)); },
+    error: function(a, b, c, d, e, f) { __log('ERROR ' + __fmt(a, b, c, d, e, f)); },
+    info: function(a, b, c, d, e, f) { __log('INFO ' + __fmt(a, b, c, d, e, f)); },
 };
 "#;
 
@@ -122,13 +124,17 @@ pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
         val["main"] = serde_json::json!(main);
     }
     if let Some(files) = &manifest.files {
-        // Filter out any file paths that start with "server/"
+        // Filter out any file paths that start with "server/" (case-insensitive
+        // to handle case-insensitive file systems on Windows/macOS)
         let filtered: HashMap<String, Vec<String>> = files
             .iter()
             .map(|(k, v)| {
                 let safe: Vec<String> = v
                     .iter()
-                    .filter(|p| !p.starts_with("server/") && !p.starts_with("server\\"))
+                    .filter(|p| {
+                        let lower = p.to_lowercase();
+                        !lower.starts_with("server/") && !lower.starts_with("server\\")
+                    })
                     .cloned()
                     .collect();
                 (k.clone(), safe)
