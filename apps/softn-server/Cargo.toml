@@ -17,4 +17,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 ureq = "3"
+chrono = "0.4"
 futures-util = "0.3"

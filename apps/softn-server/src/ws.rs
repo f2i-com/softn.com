@@ -202,57 +202,6 @@ pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
     }
 }
 
-/// ISO 8601 timestamp from system clock.
 fn iso_now() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    // Convert to date-time components
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let hours = time_secs / 3600;
-    let mins = (time_secs % 3600) / 60;
-    let s = time_secs % 60;
-
-    // Days since 1970-01-01
-    let mut y = 1970i64;
-    let mut remaining = days as i64;
-    loop {
-        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if remaining < days_in_year {
-            break;
-        }
-        remaining -= days_in_year;
-        y += 1;
-    }
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days = [
-        31,
-        if leap { 29 } else { 28 },
-        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
-    ];
-    let mut m = 0;
-    for md in &month_days {
-        if remaining < *md {
-            break;
-        }
-        remaining -= *md;
-        m += 1;
-    }
-    let d = remaining + 1;
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y,
-        m + 1,
-        d,
-        hours,
-        mins,
-        s
-    )
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
