@@ -89,6 +89,18 @@ impl AppContext {
             rt.init(source)?;
             tracing::info!("Server scripts initialized");
 
+            // Validate that all manifest route handlers exist in the script
+            if let Some(routes) = server.routes.as_ref() {
+                for route in routes {
+                    if !rt.has_function(&route.handler) {
+                        tracing::warn!(
+                            "Route {} {} references handler '{}' which is not defined in the script",
+                            route.method, route.path, route.handler
+                        );
+                    }
+                }
+            }
+
             // Call onStart if defined
             if rt.has_function("onStart") {
                 match rt.call("onStart", vec![]) {

@@ -60,8 +60,9 @@ pub enum ServerMessage {
         op_id: String,
         reason: String,
     },
-    /// Transient failure — client should retry (e.g. worker pool overloaded,
-    /// DB lock contention). Distinct from SyncReject which is permanent.
+    /// Transient failure — client should retry (e.g. future connection pool
+    /// exhaustion). Distinct from SyncReject which is permanent.
+    #[allow(dead_code)]
     #[serde(rename = "sync_retry")]
     SyncRetry {
         #[serde(rename = "opIds")]
@@ -231,7 +232,17 @@ impl SyncManager {
         // First pass: basic validation (no RPC needed)
         let server_time = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let mut basic_valid_ops = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
         for mut op in ops {
+            // Reject duplicate op IDs within the same batch
+            if !seen_ids.insert(op.id.clone()) {
+                responses.push(ServerMessage::SyncReject {
+                    op_id: op.id.clone(),
+                    reason: "Duplicate op ID in batch".into(),
+                });
+                continue;
+            }
+
             op.client_id = client_id.to_string();
             // Stamp with authoritative server time
             op.timestamp = server_time.clone();
@@ -278,11 +289,13 @@ impl SyncManager {
                         });
                     }
                     Err(e) => {
-                        // Hook execution error — transient, client should retry
+                        // Hook execution error — permanent reject, not retry.
+                        // Script errors (TypeError, etc.) will recur on retry,
+                        // causing an infinite loop. Reject to unblock the client.
                         tracing::warn!("onBeforeSync error (fail-closed): {}", e);
-                        responses.push(ServerMessage::SyncRetry {
-                            op_ids: vec![op.id.clone()],
-                            reason: format!("Hook error (retryable): {}", e),
+                        responses.push(ServerMessage::SyncReject {
+                            op_id: op.id.clone(),
+                            reason: format!("Hook error: {}", e),
                         });
                     }
                     _ => accepted.push(op),
@@ -394,14 +407,15 @@ impl SyncManager {
             Ok(r) => r,
             Err(e) => {
                 // Fail-closed: reject all ops on hook error.
-                // Use SyncRetry — this is a transient infrastructure failure
-                // (worker pool overloaded, script timeout), not a validation rejection.
+                // Script errors (TypeError, etc.) are permanent — retrying would
+                // cause an infinite loop. Reject to unblock the client's queue.
                 tracing::warn!("onBeforeSyncBatch error (fail-closed): {}", e);
-                let op_ids: Vec<String> = ops.iter().map(|op| op.id.clone()).collect();
-                responses.push(ServerMessage::SyncRetry {
-                    op_ids,
-                    reason: format!("Hook error (retryable): {}", e),
-                });
+                for op in &ops {
+                    responses.push(ServerMessage::SyncReject {
+                        op_id: op.id.clone(),
+                        reason: format!("Hook error: {}", e),
+                    });
+                }
                 return Vec::new();
             }
         };
