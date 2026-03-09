@@ -9,6 +9,9 @@ const MAX_OPS_PER_PUSH: usize = 1000;
 /// If no data is received from the client within this period, assume the
 /// connection is dead (e.g. mobile lost signal, laptop asleep) and clean up.
 const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+/// Max time to wait for the client to send an auth message after connecting.
+/// Prevents resource leaks from clients that open connections but never authenticate.
+const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Outbound channel capacity — large enough to absorb burst from sync_pull
 /// responses without blocking the reader task.
 const OUT_CHANNEL_SIZE: usize = 512;
@@ -31,21 +34,31 @@ pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Auth phase: expect first message to be a text auth message.
-    // Skip non-text frames (ping/pong/binary) and wait for text.
-    let auth_msg = loop {
-        match ws_rx.next().await {
-            Some(Ok(Message::Text(text))) => break text,
-            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
-            Some(Ok(_)) => {
-                let msg = ServerMessage::Error {
-                    message: "Expected text auth message".into(),
-                };
-                if let Ok(json) = serde_json::to_string(&msg) {
-                    let _ = ws_tx.send(Message::Text(json.into())).await;
-                }
-                return;
+    // Wrapped in AUTH_TIMEOUT to prevent connection leaks from clients
+    // that complete the WebSocket handshake but never send a message.
+    let auth_msg = match tokio::time::timeout(AUTH_TIMEOUT, async {
+        loop {
+            match ws_rx.next().await {
+                Some(Ok(Message::Text(text))) => return Some(text),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                Some(Ok(_)) => return None,
+                _ => return None,
             }
-            _ => return,
+        }
+    }).await {
+        Ok(Some(text)) => text,
+        Ok(None) => {
+            let msg = ServerMessage::Error {
+                message: "Expected text auth message".into(),
+            };
+            if let Ok(json) = serde_json::to_string(&msg) {
+                let _ = ws_tx.send(Message::Text(json.into())).await;
+            }
+            return;
+        }
+        Err(_) => {
+            tracing::debug!("WebSocket auth timeout — closing unauthenticated connection");
+            return;
         }
     };
 
@@ -221,6 +234,11 @@ async fn reader_task(
                             .and_then(|c| serde_json::from_value(c.clone()).ok())
                             .unwrap_or_default();
                         let sync_clone = sync.clone();
+                        // Note: tokio::time::timeout drops the future but does NOT cancel
+                        // the underlying blocking thread. However, all operations within
+                        // handle_sync_pull are bounded: DB queries are fast indexed reads
+                        // under WAL, and the VM has a 25s wall-time limit. The blocking
+                        // thread will always terminate within the VM timeout.
                         let responses = match tokio::time::timeout(
                             HANDLER_TIMEOUT,
                             tokio::task::spawn_blocking(move || {
