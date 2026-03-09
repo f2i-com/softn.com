@@ -5,6 +5,17 @@ use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
 use xdb::SharedDb;
 
+/// Valid operations for sync ops.
+const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
+
+/// Validate a collection name: must be non-empty, alphanumeric + dash/underscore,
+/// and at most 64 characters. Rejects names that could cause issues in queries.
+fn is_valid_collection_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncOp {
     pub id: String,
@@ -156,6 +167,13 @@ impl SyncManager {
         let mut messages = Vec::new();
 
         for collection in collections {
+            if !is_valid_collection_name(collection) {
+                messages.push(ServerMessage::Error {
+                    message: format!("Invalid collection name: {}", collection),
+                });
+                continue;
+            }
+
             // Lock the database for the duration of the query, then release immediately.
             // SharedDb is a single Mutex — this serializes access, but WAL mode ensures
             // SQLite reads are fast and don't block pending writes at the filesystem level.
@@ -211,9 +229,28 @@ impl SyncManager {
         // completes before we touch storage.
 
         // First pass: basic validation (no RPC needed)
+        let server_time = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let mut basic_valid_ops = Vec::new();
         for mut op in ops {
             op.client_id = client_id.to_string();
+            // Stamp with authoritative server time
+            op.timestamp = server_time.clone();
+
+            if !VALID_OPERATIONS.contains(&op.operation.as_str()) {
+                responses.push(ServerMessage::SyncReject {
+                    op_id: op.id.clone(),
+                    reason: format!("Unknown operation: {}", op.operation),
+                });
+                continue;
+            }
+
+            if !is_valid_collection_name(&op.collection) {
+                responses.push(ServerMessage::SyncReject {
+                    op_id: op.id.clone(),
+                    reason: "Invalid collection name (must be 1-64 alphanumeric/dash/underscore chars)".into(),
+                });
+                continue;
+            }
 
             if (op.operation == "update" || op.operation == "delete") && op.record_id.is_empty() {
                 responses.push(ServerMessage::SyncReject {

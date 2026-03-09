@@ -68,8 +68,21 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
 
     let content = fs::read_to_string(&manifest_path)
         .map_err(|e| format!("Failed to read manifest: {}", e))?;
-    serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse manifest: {}", e))
+    let manifest: ServerManifest = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse manifest: {}", e))?;
+
+    // Validate manifest fields
+    if manifest.name.is_empty() || manifest.name.len() > 64 {
+        return Err("Manifest name must be 1-64 characters".into());
+    }
+    if !manifest.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.') {
+        return Err("Manifest name must be alphanumeric, dash, underscore, or dot".into());
+    }
+    if manifest.version.is_empty() {
+        return Err("Manifest version must not be empty".into());
+    }
+
+    Ok(manifest)
 }
 
 /// Validate a script path stays within the bundle directory.

@@ -144,7 +144,10 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
             // Whitelist: file must be in an allowed directory AND have an allowed extension
             let in_allowed_dir = ALLOWED_PREFIXES.iter().any(|p| path.starts_with(p));
             let has_allowed_ext = path.rsplit('.').next()
-                .map(|ext| ALLOWED_EXTENSIONS.contains(&ext))
+                .map(|ext| {
+                    let lower = ext.to_ascii_lowercase();
+                    ALLOWED_EXTENSIONS.iter().any(|a| *a == lower)
+                })
                 .unwrap_or(false);
 
             if !in_allowed_dir || !has_allowed_ext {
@@ -168,7 +171,10 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
             use tower::ServiceExt;
             match serve_dir.oneshot(req).await {
                 Ok(resp) => resp.into_response(),
-                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+                Err(e) => {
+                    tracing::error!("Static file serving error: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
             }
         }
     });
