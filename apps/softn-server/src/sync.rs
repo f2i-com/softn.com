@@ -177,13 +177,14 @@ impl SyncManager {
         client_id: &str,
     ) -> Vec<ServerMessage> {
         let mut responses = Vec::new();
-        let mut accepted_ops = Vec::new();
+        let mut validated_ops = Vec::new();
 
+        // Phase 1: Validate and run onBeforeSync hooks (no DB lock held).
+        // This ensures hooks don't block the database and all validation
+        // completes before we touch storage.
         for mut op in ops {
-            // Stamp the authenticated client ID on each op
             op.client_id = client_id.to_string();
 
-            // Validate recordId for update/delete (before hook to avoid unnecessary script calls)
             if (op.operation == "update" || op.operation == "delete") && op.record_id.is_empty() {
                 responses.push(ServerMessage::SyncReject {
                     op_id: op.id.clone(),
@@ -192,7 +193,6 @@ impl SyncManager {
                 continue;
             }
 
-            // Call onBeforeSync hook
             if self.has_before_sync {
                 match self.call_before_sync(&op) {
                     Ok(false) => {
@@ -215,55 +215,67 @@ impl SyncManager {
                 }
             }
 
-            // Apply to XDB
+            validated_ops.push(op);
+        }
+
+        // Phase 2: Apply all validated ops atomically under a single DB lock.
+        // This prevents interleaving from concurrent client batches.
+        let mut accepted_ops = Vec::new();
+        if !validated_ops.is_empty() {
             let mut db = match self.db.lock() {
                 Ok(db) => db,
                 Err(e) => {
-                    responses.push(ServerMessage::SyncReject {
-                        op_id: op.id.clone(),
-                        reason: format!("Database lock error: {}", e),
-                    });
-                    continue;
+                    for op in &validated_ops {
+                        responses.push(ServerMessage::SyncReject {
+                            op_id: op.id.clone(),
+                            reason: format!("Database lock error: {}", e),
+                        });
+                    }
+                    return responses;
                 }
             };
-            // Apply and capture the server-generated record ID for creates
-            let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
-                "create" => {
-                    let data = op.data.clone().unwrap_or(serde_json::json!({}));
-                    db.create_record(&op.collection, data)
-                        .map(|(record, _)| Some(record.id))
-                }
-                "update" => {
-                    let data = op.data.clone().unwrap_or(serde_json::json!({}));
-                    db.update_record(&op.record_id, data).map(|_| None)
-                }
-                "delete" => db.delete_record(&op.record_id).map(|_| None),
-                other => Err(xdb::DbError::NotFound(format!(
-                    "Unknown operation: {}",
-                    other
-                ))),
-            };
-            drop(db);
 
-            match result {
-                Ok(generated_id) => {
-                    // For creates, set the server-generated record ID on the op
-                    if let Some(id) = generated_id {
-                        op.record_id = id;
+            for mut op in validated_ops {
+                let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
+                    "create" => {
+                        let data = op.data.clone().unwrap_or(serde_json::json!({}));
+                        db.create_record(&op.collection, data)
+                            .map(|(record, _)| Some(record.id))
                     }
-                    // Call onAfterSync hook
-                    if self.has_after_sync {
-                        if let Err(e) = self.call_after_sync(&op) {
-                            tracing::warn!("onAfterSync error: {}", e);
+                    "update" => {
+                        let data = op.data.clone().unwrap_or(serde_json::json!({}));
+                        db.update_record(&op.record_id, data).map(|_| None)
+                    }
+                    "delete" => db.delete_record(&op.record_id).map(|_| None),
+                    other => Err(xdb::DbError::NotFound(format!(
+                        "Unknown operation: {}",
+                        other
+                    ))),
+                };
+
+                match result {
+                    Ok(generated_id) => {
+                        if let Some(id) = generated_id {
+                            op.record_id = id;
                         }
+                        accepted_ops.push(op);
                     }
-                    accepted_ops.push(op);
+                    Err(e) => {
+                        responses.push(ServerMessage::SyncReject {
+                            op_id: op.id.clone(),
+                            reason: format!("DB error: {}", e),
+                        });
+                    }
                 }
-                Err(e) => {
-                    responses.push(ServerMessage::SyncReject {
-                        op_id: op.id.clone(),
-                        reason: format!("DB error: {}", e),
-                    });
+            }
+            drop(db);
+        }
+
+        // Phase 3: Run onAfterSync hooks outside the DB lock.
+        if self.has_after_sync {
+            for op in &accepted_ops {
+                if let Err(e) = self.call_after_sync(op) {
+                    tracing::warn!("onAfterSync error: {}", e);
                 }
             }
         }
