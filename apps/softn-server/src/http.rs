@@ -57,6 +57,12 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                     tracing::warn!("Skipping route {} {} -> {}: conflicts with built-in route", method, path, handler_name);
                     continue;
                 }
+                // Reject paths with Axum wildcards (*) or path params (:param)
+                // to prevent router collisions and unexpected capture behavior.
+                if path.contains('*') || path.contains(':') {
+                    tracing::warn!("Skipping route {} {} -> {}: wildcards and path params are not allowed", method, path, handler_name);
+                    continue;
+                }
 
                 tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
 

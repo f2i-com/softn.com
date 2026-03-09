@@ -1,7 +1,9 @@
 use formlogic_core::http_bridge::{HttpBridge, HttpResponse};
 use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(30);
+// Must be lower than the VM wall-time limit (25s) so HTTP calls
+// time out before the VM does, producing a clean script-level error.
+const TIMEOUT: Duration = Duration::from_secs(20);
 
 pub struct NativeHttpBridge {
     agent: ureq::Agent,
