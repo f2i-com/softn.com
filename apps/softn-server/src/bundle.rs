@@ -35,9 +35,9 @@ pub struct ServerConfig {
 }
 
 /// Console shim prepended to server scripts so `console.log` etc. work.
-/// Log entries are capped at 10 000 per call to prevent OOM from runaway logging.
+/// Logs stream directly to the Rust tracing subscriber via `env.log()` —
+/// no JS-side buffering, so runaway logging cannot cause OOM.
 pub const SERVER_SHIM: &str = r#"
-let __server_log = [];
 function __fmt(a, b, c, d, e, f) {
     let s = '' + a;
     if (b !== undefined) { s = s + ' ' + b; }
@@ -47,12 +47,11 @@ function __fmt(a, b, c, d, e, f) {
     if (f !== undefined) { s = s + ' ' + f; }
     return s;
 }
-function __log(msg) { if (__server_log.length < 10000) __server_log.push(msg); }
 let console = {
-    log: function(a, b, c, d, e, f) { __log('INFO ' + __fmt(a, b, c, d, e, f)); },
-    warn: function(a, b, c, d, e, f) { __log('WARN ' + __fmt(a, b, c, d, e, f)); },
-    error: function(a, b, c, d, e, f) { __log('ERROR ' + __fmt(a, b, c, d, e, f)); },
-    info: function(a, b, c, d, e, f) { __log('INFO ' + __fmt(a, b, c, d, e, f)); },
+    log: function(a, b, c, d, e, f) { env.log('INFO', __fmt(a, b, c, d, e, f)); },
+    warn: function(a, b, c, d, e, f) { env.log('WARN', __fmt(a, b, c, d, e, f)); },
+    error: function(a, b, c, d, e, f) { env.log('ERROR', __fmt(a, b, c, d, e, f)); },
+    info: function(a, b, c, d, e, f) { env.log('INFO', __fmt(a, b, c, d, e, f)); },
 };
 "#;
 

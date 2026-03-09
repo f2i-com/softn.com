@@ -10,4 +10,12 @@ impl EnvBridge for NativeEnvBridge {
     fn keys(&self) -> Vec<String> {
         std::env::vars().map(|(k, _)| k).collect()
     }
+
+    fn log(&self, level: &str, message: &str) {
+        match level {
+            "WARN" => tracing::warn!(target: "softn_script", "{}", message),
+            "ERROR" => tracing::error!(target: "softn_script", "{}", message),
+            _ => tracing::info!(target: "softn_script", "{}", message),
+        }
+    }
 }

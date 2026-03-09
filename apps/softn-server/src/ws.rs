@@ -181,6 +181,10 @@ pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
                             _ => {}
                         }
                     }
+                    Some(Ok(Message::Ping(data))) => {
+                        let _ = ws_tx.send(Message::Pong(data)).await;
+                    }
+                    Some(Ok(Message::Pong(_))) => {}
                     Some(Ok(Message::Close(_))) | None => {
                         tracing::info!("Client {} disconnected", cid);
                         break;

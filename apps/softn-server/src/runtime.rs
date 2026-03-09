@@ -188,65 +188,15 @@ impl ServerRuntime {
 
                         match s.call_function(&name, &obj_args) {
                             Ok(result) => {
-                                Self::flush_server_log(s);
                                 let json = object_to_json(&result, s.heap());
                                 Ok(json)
                             }
-                            Err(e) => {
-                                Self::flush_server_log(s);
-                                Err(e)
-                            }
+                            Err(e) => Err(e),
                         }
                     }
                     None => Err("Runtime not initialized".into()),
                 };
                 let _ = reply.send(result);
-            }
-        }
-    }
-
-    /// Cap at 10 000 entries to match the SERVER_SHIM limit.
-    const MAX_LOG_ENTRIES: usize = 10_000;
-
-    fn flush_server_log(state: &mut ScriptState) {
-        if let Ok(log_obj) = state.get_global("__server_log") {
-            if let Object::Array(arr) = &log_obj {
-                let len = arr.borrow().len();
-                let messages: Vec<String> = {
-                    let borrowed = arr.borrow();
-                    borrowed
-                        .iter()
-                        .take(Self::MAX_LOG_ENTRIES)
-                        .map(|item| {
-                            let obj = value::val_to_obj(*item, state.heap());
-                            match &obj {
-                                Object::String(s) => s.to_string(),
-                                other => format!("{:?}", other),
-                            }
-                        })
-                        .collect()
-                };
-                arr.borrow_mut().clear();
-
-                if len > Self::MAX_LOG_ENTRIES {
-                    tracing::warn!(
-                        target: "softn_script",
-                        "Truncated server log: {} entries (max {})",
-                        len, Self::MAX_LOG_ENTRIES,
-                    );
-                }
-
-                for msg in &messages {
-                    if msg.starts_with("WARN ") {
-                        tracing::warn!(target: "softn_script", "{}", &msg[5..]);
-                    } else if msg.starts_with("ERROR ") {
-                        tracing::error!(target: "softn_script", "{}", &msg[6..]);
-                    } else if msg.starts_with("INFO ") {
-                        tracing::info!(target: "softn_script", "{}", &msg[5..]);
-                    } else {
-                        tracing::info!(target: "softn_script", "{}", msg);
-                    }
-                }
             }
         }
     }
