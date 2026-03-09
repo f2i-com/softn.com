@@ -226,8 +226,20 @@ async fn api_handler(
     }
 }
 
+/// Allowed client-facing directories for static file serving.
+const ALLOWED_PREFIXES: &[&str] = &["ui/", "assets/", "styles/", "fonts/", "images/", "icons/"];
+
+/// File extensions allowed to be served statically.
+const ALLOWED_EXTENSIONS: &[&str] = &[
+    "html", "htm", "css", "js", "mjs", "json", "ui", "logic",
+    "svg", "png", "jpg", "jpeg", "gif", "webp", "ico",
+    "woff", "woff2", "ttf", "otf",
+    "mp3", "wav", "mp4", "webm",
+    "pdf", "xml", "txt", "softn",
+];
+
 /// Serve client bundle files from the bundle directory.
-/// Rejects path traversal and maps file extensions to MIME types.
+/// Uses a whitelist of allowed prefixes and file extensions.
 async fn serve_bundle_file(
     State(ctx): State<Arc<AppContext>>,
     request: Request,
@@ -235,18 +247,30 @@ async fn serve_bundle_file(
     let path = request.uri().path().trim_start_matches('/');
 
     // Reject path traversal
-    if path.contains("..") || path.starts_with("server/") || path.starts_with("server\\") {
+    if path.contains("..") {
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
 
-    // Don't serve data directory files
-    if path.starts_with("data/") || path.starts_with("data\\") {
+    // Blacklist: never serve server-side or data files regardless of extension
+    if path.starts_with("server/") || path.starts_with("server\\")
+        || path.starts_with("data/") || path.starts_with("data\\")
+    {
         return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+
+    // Whitelist: file must be in an allowed directory or have an allowed extension
+    let in_allowed_dir = ALLOWED_PREFIXES.iter().any(|p| path.starts_with(p));
+    let has_allowed_ext = path.rsplit('.').next()
+        .map(|ext| ALLOWED_EXTENSIONS.contains(&ext))
+        .unwrap_or(false);
+
+    if !in_allowed_dir && !has_allowed_ext {
+        return StatusCode::NOT_FOUND.into_response();
     }
 
     let file_path = ctx.bundle_path.join(path);
 
-    // Verify it stays inside the bundle directory
+    // Verify file exists and stays inside the bundle directory
     if file_path.exists() {
         if let (Ok(canonical), Ok(canonical_bundle)) = (
             std::fs::canonicalize(&file_path),

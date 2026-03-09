@@ -75,11 +75,12 @@ impl ServerRuntime {
                                     s.set_env(env);
                                 }
                             }
-                            // Server scripts get a 30s wall-time limit per call
-                            // to prevent infinite loops from blocking the script thread
+                            // VM wall-time (25s) must be lower than the HTTP/WS
+                            // timeout (30s) so the engine terminates gracefully
+                            // and sends a clean error before the outer timeout fires.
                             s.set_execution_limits(
                                 Some(100_000_000), // 100M instructions
-                                Some(30_000),      // 30 seconds wall time
+                                Some(25_000),      // 25s wall time (< 30s HTTP timeout)
                             );
                             state = Some(s);
                             let _ = reply.send(Ok(()));
