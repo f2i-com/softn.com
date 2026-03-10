@@ -4,6 +4,11 @@ use formlogic_core::value::{self, Heap, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 
+/// Post-init globals snapshot for state isolation between handler calls.
+/// Restored before each Call to prevent one request's side-effects on
+/// global variables from bleeding into the next request on the same worker.
+struct GlobalsSnapshot(Vec<Value>);
+
 /// Collection of bridge instances, created per worker thread.
 pub struct BridgeSet {
     pub db: Option<Box<dyn formlogic_core::db_bridge::DbBridge>>,
@@ -121,6 +126,7 @@ impl ServerRuntime {
     {
         let engine = FormLogicEngine::default();
         let mut state: Option<ScriptState> = None;
+        let mut globals_snapshot: Option<GlobalsSnapshot> = None;
         let mut init_source: Option<String> = None;
 
         // Phase 1: Wait for Init on dedicated channel (guaranteed 1:1 delivery).
@@ -130,11 +136,12 @@ impl ServerRuntime {
                     init_source = Some(source.clone());
                 }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    Self::handle_request(req, &engine, &mut state, bridge_factory);
+                    Self::handle_request(req, &engine, &mut state, &mut globals_snapshot, bridge_factory);
                 }));
                 if let Err(panic_info) = result {
                     Self::log_panic(&panic_info);
                     state = None;
+                    globals_snapshot = None;
                 }
             }
             Err(_) => return,
@@ -157,7 +164,7 @@ impl ServerRuntime {
             };
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::handle_request(req, &engine, &mut state, bridge_factory);
+                Self::handle_request(req, &engine, &mut state, &mut globals_snapshot, bridge_factory);
             }));
 
             if let Err(panic_info) = result {
@@ -189,9 +196,11 @@ impl ServerRuntime {
 
                 // State is potentially corrupted — attempt re-init from stored source
                 state = None;
+                globals_snapshot = None;
                 if let Some(ref source) = init_source {
                     match Self::init_state(&engine, source, bridge_factory) {
                         Ok(s) => {
+                            globals_snapshot = Some(GlobalsSnapshot(s.snapshot_globals()));
                             state = Some(s);
                             tracing::info!("Worker re-initialized after panic");
                         }
@@ -255,6 +264,7 @@ impl ServerRuntime {
         req: ScriptRequest,
         engine: &FormLogicEngine,
         state: &mut Option<ScriptState>,
+        globals_snapshot: &mut Option<GlobalsSnapshot>,
         bridge_factory: &F,
     )
     where
@@ -266,6 +276,9 @@ impl ServerRuntime {
                     Ok(s) => {
                         let globals: Vec<String> =
                             s.globals_table().keys().cloned().collect();
+                        // Snapshot globals after init so we can restore them
+                        // before each Call, preventing state bleed between requests.
+                        *globals_snapshot = Some(GlobalsSnapshot(s.snapshot_globals()));
                         *state = Some(s);
                         let _ = reply.send(Ok(globals));
                     }
@@ -277,6 +290,12 @@ impl ServerRuntime {
             ScriptRequest::Call { name, args, reply } => {
                 let result = match state.as_mut() {
                     Some(s) => {
+                        // Restore globals to post-init values so this handler
+                        // starts with clean state, regardless of what a prior
+                        // request on this worker may have mutated.
+                        if let Some(ref snapshot) = globals_snapshot {
+                            s.restore_globals(&snapshot.0);
+                        }
                         let obj_args: Result<Vec<Object>, String> = args
                             .into_iter()
                             .map(|v| json_to_object(v, s.heap_mut()))
