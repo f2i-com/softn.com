@@ -151,7 +151,7 @@ export interface ValidationError {
 export type DevicePreset = 'desktop' | 'tablet' | 'mobile';
 
 /** Left rail panel */
-export type LeftPanel = 'pages' | 'data' | 'logic' | 'assets' | 'history' | 'ai' | 'components' | 'settings' | 'files';
+export type LeftPanel = 'pages' | 'history' | 'ai' | 'settings' | 'files';
 
 /** Builder mode */
 export type BuilderMode = 'describe' | 'structure' | 'design' | 'data' | 'logic' | 'test';
