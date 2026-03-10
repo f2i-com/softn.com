@@ -40,23 +40,20 @@ impl AppContext {
         tracing::info!("Loaded app: {} v{}", manifest.name, manifest.version);
 
         // Data directory: prefer explicit --data-dir, then platform data dir,
-        // then fall back to a sibling "data" dir for local development.
-        // If bundle_path is a file (e.g. ZIP), use its parent directory.
+        // then fall back to a sibling directory alongside the bundle.
+        // Placing data alongside (not inside) the bundle prevents accidentally
+        // packaging live databases/files when zipping the bundle directory.
         let data_dir = data_dir.unwrap_or_else(|| {
             if let Some(base) = dirs::data_dir() {
                 base.join("softn").join(&manifest.name)
             } else {
-                let base = if bundle_path.is_file() {
-                    // parent() returns "" for bare filenames like "app.softn",
-                    // which would create an invalid path. Default to "." (cwd).
-                    bundle_path.parent()
-                        .filter(|p| !p.as_os_str().is_empty())
-                        .unwrap_or_else(|| std::path::Path::new("."))
-                        .to_path_buf()
-                } else {
-                    bundle_path.clone()
-                };
-                base.join("data")
+                // parent() returns "" for bare filenames like "app.softn",
+                // which would create an invalid path. Default to "." (cwd).
+                let base = bundle_path.parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf();
+                base.join(format!("{}-data", manifest.name))
             }
         });
         std::fs::create_dir_all(&data_dir)

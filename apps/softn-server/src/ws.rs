@@ -5,14 +5,14 @@ use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch};
 
-const HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Timeout for sync_pull / sync_push blocking tasks. Must exceed the VM
+/// wall-time limit (25s) by enough margin for the DB operations that follow
+/// a long-running hook to complete cleanly.
+const HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 const MAX_OPS_PER_PUSH: usize = 1000;
 /// If no data is received from the client within this period, assume the
 /// connection is dead (e.g. mobile lost signal, laptop asleep) and clean up.
 const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
-/// Max time to wait for the client to send an auth message after connecting.
-/// Prevents resource leaks from clients that open connections but never authenticate.
-const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Outbound channel capacity — large enough to absorb burst from sync_pull
 /// responses without blocking the reader task.
 const OUT_CHANNEL_SIZE: usize = 512;
@@ -46,83 +46,23 @@ async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage)
     }
 }
 
-pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>, shutdown_rx: watch::Receiver<bool>) {
+/// Handle an authenticated WebSocket connection.
+/// Auth is performed during the HTTP upgrade phase (see http::ws_upgrade),
+/// so `cid` is already validated before this function is called.
+pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>, shutdown_rx: watch::Receiver<bool>, cid: String) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // Auth phase: expect first message to be a text auth message.
-    // Wrapped in AUTH_TIMEOUT to prevent connection leaks from clients
-    // that complete the WebSocket handshake but never send a message.
-    let auth_msg = match tokio::time::timeout(AUTH_TIMEOUT, async {
-        loop {
-            match ws_rx.next().await {
-                Some(Ok(Message::Text(text))) => return Some(text),
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
-                Some(Ok(_)) => return None,
-                _ => return None,
-            }
-        }
-    }).await {
-        Ok(Some(text)) => text,
-        Ok(None) => {
-            let msg = ServerMessage::Error {
-                message: "Expected text auth message".into(),
-            };
-            if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = ws_tx.send(Message::Text(json.into())).await;
-            }
-            return;
-        }
-        Err(_) => {
-            tracing::debug!("WebSocket auth timeout — closing unauthenticated connection");
-            return;
-        }
+    // Connection is pre-authenticated — send auth_ok immediately so the
+    // client receives its client_id and server time.
+    let msg = ServerMessage::AuthOk {
+        client_id: cid.clone(),
+        server_time: iso_now(),
     };
-
-    let parsed: serde_json::Value = match util::parse_json_bounded(&auth_msg, util::MAX_JSON_DEPTH) {
-        Ok(v) => v,
-        Err(_) => {
-            let msg = ServerMessage::Error {
-                message: "Invalid JSON".into(),
-            };
-            if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = ws_tx.send(Message::Text(json.into())).await;
-            }
+    if let Ok(json) = serde_json::to_string(&msg) {
+        if ws_tx.send(Message::Text(json.into())).await.is_err() {
             return;
         }
-    };
-
-    if parsed.get("type").and_then(|t| t.as_str()) != Some("auth") {
-        let msg = ServerMessage::Error {
-            message: "Expected auth message".into(),
-        };
-        if let Ok(json) = serde_json::to_string(&msg) {
-            let _ = ws_tx.send(Message::Text(json.into())).await;
-        }
-        return;
     }
-
-    let token = parsed.get("token").and_then(|t| t.as_str());
-    let app_version = parsed.get("appVersion").and_then(|v| v.as_str());
-
-    let cid = match sync.handle_auth(token, app_version) {
-        Ok(cid) => {
-            let msg = ServerMessage::AuthOk {
-                client_id: cid.clone(),
-                server_time: iso_now(),
-            };
-            if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = ws_tx.send(Message::Text(json.into())).await;
-            }
-            cid
-        }
-        Err(reason) => {
-            let msg = ServerMessage::AuthError { reason };
-            if let Ok(json) = serde_json::to_string(&msg) {
-                let _ = ws_tx.send(Message::Text(json.into())).await;
-            }
-            return;
-        }
-    };
     tracing::info!("Client {} connected", cid);
 
     // Split into reader/writer actor tasks to prevent head-of-line blocking.

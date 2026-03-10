@@ -202,14 +202,32 @@ async fn serve_manifest(State(ctx): State<Arc<AppContext>>) -> Json<serde_json::
 /// Sync messages are typically small (a few KB per op), so 4MB is generous.
 const MAX_WS_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
+/// Pre-upgrade auth: validate the token from query params before allocating
+/// WebSocket resources. This rejects unauthenticated connections at the HTTP
+/// level (401), preventing attackers from exhausting file descriptors by
+/// opening thousands of connections that sit idle during post-upgrade auth.
+///
+/// Clients pass the token as `?token=...` in the WebSocket URL.
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(ctx): State<Arc<AppContext>>,
-) -> impl IntoResponse {
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
     let sync = ctx.sync_manager.clone();
+    let token = params.get("token").map(String::as_str);
+    let app_version = params.get("appVersion").map(String::as_str);
+
+    let cid = match sync.handle_auth(token, app_version) {
+        Ok(cid) => cid,
+        Err(reason) => {
+            return (StatusCode::UNAUTHORIZED, reason).into_response();
+        }
+    };
+
     let shutdown_rx = ctx.shutdown.subscribe();
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
-        .on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx))
+        .on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx, cid))
+        .into_response()
 }
 
 async fn api_handler(

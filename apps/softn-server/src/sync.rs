@@ -9,6 +9,13 @@ use tokio::sync::broadcast;
 /// Valid operations for sync ops.
 const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 
+/// Maximum records per SyncState message to prevent oversized WebSocket frames
+/// and server-side RAM spikes. With ~200-500 bytes per JSON record, 500 records
+/// ≈ 100-250KB per message — well within the 4MB MAX_WS_MESSAGE_SIZE limit.
+/// Multiple SyncState messages are sent for the same collection when there are
+/// more records than this limit.
+const SYNC_PULL_CHUNK_SIZE: usize = 500;
+
 /// Maximum allowed clock drift from clients into the future (in seconds).
 /// Timestamps further ahead than this are clamped to server time to prevent
 /// far-future timestamps from permanently winning in LWW conflict resolution.
@@ -47,8 +54,6 @@ pub enum ServerMessage {
         #[serde(rename = "serverTime")]
         server_time: String,
     },
-    #[serde(rename = "auth_error")]
-    AuthError { reason: String },
     #[serde(rename = "sync_state")]
     SyncState {
         collection: String,
@@ -249,7 +254,7 @@ impl SyncManager {
             };
             drop(conn);
 
-            let json_records: Vec<serde_json::Value> = records
+            let mut json_records: Vec<serde_json::Value> = records
                 .into_iter()
                 .map(|r| {
                     let mut record = serde_json::json!({
@@ -268,10 +273,26 @@ impl SyncManager {
                 })
                 .collect();
 
-            messages.push(ServerMessage::SyncState {
-                collection: collection.clone(),
-                records: json_records,
-            });
+            // Send in chunks to prevent oversized WebSocket frames and RAM spikes.
+            // Each chunk is its own SyncState message so neither the server nor the
+            // client needs to buffer all records in a single JSON array.
+            if json_records.is_empty() {
+                // Send empty SyncState so the client knows the collection was queried
+                messages.push(ServerMessage::SyncState {
+                    collection: collection.clone(),
+                    records: Vec::new(),
+                });
+            } else {
+                while !json_records.is_empty() {
+                    let at = json_records.len().min(SYNC_PULL_CHUNK_SIZE);
+                    let rest = json_records.split_off(at);
+                    messages.push(ServerMessage::SyncState {
+                        collection: collection.clone(),
+                        records: json_records,
+                    });
+                    json_records = rest;
+                }
+            }
         }
 
         messages
