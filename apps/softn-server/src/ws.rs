@@ -1,4 +1,5 @@
 use crate::sync::{ServerMessage, SyncManager, SyncOp};
+use crate::util;
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -72,7 +73,7 @@ pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>, shutdown_rx: w
         }
     };
 
-    let parsed: serde_json::Value = match serde_json::from_str(&auth_msg) {
+    let parsed: serde_json::Value = match util::parse_json_bounded(&auth_msg, util::MAX_JSON_DEPTH) {
         Ok(v) => v,
         Err(_) => {
             let msg = ServerMessage::Error {
@@ -239,7 +240,8 @@ async fn reader_task(
         };
         match msg {
             Some(Ok(Message::Text(text))) => {
-                let parsed: serde_json::Value = match serde_json::from_str(&text) {
+                // Depth-bounded parse to prevent stack overflow from deeply nested payloads
+                let parsed: serde_json::Value = match util::parse_json_bounded(&text, util::MAX_JSON_DEPTH) {
                     Ok(v) => v,
                     Err(_) => {
                         if !send_response(out_tx, ServerMessage::Error {
@@ -259,15 +261,27 @@ async fn reader_task(
                             .get("collections")
                             .and_then(|c| serde_json::from_value(c.clone()).ok())
                             .unwrap_or_default();
+
+                        // Acquire a sync permit to bound concurrent blocking tasks.
+                        // Without this, a flood of slow sync_pull requests could exhaust
+                        // Tokio's 512-thread spawn_blocking pool, starving all other I/O.
+                        let permit = match sync.sync_permits.clone().try_acquire_owned() {
+                            Ok(p) => p,
+                            Err(_) => {
+                                if !send_response(out_tx, ServerMessage::Error {
+                                    message: "Server busy — too many concurrent sync operations, retry later".into(),
+                                }).await {
+                                    return;
+                                }
+                                continue;
+                            }
+                        };
+
                         let sync_clone = sync.clone();
-                        // Note: tokio::time::timeout drops the future but does NOT cancel
-                        // the underlying blocking thread. However, all operations within
-                        // handle_sync_pull are bounded: DB queries are fast indexed reads
-                        // under WAL, and the VM has a 25s wall-time limit. The blocking
-                        // thread will always terminate within the VM timeout.
                         let responses = match tokio::time::timeout(
                             HANDLER_TIMEOUT,
                             tokio::task::spawn_blocking(move || {
+                                let _permit = permit; // held until task completes
                                 sync_clone.handle_sync_pull(&collections)
                             }),
                         ).await {
@@ -315,11 +329,26 @@ async fn reader_task(
                             }
                             continue;
                         }
+
+                        // Acquire sync permit (same rationale as sync_pull above)
+                        let permit = match sync.sync_permits.clone().try_acquire_owned() {
+                            Ok(p) => p,
+                            Err(_) => {
+                                if !send_response(out_tx, ServerMessage::Error {
+                                    message: "Server busy — too many concurrent sync operations, retry later".into(),
+                                }).await {
+                                    return;
+                                }
+                                continue;
+                            }
+                        };
+
                         let sync_clone = sync.clone();
                         let cid_clone = cid.to_string();
                         let responses = match tokio::time::timeout(
                             HANDLER_TIMEOUT,
                             tokio::task::spawn_blocking(move || {
+                                let _permit = permit; // held until task completes
                                 sync_clone.handle_sync_push(ops, &cid_clone)
                             }),
                         ).await {

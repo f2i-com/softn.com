@@ -89,6 +89,10 @@ pub struct SyncManager {
     has_after_sync_batch: bool,
     has_after_sync: bool,
     auth_token: Option<String>,
+    /// Bounds concurrent blocking sync operations to prevent Tokio's
+    /// spawn_blocking pool (512 threads) from exhaustion by slow/malicious
+    /// clients. When full, callers should return backpressure immediately.
+    pub sync_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl SyncManager {
@@ -135,6 +139,14 @@ impl SyncManager {
             );
         }
 
+        // Cap concurrent sync operations well below Tokio's 512-thread blocking pool.
+        // Sized for I/O-bound DB queries: 4x CPUs is ample headroom, capped at 64.
+        let max_concurrent = std::thread::available_parallelism()
+            .map(|n| (n.get() * 4).min(64))
+            .unwrap_or(32);
+        let sync_permits = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        tracing::info!("Sync concurrency limit: {} permits", max_concurrent);
+
         Arc::new(Self {
             db,
             broadcast_tx,
@@ -144,6 +156,7 @@ impl SyncManager {
             has_after_sync_batch,
             has_after_sync,
             auth_token,
+            sync_permits,
         })
     }
 
