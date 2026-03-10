@@ -1,6 +1,6 @@
 use crate::sync::{ServerMessage, SyncManager, SyncOp};
 use crate::util;
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -162,8 +162,16 @@ async fn writer_task(
                             }
                         }
                     }
-                    // Reader dropped out_tx — time to exit
-                    None => break,
+                    // Reader dropped out_tx — send a Close frame so the client
+                    // sees a clean disconnect instead of an abrupt TCP close
+                    // (covers both normal exit and send_response timeout).
+                    None => {
+                        let _ = ws_tx.send(Message::Close(Some(CloseFrame {
+                            code: 1000,
+                            reason: "Connection closing".into(),
+                        }))).await;
+                        break;
+                    }
                 }
             }
             // Broadcast from other clients' sync_push
