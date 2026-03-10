@@ -261,6 +261,12 @@ async fn reader_task(
                             .get("collections")
                             .and_then(|c| serde_json::from_value(c.clone()).ok())
                             .unwrap_or_default();
+                        // Optional timestamp cursor for incremental sync.
+                        // If provided, only records updated after this timestamp are returned.
+                        let last_sync: Option<String> = parsed
+                            .get("lastSync")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
 
                         // Acquire a sync permit to bound concurrent blocking tasks.
                         // Without this, a flood of slow sync_pull requests could exhaust
@@ -282,7 +288,7 @@ async fn reader_task(
                             HANDLER_TIMEOUT,
                             tokio::task::spawn_blocking(move || {
                                 let _permit = permit; // held until task completes
-                                sync_clone.handle_sync_pull(&collections)
+                                sync_clone.handle_sync_pull(&collections, last_sync.as_deref())
                             }),
                         ).await {
                             Ok(Ok(r)) => r,

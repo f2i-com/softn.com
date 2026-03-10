@@ -148,13 +148,19 @@ async fn serve_manifest(State(ctx): State<Arc<AppContext>>) -> Json<serde_json::
     Json(bundle::client_manifest(&ctx.manifest))
 }
 
+/// Max incoming WebSocket message size (4MB).
+/// Axum/Tungstenite defaults to 64MB which bypasses the HTTP body limit.
+/// Sync messages are typically small (a few KB per op), so 4MB is generous.
+const MAX_WS_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(ctx): State<Arc<AppContext>>,
 ) -> impl IntoResponse {
     let sync = ctx.sync_manager.clone();
     let shutdown_rx = ctx.shutdown.subscribe();
-    ws.on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx))
+    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
+        .on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx))
 }
 
 async fn api_handler(
