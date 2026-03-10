@@ -8,6 +8,12 @@ use tokio::sync::broadcast;
 /// Valid operations for sync ops.
 const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 
+/// Maximum allowed clock drift from clients into the future (in seconds).
+/// Timestamps further ahead than this are clamped to server time to prevent
+/// far-future timestamps from permanently winning in LWW conflict resolution.
+/// Past timestamps are always trusted — they represent legitimate offline edits.
+const MAX_FUTURE_DRIFT_SECS: i64 = 5 * 60; // 5 minutes
+
 /// Validate a collection name: must be non-empty, alphanumeric + dash/underscore,
 /// and at most 64 characters. Rejects names that could cause issues in queries.
 fn is_valid_collection_name(name: &str) -> bool {
@@ -60,9 +66,8 @@ pub enum ServerMessage {
         op_id: String,
         reason: String,
     },
-    /// Transient failure — client should retry (e.g. future connection pool
-    /// exhaustion). Distinct from SyncReject which is permanent.
-    #[allow(dead_code)]
+    /// Transient failure — client should retry (e.g. hook execution error,
+    /// pool exhaustion). Distinct from SyncReject which is permanent.
     #[serde(rename = "sync_retry")]
     SyncRetry {
         #[serde(rename = "opIds")]
@@ -230,7 +235,8 @@ impl SyncManager {
         // completes before we touch storage.
 
         // First pass: basic validation (no RPC needed)
-        let server_time = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let server_now = chrono::Utc::now();
+        let server_time = server_now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let mut basic_valid_ops = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
         for mut op in ops {
@@ -244,8 +250,30 @@ impl SyncManager {
             }
 
             op.client_id = client_id.to_string();
-            // Stamp with authoritative server time
-            op.timestamp = server_time.clone();
+
+            // Trust client timestamps for correct local-first / offline sync ordering.
+            // Without this, a client that goes offline Monday, edits a record, then
+            // reconnects Wednesday would have its stale edit "win" over newer online
+            // edits because the server would stamp it with Wednesday's time.
+            // Fall back to server time if missing or unparseable. Clamp far-future
+            // timestamps to prevent clock-skew abuse in LWW conflict resolution.
+            if op.timestamp.is_empty() {
+                op.timestamp = server_time.clone();
+            } else if let Ok(client_ts) = chrono::DateTime::parse_from_rfc3339(&op.timestamp) {
+                let drift = client_ts.signed_duration_since(server_now).num_seconds();
+                if drift > MAX_FUTURE_DRIFT_SECS {
+                    tracing::warn!(
+                        "Clamping future timestamp from client {} (drift: {}s)",
+                        client_id, drift
+                    );
+                    op.timestamp = server_time.clone();
+                }
+                // Otherwise trust the client's timestamp — even past timestamps are
+                // valid (e.g. edits made while offline).
+            } else {
+                // Unparseable timestamp — fall back to server time
+                op.timestamp = server_time.clone();
+            }
 
             if !VALID_OPERATIONS.contains(&op.operation.as_str()) {
                 responses.push(ServerMessage::SyncReject {
@@ -289,13 +317,13 @@ impl SyncManager {
                         });
                     }
                     Err(e) => {
-                        // Hook execution error — permanent reject, not retry.
-                        // Script errors (TypeError, etc.) will recur on retry,
-                        // causing an infinite loop. Reject to unblock the client.
-                        tracing::warn!("onBeforeSync error (fail-closed): {}", e);
-                        responses.push(ServerMessage::SyncReject {
-                            op_id: op.id.clone(),
-                            reason: "Operation rejected by server".into(),
+                        // Hook execution error — use SyncRetry so the client
+                        // retains the op. A server redeploy may fix the script
+                        // bug; SyncReject would permanently discard user data.
+                        tracing::warn!("onBeforeSync hook error (retry): {}", e);
+                        responses.push(ServerMessage::SyncRetry {
+                            op_ids: vec![op.id.clone()],
+                            reason: "Transient hook error — retry later".into(),
                         });
                     }
                     _ => accepted.push(op),
@@ -398,16 +426,15 @@ impl SyncManager {
         let result = match rt.call("onBeforeSyncBatch", vec![serde_json::Value::Array(ops_json)]) {
             Ok(r) => r,
             Err(e) => {
-                // Fail-closed: reject all ops on hook error.
-                // Script errors (TypeError, etc.) are permanent — retrying would
-                // cause an infinite loop. Reject to unblock the client's queue.
-                tracing::warn!("onBeforeSyncBatch error (fail-closed): {}", e);
-                for op in &ops {
-                    responses.push(ServerMessage::SyncReject {
-                        op_id: op.id.clone(),
-                        reason: format!("Hook error: {}", e),
-                    });
-                }
+                // Hook execution error — use SyncRetry so the client retains ops
+                // in its queue. Script bugs (TypeError, etc.) may be fixed by a
+                // server redeploy; permanent rejection (SyncReject) would
+                // irreversibly discard user data changes.
+                tracing::warn!("onBeforeSyncBatch hook error (retry): {}", e);
+                responses.push(ServerMessage::SyncRetry {
+                    op_ids: ops.iter().map(|op| op.id.clone()).collect(),
+                    reason: "Transient hook error — retry later".into(),
+                });
                 return Vec::new();
             }
         };

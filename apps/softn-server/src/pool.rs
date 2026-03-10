@@ -74,6 +74,12 @@ impl ServerDb {
 
 // ── Standalone read queries (don't need XdbDatabase, just a Connection) ──
 
+/// Maximum rows returned by read_collection to prevent unbounded memory usage
+/// from collections with millions of rows. This bounds both RAM consumption
+/// (each row is deserialized to serde_json::Value) and the time a worker thread
+/// is blocked on a query, preventing worker pool exhaustion from pathological reads.
+const MAX_COLLECTION_ROWS: i64 = 10_000;
+
 /// Query a single record by ID using a read-only connection.
 pub fn read_record(conn: &rusqlite::Connection, id: &str) -> Result<Record, DbError> {
     conn.query_row(
@@ -103,11 +109,13 @@ pub fn read_collection(
     collection: &str,
 ) -> Result<Vec<Record>, DbError> {
     let mut stmt = conn.prepare(
-        "SELECT id, collection, data, created_at, updated_at, deleted FROM records WHERE collection = ?1 AND deleted = 0 ORDER BY created_at DESC",
+        "SELECT id, collection, data, created_at, updated_at, deleted \
+         FROM records WHERE collection = ?1 AND deleted = 0 \
+         ORDER BY created_at DESC LIMIT ?2",
     )?;
 
     let records = stmt
-        .query_map(params![collection], |row| {
+        .query_map(params![collection, MAX_COLLECTION_ROWS], |row| {
             let raw_data = row.get::<_, String>(2)?;
             Ok(Record {
                 id: row.get(0)?,

@@ -14,6 +14,9 @@ pub struct AppContext {
     pub db: ServerDb,
     pub runtime: Option<Arc<ServerRuntime>>,
     pub sync_manager: Arc<SyncManager>,
+    /// Shutdown signal — when `true` is sent, WebSocket connections should
+    /// send a clean Close frame and disconnect before the process exits.
+    pub shutdown: tokio::sync::watch::Sender<bool>,
 }
 
 impl AppContext {
@@ -132,6 +135,7 @@ impl AppContext {
         };
 
         let sync_manager = SyncManager::new(db.clone(), runtime.clone(), auth_token);
+        let (shutdown, _) = tokio::sync::watch::channel(false);
 
         Ok(Arc::new(Self {
             manifest,
@@ -140,6 +144,7 @@ impl AppContext {
             db,
             runtime,
             sync_manager,
+            shutdown,
         }))
     }
 }
