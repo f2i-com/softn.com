@@ -58,13 +58,15 @@ impl AppContext {
             .map_err(|e| format!("Failed to create data dir: {}", e))?;
 
         // Open XDB (writer) and create a read-only connection pool.
-        // Read pool size: min(cpu_count, 8) — enough for concurrent sync_pull + script reads.
+        // Read pool size: 2x CPUs, capped at 32. SQLite WAL reads are fast and
+        // non-blocking, but under high concurrency (HTTP + WebSocket sync_pull)
+        // a larger pool prevents simple reads from queuing behind long queries.
         let db_path = data_dir.join(format!("{}.sqlite", manifest.name));
         let shared_db = xdb::create_shared_db(db_path.clone())
             .map_err(|e| format!("Failed to open DB: {}", e))?;
         let read_pool_size = std::thread::available_parallelism()
-            .map(|n| n.get().min(8) as u32)
-            .unwrap_or(4);
+            .map(|n| (n.get() * 2).min(32) as u32)
+            .unwrap_or(8);
         let db = ServerDb::new(shared_db, &db_path, read_pool_size)?;
         tracing::info!("Database opened (read pool: {} connections)", read_pool_size);
 

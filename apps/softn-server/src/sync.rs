@@ -341,7 +341,11 @@ impl SyncManager {
                 continue;
             }
 
-            if (op.operation == "update" || op.operation == "delete") && op.record_id.is_empty() {
+            // All operations require a client-supplied recordId. In a local-first
+            // architecture the client must generate UUIDs — if the server generates
+            // one on create, the sender never learns it (SyncDelta is not echoed back)
+            // so subsequent updates/deletes would fail or desync.
+            if op.record_id.is_empty() {
                 responses.push(ServerMessage::SyncReject {
                     op_id: op.id.clone(),
                     reason: format!("{} requires a recordId", op.operation),
@@ -393,28 +397,20 @@ impl SyncManager {
             for mut op in validated_ops {
                 let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
                     "create" => {
+                        // recordId is guaranteed non-empty (validated above).
+                        // Use upsert so the client's UUID is preserved — local-first
+                        // clients always generate their own IDs.
                         let data = op.data.clone().unwrap_or(serde_json::json!({}));
-                        if !op.record_id.is_empty() {
-                            // Client provided an ID — use it (local-first clients
-                            // generate UUIDs). Without this, the server generates a
-                            // different ID and the SyncDelta (not echoed to sender)
-                            // means the client never learns the server's ID, causing
-                            // subsequent updates to fail with NotFound.
-                            let now = &op.timestamp;
-                            let record = xdb::Record {
-                                id: op.record_id.clone(),
-                                collection: op.collection.clone(),
-                                data,
-                                created_at: now.clone(),
-                                updated_at: now.clone(),
-                                deleted: false,
-                            };
-                            db.upsert_record(record).map(|_| None)
-                        } else {
-                            // No client ID — server generates one
-                            db.create_record(&op.collection, data)
-                                .map(|(record, _)| Some(record.id))
-                        }
+                        let now = &op.timestamp;
+                        let record = xdb::Record {
+                            id: op.record_id.clone(),
+                            collection: op.collection.clone(),
+                            data,
+                            created_at: now.clone(),
+                            updated_at: now.clone(),
+                            deleted: false,
+                        };
+                        db.upsert_record(record).map(|_| None)
                     }
                     "update" => {
                         let data = op.data.clone().unwrap_or(serde_json::json!({}));
