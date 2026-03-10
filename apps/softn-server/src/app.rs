@@ -14,6 +14,9 @@ pub struct AppContext {
     pub db: ServerDb,
     pub runtime: Option<Arc<ServerRuntime>>,
     pub sync_manager: Arc<SyncManager>,
+    /// Auth token for API routes (same token used for sync).
+    /// Stored here for quick access in the API auth middleware.
+    pub auth_token: Option<String>,
     /// Shutdown signal — when `true` is sent, WebSocket connections should
     /// send a clean Close frame and disconnect before the process exits.
     pub shutdown: tokio::sync::watch::Sender<bool>,
@@ -109,10 +112,33 @@ impl AppContext {
                     .map(|n| n as usize)
             });
 
+            // Parse capability permissions from manifest server.permissions.
+            // If set, only explicitly enabled bridges are available to scripts.
+            // If not set, all bridges are enabled (backward compatible).
+            // This implements deny-by-default for sensitive capabilities (http, fs)
+            // when the developer explicitly opts into the permissions model.
+            let permissions = server.permissions.as_ref();
+            let allow_http = permissions
+                .and_then(|p| p.get("http"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| permissions.is_none()); // default: on if no permissions block
+            let allow_fs = permissions
+                .and_then(|p| p.get("fs"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or_else(|| permissions.is_none());
+
+            if let Some(_p) = permissions {
+                tracing::info!(
+                    "Capabilities: db=always, env=always, http={}, fs={}",
+                    allow_http, allow_fs
+                );
+            }
+
             let rt = ServerRuntime::new(move || BridgeSet {
                 db: Some(Box::new(NativeDbBridge::new(db_for_factory.clone()))),
-                http: Some(Box::new(NativeHttpBridge::new())),
-                fs: Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))),
+                http: if allow_http { Some(Box::new(NativeHttpBridge::new())) } else { None },
+                fs: if allow_fs { Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))) } else { None },
+                // env is always enabled (provides console.log via env.log)
                 env: Some(Box::new(NativeEnvBridge)),
             }, configured_workers);
 
@@ -167,7 +193,7 @@ impl AppContext {
             });
 
         let sync_manager = SyncManager::new(
-            db.clone(), runtime.clone(), auth_token,
+            db.clone(), runtime.clone(), auth_token.clone(),
             db_path.clone(), max_storage_bytes, sync_permits,
         );
         let (shutdown, _) = tokio::sync::watch::channel(false);
@@ -179,6 +205,7 @@ impl AppContext {
             db,
             runtime,
             sync_manager,
+            auth_token,
             shutdown,
         }))
     }

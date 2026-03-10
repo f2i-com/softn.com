@@ -28,6 +28,11 @@ pub struct RouteDefinition {
     pub method: String,
     pub path: String,
     pub handler: String,
+    /// If true, this route does not require auth even when `auth_token` is set.
+    /// Defaults to false (authenticated). Use for public-facing endpoints like
+    /// webhooks or health checks exposed through the script layer.
+    #[serde(default)]
+    pub public: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
