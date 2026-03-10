@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
@@ -59,11 +60,89 @@ let console = {
 };
 "#;
 
+/// Extract a `.softn` ZIP bundle to a temporary directory.
+/// Returns the path to the extracted directory. The caller is responsible for
+/// using this path as the bundle_path for all subsequent operations.
+pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
+    let file = fs::File::open(zip_path)
+        .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
+
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("Invalid .softn bundle: {}", e))?;
+
+    // Extract to a sibling directory named <stem>_extracted
+    let stem = zip_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bundle");
+    let extract_dir = zip_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("{}_bundle", stem));
+
+    if extract_dir.exists() {
+        fs::remove_dir_all(&extract_dir)
+            .map_err(|e| format!("Failed to clean extract dir: {}", e))?;
+    }
+
+    const MAX_ENTRIES: usize = 10_000;
+    const MAX_TOTAL_BYTES: u64 = 500 * 1024 * 1024;
+    const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+    if archive.len() > MAX_ENTRIES {
+        return Err(format!("Bundle has too many files ({})", archive.len()));
+    }
+
+    let mut total_bytes: u64 = 0;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
+
+        let name = entry.name().replace('\\', "/");
+
+        // Security: reject path traversal and absolute paths
+        if name.contains("..") || name.starts_with('/') || name.contains('\0') {
+            tracing::warn!("Skipping unsafe ZIP entry: {}", name);
+            continue;
+        }
+
+        if entry.is_dir() {
+            fs::create_dir_all(extract_dir.join(&name))
+                .map_err(|e| format!("Failed to create dir {}: {}", name, e))?;
+            continue;
+        }
+
+        if entry.size() > MAX_FILE_BYTES {
+            return Err(format!("File too large in bundle: {} ({}B)", name, entry.size()));
+        }
+        total_bytes += entry.size();
+        if total_bytes > MAX_TOTAL_BYTES {
+            return Err("Bundle contents too large".into());
+        }
+
+        let out_path = extract_dir.join(&name);
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create dir for {}: {}", name, e))?;
+        }
+
+        let mut buf = Vec::with_capacity(entry.size() as usize);
+        entry.read_to_end(&mut buf)
+            .map_err(|e| format!("Failed to read {}: {}", name, e))?;
+        fs::write(&out_path, &buf)
+            .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+    }
+
+    tracing::info!("Extracted .softn bundle to {}", extract_dir.display());
+    Ok(extract_dir)
+}
+
 pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
     let manifest_path = if bundle_path.is_dir() {
         bundle_path.join("manifest.json")
     } else {
-        return Err("ZIP bundles not yet supported; use a directory".into());
+        return Err("Expected a directory. Use extract_softn_zip() first for .softn files.".into());
     };
 
     let content = fs::read_to_string(&manifest_path)
@@ -166,4 +245,3 @@ pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
     }
     val
 }
-

@@ -1,9 +1,9 @@
+use crate::pool::{self, ServerDb};
 use crate::runtime::ServerRuntime;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
-use xdb::SharedDb;
 
 /// Valid operations for sync ops.
 const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
@@ -74,7 +74,7 @@ pub enum ServerMessage {
 }
 
 pub struct SyncManager {
-    db: SharedDb,
+    db: ServerDb,
     broadcast_tx: broadcast::Sender<(String, ServerMessage)>,
     runtime: Option<Arc<ServerRuntime>>,
     /// Batch hook: validates all ops in a single RPC call (preferred).
@@ -88,7 +88,7 @@ pub struct SyncManager {
 
 impl SyncManager {
     pub fn new(
-        db: SharedDb,
+        db: ServerDb,
         runtime: Option<Arc<ServerRuntime>>,
         auth_token: Option<String>,
     ) -> Arc<Self> {
@@ -177,24 +177,24 @@ impl SyncManager {
                 continue;
             }
 
-            // Lock the database for the duration of the query, then release immediately.
-            // SharedDb is a single Mutex — this serializes access, but WAL mode ensures
-            // SQLite reads are fast and don't block pending writes at the filesystem level.
-            let db = match self.db.lock() {
-                Ok(db) => db,
-                Err(poisoned) => {
-                    tracing::error!("Database lock poisoned in sync_pull, recovering: {}", poisoned);
-                    poisoned.into_inner()
+            // Read from the pool — concurrent with other reads and writes.
+            let conn = match self.db.read() {
+                Ok(c) => c,
+                Err(e) => {
+                    messages.push(ServerMessage::Error {
+                        message: format!("Read pool error: {}", e),
+                    });
+                    continue;
                 }
             };
-            let records = match db.get_collection(collection) {
+            let records = match pool::read_collection(&conn, collection) {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!("Failed to query collection '{}': {}", collection, e);
                     Vec::new()
                 }
             };
-            drop(db);
+            drop(conn);
 
             let json_records: Vec<serde_json::Value> = records
                 .into_iter()
@@ -295,7 +295,7 @@ impl SyncManager {
                         tracing::warn!("onBeforeSync error (fail-closed): {}", e);
                         responses.push(ServerMessage::SyncReject {
                             op_id: op.id.clone(),
-                            reason: format!("Hook error: {}", e),
+                            reason: "Operation rejected by server".into(),
                         });
                     }
                     _ => accepted.push(op),
@@ -310,16 +310,7 @@ impl SyncManager {
         // This prevents interleaving from concurrent client batches.
         let mut accepted_ops = Vec::new();
         if !validated_ops.is_empty() {
-            let mut db = match self.db.lock() {
-                Ok(db) => db,
-                Err(poisoned) => {
-                    // Lock poisoned = a writer panicked while holding the lock.
-                    // Recover the inner value (still usable) rather than permanently
-                    // failing all future sync operations.
-                    tracing::error!("Database lock poisoned, recovering: {}", poisoned);
-                    poisoned.into_inner()
-                }
-            };
+            let mut db = self.db.write();
 
             for mut op in validated_ops {
                 let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
@@ -347,9 +338,10 @@ impl SyncManager {
                         accepted_ops.push(op);
                     }
                     Err(e) => {
+                        tracing::warn!("sync_push DB error for op {}: {}", op.id, e);
                         responses.push(ServerMessage::SyncReject {
                             op_id: op.id.clone(),
-                            reason: format!("DB error: {}", e),
+                            reason: "Operation failed".into(),
                         });
                     }
                 }

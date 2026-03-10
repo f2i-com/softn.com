@@ -498,7 +498,9 @@ function renderElement(
 
     if (binding.name === 'bind') {
       // Two-way binding shorthand
-      props.value = value;
+      // Default to "" when value is undefined/null to keep the input controlled
+      // from the first render (avoids React "uncontrolled to controlled" warning)
+      props.value = value ?? '';
       // Handle both native elements (pass event) and custom components (pass value directly)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       props.onChange = (eventOrValue: any) => {
@@ -561,7 +563,9 @@ function renderElement(
         return fn(val);
       };
     }
-    return fn;
+    // For other events (click, submit, etc.), discard the DOM event to prevent
+    // it leaking into the FormLogic VM (which can't handle DOM objects).
+    return () => fn();
   };
 
   for (const event of node.events) {

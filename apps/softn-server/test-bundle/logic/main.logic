@@ -1,0 +1,88 @@
+// Client-side logic for the Notes app
+// This runs in the SoftN FormLogic VM on the client
+// Uses the db bridge: db.create(), db.query(), db.delete()
+// Local changes sync to the server via XDBServerSync automatically
+
+let notes = []
+let newTitle = ""
+let newContent = ""
+let noteCount = 0
+let searchQuery = ""
+
+function addNote() {
+  if (!newTitle) return
+  db.create("notes", {
+    title: newTitle,
+    content: newContent,
+    createdAt: new Date().toISOString()
+  })
+  newTitle = ""
+  newContent = ""
+  refreshNotes()
+}
+
+function deleteNote(id) {
+  db.delete(id)
+  refreshNotes()
+}
+
+function refreshNotes() {
+  let result = db.query("notes")
+  if (searchQuery) {
+    let q = searchQuery.toLowerCase()
+    let filtered = []
+    for (let i = 0; i < result.length; i = i + 1) {
+      let note = result[i]
+      let title = note.data.title ? note.data.title.toLowerCase() : ""
+      let content = note.data.content ? note.data.content.toLowerCase() : ""
+      if (title.indexOf(q) >= 0 || content.indexOf(q) >= 0) {
+        filtered.push(note)
+      }
+    }
+    result = filtered
+  }
+  notes = result
+  noteCount = result.length
+}
+
+function getFilteredNotes() {
+  let result = db.query("notes")
+  if (searchQuery) {
+    let q = searchQuery.toLowerCase()
+    let filtered = []
+    for (let i = 0; i < result.length; i = i + 1) {
+      let note = result[i]
+      let title = note.data.title ? note.data.title.toLowerCase() : ""
+      let content = note.data.content ? note.data.content.toLowerCase() : ""
+      if (title.indexOf(q) >= 0 || content.indexOf(q) >= 0) {
+        filtered.push(note)
+      }
+    }
+    result = filtered
+  }
+  return result
+}
+
+function formatDate(isoString) {
+  if (!isoString) return ""
+  let d = new Date(isoString)
+  let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+  let month = months[d.getMonth()]
+  let day = d.getDate()
+  let hours = d.getHours()
+  let mins = d.getMinutes()
+  let ampm = "AM"
+  if (hours >= 12) ampm = "PM"
+  if (hours > 12) hours = hours - 12
+  if (hours === 0) hours = 12
+  let minStr = mins < 10 ? "0" + mins : "" + mins
+  return month + " " + day + " at " + hours + ":" + minStr + " " + ampm
+}
+
+function _init() {
+  refreshNotes()
+}
+
+function _onDataChange() {
+  refreshNotes()
+}

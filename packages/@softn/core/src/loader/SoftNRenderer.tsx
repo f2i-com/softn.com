@@ -997,6 +997,17 @@ export function SoftNRenderer({
     }
   }, [state.componentState]);
 
+  // When initialData changes (e.g., XDB server sync delivers new records), call
+  // the script's _onDataChange() convention so it can refresh derived state.
+  useEffect(() => {
+    const fn = state.scriptFunctions['_onDataChange'] as ((...args: unknown[]) => Promise<unknown>) | undefined;
+    if (fn) {
+      fn().catch((e: unknown) => {
+        console.warn('[SoftN] _onDataChange error:', e);
+      });
+    }
+  }, [initialData, state.scriptFunctions]);
+
   // Get computed values from reactive state
   const computedValues = useMemo(() => {
     const reactive = reactiveRef.current;
@@ -1594,7 +1605,11 @@ export function SoftNWithXDB({
   useEffect(() => {
     if (!serverUrl) return;
     let sync: import('../runtime/xdb-server-sync').XDBServerSync | null = null;
+    let stale = false;
     import('../runtime/xdb-server-sync').then(({ XDBServerSync }) => {
+      // Guard against StrictMode double-mount: the async import may resolve
+      // after the first mount's cleanup has already run.
+      if (stale) return;
       sync = new XDBServerSync(xdb, {
         wsUrl: serverUrl,
         appVersion: '1.0.0',
@@ -1609,6 +1624,7 @@ export function SoftNWithXDB({
       // Server sync module not available
     });
     return () => {
+      stale = true;
       sync?.disconnect();
     };
   }, [xdb, serverUrl, serverToken, serverCollections]);
@@ -1646,13 +1662,32 @@ export function SoftNWithXDB({
     onDataChange?.(xdbData);
   }, [xdbData, onDataChange]);
 
+  // Subscribe to server-synced collections so that when XDBServerSync delivers
+  // data (via upsertFromServer), we detect it and force initialData to change,
+  // which triggers _onDataChange() in SoftNRenderer for script-managed state.
+  const [serverSyncVersion, setServerSyncVersion] = useState(0);
+  useEffect(() => {
+    if (!serverCollections || serverCollections.length === 0) return;
+    const unsubscribes: (() => void)[] = [];
+    for (const collection of serverCollections) {
+      const unsub = xdb.subscribe(collection, () => {
+        setServerSyncVersion((v) => v + 1);
+      });
+      unsubscribes.push(unsub);
+    }
+    return () => unsubscribes.forEach((fn) => fn());
+  }, [xdb, serverCollections]);
+
   // Merge XDB data with initial data
+  // serverSyncVersion forces a new reference when server sync data arrives,
+  // even if useDataBlock has no <collection> declarations to track.
   const mergedData = useMemo(
     () => ({
       ...props.initialData,
       ...xdbData,
     }),
-    [props.initialData, xdbData]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [props.initialData, xdbData, serverSyncVersion]
   );
 
   // Merge XDB functions with provided functions
