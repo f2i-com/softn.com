@@ -2,7 +2,7 @@ use crate::sync::{ServerMessage, SyncManager, SyncOp};
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 const HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_OPS_PER_PUSH: usize = 1000;
@@ -40,7 +40,7 @@ async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage)
     }
 }
 
-pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
+pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>, shutdown_rx: watch::Receiver<bool>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Auth phase: expect first message to be a text auth message.
@@ -127,7 +127,7 @@ pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
     let broadcast_rx = sync.subscribe();
 
     let cid_for_writer = cid.clone();
-    let writer_handle = tokio::spawn(writer_task(ws_tx, out_rx, broadcast_rx, cid_for_writer));
+    let writer_handle = tokio::spawn(writer_task(ws_tx, out_rx, broadcast_rx, cid_for_writer, shutdown_rx));
 
     // Reader task: runs in the current task
     reader_task(&mut ws_rx, &sync, &cid, &out_tx).await;
@@ -140,11 +140,14 @@ pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>) {
 
 /// Writer task: owns the WebSocket sink and merges outbound messages from
 /// the reader (via out_rx) and broadcast notifications (via broadcast_rx).
+/// Also listens for the server shutdown signal to send a clean Close frame
+/// before the process exits.
 async fn writer_task(
     mut ws_tx: futures_util::stream::SplitSink<WebSocket, Message>,
     mut out_rx: mpsc::Receiver<ServerMessage>,
     mut broadcast_rx: broadcast::Receiver<(String, ServerMessage)>,
     cid: String,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
     loop {
         tokio::select! {
@@ -189,6 +192,19 @@ async fn writer_task(
                         tracing::info!("Broadcast channel closed, disconnecting client {}", cid);
                         break;
                     }
+                }
+            }
+            // Server shutdown — send a clean Close frame before the process exits
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    tracing::info!("Server shutting down, closing client {}", cid);
+                    let msg = ServerMessage::Error {
+                        message: "Server shutting down".into(),
+                    };
+                    if let Ok(json) = serde_json::to_string(&msg) {
+                        let _ = ws_tx.send(Message::Text(json.into())).await;
+                    }
+                    break;
                 }
             }
         }

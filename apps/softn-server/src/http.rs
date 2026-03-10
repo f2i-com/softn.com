@@ -13,6 +13,7 @@ use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 pub async fn serve(ctx: Arc<AppContext>, port: u16) -> Result<(), String> {
+    let shutdown_tx = ctx.shutdown.clone();
     let router = build_router(ctx);
     let addr = format!("0.0.0.0:{}", port);
     tracing::info!("Listening on http://{}", addr);
@@ -22,7 +23,7 @@ pub async fn serve(ctx: Arc<AppContext>, port: u16) -> Result<(), String> {
         .map_err(|e| format!("Failed to bind: {}", e))?;
 
     axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await
         .map_err(|e| format!("Server error: {}", e))?;
 
@@ -228,7 +229,8 @@ async fn ws_upgrade(
     State(ctx): State<Arc<AppContext>>,
 ) -> impl IntoResponse {
     let sync = ctx.sync_manager.clone();
-    ws.on_upgrade(move |socket| ws::handle_ws(socket, sync))
+    let shutdown_rx = ctx.shutdown.subscribe();
+    ws.on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx))
 }
 
 async fn api_handler(
@@ -368,9 +370,14 @@ const ALLOWED_EXTENSIONS: &[&str] = &[
     "pdf", "xml", "txt", "softn",
 ];
 
-async fn shutdown_signal() {
+async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
     match tokio::signal::ctrl_c().await {
-        Ok(()) => tracing::info!("Shutting down..."),
+        Ok(()) => {
+            tracing::info!("Shutting down...");
+            // Signal all WebSocket connections to send Close frames and disconnect
+            // before the process exits, preventing unclean termination.
+            let _ = shutdown_tx.send(true);
+        }
         Err(e) => {
             tracing::error!("Failed to install CTRL+C handler: {}", e);
             // Don't return — keep the server running rather than shutting down immediately
