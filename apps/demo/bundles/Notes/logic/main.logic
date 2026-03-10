@@ -1,66 +1,67 @@
 // Client-side logic for the Notes app
-// This runs in the SoftN FormLogic VM on the client
-// Uses the db bridge: db.create(), db.query(), db.delete()
-// Local changes sync to the server via XDBServerSync automatically
+// Uses softn.net.fetch() to call the server HTTP API endpoints
+// Server handles all CRUD operations via db bridge
 
 let notes = []
 let newTitle = ""
 let newContent = ""
 let noteCount = 0
 let searchQuery = ""
+let serverUrl = "http://localhost:9876"
 
 function addNote() {
   if (!newTitle) return
-  db.create("notes", {
+  let noteData = {
     title: newTitle,
     content: newContent,
     createdAt: new Date().toISOString()
+  }
+  softn.net.fetch(serverUrl + "/api/create-note", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: noteData
+  }, function(result) {
+    if (result.ok) {
+      newTitle = ""
+      newContent = ""
+      refreshNotes()
+    }
   })
-  newTitle = ""
-  newContent = ""
-  refreshNotes()
 }
 
 function deleteNote(id) {
-  db.delete(id)
-  refreshNotes()
+  softn.net.fetch(serverUrl + "/api/delete-note", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: { id: id }
+  }, function(result) {
+    refreshNotes()
+  })
 }
 
 function refreshNotes() {
-  let result = db.query("notes")
-  if (searchQuery) {
-    let q = searchQuery.toLowerCase()
-    let filtered = []
-    for (let i = 0; i < result.length; i = i + 1) {
-      let note = result[i]
-      let title = note.data.title ? note.data.title.toLowerCase() : ""
-      let content = note.data.content ? note.data.content.toLowerCase() : ""
-      if (title.indexOf(q) >= 0 || content.indexOf(q) >= 0) {
-        filtered.push(note)
-      }
+  softn.net.fetch(serverUrl + "/api/notes", {}, function(result) {
+    if (result.ok) {
+      let data = JSON.parse(result.body)
+      notes = data.notes
+      noteCount = data.count
     }
-    result = filtered
-  }
-  notes = result
-  noteCount = result.length
+  })
 }
 
 function getFilteredNotes() {
-  let result = db.query("notes")
-  if (searchQuery) {
-    let q = searchQuery.toLowerCase()
-    let filtered = []
-    for (let i = 0; i < result.length; i = i + 1) {
-      let note = result[i]
-      let title = note.data.title ? note.data.title.toLowerCase() : ""
-      let content = note.data.content ? note.data.content.toLowerCase() : ""
-      if (title.indexOf(q) >= 0 || content.indexOf(q) >= 0) {
-        filtered.push(note)
-      }
+  if (!searchQuery) return notes
+  let q = searchQuery.toLowerCase()
+  let filtered = []
+  for (let i = 0; i < notes.length; i = i + 1) {
+    let note = notes[i]
+    let title = note.data.title ? note.data.title.toLowerCase() : ""
+    let content = note.data.content ? note.data.content.toLowerCase() : ""
+    if (title.indexOf(q) >= 0 || content.indexOf(q) >= 0) {
+      filtered.push(note)
     }
-    result = filtered
   }
-  return result
+  return filtered
 }
 
 function formatDate(isoString) {
@@ -80,9 +81,5 @@ function formatDate(isoString) {
 }
 
 function _init() {
-  refreshNotes()
-}
-
-function _onDataChange() {
   refreshNotes()
 }

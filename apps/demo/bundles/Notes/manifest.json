@@ -8,6 +8,14 @@
     "logic": ["logic/main.logic"],
     "server": ["server/main.logic"]
   },
+  "server": {
+    "entry": "server/main.logic",
+    "routes": [
+      { "method": "POST", "path": "/api/create-note", "handler": "handleCreateNote", "public": true },
+      { "method": "GET", "path": "/api/notes", "handler": "handleGetNotes", "public": true },
+      { "method": "POST", "path": "/api/delete-note", "handler": "handleDeleteNote", "public": true }
+    ]
+  },
   "config": {
     "window": {
       "title": "Notes",

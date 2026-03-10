@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "net": {
+      "enabled": true,
+      "allow_http": true,
+      "allowed_hosts": ["localhost"]
+    }
+  }
+}
