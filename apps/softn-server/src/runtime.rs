@@ -378,6 +378,12 @@ impl ServerRuntime {
 /// Maximum nesting depth for JSON → Object conversion to prevent stack overflow.
 const MAX_JSON_DEPTH: usize = 64;
 
+/// Maximum individual string length when converting JSON to VM objects (2MB).
+/// Prevents OOM from payloads with multi-megabyte string values being copied
+/// into the sandboxed VM heap. Scripts needing larger data should use the
+/// FS bridge to read/write files instead.
+const MAX_STRING_VALUE_LEN: usize = 2 * 1024 * 1024;
+
 fn json_to_object(val: serde_json::Value, heap: &mut Heap) -> Result<Object, String> {
     json_to_object_inner(val, heap, 0)
 }
@@ -396,7 +402,15 @@ fn json_to_object_inner(val: serde_json::Value, heap: &mut Heap, depth: usize) -
                 Ok(Object::Float(n.as_f64().unwrap_or(0.0)))
             }
         }
-        serde_json::Value::String(s) => Ok(Object::String(s.into())),
+        serde_json::Value::String(s) => {
+            if s.len() > MAX_STRING_VALUE_LEN {
+                return Err(format!(
+                    "String value too large ({} bytes, max {})",
+                    s.len(), MAX_STRING_VALUE_LEN
+                ));
+            }
+            Ok(Object::String(s.into()))
+        }
         serde_json::Value::Array(arr) => {
             let mut items: Vec<Value> = Vec::with_capacity(arr.len());
             for v in arr {
