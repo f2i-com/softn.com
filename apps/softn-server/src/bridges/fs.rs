@@ -10,8 +10,16 @@ impl NativeFsBridge {
         Self { root_dir }
     }
 
-    /// Resolve a path relative to root, rejecting traversal and absolute paths.
-    /// Does NOT create directories — callers must do that after validation.
+    /// Resolve a path relative to root, rejecting traversal, absolute paths,
+    /// and symlinks.
+    ///
+    /// Symlinks are rejected to close TOCTOU (time-of-check to time-of-use)
+    /// gaps: without this, a symlink could be swapped between canonicalize()
+    /// and the actual fs::read/write, redirecting the operation outside root.
+    /// By rejecting symlinks in all existing path components, the only way to
+    /// escape the sandbox requires creating a symlink *after* our check and
+    /// *before* the kernel opens the file — which requires concurrent write
+    /// access to the sandbox directory itself (not possible from scripts).
     fn resolve(&self, path: &str) -> Result<PathBuf, String> {
         // Reject traversal patterns and absolute paths before any filesystem interaction.
         // Absolute paths would cause join() to ignore the root entirely.
@@ -27,6 +35,9 @@ impl NativeFsBridge {
             .map_err(|e| format!("Root resolve error: {}", e))?;
 
         if joined.exists() {
+            // Reject symlinks anywhere in the path to close TOCTOU gaps.
+            self.reject_symlinks_in_path(&joined, &canonical_root)?;
+
             let canonical = std::fs::canonicalize(&joined)
                 .map_err(|e| format!("Path resolve error: {}", e))?;
             if !canonical.starts_with(&canonical_root) {
@@ -40,6 +51,9 @@ impl NativeFsBridge {
             let mut ancestor = joined.parent();
             while let Some(dir) = ancestor {
                 if dir.exists() {
+                    // Check for symlinks in the existing portion of the path
+                    self.reject_symlinks_in_path(dir, &canonical_root)?;
+
                     let canonical_ancestor = std::fs::canonicalize(dir)
                         .map_err(|e| format!("Path resolve error: {}", e))?;
                     if !canonical_ancestor.starts_with(&canonical_root) {
@@ -56,6 +70,31 @@ impl NativeFsBridge {
             }
             Ok(joined)
         }
+    }
+
+    /// Walk each component of `path` that is inside `canonical_root` and reject
+    /// any that are symlinks. Uses `symlink_metadata` (lstat) which does NOT
+    /// follow symlinks, so it detects them reliably.
+    fn reject_symlinks_in_path(
+        &self,
+        path: &std::path::Path,
+        canonical_root: &std::path::Path,
+    ) -> Result<(), String> {
+        // Build the path incrementally from root, checking each component
+        let canonical_root_components: usize = canonical_root.components().count();
+        let mut current = PathBuf::new();
+        for (i, component) in path.components().enumerate() {
+            current.push(component);
+            // Only check components within/below the root directory
+            if i >= canonical_root_components && current.exists() {
+                let meta = std::fs::symlink_metadata(&current)
+                    .map_err(|e| format!("Path check error: {}", e))?;
+                if meta.file_type().is_symlink() {
+                    return Err("Symlinks are not allowed in sandboxed paths".into());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Ensure parent directory exists for a write operation.
