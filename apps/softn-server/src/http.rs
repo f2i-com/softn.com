@@ -1,5 +1,6 @@
 use crate::app::AppContext;
 use crate::bundle;
+use crate::util;
 use crate::ws;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{DefaultBodyLimit, State};
@@ -117,103 +118,26 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
         }
     }
 
-    // Serve client bundle files via tower-http ServeDir.
-    // This handles ETag, Last-Modified, and correct MIME types automatically.
-    // We wrap it in a security filter that blocks server/ and data/ paths.
+    // Serve client bundle files via per-prefix ServeDir mounts.
+    // Each allowed directory gets its own scoped ServeDir, which eliminates:
+    // - Manual path traversal checks (ServeDir handles it internally)
+    // - TOCTOU races from separate canonicalize + serve steps
+    // - Blacklist maintenance (only whitelisted prefixes are reachable)
+    // tower-http's ServeDir provides ETag, Last-Modified, and Content-Type.
     let bundle_path = ctx.bundle_path.clone();
-    let serve_dir = ServeDir::new(&bundle_path);
-
-    // Use a fallback handler that validates paths before delegating to ServeDir
-    let bundle_path_for_fallback = bundle_path.clone();
-    router = router.fallback(move |req: axum::extract::Request| {
-        let serve_dir = serve_dir.clone();
-        let bundle_path = bundle_path_for_fallback.clone();
-        async move {
-            let path = req.uri().path().trim_start_matches('/');
-
-            // Security: reject path traversal (both literal and URL-decoded).
-            // percent_decode handles %2e%2e%2f → ../
-            let decoded = decode_uri_path(path);
-            if decoded.contains("..") || path.contains("..")
-                || decoded.contains('\0') {
-                return (StatusCode::FORBIDDEN, "Forbidden").into_response();
-            }
-
-            // Blacklist: never serve server-side or data files.
-            let normalized = decoded.replace('\\', "/");
-            if normalized.starts_with("server/") || normalized.starts_with("data/") {
-                return (StatusCode::FORBIDDEN, "Forbidden").into_response();
-            }
-
-            // Whitelist: file must be in an allowed directory AND have an allowed extension.
-            // Use the decoded path for the directory check so percent-encoded
-            // bypasses like `ui%2f..%2fserver%2f` are caught.
-            let in_allowed_dir = ALLOWED_PREFIXES.iter().any(|p| normalized.starts_with(p));
-            let has_allowed_ext = normalized.rsplit('.').next()
-                .map(|ext| {
-                    let lower = ext.to_ascii_lowercase();
-                    ALLOWED_EXTENSIONS.iter().any(|a| *a == lower)
-                })
-                .unwrap_or(false);
-
-            if !in_allowed_dir || !has_allowed_ext {
-                return StatusCode::NOT_FOUND.into_response();
-            }
-
-            // Extra safety: verify the resolved path stays within the bundle.
-            // Always check — even for non-existent files — by walking up to
-            // the nearest existing ancestor.
-            let file_path = bundle_path.join(path);
-            let check_path = if file_path.exists() {
-                Some(file_path.clone())
-            } else {
-                // Walk up to the nearest existing ancestor
-                let mut ancestor = file_path.parent();
-                loop {
-                    match ancestor {
-                        Some(dir) if dir.exists() => break Some(dir.to_path_buf()),
-                        Some(dir) => ancestor = dir.parent(),
-                        None => break None,
-                    }
-                }
-            };
-            if let Some(existing) = check_path {
-                if let (Ok(canonical), Ok(canonical_bundle)) = (
-                    std::fs::canonicalize(&existing),
-                    std::fs::canonicalize(&bundle_path),
-                ) {
-                    if !canonical.starts_with(&canonical_bundle) {
-                        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
-                    }
-                }
-            }
-
-            // Delegate to ServeDir for proper ETag, Last-Modified, Content-Type
-            use tower::ServiceExt;
-            match serve_dir.oneshot(req).await {
-                Ok(resp) => resp.into_response(),
-                Err(e) => {
-                    tracing::error!("Static file serving error: {}", e);
-                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
-                }
-            }
-        }
-    });
+    for &prefix in ALLOWED_STATIC_DIRS {
+        let dir = bundle_path.join(prefix);
+        router = router.nest_service(
+            &format!("/{}", prefix),
+            ServeDir::new(dir),
+        );
+    }
 
     router
         .layer(DefaultBodyLimit::max(max_body))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(ctx)
-}
-
-/// Decode percent-encoded path segments for security validation.
-/// Uses the `percent-encoding` crate for correct handling of malformed
-/// UTF-8, null bytes, and other edge cases that manual parsers can miss.
-fn decode_uri_path(s: &str) -> String {
-    percent_encoding::percent_decode_str(s)
-        .decode_utf8_lossy()
-        .into_owned()
 }
 
 async fn health() -> &'static str {
@@ -252,7 +176,7 @@ async fn api_handler(
         }
     };
 
-    // Build headers map (only include safe, non-binary headers)
+    // Collect lightweight metadata on the reactor; defer heavy work to spawn_blocking.
     let headers_json: serde_json::Map<String, serde_json::Value> = headers
         .iter()
         .filter_map(|(k, v)| {
@@ -261,49 +185,41 @@ async fn api_handler(
             })
         })
         .collect();
-
-    // Build request object with body, query params, headers, method, and path.
-    // Attempt to parse body as UTF-8 text/JSON; binary payloads get a size marker.
-    // Cap JSON parsing at 10MB to prevent memory exhaustion from large DOM trees —
-    // serde_json::Value can use 5-10x the input size in RAM.
-    const MAX_JSON_PARSE_SIZE: usize = 10 * 1024 * 1024;
-    let body_json = if body.is_empty() {
-        serde_json::Value::Null
-    } else if body.len() > MAX_JSON_PARSE_SIZE {
-        // Too large to safely parse as JSON — report as oversized
-        serde_json::json!({
-            "__oversized": true,
-            "size": body.len(),
-        })
-    } else {
-        match std::str::from_utf8(&body) {
-            Ok(text) => serde_json::from_str(text)
-                .unwrap_or_else(|_| serde_json::Value::String(text.to_string())),
-            Err(_) => {
-                // Binary payload — scripts don't handle raw bytes yet
-                serde_json::json!({
-                    "__binary": true,
-                    "size": body.len(),
-                })
-            }
-        }
-    };
-
     let query_json = serde_json::to_value(&query.0).unwrap_or_default();
-    let request = serde_json::json!({
-        "method": method.as_str(),
-        "path": uri.path(),
-        "body": body_json,
-        "query": query_json,
-        "headers": headers_json,
-    });
+    let method_str = method.to_string();
+    let path_str = uri.path().to_string();
 
-    // Run the blocking runtime.call() off the tokio reactor (30s timeout).
-    // Note: if all 50 script workers are busy, this queues in the crossbeam
-    // channel until a worker is free. The 30s timeout covers total wait+exec.
+    // Run body parsing AND script execution off the Tokio reactor (30s timeout).
+    // JSON parsing can be CPU-intensive for large payloads (up to 10MB), and
+    // running it on the reactor would block all async I/O (WebSocket pings,
+    // health checks, etc.) causing severe latency spikes.
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         tokio::task::spawn_blocking(move || {
+            // Parse body off the reactor (can be CPU-intensive for large JSON).
+            // Cap at 10MB — serde_json::Value can use 5-10x the input size in RAM.
+            // Also enforces depth limit to prevent stack overflow from nested payloads.
+            const MAX_JSON_PARSE_SIZE: usize = 10 * 1024 * 1024;
+            let body_json = if body.is_empty() {
+                serde_json::Value::Null
+            } else if body.len() > MAX_JSON_PARSE_SIZE {
+                serde_json::json!({ "__oversized": true, "size": body.len() })
+            } else {
+                match std::str::from_utf8(&body) {
+                    Ok(text) => util::parse_json_bounded(text, util::MAX_JSON_DEPTH)
+                        .unwrap_or_else(|_| serde_json::Value::String(text.to_string())),
+                    Err(_) => serde_json::json!({ "__binary": true, "size": body.len() }),
+                }
+            };
+
+            let request = serde_json::json!({
+                "method": method_str,
+                "path": path_str,
+                "body": body_json,
+                "query": query_json,
+                "headers": headers_json,
+            });
+
             runtime.call(&handler_name, vec![request])
         }),
     )
@@ -359,16 +275,9 @@ async fn api_handler(
 }
 
 /// Allowed client-facing directories for static file serving.
-const ALLOWED_PREFIXES: &[&str] = &["ui/", "assets/", "styles/", "fonts/", "images/", "icons/"];
-
-/// File extensions allowed to be served statically.
-const ALLOWED_EXTENSIONS: &[&str] = &[
-    "html", "htm", "css", "js", "mjs", "json", "wasm", "ui", "logic",
-    "svg", "png", "jpg", "jpeg", "gif", "webp", "ico",
-    "woff", "woff2", "ttf", "otf",
-    "mp3", "wav", "mp4", "webm",
-    "pdf", "xml", "txt", "softn",
-];
+/// Each directory gets its own scoped ServeDir mount, so only these
+/// prefixes are reachable. server/ and data/ are never exposed.
+const ALLOWED_STATIC_DIRS: &[&str] = &["ui", "assets", "styles", "fonts", "images", "icons"];
 
 async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
     match tokio::signal::ctrl_c().await {

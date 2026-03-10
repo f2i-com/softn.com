@@ -5,6 +5,7 @@ mod http;
 mod pool;
 mod runtime;
 mod sync;
+mod util;
 mod ws;
 
 use clap::{Parser, Subcommand};
