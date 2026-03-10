@@ -168,6 +168,7 @@ function buildBundle(bundleName) {
   const fileSet = new Set([
     ...(manifest.files.ui || []),
     ...(manifest.files.logic || []),
+    ...(manifest.files.server || []),
     ...(manifest.files.xdb || []),
     ...(manifest.files.assets || []),
   ]);

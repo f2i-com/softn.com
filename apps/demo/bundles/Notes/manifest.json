@@ -1,0 +1,27 @@
+{
+  "name": "Notes",
+  "version": "1.0.0",
+  "description": "Notes CRUD app with real-time server sync via XDB",
+  "main": "ui/main.ui",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "server": ["server/main.logic"]
+  },
+  "config": {
+    "window": {
+      "title": "Notes",
+      "width": 900,
+      "height": 650
+    },
+    "theme": {
+      "primary": "#6366f1",
+      "mode": "dark"
+    },
+    "server": {
+      "url": "ws://localhost:9876/sync",
+      "auth_token": "test-token-123",
+      "collections": ["notes"]
+    }
+  }
+}
