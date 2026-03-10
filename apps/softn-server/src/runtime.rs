@@ -432,7 +432,22 @@ fn object_to_json_inner(obj: &Object, heap: &Heap, depth: usize) -> Result<serde
         Object::Boolean(b) => Ok(serde_json::Value::Bool(*b)),
         Object::Integer(n) => Ok(serde_json::json!(*n)),
         Object::Float(f) => Ok(serde_json::json!(*f)),
-        Object::String(s) => Ok(serde_json::Value::String(s.to_string())),
+        Object::String(s) => {
+            let s = s.to_string();
+            if s.len() > MAX_STRING_VALUE_LEN {
+                // Truncate at a UTF-8 boundary to prevent allocation of
+                // massive JSON strings from script-generated values.
+                let mut end = MAX_STRING_VALUE_LEN;
+                while end > 0 && !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let mut truncated = s[..end].to_string();
+                truncated.push_str("...(truncated)");
+                Ok(serde_json::Value::String(truncated))
+            } else {
+                Ok(serde_json::Value::String(s))
+            }
+        }
         Object::Array(arr) => {
             let items = arr.borrow();
             let mut vals: Vec<serde_json::Value> = Vec::with_capacity(items.len());

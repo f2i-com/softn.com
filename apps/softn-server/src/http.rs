@@ -297,9 +297,14 @@ async fn api_handler(
     let path_str = uri.path().to_string();
 
     // Run body parsing AND script execution off the Tokio reactor (30s timeout).
-    // JSON parsing can be CPU-intensive for large payloads (up to 10MB), and
-    // running it on the reactor would block all async I/O (WebSocket pings,
-    // health checks, etc.) causing severe latency spikes.
+    // INVARIANT: This timeout (30s) must exceed the VM wall-time limit (25s,
+    // set in runtime.rs init_state). If the VM limit is ever raised above this
+    // timeout, the HTTP handler returns 504 but the spawn_blocking thread
+    // continues running until the VM terminates, silently leaking blocking
+    // threads under load. Keep these values aligned.
+    // JSON parsing can be CPU-intensive for large payloads, and running it on
+    // the reactor would block all async I/O (WebSocket pings, health checks,
+    // etc.) causing severe latency spikes.
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         tokio::task::spawn_blocking(move || {

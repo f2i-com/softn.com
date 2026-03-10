@@ -66,9 +66,16 @@ impl AppContext {
         let db_path = data_dir.join(format!("{}.sqlite", manifest.name));
         let shared_db = xdb::create_shared_db(db_path.clone())
             .map_err(|e| format!("Failed to open DB: {}", e))?;
-        let read_pool_size = std::thread::available_parallelism()
-            .map(|n| (n.get() * 2).min(32) as u32)
-            .unwrap_or(8);
+        let read_pool_size = manifest.config.as_ref()
+            .and_then(|c| c.get("server"))
+            .and_then(|s| s.get("readPoolSize"))
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as u32).clamp(2, 128))
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| (n.get() * 2).min(32) as u32)
+                    .unwrap_or(8)
+            });
         let db = ServerDb::new(shared_db, &db_path, read_pool_size)?;
         tracing::info!("Database opened (read pool: {} connections)", read_pool_size);
 
@@ -138,7 +145,31 @@ impl AppContext {
             None
         };
 
-        let sync_manager = SyncManager::new(db.clone(), runtime.clone(), auth_token);
+        // Configurable pool limits — tunable via manifest config.server for
+        // small VPS deployments where the auto-detected CPU-based defaults
+        // (4x CPUs for sync, 2x CPUs for read pool) may be too restrictive.
+        let max_storage_bytes = manifest.config.as_ref()
+            .and_then(|c| c.get("server"))
+            .and_then(|s| s.get("maxStorageMB"))
+            .and_then(|v| v.as_u64())
+            .map(|mb| mb.min(10 * 1024) * 1024 * 1024) // cap at 10TB
+            .unwrap_or(512 * 1024 * 1024); // 512MB default
+
+        let sync_permits = manifest.config.as_ref()
+            .and_then(|c| c.get("server"))
+            .and_then(|s| s.get("syncPermits"))
+            .and_then(|v| v.as_u64())
+            .map(|n| (n as usize).clamp(4, 256))
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism()
+                    .map(|n| (n.get() * 4).min(64))
+                    .unwrap_or(32)
+            });
+
+        let sync_manager = SyncManager::new(
+            db.clone(), runtime.clone(), auth_token,
+            db_path.clone(), max_storage_bytes, sync_permits,
+        );
         let (shutdown, _) = tokio::sync::watch::channel(false);
 
         Ok(Arc::new(Self {
