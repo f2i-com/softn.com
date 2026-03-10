@@ -158,3 +158,20 @@ jobs:
             **Platforms:** Windows (.exe, .msi), macOS (.dmg), Linux (.AppImage, .deb)
           releaseDraft: false
           prerelease: false
+          # Skip Tauri's built-in DMG bundling on macOS — bundle_dmg.sh fails
+          # on headless CI runners. We create and upload the DMG manually below.
+          args: ${{ startsWith(matrix.platform, 'macos') && '--bundles app' || '' }}
+
+      - name: Create and upload DMG (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APP_DIR="apps/${{ matrix.app }}/src-tauri/target/release/bundle/macos"
+          DMG_DIR="apps/${{ matrix.app }}/src-tauri/target/release/bundle/dmg"
+          mkdir -p "$DMG_DIR"
+          APP_PATH=$(find "$APP_DIR" -maxdepth 1 -name "*.app" | head -1)
+          APP_NAME=$(basename "$APP_PATH" .app)
+          DMG_PATH="$DMG_DIR/$APP_NAME.dmg"
+          hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH"
+          gh release upload "${{ github.ref_name }}" "$DMG_PATH" --clobber

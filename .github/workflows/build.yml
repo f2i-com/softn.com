@@ -183,6 +183,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/${{ matrix.app }}
+          # Skip Tauri's built-in DMG bundling on macOS — bundle_dmg.sh fails
+          # on headless CI runners. We create the DMG manually in the next step.
+          args: ${{ startsWith(matrix.platform, 'macos') && '--bundles app' || '' }}
+
+      - name: Create DMG (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          APP_DIR="apps/${{ matrix.app }}/src-tauri/target/release/bundle/macos"
+          DMG_DIR="apps/${{ matrix.app }}/src-tauri/target/release/bundle/dmg"
+          mkdir -p "$DMG_DIR"
+          APP_PATH=$(find "$APP_DIR" -maxdepth 1 -name "*.app" | head -1)
+          APP_NAME=$(basename "$APP_PATH" .app)
+          hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_DIR/$APP_NAME.dmg"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
