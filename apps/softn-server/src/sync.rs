@@ -268,6 +268,30 @@ impl SyncManager {
         self.auth_token.is_some()
     }
 
+    /// Spawn a background task that periodically prunes expired tickets.
+    /// Without this, expired tickets are only evicted opportunistically when
+    /// issue_ticket/redeem_ticket is called. If an attacker fills the ticket
+    /// table to MAX_PENDING_TICKETS and no legitimate requests arrive, the
+    /// server would be locked out until a request triggers eviction.
+    pub fn spawn_ticket_cleanup(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            loop {
+                interval.tick().await;
+                let Some(sync) = weak.upgrade() else { break };
+                let mut tickets = sync.tickets.lock().unwrap_or_else(|p| p.into_inner());
+                let before = tickets.len();
+                let now = std::time::Instant::now();
+                tickets.retain(|_, t| t.expires_at > now);
+                let evicted = before - tickets.len();
+                if evicted > 0 {
+                    tracing::debug!("Evicted {} expired auth tickets", evicted);
+                }
+            }
+        });
+    }
+
     /// Pull collection state. If `last_sync` is provided, returns only records
     /// updated after that timestamp (incremental sync, including soft-deleted
     /// records so the client can remove them locally). Otherwise returns all
@@ -428,6 +452,12 @@ impl SyncManager {
             // edits because the server would stamp it with Wednesday's time.
             // Fall back to server time if missing or unparseable. Clamp far-future
             // timestamps to prevent clock-skew abuse in LWW conflict resolution.
+            //
+            // NOTE: This uses wall-clock LWW — two clients editing the same record
+            // within ~1s can produce non-deterministic winners depending on clock
+            // skew. A Hybrid Logical Clock (HLC) would provide causal ordering, but
+            // requires client-side HLC support and a protocol change. For the current
+            // use case (single-user multi-device sync) this is acceptable.
             if op.timestamp.is_empty() {
                 op.timestamp = server_time.clone();
             } else if let Ok(client_ts) = chrono::DateTime::parse_from_rfc3339(&op.timestamp) {
@@ -524,51 +554,79 @@ impl SyncManager {
         // calls, network requests, or expensive computation inside this block.
         let mut accepted_ops = Vec::new();
         if !validated_ops.is_empty() {
+            // Collect op IDs before moving ops into the transaction closure,
+            // so we can reference them in error paths after the move.
+            let all_op_ids: Vec<String> = validated_ops.iter().map(|op| op.id.clone()).collect();
             let mut db = self.db.write();
 
-            for mut op in validated_ops {
-                let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
-                    "create" => {
-                        // recordId is guaranteed non-empty (validated above).
-                        // Use upsert so the client's UUID is preserved — local-first
-                        // clients always generate their own IDs.
-                        let data = op.data.clone().unwrap_or(serde_json::json!({}));
-                        let now = &op.timestamp;
-                        let record = xdb::Record {
-                            id: op.record_id.clone(),
-                            collection: op.collection.clone(),
-                            data,
-                            created_at: now.clone(),
-                            updated_at: now.clone(),
-                            deleted: false,
-                        };
-                        db.upsert_record(record).map(|_| None)
-                    }
-                    "update" => {
-                        let data = op.data.clone().unwrap_or(serde_json::json!({}));
-                        db.update_record(&op.record_id, data).map(|_| None)
-                    }
-                    "delete" => db.delete_record(&op.record_id).map(|_| None),
-                    other => Err(xdb::DbError::NotFound(format!(
-                        "Unknown operation: {}",
-                        other
-                    ))),
-                };
+            // Wrap the entire batch in a single SQLite transaction.
+            // Without this, each operation auto-commits individually, causing
+            // 1000 ops × 1 fsync each = massive I/O overhead and prolonged
+            // writer mutex hold time. A single transaction flushes to disk once.
+            let batch_result = db.with_transaction(|db| {
+                let mut batch_accepted = Vec::new();
+                let mut batch_rejected = Vec::new();
 
-                match result {
-                    Ok(generated_id) => {
-                        if let Some(id) = generated_id {
-                            op.record_id = id;
+                for mut op in validated_ops {
+                    let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
+                        "create" => {
+                            let data = op.data.clone().unwrap_or(serde_json::json!({}));
+                            let now = &op.timestamp;
+                            let record = xdb::Record {
+                                id: op.record_id.clone(),
+                                collection: op.collection.clone(),
+                                data,
+                                created_at: now.clone(),
+                                updated_at: now.clone(),
+                                deleted: false,
+                            };
+                            db.upsert_record(record).map(|_| None)
                         }
-                        accepted_ops.push(op);
+                        "update" => {
+                            let data = op.data.clone().unwrap_or(serde_json::json!({}));
+                            db.update_record(&op.record_id, data).map(|_| None)
+                        }
+                        "delete" => db.delete_record(&op.record_id).map(|_| None),
+                        other => Err(xdb::DbError::NotFound(format!(
+                            "Unknown operation: {}",
+                            other
+                        ))),
+                    };
+
+                    match result {
+                        Ok(generated_id) => {
+                            if let Some(id) = generated_id {
+                                op.record_id = id;
+                            }
+                            batch_accepted.push(op);
+                        }
+                        Err(e) => {
+                            tracing::warn!("sync_push DB error for op {}: {}", op.id, e);
+                            batch_rejected.push((op.id.clone(), format!("Operation failed: {}", e)));
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!("sync_push DB error for op {}: {}", op.id, e);
+                }
+
+                Ok((batch_accepted, batch_rejected))
+            });
+
+            match batch_result {
+                Ok((batch_accepted, batch_rejected)) => {
+                    for (op_id, reason) in batch_rejected {
                         responses.push(ServerMessage::SyncReject {
-                            op_id: op.id.clone(),
-                            reason: "Operation failed".into(),
+                            op_id,
+                            reason,
                         });
                     }
+                    accepted_ops = batch_accepted;
+                }
+                Err(e) => {
+                    tracing::error!("Batch transaction failed: {}", e);
+                    // Transaction rolled back — retry all ops
+                    responses.push(ServerMessage::SyncRetry {
+                        op_ids: all_op_ids,
+                        reason: "Database transaction failed — retry later".into(),
+                    });
                 }
             }
             drop(db);
