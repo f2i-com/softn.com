@@ -3230,6 +3230,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "subtle",
  "tokio",
  "tower-http",

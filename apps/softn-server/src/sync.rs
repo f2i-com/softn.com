@@ -1,6 +1,7 @@
 use crate::pool::{self, ServerDb};
 use crate::runtime::ServerRuntime;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
@@ -169,13 +170,21 @@ impl SyncManager {
         token: Option<&str>,
         _app_version: Option<&str>,
     ) -> Result<String, String> {
-        // Check auth token if configured (constant-time comparison)
+        // Check auth token if configured.
+        // Hash both tokens to SHA-256 before comparing so ct_eq always operates
+        // on 32-byte inputs. Raw ct_eq on variable-length slices leaks the
+        // expected token's length via timing (instant fail if lengths differ).
         if let Some(expected) = &self.auth_token {
             match token {
-                Some(t) if t.as_bytes().ct_eq(expected.as_bytes()).into() => {}
-                // Generic error prevents token enumeration (attacker can't
-                // distinguish "no token" from "wrong token").
-                Some(_) => return Err("Authentication failed".into()),
+                Some(t) => {
+                    let hash_t = Sha256::digest(t.as_bytes());
+                    let hash_e = Sha256::digest(expected.as_bytes());
+                    if !bool::from(hash_t.ct_eq(&hash_e)) {
+                        // Generic error prevents token enumeration (attacker can't
+                        // distinguish "no token" from "wrong token").
+                        return Err("Authentication failed".into());
+                    }
+                }
                 None => return Err("Authentication failed".into()),
             }
         }
@@ -184,7 +193,15 @@ impl SyncManager {
         Ok(client_id)
     }
 
-    pub fn handle_sync_pull(&self, collections: &[String]) -> Vec<ServerMessage> {
+    /// Pull collection state. If `last_sync` is provided, returns only records
+    /// updated after that timestamp (incremental sync, including soft-deleted
+    /// records so the client can remove them locally). Otherwise returns all
+    /// non-deleted records (full sync for first-time connections).
+    pub fn handle_sync_pull(
+        &self,
+        collections: &[String],
+        last_sync: Option<&str>,
+    ) -> Vec<ServerMessage> {
         let mut messages = Vec::new();
 
         for collection in collections {
@@ -205,11 +222,25 @@ impl SyncManager {
                     continue;
                 }
             };
-            let records = match pool::read_collection(&conn, collection) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("Failed to query collection '{}': {}", collection, e);
-                    Vec::new()
+
+            let records = if let Some(since) = last_sync {
+                // Incremental: only records changed since last sync.
+                // Includes deleted records so the client can remove them locally.
+                match pool::read_collection_since(&conn, collection, since) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("Failed to query collection '{}' since '{}': {}", collection, since, e);
+                        Vec::new()
+                    }
+                }
+            } else {
+                // Full sync: all non-deleted records
+                match pool::read_collection(&conn, collection) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("Failed to query collection '{}': {}", collection, e);
+                        Vec::new()
+                    }
                 }
             };
             drop(conn);
@@ -217,13 +248,19 @@ impl SyncManager {
             let json_records: Vec<serde_json::Value> = records
                 .into_iter()
                 .map(|r| {
-                    serde_json::json!({
+                    let mut record = serde_json::json!({
                         "id": r.id,
                         "collection": r.collection,
                         "data": r.data,
                         "createdAt": r.created_at,
                         "updatedAt": r.updated_at,
-                    })
+                    });
+                    // Include deleted flag for incremental sync so clients
+                    // can remove locally cached records deleted on other devices.
+                    if r.deleted {
+                        record["deleted"] = serde_json::json!(true);
+                    }
+                    record
                 })
                 .collect();
 
@@ -357,8 +394,27 @@ impl SyncManager {
                 let result: Result<Option<String>, xdb::DbError> = match op.operation.as_str() {
                     "create" => {
                         let data = op.data.clone().unwrap_or(serde_json::json!({}));
-                        db.create_record(&op.collection, data)
-                            .map(|(record, _)| Some(record.id))
+                        if !op.record_id.is_empty() {
+                            // Client provided an ID — use it (local-first clients
+                            // generate UUIDs). Without this, the server generates a
+                            // different ID and the SyncDelta (not echoed to sender)
+                            // means the client never learns the server's ID, causing
+                            // subsequent updates to fail with NotFound.
+                            let now = &op.timestamp;
+                            let record = xdb::Record {
+                                id: op.record_id.clone(),
+                                collection: op.collection.clone(),
+                                data,
+                                created_at: now.clone(),
+                                updated_at: now.clone(),
+                                deleted: false,
+                            };
+                            db.upsert_record(record).map(|_| None)
+                        } else {
+                            // No client ID — server generates one
+                            db.create_record(&op.collection, data)
+                                .map(|(record, _)| Some(record.id))
+                        }
                     }
                     "update" => {
                         let data = op.data.clone().unwrap_or(serde_json::json!({}));
@@ -462,10 +518,20 @@ impl SyncManager {
                 arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
             }
             serde_json::Value::Object(obj) => {
-                obj.get("rejected")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default()
+                if let Some(arr) = obj.get("rejected").and_then(|v| v.as_array()) {
+                    arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+                } else {
+                    // Object doesn't match expected schema — warn so the developer
+                    // can fix their hook (e.g. returning { error: "..." } by mistake
+                    // would silently accept all ops without this warning).
+                    if !obj.is_empty() {
+                        tracing::warn!(
+                            "onBeforeSyncBatch returned unrecognized object schema \
+                             (expected {{ rejected: [...] }}), accepting all ops"
+                        );
+                    }
+                    std::collections::HashSet::new()
+                }
             }
             _ => std::collections::HashSet::new(),
         };

@@ -103,6 +103,41 @@ pub fn read_record(conn: &rusqlite::Connection, id: &str) -> Result<Record, DbEr
     .map_err(|_| DbError::NotFound(id.to_string()))
 }
 
+/// Query records in a collection updated after `since` (incremental sync).
+/// Includes soft-deleted records so clients can remove them locally.
+/// Ordered by updated_at ASC so the client can use the last record's
+/// timestamp as the cursor for the next incremental pull.
+pub fn read_collection_since(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    since: &str,
+) -> Result<Vec<Record>, DbError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, collection, data, created_at, updated_at, deleted \
+         FROM records WHERE collection = ?1 AND updated_at > ?2 \
+         ORDER BY updated_at ASC LIMIT ?3",
+    )?;
+
+    let records = stmt
+        .query_map(params![collection, since, MAX_COLLECTION_ROWS], |row| {
+            let raw_data = row.get::<_, String>(2)?;
+            Ok(Record {
+                id: row.get(0)?,
+                collection: row.get(1)?,
+                data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
+                    tracing::warn!("Invalid JSON in record data: {}", e);
+                    serde_json::Value::Null
+                }),
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                deleted: row.get::<_, i32>(5)? != 0,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(records)
+}
+
 /// Query all non-deleted records in a collection using a read-only connection.
 pub fn read_collection(
     conn: &rusqlite::Connection,
