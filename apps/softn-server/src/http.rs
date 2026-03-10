@@ -63,8 +63,14 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
                 .filter_map(|s| s.parse().ok())
                 .collect();
             if parsed.is_empty() {
-                tracing::warn!("config.server.allowedOrigins contains no valid origins, falling back to allow-all");
-                CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+                // Fail closed: if the developer explicitly configured allowedOrigins
+                // but all entries failed to parse (e.g. typos), reject cross-origin
+                // requests rather than silently opening the API to the entire internet.
+                tracing::error!(
+                    "config.server.allowedOrigins contains no valid origins — \
+                     rejecting all cross-origin requests (check for typos in your config)"
+                );
+                CorsLayer::new()
             } else {
                 tracing::info!("CORS restricted to {} origin(s)", parsed.len());
                 CorsLayer::new().allow_origin(parsed).allow_methods(Any).allow_headers(Any)

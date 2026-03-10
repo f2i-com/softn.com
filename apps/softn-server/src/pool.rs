@@ -51,6 +51,20 @@ impl ServerDb {
             .build(manager)
             .map_err(|e| format!("Failed to create read pool: {}", e))?;
 
+        // Ensure composite index for sync queries. The compound cursor
+        // (collection, updated_at, id) needs this index for efficient
+        // ORDER BY + LIMIT pagination — without it, large collections
+        // force full table scans and in-memory sorts.
+        {
+            let idx_conn = rusqlite::Connection::open(db_path)
+                .map_err(|e| format!("Failed to open DB for indexing: {}", e))?;
+            idx_conn.execute_batch(
+                "PRAGMA busy_timeout = 5000; \
+                 CREATE INDEX IF NOT EXISTS idx_records_sync \
+                 ON records (collection, updated_at, id);"
+            ).map_err(|e| format!("Failed to create sync index: {}", e))?;
+        }
+
         Ok(Self { writer, read_pool })
     }
 

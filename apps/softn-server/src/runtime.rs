@@ -334,6 +334,11 @@ impl ServerRuntime {
     }
 
     /// Call a function on the next available (idle) worker.
+    /// Uses `try_send` to avoid blocking the calling thread when the queue is
+    /// full. This is critical because callers run inside `spawn_blocking` —
+    /// a blocking `send` would pin a Tokio blocking thread until the queue
+    /// drains, and under sustained load all 512 blocking threads would stall,
+    /// starving DB reads, health checks, and all other blocking I/O.
     pub fn call(
         &self,
         name: &str,
@@ -341,12 +346,19 @@ impl ServerRuntime {
     ) -> Result<serde_json::Value, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.work_tx
-            .send(ScriptRequest::Call {
+            .try_send(ScriptRequest::Call {
                 name: name.to_string(),
                 args,
                 reply: reply_tx,
             })
-            .map_err(|_| "All script workers died".to_string())?;
+            .map_err(|e| match e {
+                crossbeam_channel::TrySendError::Full(_) => {
+                    "Worker queue full — server overloaded".to_string()
+                }
+                crossbeam_channel::TrySendError::Disconnected(_) => {
+                    "All script workers died".to_string()
+                }
+            })?;
         reply_rx
             .recv()
             .map_err(|_| "Script worker died".to_string())?
