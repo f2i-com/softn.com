@@ -2,6 +2,7 @@ use crate::pool::{self, ServerDb};
 use crate::runtime::ServerRuntime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
@@ -86,6 +87,8 @@ pub enum ServerMessage {
 
 pub struct SyncManager {
     db: ServerDb,
+    db_path: PathBuf,
+    max_storage_bytes: u64,
     broadcast_tx: broadcast::Sender<(String, ServerMessage)>,
     runtime: Option<Arc<ServerRuntime>>,
     /// Batch hook: validates all ops in a single RPC call (preferred).
@@ -106,6 +109,9 @@ impl SyncManager {
         db: ServerDb,
         runtime: Option<Arc<ServerRuntime>>,
         auth_token: Option<String>,
+        db_path: PathBuf,
+        max_storage_bytes: u64,
+        max_sync_permits: usize,
     ) -> Arc<Self> {
         let (broadcast_tx, _) = broadcast::channel(256);
 
@@ -145,16 +151,16 @@ impl SyncManager {
             );
         }
 
-        // Cap concurrent sync operations well below Tokio's 512-thread blocking pool.
-        // Sized for I/O-bound DB queries: 4x CPUs is ample headroom, capped at 64.
-        let max_concurrent = std::thread::available_parallelism()
-            .map(|n| (n.get() * 4).min(64))
-            .unwrap_or(32);
-        let sync_permits = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
-        tracing::info!("Sync concurrency limit: {} permits", max_concurrent);
+        let sync_permits = Arc::new(tokio::sync::Semaphore::new(max_sync_permits));
+        tracing::info!("Sync concurrency limit: {} permits", max_sync_permits);
+        if max_storage_bytes > 0 {
+            tracing::info!("Storage quota: {}MB", max_storage_bytes / (1024 * 1024));
+        }
 
         Arc::new(Self {
             db,
+            db_path,
+            max_storage_bytes,
             broadcast_tx,
             runtime,
             has_before_sync_batch,
@@ -303,6 +309,32 @@ impl SyncManager {
         ops: Vec<SyncOp>,
         client_id: &str,
     ) -> Vec<ServerMessage> {
+        // Storage quota: reject all ops if the database file exceeds the
+        // configured limit. Prevents clients from filling the disk via
+        // infinite sync_push loops. Uses SyncRetry (not SyncReject) because
+        // the condition is transient — an admin can increase the limit or
+        // clean up data, and SyncReject would permanently discard user data.
+        if self.max_storage_bytes > 0 {
+            let db_size = std::fs::metadata(&self.db_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            if db_size >= self.max_storage_bytes {
+                tracing::warn!(
+                    "Storage quota exceeded ({:.1}MB >= {}MB limit) — rejecting sync_push",
+                    db_size as f64 / (1024.0 * 1024.0),
+                    self.max_storage_bytes / (1024 * 1024)
+                );
+                let op_ids: Vec<String> = ops.iter().map(|op| op.id.clone()).collect();
+                return vec![ServerMessage::SyncRetry {
+                    op_ids,
+                    reason: format!(
+                        "Storage quota exceeded ({}MB limit)",
+                        self.max_storage_bytes / (1024 * 1024)
+                    ),
+                }];
+            }
+        }
+
         let mut responses = Vec::new();
 
         // Phase 1: Validate and run onBeforeSync hooks (no DB lock held).
@@ -546,17 +578,19 @@ impl SyncManager {
                     std::collections::HashSet::new()
                 } else {
                     // Object doesn't match expected schema (e.g. { reject: [...] }
-                    // typo) — fail closed with SyncRetry so the developer realizes
-                    // their hook is returning the wrong format, rather than silently
-                    // accepting ops the developer intended to reject.
+                    // typo). This is a deterministic developer bug — retrying won't
+                    // resolve it and would jam the client's sync queue indefinitely.
+                    // Use SyncReject so the client can surface the error and move on.
                     tracing::warn!(
                         "onBeforeSyncBatch returned unrecognized object schema \
-                         (expected {{ rejected: [...] }}) — rejecting batch to prevent data corruption"
+                         (expected {{ rejected: [...] }}) — permanently rejecting batch"
                     );
-                    responses.push(ServerMessage::SyncRetry {
-                        op_ids: ops.iter().map(|op| op.id.clone()).collect(),
-                        reason: "Hook returned unrecognized schema (expected { rejected: [...] })".into(),
-                    });
+                    for op in &ops {
+                        responses.push(ServerMessage::SyncReject {
+                            op_id: op.id.clone(),
+                            reason: "Hook returned unrecognized schema (expected { rejected: [...] })".into(),
+                        });
+                    }
                     return Vec::new();
                 }
             }
