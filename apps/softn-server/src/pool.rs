@@ -178,6 +178,10 @@ pub fn read_collection_since(
 }
 
 /// Query all non-deleted records in a collection using a read-only connection.
+/// Sorted by (updated_at ASC, id ASC) to match the incremental sync cursor
+/// so clients can paginate forward using the compound cursor. If a collection
+/// has >10k records, the client receives the first 10k and uses the last
+/// record's (updatedAt, id) as a compound cursor in the next sync_pull.
 pub fn read_collection(
     conn: &rusqlite::Connection,
     collection: &str,
@@ -185,7 +189,7 @@ pub fn read_collection(
     let mut stmt = conn.prepare(
         "SELECT id, collection, data, created_at, updated_at, deleted \
          FROM records WHERE collection = ?1 AND deleted = 0 \
-         ORDER BY created_at DESC LIMIT ?2",
+         ORDER BY updated_at ASC, id ASC LIMIT ?2",
     )?;
 
     let records = stmt

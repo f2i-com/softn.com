@@ -113,6 +113,15 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool) -> Router {
                     tracing::warn!("Skipping route {} {} -> {}: conflicts with built-in route", method, path, handler_name);
                     continue;
                 }
+                // Reject routes that overlap with static directory mounts.
+                // Axum panics on overlapping routes (nest_service vs route),
+                // which would crash the host process at startup.
+                if ALLOWED_STATIC_DIRS.iter().any(|dir| {
+                    path == format!("/{}", dir) || path.starts_with(&format!("/{}/", dir))
+                }) {
+                    tracing::warn!("Skipping route {} {} -> {}: conflicts with static directory mount", method, path, handler_name);
+                    continue;
+                }
                 // Reject paths with Axum wildcards (*), path params (:param),
                 // or braces ({param}) to prevent router collisions.
                 if path.contains('*') || path.contains(':') || path.contains('{') || path.contains('}') {
