@@ -175,26 +175,14 @@ impl ServerRuntime {
 
                 if panic_count >= MAX_PANICS_IN_WINDOW {
                     tracing::warn!(
-                        "Worker panicked {} times in {}s — rejecting requests for {}s to prevent thrashing",
+                        "Worker panicked {} times in {}s — sleeping for {}s to prevent thrashing",
                         panic_count, PANIC_WINDOW.as_secs(), COOLDOWN.as_secs()
                     );
-                    // Stay awake and drain requests, returning errors immediately
-                    // instead of sleeping. Sleeping silently reduces the effective
-                    // pool size; if the same crash payload hits multiple workers,
-                    // all threads could sleep simultaneously, blocking all requests.
-                    let cooldown_until = std::time::Instant::now() + COOLDOWN;
-                    while std::time::Instant::now() < cooldown_until {
-                        match work_rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                            Ok(ScriptRequest::Call { reply, .. }) => {
-                                let _ = reply.send(Err("Worker in cooldown after repeated panics".into()));
-                            }
-                            Ok(ScriptRequest::Init { reply, .. }) => {
-                                let _ = reply.send(Err("Worker in cooldown after repeated panics".into()));
-                            }
-                            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-                            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
-                        }
-                    }
+                    // Sleep rather than drain the shared MPMC channel. A sleeping
+                    // worker simply doesn't participate — healthy workers pick up
+                    // all requests from the bounded queue. Draining would actively
+                    // steal requests from healthy workers and fail them ("black hole").
+                    std::thread::sleep(COOLDOWN);
                     panic_count = 0;
                     window_start = std::time::Instant::now();
                 }
