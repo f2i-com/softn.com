@@ -32,10 +32,30 @@ pub async fn serve(ctx: Arc<AppContext>, port: u16) -> Result<(), String> {
 }
 
 fn build_router(ctx: Arc<AppContext>) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // CORS: restrict origins if config.server.allowedOrigins is set.
+    // Wide-open CORS (Any) is fine for local dev but a CSRF risk in production.
+    let cors = {
+        let allowed_origins: Option<Vec<String>> = ctx.manifest.config.as_ref()
+            .and_then(|c| c.get("server"))
+            .and_then(|s| s.get("allowedOrigins"))
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+
+        if let Some(origins) = allowed_origins.filter(|o| !o.is_empty()) {
+            let parsed: Vec<axum::http::HeaderValue> = origins.iter()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if parsed.is_empty() {
+                tracing::warn!("config.server.allowedOrigins contains no valid origins, falling back to allow-all");
+                CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+            } else {
+                tracing::info!("CORS restricted to {} origin(s)", parsed.len());
+                CorsLayer::new().allow_origin(parsed).allow_methods(Any).allow_headers(Any)
+            }
+        } else {
+            CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+        }
+    };
 
     let mut router = Router::new()
         .route("/health", get(health))
@@ -56,6 +76,7 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
     // Register custom API routes from manifest
     if let Some(server) = &ctx.manifest.server {
         if let Some(routes) = &server.routes {
+            let mut registered_routes = std::collections::HashSet::<String>::new();
             for route in routes {
                 let handler_name = route.handler.clone();
                 let method = route.method.to_uppercase();
@@ -67,6 +88,13 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                 } else {
                     path
                 };
+                // Normalize: strip trailing slash (except root "/") to prevent
+                // Axum router panics from overlapping routes like /api and /api/.
+                let path = if path.len() > 1 && path.ends_with('/') {
+                    path[..path.len() - 1].to_string()
+                } else {
+                    path
+                };
                 if path == "/health" || path == "/manifest.json" || path == "/sync" {
                     tracing::warn!("Skipping route {} {} -> {}: conflicts with built-in route", method, path, handler_name);
                     continue;
@@ -75,6 +103,13 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                 // or braces ({param}) to prevent router collisions.
                 if path.contains('*') || path.contains(':') || path.contains('{') || path.contains('}') {
                     tracing::warn!("Skipping route {} {} -> {}: wildcards and path params are not allowed", method, path, handler_name);
+                    continue;
+                }
+                // Prevent duplicate (method, path) registrations — Axum panics
+                // on overlapping routes, which would crash the host process.
+                let route_key = format!("{} {}", method, path);
+                if !registered_routes.insert(route_key.clone()) {
+                    tracing::warn!("Skipping duplicate route: {} -> {}", route_key, handler_name);
                     continue;
                 }
 
