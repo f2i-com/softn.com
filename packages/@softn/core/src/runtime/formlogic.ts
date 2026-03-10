@@ -1338,12 +1338,24 @@ export class SoftNScriptRuntime {
    * movement ticks) can execute while slow host operations (AI generation) run.
    * The lock is re-acquired only briefly to resolve each callback in the VM.
    */
+  /** Max total host calls resolved per processPendingHostCalls invocation.
+   *  Prevents runaway callback chains from consuming unbounded memory/CPU. */
+  private static readonly MAX_HOST_CALL_ROUNDS = 256;
+
   private async processPendingHostCallsUnlocked(initialPending: PendingHostCall[]): Promise<void> {
     if (!this.vmEngine) return;
 
     let pending = initialPending;
+    let totalResolved = 0;
     while (pending.length > 0) {
       for (const call of pending) {
+        if (++totalResolved > SoftNScriptRuntime.MAX_HOST_CALL_ROUNDS) {
+          console.error(
+            `[SoftN] Host call limit exceeded (${SoftNScriptRuntime.MAX_HOST_CALL_ROUNDS}) — ` +
+            'aborting to prevent runaway callback chains'
+          );
+          return;
+        }
         // Execute the async host call OUTSIDE the lock
         let result: unknown;
         try {
@@ -1422,24 +1434,40 @@ export class SoftNScriptRuntime {
 
   // ── Permission checks ──
 
+  /** Whether we've already warned about missing permissionConfig (log once) */
+  private static _warnedNoPermConfig = false;
+
   private checkPermission(capability: string): void {
-    if (!this.permissionConfig) return; // No permission config = all allowed (dev mode)
+    if (!this.permissionConfig) {
+      // No permission config loaded — allow for backward compatibility but warn once.
+      // Authors should provide permission.json in production bundles; without it
+      // all host APIs are available (equivalent to a dev-mode grant).
+      if (!SoftNScriptRuntime._warnedNoPermConfig) {
+        SoftNScriptRuntime._warnedNoPermConfig = true;
+        console.warn(
+          '[SoftN] No permission.json loaded — all host APIs are allowed. ' +
+          'Add a permission.json to your bundle for production use.'
+        );
+      }
+      return;
+    }
+    // Permission config IS set — deny by default for any capability not explicitly enabled.
     const perms = this.permissionConfig.permissions;
     switch (capability) {
       case 'net':
-        if (!perms.net?.enabled) throw new Error('Network access not permitted');
+        if (!perms.net?.enabled) throw new Error('Network access not permitted. Add net.enabled to permission.json');
         break;
       case 'camera':
-        if (!perms.camera?.enabled) throw new Error('Camera access not permitted');
+        if (!perms.camera?.enabled) throw new Error('Camera access not permitted. Add camera.enabled to permission.json');
         break;
       case 'files':
-        if (!perms.files?.enabled) throw new Error('File access not permitted');
+        if (!perms.files?.enabled) throw new Error('File access not permitted. Add files.enabled to permission.json');
         break;
       case 'qr':
-        if (!perms.qr?.enabled) throw new Error('QR access not permitted');
+        if (!perms.qr?.enabled) throw new Error('QR access not permitted. Add qr.enabled to permission.json');
         break;
       case 'ai':
-        if (!perms.ai?.enabled) throw new Error('AI access not permitted');
+        if (!perms.ai?.enabled) throw new Error('AI access not permitted. Add ai.enabled to permission.json');
         break;
       case 'gpu':
         if (!perms.gpu?.enabled) throw new Error('GPU compute access not permitted. Add gpu.enabled to permission.json');
@@ -1447,25 +1475,34 @@ export class SoftNScriptRuntime {
       case 'sync':
         if (!perms.sync?.enabled) throw new Error('Sync not permitted. Add sync.enabled to permission.json');
         break;
+      default:
+        throw new Error(`Unknown capability: ${capability}. Add it to permission.json`);
     }
   }
 
   private checkNetHost(url: string): void {
-    if (!this.permissionConfig?.permissions.net) return;
-    const { allowed_hosts, allow_http } = this.permissionConfig.permissions.net;
+    let parsed: URL;
     try {
-      const parsed = new URL(url);
-      if (!allow_http && parsed.protocol === 'http:') {
-        throw new Error(`HTTP not allowed: ${url}`);
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`Invalid URL: ${url}`);
+    }
+
+    // Always enforce scheme allowlist — even without permission config, reject
+    // non-HTTP(S) schemes (e.g. file://, javascript:, data:) to prevent abuse.
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error(`Scheme not allowed: ${parsed.protocol}`);
+    }
+
+    const netPerms = this.permissionConfig?.permissions.net;
+    // Default: HTTPS only unless allow_http is explicitly true
+    if (!netPerms?.allow_http && parsed.protocol === 'http:') {
+      throw new Error(`HTTP not allowed (only HTTPS). Set net.allow_http in permission.json to allow: ${url}`);
+    }
+    if (netPerms?.allowed_hosts && netPerms.allowed_hosts.length > 0) {
+      if (!netPerms.allowed_hosts.includes(parsed.hostname)) {
+        throw new Error(`Host not allowed: ${parsed.hostname}`);
       }
-      if (allowed_hosts && allowed_hosts.length > 0) {
-        if (!allowed_hosts.includes(parsed.hostname)) {
-          throw new Error(`Host not allowed: ${parsed.hostname}`);
-        }
-      }
-    } catch (e) {
-      if (e instanceof TypeError) throw new Error(`Invalid URL: ${url}`);
-      throw e;
     }
   }
 
@@ -1477,11 +1514,14 @@ export class SoftNScriptRuntime {
     this.checkNetHost(url);
     const options = optionsJson ? JSON.parse(optionsJson) : {};
 
+    // Disable redirects to prevent allowlist bypass: a redirect from an
+    // allowed host to an internal/disallowed host would skip checkNetHost.
     const resp = await fetch(url, {
       method: options.method || 'GET',
       headers: options.headers,
       body: options.body ? JSON.stringify(options.body) : undefined,
       signal: AbortSignal.timeout(options.timeout || 15000),
+      redirect: 'error',
     });
 
     const body = await resp.text();

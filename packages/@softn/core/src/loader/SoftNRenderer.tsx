@@ -40,6 +40,25 @@ import type { Expression, TemplateNode } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 
 /**
+ * Sanitize CSS from bundle style blocks before injection.
+ * Strips patterns that could load external resources or exfiltrate data:
+ * - @import rules (external stylesheet loads)
+ * - url() values pointing to http/https/data URIs (resource loads, exfiltration)
+ * - expression() / -moz-binding (legacy IE/Firefox code execution)
+ * Leaves relative url() intact (e.g. fonts/images bundled with the app).
+ */
+function sanitizeBundleCSS(css: string): string {
+  // Remove @import rules (with or without url())
+  let sanitized = css.replace(/@import\s+(?:url\s*\([^)]*\)|["'][^"']*["'])[^;]*;?/gi, '/* @import removed */');
+  // Remove url() values that reference external protocols
+  sanitized = sanitized.replace(/url\s*\(\s*(['"]?)\s*(https?:|data:|javascript:|blob:)[^)]*\1\s*\)/gi, 'url(/* removed */)');
+  // Remove expression() (IE) and -moz-binding (Firefox) — code execution vectors
+  sanitized = sanitized.replace(/expression\s*\([^)]*\)/gi, '/* expression removed */');
+  sanitized = sanitized.replace(/-moz-binding\s*:[^;]+;?/gi, '/* -moz-binding removed */');
+  return sanitized;
+}
+
+/**
  * Error Boundary for catching runtime errors in SoftN rendering
  */
 interface ErrorBoundaryProps {
@@ -1145,7 +1164,7 @@ export function SoftNRenderer({
     return (
       <div ref={containerRef} key={`softn-container-${stateKey}`} data-softn-page={stateKey} style={{ height: '100%', minHeight: 0 }}>
         {state.document.style?.content && (
-          <style dangerouslySetInnerHTML={{ __html: state.document.style.content }} />
+          <style dangerouslySetInnerHTML={{ __html: sanitizeBundleCSS(state.document.style.content) }} />
         )}
         <SoftNErrorBoundary
           fallback={(error, reset) =>

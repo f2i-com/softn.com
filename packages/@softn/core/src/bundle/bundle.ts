@@ -449,12 +449,17 @@ async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>> {
     fileName = fileName.replace(/\\/g, '/');  // Normalize backslashes
     if (
       fileName.startsWith('/') ||
-      fileName.includes('..') ||
       fileName.includes('\0') ||
       /^[a-zA-Z]:/.test(fileName)
     ) {
-      // Skip entries with absolute paths, directory traversal, null bytes,
-      // or Windows drive letters (e.g., C:/foo)
+      // Skip entries with absolute paths, null bytes, or Windows drive letters
+      offset += 46 + nameLength + extraLength + commentLength;
+      continue;
+    }
+    // Canonical segment validation: reject "..", ".", and empty segments
+    // which can survive simple substring checks after normalisation
+    const segments = fileName.split('/');
+    if (segments.some(s => s === '..' || s === '.' || s === '')) {
       offset += 46 + nameLength + extraLength + commentLength;
       continue;
     }
@@ -493,6 +498,16 @@ async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>> {
         fileData = await decompressDeflate(compressedData, uncompressedSize);
       } else {
         throw new Error(`Unsupported compression method: ${compressionMethod}`);
+      }
+
+      // Verify decompressed size matches the declared uncompressed size.
+      // A mismatch indicates a corrupted or maliciously crafted ZIP entry
+      // (e.g., a zip bomb declaring a small size but inflating much larger).
+      if (fileData.length !== uncompressedSize) {
+        throw new Error(
+          `Decompressed size mismatch for "${fileName}": ` +
+          `expected ${uncompressedSize}, got ${fileData.length}`
+        );
       }
 
       entries.set(fileName, fileData);

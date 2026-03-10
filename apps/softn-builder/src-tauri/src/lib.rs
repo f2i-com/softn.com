@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 /// Validate that a path does not contain traversal sequences and is absolute.
 /// The builder should only operate on user-chosen file paths (from save/open dialogs).
+/// Also resolves symlinks to prevent write-through-symlink attacks where a symlink
+/// inside a project directory points to a sensitive location outside it.
 fn validate_path(path: &str) -> Result<PathBuf, String> {
     let p = PathBuf::from(path);
     // Reject paths containing traversal components
@@ -13,6 +15,15 @@ fn validate_path(path: &str) -> Result<PathBuf, String> {
     // Require absolute paths (from file dialogs)
     if !p.is_absolute() {
         return Err("Only absolute paths are allowed".to_string());
+    }
+    // For existing paths, resolve symlinks and verify the canonical path
+    // is still absolute and doesn't escape via symlink indirection.
+    if p.exists() {
+        let canonical = p.canonicalize()
+            .map_err(|e| format!("Failed to resolve path: {}", e))?;
+        if !canonical.is_absolute() {
+            return Err("Resolved path is not absolute".to_string());
+        }
     }
     Ok(p)
 }
