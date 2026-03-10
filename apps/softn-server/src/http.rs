@@ -89,12 +89,16 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
     let mut router = Router::new()
         .route("/health", get(health))
         .route("/manifest.json", get(serve_manifest))
-        .route("/sync", get(ws_upgrade));
+        .route("/sync", get(ws_upgrade))
+        .route("/sync/ticket", axum::routing::post(issue_ticket));
 
     // Explicit body limit for API routes (2MB default).
     // Configurable via manifest config.server.maxBodySize if needed.
-    // Cap at 256MB to prevent unreasonable values from exhausting memory.
-    const MAX_BODY_CEILING: u64 = 256 * 1024 * 1024;
+    // Cap at 16MB at the HTTP layer. Note: JSON parsing is further limited
+    // to 2MB by MAX_JSON_PARSE_SIZE in api_handler (serde_json::Value can
+    // use 5-10x the input size in RAM). The HTTP layer limit is higher to
+    // accommodate future non-JSON endpoints (e.g. file uploads).
+    const MAX_BODY_CEILING: u64 = 16 * 1024 * 1024;
     let max_body = ctx.manifest.config.as_ref()
         .and_then(|c| c.get("server"))
         .and_then(|s| s.get("maxBodySize"))
@@ -231,12 +235,37 @@ async fn serve_manifest(State(ctx): State<Arc<AppContext>>) -> Json<serde_json::
 /// Sync messages are typically small (a few KB per op), so 4MB is generous.
 const MAX_WS_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
-/// Pre-upgrade auth: validate the token from query params before allocating
+/// Issue a single-use, 30-second ticket for WebSocket authentication.
+/// Clients POST here with `Authorization: Bearer <token>` and receive a
+/// short-lived ticket to use in the WebSocket URL instead of their long-lived
+/// auth token. This prevents tokens from appearing in proxy access logs.
+async fn issue_ticket(
+    State(ctx): State<Arc<AppContext>>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let sync = ctx.sync_manager.clone();
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
+
+    match sync.issue_ticket(token.as_deref(), None) {
+        Ok(ticket) => Json(serde_json::json!({ "ticket": ticket })).into_response(),
+        Err(reason) => (StatusCode::UNAUTHORIZED, reason).into_response(),
+    }
+}
+
+/// Pre-upgrade auth: validate credentials from query params before allocating
 /// WebSocket resources. This rejects unauthenticated connections at the HTTP
 /// level (401), preventing attackers from exhausting file descriptors by
 /// opening thousands of connections that sit idle during post-upgrade auth.
 ///
-/// Clients pass the token as `?token=...` in the WebSocket URL.
+/// Preferred flow (avoids tokens in URLs/logs):
+///   1. POST /sync/ticket with Authorization header → { ticket: "..." }
+///   2. Connect to /sync?ticket=<ticket>
+///
+/// Fallback (backward-compatible): pass `?token=...` directly.
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(ctx): State<Arc<AppContext>>,
@@ -244,13 +273,24 @@ async fn ws_upgrade(
     axum::Extension(conn_tx): axum::Extension<tokio::sync::mpsc::Sender<()>>,
 ) -> axum::response::Response {
     let sync = ctx.sync_manager.clone();
-    let token = params.get("token").map(String::as_str);
     let app_version = params.get("appVersion").map(String::as_str);
 
-    let cid = match sync.handle_auth(token, app_version) {
-        Ok(cid) => cid,
-        Err(reason) => {
-            return (StatusCode::UNAUTHORIZED, reason).into_response();
+    // Prefer ticket-based auth (short-lived, single-use, not logged by proxies).
+    // Fall back to raw token for backward compatibility.
+    let cid = if let Some(ticket) = params.get("ticket") {
+        match sync.redeem_ticket(ticket) {
+            Ok(cid) => cid,
+            Err(reason) => {
+                return (StatusCode::UNAUTHORIZED, reason).into_response();
+            }
+        }
+    } else {
+        let token = params.get("token").map(String::as_str);
+        match sync.handle_auth(token, app_version) {
+            Ok(cid) => cid,
+            Err(reason) => {
+                return (StatusCode::UNAUTHORIZED, reason).into_response();
+            }
         }
     };
 

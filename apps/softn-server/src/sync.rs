@@ -7,6 +7,21 @@ use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use tokio::sync::broadcast;
 
+/// Short-lived, single-use WebSocket authentication ticket.
+/// Clients exchange their long-lived auth token for a ticket via POST /sync/ticket,
+/// then use the ticket in the WebSocket URL (?ticket=...) instead of the raw token.
+/// This prevents the long-lived token from appearing in proxy/load balancer access logs.
+struct AuthTicket {
+    /// Pre-authenticated client ID
+    client_id: String,
+    expires_at: std::time::Instant,
+}
+
+/// How long a ticket remains valid after issuance.
+const TICKET_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
+/// Maximum outstanding tickets before we start rejecting (prevents memory exhaustion).
+const MAX_PENDING_TICKETS: usize = 1000;
+
 /// Valid operations for sync ops.
 const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 
@@ -102,6 +117,8 @@ pub struct SyncManager {
     /// spawn_blocking pool (512 threads) from exhaustion by slow/malicious
     /// clients. When full, callers should return backpressure immediately.
     pub sync_permits: Arc<tokio::sync::Semaphore>,
+    /// Short-lived single-use tickets for WebSocket auth. Keyed by ticket ID.
+    tickets: std::sync::Mutex<std::collections::HashMap<String, AuthTicket>>,
 }
 
 impl SyncManager {
@@ -169,6 +186,7 @@ impl SyncManager {
             has_after_sync,
             auth_token,
             sync_permits,
+            tickets: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -202,6 +220,52 @@ impl SyncManager {
 
         let client_id = uuid::Uuid::new_v4().to_string();
         Ok(client_id)
+    }
+
+    /// Issue a short-lived, single-use ticket for WebSocket authentication.
+    /// The client calls POST /sync/ticket with their auth token in the
+    /// Authorization header; the returned ticket replaces the raw token in the
+    /// WebSocket URL, preventing long-lived tokens from appearing in proxy logs.
+    pub fn issue_ticket(&self, token: Option<&str>, app_version: Option<&str>) -> Result<String, String> {
+        // Validate the auth token first (reuse existing logic).
+        let client_id = self.handle_auth(token, app_version)?;
+
+        let mut tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Evict expired tickets opportunistically to bound memory usage.
+        let now = std::time::Instant::now();
+        tickets.retain(|_, t| t.expires_at > now);
+
+        if tickets.len() >= MAX_PENDING_TICKETS {
+            return Err("Too many pending tickets — try again later".into());
+        }
+
+        let ticket_id = uuid::Uuid::new_v4().to_string();
+        tickets.insert(ticket_id.clone(), AuthTicket {
+            client_id,
+            expires_at: now + TICKET_LIFETIME,
+        });
+        Ok(ticket_id)
+    }
+
+    /// Redeem a single-use ticket for WebSocket upgrade.
+    /// Returns the pre-authenticated client_id if the ticket is valid and
+    /// not expired. The ticket is consumed (removed) on success.
+    pub fn redeem_ticket(&self, ticket_id: &str) -> Result<String, String> {
+        let mut tickets = self.tickets.lock().unwrap_or_else(|p| p.into_inner());
+        match tickets.remove(ticket_id) {
+            Some(ticket) if ticket.expires_at > std::time::Instant::now() => {
+                Ok(ticket.client_id)
+            }
+            Some(_) => Err("Ticket expired".into()),
+            None => Err("Invalid ticket".into()),
+        }
+    }
+
+    /// Returns true if auth token is configured (clients should use ticket flow).
+    #[allow(dead_code)]
+    pub fn has_auth(&self) -> bool {
+        self.auth_token.is_some()
     }
 
     /// Pull collection state. If `last_sync` is provided, returns only records
@@ -451,6 +515,13 @@ impl SyncManager {
 
         // Phase 2: Apply all validated ops atomically under a single DB lock.
         // This prevents interleaving from concurrent client batches.
+        //
+        // WRITE CONTENTION NOTE: SQLite in WAL mode permits only one active writer.
+        // Heavy concurrent pushes bottleneck behind this Mutex. This is acceptable
+        // for local-first sync (clients push rarely, in batches) but requires that
+        // hooks (Phase 1) and post-processing (Phase 3) run OUTSIDE the lock so
+        // the time spent holding db.write() is exclusively I/O. Never add RPC
+        // calls, network requests, or expensive computation inside this block.
         let mut accepted_ops = Vec::new();
         if !validated_ops.is_empty() {
             let mut db = self.db.write();
