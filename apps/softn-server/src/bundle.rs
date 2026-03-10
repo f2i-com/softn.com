@@ -101,8 +101,11 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
 
         let name = entry.name().replace('\\', "/");
 
-        // Security: reject path traversal and absolute paths
-        if name.contains("..") || name.starts_with('/') || name.contains('\0') {
+        // Security: reject path traversal and absolute paths.
+        // The is_absolute() check catches Windows drive-letter paths (e.g. C:\...)
+        // which bypass the starts_with('/') check and would cause Path::join to
+        // replace the base path entirely, allowing writes to arbitrary locations.
+        if name.contains("..") || name.starts_with('/') || name.contains('\0') || Path::new(&name).is_absolute() {
             tracing::warn!("Skipping unsafe ZIP entry: {}", name);
             continue;
         }
