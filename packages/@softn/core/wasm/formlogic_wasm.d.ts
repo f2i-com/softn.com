@@ -89,6 +89,11 @@ export class WasmFormLogicEngine {
      * Store a JS localStorage bridge object for later use during init_script.
      */
     setLocalStorageBridge(bridge: any): void;
+    /**
+     * Override VM execution limits. Pass 0 to disable a limit.
+     * Defaults (set in init_script): 50M instructions, 5s wall time.
+     */
+    setExecutionLimits(max_instructions: number, max_wall_time_ms: number): void;
 }
 
 /**

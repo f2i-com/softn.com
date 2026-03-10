@@ -43,18 +43,28 @@ import type { SoftNRenderContext, SoftNProps } from '../types';
  * Sanitize CSS from bundle style blocks before injection.
  * Strips patterns that could load external resources or exfiltrate data:
  * - @import rules (external stylesheet loads)
- * - url() values pointing to http/https/data URIs (resource loads, exfiltration)
+ * - url() values pointing to http/https/data/javascript/blob URIs
+ * - Protocol-relative URLs (//attacker.test/...)
+ * - Encoded protocol schemes (\68ttp, \6a avascript, etc.)
  * - expression() / -moz-binding (legacy IE/Firefox code execution)
+ * - behavior: (IE HTC component loading)
  * Leaves relative url() intact (e.g. fonts/images bundled with the app).
  */
 function sanitizeBundleCSS(css: string): string {
+  // Strip CSS escape sequences that could bypass protocol detection
+  // (e.g. \6a avascript:, \68 ttp:, \75rl)
+  let sanitized = css.replace(/\\[0-9a-fA-F]{1,6}\s?/g, '_');
   // Remove @import rules (with or without url())
-  let sanitized = css.replace(/@import\s+(?:url\s*\([^)]*\)|["'][^"']*["'])[^;]*;?/gi, '/* @import removed */');
-  // Remove url() values that reference external protocols
-  sanitized = sanitized.replace(/url\s*\(\s*(['"]?)\s*(https?:|data:|javascript:|blob:)[^)]*\1\s*\)/gi, 'url(/* removed */)');
+  sanitized = sanitized.replace(/@import\s+(?:url\s*\([^)]*\)|["'][^"']*["'])[^;]*;?/gi, '/* @import removed */');
+  // Remove url() values that reference external or dangerous protocols
+  sanitized = sanitized.replace(/url\s*\(\s*(['"]?)\s*(https?:|data:|javascript:|blob:|ftp:)[^)]*\1\s*\)/gi, 'url(/* removed */)');
+  // Remove protocol-relative URLs (//host/path) inside url()
+  sanitized = sanitized.replace(/url\s*\(\s*(['"]?)\s*\/\/[^)]*\1\s*\)/gi, 'url(/* removed */)');
   // Remove expression() (IE) and -moz-binding (Firefox) — code execution vectors
   sanitized = sanitized.replace(/expression\s*\([^)]*\)/gi, '/* expression removed */');
   sanitized = sanitized.replace(/-moz-binding\s*:[^;]+;?/gi, '/* -moz-binding removed */');
+  // Remove behavior: (IE HTC component loading)
+  sanitized = sanitized.replace(/behavior\s*:[^;]+;?/gi, '/* behavior removed */');
   return sanitized;
 }
 
