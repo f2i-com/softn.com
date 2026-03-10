@@ -49,7 +49,15 @@ async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage)
 /// Handle an authenticated WebSocket connection.
 /// Auth is performed during the HTTP upgrade phase (see http::ws_upgrade),
 /// so `cid` is already validated before this function is called.
-pub async fn handle_ws(socket: WebSocket, sync: Arc<SyncManager>, shutdown_rx: watch::Receiver<bool>, cid: String) {
+/// `_conn_guard` is held for the lifetime of the connection — when dropped,
+/// it signals the shutdown drain that this connection has closed.
+pub async fn handle_ws(
+    socket: WebSocket,
+    sync: Arc<SyncManager>,
+    shutdown_rx: watch::Receiver<bool>,
+    cid: String,
+    _conn_guard: tokio::sync::mpsc::Sender<()>,
+) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Connection is pre-authenticated — send auth_ok immediately so the

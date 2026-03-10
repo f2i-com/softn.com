@@ -15,7 +15,12 @@ use tower_http::trace::TraceLayer;
 
 pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) -> Result<(), String> {
     let shutdown_tx = ctx.shutdown.clone();
-    let router = build_router(ctx, dev_mode);
+    // Connection drain: each WebSocket connection holds a clone of conn_tx.
+    // After shutdown, we wait for all clones to drop (= all connections closed)
+    // instead of using a fixed sleep, avoiding the race condition where
+    // 250ms isn't enough for writer tasks to flush Close frames under load.
+    let (conn_tx, mut conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let router = build_router(ctx, dev_mode, conn_tx);
     let addr = format!("{}:{}", host, port);
     tracing::info!("Listening on http://{}", addr);
 
@@ -28,15 +33,17 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) 
         .await
         .map_err(|e| format!("Server error: {}", e))?;
 
-    // Brief delay after graceful shutdown to let WebSocket writer tasks
-    // flush their Close frames to the OS TCP buffer before the Tokio
-    // runtime drops and terminates all spawned tasks.
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    // Wait for all WebSocket connections to close (senders dropped),
+    // with a timeout to prevent hanging indefinitely on stuck connections.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        conn_rx.recv(), // returns None when all senders are dropped
+    ).await;
 
     Ok(())
 }
 
-fn build_router(ctx: Arc<AppContext>, dev_mode: bool) -> Router {
+fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc::Sender<()>) -> Router {
     // CORS: restrict origins if config.server.allowedOrigins is set.
     // In production (no --dev flag), missing allowedOrigins defaults to rejecting
     // cross-origin requests to prevent CSRF. Use --dev for permissive CORS during
@@ -132,7 +139,10 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool) -> Router {
                 // on overlapping routes, which would crash the host process.
                 let route_key = format!("{} {}", method, path);
                 if !registered_routes.insert(route_key.clone()) {
-                    tracing::warn!("Skipping duplicate route: {} -> {}", route_key, handler_name);
+                    tracing::warn!(
+                        "Skipping duplicate route: {} -> {} (may result from trailing slash normalization)",
+                        route_key, handler_name
+                    );
                     continue;
                 }
 
@@ -195,6 +205,7 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool) -> Router {
         .layer(DefaultBodyLimit::max(max_body))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(axum::Extension(conn_tx))
         .with_state(ctx)
 }
 
@@ -221,6 +232,7 @@ async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(ctx): State<Arc<AppContext>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::Extension(conn_tx): axum::Extension<tokio::sync::mpsc::Sender<()>>,
 ) -> axum::response::Response {
     let sync = ctx.sync_manager.clone();
     let token = params.get("token").map(String::as_str);
@@ -235,7 +247,7 @@ async fn ws_upgrade(
 
     let shutdown_rx = ctx.shutdown.subscribe();
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
-        .on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx, cid))
+        .on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx, cid, conn_tx))
         .into_response()
 }
 
@@ -260,8 +272,10 @@ async fn api_handler(
 
     // Reject oversized bodies before doing any work — no point parsing
     // headers or spawning a blocking task for a body we won't process.
-    // serde_json::Value can use 5-10x the input size in RAM.
-    const MAX_JSON_PARSE_SIZE: usize = 10 * 1024 * 1024;
+    // serde_json::Value can use 5-10x the input size in RAM, and the value
+    // is then copied again into VM Objects. Keep this aligned with the
+    // default body limit (2MB). Larger payloads should use the FS bridge.
+    const MAX_JSON_PARSE_SIZE: usize = 2 * 1024 * 1024;
     if body.len() > MAX_JSON_PARSE_SIZE {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
