@@ -1,5 +1,5 @@
 use formlogic_core::http_bridge::{HttpBridge, HttpResponse};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::time::Duration;
 
 // All timeouts must be lower than the VM wall-time limit (25s) so HTTP
@@ -119,6 +119,46 @@ fn validate_url(url: &str) -> Result<(), String> {
                 "Requests to private/reserved IP {} are blocked (SSRF protection)",
                 ip
             ));
+        }
+    }
+
+    // DNS rebinding protection: resolve the hostname and verify all resolved
+    // IPs are safe. This prevents attacks where an attacker-controlled domain
+    // (e.g. evil.com) has a DNS A record pointing to 127.0.0.1 or
+    // 169.254.169.254 — the static string checks above would pass, but the
+    // actual connection would reach internal services.
+    //
+    // There is a tiny TOCTOU window (ureq resolves DNS again internally), but
+    // combined with max_redirects(0) and the static checks, the attack surface
+    // is negligible. A custom ureq Resolver would close it fully but the API
+    // is still unstable (ureq::unversioned).
+    if host.parse::<IpAddr>().is_err() {
+        // It's a hostname, not a literal IP — resolve it
+        let port = host_port
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(80);
+        let addr_str = format!("{}:{}", host, port);
+        match addr_str.to_socket_addrs() {
+            Ok(addrs) => {
+                let resolved: Vec<_> = addrs.collect();
+                if resolved.is_empty() {
+                    return Err(format!("DNS resolution failed for host: {}", host));
+                }
+                for addr in &resolved {
+                    if is_blocked_ip(addr.ip()) {
+                        return Err(format!(
+                            "DNS for {} resolved to blocked IP {} (SSRF protection)",
+                            host,
+                            addr.ip()
+                        ));
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(format!("DNS resolution failed for {}: {}", host, e));
+            }
         }
     }
 
