@@ -19,6 +19,11 @@ const OUT_CHANNEL_SIZE: usize = 512;
 /// Timeout for sending direct responses (sync_pull/sync_push results).
 /// If the writer can't drain within this, the client is irrecoverably slow.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Server-to-client Ping interval. Browser WebSocket APIs cannot send Ping
+/// frames, so without server-initiated pings an idle (but healthy) browser
+/// client would hit IDLE_TIMEOUT and be disconnected. The browser's built-in
+/// Pong reply resets the reader's idle timer automatically.
+const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Send a direct response (sync_pull/sync_push result) to the writer task.
 /// Uses an async send with a timeout — these are responses the client is
@@ -150,6 +155,10 @@ async fn writer_task(
     cid: String,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+    // First tick fires immediately — skip it so we don't ping right after connect.
+    ping_interval.tick().await;
+
     loop {
         tokio::select! {
             // Messages from the reader (sync responses, errors, etc.)
@@ -201,6 +210,15 @@ async fn writer_task(
                         tracing::info!("Broadcast channel closed, disconnecting client {}", cid);
                         break;
                     }
+                }
+            }
+            // Server-initiated keepalive ping. Browser WebSocket APIs cannot
+            // send Ping frames, so without this an idle browser client would
+            // hit the reader's IDLE_TIMEOUT and be disconnected. The browser
+            // automatically replies with a Pong, which resets the idle timer.
+            _ = ping_interval.tick() => {
+                if ws_tx.send(Message::Ping(vec![].into())).await.is_err() {
+                    break;
                 }
             }
             // Server shutdown — send a clean Close frame before the process exits
