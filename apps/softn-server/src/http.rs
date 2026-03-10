@@ -15,6 +15,10 @@ use tower_http::trace::TraceLayer;
 
 pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) -> Result<(), String> {
     let shutdown_tx = ctx.shutdown.clone();
+    // Start background ticket cleanup so expired tickets are pruned even when
+    // no new issue/redeem requests arrive (prevents attacker lock-out via
+    // ticket table exhaustion).
+    ctx.sync_manager.spawn_ticket_cleanup();
     // Connection drain: each WebSocket connection holds a clone of conn_tx.
     // After shutdown, we wait for all clones to drop (= all connections closed)
     // instead of using a fixed sleep, avoiding the race condition where

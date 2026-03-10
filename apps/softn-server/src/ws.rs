@@ -37,10 +37,15 @@ const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 /// the caller to **drop the connection immediately**. A failed send means the
 /// client is irrecoverably slow; dropping forces a reconnect and fresh sync.
 ///
-/// On timeout, sends an Error message describing the reason before returning
-/// false, so the writer task can relay it to the client as a clean Close
-/// frame instead of an abrupt TCP FIN.
-async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage) -> bool {
+/// On timeout, sets the close reason on `close_reason_tx` so the writer task
+/// can include it in the Close frame. This bypasses the full outbound channel
+/// via a dedicated watch channel, guaranteeing the reason is delivered even
+/// when the mpsc channel is completely full.
+async fn send_response(
+    out_tx: &mpsc::Sender<ServerMessage>,
+    close_reason_tx: &watch::Sender<Option<String>>,
+    msg: ServerMessage,
+) -> bool {
     match tokio::time::timeout(SEND_TIMEOUT, out_tx.send(msg)).await {
         Ok(Ok(())) => true,
         Ok(Err(_)) => {
@@ -49,11 +54,11 @@ async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage)
         }
         Err(_) => {
             tracing::warn!("WebSocket send timed out ({}s) — dropping connection to force re-sync", SEND_TIMEOUT.as_secs());
-            // Best-effort: try to send an error message so the writer can
-            // relay it before closing. Use try_send to avoid blocking again.
-            let _ = out_tx.try_send(ServerMessage::Error {
-                message: "Connection too slow — disconnecting to force re-sync".into(),
-            });
+            // Signal the close reason via a dedicated watch channel that bypasses
+            // the full mpsc queue. The writer reads this when out_rx returns None.
+            let _ = close_reason_tx.send(Some(
+                "Connection too slow — disconnecting to force re-sync".into(),
+            ));
             false
         }
     }
@@ -93,11 +98,17 @@ pub async fn handle_ws(
     let (out_tx, out_rx) = mpsc::channel::<ServerMessage>(OUT_CHANNEL_SIZE);
     let broadcast_rx = sync.subscribe();
 
+    // Dedicated watch channel for terminal close reasons. When send_response
+    // times out, the mpsc channel is likely full — so we use a separate watch
+    // channel to deliver the close reason to the writer task, which reads it
+    // when out_rx returns None (after out_tx is dropped).
+    let (close_reason_tx, close_reason_rx) = watch::channel::<Option<String>>(None);
+
     let cid_for_writer = cid.clone();
-    let writer_handle = tokio::spawn(writer_task(ws_tx, out_rx, broadcast_rx, cid_for_writer, shutdown_rx));
+    let writer_handle = tokio::spawn(writer_task(ws_tx, out_rx, broadcast_rx, cid_for_writer, shutdown_rx, close_reason_rx));
 
     // Reader task: runs in the current task
-    reader_task(&mut ws_rx, &sync, &cid, &out_tx).await;
+    reader_task(&mut ws_rx, &sync, &cid, &out_tx, &close_reason_tx).await;
 
     // Reader exited (client disconnected or error) — drop out_tx to signal writer
     drop(out_tx);
@@ -115,6 +126,7 @@ async fn writer_task(
     mut broadcast_rx: broadcast::Receiver<(String, ServerMessage)>,
     cid: String,
     mut shutdown_rx: watch::Receiver<bool>,
+    close_reason_rx: watch::Receiver<Option<String>>,
 ) {
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     // First tick fires immediately — skip it so we don't ping right after connect.
@@ -136,9 +148,14 @@ async fn writer_task(
                     // sees a clean disconnect instead of an abrupt TCP close
                     // (covers both normal exit and send_response timeout).
                     None => {
+                        // Check the watch channel for a terminal close reason
+                        // (set by send_response on timeout). Falls back to a
+                        // generic reason for normal disconnects.
+                        let reason = close_reason_rx.borrow().clone()
+                            .unwrap_or_else(|| "Connection closing".into());
                         let _ = ws_tx.send(Message::Close(Some(CloseFrame {
                             code: 1000,
-                            reason: "Connection closing".into(),
+                            reason: reason.into(),
                         }))).await;
                         break;
                     }
@@ -210,6 +227,7 @@ async fn reader_task(
     sync: &Arc<SyncManager>,
     cid: &str,
     out_tx: &mpsc::Sender<ServerMessage>,
+    close_reason_tx: &watch::Sender<Option<String>>,
 ) {
     loop {
         // Idle timeout: if no data arrives within IDLE_TIMEOUT, assume the
@@ -219,7 +237,7 @@ async fn reader_task(
             Ok(msg) => msg,
             Err(_) => {
                 tracing::info!("Client {} idle timeout ({}s) — disconnecting", cid, IDLE_TIMEOUT.as_secs());
-                let _ = send_response(out_tx, ServerMessage::Error {
+                let _ = send_response(out_tx, close_reason_tx, ServerMessage::Error {
                     message: "Idle timeout".into(),
                 }).await;
                 break;
@@ -231,7 +249,7 @@ async fn reader_task(
                 let parsed: serde_json::Value = match util::parse_json_bounded(&text, util::MAX_JSON_DEPTH) {
                     Ok(v) => v,
                     Err(_) => {
-                        if !send_response(out_tx, ServerMessage::Error {
+                        if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
                             message: "Invalid JSON".into(),
                         }).await {
                             break;
@@ -273,7 +291,7 @@ async fn reader_task(
                         ).await {
                             Ok(Ok(p)) => p,
                             _ => {
-                                if !send_response(out_tx, ServerMessage::Error {
+                                if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
                                     message: "Server busy — too many concurrent sync operations, retry later".into(),
                                 }).await {
                                     return;
@@ -305,7 +323,7 @@ async fn reader_task(
                             }
                         };
                         for resp in responses {
-                            if !send_response(out_tx, resp).await {
+                            if !send_response(out_tx, close_reason_tx, resp).await {
                                 return;
                             }
                         }
@@ -319,7 +337,7 @@ async fn reader_task(
                             None => Vec::new(),
                         };
                         if ops.is_empty() {
-                            if !send_response(out_tx, ServerMessage::Error {
+                            if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
                                 message: "Invalid or empty ops in sync_push".into(),
                             }).await {
                                 return;
@@ -327,7 +345,7 @@ async fn reader_task(
                             continue;
                         }
                         if ops.len() > MAX_OPS_PER_PUSH {
-                            if !send_response(out_tx, ServerMessage::Error {
+                            if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
                                 message: format!("Too many ops ({}, max {})", ops.len(), MAX_OPS_PER_PUSH),
                             }).await {
                                 return;
@@ -342,7 +360,7 @@ async fn reader_task(
                         ).await {
                             Ok(Ok(p)) => p,
                             _ => {
-                                if !send_response(out_tx, ServerMessage::Error {
+                                if !send_response(out_tx, close_reason_tx, ServerMessage::Error {
                                     message: "Server busy — too many concurrent sync operations, retry later".into(),
                                 }).await {
                                     return;
@@ -375,7 +393,7 @@ async fn reader_task(
                             }
                         };
                         for resp in responses {
-                            if !send_response(out_tx, resp).await {
+                            if !send_response(out_tx, close_reason_tx, resp).await {
                                 return;
                             }
                         }

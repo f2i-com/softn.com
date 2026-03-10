@@ -1,9 +1,16 @@
 use formlogic_core::http_bridge::{HttpBridge, HttpResponse};
 use std::time::Duration;
 
-// Must be lower than the VM wall-time limit (25s) so HTTP calls
-// time out before the VM does, producing a clean script-level error.
-const TIMEOUT: Duration = Duration::from_secs(20);
+// All timeouts must be lower than the VM wall-time limit (25s) so HTTP
+// calls time out before the VM does, producing a clean script-level error
+// instead of a silent thread leak. The global timeout (20s) is the hard
+// upper bound. Connect and read timeouts are set tighter to fail fast on
+// unresponsive hosts and prevent spawn_blocking threads from hanging if
+// the tokio::time::timeout fires first (which only cancels the await,
+// not the underlying OS thread).
+const TIMEOUT_GLOBAL: Duration = Duration::from_secs(20);
+const TIMEOUT_CONNECT: Duration = Duration::from_secs(10);
+const TIMEOUT_READ: Duration = Duration::from_secs(15);
 
 pub struct NativeHttpBridge {
     agent: ureq::Agent,
@@ -13,7 +20,9 @@ impl NativeHttpBridge {
     pub fn new() -> Self {
         let agent = ureq::Agent::new_with_config(
             ureq::config::Config::builder()
-                .timeout_global(Some(TIMEOUT))
+                .timeout_global(Some(TIMEOUT_GLOBAL))
+                .timeout_connect(Some(TIMEOUT_CONNECT))
+                .timeout_recv_body(Some(TIMEOUT_READ))
                 .http_status_as_error(false)
                 .build(),
         );
