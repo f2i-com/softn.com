@@ -13,10 +13,10 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
-pub async fn serve(ctx: Arc<AppContext>, port: u16) -> Result<(), String> {
+pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16) -> Result<(), String> {
     let shutdown_tx = ctx.shutdown.clone();
     let router = build_router(ctx);
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{}:{}", host, port);
     tracing::info!("Listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -27,6 +27,11 @@ pub async fn serve(ctx: Arc<AppContext>, port: u16) -> Result<(), String> {
         .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await
         .map_err(|e| format!("Server error: {}", e))?;
+
+    // Brief delay after graceful shutdown to let WebSocket writer tasks
+    // flush their Close frames to the OS TCP buffer before the Tokio
+    // runtime drops and terminates all spawned tasks.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     Ok(())
 }
@@ -91,6 +96,7 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                 // Normalize: strip trailing slash (except root "/") to prevent
                 // Axum router panics from overlapping routes like /api and /api/.
                 let path = if path.len() > 1 && path.ends_with('/') {
+                    tracing::warn!("Route path '{}' has trailing slash — stripped to '{}'", path, &path[..path.len() - 1]);
                     path[..path.len() - 1].to_string()
                 } else {
                     path
@@ -217,6 +223,17 @@ async fn api_handler(
         }
     };
 
+    // Reject oversized bodies before doing any work — no point parsing
+    // headers or spawning a blocking task for a body we won't process.
+    // serde_json::Value can use 5-10x the input size in RAM.
+    const MAX_JSON_PARSE_SIZE: usize = 10 * 1024 * 1024;
+    if body.len() > MAX_JSON_PARSE_SIZE {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({"error": format!("Body too large ({} bytes, max {})", body.len(), MAX_JSON_PARSE_SIZE)})),
+        );
+    }
+
     // Collect lightweight metadata on the reactor; defer heavy work to spawn_blocking.
     let headers_json: serde_json::Map<String, serde_json::Value> = headers
         .iter()
@@ -238,13 +255,9 @@ async fn api_handler(
         std::time::Duration::from_secs(30),
         tokio::task::spawn_blocking(move || {
             // Parse body off the reactor (can be CPU-intensive for large JSON).
-            // Cap at 10MB — serde_json::Value can use 5-10x the input size in RAM.
-            // Also enforces depth limit to prevent stack overflow from nested payloads.
-            const MAX_JSON_PARSE_SIZE: usize = 10 * 1024 * 1024;
+            // Depth limit prevents stack overflow from deeply nested payloads.
             let body_json = if body.is_empty() {
                 serde_json::Value::Null
-            } else if body.len() > MAX_JSON_PARSE_SIZE {
-                serde_json::json!({ "__oversized": true, "size": body.len() })
             } else {
                 match std::str::from_utf8(&body) {
                     Ok(text) => util::parse_json_bounded(text, util::MAX_JSON_DEPTH)

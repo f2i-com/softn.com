@@ -27,6 +27,10 @@ enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "3000")]
         port: u16,
+        /// Host address to bind to (default: 127.0.0.1 for safety;
+        /// use 0.0.0.0 to expose to the network)
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
         /// Data directory for XDB and files
         #[arg(long)]
         data_dir: Option<PathBuf>,
@@ -50,9 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { path, port, data_dir, workers } => {
+        Commands::Run { path, port, host, data_dir, workers } => {
             let ctx = app::AppContext::load(path, data_dir, workers)?;
-            http::serve(ctx, port).await?;
+            http::serve(ctx, &host, port).await?;
         }
         Commands::Info { path } => {
             let manifest = bundle::load_manifest(&path)?;
