@@ -8,8 +8,7 @@ Status: Working draft
 
 SoftN Studio is the no-code creation surface for the SoftN ecosystem. It lets a user describe an app in natural language, shape it visually, wire data and actions without writing code, then either:
 
-- download the result as a portable `.softn` bundle, or
-- publish it to the web and open it in a browser-based SoftN viewer.
+- download the result as a portable `.softn` bundle.
 
 The product is not just a prompt box. It is a guided studio with:
 
@@ -25,7 +24,7 @@ Core promise:
 - describe the app in plain language,
 - review the AI's plan before generation,
 - visually edit pages, data, and actions,
-- export or publish without touching code.
+- export without touching code.
 
 ## 2. Product Goals
 
@@ -34,7 +33,7 @@ Core promise:
 - Make SoftN app creation accessible to non-developers.
 - Keep generation aligned to SoftN-native patterns instead of generic code output.
 - Support both privacy-conscious BYOK users and zero-setup House AI users.
-- Make export and publish feel like first-class outcomes, not afterthoughts.
+- Make export feel like a first-class outcome, not an afterthought.
 
 ### Non-goals
 
@@ -72,7 +71,7 @@ Users should be able to:
 5. Edit pages, components, bindings, and actions visually.
 6. Preview the app live at desktop, tablet, and mobile widths.
 7. Export the app as a `.softn` file.
-8. Publish the app to the web and open it in a web viewer.
+8. Run the exported bundle locally with `softn-server`.
 
 ## 5. Product Principles
 
@@ -161,14 +160,12 @@ Inside the editor, the user can:
 
 Every meaningful change triggers validation. If errors appear, the Repair agent receives a minimal failure packet and patches only the necessary files.
 
-### Phase H: Export or publish
+### Phase H: Export
 
 The user can:
 
 - export a `.softn` bundle for download,
-- publish to `play.softn.com`,
-- open the published app in a browser viewer,
-- manage versions and visibility.
+- manage versions locally.
 
 ## 7. AI Access Model
 
@@ -346,14 +343,12 @@ This target influences:
 - sync strategy,
 - navigation patterns,
 - allowed capabilities,
-- publish behavior,
+- export behavior,
 - validation rules.
 
 The system should prevent or warn on target-incompatible generation.
 
-## 12. Export and Web Viewing
-
-### Export
+## 12. Export
 
 Export flow:
 
@@ -363,25 +358,7 @@ Export flow:
 4. Zip the bundle into a `.softn` file.
 5. Trigger browser download.
 
-### Publish
-
-Publish flow:
-
-1. Require zero blocking validation errors.
-2. Upload the generated bundle and assets.
-3. Create a publish record with slug, visibility, and version.
-4. Return a public viewer URL.
-5. Open the published app through a lightweight web viewer powered by the SoftN runtime.
-
-### Viewer requirements
-
-The web viewer should:
-
-- fetch the published `.softn` bundle,
-- mount it using the SoftN runtime,
-- support responsive viewing,
-- support PWA install where relevant,
-- honor public, unlisted, or password-protected visibility rules.
+The exported bundle can be run locally with `softn-server run app.softn`.
 
 ## 13. Billing and Commerce
 
@@ -417,11 +394,11 @@ Internally, usage should be based on actual token consumption, mapped to credits
 - explicit postMessage bridge only
 - no direct access to parent app state except approved events
 
-### Publishing security
+### Export security
 
-- publish only validated static bundles
+- export only validated bundles
 - block forbidden paths and absolute references
-- scan for common unsafe patterns before publish
+- scan for common unsafe patterns before export
 
 ## 15. Analytics
 
@@ -429,20 +406,12 @@ The product should measure:
 
 - time to first preview,
 - blueprint approval rate,
-- export vs publish ratio,
+- export rate,
 - credits consumed per app,
 - validation failure rate,
 - retry frequency,
 - smart-component usage rate,
-- publish success rate.
-
-User-facing analytics for published apps can include:
-
-- views,
-- unique visitors,
-- session duration,
-- install count,
-- high-level geography.
+- export success rate.
 
 ## 16. MVP Scope
 
@@ -458,7 +427,6 @@ User-facing analytics for published apps can include:
 - VFS-backed preview and export
 - validation drawer with actionable errors
 - `.softn` export
-- publish to web viewer
 
 ### Post-MVP
 
@@ -466,7 +434,7 @@ User-facing analytics for published apps can include:
 - template marketplace
 - custom component SDK
 - GitHub sync
-- CI/CD publishing
+- web publishing and viewer
 - custom domains
 - backend functions
 
@@ -488,7 +456,7 @@ Recommended next implementation slices:
 3. Build agent action timeline and validation pipeline UI.
 4. Implement BYOK provider management with encrypted session storage.
 5. Add House AI credit purchase, estimate, and ledger flows.
-6. Implement publish API contract and web viewer integration.
+6. (Post-MVP) Implement web publishing and viewer integration.
 
 ## 18. Acceptance Criteria
 
@@ -497,5 +465,5 @@ Recommended next implementation slices:
 - The user can review and approve a blueprint before file generation.
 - The editor shows a live preview and supports selection-driven inspection.
 - The user can export a valid `.softn` bundle.
-- The user can publish a validated app and open it in a web viewer.
+- The user can export a validated `.softn` bundle and run it with `softn-server`.
 - The system surfaces spend, progress, and validation issues clearly.

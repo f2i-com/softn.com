@@ -47,7 +47,12 @@ impl AppContext {
                 base.join("softn").join(&manifest.name)
             } else {
                 let base = if bundle_path.is_file() {
-                    bundle_path.parent().unwrap_or(&bundle_path).to_path_buf()
+                    // parent() returns "" for bare filenames like "app.softn",
+                    // which would create an invalid path. Default to "." (cwd).
+                    bundle_path.parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or_else(|| std::path::Path::new("."))
+                        .to_path_buf()
                 } else {
                     bundle_path.clone()
                 };
