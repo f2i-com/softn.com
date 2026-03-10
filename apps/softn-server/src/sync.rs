@@ -418,15 +418,20 @@ impl SyncManager {
             self.call_before_sync_batch(basic_valid_ops, &mut responses)
         } else if self.has_before_sync {
             let mut accepted = Vec::new();
-            for op in basic_valid_ops {
+            for mut op in basic_valid_ops {
                 match self.call_before_sync(&op) {
-                    Ok(false) => {
+                    Ok((false, _)) => {
                         tracing::info!("onBeforeSync rejected op {}", op.id);
                         responses.push(ServerMessage::SyncReject {
                             op_id: op.id.clone(),
                             reason: "Rejected by onBeforeSync hook".into(),
                         });
                     }
+                    Ok((true, Some(new_data))) => {
+                        op.data = Some(new_data);
+                        accepted.push(op);
+                    }
+                    Ok((true, None)) => accepted.push(op),
                     Err(e) => {
                         // Hook execution error — use SyncRetry so the client
                         // retains the op. A server redeploy may fix the script
@@ -437,7 +442,6 @@ impl SyncManager {
                             reason: "Transient hook error — retry later".into(),
                         });
                     }
-                    _ => accepted.push(op),
                 }
             }
             accepted
@@ -532,8 +536,16 @@ impl SyncManager {
     }
 
     /// Batch before-sync hook: passes all ops in a single RPC call.
-    /// Returns an array of rejected op IDs, or an object `{ rejected: ["id1", ...] }`.
-    /// Ops not in the rejected list are accepted.
+    /// Supported return formats:
+    ///   - `["id1", "id2"]`                    — rejected IDs
+    ///   - `{ rejected: ["id1"] }`             — rejected IDs
+    ///   - `{ rejected: ["id1"], ops: [...] }` — rejected IDs + data mutations
+    ///   - `{ ops: [...] }`                    — accept all, with data mutations
+    ///   - `null` / `undefined`                — accept all
+    ///
+    /// When `ops` is present, each entry's `data` field overrides the original
+    /// op's data before DB insertion, enabling hooks to sanitize, transform,
+    /// or enrich data (e.g. trimming strings, adding server-computed fields).
     fn call_before_sync_batch(
         &self,
         ops: Vec<SyncOp>,
@@ -573,8 +585,9 @@ impl SyncManager {
             serde_json::Value::Object(obj) => {
                 if let Some(arr) = obj.get("rejected").and_then(|v| v.as_array()) {
                     arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                } else if obj.is_empty() {
-                    // Empty object {} — accept all (no rejections)
+                } else if obj.is_empty() || obj.contains_key("ops") {
+                    // Empty object {} or { ops: [...] } — no rejections.
+                    // If `ops` is present, data mutations are applied below.
                     std::collections::HashSet::new()
                 } else {
                     // Object doesn't match expected schema (e.g. { reject: [...] }
@@ -609,17 +622,52 @@ impl SyncManager {
                 accepted.push(op);
             }
         }
+
+        // Apply data mutations from `ops` field if present (hook data sanitization).
+        // Each returned op with an `id` + `data` overrides the original op's data
+        // before DB insertion. Ops not in the returned array keep their original data.
+        if let serde_json::Value::Object(obj) = &result {
+            if let Some(returned_ops) = obj.get("ops").and_then(|v| v.as_array()) {
+                let mutations: std::collections::HashMap<&str, &serde_json::Value> = returned_ops
+                    .iter()
+                    .filter_map(|v| {
+                        let id = v.get("id")?.as_str()?;
+                        let data = v.get("data")?;
+                        Some((id, data))
+                    })
+                    .collect();
+
+                if !mutations.is_empty() {
+                    for op in &mut accepted {
+                        if let Some(&new_data) = mutations.get(op.id.as_str()) {
+                            op.data = Some(new_data.clone());
+                        }
+                    }
+                    tracing::info!(
+                        "onBeforeSyncBatch mutated data for {} op(s)",
+                        mutations.len()
+                    );
+                }
+            }
+        }
+
         accepted
     }
 
-    fn call_before_sync(&self, op: &SyncOp) -> Result<bool, String> {
+    /// Per-op before-sync hook. Returns `(accepted, optional_mutated_data)`.
+    /// If the hook returns an object with a `data` field, that data overrides
+    /// the original op's data (enabling sanitization/enrichment).
+    /// An explicit `false` rejects; null/undefined/true accepts without mutation.
+    fn call_before_sync(&self, op: &SyncOp) -> Result<(bool, Option<serde_json::Value>), String> {
         let rt = self.runtime.as_ref().ok_or("No runtime")?;
         let op_json = Self::op_to_json(op);
         let result = rt.call("onBeforeSync", vec![op_json])?;
-        // Only an explicit `false` rejects; null/undefined (forgotten return) allows
         match &result {
-            serde_json::Value::Bool(false) => Ok(false),
-            _ => Ok(true),
+            serde_json::Value::Bool(false) => Ok((false, None)),
+            serde_json::Value::Object(obj) if obj.contains_key("data") => {
+                Ok((true, obj.get("data").cloned()))
+            }
+            _ => Ok((true, None)),
         }
     }
 
