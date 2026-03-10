@@ -12,7 +12,7 @@ import type { XDBService } from './xdb';
 // ── Types ─────────────────────────────────────────────────
 
 export interface ServerSyncConfig {
-  /** WebSocket URL for the sync endpoint (e.g. "ws://localhost:3000/sync") */
+  /** WebSocket URL for the sync endpoint (e.g. "wss://sync.example.com/sync") */
   wsUrl: string;
   /** App version (sent during auth handshake) */
   appVersion: string;
@@ -22,6 +22,8 @@ export interface ServerSyncConfig {
   collections?: string[];
   /** Reconnection delay in ms (default: 2000) */
   reconnectDelay?: number;
+  /** Allow insecure ws:// connections (default: false, only for local development) */
+  allowInsecureWs?: boolean;
 }
 
 /** A sync operation (mutation) sent to/from the server. */
@@ -139,9 +141,24 @@ export class XDBServerSync {
 
   // ── Internal ───────────────────────────────────────────
 
+  /** Maximum inbound message size (2MB). Prevents memory exhaustion from
+   *  a compromised or malicious server sending oversized payloads. */
+  private static readonly MAX_MESSAGE_SIZE = 2 * 1024 * 1024;
+
   private createConnection(): void {
+    // Enforce wss:// in production to prevent MitM. Allow ws:// only when
+    // explicitly opted in (local development against localhost).
+    const url = this.config.wsUrl;
+    if (url.startsWith('ws://') && !this.config.allowInsecureWs) {
+      const host = new URL(url.replace('ws://', 'http://')).hostname;
+      if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+        this.listeners.error.forEach((fn) => fn('Insecure ws:// connections are blocked outside localhost. Use wss:// or set allowInsecureWs for development.'));
+        return;
+      }
+    }
+
     try {
-      this.ws = new WebSocket(this.config.wsUrl);
+      this.ws = new WebSocket(url);
     } catch (e) {
       this.scheduleReconnect();
       return;
@@ -157,8 +174,17 @@ export class XDBServerSync {
 
     this.ws.onmessage = (event) => {
       try {
-        const msg: ServerMessage = JSON.parse(event.data as string);
-        this.handleMessage(msg);
+        const raw = event.data as string;
+        if (raw.length > XDBServerSync.MAX_MESSAGE_SIZE) {
+          console.warn('[XDBServerSync] Message too large, discarding:', raw.length);
+          return;
+        }
+        const msg = JSON.parse(raw) as Record<string, unknown>;
+        if (!msg || typeof msg.type !== 'string') {
+          console.warn('[XDBServerSync] Invalid message structure, discarding');
+          return;
+        }
+        this.handleMessage(msg as ServerMessage);
       } catch {
         // Ignore malformed messages
       }

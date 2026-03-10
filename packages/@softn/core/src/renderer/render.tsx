@@ -204,20 +204,11 @@ export function renderNode(
 }
 
 /**
- * Set of valid HTML element tags
+ * Safe-by-default HTML allowlist for untrusted bundles.
+ * Excludes all active content tags (script, iframe, embed, object, etc.)
+ * and document metadata tags that could bypass security policies.
  */
 const HTML_ELEMENTS = new Set([
-  // Main root
-  'html',
-  // Document metadata
-  'base',
-  'head',
-  'link',
-  'meta',
-  'style',
-  'title',
-  // Sectioning root
-  'body',
   // Content sectioning
   'address',
   'article',
@@ -287,21 +278,14 @@ const HTML_ELEMENTS = new Set([
   'map',
   'track',
   'video',
-  // Embedded content
-  'embed',
-  'iframe',
-  'object',
-  'param',
+  // Safe embedded content (no active content loaders)
   'picture',
-  'portal',
   'source',
   // SVG and MathML
   'svg',
   'math',
-  // Scripting
+  // Canvas (drawing API, no script execution)
   'canvas',
-  'noscript',
-  'script',
   // Demarcating edits
   'del',
   'ins',
@@ -335,16 +319,40 @@ const HTML_ELEMENTS = new Set([
   'details',
   'dialog',
   'summary',
-  // Web Components
-  'slot',
-  'template',
 ]);
 
 /**
- * Check if a tag is a valid HTML element
+ * Explicitly blocked tags — active content, document metadata, and embedded
+ * contexts that could execute code or load external resources in the host DOM.
+ * Checked as a denylist safeguard even if the allowlist evolves.
+ */
+const BLOCKED_TAGS = new Set([
+  'script',    // JS execution
+  'iframe',    // embedded browsing context
+  'embed',     // plugin content
+  'object',    // plugin/embedded content
+  'portal',    // embedded browsing context
+  'link',      // external resource loading
+  'meta',      // http-equiv redirects, CSP overrides
+  'base',      // base URL hijacking
+  'style',     // CSS injection (handled separately by sanitizer)
+  'template',  // inert but can be activated by scripts
+  'noscript',  // content injection when scripts disabled
+  'html',      // document root
+  'head',      // document metadata container
+  'body',      // document body
+  'title',     // document title
+  'param',     // object parameters
+  'slot',      // web component slot
+]);
+
+/**
+ * Check if a tag is a valid HTML element (safe for untrusted rendering)
  */
 function isHTMLElement(tag: string): boolean {
-  return HTML_ELEMENTS.has(tag.toLowerCase());
+  const lower = tag.toLowerCase();
+  if (BLOCKED_TAGS.has(lower)) return false;
+  return HTML_ELEMENTS.has(lower);
 }
 
 /**

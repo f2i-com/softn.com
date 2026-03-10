@@ -649,15 +649,45 @@ function App(): React.ReactElement {
         console.log('[SoftN Loader] Final source prepared with inlined components');
 
         // Create import resolver for .logic file imports (looks up in bundle files, fetches URLs)
+        // Remote imports are default-deny: only allowed if the bundle explicitly
+        // declares network permission AND uses HTTPS (no plaintext HTTP).
+        const hasNetworkPermission = !!parsedManifest.permissions?.network;
         const urlCache = new Map<string, string>();
+        const MAX_REMOTE_IMPORT_BYTES = 1 * 1024 * 1024; // 1MB
+        const REMOTE_IMPORT_TIMEOUT_MS = 10_000;
         const resolver = async (path: string): Promise<string | null> => {
           if (path.startsWith('http://') || path.startsWith('https://')) {
+            if (!hasNetworkPermission) {
+              console.warn('[SoftN Loader] Remote import blocked (no network permission):', path);
+              return null;
+            }
+            if (path.startsWith('http://')) {
+              console.warn('[SoftN Loader] Remote import blocked (HTTPS required):', path);
+              return null;
+            }
             if (urlCache.has(path)) return urlCache.get(path)!;
-            const resp = await fetch(path);
-            if (!resp.ok) return null;
-            const text = await resp.text();
-            urlCache.set(path, text);
-            return text;
+            try {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), REMOTE_IMPORT_TIMEOUT_MS);
+              const resp = await fetch(path, { signal: controller.signal });
+              clearTimeout(timer);
+              if (!resp.ok) return null;
+              const contentLength = resp.headers.get('content-length');
+              if (contentLength && parseInt(contentLength, 10) > MAX_REMOTE_IMPORT_BYTES) {
+                console.warn('[SoftN Loader] Remote import too large:', path);
+                return null;
+              }
+              const text = await resp.text();
+              if (text.length > MAX_REMOTE_IMPORT_BYTES) {
+                console.warn('[SoftN Loader] Remote import too large:', path);
+                return null;
+              }
+              urlCache.set(path, text);
+              return text;
+            } catch (e) {
+              console.warn('[SoftN Loader] Remote import failed:', path, e);
+              return null;
+            }
           }
           return textFiles.get(path) ?? null;
         };

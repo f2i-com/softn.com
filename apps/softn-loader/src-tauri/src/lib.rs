@@ -100,8 +100,9 @@ pub fn run() {
             .add_directive("softn_loader=info".parse().unwrap()))
         .init();
 
+    // Only include plugins strictly needed by the loader.
+    // shell plugin removed — untrusted bundles must not reach OS command execution.
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init());
 
