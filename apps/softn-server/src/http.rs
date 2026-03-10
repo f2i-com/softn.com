@@ -166,7 +166,7 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
                 tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
 
                 // All methods use the same extractor pattern
-                let make_handler = |name: String| {
+                let make_handler = |name: String, is_public: bool| {
                     move |
                         State(ctx): State<Arc<AppContext>>,
                         method: axum::http::Method,
@@ -175,25 +175,26 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
                         query: axum::extract::Query<std::collections::HashMap<String, String>>,
                         body: axum::body::Bytes,
                     | {
-                        api_handler(ctx, name, method, uri, headers, query, body)
+                        api_handler(ctx, name, is_public, method, uri, headers, query, body)
                     }
                 };
+                let is_public = route.public;
 
                 match method.as_str() {
                     "GET" => {
-                        router = router.route(&path, get(make_handler(handler_name.clone())));
+                        router = router.route(&path, get(make_handler(handler_name.clone(), is_public)));
                     }
                     "POST" => {
-                        router = router.route(&path, axum::routing::post(make_handler(handler_name.clone())));
+                        router = router.route(&path, axum::routing::post(make_handler(handler_name.clone(), is_public)));
                     }
                     "PUT" => {
-                        router = router.route(&path, axum::routing::put(make_handler(handler_name.clone())));
+                        router = router.route(&path, axum::routing::put(make_handler(handler_name.clone(), is_public)));
                     }
                     "DELETE" => {
-                        router = router.route(&path, axum::routing::delete(make_handler(handler_name.clone())));
+                        router = router.route(&path, axum::routing::delete(make_handler(handler_name.clone(), is_public)));
                     }
                     "PATCH" => {
-                        router = router.route(&path, axum::routing::patch(make_handler(handler_name.clone())));
+                        router = router.route(&path, axum::routing::patch(make_handler(handler_name.clone(), is_public)));
                     }
                     _ => {
                         tracing::warn!("Unsupported method: {}", method);
@@ -307,12 +308,47 @@ async fn ws_upgrade(
 async fn api_handler(
     ctx: Arc<AppContext>,
     handler_name: String,
+    is_public: bool,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
     query: axum::extract::Query<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
+    // Auth check: when auth_token is configured, require Bearer token for
+    // non-public routes. CORS only protects browser clients — non-browser
+    // clients (curl, scripts, bots) bypass CORS entirely, so auth must be
+    // enforced at the framework level for all API routes by default.
+    if !is_public {
+        if let Some(expected) = &ctx.auth_token {
+            let provided = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "));
+            match provided {
+                Some(token) => {
+                    // Constant-time comparison via SHA-256 hash (same as sync auth)
+                    use sha2::Digest;
+                    use subtle::ConstantTimeEq;
+                    let hash_t = sha2::Sha256::digest(token.as_bytes());
+                    let hash_e = sha2::Sha256::digest(expected.as_bytes());
+                    if !bool::from(hash_t.ct_eq(&hash_e)) {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({"error": "Invalid auth token"})),
+                        );
+                    }
+                }
+                None => {
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(serde_json::json!({"error": "Authorization required"})),
+                    );
+                }
+            }
+        }
+    }
+
     let runtime = match &ctx.runtime {
         Some(r) => r.clone(),
         None => {
