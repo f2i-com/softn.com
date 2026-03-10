@@ -105,35 +105,67 @@ pub fn read_record(conn: &rusqlite::Connection, id: &str) -> Result<Record, DbEr
 
 /// Query records in a collection updated after `since` (incremental sync).
 /// Includes soft-deleted records so clients can remove them locally.
-/// Ordered by updated_at ASC so the client can use the last record's
-/// timestamp as the cursor for the next incremental pull.
+/// Uses a compound cursor (updated_at, id) to handle timestamp ties: if a
+/// bulk operation updates >10k records in the same millisecond, a strictly
+/// `updated_at > ?` cursor would permanently miss records sharing the last
+/// timestamp. The compound cursor ensures deterministic pagination.
 pub fn read_collection_since(
     conn: &rusqlite::Connection,
     collection: &str,
     since: &str,
+    last_id: Option<&str>,
 ) -> Result<Vec<Record>, DbError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, collection, data, created_at, updated_at, deleted \
-         FROM records WHERE collection = ?1 AND updated_at > ?2 \
-         ORDER BY updated_at ASC LIMIT ?3",
-    )?;
-
-    let records = stmt
-        .query_map(params![collection, since, MAX_COLLECTION_ROWS], |row| {
-            let raw_data = row.get::<_, String>(2)?;
-            Ok(Record {
-                id: row.get(0)?,
-                collection: row.get(1)?,
-                data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
-                    tracing::warn!("Invalid JSON in record data: {}", e);
-                    serde_json::Value::Null
-                }),
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
-                deleted: row.get::<_, i32>(5)? != 0,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    // Compound cursor: (updated_at > since) OR (updated_at = since AND id > last_id)
+    // When last_id is None (first pull), fall back to the simpler updated_at > since.
+    let (sql, records) = if let Some(lid) = last_id {
+        let mut stmt = conn.prepare(
+            "SELECT id, collection, data, created_at, updated_at, deleted \
+             FROM records WHERE collection = ?1 \
+             AND (updated_at > ?2 OR (updated_at = ?2 AND id > ?3)) \
+             ORDER BY updated_at ASC, id ASC LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(params![collection, since, lid, MAX_COLLECTION_ROWS], |row| {
+                let raw_data = row.get::<_, String>(2)?;
+                Ok(Record {
+                    id: row.get(0)?,
+                    collection: row.get(1)?,
+                    data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
+                        tracing::warn!("Invalid JSON in record data: {}", e);
+                        serde_json::Value::Null
+                    }),
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    deleted: row.get::<_, i32>(5)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        ("compound", rows)
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT id, collection, data, created_at, updated_at, deleted \
+             FROM records WHERE collection = ?1 AND updated_at > ?2 \
+             ORDER BY updated_at ASC, id ASC LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![collection, since, MAX_COLLECTION_ROWS], |row| {
+                let raw_data = row.get::<_, String>(2)?;
+                Ok(Record {
+                    id: row.get(0)?,
+                    collection: row.get(1)?,
+                    data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
+                        tracing::warn!("Invalid JSON in record data: {}", e);
+                        serde_json::Value::Null
+                    }),
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    deleted: row.get::<_, i32>(5)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        ("simple", rows)
+    };
+    let _ = sql; // suppress unused warning
 
     Ok(records)
 }

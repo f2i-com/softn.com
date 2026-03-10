@@ -136,6 +136,15 @@ impl ServerRuntime {
         }
 
         // Phase 2: Process Call requests from the shared MPMC queue.
+        // Circuit breaker: if panics are too frequent, delay re-init to avoid
+        // thrashing CPU with constant teardown/rebuild cycles from a deterministic
+        // crash payload being repeatedly dispatched.
+        const MAX_PANICS_IN_WINDOW: u32 = 3;
+        const PANIC_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+        const COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
+        let mut panic_count: u32 = 0;
+        let mut window_start = std::time::Instant::now();
+
         loop {
             let req = match work_rx.recv() {
                 Ok(r) => r,
@@ -148,6 +157,26 @@ impl ServerRuntime {
 
             if let Err(panic_info) = result {
                 Self::log_panic(&panic_info);
+
+                // Circuit breaker: track panic frequency
+                let now = std::time::Instant::now();
+                if now.duration_since(window_start) > PANIC_WINDOW {
+                    // Reset window
+                    panic_count = 1;
+                    window_start = now;
+                } else {
+                    panic_count += 1;
+                }
+
+                if panic_count >= MAX_PANICS_IN_WINDOW {
+                    tracing::warn!(
+                        "Worker panicked {} times in {}s — cooling down for {}s to prevent thrashing",
+                        panic_count, PANIC_WINDOW.as_secs(), COOLDOWN.as_secs()
+                    );
+                    std::thread::sleep(COOLDOWN);
+                    panic_count = 0;
+                    window_start = std::time::Instant::now();
+                }
 
                 // State is potentially corrupted — attempt re-init from stored source
                 state = None;
