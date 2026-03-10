@@ -11,11 +11,7 @@ import { Icon } from './components/common/Icon';
 import { Dashboard } from './components/layout/Dashboard';
 import { BriefWizard } from './components/brief/BriefWizard';
 import { AIChat } from './components/ai/AIChat';
-import { ComponentPalette } from './components/panels/ComponentPalette';
 import { PagesPanel } from './components/panels/PagesPanel';
-import { DataPanel } from './components/panels/DataPanel';
-import { LogicPanel } from './components/panels/LogicPanel';
-import { AssetsPanel } from './components/panels/AssetsPanel';
 import { HistoryPanel } from './components/panels/HistoryPanel';
 import { SettingsPanel } from './components/panels/SettingsPanel';
 import { FilesPanel } from './components/panels/FilesPanel';
@@ -367,11 +363,7 @@ const App: React.FC = () => {
   const renderLeftPanelContent = () => {
     switch (leftPanel) {
       case 'ai': return <AIChat />;
-      case 'components': return <ComponentPalette />;
       case 'pages': return <PagesPanel />;
-      case 'data': return <DataPanel />;
-      case 'logic': return <LogicPanel />;
-      case 'assets': return <AssetsPanel />;
       case 'history': return <HistoryPanel />;
       case 'settings': return <SettingsPanel />;
       case 'files': return <FilesPanel />;
