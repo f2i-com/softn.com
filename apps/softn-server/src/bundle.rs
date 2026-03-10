@@ -60,9 +60,15 @@ let console = {
 };
 "#;
 
-/// Extract a `.softn` ZIP bundle to a temporary directory.
+/// Extract a `.softn` ZIP bundle to a directory.
 /// Returns the path to the extracted directory. The caller is responsible for
 /// using this path as the bundle_path for all subsequent operations.
+///
+/// Uses a two-phase extract-then-rename strategy to prevent race conditions:
+/// if the old server is still running and serving files from the previous
+/// extraction directory, extracting to a temp directory first and then
+/// renaming ensures the old directory remains intact until the new one is
+/// fully ready. The old directory is removed only after the rename succeeds.
 pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
     let file = fs::File::open(zip_path)
         .map_err(|e| format!("Failed to open {}: {}", zip_path.display(), e))?;
@@ -70,19 +76,20 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| format!("Invalid .softn bundle: {}", e))?;
 
-    // Extract to a sibling directory named <stem>_extracted
     let stem = zip_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("bundle");
-    let extract_dir = zip_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join(format!("{}_bundle", stem));
+    let parent = zip_path.parent().unwrap_or(Path::new("."));
+    let final_dir = parent.join(format!("{}_bundle", stem));
 
-    if extract_dir.exists() {
-        fs::remove_dir_all(&extract_dir)
-            .map_err(|e| format!("Failed to clean extract dir: {}", e))?;
+    // Phase 1: Extract into a temporary sibling directory.
+    // If we crash mid-extraction, only the temp dir is left (easily cleaned up),
+    // and any existing extraction at final_dir remains untouched.
+    let temp_dir = parent.join(format!("{}_bundle_new", stem));
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir)
+            .map_err(|e| format!("Failed to clean temp extract dir: {}", e))?;
     }
 
     const MAX_ENTRIES: usize = 10_000;
@@ -111,7 +118,7 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
         }
 
         if entry.is_dir() {
-            fs::create_dir_all(extract_dir.join(&name))
+            fs::create_dir_all(temp_dir.join(&name))
                 .map_err(|e| format!("Failed to create dir {}: {}", name, e))?;
             continue;
         }
@@ -124,7 +131,7 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
             return Err("Bundle contents too large".into());
         }
 
-        let out_path = extract_dir.join(&name);
+        let out_path = temp_dir.join(&name);
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create dir for {}: {}", name, e))?;
@@ -137,8 +144,29 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
             .map_err(|e| format!("Failed to write {}: {}", name, e))?;
     }
 
-    tracing::info!("Extracted .softn bundle to {}", extract_dir.display());
-    Ok(extract_dir)
+    // Phase 2: Atomically swap the old extraction directory with the new one.
+    // Move the old directory aside (if it exists) before renaming the new one
+    // into place. This minimizes the window where no directory exists at the
+    // final path, and ensures the old server can still serve from the old
+    // directory until the rename completes.
+    let old_dir = parent.join(format!("{}_bundle_old", stem));
+    if final_dir.exists() {
+        // Remove any leftover _old directory from a previous run
+        if old_dir.exists() {
+            let _ = fs::remove_dir_all(&old_dir);
+        }
+        fs::rename(&final_dir, &old_dir)
+            .map_err(|e| format!("Failed to move old bundle aside: {}", e))?;
+    }
+    fs::rename(&temp_dir, &final_dir)
+        .map_err(|e| format!("Failed to rename extracted bundle: {}", e))?;
+    // Clean up old directory (best-effort — not critical if it fails)
+    if old_dir.exists() {
+        let _ = fs::remove_dir_all(&old_dir);
+    }
+
+    tracing::info!("Extracted .softn bundle to {}", final_dir.display());
+    Ok(final_dir)
 }
 
 pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
