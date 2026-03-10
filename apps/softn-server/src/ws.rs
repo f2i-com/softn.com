@@ -19,6 +19,10 @@ const OUT_CHANNEL_SIZE: usize = 512;
 /// Timeout for sending direct responses (sync_pull/sync_push results).
 /// If the writer can't drain within this, the client is irrecoverably slow.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long to wait for a sync permit before returning "server busy".
+/// A short wait smooths out micro-bursts (e.g. dozens of clients reconnecting
+/// after a network partition resolves) without hanging the connection.
+const PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Server-to-client Ping interval. Browser WebSocket APIs cannot send Ping
 /// frames, so without server-initiated pings an idle (but healthy) browser
 /// client would hit IDLE_TIMEOUT and be disconnected. The browser's built-in
@@ -32,6 +36,10 @@ const PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 /// Returns false if the channel is closed or the send times out, signaling
 /// the caller to **drop the connection immediately**. A failed send means the
 /// client is irrecoverably slow; dropping forces a reconnect and fresh sync.
+///
+/// On timeout, sends an Error message describing the reason before returning
+/// false, so the writer task can relay it to the client as a clean Close
+/// frame instead of an abrupt TCP FIN.
 async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage) -> bool {
     match tokio::time::timeout(SEND_TIMEOUT, out_tx.send(msg)).await {
         Ok(Ok(())) => true,
@@ -41,6 +49,11 @@ async fn send_response(out_tx: &mpsc::Sender<ServerMessage>, msg: ServerMessage)
         }
         Err(_) => {
             tracing::warn!("WebSocket send timed out ({}s) — dropping connection to force re-sync", SEND_TIMEOUT.as_secs());
+            // Best-effort: try to send an error message so the writer can
+            // relay it before closing. Use try_send to avoid blocking again.
+            let _ = out_tx.try_send(ServerMessage::Error {
+                message: "Connection too slow — disconnecting to force re-sync".into(),
+            });
             false
         }
     }
@@ -251,9 +264,15 @@ async fn reader_task(
                         // Acquire a sync permit to bound concurrent blocking tasks.
                         // Without this, a flood of slow sync_pull requests could exhaust
                         // Tokio's 512-thread spawn_blocking pool, starving all other I/O.
-                        let permit = match sync.sync_permits.clone().try_acquire_owned() {
-                            Ok(p) => p,
-                            Err(_) => {
+                        // Uses a short timeout to smooth out micro-bursts (e.g. dozens of
+                        // clients reconnecting after a network partition) instead of
+                        // immediately failing and forcing client-side retry logic.
+                        let permit = match tokio::time::timeout(
+                            PERMIT_WAIT,
+                            sync.sync_permits.clone().acquire_owned(),
+                        ).await {
+                            Ok(Ok(p)) => p,
+                            _ => {
                                 if !send_response(out_tx, ServerMessage::Error {
                                     message: "Server busy — too many concurrent sync operations, retry later".into(),
                                 }).await {
@@ -317,9 +336,12 @@ async fn reader_task(
                         }
 
                         // Acquire sync permit (same rationale as sync_pull above)
-                        let permit = match sync.sync_permits.clone().try_acquire_owned() {
-                            Ok(p) => p,
-                            Err(_) => {
+                        let permit = match tokio::time::timeout(
+                            PERMIT_WAIT,
+                            sync.sync_permits.clone().acquire_owned(),
+                        ).await {
+                            Ok(Ok(p)) => p,
+                            _ => {
                                 if !send_response(out_tx, ServerMessage::Error {
                                     message: "Server busy — too many concurrent sync operations, retry later".into(),
                                 }).await {

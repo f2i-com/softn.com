@@ -35,8 +35,11 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) 
 
     // Wait for all WebSocket connections to close (senders dropped),
     // with a timeout to prevent hanging indefinitely on stuck connections.
+    // Must exceed the maximum handler timeout (35s in ws.rs HANDLER_TIMEOUT)
+    // so in-flight sync operations and API calls can complete cleanly before
+    // the process exits. A 40s timeout gives 5s of margin.
     let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+        std::time::Duration::from_secs(40),
         conn_rx.recv(), // returns None when all senders are dropped
     ).await;
 

@@ -39,9 +39,15 @@ impl ServerDb {
         let read_pool = Pool::builder()
             .max_size(read_pool_size)
             .min_idle(Some(1))
-            // Don't close idle connections — avoids WAL checkpoint disruption.
+            // Don't close idle connections — avoids WAL checkpoint disruption
+            // from rapid connect/disconnect cycles.
             .idle_timeout(None)
-            .max_lifetime(None)
+            // Gently recycle connections after 30 minutes so all read locks are
+            // periodically dropped, allowing SQLite to fully checkpoint the WAL
+            // back into the main database file. Without this, continuous
+            // overlapping reads can hold locks on old WAL frames indefinitely,
+            // causing unbounded WAL growth under sustained traffic.
+            .max_lifetime(Some(std::time::Duration::from_secs(30 * 60)))
             .build(manager)
             .map_err(|e| format!("Failed to create read pool: {}", e))?;
 
