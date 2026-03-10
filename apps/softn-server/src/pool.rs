@@ -49,11 +49,18 @@ impl ServerDb {
     }
 
     /// Lock the writer for mutations (create, update, delete).
-    /// Recovers from poisoned locks to avoid permanent failure.
+    /// Recovers from poisoned locks to avoid permanent failure after a thread
+    /// panic. This is safe because XdbDatabase wraps SQLite, which automatically
+    /// rolls back any uncommitted transaction when the connection is next used.
+    /// The in-memory CRDT `docs` cache is not used by softn-server's sync path.
     pub fn write(&self) -> std::sync::MutexGuard<'_, XdbDatabase> {
-        self.writer
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.writer.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!(
+                "Writer mutex was poisoned by a panicked thread — recovering. \
+                 SQLite will auto-rollback any uncommitted transaction."
+            );
+            poisoned.into_inner()
+        })
     }
 
     /// Get a read-only connection from the pool.

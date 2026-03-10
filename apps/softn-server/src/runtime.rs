@@ -38,6 +38,11 @@ enum ScriptRequest {
 /// may execute on different threads with independent global state. Scripts must
 /// not rely on in-memory globals persisting across operations — always flush
 /// state to the database (via `db.*` APIs) for durability.
+///
+/// **Thread lifecycle:** Workers are tied to the channels owned by this struct.
+/// When `ServerRuntime` is dropped (e.g. if `init()` fails), `work_tx` and
+/// `init_txs` are dropped, causing all worker `recv()` calls to return `Err`,
+/// which exits their loops cleanly. No explicit shutdown signal is needed.
 pub struct ServerRuntime {
     work_tx: crossbeam_channel::Sender<ScriptRequest>,
     /// One per worker — used only during init() for guaranteed 1:1 delivery.
@@ -438,9 +443,18 @@ fn object_to_json_inner(obj: &Object, heap: &Heap, depth: usize) -> Result<serde
             Ok(serde_json::Value::Object(map))
         }
         Object::Error(err) => {
+            // Truncate error messages to prevent unbounded memory usage from
+            // scripts that generate massive strings in Error constructors.
+            const MAX_ERR_LEN: usize = 2048;
+            let name = err.name.to_string();
+            let mut message = err.message.to_string();
+            if message.len() > MAX_ERR_LEN {
+                message.truncate(MAX_ERR_LEN);
+                message.push_str("...(truncated)");
+            }
             Ok(serde_json::json!({
-                "name": err.name.to_string(),
-                "message": err.message.to_string(),
+                "name": name,
+                "message": message,
             }))
         }
         _ => Ok(serde_json::Value::Null),
