@@ -275,6 +275,12 @@ async fn reader_task(
                             .get("lastSync")
                             .and_then(|v| v.as_str())
                             .map(String::from);
+                        // Optional compound cursor: (lastSync, lastId) resolves
+                        // timestamp ties when >10k records share the same updated_at.
+                        let last_id: Option<String> = parsed
+                            .get("lastId")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
 
                         // Acquire a sync permit to bound concurrent blocking tasks.
                         // Without this, a flood of slow sync_pull requests could exhaust
@@ -296,7 +302,7 @@ async fn reader_task(
                             HANDLER_TIMEOUT,
                             tokio::task::spawn_blocking(move || {
                                 let _permit = permit; // held until task completes
-                                sync_clone.handle_sync_pull(&collections, last_sync.as_deref())
+                                sync_clone.handle_sync_pull(&collections, last_sync.as_deref(), last_id.as_deref())
                             }),
                         ).await {
                             Ok(Ok(r)) => r,

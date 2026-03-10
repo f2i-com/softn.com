@@ -37,6 +37,11 @@ enum Commands {
         /// Number of script worker threads (default: auto-detect based on CPU count)
         #[arg(long)]
         workers: Option<usize>,
+        /// Development mode: permissive CORS (allow all origins) when no
+        /// allowedOrigins are configured. Without this flag, missing
+        /// allowedOrigins defaults to rejecting cross-origin requests.
+        #[arg(long)]
+        dev: bool,
     },
     /// Show bundle info
     Info {
@@ -54,9 +59,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { path, port, host, data_dir, workers } => {
+        Commands::Run { path, port, host, data_dir, workers, dev } => {
             let ctx = app::AppContext::load(path, data_dir, workers)?;
-            http::serve(ctx, &host, port).await?;
+            http::serve(ctx, &host, port, dev).await?;
         }
         Commands::Info { path } => {
             let manifest = bundle::load_manifest(&path)?;

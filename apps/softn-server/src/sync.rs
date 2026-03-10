@@ -197,10 +197,14 @@ impl SyncManager {
     /// updated after that timestamp (incremental sync, including soft-deleted
     /// records so the client can remove them locally). Otherwise returns all
     /// non-deleted records (full sync for first-time connections).
+    /// `last_id` forms a compound cursor with `last_sync` to handle timestamp
+    /// ties — without it, bulk updates sharing a timestamp could be permanently
+    /// missed by the `updated_at > ?` cursor.
     pub fn handle_sync_pull(
         &self,
         collections: &[String],
         last_sync: Option<&str>,
+        last_id: Option<&str>,
     ) -> Vec<ServerMessage> {
         let mut messages = Vec::new();
 
@@ -226,7 +230,7 @@ impl SyncManager {
             let records = if let Some(since) = last_sync {
                 // Incremental: only records changed since last sync.
                 // Includes deleted records so the client can remove them locally.
-                match pool::read_collection_since(&conn, collection, since) {
+                match pool::read_collection_since(&conn, collection, since, last_id) {
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!("Failed to query collection '{}' since '{}': {}", collection, since, e);
@@ -516,17 +520,23 @@ impl SyncManager {
             serde_json::Value::Object(obj) => {
                 if let Some(arr) = obj.get("rejected").and_then(|v| v.as_array()) {
                     arr.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                } else {
-                    // Object doesn't match expected schema — warn so the developer
-                    // can fix their hook (e.g. returning { error: "..." } by mistake
-                    // would silently accept all ops without this warning).
-                    if !obj.is_empty() {
-                        tracing::warn!(
-                            "onBeforeSyncBatch returned unrecognized object schema \
-                             (expected {{ rejected: [...] }}), accepting all ops"
-                        );
-                    }
+                } else if obj.is_empty() {
+                    // Empty object {} — accept all (no rejections)
                     std::collections::HashSet::new()
+                } else {
+                    // Object doesn't match expected schema (e.g. { reject: [...] }
+                    // typo) — fail closed with SyncRetry so the developer realizes
+                    // their hook is returning the wrong format, rather than silently
+                    // accepting ops the developer intended to reject.
+                    tracing::warn!(
+                        "onBeforeSyncBatch returned unrecognized object schema \
+                         (expected {{ rejected: [...] }}) — rejecting batch to prevent data corruption"
+                    );
+                    responses.push(ServerMessage::SyncRetry {
+                        op_ids: ops.iter().map(|op| op.id.clone()).collect(),
+                        reason: "Hook returned unrecognized schema (expected { rejected: [...] })".into(),
+                    });
+                    return Vec::new();
                 }
             }
             _ => std::collections::HashSet::new(),

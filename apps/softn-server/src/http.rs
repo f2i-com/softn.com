@@ -13,9 +13,9 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
-pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16) -> Result<(), String> {
+pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) -> Result<(), String> {
     let shutdown_tx = ctx.shutdown.clone();
-    let router = build_router(ctx);
+    let router = build_router(ctx, dev_mode);
     let addr = format!("{}:{}", host, port);
     tracing::info!("Listening on http://{}", addr);
 
@@ -36,9 +36,11 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16) -> Result<(), St
     Ok(())
 }
 
-fn build_router(ctx: Arc<AppContext>) -> Router {
+fn build_router(ctx: Arc<AppContext>, dev_mode: bool) -> Router {
     // CORS: restrict origins if config.server.allowedOrigins is set.
-    // Wide-open CORS (Any) is fine for local dev but a CSRF risk in production.
+    // In production (no --dev flag), missing allowedOrigins defaults to rejecting
+    // cross-origin requests to prevent CSRF. Use --dev for permissive CORS during
+    // local development.
     let cors = {
         let allowed_origins: Option<Vec<String>> = ctx.manifest.config.as_ref()
             .and_then(|c| c.get("server"))
@@ -57,8 +59,14 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                 tracing::info!("CORS restricted to {} origin(s)", parsed.len());
                 CorsLayer::new().allow_origin(parsed).allow_methods(Any).allow_headers(Any)
             }
-        } else {
+        } else if dev_mode {
+            tracing::warn!("Dev mode: CORS open to all origins");
             CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+        } else {
+            // Production default: no Access-Control-Allow-Origin header is sent,
+            // so browsers will reject cross-origin requests (CSRF protection).
+            tracing::info!("No allowedOrigins configured — cross-origin requests will be rejected (use --dev for open CORS)");
+            CorsLayer::new()
         }
     };
 
