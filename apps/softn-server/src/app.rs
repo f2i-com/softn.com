@@ -1,17 +1,17 @@
 use crate::bridges::{db::NativeDbBridge, env::NativeEnvBridge, fs::NativeFsBridge, http::NativeHttpBridge};
 use crate::bundle::{self, ServerConfig, ServerManifest};
+use crate::pool::ServerDb;
 use crate::runtime::{BridgeSet, ServerRuntime};
 use crate::sync::SyncManager;
 use std::path::PathBuf;
 use std::sync::Arc;
-use xdb::SharedDb;
 
 #[allow(dead_code)]
 pub struct AppContext {
     pub manifest: ServerManifest,
     pub bundle_path: PathBuf,
     pub data_dir: PathBuf,
-    pub db: SharedDb,
+    pub db: ServerDb,
     pub runtime: Option<Arc<ServerRuntime>>,
     pub sync_manager: Arc<SyncManager>,
 }
@@ -20,6 +20,18 @@ impl AppContext {
     pub fn load(bundle_path: PathBuf, data_dir: Option<PathBuf>, workers: Option<usize>) -> Result<Arc<Self>, String> {
         let bundle_path = std::fs::canonicalize(&bundle_path)
             .map_err(|e| format!("Invalid bundle path: {}", e))?;
+
+        // If the path is a .softn ZIP file, extract it first
+        let bundle_path = if bundle_path.is_file() {
+            let ext = bundle_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext == "softn" || ext == "zip" {
+                bundle::extract_softn_zip(&bundle_path)?
+            } else {
+                return Err(format!("Unsupported file type: .{}", ext));
+            }
+        } else {
+            bundle_path
+        };
 
         let manifest = bundle::load_manifest(&bundle_path)?;
         tracing::info!("Loaded app: {} v{}", manifest.name, manifest.version);
@@ -42,11 +54,16 @@ impl AppContext {
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| format!("Failed to create data dir: {}", e))?;
 
-        // Open XDB
+        // Open XDB (writer) and create a read-only connection pool.
+        // Read pool size: min(cpu_count, 8) — enough for concurrent sync_pull + script reads.
         let db_path = data_dir.join(format!("{}.sqlite", manifest.name));
-        let db = xdb::create_shared_db(db_path)
+        let shared_db = xdb::create_shared_db(db_path.clone())
             .map_err(|e| format!("Failed to open DB: {}", e))?;
-        tracing::info!("Database opened");
+        let read_pool_size = std::thread::available_parallelism()
+            .map(|n| n.get().min(8) as u32)
+            .unwrap_or(4);
+        let db = ServerDb::new(shared_db, &db_path, read_pool_size)?;
+        tracing::info!("Database opened (read pool: {} connections)", read_pool_size);
 
         // Auth token from config
         let auth_token = manifest

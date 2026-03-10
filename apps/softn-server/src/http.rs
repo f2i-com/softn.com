@@ -69,9 +69,9 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                     tracing::warn!("Skipping route {} {} -> {}: conflicts with built-in route", method, path, handler_name);
                     continue;
                 }
-                // Reject paths with Axum wildcards (*) or path params (:param)
-                // to prevent router collisions and unexpected capture behavior.
-                if path.contains('*') || path.contains(':') {
+                // Reject paths with Axum wildcards (*), path params (:param),
+                // or braces ({param}) to prevent router collisions.
+                if path.contains('*') || path.contains(':') || path.contains('{') || path.contains('}') {
                     tracing::warn!("Skipping route {} {} -> {}: wildcards and path params are not allowed", method, path, handler_name);
                     continue;
                 }
@@ -144,9 +144,11 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                 return (StatusCode::FORBIDDEN, "Forbidden").into_response();
             }
 
-            // Whitelist: file must be in an allowed directory AND have an allowed extension
-            let in_allowed_dir = ALLOWED_PREFIXES.iter().any(|p| path.starts_with(p));
-            let has_allowed_ext = path.rsplit('.').next()
+            // Whitelist: file must be in an allowed directory AND have an allowed extension.
+            // Use the decoded path for the directory check so percent-encoded
+            // bypasses like `ui%2f..%2fserver%2f` are caught.
+            let in_allowed_dir = ALLOWED_PREFIXES.iter().any(|p| normalized.starts_with(p));
+            let has_allowed_ext = normalized.rsplit('.').next()
                 .map(|ext| {
                     let lower = ext.to_ascii_lowercase();
                     ALLOWED_EXTENSIONS.iter().any(|a| *a == lower)
@@ -157,11 +159,26 @@ fn build_router(ctx: Arc<AppContext>) -> Router {
                 return StatusCode::NOT_FOUND.into_response();
             }
 
-            // Extra safety: verify the resolved path stays within the bundle
+            // Extra safety: verify the resolved path stays within the bundle.
+            // Always check — even for non-existent files — by walking up to
+            // the nearest existing ancestor.
             let file_path = bundle_path.join(path);
-            if file_path.exists() {
+            let check_path = if file_path.exists() {
+                Some(file_path.clone())
+            } else {
+                // Walk up to the nearest existing ancestor
+                let mut ancestor = file_path.parent();
+                loop {
+                    match ancestor {
+                        Some(dir) if dir.exists() => break Some(dir.to_path_buf()),
+                        Some(dir) => ancestor = dir.parent(),
+                        None => break None,
+                    }
+                }
+            };
+            if let Some(existing) = check_path {
                 if let (Ok(canonical), Ok(canonical_bundle)) = (
-                    std::fs::canonicalize(&file_path),
+                    std::fs::canonicalize(&existing),
                     std::fs::canonicalize(&bundle_path),
                 ) {
                     if !canonical.starts_with(&canonical_bundle) {
@@ -314,7 +331,8 @@ async fn api_handler(
                 let status = obj
                     .get("status")
                     .and_then(|s| s.as_u64())
-                    .unwrap_or(200) as u16;
+                    .and_then(|n| u16::try_from(n).ok())
+                    .unwrap_or(200);
                 let body = obj
                     .get("body")
                     .cloned()
@@ -328,10 +346,13 @@ async fn api_handler(
                 (StatusCode::OK, Json(result))
             }
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e})),
-        ),
+        Err(e) => {
+            tracing::error!("Script handler error: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal server error"})),
+            )
+        }
     }
 }
 
@@ -340,7 +361,7 @@ const ALLOWED_PREFIXES: &[&str] = &["ui/", "assets/", "styles/", "fonts/", "imag
 
 /// File extensions allowed to be served statically.
 const ALLOWED_EXTENSIONS: &[&str] = &[
-    "html", "htm", "css", "js", "mjs", "json", "ui", "logic",
+    "html", "htm", "css", "js", "mjs", "json", "wasm", "ui", "logic",
     "svg", "png", "jpg", "jpeg", "gif", "webp", "ico",
     "woff", "woff2", "ttf", "otf",
     "mp3", "wav", "mp4", "webm",

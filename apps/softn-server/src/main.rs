@@ -2,6 +2,7 @@ mod app;
 mod bridges;
 mod bundle;
 mod http;
+mod pool;
 mod runtime;
 mod sync;
 mod ws;

@@ -1,2 +1,5 @@
 /target
 /test-app/data
+/data
+*.softn
+*_bundle/

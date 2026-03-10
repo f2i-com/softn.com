@@ -49,6 +49,11 @@ interface BundleManifest {
     mobile?: {
       orientation?: 'portrait' | 'landscape' | 'auto';
     };
+    server?: {
+      url?: string;
+      auth_token?: string;
+      collections?: string[];
+    };
   };
   permissions?: import('@softn/core').AppPermissions;
 }
@@ -907,6 +912,9 @@ function App(): React.ReactElement {
           permissions={_manifest?.permissions}
           importResolver={importResolver}
           logicBasePath={logicBasePath}
+          serverUrl={_manifest?.config?.server?.url}
+          serverToken={_manifest?.config?.server?.auth_token}
+          serverCollections={_manifest?.config?.server?.collections}
           functions={{
             asset: (path: unknown) => {
               if (typeof path !== 'string' || !assetResolver) return '';

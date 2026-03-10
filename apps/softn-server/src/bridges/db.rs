@@ -1,12 +1,12 @@
+use crate::pool::{self, ServerDb};
 use formlogic_core::db_bridge::{DbBridge, DbRecord, DbSyncStatus};
-use xdb::SharedDb;
 
 pub struct NativeDbBridge {
-    db: SharedDb,
+    db: ServerDb,
 }
 
 impl NativeDbBridge {
-    pub fn new(db: SharedDb) -> Self {
+    pub fn new(db: ServerDb) -> Self {
         Self { db }
     }
 }
@@ -24,26 +24,26 @@ fn xdb_to_fl(r: xdb::Record) -> DbRecord {
 
 impl DbBridge for NativeDbBridge {
     fn query(&self, collection: &str) -> Result<Vec<DbRecord>, String> {
-        let db = self.db.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let records = db.get_collection(collection)
+        // Use read pool — concurrent with other reads and writes
+        let conn = self.db.read()?;
+        let records = pool::read_collection(&conn, collection)
             .map_err(|e| format!("db.query failed: {}", e))?;
         Ok(records.into_iter().map(xdb_to_fl).collect())
     }
 
     fn create(&mut self, collection: &str, data: &str) -> Result<DbRecord, String> {
-        let mut db = self.db.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let json: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
+        let mut db = self.db.write();
+        let json: serde_json::Value = serde_json::from_str(data)
+            .map_err(|e| format!("db.create: invalid JSON: {}", e))?;
         let (record, _update) = db.create_record(collection, json)
             .map_err(|e| format!("db.create failed: {}", e))?;
         Ok(xdb_to_fl(record))
     }
 
     fn update(&mut self, id: &str, data: &str) -> Result<Option<DbRecord>, String> {
-        let mut db = self.db.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let json: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
+        let mut db = self.db.write();
+        let json: serde_json::Value = serde_json::from_str(data)
+            .map_err(|e| format!("db.update: invalid JSON: {}", e))?;
         match db.update_record(id, json) {
             Ok((r, _)) => Ok(Some(xdb_to_fl(r))),
             Err(xdb::DbError::NotFound(_)) => Ok(None),
@@ -52,8 +52,7 @@ impl DbBridge for NativeDbBridge {
     }
 
     fn delete(&mut self, id: &str) -> Result<(), String> {
-        let mut db = self.db.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut db = self.db.write();
         db.delete_record(id)
             .map_err(|e| format!("db.delete failed: {}", e))?;
         Ok(())
@@ -61,17 +60,16 @@ impl DbBridge for NativeDbBridge {
 
     fn hard_delete(&mut self, _collection: &str, id: &str) -> Result<(), String> {
         // XDB only supports soft delete (sets deleted=1 for CRDT sync)
-        let mut db = self.db.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut db = self.db.write();
         db.delete_record(id)
             .map_err(|e| format!("db.hard_delete failed: {}", e))?;
         Ok(())
     }
 
     fn get(&self, _collection: &str, id: &str) -> Result<Option<DbRecord>, String> {
-        let db = self.db.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match db.get_record(id) {
+        // Use read pool — concurrent with other reads and writes
+        let conn = self.db.read()?;
+        match pool::read_record(&conn, id) {
             Ok(r) => Ok(Some(xdb_to_fl(r))),
             Err(xdb::DbError::NotFound(_)) => Ok(None),
             Err(e) => Err(format!("db.get failed: {}", e)),

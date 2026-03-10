@@ -1,0 +1,358 @@
+// main.ui - Notes App
+// A Notes CRUD app that syncs with softn-server via XDB
+
+<logic src="../logic/main.logic" />
+
+<style>
+.notes-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Top bar ── */
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.875rem 1.5rem;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: rgba(24,24,27,0.8);
+  backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+
+.top-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.header-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.top-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.note-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 11px;
+  background: rgba(99,102,241,0.15);
+  color: #818cf8;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.sync-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.sync-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+}
+
+/* ── Main content area ── */
+.main-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Sidebar (compose) ── */
+.sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid rgba(255,255,255,0.06);
+  display: flex;
+  flex-direction: column;
+  background: rgba(17,17,19,0.5);
+}
+
+.sidebar-header {
+  padding: 1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.compose-area {
+  padding: 1rem 1.25rem;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Notes panel ── */
+.notes-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.notes-toolbar {
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  flex-shrink: 0;
+}
+
+.notes-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.75rem 1.25rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.08) transparent;
+}
+
+.notes-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.notes-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.notes-list::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+}
+
+.notes-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+/* ── Notes grid ── */
+.notes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.625rem;
+}
+
+.note-card {
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  padding: 1rem 1.125rem;
+  background: rgba(24,24,27,0.5);
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.note-card:hover {
+  border-color: rgba(255,255,255,0.12);
+  background: rgba(24,24,27,0.8);
+  transform: translateY(-1px);
+}
+
+.note-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #fafafa;
+  line-height: 1.4;
+}
+
+.note-content {
+  color: #a1a1aa;
+  font-size: 0.8rem;
+  margin-top: 0.375rem;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.note-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(255,255,255,0.04);
+}
+
+.note-date {
+  font-size: 0.7rem;
+  color: #52525b;
+}
+
+.delete-btn {
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+}
+
+.note-card:hover .delete-btn {
+  opacity: 0.4;
+}
+
+.delete-btn:hover {
+  opacity: 1 !important;
+  color: #ef4444;
+}
+
+/* ── Empty state ── */
+.empty-state {
+  text-align: center;
+  padding: 4rem 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.empty-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: rgba(99,102,241,0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.25rem;
+}
+
+/* ── Responsive: stack on narrow windows ── */
+@media (max-width: 700px) {
+  .main-content {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .compose-area {
+    padding: 0.75rem 1rem;
+  }
+
+  .notes-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+
+<App theme="dark">
+  <Box className="notes-app">
+
+    <Box className="top-bar">
+      <Box className="top-bar-left">
+        <Box className="header-icon">
+          <Icon name="edit" size={16} color="white" />
+        </Box>
+        <Heading level={3} style={{ margin: 0, fontSize: "1rem" }}>Notes</Heading>
+        <Box className="note-count-badge">{noteCount}</Box>
+      </Box>
+      <Box className="top-bar-right">
+        <Box className="sync-label">
+          <Box className="sync-dot" />
+          <Text style={{ color: "#52525b", fontSize: "0.75rem" }}>Synced</Text>
+        </Box>
+      </Box>
+    </Box>
+
+    <Box className="main-content">
+
+      <Box className="sidebar">
+        <Box className="sidebar-header">
+          <Text style={{ color: "#a1a1aa", fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            New Note
+          </Text>
+        </Box>
+        <Box className="compose-area">
+          <Stack direction="vertical" gap="sm" style={{ flex: 1 }}>
+            <Input
+              placeholder="Title"
+              :bind={newTitle}
+              style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", fontSize: "0.875rem" }}
+            />
+            <TextArea
+              placeholder="Write something..."
+              :bind={newContent}
+              rows={5}
+              style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", resize: "vertical", width: "100%", boxSizing: "border-box", fontSize: "0.8rem", flex: 1 }}
+            />
+            <Button
+              @click={addNote}
+              variant="primary"
+              style={{ borderRadius: "8px", width: "100%" }}
+            >
+              <Stack direction="horizontal" gap="xs" style={{ alignItems: "center", justifyContent: "center" }}>
+                <Icon name="plus" size={15} color="white" />
+                <Text style={{ color: "white", fontSize: "0.8rem", fontWeight: 500 }}>Add Note</Text>
+              </Stack>
+            </Button>
+          </Stack>
+        </Box>
+      </Box>
+
+      <Box className="notes-panel">
+        <Box className="notes-toolbar">
+          <Input
+            placeholder="Search notes..."
+            :bind={searchQuery}
+            style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: "8px", fontSize: "0.8rem" }}
+          />
+        </Box>
+
+        <Box className="notes-list">
+          <Box className="notes-grid">
+            <Box each={getFilteredNotes()} as="note" className="note-card">
+              <Box>
+                <Text className="note-title">{note.data.title}</Text>
+                <Text className="note-content" if={note.data.content}>{note.data.content}</Text>
+              </Box>
+              <Box className="note-meta">
+                <Text className="note-date">{formatDate(note.data.createdAt)}</Text>
+                <Box className="delete-btn" @click={deleteNote(note.id)}>
+                  <Icon name="trash" size={13} color="currentColor" />
+                </Box>
+              </Box>
+            </Box>
+          </Box>
+
+          <Box if={noteCount === 0} className="empty-state">
+            <Box className="empty-icon">
+              <Icon name="edit" size={26} color="#6366f1" />
+            </Box>
+            <Text style={{ color: "#a1a1aa", fontSize: "0.9rem", fontWeight: 500, marginBottom: "0.375rem" }}>
+              No notes yet
+            </Text>
+            <Text style={{ color: "#3f3f46", fontSize: "0.8rem" }}>
+              Create your first note using the sidebar
+            </Text>
+          </Box>
+        </Box>
+      </Box>
+
+    </Box>
+
+  </Box>
+</App>

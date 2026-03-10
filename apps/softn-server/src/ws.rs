@@ -284,6 +284,11 @@ async fn reader_task(
                             None => Vec::new(),
                         };
                         if ops.is_empty() {
+                            if !send_response(out_tx, ServerMessage::Error {
+                                message: "Invalid or empty ops in sync_push".into(),
+                            }).await {
+                                return;
+                            }
                             continue;
                         }
                         if ops.len() > MAX_OPS_PER_PUSH {
