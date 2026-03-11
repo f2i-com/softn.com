@@ -5,6 +5,7 @@ mod http;
 mod pool;
 mod runtime;
 mod sync;
+mod tenant;
 mod util;
 mod ws;
 
@@ -20,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run a .softn bundle
+    /// Run a single .softn bundle (single-tenant mode)
     Run {
         /// Path to .softn bundle (directory or ZIP)
         path: PathBuf,
@@ -54,6 +55,35 @@ enum Commands {
         #[arg(long)]
         trusted_proxy: bool,
     },
+    /// Run multiple .softn bundles (multi-tenant mode)
+    ///
+    /// Each bundle in the directory becomes a tenant, routed via URL path
+    /// prefix: /<tenant-id>/... Tenant ID is the manifest `id` or `name`.
+    ServeMulti {
+        /// Directory containing .softn bundles (directories or ZIP files)
+        bundles_dir: PathBuf,
+        /// Port to listen on
+        #[arg(short, long, default_value = "3000")]
+        port: u16,
+        /// Host address to bind to
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Base data directory (each tenant gets a subdirectory)
+        #[arg(long)]
+        data_dir: Option<PathBuf>,
+        /// Worker threads per tenant (default: 4)
+        #[arg(long)]
+        workers_per_tenant: Option<usize>,
+        /// Development mode: permissive CORS
+        #[arg(long)]
+        dev: bool,
+        /// Allow all script capabilities for all tenants
+        #[arg(long)]
+        allow_all_capabilities: bool,
+        /// Trust X-Forwarded-For header
+        #[arg(long)]
+        trusted_proxy: bool,
+    },
     /// Show bundle info
     Info {
         /// Path to .softn bundle
@@ -78,6 +108,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(false);
             let ctx = app::AppContext::load(path, data_dir, workers, allow_all)?;
             http::serve(ctx, &host, port, dev, trusted_proxy).await?;
+        }
+        Commands::ServeMulti { bundles_dir, port, host, data_dir, workers_per_tenant, dev, allow_all_capabilities, trusted_proxy } => {
+            let allow_all = allow_all_capabilities || std::env::var("SOFTN_ALLOW_ALL_CAPABILITIES")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            let manager = tenant::TenantManager::load(
+                &bundles_dir,
+                data_dir.as_deref(),
+                workers_per_tenant,
+                allow_all,
+            )?;
+            http::serve_multi(manager, &host, port, dev, trusted_proxy).await?;
         }
         Commands::Info { path } => {
             let manifest = bundle::load_manifest(&path)?;

@@ -1,5 +1,6 @@
 use crate::app::AppContext;
 use crate::bundle;
+use crate::tenant::{TenantContext, TenantManager};
 use crate::util;
 use crate::ws;
 use axum::extract::ws::WebSocketUpgrade;
@@ -15,6 +16,8 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
+// ── Single-tenant serve (unchanged) ──
+
 pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool, trusted_proxy: bool) -> Result<(), String> {
     if trusted_proxy {
         tracing::info!("Trusted proxy mode: using X-Forwarded-For for client IP attribution");
@@ -29,7 +32,7 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool, 
     // instead of using a fixed sleep, avoiding the race condition where
     // 250ms isn't enough for writer tasks to flush Close frames under load.
     let (conn_tx, mut conn_rx) = tokio::sync::mpsc::channel::<()>(1);
-    let router = build_router(ctx, dev_mode, conn_tx, trusted_proxy);
+    let router = build_single_tenant_router(ctx, dev_mode, conn_tx, trusted_proxy);
     let addr = format!("{}:{}", host, port);
     tracing::info!("Listening on http://{}", addr);
 
@@ -41,67 +44,71 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool, 
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(shutdown_tx))
+    .with_graceful_shutdown(shutdown_signal_single(shutdown_tx))
     .await
     .map_err(|e| format!("Server error: {}", e))?;
 
     // Wait for all WebSocket connections to close (senders dropped),
     // with a timeout to prevent hanging indefinitely on stuck connections.
-    // Must exceed the maximum handler timeout (35s in ws.rs HANDLER_TIMEOUT)
-    // so in-flight sync operations and API calls can complete cleanly before
-    // the process exits. A 40s timeout gives 5s of margin.
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(40),
-        conn_rx.recv(), // returns None when all senders are dropped
+        conn_rx.recv(),
     ).await;
 
     Ok(())
 }
 
-fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc::Sender<()>, trusted_proxy: bool) -> Router {
-    // CORS: restrict origins if config.server.allowedOrigins is set.
-    // In production (no --dev flag), missing allowedOrigins defaults to rejecting
-    // cross-origin requests to prevent CSRF. Use --dev for permissive CORS during
-    // local development.
-    let cors = {
-        let allowed_origins: Option<Vec<String>> = ctx.manifest.config.as_ref()
-            .and_then(|c| c.get("server"))
-            .and_then(|s| s.get("allowedOrigins"))
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+// ── Multi-tenant serve ──
 
-        if let Some(origins) = allowed_origins.filter(|o| !o.is_empty()) {
-            let parsed: Vec<axum::http::HeaderValue> = origins.iter()
-                .filter_map(|s| s.parse().ok())
-                .collect();
-            if parsed.is_empty() {
-                // Fail closed: if the developer explicitly configured allowedOrigins
-                // but all entries failed to parse (e.g. typos), reject cross-origin
-                // requests rather than silently opening the API to the entire internet.
-                // Log every invalid origin so the developer can see exactly what failed.
-                let invalid: Vec<&str> = origins.iter().map(String::as_str).collect();
-                tracing::error!(
-                    "config.server.allowedOrigins contains no valid origins — \
-                     rejecting all cross-origin requests. Invalid entries: {:?}. \
-                     Valid origins must include the scheme (e.g. \"https://example.com\", \
-                     not \"example.com\"). Fix in manifest.json config.server.allowedOrigins.",
-                    invalid
-                );
-                CorsLayer::new()
-            } else {
-                tracing::info!("CORS restricted to {} origin(s)", parsed.len());
-                CorsLayer::new().allow_origin(parsed).allow_methods(Any).allow_headers(Any)
-            }
-        } else if dev_mode {
-            tracing::warn!("Dev mode: CORS open to all origins");
-            CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
-        } else {
-            // Production default: no Access-Control-Allow-Origin header is sent,
-            // so browsers will reject cross-origin requests (CSRF protection).
-            tracing::info!("No allowedOrigins configured — cross-origin requests will be rejected (use --dev for open CORS)");
-            CorsLayer::new()
-        }
-    };
+pub async fn serve_multi(manager: Arc<TenantManager>, host: &str, port: u16, dev_mode: bool, trusted_proxy: bool) -> Result<(), String> {
+    if trusted_proxy {
+        tracing::info!("Trusted proxy mode: using X-Forwarded-For for client IP attribution");
+    }
+
+    // Start ticket cleanup for each tenant
+    for tenant in manager.tenants() {
+        tenant.sync_manager.spawn_ticket_cleanup();
+    }
+
+    let shutdown_tx = manager.shutdown.clone();
+    let (conn_tx, mut conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let router = build_multi_tenant_router(manager.clone(), dev_mode, conn_tx, trusted_proxy);
+    let addr = format!("{}:{}", host, port);
+
+    let tenant_ids = manager.tenant_ids();
+    tracing::info!(
+        "Multi-tenant mode: {} tenant(s) on http://{}",
+        tenant_ids.len(), addr
+    );
+    for id in &tenant_ids {
+        tracing::info!("  /{}/... -> tenant '{}'", id, id);
+    }
+
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| format!("Failed to bind: {}", e))?;
+
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal_multi(shutdown_tx))
+    .await
+    .map_err(|e| format!("Server error: {}", e))?;
+
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(40),
+        conn_rx.recv(),
+    ).await;
+
+    Ok(())
+}
+
+// ── Single-tenant router (original, renamed) ──
+
+fn build_single_tenant_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc::Sender<()>, trusted_proxy: bool) -> Router {
+    // CORS: restrict origins if config.server.allowedOrigins is set.
+    let cors = build_cors(&ctx.manifest, dev_mode);
 
     let mut router = Router::new()
         .route("/health", get(health))
@@ -110,11 +117,6 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
         .route("/sync/ticket", axum::routing::post(issue_ticket));
 
     // Explicit body limit for API routes (2MB default).
-    // Configurable via manifest config.server.maxBodySize if needed.
-    // Cap at 16MB at the HTTP layer. Note: JSON parsing is further limited
-    // to 2MB by MAX_JSON_PARSE_SIZE in api_handler (serde_json::Value can
-    // use 5-10x the input size in RAM). The HTTP layer limit is higher to
-    // accommodate future non-JSON endpoints (e.g. file uploads).
     const MAX_BODY_CEILING: u64 = 16 * 1024 * 1024;
     let max_body = ctx.manifest.config.as_ref()
         .and_then(|c| c.get("server"))
@@ -126,103 +128,11 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
     // Register custom API routes from manifest
     if let Some(server) = &ctx.manifest.server {
         if let Some(routes) = &server.routes {
-            let mut registered_routes = std::collections::HashSet::<String>::new();
-            for route in routes {
-                let handler_name = route.handler.clone();
-                let method = route.method.to_uppercase();
-                let path = route.path.clone();
-
-                // Validate path: must start with '/' and not conflict with builtins
-                let path = if !path.starts_with('/') {
-                    format!("/{}", path)
-                } else {
-                    path
-                };
-                // Normalize: strip trailing slash (except root "/") to prevent
-                // Axum router panics from overlapping routes like /api and /api/.
-                let path = if path.len() > 1 && path.ends_with('/') {
-                    tracing::warn!("Route path '{}' has trailing slash — stripped to '{}'", path, &path[..path.len() - 1]);
-                    path[..path.len() - 1].to_string()
-                } else {
-                    path
-                };
-                if path == "/health" || path == "/manifest.json" || path == "/sync" {
-                    tracing::warn!("Skipping route {} {} -> {}: conflicts with built-in route", method, path, handler_name);
-                    continue;
-                }
-                // Reject routes that overlap with static directory mounts.
-                // Axum panics on overlapping routes (nest_service vs route),
-                // which would crash the host process at startup.
-                if ALLOWED_STATIC_DIRS.iter().any(|dir| {
-                    path == format!("/{}", dir) || path.starts_with(&format!("/{}/", dir))
-                }) {
-                    tracing::warn!("Skipping route {} {} -> {}: conflicts with static directory mount", method, path, handler_name);
-                    continue;
-                }
-                // Reject paths with Axum wildcards (*), path params (:param),
-                // or braces ({param}) to prevent router collisions.
-                if path.contains('*') || path.contains(':') || path.contains('{') || path.contains('}') {
-                    tracing::warn!("Skipping route {} {} -> {}: wildcards and path params are not allowed", method, path, handler_name);
-                    continue;
-                }
-                // Prevent duplicate (method, path) registrations — Axum panics
-                // on overlapping routes, which would crash the host process.
-                let route_key = format!("{} {}", method, path);
-                if !registered_routes.insert(route_key.clone()) {
-                    tracing::warn!(
-                        "Skipping duplicate route: {} -> {} (may result from trailing slash normalization)",
-                        route_key, handler_name
-                    );
-                    continue;
-                }
-
-                tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
-
-                // All methods use the same extractor pattern
-                let make_handler = |name: String, is_public: bool| {
-                    move |
-                        State(ctx): State<Arc<AppContext>>,
-                        method: axum::http::Method,
-                        uri: axum::http::Uri,
-                        headers: axum::http::HeaderMap,
-                        query: axum::extract::Query<std::collections::HashMap<String, String>>,
-                        body: axum::body::Bytes,
-                    | {
-                        api_handler(ctx, name, is_public, method, uri, headers, query, body)
-                    }
-                };
-                let is_public = route.public;
-
-                match method.as_str() {
-                    "GET" => {
-                        router = router.route(&path, get(make_handler(handler_name.clone(), is_public)));
-                    }
-                    "POST" => {
-                        router = router.route(&path, axum::routing::post(make_handler(handler_name.clone(), is_public)));
-                    }
-                    "PUT" => {
-                        router = router.route(&path, axum::routing::put(make_handler(handler_name.clone(), is_public)));
-                    }
-                    "DELETE" => {
-                        router = router.route(&path, axum::routing::delete(make_handler(handler_name.clone(), is_public)));
-                    }
-                    "PATCH" => {
-                        router = router.route(&path, axum::routing::patch(make_handler(handler_name.clone(), is_public)));
-                    }
-                    _ => {
-                        tracing::warn!("Unsupported method: {}", method);
-                    }
-                }
-            }
+            router = register_api_routes(router, routes, false);
         }
     }
 
-    // Serve client bundle files via per-prefix ServeDir mounts.
-    // Each allowed directory gets its own scoped ServeDir, which eliminates:
-    // - Manual path traversal checks (ServeDir handles it internally)
-    // - TOCTOU races from separate canonicalize + serve steps
-    // - Blacklist maintenance (only whitelisted prefixes are reachable)
-    // tower-http's ServeDir provides ETag, Last-Modified, and Content-Type.
+    // Serve client bundle files
     let bundle_path = ctx.bundle_path.clone();
     for &prefix in ALLOWED_STATIC_DIRS {
         let dir = bundle_path.join(prefix);
@@ -241,6 +151,280 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
         .with_state(ctx)
 }
 
+// ── Multi-tenant router ──
+
+fn build_multi_tenant_router(
+    manager: Arc<TenantManager>,
+    dev_mode: bool,
+    conn_tx: tokio::sync::mpsc::Sender<()>,
+    trusted_proxy: bool,
+) -> Router {
+    // Global routes (not tenant-scoped).
+    // Convert to Router<()> via .with_state() so we can merge with tenant
+    // sub-routers that also have their own state baked in.
+    let mut app: Router<()> = Router::new()
+        .route("/health", get(health_multi))
+        .route("/tenants", get(list_tenants))
+        .with_state(manager.clone());
+
+    // Build a sub-router for each tenant, nested under /<tenant-id>/
+    for tenant in manager.tenants() {
+        let tenant_id = tenant.tenant_id.clone();
+        let tenant_arc = tenant.clone();
+
+        let cors = if dev_mode {
+            CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+        } else {
+            build_cors(&tenant.manifest, false)
+        };
+
+        let max_body = tenant.manifest.config.as_ref()
+            .and_then(|c| c.get("server"))
+            .and_then(|s| s.get("maxBodySize"))
+            .and_then(|v| v.as_u64())
+            .map(|n| n.min(16 * 1024 * 1024))
+            .unwrap_or(2 * 1024 * 1024) as usize;
+
+        let mut tenant_router: Router<Arc<TenantContext>> = Router::new()
+            .route("/manifest.json", get(tenant_serve_manifest))
+            .route("/sync", get(tenant_ws_upgrade))
+            .route("/sync/ticket", axum::routing::post(tenant_issue_ticket));
+
+        // Register tenant's API routes
+        if let Some(server) = &tenant.manifest.server {
+            if let Some(routes) = &server.routes {
+                tenant_router = register_api_routes_tenant(tenant_router, routes);
+            }
+        }
+
+        // Static files
+        for &prefix in ALLOWED_STATIC_DIRS {
+            let dir = tenant.bundle_path.join(prefix);
+            tenant_router = tenant_router.nest_service(
+                &format!("/{}", prefix),
+                ServeDir::new(dir),
+            );
+        }
+
+        // Convert tenant router to Router<()> by baking in its state
+        let tenant_router: Router<()> = tenant_router
+            .layer(DefaultBodyLimit::max(max_body))
+            .layer(cors)
+            .with_state(tenant_arc);
+
+        let path = format!("/{}", tenant_id);
+        tracing::debug!("Nesting tenant router at {}", path);
+        app = app.nest(&path, tenant_router);
+    }
+
+    app
+        .layer(TraceLayer::new_for_http())
+        .layer(axum::Extension(conn_tx))
+        .layer(axum::Extension(TrustedProxy(trusted_proxy)))
+}
+
+/// Register API routes from manifest onto a single-tenant router.
+fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bundle::RouteDefinition], _is_tenant: bool) -> Router<Arc<AppContext>> {
+    let mut registered = std::collections::HashSet::<String>::new();
+
+    for route in routes {
+        let handler_name = route.handler.clone();
+        let method = route.method.to_uppercase();
+        let path = normalize_route_path(&route.path);
+
+        if let Some(reason) = validate_route_path(&path) {
+            tracing::warn!("Skipping route {} {} -> {}: {}", method, path, handler_name, reason);
+            continue;
+        }
+
+        let route_key = format!("{} {}", method, path);
+        if !registered.insert(route_key.clone()) {
+            tracing::warn!("Skipping duplicate route: {} -> {}", route_key, handler_name);
+            continue;
+        }
+
+        tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
+
+        let make_handler = |name: String, is_public: bool| {
+            move |
+                State(ctx): State<Arc<AppContext>>,
+                method: axum::http::Method,
+                uri: axum::http::Uri,
+                headers: axum::http::HeaderMap,
+                query: axum::extract::Query<HashMap<String, String>>,
+                body: axum::body::Bytes,
+            | {
+                api_handler_single(ctx, name, is_public, method, uri, headers, query, body)
+            }
+        };
+        let is_public = route.public;
+
+        router = add_method_route(router, &method, &path, make_handler(handler_name, is_public));
+    }
+
+    router
+}
+
+/// Register API routes for a tenant router.
+/// Uses relaxed validation: tenant routes are nested under `/<tenant-id>/`,
+/// so paths like `/health` or `/sync` don't conflict with global routes.
+/// Only wildcards/params and static dir conflicts are checked.
+fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[crate::bundle::RouteDefinition]) -> Router<Arc<TenantContext>> {
+    let mut registered = std::collections::HashSet::<String>::new();
+
+    for route in routes {
+        let handler_name = route.handler.clone();
+        let method = route.method.to_uppercase();
+        let path = normalize_route_path(&route.path);
+
+        // Tenant routes only need to avoid conflicts within their own namespace.
+        // Built-in routes (/manifest.json, /sync, /sync/ticket) are already
+        // registered on the tenant router, so reject those. Static dirs and
+        // wildcards are also rejected. But /health is fine — it becomes
+        // /<tenant-id>/health after nesting, not the global /health.
+        if path == "/manifest.json" || path == "/sync" || path == "/sync/ticket" {
+            tracing::warn!("Skipping route {} {} -> {}: conflicts with built-in tenant route", method, path, handler_name);
+            continue;
+        }
+        if ALLOWED_STATIC_DIRS.iter().any(|dir| {
+            path == format!("/{}", dir) || path.starts_with(&format!("/{}/", dir))
+        }) {
+            tracing::warn!("Skipping route {} {} -> {}: conflicts with static directory mount", method, path, handler_name);
+            continue;
+        }
+        if path.contains('*') || path.contains(':') || path.contains('{') || path.contains('}') {
+            tracing::warn!("Skipping route {} {} -> {}: wildcards and path params are not allowed", method, path, handler_name);
+            continue;
+        }
+
+        let route_key = format!("{} {}", method, path);
+        if !registered.insert(route_key.clone()) {
+            tracing::warn!("Skipping duplicate route: {} -> {}", route_key, handler_name);
+            continue;
+        }
+
+        tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
+
+        let make_handler = |name: String, is_public: bool| {
+            move |
+                State(tenant): State<Arc<TenantContext>>,
+                method: axum::http::Method,
+                uri: axum::http::Uri,
+                headers: axum::http::HeaderMap,
+                query: axum::extract::Query<HashMap<String, String>>,
+                body: axum::body::Bytes,
+            | {
+                api_handler_tenant(tenant, name, is_public, method, uri, headers, query, body)
+            }
+        };
+        let is_public = route.public;
+
+        router = add_method_route_tenant(router, &method, &path, make_handler(handler_name, is_public));
+    }
+
+    router
+}
+
+// ── Shared helpers ──
+
+fn normalize_route_path(path: &str) -> String {
+    let path = if !path.starts_with('/') {
+        format!("/{}", path)
+    } else {
+        path.to_string()
+    };
+    if path.len() > 1 && path.ends_with('/') {
+        tracing::warn!("Route path '{}' has trailing slash — stripped", path);
+        path[..path.len() - 1].to_string()
+    } else {
+        path
+    }
+}
+
+fn validate_route_path(path: &str) -> Option<&'static str> {
+    if path == "/health" || path == "/manifest.json" || path == "/sync" || path == "/sync/ticket" {
+        return Some("conflicts with built-in route");
+    }
+    if ALLOWED_STATIC_DIRS.iter().any(|dir| {
+        path == format!("/{}", dir) || path.starts_with(&format!("/{}/", dir))
+    }) {
+        return Some("conflicts with static directory mount");
+    }
+    if path.contains('*') || path.contains(':') || path.contains('{') || path.contains('}') {
+        return Some("wildcards and path params are not allowed");
+    }
+    None
+}
+
+fn add_method_route<H, T>(router: Router<Arc<AppContext>>, method: &str, path: &str, handler: H) -> Router<Arc<AppContext>>
+where
+    H: axum::handler::Handler<T, Arc<AppContext>> + Clone + Send + 'static,
+    T: 'static,
+{
+    match method {
+        "GET" => router.route(path, get(handler)),
+        "POST" => router.route(path, axum::routing::post(handler)),
+        "PUT" => router.route(path, axum::routing::put(handler)),
+        "DELETE" => router.route(path, axum::routing::delete(handler)),
+        "PATCH" => router.route(path, axum::routing::patch(handler)),
+        _ => {
+            tracing::warn!("Unsupported method: {}", method);
+            router
+        }
+    }
+}
+
+fn add_method_route_tenant<H, T>(router: Router<Arc<TenantContext>>, method: &str, path: &str, handler: H) -> Router<Arc<TenantContext>>
+where
+    H: axum::handler::Handler<T, Arc<TenantContext>> + Clone + Send + 'static,
+    T: 'static,
+{
+    match method {
+        "GET" => router.route(path, get(handler)),
+        "POST" => router.route(path, axum::routing::post(handler)),
+        "PUT" => router.route(path, axum::routing::put(handler)),
+        "DELETE" => router.route(path, axum::routing::delete(handler)),
+        "PATCH" => router.route(path, axum::routing::patch(handler)),
+        _ => {
+            tracing::warn!("Unsupported method: {}", method);
+            router
+        }
+    }
+}
+
+fn build_cors(manifest: &crate::bundle::ServerManifest, dev_mode: bool) -> CorsLayer {
+    let allowed_origins: Option<Vec<String>> = manifest.config.as_ref()
+        .and_then(|c| c.get("server"))
+        .and_then(|s| s.get("allowedOrigins"))
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+
+    if let Some(origins) = allowed_origins.filter(|o| !o.is_empty()) {
+        let parsed: Vec<axum::http::HeaderValue> = origins.iter()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if parsed.is_empty() {
+            let invalid: Vec<&str> = origins.iter().map(String::as_str).collect();
+            tracing::error!(
+                "config.server.allowedOrigins contains no valid origins — \
+                 rejecting all cross-origin requests. Invalid entries: {:?}.",
+                invalid
+            );
+            CorsLayer::new()
+        } else {
+            tracing::info!("CORS restricted to {} origin(s)", parsed.len());
+            CorsLayer::new().allow_origin(parsed).allow_methods(Any).allow_headers(Any)
+        }
+    } else if dev_mode {
+        tracing::warn!("Dev mode: CORS open to all origins");
+        CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+    } else {
+        CorsLayer::new()
+    }
+}
+
+// ── Single-tenant handlers ──
+
 async fn health() -> &'static str {
     "ok"
 }
@@ -250,17 +434,11 @@ async fn serve_manifest(State(ctx): State<Arc<AppContext>>) -> Json<serde_json::
 }
 
 /// Max incoming WebSocket message size (4MB).
-/// Axum/Tungstenite defaults to 64MB which bypasses the HTTP body limit.
-/// Sync messages are typically small (a few KB per op), so 4MB is generous.
 const MAX_WS_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 // ── IP-based rate limiter for the ticket endpoint ──
 
-/// Maximum ticket requests per IP within the rate-limit window.
-/// Prevents an attacker from continuously hitting the ticket endpoint
-/// to fill MAX_PENDING_TICKETS and lock out legitimate users.
 const TICKET_RATE_LIMIT: u32 = 10;
-/// Rate-limit window duration.
 const TICKET_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 struct RateLimitEntry {
@@ -268,9 +446,6 @@ struct RateLimitEntry {
     window_start: std::time::Instant,
 }
 
-/// Simple in-memory IP rate limiter. Uses a Mutex<HashMap> which is fine
-/// for the ticket endpoint's low request volume. Entries are lazily evicted
-/// when their window expires.
 struct IpRateLimiter {
     entries: Mutex<HashMap<std::net::IpAddr, RateLimitEntry>>,
 }
@@ -282,13 +457,10 @@ impl IpRateLimiter {
         }
     }
 
-    /// Returns Ok(()) if the request is allowed, Err(()) if rate-limited.
     fn check(&self, ip: std::net::IpAddr) -> Result<(), ()> {
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         let now = std::time::Instant::now();
 
-        // Lazy eviction: prune expired entries periodically to bound memory.
-        // Only run when the table grows large to avoid O(n) on every request.
         if entries.len() > 1000 {
             entries.retain(|_, e| now.duration_since(e.window_start) < TICKET_RATE_WINDOW);
         }
@@ -299,7 +471,6 @@ impl IpRateLimiter {
         });
 
         if now.duration_since(entry.window_start) >= TICKET_RATE_WINDOW {
-            // Window expired — reset
             entry.count = 1;
             entry.window_start = now;
             Ok(())
@@ -312,26 +483,18 @@ impl IpRateLimiter {
     }
 }
 
-/// Lazily-initialized global rate limiter for the ticket endpoint.
 static TICKET_RATE_LIMITER: std::sync::OnceLock<IpRateLimiter> = std::sync::OnceLock::new();
 
 fn ticket_rate_limiter() -> &'static IpRateLimiter {
     TICKET_RATE_LIMITER.get_or_init(IpRateLimiter::new)
 }
 
-/// Issue a single-use, 30-second ticket for WebSocket authentication.
-/// Clients POST here with `Authorization: Bearer <token>` and receive a
-/// short-lived ticket to use in the WebSocket URL instead of their long-lived
-/// auth token. This prevents tokens from appearing in proxy access logs.
-///
-/// Rate-limited per IP to prevent ticket table exhaustion DoS.
 async fn issue_ticket(
     State(ctx): State<Arc<AppContext>>,
     info: ConnectInfo<SocketAddr>,
     axum::Extension(proxy): axum::Extension<TrustedProxy>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    // Rate-limit by client IP, using X-Forwarded-For when behind a trusted proxy.
     let client_ip = extract_client_ip(&headers, info.0.ip(), proxy.0);
     if ticket_rate_limiter().check(client_ip).is_err() {
         return (
@@ -354,27 +517,15 @@ async fn issue_ticket(
     }
 }
 
-/// Pre-upgrade auth: validate credentials from query params before allocating
-/// WebSocket resources. This rejects unauthenticated connections at the HTTP
-/// level (401), preventing attackers from exhausting file descriptors by
-/// opening thousands of connections that sit idle during post-upgrade auth.
-///
-/// Preferred flow (avoids tokens in URLs/logs):
-///   1. POST /sync/ticket with Authorization header → { ticket: "..." }
-///   2. Connect to /sync?ticket=<ticket>
-///
-/// Fallback (backward-compatible): pass `?token=...` directly.
 async fn ws_upgrade(
     ws: WebSocketUpgrade,
     State(ctx): State<Arc<AppContext>>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
     axum::Extension(conn_tx): axum::Extension<tokio::sync::mpsc::Sender<()>>,
 ) -> axum::response::Response {
     let sync = ctx.sync_manager.clone();
     let app_version = params.get("appVersion").map(String::as_str);
 
-    // Prefer ticket-based auth (short-lived, single-use, not logged by proxies).
-    // Fall back to raw token for backward compatibility.
     let cid = if let Some(ticket) = params.get("ticket") {
         match sync.redeem_ticket(ticket) {
             Ok(cid) => cid,
@@ -398,47 +549,20 @@ async fn ws_upgrade(
         .into_response()
 }
 
-async fn api_handler(
+async fn api_handler_single(
     ctx: Arc<AppContext>,
     handler_name: String,
     is_public: bool,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
-    query: axum::extract::Query<std::collections::HashMap<String, String>>,
+    query: axum::extract::Query<HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    // Auth check: when auth_token is configured, require Bearer token for
-    // non-public routes. CORS only protects browser clients — non-browser
-    // clients (curl, scripts, bots) bypass CORS entirely, so auth must be
-    // enforced at the framework level for all API routes by default.
+    // Auth check
     if !is_public {
-        if let Some(expected) = &ctx.auth_token {
-            let provided = headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "));
-            match provided {
-                Some(token) => {
-                    // Constant-time comparison via SHA-256 hash (same as sync auth)
-                    use sha2::Digest;
-                    use subtle::ConstantTimeEq;
-                    let hash_t = sha2::Sha256::digest(token.as_bytes());
-                    let hash_e = sha2::Sha256::digest(expected.as_bytes());
-                    if !bool::from(hash_t.ct_eq(&hash_e)) {
-                        return (
-                            StatusCode::UNAUTHORIZED,
-                            Json(serde_json::json!({"error": "Invalid auth token"})),
-                        );
-                    }
-                }
-                None => {
-                    return (
-                        StatusCode::UNAUTHORIZED,
-                        Json(serde_json::json!({"error": "Authorization required"})),
-                    );
-                }
-            }
+        if let Some(rejection) = check_auth(&headers, ctx.auth_token.as_deref()) {
+            return rejection;
         }
     }
 
@@ -452,12 +576,170 @@ async fn api_handler(
         }
     };
 
-    // Reject oversized bodies before doing any work — no point parsing
-    // headers or spawning a blocking task for a body we won't process.
-    // serde_json::Value can use 5-10x the input size in RAM, and the value
-    // is then copied again into VM Objects. Keep this aligned with the
-    // default body limit (2MB). Larger payloads should use the FS bridge.
-    const MAX_JSON_PARSE_SIZE: usize = 2 * 1024 * 1024;
+    execute_api_handler(runtime, handler_name, method, uri, headers, query, body).await
+}
+
+// ── Multi-tenant handlers ──
+
+async fn health_multi(State(manager): State<Arc<TenantManager>>) -> Json<serde_json::Value> {
+    let tenant_ids: Vec<&str> = manager.tenant_ids();
+    Json(serde_json::json!({
+        "status": "ok",
+        "tenants": tenant_ids.len(),
+    }))
+}
+
+async fn list_tenants(State(manager): State<Arc<TenantManager>>) -> Json<serde_json::Value> {
+    let tenants: Vec<serde_json::Value> = manager.tenants()
+        .map(|t| serde_json::json!({
+            "id": t.tenant_id,
+            "name": t.manifest.name,
+            "version": t.manifest.version,
+        }))
+        .collect();
+    Json(serde_json::json!({ "tenants": tenants }))
+}
+
+async fn tenant_serve_manifest(
+    State(tenant): State<Arc<TenantContext>>,
+) -> Json<serde_json::Value> {
+    Json(bundle::client_manifest(&tenant.manifest))
+}
+
+async fn tenant_issue_ticket(
+    State(tenant): State<Arc<TenantContext>>,
+    info: ConnectInfo<SocketAddr>,
+    axum::Extension(proxy): axum::Extension<TrustedProxy>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let client_ip = extract_client_ip(&headers, info.0.ip(), proxy.0);
+    if ticket_rate_limiter().check(client_ip).is_err() {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Rate limited — too many ticket requests, try again later",
+        )
+            .into_response();
+    }
+
+    let sync = tenant.sync_manager.clone();
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(|s| s.to_string());
+
+    match sync.issue_ticket(token.as_deref(), None) {
+        Ok(ticket) => Json(serde_json::json!({ "ticket": ticket })).into_response(),
+        Err(reason) => (StatusCode::UNAUTHORIZED, reason).into_response(),
+    }
+}
+
+async fn tenant_ws_upgrade(
+    ws: WebSocketUpgrade,
+    State(tenant): State<Arc<TenantContext>>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+    axum::Extension(conn_tx): axum::Extension<tokio::sync::mpsc::Sender<()>>,
+) -> axum::response::Response {
+    let sync = tenant.sync_manager.clone();
+    let app_version = params.get("appVersion").map(String::as_str);
+
+    let cid = if let Some(ticket) = params.get("ticket") {
+        match sync.redeem_ticket(ticket) {
+            Ok(cid) => cid,
+            Err(reason) => {
+                return (StatusCode::UNAUTHORIZED, reason).into_response();
+            }
+        }
+    } else {
+        let token = params.get("token").map(String::as_str);
+        match sync.handle_auth(token, app_version) {
+            Ok(cid) => cid,
+            Err(reason) => {
+                return (StatusCode::UNAUTHORIZED, reason).into_response();
+            }
+        }
+    };
+
+    let shutdown_rx = tenant.shutdown.subscribe();
+    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
+        .on_upgrade(move |socket| ws::handle_ws(socket, sync, shutdown_rx, cid, conn_tx))
+        .into_response()
+}
+
+async fn api_handler_tenant(
+    tenant: Arc<TenantContext>,
+    handler_name: String,
+    is_public: bool,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    query: axum::extract::Query<HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    if !is_public {
+        if let Some(rejection) = check_auth(&headers, tenant.auth_token.as_deref()) {
+            return rejection;
+        }
+    }
+
+    let runtime = match &tenant.runtime {
+        Some(r) => r.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Runtime not available"})),
+            );
+        }
+    };
+
+    execute_api_handler(runtime, handler_name, method, uri, headers, query, body).await
+}
+
+// ── Shared helpers ──
+
+fn check_auth(
+    headers: &axum::http::HeaderMap,
+    expected: Option<&str>,
+) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    let expected = expected?;
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match provided {
+        Some(token) => {
+            use sha2::Digest;
+            use subtle::ConstantTimeEq;
+            let hash_t = sha2::Sha256::digest(token.as_bytes());
+            let hash_e = sha2::Sha256::digest(expected.as_bytes());
+            if !bool::from(hash_t.ct_eq(&hash_e)) {
+                Some((
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": "Invalid auth token"})),
+                ))
+            } else {
+                None
+            }
+        }
+        None => Some((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Authorization required"})),
+        )),
+    }
+}
+
+/// Maximum JSON body size for API handlers.
+const MAX_JSON_PARSE_SIZE: usize = 2 * 1024 * 1024;
+
+async fn execute_api_handler(
+    runtime: Arc<crate::runtime::ServerRuntime>,
+    handler_name: String,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    query: axum::extract::Query<HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> (StatusCode, Json<serde_json::Value>) {
     if body.len() > MAX_JSON_PARSE_SIZE {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -465,7 +747,6 @@ async fn api_handler(
         );
     }
 
-    // Collect lightweight metadata on the reactor; defer heavy work to spawn_blocking.
     let headers_json: serde_json::Map<String, serde_json::Value> = headers
         .iter()
         .filter_map(|(k, v)| {
@@ -478,20 +759,9 @@ async fn api_handler(
     let method_str = method.to_string();
     let path_str = uri.path().to_string();
 
-    // Run body parsing AND script execution off the Tokio reactor (30s timeout).
-    // INVARIANT: This timeout (30s) must exceed the VM wall-time limit (25s,
-    // set in runtime.rs init_state). If the VM limit is ever raised above this
-    // timeout, the HTTP handler returns 504 but the spawn_blocking thread
-    // continues running until the VM terminates, silently leaking blocking
-    // threads under load. Keep these values aligned.
-    // JSON parsing can be CPU-intensive for large payloads, and running it on
-    // the reactor would block all async I/O (WebSocket pings, health checks,
-    // etc.) causing severe latency spikes.
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         tokio::task::spawn_blocking(move || {
-            // Parse body off the reactor (can be CPU-intensive for large JSON).
-            // Depth limit prevents stack overflow from deeply nested payloads.
             let body_json = if body.is_empty() {
                 serde_json::Value::Null
             } else {
@@ -534,7 +804,6 @@ async fn api_handler(
 
     match call_result {
         Ok(result) => {
-            // Check if result has { status, body } structure
             if let Some(obj) = result.as_object() {
                 let status = obj
                     .get("status")
@@ -565,20 +834,11 @@ async fn api_handler(
 }
 
 /// Allowed client-facing directories for static file serving.
-/// Each directory gets its own scoped ServeDir mount, so only these
-/// prefixes are reachable. server/ and data/ are never exposed.
 const ALLOWED_STATIC_DIRS: &[&str] = &["ui", "assets", "styles", "fonts", "images", "icons"];
 
-/// Whether to trust X-Forwarded-For headers for client IP extraction.
-/// Stored as an Axum Extension so handlers can access it.
 #[derive(Clone, Copy)]
 struct TrustedProxy(bool);
 
-/// Extract the client IP, respecting trusted proxy configuration.
-/// When `--trusted-proxy` is enabled, uses the rightmost IP from the
-/// X-Forwarded-For header (the one added by the directly connected proxy).
-/// Falls back to the socket peer address if the header is missing or
-/// unparseable.
 fn extract_client_ip(
     headers: &axum::http::HeaderMap,
     socket_ip: std::net::IpAddr,
@@ -591,9 +851,6 @@ fn extract_client_ip(
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|xff| {
-            // Use the rightmost entry: it's the one appended by the directly
-            // connected (trusted) proxy. Entries to the left can be spoofed
-            // by the client via `X-Forwarded-For: fake-ip`.
             xff.rsplit(',')
                 .next()
                 .and_then(|ip_str| ip_str.trim().parse::<std::net::IpAddr>().ok())
@@ -601,17 +858,27 @@ fn extract_client_ip(
         .unwrap_or(socket_ip)
 }
 
-async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
+async fn shutdown_signal_single(shutdown_tx: tokio::sync::watch::Sender<bool>) {
     match tokio::signal::ctrl_c().await {
         Ok(()) => {
             tracing::info!("Shutting down...");
-            // Signal all WebSocket connections to send Close frames and disconnect
-            // before the process exits, preventing unclean termination.
             let _ = shutdown_tx.send(true);
         }
         Err(e) => {
             tracing::error!("Failed to install CTRL+C handler: {}", e);
-            // Don't return — keep the server running rather than shutting down immediately
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+async fn shutdown_signal_multi(shutdown_tx: tokio::sync::watch::Sender<bool>) {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => {
+            tracing::info!("Shutting down multi-tenant server...");
+            let _ = shutdown_tx.send(true);
+        }
+        Err(e) => {
+            tracing::error!("Failed to install CTRL+C handler: {}", e);
             std::future::pending::<()>().await;
         }
     }
