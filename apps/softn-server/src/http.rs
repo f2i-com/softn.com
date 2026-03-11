@@ -3,12 +3,14 @@ use crate::bundle;
 use crate::util;
 use crate::ws;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
 use axum::Router;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -32,10 +34,13 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) 
         .await
         .map_err(|e| format!("Failed to bind: {}", e))?;
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
-        .await
-        .map_err(|e| format!("Server error: {}", e))?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal(shutdown_tx))
+    .await
+    .map_err(|e| format!("Server error: {}", e))?;
 
     // Wait for all WebSocket connections to close (senders dropped),
     // with a timeout to prevent hanging indefinitely on stuck connections.
@@ -240,14 +245,92 @@ async fn serve_manifest(State(ctx): State<Arc<AppContext>>) -> Json<serde_json::
 /// Sync messages are typically small (a few KB per op), so 4MB is generous.
 const MAX_WS_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
+// ── IP-based rate limiter for the ticket endpoint ──
+
+/// Maximum ticket requests per IP within the rate-limit window.
+/// Prevents an attacker from continuously hitting the ticket endpoint
+/// to fill MAX_PENDING_TICKETS and lock out legitimate users.
+const TICKET_RATE_LIMIT: u32 = 10;
+/// Rate-limit window duration.
+const TICKET_RATE_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+struct RateLimitEntry {
+    count: u32,
+    window_start: std::time::Instant,
+}
+
+/// Simple in-memory IP rate limiter. Uses a Mutex<HashMap> which is fine
+/// for the ticket endpoint's low request volume. Entries are lazily evicted
+/// when their window expires.
+struct IpRateLimiter {
+    entries: Mutex<HashMap<std::net::IpAddr, RateLimitEntry>>,
+}
+
+impl IpRateLimiter {
+    fn new() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Returns Ok(()) if the request is allowed, Err(()) if rate-limited.
+    fn check(&self, ip: std::net::IpAddr) -> Result<(), ()> {
+        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let now = std::time::Instant::now();
+
+        // Lazy eviction: prune expired entries periodically to bound memory.
+        // Only run when the table grows large to avoid O(n) on every request.
+        if entries.len() > 1000 {
+            entries.retain(|_, e| now.duration_since(e.window_start) < TICKET_RATE_WINDOW);
+        }
+
+        let entry = entries.entry(ip).or_insert(RateLimitEntry {
+            count: 0,
+            window_start: now,
+        });
+
+        if now.duration_since(entry.window_start) >= TICKET_RATE_WINDOW {
+            // Window expired — reset
+            entry.count = 1;
+            entry.window_start = now;
+            Ok(())
+        } else if entry.count < TICKET_RATE_LIMIT {
+            entry.count += 1;
+            Ok(())
+        } else {
+            Err(())
+        }
+    }
+}
+
+/// Lazily-initialized global rate limiter for the ticket endpoint.
+static TICKET_RATE_LIMITER: std::sync::OnceLock<IpRateLimiter> = std::sync::OnceLock::new();
+
+fn ticket_rate_limiter() -> &'static IpRateLimiter {
+    TICKET_RATE_LIMITER.get_or_init(IpRateLimiter::new)
+}
+
 /// Issue a single-use, 30-second ticket for WebSocket authentication.
 /// Clients POST here with `Authorization: Bearer <token>` and receive a
 /// short-lived ticket to use in the WebSocket URL instead of their long-lived
 /// auth token. This prevents tokens from appearing in proxy access logs.
+///
+/// Rate-limited per IP to prevent ticket table exhaustion DoS.
 async fn issue_ticket(
     State(ctx): State<Arc<AppContext>>,
+    info: ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    // Rate-limit by client IP to prevent ticket table exhaustion.
+    let client_ip = info.0.ip();
+    if ticket_rate_limiter().check(client_ip).is_err() {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Rate limited — too many ticket requests, try again later",
+        )
+            .into_response();
+    }
+
     let sync = ctx.sync_manager.clone();
     let token = headers
         .get("authorization")

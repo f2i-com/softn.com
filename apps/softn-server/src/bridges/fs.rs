@@ -1,6 +1,24 @@
 use formlogic_core::fs_bridge::FsBridge;
 use std::path::PathBuf;
 
+/// Strip the Windows UNC `\\?\` prefix from canonicalized paths.
+/// `std::fs::canonicalize` on Windows returns extended-length paths like
+/// `\\?\C:\Users\...`. If the incremental path builder in `reject_symlinks_in_path`
+/// doesn't include the `\\?\` prefix, `starts_with` comparisons against the
+/// canonical root will fail, causing false rejections. Stripping the prefix
+/// normalizes both sides to regular `C:\...` paths for reliable comparison.
+/// On non-Windows platforms this is a no-op.
+fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
+
 pub struct NativeFsBridge {
     root_dir: PathBuf,
 }
@@ -31,15 +49,19 @@ impl NativeFsBridge {
 
         // Normalize without touching the filesystem: ensure it stays under root.
         // We check both the logical path and (if it exists) the canonical path.
-        let canonical_root = std::fs::canonicalize(&self.root_dir)
-            .map_err(|e| format!("Root resolve error: {}", e))?;
+        let canonical_root = strip_unc_prefix(
+            std::fs::canonicalize(&self.root_dir)
+                .map_err(|e| format!("Root resolve error: {}", e))?,
+        );
 
         if joined.exists() {
             // Reject symlinks anywhere in the path to close TOCTOU gaps.
             self.reject_symlinks_in_path(&joined, &canonical_root)?;
 
-            let canonical = std::fs::canonicalize(&joined)
-                .map_err(|e| format!("Path resolve error: {}", e))?;
+            let canonical = strip_unc_prefix(
+                std::fs::canonicalize(&joined)
+                    .map_err(|e| format!("Path resolve error: {}", e))?,
+            );
             if !canonical.starts_with(&canonical_root) {
                 return Err("Path traversal rejected".into());
             }
@@ -54,8 +76,10 @@ impl NativeFsBridge {
                     // Check for symlinks in the existing portion of the path
                     self.reject_symlinks_in_path(dir, &canonical_root)?;
 
-                    let canonical_ancestor = std::fs::canonicalize(dir)
-                        .map_err(|e| format!("Path resolve error: {}", e))?;
+                    let canonical_ancestor = strip_unc_prefix(
+                        std::fs::canonicalize(dir)
+                            .map_err(|e| format!("Path resolve error: {}", e))?,
+                    );
                     if !canonical_ancestor.starts_with(&canonical_root) {
                         return Err("Path traversal rejected".into());
                     }

@@ -25,6 +25,13 @@ const MAX_PENDING_TICKETS: usize = 1000;
 /// Valid operations for sync ops.
 const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 
+/// Maximum byte size of an individual SyncOp's `data` field (512KB).
+/// Without this, a client could submit 1000 ops each with a 500KB JSON object,
+/// forcing the server to parse ~500MB of payload data in memory. The 4MB
+/// MAX_WS_MESSAGE_SIZE provides outer bounds, but this inner limit prevents
+/// memory amplification from serde_json::Value's overhead (5-10x input size).
+const MAX_OP_DATA_BYTES: usize = 512 * 1024;
+
 /// Maximum records per SyncState message to prevent oversized WebSocket frames
 /// and server-side RAM spikes. With ~200-500 bytes per JSON record, 500 records
 /// ≈ 100-250KB per message — well within the 4MB MAX_WS_MESSAGE_SIZE limit.
@@ -474,6 +481,23 @@ impl SyncManager {
             } else {
                 // Unparseable timestamp — fall back to server time
                 op.timestamp = server_time.clone();
+            }
+
+            // Reject oversized data payloads before any further processing.
+            // Without this, 1000 ops × 500KB each = 500MB parsed into serde Values
+            // (which use 5-10x RAM vs input), causing memory spikes.
+            if let Some(ref data) = op.data {
+                let data_size = data.to_string().len();
+                if data_size > MAX_OP_DATA_BYTES {
+                    responses.push(ServerMessage::SyncReject {
+                        op_id: op.id.clone(),
+                        reason: format!(
+                            "Op data too large ({} bytes, max {})",
+                            data_size, MAX_OP_DATA_BYTES
+                        ),
+                    });
+                    continue;
+                }
             }
 
             if !VALID_OPERATIONS.contains(&op.operation.as_str()) {

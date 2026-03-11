@@ -48,7 +48,14 @@ impl AppContext {
         // packaging live databases/files when zipping the bundle directory.
         let data_dir = data_dir.unwrap_or_else(|| {
             if let Some(base) = dirs::data_dir() {
-                base.join("softn").join(&manifest.name)
+                // Namespace with a hash of the canonical bundle path to prevent
+                // collisions between apps with the same manifest name (e.g. two
+                // different developers both naming their app "demo"). The hash
+                // suffix guarantees isolation without requiring globally unique names.
+                use sha2::Digest;
+                let path_hash = sha2::Sha256::digest(bundle_path.to_string_lossy().as_bytes());
+                let short_hash: String = path_hash.iter().take(6).map(|b| format!("{:02x}", b)).collect();
+                base.join("softn").join(format!("{}-{}", manifest.name, short_hash))
             } else {
                 // parent() returns "" for bare filenames like "app.softn",
                 // which would create an invalid path. Default to "." (cwd).
