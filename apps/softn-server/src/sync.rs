@@ -126,6 +126,13 @@ pub struct SyncManager {
     pub sync_permits: Arc<tokio::sync::Semaphore>,
     /// Short-lived single-use tickets for WebSocket auth. Keyed by ticket ID.
     tickets: std::sync::Mutex<std::collections::HashMap<String, AuthTicket>>,
+    /// When true, all sync ops use server time regardless of client timestamps.
+    /// Prevents LWW manipulation where a malicious client sets timestamps to
+    /// `ServerTime + 4m59s` to guarantee their edits win over concurrent edits.
+    /// Trade-off: offline edits lose their original timestamps, so the LWW
+    /// ordering may not reflect the actual sequence of user actions. Enable
+    /// this for apps where data integrity matters more than offline ordering.
+    force_server_timestamps: bool,
 }
 
 impl SyncManager {
@@ -136,6 +143,7 @@ impl SyncManager {
         db_path: PathBuf,
         max_storage_bytes: u64,
         max_sync_permits: usize,
+        force_server_timestamps: bool,
     ) -> Arc<Self> {
         let (broadcast_tx, _) = broadcast::channel(256);
 
@@ -180,6 +188,9 @@ impl SyncManager {
         if max_storage_bytes > 0 {
             tracing::info!("Storage quota: {}MB", max_storage_bytes / (1024 * 1024));
         }
+        if force_server_timestamps {
+            tracing::info!("Server timestamps enforced — client timestamps will be ignored (LWW hardening)");
+        }
 
         Arc::new(Self {
             db,
@@ -194,6 +205,7 @@ impl SyncManager {
             auth_token,
             sync_permits,
             tickets: std::sync::Mutex::new(std::collections::HashMap::new()),
+            force_server_timestamps,
         })
     }
 
@@ -465,7 +477,9 @@ impl SyncManager {
             // skew. A Hybrid Logical Clock (HLC) would provide causal ordering, but
             // requires client-side HLC support and a protocol change. For the current
             // use case (single-user multi-device sync) this is acceptable.
-            if op.timestamp.is_empty() {
+            if self.force_server_timestamps {
+                op.timestamp = server_time.clone();
+            } else if op.timestamp.is_empty() {
                 op.timestamp = server_time.clone();
             } else if let Ok(client_ts) = chrono::DateTime::parse_from_rfc3339(&op.timestamp) {
                 let drift = client_ts.signed_duration_since(server_now).num_seconds();
