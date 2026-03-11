@@ -15,7 +15,10 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
-pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) -> Result<(), String> {
+pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool, trusted_proxy: bool) -> Result<(), String> {
+    if trusted_proxy {
+        tracing::info!("Trusted proxy mode: using X-Forwarded-For for client IP attribution");
+    }
     let shutdown_tx = ctx.shutdown.clone();
     // Start background ticket cleanup so expired tickets are pruned even when
     // no new issue/redeem requests arrive (prevents attacker lock-out via
@@ -26,7 +29,7 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) 
     // instead of using a fixed sleep, avoiding the race condition where
     // 250ms isn't enough for writer tasks to flush Close frames under load.
     let (conn_tx, mut conn_rx) = tokio::sync::mpsc::channel::<()>(1);
-    let router = build_router(ctx, dev_mode, conn_tx);
+    let router = build_router(ctx, dev_mode, conn_tx, trusted_proxy);
     let addr = format!("{}:{}", host, port);
     tracing::info!("Listening on http://{}", addr);
 
@@ -55,7 +58,7 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool) 
     Ok(())
 }
 
-fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc::Sender<()>) -> Router {
+fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc::Sender<()>, trusted_proxy: bool) -> Router {
     // CORS: restrict origins if config.server.allowedOrigins is set.
     // In production (no --dev flag), missing allowedOrigins defaults to rejecting
     // cross-origin requests to prevent CSRF. Use --dev for permissive CORS during
@@ -234,6 +237,7 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .layer(axum::Extension(conn_tx))
+        .layer(axum::Extension(TrustedProxy(trusted_proxy)))
         .with_state(ctx)
 }
 
@@ -324,10 +328,11 @@ fn ticket_rate_limiter() -> &'static IpRateLimiter {
 async fn issue_ticket(
     State(ctx): State<Arc<AppContext>>,
     info: ConnectInfo<SocketAddr>,
+    axum::Extension(proxy): axum::Extension<TrustedProxy>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    // Rate-limit by client IP to prevent ticket table exhaustion.
-    let client_ip = info.0.ip();
+    // Rate-limit by client IP, using X-Forwarded-For when behind a trusted proxy.
+    let client_ip = extract_client_ip(&headers, info.0.ip(), proxy.0);
     if ticket_rate_limiter().check(client_ip).is_err() {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -563,6 +568,38 @@ async fn api_handler(
 /// Each directory gets its own scoped ServeDir mount, so only these
 /// prefixes are reachable. server/ and data/ are never exposed.
 const ALLOWED_STATIC_DIRS: &[&str] = &["ui", "assets", "styles", "fonts", "images", "icons"];
+
+/// Whether to trust X-Forwarded-For headers for client IP extraction.
+/// Stored as an Axum Extension so handlers can access it.
+#[derive(Clone, Copy)]
+struct TrustedProxy(bool);
+
+/// Extract the client IP, respecting trusted proxy configuration.
+/// When `--trusted-proxy` is enabled, uses the rightmost IP from the
+/// X-Forwarded-For header (the one added by the directly connected proxy).
+/// Falls back to the socket peer address if the header is missing or
+/// unparseable.
+fn extract_client_ip(
+    headers: &axum::http::HeaderMap,
+    socket_ip: std::net::IpAddr,
+    trusted_proxy: bool,
+) -> std::net::IpAddr {
+    if !trusted_proxy {
+        return socket_ip;
+    }
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|xff| {
+            // Use the rightmost entry: it's the one appended by the directly
+            // connected (trusted) proxy. Entries to the left can be spoofed
+            // by the client via `X-Forwarded-For: fake-ip`.
+            xff.rsplit(',')
+                .next()
+                .and_then(|ip_str| ip_str.trim().parse::<std::net::IpAddr>().ok())
+        })
+        .unwrap_or(socket_ip)
+}
 
 async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
     match tokio::signal::ctrl_c().await {

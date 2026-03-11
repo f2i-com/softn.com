@@ -14,6 +14,13 @@ struct GlobalsSnapshot(Vec<Value>);
 /// will often try global caching, and we want to warn them exactly once.
 struct MutationWarned(bool);
 
+/// Warn if the globals snapshot exceeds this many slots after init.
+/// Each slot is 8 bytes (NaN-boxed Value), so 5000 slots = 40KB. The snapshot
+/// is restored before every handler call, and while the memcpy is fast, an
+/// excessive number of globals usually indicates a script anti-pattern (loading
+/// large data structures into module-level variables instead of using db.* APIs).
+const MAX_GLOBALS_SNAPSHOT_SLOTS: usize = 5_000;
+
 /// Global cap on total worker threads across all ServerRuntime instances.
 /// Prevents accidental thread exhaustion if multiple runtimes are created
 /// (e.g. during testing or future multi-tenancy). Each OS thread consumes
@@ -32,7 +39,7 @@ pub struct BridgeSet {
 enum ScriptRequest {
     Init {
         source: String,
-        reply: std::sync::mpsc::Sender<Result<Vec<String>, String>>,
+        reply: std::sync::mpsc::Sender<Result<(Vec<String>, usize), String>>,
     },
     Call {
         name: String,
@@ -318,9 +325,11 @@ impl ServerRuntime {
                             s.globals_table().keys().cloned().collect();
                         // Snapshot globals after init so we can restore them
                         // before each Call, preventing state bleed between requests.
-                        *globals_snapshot = Some(GlobalsSnapshot(s.snapshot_globals()));
+                        let snapshot = GlobalsSnapshot(s.snapshot_globals());
+                        let snapshot_slots = snapshot.0.len();
+                        *globals_snapshot = Some(snapshot);
                         *state = Some(s);
-                        let _ = reply.send(Ok(globals));
+                        let _ = reply.send(Ok((globals, snapshot_slots)));
                     }
                     Err(e) => {
                         let _ = reply.send(Err(e));
@@ -399,9 +408,20 @@ impl ServerRuntime {
         let init_timeout = std::time::Duration::from_secs(30);
         for (i, reply_rx) in reply_rxs.iter().enumerate() {
             match reply_rx.recv_timeout(init_timeout) {
-                Ok(Ok(globals)) => {
-                    // Store global names from the first successful worker
-                    let _ = self.known_globals.set(globals.into_iter().collect());
+                Ok(Ok((globals, snapshot_slots))) => {
+                    // Log snapshot size once (first worker that sets known_globals)
+                    if self.known_globals.set(globals.into_iter().collect()).is_ok() {
+                        if snapshot_slots > MAX_GLOBALS_SNAPSHOT_SLOTS {
+                            tracing::warn!(
+                                slots = snapshot_slots,
+                                bytes = snapshot_slots * 8,
+                                "Large globals snapshot ({} slots, {}KB). This is restored before \
+                                 each handler call. Keep global variables light — use db.* APIs \
+                                 for large data instead of global variables.",
+                                snapshot_slots, snapshot_slots * 8 / 1024
+                            );
+                        }
+                    }
                 }
                 Ok(Err(e)) => errors.push(format!("Worker {}: {}", i, e)),
                 Err(_) => errors.push(format!("Worker {} died during init", i)),
