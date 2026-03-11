@@ -32,6 +32,13 @@ const VALID_OPERATIONS: &[&str] = &["create", "update", "delete"];
 /// memory amplification from serde_json::Value's overhead (5-10x input size).
 const MAX_OP_DATA_BYTES: usize = 512 * 1024;
 
+/// Maximum total bytes of all op data payloads in a single sync_push batch.
+/// Bounds the total memory consumed during the DB write transaction to prevent
+/// excessive SQLite WAL writer lock hold times. Individual ops are capped by
+/// MAX_OP_DATA_BYTES; this caps the aggregate. Defense-in-depth alongside the
+/// 4MB MAX_WS_MESSAGE_SIZE WebSocket frame limit.
+const MAX_BATCH_DATA_BYTES: usize = 4 * 1024 * 1024;
+
 /// Maximum records per SyncState message to prevent oversized WebSocket frames
 /// and server-side RAM spikes. With ~200-500 bytes per JSON record, 500 records
 /// ≈ 100-250KB per message — well within the 4MB MAX_WS_MESSAGE_SIZE limit.
@@ -376,6 +383,10 @@ impl SyncManager {
                         "data": r.data,
                         "createdAt": r.created_at,
                         "updatedAt": r.updated_at,
+                        // Server-assigned receipt timestamp for sync cursor pagination.
+                        // Clients should use this (not updatedAt) as the lastSync cursor
+                        // to avoid missing offline edits with past timestamps.
+                        "serverReceivedAt": r.server_received_at,
                     });
                     // Include deleted flag for incremental sync so clients
                     // can remove locally cached records deleted on other devices.
@@ -453,6 +464,7 @@ impl SyncManager {
         let server_time = server_now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let mut basic_valid_ops = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
+        let mut batch_data_bytes: usize = 0;
         for mut op in ops {
             // Reject duplicate op IDs within the same batch
             if !seen_ids.insert(op.id.clone()) {
@@ -508,6 +520,20 @@ impl SyncManager {
                         reason: format!(
                             "Op data too large ({} bytes, max {})",
                             data_size, MAX_OP_DATA_BYTES
+                        ),
+                    });
+                    continue;
+                }
+                batch_data_bytes += data_size;
+                if batch_data_bytes > MAX_BATCH_DATA_BYTES {
+                    // Reject remaining ops to bound DB write lock hold time.
+                    // Already-accepted ops proceed normally; the client retries
+                    // the rest in a subsequent batch.
+                    responses.push(ServerMessage::SyncRetry {
+                        op_ids: vec![op.id.clone()],
+                        reason: format!(
+                            "Batch data limit exceeded ({}MB max) — send fewer ops per batch",
+                            MAX_BATCH_DATA_BYTES / (1024 * 1024)
                         ),
                     });
                     continue;

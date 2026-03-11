@@ -474,6 +474,12 @@ impl ServerRuntime {
     }
 }
 
+impl Drop for ServerRuntime {
+    fn drop(&mut self) {
+        GLOBAL_WORKER_COUNT.fetch_sub(self.worker_count, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 // ── JSON ↔ Object conversion ──
 
 /// Maximum nesting depth for JSON → Object conversion to prevent stack overflow.

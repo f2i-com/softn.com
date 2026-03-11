@@ -28,7 +28,14 @@ impl DbBridge for NativeDbBridge {
         let conn = self.db.read()?;
         let records = pool::read_collection(&conn, collection)
             .map_err(|e| format!("db.query failed: {}", e))?;
-        Ok(records.into_iter().map(xdb_to_fl).collect())
+        Ok(records.into_iter().map(|r| DbRecord {
+            id: r.id,
+            collection: r.collection,
+            data: r.data.to_string(),
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            data_parsed: Some(r.data),
+        }).collect())
     }
 
     fn create(&mut self, collection: &str, data: &str) -> Result<DbRecord, String> {

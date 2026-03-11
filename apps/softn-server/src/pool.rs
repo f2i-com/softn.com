@@ -51,18 +51,65 @@ impl ServerDb {
             .build(manager)
             .map_err(|e| format!("Failed to create read pool: {}", e))?;
 
-        // Ensure composite index for sync queries. The compound cursor
-        // (collection, updated_at, id) needs this index for efficient
-        // ORDER BY + LIMIT pagination — without it, large collections
-        // force full table scans and in-memory sorts.
+        // Schema migrations and index creation for sync queries.
         {
             let idx_conn = rusqlite::Connection::open(db_path)
                 .map_err(|e| format!("Failed to open DB for indexing: {}", e))?;
+            idx_conn.execute_batch("PRAGMA busy_timeout = 5000;")
+                .map_err(|e| format!("Failed to set busy_timeout: {}", e))?;
+
+            // Legacy index (kept for non-sync queries that filter by updated_at)
             idx_conn.execute_batch(
-                "PRAGMA busy_timeout = 5000; \
-                 CREATE INDEX IF NOT EXISTS idx_records_sync \
+                "CREATE INDEX IF NOT EXISTS idx_records_sync \
                  ON records (collection, updated_at, id);"
             ).map_err(|e| format!("Failed to create sync index: {}", e))?;
+
+            // Add server_received_at column for sync cursor pagination.
+            // This separates the sync pull cursor (server_received_at, monotonically
+            // increasing) from LWW conflict resolution (updated_at, may be a past
+            // timestamp from offline edits). Without this, a client that goes offline,
+            // edits a record on Monday, and reconnects Wednesday would have its Monday
+            // timestamp accepted — but other clients whose lastSync cursor is Tuesday
+            // would permanently miss the edit (WHERE updated_at > Tuesday skips Monday).
+            // ALTER TABLE ADD COLUMN has no IF NOT EXISTS — ignore the error on re-run.
+            let _ = idx_conn.execute_batch(
+                "ALTER TABLE records ADD COLUMN server_received_at TEXT"
+            );
+
+            // Triggers: auto-set server_received_at on every write.
+            // INSERT trigger: fires when a new row is inserted (including INSERT OR
+            // REPLACE used by xdb's upsert_record). The WHEN clause checks for NULL
+            // so explicitly-provided values are preserved.
+            // UPDATE trigger: fires when data/updated_at/deleted change (all xdb write
+            // paths). Does NOT fire when only server_received_at changes, preventing
+            // trigger chains.
+            idx_conn.execute_batch(
+                "CREATE TRIGGER IF NOT EXISTS trg_server_received_at_insert \
+                 AFTER INSERT ON records \
+                 WHEN NEW.server_received_at IS NULL \
+                 BEGIN \
+                   UPDATE records SET server_received_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = NEW.id; \
+                 END; \
+                 \
+                 CREATE TRIGGER IF NOT EXISTS trg_server_received_at_update \
+                 AFTER UPDATE OF data, updated_at, deleted ON records \
+                 BEGIN \
+                   UPDATE records SET server_received_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = NEW.id; \
+                 END;"
+            ).map_err(|e| format!("Failed to create server_received_at triggers: {}", e))?;
+
+            // Backfill existing rows that predate the migration.
+            // Uses updated_at as a reasonable approximation — these records were written
+            // before the column existed, so their "server received" time ≈ updated_at.
+            idx_conn.execute_batch(
+                "UPDATE records SET server_received_at = updated_at WHERE server_received_at IS NULL"
+            ).map_err(|e| format!("Failed to backfill server_received_at: {}", e))?;
+
+            // Index for sync_pull cursor queries (collection, server_received_at, id).
+            idx_conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_records_sync_received \
+                 ON records (collection, server_received_at, id);"
+            ).map_err(|e| format!("Failed to create sync_received index: {}", e))?;
         }
 
         Ok(Self { writer, read_pool })
@@ -101,6 +148,21 @@ impl ServerDb {
 
 // ── Standalone read queries (don't need XdbDatabase, just a Connection) ──
 
+/// Extended record with server-assigned receipt timestamp for sync cursors.
+/// `server_received_at` is set by the server (via SQLite trigger) at the exact
+/// moment a row is written, regardless of what `updated_at` contains. Sync pull
+/// uses `server_received_at` as the pagination cursor instead of `updated_at`
+/// to prevent "lost updates" when clients push offline edits with past timestamps.
+pub struct SyncRecord {
+    pub id: String,
+    pub collection: String,
+    pub data: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+    pub server_received_at: String,
+    pub deleted: bool,
+}
+
 /// Maximum rows returned by read_collection to prevent unbounded memory usage
 /// from collections with millions of rows. This bounds both RAM consumption
 /// (each row is deserialized to serde_json::Value) and the time a worker thread
@@ -130,31 +192,37 @@ pub fn read_record(conn: &rusqlite::Connection, id: &str) -> Result<Record, DbEr
     .map_err(|_| DbError::NotFound(id.to_string()))
 }
 
-/// Query records in a collection updated after `since` (incremental sync).
+/// Query records in a collection received after `since` (incremental sync).
 /// Includes soft-deleted records so clients can remove them locally.
-/// Uses a compound cursor (updated_at, id) to handle timestamp ties: if a
+///
+/// Uses `server_received_at` (server-assigned on write) instead of `updated_at`
+/// (client-provided) for the pagination cursor. This prevents "lost updates"
+/// when clients push offline edits with past timestamps: a record created offline
+/// on Monday and pushed on Wednesday gets `server_received_at = Wednesday`, so
+/// other clients with `lastSync = Tuesday` correctly pick it up.
+///
+/// Uses a compound cursor (server_received_at, id) to handle timestamp ties: if a
 /// bulk operation updates >10k records in the same millisecond, a strictly
-/// `updated_at > ?` cursor would permanently miss records sharing the last
+/// `server_received_at > ?` cursor would permanently miss records sharing the last
 /// timestamp. The compound cursor ensures deterministic pagination.
 pub fn read_collection_since(
     conn: &rusqlite::Connection,
     collection: &str,
     since: &str,
     last_id: Option<&str>,
-) -> Result<Vec<Record>, DbError> {
-    // Compound cursor: (updated_at > since) OR (updated_at = since AND id > last_id)
-    // When last_id is None (first pull), fall back to the simpler updated_at > since.
-    let (sql, records) = if let Some(lid) = last_id {
+) -> Result<Vec<SyncRecord>, DbError> {
+    // Compound cursor: (server_received_at > since) OR (server_received_at = since AND id > last_id)
+    // When last_id is None (first pull), fall back to the simpler server_received_at > since.
+    if let Some(lid) = last_id {
         let mut stmt = conn.prepare(
-            "SELECT id, collection, data, created_at, updated_at, deleted \
+            "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
              FROM records WHERE collection = ?1 \
-             AND (updated_at > ?2 OR (updated_at = ?2 AND id > ?3)) \
-             ORDER BY updated_at ASC, id ASC LIMIT ?4",
+             AND (server_received_at > ?2 OR (server_received_at = ?2 AND id > ?3)) \
+             ORDER BY server_received_at ASC, id ASC LIMIT ?4",
         )?;
-        let rows = stmt
-            .query_map(params![collection, since, lid, MAX_COLLECTION_ROWS], |row| {
+        let records = stmt.query_map(params![collection, since, lid, MAX_COLLECTION_ROWS], |row| {
                 let raw_data = row.get::<_, String>(2)?;
-                Ok(Record {
+                Ok(SyncRecord {
                     id: row.get(0)?,
                     collection: row.get(1)?,
                     data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
@@ -164,20 +232,21 @@ pub fn read_collection_since(
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
                     deleted: row.get::<_, i32>(5)? != 0,
+                    server_received_at: row.get::<_, Option<String>>(6)?
+                        .unwrap_or_default(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        ("compound", rows)
+        Ok(records)
     } else {
         let mut stmt = conn.prepare(
-            "SELECT id, collection, data, created_at, updated_at, deleted \
-             FROM records WHERE collection = ?1 AND updated_at > ?2 \
-             ORDER BY updated_at ASC, id ASC LIMIT ?3",
+            "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
+             FROM records WHERE collection = ?1 AND server_received_at > ?2 \
+             ORDER BY server_received_at ASC, id ASC LIMIT ?3",
         )?;
-        let rows = stmt
-            .query_map(params![collection, since, MAX_COLLECTION_ROWS], |row| {
+        let records = stmt.query_map(params![collection, since, MAX_COLLECTION_ROWS], |row| {
                 let raw_data = row.get::<_, String>(2)?;
-                Ok(Record {
+                Ok(SyncRecord {
                     id: row.get(0)?,
                     collection: row.get(1)?,
                     data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
@@ -187,35 +256,34 @@ pub fn read_collection_since(
                     created_at: row.get(3)?,
                     updated_at: row.get(4)?,
                     deleted: row.get::<_, i32>(5)? != 0,
+                    server_received_at: row.get::<_, Option<String>>(6)?
+                        .unwrap_or_default(),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        ("simple", rows)
-    };
-    let _ = sql; // suppress unused warning
-
-    Ok(records)
+        Ok(records)
+    }
 }
 
 /// Query all non-deleted records in a collection using a read-only connection.
-/// Sorted by (updated_at ASC, id ASC) to match the incremental sync cursor
-/// so clients can paginate forward using the compound cursor. If a collection
-/// has >10k records, the client receives the first 10k and uses the last
-/// record's (updatedAt, id) as a compound cursor in the next sync_pull.
+/// Sorted by (server_received_at ASC, id ASC) to match the incremental sync
+/// cursor so clients can paginate forward using the compound cursor. If a
+/// collection has >10k records, the client receives the first 10k and uses the
+/// last record's (serverReceivedAt, id) as a compound cursor in the next sync_pull.
 pub fn read_collection(
     conn: &rusqlite::Connection,
     collection: &str,
-) -> Result<Vec<Record>, DbError> {
+) -> Result<Vec<SyncRecord>, DbError> {
     let mut stmt = conn.prepare(
-        "SELECT id, collection, data, created_at, updated_at, deleted \
+        "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
          FROM records WHERE collection = ?1 AND deleted = 0 \
-         ORDER BY updated_at ASC, id ASC LIMIT ?2",
+         ORDER BY server_received_at ASC, id ASC LIMIT ?2",
     )?;
 
     let records = stmt
         .query_map(params![collection, MAX_COLLECTION_ROWS], |row| {
             let raw_data = row.get::<_, String>(2)?;
-            Ok(Record {
+            Ok(SyncRecord {
                 id: row.get(0)?,
                 collection: row.get(1)?,
                 data: serde_json::from_str(&raw_data).unwrap_or_else(|e| {
@@ -225,6 +293,8 @@ pub fn read_collection(
                 created_at: row.get(3)?,
                 updated_at: row.get(4)?,
                 deleted: row.get::<_, i32>(5)? != 0,
+                server_received_at: row.get::<_, Option<String>>(6)?
+                    .unwrap_or_default(),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
