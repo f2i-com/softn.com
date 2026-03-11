@@ -23,7 +23,7 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    pub fn load(bundle_path: PathBuf, data_dir: Option<PathBuf>, workers: Option<usize>) -> Result<Arc<Self>, String> {
+    pub fn load(bundle_path: PathBuf, data_dir: Option<PathBuf>, workers: Option<usize>, allow_all_capabilities: bool) -> Result<Arc<Self>, String> {
         let bundle_path = std::fs::canonicalize(&bundle_path)
             .map_err(|e| format!("Invalid bundle path: {}", e))?;
 
@@ -100,13 +100,21 @@ impl AppContext {
         let db = ServerDb::new(shared_db, &db_path, read_pool_size)?;
         tracing::info!("Database opened (read pool: {} connections)", read_pool_size);
 
-        // Auth token from config
-        let auth_token = manifest
-            .config
-            .as_ref()
-            .and_then(|c| c.get("server"))
-            .and_then(|s| serde_json::from_value::<ServerConfig>(s.clone()).ok())
-            .and_then(|sc| sc.auth_token);
+        // Auth token: prefer SOFTN_AUTH_TOKEN env var (avoids embedding secrets
+        // in distributable bundles), fall back to manifest config.server.auth_token.
+        let auth_token = std::env::var("SOFTN_AUTH_TOKEN").ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                manifest
+                    .config
+                    .as_ref()
+                    .and_then(|c| c.get("server"))
+                    .and_then(|s| serde_json::from_value::<ServerConfig>(s.clone()).ok())
+                    .and_then(|sc| sc.auth_token)
+            });
+        if auth_token.is_some() && std::env::var("SOFTN_AUTH_TOKEN").ok().filter(|s| !s.is_empty()).is_some() {
+            tracing::info!("Auth token loaded from SOFTN_AUTH_TOKEN environment variable");
+        }
 
         // Load and run server scripts
         let runtime = if let Some(server) = &manifest.server {
@@ -130,27 +138,43 @@ impl AppContext {
                     .map(|n| n as usize)
             });
 
-            // Parse capability permissions from manifest server.permissions.
-            // If set, only explicitly enabled bridges are available to scripts.
-            // If not set, all bridges are enabled (backward compatible).
-            // This implements deny-by-default for sensitive capabilities (http, fs)
-            // when the developer explicitly opts into the permissions model.
+            // Capability permissions: secure-by-default.
+            // When a permissions block is present, capabilities are granted
+            // explicitly (http: true, fs: true). When the permissions block
+            // is missing, sensitive capabilities (http, fs) are DENIED unless
+            // the operator explicitly opts in via --allow-all-capabilities or
+            // SOFTN_ALLOW_ALL_CAPABILITIES=1. This prevents untrusted bundles
+            // from silently gaining network/filesystem access by simply
+            // omitting the permissions block.
             let permissions = server.permissions.as_ref();
-            let allow_http = permissions
-                .and_then(|p| p.get("http"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or_else(|| permissions.is_none()); // default: on if no permissions block
-            let allow_fs = permissions
-                .and_then(|p| p.get("fs"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or_else(|| permissions.is_none());
+            let allow_http = if permissions.is_none() && allow_all_capabilities {
+                true
+            } else {
+                permissions
+                    .and_then(|p| p.get("http"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            };
+            let allow_fs = if permissions.is_none() && allow_all_capabilities {
+                true
+            } else {
+                permissions
+                    .and_then(|p| p.get("fs"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            };
 
-            if let Some(_p) = permissions {
-                tracing::info!(
-                    "Capabilities: db=always, env=always, http={}, fs={}",
-                    allow_http, allow_fs
+            if permissions.is_none() && !allow_all_capabilities {
+                tracing::warn!(
+                    "No server.permissions block — http and fs bridges disabled by default. \
+                     Add a permissions block to manifest.json or use --allow-all-capabilities \
+                     (SOFTN_ALLOW_ALL_CAPABILITIES=1) for trusted bundles."
                 );
             }
+            tracing::info!(
+                "Capabilities: db=always, env=always, http={}, fs={}",
+                allow_http, allow_fs
+            );
 
             let rt = ServerRuntime::new(move || BridgeSet {
                 db: Some(Box::new(NativeDbBridge::new(db_for_factory.clone()))),

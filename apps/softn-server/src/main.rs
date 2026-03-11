@@ -42,6 +42,17 @@ enum Commands {
         /// allowedOrigins defaults to rejecting cross-origin requests.
         #[arg(long)]
         dev: bool,
+        /// Allow all script capabilities (http, fs) even when the bundle's
+        /// manifest.json has no server.permissions block. Only use for
+        /// trusted bundles. Can also be set via SOFTN_ALLOW_ALL_CAPABILITIES=1.
+        #[arg(long)]
+        allow_all_capabilities: bool,
+        /// Trust X-Forwarded-For header from a reverse proxy for rate limiting
+        /// and client IP attribution. Enable this when running behind nginx,
+        /// Cloudflare, or similar. Without this, all clients behind a proxy
+        /// share the proxy's IP for rate limiting.
+        #[arg(long)]
+        trusted_proxy: bool,
     },
     /// Show bundle info
     Info {
@@ -59,9 +70,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { path, port, host, data_dir, workers, dev } => {
-            let ctx = app::AppContext::load(path, data_dir, workers)?;
-            http::serve(ctx, &host, port, dev).await?;
+        Commands::Run { path, port, host, data_dir, workers, dev, allow_all_capabilities, trusted_proxy } => {
+            // Check both CLI flag and env var for allow-all-capabilities
+            let allow_all = allow_all_capabilities || std::env::var("SOFTN_ALLOW_ALL_CAPABILITIES")
+                .ok()
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            let ctx = app::AppContext::load(path, data_dir, workers, allow_all)?;
+            http::serve(ctx, &host, port, dev, trusted_proxy).await?;
         }
         Commands::Info { path } => {
             let manifest = bundle::load_manifest(&path)?;
