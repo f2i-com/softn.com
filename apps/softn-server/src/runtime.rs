@@ -37,12 +37,13 @@ enum ScriptRequest {
 ///   so idle workers pick up tasks automatically.
 /// - Pool is sized for I/O-bound workloads (scripts may block on HTTP/DB).
 ///
-/// **Important for script authors:** Worker threads may be re-initialized after
-/// a panic, which resets all in-memory global state to its post-init value.
-/// Additionally, requests are dispatched to any idle worker, so different calls
-/// may execute on different threads with independent global state. Scripts must
-/// not rely on in-memory globals persisting across operations — always flush
-/// state to the database (via `db.*` APIs) for durability.
+/// **Important for script authors:** Worker threads maintain independent global
+/// state. Consecutive requests from the same user may hit different workers, so
+/// global variables will appear to "reset" unpredictably between calls. Workers
+/// also re-initialize after panics, discarding all in-memory state. **Never use
+/// global variables as an in-memory cache or session store.** Always persist
+/// state to the database (via `db.*` APIs) and treat each handler call as
+/// stateless.
 ///
 /// **Thread lifecycle:** Workers are tied to the channels owned by this struct.
 /// When `ServerRuntime` is dropped (e.g. if `init()` fails), `work_tx` and

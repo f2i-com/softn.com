@@ -1,6 +1,8 @@
 use formlogic_core::http_bridge::{HttpBridge, HttpResponse};
-use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::DefaultConnector;
 
 // All timeouts must be lower than the VM wall-time limit (25s) so HTTP
 // calls time out before the VM does, producing a clean script-level error
@@ -24,21 +26,31 @@ pub struct NativeHttpBridge {
 
 impl NativeHttpBridge {
     pub fn new() -> Self {
-        let agent = ureq::Agent::new_with_config(
-            ureq::config::Config::builder()
-                .timeout_global(Some(TIMEOUT_GLOBAL))
-                .timeout_connect(Some(TIMEOUT_CONNECT))
-                .timeout_recv_body(Some(TIMEOUT_READ))
-                .http_status_as_error(false)
-                // Disable automatic redirect following to prevent SSRF bypasses.
-                // Attackers can set up a public URL that 302-redirects to internal
-                // services (169.254.169.254, localhost, etc.) — ureq would follow
-                // the redirect silently, bypassing our validate_url() check on the
-                // initial request. Scripts receive the 3xx response and can implement
-                // their own redirect logic if needed.
-                .max_redirects(0)
-                .build(),
+        let config = ureq::config::Config::builder()
+            .timeout_global(Some(TIMEOUT_GLOBAL))
+            .timeout_connect(Some(TIMEOUT_CONNECT))
+            .timeout_recv_body(Some(TIMEOUT_READ))
+            .http_status_as_error(false)
+            // Disable automatic redirect following to prevent SSRF bypasses.
+            // Attackers can set up a public URL that 302-redirects to internal
+            // services (169.254.169.254, localhost, etc.) — ureq would follow
+            // the redirect silently, bypassing our validate_url() check on the
+            // initial request. Scripts receive the 3xx response and can implement
+            // their own redirect logic if needed.
+            .max_redirects(0)
+            .build();
+
+        // Use a custom resolver that wraps ureq's DefaultResolver but checks
+        // all resolved IPs against our SSRF blocklist. This closes the DNS
+        // rebinding TOCTOU gap: the validation happens at the same DNS lookup
+        // that ureq uses to connect, so there is no window for an attacker's
+        // DNS server to return a different IP between check and connection.
+        let agent = ureq::Agent::with_parts(
+            config,
+            DefaultConnector::default(),
+            SsrfSafeResolver::new(),
         );
+
         Self { agent }
     }
 }
@@ -60,10 +72,54 @@ fn to_http_response(resp: ureq::http::Response<ureq::Body>) -> Result<HttpRespon
 
 // ── SSRF protection ──
 
+/// Custom DNS resolver that wraps ureq's DefaultResolver and validates
+/// all resolved IPs against the SSRF blocklist before returning them.
+///
+/// This eliminates the DNS rebinding TOCTOU gap: an attacker who controls
+/// a DNS server and alternates between safe/unsafe IPs cannot bypass the
+/// check, because the IPs returned by this resolver are the exact IPs
+/// ureq will connect to — there is no second DNS lookup.
+#[derive(Debug)]
+struct SsrfSafeResolver {
+    inner: DefaultResolver,
+}
+
+impl SsrfSafeResolver {
+    fn new() -> Self {
+        Self {
+            inner: DefaultResolver::default(),
+        }
+    }
+}
+
+impl Resolver for SsrfSafeResolver {
+    fn resolve(
+        &self,
+        uri: &ureq::http::Uri,
+        config: &ureq::config::Config,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        let addrs = self.inner.resolve(uri, config, timeout)?;
+
+        // Check every resolved IP against the blocklist.
+        // If ANY resolved address is blocked, reject the entire request.
+        for addr in addrs.iter() {
+            if is_blocked_ip(addr.ip()) {
+                // Return HostNotFound — we don't want to reveal which internal
+                // IP the hostname resolved to.
+                return Err(ureq::Error::HostNotFound);
+            }
+        }
+
+        Ok(addrs)
+    }
+}
+
 /// Validate a URL for SSRF safety before making a request.
 /// Rejects non-HTTP schemes, private/reserved IPs, and known-dangerous hostnames.
-/// This is the primary defence against scripts (or script inputs) that try to
-/// reach cloud metadata endpoints, internal services, or localhost.
+///
+/// This performs static string-level checks. The DNS-level IP validation is
+/// handled by SsrfSafeResolver at connection time (zero TOCTOU gap).
 fn validate_url(url: &str) -> Result<(), String> {
     // Require http:// or https:// scheme. Blocks file://, ftp://, gopher://, etc.
     let rest = if let Some(r) = url.strip_prefix("https://") {
@@ -112,53 +168,15 @@ fn validate_url(url: &str) -> Result<(), String> {
         return Err("Requests to local/internal hostnames are blocked (SSRF protection)".into());
     }
 
-    // If it's a literal IP address, check against blocked ranges
+    // If it's a literal IP address, check against blocked ranges.
+    // (Also caught by SsrfSafeResolver, but failing early here gives
+    // a clearer error message than "host not found".)
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_blocked_ip(ip) {
             return Err(format!(
                 "Requests to private/reserved IP {} are blocked (SSRF protection)",
                 ip
             ));
-        }
-    }
-
-    // DNS rebinding protection: resolve the hostname and verify all resolved
-    // IPs are safe. This prevents attacks where an attacker-controlled domain
-    // (e.g. evil.com) has a DNS A record pointing to 127.0.0.1 or
-    // 169.254.169.254 — the static string checks above would pass, but the
-    // actual connection would reach internal services.
-    //
-    // There is a tiny TOCTOU window (ureq resolves DNS again internally), but
-    // combined with max_redirects(0) and the static checks, the attack surface
-    // is negligible. A custom ureq Resolver would close it fully but the API
-    // is still unstable (ureq::unversioned).
-    if host.parse::<IpAddr>().is_err() {
-        // It's a hostname, not a literal IP — resolve it
-        let port = host_port
-            .rsplit(':')
-            .next()
-            .and_then(|p| p.parse::<u16>().ok())
-            .unwrap_or(80);
-        let addr_str = format!("{}:{}", host, port);
-        match addr_str.to_socket_addrs() {
-            Ok(addrs) => {
-                let resolved: Vec<_> = addrs.collect();
-                if resolved.is_empty() {
-                    return Err(format!("DNS resolution failed for host: {}", host));
-                }
-                for addr in &resolved {
-                    if is_blocked_ip(addr.ip()) {
-                        return Err(format!(
-                            "DNS for {} resolved to blocked IP {} (SSRF protection)",
-                            host,
-                            addr.ip()
-                        ));
-                    }
-                }
-            }
-            Err(e) => {
-                return Err(format!("DNS resolution failed for {}: {}", host, e));
-            }
         }
     }
 
