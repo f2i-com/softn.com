@@ -111,42 +111,54 @@ pub fn extract_softn_zip(zip_path: &Path) -> Result<PathBuf, String> {
             .by_index(i)
             .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
 
-        let name = entry.name().replace('\\', "/");
-
-        // Security: reject path traversal and absolute paths.
-        // The is_absolute() check catches Windows drive-letter paths (e.g. C:\...)
-        // which bypass the starts_with('/') check and would cause Path::join to
-        // replace the base path entirely, allowing writes to arbitrary locations.
-        if name.contains("..") || name.starts_with('/') || name.contains('\0') || Path::new(&name).is_absolute() {
-            tracing::warn!("Skipping unsafe ZIP entry: {}", name);
+        // Security: reject symlinks to prevent sandbox escapes. A malicious
+        // ZIP can contain a symlink entry pointing to `../../etc/shadow`;
+        // extracting it would create a symlink inside the bundle directory
+        // that, when followed, reads/writes outside the sandbox.
+        if entry.is_symlink() {
+            tracing::warn!("Skipping symlink ZIP entry: {}", entry.name());
             continue;
         }
 
+        // Use enclosed_name() as the primary zip-slip defense. It returns None
+        // for entries that would escape the extraction directory (absolute paths,
+        // excessive `..` traversal, null bytes, Windows drive prefixes, etc.).
+        // This is the zip crate's recommended approach — it handles edge cases
+        // that manual string checks can miss (e.g. `foo/../../../../etc/passwd`
+        // where the `..` count exceeds the depth of preceding directories).
+        let safe_name = match entry.enclosed_name() {
+            Some(name) => name.to_owned(),
+            None => {
+                tracing::warn!("Skipping unsafe ZIP entry: {}", entry.name());
+                continue;
+            }
+        };
+
         if entry.is_dir() {
-            fs::create_dir_all(temp_dir.join(&name))
-                .map_err(|e| format!("Failed to create dir {}: {}", name, e))?;
+            fs::create_dir_all(temp_dir.join(&safe_name))
+                .map_err(|e| format!("Failed to create dir {}: {}", safe_name.display(), e))?;
             continue;
         }
 
         if entry.size() > MAX_FILE_BYTES {
-            return Err(format!("File too large in bundle: {} ({}B)", name, entry.size()));
+            return Err(format!("File too large in bundle: {} ({}B)", safe_name.display(), entry.size()));
         }
         total_bytes += entry.size();
         if total_bytes > MAX_TOTAL_BYTES {
             return Err("Bundle contents too large".into());
         }
 
-        let out_path = temp_dir.join(&name);
+        let out_path = temp_dir.join(&safe_name);
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create dir for {}: {}", name, e))?;
+                .map_err(|e| format!("Failed to create dir for {}: {}", safe_name.display(), e))?;
         }
 
         let mut buf = Vec::with_capacity(entry.size() as usize);
         entry.read_to_end(&mut buf)
-            .map_err(|e| format!("Failed to read {}: {}", name, e))?;
+            .map_err(|e| format!("Failed to read {}: {}", safe_name.display(), e))?;
         fs::write(&out_path, &buf)
-            .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+            .map_err(|e| format!("Failed to write {}: {}", safe_name.display(), e))?;
     }
 
     // Phase 2: Atomically swap the old extraction directory with the new one.

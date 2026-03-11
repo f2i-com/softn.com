@@ -9,6 +9,13 @@ use std::sync::Arc;
 /// global variables from bleeding into the next request on the same worker.
 struct GlobalsSnapshot(Vec<Value>);
 
+/// Global cap on total worker threads across all ServerRuntime instances.
+/// Prevents accidental thread exhaustion if multiple runtimes are created
+/// (e.g. during testing or future multi-tenancy). Each OS thread consumes
+/// ~8MB of stack, so 200 threads ≈ 1.6GB of stack alone.
+const MAX_GLOBAL_WORKER_THREADS: usize = 200;
+static GLOBAL_WORKER_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Collection of bridge instances, created per worker thread.
 pub struct BridgeSet {
     pub db: Option<Box<dyn formlogic_core::db_bridge::DbBridge>>,
@@ -36,6 +43,13 @@ enum ScriptRequest {
 /// - After init, workers pull Call requests from a **shared** MPMC channel
 ///   so idle workers pick up tasks automatically.
 /// - Pool is sized for I/O-bound workloads (scripts may block on HTTP/DB).
+///
+/// **Single-tenant design:** This runtime creates one thread pool per
+/// `ServerRuntime` instance. The softn-server currently hosts a single
+/// `.softn` bundle per process. If multi-tenancy is added in the future
+/// (hosting multiple bundles on one server), a shared global worker pool
+/// should replace per-runtime pools to prevent thread exhaustion (e.g.
+/// 10 apps × 50 threads = 500 OS threads).
 ///
 /// **Important for script authors:** Worker threads maintain independent global
 /// state. Consecutive requests from the same user may hit different workers, so
@@ -80,6 +94,20 @@ impl ServerRuntime {
                     .map(|n| n.get().clamp(16, 50))
                     .unwrap_or(16)
             });
+
+        // Enforce a global cap on worker threads to prevent thread exhaustion
+        // from multiple runtimes (e.g. during testing or future multi-tenancy).
+        let current_global = GLOBAL_WORKER_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        let available = MAX_GLOBAL_WORKER_THREADS.saturating_sub(current_global);
+        if available == 0 {
+            tracing::error!(
+                "Global worker thread limit reached ({}) — cannot create new runtime",
+                MAX_GLOBAL_WORKER_THREADS
+            );
+            panic!("Cannot start runtime: global worker thread limit ({}) exhausted", MAX_GLOBAL_WORKER_THREADS);
+        }
+        let worker_count = worker_count.min(available);
+        GLOBAL_WORKER_COUNT.fetch_add(worker_count, std::sync::atomic::Ordering::Relaxed);
 
         let factory = Arc::new(bridge_factory);
         // Bounded queue prevents memory exhaustion from request floods.
@@ -182,8 +210,12 @@ impl ServerRuntime {
                 }
 
                 if panic_count >= MAX_PANICS_IN_WINDOW {
-                    tracing::warn!(
-                        "Worker panicked {} times in {}s — sleeping for {}s to prevent thrashing",
+                    tracing::error!(
+                        panic_count = panic_count,
+                        window_secs = PANIC_WINDOW.as_secs(),
+                        cooldown_secs = COOLDOWN.as_secs(),
+                        "ALERT: Worker panicked {} times in {}s — likely a deterministic crash payload. \
+                         Sleeping {}s to prevent CPU thrashing. Investigate the panic messages above.",
                         panic_count, PANIC_WINDOW.as_secs(), COOLDOWN.as_secs()
                     );
                     // Sleep rather than drain the shared MPMC channel. A sleeping
