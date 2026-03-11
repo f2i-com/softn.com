@@ -210,9 +210,16 @@ impl AppContext {
                     .unwrap_or(32)
             });
 
+        let force_server_timestamps = manifest.config.as_ref()
+            .and_then(|c| c.get("server"))
+            .and_then(|s| s.get("forceServerTimestamps"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
         let sync_manager = SyncManager::new(
             db.clone(), runtime.clone(), auth_token.clone(),
             db_path.clone(), max_storage_bytes, sync_permits,
+            force_server_timestamps,
         );
         let (shutdown, _) = tokio::sync::watch::channel(false);
 

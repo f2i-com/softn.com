@@ -9,6 +9,11 @@ use std::sync::Arc;
 /// global variables from bleeding into the next request on the same worker.
 struct GlobalsSnapshot(Vec<Value>);
 
+/// Whether a global-mutation warning has already been logged for this worker.
+/// Set once per worker thread to avoid log spam — developers used to Node.js
+/// will often try global caching, and we want to warn them exactly once.
+struct MutationWarned(bool);
+
 /// Global cap on total worker threads across all ServerRuntime instances.
 /// Prevents accidental thread exhaustion if multiple runtimes are created
 /// (e.g. during testing or future multi-tenancy). Each OS thread consumes
@@ -157,6 +162,7 @@ impl ServerRuntime {
         let mut state: Option<ScriptState> = None;
         let mut globals_snapshot: Option<GlobalsSnapshot> = None;
         let mut init_source: Option<String> = None;
+        let mut mutation_warned = MutationWarned(false);
 
         // Phase 1: Wait for Init on dedicated channel (guaranteed 1:1 delivery).
         match init_rx.recv() {
@@ -165,7 +171,7 @@ impl ServerRuntime {
                     init_source = Some(source.clone());
                 }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    Self::handle_request(req, &engine, &mut state, &mut globals_snapshot, bridge_factory);
+                    Self::handle_request(req, &engine, &mut state, &mut globals_snapshot, &mut mutation_warned, bridge_factory);
                 }));
                 if let Err(panic_info) = result {
                     Self::log_panic(&panic_info);
@@ -193,7 +199,7 @@ impl ServerRuntime {
             };
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::handle_request(req, &engine, &mut state, &mut globals_snapshot, bridge_factory);
+                Self::handle_request(req, &engine, &mut state, &mut globals_snapshot, &mut mutation_warned, bridge_factory);
             }));
 
             if let Err(panic_info) = result {
@@ -298,6 +304,7 @@ impl ServerRuntime {
         engine: &FormLogicEngine,
         state: &mut Option<ScriptState>,
         globals_snapshot: &mut Option<GlobalsSnapshot>,
+        mutation_warned: &mut MutationWarned,
         bridge_factory: &F,
     )
     where
@@ -333,7 +340,7 @@ impl ServerRuntime {
                             .into_iter()
                             .map(|v| json_to_object(v, s.heap_mut()))
                             .collect();
-                        match obj_args {
+                        let call_result = match obj_args {
                             Ok(obj_args) => {
                                 match s.call_function(&name, &obj_args) {
                                     Ok(result) => object_to_json(&result, s.heap()),
@@ -341,7 +348,29 @@ impl ServerRuntime {
                                 }
                             }
                             Err(e) => Err(e),
+                        };
+
+                        // Detect global mutations: warn once if a handler modified
+                        // global variables. These changes will be silently discarded
+                        // on the next call (restored from snapshot), which confuses
+                        // developers used to Node.js-style in-memory caching.
+                        if !mutation_warned.0 {
+                            if let Some(ref snapshot) = globals_snapshot {
+                                let current = s.snapshot_globals();
+                                if current != snapshot.0 {
+                                    mutation_warned.0 = true;
+                                    tracing::warn!(
+                                        handler = %name,
+                                        "Handler '{}' modified global variables. These changes are \
+                                         discarded between requests (each call starts with clean state). \
+                                         Use db.* APIs for persistence instead of global variables.",
+                                        name
+                                    );
+                                }
+                            }
                         }
+
+                        call_result
                     }
                     None => Err("Runtime not initialized".into()),
                 };
