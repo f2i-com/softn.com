@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 pub struct ServerManifest {
     pub name: String,
     pub version: String,
+    /// Stable unique identifier for data directory isolation (e.g.
+    /// "com.mybrand.appname"). If provided, the data directory is keyed by
+    /// this value instead of a volatile hash of the bundle's filesystem path.
+    /// Without this, moving the `.softn` file to a different folder changes
+    /// the path hash and creates a new empty database, appearing as data loss.
+    pub id: Option<String>,
     pub main: Option<String>,
     pub files: Option<HashMap<String, Vec<String>>>,
     pub server: Option<ServerBlock>,
@@ -205,6 +211,15 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
     if !manifest.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.') {
         return Err("Manifest name must be alphanumeric, dash, underscore, or dot".into());
     }
+    if let Some(ref id) = manifest.id {
+        if id.is_empty() || id.len() > 128 {
+            return Err("Manifest id must be 1-128 characters".into());
+        }
+        // Allow reverse-domain style: alphanumeric, dash, underscore, dot
+        if !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.') {
+            return Err("Manifest id must be alphanumeric, dash, underscore, or dot".into());
+        }
+    }
     if manifest.version.is_empty() {
         return Err("Manifest version must not be empty".into());
     }
@@ -264,6 +279,9 @@ pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
         "name": manifest.name,
         "version": manifest.version,
     });
+    if let Some(id) = &manifest.id {
+        val["id"] = serde_json::json!(id);
+    }
     if let Some(main) = &manifest.main {
         val["main"] = serde_json::json!(main);
     }

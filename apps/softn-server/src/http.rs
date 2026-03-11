@@ -75,9 +75,14 @@ fn build_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc
                 // Fail closed: if the developer explicitly configured allowedOrigins
                 // but all entries failed to parse (e.g. typos), reject cross-origin
                 // requests rather than silently opening the API to the entire internet.
+                // Log every invalid origin so the developer can see exactly what failed.
+                let invalid: Vec<&str> = origins.iter().map(String::as_str).collect();
                 tracing::error!(
                     "config.server.allowedOrigins contains no valid origins — \
-                     rejecting all cross-origin requests (check for typos in your config)"
+                     rejecting all cross-origin requests. Invalid entries: {:?}. \
+                     Valid origins must include the scheme (e.g. \"https://example.com\", \
+                     not \"example.com\"). Fix in manifest.json config.server.allowedOrigins.",
+                    invalid
                 );
                 CorsLayer::new()
             } else {

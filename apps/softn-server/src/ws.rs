@@ -16,9 +16,14 @@ const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 /// Outbound channel capacity — large enough to absorb burst from sync_pull
 /// responses without blocking the reader task.
 const OUT_CHANNEL_SIZE: usize = 512;
-/// Timeout for sending direct responses (sync_pull/sync_push results).
+/// Timeout for sending single-message responses (errors, acks, etc.).
 /// If the writer can't drain within this, the client is irrecoverably slow.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Timeout for sending bulk transfer responses (sync_pull, sync_push).
+/// Mobile clients on slow networks (3G) may legitimately need longer to
+/// drain large SyncState payloads. Using the tight SEND_TIMEOUT for these
+/// would trap them in a disconnect → reconnect → heavy payload → timeout loop.
+const SEND_TIMEOUT_BULK: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long to wait for a sync permit before returning "server busy".
 /// A short wait smooths out micro-bursts (e.g. dozens of clients reconnecting
 /// after a network partition resolves) without hanging the connection.
@@ -46,14 +51,26 @@ async fn send_response(
     close_reason_tx: &watch::Sender<Option<String>>,
     msg: ServerMessage,
 ) -> bool {
-    match tokio::time::timeout(SEND_TIMEOUT, out_tx.send(msg)).await {
+    send_response_with_timeout(out_tx, close_reason_tx, msg, SEND_TIMEOUT).await
+}
+
+/// Like `send_response` but with a caller-specified timeout.
+/// Used for bulk transfers (sync_pull/sync_push) where slow mobile clients
+/// need more time to drain large payloads without being disconnected.
+async fn send_response_with_timeout(
+    out_tx: &mpsc::Sender<ServerMessage>,
+    close_reason_tx: &watch::Sender<Option<String>>,
+    msg: ServerMessage,
+    timeout: std::time::Duration,
+) -> bool {
+    match tokio::time::timeout(timeout, out_tx.send(msg)).await {
         Ok(Ok(())) => true,
         Ok(Err(_)) => {
             tracing::warn!("WebSocket outbound channel closed — dropping connection");
             false
         }
         Err(_) => {
-            tracing::warn!("WebSocket send timed out ({}s) — dropping connection to force re-sync", SEND_TIMEOUT.as_secs());
+            tracing::warn!("WebSocket send timed out ({}s) — dropping connection to force re-sync", timeout.as_secs());
             // Signal the close reason via a dedicated watch channel that bypasses
             // the full mpsc queue. The writer reads this when out_rx returns None.
             let _ = close_reason_tx.send(Some(
@@ -323,7 +340,7 @@ async fn reader_task(
                             }
                         };
                         for resp in responses {
-                            if !send_response(out_tx, close_reason_tx, resp).await {
+                            if !send_response_with_timeout(out_tx, close_reason_tx, resp, SEND_TIMEOUT_BULK).await {
                                 return;
                             }
                         }
@@ -393,7 +410,7 @@ async fn reader_task(
                             }
                         };
                         for resp in responses {
-                            if !send_response(out_tx, close_reason_tx, resp).await {
+                            if !send_response_with_timeout(out_tx, close_reason_tx, resp, SEND_TIMEOUT_BULK).await {
                                 return;
                             }
                         }
