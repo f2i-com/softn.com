@@ -429,7 +429,7 @@
   }
 
   function leaveTable() {
-    // Only remove our own player record — bots are shared state and persist
+    // Unseat the player but stay in the room
     let allPlayers = db.query("poker_players")
     let lpi = 0
     while (lpi < allPlayers.length) {
@@ -441,54 +441,15 @@
       }
       lpi = lpi + 1
     }
-    db.stopSync(syncRoom)
-    // Reset ALL state to prevent stale UI on rejoin
-    syncConnected = false
-    syncConnecting = false
-    syncPeers = 0
-    currentPage = "lobby"
     mySeat = -1
     myRecordMissingTicks = 0
-    gamePhase = TableStateClass.phaseWaiting()
-    handNumber = 0
-    dealerSeat = 0
-    currentTurnSeat = -1
-    currentBet = 0
-    pot = 0
-    communityCards = []
-    tableId = ""
     myHoleCards = []
     myChips = 0
     myBet = 0
     myStatus = TableStateClass.statusWaiting()
-    players = []
-    isHost = false
-    botSeats = []
-    hostAutomationPauseUntilMs = 0
-    wasHostLastTick = false
-    showResultsModal = false
-    resultWinnerName = ""
-    resultHandName = ""
-    resultPotAmount = 0
-    resultDetails = ""
-    debugHandBankrollBaseline = 0
-    showDebugOverlay = false
-    debugTraceEnabled = false
-    debugLastStateSig = ""
-    soundWatchInitialized = false
-    soundLastHandNumber = 0
-    soundLastCommunityCount = 0
-    soundLastActionKey = ""
-    soundLastActionScanSig = ""
-    raiseAmount = ""
     myHandName = ""
-    showdownAutoDelay = 0
-    showdownAutoDeadlineMs = 0
-    showdownStartedAtMs = 0
-    toastClearDelay = 0
-    toastMessage = ""
-    slowLaneTickCounter = 0
-    lastHostRepairAtMs = 0
+    showResultsModal = false
+    refreshFromDB()
   }
 
   function copySyncRoom() {
