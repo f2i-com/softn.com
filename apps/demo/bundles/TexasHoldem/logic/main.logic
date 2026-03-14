@@ -429,8 +429,7 @@
   }
 
   function leaveTable() {
-    // Clean up our seat + bots (only host owns bots)
-    let wasHost = isHost
+    // Only remove our own player record — bots are shared state and persist
     let allPlayers = db.query("poker_players")
     let lpi = 0
     while (lpi < allPlayers.length) {
@@ -438,13 +437,6 @@
         let lpid = allPlayers[lpi].data.peerId || ""
         if (lpid === peerId) {
           db.hardDelete("poker_players", allPlayers[lpi].id)
-        }
-        // Only remove bots if we were the host (we created them)
-        if (wasHost) {
-          let lIsBot = lpid.charAt(0) === "b" && lpid.charAt(1) === "o" && lpid.charAt(2) === "t" && lpid.charAt(3) === "-"
-          if (lIsBot) {
-            db.hardDelete("poker_players", allPlayers[lpi].id)
-          }
         }
       }
       lpi = lpi + 1
