@@ -11,7 +11,7 @@
 import * as Y from 'yjs';
 import { WebrtcProvider } from 'y-webrtc';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { XDBService, type XDBEvent } from './xdb';
+import { XDBService, getDefaultSignaling, type XDBEvent } from './xdb';
 import type { XDBRecord } from '../types';
 
 // ── Types ─────────────────────────────────────────────────
@@ -74,10 +74,16 @@ export class XDBSyncAdapter {
     const providerOptions: { signaling?: string[]; password?: string } = {
       password: this.options.password,
     };
-    // Use user-provided signaling URLs if available; otherwise let
-    // y-webrtc use its built-in public signaling servers.
+    // Use explicit signaling URLs, then app-level defaults, then empty
+    // (never fall back to y-webrtc's public signaling servers).
+    const appDefaults = getDefaultSignaling();
     if (Array.isArray(this.options.signaling) && this.options.signaling.length > 0) {
       providerOptions.signaling = this.options.signaling;
+    } else if (appDefaults && appDefaults.length > 0) {
+      providerOptions.signaling = appDefaults;
+    } else {
+      // Empty array prevents y-webrtc from using its built-in public servers
+      providerOptions.signaling = [];
     }
     this.provider = new WebrtcProvider(this.options.room, this.ydoc, providerOptions);
 

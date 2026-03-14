@@ -209,6 +209,13 @@ export interface SoftNRendererProps {
    * Provider for reading files from a .softn bundle (used by AI model loading).
    */
   bundleFileProvider?: BundleFileProvider;
+
+  /**
+   * Mutable ref that receives a function to snapshot the current reactive state.
+   * Call `ref.current()` to get a plain object of all state variables.
+   * Useful for persisting state across page refreshes.
+   */
+  stateRef?: React.MutableRefObject<(() => Record<string, unknown>) | null>;
 }
 
 /**
@@ -378,6 +385,7 @@ export function SoftNRenderer({
   scriptExecutionMode = 'worker',
   resumeSavedSyncRoom = false,
   bundleFileProvider,
+  stateRef,
 }: SoftNRendererProps): React.ReactElement | null {
   const [resolvedSource, setResolvedSource] = useState<string | undefined>(source);
   const [state, setState] = useState<RendererState>({
@@ -399,6 +407,14 @@ export function SoftNRenderer({
   // Reactive state for computed values
   const reactiveRef = useRef<ReactiveState | null>(null);
   const [, forceUpdate] = useState({});
+
+  // Keep stateRef up-to-date on every render so snapshot reads latest state
+  if (stateRef) {
+    stateRef.current = () => ({
+      ...state.componentState,
+      ...(reactiveRef.current?.getStateSnapshot() ?? {}),
+    });
+  }
 
   // Focus/scroll preservation for hot reload
   const scrollRef = useRef<{ x: number; y: number } | null>(null);

@@ -1438,6 +1438,24 @@ export interface XDBExportData {
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
+// ── Sync signaling configuration ──────────────────────────
+
+/** Default signaling server URLs for XDB sync.
+ *  Stored here (in xdb.ts) so it's accessible without importing the heavy
+ *  xdb-sync.ts module. The sync module reads this when it connects. */
+let _defaultSignalingUrls: string[] | undefined;
+
+/** Set default signaling server URLs for all XDB sync adapters.
+ *  Call this at app startup to prevent connections to public signaling servers. */
+export function setDefaultSignaling(urls: string[]): void {
+  _defaultSignalingUrls = urls;
+}
+
+/** Get the configured default signaling URLs (used by xdb-sync.ts). */
+export function getDefaultSignaling(): string[] | undefined {
+  return _defaultSignalingUrls;
+}
+
 // Per-app XDB instances
 const xdbInstances = new Map<string, XDBService>();
 
