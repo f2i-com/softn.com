@@ -74,11 +74,11 @@ export class XDBSyncAdapter {
     const providerOptions: { signaling?: string[]; password?: string } = {
       password: this.options.password,
     };
-    // Default to local signaling server; fall back to user-provided URLs
-    providerOptions.signaling =
-      Array.isArray(this.options.signaling) && this.options.signaling.length > 0
-        ? this.options.signaling
-        : ['ws://localhost:4444'];
+    // Use user-provided signaling URLs if available; otherwise let
+    // y-webrtc use its built-in public signaling servers.
+    if (Array.isArray(this.options.signaling) && this.options.signaling.length > 0) {
+      providerOptions.signaling = this.options.signaling;
+    }
     this.provider = new WebrtcProvider(this.options.room, this.ydoc, providerOptions);
 
     // 2. Set awareness (our display name)
