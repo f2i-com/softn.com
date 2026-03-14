@@ -237,7 +237,7 @@ export class XDBServerSync {
     }
   }
 
-  /** Called after successful auth — subscribe and pull initial state. */
+  /** Called after successful auth — subscribe, pull state, flush offline ops. */
   private onAuthenticated(): void {
     const collections = this.config.collections ?? this.getKnownCollections();
 
@@ -247,6 +247,12 @@ export class XDBServerSync {
 
       // Pull initial state
       this.send({ type: 'sync_pull', collections });
+    }
+
+    // Flush any mutations that accumulated while offline
+    if (this.pendingOps.size > 0) {
+      const ops = Array.from(this.pendingOps.values());
+      this.send({ type: 'sync_push', ops });
     }
 
     // Listen for local XDB mutations and push them to the server

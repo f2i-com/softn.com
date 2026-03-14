@@ -78,23 +78,29 @@ function sanitizeArgs(args: unknown[]): unknown[] {
       console.warn('[FormLogic Sandbox] Dropped Window object from script arguments.');
       return null;
     }
-    // Break circular references
+    // Break circular references but allow valid DAGs (shared references)
     const o = obj as object;
     if (seen.has(o)) return null;
     seen.add(o);
+
+    let result: unknown;
     if (Array.isArray(o)) {
-      return o.map(cloneSafe);
-    }
-    const clone: Record<string, unknown> = {};
-    for (const key of Object.keys(o)) {
-      try {
-        clone[key] = cloneSafe((o as Record<string, unknown>)[key]);
-      } catch {
-        // Handle getters that throw
-        clone[key] = null;
+      result = o.map(cloneSafe);
+    } else {
+      const clone: Record<string, unknown> = {};
+      for (const key of Object.keys(o)) {
+        try {
+          clone[key] = cloneSafe((o as Record<string, unknown>)[key]);
+        } catch {
+          // Handle getters that throw
+          clone[key] = null;
+        }
       }
+      result = clone;
     }
-    return clone;
+
+    seen.delete(o); // Allow this object to appear in sibling paths
+    return result;
   }
 
   return args.map(cloneSafe);
