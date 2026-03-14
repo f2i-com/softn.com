@@ -52,12 +52,8 @@ const pendingImports = new Map<number, {
 
 const workerImportResolver: ImportResolver = (path: string) => {
   return new Promise((resolve, reject) => {
-    // Fail immediately if explicitly offline — no point waiting 15s for a timeout
-    if (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean' && !navigator.onLine) {
-      reject(new Error(`Network offline. Import request skipped for: ${path}`));
-      return;
-    }
-
+    // Note: we do NOT reject based on navigator.onLine, as it is unreliable
+    // and would bypass service worker / PWA cache serving.
     const id = importReqId++;
     const timeoutId = setTimeout(() => {
       pendingImports.delete(id);
