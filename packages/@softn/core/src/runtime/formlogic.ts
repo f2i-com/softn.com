@@ -2054,7 +2054,7 @@ export interface DBNamespace {
  * Create a synchronous db namespace for use in <logic> blocks
  * This uses the XDB service synchronously for immediate data access
  */
-export function createDBNamespace(getPermissionConfig?: () => PermissionConfig | null, appId?: string): DBNamespace {
+export function createDBNamespace(getPermissionConfig?: () => PermissionConfig | null, appId?: string, syncEncryptionKeyHex?: string): DBNamespace {
   // Import XDB directly - this module uses a singleton pattern
   // We use a wrapper that will lazily initialize
   let xdbService: import('./xdb').XDBService | null = null;
@@ -2122,9 +2122,33 @@ export function createDBNamespace(getPermissionConfig?: () => PermissionConfig |
         console.error('[XDB Sync] Sync not permitted. Add sync.enabled to permission.json');
         return;
       }
+      const syncOpts: Record<string, unknown> = { room, ...(options || {}) };
+      const sharedKey = appId ? `xdb-sync-shared:${appId}` : null;
+      // Shared room: sharedRoom flag, legacy noEncrypt, or persisted from prior session
+      let isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;
+      if (!isShared && sharedKey) {
+        try { isShared = localStorage.getItem(sharedKey) === 'true'; } catch { /* noop */ }
+      }
+      if (isShared) {
+        // Derive encryption key from room name — all peers use the same key.
+        // y-webrtc runs PBKDF2(password, roomName) to produce AES-256-GCM.
+        syncOpts.password = 'softn-shared:' + room;
+        delete syncOpts.encryptionKey;
+      } else if (syncEncryptionKeyHex && !syncOpts.encryptionKey) {
+        syncOpts.encryptionKey = syncEncryptionKeyHex;
+      }
+      // Persist shared flag so auto-resume also uses room-key encryption
+      if (isShared && sharedKey) {
+        try { localStorage.setItem(sharedKey, 'true'); } catch { /* noop */ }
+      }
+      delete syncOpts.noEncrypt;
+      delete syncOpts.sharedRoom;
+      if (appId && !syncOpts.appId) {
+        syncOpts.appId = appId;
+      }
       import('./xdb-sync').then((mod) => {
         _syncModuleCache = mod;
-        mod.startSync({ room, ...(options || {}) });
+        mod.startSync(syncOpts as unknown as import('./xdb-sync').XDBSyncOptions);
       }).catch((err) => {
         console.error('[XDB Sync] Failed to start sync:', err);
       });
@@ -2132,7 +2156,7 @@ export function createDBNamespace(getPermissionConfig?: () => PermissionConfig |
 
     stopSync: (room?: string) => {
       import('./xdb-sync').then(({ stopSync }) => {
-        stopSync(room);
+        stopSync(room, appId);
       }).catch((err) => {
         console.error('[XDB Sync] Failed to stop sync:', err);
       });
@@ -2147,7 +2171,8 @@ export function createDBNamespace(getPermissionConfig?: () => PermissionConfig |
     },
 
     getSavedSyncRoom: () => {
-      try { return localStorage.getItem('xdb-sync-active-room'); } catch { return null; }
+      const key = appId ? `xdb-sync-active-room:${appId}` : 'xdb-sync-active-room';
+      try { return localStorage.getItem(key); } catch { return null; }
     },
 
     prune: (collection: string, maxRecords: number) => {

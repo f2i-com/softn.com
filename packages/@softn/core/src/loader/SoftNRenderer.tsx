@@ -799,7 +799,8 @@ export function SoftNRenderer({
                 try {
                   let savedRoom: string | null = null;
                   try {
-                    savedRoom = localStorage.getItem('xdb-sync-active-room');
+                    const roomKey = appId ? `xdb-sync-active-room:${appId}` : 'xdb-sync-active-room';
+                    savedRoom = localStorage.getItem(roomKey);
                   } catch {
                     // localStorage may be unavailable in restricted contexts
                   }
@@ -1474,6 +1475,8 @@ export function useDataBlock(document: SoftNDocument | null, appId?: string): {
  */
 export function createXDBHelpers(
   xdb: ReturnType<typeof getXDB>,
+  syncEncryptionKeyHex?: string,
+  appId?: string,
 ): Record<string, (...args: unknown[]) => unknown> {
   return {
     /**
@@ -1554,9 +1557,22 @@ export function createXDBHelpers(
     startSync: (...args: unknown[]) => {
       const room = args[0] as string;
       const options = args[1] as Record<string, unknown> | undefined;
+      const syncOpts: Record<string, unknown> = { room, ...(options || {}) };
+      const isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;
+      if (isShared) {
+        syncOpts.password = 'softn-shared:' + room;
+        delete syncOpts.encryptionKey;
+      } else if (syncEncryptionKeyHex && !syncOpts.encryptionKey) {
+        syncOpts.encryptionKey = syncEncryptionKeyHex;
+      }
+      delete syncOpts.noEncrypt;
+      delete syncOpts.sharedRoom;
+      if (appId && !syncOpts.appId) {
+        syncOpts.appId = appId;
+      }
       import('../runtime/xdb-sync').then((mod) => {
         setSyncModuleCache(mod);
-        mod.startSync({ room, ...(options || {}) });
+        mod.startSync(syncOpts as unknown as import('../runtime/xdb-sync').XDBSyncOptions);
       }).catch((err) => {
         console.error('[XDB Sync] Failed to start sync:', err);
       });
@@ -1565,7 +1581,7 @@ export function createXDBHelpers(
     stopSync: (...args: unknown[]) => {
       const room = args[0] as string | undefined;
       import('../runtime/xdb-sync').then(({ stopSync }) => {
-        stopSync(room);
+        stopSync(room, appId);
       }).catch((err) => {
         console.error('[XDB Sync] Failed to stop sync:', err);
       });
@@ -1582,7 +1598,8 @@ export function createXDBHelpers(
     },
 
     getSavedSyncRoom: () => {
-      try { return localStorage.getItem('xdb-sync-active-room'); } catch { return null; }
+      const key = appId ? `xdb-sync-active-room:${appId}` : 'xdb-sync-active-room';
+      try { return localStorage.getItem(key); } catch { return null; }
     },
 
     getDbPath: () => {
@@ -1618,6 +1635,12 @@ export interface SoftNWithXDBProps extends SoftNRendererProps {
    * Collections to sync with the server.
    */
   serverCollections?: string[];
+
+  /**
+   * Hex-encoded encryption key for P2P XDB sync.
+   * When set, all sync signaling is encrypted with this key.
+   */
+  syncEncryptionKeyHex?: string;
 }
 
 export function SoftNWithXDB({
@@ -1626,6 +1649,7 @@ export function SoftNWithXDB({
   serverUrl,
   serverToken,
   serverCollections,
+  syncEncryptionKeyHex,
   ...props
 }: SoftNWithXDBProps): React.ReactElement | null {
   // Parse the document to get data block
@@ -1635,7 +1659,7 @@ export function SoftNWithXDB({
   const { data: xdbData, xdb } = useDataBlock(document, props.appId);
 
   // Create XDB helpers for the functions prop
-  const xdbHelpers = useMemo(() => createXDBHelpers(xdb), [xdb]);
+  const xdbHelpers = useMemo(() => createXDBHelpers(xdb, syncEncryptionKeyHex, props.appId), [xdb, syncEncryptionKeyHex, props.appId]);
 
   // Log per-app database path on mount
   useEffect(() => {
@@ -1677,10 +1701,10 @@ export function SoftNWithXDB({
   // Auto-resume sync from localStorage on mount
   const syncResumedRef = useRef(false);
 
-  // Isolated runtimes (like loader) should not inherit active sync adapters from
-  // previously opened apps. Stop all active adapters on mount.
+  // Clean up stale sync adapters from previously opened apps on mount.
+  // Fires when resumeSavedSyncRoom is not explicitly true (i.e., false or undefined).
   useEffect(() => {
-    if (props.resumeSavedSyncRoom !== false) return;
+    if (props.resumeSavedSyncRoom) return;
     import('../runtime/xdb-sync').then(({ stopSync }) => {
       stopSync();
     }).catch(() => {
@@ -1688,19 +1712,30 @@ export function SoftNWithXDB({
     });
   }, [props.resumeSavedSyncRoom]);
 
+  // Auto-resume sync only when explicitly opted in (resumeSavedSyncRoom === true).
   useEffect(() => {
-    if (props.resumeSavedSyncRoom === false) return;
+    if (!props.resumeSavedSyncRoom) return;
     if (syncResumedRef.current) return;
     syncResumedRef.current = true;
     try {
-      const savedRoom = localStorage.getItem('xdb-sync-active-room');
+      const key = props.appId ? `xdb-sync-active-room:${props.appId}` : 'xdb-sync-active-room';
+      const savedRoom = localStorage.getItem(key);
       if (savedRoom) {
-        xdbHelpers.startSync(savedRoom);
+        // Check if this is a shared/multiplayer room (set by wallet App Sync).
+        // Shared rooms must NOT use per-user encryption keys, otherwise different
+        // users would join different signaling rooms and never discover each other.
+        const sharedKey = props.appId ? `xdb-sync-shared:${props.appId}` : null;
+        const isShared = sharedKey ? localStorage.getItem(sharedKey) === 'true' : false;
+        if (isShared) {
+          xdbHelpers.startSync(savedRoom, { sharedRoom: true });
+        } else {
+          xdbHelpers.startSync(savedRoom);
+        }
       }
     } catch {
       // localStorage may be unavailable in restricted contexts
     }
-  }, [xdbHelpers]);
+  }, [xdbHelpers, props.resumeSavedSyncRoom]);
 
   // Notify parent of data changes
   useEffect(() => {

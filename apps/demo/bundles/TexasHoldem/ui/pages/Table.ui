@@ -105,7 +105,7 @@
         <Box if={seatIsBot(0)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
           <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(0) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(0)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+        <Box if={seatIsBot(0) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(0)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
           <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
         </Box>
       </Box>
@@ -149,7 +149,7 @@
         <Box if={seatIsBot(1)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
           <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(1) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(1)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+        <Box if={seatIsBot(1) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(1)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
           <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
         </Box>
       </Box>
@@ -193,7 +193,7 @@
         <Box if={seatIsBot(2)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
           <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(2) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(2)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+        <Box if={seatIsBot(2) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(2)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
           <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
         </Box>
       </Box>
@@ -237,7 +237,7 @@
         <Box if={seatIsBot(3)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
           <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(3) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(3)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+        <Box if={seatIsBot(3) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(3)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
           <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
         </Box>
       </Box>
@@ -281,7 +281,7 @@
         <Box if={seatIsBot(4)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
           <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(4) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(4)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+        <Box if={seatIsBot(4) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(4)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
           <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
         </Box>
       </Box>
@@ -325,15 +325,15 @@
         <Box if={seatIsBot(5)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
           <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(5) && isHost && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(5)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+        <Box if={seatIsBot(5) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(5)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
           <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
         </Box>
       </Box>
     </Box>
   </Box>
 
-  // Host controls (deal cards + add bot)
-  <Box className="poker-host-controls" if={isHost && mySeat >= 0} style={{
+  // Game controls (deal cards + add bot) — visible to all seated players
+  <Box className="poker-host-controls" if={mySeat >= 0} style={{
     position: "absolute", bottom: hostControlsBottomStyle(), left: "50%", transform: "translateX(-50%)", zIndex: 60,
     display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", justifyContent: "center",
     width: "min(94vw, 640px)"

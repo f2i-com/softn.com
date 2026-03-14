@@ -1456,6 +1456,19 @@ export function getDefaultSignaling(): string[] | undefined {
   return _defaultSignalingUrls;
 }
 
+/** Cached reference to xdb-sync module (set after first dynamic import). */
+let _syncModuleRef: { getAllSyncStatus: () => { connected: boolean; peers: number; room: string; peerId: string }[] } | null = null;
+
+/** Register the sync module reference (called from xdb-sync.ts or formlogic.ts). */
+export function _setSyncModuleRef(mod: typeof _syncModuleRef): void {
+  _syncModuleRef = mod;
+}
+
+/** Get sync status of all active rooms. Returns empty array if sync module not loaded. */
+export function getSyncStatuses(): { connected: boolean; peers: number; room: string; peerId: string }[] {
+  return _syncModuleRef?.getAllSyncStatus() ?? [];
+}
+
 // Per-app XDB instances
 const xdbInstances = new Map<string, XDBService>();
 

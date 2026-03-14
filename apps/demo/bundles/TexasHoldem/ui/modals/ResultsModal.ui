@@ -60,7 +60,7 @@
       }}>
         Close
       </Button>
-      <Button if={isHost} @click={nextHand} style={{
+      <Button @click={nextHand} style={{
         background: "linear-gradient(135deg, #c8aa6e, #a08040)",
         color: "#1c1917",
         border: "none",

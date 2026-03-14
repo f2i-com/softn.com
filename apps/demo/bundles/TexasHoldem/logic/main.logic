@@ -6,6 +6,7 @@
   let syncConnected = false
   let syncConnecting = false
   let syncPeers = 0
+  let hasExternalRoom = false
   let showSyncModal = false
   let showResultsModal = false
   let toastMessage = ""
@@ -205,7 +206,7 @@
       if (savedRoom) {
         syncRoom = savedRoom
         syncConnecting = true
-        db.startSync(savedRoom)
+        db.startSync(savedRoom, { sharedRoom: true })
       }
       refreshFromDB()
       currentPage = "table"
@@ -216,7 +217,7 @@
     let savedRoom = db.getSavedSyncRoom()
     if (savedRoom) {
       syncRoom = savedRoom
-      db.stopSync(savedRoom)
+      hasExternalRoom = true
     }
     // Clean out stale poker data from previous sessions
     let oldTables = db.query("poker_table")
@@ -237,6 +238,16 @@
       db.hardDelete("poker_actions", oldActions[oai].id)
       oai = oai + 1
     }
+
+    // If a room was pre-set (e.g. by wallet) and we have a player name, auto-join
+    if (savedRoom && playerName) {
+      syncConnecting = true
+      syncConnected = false
+      db.startSync(syncRoom, { sharedRoom: true })
+      currentPage = "table"
+      return
+    }
+    // Otherwise show lobby — if hasExternalRoom, lobby adapts to show join-only UI
   }
 
   function generateRoomCode() {
@@ -248,6 +259,11 @@
       i = i + 1
     }
     syncRoom = code
+  }
+
+  function clearExternalRoom() {
+    hasExternalRoom = false
+    syncRoom = ""
   }
 
   function setPlayerName(value) {
@@ -291,7 +307,7 @@
     generateRoomCode()
     syncConnecting = true
     syncConnected = false
-    db.startSync(syncRoom)
+    db.startSync(syncRoom, { sharedRoom: true })
 
     // Clean up ALL stale records from previous sessions
     let oldTables = db.query("poker_table")
@@ -405,7 +421,7 @@
     } else {
       syncConnecting = true
       syncConnected = false
-      db.startSync(syncRoom)
+      db.startSync(syncRoom, { sharedRoom: true })
     }
     slowLaneTickCounter = 0
     lastHostRepairAtMs = 0
