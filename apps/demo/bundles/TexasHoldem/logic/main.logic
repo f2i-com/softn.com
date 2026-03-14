@@ -9,6 +9,7 @@
   let hasExternalRoom = false
   let showSyncModal = false
   let showResultsModal = false
+  let showLeaveModal = false
   let toastMessage = ""
   let toastType = "info"
   let showDebugOverlay = false
@@ -429,7 +430,16 @@
   }
 
   function leaveTable() {
+    showLeaveModal = true
+  }
+
+  function closeLeaveModal() {
+    showLeaveModal = false
+  }
+
+  function leaveUnseat() {
     // Unseat the player but stay in the room
+    showLeaveModal = false
     let allPlayers = db.query("poker_players")
     let lpi = 0
     while (lpi < allPlayers.length) {
@@ -450,6 +460,47 @@
     myHandName = ""
     showResultsModal = false
     refreshFromDB()
+  }
+
+  function leaveLobby() {
+    // Unseat, disconnect sync, return to lobby
+    showLeaveModal = false
+    let allPlayers = db.query("poker_players")
+    let lpi = 0
+    while (lpi < allPlayers.length) {
+      if (allPlayers[lpi].data) {
+        let lpid = allPlayers[lpi].data.peerId || ""
+        if (lpid === peerId) {
+          db.hardDelete("poker_players", allPlayers[lpi].id)
+        }
+      }
+      lpi = lpi + 1
+    }
+    db.stopSync(syncRoom)
+    syncConnected = false
+    syncConnecting = false
+    syncPeers = 0
+    currentPage = "lobby"
+    mySeat = -1
+    myRecordMissingTicks = 0
+    gamePhase = TableStateClass.phaseWaiting()
+    handNumber = 0
+    dealerSeat = 0
+    currentTurnSeat = -1
+    currentBet = 0
+    pot = 0
+    communityCards = []
+    tableId = ""
+    myHoleCards = []
+    myChips = 0
+    myBet = 0
+    myStatus = TableStateClass.statusWaiting()
+    players = []
+    isHost = false
+    botSeats = []
+    showResultsModal = false
+    myHandName = ""
+    toastMessage = ""
   }
 
   function copySyncRoom() {
