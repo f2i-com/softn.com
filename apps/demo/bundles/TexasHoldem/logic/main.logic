@@ -176,8 +176,43 @@
     if (savedName) {
       playerName = savedName
     }
-    // Stop any sync adapter left over from a previous session to prevent
-    // stale sync events from re-hydrating data we're about to delete
+
+    // Check if we can resume an existing game session (e.g. after page refresh)
+    let existingTables = db.query("poker_table")
+    let existingPlayers = db.query("poker_players")
+    let canResume = false
+    if (existingTables.length > 0 && existingPlayers.length > 0) {
+      // Check if our peerId or any bots exist in the player list
+      let ri = 0
+      while (ri < existingPlayers.length) {
+        if (existingPlayers[ri].data) {
+          let rpid = existingPlayers[ri].data.peerId || ""
+          if (rpid === peerId) {
+            canResume = true
+          }
+          // Also resume if there are bots (local solo game)
+          if (rpid.charAt(0) === "b" && rpid.charAt(1) === "o" && rpid.charAt(2) === "t" && rpid.charAt(3) === "-") {
+            canResume = true
+          }
+        }
+        ri = ri + 1
+      }
+    }
+
+    if (canResume) {
+      // Resume existing game — restore state from XDB
+      let savedRoom = db.getSavedSyncRoom()
+      if (savedRoom) {
+        syncRoom = savedRoom
+        syncConnecting = true
+        db.startSync(savedRoom)
+      }
+      refreshFromDB()
+      currentPage = "table"
+      return
+    }
+
+    // No resumable session — clean slate
     let savedRoom = db.getSavedSyncRoom()
     if (savedRoom) {
       syncRoom = savedRoom
