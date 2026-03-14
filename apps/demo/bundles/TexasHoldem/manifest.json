@@ -13,7 +13,8 @@
       "ui/pages/Lobby.ui",
       "ui/pages/Table.ui",
       "ui/modals/SyncModal.ui",
-      "ui/modals/ResultsModal.ui"
+      "ui/modals/ResultsModal.ui",
+      "ui/modals/LeaveModal.ui"
     ],
     "logic": [
       "logic/main.logic",
