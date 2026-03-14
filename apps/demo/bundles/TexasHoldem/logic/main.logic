@@ -71,6 +71,9 @@
   let myHandName = ""
   let lastHandEvalSig = ""
 
+  // Wallet identity
+  let walletAvatarUrl = ""
+
   // Bot mode
   let botSeats = []
   let botActionDelay = 0
@@ -174,9 +177,35 @@
       peerId = "peer-" + Math.floor(Math.random() * 1000000)
       localStorage.setItem("poker-peer-id", peerId)
     }
-    let savedName = localStorage.getItem("poker-player-name")
-    if (savedName) {
-      playerName = savedName
+    // Use wallet alias if available, otherwise fall back to saved name
+    let walletAlias = ""
+    if (typeof getAlias === "function") {
+      walletAlias = getAlias()
+    }
+    if (walletAlias) {
+      playerName = walletAlias
+    } else {
+      let savedName = localStorage.getItem("poker-player-name")
+      if (savedName) {
+        playerName = savedName
+      }
+    }
+    // Load wallet avatar if available
+    if (typeof getAvatar === "function") {
+      walletAvatarUrl = getAvatar()
+    }
+
+    // Clean up any corrupted player records (e.g. from XDB field-order bugs)
+    let cleanupPlayers = db.query("poker_players")
+    let ci = 0
+    while (ci < cleanupPlayers.length) {
+      if (cleanupPlayers[ci].data) {
+        let cSeat = cleanupPlayers[ci].data.seat
+        if (typeof cSeat !== "number" || cSeat < 0 || cSeat > 5) {
+          db.hardDelete("poker_players", cleanupPlayers[ci].id)
+        }
+      }
+      ci = ci + 1
     }
 
     // Check if we can resume an existing game session (e.g. after page refresh)
@@ -210,6 +239,26 @@
         db.startSync(savedRoom, { sharedRoom: true })
       }
       refreshFromDB()
+
+      // Update our record with current wallet avatar/name if stale
+      let resumeMe = getMyPlayerRecord()
+      if (resumeMe && resumeMe.data) {
+        let needsUpdate = false
+        let resumePatch = {}
+        if (walletAvatarUrl && resumeMe.data.avatarUrl !== walletAvatarUrl) {
+          resumePatch.avatarUrl = walletAvatarUrl
+          needsUpdate = true
+        }
+        if (playerName && resumeMe.data.name !== playerName) {
+          resumePatch.name = playerName
+          needsUpdate = true
+        }
+        if (needsUpdate) {
+          db.update(resumeMe.id, resumePatch)
+          refreshFromDB()
+        }
+      }
+
       currentPage = "table"
       return
     }
@@ -750,7 +799,7 @@
       myRecordMissingTicks = 0
     } else if (mySeat >= 0) {
       myRecordMissingTicks = myRecordMissingTicks + 1
-      if (myRecordMissingTicks >= 10) {
+      if (myRecordMissingTicks >= 3) {
         mySeat = -1
         myHoleCards = []
         myBet = 0
@@ -864,7 +913,22 @@
   // --- Seat Management ---
 
   function takeSeat(seatNum) {
-    if (mySeat >= 0) return
+    if (mySeat >= 0) {
+      // Verify our record actually exists; if not, reset so we can re-seat
+      let verifyPlayers = db.query("poker_players")
+      let found = false
+      let vi = 0
+      while (vi < verifyPlayers.length) {
+        if (verifyPlayers[vi].data && verifyPlayers[vi].data.peerId === peerId) {
+          found = true
+        }
+        vi = vi + 1
+      }
+      if (found) return
+      // Record missing — stale mySeat, allow re-seating
+      mySeat = -1
+      myRecordMissingTicks = 0
+    }
     // Claim seat immediately to prevent double-seat on rapid clicks
     mySeat = seatNum
     // Re-read latest players before checking seat availability
@@ -889,7 +953,8 @@
       bet: 0,
       handContribution: 0,
       status: TableStateClass.statusWaiting(),
-      hasActed: false
+      hasActed: false,
+      avatarUrl: walletAvatarUrl || ""
     })
     toastMessage = "Took seat " + (seatNum + 1)
     toastType = "success"
@@ -1054,7 +1119,7 @@
       myRecordMissingTicks = 0
     } else if (mySeat >= 0) {
       myRecordMissingTicks = myRecordMissingTicks + 1
-      if (myRecordMissingTicks >= 10) {
+      if (myRecordMissingTicks >= 3) {
         mySeat = -1
         myHoleCards = []
         myBet = 0
