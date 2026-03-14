@@ -10,7 +10,6 @@
   }
 
   function addBot() {
-    if (!isHost) return
     if (TableStateClass.isLiveHandPhase(gamePhase)) return
     // Re-read latest players so we do not place bots on newly occupied seats
     players = db.query("poker_players")
@@ -42,7 +41,6 @@
   }
 
   function removeBot(seatNum) {
-    if (!isHost) return
     if (TableStateClass.isLiveHandPhase(gamePhase)) return
     let i = 0
     while (i < players.length) {

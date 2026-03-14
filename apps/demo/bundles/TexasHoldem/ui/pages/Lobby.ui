@@ -29,7 +29,7 @@
     backdropFilter: "blur(12px)"
   }}>
     <Stack direction=vertical gap=lg>
-      // Player name
+      // Player name (always shown)
       <Stack direction=vertical gap=sm>
         <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>Your Name</Text>
         <Input
@@ -46,62 +46,125 @@
         />
       </Stack>
 
-      // Create room
-      <Button @click={createRoom} style={{
-        width: "100%",
-        background: "linear-gradient(135deg, #c8aa6e, #a08040)",
-        color: "#1c1917",
-        border: "none",
-        borderRadius: "10px",
-        padding: "14px",
-        fontSize: "16px",
-        fontWeight: "700",
-        cursor: "pointer",
-        letterSpacing: "0.5px"
-      }}>
-        Create Room
-      </Button>
-
-      // Divider
-      <Box style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-        <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
-        <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "12px", textTransform: "uppercase", letterSpacing: "2px" }}>or join</Text>
-        <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
-      </Box>
-
-      // Join room
-      <Stack direction=vertical gap=sm>
-        <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>Room Code</Text>
-        <Stack direction=horizontal gap=sm>
-          <Input
-            :bind={syncRoom}
-            placeholder="e.g. poker-x9km2p"
-            style={{
-              flex: 1,
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(200,170,110,0.2)",
-              borderRadius: "10px",
-              padding: "12px 16px",
-              color: "#fff",
-              fontSize: "15px",
-              fontFamily: "monospace"
-            }}
-          />
-          <Button @click={joinRoom} style={{
-            background: "rgba(200,170,110,0.15)",
-            color: "#c8aa6e",
-            border: "1px solid rgba(200,170,110,0.3)",
-            borderRadius: "10px",
-            padding: "12px 20px",
-            fontSize: "14px",
-            fontWeight: "600",
-            cursor: "pointer",
-            flexShrink: 0
+      // ── External room: show pre-set room + join button ──
+      <Box if={hasExternalRoom}>
+        <Stack direction=vertical gap=md>
+          // Room badge
+          <Box style={{
+            background: "rgba(200,170,110,0.08)",
+            border: "1px solid rgba(200,170,110,0.2)",
+            borderRadius: "12px",
+            padding: "14px 16px",
+            textAlign: "center"
           }}>
-            Join
+            <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: "11px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1.5px", marginBottom: "6px" }}>
+              Room Code
+            </Text>
+            <Text style={{ color: "#c8aa6e", fontSize: "22px", fontWeight: "bold", fontFamily: "monospace", letterSpacing: "3px" }}>
+              {syncRoom}
+            </Text>
+          </Box>
+
+          // Join button
+          <Button @click={joinRoom} style={{
+            width: "100%",
+            background: "linear-gradient(135deg, #c8aa6e, #a08040)",
+            color: "#1c1917",
+            border: "none",
+            borderRadius: "10px",
+            padding: "14px",
+            fontSize: "16px",
+            fontWeight: "700",
+            cursor: "pointer",
+            letterSpacing: "0.5px"
+          }}>
+            Join Room
+          </Button>
+
+          // Option to use a different room
+          <Box style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
+            <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "12px", textTransform: "uppercase", letterSpacing: "2px" }}>or</Text>
+            <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
+          </Box>
+
+          <Button @click={clearExternalRoom} style={{
+            width: "100%",
+            background: "rgba(255,255,255,0.04)",
+            color: "rgba(255,255,255,0.5)",
+            border: "1px solid rgba(255,255,255,0.1)",
+            borderRadius: "10px",
+            padding: "12px",
+            fontSize: "13px",
+            fontWeight: "500",
+            cursor: "pointer"
+          }}>
+            Create or Join a Different Room
           </Button>
         </Stack>
-      </Stack>
+      </Box>
+
+      // ── Normal lobby: create or join ──
+      <Box if={!hasExternalRoom}>
+        <Stack direction=vertical gap=lg>
+          // Create room
+          <Button @click={createRoom} style={{
+            width: "100%",
+            background: "linear-gradient(135deg, #c8aa6e, #a08040)",
+            color: "#1c1917",
+            border: "none",
+            borderRadius: "10px",
+            padding: "14px",
+            fontSize: "16px",
+            fontWeight: "700",
+            cursor: "pointer",
+            letterSpacing: "0.5px"
+          }}>
+            Create Room
+          </Button>
+
+          // Divider
+          <Box style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
+            <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "12px", textTransform: "uppercase", letterSpacing: "2px" }}>or join</Text>
+            <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
+          </Box>
+
+          // Join room
+          <Stack direction=vertical gap=sm>
+            <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>Room Code</Text>
+            <Stack direction=horizontal gap=sm>
+              <Input
+                :bind={syncRoom}
+                placeholder="e.g. poker-x9km2p"
+                style={{
+                  flex: 1,
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(200,170,110,0.2)",
+                  borderRadius: "10px",
+                  padding: "12px 16px",
+                  color: "#fff",
+                  fontSize: "15px",
+                  fontFamily: "monospace"
+                }}
+              />
+              <Button @click={joinRoom} style={{
+                background: "rgba(200,170,110,0.15)",
+                color: "#c8aa6e",
+                border: "1px solid rgba(200,170,110,0.3)",
+                borderRadius: "10px",
+                padding: "12px 20px",
+                fontSize: "14px",
+                fontWeight: "600",
+                cursor: "pointer",
+                flexShrink: 0
+              }}>
+                Join
+              </Button>
+            </Stack>
+          </Stack>
+        </Stack>
+      </Box>
     </Stack>
   </Card>
 

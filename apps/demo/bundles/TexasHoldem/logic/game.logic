@@ -8,11 +8,31 @@
   }
 
   function startHand() {
-    if (!isHost) return
     if (TableStateClass.isLiveHandPhase(gamePhase)) return
     // Re-read table to ensure tableId is valid (could be stale after ID swap)
     let tableRec = getFreshTableRecord()
-    if (!tableRec) return
+    if (!tableRec) {
+      // No poker_table record exists (e.g. joined via sync without createRoom).
+      // Create one on the fly so the game can proceed.
+      let tableData = {
+        gamePhase: TableStateClass.phaseWaiting(),
+        handNumber: 0,
+        dealerSeat: 0,
+        currentTurnSeat: -1,
+        currentBet: 0,
+        pot: 0,
+        deck: [],
+        deckPosition: 0,
+        communityCards: [],
+        smallBlind: 10,
+        bigBlind: 20,
+        lastFullRaise: 20,
+        lastBigBlindSeat: -1
+      }
+      db.create("poker_table", tableData)
+      tableRec = getFreshTableRecord()
+      if (!tableRec) return
+    }
     // Re-read players for accurate count
     players = db.query("poker_players")
     if (countSeatedPlayers() < 2) {
@@ -792,13 +812,12 @@
     // Re-read fresh state before starting - the auto-advance timer may have
     // already changed gamePhase, or polling may not have run yet
     refreshFromDB()
-    if (isHost && (gamePhase === TableStateClass.phaseWaiting() || gamePhase === TableStateClass.phaseShowdown())) {
+    if (gamePhase === TableStateClass.phaseWaiting() || gamePhase === TableStateClass.phaseShowdown()) {
       startHand()
     }
   }
 
   function forceReset() {
-    if (!isHost) return
     // Re-read fresh table ID
     let resetTable = getFreshTableRecord()
     if (!resetTable) return

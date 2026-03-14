@@ -11,7 +11,7 @@
 import * as Y from 'yjs';
 import { WebrtcProvider } from 'y-webrtc';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { XDBService, getDefaultSignaling, type XDBEvent } from './xdb';
+import { XDBService, getDefaultSignaling, _setSyncModuleRef, type XDBEvent } from './xdb';
 import type { XDBRecord } from '../types';
 
 // ── Types ─────────────────────────────────────────────────
@@ -21,12 +21,20 @@ export interface XDBSyncOptions {
   room: string;
   /** Optional password for encrypted signaling */
   password?: string;
+  /** Hex-encoded encryption key for P2P sync (used as password for y-webrtc).
+   *  When set, all signaling messages are encrypted with AES-256-GCM. */
+  encryptionKey?: string;
   /** Signaling server URLs (defaults to public Yjs signaling) */
   signaling?: string[];
   /** Display name for this peer (shown in awareness) */
   displayName?: string;
+  /** When true, derives encryption key from the room name so all peers in the
+   *  same room share the same key. Use for multiplayer/shared rooms. */
+  sharedRoom?: boolean;
   /** Whether to persist CRDT state to IndexedDB (default: true) */
   persist?: boolean;
+  /** App ID — when set, syncs the per-app XDB instance instead of the default */
+  appId?: string;
 }
 
 export interface XDBSyncStatus {
@@ -71,8 +79,10 @@ export class XDBSyncAdapter {
     if (this.provider) return;
 
     // 1. Create WebRTC provider
+    // Use encryptionKey (per-dapp derived key) if available, else fallback to password
+    const effectivePassword = this.options.encryptionKey || this.options.password;
     const providerOptions: { signaling?: string[]; password?: string } = {
-      password: this.options.password,
+      password: effectivePassword,
     };
     // Use explicit signaling URLs, then app-level defaults, then empty
     // (never fall back to y-webrtc's public signaling servers).
@@ -85,6 +95,9 @@ export class XDBSyncAdapter {
       // Empty array prevents y-webrtc from using its built-in public servers
       providerOptions.signaling = [];
     }
+    console.log('[XDB Sync] Connecting to room:', this.options.room,
+      '| password:', effectivePassword ? '(encrypted)' : '(none)',
+      '| signaling:', providerOptions.signaling);
     this.provider = new WebrtcProvider(this.options.room, this.ydoc, providerOptions);
 
     // 2. Set awareness (our display name)
@@ -394,10 +407,10 @@ function jsonToRecord(json: Record<string, unknown>): XDBRecord {
   return {
     id: json.id as string,
     collection: json.collection as string,
-    data: (json.data as Record<string, unknown>) || {},
-    created_at: (json.created_at as string) || '',
-    updated_at: (json.updated_at as string) || '',
-    deleted: (json.deleted as boolean) || false,
+    data: (json.data as Record<string, unknown>) ?? {},
+    created_at: (json.created_at as string) ?? '',
+    updated_at: (json.updated_at as string) ?? '',
+    deleted: (json.deleted as boolean) ?? false,
   };
 }
 
@@ -409,23 +422,31 @@ function jsonToRecord(json: Record<string, unknown>): XDBRecord {
 import { getXDB } from './xdb';
 
 const syncAdapters = new Map<string, XDBSyncAdapter>();
-const SYNC_ROOM_KEY = 'xdb-sync-active-room';
+const SYNC_ROOM_KEY_PREFIX = 'xdb-sync-active-room';
+
+/** Get the localStorage key for persisting the active sync room, namespaced by appId. */
+function getSyncRoomKey(appId?: string): string {
+  return appId ? `${SYNC_ROOM_KEY_PREFIX}:${appId}` : SYNC_ROOM_KEY_PREFIX;
+}
 
 /**
- * Start syncing the default XDB instance to a room.
+ * Start syncing an XDB instance to a room.
+ * When `options.appId` is set, syncs the per-app XDB instance (not the default).
  * If a sync for this room already exists, returns the existing adapter.
  * Persists the room to localStorage so sync can auto-resume after reload.
  */
 export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
+  // Register this module so getSyncStatuses() works without dynamic import
+  _setSyncModuleRef({ getAllSyncStatus });
   if (syncAdapters.has(options.room)) {
     console.warn(`[XDB Sync] Room "${options.room}" already has an active sync adapter. Returning existing adapter — new options are ignored.`);
     return syncAdapters.get(options.room)!;
   }
-  const adapter = new XDBSyncAdapter(getXDB(), options);
+  const adapter = new XDBSyncAdapter(getXDB(options.appId), options);
   adapter.connect();
   syncAdapters.set(options.room, adapter);
   try {
-    localStorage.setItem(SYNC_ROOM_KEY, options.room);
+    localStorage.setItem(getSyncRoomKey(options.appId), options.room);
   } catch {
     // localStorage may be unavailable in restricted contexts
   }
@@ -437,7 +458,7 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
  * If room is provided, stops that room only. If no room, stops all.
  * The adapter is removed from the map so next startSync() creates a fresh one.
  */
-export function stopSync(room?: string): void {
+export function stopSync(room?: string, appId?: string): void {
   if (room) {
     const adapter = syncAdapters.get(room);
     if (adapter) {
@@ -445,8 +466,9 @@ export function stopSync(room?: string): void {
       syncAdapters.delete(room);
     }
     try {
-      const saved = localStorage.getItem(SYNC_ROOM_KEY);
-      if (saved === room) localStorage.removeItem(SYNC_ROOM_KEY);
+      const key = getSyncRoomKey(appId);
+      const saved = localStorage.getItem(key);
+      if (saved === room) localStorage.removeItem(key);
     } catch {
       // localStorage may be unavailable in restricted contexts
     }
@@ -456,7 +478,9 @@ export function stopSync(room?: string): void {
     }
     syncAdapters.clear();
     try {
-      localStorage.removeItem(SYNC_ROOM_KEY);
+      // Clear all possible sync room keys
+      localStorage.removeItem(getSyncRoomKey(appId));
+      if (!appId) localStorage.removeItem(SYNC_ROOM_KEY_PREFIX);
     } catch {
       // localStorage may be unavailable in restricted contexts
     }
@@ -504,6 +528,6 @@ export function getAllSyncStatus(): XDBSyncStatus[] {
 /**
  * Get the saved sync room from localStorage (for auto-resume after reload).
  */
-export function getSavedSyncRoom(): string | null {
-  try { return localStorage.getItem(SYNC_ROOM_KEY); } catch { return null; }
+export function getSavedSyncRoom(appId?: string): string | null {
+  try { return localStorage.getItem(getSyncRoomKey(appId)); } catch { return null; }
 }
