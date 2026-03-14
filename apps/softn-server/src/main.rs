@@ -77,7 +77,10 @@ enum Commands {
         /// Development mode: permissive CORS
         #[arg(long)]
         dev: bool,
-        /// Allow all script capabilities for all tenants
+        /// Allow all script capabilities (http, fs) for ALL tenants.
+        /// WARNING: This elevates privileges for every hosted bundle.
+        /// Do NOT use when hosting untrusted bundles alongside trusted ones.
+        /// Can also be set via SOFTN_ALLOW_ALL_CAPABILITIES=1.
         #[arg(long)]
         allow_all_capabilities: bool,
         /// Trust X-Forwarded-For header

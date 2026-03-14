@@ -48,9 +48,21 @@ export const WASM_BRIDGE_PREAMBLE = 'let window = {};\nlet navigator = {};\n';
 // ============================================================================
 
 /**
+ * Check if an object is a plain object or array (safe to pass to the WASM VM).
+ * Rejects DOM nodes, events, and all browser host objects using an allowlist
+ * approach: only plain objects ({} / Object.create(null)) and arrays pass.
+ */
+function isPlainObject(obj: object): boolean {
+  if (Array.isArray(obj)) return true;
+  const proto = Object.getPrototypeOf(obj);
+  return proto === null || proto === Object.prototype;
+}
+
+/**
  * Sanitize arguments before passing to the WASM VM.
  * Performs a defensive deep-clone that:
- * - Replaces DOM Events, Nodes, and Window with null
+ * - Only allows primitives, plain objects, and arrays (allowlist approach)
+ * - Rejects DOM nodes, events, and all browser host objects
  * - Breaks circular references using a WeakSet (prevents Rust panic from infinite recursion)
  * - Catches throwing getters gracefully
  * .logic code operates on plain data, not browser objects.
@@ -65,21 +77,11 @@ function sanitizeArgs(args: unknown[]): unknown[] {
     if (t === 'string' || t === 'number' || t === 'boolean') return obj;
     if (t === 'function') return null;
     if (t !== 'object') return obj;
-    // Reject DOM objects — warn in dev so .logic authors know why values are null
-    if (typeof Event !== 'undefined' && obj instanceof Event) {
-      console.warn('[FormLogic Sandbox] Dropped Event object from script arguments.');
-      return null;
-    }
-    if (typeof Node !== 'undefined' && obj instanceof Node) {
-      console.warn('[FormLogic Sandbox] Dropped DOM Node from script arguments.');
-      return null;
-    }
-    if (typeof window !== 'undefined' && obj === window) {
-      console.warn('[FormLogic Sandbox] Dropped Window object from script arguments.');
-      return null;
-    }
-    // Break circular references but allow valid DAGs (shared references)
+    // Allowlist: only clone plain objects and arrays. Everything else
+    // (DOM nodes, events, typed arrays, Map, Set, etc.) is dropped.
     const o = obj as object;
+    if (!isPlainObject(o)) return null;
+    // Break circular references but allow valid DAGs (shared references)
     if (seen.has(o)) return null;
     seen.add(o);
 
