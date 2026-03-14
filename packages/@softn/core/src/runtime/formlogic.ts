@@ -564,6 +564,8 @@ export class SoftNScriptRuntime {
   private gpuComputeManager: import('./ai-gpu-compute-manager').GpuComputeManager | null = null;
   /** Bundle file provider for loading models from .softn bundles */
   private bundleFileProvider: BundleFileProvider | null = null;
+  /** External functions (e.g. wallet bridge) to inject into the VM as callable globals */
+  private externalFunctions: Record<string, (...args: unknown[]) => unknown> | null = null;
 
   constructor(
     context: FormLogicContext,
@@ -572,12 +574,14 @@ export class SoftNScriptRuntime {
     importResolver?: unknown,
     logicBasePath?: string,
     options?: ScriptRuntimeOptions,
-    bundleFileProvider?: BundleFileProvider
+    bundleFileProvider?: BundleFileProvider,
+    externalFunctions?: Record<string, (...args: unknown[]) => unknown>
   ) {
     this.context = context;
     this.permissions = permissions;
     this.appId = appId;
     this.runtimeMode = options?.mode || 'main';
+    this.externalFunctions = externalFunctions ?? null;
     this.db = createDBNamespace(() => this.permissionConfig, appId);
     if (typeof importResolver === 'function') {
       this.importResolver = importResolver as (path: string) => Promise<string | null>;
@@ -630,8 +634,36 @@ export class SoftNScriptRuntime {
       );
     }
 
-    // 4. Prepend bridge preamble (declares `let window = {}; let navigator = {};`)
-    const fullCode = WASM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + resolvedCode;
+    // 4. Generate preamble for external functions (e.g. wallet bridge)
+    // Calls each function with no args; if it returns a primitive synchronously,
+    // injects a function declaration so .logic code can call it.
+    let extFnPreamble = '';
+    if (this.externalFunctions) {
+      for (const [name, fn] of Object.entries(this.externalFunctions)) {
+        // Skip names that aren't valid JS identifiers or XDB helpers
+        if (!/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(name)) continue;
+        if (name.startsWith('xdb_') || name === 'asset') continue;
+        try {
+          const result = fn();
+          // Skip async results (Promises) — swallow their rejections
+          if (result != null && typeof (result as { then?: unknown }).then === 'function') {
+            (result as Promise<unknown>).catch(() => {});
+            continue;
+          }
+          // Only inject primitives + null
+          if (typeof result === 'string' || typeof result === 'number' ||
+              typeof result === 'boolean' || result === null || result === undefined) {
+            const serialized = result === undefined ? 'undefined' : JSON.stringify(result);
+            extFnPreamble += `function ${name}() { return ${serialized}; }\n`;
+          }
+        } catch {
+          // Function needs args or threw — skip
+        }
+      }
+    }
+
+    // 5. Prepend bridge preamble (declares `let window = {}; let navigator = {};`)
+    const fullCode = WASM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode;
 
     // 5. Compile + run the full .logic code in the WASM VM
     const symbolMap = await this.vmEngine.initializeScript(fullCode);
@@ -1943,7 +1975,8 @@ export function createScriptRuntime(
   importResolver?: unknown,
   logicBasePath?: string,
   options?: ScriptRuntimeOptions,
-  bundleFileProvider?: BundleFileProvider
+  bundleFileProvider?: BundleFileProvider,
+  externalFunctions?: Record<string, (...args: unknown[]) => unknown>
 ): ScriptRuntimeHandle {
   return new SoftNScriptRuntime(
     context,
@@ -1952,7 +1985,8 @@ export function createScriptRuntime(
     importResolver,
     logicBasePath,
     options,
-    bundleFileProvider
+    bundleFileProvider,
+    externalFunctions
   );
 }
 

@@ -357,6 +357,12 @@
     return -99
   }
 
+  function seatAvatarUrl(n) {
+    let p = getPlayerAtSeat(n)
+    if (!p) return ""
+    return p.data.avatarUrl || ""
+  }
+
   function seatAvatarBg(n) {
     if (isCurrentTurn(n)) return "linear-gradient(135deg, #c8aa6e, #a08040)"
     return "linear-gradient(135deg, #374151, #1f2937)"

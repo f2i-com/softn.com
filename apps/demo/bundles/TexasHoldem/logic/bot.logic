@@ -26,7 +26,8 @@
           bet: 0,
           handContribution: 0,
           status: TableStateClass.statusWaiting(),
-          hasActed: false
+          hasActed: false,
+          avatarUrl: ""
         })
         botSeats.push(s)
         toastMessage = "Bot added to seat " + (s + 1)

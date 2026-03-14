@@ -88,8 +88,9 @@
           </Box>
           <Box className="poker-seat-card" if={seatCard2(0) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
         </Box>
-        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(0), border: seatBorder(0), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(0) }}>
-          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(0)}</Text>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(0), border: seatBorder(0), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(0), overflow: "hidden" }}>
+          <Image if={seatAvatarUrl(0)} src={seatAvatarUrl(0)} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
+          <Text if={!seatAvatarUrl(0)} style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(0)}</Text>
         </Box>
         <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px", textAlign: "center" }}>{seatDisplayName(0)}</Text>
         <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(0)}</Text>
@@ -132,8 +133,9 @@
           </Box>
           <Box className="poker-seat-card" if={seatCard2(1) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
         </Box>
-        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(1), border: seatBorder(1), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(1) }}>
-          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(1)}</Text>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(1), border: seatBorder(1), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(1), overflow: "hidden" }}>
+          <Image if={seatAvatarUrl(1)} src={seatAvatarUrl(1)} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
+          <Text if={!seatAvatarUrl(1)} style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(1)}</Text>
         </Box>
         <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(1)}</Text>
         <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(1)}</Text>
@@ -176,8 +178,9 @@
           </Box>
           <Box className="poker-seat-card" if={seatCard2(2) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
         </Box>
-        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(2), border: seatBorder(2), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(2) }}>
-          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(2)}</Text>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(2), border: seatBorder(2), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(2), overflow: "hidden" }}>
+          <Image if={seatAvatarUrl(2)} src={seatAvatarUrl(2)} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
+          <Text if={!seatAvatarUrl(2)} style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(2)}</Text>
         </Box>
         <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(2)}</Text>
         <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(2)}</Text>
@@ -220,8 +223,9 @@
           </Box>
           <Box className="poker-seat-card" if={seatCard2(3) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
         </Box>
-        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(3), border: seatBorder(3), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(3) }}>
-          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(3)}</Text>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(3), border: seatBorder(3), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(3), overflow: "hidden" }}>
+          <Image if={seatAvatarUrl(3)} src={seatAvatarUrl(3)} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
+          <Text if={!seatAvatarUrl(3)} style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(3)}</Text>
         </Box>
         <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(3)}</Text>
         <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(3)}</Text>
@@ -264,8 +268,9 @@
           </Box>
           <Box className="poker-seat-card" if={seatCard2(4) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
         </Box>
-        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(4), border: seatBorder(4), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(4) }}>
-          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(4)}</Text>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(4), border: seatBorder(4), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(4), overflow: "hidden" }}>
+          <Image if={seatAvatarUrl(4)} src={seatAvatarUrl(4)} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
+          <Text if={!seatAvatarUrl(4)} style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(4)}</Text>
         </Box>
         <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(4)}</Text>
         <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(4)}</Text>
@@ -308,8 +313,9 @@
           </Box>
           <Box className="poker-seat-card" if={seatCard2(5) === -1} style={{ width: "clamp(24px, 3.6vw, 30px)", height: "clamp(36px, 5.4vw, 44px)", borderRadius: "6px", background: "linear-gradient(135deg, #1e3a5f, #2563eb, #1e3a5f)", border: "2px solid #c8aa6e", flexShrink: 0 }} />
         </Box>
-        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(5), border: seatBorder(5), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(5) }}>
-          <Text style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(5)}</Text>
+        <Box className="poker-seat-avatar" style={{ width: "clamp(36px, 5vw, 44px)", height: "clamp(36px, 5vw, 44px)", minWidth: "36px", minHeight: "36px", aspectRatio: "1 / 1", flexShrink: 0, borderRadius: "50%", background: seatAvatarBg(5), border: seatBorder(5), display: "flex", alignItems: "center", justifyContent: "center", boxShadow: seatShadow(5), overflow: "hidden" }}>
+          <Image if={seatAvatarUrl(5)} src={seatAvatarUrl(5)} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
+          <Text if={!seatAvatarUrl(5)} style={{ color: "#fff", fontSize: "clamp(12px, 2vw, 15px)", fontWeight: "bold" }}>{seatInitial(5)}</Text>
         </Box>
         <Text style={{ color: "#fff", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "600", marginTop: "3px" }}>{seatDisplayName(5)}</Text>
         <Text style={{ color: "#c8aa6e", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "bold" }}>{"$" + seatChips(5)}</Text>

@@ -693,7 +693,8 @@ export function SoftNRenderer({
               importResolver,
               logicBasePath,
               { mode: 'main' },
-              bundleFileProvider
+              bundleFileProvider,
+              functions
             );
             runtime = {
               loadScript: async (script) => {
@@ -722,7 +723,8 @@ export function SoftNRenderer({
               importResolver,
               logicBasePath,
               { mode: 'main' },
-              bundleFileProvider
+              bundleFileProvider,
+              functions
             );
             runtime = {
               loadScript: async (script) => {
@@ -743,7 +745,8 @@ export function SoftNRenderer({
               importResolver,
               logicBasePath,
               { mode: 'main' },
-              bundleFileProvider
+              bundleFileProvider,
+              functions
             );
           }
           scriptRuntimeRef.current = runtime;
