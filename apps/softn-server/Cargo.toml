@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-formlogic-core = { path = "../../../formlogic-rust/crates/formlogic-core" }
+# The JavaScript engine `.logic` runs on. `instrument` is what gives the
+# server a step budget and a cooperative abort flag for untrusted scripts;
+# it switches the JIT off, which is the price of the budget being real.
+zipp-vm = { path = "../../../zipp-lang/crates/zipp-vm", features = ["instrument"] }
 xdb = { path = "../../../xdb.org/crates/xdb", default-features = false }
 
 axum = { version = "0.8", features = ["ws"] }

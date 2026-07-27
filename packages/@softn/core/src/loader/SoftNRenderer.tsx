@@ -29,6 +29,7 @@ import {
   type ScriptRuntimeHandle,
   type ScriptRuntimeMode,
   type BundleFileProvider,
+  type PermissionConfig,
 } from '../runtime/formlogic';
 // Worker runtime available but currently all calls route through main-thread WASM VM
 // for instant responsiveness. Can re-enable for heavy computation offloading if needed.
@@ -199,6 +200,12 @@ export interface SoftNRendererProps {
    * second time, which would redeclare everything it defines.
    */
   preIncludedLogicPaths?: string[];
+
+  /**
+   * The bundle's parsed `permission.json`, forwarded to the script runtime so
+   * capability checks reflect what the bundle actually declared.
+   */
+  permissionConfig?: PermissionConfig;
 
   /**
    * Script execution mode.
@@ -390,6 +397,7 @@ export function SoftNRenderer({
   importResolver,
   logicBasePath,
   preIncludedLogicPaths,
+  permissionConfig,
   scriptExecutionMode = 'worker',
   resumeSavedSyncRoom = false,
   bundleFileProvider,
@@ -700,7 +708,7 @@ export function SoftNRenderer({
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main', preIncludedLogicPaths },
+              { mode: 'main', preIncludedLogicPaths, permissionConfig },
               bundleFileProvider,
               functions
             );
@@ -730,7 +738,7 @@ export function SoftNRenderer({
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main', preIncludedLogicPaths },
+              { mode: 'main', preIncludedLogicPaths, permissionConfig },
               bundleFileProvider,
               functions
             );
@@ -752,7 +760,7 @@ export function SoftNRenderer({
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main', preIncludedLogicPaths },
+              { mode: 'main', preIncludedLogicPaths, permissionConfig },
               bundleFileProvider,
               functions
             );

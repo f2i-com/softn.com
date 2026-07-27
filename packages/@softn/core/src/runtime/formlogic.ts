@@ -106,6 +106,14 @@ export interface ScriptRuntimeOptions {
    * rejects. Paths are bundle-relative, matching what `importResolver` takes.
    */
   preIncludedLogicPaths?: readonly string[];
+  /**
+   * The bundle's parsed `permission.json`.
+   *
+   * Without it every capability check runs in "no config" mode, which is
+   * permissive for most APIs but still refuses plain `http://` — so a bundle
+   * that legitimately declares `net.allow_http` cannot reach its own server.
+   */
+  permissionConfig?: PermissionConfig;
 }
 
 export interface ScriptLoadResult {
@@ -602,6 +610,9 @@ export class SoftNScriptRuntime {
     }
     this.logicBasePath = logicBasePath;
     this.bundleFileProvider = bundleFileProvider ?? null;
+    if (options?.permissionConfig) {
+      this.permissionConfig = options.permissionConfig;
+    }
     for (const p of options?.preIncludedLogicPaths ?? []) {
       this.includedLogicPaths.add(p);
     }
