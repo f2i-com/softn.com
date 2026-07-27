@@ -193,19 +193,26 @@ export function TreeView({
   const expandedIds = controlledExpandedIds ?? internalExpandedIds;
 
   const handleExpand = (id: string, expanded: boolean) => {
-    if (onExpand) {
-      onExpand(id, expanded);
-    } else {
-      setInternalExpandedIds((prev) => {
-        const next = new Set(prev);
-        if (expanded) {
-          next.add(id);
-        } else {
-          next.delete(id);
-        }
-        return next;
-      });
-    }
+    onExpand?.(id, expanded);
+
+    // Ownership is decided by `expandedIds`, not by whether a callback exists.
+    //
+    // Treating the presence of `onExpand` as "the caller drives expansion" meant
+    // anyone passing it just to observe — logging, analytics, syncing a
+    // breadcrumb — got a tree that could never open, while the callback fired
+    // correctly every time they clicked. This matches how Checkbox, Radio and
+    // Select decide the same question.
+    if (controlledExpandedIds) return;
+
+    setInternalExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (expanded) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
   };
 
   const containerStyle: React.CSSProperties = {

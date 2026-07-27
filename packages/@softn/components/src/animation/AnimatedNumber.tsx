@@ -67,15 +67,27 @@ export function AnimatedNumber({
 
       const startTime = performance.now();
 
-      const tick = (now: number) => {
-        const elapsed = now - startTime;
-        const progress = Math.min(elapsed / duration, 1);
+      const tick = () => {
+        // Measured against the same clock the start was taken from, rather
+        // than the timestamp the callback is handed. Those are only guaranteed
+        // to share a timeline by specification; where they do not, `elapsed`
+        // comes out hugely negative and the eased value with it — a count-up
+        // from 0 to 100 rendering -587 before climbing.
+        const elapsed = performance.now() - startTime;
+        const progress = Math.max(0, Math.min(elapsed / duration, 1));
 
         // Ease-out quadratic: t * (2 - t)
         const eased = progress * (2 - progress);
         const current = from + (to - from) * eased;
 
         setDisplayValue(current);
+        // Track the value actually on screen, not just the settled one.
+        //
+        // This used to be written only on completion, so an update arriving
+        // mid-animation restarted from the last *finished* value. A counter fed
+        // by sync or a dashboard poll faster than the animation lasts snapped
+        // back toward the old number on every tick and never settled.
+        previousValueRef.current = current;
 
         if (progress < 1) {
           animationFrameRef.current = requestAnimationFrame(tick);
