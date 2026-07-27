@@ -6,3 +6,4 @@
 
 export * from './render';
 export * from './registry';
+export * from './sanitize-html';

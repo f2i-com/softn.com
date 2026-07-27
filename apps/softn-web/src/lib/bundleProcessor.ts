@@ -518,7 +518,17 @@ export function extractPermissions(textFiles: Map<string, string>, manifest: Bun
   if (permJson) {
     try {
       return JSON.parse(permJson) as PermissionConfig;
-    } catch { /* fall through */ }
+    } catch (e) {
+      // A malformed permission.json must not be treated as an absent one.
+      // `checkPermission` allows everything when the config is null (documented
+      // backward compatibility for bundles predating the file), so falling
+      // through here meant a bundle whose permission.json had a trailing comma
+      // got strictly *more* privilege than the same bundle with valid JSON
+      // declaring nothing at all. An empty config denies every capability,
+      // which is the safe reading of "the author meant to declare something".
+      console.error('[SoftN] Invalid permission.json — denying all capabilities:', e);
+      return { permissions: {} } as PermissionConfig;
+    }
   }
   // Fall back to manifest.permissions (backward compat)
   if (manifest?.permissions) {

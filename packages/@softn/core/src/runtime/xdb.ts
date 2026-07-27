@@ -1169,9 +1169,14 @@ export class XDBService {
       const storage = this.storage as Storage;
       for (let i = 0; i < storage.length; i++) {
         const key = storage.key(i);
-        if (key?.startsWith(prefixWithColon)) {
-          keys.push(key.slice(prefixWithColon.length));
-        }
+        if (!key?.startsWith(prefixWithColon)) continue;
+        const collection = key.slice(prefixWithColon.length);
+        // A collection name never contains a colon, so anything that does is a
+        // deeper namespace — some app's `xdb:<appId>:<collection>`. Without
+        // this the unnamespaced default instance would enumerate, and through
+        // `update`/`delete` by id also mutate, every app's records.
+        if (collection.includes(':')) continue;
+        keys.push(collection);
       }
       return keys;
     }
@@ -1481,18 +1486,88 @@ export function getSyncStatuses(): { connected: boolean; peers: number; room: st
 const xdbInstances = new Map<string, XDBService>();
 
 /**
- * Get or create an XDB instance, optionally per-app.
- * When appId is provided, returns an isolated instance for that app.
- * Without appId, returns the default instance.
+ * The app currently running in this document.
+ *
+ * Most callers pass an appId, but a few cannot reasonably reach one — a
+ * `<SmartForm collection="…">` is an ordinary component several levels down,
+ * and the bundle seeder and worker mutation path are both plain modules. Before
+ * storage was namespaced they all landed on the same keys, so it did not
+ * matter. Now it does: if those callers resolved to a different instance than
+ * the app's own logic, a form would write records the app could never read.
+ *
+ * A module-level pointer is honest about what this already is — the host runs
+ * one app per document — and keeps every caller on one store.
  */
+let activeAppId: string | undefined;
+
+/**
+ * Point the no-argument callers at an app. Called by the loader when a bundle
+ * starts; passing undefined restores the shared default.
+ */
+export function setActiveXDBApp(appId?: string): void {
+  activeAppId = appId;
+}
+
+/**
+ * Storage keys are namespaced per app.
+ *
+ * Every bundle used to share the literal `xdb:` prefix, so opening a second
+ * `.softn` gave it read *and delete* access to the first one's records —
+ * `getAllCollectionKeys()` even enumerates them, so nothing had to be guessed.
+ * The sibling localStorage bridge already namespaces as `softn:<appId>:`, and
+ * SoftNRenderer documents per-app isolation as the intended design.
+ */
+function prefixFor(appId?: string): string {
+  return appId ? `xdb:${appId}` : 'xdb';
+}
+
 export function getXDB(appId?: string): XDBService {
-  const key = appId || '_default';
+  const resolved = appId ?? activeAppId;
+  const key = resolved || '_default';
   let instance = xdbInstances.get(key);
   if (!instance) {
-    instance = new XDBService(undefined, 'xdb', appId);
+    if (resolved) migrateLegacyKeys(resolved);
+    instance = new XDBService(undefined, prefixFor(resolved), resolved);
     xdbInstances.set(key, instance);
   }
   return instance;
+}
+
+/**
+ * Adopt records written before storage was namespaced.
+ *
+ * Without this, upgrading silently empties every existing app. The legacy keys
+ * are copied rather than moved because they may hold more than one app's
+ * records — there is no way to tell whose is whose after the fact, and deleting
+ * them would destroy data belonging to an app that has not been opened yet.
+ * Copying preserves exactly the access each app already had while making all
+ * subsequent writes private.
+ */
+function migrateLegacyKeys(appId: string): void {
+  if (typeof localStorage === 'undefined') return;
+
+  const legacy: Array<[string, string]> = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    // Only bare `xdb:<collection>` keys — anything with a second colon is
+    // already namespaced and belongs to some app.
+    if (!key || !key.startsWith('xdb:') || key.indexOf(':', 4) !== -1) continue;
+    const value = localStorage.getItem(key);
+    if (value) legacy.push([key.slice(4), value]);
+  }
+  if (legacy.length === 0) return;
+
+  for (const [collection, value] of legacy) {
+    const target = `xdb:${appId}:${collection}`;
+    if (localStorage.getItem(target) === null) {
+      try {
+        localStorage.setItem(target, value);
+      } catch {
+        // Out of quota. Better to start this app empty than to fail its load.
+        break;
+      }
+    }
+  }
 }
 
 /**

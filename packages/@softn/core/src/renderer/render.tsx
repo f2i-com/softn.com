@@ -19,6 +19,7 @@ import type {
 } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent } from './registry';
+import { isSafeUrl, URL_ATTRIBUTES } from './sanitize-html';
 
 // Maximum recursion depth for expression evaluation to prevent infinite loops
 const MAX_EVAL_DEPTH = 100;
@@ -356,6 +357,63 @@ function isHTMLElement(tag: string): boolean {
 }
 
 /**
+ * HTML elements that cannot contain children. React rejects the children
+ * argument for these outright rather than ignoring it.
+ */
+const VOID_ELEMENTS = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr',
+]);
+
+/**
+ * Attributes whose value the browser will fetch or navigate to.
+ *
+ * `BLOCKED_TAGS` above stops a bundle from writing `<script>`, but nothing
+ * stopped it writing `<a href="javascript:…">`: React only warns, and one click
+ * then runs bundle-authored code on the host origin, where every other app's
+ * `softn:*` and `xdb:*` storage is readable. `<img src="https://…?d={state}">`
+ * is the same hole without the click, and without needing the `net` grant.
+ */
+const URL_PROPS = new Set([
+  ...URL_ATTRIBUTES,
+  'xlinkHref', // React's camelCase spelling of xlink:href
+]);
+
+/**
+ * Drop unsafe URL props before they reach a raw HTML element.
+ *
+ * Applied only to intrinsic elements: registered components receive props as
+ * ordinary values and decide for themselves what to do with them.
+ */
+function sanitizeUrlProps(props: SoftNProps, tag: string): void {
+  for (const name of Object.keys(props)) {
+    if (!URL_PROPS.has(name)) continue;
+    const value = props[name];
+    const safe = typeof value === 'string' ? (isSafeUrl(value) ? value : undefined) : value;
+    if (safe === undefined && props[name] !== undefined) {
+      if (isDevelopment) {
+        console.warn(
+          `[SoftN] Blocked unsafe URL in <${tag} ${name}>: ${String(props[name]).slice(0, 80)}`
+        );
+      }
+      delete props[name];
+    }
+  }
+}
+
+/**
  * Get a unified context for event handlers and callbacks.
  * Cached on the context object to avoid re-creating per element (~100+ elements per render).
  */
@@ -670,7 +728,23 @@ function renderElement(
   // Render non-slot children with parent key for stable keys
   const children = renderNodes(defaultChildren, childContext, registry, String(key));
 
-  const element = React.createElement(FinalComponent, props, children);
+  // Only intrinsic elements: a string tag means these props go straight to the
+  // DOM, where the browser will act on whatever URL they carry. Registered
+  // components receive props as ordinary values and decide for themselves.
+  if (typeof FinalComponent === 'string') {
+    sanitizeUrlProps(props, node.tag);
+  }
+
+  // Void elements take no children, and React throws rather than ignoring the
+  // argument — even for the empty array `renderNodes` returns for a childless
+  // element. `img`, `br`, `hr`, `input` and `source` are all on the allowlist
+  // above, so every one of them crashed the render of any `.ui` that used the
+  // plain HTML tag. The demos only reach them through wrapper components like
+  // `<Image>`, which is why it went unnoticed.
+  const element =
+    typeof FinalComponent === 'string' && VOID_ELEMENTS.has(node.tag.toLowerCase())
+      ? React.createElement(FinalComponent, props)
+      : React.createElement(FinalComponent, props, children);
 
   // Wrap registered (non-HTML) components in a per-component error boundary
   // so a single component crash doesn't take down the entire document

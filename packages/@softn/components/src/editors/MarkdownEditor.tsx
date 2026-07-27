@@ -5,6 +5,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import { isSafeUrl } from '@softn/core';
 
 export interface MarkdownEditorProps {
   /** Current value */
@@ -31,6 +32,23 @@ export interface MarkdownEditorProps {
   className?: string;
   /** Inline styles */
   style?: React.CSSProperties;
+}
+
+/**
+ * Make a markdown link target safe to sit inside a double-quoted attribute.
+ *
+ * The up-front HTML escape below handles `&`, `<` and `>` but not `"`, and the
+ * link target is interpolated straight into `href="…"`. So a target of
+ * `" onmouseover="…` closed the attribute and opened an event handler — the
+ * rendered output goes through `dangerouslySetInnerHTML`, and preview content
+ * routinely arrives from XDB or sync rather than from the person reading it.
+ *
+ * The scheme check is the same one the renderer applies to `.ui` markup:
+ * relative targets are fine, `javascript:` is not.
+ */
+function safeLinkTarget(target: string): string {
+  if (!isSafeUrl(target)) return '';
+  return target.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // Simple markdown to HTML converter
@@ -65,16 +83,20 @@ function markdownToHtml(markdown: string): string {
   // Inline code
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
+  // Images — before links, since `![alt](url)` also matches the link pattern.
+  // Running links first turned every image into `!<a href="url">alt</a>`, so
+  // images never rendered at all.
+  html = html.replace(
+    /!\[([^\]]*)\]\(([^)]+)\)/g,
+    (_m, alt: string, src: string) =>
+      `<img src="${safeLinkTarget(src)}" alt="${alt.replace(/"/g, '&quot;')}" style="max-width: 100%;" />`
+  );
+
   // Links
   html = html.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener">$1</a>'
-  );
-
-  // Images
-  html = html.replace(
-    /!\[([^\]]*)\]\(([^)]+)\)/g,
-    '<img src="$2" alt="$1" style="max-width: 100%;" />'
+    (_m, text: string, target: string) =>
+      `<a href="${safeLinkTarget(target)}" target="_blank" rel="noopener">${text}</a>`
   );
 
   // Blockquotes
