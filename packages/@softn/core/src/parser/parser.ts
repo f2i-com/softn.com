@@ -228,6 +228,7 @@ export class Parser {
       this.nextToken();
       namedImports = [];
       while (!this.curTokenIs(TokenType.EXPR_END) && !this.curTokenIs(TokenType.EOF)) {
+        const memberStart = this.curToken.start;
         if (this.curTokenIs(TokenType.IDENTIFIER)) {
           namedImports.push(this.curToken.literal);
           this.nextToken();
@@ -235,6 +236,8 @@ export class Parser {
         if (this.curTokenIs(TokenType.COMMA)) {
           this.nextToken();
         }
+        // A typo in a braced import list would otherwise wedge the parser.
+        this.expectProgress(memberStart, TokenType.EXPR_END);
       }
       this.expectToken(TokenType.EXPR_END);
     } else if (this.curTokenIs(TokenType.IDENTIFIER)) {
@@ -1484,10 +1487,15 @@ export class Parser {
         const args: Expression[] = [];
 
         while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
+          const argStart = this.curToken.start;
           args.push(this.parseExpression());
           if (this.curTokenIs(TokenType.COMMA)) {
             this.nextToken();
           }
+          // `parsePrimary` falls back to a synthetic `undefined` without
+          // consuming anything, so an argument it cannot start on — a
+          // paren-less arrow, a spread — otherwise loops here forever.
+          this.expectProgress(argStart, TokenType.RPAREN);
         }
 
         this.expectToken(TokenType.RPAREN);
@@ -1534,6 +1542,7 @@ export class Parser {
         // Could be arrow function params - use original approach
         const params: string[] = [];
         while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
+          const paramStart = this.curToken.start;
           if (this.curTokenIs(TokenType.IDENTIFIER)) {
             params.push(this.curToken.literal);
             this.nextToken();
@@ -1541,6 +1550,9 @@ export class Parser {
           if (this.curTokenIs(TokenType.COMMA)) {
             this.nextToken();
           }
+          // Only identifiers and commas advance here, so a default value, a
+          // rest element or a destructured parameter would spin.
+          this.expectProgress(paramStart, TokenType.RPAREN);
         }
         this.expectToken(TokenType.RPAREN);
 
@@ -1772,6 +1784,21 @@ export class Parser {
       throw new UnexpectedTokenError(this.curToken, type, this.source);
     }
     this.nextToken();
+  }
+
+  /**
+   * Fail a list loop that consumed nothing this pass.
+   *
+   * Loops that only advance on the tokens they expect spin forever on anything
+   * else, and `parse()` runs on every render and every keystroke in the live
+   * preview — so an unsupported construct or a half-typed one took the tab with
+   * it rather than showing an error. `expected` names what would have been
+   * valid here, which is what the reader needs to fix it.
+   */
+  private expectProgress(startPos: number, expected: TokenType): void {
+    if (this.curToken.start === startPos) {
+      throw new UnexpectedTokenError(this.curToken, expected, this.source);
+    }
   }
 
   private currentLoc(): SourceLocation {
