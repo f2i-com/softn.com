@@ -197,12 +197,15 @@ export function Toast({
     return () => {
       if (timerRef.current) {
         clearInterval(timerRef.current);
-        // Save remaining time when pausing
-        if (isPaused) {
-          const elapsed = Date.now() - startTimeRef.current;
-          remainingTimeRef.current = Math.max(0, remainingTimeRef.current - elapsed);
-        }
       }
+      // No deduction here.
+      //
+      // `handleMouseEnter` already subtracts the elapsed time before pausing.
+      // Doing it again on the way *out* of the paused state charged the whole
+      // hover against the remaining time as well — and from a `startTimeRef`
+      // set before the pause began, so a long hover drove the remainder to
+      // zero and the toast vanished the instant the pointer left. That is the
+      // exact opposite of what pause-on-hover is for.
     };
   }, [visible, duration, isPaused, onClose]);
 

@@ -22,6 +22,7 @@ import { useProjectStore } from './stores/projectStore';
 import { useHistoryStore } from './stores/historyStore';
 import { useSchemaStore } from './stores/schemaStore';
 import { useFilesStore } from './stores/filesStore';
+import { encodeAsset, decodeAsset, type SerializedAssetFile } from './utils/sessionAssets';
 import type {
   AssetFile,
   CanvasElement as CanvasElementType,
@@ -321,6 +322,18 @@ interface BuilderSession {
     rootFolders: string[];
     uiFiles: [string, SerializedUIFile][];
     logicFiles: [string, LogicFileState][];
+    /**
+     * Assets, base64-encoded.
+     *
+     * These were omitted entirely, so restoring a session brought back a
+     * project whose every `asset('logo.png')` resolved to nothing — images
+     * and sounds silently gone, with the file tree still listing them.
+     *
+     * Base64 rather than the raw `Uint8Array`: JSON.stringify turns a byte
+     * array into `{"0":80,"1":75,…}`, roughly seven bytes of text per byte of
+     * asset, which would push almost any project past the storage quota.
+     */
+    assetFiles?: [string, SerializedAssetFile][];
     activeFileId: string | null;
     openTabs: string[];
   };
@@ -712,6 +725,9 @@ function App() {
             },
           ]),
           logicFiles: Array.from(updatedFilesState.logicFiles.entries()),
+          assetFiles: Array.from(updatedFilesState.assetFiles.entries()).map(
+            ([id, asset]) => [id, encodeAsset(asset)] as [string, SerializedAssetFile]
+          ),
           activeFileId: updatedFilesState.activeFileId,
           openTabs: updatedFilesState.openTabs,
         },
@@ -789,6 +805,10 @@ function App() {
         rootFolders: session.files.rootFolders || [],
         uiFiles: restoredUIFiles,
         logicFiles: new Map(session.files.logicFiles || []),
+        // Sessions written before assets were persisted have no entry here.
+        assetFiles: new Map(
+          (session.files.assetFiles || []).map(([id, asset]) => [id, decodeAsset(asset)])
+        ),
         activeFileId: session.files.activeFileId || null,
         openTabs: session.files.openTabs || [],
       });
