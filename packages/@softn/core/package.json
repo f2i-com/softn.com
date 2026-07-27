@@ -30,6 +30,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "build:zipp-wasm": "node scripts/build-zipp-wasm.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest"

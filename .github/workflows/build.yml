@@ -1,10 +1,18 @@
 name: Build SoftN
 
+# DISABLED. Both jobs build the FormLogic engine from the formlogic-rust
+# repository and copy it into packages/@softn/core/wasm/, but .logic now runs on
+# zipp, whose build is committed at packages/@softn/core/wasm-zipp/. Until these
+# are rewritten against zipp (or dropped, since the engine is vendored), CI would
+# spend its time compiling an engine nothing loads.
+#
+# Re-enable by restoring the trigger commented out below.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+#  push:
+#    branches: [main]
+#  pull_request:
+#    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always

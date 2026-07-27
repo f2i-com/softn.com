@@ -324,6 +324,7 @@ function App(): React.ReactElement {
   const [isDragOver, setIsDragOver] = useState(false);
   const [importResolver, setImportResolver] = useState<((path: string) => Promise<string | null>) | undefined>();
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
+  const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
   const [assetResolver, setAssetResolver] = useState<((path: string) => string | null) | undefined>();
 
   // Open a file picker to choose a .softn file
@@ -551,6 +552,9 @@ function App(): React.ReactElement {
 
         let fullSource = mainUI;
         let logicBasePath: string | undefined;
+        // Logic files concatenated below. Reported to the runtime so an `import`
+        // naming one of them is skipped rather than inlining the file twice.
+        const preIncludedLogic = new Set<string>();
 
         const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -576,6 +580,7 @@ function App(): React.ReactElement {
               if (content) {
                 console.log('[SoftN Loader] Including manifest logic file:', mlPath);
                 parts.push(content);
+                preIncludedLogic.add(mlPath);
               }
             }
             parts.push(logicFile); // main entry last
@@ -731,6 +736,7 @@ function App(): React.ReactElement {
           (window as unknown as Record<string, unknown>).__softnAsset = resolveAsset;
         }
         setLogicBasePath(logicBasePath);
+        setPreIncludedLogicPaths([...preIncludedLogic]);
         setMainSource(fullSource);
         setLoading(false);
 
@@ -942,6 +948,7 @@ function App(): React.ReactElement {
           permissions={_manifest?.permissions}
           importResolver={importResolver}
           logicBasePath={logicBasePath}
+          preIncludedLogicPaths={preIncludedLogicPaths}
           serverUrl={_manifest?.config?.server?.url}
           serverToken={_manifest?.config?.server?.auth_token}
           serverCollections={_manifest?.config?.server?.collections}

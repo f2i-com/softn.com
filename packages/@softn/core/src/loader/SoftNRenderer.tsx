@@ -194,6 +194,13 @@ export interface SoftNRendererProps {
   logicBasePath?: string;
 
   /**
+   * Logic files the host already concatenated into `source` itself. An
+   * `import` naming one of these is skipped instead of inlining the file a
+   * second time, which would redeclare everything it defines.
+   */
+  preIncludedLogicPaths?: string[];
+
+  /**
    * Script execution mode.
    * `worker` is currently a migration mode and falls back to main-thread execution.
    */
@@ -382,6 +389,7 @@ export function SoftNRenderer({
   onPageChange,
   importResolver,
   logicBasePath,
+  preIncludedLogicPaths,
   scriptExecutionMode = 'worker',
   resumeSavedSyncRoom = false,
   bundleFileProvider,
@@ -692,7 +700,7 @@ export function SoftNRenderer({
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main' },
+              { mode: 'main', preIncludedLogicPaths },
               bundleFileProvider,
               functions
             );
@@ -722,7 +730,7 @@ export function SoftNRenderer({
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main' },
+              { mode: 'main', preIncludedLogicPaths },
               bundleFileProvider,
               functions
             );
@@ -744,7 +752,7 @@ export function SoftNRenderer({
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main' },
+              { mode: 'main', preIncludedLogicPaths },
               bundleFileProvider,
               functions
             );

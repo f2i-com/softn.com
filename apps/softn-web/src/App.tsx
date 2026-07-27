@@ -102,6 +102,7 @@ interface OpenTab {
   permissionConfig?: PermissionConfig;
   importResolver?: (path: string) => Promise<string | null>;
   logicBasePath?: string;
+  preIncludedLogicPaths?: string[];
   serverUrl?: string;
   serverToken?: string;
   serverCollections?: string[];
@@ -279,7 +280,7 @@ function App(): React.ReactElement {
         await loadXDBData(textFiles, manifest, manifest.name);
 
         // Process source
-        const { source, logicBasePath } = processBundle(textFiles, manifest);
+        const { source, logicBasePath, preIncludedLogicPaths } = processBundle(textFiles, manifest);
         const importResolver = createImportResolver(textFiles);
 
         // Cache the app (may already be cached from permission flow above, cacheApp handles dedup by name)
@@ -324,6 +325,7 @@ function App(): React.ReactElement {
           permissionConfig: permissionConfig || undefined,
           importResolver,
           logicBasePath,
+          preIncludedLogicPaths,
           serverUrl,
           serverToken: serverConfig?.token,
           serverCollections: serverConfig?.collections,
@@ -707,6 +709,7 @@ function App(): React.ReactElement {
               permissions={tab.permissions}
               importResolver={tab.importResolver}
               logicBasePath={tab.logicBasePath}
+              preIncludedLogicPaths={tab.preIncludedLogicPaths}
               onPageChange={(page) => handlePageChange(tab.id, page)}
               serverUrl={tab.serverUrl}
               serverToken={tab.serverToken}

@@ -10,6 +10,7 @@ interface AppRunnerProps {
   permissions?: import('@softn/core').AppPermissions;
   importResolver?: (path: string) => Promise<string | null>;
   logicBasePath?: string;
+  preIncludedLogicPaths?: string[];
   onPageChange?: (page: string) => void;
   serverUrl?: string;
   serverToken?: string;
@@ -157,7 +158,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, active, initialPage, permissions, importResolver, logicBasePath, onPageChange, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ source, appName, active, initialPage, permissions, importResolver, logicBasePath, preIncludedLogicPaths, onPageChange, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
   // Build initial state: page from URL + saved sync room from localStorage
   const initialState = useMemo(() => {
     const state: Record<string, unknown> = {};
@@ -227,6 +228,7 @@ export function AppRunner({ source, appName, active, initialPage, permissions, i
             permissions={permissions}
             importResolver={importResolver}
             logicBasePath={logicBasePath}
+            preIncludedLogicPaths={preIncludedLogicPaths}
             appId={appName}
             onPageChange={onPageChange}
             serverUrl={serverUrl}

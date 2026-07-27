@@ -11,7 +11,7 @@ SoftN is a complete system for creating modular, reactive UI applications using 
 - **AI-Friendly DSL** -- Clean, consistent `.ui` syntax optimized for AI code generation
 - **86 Built-in Components** -- Comprehensive library across 12 categories including 3D, charts, and animation
 - **Smart Components** -- Auto-configured, data-driven components with search, sort, pagination, and CRUD
-- **FormLogic VM** -- Sandboxed bytecode-compiled scripting engine written in Rust, running in WebAssembly (no `eval`, no `new Function`)
+- **zipp Engine** -- Sandboxed JavaScript engine written in Rust, running in WebAssembly (no `eval`, no `new Function`)
 - **XDB Database** -- Local-first database with CRDT-based P2P synchronization
 - **Web Runtime** -- Browser-based `.softn` bundle runner with PWA support
 - **Desktop Runtime** -- Tauri-based loader for running `.softn` bundles natively
@@ -44,7 +44,7 @@ softn.com/
 
 | Repository | Description |
 |-----------|-------------|
-| [formlogic-rust](https://github.com/f2i-com/formlogic-rust) | FormLogic scripting engine (Rust to WebAssembly) |
+| [zipp-lang](https://github.com/f2i-com/zipp-lang) | zipp -- the JavaScript engine `.logic` runs on (Rust to WebAssembly) |
 | [xdb.org](https://github.com/f2i-com/xdb.org) | XDB database (Tauri/Rust -- SQLite + libp2p + Y-CRDT) |
 
 ---
@@ -56,7 +56,7 @@ softn.com/
 | UI Rendering | React 18/19 |
 | Language | TypeScript 5.3+ |
 | Desktop Framework | Tauri 2.0+ |
-| Scripting Engine | FormLogic-Rust (register-based bytecode VM compiled to WebAssembly) |
+| Scripting Engine | zipp (NaN-boxed register VM with inline caches, Rust compiled to WebAssembly) |
 | Database (Web) | IndexedDB + Yjs + y-webrtc |
 | Database (Desktop) | SQLite + Y-CRDT + libp2p |
 | Build Tooling | Vite 5+ / tsup |
@@ -106,7 +106,7 @@ Open `http://localhost:1420` and drag-drop a `.softn` bundle to run it.
       |
       v
   +-------+     +---------+     +----------+     +----------+
-  | Lexer | --> | Parser  | --> | Compiler | --> | WASM VM  |
+  | Lexer | --> | Parser  | --> | Compiler | --> | zipp VM  |
   +-------+     +---------+     +----------+     +----------+
    Tokens         AST            Bytecode        Register-based
                                                  execution (Rust)
@@ -115,13 +115,13 @@ Open `http://localhost:1420` and drag-drop a `.softn` bundle to run it.
 ### State Flow
 
 ```
-FormLogic VM Globals  <--sync-->  React componentState  -->  Render Context  -->  UI
+Script VM Globals     <--sync-->  React componentState  -->  Render Context  -->  UI
          |                                                        ^
          v                                                        |
     VM Bridges (db, localStorage, window, navigator)         Expression eval
 ```
 
-Before each FormLogic function call, all React state is synced to VM globals. After the call returns, VM globals are synced back to React state, triggering a re-render.
+Before each script function call, all React state is synced to VM globals. After the call returns, VM globals are synced back to React state, triggering a re-render.
 
 ---
 
@@ -235,18 +235,28 @@ MyApp.softn (ZIP archive)
 
 ---
 
-## FormLogic Scripting Engine
+## Scripting Engine
 
-Sandboxed JavaScript-like language written in Rust, compiled to WebAssembly. Source: [formlogic-rust](https://github.com/f2i-com/formlogic-rust).
+`.logic` files are JavaScript, executed by [zipp](https://github.com/f2i-com/zipp-lang) -- a clean-sheet
+JavaScript engine written in Rust and compiled to WebAssembly.
 
 ```
 Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rust/WASM)
 ```
 
-- JavaScript-like syntax with classes, async/await, destructuring, spread/rest
-- Rust + WASM register-based VM via `wasm-bindgen`
-- True sandboxing with configurable instruction limits and wall-clock timeouts
-- Custom modules: `db`, `localStorage`, `console`, `Math`, `JSON`, `Date`
+- Real JavaScript: classes, async/await, destructuring, spread/rest, closures, regex
+- Rust + WASM register VM with per-call-site inline caches, via `wasm-bindgen`
+- True sandboxing: the script reaches nothing the engine preamble does not hand it
+- Host modules: `db`, `localStorage`, `window`, `navigator`, `host`, plus the `softn.*` async APIs
+
+The compiled engine is committed at `packages/@softn/core/wasm-zipp/`, so building SoftN needs no
+Rust toolchain. To pick up a new engine revision from a `zipp-lang` checkout beside this repo:
+
+```bash
+npm run build:zipp-wasm -w @softn/core   # needs rustup + wasm-pack
+```
+
+The engine is selected in one place -- `packages/@softn/core/src/runtime/vm-adapter.ts`.
 
 ```javascript
 let clients = []
@@ -302,7 +312,7 @@ All CRUD operations are **synchronous** (XDB caches everything in memory).
 
 | Layer | Protection |
 |-------|-----------|
-| VM Sandboxing | FormLogic bytecode VM -- no `eval()`, no `new Function()`, no host access |
+| VM Sandboxing | zipp WASM VM -- no `eval()`, no `new Function()`, no host access |
 | Instruction Limits | Configurable max instructions and wall-clock timeouts |
 | Bridge Isolation | `window` and `navigator` are controlled bridge objects |
 | localStorage | App-scoped prefix `softn:{appId}:` prevents cross-app leakage |
@@ -344,7 +354,8 @@ cd apps/softn-builder && npm run tauri dev
 |------|---------|
 | `packages/@softn/core/src/parser/` | Lexer and AST parser |
 | `packages/@softn/core/src/renderer/` | AST to React renderer and component registry |
-| `packages/@softn/core/src/runtime/formlogic.ts` | FormLogic script runtime |
+| `packages/@softn/core/src/runtime/formlogic.ts` | Script runtime (state sync, bridges, host calls) |
+| `packages/@softn/core/src/runtime/vm-adapter.ts` | Which engine `.logic` runs on |
 | `packages/@softn/core/src/runtime/xdb.ts` | XDB database service |
 | `packages/@softn/core/src/bundle/bundle.ts` | ZIP bundle reader |
 | `packages/@softn/core/src/loader/SoftNRenderer.tsx` | Main renderer component |
@@ -360,4 +371,4 @@ MIT
 
 ## Credits
 
-Built with [FormLogic-Rust](https://github.com/f2i-com/formlogic-rust), [XDB](https://github.com/f2i-com/xdb.org), [Tauri](https://tauri.app), [React](https://react.dev), [Three.js](https://threejs.org), and [Yjs](https://yjs.dev).
+Built with [zipp](https://github.com/f2i-com/zipp-lang), [XDB](https://github.com/f2i-com/xdb.org), [Tauri](https://tauri.app), [React](https://react.dev), [Three.js](https://threejs.org), and [Yjs](https://yjs.dev).

@@ -1,0 +1,32 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_engine_free: (a: number, b: number) => void;
+export const engine_callFunction: (a: number, b: number, c: number, d: any) => [number, number, number];
+export const engine_dispatchEvent: (a: number, b: number, c: number, d: any) => [number, number, number];
+export const engine_dispose: (a: number) => void;
+export const engine_drainPendingHostCalls: (a: number) => any;
+export const engine_evalInContext: (a: number, b: number, c: number) => [number, number, number];
+export const engine_getEventListenerTypes: (a: number) => any;
+export const engine_getGlobalByIndex: (a: number, b: number) => any;
+export const engine_getGlobalsBatch: (a: number, b: any) => any;
+export const engine_initScript: (a: number, b: number, c: number) => [number, number, number];
+export const engine_new: () => number;
+export const engine_preambleLines: (a: number) => number;
+export const engine_pump: (a: number) => void;
+export const engine_resolveHostCallback: (a: number, b: number, c: any) => [number, number];
+export const engine_setDbBridge: (a: number, b: any) => void;
+export const engine_setGlobalByIndex: (a: number, b: number, c: any) => void;
+export const engine_setGlobalsBatch: (a: number, b: any, c: any) => void;
+export const engine_setLocalStorageBridge: (a: number, b: any) => void;
+export const engine_takeOutput: (a: number) => any;
+export const zipp_install_panic_hook: () => void;
+export const zipp_start: () => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;
