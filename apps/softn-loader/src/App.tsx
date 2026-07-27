@@ -577,8 +577,12 @@ function App(): React.ReactElement {
           try {
             setPermissionConfig(JSON.parse(permJson));
           } catch (e) {
-            console.error('[SoftN Loader] Invalid permission.json:', e);
-            setPermissionConfig(null);
+            // Not null: a null config means "no permission.json at all", which
+            // the runtime treats as a legacy bundle and allows everything. A
+            // file that fails to parse would then grant more than a valid one
+            // declaring nothing. An empty config denies every capability.
+            console.error('[SoftN Loader] Invalid permission.json — denying all capabilities:', e);
+            setPermissionConfig({ permissions: {} });
           }
         } else {
           setPermissionConfig(null);

@@ -6,6 +6,7 @@
  */
 
 import React, { useRef, useCallback, useEffect, useState } from 'react';
+import { sanitizeRichText } from '@softn/core';
 
 export interface RichTextEditorProps {
   /** Current HTML value */
@@ -75,12 +76,16 @@ export function RichTextEditor({
   const editorRef = useRef<HTMLDivElement>(null);
   const [isEmpty, setIsEmpty] = useState(true);
 
-  // Initialize content
+  // Initialize content.
+  //
+  // Sanitized on the way in: this value is normally a record loaded from XDB or
+  // arriving over sync, and assigning it to innerHTML executes whatever markup
+  // it carries on the host origin.
   useEffect(() => {
     if (editorRef.current) {
       const initialContent = value ?? defaultValue;
       if (initialContent) {
-        editorRef.current.innerHTML = initialContent;
+        editorRef.current.innerHTML = sanitizeRichText(initialContent);
         setIsEmpty(false);
       }
     }
@@ -90,8 +95,12 @@ export function RichTextEditor({
   useEffect(() => {
     if (value !== undefined && editorRef.current) {
       const currentHtml = editorRef.current.innerHTML;
-      if (currentHtml !== value) {
-        editorRef.current.innerHTML = value;
+      const safe = sanitizeRichText(value);
+      // Compare against the sanitized form, or a value that only differs in the
+      // parts sanitization strips would rewrite the DOM on every render and
+      // move the caret to the start each time.
+      if (currentHtml !== safe) {
+        editorRef.current.innerHTML = safe;
         setIsEmpty(!value || value === '<br>' || value === '<p><br></p>');
       }
     }

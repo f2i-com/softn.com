@@ -34,7 +34,7 @@ import {
 // Worker runtime available but currently all calls route through main-thread WASM VM
 // for instant responsiveness. Can re-enable for heavy computation offloading if needed.
 // import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
-import { getXDB } from '../runtime/xdb';
+import { getXDB, setActiveXDBApp } from '../runtime/xdb';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
 import type { Expression, TemplateNode } from '../parser/ast';
@@ -559,6 +559,16 @@ export function SoftNRenderer({
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
+
+  // Point XDB's no-argument callers at this app.
+  //
+  // Storage is namespaced per app, but a few callers cannot reach an appId —
+  // `<SmartForm collection="…">` is an ordinary component well below here, and
+  // the bundle seeder is a plain module. They must resolve to the same store
+  // this app's own logic uses, or a form would write records the app can never
+  // read. Done during render rather than in an effect because those children
+  // render before any effect runs.
+  setActiveXDBApp(appId);
 
   // Parse source when provided directly
   useEffect(() => {

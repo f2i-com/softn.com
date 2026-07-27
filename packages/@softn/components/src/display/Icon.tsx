@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { sanitizeSvg } from '@softn/core';
 
 export interface IconProps {
   /** Built-in icon name */
@@ -88,13 +89,18 @@ export function Icon({
     ...style,
   };
 
-  // Custom SVG markup
+  // Custom SVG markup.
+  //
+  // Sanitized because this prop is routinely assigned from a `.ui` expression,
+  // which means from a record in XDB or a value off the sync socket. Injecting
+  // it verbatim routed straight around the renderer's tag denylist: `<Icon
+  // svg={record.body}/>` with `<img src=x onerror=…>` ran on the host origin.
   if (svg) {
     return (
       <span
         className={className}
         style={wrapperStyle}
-        dangerouslySetInnerHTML={{ __html: svg }}
+        dangerouslySetInnerHTML={{ __html: sanitizeSvg(svg) }}
       />
     );
   }
