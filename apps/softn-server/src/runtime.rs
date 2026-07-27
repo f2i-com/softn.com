@@ -112,6 +112,19 @@ const WEDGE_GRACE_MS: u64 = 25_000;
 /// serving on a reduced pool and says so.
 const MAX_ABANDONED_WORKERS: usize = 8;
 
+/// The longest [`ServerRuntime::call`] will wait for a worker's reply.
+///
+/// A call the watchdog aborts returns just after the wall-time limit, so this
+/// only has to clear that. It deliberately does NOT cover the wedge grace: once
+/// a worker is wedged its reply is never coming, and waiting the extra time
+/// only pins the caller's blocking thread for longer.
+///
+/// Every timeout layered above a handler must EXCEED this, or the outer one
+/// fires first on a call that was going to answer — and dropping a
+/// `spawn_blocking` handle does not cancel the work, so it goes on to commit
+/// after the client has been told it failed.
+pub const MAX_CALL_WAIT: Duration = Duration::from_millis(WALL_TIME_MS + 5_000);
+
 /// How often the watchdog looks for overrunning calls. The engine polls the
 /// abort flag every few thousand instructions, so the true overshoot is this
 /// plus a poll interval — well inside the 5s margin to the HTTP timeout.
@@ -917,8 +930,7 @@ impl ServerRuntime {
         // Tokio blocking threads. Waiting forever would retire one of those per
         // wedged request until the blocking pool is gone and every other
         // blocking path — DB reads, health checks — stalls with it.
-        let budget = Duration::from_millis(WALL_TIME_MS + WEDGE_GRACE_MS + 5_000);
-        match reply_rx.recv_timeout(budget) {
+        match reply_rx.recv_timeout(MAX_CALL_WAIT) {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 Err("Handler did not return — the worker is wedged".to_string())

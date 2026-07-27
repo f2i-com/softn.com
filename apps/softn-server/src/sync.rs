@@ -826,6 +826,19 @@ impl SyncManager {
                     .filter_map(|v| {
                         let id = v.get("id")?.as_str()?;
                         let data = v.get("data")?;
+                        // A hook that falls off the end of a branch returns
+                        // `undefined`, which crosses as null. Applying that
+                        // replaces the record's whole payload with JSON null and
+                        // broadcasts the wipe to every peer — never what a
+                        // sanitising hook meant. Keep the original data instead.
+                        if data.is_null() {
+                            tracing::warn!(
+                                op = id,
+                                "onBeforeSyncBatch returned no data for an op — keeping the \
+                                 original payload rather than nulling the record"
+                            );
+                            return None;
+                        }
                         Some((id, data))
                     })
                     .collect();

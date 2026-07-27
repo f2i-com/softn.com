@@ -759,8 +759,10 @@ async fn execute_api_handler(
     let method_str = method.to_string();
     let path_str = uri.path().to_string();
 
+    // Must exceed the runtime's own wait, or this fires first on a handler that
+    // was about to answer — and the blocking task keeps running either way.
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        crate::runtime::MAX_CALL_WAIT + std::time::Duration::from_secs(5),
         tokio::task::spawn_blocking(move || {
             let body_json = if body.is_empty() {
                 serde_json::Value::Null
