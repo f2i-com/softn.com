@@ -351,8 +351,10 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     return null;
   }, [previewLogicFiles]);
 
-  const softNSource = useMemo(() => {
-    if (!isSoftNUIFile || !activeVFSFile || !previewFileContent) return null;
+  const { source: softNSource, preIncludedLogicPaths } = useMemo(() => {
+    if (!isSoftNUIFile || !activeVFSFile || !previewFileContent) {
+      return { source: null as string | null, preIncludedLogicPaths: [] as string[] };
+    }
     let source = previewFileContent;
     source = resolveExternalLogic(source, activeVFSFile, previewLogicFiles);
     source = resolveUIImports(source, activeVFSFile, previewUIFiles);
@@ -362,12 +364,17 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     // If the resolved source has no <logic> block (e.g. a component .ui file
     // being previewed standalone), inject all project .logic files so that
     // shared functions are available to the template.
+    // Files inlined here are already part of this compilation. They are
+    // reported to the runtime so an `import` naming one is skipped rather
+    // than inlining it twice — a repeated class or `let` is a SyntaxError.
+    let preIncluded: string[] = [];
     if (!/<logic[\s>]/i.test(source) && previewLogicFiles.size > 0) {
       const combined = Array.from(previewLogicFiles.values()).join('\n');
+      preIncluded = Array.from(previewLogicFiles.keys());
       source = `<logic>\n${combined}\n</logic>\n${source}`;
     }
 
-    return source;
+    return { source, preIncludedLogicPaths: preIncluded };
   }, [isSoftNUIFile, activeVFSFile, previewFileContent, previewLogicFiles, previewUIFiles, resolveAssetUrl]);
 
   // Create a blob URL for HTML preview in iframe
@@ -502,6 +509,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
                         initialData={initialData}
                         importResolver={importResolver}
                         logicBasePath={activeLogicBasePath}
+                        preIncludedLogicPaths={preIncludedLogicPaths}
                         appId={previewAppId}
                         resumeSavedSyncRoom={false}
                       />
@@ -515,6 +523,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
                       initialData={initialData}
                       importResolver={importResolver}
                       logicBasePath={activeLogicBasePath}
+                      preIncludedLogicPaths={preIncludedLogicPaths}
                       appId={previewAppId}
                       resumeSavedSyncRoom={false}
           />

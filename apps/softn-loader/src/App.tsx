@@ -325,6 +325,7 @@ function App(): React.ReactElement {
   const [importResolver, setImportResolver] = useState<((path: string) => Promise<string | null>) | undefined>();
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
   const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
+  const [permissionConfig, setPermissionConfig] = useState<import('@softn/core').PermissionConfig | null>(null);
   const [assetResolver, setAssetResolver] = useState<((path: string) => string | null) | undefined>();
 
   // Open a file picker to choose a .softn file
@@ -499,6 +500,22 @@ function App(): React.ReactElement {
 
         const data = new Uint8Array(rawData);
         const { textFiles, binaryFiles } = readZip(data);
+
+        // The bundle's declared capabilities. Without this the runtime runs with
+        // no config, which allows most APIs but still refuses plain http:// — so
+        // a bundle that legitimately declared net.allow_http for a LAN or
+        // localhost server could not reach it, and allowed_hosts went unenforced.
+        const permJson = textFiles.get('permission.json');
+        if (permJson) {
+          try {
+            setPermissionConfig(JSON.parse(permJson));
+          } catch (e) {
+            console.error('[SoftN Loader] Invalid permission.json:', e);
+            setPermissionConfig(null);
+          }
+        } else {
+          setPermissionConfig(null);
+        }
 
         const manifestContent = textFiles.get('manifest.json');
         if (!manifestContent) {
@@ -949,6 +966,7 @@ function App(): React.ReactElement {
           importResolver={importResolver}
           logicBasePath={logicBasePath}
           preIncludedLogicPaths={preIncludedLogicPaths}
+          permissionConfig={permissionConfig ?? undefined}
           serverUrl={_manifest?.config?.server?.url}
           serverToken={_manifest?.config?.server?.auth_token}
           serverCollections={_manifest?.config?.server?.collections}

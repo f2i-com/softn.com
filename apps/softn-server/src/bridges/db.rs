@@ -73,10 +73,15 @@ impl DbBridge for NativeDbBridge {
         Ok(())
     }
 
-    fn get(&self, _collection: &str, id: &str) -> Result<Option<DbRecord>, String> {
+    fn get(&self, collection: &str, id: &str) -> Result<Option<DbRecord>, String> {
         // Use read pool — concurrent with other reads and writes
         let conn = self.db.read()?;
         match pool::read_record(&conn, id) {
+            // `read_record` looks an id up across the whole table and returns
+            // tombstones, because sync needs both. A script asking a collection
+            // for an id must not get another collection's record, and must not
+            // see one it deleted — `db.query` already hides those.
+            Ok(r) if r.deleted || r.collection != collection => Ok(None),
             Ok(r) => Ok(Some(xdb_to_record(r))),
             Err(xdb::DbError::NotFound(_)) => Ok(None),
             Err(e) => Err(format!("db.get failed: {}", e)),

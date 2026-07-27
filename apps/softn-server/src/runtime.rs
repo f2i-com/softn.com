@@ -68,6 +68,13 @@ const MAX_GLOBALS_SNAPSHOT_SLOTS: usize = 5_000;
 
 /// Bytecode instructions one handler call may execute before the engine stops
 /// it with an uncaught `RangeError` the script cannot catch.
+///
+/// Re-applied before every call, because the budget is per-VM and would
+/// otherwise span the worker's whole life. That has a cost: re-applying it
+/// discards the engine's compiled code, so a handler never keeps a JIT tier
+/// across requests. Handler bodies are short and dominated by bridge work
+/// (SQLite, HTTP), so this buys a hard per-request bound for little — but it is
+/// the knob to revisit if a CPU-heavy handler ever needs the tier.
 const MAX_STEPS_PER_CALL: u64 = 100_000_000;
 
 /// VM wall-time. Must stay under the HTTP/WS timeout (30s) so the engine
@@ -81,9 +88,8 @@ const WALL_TIME_MS: u64 = 25_000;
 /// Grace beyond the wall-time limit after which a call that has ignored its
 /// abort flag is treated as wedged rather than slow.
 ///
-/// The flag is only polled by the interpreter dispatch loop, so a script sitting
-/// inside ONE long native builtin — a catastrophic regex, a huge `JSON.parse` —
-/// never sees it. That thread cannot be killed from safe Rust, so the pool
+/// The flag is polled between instructions, so a script sitting inside ONE long
+/// native builtin — a catastrophic regex, a huge `JSON.parse` — never sees it. That thread cannot be killed from safe Rust, so the pool
 /// abandons it and starts a replacement instead of losing a worker for good.
 const WEDGE_GRACE_MS: u64 = 25_000;
 
@@ -438,6 +444,10 @@ impl ServerRuntime {
                 }));
                 if let Err(panic_info) = result {
                     Self::log_panic(&panic_info);
+                    // The panic unwound past `init_worker`'s disarm, so the guard
+                    // is still armed against a worker that is now idle. Left set,
+                    // the watchdog would warn about it and then abandon it.
+                    guard.disarm();
                     worker = None;
                 }
             }
@@ -564,8 +574,7 @@ impl ServerRuntime {
         }));
 
         // Bound the top level too — a script can loop forever before defining a
-        // single handler. This also switches the JIT off for this VM, which is
-        // what makes the budget observable at all.
+        // single handler.
         state.set_limits(MAX_STEPS_PER_CALL, Some(guard.abort.clone()));
         guard.arm();
         let init_result = state.run_init();
@@ -804,9 +813,21 @@ impl ServerRuntime {
                     "All script workers died".to_string()
                 }
             })?;
-        reply_rx
-            .recv()
-            .map_err(|_| "Script worker died".to_string())?
+        // Bounded, not `recv()`: a worker wedged inside a native call still owns
+        // this request's reply Sender and will never drop it, and callers run on
+        // Tokio blocking threads. Waiting forever would retire one of those per
+        // wedged request until the blocking pool is gone and every other
+        // blocking path — DB reads, health checks — stalls with it.
+        let budget = Duration::from_millis(WALL_TIME_MS + WEDGE_GRACE_MS + 5_000);
+        match reply_rx.recv_timeout(budget) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err("Handler did not return — the worker is wedged".to_string())
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err("Script worker died".to_string())
+            }
+        }
     }
 
     /// Instant lock-free check using global names extracted during init.
@@ -851,7 +872,10 @@ const MAX_JSON_DEPTH: usize = 64;
 const MAX_STRING_VALUE_LEN: usize = 2 * 1024 * 1024;
 
 fn json_to_host(val: serde_json::Value, depth: usize) -> Result<HostValue, String> {
-    if depth > MAX_JSON_DEPTH {
+    // `>=`, not `>`: the engine replaces anything at or past its own depth cap
+    // with null, so a value accepted here at exactly the cap would reach the
+    // handler as null with no error anywhere. Rejecting it is the honest answer.
+    if depth >= MAX_JSON_DEPTH {
         return Err(format!("JSON nesting depth exceeds maximum of {}", MAX_JSON_DEPTH));
     }
     Ok(match val {
@@ -885,7 +909,7 @@ fn json_to_host(val: serde_json::Value, depth: usize) -> Result<HostValue, Strin
 }
 
 fn host_to_json(val: &HostValue, depth: usize) -> Result<serde_json::Value, String> {
-    if depth > MAX_JSON_DEPTH {
+    if depth >= MAX_JSON_DEPTH {
         return Err(format!("Value nesting depth exceeds maximum of {}", MAX_JSON_DEPTH));
     }
     Ok(match val {
