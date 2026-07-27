@@ -522,7 +522,22 @@ async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>> {
 /**
  * Decompress deflate data
  */
-async function decompressDeflate(data: Uint8Array, _expectedSize: number): Promise<Uint8Array> {
+/** Ceiling for an entry that declares no size of its own. Mirrors the per-file limit. */
+const MAX_DEFLATE_OUTPUT = 50 * 1024 * 1024;
+
+/**
+ * Inflate a raw-deflate entry, refusing to produce more than `expectedSize`.
+ *
+ * The cap is not a nicety: the size limits enforced against the central
+ * directory bound what the archive *claims*, and a bundle can claim a few bytes
+ * while carrying a payload that inflates to hundreds of megabytes. Without a
+ * ceiling here the whole thing is materialised first and the mismatch noticed
+ * afterwards — by which point the memory is already gone.
+ */
+async function decompressDeflate(data: Uint8Array, expectedSize: number): Promise<Uint8Array> {
+  // A zero or absent declared size means "unknown", so fall back to the
+  // per-file ceiling rather than refusing everything.
+  const limit = expectedSize > 0 ? expectedSize : MAX_DEFLATE_OUTPUT;
   // Try using DecompressionStream (modern browsers)
   if (typeof DecompressionStream !== 'undefined') {
     // Add zlib header for raw deflate
@@ -544,11 +559,17 @@ async function decompressDeflate(data: Uint8Array, _expectedSize: number): Promi
       const chunks: Uint8Array[] = [];
 
       let done = false;
+      let produced = 0;
       while (!done) {
         const { done: doneRead, value } = await reader.read();
         if (doneRead) {
           done = true;
         } else {
+          produced += value.length;
+          if (produced > limit) {
+            await reader.cancel().catch(() => {});
+            throw new Error('ZIP entry inflates beyond its declared size');
+          }
           chunks.push(value);
         }
       }
@@ -569,8 +590,14 @@ async function decompressDeflate(data: Uint8Array, _expectedSize: number): Promi
 
   // Fallback: async inflate via fflate (non-blocking, uses Web Worker internally)
   try {
-    return await inflateAsync(data);
-  } catch {
+    const inflated = await inflateAsync(data);
+    if (inflated.length > limit) {
+      throw new Error('ZIP entry inflates beyond its declared size');
+    }
+    return inflated;
+  } catch (e) {
+    // Don't bury the size refusal under the "not available" message.
+    if (e instanceof Error && e.message.startsWith('ZIP entry inflates')) throw e;
     throw new Error('Deflate decompression not available. Use uncompressed ZIP files.');
   }
 }
