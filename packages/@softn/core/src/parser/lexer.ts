@@ -145,17 +145,6 @@ export class Lexer {
 
     // Single character tokens
     switch (this.ch) {
-      case '<':
-        // Only reachable inside an expression or control flow — elsewhere the
-        // caller has already routed `<` to readTagStart.
-        if (this.peekChar() === '=') {
-          this.readChar();
-          this.readChar();
-          return createToken(TokenType.LTE, '<=', startLine, startColumn, startPos, this.position);
-        }
-        this.readChar();
-        return createToken(TokenType.LT, '<', startLine, startColumn, startPos, this.position);
-
       case '>':
         // Inside an expression or control flow, > is a comparison operator, not a tag close
         if (this.inExpression > 0 || this.inControlFlow > 0) {
