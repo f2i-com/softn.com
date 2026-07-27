@@ -566,6 +566,23 @@ export function SoftNRenderer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Hold the load callbacks in refs so they cannot re-run the parse effect.
+  //
+  // That effect owns parsing, runtime creation, `loadScript` and `_init()`, and
+  // its cleanup disposes the WASM engine and clears every script function. With
+  // `onLoad`/`onError` in its dependency array, any caller passing inline
+  // arrows re-ran the whole thing on every render — and the builder's
+  // LivePreview does exactly that from a plain function, while subscribing to
+  // whole stores with no selector, so it re-renders on selection and hover.
+  // Clicking any element on the canvas therefore disposed the engine,
+  // recompiled the script, re-ran its top level and called `_init()` again:
+  // every button inert during the async gap, and an `_init()` that seeds
+  // records duplicating them on each click.
+  const onLoadRef = useRef(onLoad);
+  onLoadRef.current = onLoad;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+
   // Track if script has been initialized to avoid re-initialization
   const scriptInitializedRef = useRef(false);
 
@@ -921,7 +938,7 @@ export function SoftNRenderer({
           scriptSyncFunctions: codeBlock ? {} : prev.scriptSyncFunctions,
           scriptComputed: codeBlock ? {} : prev.scriptComputed,
         }));
-        onLoad?.(doc);
+        onLoadRef.current?.(doc);
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
         setState((prev) => ({
@@ -930,7 +947,7 @@ export function SoftNRenderer({
           loading: false,
           error,
         }));
-        onError?.(error);
+        onErrorRef.current?.(error);
       }
     }
 
@@ -950,7 +967,7 @@ export function SoftNRenderer({
       // Allow re-initialization on next mount (React Strict Mode double-mount)
       scriptInitializedRef.current = false;
     };
-  }, [resolvedSource, onLoad, onError, captureScrollAndFocus]);
+  }, [resolvedSource, captureScrollAndFocus]);
 
   // Keep resolved source in sync for direct source mode.
   useEffect(() => {
@@ -986,11 +1003,11 @@ export function SoftNRenderer({
           loading: false,
           error,
         }));
-        onError?.(error);
+        onErrorRef.current?.(error);
       });
 
     return () => { abortController.abort(); };
-  }, [url, onLoad, onError]);
+  }, [url]);
 
   // State setter for the context
   const setComponentState = useCallback((path: string, value: unknown) => {
