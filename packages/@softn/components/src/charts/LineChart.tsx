@@ -81,10 +81,28 @@ export function LineChart({
   const xValues = allPoints.map((p, idx) => (typeof p.x === 'number' ? p.x : idx));
   const yValues = allPoints.map((p) => p.y);
 
-  const xMin = Math.min(...xValues);
-  const xMax = Math.max(...xValues);
-  const rawYMin = Math.min(0, Math.min(...yValues));
-  const rawYMax = Math.max(...yValues) * 1.1 || 1;
+  // A chart is routinely bound to data that has not arrived yet. `Math.max()`
+  // of nothing is -Infinity, which is truthy, so the `|| 1` guards below never
+  // fired and the axis rendered "-Infinityk" above five NaN ticks.
+  const hasPoints = allPoints.length > 0;
+  const xMin = hasPoints ? Math.min(...xValues) : 0;
+  const xMax = hasPoints ? Math.max(...xValues) : 1;
+
+  // Pad away from zero at each end, rather than scaling both ends by 1.1.
+  //
+  // Multiplying a negative maximum by 1.1 moves it *down*: an all-negative
+  // series like [-100, -105] produced a max of -110 below its own min of -105,
+  // so the top of the axis sat beneath the bottom and every point mapped off
+  // the canvas — the axis read -110 at the top while the line was nowhere.
+  const dataMin = hasPoints ? Math.min(...yValues) : 0;
+  const dataMax = hasPoints ? Math.max(...yValues) : 0;
+  const lo = Math.min(0, dataMin);
+  const hi = Math.max(0, dataMax);
+  const paddedMin = lo < 0 ? lo * 1.1 : lo;
+  const paddedMax = hi > 0 ? hi * 1.1 : hi;
+
+  // All zeros, or no data at all: a unit domain keeps the maths finite.
+  const [rawYMin, rawYMax] = paddedMax > paddedMin ? [paddedMin, paddedMax] : [0, 1];
   const yRange = rawYMax - rawYMin || 1;
   const tickStep = Math.pow(10, Math.floor(Math.log10(yRange / 5))) * Math.ceil((yRange / 5) / Math.pow(10, Math.floor(Math.log10(yRange / 5)))) || 1;
   const yMin = propYMin ?? Math.floor(rawYMin / tickStep) * tickStep;

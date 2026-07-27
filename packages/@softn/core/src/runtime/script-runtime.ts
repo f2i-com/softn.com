@@ -995,6 +995,35 @@ export class SoftNScriptRuntime {
    * Stripped to bare minimum for performance — window sync is only done
    * in async wrappers (needed for Scene3D mouse-look, not template expressions).
    */
+  /**
+   * Key for the per-render sync-call cache, or null when the arguments cannot
+   * be described by one.
+   *
+   * Returning null means "call through and do not cache" — the alternative was
+   * letting `JSON.stringify` throw on a cyclic argument, which the catch below
+   * turned into a rendered `undefined`.
+   */
+  private syncCacheKey(name: string, args: unknown[]): string | null {
+    if (args.length === 0) return name;
+
+    // Primitives are keyed by type *and* value, so `1` and `"1"` stay distinct.
+    if (args.length === 1) {
+      const a = args[0];
+      const t = typeof a;
+      if (a === null) return `${name}|null`;
+      if (t === 'string' || t === 'number' || t === 'boolean' || t === 'undefined' || t === 'bigint') {
+        return `${name}|${t}:${String(a)}`;
+      }
+    }
+
+    try {
+      return `${name}|json:${JSON.stringify(args)}`;
+    } catch {
+      // Cyclic, or something JSON cannot describe.
+      return null;
+    }
+  }
+
   private createVMSyncFunction(name: string): (...args: unknown[]) => unknown {
     return (...args: unknown[]): unknown => {
       try {
@@ -1014,16 +1043,22 @@ export class SoftNScriptRuntime {
         }
         this.lastSyncCallTs = now;
 
-        // Build cache key — optimized for the common single-primitive-arg case
-        const cacheKey = args.length === 0 ? name
-          : args.length === 1 && typeof args[0] !== 'object' ? `${name}|${args[0]}`
-          : `${name}|${JSON.stringify(args)}`;
-
-        if (this.syncCallCache.has(cacheKey)) return this.syncCallCache.get(cacheKey);
+        // Build cache key — optimized for the common single-primitive-arg case.
+        //
+        // The type has to be part of the key. Interpolating the value alone
+        // collapsed `f(1)` and `f("1")` — and `f(true)` and `f("true")`, and
+        // `f(null)` and `f("null")` — onto one entry, so within a single render
+        // the second call silently returned the first one's answer. A helper
+        // that branches on `typeof` then rendered the wrong thing with nothing
+        // to suggest it had.
+        const cacheKey = this.syncCacheKey(name, args);
+        if (cacheKey !== null && this.syncCallCache.has(cacheKey)) {
+          return this.syncCallCache.get(cacheKey);
+        }
 
         if (!this.vmEngine) return undefined;
         const result = this.vmEngine.callFunctionSync(name, args);
-        this.syncCallCache.set(cacheKey, result);
+        if (cacheKey !== null) this.syncCallCache.set(cacheKey, result);
         return result;
       } catch (error) {
         console.error(`[SoftN] Error executing sync function ${name}:`, error);

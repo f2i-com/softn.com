@@ -109,10 +109,21 @@ export function AreaChart({
   const allPoints = series.flatMap((s) => s.data);
   const xValues = allPoints.map((p, idx) => (typeof p.x === 'number' ? p.x : idx));
 
-  const xMin = Math.min(...xValues);
-  const xMax = Math.max(...xValues);
-  const rawYMin = Math.min(0, Math.min(...allYValues));
-  const rawYMax = Math.max(...allYValues) * 1.1 || 1;
+  // Same reasoning as LineChart: `Math.max()` of nothing is -Infinity, and
+  // scaling a negative maximum by 1.1 moves it below the minimum, inverting
+  // the domain so every point maps off the canvas.
+  const hasPoints = allPoints.length > 0;
+  const xMin = hasPoints ? Math.min(...xValues) : 0;
+  const xMax = hasPoints ? Math.max(...xValues) : 1;
+
+  const dataMin = hasPoints ? Math.min(...allYValues) : 0;
+  const dataMax = hasPoints ? Math.max(...allYValues) : 0;
+  const lo = Math.min(0, dataMin);
+  const hi = Math.max(0, dataMax);
+  const paddedMin = lo < 0 ? lo * 1.1 : lo;
+  const paddedMax = hi > 0 ? hi * 1.1 : hi;
+
+  const [rawYMin, rawYMax] = paddedMax > paddedMin ? [paddedMin, paddedMax] : [0, 1];
   const yRange = rawYMax - rawYMin || 1;
   const tickStep = Math.pow(10, Math.floor(Math.log10(yRange / 5))) * Math.ceil((yRange / 5) / Math.pow(10, Math.floor(Math.log10(yRange / 5)))) || 1;
   const yMin = propYMin ?? Math.floor(rawYMin / tickStep) * tickStep;

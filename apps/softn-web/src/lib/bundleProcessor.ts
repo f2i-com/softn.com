@@ -542,6 +542,19 @@ export function extractPermissions(textFiles: Map<string, string>, manifest: Bun
   return null;
 }
 
+/**
+ * Every capability a permission config asks for.
+ *
+ * One list, read by both the consent check and the grant record, so the two
+ * cannot disagree about what was approved.
+ */
+const CAPABILITIES = ['net', 'camera', 'files', 'qr', 'ai', 'gpu', 'sync'] as const;
+
+export function requestedCapabilities(config: PermissionConfig): string[] {
+  const perms = (config.permissions ?? {}) as Record<string, { enabled?: boolean } | undefined>;
+  return CAPABILITIES.filter((name) => perms[name]?.enabled);
+}
+
 /** Extract icon as a data URL from bundle binary files */
 export function extractIconDataUrl(
   binaryFiles: Map<string, Uint8Array>,

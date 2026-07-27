@@ -70,24 +70,42 @@ export function BarChart({
 
   const allLabels = [...new Set(series.flatMap((s) => s.data.map((d) => d.label)))];
 
-  const maxValue = (() => {
-    let raw: number;
-    if (stacked) {
-      const labelTotals = allLabels.map((label) =>
-        series.reduce((sum, s) => {
-          const dp = s.data.find((d) => d.label === label);
-          return sum + (dp ? dp.value : 0);
-        }, 0)
-      );
-      raw = Math.max(...labelTotals, 0) * 1.1;
-    } else {
-      const allValues = series.flatMap((s) => s.data.map((d) => d.value));
-      raw = Math.max(...allValues, 0) * 1.1;
-    }
-    if (raw <= 0) return 1;
-    const step = Math.pow(10, Math.floor(Math.log10(raw / 5)));
-    return Math.ceil(raw / step) * step || 1;
+  // Signed value domain.
+  //
+  // This used to be `Math.max(...values, 0)`, so the domain never went below
+  // zero and a negative value scaled to a negative bar height. SVG treats a
+  // negative height as an error and skips the element, so a loss simply did
+  // not appear — while its axis label still did, making it read as zero. That
+  // is the worst possible failure for a chart: confidently wrong.
+  const { minValue, maxValue } = (() => {
+    const values = stacked
+      ? allLabels.map((label) =>
+          series.reduce((sum, s) => {
+            const dp = s.data.find((d) => d.label === label);
+            return sum + (dp ? dp.value : 0);
+          }, 0)
+        )
+      : series.flatMap((s) => s.data.map((d) => d.value));
+
+    // Zero is always in the domain, so bars have a baseline to grow from.
+    const lo = Math.min(0, ...values);
+    const hi = Math.max(0, ...values);
+    const paddedLo = lo < 0 ? lo * 1.1 : 0;
+    const paddedHi = hi > 0 ? hi * 1.1 : 0;
+
+    // No data, or all zeros.
+    if (paddedHi <= paddedLo) return { minValue: 0, maxValue: 1 };
+
+    // Round each end out to a whole tick, as before.
+    const round = (v: number) => {
+      if (v === 0) return 0;
+      const step = Math.pow(10, Math.floor(Math.log10(Math.abs(v) / 5))) || 1;
+      return v > 0 ? Math.ceil(v / step) * step : Math.floor(v / step) * step;
+    };
+    return { minValue: round(paddedLo), maxValue: round(paddedHi) || 1 };
   })();
+
+  const valueSpan = maxValue - minValue || 1;
 
   const numGroups = allLabels.length;
   const numBarsPerGroup = stacked ? 1 : grouped ? series.length : 1;
@@ -97,14 +115,18 @@ export function BarChart({
   const availableGroupWidth = groupWidth - groupGap;
   const barWidth = Math.max(1, (availableGroupWidth / numBarsPerGroup) * (1 - barPadding));
 
-  const scaleValue = (v: number): number => {
-    return (v / maxValue) * (orientation === 'vertical' ? chartHeight : chartWidth);
-  };
+  const axisExtent = orientation === 'vertical' ? chartHeight : chartWidth;
+
+  /** Pixels from the domain floor to a value. */
+  const scaleValue = (v: number): number => ((v - minValue) / valueSpan) * axisExtent;
+
+  /** Where zero sits, so bars can be drawn from it in either direction. */
+  const zeroOffset = scaleValue(0);
 
   const gridLines: React.ReactNode[] = [];
   const numGridLines = 5;
   for (let i = 0; i <= numGridLines; i++) {
-    const value = (i / numGridLines) * maxValue;
+    const value = minValue + (i / numGridLines) * valueSpan;
     if (orientation === 'vertical') {
       const y = padding.top + chartHeight - scaleValue(value);
       gridLines.push(
@@ -165,37 +187,50 @@ export function BarChart({
 
       const value = dataPoint.value;
       const color = dataPoint.color || s.color || defaultColors[seriesIdx % defaultColors.length];
-      const barHeight = scaleValue(value);
+
+      // A bar runs between the zero baseline and its value, in whichever
+      // direction that is. Taking the span between the two ends rather than
+      // the raw scaled value is what keeps the geometry non-negative when the
+      // value is.
+      const tip = scaleValue(value);
+      const near = Math.min(zeroOffset, tip);
+      const far = Math.max(zeroOffset, tip);
+      const barLength = far - near;
 
       let x: number, y: number, w: number, h: number;
 
       if (stacked) {
-        const stackedBarHeight = scaleValue(stackOffset);
+        // Stacked segments sit end to end from the running total.
+        const from = scaleValue(stackOffset);
+        const to = scaleValue(stackOffset + value);
+        const segNear = Math.min(from, to);
+        const segLength = Math.abs(to - from);
+
         if (orientation === 'vertical') {
           const groupStart = padding.left + groupIdx * groupWidth + groupGap / 2;
           x = groupStart + (availableGroupWidth - barWidth) / 2;
-          y = padding.top + chartHeight - stackedBarHeight - barHeight;
+          y = padding.top + chartHeight - segNear - segLength;
           w = barWidth;
-          h = barHeight;
+          h = segLength;
         } else {
           const groupStart = padding.top + groupIdx * groupWidth + groupGap / 2;
-          x = padding.left + stackedBarHeight;
+          x = padding.left + segNear;
           y = groupStart + (availableGroupWidth - barWidth) / 2;
-          w = barHeight;
+          w = segLength;
           h = barWidth;
         }
         stackOffset += value;
       } else if (orientation === 'vertical') {
         const groupStart = padding.left + groupIdx * groupWidth + groupGap / 2;
         x = groupStart + seriesIdx * (barWidth + barWidth * barPadding);
-        y = padding.top + chartHeight - barHeight;
+        y = padding.top + chartHeight - far;
         w = barWidth;
-        h = barHeight;
+        h = barLength;
       } else {
         const groupStart = padding.top + groupIdx * groupWidth + groupGap / 2;
-        x = padding.left;
+        x = padding.left + near;
         y = groupStart + seriesIdx * (barWidth + barWidth * barPadding);
-        w = barHeight;
+        w = barLength;
         h = barWidth;
       }
 
