@@ -134,8 +134,10 @@ function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
   }
 
   const declared = new Map<string, DeclaredEntry>();
+  const seenLocalHeaders = new Set<number>();
   let offset = centralDirOffset;
   let totalUncompressed = 0;
+  let totalCompressed = 0;
   for (let i = 0; i < entryCount; i++) {
     if (offset + 46 > data.byteLength || view.getUint32(offset, true) !== CEN_SIGNATURE) {
       throw new Error('Invalid ZIP central directory entry');
@@ -154,6 +156,22 @@ function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
     }
     if (uncompressedSize > MAX_ZIP_FILE_BYTES) {
       throw new Error('File too large in bundle');
+    }
+
+    // Two entries pointing at one local header is how a small archive claims a
+    // large payload many times over: the budget below is charged once per
+    // entry, but the bytes are extracted once per entry too.
+    if (seenLocalHeaders.has(localHeaderOffset)) {
+      throw new Error('Corrupt ZIP: two entries share a local header');
+    }
+    seenLocalHeaders.add(localHeaderOffset);
+
+    // The compressed bytes have to actually exist in the file. A stored entry
+    // extracts `compressedSize` bytes regardless of what it claims uncompressed,
+    // so budgeting only the uncompressed figure left that path unbounded.
+    totalCompressed += compressedSize;
+    if (totalCompressed > data.byteLength) {
+      throw new Error('Corrupt ZIP: entries claim more data than the file holds');
     }
 
     totalUncompressed += uncompressedSize;

@@ -805,13 +805,19 @@ function renderExpression(
  * Extract a descriptive identifier from a condition expression
  * Used to generate more unique keys for conditional branches
  */
-function getConditionIdentifier(condition: Expression, context: SoftNRenderContext): string {
+function getConditionIdentifier(condition: Expression): string {
   if (condition.type === 'BinaryExpression') {
     // For comparisons like `currentPage === "dashboard"`, extract the right value
     if (condition.operator === '===' || condition.operator === '==') {
-      const rightValue = evaluateExpression(condition.right, context);
-      if (typeof rightValue === 'string' || typeof rightValue === 'number') {
-        return String(rightValue);
+      // Read a literal operand directly instead of evaluating it. This only
+      // builds a React key, and the condition has already been evaluated by the
+      // caller — evaluating the operand again ran any call inside it a second
+      // time on every render.
+      if (condition.right.type === 'Literal') {
+        const rightValue = condition.right.value;
+        if (typeof rightValue === 'string' || typeof rightValue === 'number') {
+          return String(rightValue);
+        }
       }
     }
   }
@@ -832,7 +838,7 @@ function renderIfBlock(
   const condition = evaluateExpression(node.condition, context);
 
   // Get a unique identifier for the condition value
-  const conditionId = getConditionIdentifier(node.condition, context);
+  const conditionId = getConditionIdentifier(node.condition);
 
   // Get currentPage for making keys truly unique across navigation
   const currentPage = context.state['currentPage'] ?? 'unknown';

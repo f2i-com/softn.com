@@ -230,8 +230,22 @@ export class Parser {
       while (!this.curTokenIs(TokenType.EXPR_END) && !this.curTokenIs(TokenType.EOF)) {
         const memberStart = this.curToken.start;
         if (this.curTokenIs(TokenType.IDENTIFIER)) {
-          namedImports.push(this.curToken.literal);
+          const imported = this.curToken.literal;
           this.nextToken();
+          // `{ Card as C }` names one import, not three. Without this the list
+          // came back as ["Card", "as", "C"] — with an import literally called
+          // "as" — and nothing said so.
+          if (this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal === 'as') {
+            this.nextToken();
+            if (this.curTokenIs(TokenType.IDENTIFIER)) {
+              namedImports.push(this.curToken.literal);
+              this.nextToken();
+            } else {
+              throw new UnexpectedTokenError(this.curToken, TokenType.IDENTIFIER, this.source);
+            }
+          } else {
+            namedImports.push(imported);
+          }
         }
         if (this.curTokenIs(TokenType.COMMA)) {
           this.nextToken();
@@ -1150,6 +1164,25 @@ export class Parser {
 
     this.expectToken(TokenType.RPAREN);
 
+    // Optional `key={expr}` after the header.
+    //
+    // The renderer has always had a branch for this and the development warning
+    // recommends writing exactly it, but nothing ever parsed it — so the text
+    // fell into the block body and rendered on the page.
+    // Past the header the lexer is back in text mode, so `key=` arrives as a
+    // TEXT token rather than an identifier and an equals.
+    let keyExpression: Expression | undefined;
+    if (
+      this.curTokenIs(TokenType.TEXT) &&
+      this.curToken.literal.trim() === 'key=' &&
+      this.peekToken.type === TokenType.EXPR_START
+    ) {
+      this.nextToken(); // consume `key=`
+      this.expectToken(TokenType.EXPR_START);
+      keyExpression = this.parseExpression();
+      this.expectToken(TokenType.EXPR_END);
+    }
+
     const body: TemplateNode[] = [];
     let emptyFallback: TemplateNode[] | undefined;
 
@@ -1231,6 +1264,7 @@ export class Parser {
       iterable,
       itemName,
       indexName,
+      keyExpression,
       body,
       emptyFallback,
       loc,
