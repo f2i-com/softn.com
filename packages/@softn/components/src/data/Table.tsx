@@ -21,6 +21,63 @@ export interface Column<T> {
   render?: (value: unknown, row: T, index: number) => React.ReactNode;
 }
 
+/**
+ * A single row.
+ *
+ * Declared at module scope, not inside `Table`.
+ *
+ * A component defined in another component's body is a new *type* on every
+ * render, so React cannot match it against the previous tree — it unmounts and
+ * remounts the whole subtree rather than updating it. With a column rendering
+ * an `<input>`, that destroyed and rebuilt the field on every parent render:
+ * typing one character lost the caret and the focus, which reads as the table
+ * fighting the user.
+ */
+function TableRow<T extends Record<string, unknown>>({
+  row,
+  index,
+  columns,
+  onRowClick,
+  getRowStyle,
+  getBodyCellStyle,
+}: {
+  row: T;
+  index: number;
+  columns: Column<T>[];
+  onRowClick?: (row: T, index: number) => void;
+  getRowStyle: (index: number, isHovered: boolean) => React.CSSProperties;
+  getBodyCellStyle: (column: Column<T>) => React.CSSProperties;
+}): React.ReactElement {
+  const [isHovered, setIsHovered] = React.useState(false);
+
+  const handleRowKeyDown = (e: React.KeyboardEvent) => {
+    if (onRowClick && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      onRowClick(row, index);
+    }
+  };
+
+  return (
+    <tr
+      style={getRowStyle(index, isHovered)}
+      onClick={() => onRowClick?.(row, index)}
+      onKeyDown={onRowClick ? handleRowKeyDown : undefined}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      tabIndex={onRowClick ? 0 : undefined}
+      role={onRowClick ? 'button' : undefined}
+    >
+      {columns.map((column) => (
+        <td key={column.key} style={getBodyCellStyle(column)} role="cell">
+          {column.render
+            ? column.render(row[column.key], row, index)
+            : String(row[column.key] ?? '')}
+        </td>
+      ))}
+    </tr>
+  );
+}
+
 export interface TableProps<T> {
   /** Table columns */
   columns: Column<T>[];
@@ -206,37 +263,6 @@ export function Table<T extends Record<string, unknown>>({
     );
   };
 
-  const TableRow = ({ row, index }: { row: T; index: number }) => {
-    const [isHovered, setIsHovered] = React.useState(false);
-
-    const handleRowKeyDown = (e: React.KeyboardEvent) => {
-      if (onRowClick && (e.key === 'Enter' || e.key === ' ')) {
-        e.preventDefault();
-        onRowClick(row, index);
-      }
-    };
-
-    return (
-      <tr
-        style={getRowStyle(index, isHovered)}
-        onClick={() => onRowClick?.(row, index)}
-        onKeyDown={onRowClick ? handleRowKeyDown : undefined}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-        tabIndex={onRowClick ? 0 : undefined}
-        role={onRowClick ? 'button' : undefined}
-      >
-        {columns.map((column) => (
-          <td key={column.key} style={getBodyCellStyle(column)} role="cell">
-            {column.render
-              ? column.render(row[column.key], row, index)
-              : String(row[column.key] ?? '')}
-          </td>
-        ))}
-      </tr>
-    );
-  };
-
   return (
     <div className={className} style={containerStyle} role="region" aria-label="Data table">
       <table style={tableStyle} role="table">
@@ -268,7 +294,15 @@ export function Table<T extends Record<string, unknown>>({
             </tr>
           ) : (
             data.map((row, index) => (
-              <TableRow key={getRowKey(row, index)} row={row} index={index} />
+              <TableRow
+                key={getRowKey(row, index)}
+                row={row}
+                index={index}
+                columns={columns}
+                onRowClick={onRowClick}
+                getRowStyle={getRowStyle}
+                getBodyCellStyle={getBodyCellStyle}
+              />
             ))
           )}
         </tbody>
