@@ -381,8 +381,14 @@ function renderElement(
   registry: ComponentRegistry,
   key?: number | string
 ): React.ReactNode {
-  // Check inline conditional first
-  if (node.conditionalIf) {
+  // Check inline conditional first.
+  //
+  // Not when the element also loops: such a condition almost always names the
+  // loop variable, which is not bound out here, so testing it now answers
+  // falsy and drops the whole loop. The per-item recursion below re-enters
+  // with the variable bound and keeps `conditionalIf`, which is where an
+  // `each` + `if` pair is meant to be resolved.
+  if (node.conditionalIf && !node.inlineEach) {
     const condition = evaluateExpression(node.conditionalIf, context);
     if (!condition) {
       return null; // Don't render if condition is falsy
@@ -504,11 +510,25 @@ function renderElement(
       value = undefined;
     }
 
+    // A checkbox-shaped control carries its state in `checked`, not `value` —
+    // its `value` is the constant "on". Binding `value` left `checked`
+    // undefined, so the control ran uncontrolled and never reflected the bound
+    // variable, while the change wrote the string "on" back over it.
+    const isCheckable =
+      node.tag === 'Checkbox' ||
+      node.tag === 'Switch' ||
+      props.type === 'checkbox' ||
+      props.type === 'radio';
+
     if (binding.name === 'bind') {
       // Two-way binding shorthand
       // Default to "" when value is undefined/null to keep the input controlled
       // from the first render (avoids React "uncontrolled to controlled" warning)
-      props.value = value ?? '';
+      if (isCheckable) {
+        props.checked = value === true;
+      } else {
+        props.value = value ?? '';
+      }
       // Handle both native elements (pass event) and custom components (pass value directly)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       props.onChange = (eventOrValue: any) => {
@@ -521,7 +541,15 @@ function renderElement(
           // - If it's an event object with target.value (native elements), use that
           // - Otherwise, treat the argument as the value directly (custom components like Select)
           let newValue: unknown;
-          if (
+          if (isCheckable) {
+            // Read `checked`, and as a boolean: `target.value` on a checkbox is
+            // the constant "on", which would make the bound variable a string
+            // that never compares false again.
+            newValue =
+              eventOrValue && typeof eventOrValue === 'object' && 'target' in eventOrValue
+                ? Boolean(eventOrValue.target.checked)
+                : Boolean(eventOrValue);
+          } else if (
             eventOrValue &&
             typeof eventOrValue === 'object' &&
             'target' in eventOrValue &&
