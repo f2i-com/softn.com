@@ -46,6 +46,19 @@ struct PrimitiveSnapshot {
     values: Vec<HostValue>,
 }
 
+/// Whether `source` declares a class at the start of a line.
+///
+/// Deliberately textual and deliberately loose. The engine reports a class in
+/// the same symbol scope as a function, so there is nothing to inspect after
+/// compilation, and erring towards the sound-but-slower path is the right way
+/// to be wrong. A `class` inside a string or comment costs that script a
+/// rebuild per request; missing a real one would leak its statics.
+fn declares_class(source: &str) -> bool {
+    source
+        .lines()
+        .any(|l| l.trim_start().starts_with("class ") || l.trim_start().starts_with("class	"))
+}
+
 /// Whether a value survives the `HostValue` round trip unchanged.
 fn is_primitive(v: &HostValue) -> bool {
     matches!(
@@ -197,6 +210,11 @@ struct Worker {
     bridges: Rc<RefCell<BridgeSet>>,
     /// The script this worker runs, so it can rebuild itself.
     source: Rc<str>,
+    /// Whether a handler has run since the globals were last known clean. A
+    /// rebuild re-executes the script's top level — including any `db.create`
+    /// or `http.get` written there — so it must not happen on a worker that has
+    /// not run anything since the last one.
+    dirty: bool,
 }
 
 /// Wraps zipp VMs behind a pool of dedicated OS threads.
@@ -238,6 +256,9 @@ pub struct ServerRuntime {
     /// The script every worker runs, kept so the watchdog can initialise a
     /// replacement for a wedged one.
     init_source: Arc<std::sync::Mutex<Option<String>>>,
+    /// Replacement workers the watchdog started. Counted against the global
+    /// thread cap like any other worker, and returned to it on drop.
+    replacements: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl ServerRuntime {
@@ -306,6 +327,8 @@ impl ServerRuntime {
         let wd_factory = factory.clone();
         let wd_work_rx = work_rx.clone();
         let wd_source = init_source.clone();
+        let replacements_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wd_replacements = replacements_count.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("softn-vm-watchdog".to_string())
             .spawn(move || {
@@ -349,9 +372,22 @@ impl ServerRuntime {
                             );
                             continue;
                         }
+                        // A replacement is an additional thread — the wedged one
+                        // cannot be reclaimed — so it has to come out of the same
+                        // global budget as any other worker.
+                        if GLOBAL_WORKER_COUNT.fetch_add(1, Ordering::Relaxed) >= MAX_GLOBAL_WORKER_THREADS {
+                            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
+                            tracing::error!(
+                                "Worker wedged, but the global thread limit ({}) leaves no room for                                  a replacement — the pool is now smaller.",
+                                MAX_GLOBAL_WORKER_THREADS
+                            );
+                            continue;
+                        }
                         abandoned += 1;
                         let source = wd_source.lock().ok().and_then(|s| s.clone());
                         let Some(source) = source else {
+                            GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
+                            abandoned -= 1;
                             tracing::error!("Worker wedged before init completed — not replacing it");
                             continue;
                         };
@@ -372,10 +408,16 @@ impl ServerRuntime {
                                          until the process exits."
                                     );
                                     replacements.push(guard);
+                                    wd_replacements.fetch_add(1, Ordering::Relaxed);
                                     next_id += 1;
+                                } else {
+                                    GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
+                                    abandoned -= 1;
                                 }
                             }
                             Err(e) => {
+                                GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::Relaxed);
+                                abandoned -= 1;
                                 tracing::error!("Failed to spawn replacement worker: {}", e);
                             }
                         }
@@ -398,6 +440,7 @@ impl ServerRuntime {
             known_globals: OnceLock::new(),
             watchdog_stop,
             init_source,
+            replacements: replacements_count,
         })
     }
 
@@ -550,8 +593,11 @@ impl ServerRuntime {
     {
         let bridges = Rc::new(RefCell::new(bridge_factory()));
         let source: Rc<str> = Rc::from(source);
-        let (state, slots, isolation) = Self::build_state(&source, &bridges, guard)?;
-        Ok(Worker { state, slots, isolation, bridges, source })
+        guard.arm();
+        let built = Self::build_state(&source, &bridges, guard);
+        guard.disarm();
+        let (state, slots, isolation) = built?;
+        Ok(Worker { state, slots, isolation, bridges, source, dirty: false })
     }
 
     /// Compile and run the script, returning the live VM, its symbol table and
@@ -575,10 +621,11 @@ impl ServerRuntime {
 
         // Bound the top level too — a script can loop forever before defining a
         // single handler.
+        // The caller owns the deadline. Arming here as well would hand the top
+        // level a fresh 25s on top of the one covering the request, so a rebuild
+        // could outlive the HTTP timeout the wall-time limit exists to stay under.
         state.set_limits(MAX_STEPS_PER_CALL, Some(guard.abort.clone()));
-        guard.arm();
         let init_result = state.run_init();
-        guard.disarm();
         drain_output(&mut state);
         init_result?;
 
@@ -596,7 +643,11 @@ impl ServerRuntime {
         }
 
         let values: Vec<HostValue> = var_indices.iter().map(|&i| state.get_slot(i)).collect();
-        let isolation = if values.iter().all(is_primitive) {
+        // A class lives in a *function* slot, and the host cannot write those at
+        // all — so `class Cache { static items = {} }` would keep whatever a
+        // handler hung on it into the next request, invisibly. Restoring cannot
+        // reach that, so a script declaring a class rebuilds instead.
+        let isolation = if values.iter().all(is_primitive) && !declares_class(source) {
             Isolation::Restore(PrimitiveSnapshot { indices: var_indices, values })
         } else {
             Isolation::Rebuild
@@ -648,6 +699,22 @@ impl ServerRuntime {
         mutation_warned: &mut MutationWarned,
         guard: &CallGuard,
     ) -> Result<serde_json::Value, String> {
+        // One deadline for the whole request, covering the reset as well as the
+        // handler: the reset walks VM state and, on a rebuild, recompiles and
+        // re-runs the top level. Arming per step would give each its own 25s.
+        guard.arm();
+        let result = Self::run_request(w, name, args, mutation_warned, guard);
+        guard.disarm();
+        result
+    }
+
+    fn run_request(
+        w: &mut Worker,
+        name: &str,
+        args: Vec<serde_json::Value>,
+        mutation_warned: &mut MutationWarned,
+        guard: &CallGuard,
+    ) -> Result<serde_json::Value, String> {
         // Start this handler from pristine globals, whatever a prior request on
         // this worker did to them.
         Self::isolate(w, name, mutation_warned, guard)?;
@@ -661,9 +728,10 @@ impl ServerRuntime {
         // would span the worker's whole life and every worker would eventually
         // refuse to run anything.
         w.state.set_limits(MAX_STEPS_PER_CALL, Some(guard.abort.clone()));
-        guard.arm();
+        // Anything the handler touches has to be assumed dirty from here, even
+        // if it throws part-way through.
+        w.dirty = true;
         let call_result = w.state.call_slot(slot, &host_args);
-        guard.disarm();
         drain_output(&mut w.state);
         let value = call_result?;
 
@@ -673,9 +741,7 @@ impl ServerRuntime {
         // any error it threw. Say so instead.
         if matches!(value, HostValue::Opaque) {
             return Err(format!(
-                "Handler '{name}' returned a value that cannot cross to the host \
-                 (a Promise, function, Map, Set or Date). Server handlers must be \
-                 synchronous and return plain data, e.g. {{ status, body }}."
+                "Handler '{name}' returned a value that cannot cross to the host                  (a Promise, function, Map, Set or Date). Server handlers must be                  synchronous and return plain data, e.g. {{ status, body }}."
             ));
         }
 
@@ -694,43 +760,55 @@ impl ServerRuntime {
         mutation_warned: &mut MutationWarned,
         guard: &CallGuard,
     ) -> Result<(), String> {
-        // The reset itself walks VM state, so it runs inside the deadline the
-        // watchdog polices rather than before it.
-        guard.arm();
-        let outcome = match &w.isolation {
-            Isolation::Restore(snap) => {
-                let mut mutated = false;
-                for (i, &index) in snap.indices.iter().enumerate() {
-                    if w.state.get_slot(index) != snap.values[i] {
-                        mutated = true;
-                        w.state.set_slot(index, &snap.values[i]);
-                    }
-                }
-                Ok(mutated)
-            }
-            Isolation::Rebuild => {
-                let source = Rc::clone(&w.source);
-                let bridges = Rc::clone(&w.bridges);
-                Self::build_state(&source, &bridges, guard).map(|(state, slots, isolation)| {
-                    w.state = state;
-                    w.slots = slots;
-                    w.isolation = isolation;
-                    // A rebuild is not evidence the previous handler mutated
-                    // anything, so it does not trigger the advisory below.
-                    false
-                })
-            }
-        };
-        guard.disarm();
+        // Nothing has run since the globals were last clean, so there is nothing
+        // to undo. This is what keeps a rebuild off the first request after init
+        // and off a worker that has been idle.
+        if !w.dirty {
+            return Ok(());
+        }
 
-        let mutated = outcome?;
+        let mut mutated = false;
+        let mut unrestorable = false;
+        if let Isolation::Restore(snap) = &w.isolation {
+            for (i, &index) in snap.indices.iter().enumerate() {
+                if w.state.get_slot(index) == snap.values[i] {
+                    continue;
+                }
+                mutated = true;
+                // A refused write means the slot now holds something the host
+                // cannot overwrite — a Map, Set, Date, or a closure the handler
+                // assigned. The value stays live into the next request, so this
+                // worker can no longer isolate by restoring.
+                if !w.state.set_slot(index, &snap.values[i]) {
+                    unrestorable = true;
+                    break;
+                }
+            }
+        }
+
+        if unrestorable || matches!(w.isolation, Isolation::Rebuild) {
+            if unrestorable {
+                tracing::warn!(
+                    handler = %name,
+                    "A global now holds a value that cannot be restored (Map, Set, Date                      or a function). Rebuilding this worker's VM between requests from                      here on — note that re-runs the script's top level each time."
+                );
+            }
+            let source = Rc::clone(&w.source);
+            let bridges = Rc::clone(&w.bridges);
+            let (state, slots, isolation) = Self::build_state(&source, &bridges, guard)?;
+            w.state = state;
+            w.slots = slots;
+            w.isolation = isolation;
+            w.dirty = false;
+            return Ok(());
+        }
+
+        w.dirty = false;
         if mutated && !mutation_warned.0 {
             mutation_warned.0 = true;
             tracing::warn!(
                 handler = %name,
-                "A handler modified global variables before '{}'. These changes are \
-                 discarded between requests (each call starts with clean state). \
-                 Use db.* APIs for persistence instead of global variables.",
+                "A handler modified global variables before '{}'. These changes are                  discarded between requests (each call starts with clean state).                  Use db.* APIs for persistence instead of global variables.",
                 name
             );
         }
@@ -842,7 +920,8 @@ impl ServerRuntime {
 impl Drop for ServerRuntime {
     fn drop(&mut self) {
         self.watchdog_stop.store(true, Ordering::Relaxed);
-        GLOBAL_WORKER_COUNT.fetch_sub(self.worker_count, Ordering::Relaxed);
+        let extra = self.replacements.load(Ordering::Relaxed);
+        GLOBAL_WORKER_COUNT.fetch_sub(self.worker_count + extra, Ordering::Relaxed);
     }
 }
 
