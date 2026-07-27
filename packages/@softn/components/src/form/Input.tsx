@@ -436,8 +436,15 @@ export function Input({
         <input
           type={type}
           name={name}
-          value={value}
-          defaultValue={defaultValue}
+          // Render the value the component actually tracks.
+          //
+          // This used to render `value` / `defaultValue` and never
+          // `internalValue`, so an uncontrolled input's own state was
+          // invisible — clearing it changed only whether the ✕ showed. The
+          // text stayed on screen while the button that clears it vanished.
+          // `currentValue` is the existing controlled-or-internal resolution
+          // used everywhere else in this component.
+          value={currentValue ?? ''}
           placeholder={placeholder}
           disabled={disabled}
           readOnly={readOnly}

@@ -21,6 +21,10 @@ if (!window.matchMedia) {
     }) as unknown as MediaQueryList;
 }
 
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 if (!window.ResizeObserver) {
   window.ResizeObserver = class {
     observe() {}
