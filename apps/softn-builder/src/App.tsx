@@ -716,12 +716,26 @@ function App() {
           openTabs: updatedFilesState.openTabs,
         },
       };
-      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-
-      // 6. Mark clean and toast
+      // 6. Mark clean and toast.
+      //
+      // Before the session write, and with that write guarded separately: the
+      // bundle is already on disk by this point, so a failure here is not a
+      // failed save. The session payload embeds every UI file's elements,
+      // every logic file, the icon data URL and all seed data, so a project
+      // over the ~5 MB quota threw QuotaExceededError into the catch below —
+      // reporting "Save failed" for a bundle that had saved perfectly, and
+      // skipping markClean() so the project stayed dirty.
       projectState.markClean();
       toast.success(handle ? `Saved: ${handle.name}` : 'Bundle downloaded');
       debug('[App] Bundle saved to file');
+
+      try {
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+      } catch (sessionError) {
+        // Session restore is a convenience; losing it does not affect the file
+        // the user just wrote.
+        console.warn('[App] Could not store session for restore:', sessionError);
+      }
     } catch (e) {
       // User cancelling the file picker throws an AbortError — ignore silently
       if (e instanceof DOMException && e.name === 'AbortError') return;
