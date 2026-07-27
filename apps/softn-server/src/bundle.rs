@@ -46,30 +46,7 @@ pub struct ServerConfig {
     pub auth_token: Option<String>,
 }
 
-/// Console shim prepended to server scripts so `console.log` etc. work.
-/// Logs stream directly to the Rust tracing subscriber via `env.log()` —
-/// no JS-side buffering, so runaway logging cannot cause OOM.
-pub const SERVER_SHIM: &str = r#"
-function __fmt(a, b, c, d, e, f, g, h, i, j) {
-    let s = '' + a;
-    if (b !== undefined) { s = s + ' ' + b; }
-    if (c !== undefined) { s = s + ' ' + c; }
-    if (d !== undefined) { s = s + ' ' + d; }
-    if (e !== undefined) { s = s + ' ' + e; }
-    if (f !== undefined) { s = s + ' ' + f; }
-    if (g !== undefined) { s = s + ' ' + g; }
-    if (h !== undefined) { s = s + ' ' + h; }
-    if (i !== undefined) { s = s + ' ' + i; }
-    if (j !== undefined) { s = s + ' ' + j; }
-    return s;
-}
-let console = {
-    log: function(a, b, c, d, e, f, g, h, i, j) { env.log('INFO', __fmt(a, b, c, d, e, f, g, h, i, j)); },
-    warn: function(a, b, c, d, e, f, g, h, i, j) { env.log('WARN', __fmt(a, b, c, d, e, f, g, h, i, j)); },
-    error: function(a, b, c, d, e, f, g, h, i, j) { env.log('ERROR', __fmt(a, b, c, d, e, f, g, h, i, j)); },
-    info: function(a, b, c, d, e, f, g, h, i, j) { env.log('INFO', __fmt(a, b, c, d, e, f, g, h, i, j)); },
-};
-"#;
+
 
 /// Extract a `.softn` ZIP bundle to a directory.
 /// Returns the path to the extracted directory. The caller is responsible for
@@ -247,10 +224,11 @@ fn validate_script_path(bundle_path: &Path, relative: &str) -> Result<PathBuf, S
     Ok(full)
 }
 
-/// Load all server scripts concatenated, with the console shim prepended.
+/// Load all server scripts concatenated. `console` and the host bindings come
+/// from the runtime preamble, not from here.
 pub fn load_server_scripts(bundle_path: &Path, server: &ServerBlock) -> Result<String, String> {
     let entry = server.entry.as_deref().unwrap_or("server/main.logic");
-    let mut source = String::from(SERVER_SHIM);
+    let mut source = String::new();
 
     // Load entry script
     let entry_path = validate_script_path(bundle_path, entry)?;

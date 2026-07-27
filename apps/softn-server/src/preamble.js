@@ -8,8 +8,10 @@
 // Every call is synchronous by necessity: handlers do `let rows = db.query(c)`
 // mid-expression and have nothing to await on.
 //
-// `console` is not defined here. The engine provides it, and the runtime drains
-// what it buffered after each call into the server's tracing output.
+// `console` is defined here too. It streams straight to the host's tracing
+// subscriber rather than buffering in the VM, so runaway logging cannot grow
+// the heap — and being declared here means the runtime treats it as plumbing
+// rather than as a script global it has to isolate between requests.
 
 var db = {
   query: function (c) {
@@ -74,4 +76,25 @@ var env = {
   get: function (name) { return JSON.parse(__zippHostCall("env.get", String(name))); },
   keys: function () { return JSON.parse(__zippHostCall("env.keys")); },
   log: function (level, message) { __zippHostCall("env.log", String(level), String(message)); },
+};
+
+function __zFmt(a, b, c, d, e, f, g, h, i, j) {
+  var s = "" + a;
+  if (b !== undefined) { s = s + " " + b; }
+  if (c !== undefined) { s = s + " " + c; }
+  if (d !== undefined) { s = s + " " + d; }
+  if (e !== undefined) { s = s + " " + e; }
+  if (f !== undefined) { s = s + " " + f; }
+  if (g !== undefined) { s = s + " " + g; }
+  if (h !== undefined) { s = s + " " + h; }
+  if (i !== undefined) { s = s + " " + i; }
+  if (j !== undefined) { s = s + " " + j; }
+  return s;
+}
+
+var console = {
+  log: function (a, b, c, d, e, f, g, h, i, j) { env.log("INFO", __zFmt(a, b, c, d, e, f, g, h, i, j)); },
+  warn: function (a, b, c, d, e, f, g, h, i, j) { env.log("WARN", __zFmt(a, b, c, d, e, f, g, h, i, j)); },
+  error: function (a, b, c, d, e, f, g, h, i, j) { env.log("ERROR", __zFmt(a, b, c, d, e, f, g, h, i, j)); },
+  info: function (a, b, c, d, e, f, g, h, i, j) { env.log("INFO", __zFmt(a, b, c, d, e, f, g, h, i, j)); },
 };
