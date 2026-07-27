@@ -652,10 +652,14 @@ function App(): React.ReactElement {
 
             const escapedName = escapeRegex(imp.name);
             const selfClosingRegex = new RegExp(`<${escapedName}\\s*/>`, 'g');
-            nextSource = nextSource.replace(selfClosingRegex, templateContent);
+            // Function replacer: a component's markup is content, not a
+            // substitution pattern. Passed as a string, `$&` re-inserts the
+            // tag it just replaced and `$'` splices in the rest of the
+            // document — so a component containing either corrupted the page.
+            nextSource = nextSource.replace(selfClosingRegex, () => templateContent);
 
             const pairedRegex = new RegExp(`<${escapedName}[^>]*>.*?</${escapedName}>`, 'gs');
-            nextSource = nextSource.replace(pairedRegex, templateContent);
+            nextSource = nextSource.replace(pairedRegex, () => templateContent);
           }
 
           return nextSource;

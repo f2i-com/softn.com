@@ -14,6 +14,7 @@ import { getDefaultRegistry } from '../renderer/registry';
 import { getXDB } from '../runtime/xdb';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNRenderContext, SoftNDocument } from '../types';
+import { parseStatePath } from '../runtime/state-path';
 
 // ============================================================================
 // Bundle Runtime
@@ -357,7 +358,7 @@ export function SoftNBundleRenderer({
 
   const setState = useCallback((path: string, value: unknown) => {
     setComponentState((prev) => {
-      const parts = path.split('.');
+      const parts = parseStatePath(path);
       const newState = { ...prev };
       let current: Record<string, unknown> = newState;
 

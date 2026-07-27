@@ -486,6 +486,17 @@ function renderElement(
         // state changes from these handlers trigger re-renders
         const isCallbackProp = prop.name.startsWith('on') && prop.name.length > 2;
         const evalContext = isCallbackProp ? callbackContext : context;
+
+        // `onClick={doThing()}` names the call to make on click, not a value to
+        // compute now — the same reading `@click={doThing()}` already gets from
+        // the events loop below. Evaluating it here ran the handler on every
+        // render and then passed its return value as the callback.
+        if (isCallbackProp && prop.value.value.type === 'CallExpression') {
+          const callExpr = prop.value.value;
+          props[prop.name] = () => evaluateExpression(callExpr, evalContext);
+          continue;
+        }
+
         const evaluated = evaluateExpression(prop.value.value, evalContext);
 
         props[prop.name] = evaluated;

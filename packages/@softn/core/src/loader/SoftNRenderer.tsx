@@ -39,6 +39,7 @@ import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
 import type { Expression, TemplateNode } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
+import { parseStatePath } from '../runtime/state-path';
 
 /**
  * Sanitize CSS from bundle style blocks before injection.
@@ -599,7 +600,7 @@ export function SoftNRenderer({
             setState: (path: string, value: unknown) => {
               if (!mountedRef.current || stale) return;
               setState((prev) => {
-                const parts = path.split('.');
+                const parts = parseStatePath(path);
                 const newState = { ...prev.componentState };
                 let current: unknown = newState;
                 for (let i = 0; i < parts.length - 1; i++) {
@@ -968,7 +969,7 @@ export function SoftNRenderer({
   // State setter for the context
   const setComponentState = useCallback((path: string, value: unknown) => {
     setState((prev) => {
-      const parts = path.split('.');
+      const parts = parseStatePath(path);
       const newState = { ...prev.componentState };
 
       let current: unknown = newState;
@@ -1312,12 +1313,22 @@ export function useDataBlock(document: SoftNDocument | null, appId?: string): {
     const parts: string[] = [];
     for (const key of keys) {
       const records = data[key] || [];
-      const count = records.length;
-      const first = count > 0 ? records[0] : null;
-      const last = count > 0 ? records[count - 1] : null;
-      parts.push(
-        `${key}:${count}:${first?.id || ''}:${first?.updated_at || ''}:${last?.id || ''}:${last?.updated_at || ''}`
-      );
+      // Every record contributes. Sampling only the first and last meant an
+      // edit to any record between them produced an identical signature, so
+      // the collection was judged unchanged and nothing re-rendered — editing
+      // an item in the middle of a list did nothing on screen.
+      //
+      // Folded into a rolling hash (FNV-1a) rather than concatenated, so the
+      // signature stays short for a large collection.
+      let hash = 0x811c9dc5;
+      for (const record of records) {
+        const field = `${record.id} ${record.updated_at || ''}`;
+        for (let i = 0; i < field.length; i++) {
+          hash ^= field.charCodeAt(i);
+          hash = Math.imul(hash, 0x01000193);
+        }
+      }
+      parts.push(`${key}:${records.length}:${(hash >>> 0).toString(36)}`);
     }
     return parts.join('|');
   }, []);
