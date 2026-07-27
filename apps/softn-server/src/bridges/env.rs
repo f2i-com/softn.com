@@ -1,4 +1,4 @@
-use formlogic_core::env_bridge::EnvBridge;
+use super::EnvBridge;
 
 pub struct NativeEnvBridge;
 
@@ -38,8 +38,15 @@ impl EnvBridge for NativeEnvBridge {
     fn log(&self, level: &str, message: &str) {
         // Truncate to prevent scripts from flooding logs with huge messages.
         const MAX_LOG_LEN: usize = 8192;
+        // Truncate on a char boundary: slicing at a raw byte offset panics when
+        // a multi-byte character straddles it, and every `console.*` call in a
+        // script reaches this method.
         let msg = if message.len() > MAX_LOG_LEN {
-            &message[..MAX_LOG_LEN]
+            let mut end = MAX_LOG_LEN;
+            while end > 0 && !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            &message[..end]
         } else {
             message
         };

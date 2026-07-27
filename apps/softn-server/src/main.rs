@@ -1,6 +1,7 @@
 mod app;
 mod bridges;
 mod bundle;
+mod host;
 mod http;
 mod pool;
 mod runtime;

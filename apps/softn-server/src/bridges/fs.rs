@@ -1,4 +1,4 @@
-use formlogic_core::fs_bridge::FsBridge;
+use super::FsBridge;
 use std::path::PathBuf;
 
 /// Strip the Windows UNC `\\?\` prefix from canonicalized paths.

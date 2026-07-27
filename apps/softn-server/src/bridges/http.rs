@@ -1,4 +1,4 @@
-use formlogic_core::http_bridge::{HttpBridge, HttpResponse};
+use super::{HttpBridge, HttpResponse};
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};

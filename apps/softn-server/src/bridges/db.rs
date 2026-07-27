@@ -1,5 +1,5 @@
 use crate::pool::{self, ServerDb};
-use formlogic_core::db_bridge::{DbBridge, DbRecord, DbSyncStatus};
+use super::{DbBridge, DbRecord, DbSyncStatus};
 
 pub struct NativeDbBridge {
     db: ServerDb,
@@ -11,14 +11,13 @@ impl NativeDbBridge {
     }
 }
 
-fn xdb_to_fl(r: xdb::Record) -> DbRecord {
+fn xdb_to_record(r: xdb::Record) -> DbRecord {
     DbRecord {
         id: r.id,
         collection: r.collection,
-        data: r.data.to_string(),
+        data: r.data,
         created_at: r.created_at,
         updated_at: r.updated_at,
-        data_parsed: Some(r.data),
     }
 }
 
@@ -28,13 +27,14 @@ impl DbBridge for NativeDbBridge {
         let conn = self.db.read()?;
         let records = pool::read_collection(&conn, collection)
             .map_err(|e| format!("db.query failed: {}", e))?;
+        // Note: the read pool yields `SyncRecord`, not `xdb::Record` — same
+        // field set, different type, so this cannot reuse `xdb_to_record`.
         Ok(records.into_iter().map(|r| DbRecord {
             id: r.id,
             collection: r.collection,
-            data: r.data.to_string(),
+            data: r.data,
             created_at: r.created_at,
             updated_at: r.updated_at,
-            data_parsed: Some(r.data),
         }).collect())
     }
 
@@ -44,7 +44,7 @@ impl DbBridge for NativeDbBridge {
             .map_err(|e| format!("db.create: invalid JSON: {}", e))?;
         let (record, _update) = db.create_record(collection, json)
             .map_err(|e| format!("db.create failed: {}", e))?;
-        Ok(xdb_to_fl(record))
+        Ok(xdb_to_record(record))
     }
 
     fn update(&mut self, id: &str, data: &str) -> Result<Option<DbRecord>, String> {
@@ -52,7 +52,7 @@ impl DbBridge for NativeDbBridge {
         let json: serde_json::Value = serde_json::from_str(data)
             .map_err(|e| format!("db.update: invalid JSON: {}", e))?;
         match db.update_record(id, json) {
-            Ok((r, _)) => Ok(Some(xdb_to_fl(r))),
+            Ok((r, _)) => Ok(Some(xdb_to_record(r))),
             Err(xdb::DbError::NotFound(_)) => Ok(None),
             Err(e) => Err(format!("db.update failed: {}", e)),
         }
@@ -77,7 +77,7 @@ impl DbBridge for NativeDbBridge {
         // Use read pool — concurrent with other reads and writes
         let conn = self.db.read()?;
         match pool::read_record(&conn, id) {
-            Ok(r) => Ok(Some(xdb_to_fl(r))),
+            Ok(r) => Ok(Some(xdb_to_record(r))),
             Err(xdb::DbError::NotFound(_)) => Ok(None),
             Err(e) => Err(format!("db.get failed: {}", e)),
         }

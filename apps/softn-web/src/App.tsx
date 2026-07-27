@@ -710,6 +710,7 @@ function App(): React.ReactElement {
               importResolver={tab.importResolver}
               logicBasePath={tab.logicBasePath}
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
+              permissionConfig={tab.permissionConfig}
               onPageChange={(page) => handlePageChange(tab.id, page)}
               serverUrl={tab.serverUrl}
               serverToken={tab.serverToken}
