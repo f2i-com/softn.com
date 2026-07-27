@@ -1,16 +1,19 @@
 /**
- * SoftN FormLogic Bridge
+ * SoftN Scripting Bridge
  *
- * Integrates the FormLogic VM with the SoftN runtime.
- * Uses the Rust WASM engine for ~20x faster execution.
- * All .logic code is executed inside the WASM VM for true sandboxing.
+ * Integrates the scripting VM with the SoftN runtime. The engine itself is
+ * selected in `./vm-adapter` — currently zipp, a JavaScript engine written in
+ * Rust and compiled to WASM. All .logic code executes inside the WASM VM, so
+ * the sandbox holds: no `eval`, no `new Function`, and no host object the
+ * engine preamble did not hand over.
  */
 
 import {
-  WasmFormLogicAdapter,
-  WASM_BRIDGE_PREAMBLE,
+  VmAdapter,
+  VM_BRIDGE_PREAMBLE,
   type SymbolScope,
-} from './formlogic-wasm-adapter';
+} from './vm-adapter';
+import { deepEqual } from './vm-state';
 
 import type { ScriptBlock, LogicBlock } from '../parser/ast';
 import type { AppPermissions } from '../bundle/types';
@@ -93,6 +96,16 @@ export type ScriptRuntimeMode = 'main' | 'worker';
 
 export interface ScriptRuntimeOptions {
   mode?: ScriptRuntimeMode;
+  /**
+   * Logic files the host already concatenated into `script.code` itself.
+   *
+   * A host that assembles a bundle may inline manifest-listed `.logic` files
+   * ahead of the entry file. Those files are then already part of this
+   * compilation, so an `import` naming one must not inline it a second time —
+   * every class and variable in it would be declared twice, which the VM
+   * rejects. Paths are bundle-relative, matching what `importResolver` takes.
+   */
+  preIncludedLogicPaths?: readonly string[];
 }
 
 export interface ScriptLoadResult {
@@ -321,11 +334,6 @@ export function detectWorkerIncompatibilities(code: string): string[] {
 }
 
 /**
- * Maximum recursion depth for deepEqual comparison.
- */
-const MAX_CONVERSION_DEPTH = 10;
-
-/**
  * Names of variables added by BRIDGE_PREAMBLE that should not be treated
  * as user state variables.
  */
@@ -490,7 +498,7 @@ function extractComputedDeclarations(
  * No `new Function()` calls are used — all user code runs in the VM.
  */
 export class SoftNScriptRuntime {
-  private vmEngine: WasmFormLogicAdapter | null = null;
+  private vmEngine: VmAdapter | null = null;
   private context: FormLogicContext;
   private db: DBNamespace;
   private permissions?: AppPermissions;
@@ -552,6 +560,12 @@ export class SoftNScriptRuntime {
   private importResolver?: (path: string) => Promise<string | null>;
   /** Base path of the .logic file for resolving relative imports */
   private logicBasePath?: string;
+  /**
+   * Every `.logic` path already part of this compilation — whether the host
+   * concatenated it or an earlier import pulled it in. The single registry
+   * that makes inclusion idempotent no matter which path reached the file.
+   */
+  private includedLogicPaths = new Set<string>();
 
   /** Permission config from permission.json (set via setPermissionConfig) */
   private permissionConfig: PermissionConfig | null = null;
@@ -588,6 +602,9 @@ export class SoftNScriptRuntime {
     }
     this.logicBasePath = logicBasePath;
     this.bundleFileProvider = bundleFileProvider ?? null;
+    for (const p of options?.preIncludedLogicPaths ?? []) {
+      this.includedLogicPaths.add(p);
+    }
   }
 
   /** Set the permission config for this runtime (from permission.json). */
@@ -603,7 +620,7 @@ export class SoftNScriptRuntime {
     const useHostBridges = this.runtimeMode === 'main';
 
     // 0. Create the WASM adapter
-    this.vmEngine = await WasmFormLogicAdapter.create();
+    this.vmEngine = await VmAdapter.create();
 
     if (useHostBridges) {
       // 1. Ensure XDB is fully initialized before executing any .logic code
@@ -627,6 +644,9 @@ export class SoftNScriptRuntime {
     // 3. Resolve imports (inline imported .logic files before passing to WASM)
     let resolvedCode = script.code;
     if (this.importResolver) {
+      // The entry file is already in `script.code`, so it counts as included
+      // for dedupe as well as being the root of the cycle-detection chain.
+      if (this.logicBasePath) this.includedLogicPaths.add(this.logicBasePath);
       resolvedCode = await this.resolveImports(
         resolvedCode,
         new Set(this.logicBasePath ? [this.logicBasePath] : []),
@@ -662,8 +682,9 @@ export class SoftNScriptRuntime {
       }
     }
 
-    // 5. Prepend bridge preamble (declares `let window = {}; let navigator = {};`)
-    const fullCode = WASM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode;
+    // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
+    // window/navigator/db/localStorage/host itself) then SoftN's own.
+    const fullCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode;
 
     // 5. Compile + run the full .logic code in the WASM VM
     const symbolMap = await this.vmEngine.initializeScript(fullCode);
@@ -1203,7 +1224,7 @@ export class SoftNScriptRuntime {
    */
   private async resolveImports(
     code: string,
-    visited: Set<string>,
+    expanding: Set<string>,
     currentPath?: string
   ): Promise<string> {
     if (!this.importResolver) return code;
@@ -1221,17 +1242,25 @@ export class SoftNScriptRuntime {
       const importPath = match[1];
       const resolvedPath = this.resolveImportPath(importPath, currentPath);
 
-      if (visited.has(resolvedPath)) {
+      // A file already in this compilation is included once, not twice: the
+      // result is a single translation unit, and re-inlining a file would
+      // redeclare every class and variable in it — a SyntaxError to the VM.
+      // Two files importing a common third is normal, so this is a skip.
+      if (this.includedLogicPaths.has(resolvedPath)) {
+        parts.push(`/* already included: ${importPath} */`);
+      } else if (expanding.has(resolvedPath)) {
+        // Still being expanded further up the chain, so it genuinely cycles.
         throw new Error(
-          `Circular import detected: "${resolvedPath}" is already in the import chain: ${[...visited].join(' → ')} → ${resolvedPath}`
+          `Circular import detected: "${resolvedPath}" is already in the import chain: ${[...expanding].join(' → ')} → ${resolvedPath}`
         );
       } else {
-        visited.add(resolvedPath);
+        expanding.add(resolvedPath);
+        this.includedLogicPaths.add(resolvedPath);
         try {
           const source = await this.importResolver(resolvedPath);
           if (source != null) {
             // Recursively resolve imports in the imported code
-            const resolved = await this.resolveImports(source, visited, resolvedPath);
+            const resolved = await this.resolveImports(source, expanding, resolvedPath);
             parts.push(resolved);
           } else {
             parts.push(`/* import not found: ${importPath} */`);
@@ -1239,6 +1268,10 @@ export class SoftNScriptRuntime {
         } catch (e) {
           console.error(`[SoftN] Error resolving import "${importPath}":`, e);
           parts.push(`/* import error: ${importPath} */`);
+        } finally {
+          // Off the ancestor chain — it stays in includedLogicPaths, so a
+          // later sibling import of the same file skips rather than throws.
+          expanding.delete(resolvedPath);
         }
       }
 
@@ -1873,93 +1906,6 @@ export class SoftNScriptRuntime {
     const mgr = await this.getGpuComputeManager();
     return mgr.releaseAll();
   }
-}
-
-/**
- * Deep equality check for state comparison.
- * Handles primitives, arrays, plain objects, Date, Set, Map, RegExp,
- * and typed arrays to prevent infinite re-renders or missed updates.
- */
-function deepEqual(a: unknown, b: unknown, depth: number = 0): boolean {
-  if (a === b) return true;
-  // Handle NaN: NaN === NaN is false, but they should be equal for state comparison
-  if (typeof a === 'number' && typeof b === 'number' && Number.isNaN(a) && Number.isNaN(b)) return true;
-  if (a == null || b == null) return false;
-  if (typeof a !== typeof b) return false;
-  if (typeof a !== 'object') return false;
-  // Prevent stack overflow on pathologically deep structures
-  if (depth >= MAX_CONVERSION_DEPTH) return false;
-
-  // Date
-  if (a instanceof Date) {
-    return b instanceof Date && a.getTime() === b.getTime();
-  }
-
-  // RegExp
-  if (a instanceof RegExp) {
-    return b instanceof RegExp && a.source === b.source && a.flags === b.flags;
-  }
-
-  // Set
-  if (a instanceof Set) {
-    if (!(b instanceof Set) || a.size !== b.size) return false;
-    for (const val of a) {
-      if (!b.has(val)) return false;
-    }
-    return true;
-  }
-
-  // Map
-  if (a instanceof Map) {
-    if (!(b instanceof Map) || a.size !== b.size) return false;
-    for (const [key, val] of a) {
-      if (!b.has(key) || !deepEqual(val, b.get(key), depth + 1)) return false;
-    }
-    return true;
-  }
-
-  // ArrayBuffer
-  if (a instanceof ArrayBuffer) {
-    if (!(b instanceof ArrayBuffer) || a.byteLength !== b.byteLength) return false;
-    const viewA = new Uint8Array(a);
-    const viewB = new Uint8Array(b);
-    for (let i = 0; i < viewA.length; i++) {
-      if (viewA[i] !== viewB[i]) return false;
-    }
-    return true;
-  }
-
-  // Typed arrays (Uint8Array, Float32Array, etc.)
-  if (ArrayBuffer.isView(a)) {
-    if (!ArrayBuffer.isView(b)) return false;
-    const ta = a as unknown as { length: number; [i: number]: number; constructor: unknown };
-    const tb = b as unknown as { length: number; [i: number]: number; constructor: unknown };
-    if (ta.constructor !== tb.constructor || ta.length !== tb.length) return false;
-    for (let i = 0; i < ta.length; i++) {
-      if (ta[i] !== tb[i]) return false;
-    }
-    return true;
-  }
-
-  // Arrays
-  if (Array.isArray(a)) {
-    if (!Array.isArray(b) || a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (!deepEqual(a[i], b[i], depth + 1)) return false;
-    }
-    return true;
-  }
-
-  // Plain objects
-  const aObj = a as Record<string, unknown>;
-  const bObj = b as Record<string, unknown>;
-  const aKeys = Object.keys(aObj);
-  const bKeys = Object.keys(bObj);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const key of aKeys) {
-    if (!deepEqual(aObj[key], bObj[key], depth + 1)) return false;
-  }
-  return true;
 }
 
 /**

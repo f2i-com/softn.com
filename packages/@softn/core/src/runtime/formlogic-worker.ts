@@ -7,14 +7,15 @@
  */
 
 import {
-  WasmFormLogicAdapter,
-  WASM_BRIDGE_PREAMBLE,
+  VmAdapter,
+  VM_BRIDGE_PREAMBLE,
   type SymbolScope,
-} from './formlogic-wasm-adapter';
+} from './vm-adapter';
 import {
   SnapshotDBBridge,
   SnapshotLocalStorageBridge,
 } from './formlogic-worker-bridges';
+import { deepEqual } from './vm-state';
 
 // Type-only import from formlogic (no runtime dependency on DOM-heavy module)
 import type { CodeBlock } from './formlogic';
@@ -26,7 +27,7 @@ type ImportResolver = (path: string) => Promise<string | null>;
 // State
 // ============================================================================
 
-let wasmAdapter: WasmFormLogicAdapter | null = null;
+let wasmAdapter: VmAdapter | null = null;
 const dbBridge = new SnapshotDBBridge();
 const lsBridge = new SnapshotLocalStorageBridge();
 
@@ -36,7 +37,10 @@ let stateVarIndices: number[] = [];
 let functionNames: string[] = [];
 const workerState: Record<string, unknown> = {};
 
-const BRIDGE_VARS = new Set(['window', 'navigator']);
+// Engine-provided bindings, not script state. `host` is in the symbol map
+// because the engine exposes it for two-way syncing, but syncing it as a state
+// variable would round-trip its methods through the host and back.
+const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn']);
 
 // ============================================================================
 // Import resolution (RPC to main thread)
@@ -159,7 +163,7 @@ self.onmessage = async (evt: MessageEvent) => {
       }
 
       // Create WASM adapter
-      wasmAdapter = await WasmFormLogicAdapter.create();
+      wasmAdapter = await VmAdapter.create();
 
       // Register snapshot-based bridges
       wasmAdapter.registerDBBridge(dbBridge as never);
@@ -178,7 +182,7 @@ self.onmessage = async (evt: MessageEvent) => {
       }
 
       // Compile and run
-      const fullCode = WASM_BRIDGE_PREAMBLE + resolvedCode;
+      const fullCode = VM_BRIDGE_PREAMBLE + resolvedCode;
       symbolMap = await wasmAdapter.initializeScript(fullCode);
 
       // Extract state and functions
@@ -241,20 +245,22 @@ self.onmessage = async (evt: MessageEvent) => {
       // Call the function
       const result = wasmAdapter.callFunction(name, args);
 
-      // Use the VM's dirty bitset to find only globals that were written
+      // Narrow to the globals the VM may have written, then diff them. The
+      // engine reports conservatively when it has no dirty bits of its own, so
+      // the diff — not the report — is what decides a value actually changed;
+      // posting unchanged state back would re-render the tree on every call.
       const dirtyIndices = wasmAdapter.getDirtyGlobals(stateVarIndices);
       const changedState: Record<string, unknown> = {};
       if (dirtyIndices.length > 0) {
-        // Only fetch and update the globals that actually changed
         const dirtyValues = wasmAdapter.getGlobalsBatch(dirtyIndices) as unknown[];
         for (let i = 0; i < dirtyIndices.length; i++) {
-          const idx = dirtyIndices[i];
-          const varIdx = stateVarIndices.indexOf(idx);
-          if (varIdx !== -1) {
-            const name = stateVarNames[varIdx];
-            workerState[name] = dirtyValues[i];
-            changedState[name] = dirtyValues[i];
-          }
+          const varIdx = stateVarIndices.indexOf(dirtyIndices[i]);
+          if (varIdx === -1) continue;
+          const varName = stateVarNames[varIdx];
+          const value = dirtyValues[i];
+          if (deepEqual(value, workerState[varName])) continue;
+          workerState[varName] = value;
+          changedState[varName] = value;
         }
       }
 

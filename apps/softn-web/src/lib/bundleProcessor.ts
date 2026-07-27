@@ -298,7 +298,7 @@ export async function loadXDBData(
 export function processBundle(
   textFiles: Map<string, string>,
   manifest: BundleManifest
-): { source: string; logicBasePath?: string } {
+): { source: string; logicBasePath?: string; preIncludedLogicPaths: string[] } {
   const mainUI = textFiles.get(manifest.main);
   if (!mainUI) {
     throw new Error(`Main file not found: ${manifest.main}`);
@@ -306,6 +306,9 @@ export function processBundle(
 
   let fullSource = mainUI;
   let logicBasePath: string | undefined;
+  // Logic files concatenated below. Reported to the runtime so an `import`
+  // naming one of them is skipped rather than inlining the file a second time.
+  const preIncludedLogic = new Set<string>();
 
   const inlineLogic = (source: string, basePath: string): string => {
     return source.replace(/<logic\s+src=["']([^"']+)["']\s*\/>/g, (match, rel) => {
@@ -331,6 +334,7 @@ export function processBundle(
         if (content) {
           console.log('[SoftN Web] Including manifest logic file:', mlPath);
           parts.push(content);
+          preIncludedLogic.add(mlPath);
         }
       }
       parts.push(logicFile); // main entry last
@@ -403,7 +407,7 @@ export function processBundle(
 
   console.log('[SoftN Web] Final source prepared with inlined components');
 
-  return { source: fullSource, logicBasePath };
+  return { source: fullSource, logicBasePath, preIncludedLogicPaths: [...preIncludedLogic] };
 }
 
 /**

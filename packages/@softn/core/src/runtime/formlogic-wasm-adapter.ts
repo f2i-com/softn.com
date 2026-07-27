@@ -14,6 +14,7 @@ import initWasm, { WasmFormLogicEngine, detectHostBridges } from '../../wasm/for
 
 import type { DBNamespace } from './formlogic';
 import { setWasmDetectHostBridges } from './formlogic';
+import { sanitizeArgs } from './vm-args';
 
 // ============================================================================
 // WASM initialization
@@ -42,71 +43,6 @@ function ensureWasm(): Promise<void> {
  * These shadow the real browser globals so the VM can intercept access.
  */
 export const WASM_BRIDGE_PREAMBLE = 'let window = {};\nlet navigator = {};\n';
-
-// ============================================================================
-// Argument sanitization
-// ============================================================================
-
-/**
- * Check if an object is a plain object or array (safe to pass to the WASM VM).
- * Rejects DOM nodes, events, and all browser host objects using an allowlist
- * approach: only plain objects ({} / Object.create(null)) and arrays pass.
- */
-function isPlainObject(obj: object): boolean {
-  if (Array.isArray(obj)) return true;
-  const proto = Object.getPrototypeOf(obj);
-  return proto === null || proto === Object.prototype;
-}
-
-/**
- * Sanitize arguments before passing to the WASM VM.
- * Performs a defensive deep-clone that:
- * - Only allows primitives, plain objects, and arrays (allowlist approach)
- * - Rejects DOM nodes, events, and all browser host objects
- * - Breaks circular references using a WeakSet (prevents Rust panic from infinite recursion)
- * - Catches throwing getters gracefully
- * .logic code operates on plain data, not browser objects.
- */
-function sanitizeArgs(args: unknown[]): unknown[] {
-  if (args.length === 0) return args;
-  const seen = new WeakSet();
-
-  function cloneSafe(obj: unknown): unknown {
-    if (obj === null || obj === undefined) return obj;
-    const t = typeof obj;
-    if (t === 'string' || t === 'number' || t === 'boolean') return obj;
-    if (t === 'function') return null;
-    if (t !== 'object') return obj;
-    // Allowlist: only clone plain objects and arrays. Everything else
-    // (DOM nodes, events, typed arrays, Map, Set, etc.) is dropped.
-    const o = obj as object;
-    if (!isPlainObject(o)) return null;
-    // Break circular references but allow valid DAGs (shared references)
-    if (seen.has(o)) return null;
-    seen.add(o);
-
-    let result: unknown;
-    if (Array.isArray(o)) {
-      result = o.map(cloneSafe);
-    } else {
-      const clone: Record<string, unknown> = {};
-      for (const key of Object.keys(o)) {
-        try {
-          clone[key] = cloneSafe((o as Record<string, unknown>)[key]);
-        } catch {
-          // Handle getters that throw
-          clone[key] = null;
-        }
-      }
-      result = clone;
-    }
-
-    seen.delete(o); // Allow this object to appear in sibling paths
-    return result;
-  }
-
-  return args.map(cloneSafe);
-}
 
 // ============================================================================
 // Symbol types (matching TS engine)
