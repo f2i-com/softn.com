@@ -2,8 +2,8 @@
  * FormLogic WASM Adapter
  *
  * Drop-in replacement for the TypeScript FormLogicEngine, powered by the
- * formlogic-rust WASM module. Provides the same API surface used by
- * formlogic.ts (SoftNScriptRuntime).
+ * script-runtime-rust WASM module. Provides the same API surface used by
+ * script-runtime.ts (SoftNScriptRuntime).
  *
  * Key difference from the TS engine: the WASM engine returns plain JS values
  * (not BaseObject instances), so jsToFormLogic/formLogicToJS conversions are
@@ -12,8 +12,8 @@
 
 import initWasm, { WasmFormLogicEngine, detectHostBridges } from '../../wasm/formlogic_wasm.js';
 
-import type { DBNamespace } from './formlogic';
-import { setWasmDetectHostBridges } from './formlogic';
+import type { DBNamespace } from './script-runtime';
+import { setWasmDetectHostBridges } from './script-runtime';
 import { sanitizeArgs } from './vm-args';
 
 // ============================================================================

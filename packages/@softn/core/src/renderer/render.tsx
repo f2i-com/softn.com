@@ -572,7 +572,7 @@ function renderElement(
       };
     }
     // For other events (click, submit, etc.), discard the DOM event to prevent
-    // it leaking into the FormLogic VM (which can't handle DOM objects).
+    // it leaking into the script VM (which can't handle DOM objects).
     return () => fn();
   };
 
@@ -1118,15 +1118,15 @@ export function evaluateExpression(
         });
 
         if (typeof expr.body === 'string') {
-          // Block body - try to extract return value or execute with FormLogic
+          // Block body - try to extract return value or execute in the VM
           // For now, attempt to parse simple return statements
           const bodyStr = expr.body.trim();
           if (bodyStr.startsWith('return ')) {
             // Simple return statement - this is a limitation
-            // Full support would require FormLogic integration
+            // Full support would require script-VM integration
             if (isDevelopment) {
               console.warn(
-                '[SoftN] Block body arrow functions with complex logic require FormLogic integration'
+                '[SoftN] Block body arrow functions with complex logic require script-VM integration'
               );
             }
           }

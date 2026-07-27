@@ -143,7 +143,7 @@ SoftN Studio supports two page formats. Use **.ui** for component-driven apps (r
 
 - **.ui** — SoftN UI markup. XML-like component tree rendered by @softn/core. The preferred format.
 - **.html** — Standard HTML with inline CSS and JS. Good for simple or self-contained pages.
-- **.logic** — FormLogic scripting (JavaScript-like). Imported by .ui files for shared logic.
+- **.logic** — JavaScript, run in a sandboxed VM. Imported by .ui files for shared logic.
 - **.xdb** — Data collections. JSON with \`{ "collection": "name", "records": [...] }\`.
 - **.json** — Config and data files. manifest.json defines the app entry point.
 - **.css / .js / .ts / .tsx** — Standard web files, used alongside .html pages.
@@ -184,7 +184,7 @@ A .ui file has these sections in order: imports, component declaration, data, lo
   <collection name="tasks" as="tasks" sort="createdAt:desc" />
 </data>
 
-<!-- 4. Logic block — FormLogic code (optional) -->
+<!-- 4. Logic block — JavaScript (optional) -->
 <logic>
   let count = 0
   function increment() {
@@ -349,9 +349,10 @@ A .ui file has these sections in order: imports, component declaration, data, lo
 
 ---
 
-## FormLogic (.logic) Syntax
+## .logic Syntax
 
-FormLogic is a JavaScript-like scripting language. Used inside \`<logic>\` blocks or standalone \`.logic\` files.
+.logic is JavaScript, executed by a sandboxed engine — no \`eval\`, no \`new Function\`, and no host
+access beyond the modules listed below. Used inside \`<logic>\` blocks or standalone \`.logic\` files.
 
 \`\`\`javascript
 // Variables

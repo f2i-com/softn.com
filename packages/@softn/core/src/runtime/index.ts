@@ -1,11 +1,11 @@
 /**
  * SoftN Runtime Module
  *
- * Exports the runtime context, state management, FormLogic bridge, and XDB.
+ * Exports the runtime context, state management, script bridge, and XDB.
  */
 
 export * from './context';
-export * from './formlogic';
+export * from './script-runtime';
 export * from './reactivity';
 export * from './xdb';
 export * from './xdb-server-sync';

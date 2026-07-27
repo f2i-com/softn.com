@@ -13,7 +13,7 @@ interface ProjectStore {
   icon: string | null;
   themeMode: 'light' | 'dark' | 'system';
 
-  // Logic source (FormLogic code)
+  // Logic source (.logic — JavaScript)
   logicSource: string;
 
   // XDB collections
@@ -73,7 +73,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   description: '',
   icon: null,
   themeMode: 'light',
-  logicSource: `// FormLogic code goes here
+  logicSource: `// SoftN logic — JavaScript, run in a sandboxed VM
 // Define your state, computed values, and functions
 
 let count = 0
@@ -194,7 +194,7 @@ function decrement() {
       description: '',
       icon: null,
       themeMode: 'light',
-      logicSource: `// FormLogic code goes here
+      logicSource: `// SoftN logic — JavaScript, run in a sandboxed VM
 // Define your state, computed values, and functions
 
 let count = 0

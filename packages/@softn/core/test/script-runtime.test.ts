@@ -1,7 +1,7 @@
 /**
- * FormLogic Integration Tests
+ * Script runtime integration tests
  *
- * With the WASM engine, jsToFormLogic/formLogicToJS are no longer needed —
+ * The WASM engine returns plain JS values, so no host<->VM value
  * the WASM adapter returns plain JS values directly. These tests verify
  * the SoftNScriptRuntime API with the WASM backend.
  */
@@ -12,11 +12,11 @@ import {
   createMockXDBModule,
   createMockNavModule,
   createConsoleModule,
-  type FormLogicContext,
-} from '../src/runtime/formlogic';
+  type ScriptContext,
+} from '../src/runtime/script-runtime';
 import type { ScriptBlock } from '../src/parser/ast';
 
-describe('FormLogic Bridge', () => {
+describe('Script runtime', () => {
   describe('SoftNScriptRuntime', () => {
     it('should load script state, functions, and computed values', async () => {
       const script: ScriptBlock = {
@@ -33,7 +33,7 @@ describe('FormLogic Bridge', () => {
       };
 
       const contextState: Record<string, unknown> = {};
-      const context: FormLogicContext = {
+      const context: ScriptContext = {
         state: contextState,
         setState: (path: string, value: unknown) => {
           contextState[path] = value;

@@ -25,15 +25,15 @@ import {
   createConsoleModule,
   getSyncModuleCache,
   setSyncModuleCache,
-  type FormLogicContext,
+  type ScriptContext,
   type ScriptRuntimeHandle,
   type ScriptRuntimeMode,
   type BundleFileProvider,
   type PermissionConfig,
-} from '../runtime/formlogic';
+} from '../runtime/script-runtime';
 // Worker runtime available but currently all calls route through main-thread WASM VM
 // for instant responsiveness. Can re-enable for heavy computation offloading if needed.
-// import { createWorkerScriptRuntime } from '../runtime/formlogic-worker-runtime';
+// import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
 import { getXDB } from '../runtime/xdb';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
@@ -414,7 +414,7 @@ export function SoftNRenderer({
     scriptComputed: {},
   });
 
-  // Script runtime ref for FormLogic execution
+  // Script runtime ref for .logic execution
   const scriptRuntimeRef = useRef<ScriptRuntimeHandle | null>(null);
 
   // Sync poll interval ref for cleanup on unmount
@@ -591,10 +591,10 @@ export function SoftNRenderer({
         if (codeBlock && !scriptInitializedRef.current) {
           scriptInitializedRef.current = true;
 
-          // Create the FormLogic context with a mutable state object
+          // Create the script context with a mutable state object
           // The state will be populated by loadScript() after VM initialization
           const scriptState: Record<string, unknown> = {};
-          const formLogicContext: FormLogicContext = {
+          const formLogicContext: ScriptContext = {
             state: scriptState,
             setState: (path: string, value: unknown) => {
               if (!mountedRef.current || stale) return;
@@ -1054,7 +1054,7 @@ export function SoftNRenderer({
     }
   }, [currentPageValue]);
 
-  // Sync React state changes to FormLogic context
+  // Sync React state changes to the script context
   // This ensures form bindings (:bind) update the context that save functions read from
   useEffect(() => {
     if (scriptRuntimeRef.current) {

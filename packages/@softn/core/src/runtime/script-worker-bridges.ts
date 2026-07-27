@@ -1,5 +1,5 @@
 /**
- * Snapshot-based bridges for Web Worker FormLogic execution.
+ * Snapshot-based bridges for Web Worker script execution.
  *
  * These bridges operate on in-memory snapshots of XDB data and localStorage,
  * allowing the WASM VM to run in a Web Worker without direct access to the

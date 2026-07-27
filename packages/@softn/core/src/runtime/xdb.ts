@@ -1459,7 +1459,7 @@ export function getDefaultSignaling(): string[] | undefined {
 /** Cached reference to xdb-sync module (set after first dynamic import). */
 let _syncModuleRef: { getAllSyncStatus: () => { connected: boolean; peers: number; room: string; peerId: string }[] } | null = null;
 
-/** Register the sync module reference (called from xdb-sync.ts or formlogic.ts). */
+/** Register the sync module reference (called from xdb-sync.ts or script-runtime.ts). */
 export function _setSyncModuleRef(mod: typeof _syncModuleRef): void {
   _syncModuleRef = mod;
 }
@@ -1771,7 +1771,7 @@ function createMemoryStorage(): XDBStorage {
 }
 
 /**
- * Create XDB module for FormLogic integration
+ * Create XDB module for script integration
  */
 export function createXDBModule(xdb?: XDBService) {
   const db = xdb || getXDB();

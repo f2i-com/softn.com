@@ -219,7 +219,7 @@ export function createBundleRuntime(bundle: SoftNBundle): BundleRuntime {
     };
 
     // For now, we return the parsed state
-    // Full execution would require the FormLogic runtime
+    // Full execution would require the script runtime
     logicCache.set(normalizedPath, exports);
     return exports;
   }

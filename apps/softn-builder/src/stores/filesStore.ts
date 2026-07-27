@@ -49,7 +49,7 @@ function createEmptyLogicFile(id: string, path: string): LogicFileState {
   return {
     id,
     path,
-    content: `// ${path.split('/').pop()}\n// FormLogic code\n\n`,
+    content: `// ${path.split('/').pop()}\n// SoftN logic — JavaScript, run in a sandboxed VM\n\n`,
     imports: [],
     exports: [],
   };
@@ -219,7 +219,7 @@ export const useFilesStore = create<FilesStore>((set, get) => ({
       {
         id: mainLogicId,
         path: 'logic/main.logic',
-        content: `// FormLogic code goes here
+        content: `// SoftN logic — JavaScript, run in a sandboxed VM
 // Define your state, computed values, and functions
 
 let count = 0
@@ -950,7 +950,7 @@ function decrement() {
           {
             id: mainLogicId,
             path: 'logic/main.logic',
-            content: `// FormLogic code goes here
+            content: `// SoftN logic — JavaScript, run in a sandboxed VM
 // Define your state, computed values, and functions
 
 let count = 0

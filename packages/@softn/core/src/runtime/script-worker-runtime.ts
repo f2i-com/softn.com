@@ -1,14 +1,14 @@
 import type { AppPermissions } from '../bundle/types';
-import type { DBMutation, LSMutation } from './formlogic-worker-bridges';
+import type { DBMutation, LSMutation } from './script-worker-bridges';
 
 type ImportResolver = (path: string) => Promise<string | null>;
 import type {
   CodeBlock,
-  FormLogicContext,
+  ScriptContext,
   ScriptLoadResult,
   ScriptRuntimeHandle,
-} from './formlogic';
-import { getSyncModuleCache } from './formlogic';
+} from './script-runtime';
+import { getSyncModuleCache } from './script-runtime';
 
 type WorkerPayloadMap = {
   init: Record<string, unknown>;
@@ -85,7 +85,7 @@ function sanitizeForPostMessage(a: unknown): unknown {
 export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private worker: Worker;
   private workerUrl: URL;
-  private context: FormLogicContext;
+  private context: ScriptContext;
   private importResolver?: ImportResolver;
   private permissions?: AppPermissions;
   private appId?: string;
@@ -111,7 +111,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private perfLastReport = 0;
 
   constructor(
-    context: FormLogicContext,
+    context: ScriptContext,
     permissions?: AppPermissions,
     appId?: string,
     importResolver?: ImportResolver,
@@ -124,7 +124,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.logicBasePath = logicBasePath;
     this.safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
     // Use a static URL reference so bundlers can emit and rewrite the worker asset path.
-    this.workerUrl = new URL('./core-runtime/runtime/formlogic-worker.js', import.meta.url);
+    this.workerUrl = new URL('./core-runtime/runtime/script-worker.js', import.meta.url);
     this.worker = new Worker(this.workerUrl, { type: 'module' });
     this.worker.onmessage = (evt: MessageEvent) => this.onWorkerMessage(evt);
     this.worker.onerror = (evt: ErrorEvent) => {
@@ -523,7 +523,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
 }
 
 export function createWorkerScriptRuntime(
-  context: FormLogicContext,
+  context: ScriptContext,
   permissions?: AppPermissions,
   appId?: string,
   importResolver?: ImportResolver,

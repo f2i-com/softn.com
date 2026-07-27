@@ -681,7 +681,7 @@ export function Scene3D({
 
   // Update camera — compare actual values, not object reference.
   // When orbit controls are active, only update if values truly changed
-  // (avoids resetting camera after every formlogic re-render).
+  // (avoids resetting camera after every script-driven re-render).
   useEffect(() => {
     const cam = cameraRef.current;
     if (!cam || !cameraProp) return;

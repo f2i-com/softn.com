@@ -354,7 +354,7 @@ cd apps/softn-builder && npm run tauri dev
 |------|---------|
 | `packages/@softn/core/src/parser/` | Lexer and AST parser |
 | `packages/@softn/core/src/renderer/` | AST to React renderer and component registry |
-| `packages/@softn/core/src/runtime/formlogic.ts` | Script runtime (state sync, bridges, host calls) |
+| `packages/@softn/core/src/runtime/script-runtime.ts` | Script runtime (state sync, bridges, host calls) |
 | `packages/@softn/core/src/runtime/vm-adapter.ts` | Which engine `.logic` runs on |
 | `packages/@softn/core/src/runtime/xdb.ts` | XDB database service |
 | `packages/@softn/core/src/bundle/bundle.ts` | ZIP bundle reader |
