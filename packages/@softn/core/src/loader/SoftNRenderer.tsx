@@ -52,16 +52,32 @@ import { parseStatePath } from '../runtime/state-path';
  * - behavior: (IE HTC component loading)
  * Leaves relative url() intact (e.g. fonts/images bundled with the app).
  */
-function sanitizeBundleCSS(css: string): string {
+export function sanitizeBundleCSS(css: string): string {
   // Strip CSS escape sequences that could bypass protocol detection
   // (e.g. \6a avascript:, \68 ttp:, \75rl)
   let sanitized = css.replace(/\\[0-9a-fA-F]{1,6}\s?/g, '_');
   // Remove @import rules (with or without url())
   sanitized = sanitized.replace(/@import\s+(?:url\s*\([^)]*\)|["'][^"']*["'])[^;]*;?/gi, '/* @import removed */');
-  // Remove url() values that reference external or dangerous protocols
-  sanitized = sanitized.replace(/url\s*\(\s*(['"]?)\s*(https?:|data:|javascript:|blob:|ftp:)[^)]*\1\s*\)/gi, 'url(/* removed */)');
-  // Remove protocol-relative URLs (//host/path) inside url()
-  sanitized = sanitized.replace(/url\s*\(\s*(['"]?)\s*\/\/[^)]*\1\s*\)/gi, 'url(/* removed */)');
+  // Remove url() values that reference external or dangerous protocols.
+  //
+  // Quoted and unquoted forms are matched separately. A single pattern with
+  // `[^)]*` cannot cross a literal `)`, so a URL that contains one inside its
+  // quotes — `url("https://evil.test/beacon?a=(b)")`, a perfectly ordinary
+  // query string — failed to match and the declaration reached the page
+  // untouched. Confirmed by running the real function: the unquoted form was
+  // removed, the quoted one came back unchanged.
+  const isRemote = (target: string): boolean =>
+    /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/)/i.test(target);
+
+  const stripRemote = (pattern: RegExp) => {
+    sanitized = sanitized.replace(pattern, (match, inner: string) =>
+      isRemote(inner) ? 'url(/* removed */)' : match
+    );
+  };
+
+  stripRemote(/url\s*\(\s*"([^"]*)"\s*\)/gi);
+  stripRemote(/url\s*\(\s*'([^']*)'\s*\)/gi);
+  stripRemote(/url\s*\(\s*([^)'"]*?)\s*\)/gi);
   // Remove expression() (IE) and -moz-binding (Firefox) — code execution vectors
   sanitized = sanitized.replace(/expression\s*\([^)]*\)/gi, '/* expression removed */');
   sanitized = sanitized.replace(/-moz-binding\s*:[^;]+;?/gi, '/* -moz-binding removed */');

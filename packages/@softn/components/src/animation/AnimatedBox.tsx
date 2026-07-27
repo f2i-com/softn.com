@@ -173,6 +173,15 @@ export function AnimatedBox({
     el.style.transition = 'none'; // no transition for initial state
     el.style.willChange = 'opacity, transform';
 
+    // This effect re-runs whenever the animation, duration, easing or preset
+    // changes, and it has just put the element back into its "from" state —
+    // typically opacity 0. Without clearing the guard, `doAnimate` below sees
+    // that it already ran once and returns immediately, so the content faded
+    // out and never came back: `<AnimatedBox animation={mode}>` with `mode`
+    // flipping from "fadeIn" to "slideUp" left the content permanently
+    // invisible.
+    hasAnimatedRef.current = false;
+
     const doAnimate = () => {
       if (hasAnimatedRef.current) return;
       hasAnimatedRef.current = true;
