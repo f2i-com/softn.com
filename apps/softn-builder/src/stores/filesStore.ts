@@ -90,6 +90,70 @@ function resolveImportPath(fromPath: string, importPath: string): string {
   return parts.join('/');
 }
 
+/**
+ * Express `targetPath` relative to the file at `fromPath`.
+ *
+ * The inverse of `resolveImportPath`, so a rewritten `<logic src>` keeps the
+ * same relative style the author wrote.
+ */
+function relativeImportPath(fromPath: string, targetPath: string): string {
+  const fromParts = (parsePath(fromPath).parent || '').split('/').filter(Boolean);
+  const toParts = targetPath.split('/').filter(Boolean);
+
+  let shared = 0;
+  while (shared < fromParts.length && shared < toParts.length && fromParts[shared] === toParts[shared]) {
+    shared += 1;
+  }
+
+  const up = fromParts.length - shared;
+  const down = toParts.slice(shared);
+  const prefix = up > 0 ? Array(up).fill('..') : ['.'];
+  return [...prefix, ...down].join('/');
+}
+
+/**
+ * Repoint every `<logic src>` that referred to a file which has just moved.
+ *
+ * Renaming a logic file used to rewrite only the file's own path, leaving each
+ * UI file's `logicSrc` pointing at a name that no longer existed. Nothing
+ * downstream treats that as an error: the preview substitutes an empty
+ * `<logic>` block "to avoid parse errors", the parser turns a leftover
+ * self-closing `<logic src>` into an empty code block, and the renderer
+ * replaces every handler that is not a function with a no-op whose warning is
+ * gated on `scriptLoaded` — which is false in exactly this case. The result
+ * was an app that rendered completely and did nothing at all, with a single
+ * console.warn to show for it.
+ */
+function repointLogicReferences(
+  uiFiles: Map<string, UIFileState>,
+  oldPath: string,
+  newPath: string
+): Map<string, UIFileState> {
+  const updated = new Map(uiFiles);
+
+  for (const [id, file] of uiFiles) {
+    if (!file.logicSrc) continue;
+    if (resolveImportPath(file.path, file.logicSrc) !== oldPath) continue;
+
+    const nextSrc = relativeImportPath(file.path, newPath);
+    const next: UIFileState = { ...file, logicSrc: nextSrc };
+
+    // Multi-file bundles keep the original text and re-emit the header from
+    // it, so the tag in that copy has to be repointed too or export would
+    // write the stale path back out.
+    if (file.originalSource) {
+      next.originalSource = file.originalSource.replace(
+        /(<logic\s+src=")([^"]*)(")/,
+        `$1${nextSrc}$3`
+      );
+    }
+
+    updated.set(id, next);
+  }
+
+  return updated;
+}
+
 interface FilesStore {
   // File tree structure
   nodes: Map<string, ProjectFileNode>;
@@ -558,7 +622,7 @@ function decrement() {
       });
 
       // Update file content path
-      const newUIFiles = new Map(state.uiFiles);
+      let newUIFiles = new Map(state.uiFiles);
       const newLogicFiles = new Map(state.logicFiles);
       const newAssetFiles = new Map(state.assetFiles);
 
@@ -572,6 +636,9 @@ function decrement() {
         if (file) {
           newLogicFiles.set(id, { ...file, path: newPath });
         }
+        // Every `<logic src>` that pointed at the old path has to follow it,
+        // or the app renders perfectly and every button is inert.
+        newUIFiles = repointLogicReferences(newUIFiles, node.path, newPath);
       } else if (node.fileType === 'asset') {
         const file = newAssetFiles.get(id);
         if (file) {
@@ -635,7 +702,7 @@ function decrement() {
       });
 
       // Update file content path
-      const newUIFiles = new Map(state.uiFiles);
+      let newUIFiles = new Map(state.uiFiles);
       const newLogicFiles = new Map(state.logicFiles);
       const newAssetFiles = new Map(state.assetFiles);
 
@@ -649,6 +716,9 @@ function decrement() {
         if (file) {
           newLogicFiles.set(id, { ...file, path: newPath });
         }
+        // Every `<logic src>` that pointed at the old path has to follow it,
+        // or the app renders perfectly and every button is inert.
+        newUIFiles = repointLogicReferences(newUIFiles, node.path, newPath);
       } else if (node.fileType === 'asset') {
         const file = newAssetFiles.get(id);
         if (file) {
