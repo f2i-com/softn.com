@@ -66,17 +66,28 @@ export function Radio({
   const hasError = Boolean(error);
   const errorMessage = typeof error === 'string' ? error : undefined;
 
-  const [selectedValue, setSelectedValue] = React.useState(value ?? defaultValue ?? '');
+  const [internalValue, setInternalValue] = React.useState(value ?? defaultValue ?? '');
+
+  // When `value` is supplied the caller owns the selection, so render from the
+  // prop rather than from internal state. Selecting used to overwrite internal
+  // state unconditionally and the resync effect only fires when `value` itself
+  // changes — so a handler that rejected a choice and left the bound value
+  // alone still saw the rejected option stay selected, with the UI and the
+  // app's state permanently disagreeing. Checkbox already works this way.
+  const isControlled = value !== undefined;
+  const selectedValue = isControlled ? value : internalValue;
 
   React.useEffect(() => {
     if (value !== undefined) {
-      setSelectedValue(value);
+      setInternalValue(value);
     }
   }, [value]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = e.target.value;
-    setSelectedValue(newValue);
+    if (!isControlled) {
+      setInternalValue(newValue);
+    }
     onChange?.(newValue, e);
   };
 

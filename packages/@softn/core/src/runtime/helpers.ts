@@ -235,12 +235,7 @@ export function unique<T>(items: T[], key?: string): T[] {
   if (key) {
     const seen = new Set<unknown>();
     return items.filter((item) => {
-      // A record's own fields — id, created_at, updated_at, deleted — are as
-    // addressable as the ones inside `data`. Indexing only `data` made every
-    // key-based helper answer `undefined` for them, which sorts nothing,
-    // matches nothing and collapses every record to one. `find` already
-    // merged both; the rest now agree with it.
-    const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
+      const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
       const val = (data as Record<string, unknown>)[key];
       if (seen.has(val)) return false;
       seen.add(val);
@@ -261,11 +256,6 @@ export function pluck<T>(items: T[], key: string): unknown[] {
   if (!Array.isArray(items)) return [];
 
   return items.map((item) => {
-    // A record's own fields — id, created_at, updated_at, deleted — are as
-    // addressable as the ones inside `data`. Indexing only `data` made every
-    // key-based helper answer `undefined` for them, which sorts nothing,
-    // matches nothing and collapses every record to one. `find` already
-    // merged both; the rest now agree with it.
     const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
     return (data as Record<string, unknown>)[key];
   });
@@ -320,9 +310,20 @@ export function titleCase(str: string): string {
  *   {formatNumber(1234567.89)}
  *   {formatNumber(price, { style: 'currency', currency: 'USD' })}
  */
-export function formatNumber(num: number, options?: Intl.NumberFormatOptions): string {
-  if (typeof num !== 'number' || isNaN(num)) return '';
-  return new Intl.NumberFormat(undefined, options).format(num);
+export function formatNumber(
+  num: number | string,
+  options?: Intl.NumberFormatOptions
+): string {
+  // Accept a numeric string. `:bind` on `<Input type="number">` stores exactly
+  // that — the DOM hands back `target.value` — so a price entered through a
+  // form arrived here as "19.99" and rendered as nothing: a blank cell where a
+  // number should be, with no warning.
+  //
+  // A blank string is not zero, though `Number('')` is: an empty field must
+  // stay empty rather than claim a value the user never entered.
+  const value = typeof num === 'string' ? (num.trim() === '' ? NaN : Number(num)) : num;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+  return new Intl.NumberFormat(undefined, options).format(value);
 }
 
 /**
@@ -332,7 +333,7 @@ export function formatNumber(num: number, options?: Intl.NumberFormatOptions): s
  *   {currency(price)}
  *   {currency(price, 'EUR')}
  */
-export function currency(num: number, currencyCode = 'USD'): string {
+export function currency(num: number | string, currencyCode = 'USD'): string {
   return formatNumber(num, { style: 'currency', currency: currencyCode });
 }
 
@@ -342,8 +343,10 @@ export function currency(num: number, currencyCode = 'USD'): string {
  * Usage in templates:
  *   {percent(0.75)}
  */
-export function percent(num: number, decimals = 0): string {
-  if (typeof num !== 'number' || isNaN(num)) return '';
+export function percent(num: number | string, decimals = 0): string {
+  // `formatNumber` already rejects anything that is not a finite number, and
+  // accepts the numeric strings that form binding produces — duplicating a
+  // stricter guard here just made `percent` the odd one out.
   return formatNumber(num, {
     style: 'percent',
     minimumFractionDigits: decimals,
@@ -354,6 +357,27 @@ export function percent(num: number, decimals = 0): string {
 // ============================================================================
 // Date Helpers
 // ============================================================================
+
+/**
+ * Parse a date value, keeping a date-only string on the calendar day it names.
+ *
+ * `new Date('2026-07-27')` is UTC midnight by specification, and formatting
+ * that in any zone west of UTC renders the day before — so a due date picked as
+ * 27 July displayed as 26 July for every user in the Americas. `<input
+ * type="date">` with `:bind` stores exactly this shape, so it was the common
+ * case rather than an edge one. A value carrying a time is left alone: there
+ * the instant is the point.
+ */
+function toDate(value: string | Date | number): Date {
+  if (value instanceof Date) return value;
+  if (typeof value === 'string') {
+    const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (dateOnly) {
+      return new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]));
+    }
+  }
+  return new Date(value);
+}
 
 /**
  * Format a date
@@ -369,7 +393,7 @@ export function formatDate(
 ): string {
   if (!date) return '';
 
-  const dateObj = date instanceof Date ? date : new Date(date);
+  const dateObj = toDate(date);
   if (isNaN(dateObj.getTime())) return '';
 
   let options: Intl.DateTimeFormatOptions;
@@ -395,7 +419,7 @@ export function formatTime(
 ): string {
   if (!date) return '';
 
-  const dateObj = date instanceof Date ? date : new Date(date);
+  const dateObj = toDate(date);
   if (isNaN(dateObj.getTime())) return '';
 
   return new Intl.DateTimeFormat(undefined, { timeStyle: style }).format(dateObj);
@@ -410,13 +434,20 @@ export function formatTime(
 export function timeAgo(date: string | Date | number): string {
   if (!date) return '';
 
-  const dateObj = date instanceof Date ? date : new Date(date);
+  const dateObj = toDate(date);
   if (isNaN(dateObj.getTime())) return '';
 
   const now = Date.now();
   const diff = now - dateObj.getTime();
 
-  const seconds = Math.floor(diff / 1000);
+  // Pick the unit from the magnitude and apply the direction at the end.
+  // Every branch used to test `> 0`, so a future date fell past all of them to
+  // the seconds case and reported "in 172,800 seconds" for something two days
+  // out. A due date is as ordinary an input here as a created date.
+  const sign = diff < 0 ? -1 : 1;
+  const magnitude = Math.abs(diff);
+
+  const seconds = Math.floor(magnitude / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
@@ -425,14 +456,16 @@ export function timeAgo(date: string | Date | number): string {
   const years = Math.floor(days / 365);
 
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const ago = (value: number, unit: Intl.RelativeTimeFormatUnit) =>
+    rtf.format(-sign * value, unit);
 
-  if (years > 0) return rtf.format(-years, 'year');
-  if (months > 0) return rtf.format(-months, 'month');
-  if (weeks > 0) return rtf.format(-weeks, 'week');
-  if (days > 0) return rtf.format(-days, 'day');
-  if (hours > 0) return rtf.format(-hours, 'hour');
-  if (minutes > 0) return rtf.format(-minutes, 'minute');
-  return rtf.format(-seconds, 'second');
+  if (years > 0) return ago(years, 'year');
+  if (months > 0) return ago(months, 'month');
+  if (weeks > 0) return ago(weeks, 'week');
+  if (days > 0) return ago(days, 'day');
+  if (hours > 0) return ago(hours, 'hour');
+  if (minutes > 0) return ago(minutes, 'minute');
+  return ago(seconds, 'second');
 }
 
 // ============================================================================

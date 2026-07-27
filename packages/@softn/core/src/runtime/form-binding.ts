@@ -130,8 +130,15 @@ export function validateForm(
     const value = state.values[field.name];
     let error: string | null = null;
 
-    // Required validation
-    if (field.required && isEmpty(value)) {
+    // Required validation.
+    //
+    // A required boolean means "must be true" — an unticked consent box is the
+    // whole point of marking one required. `isEmpty(false)` is false, and
+    // `createFormState` seeds booleans to false, so such a field could never
+    // fail and the form validated with the box clear.
+    const missing =
+      field.type === 'boolean' ? value !== true : isEmpty(value);
+    if (field.required && missing) {
       error = `${field.label || field.name} is required`;
     }
 
