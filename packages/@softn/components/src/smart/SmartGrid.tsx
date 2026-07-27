@@ -652,7 +652,22 @@ export function SmartGrid<T extends Record<string, unknown>>({
                 <input
                   type={col.type === 'number' ? 'number' : col.type === 'date' ? 'date' : 'text'}
                   value={formData[col.key] != null ? String(formData[col.key]) : ''}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, [col.key]: e.target.value }))}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      // The column already declares its type, so keep a number a
+                      // number. `target.value` is always a string, and saving
+                      // "50" for a price made the grid's own numeric sort fall
+                      // back to string compare ("100" before "50") and left
+                      // currency() rendering a blank cell.
+                      [col.key]:
+                        col.type === 'number'
+                          ? e.target.value === ''
+                            ? ''
+                            : Number(e.target.value)
+                          : e.target.value,
+                    }))
+                  }
                   style={inputStyle}
                 />
               )}
