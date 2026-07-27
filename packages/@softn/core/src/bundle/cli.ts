@@ -6,6 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { createBundle } from './bundle';
 import type { SoftNManifest, SoftNBundleInput, BundleFileInput } from './types';
 
@@ -114,7 +115,12 @@ export async function bundleDirectory(sourceDir: string, outputPath: string): Pr
     return {
       path: file.path,
       type,
-      content: isText ? file.content.toString('utf-8') : file.content,
+      // A Node Buffer is a Uint8Array, but typed over ArrayBufferLike rather
+      // than ArrayBuffer, so it does not satisfy the shared input type. Copy
+      // into a plain Uint8Array instead of asserting the difference away.
+      content: isText
+        ? file.content.toString('utf-8')
+        : new Uint8Array(file.content),
       mimeType,
     };
   });
@@ -182,8 +188,15 @@ async function main(): Promise<void> {
   }
 }
 
-// Run CLI if called directly
-if (require.main === module) {
+// Run CLI if called directly. `require.main === module` is the CommonJS form,
+// and this package is ESM — evaluating it threw a ReferenceError before the
+// check could decide anything, so the CLI could not start at all.
+const invokedDirectly =
+  typeof process !== 'undefined' &&
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
   main().catch((error) => {
     console.error('Error:', error.message);
     process.exit(1);

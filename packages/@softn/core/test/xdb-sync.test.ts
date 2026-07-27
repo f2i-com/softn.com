@@ -337,7 +337,6 @@ describe('XDBSyncAdapter lifecycle', () => {
       signaling: ['ws://localhost:8700/ws'],
     });
     adapter.connect();
-    const firstOptions = { ...lastProviderOptions };
 
     // Second connect should be a no-op
     lastProviderOptions = undefined;
