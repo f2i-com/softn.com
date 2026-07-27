@@ -145,18 +145,70 @@ function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/**
+ * Highlight in a single left-to-right pass.
+ *
+ * The previous version applied each pattern in turn over HTML that already
+ * contained the spans emitted by earlier patterns — so the string pattern
+ * happily matched a colour literal from the comment pass. Highlighting
+ * `// total` produced
+ *
+ *   <span style=<span style="color: #34d399">"color: #a1a1aa"</span>>// total</span>
+ *
+ * and since this layer sits under a transparent textarea, the text
+ * `"color: #a1a1aa">` became visible and every character after the first
+ * comment sat offset from the caret the user was moving. A string containing
+ * `//` was corrupted the same way.
+ *
+ * Scanning once and consuming each token means no pattern ever sees another's
+ * output. Each pattern is tried sticky at the current offset, in the order
+ * they are declared, so comments still win over strings and keywords.
+ */
 function highlightCode(code: string, language: string): string {
-  let html = escapeHtml(code);
   const patterns = highlightPatterns[language] || [];
+  if (patterns.length === 0) return escapeHtml(code);
 
-  for (const { pattern, className } of patterns) {
-    html = html.replace(pattern, (match) => {
-      const color = highlightColors[className] || '#e4e4e7';
-      return `<span style="color: ${color}">${match}</span>`;
-    });
+  const scanners = patterns.map(({ pattern, className }) => ({
+    // Sticky, so a match must begin exactly at the offset being tested.
+    // `exec` still sees the whole string, so `\b` and `$` behave as written.
+    re: new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '') + 'y'),
+    className,
+  }));
+
+  let out = '';
+  let plain = '';
+  let i = 0;
+
+  const flushPlain = () => {
+    if (plain) {
+      out += escapeHtml(plain);
+      plain = '';
+    }
+  };
+
+  while (i < code.length) {
+    let consumed = 0;
+    for (const { re, className } of scanners) {
+      re.lastIndex = i;
+      const match = re.exec(code);
+      if (match && match[0].length > 0) {
+        flushPlain();
+        const color = highlightColors[className] || '#e4e4e7';
+        out += `<span style="color: ${color}">${escapeHtml(match[0])}</span>`;
+        consumed = match[0].length;
+        break;
+      }
+    }
+    if (consumed === 0) {
+      plain += code[i];
+      i += 1;
+    } else {
+      i += consumed;
+    }
   }
 
-  return html;
+  flushPlain();
+  return out;
 }
 
 export function CodeEditor({

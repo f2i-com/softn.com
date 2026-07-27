@@ -170,6 +170,16 @@ function App(): React.ReactElement {
   /** Process a .softn bundle from raw bytes */
   const processBundleData = useCallback(
     async (data: Uint8Array, fileName: string, cachedAppId?: string, initialPage?: string) => {
+      // The placeholder tab a URL load creates, if this call created one.
+      //
+      // Tracked out here so the catch below can remove it. It could not before:
+      // the ids are declared inside the try, so a failure left a tab whose
+      // source is '' on screen forever, rendering "Loading …" with no way back
+      // — dismissing the error card did not remove it, and reopening the app
+      // found the dead tab again. The permission-denied branch already cleaned
+      // up correctly; this is the same cleanup for the failure path.
+      let skeletonTabId: string | null = null;
+
       try {
         setError(null);
 
@@ -210,6 +220,9 @@ function App(): React.ReactElement {
 
         // Use existing skeleton tab ID (from URL pre-populate) or create new
         const tabId = existingTab?.id || crypto.randomUUID();
+        // A tab with no source is a placeholder waiting for this load. If the
+        // load fails it has to go, or it renders "Loading …" indefinitely.
+        if (existingTab && !existingTab.source) skeletonTabId = existingTab.id;
 
         if (!existingTab) {
           // Fresh open (not from URL) — show loading overlay
@@ -362,6 +375,10 @@ function App(): React.ReactElement {
         setError(err instanceof Error ? err : new Error(String(err)));
         setLoadingTabId(null);
         setLoadingFileName('');
+        if (skeletonTabId) {
+          setOpenTabs((prev) => prev.filter((t) => t.id !== skeletonTabId));
+          setActiveTabId(null);
+        }
       }
     },
     []
