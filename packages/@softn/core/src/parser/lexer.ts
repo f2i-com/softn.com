@@ -28,7 +28,15 @@ export class Lexer {
   private sawStyleKeyword: boolean = false;
   // Template literal state
   private inTemplateLiteral: boolean = false;
-  private templateExprDepth: number = 0;
+  /**
+   * The `inExpression` depth surrounding each open `${`, innermost last.
+   *
+   * A count is not enough: in a `.ui` file a template literal lives inside
+   * `{...}`, so `inExpression` never returns to zero and a `}` cannot be
+   * recognised as closing its `${` by depth alone. Recording the depth each
+   * `${` opened at makes the match exact, and nests.
+   */
+  private templateExprStack: number[] = [];
 
   constructor(source: string) {
     this.source = source;
@@ -103,8 +111,12 @@ export class Lexer {
       return token;
     }
 
-    // Tag start
-    if (this.ch === '<') {
+    // Tag start.
+    //
+    // Not inside an expression, where `<` is a comparison — the mirror of the
+    // guard `>` already has below. Without this, `{count < limit}` lexed as a
+    // tag open and the rest of the element was consumed as markup.
+    if (this.ch === '<' && this.inExpression === 0 && this.inControlFlow === 0) {
       return this.readTagStart();
     }
 
@@ -133,6 +145,17 @@ export class Lexer {
 
     // Single character tokens
     switch (this.ch) {
+      case '<':
+        // Only reachable inside an expression or control flow — elsewhere the
+        // caller has already routed `<` to readTagStart.
+        if (this.peekChar() === '=') {
+          this.readChar();
+          this.readChar();
+          return createToken(TokenType.LTE, '<=', startLine, startColumn, startPos, this.position);
+        }
+        this.readChar();
+        return createToken(TokenType.LT, '<', startLine, startColumn, startPos, this.position);
+
       case '>':
         // Inside an expression or control flow, > is a comparison operator, not a tag close
         if (this.inExpression > 0 || this.inControlFlow > 0) {
@@ -235,8 +258,14 @@ export class Lexer {
       case '}':
         this.readChar();
         this.inExpression = Math.max(0, this.inExpression - 1);
-        if (this.inExpression === 0 && this.templateExprDepth > 0) {
-          this.templateExprDepth--;
+        // Back at the depth some `${` opened at, so this `}` closes it and the
+        // rest of the template literal resumes. Without this the closing
+        // backtick is lexed as an opening one and the lexer never reaches EOF.
+        if (
+          this.templateExprStack.length > 0 &&
+          this.templateExprStack[this.templateExprStack.length - 1] === this.inExpression
+        ) {
+          this.templateExprStack.pop();
           this.inTemplateLiteral = true;
         }
         return createToken(
@@ -575,8 +604,9 @@ export class Lexer {
         this.readChar();
         this.readChar();
         this.inTemplateLiteral = false;
+        // Record the depth outside this `${` so its `}` can be recognised.
+        this.templateExprStack.push(this.inExpression);
         this.inExpression++;
-        this.templateExprDepth++;
         return createToken(
           TokenType.TEMPLATE_EXPR_START,
           '${',
