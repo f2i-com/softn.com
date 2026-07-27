@@ -67,7 +67,40 @@ const MAX_ZIP_ENTRIES = 10_000;
 const MAX_ZIP_TOTAL_BYTES = 500 * 1024 * 1024; // 500 MB
 const MAX_ZIP_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
 
-function preflightZip(data: Uint8Array): void {
+/** What the central directory claims about one entry. */
+interface DeclaredEntry {
+  crc32: number;
+  uncompressedSize: number;
+}
+
+/**
+ * CRC-32 — the only field in a ZIP that actually attests to an entry's bytes.
+ *
+ * fflate decompresses to the *declared* size and verifies nothing, so a bundle
+ * that understates a size is silently truncated to it. Checking the length back
+ * does not help: the lie is self-consistent. Only the checksum catches it, and
+ * without it the same file reads differently here than in core's own reader or
+ * the Rust one.
+ */
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[i] = c;
+  }
+  return table;
+})();
+
+function crc32(bytes: Uint8Array): number {
+  let c = -1;
+  for (let i = 0; i < bytes.length; i++) {
+    c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  }
+  return (c ^ -1) >>> 0;
+}
+
+function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const EOCD_SIGNATURE = 0x06054b50;
   const CEN_SIGNATURE = 0x02014b50;
@@ -100,6 +133,7 @@ function preflightZip(data: Uint8Array): void {
     throw new Error('Corrupt ZIP: central directory out of bounds');
   }
 
+  const declared = new Map<string, DeclaredEntry>();
   let offset = centralDirOffset;
   let totalUncompressed = 0;
   for (let i = 0; i < entryCount; i++) {
@@ -107,6 +141,7 @@ function preflightZip(data: Uint8Array): void {
       throw new Error('Invalid ZIP central directory entry');
     }
 
+    const declaredCrc = view.getUint32(offset + 16, true);
     const compressedSize = view.getUint32(offset + 20, true);
     const uncompressedSize = view.getUint32(offset + 24, true);
     const fileNameLength = view.getUint16(offset + 28, true);
@@ -133,8 +168,14 @@ function preflightZip(data: Uint8Array): void {
       throw new Error('Corrupt ZIP: invalid local file header');
     }
 
+    const nameBytes = data.slice(offset + 46, offset + 46 + fileNameLength);
+    const entryName = new TextDecoder().decode(nameBytes).replace(/\\/g, '/');
+    declared.set(entryName, { crc32: declaredCrc, uncompressedSize });
+
     offset += 46 + fileNameLength + extraLength + commentLength;
   }
+
+  return declared;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -190,7 +231,7 @@ export function readZip(data: Uint8Array): ZipResult {
   const binaryFiles = new Map<string, Uint8Array>();
   const decoder = new TextDecoder();
 
-  preflightZip(data);
+  const declared = preflightZip(data);
 
   const unzipped = unzipSync(data);
   const entries = Object.entries(unzipped);
@@ -215,6 +256,19 @@ export function readZip(data: Uint8Array): ZipResult {
 
     if (content.byteLength > MAX_ZIP_FILE_BYTES) {
       throw new Error(`File too large in bundle: ${normalizedPath}`);
+    }
+
+    // Check what came out against what the archive claimed. Without this a
+    // crafted bundle silently hands this reader a truncated file while every
+    // other reader sees the whole one.
+    const claim = declared.get(normalizedPath) ?? declared.get(path);
+    if (claim) {
+      if (content.byteLength !== claim.uncompressedSize) {
+        throw new Error(`Corrupt bundle: size mismatch for ${normalizedPath}`);
+      }
+      if (crc32(content) !== claim.crc32) {
+        throw new Error(`Corrupt bundle: checksum mismatch for ${normalizedPath}`);
+      }
     }
     totalBytes += content.byteLength;
     if (totalBytes > MAX_ZIP_TOTAL_BYTES) {
@@ -389,10 +443,13 @@ export function processBundle(
 
       const escapedName = escapeRegex(imp.name);
       const selfClosingRegex = new RegExp(`<${escapedName}\\s*/>`, 'g');
-      nextSource = nextSource.replace(selfClosingRegex, templateContent);
+      // Function replacer: a component's markup is content, not a substitution
+      // pattern. Passed as a string, `$&` re-inserts the tag it just replaced
+      // and `$'` splices in the rest of the document.
+      nextSource = nextSource.replace(selfClosingRegex, () => templateContent);
 
       const pairedRegex = new RegExp(`<${escapedName}[^>]*>.*?</${escapedName}>`, 'gs');
-      nextSource = nextSource.replace(pairedRegex, templateContent);
+      nextSource = nextSource.replace(pairedRegex, () => templateContent);
     }
 
     return nextSource;

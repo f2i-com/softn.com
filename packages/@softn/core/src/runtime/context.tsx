@@ -6,6 +6,7 @@
 
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import type { SoftNRenderContext, RuntimeState, SoftNProps, XDBRecord } from '../types';
+import { parseStatePath } from './state-path';
 
 /**
  * Context type for SoftN runtime
@@ -51,7 +52,7 @@ export function SoftNProvider({
    */
   const setState = useCallback((path: string, value: unknown) => {
     setStateValue((prevState) => {
-      const parts = path.split('.');
+      const parts = parseStatePath(path);
       const newState = { ...prevState };
 
       let current: Record<string, unknown> = newState;

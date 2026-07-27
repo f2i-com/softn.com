@@ -1119,13 +1119,21 @@ export class XDBService {
     createdAt: string;
     updatedAt: string;
   }): void {
+    // An update delta carries no creation time and says nothing about deletion,
+    // so both come from the row already here. Without this, `created_at` was
+    // restamped to now — a record edited on another device jumped position in
+    // any list sorted by it — and `deleted: false` resurrected a record this
+    // device had already deleted.
+    // Deliberately not `get()`, which hides soft-deleted rows — the deleted
+    // ones are exactly the case this has to see.
+    const existing = this.getAllCollectionData(collection).find((r) => r.id === record.id);
     const xdbRecord: XDBRecord = {
       id: record.id,
       collection: record.collection,
       data: record.data,
-      created_at: record.createdAt || new Date().toISOString(),
+      created_at: record.createdAt || existing?.created_at || new Date().toISOString(),
       updated_at: record.updatedAt || new Date().toISOString(),
-      deleted: false,
+      deleted: existing?.deleted ?? false,
     };
     this._mutationSource = 'server';
     this.writeRecord(collection, xdbRecord);
