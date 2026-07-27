@@ -1009,6 +1009,22 @@ export function SoftNRenderer({
       } else {
         (current as Record<string, unknown>)[lastPart] = value;
       }
+
+      // Push the new state into the script context here, before the re-render
+      // this update triggers.
+      //
+      // `$:` computed values and sync helpers are evaluated *during* render,
+      // reading the script context; the context was only refreshed by a
+      // post-commit effect. So render N saw the state from render N-1, and
+      // every derived value was permanently one keystroke behind — typing
+      // "abc" into a `:bind` input left `$: greeting = "Hi " + name` showing
+      // "Hi ab". Nothing errored; the screen was simply wrong.
+      //
+      // The write is an idempotent mirror of state React already owns, so a
+      // discarded render (StrictMode invokes updaters twice) costs nothing —
+      // and the effect below still runs after commit as the authority.
+      scriptRuntimeRef.current?.updateContext(newState);
+
       return { ...prev, componentState: newState };
     });
   }, []);

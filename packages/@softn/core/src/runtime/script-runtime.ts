@@ -633,21 +633,58 @@ export class SoftNScriptRuntime {
   /**
    * Load and execute a script or logic block inside the WASM VM.
    */
+  /**
+   * Empty result for a load that was abandoned before it could run.
+   */
+  private static readonly ABANDONED: ScriptLoadResult = {
+    state: {},
+    functions: {},
+    syncFunctions: {},
+    computed: {},
+  };
+
+  /**
+   * True once `cleanup()` has run.
+   *
+   * `loadScript` is a long async chain and `cleanup()` only disposes an engine
+   * that already exists. A cleanup arriving while the first `await` is still
+   * pending therefore disposed nothing, and the continuation went on to build a
+   * fresh engine and execute the script in it — leaking one WASM engine per
+   * mount and running the `.logic` top level a second time. Under
+   * `React.StrictMode`, which all four apps use, that is every single mount:
+   * measured with a bundle whose top level calls `db.create`, two records
+   * appeared where the author wrote one.
+   */
+  private disposed = false;
+
+  /** Stop and clean up if this runtime was disposed during an await. */
+  private abandonIfDisposed(): boolean {
+    if (!this.disposed) return false;
+    if (this.vmEngine) {
+      this.vmEngine.dispose();
+      this.vmEngine = null;
+    }
+    return true;
+  }
+
   async loadScript(script: CodeBlock): Promise<ScriptLoadResult> {
     const useHostBridges = this.runtimeMode === 'main';
 
     // 0. Create the WASM adapter
     this.vmEngine = await VmAdapter.create();
+    if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
 
     if (useHostBridges) {
       // 1. Ensure XDB is fully initialized before executing any .logic code
       await this.db.ready();
+      if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
 
       // Cache XDB service reference for notification batching
       try {
         const { getXDB } = await import('./xdb');
         this.xdbService = getXDB(this.appId);
       } catch { /* XDB not available — batching disabled */ }
+      if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
 
       // 2. Register bridges on the WASM engine BEFORE compilation/execution
       this.vmEngine.registerDBBridge(this.db);
@@ -669,6 +706,9 @@ export class SoftNScriptRuntime {
         new Set(this.logicBasePath ? [this.logicBasePath] : []),
         this.logicBasePath
       );
+      // Import resolution fetches files, so this is the longest await of the
+      // three and the one most likely to still be pending at cleanup.
+      if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
     }
 
     // 4. Generate preamble for external functions (e.g. wallet bridge)
@@ -1259,6 +1299,11 @@ export class SoftNScriptRuntime {
    * Clean up resources (event listeners, WASM engine, etc.)
    */
   cleanup(): void {
+    // Set before anything else: an in-flight `loadScript` checks this after
+    // each of its awaits, so a cleanup that lands mid-load stops the script
+    // from being executed into an engine nobody will ever dispose.
+    this.disposed = true;
+
     // Clean up native event listeners
     if (typeof window !== 'undefined') {
       for (const [eventName, listeners] of this.nativeListeners.entries()) {
