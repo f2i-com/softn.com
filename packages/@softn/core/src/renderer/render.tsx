@@ -571,9 +571,16 @@ function renderElement(
         return fn(val);
       };
     }
-    // For other events (click, submit, etc.), discard the DOM event to prevent
-    // it leaking into the script VM (which can't handle DOM objects).
-    return () => fn();
+    // Everything else gets its arguments forwarded.
+    //
+    // These are not all DOM events: a component decides what it hands its own
+    // callback, and several pass plain data — DPad gives `@press` the direction
+    // pressed, and dropping it left every on-screen control doing nothing while
+    // the keyboard path still worked. Where the argument really is a DOM event,
+    // the VM adapter's allowlist already reduces it to null before it can reach
+    // a script (see `sanitizeArgs`), and a handler written in the template is
+    // entitled to the event anyway.
+    return (...args: unknown[]) => fn(...args);
   };
 
   for (const event of node.events) {
