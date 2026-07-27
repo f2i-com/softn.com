@@ -1757,10 +1757,18 @@ export function SoftNWithXDB({
         token: serverToken,
         collections: serverCollections,
       });
-      sync.connect();
+      // Listeners first.
+      //
+      // `connect()` can fail synchronously — a non-localhost `ws://` URL is
+      // rejected outright, with no reconnect — and it reports that by calling
+      // the error listeners immediately. Registering afterwards meant the
+      // message was delivered to an empty array: no console output, no UI
+      // state, no retry. The app looked completely normal and simply never
+      // synced.
       sync.on('error', (err: unknown) => {
         console.warn('[SoftN] Server sync error:', err);
       });
+      sync.connect();
     }).catch(() => {
       // Server sync module not available
     });
