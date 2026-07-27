@@ -65,6 +65,15 @@ export interface MultiBundleOptions {
   icon?: Uint8Array;
 }
 
+/** Whether the project carries a `logic/main.logic` for the entry file to link. */
+function hasMainLogic(logicFiles: Map<string, { path: string }>): boolean {
+  for (const [, file] of logicFiles) {
+    const path = file.path.startsWith('/') ? file.path.slice(1) : file.path;
+    if (path === 'logic/main.logic') return true;
+  }
+  return false;
+}
+
 /**
  * Export a .softn bundle as a ZIP file
  */
@@ -109,7 +118,12 @@ export async function exportBundle(options: BundleOptions): Promise<Uint8Array> 
     '', // Logic is in separate file
     options.collections
   );
-  files['ui/main.ui'] = strToU8(uiSource);
+  // Link that separate file. The loader inlines logic solely by rewriting a
+  // `<logic src>` tag, so without one the bundle carries its logic and never
+  // runs it — bindings read undefined and handlers do nothing.
+  files['ui/main.ui'] = strToU8(
+    options.logicSource.trim() ? `<logic src="../logic/main.logic" />\n${uiSource}` : uiSource
+  );
 
   // Generate logic file
   if (options.logicSource.trim()) {
@@ -173,6 +187,13 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
       source = uiFile.originalSource;
     } else {
       source = generateSource(uiFile.elements, uiFile.rootId, '', options.collections);
+      // A generated entry file has no <logic src>, and that tag is the only
+      // thing that links logic to markup — the loader inlines by rewriting it,
+      // with no manifest fallback. Without it the bundle ships its logic and
+      // never runs it: bindings read undefined and handlers do nothing.
+      if (path === 'ui/main.ui' && hasMainLogic(options.logicFiles)) {
+        source = `<logic src="../logic/main.logic" />\n${source}`;
+      }
     }
 
     files[path] = strToU8(source);

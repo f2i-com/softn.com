@@ -161,15 +161,22 @@ export function Toolbar({
   const { name, isDirty } = useProjectStore();
   const { canUndo, canRedo, undo, redo } = useHistoryStore();
 
+  // The history store never holds the current canvas — callers push before
+  // mutating — so stepping in either direction has to hand it over.
+  const currentEntry = () => {
+    const canvas = useCanvasStore.getState();
+    return { elements: canvas.elements, rootId: canvas.rootId, timestamp: Date.now() };
+  };
+
   const handleUndo = () => {
-    const entry = undo();
+    const entry = undo(currentEntry());
     if (entry) {
       useCanvasStore.getState().loadState(entry.elements, entry.rootId);
     }
   };
 
   const handleRedo = () => {
-    const entry = redo();
+    const entry = redo(currentEntry());
     if (entry) {
       useCanvasStore.getState().loadState(entry.elements, entry.rootId);
     }

@@ -221,7 +221,12 @@ export function Canvas() {
     // Undo
     if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
       e.preventDefault();
-      const entry = historyState.undo();
+      const canvas = useCanvasStore.getState();
+      const entry = historyState.undo({
+        elements: canvas.elements,
+        rootId: canvas.rootId,
+        timestamp: Date.now(),
+      });
       if (entry) {
         useCanvasStore.getState().loadState(entry.elements, entry.rootId);
       }
@@ -230,7 +235,12 @@ export function Canvas() {
     // Redo
     if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
       e.preventDefault();
-      const entry = historyState.redo();
+      const canvas = useCanvasStore.getState();
+      const entry = historyState.redo({
+        elements: canvas.elements,
+        rootId: canvas.rootId,
+        timestamp: Date.now(),
+      });
       if (entry) {
         useCanvasStore.getState().loadState(entry.elements, entry.rootId);
       }
