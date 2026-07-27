@@ -12,7 +12,6 @@ import type {
   OnnxFeeds,
   OnnxResult,
   OnnxRunOptions,
-  TensorDescriptor,
   BundleFileProvider,
   AIPermissionConfig,
 } from './ai-manager';
@@ -330,7 +329,7 @@ export class OnnxManager {
   /** Release all sessions */
   async releaseAll(): Promise<void> {
     const promises: Promise<void>[] = [];
-    for (const [id, entry] of this.sessions) {
+    for (const entry of this.sessions.values()) {
       promises.push(entry.session.release().catch(() => {}));
     }
     await Promise.all(promises);
