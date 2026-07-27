@@ -59,6 +59,7 @@ import {
   createImportResolver,
   extractIconDataUrl,
   extractPermissions,
+  requestedCapabilities,
   type BundleManifest,
 } from './lib/bundleProcessor';
 import {
@@ -225,9 +226,21 @@ function App(): React.ReactElement {
 
         // Check if permissions are declared and need consent
         if (permissionConfig) {
-          // Look up cached app to check for prior grant
+          // Look up cached app to check for prior grant.
+          //
+          // The grant has to be compared against what *this* bundle asks for.
+          // The old check was a boolean "has this name ever been prompted",
+          // and the lookup is by manifest name — so version 2 of an app, or
+          // any unrelated .softn calling itself the same thing, could add
+          // net + camera + files to a bundle the user had approved for `qr`
+          // alone and never see a prompt. The stored grant map was written and
+          // then never read by anything.
           const cachedApp = await getCachedAppByName(appName);
-          const hasGrant = cachedApp?.grantedPermissions && cachedApp.permissionsPromptedAt;
+          const requested = requestedCapabilities(permissionConfig);
+          const granted = cachedApp?.grantedPermissions ?? {};
+          const hasGrant =
+            Boolean(cachedApp?.permissionsPromptedAt) &&
+            requested.every((capability) => granted[capability]);
 
           if (!hasGrant) {
             // Show permission prompt and wait for user decision
@@ -260,13 +273,16 @@ function App(): React.ReactElement {
               return;
             }
 
-            // User allowed — store grant in cache
+            // User allowed — store grant in cache.
+            //
+            // Recorded from the same list the check above reads, so the two
+            // cannot drift. The previous version enumerated four capabilities
+            // by hand and silently omitted ai, gpu and sync, which meant a
+            // grant for those was never written down.
             const grantedPerms: Record<string, boolean> = {};
-            const perms = permissionConfig.permissions;
-            if (perms.net?.enabled) grantedPerms['net'] = true;
-            if (perms.camera?.enabled) grantedPerms['camera'] = true;
-            if (perms.files?.enabled) grantedPerms['files'] = true;
-            if (perms.qr?.enabled) grantedPerms['qr'] = true;
+            for (const capability of requestedCapabilities(permissionConfig)) {
+              grantedPerms[capability] = true;
+            }
 
             // Cache the app first so we have an ID to store grants against
             const cached = await cacheApp(data, manifest, icon);
