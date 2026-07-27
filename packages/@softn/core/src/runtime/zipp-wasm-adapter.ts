@@ -19,7 +19,7 @@
 
 import initWasm, { Engine, zipp_install_panic_hook } from '../../wasm-zipp/zipp_wasm.js';
 
-import type { DBNamespace } from './formlogic';
+import type { DBNamespace } from './script-runtime';
 import { sanitizeArgs } from './vm-args';
 
 // ============================================================================

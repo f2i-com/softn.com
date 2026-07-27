@@ -7,7 +7,7 @@ export default defineConfig({
     'src/parser/index.ts',
     'src/renderer/index.ts',
     'src/runtime/index.ts',
-    'src/runtime/formlogic-worker.ts',
+    'src/runtime/script-worker.ts',
     'src/loader/index.ts',
   ],
   format: ['esm'],

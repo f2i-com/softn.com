@@ -95,7 +95,7 @@ export interface AppConfig {
 }
 
 /**
- * @deprecated Use `PermissionConfig` from `../runtime/formlogic` instead.
+ * @deprecated Use `PermissionConfig` from `../runtime/script-runtime` instead.
  * Kept for backward compatibility with existing manifest.permissions fields.
  */
 export interface AppPermissions {
@@ -113,8 +113,8 @@ export interface AppPermissions {
   geolocation?: boolean;
 }
 
-// Re-export PermissionConfig from formlogic runtime
-export type { PermissionConfig } from '../runtime/formlogic';
+// Re-export PermissionConfig from script-runtime runtime
+export type { PermissionConfig } from '../runtime/script-runtime';
 
 // ============================================================================
 // File Types

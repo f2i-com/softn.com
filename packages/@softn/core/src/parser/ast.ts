@@ -89,21 +89,21 @@ export interface SlotDeclaration {
 }
 
 /**
- * Script block containing FormLogic code (legacy, use LogicBlock instead)
+ * Script block containing .logic code (legacy, use LogicBlock instead)
  */
 export interface ScriptBlock {
   type: 'ScriptBlock';
-  code: string; // Raw FormLogic code
+  code: string; // Raw .logic source
   loc: SourceLocation;
 }
 
 /**
- * Logic block containing FormLogic code (preferred over ScriptBlock)
+ * Logic block containing .logic code (preferred over ScriptBlock)
  * The <logic> tag is the new standard for SoftN files
  */
 export interface LogicBlock {
   type: 'LogicBlock';
-  code: string; // Raw FormLogic code
+  code: string; // Raw .logic source
   loc: SourceLocation;
 }
 

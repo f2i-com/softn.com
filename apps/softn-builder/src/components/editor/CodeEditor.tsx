@@ -38,7 +38,7 @@ export function CodeEditor({
       smoothScrolling: true,
     });
 
-    // Add SoftN/FormLogic syntax highlighting
+    // Add SoftN/.logic syntax highlighting
     if (language === 'softn' || language === 'formlogic') {
       monaco.languages.register({ id: 'softn' });
       monaco.languages.setMonarchTokensProvider('softn', {

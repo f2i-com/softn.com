@@ -40,9 +40,9 @@ export type CodeBlock = ScriptBlock | LogicBlock;
 import type { RuntimeState, XDBRecord } from '../types';
 
 /**
- * FormLogic execution context for SoftN scripts
+ * Execution context handed to SoftN scripts.
  */
-export interface FormLogicContext {
+export interface ScriptContext {
   // State management
   state: RuntimeState;
   setState: (path: string, value: unknown) => void;
@@ -63,7 +63,7 @@ export interface FormLogicContext {
 }
 
 /**
- * XDB module for FormLogic scripts
+ * XDB module for SoftN scripts
  */
 export interface XDBModule {
   create: (collection: string, data: Record<string, unknown>) => Promise<XDBRecord>;
@@ -75,7 +75,7 @@ export interface XDBModule {
 }
 
 /**
- * Navigation module for FormLogic scripts
+ * Navigation module for SoftN scripts
  */
 export interface NavModule {
   goto: (page: string) => void;
@@ -84,7 +84,7 @@ export interface NavModule {
 }
 
 /**
- * Console module for FormLogic scripts
+ * Console module for SoftN scripts
  */
 export interface ConsoleModule {
   log: (...args: unknown[]) => void;
@@ -508,12 +508,12 @@ function extractComputedDeclarations(
 
 /**
  * SoftN Script Runtime
- * Executes .logic code inside the FormLogic WASM VM for true sandboxing.
+ * Executes .logic code inside the WASM VM for true sandboxing.
  * No `new Function()` calls are used — all user code runs in the VM.
  */
 export class SoftNScriptRuntime {
   private vmEngine: VmAdapter | null = null;
-  private context: FormLogicContext;
+  private context: ScriptContext;
   private db: DBNamespace;
   private permissions?: AppPermissions;
   private appId?: string;
@@ -596,7 +596,7 @@ export class SoftNScriptRuntime {
   private externalFunctions: Record<string, (...args: unknown[]) => unknown> | null = null;
 
   constructor(
-    context: FormLogicContext,
+    context: ScriptContext,
     permissions?: AppPermissions,
     appId?: string,
     importResolver?: unknown,
@@ -705,10 +705,14 @@ export class SoftNScriptRuntime {
     // costs a fresh parse each time — the engine interns the result for the VM's
     // lifetime, so a per-frame expression grows the heap until the tab dies.
     // Compiled once alongside the script, each becomes an ordinary call.
+    // The expression is raw source and keeps whatever trailed it, including a
+    // `// comment`. Each piece therefore gets its own line: on one line a
+    // trailing comment would swallow the closing `);` and take the whole
+    // script's compilation down with it, not just this one value.
     const computedDecls = extractComputedDeclarations(script.code)
-      .filter(d => VALID_IDENTIFIER.test(d.name));
+      .filter(d => VALID_IDENTIFIER.test(d.name) && d.expression.trim() !== '');
     const computedPreamble = computedDecls
-      .map(d => `function ${COMPUTED_PREFIX}${d.name}() { return (${d.expression}); }`)
+      .map(d => `function ${COMPUTED_PREFIX}${d.name}() {\nreturn (\n${d.expression}\n);\n}`)
       .join('\n');
 
     // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
@@ -1070,7 +1074,7 @@ export class SoftNScriptRuntime {
   }
 
   /**
-   * Evaluate a FormLogic expression synchronously using the VM.
+   * Evaluate an expression synchronously using the VM.
    */
   /**
    * Evaluate one `$:` declaration by calling the function compiled for it.
@@ -1963,12 +1967,12 @@ export class SoftNScriptRuntime {
 
 /**
  * Create a SoftN script runtime
- * @param context - FormLogic execution context
+ * @param context - Script execution context
  * @param permissions - Optional permissions manifest from bundle for capability enforcement
  * @param appId - Optional app identifier for localStorage namespace isolation
  */
 export function createScriptRuntime(
-  context: FormLogicContext,
+  context: ScriptContext,
   permissions?: AppPermissions,
   appId?: string,
   importResolver?: unknown,
@@ -2235,7 +2239,7 @@ export function createDBNamespace(getPermissionConfig?: () => PermissionConfig |
   };
 }
 
-// Shared sync module cache — used by both createDBNamespace (formlogic) and
+// Shared sync module cache — used by both createDBNamespace (script-runtime) and
 // createXDBHelpers (SoftNRenderer) so getSyncStatus works regardless of which
 // code path started the sync.
 let _syncModuleCache: typeof import('./xdb-sync') | null = null;

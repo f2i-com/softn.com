@@ -1,5 +1,5 @@
 /**
- * LogicEditor - FormLogic code editor
+ * LogicEditor - .logic code editor
  */
 
 import React from 'react';
@@ -50,7 +50,7 @@ export function LogicEditor() {
   const activeLogicFile =
     isActiveLogicFile && activeFileId ? logicFiles.get(activeFileId) : undefined;
   const editorValue = activeLogicFile?.content ?? logicSource;
-  const editorTitle = activeLogicFile ? `Logic (${activeLogicFile.path})` : 'Logic (FormLogic)';
+  const editorTitle = activeLogicFile ? `Logic (${activeLogicFile.path})` : 'Logic';
 
   const handleChange = (next: string) => {
     if (activeLogicFile && activeFileId) {

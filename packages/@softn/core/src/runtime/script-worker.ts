@@ -1,7 +1,7 @@
 /**
- * FormLogic Web Worker
+ * Script Web Worker
  *
- * Runs the WASM FormLogic engine in a dedicated thread, using snapshot-based
+ * Runs the WASM script engine in a dedicated thread, using snapshot-based
  * bridges for DB and localStorage. The main thread sends fresh snapshots
  * before each function call, and the worker returns queued mutations.
  */
@@ -14,11 +14,11 @@ import {
 import {
   SnapshotDBBridge,
   SnapshotLocalStorageBridge,
-} from './formlogic-worker-bridges';
+} from './script-worker-bridges';
 import { deepEqual } from './vm-state';
 
-// Type-only import from formlogic (no runtime dependency on DOM-heavy module)
-import type { CodeBlock } from './formlogic';
+// Type-only import from script-runtime (no runtime dependency on DOM-heavy module)
+import type { CodeBlock } from './script-runtime';
 import type { AppPermissions } from '../bundle/types';
 
 type ImportResolver = (path: string) => Promise<string | null>;

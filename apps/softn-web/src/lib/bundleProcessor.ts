@@ -293,7 +293,7 @@ export async function loadXDBData(
  * Process a bundle's main UI file: resolve `<logic src="..."/>` inlining
  * and `<import X from="..."/>` resolution into a single source string.
  * Logic file imports are NOT resolved here — they're handled natively by
- * the FormLogic engine via the importResolver callback.
+ * the script runtime via the importResolver callback.
  */
 export function processBundle(
   textFiles: Map<string, string>,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectWorkerIncompatibilities } from '../src/runtime/formlogic';
+import { detectWorkerIncompatibilities } from '../src/runtime/script-runtime';
 
 describe('detectWorkerIncompatibilities', () => {
   it('returns empty list for pure logic code', () => {

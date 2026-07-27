@@ -111,7 +111,7 @@ export interface CompiledSoftNDocument {
   // Original document
   document: import('../parser/ast').SoftNDocument;
 
-  // Compiled script (FormLogic bytecode)
+  // Compiled script (VM bytecode)
   compiledScript?: unknown;
 
   // Parsed CSS
