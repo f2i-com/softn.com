@@ -192,7 +192,7 @@ const Spinner = () => (
 
 export function SmartForm({
   fields: fieldsProp,
-  data: initialData = {},
+  data: initialData,
   onSubmit,
   onChange,
   onCancel,
@@ -223,15 +223,37 @@ export function SmartForm({
   }, [fieldsProp]);
 
   // Form state
-  const [formData, setFormData] = useState<Record<string, unknown>>(() => {
-    const initial: Record<string, unknown> = { ...initialData };
-    fields.forEach((field) => {
-      if (initial[field.name] === undefined && field.defaultValue !== undefined) {
-        initial[field.name] = field.defaultValue;
-      }
-    });
-    return initial;
-  });
+  const seedForm = useCallback(
+    (source: Record<string, unknown> | undefined): Record<string, unknown> => {
+      const initial: Record<string, unknown> = { ...source };
+      fields.forEach((field) => {
+        if (initial[field.name] === undefined && field.defaultValue !== undefined) {
+          initial[field.name] = field.defaultValue;
+        }
+      });
+      return initial;
+    },
+    [fields]
+  );
+
+  const [formData, setFormData] = useState<Record<string, unknown>>(() => seedForm(initialData));
+
+  // Reseed when the record being edited changes.
+  //
+  // The initializer above runs once, so a `data` prop that arrives after the
+  // first render — the normal case for an edit form whose record is fetched
+  // from XDB or the server — was ignored entirely and the form opened blank
+  // over a record that had loaded perfectly.
+  //
+  // Adjusting during render rather than in an effect avoids showing the empty
+  // form for a frame first. `data` is read before its default is applied: with
+  // `= {}` in the destructure, an omitted prop would be a fresh object every
+  // render and this would never stop reseeding.
+  const [seededFrom, setSeededFrom] = useState(initialData);
+  if (initialData !== seededFrom) {
+    setSeededFrom(initialData);
+    setFormData(seedForm(initialData));
+  }
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);

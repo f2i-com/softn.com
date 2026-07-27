@@ -5,6 +5,7 @@
  */
 
 export * from './types';
+export * from './zip';
 export * from './bundle';
 export { createBundleRuntime, SoftNBundleRenderer, useSoftNBundle } from './runtime';
 

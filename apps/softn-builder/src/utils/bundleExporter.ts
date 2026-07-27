@@ -2,7 +2,8 @@
  * Bundle Exporter - Creates .softn ZIP bundles
  */
 
-import { zipSync, unzipSync, strToU8 } from 'fflate';
+import { zipSync, strToU8 } from 'fflate';
+import { readBundleEntries } from '@softn/core';
 import type {
   CanvasElement,
   CollectionDef,
@@ -288,14 +289,14 @@ export function parseBundle(data: Uint8Array): {
   manifest: BundleManifest;
   files: Map<string, Uint8Array>;
 } {
-  const unzipped = unzipSync(data);
-
-  const files = new Map<string, Uint8Array>();
-  for (const [path, content] of Object.entries(unzipped)) {
-    // Normalize path: convert backslashes to forward slashes
-    const normalizedPath = path.replace(/\\/g, '/');
-    files.set(normalizedPath, content);
-  }
+  // Validated read, shared with softn-web and softn-loader.
+  //
+  // This used to be a bare `unzipSync`: no size limits, no entry cap, no CRC
+  // check, no path filtering. Opening a hostile .softn in the builder therefore
+  // bypassed every defence the other two readers had — including the one that
+  // catches an archive understating a file's size, which hands this reader a
+  // truncated file while every other reader sees the whole one.
+  const files = readBundleEntries(data);
 
   // Debug: log all paths in the bundle
   debug('[parseBundle] Files in bundle:', Array.from(files.keys()));
