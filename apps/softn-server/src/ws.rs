@@ -5,10 +5,14 @@ use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, watch};
 
-/// Timeout for sync_pull / sync_push blocking tasks. Must exceed the VM
-/// wall-time limit (25s) by enough margin for the DB operations that follow
-/// a long-running hook to complete cleanly.
-const HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+/// Timeout for sync_pull / sync_push blocking tasks.
+///
+/// Must exceed the runtime's own wait so this never fires on a push that was
+/// going to answer: the timeout does not cancel the blocking task, so it would
+/// go on to commit and broadcast after the client had been told it timed out —
+/// and the client, still holding those op ids, would push them again.
+const HANDLER_TIMEOUT: std::time::Duration =
+    crate::runtime::MAX_CALL_WAIT.saturating_add(std::time::Duration::from_secs(10));
 const MAX_OPS_PER_PUSH: usize = 1000;
 /// If no data is received from the client within this period, assume the
 /// connection is dead (e.g. mobile lost signal, laptop asleep) and clean up.
