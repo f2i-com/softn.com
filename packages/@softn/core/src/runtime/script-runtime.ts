@@ -1590,8 +1590,19 @@ export class SoftNScriptRuntime {
           result = { error: String(err) };
         }
 
+        // The engine may have been disposed while the host call was in flight.
+        //
+        // The guard at the top of this method ran before that await, and the
+        // non-null assertions below are only true of the engine that was alive
+        // then. A `softn.net.fetch` from a click handler, followed by an
+        // unmount before it resolves, hit `drainPendingHostCalls()` on null in
+        // a try/finally with no catch — an uncaught TypeError propagating out
+        // through `createVMFunction`, which callers invoke without `.catch`.
+        if (!this.vmEngine) return;
+
         // Re-acquire the lock to resolve the callback in the VM
         await this.vmCallLock;
+        if (!this.vmEngine) return;
         let release: (() => void) | undefined;
         this.vmCallLock = new Promise<void>((r) => { release = r; });
 
@@ -1610,10 +1621,11 @@ export class SoftNScriptRuntime {
       // Check for newly queued host calls (callback may have queued more)
       // Need the lock briefly to drain
       await this.vmCallLock;
+      if (!this.vmEngine) return;
       let release2: (() => void) | undefined;
       this.vmCallLock = new Promise<void>((r) => { release2 = r; });
       try {
-        pending = this.vmEngine!.drainPendingHostCalls();
+        pending = this.vmEngine.drainPendingHostCalls();
       } finally {
         release2!();
       }
