@@ -748,8 +748,11 @@ function renderExpression(
   } catch {
     return null; // Gracefully handle expression evaluation errors
   }
-  // Properly escape and render the value
-  const text = String(value ?? '');
+  // Booleans render as nothing, as they do in JSX. `{ready && "Go"}` yields
+  // `false` when the guard fails, and printing that put the word "false" in the
+  // UI — which is what the idiom is meant to avoid. A bundle that wants to show
+  // one can ask for it with `{String(flag)}`.
+  const text = value == null || typeof value === 'boolean' ? '' : String(value);
   return React.createElement(React.Fragment, { key }, text);
 }
 
