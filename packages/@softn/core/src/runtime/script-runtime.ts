@@ -717,10 +717,30 @@ export class SoftNScriptRuntime {
 
     // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
     // window/navigator/db/localStorage/host itself) then SoftN's own.
-    const fullCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode + '\n' + computedPreamble;
+    const scriptCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode;
+    const fullCode = computedPreamble ? scriptCode + '\n' + computedPreamble : scriptCode;
 
-    // 5. Compile + run the full .logic code in the WASM VM
-    const symbolMap = await this.vmEngine.initializeScript(fullCode);
+    // 5. Compile + run the full .logic code in the WASM VM.
+    //
+    // The generated `$:` bodies share the script's compilation unit, so a
+    // declaration the scanner mis-extracts — an expression broken across lines
+    // in a way it cannot follow, say — would fail the whole script rather than
+    // the one value it belongs to. On that failure, compile the script without
+    // them and evaluate those expressions one at a time instead.
+    let computedCompiled = computedPreamble !== '';
+    let symbolMap: Map<string, { index: number; scope: SymbolScope }>;
+    try {
+      symbolMap = await this.vmEngine.initializeScript(fullCode);
+    } catch (compileError) {
+      if (!computedCompiled) throw compileError;
+      console.warn(
+        '[SoftN] A `$:` declaration could not be compiled, so all of them fall back ' +
+          'to per-render evaluation. The script itself is unaffected. Cause:',
+        compileError
+      );
+      computedCompiled = false;
+      symbolMap = await this.vmEngine.initializeScript(scriptCode);
+    }
     this.symbolMap = symbolMap;
 
     // 6. Set up window global index (sync keys are discovered dynamically)
@@ -774,9 +794,13 @@ export class SoftNScriptRuntime {
 
     // 9. Computed values, each bound to the function compiled for it in 4b.
     const computed: Record<string, () => unknown> = {};
-    for (const { name } of computedDecls) {
-      const fn = `${COMPUTED_PREFIX}${name}`;
-      computed[name] = () => this.callComputed(fn, name);
+    for (const { name, expression } of computedDecls) {
+      if (computedCompiled) {
+        const fn = `${COMPUTED_PREFIX}${name}`;
+        computed[name] = () => this.callComputed(fn, name);
+      } else {
+        computed[name] = () => this.evaluateExpression(expression);
+      }
     }
 
     return {

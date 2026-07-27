@@ -497,6 +497,16 @@ impl ServerRuntime {
             Err(_) => return,
         }
 
+        // Never joined the pool. On the startup path `init()` collects the error
+        // and the server refuses to start; a watchdog-spawned replacement has
+        // nobody waiting on its reply, so without this it would sit in the queue
+        // answering "Runtime not initialized" to its share of every request,
+        // silently and forever.
+        if worker.is_none() {
+            tracing::error!("Worker failed to initialise — exiting instead of joining the pool");
+            return;
+        }
+
         // Phase 2: Process Call requests from the shared MPMC queue.
         // Circuit breaker: if panics are too frequent, delay re-init to avoid
         // thrashing CPU with constant teardown/rebuild cycles from a deterministic
@@ -516,6 +526,17 @@ impl ServerRuntime {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::handle_request(req, &mut worker, &mut mutation_warned, bridge_factory, guard);
             }));
+
+            // The watchdog gave up on this thread mid-call and started a
+            // replacement. The native call it was stuck in has now returned, but
+            // the watchdog will never arm against this guard again — so rejoining
+            // the pool would mean serving requests with no wall-time limit at all.
+            if guard.abandoned.load(Ordering::Relaxed) {
+                tracing::warn!(
+                    "Abandoned worker finished its call — exiting rather than rejoining                      the pool, where it would run unbounded."
+                );
+                return;
+            }
 
             if let Err(panic_info) = result {
                 Self::log_panic(&panic_info);
