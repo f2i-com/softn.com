@@ -471,7 +471,11 @@ export function Scene3D({
       mlPointerUp = (e: PointerEvent) => {
         isLooking = false;
         renderer.domElement.style.cursor = 'grab';
-        try { renderer.domElement.releasePointerCapture(e.pointerId); } catch {}
+        try {
+          renderer.domElement.releasePointerCapture(e.pointerId);
+        } catch {
+          // The pointer may already have been released by the browser.
+        }
       };
 
       renderer.domElement.addEventListener('pointerdown', mlPointerDown);

@@ -12,7 +12,18 @@ module.exports = {
     'plugin:react-hooks/recommended',
     'prettier',
   ],
-  ignorePatterns: ['dist', 'node_modules', '*.config.js', '*.config.ts', 'target'],
+  ignorePatterns: [
+    'dist',
+    'node_modules',
+    '*.config.js',
+    '*.config.ts',
+    'target',
+    // wasm-bindgen output — generated, and its own eslint-disable header
+    // trips `reportUnusedDisableDirectives`.
+    'packages/@softn/core/wasm/**',
+    'packages/@softn/core/wasm-zipp/**',
+    'packages/@softn/core/src/runtime/wasm/**',
+  ],
   parser: '@typescript-eslint/parser',
   parserOptions: {
     ecmaVersion: 'latest',

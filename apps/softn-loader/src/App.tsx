@@ -97,7 +97,38 @@ const MAX_ZIP_ENTRIES = 10_000;
 const MAX_ZIP_TOTAL_BYTES = 500 * 1024 * 1024; // 500 MB
 const MAX_ZIP_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
 
-function preflightZip(data: Uint8Array): void {
+/** What the central directory claims about one entry. */
+interface DeclaredEntry {
+  crc32: number;
+  uncompressedSize: number;
+}
+
+/**
+ * CRC-32 — the only field in a ZIP that attests to an entry's bytes.
+ *
+ * fflate decompresses to the *declared* size and verifies nothing, so a bundle
+ * understating a size is silently truncated to it, and checking the length back
+ * cannot catch that: the lie is self-consistent.
+ */
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[i] = c;
+  }
+  return table;
+})();
+
+function crc32(bytes: Uint8Array): number {
+  let c = -1;
+  for (let i = 0; i < bytes.length; i++) {
+    c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  }
+  return (c ^ -1) >>> 0;
+}
+
+function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const EOCD_SIGNATURE = 0x06054b50;
   const CEN_SIGNATURE = 0x02014b50;
@@ -131,13 +162,17 @@ function preflightZip(data: Uint8Array): void {
     throw new Error('Corrupt ZIP: central directory out of bounds');
   }
 
+  const declared = new Map<string, DeclaredEntry>();
+  const seenLocalHeaders = new Set<number>();
   let offset = centralDirOffset;
   let totalUncompressed = 0;
+  let totalCompressed = 0;
   for (let i = 0; i < entryCount; i++) {
     if (offset + 46 > data.byteLength || view.getUint32(offset, true) !== CEN_SIGNATURE) {
       throw new Error('Invalid ZIP central directory entry');
     }
 
+    const declaredCrc = view.getUint32(offset + 16, true);
     const compressedSize = view.getUint32(offset + 20, true);
     const uncompressedSize = view.getUint32(offset + 24, true);
     const fileNameLength = view.getUint16(offset + 28, true);
@@ -152,6 +187,20 @@ function preflightZip(data: Uint8Array): void {
       throw new Error('File too large in bundle');
     }
 
+    // One local header shared by several entries multiplies a payload: the
+    // budget is charged per entry, but so is the extraction.
+    if (seenLocalHeaders.has(localHeaderOffset)) {
+      throw new Error('Corrupt ZIP: two entries share a local header');
+    }
+    seenLocalHeaders.add(localHeaderOffset);
+
+    // A stored entry extracts its compressed size whatever it claims
+    // uncompressed, so that figure needs a budget of its own.
+    totalCompressed += compressedSize;
+    if (totalCompressed > data.byteLength) {
+      throw new Error('Corrupt ZIP: entries claim more data than the file holds');
+    }
+
     totalUncompressed += uncompressedSize;
     if (totalUncompressed > MAX_ZIP_TOTAL_BYTES) {
       throw new Error('Bundle contents too large');
@@ -164,8 +213,14 @@ function preflightZip(data: Uint8Array): void {
       throw new Error('Corrupt ZIP: invalid local file header');
     }
 
+    const nameBytes = data.slice(offset + 46, offset + 46 + fileNameLength);
+    const entryName = new TextDecoder().decode(nameBytes).replace(/\\/g, '/');
+    declared.set(entryName, { crc32: declaredCrc, uncompressedSize });
+
     offset += 46 + fileNameLength + extraLength + commentLength;
   }
+
+  return declared;
 }
 
 // Read ZIP entries from Uint8Array using fflate
@@ -178,7 +233,7 @@ function readZip(data: Uint8Array): ZipResult {
   const binaryFiles = new Map<string, Uint8Array>();
   const decoder = new TextDecoder();
 
-  preflightZip(data);
+  const declared = preflightZip(data);
 
   // Use fflate to decompress the ZIP (supports all compression methods)
   const unzipped = unzipSync(data);
@@ -205,6 +260,18 @@ function readZip(data: Uint8Array): ZipResult {
 
     if (content.byteLength > MAX_ZIP_FILE_BYTES) {
       throw new Error(`File too large in bundle: ${normalizedPath}`);
+    }
+
+    // Check what came out against what the archive claimed, so this reader
+    // cannot be handed a truncated file that every other reader sees whole.
+    const claim = declared.get(normalizedPath) ?? declared.get(path);
+    if (claim) {
+      if (content.byteLength !== claim.uncompressedSize) {
+        throw new Error(`Corrupt bundle: size mismatch for ${normalizedPath}`);
+      }
+      if (crc32(content) !== claim.crc32) {
+        throw new Error(`Corrupt bundle: checksum mismatch for ${normalizedPath}`);
+      }
     }
     totalBytes += content.byteLength;
     if (totalBytes > MAX_ZIP_TOTAL_BYTES) {
@@ -529,7 +596,11 @@ function App(): React.ReactElement {
         if (isMobile && parsedManifest.config?.mobile?.orientation) {
           const orient = parsedManifest.config.mobile.orientation;
           if (orient !== 'auto') {
-            try { await (screen.orientation as any).lock(orient); } catch {}
+            try {
+              await (screen.orientation as { lock?: (o: string) => Promise<void> }).lock?.(orient);
+            } catch {
+              // Orientation lock is unavailable or refused; not worth failing the load.
+            }
           }
         }
 
@@ -775,20 +846,28 @@ function App(): React.ReactElement {
         setError(err instanceof Error ? err : new Error(String(err)));
         setLoading(false);
         setAssetResolver(undefined);
-      } finally {
-        // Cleanup URLs if this specific load invocation is replaced/unmounted.
-        return () => {
-          // Unlock orientation when leaving app
-          try { (screen.orientation as any).unlock(); } catch {}
-          for (const url of objectUrls) {
-            try {
-              URL.revokeObjectURL(url);
-            } catch {
-              // Ignore revoke failures.
-            }
-          }
-        };
       }
+
+      // Cleanup URLs if this specific load invocation is replaced/unmounted.
+      //
+      // Returned after the try/catch rather than out of a `finally`: a `return`
+      // there discards whatever the block was doing, including an exception the
+      // catch itself raised, so a failure inside the error handler vanished.
+      return () => {
+        // Unlock orientation when leaving app
+        try {
+          (screen.orientation as { unlock?: () => void }).unlock?.();
+        } catch {
+          // Orientation lock is not available everywhere.
+        }
+        for (const url of objectUrls) {
+          try {
+            URL.revokeObjectURL(url);
+          } catch {
+            // Ignore revoke failures.
+          }
+        }
+      };
     }
 
     const cleanupPromise = loadBundle();

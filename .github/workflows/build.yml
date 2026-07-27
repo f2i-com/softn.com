@@ -1,12 +1,11 @@
 name: Build SoftN
 
-# DISABLED. Both jobs build the FormLogic engine from the formlogic-rust
-# repository and copy it into packages/@softn/core/wasm/, but .logic now runs on
-# zipp, whose build is committed at packages/@softn/core/wasm-zipp/. Until these
-# are rewritten against zipp (or dropped, since the engine is vendored), CI would
-# spend its time compiling an engine nothing loads.
-#
-# Re-enable by restoring the trigger commented out below.
+# Manual-only for now, as requested — but the reason it was disabled is gone.
+# It used to compile the FormLogic engine from a separate repository and copy it
+# into core; that engine is no longer loaded, and the one that is lives at
+# packages/@softn/core/wasm-zipp/, committed. So this now runs the checks worth
+# running instead. Put it back on every push and PR by swapping the trigger for
+# the block commented out below.
 on:
   workflow_dispatch:
 #  push:
@@ -16,60 +15,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  WASM_BINDGEN_VERSION: "0.2.114"
 
 jobs:
-  compile-wasm:
-    name: Compile FormLogic WASM
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout formlogic-rust
-        uses: actions/checkout@v4
-        with:
-          repository: f2i-com/formlogic-rust
-          path: formlogic-rust
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            formlogic-rust/target/
-          key: wasm-cargo-${{ hashFiles('formlogic-rust/Cargo.lock') }}
-          restore-keys: wasm-cargo-
-
-      - name: Install wasm-bindgen-cli
-        run: |
-          if ! command -v wasm-bindgen &> /dev/null || [[ "$(wasm-bindgen --version)" != *"$WASM_BINDGEN_VERSION"* ]]; then
-            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
-          fi
-
-      - name: Build WASM
-        working-directory: formlogic-rust
-        run: |
-          cargo build -p formlogic-wasm --target wasm32-unknown-unknown --release
-          wasm-bindgen --target web --out-dir dist-wasm ./target/wasm32-unknown-unknown/release/formlogic_wasm.wasm
-
-      - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: formlogic-wasm
-          path: formlogic-rust/dist-wasm/
-          retention-days: 1
-
-  build-web:
-    name: Build Web Runtime
-    needs: compile-wasm
+  check:
+    name: Typecheck, lint and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,16 +28,37 @@ jobs:
         with:
           node-version: 20
 
-      - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: formlogic-wasm
-          path: wasm-dist
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
 
-      - name: Integrate WASM into core
+      # The scripting engine is committed at packages/@softn/core/wasm-zipp/,
+      # so there is nothing to compile first and no Rust toolchain needed.
+      - name: Build packages
         run: |
-          cp wasm-dist/* packages/@softn/core/src/runtime/wasm/
-          cp wasm-dist/* packages/@softn/core/wasm/
+          npm run build:core
+          npm run build:components
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `lint` is the stricter aspiration (--max-warnings 0); the tree carries
+      # several hundred deliberate `no-console` warnings, so CI gates on errors.
+      - name: Lint
+        run: npm run lint:errors
+
+      - name: Test
+        run: npm test
+  build-web:
+    name: Build Web Runtime
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
       - name: Install dependencies
         run: |
@@ -110,7 +80,7 @@ jobs:
 
   build-tauri:
     name: Build ${{ matrix.app }} (${{ matrix.platform }})
-    needs: compile-wasm
+    needs: check
     strategy:
       fail-fast: false
       matrix:
@@ -163,17 +133,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: formlogic-wasm
-          path: wasm-dist
-
-      - name: Integrate WASM into core
-        run: |
-          cp wasm-dist/* packages/@softn/core/src/runtime/wasm/
-          cp wasm-dist/* packages/@softn/core/wasm/
 
       - name: Install dependencies
         run: |
