@@ -673,13 +673,21 @@ export function Select({
           {required && <span style={{ color: 'var(--color-error-500, #ef4444)' }}> *</span>}
         </label>
       )}
-      <div ref={containerRef} className={className} style={containerStyle}>
+      {/*
+        The keydown handler lives on the wrapper, not the trigger.
+        Opening a searchable Select focuses the search input, which sits inside
+        `renderDropdown()` — a sibling of the trigger — so keystrokes never
+        reached a handler bound to the trigger alone. Arrow keys did nothing and
+        Enter selected nothing; inside a <form>, Enter submitted it instead.
+        Bound here, the handler sees keys from the trigger and the dropdown
+        both.
+      */}
+      <div ref={containerRef} className={className} style={containerStyle} onKeyDown={handleKeyDown}>
         <input type="hidden" name={name} value={Array.isArray(value) ? value.join(',') : value} />
         <div
           tabIndex={disabled ? -1 : 0}
           style={triggerStyle}
           onClick={() => !disabled && setIsOpen(!isOpen)}
-          onKeyDown={handleKeyDown}
           onFocus={onFocus}
           onBlur={() => {
             if (!isOpen) onBlur?.();

@@ -225,7 +225,13 @@ export function Drawer({
           to { transform: translateY(0); }
         }
       `}</style>
-      <div style={overlayStyle} onClick={handleOverlayClick} />
+      {/*
+        Only render the backdrop when it is meant to be there. With
+        `showOverlay={false}` it was still in the tree at opacity 0 — fixed,
+        inset 0, z-index 1000, with a click handler — so the entire page behind
+        the drawer became unclickable with nothing on screen to explain why.
+      */}
+      {showOverlay && <div style={overlayStyle} onClick={handleOverlayClick} />}
       <div
         ref={drawerRef}
         className={className}

@@ -148,9 +148,17 @@ export function Modal({
     };
   }, [isVisible, closeOnEscape, onClose, loading, preventCloseOnLoading]);
 
-  // Focus trap and restore focus on close
+  // Focus trap and restore focus on close.
+  //
+  // Keyed on `isVisible`, not `isModalOpen`: the dialog DOM is gated behind
+  // `isVisible`, which a *different* effect sets in the same commit. Running
+  // on `isModalOpen` meant `modalRef.current` was still null when `.focus()`
+  // was called, and the effect never re-ran to try again. With focus left
+  // outside, the Tab handler below matched neither its first- nor last-element
+  // branch, so Tab walked the page behind the overlay — the exact thing a
+  // focus trap exists to prevent.
   useEffect(() => {
-    if (!isModalOpen) return;
+    if (!isVisible || !isModalOpen) return;
 
     const previouslyFocused = document.activeElement as HTMLElement;
 
@@ -192,7 +200,7 @@ export function Modal({
       // Restore focus to previously focused element
       previouslyFocused?.focus?.();
     };
-  }, [isModalOpen]);
+  }, [isVisible, isModalOpen]);
 
   const handleClose = useCallback(() => {
     if (loading && preventCloseOnLoading) return;
