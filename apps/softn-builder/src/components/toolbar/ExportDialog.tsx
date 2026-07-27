@@ -188,8 +188,11 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   }, [entities, seedData, projectCollections]);
 
   // Check if we have files from a loaded bundle
-  const hasMultipleFiles =
-    uiFiles.size > 0 && Array.from(uiFiles.values()).some((f) => f.originalSource !== undefined);
+  // Count the files rather than asking whether any came from a bundle:
+  // `originalSource` is only set for files parsed out of an opened bundle, so a
+  // project built from scratch answered false however many files it had and
+  // exported only `ui/main.ui`. Matches App.tsx's save path.
+  const hasMultipleFiles = uiFiles.size + logicFiles.size > 1;
 
   const [isExporting, setIsExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -210,6 +213,12 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         }
       }
 
+      // Re-read after the flush above. `uiFiles`/`logicFiles` were destructured
+      // at render, so they are the state from *before* the flush — exporting
+      // them shipped a bundle without the edit that was just written, while
+      // Save (which re-reads) shipped it. The two disagreed silently.
+      const flushedFiles = useFilesStore.getState();
+
       let bundleData: Uint8Array;
 
       if (hasMultipleFiles) {
@@ -220,8 +229,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
           version,
           description,
           themeMode,
-          uiFiles,
-          logicFiles,
+          uiFiles: flushedFiles.uiFiles,
+          logicFiles: flushedFiles.logicFiles,
           collections,
           assets,
         });

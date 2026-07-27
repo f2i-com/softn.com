@@ -8,7 +8,7 @@
  * <SmartGrid data={items} columns="name, email, status" search sort pagination edit delete add />
  */
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -335,6 +335,17 @@ export function SmartGrid<T extends Record<string, unknown>>({
   }, [sortedData, isPageable, currentPage, pageSize]);
 
   const totalPages = Math.ceil(sortedData.length / pageSize);
+
+  // Follow the data back when it shrinks under us — deleting the last row of
+  // the last page, say. Nothing else moves `currentPage`, so it would sit past
+  // the end showing an empty grid and the "no items yet" message while records
+  // still existed; and once `totalPages` drops to 1 the pagination controls
+  // below are hidden, leaving no way to navigate back.
+  useEffect(() => {
+    if (isPageable && currentPage > totalPages) {
+      setCurrentPage(Math.max(1, totalPages));
+    }
+  }, [isPageable, currentPage, totalPages]);
 
   // Handlers
   const handleSort = useCallback(

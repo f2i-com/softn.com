@@ -642,9 +642,16 @@ function App() {
       const collections = [...schemaCollections, ...manualCollections];
 
       // 3. Determine single-file vs multi-file export
+      // Count the files, do not ask whether any came from a bundle.
+      //
+      // `originalSource` is only ever set for files parsed out of an opened
+      // bundle — `createEmptyUIFile` never sets it and `updateUIFile` only
+      // refreshes one that already exists. So a project built from New Project
+      // answered false however many files it had, took the single-file path,
+      // and Save wrote a bundle containing just `ui/main.ui` — holding the
+      // *active* file's canvas — with every other file silently dropped.
       const hasMultipleFiles =
-        updatedFilesState.uiFiles.size > 0 &&
-        Array.from(updatedFilesState.uiFiles.values()).some((f) => f.originalSource !== undefined);
+        updatedFilesState.uiFiles.size + updatedFilesState.logicFiles.size > 1;
 
       let bundleData: Uint8Array;
 
@@ -870,9 +877,14 @@ function App() {
       if (previousNode?.type === 'file' && previousNode.fileType === 'ui') {
         updateUIFile(previousActiveId, canvasElements, canvasRootId);
       }
+      // The history is a stack of canvas snapshots with no idea which file each
+      // came from, and undo loads one unconditionally. Left in place across a
+      // switch, one Ctrl+Z would drop the previous file's element tree into the
+      // file now open — and the flush above would then write it there.
+      clearHistory();
     }
     previousActiveFileIdRef.current = activeFileId;
-  }, [activeFileId, fileNodes, updateUIFile, canvasElements, canvasRootId]);
+  }, [activeFileId, fileNodes, updateUIFile, canvasElements, canvasRootId, clearHistory]);
 
   useEffect(() => {
     if (!activeFileId) return;

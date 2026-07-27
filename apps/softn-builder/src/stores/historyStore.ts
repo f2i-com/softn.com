@@ -12,8 +12,13 @@ interface HistoryStore {
 
   // Actions
   push: (elements: Map<string, CanvasElement>, rootId: string) => void;
-  undo: () => HistoryEntry | null;
-  redo: () => HistoryEntry | null;
+  /**
+   * Step back, handing over the state being left so it can be stepped into
+   * again. Callers push *before* mutating, so the store never holds the
+   * current state and has to be told it.
+   */
+  undo: (current: HistoryEntry) => HistoryEntry | null;
+  redo: (current: HistoryEntry) => HistoryEntry | null;
   clear: () => void;
 
   // State checks
@@ -56,32 +61,31 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
     });
   },
 
-  undo: () => {
+  undo: (current) => {
     const state = get();
     if (state.past.length === 0) return null;
 
     const previous = state.past[state.past.length - 1];
 
-    set((state) => {
-      const newPast = state.past.slice(0, -1);
-      return {
-        past: newPast,
-        future: [previous, ...state.future],
-      };
-    });
+    set((state) => ({
+      past: state.past.slice(0, -1),
+      // The state being left, not the one being restored. Pushing `previous`
+      // here made redo hand back where it already was, so the newest state was
+      // unrecoverable while Redo stayed enabled.
+      future: [current, ...state.future],
+    }));
 
-    // Return the state to restore (the entry we just removed from past)
     return previous;
   },
 
-  redo: () => {
+  redo: (current) => {
     const state = get();
     if (state.future.length === 0) return null;
 
     const next = state.future[0];
 
     set((state) => ({
-      past: [...state.past, next],
+      past: [...state.past, current],
       future: state.future.slice(1),
     }));
 

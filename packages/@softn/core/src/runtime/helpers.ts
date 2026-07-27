@@ -30,7 +30,12 @@ export function filter<T>(
 
   // Object match
   return items.filter((item) => {
-    const data = isXDBRecord(item) ? item.data : item;
+    // A record's own fields — id, created_at, updated_at, deleted — are as
+    // addressable as the ones inside `data`. Indexing only `data` made every
+    // key-based helper answer `undefined` for them, which sorts nothing,
+    // matches nothing and collapses every record to one. `find` already
+    // merged both; the rest now agree with it.
+    const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
     return Object.entries(predicateOrMatch).every(([key, value]) => {
       return (data as Record<string, unknown>)[key] === value;
     });
@@ -58,8 +63,8 @@ export function sort<T>(
     sorted.sort(keyOrComparator);
   } else {
     sorted.sort((a, b) => {
-      const aData = isXDBRecord(a) ? a.data : a;
-      const bData = isXDBRecord(b) ? b.data : b;
+      const aData = isXDBRecord(a) ? { ...a, ...a.data } : a;
+      const bData = isXDBRecord(b) ? { ...b, ...b.data } : b;
       const aVal = (aData as Record<string, unknown>)[keyOrComparator];
       const bVal = (bData as Record<string, unknown>)[keyOrComparator];
 
@@ -202,8 +207,9 @@ export function groupBy<T>(
         typeof keyOrGetter === 'function'
           ? keyOrGetter(item)
           : String(
-              (isXDBRecord(item) ? item.data : (item as Record<string, unknown>))[keyOrGetter] ??
-                'undefined'
+              (isXDBRecord(item)
+                ? { ...item, ...item.data }
+                : (item as Record<string, unknown>))[keyOrGetter] ?? 'undefined'
             );
 
       if (!groups[key]) {
@@ -229,7 +235,12 @@ export function unique<T>(items: T[], key?: string): T[] {
   if (key) {
     const seen = new Set<unknown>();
     return items.filter((item) => {
-      const data = isXDBRecord(item) ? item.data : item;
+      // A record's own fields — id, created_at, updated_at, deleted — are as
+    // addressable as the ones inside `data`. Indexing only `data` made every
+    // key-based helper answer `undefined` for them, which sorts nothing,
+    // matches nothing and collapses every record to one. `find` already
+    // merged both; the rest now agree with it.
+    const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
       const val = (data as Record<string, unknown>)[key];
       if (seen.has(val)) return false;
       seen.add(val);
@@ -250,7 +261,12 @@ export function pluck<T>(items: T[], key: string): unknown[] {
   if (!Array.isArray(items)) return [];
 
   return items.map((item) => {
-    const data = isXDBRecord(item) ? item.data : item;
+    // A record's own fields — id, created_at, updated_at, deleted — are as
+    // addressable as the ones inside `data`. Indexing only `data` made every
+    // key-based helper answer `undefined` for them, which sorts nothing,
+    // matches nothing and collapses every record to one. `find` already
+    // merged both; the rest now agree with it.
+    const data = isXDBRecord(item) ? { ...item, ...item.data } : item;
     return (data as Record<string, unknown>)[key];
   });
 }
