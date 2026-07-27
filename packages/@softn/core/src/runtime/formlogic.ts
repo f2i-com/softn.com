@@ -347,6 +347,12 @@ export function detectWorkerIncompatibilities(code: string): string[] {
  */
 const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn']);
 
+/** Prefix for the functions generated from `$:` declarations. */
+const COMPUTED_PREFIX = '__softnComputed_';
+
+/** A name safe to paste into generated source as an identifier. */
+const VALID_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
+
 /**
  * Extract safe, serializable properties from a browser Event for passing to the VM.
  * Only extracts primitive-valued properties — no DOM nodes, functions, or circular refs.
@@ -693,9 +699,21 @@ export class SoftNScriptRuntime {
       }
     }
 
+    // 4b. Compile each `$:` declaration into a real function.
+    //
+    // These are re-read on every render, and evaluating an expression *string*
+    // costs a fresh parse each time — the engine interns the result for the VM's
+    // lifetime, so a per-frame expression grows the heap until the tab dies.
+    // Compiled once alongside the script, each becomes an ordinary call.
+    const computedDecls = extractComputedDeclarations(script.code)
+      .filter(d => VALID_IDENTIFIER.test(d.name));
+    const computedPreamble = computedDecls
+      .map(d => `function ${COMPUTED_PREFIX}${d.name}() { return (${d.expression}); }`)
+      .join('\n');
+
     // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
     // window/navigator/db/localStorage/host itself) then SoftN's own.
-    const fullCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode;
+    const fullCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode + '\n' + computedPreamble;
 
     // 5. Compile + run the full .logic code in the WASM VM
     const symbolMap = await this.vmEngine.initializeScript(fullCode);
@@ -717,6 +735,9 @@ export class SoftNScriptRuntime {
     for (const [name, sym] of symbolMap.entries()) {
       // Skip bridge-injected variables
       if (BRIDGE_VARS.has(name)) continue;
+
+      // Generated `$:` bodies are engine plumbing, not script API.
+      if (name.startsWith(COMPUTED_PREFIX)) continue;
 
       if (sym.scope === 'function') {
         functionNames.push(name);
@@ -747,10 +768,11 @@ export class SoftNScriptRuntime {
       syncFunctions[name] = this.createVMSyncFunction(name);
     }
 
-    // 9. Computed values (extracted via comment/string-aware scanner)
+    // 9. Computed values, each bound to the function compiled for it in 4b.
     const computed: Record<string, () => unknown> = {};
-    for (const { name, expression } of extractComputedDeclarations(script.code)) {
-      computed[name] = () => this.evaluateExpression(expression);
+    for (const { name } of computedDecls) {
+      const fn = `${COMPUTED_PREFIX}${name}`;
+      computed[name] = () => this.callComputed(fn, name);
     }
 
     return {
@@ -1050,6 +1072,26 @@ export class SoftNScriptRuntime {
   /**
    * Evaluate a FormLogic expression synchronously using the VM.
    */
+  /**
+   * Evaluate one `$:` declaration by calling the function compiled for it.
+   *
+   * The same work as {@link evaluateExpression}, minus the per-call parse — and
+   * these run on every render, which is where that parse would have been paid.
+   */
+  private callComputed(fnName: string, declName: string): unknown {
+    try {
+      if (!this.vmEngine) return undefined;
+      // Skip React→VM sync if an async function is in-flight
+      if (!this.asyncCallInProgress) {
+        this.syncReactStateToVM();
+      }
+      return this.vmEngine.callFunctionSync(fnName, []);
+    } catch (error) {
+      console.error(`[SoftN] Error evaluating computed "${declName}":`, error);
+      return undefined;
+    }
+  }
+
   evaluateExpression(expression: string): unknown {
     try {
       if (!this.vmEngine) return undefined;
