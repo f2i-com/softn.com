@@ -32,7 +32,7 @@ export const BUILDER_HREF = `${BUILDER_URL}/`;
 export const STUDIO_HREF = `${STUDIO_URL}/`;
 
 export const REPO_URL = 'https://github.com/f2i-com/softn.com';
-export const ZIPP_URL = 'https://github.com/f2i-com/zipp-lang';
+export const ZIPP_URL = 'https://github.com/f2i-com/zipp.org';
 export const XDB_URL = 'https://github.com/f2i-com/xdb.org';
 
 /**

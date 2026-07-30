@@ -31,7 +31,7 @@ export function Footer(): React.ReactElement {
               softn.com
             </a>
             <a href={ZIPP_URL} target="_blank" rel="noreferrer">
-              zipp-lang
+              zipp.org
             </a>
             <a href={XDB_URL} target="_blank" rel="noreferrer">
               xdb.org
