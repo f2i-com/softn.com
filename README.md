@@ -360,7 +360,7 @@ dist/studio/     AI studio
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20.19+ (Vite 8's floor)
 - npm
 - Rust + Cargo (for Tauri apps and WASM compilation)
 
