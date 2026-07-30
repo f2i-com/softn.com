@@ -2,6 +2,7 @@
   "name": "@softn/components",
   "version": "0.1.0",
   "description": "SoftN Built-in Component Library",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

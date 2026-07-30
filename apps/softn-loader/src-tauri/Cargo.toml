@@ -3,7 +3,7 @@ name = "softn-loader"
 version = "0.1.0"
 description = "SoftN Application Runtime"
 authors = ["SoftN Team"]
-license = ""
+license = "Apache-2.0"
 repository = ""
 edition = "2021"
 
