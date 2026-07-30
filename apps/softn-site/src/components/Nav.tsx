@@ -1,5 +1,6 @@
 import React from 'react';
 import { REPO_URL } from '../lib/appUrls';
+import { ThemeToggle } from './ThemeToggle';
 
 export function Nav(): React.ReactElement {
   return (
@@ -16,6 +17,7 @@ export function Nav(): React.ReactElement {
           <a href="#runtime">Runtime</a>
           <a href="#components">Components</a>
         </div>
+        <ThemeToggle />
         <a className="nav-repo" href={REPO_URL} target="_blank" rel="noreferrer">
           GitHub
         </a>
