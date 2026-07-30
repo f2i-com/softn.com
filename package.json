@@ -46,7 +46,10 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.0.0-next.5",
-    "@rc-component/qrcode": "^1.1.1"
+    "@huggingface/transformers": "^4.0.0-next.5"
+  },
+  "overrides": {
+    "adm-zip": "^0.6.0",
+    "sharp": "^0.35.3"
   }
 }

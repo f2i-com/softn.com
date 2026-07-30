@@ -20,6 +20,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@rc-component/qrcode": "^1.1.1",
     "@softn/core": "*",
     "@yudiel/react-qr-scanner": "^2.5.1",
     "three": "^0.170.0"
