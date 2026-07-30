@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Demo .softn applications for SoftN Loader",
+  "license": "Apache-2.0",
   "scripts": {
     "bundle": "node scripts/build-bundle.cjs",
     "bundle:glamour": "node scripts/build-bundle.cjs",
