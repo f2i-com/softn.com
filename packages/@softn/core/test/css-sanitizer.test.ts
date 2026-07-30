@@ -48,6 +48,26 @@ describe('remote url() references', () => {
     expect(sanitizeBundleCSS('@import url("https://evil.test/x.css");')).not.toContain('evil.test');
     expect(sanitizeBundleCSS('@import "https://evil.test/x.css";')).not.toContain('evil.test');
   });
+
+  // CSS does not require whitespace after an at-keyword, and a comment separates
+  // tokens just as well. Each of these fetched the stylesheet while the two cases
+  // above were passing.
+  it('survive an @import with no whitespace after the at-keyword', () => {
+    expect(sanitizeBundleCSS('@import"https://evil.test/x.css";')).not.toContain('evil.test');
+    expect(sanitizeBundleCSS("@import'https://evil.test/x.css';")).not.toContain('evil.test');
+    expect(sanitizeBundleCSS('@IMPORT"https://evil.test/x.css";')).not.toContain('evil.test');
+  });
+
+  it('survive an @import separated by a comment', () => {
+    expect(sanitizeBundleCSS('@import/**/"https://evil.test/x.css";')).not.toContain('evil.test');
+    expect(sanitizeBundleCSS('@import/*x*/url("https://evil.test/x.css");')).not.toContain('evil.test');
+  });
+
+  // The word boundary that makes the separator optional must not turn a nonsense
+  // at-keyword into a matching @import; the url() pass is what neutralises this.
+  it('does not leave a remote url() behind when the at-keyword is glued to url(', () => {
+    expect(sanitizeBundleCSS('@importurl("https://evil.test/x.css");')).not.toContain('evil.test');
+  });
 });
 
 describe('url() references a bundle legitimately uses', () => {

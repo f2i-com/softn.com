@@ -134,6 +134,20 @@ interface OpenTab {
   serverCollections?: string[];
 }
 
+/**
+ * One bundle waiting on a permission decision.
+ *
+ * Identity matters: the callbacks close over the entry itself so a decision
+ * removes the right one from the queue even when several are outstanding.
+ */
+interface PendingPermission {
+  config: PermissionConfig;
+  appName: string;
+  appIcon?: string;
+  onAllow: () => void;
+  onDeny: () => void;
+}
+
 // ── App Component ────────────────────────────────────────────────
 
 function App(): React.ReactElement {
@@ -160,13 +174,14 @@ function App(): React.ReactElement {
   const [error, setError] = useState<Error | null>(null);
   const [loadingTabId, setLoadingTabId] = useState<string | null>(null);
   const [loadingFileName, setLoadingFileName] = useState('');
-  const [pendingPermission, setPendingPermission] = useState<{
-    config: PermissionConfig;
-    appName: string;
-    appIcon?: string;
-    onAllow: () => void;
-    onDeny: () => void;
-  } | null>(null);
+  // A queue, not a slot. Each entry owns the promise that a processBundleData
+  // call is parked on, and only the head is rendered. It used to be a single
+  // slot: opening a second bundle while the first was still asking replaced the
+  // first entry outright, and with it the only references to that promise's
+  // resolve — so the first tab waited on a promise nothing could ever settle and
+  // sat on "Loading…" for the rest of the session.
+  const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
+  const pendingPermission = pendingPermissions[0] ?? null;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openTabsRef = useRef(openTabs);
   openTabsRef.current = openTabs;
@@ -331,19 +346,22 @@ function App(): React.ReactElement {
           if (!hasGrant) {
             // Show permission prompt and wait for user decision
             const userDecision = await new Promise<boolean>((resolve) => {
-              setPendingPermission({
+              const entry: PendingPermission = {
                 config: permissionConfig,
                 appName,
                 appIcon: icon,
+                // Drop THIS entry, not whatever happens to be showing — the two
+                // are the same only when nothing else queued up behind it.
                 onAllow: () => {
-                  setPendingPermission(null);
+                  setPendingPermissions((queue) => queue.filter((item) => item !== entry));
                   resolve(true);
                 },
                 onDeny: () => {
-                  setPendingPermission(null);
+                  setPendingPermissions((queue) => queue.filter((item) => item !== entry));
                   resolve(false);
                 },
-              });
+              };
+              setPendingPermissions((queue) => [...queue, entry]);
             });
 
             if (!userDecision) {

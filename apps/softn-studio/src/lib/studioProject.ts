@@ -7,6 +7,28 @@ import type {
   VFSFile,
 } from '../types/studio';
 
+/**
+ * Escape text before it goes into generated HTML.
+ *
+ * Everything interpolated below is untrusted: the app name and description come
+ * from whatever the user typed into the brief, and collection and page names can
+ * come straight back from the model. Without this, a name of
+ * `</title><script>…</script>` closed the title element and injected into the
+ * head of every generated page, and a description carrying `<img src=x onerror=…>`
+ * landed verbatim in the body.
+ *
+ * slugify() is not a substitute — it happens to strip to [a-z0-9-] and so is
+ * safe for href, but it is not an escaper and must not be relied on as one.
+ */
+function esc(value: unknown): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -184,14 +206,14 @@ function buildPageHtml(brief: ProjectBrief, blueprint: Blueprint, page: Blueprin
   const palette = buildPalette(brief.style);
   const links = blueprint.pages.map((entry) => {
     const slug = slugify(entry.name);
-    return `<a class="nav-link ${entry.id === page.id ? 'active' : ''}" href="${slug}.html">${entry.name}</a>`;
+    return `<a class="nav-link ${entry.id === page.id ? 'active' : ''}" href="${slug}.html">${esc(entry.name)}</a>`;
   }).join('');
 
   const dataCards = blueprint.collections.length > 0
     ? blueprint.collections.map((collection) => `
       <article class="card">
         <span class="eyebrow">Collection</span>
-        <h3>${collection.name}</h3>
+        <h3>${esc(collection.name)}</h3>
         <p>${collection.fields.length} starter fields ready for schema editing.</p>
       </article>`).join('')
     : `
@@ -210,7 +232,7 @@ function buildPageHtml(brief: ProjectBrief, blueprint: Blueprint, page: Blueprin
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${brief.appName} - ${page.name}</title>
+  <title>${esc(brief.appName)} - ${esc(page.name)}</title>
   <style>
     :root {
       --bg: ${palette.background};
@@ -339,14 +361,14 @@ function buildPageHtml(brief: ProjectBrief, blueprint: Blueprint, page: Blueprin
 <body>
   <main class="shell">
     <section class="hero">
-      <span class="eyebrow">${brief.target} target / ${page.name}</span>
-      <h1>${brief.appName}</h1>
-      <p>${brief.description}</p>
+      <span class="eyebrow">${esc(brief.target)} target / ${esc(page.name)}</span>
+      <h1>${esc(brief.appName)}</h1>
+      <p>${esc(brief.description)}</p>
       <div class="nav">${links}</div>
       <div class="hero-grid">
         <div class="panel">
           <span class="eyebrow">AI blueprint</span>
-          <h2>${page.name} experience</h2>
+          <h2>${esc(page.name)} experience</h2>
           <p>This starter page is generated from the current SoftN Studio brief so the bundle has a live, navigable preview from the first pass.</p>
         </div>
         <div class="panel">
@@ -440,8 +462,13 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
       content: JSON.stringify({ perRoleModels: 'configured in settings' }, null, 2),
     },
     {
+      // JSON.stringify, not a hand-quoted "..." — this interpolation lands
+      // inside a JavaScript string literal in generated source, where an HTML
+      // escaper is no help. An app name containing a quote closed the literal:
+      // `x"); evil(); //` produced a logic file that ran evil(), and a name with
+      // a newline in it produced one that would not parse at all.
       path: 'logic/app.logic',
-      content: `function _init() {\n  console.log("${brief.appName} initialized");\n}\n`,
+      content: `function _init() {\n  console.log(${JSON.stringify(`${brief.appName} initialized`)});\n}\n`,
     },
   ];
 

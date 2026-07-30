@@ -167,6 +167,48 @@ describe('readBundleEntries', () => {
   });
 });
 
+describe('two entries under one name', () => {
+  /**
+   * Rename an entry in both its central-directory record and its local header.
+   * Names must be the same length so no offset moves — which is exactly what
+   * makes this attack cheap to mount by hand.
+   */
+  function renameEntry(zip: Uint8Array, from: string, to: string): Uint8Array {
+    if (from.length !== to.length) throw new Error('renameEntry needs equal-length names');
+    const out = new Uint8Array(zip);
+    const view = new DataView(out.buffer);
+    const decoder = new TextDecoder();
+    const eocd = findEocd(out);
+    let offset = view.getUint32(eocd + 16, true);
+    for (let i = view.getUint16(eocd + 10, true); i > 0; i--) {
+      const nameLength = view.getUint16(offset + 28, true);
+      if (decoder.decode(out.subarray(offset + 46, offset + 46 + nameLength)) === from) {
+        out.set(enc(to), offset + 46);
+        const localHeader = view.getUint32(offset + 42, true);
+        out.set(enc(to), localHeader + 30);
+        return out;
+      }
+      offset += 46 + nameLength + view.getUint16(offset + 30, true) + view.getUint16(offset + 32, true);
+    }
+    throw new Error(`no entry named ${from}`);
+  }
+
+  it('rejects an archive where two records share a filename', () => {
+    // Filenames take part in no checksum, so both records pass every integrity
+    // check the reader has. Which one wins is then reader-dependent: .NET keeps
+    // the first, this reader and fflate keep the last. A bundle could show an
+    // inspector one manifest.json and hand the runtime a different one.
+    // 'manifesX.json' is the same length as 'manifest.json', so renaming it
+    // moves no offsets and the archive stays structurally perfect.
+    const zip = zipSync({
+      'manifest.json': enc('{"name":"Safe"}'),
+      'manifesX.json': enc('{"name":"Evil"}'),
+    });
+    const duped = renameEntry(zip, 'manifesX.json', 'manifest.json');
+    expect(() => readBundleEntries(duped)).toThrow(/share the name/i);
+  });
+});
+
 describe('readBundle', () => {
   it('refuses bytes that do not match the archive checksum', async () => {
     // bundle.ts carried a second ZIP reader that had drifted from the shared

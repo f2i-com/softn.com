@@ -113,6 +113,7 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
 
   const declared: DeclaredEntry[] = [];
   const seenLocalHeaders = new Set<number>();
+  const seenNames = new Set<string>();
   const decoder = new TextDecoder();
   let offset = centralDirOffset;
   let totalUncompressed = 0;
@@ -185,8 +186,20 @@ function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
     }
 
     const nameBytes = data.slice(offset + 46, offset + 46 + fileNameLength);
+    const name = decoder.decode(nameBytes).replace(/\\/g, '/');
+
+    // Two records under one name mean the archive has no single meaning. Names
+    // take part in no checksum, so both records pass every integrity check, and
+    // which one wins is reader-dependent — .NET keeps the first, this reader and
+    // fflate keep the last. A bundle could therefore show an inspector one
+    // manifest.json and hand the runtime another. Refuse it rather than pick.
+    if (seenNames.has(name)) {
+      throw new Error(`Corrupt ZIP: two entries share the name ${name}`);
+    }
+    seenNames.add(name);
+
     declared.push({
-      name: decoder.decode(nameBytes).replace(/\\/g, '/'),
+      name,
       crc32: declaredCrc,
       method,
       compressedSize,
