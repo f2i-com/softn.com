@@ -11,6 +11,8 @@
  * accent, it has to be one of those two things.
  */
 :root {
+  color-scheme: dark;
+
   --ink: #101317;
   --ink-2: #161a20;
   --ink-3: #1d222a;
@@ -18,10 +20,27 @@
   --line-soft: #1c212a;
   --paper: #f2f0ec;
   --dim: #8b94a2;
-  --dimmer: #5c6572;
+  /* Light enough to clear 4.5:1 against --ink-3, not just against --ink. It is
+     used at 11px on raised panels, which is the least forgiving pairing on the
+     page, so it is set from that rather than from the page ground. */
+  --dimmer: #838c9a;
   --coral: #ff8a4c;
   --mint: #35e0c0;
   --sand: #d8c39a;
+
+  /* Derived from the three above, and listed rather than inlined so the light
+     theme can restate them — a tint of an accent has to be mixed against the
+     ground it sits on, and the two grounds are at opposite ends. */
+  --tok-tag: rgba(242, 240, 236, 0.92);
+  --nav-bg: rgba(16, 19, 23, 0.82);
+  --rule: rgba(139, 148, 162, 0.07);
+  --inset: rgba(255, 255, 255, 0.05);
+  --invert-hover: #ffffff;
+  --on-invert-dim: rgba(16, 19, 23, 0.45);
+  --mint-glow: rgba(53, 224, 192, 0.14);
+  --mint-glow-soft: rgba(53, 224, 192, 0.05);
+  --mint-edge: rgba(53, 224, 192, 0.35);
+  --select: rgba(255, 138, 76, 0.28);
 
   --display: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif;
   --body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
@@ -30,6 +49,51 @@
   --gutter: clamp(1.25rem, 4vw, 3.5rem);
   --measure: 1220px;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/*
+ * Daylight, not an inversion.
+ *
+ * The dark theme is a cool ground under warm-white type. Flipping that literally
+ * would land on a cream page with a burnt-orange accent, which is the look every
+ * generated landing page has this year. So the light theme keeps the same cool
+ * graphite family and simply turns it over: the ground becomes cool paper and
+ * the ink becomes the graphite the dark theme used as its ground.
+ *
+ * Both accents are re-mixed rather than reused. #ff8a4c and #35e0c0 are tuned to
+ * carry on near-black and neither reaches 4.5:1 on white, so the light theme has
+ * its own pair at the same job — the rule that coral marks the language and mint
+ * marks the machine is what carries across, not the hex.
+ *
+ * `data-theme` is always present: an inline script in index.html sets it before
+ * first paint. The dark values above stay on :root so a page with no JavaScript
+ * still renders as designed rather than unstyled.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --ink: #f4f6f9;
+  --ink-2: #ffffff;
+  --ink-3: #eef1f6;
+  --line: #d5dce5;
+  --line-soft: #e4e9f0;
+  --paper: #14181d;
+  --dim: #5a6472;
+  --dimmer: #656e7c;
+  --coral: #c2410c;
+  --mint: #0f766e;
+  --sand: #8a5a17;
+
+  --tok-tag: rgba(20, 24, 29, 0.92);
+  --nav-bg: rgba(244, 246, 249, 0.85);
+  --rule: rgba(20, 24, 29, 0.06);
+  --inset: rgba(20, 24, 29, 0.05);
+  --invert-hover: #000000;
+  --on-invert-dim: rgba(244, 246, 249, 0.5);
+  --mint-glow: rgba(15, 118, 110, 0.16);
+  --mint-glow-soft: rgba(15, 118, 110, 0.06);
+  --mint-edge: rgba(15, 118, 110, 0.4);
+  --select: rgba(194, 65, 12, 0.2);
 }
 
 *,
@@ -78,7 +142,7 @@ button {
 }
 
 ::selection {
-  background: rgba(255, 138, 76, 0.28);
+  background: var(--select);
 }
 
 /* ── Shared shells ─────────────────────────────────────────────── */
@@ -146,7 +210,7 @@ button {
   position: sticky;
   top: 0;
   z-index: 50;
-  background: rgba(16, 19, 23, 0.82);
+  background: var(--nav-bg);
   backdrop-filter: blur(14px) saturate(140%);
   border-bottom: 1px solid var(--line-soft);
 }
@@ -208,6 +272,27 @@ button {
   border-color: var(--dimmer);
 }
 
+/* Deliberately uncoloured: coral means the language and mint means the machine,
+   and a theme switch is neither. */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.875rem;
+  height: 1.875rem;
+  margin-right: -0.25rem;
+  border-radius: 6px;
+  color: var(--dim);
+  transition:
+    color 160ms var(--ease),
+    background 160ms var(--ease);
+}
+
+.theme-toggle:hover {
+  color: var(--paper);
+  background: var(--ink-3);
+}
+
 @media (max-width: 720px) {
   .nav-links {
     display: none;
@@ -237,7 +322,7 @@ button {
   margin-inline: auto;
   background-image: repeating-linear-gradient(
     to right,
-    rgba(139, 148, 162, 0.07) 0 1px,
+    var(--rule) 0 1px,
     transparent 1px calc(100% / 12)
   );
   -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 78%);
@@ -314,8 +399,8 @@ button {
 }
 
 .cta-primary:hover {
-  background: #fff;
-  border-color: #fff;
+  background: var(--invert-hover);
+  border-color: var(--invert-hover);
 }
 
 .cta-arrow {
@@ -328,7 +413,7 @@ button {
 }
 
 .cta-primary .cta-arrow {
-  color: rgba(16, 19, 23, 0.45);
+  color: var(--on-invert-dim);
 }
 
 /* ── The player: source on the left, the running app on the right ── */
@@ -425,17 +510,17 @@ button {
 
 .live[data-on='true'] .live-dot {
   background: var(--mint);
-  box-shadow: 0 0 0 3px rgba(53, 224, 192, 0.14);
+  box-shadow: 0 0 0 3px var(--mint-glow);
   animation: live-pulse 2.6s ease-in-out infinite;
 }
 
 @keyframes live-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 3px rgba(53, 224, 192, 0.14);
+    box-shadow: 0 0 0 3px var(--mint-glow);
   }
   50% {
-    box-shadow: 0 0 0 5px rgba(53, 224, 192, 0.05);
+    box-shadow: 0 0 0 5px var(--mint-glow-soft);
   }
 }
 
@@ -495,7 +580,7 @@ button {
   font-family: var(--mono);
   font-size: 0.8125rem;
   color: var(--paper);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--inset);
   border: 1px solid var(--line);
   border-radius: 5px;
   padding: 0.1875rem 0.4375rem;
@@ -832,7 +917,7 @@ button {
 /* The last stage of each pipeline is the only thing actually executing, so it
    is the only stage that gets the machine colour. */
 .stage[data-terminal='true'] {
-  border-color: rgba(53, 224, 192, 0.35);
+  border-color: var(--mint-edge);
 }
 
 .stage[data-terminal='true'] .stage-name {
@@ -989,7 +1074,7 @@ button {
 /* ── Syntax colours ────────────────────────────────────────────── */
 
 .tok-tag {
-  color: rgba(242, 240, 236, 0.92);
+  color: var(--tok-tag);
 }
 .tok-attr {
   color: var(--dim);
