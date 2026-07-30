@@ -109,6 +109,7 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
   },
   projectEyebrow: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: '0.12em',
@@ -116,8 +117,10 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--studio-accent)',
   },
   projectName: {
-    fontSize: 14,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 15,
     fontWeight: 700,
+    letterSpacing: '-0.02em',
     color: 'var(--studio-text)',
     whiteSpace: 'nowrap',
     overflow: 'hidden',

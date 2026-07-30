@@ -356,6 +356,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   label: {
     display: 'block',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 11,
     fontWeight: 600,
     color: 'var(--studio-text-dim)',
@@ -365,6 +366,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   fieldLabel: {
     display: 'block',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 12,
     fontWeight: 500,
     color: 'var(--studio-text-muted)',
@@ -429,12 +431,12 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     fontWeight: 400,
     color: 'var(--studio-text-muted)',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--studio-mono)',
   },
   providerKey: {
     fontSize: 10,
     color: 'var(--studio-text-dim)',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--studio-mono)',
   },
   removeBtn: {
     width: 28,
@@ -533,7 +535,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     borderRadius: 6,
     background: 'var(--studio-accent)',
-    color: '#fff',
+    color: 'var(--studio-bg)',
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer',
@@ -580,7 +582,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text)',
     fontSize: 11,
     outline: 'none',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--studio-mono)',
     flexShrink: 0,
   },
 };

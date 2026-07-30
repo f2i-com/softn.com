@@ -4,6 +4,7 @@
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Toolbar } from './components/toolbar/Toolbar';
+import { NarrowScreenNotice } from './components/NarrowScreenNotice';
 import { ExportDialog } from './components/toolbar/ExportDialog';
 import { ShortcutsDialog } from './components/toolbar/ShortcutsDialog';
 import { NewProjectDialog, type NewProjectConfig } from './components/toolbar/NewProjectDialog';
@@ -340,7 +341,27 @@ interface BuilderSession {
   };
 }
 
+/**
+ * Where the two apps that do work on a phone live. Dev serves each on its own
+ * port; a deployed softn.com puts them under one origin.
+ */
+const STUDIO_URL = import.meta.env.VITE_STUDIO_URL || (import.meta.env.DEV ? 'http://localhost:1423' : '/studio/');
+const RUNTIME_URL = import.meta.env.VITE_WEB_URL || (import.meta.env.DEV ? 'http://localhost:1420' : '/web/');
+
+/** True while the window is too narrow for the builder's panel layout. */
+function useNarrowScreen(minWidth = 900): boolean {
+  const [narrow, setNarrow] = useState(() => window.innerWidth < minWidth);
+  useEffect(() => {
+    const check = () => setNarrow(window.innerWidth < minWidth);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, [minWidth]);
+  return narrow;
+}
+
 function App() {
+  const isNarrow = useNarrowScreen();
   const [view, setView] = useState<ViewMode>('design');
   const [dockFiles, setDockFiles] = useState(true);
   const [dockComponents, setDockComponents] = useState(true);
@@ -1088,6 +1109,12 @@ function App() {
         return null;
     }
   };
+
+  // Below this the four panels stop fitting and the canvas is unusable with a
+  // finger. Measured, not guessed: at 768px the toolbar alone overflows by 130px.
+  if (isNarrow) {
+    return <NarrowScreenNotice studioUrl={STUDIO_URL} runtimeUrl={RUNTIME_URL} />;
+  }
 
   return (
     <div style={styles.app}>

@@ -112,15 +112,15 @@ const styles: Record<string, React.CSSProperties> = {
   railBtnGlow: {
     position: 'absolute',
     inset: 0,
-    background: 'radial-gradient(circle at top, rgba(56,189,248,0.18), transparent 70%)',
+    background: 'radial-gradient(circle at top, var(--studio-accent-soft), transparent 70%)',
     opacity: 0,
     transition: 'opacity 0.2s ease',
     pointerEvents: 'none',
   },
   railBtnActive: {
-    color: 'var(--studio-text)',
-    background: 'linear-gradient(180deg, var(--studio-accent-soft), rgba(37,99,235,0.14))',
-    boxShadow: '0 10px 20px rgba(2, 132, 199, 0.18), inset 0 1px 0 rgba(255,255,255,0.06)',
+    color: 'var(--studio-accent)',
+    background: 'var(--studio-accent-soft)',
+    boxShadow: 'inset 0 0 0 1px var(--studio-accent-soft)',
     transform: 'translateY(-1px)',
   },
   railBtnHover: {
@@ -128,6 +128,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--studio-panel)',
   },
   railLabel: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 9,
     fontWeight: 700,
     lineHeight: 1,
@@ -142,7 +143,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     background: 'var(--studio-bg-muted)',
     borderRight: '1px solid var(--studio-border)',
-    boxShadow: '12px 0 30px rgba(2, 6, 23, 0.28)',
+    boxShadow: 'var(--studio-shadow)',
     overflow: 'hidden',
   },
   aiPanel: {
@@ -159,6 +160,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   panelEyebrow: {
     display: 'block',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: '0.14em',
@@ -172,8 +174,10 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   panelTitle: {
-    fontSize: 16,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 17,
     fontWeight: 700,
+    letterSpacing: '-0.02em',
     color: 'var(--studio-text)',
   },
   panelCount: {
@@ -181,6 +185,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     background: 'var(--studio-accent-soft)',
     color: 'var(--studio-accent)',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: '0.08em',

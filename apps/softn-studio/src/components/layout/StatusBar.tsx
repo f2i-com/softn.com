@@ -34,9 +34,9 @@ export const StatusBar: React.FC = () => {
         <div style={styles.item}>
           <div style={{
             ...styles.statusDot,
-            background: agentState === 'idle' ? 'var(--studio-success)'
+            background: agentState === 'idle' ? 'var(--studio-text-dim)'
               : agentState === 'error' ? 'var(--studio-error)'
-              : 'var(--studio-accent)',
+              : 'var(--studio-live)',
           }} />
           <span>Agent: {agentState}</span>
         </div>
@@ -84,6 +84,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '0 12px',
     background: 'linear-gradient(180deg, var(--studio-bg-elevated) 0%, var(--studio-bg-muted) 100%)',
     borderTop: '1px solid var(--studio-border)',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 11,
     color: 'var(--studio-text-muted)',
     flexShrink: 0,

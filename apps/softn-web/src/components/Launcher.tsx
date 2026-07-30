@@ -66,6 +66,18 @@ const launcherStyles = `
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 0.875rem;
   }
+
+  /* 11px section labels read as fine print on a phone, and the cards want a
+     thumb-sized target rather than a cursor-sized one. */
+  @media (max-width: 640px) {
+    .softn-launcher { padding: 2rem 1.25rem; }
+    .softn-launcher-grid { grid-template-columns: 1fr; }
+    .softn-launcher-section-label { font-size: 0.75rem !important; }
+    .softn-launcher-card [style*="0.6875rem"] { font-size: 0.75rem !important; }
+  }
+  @media (pointer: coarse) {
+    .softn-launcher-card { min-height: 44px; }
+  }
   .softn-launcher-card {
     background: rgba(255, 255, 255, 0.025);
     border: 1px solid rgba(255, 255, 255, 0.06);

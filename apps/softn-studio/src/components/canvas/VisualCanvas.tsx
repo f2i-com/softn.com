@@ -587,9 +587,9 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
               <div style={styles.previewChrome}>
                 <div style={styles.previewChromeLeft}>
                   <div style={styles.previewTrafficLights}>
-                    <span style={{ ...styles.trafficLight, background: '#f97316' }} />
-                    <span style={{ ...styles.trafficLight, background: '#facc15' }} />
-                    <span style={{ ...styles.trafficLight, background: '#22c55e' }} />
+                    <span style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }} />
+                    <span style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }} />
+                    <span style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }} />
                   </div>
                   <div style={styles.previewMeta}>
                     <span style={styles.previewLabel}>{selectedSurfaceLabel}</span>
@@ -693,7 +693,7 @@ const styles: Record<string, React.CSSProperties> = {
   atmosphere: {
     position: 'absolute',
     inset: 0,
-    background: 'radial-gradient(circle at 20% 20%, rgba(34,197,94,0.08), transparent 24%), radial-gradient(circle at 80% 0%, rgba(245,158,11,0.08), transparent 20%)',
+    background: 'radial-gradient(circle at 20% 20%, var(--studio-surface), transparent 24%), radial-gradient(circle at 80% 0%, var(--studio-accent-soft), transparent 20%)',
     pointerEvents: 'none',
   },
   canvasArea: {
@@ -731,7 +731,7 @@ const styles: Record<string, React.CSSProperties> = {
   expandedOverlay: {
     position: 'fixed',
     inset: 0,
-    background: 'var(--studio-overlay, rgba(2,6,23,0.74))',
+    background: 'var(--studio-overlay)',
     backdropFilter: 'blur(10px)',
     display: 'flex',
     alignItems: 'center',
@@ -768,7 +768,8 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     background: 'var(--studio-panel)',
     border: '1px solid var(--studio-border)',
-    fontSize: 14,
+    fontFamily: 'var(--studio-mono)',
+    fontSize: 13,
     fontWeight: 700,
     color: 'var(--studio-text)',
     overflow: 'hidden',
@@ -819,7 +820,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 10,
     height: 10,
     borderRadius: '50%',
-    boxShadow: '0 0 0 1px rgba(255,255,255,0.08) inset',
+    boxShadow: '0 0 0 1px var(--studio-border) inset',
   },
   previewMeta: {
     display: 'flex',
@@ -827,11 +828,13 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 1,
   },
   previewLabel: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 12,
     fontWeight: 700,
     color: 'var(--studio-text)',
   },
   previewSubLabel: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     color: 'var(--studio-text-muted)',
     textTransform: 'capitalize' as const,
@@ -841,7 +844,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     flex: 1,
     border: 'none',
-    background: '#ffffff',
+    background: 'var(--studio-bg-elevated)',
     minHeight: 0,
   },
   codePreview: {
@@ -869,6 +872,10 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 14,
     background: 'var(--studio-inset)',
     border: '1px solid var(--studio-border)',
+    fontFamily: 'var(--studio-mono)',
+    fontSize: 12,
+    color: 'var(--studio-text)',
+    overflowWrap: 'anywhere',
   },
   manifestLabel: {
     display: 'block',
@@ -895,10 +902,11 @@ const styles: Record<string, React.CSSProperties> = {
     maxHeight: '70%',
     objectFit: 'contain' as const,
     borderRadius: 18,
-    boxShadow: '0 22px 50px rgba(2,6,23,0.34)',
+    boxShadow: 'var(--studio-shadow)',
     background: 'var(--studio-panel-strong)',
   },
   assetLabel: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 12,
     color: 'var(--studio-text-dim)',
     fontWeight: 500,
@@ -924,7 +932,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 16,
     fontSize: 12,
     lineHeight: 1.6,
-    fontFamily: "'Menlo', 'Consolas', 'Monaco', monospace",
+    fontFamily: 'var(--studio-mono)',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
     overflow: 'auto',
@@ -948,7 +956,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: '2px solid var(--studio-border-strong)',
     padding: 8,
     background: 'var(--studio-inset)',
-    boxShadow: '0 20px 40px rgba(2,6,23,0.32)',
+    boxShadow: 'var(--studio-shadow)',
   },
   emptyPhoneScreen: {
     width: '100%',
@@ -973,8 +981,10 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
   },
   emptyTitle: {
-    fontSize: 20,
-    fontWeight: 700,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 26,
+    fontWeight: 800,
+    letterSpacing: '-0.03em',
     color: 'var(--studio-text)',
     margin: 0,
   },
@@ -999,13 +1009,14 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--studio-inset)',
     border: '1px solid var(--studio-border)',
     textAlign: 'left' as const,
-    boxShadow: '0 12px 28px rgba(2,6,23,0.2)',
+    boxShadow: 'var(--studio-shadow)',
     cursor: 'pointer',
     fontFamily: 'inherit',
     transition: 'all 0.15s',
   },
   emptyActionKicker: {
     display: 'block',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: '0.12em',
@@ -1015,8 +1026,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   emptyActionTitle: {
     display: 'block',
-    fontSize: 14,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 15,
     fontWeight: 700,
+    letterSpacing: '-0.02em',
     color: 'var(--studio-text)',
   },
   toolbar: {
@@ -1031,7 +1044,7 @@ const styles: Record<string, React.CSSProperties> = {
     backdropFilter: 'blur(12px)',
     borderRadius: 14,
     border: '1px solid var(--studio-border)',
-    boxShadow: '0 18px 40px rgba(2,6,23,0.24)',
+    boxShadow: 'var(--studio-shadow)',
     zIndex: 2,
   },
   toolBtn: {

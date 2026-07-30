@@ -1129,6 +1129,84 @@ button {
   transform: none;
 }
 
+/* ── Touch ─────────────────────────────────────────────────────── */
+
+/*
+ * The small controls are sized for a cursor: the theme toggle is 30px square,
+ * the "open full size" link is 18px tall. Fine to click, awkward to thumb, and
+ * 18px is under the 24px WCAG asks for outright.
+ *
+ * Real height rather than an invisible ::after hit area, which was the first
+ * attempt and does not survive contact: stacked 30px footer links cannot have
+ * non-overlapping 44px targets, so their hit areas ate each other and whichever
+ * painted last won. Growing the controls costs a little vertical space on a
+ * phone and is honest about what is actually tappable.
+ *
+ * Keyed on pointer type, not width — a narrow window on a desktop still has a
+ * mouse, and a large tablet does not.
+ */
+@media (pointer: coarse) {
+  .nav-repo,
+  .theme-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .theme-toggle {
+    width: 44px;
+    height: 44px;
+  }
+
+  .nav-links a,
+  .foot-col a {
+    display: block;
+    padding-block: 0.6875rem;
+  }
+
+  .door-open {
+    min-height: 44px;
+  }
+
+  /* The bar is 38px, so a 44px target inside it would be clipped by the panel.
+     The bar grows instead. */
+  .panel-bar {
+    height: 44px;
+  }
+
+  .panel-bar-tag,
+  .panel-bar-name {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .chip {
+    min-height: 44px;
+  }
+}
+
+/* The mono labels are 11px, which reads as a caption on a desktop and as fine
+   print on a phone. One step up below the tablet breakpoint. */
+@media (max-width: 767px) {
+  .eyebrow,
+  .panel-bar-tag,
+  .chip-meta,
+  .live,
+  .lang-tab-hint,
+  .stage-out,
+  .foot-col-head,
+  .foot-rule,
+  .door-badge,
+  .cat-count,
+  .stepNum {
+    font-size: 0.75rem;
+  }
+
+  .panel-bar {
+    font-size: 0.8125rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;

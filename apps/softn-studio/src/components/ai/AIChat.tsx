@@ -248,7 +248,7 @@ export const AIChat: React.FC = () => {
                 <span style={{ ...styles.dot, animationDelay: '300ms' }} />
               </div>
               {currentStep && (
-                <span style={{ fontSize: 10, color: 'var(--studio-text-dim)' }}>
+                <span style={{ fontFamily: 'var(--studio-mono)', fontSize: 10, color: 'var(--studio-live)' }}>
                   {currentStep}
                 </span>
               )}
@@ -272,9 +272,9 @@ export const AIChat: React.FC = () => {
         {agentState === 'building' ? (
           <button
             onClick={abortAgentTurn}
-            style={{ ...styles.sendBtn, background: 'var(--studio-error, #ef4444)' }}
+            style={{ ...styles.sendBtn, background: 'var(--studio-error)' }}
           >
-            <Icon name="x" size={16} color="#fff" />
+            <Icon name="x" size={16} color="var(--studio-bg)" />
           </button>
         ) : (
           <button
@@ -286,7 +286,7 @@ export const AIChat: React.FC = () => {
               cursor: input.trim() && agentState === 'idle' ? 'pointer' : 'not-allowed',
             }}
           >
-            <Icon name="send" size={16} color="#fff" />
+            <Icon name="send" size={16} color="var(--studio-bg)" />
           </button>
         )}
       </div>
@@ -340,10 +340,12 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     background: 'var(--studio-accent-soft)',
     color: 'var(--studio-accent)',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,
   },
   stat: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     color: 'var(--studio-text-muted)',
   },
@@ -369,8 +371,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     margin: '10px 10px 0',
     padding: '12px 14px',
-    background: 'rgba(251,191,36,0.06)',
-    border: '1px solid rgba(251,191,36,0.15)',
+    background: 'var(--studio-surface)',
+    border: '1px solid var(--studio-warning)',
     borderRadius: 10,
     cursor: 'pointer',
     textAlign: 'left' as const,
@@ -385,8 +387,10 @@ const styles: Record<string, React.CSSProperties> = {
     minWidth: 0,
   },
   setupBannerTitle: {
-    fontSize: 12,
-    fontWeight: 600,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 13,
+    fontWeight: 700,
+    letterSpacing: '-0.01em',
     color: 'var(--studio-warning)',
   },
   setupBannerDesc: {
@@ -396,8 +400,8 @@ const styles: Record<string, React.CSSProperties> = {
   briefContext: {
     margin: '10px 10px 0',
     padding: '10px 12px',
-    background: 'rgba(59,130,246,0.06)',
-    border: '1px solid rgba(59,130,246,0.12)',
+    background: 'var(--studio-accent-soft)',
+    border: '1px solid var(--studio-border)',
     borderRadius: 10,
     flexShrink: 0,
   },
@@ -408,8 +412,10 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 4,
   },
   briefContextTitle: {
-    fontSize: 12,
-    fontWeight: 600,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 13,
+    fontWeight: 700,
+    letterSpacing: '-0.01em',
     color: 'var(--studio-accent)',
   },
   briefContextDesc: {
@@ -429,9 +435,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   briefTag: {
     padding: '2px 6px',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     color: 'var(--studio-accent)',
-    background: 'rgba(59,130,246,0.1)',
+    background: 'var(--studio-accent-soft)',
     borderRadius: 4,
   },
   messages: {
@@ -456,15 +463,17 @@ const styles: Record<string, React.CSSProperties> = {
     width: 56,
     height: 56,
     borderRadius: 16,
-    background: 'rgba(59,130,246,0.1)',
+    background: 'var(--studio-accent-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
   },
   emptyTitle: {
-    fontSize: 15,
-    fontWeight: 600,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 19,
+    fontWeight: 700,
+    letterSpacing: '-0.025em',
     color: 'var(--studio-text)',
     marginBottom: 6,
   },
@@ -508,7 +517,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 26,
     height: 26,
     borderRadius: 8,
-    background: 'rgba(59,130,246,0.1)',
+    background: 'var(--studio-accent-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -521,16 +530,20 @@ const styles: Record<string, React.CSSProperties> = {
   },
   userContent: {
     background: 'var(--studio-accent)',
+    // The coral fill is light in dark theme and dark in light theme, so the
+    // page ground is the only token that stays legible on it in both.
+    color: 'var(--studio-bg)',
     borderBottomRightRadius: 4,
   },
   aiContent: {
     background: 'var(--studio-surface-hover)',
+    color: 'var(--studio-text)',
     borderBottomLeftRadius: 4,
   },
   messageText: {
     fontSize: 13,
     lineHeight: 1.5,
-    color: 'var(--studio-text)',
+    color: 'inherit',
     margin: 0,
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-word',
@@ -556,21 +569,23 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     fontWeight: 600,
     color: 'var(--studio-text-muted)',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--studio-mono)',
   },
   toolResult: {
     fontSize: 10,
     color: 'var(--studio-text-dim)',
     margin: '4px 0 0',
     whiteSpace: 'pre-wrap',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--studio-mono)',
     maxHeight: 80,
     overflow: 'auto',
   },
   tokenCount: {
     display: 'block',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 9,
-    color: 'var(--studio-text-dim)',
+    color: 'inherit',
+    opacity: 0.7,
     marginTop: 4,
     textAlign: 'right' as const,
   },
@@ -590,7 +605,8 @@ const styles: Record<string, React.CSSProperties> = {
     width: 6,
     height: 6,
     borderRadius: '50%',
-    background: 'var(--studio-text-dim)',
+    // The agent is mid-turn here — this is the machine actually running.
+    background: 'var(--studio-live)',
     display: 'inline-block',
     animation: 'softn-dot-pulse 1s ease-in-out infinite',
   },

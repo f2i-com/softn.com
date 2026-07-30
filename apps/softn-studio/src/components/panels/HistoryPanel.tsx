@@ -39,7 +39,7 @@ export const HistoryPanel: React.FC = () => {
               <div key={`${event.path}:${event.timestamp}`} style={styles.timelineItem}>
                 <div style={{
                   ...styles.dot,
-                  background: event.source === 'ai' ? 'var(--studio-accent)' : 'var(--studio-success)',
+                  background: event.source === 'ai' ? 'var(--studio-accent)' : 'var(--studio-text-dim)',
                 }} />
                 <div style={styles.eventInfo}>
                   <span style={styles.eventType}>{event.type}</span>
@@ -91,13 +91,15 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1, display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0,
   },
   eventType: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 11, fontWeight: 600, color: 'var(--studio-text-muted)', textTransform: 'capitalize' as const,
   },
   eventPath: {
-    fontSize: 10, color: 'var(--studio-text-dim)', fontFamily: 'monospace',
+    fontSize: 10, color: 'var(--studio-text-dim)', fontFamily: 'var(--studio-mono)',
     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
   eventTime: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10, color: 'var(--studio-text-dim)', flexShrink: 0,
   },
 };

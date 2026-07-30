@@ -7,6 +7,32 @@ interface BlueprintReviewProps {
   onReviseBrief?: () => void;
 }
 
+// Same focus contract as the brief wizard, for the same reason: inline style
+// objects cannot express :focus, so the ring is written onto the node and taken
+// off again on blur. Two stacked --studio-accent-soft layers compound their
+// alpha so the halo still reads on the light theme's 10% coral.
+const FOCUS_SHADOW = '0 0 0 1px var(--studio-accent), 0 0 0 4px var(--studio-accent-soft), 0 0 0 7px var(--studio-accent-soft)';
+
+// A coral halo disappears on a coral button, so the approve action gets a ring
+// gapped off the sheet instead.
+const FOCUS_SHADOW_ON_ACCENT = '0 0 0 2px var(--studio-bg-elevated), 0 0 0 4px var(--studio-accent)';
+
+const ring = (restBorder: string, restShadow = 'none', focusShadow = FOCUS_SHADOW) => ({
+  onFocus: (event: React.FocusEvent<HTMLElement>) => {
+    event.currentTarget.style.borderColor = 'var(--studio-accent)';
+    event.currentTarget.style.boxShadow = focusShadow;
+  },
+  onBlur: (event: React.FocusEvent<HTMLElement>) => {
+    event.currentTarget.style.borderColor = restBorder;
+    event.currentTarget.style.boxShadow = restShadow;
+  },
+});
+
+const hover = (rest: string, over: string) => ({
+  onMouseEnter: (event: React.MouseEvent<HTMLElement>) => { event.currentTarget.style.background = over; },
+  onMouseLeave: (event: React.MouseEvent<HTMLElement>) => { event.currentTarget.style.background = rest; },
+});
+
 export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onReviseBrief }) => {
   const {
     blueprint,
@@ -48,6 +74,9 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
     setRevisionInput('');
   };
 
+  const rule = (isLast: boolean): React.CSSProperties =>
+    (isLast ? { borderBottom: 'none', paddingBottom: 0 } : {});
+
   return (
     <div style={styles.overlay}>
       <div style={styles.modal}>
@@ -72,9 +101,9 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
         <div style={styles.contentGrid}>
           <section style={styles.sectionCard}>
             <span style={styles.sectionKicker}>Pages</span>
-            {blueprint.pages.map((page) => (
-              <div key={page.id} style={styles.listRow}>
-                <div>
+            {blueprint.pages.map((page, index) => (
+              <div key={page.id} style={{ ...styles.listRow, ...rule(index === blueprint.pages.length - 1) }}>
+                <div style={{ minWidth: 0 }}>
                   <div style={styles.rowTitle}>{page.name}</div>
                   <div style={styles.rowSub}>{page.route || 'No route'} / {page.layout}</div>
                 </div>
@@ -85,9 +114,9 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
 
           <section style={styles.sectionCard}>
             <span style={styles.sectionKicker}>Data model</span>
-            {blueprint.collections.length > 0 ? blueprint.collections.map((collection) => (
-              <div key={collection.id} style={styles.listRow}>
-                <div>
+            {blueprint.collections.length > 0 ? blueprint.collections.map((collection, index) => (
+              <div key={collection.id} style={{ ...styles.listRow, ...rule(index === blueprint.collections.length - 1) }}>
+                <div style={{ minWidth: 0 }}>
                   <div style={styles.rowTitle}>{collection.name}</div>
                   <div style={styles.rowSub}>{collection.fields.map((field) => field.name).join(', ') || 'No fields yet'}</div>
                 </div>
@@ -100,29 +129,43 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
 
           <section style={styles.sectionCard}>
             <span style={styles.sectionKicker}>Risks</span>
-            {blueprint.risks.map((risk) => <div key={risk} style={styles.noteRow}>{risk}</div>)}
+            {blueprint.risks.map((risk, index) => (
+              <div key={risk} style={{ ...styles.noteRow, ...rule(index === blueprint.risks.length - 1) }}>{risk}</div>
+            ))}
           </section>
 
           <section style={styles.sectionCard}>
             <span style={styles.sectionKicker}>Assumptions</span>
-            {blueprint.assumptions.map((assumption) => <div key={assumption} style={styles.noteRow}>{assumption}</div>)}
+            {blueprint.assumptions.map((assumption, index) => (
+              <div key={assumption} style={{ ...styles.noteRow, ...rule(index === blueprint.assumptions.length - 1) }}>{assumption}</div>
+            ))}
           </section>
         </div>
 
         <div style={styles.revisionCard}>
           <div style={styles.revisionHeader}>
-            <Icon name="edit" size={15} color="var(--studio-accent)" />
-            <span style={styles.revisionTitle}>Revise the plan</span>
+            <Icon name="edit" size={14} color="var(--studio-accent)" />
+            <span id="blueprint-revision-title" style={styles.revisionTitle}>Revise the plan</span>
           </div>
           <div style={styles.revisionRow}>
             <input
+              id="blueprint-revision-note"
               value={revisionInput}
               onChange={(event) => setRevisionInput(event.target.value)}
               onKeyDown={(event) => { if (event.key === 'Enter') applyRevisionHint(); }}
               placeholder="Add another page, tighten auth, or note a revision for the next pass..."
+              aria-labelledby="blueprint-revision-title"
               style={styles.revisionInput}
+              {...ring('var(--studio-border)')}
             />
-            <button onClick={applyRevisionHint} style={styles.secondaryButton}>Apply note</button>
+            <button
+              onClick={applyRevisionHint}
+              style={styles.secondaryButton}
+              {...ring('var(--studio-border)')}
+              {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
+            >
+              Apply note
+            </button>
           </div>
         </div>
 
@@ -140,6 +183,8 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               }
             }}
             style={styles.secondaryButton}
+            {...ring('var(--studio-border)')}
+            {...hover('var(--studio-bg-muted)', 'var(--studio-surface-hover)')}
           >
             Revise brief
           </button>
@@ -150,6 +195,7 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
               onApprove();
             }}
             style={styles.primaryButton}
+            {...ring('var(--studio-accent)', 'none', FOCUS_SHADOW_ON_ACCENT)}
           >
             Approve blueprint
           </button>
@@ -157,6 +203,16 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
       </div>
     </div>
   );
+};
+
+// Shared with the brief wizard: mono, small, tracked, uppercase — softn.com's
+// eyebrow, used here for every kicker, stat label and count.
+const eyebrow: React.CSSProperties = {
+  fontFamily: 'var(--studio-mono)',
+  fontSize: 10.5,
+  fontWeight: 500,
+  letterSpacing: '0.12em',
+  textTransform: 'uppercase',
 };
 
 const styles: Record<string, React.CSSProperties> = {
@@ -171,139 +227,172 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 24,
     zIndex: 30,
   },
+  // Same sheet the wizard hands off from: elevated ground, hairline, one radius.
   modal: {
     width: 'min(1100px, 100%)',
     maxHeight: '100%',
     overflow: 'auto',
-    borderRadius: 28,
+    borderRadius: 18,
     background: 'var(--studio-bg-elevated)',
-    border: '1px solid var(--studio-border)',
-    boxShadow: '0 40px 80px var(--studio-shadow)',
-    padding: 24,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-border)',
+    // The old value read `0 40px 80px var(--studio-shadow)`, but the token
+    // already carries its own offsets, so the declaration was invalid and the
+    // modal had no shadow at all.
+    boxShadow: 'var(--studio-shadow)',
+    padding: 28,
   },
   header: {
     display: 'flex',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 16,
-    marginBottom: 18,
+    marginBottom: 22,
   },
   eyebrow: {
+    ...eyebrow,
     display: 'block',
-    fontSize: 11,
-    fontWeight: 700,
-    letterSpacing: '0.14em',
-    textTransform: 'uppercase' as const,
+    fontWeight: 600,
     color: 'var(--studio-accent)',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   title: {
     margin: 0,
-    fontSize: 30,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 32,
+    fontWeight: 700,
+    letterSpacing: '-0.035em',
+    lineHeight: 1.05,
     color: 'var(--studio-text)',
   },
   subtitle: {
-    margin: '8px 0 0',
+    margin: '10px 0 0',
     color: 'var(--studio-text-muted)',
     fontSize: 14,
+    lineHeight: 1.5,
   },
   badge: {
-    padding: '8px 12px',
+    ...eyebrow,
+    padding: '6px 12px',
     borderRadius: 999,
     background: 'var(--studio-accent-soft)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-accent)',
     color: 'var(--studio-accent)',
-    fontSize: 11,
-    fontWeight: 700,
-    whiteSpace: 'nowrap' as const,
+    fontWeight: 600,
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
   },
   statGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
     gap: 12,
-    marginBottom: 18,
+    marginBottom: 14,
   },
   statCard: {
-    padding: 16,
-    borderRadius: 18,
-    background: 'var(--studio-inset)',
-    border: '1px solid var(--studio-border)',
+    padding: '14px 16px',
+    borderRadius: 12,
+    background: 'var(--studio-bg-muted)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-border)',
   },
   statLabel: {
+    ...eyebrow,
     display: 'block',
-    fontSize: 10,
-    letterSpacing: '0.08em',
-    textTransform: 'uppercase' as const,
-    color: 'var(--studio-text-muted)',
-    marginBottom: 10,
+    color: 'var(--studio-text-dim)',
+    marginBottom: 8,
   },
+  // Counts get size and the display face rather than colour.
   statValue: {
+    display: 'block',
+    fontFamily: 'var(--studio-display)',
     color: 'var(--studio-text)',
-    fontSize: 28,
+    fontSize: 30,
+    fontWeight: 700,
+    letterSpacing: '-0.04em',
+    lineHeight: 1,
   },
   contentGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-    gap: 14,
+    gap: 12,
   },
   sectionCard: {
-    padding: 16,
-    borderRadius: 18,
-    background: 'var(--studio-inset)',
-    border: '1px solid var(--studio-border)',
+    padding: '14px 16px 4px',
+    borderRadius: 12,
+    background: 'var(--studio-bg-muted)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-border)',
   },
+  // Four coral kickers turned the panel into a stripe of accent; section names
+  // are not SoftN, so they get the eyebrow treatment in dim instead.
   sectionKicker: {
+    ...eyebrow,
     display: 'block',
-    fontSize: 10,
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.1em',
-    color: 'var(--studio-accent)',
-    fontWeight: 700,
-    marginBottom: 12,
+    color: 'var(--studio-text-dim)',
+    paddingBottom: 10,
+    marginBottom: 2,
+    borderBottom: '1px solid var(--studio-border)',
   },
   listRow: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 10,
-    padding: '10px 0',
-    borderBottom: '1px solid var(--studio-border)',
+    paddingTop: 11,
+    paddingBottom: 11,
+    borderBottom: '1px solid var(--studio-border-subtle)',
   },
   rowTitle: {
     color: 'var(--studio-text)',
     fontSize: 14,
-    fontWeight: 700,
+    fontWeight: 600,
   },
   rowSub: {
+    fontFamily: 'var(--studio-mono)',
     color: 'var(--studio-text-muted)',
-    fontSize: 12,
+    fontSize: 11,
     marginTop: 4,
+    lineHeight: 1.4,
+    wordBreak: 'break-word',
   },
   rowBadge: {
-    padding: '5px 8px',
+    ...eyebrow,
+    padding: '4px 8px',
     borderRadius: 999,
-    background: 'var(--studio-accent-soft)',
-    color: 'var(--studio-accent)',
-    fontSize: 10,
-    fontWeight: 700,
+    background: 'var(--studio-bg-elevated)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-border)',
+    color: 'var(--studio-text-muted)',
+    whiteSpace: 'nowrap',
+    flexShrink: 0,
   },
   noteRow: {
     color: 'var(--studio-text)',
     fontSize: 13,
     lineHeight: 1.6,
-    padding: '8px 0',
-    borderBottom: '1px solid var(--studio-border)',
+    paddingTop: 10,
+    paddingBottom: 10,
+    borderBottom: '1px solid var(--studio-border-subtle)',
   },
   emptyCard: {
-    color: 'var(--studio-text-muted)',
+    color: 'var(--studio-text-dim)',
     fontSize: 13,
-    padding: '8px 0',
+    padding: '10px 0 14px',
   },
   revisionCard: {
-    marginTop: 16,
-    padding: 16,
-    borderRadius: 18,
-    background: 'var(--studio-bg)',
-    border: '1px solid var(--studio-border)',
+    marginTop: 12,
+    padding: '14px 16px 16px',
+    borderRadius: 12,
+    background: 'var(--studio-bg-muted)',
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-border)',
   },
   revisionHeader: {
     display: 'flex',
@@ -312,9 +401,8 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 12,
   },
   revisionTitle: {
-    color: 'var(--studio-text)',
-    fontSize: 13,
-    fontWeight: 700,
+    ...eyebrow,
+    color: 'var(--studio-text-dim)',
   },
   revisionRow: {
     display: 'flex',
@@ -322,14 +410,19 @@ const styles: Record<string, React.CSSProperties> = {
   },
   revisionInput: {
     flex: 1,
-    padding: '12px 14px',
-    borderRadius: 14,
-    border: '1px solid var(--studio-border)',
-    background: 'var(--studio-surface)',
+    minWidth: 0,
+    padding: '11px 14px',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-border)',
+    background: 'var(--studio-bg)',
     color: 'var(--studio-text)',
     fontSize: 13,
     outline: 'none',
+    boxShadow: 'none',
     fontFamily: 'inherit',
+    transition: 'border-color 0.12s, box-shadow 0.12s',
   },
   actions: {
     display: 'flex',
@@ -338,25 +431,33 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 20,
   },
   secondaryButton: {
-    padding: '10px 14px',
-    borderRadius: 12,
-    border: '1px solid var(--studio-border)',
-    background: 'var(--studio-surface)',
+    padding: '10px 16px',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-border)',
+    background: 'var(--studio-bg-muted)',
     color: 'var(--studio-text-muted)',
     fontSize: 13,
-    fontWeight: 700,
+    fontWeight: 600,
     cursor: 'pointer',
     fontFamily: 'inherit',
+    outline: 'none',
+    flexShrink: 0,
   },
   primaryButton: {
-    padding: '10px 16px',
-    borderRadius: 12,
-    border: 'none',
-    background: 'linear-gradient(135deg, #0ea5e9, #2563eb)',
-    color: '#fff',
+    padding: '10px 18px',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    borderColor: 'var(--studio-accent)',
+    background: 'var(--studio-accent)',
+    color: 'var(--studio-bg)',
     fontSize: 13,
-    fontWeight: 700,
+    fontWeight: 600,
+    letterSpacing: '0.01em',
     cursor: 'pointer',
     fontFamily: 'inherit',
+    outline: 'none',
   },
 };
