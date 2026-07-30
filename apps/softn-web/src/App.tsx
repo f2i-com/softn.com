@@ -170,6 +170,15 @@ function App(): React.ReactElement {
   const tabPagesRef = useRef<Record<string, string>>({}); // tabId → current page
   const urlReadyRef = useRef(false); // true after initial URL parsing
   const skipNextUrlPushRef = useRef(false); // skip URL push after popstate
+  // The address the page was opened at is a one-shot instruction, and acting on
+  // it twice opens the bundle twice. StrictMode invokes every mount effect
+  // twice in development, so "runs on mount" is not the same as "runs once".
+  const entryHandledRef = useRef(false);
+  // Bundle loads that have started but not finished, by resolved URL. A second
+  // request for one already in flight joins it rather than starting its own —
+  // the tab-reuse check below cannot help, because it can only recognise a tab
+  // that has finished loading, and the whole point here is that this one has not.
+  const inFlightRef = useRef(new Map<string, Promise<string | null>>());
 
   // An embedded frame keeps ?embed=1 through every rewrite, so a frame that
   // reloads itself does not sprout a tab bar inside somebody else's page.
@@ -456,7 +465,7 @@ function App(): React.ReactElement {
    * demo card on the launcher clicks.
    */
   const openFromUrl = useCallback(
-    async (value: string): Promise<string | null> => {
+    (value: string): Promise<string | null> => {
       let url: URL;
       try {
         url = resolveBundleUrl(value, window.location.origin);
@@ -465,51 +474,70 @@ function App(): React.ReactElement {
         // only ever the error card.
         setError(err instanceof Error ? err : new Error(String(err)));
         setActiveTabId(null);
-        return null;
+        return Promise.resolve(null);
       }
 
       const displayName = bundleNameFromUrl(url);
       const loadedTab = openTabsRef.current.find((t) => t.name === displayName && t.source);
       if (loadedTab) {
         setActiveTabId(loadedTab.id);
-        return loadedTab.name;
+        return Promise.resolve(loadedTab.name);
       }
 
-      // The same placeholder the /app/:name flow uses, so the download shows up
-      // in the tab bar instead of leaving the window blank until it lands.
-      // processBundleData adopts it once the real name is known.
-      const skeletonTabId = crypto.randomUUID();
-      setError(null);
-      setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '' }]);
-      setActiveTabId(skeletonTabId);
+      // A load for this exact bundle is already running: join it. Without this,
+      // a double-clicked demo card and StrictMode's doubled mount effect both
+      // download the bundle twice and leave a placeholder nobody owns — the tab
+      // bar ends up with the running app beside a tab loading forever.
+      const joined = inFlightRef.current.get(url.href);
+      if (joined) return joined;
 
-      let data: Uint8Array;
-      try {
-        data = await fetchRemoteBundle(url);
-      } catch (err) {
-        console.error('[SoftN Web] Failed to fetch bundle:', err);
-        setError(err instanceof Error ? err : new Error(String(err)));
-        discardPlaceholder(skeletonTabId);
-        return null;
-      }
+      const run = async (): Promise<string | null> => {
+        // The same placeholder the /app/:name flow uses, so the download shows
+        // up in the tab bar instead of leaving the window blank until it lands.
+        // processBundleData adopts it once the real name is known.
+        const skeletonTabId = crypto.randomUUID();
+        setError(null);
+        setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '' }]);
+        setActiveTabId(skeletonTabId);
 
-      // Whatever happens from here the placeholder is this function's to
-      // account for: it is gone unless processBundleData reports that it opened
-      // the bundle, in which case the tab it adopted is the running app.
-      let opened: string | null = null;
-      try {
-        opened = await processBundleData(data, `${displayName}.softn`);
-        return opened;
-      } catch (err) {
-        // processBundleData reports its own failures, so anything thrown out of
-        // it is a surprise — surfacing it here keeps the promise this function
-        // returns resolved, which the ?open= caller relies on.
-        console.error('[SoftN Web] Failed to open bundle:', err);
-        setError(err instanceof Error ? err : new Error(String(err)));
-        return null;
-      } finally {
-        if (opened === null) discardPlaceholder(skeletonTabId);
-      }
+        let data: Uint8Array;
+        try {
+          data = await fetchRemoteBundle(url);
+        } catch (err) {
+          console.error('[SoftN Web] Failed to fetch bundle:', err);
+          setError(err instanceof Error ? err : new Error(String(err)));
+          discardPlaceholder(skeletonTabId);
+          return null;
+        }
+
+        // Whatever happens from here the placeholder is this function's to
+        // account for: it is gone unless processBundleData reports that it
+        // opened the bundle, in which case the tab it adopted is the running app.
+        let opened: string | null = null;
+        try {
+          opened = await processBundleData(data, `${displayName}.softn`);
+          return opened;
+        } catch (err) {
+          // processBundleData reports its own failures, so anything thrown out
+          // of it is a surprise — surfacing it here keeps the promise this
+          // function returns resolved, which the ?open= caller relies on.
+          console.error('[SoftN Web] Failed to open bundle:', err);
+          setError(err instanceof Error ? err : new Error(String(err)));
+          return null;
+        } finally {
+          if (opened === null) discardPlaceholder(skeletonTabId);
+        }
+      };
+
+      // `load` is referenced inside its own initializer, which is safe because
+      // the callback cannot run until the promise settles, long after binding.
+      const load: Promise<string | null> = run().finally(() => {
+        // Only clear the entry if it is still this load's; a later request for
+        // the same bundle owns the slot by then.
+        if (inFlightRef.current.get(url.href) === load) inFlightRef.current.delete(url.href);
+      });
+      inFlightRef.current.set(url.href, load);
+      return load;
     },
     [processBundleData, discardPlaceholder]
   );
@@ -626,6 +654,9 @@ function App(): React.ReactElement {
   // ── URL Routing: Load app from URL on mount ───────────────────
 
   useEffect(() => {
+    if (entryHandledRef.current) return;
+    entryHandledRef.current = true;
+
     if (urlInit.openValue) {
       // ?open= is a one-shot instruction: once it has been acted on the URL
       // becomes the ordinary /app/<name> form, so a reload replays the bundle
