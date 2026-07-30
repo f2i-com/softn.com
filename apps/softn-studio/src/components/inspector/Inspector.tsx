@@ -211,7 +211,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     overflow: 'hidden',
     flexShrink: 0,
-    boxShadow: '-12px 0 30px rgba(2,6,23,0.18)',
+    boxShadow: 'var(--studio-shadow)',
   },
   header: {
     padding: '14px 16px',
@@ -221,6 +221,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   headerEyebrow: {
     display: 'block',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: '0.14em',
@@ -229,8 +230,10 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 4,
   },
   headerTitle: {
-    fontSize: 16,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 17,
     fontWeight: 700,
+    letterSpacing: '-0.02em',
     color: 'var(--studio-text)',
   },
   componentBadge: {
@@ -240,6 +243,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 6,
   },
   componentType: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 12,
     fontWeight: 700,
     color: 'var(--studio-accent)',
@@ -247,7 +251,7 @@ const styles: Record<string, React.CSSProperties> = {
   componentId: {
     fontSize: 11,
     color: 'var(--studio-text-muted)',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--studio-mono)',
   },
   overviewCard: {
     display: 'flex',
@@ -266,6 +270,7 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
   },
   overviewLabel: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: '0.1em',
@@ -273,6 +278,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text-dim)',
   },
   overviewValue: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 13,
     fontWeight: 700,
     color: 'var(--studio-text)',
@@ -310,7 +316,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 16,
     background: 'var(--studio-inset)',
     border: '1px solid var(--studio-border)',
-    boxShadow: '0 14px 28px rgba(2,6,23,0.14)',
+    boxShadow: 'var(--studio-shadow)',
   },
   aiHintRow: {
     display: 'flex',
@@ -354,6 +360,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 8,
   },
   aiLabel: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 11,
     fontWeight: 700,
     color: 'var(--studio-accent)',
@@ -377,7 +384,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 38,
     height: 38,
     borderRadius: 12,
-    background: 'rgba(56,189,248,0.12)',
+    background: 'var(--studio-accent-soft)',
     border: 'none',
     display: 'flex',
     alignItems: 'center',

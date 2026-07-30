@@ -222,6 +222,7 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.4,
   },
   fileCount: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 11,
     color: 'var(--studio-text-muted)',
   },
@@ -252,6 +253,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   treeName: {
     flex: 1,
+    fontFamily: 'var(--studio-mono)',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',

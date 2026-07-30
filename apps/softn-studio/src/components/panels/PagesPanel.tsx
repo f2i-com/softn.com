@@ -174,11 +174,12 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '12px',
     marginBottom: 10,
     borderRadius: 14,
-    background: 'linear-gradient(180deg, rgba(56,189,248,0.12), rgba(37,99,235,0.08))',
-    border: '1px solid rgba(56,189,248,0.16)',
+    background: 'var(--studio-accent-soft)',
+    border: '1px solid var(--studio-accent-soft)',
   },
   viewerEyebrow: {
     display: 'block',
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 700,
     color: 'var(--studio-accent)',
@@ -187,14 +188,16 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 6,
   },
   viewerTitle: {
-    fontSize: 13,
+    fontFamily: 'var(--studio-display)',
+    fontSize: 14,
     fontWeight: 700,
+    letterSpacing: '-0.02em',
     color: 'var(--studio-text)',
   },
   viewerPath: {
     fontSize: 10,
     color: 'var(--studio-accent)',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--studio-mono)',
     marginTop: 3,
   },
   viewerButton: {
@@ -225,7 +228,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
   },
   pageItemActive: {
-    background: 'rgba(59,130,246,0.1)',
+    background: 'var(--studio-accent-soft)',
     color: 'var(--studio-text)',
   },
   pageName: {
@@ -238,13 +241,14 @@ const styles: Record<string, React.CSSProperties> = {
   pageRoute: {
     fontSize: 10,
     color: 'var(--studio-text-dim)',
-    fontFamily: 'monospace',
+    fontFamily: 'var(--studio-mono)',
     flexShrink: 0,
   },
   sectionDivider: {
     padding: '10px 10px 4px',
   },
   sectionLabel: {
+    fontFamily: 'var(--studio-mono)',
     fontSize: 10,
     fontWeight: 600,
     color: 'var(--studio-text-dim)',

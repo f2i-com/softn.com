@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { Icon } from '../common/Icon';
 import { useWorkspaceStore, useVFSStore, useAIStore } from '../../stores';
 import { removeRecentProject, loadRecentProjects, loadWorkspaceSnapshot } from '../../lib/persistence';
-import { STUDIO_ICON } from '../../lib/assets';
+import { Mark } from '../common/Mark';
 
 interface RecentProject {
   id: string;
@@ -20,40 +20,42 @@ interface DashboardProps {
 
 type ThemeMode = 'dark' | 'light';
 
+/**
+ * The dashboard used to carry its own palette — a third one, agreeing with
+ * neither theme in App.tsx and drifting from both. These are now just names for
+ * the studio tokens, so there is one place a colour is decided. App.tsx mirrors
+ * those tokens onto the document element, which is what makes them resolve here:
+ * the dashboard renders outside the subtree each editor view wraps in them.
+ *
+ * The shadows still branch on the mode because a shadow is not a colour swap —
+ * on a light ground it is a soft grey lift, on a dark one it is a deeper hole.
+ */
 function getTheme(theme: ThemeMode) {
-  if (theme === 'light') {
-    return {
-      pageBg: '#f4f7fb',
-      cardBg: 'rgba(255,255,255,0.92)',
-      cardBgHover: 'rgba(255,255,255,1)',
-      surfaceBg: 'rgba(0,0,0,0.03)',
-      text: '#111827',
-      textSecondary: '#6b7280',
-      textDim: '#9ca3af',
-      border: 'rgba(0,0,0,0.08)',
-      borderHover: 'rgba(0,0,0,0.15)',
-      accent: '#2563eb',
-      accentSoft: 'rgba(37,99,235,0.08)',
-      accentGlow: 'rgba(37,99,235,0.12)',
-      shadow: '0 1px 3px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.04)',
-      shadowHover: '0 4px 12px rgba(0,0,0,0.08), 0 16px 40px rgba(0,0,0,0.06)',
-    };
-  }
+  const shadows =
+    theme === 'light'
+      ? {
+          shadow: '0 1px 2px rgba(20,24,29,0.04), 0 8px 24px rgba(20,24,29,0.05)',
+          shadowHover: '0 2px 6px rgba(20,24,29,0.07), 0 18px 44px rgba(20,24,29,0.09)',
+        }
+      : {
+          shadow: '0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.22)',
+          shadowHover: '0 2px 6px rgba(0,0,0,0.4), 0 18px 44px rgba(0,0,0,0.32)',
+        };
+
   return {
-    pageBg: '#0a0e17',
-    cardBg: 'rgba(17,24,39,0.8)',
-    cardBgHover: 'rgba(22,30,48,0.95)',
-    surfaceBg: 'rgba(255,255,255,0.04)',
-    text: '#f1f5f9',
-    textSecondary: '#94a3b8',
-    textDim: '#475569',
-    border: 'rgba(148,163,184,0.12)',
-    borderHover: 'rgba(148,163,184,0.22)',
-    accent: '#38bdf8',
-    accentSoft: 'rgba(56,189,248,0.08)',
-    accentGlow: 'rgba(56,189,248,0.15)',
-    shadow: '0 1px 3px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.15)',
-    shadowHover: '0 4px 12px rgba(0,0,0,0.3), 0 16px 40px rgba(0,0,0,0.2)',
+    pageBg: 'var(--studio-bg)',
+    cardBg: 'var(--studio-bg-elevated)',
+    cardBgHover: 'var(--studio-bg-muted)',
+    surfaceBg: 'var(--studio-surface)',
+    text: 'var(--studio-text)',
+    textSecondary: 'var(--studio-text-muted)',
+    textDim: 'var(--studio-text-dim)',
+    border: 'var(--studio-border)',
+    borderHover: 'var(--studio-border-strong)',
+    accent: 'var(--studio-accent)',
+    accentSoft: 'var(--studio-accent-soft)',
+    accentGlow: 'var(--studio-accent-soft)',
+    ...shadows,
   };
 }
 
@@ -113,9 +115,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
           {/* Header */}
           <div style={{ ...s.header, marginBottom: m ? 24 : 36 }}>
             <div style={s.headerLeft}>
-              <div style={{ ...s.logo, width: m ? 36 : 44, height: m ? 36 : 44, borderRadius: m ? 10 : 12 }}>
-                <img src={STUDIO_ICON} alt="SoftN Studio" style={{ ...s.logoImg, borderRadius: m ? 10 : 12 }} />
-              </div>
+              <Mark size={m ? 36 : 44} radius={m ? 10 : 12} />
               <span style={{ ...s.logoLabel, fontSize: m ? 15 : 17, color: theme.text }}>SoftN Studio</span>
             </div>
             <button
@@ -146,14 +146,17 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
               style={{
                 ...s.actionCard,
                 flex: m ? 'none' : 1,
+                // The primary path, and it says so at rest rather than only on
+                // hover: side by side at identical weight, neither card looked
+                // like the one to press first.
                 background: hoveredCard === 'new' ? theme.cardBgHover : theme.cardBg,
-                borderColor: hoveredCard === 'new' ? theme.accent : theme.border,
+                borderColor: theme.accent,
                 boxShadow: hoveredCard === 'new' ? theme.shadowHover : theme.shadow,
                 padding: m ? '18px 16px' : '24px 22px',
               }}
             >
-              <div style={{ ...s.actionIcon, background: 'linear-gradient(135deg, #0ea5e9, #2563eb)' }}>
-                <Icon name="sparkles" size={20} color="#fff" />
+              <div style={{ ...s.actionIcon, background: 'var(--studio-accent-soft)', border: '1px solid var(--studio-accent)' }}>
+                <Icon name="sparkles" size={20} color="var(--studio-accent)" />
               </div>
               <div style={s.actionText}>
                 <span style={{ ...s.actionTitle, color: theme.text }}>Start with AI</span>
@@ -249,18 +252,29 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
           {!m && (
             <div style={{ marginBottom: 32 }}>
               <h2 style={{ ...s.sectionTitle, color: theme.textSecondary, marginBottom: 12 }}>How it works</h2>
-              <div style={{ display: 'flex', gap: 12 }}>
+              {/*
+                A real sequence, so the numbers earn their place — but as three
+                boxed cards they competed with the two actions above, which are
+                the only things on this screen you can actually press. Divided
+                columns say "steps" just as well and stay in the background.
+              */}
+              <div style={s.steps}>
                 {[
-                  { step: '1', title: 'Describe', desc: 'Tell AI what you want to build' },
-                  { step: '2', title: 'Preview', desc: 'See the result live in the canvas' },
-                  { step: '3', title: 'Export', desc: 'Download your app as a .softn bundle' },
-                ].map((item) => (
-                  <div key={item.step} style={{ ...s.stepCard, background: theme.cardBg, borderColor: theme.border, boxShadow: theme.shadow }}>
-                    <div style={{ ...s.stepNum, background: 'linear-gradient(135deg, #0ea5e9, #2563eb)' }}>{item.step}</div>
-                    <div>
-                      <div style={{ ...s.stepTitle, color: theme.text }}>{item.title}</div>
-                      <div style={{ ...s.stepDesc, color: theme.textSecondary }}>{item.desc}</div>
-                    </div>
+                  { step: '01', title: 'Describe', desc: 'Tell AI what you want to build' },
+                  { step: '02', title: 'Preview', desc: 'See the result live in the canvas' },
+                  { step: '03', title: 'Export', desc: 'Download your app as a .softn bundle' },
+                ].map((item, i) => (
+                  <div
+                    key={item.step}
+                    style={{
+                      ...s.step,
+                      borderLeft: i === 0 ? 'none' : `1px solid ${theme.border}`,
+                      paddingLeft: i === 0 ? 0 : 18,
+                    }}
+                  >
+                    <div style={{ ...s.stepNum, color: theme.accent }}>{item.step}</div>
+                    <div style={{ ...s.stepTitle, color: theme.text }}>{item.title}</div>
+                    <div style={{ ...s.stepDesc, color: theme.textSecondary }}>{item.desc}</div>
                   </div>
                 ))}
               </div>
@@ -295,11 +309,18 @@ const s: Record<string, React.CSSProperties> = {
     overflowY: 'auto',
     overflowX: 'hidden',
     WebkitOverflowScrolling: 'touch',
+    // Centre the column in the viewport rather than pinning it to the top. The
+    // dashboard is short, and left at the top it sat in the first third of the
+    // screen with the rest of the window empty behind it. `auto` margins on the
+    // flex child keep it centred when it is short and let it scroll normally
+    // once recent projects make it taller than the window.
+    display: 'flex',
+    flexDirection: 'column',
   },
   page: {
     width: '100%',
-    maxWidth: 680,
-    margin: '0 auto',
+    maxWidth: 760,
+    margin: 'auto',
   },
 
   // Header
@@ -343,10 +364,12 @@ const s: Record<string, React.CSSProperties> = {
 
   // Hero
   heroTitle: {
-    fontWeight: 700,
-    lineHeight: 1.1,
+    fontFamily: 'var(--studio-display)',
+    fontWeight: 800,
+    lineHeight: 0.98,
     margin: 0,
-    letterSpacing: '-0.02em',
+    letterSpacing: '-0.04em',
+    fontVariationSettings: "'wdth' 100, 'opsz' 40",
   },
   heroSub: {
     lineHeight: 1.6,
@@ -397,10 +420,11 @@ const s: Record<string, React.CSSProperties> = {
   // Section
   sectionTitle: {
     margin: 0,
-    fontSize: 13,
-    fontWeight: 700,
+    fontFamily: 'var(--studio-mono)',
+    fontSize: 11,
+    fontWeight: 500,
     textTransform: 'uppercase' as const,
-    letterSpacing: '0.06em',
+    letterSpacing: '0.16em',
   },
 
   // Project rows
@@ -466,35 +490,28 @@ const s: Record<string, React.CSSProperties> = {
   },
 
   // Steps
-  stepCard: {
-    flex: 1,
+  steps: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gap: 18,
+  },
+  step: {
     display: 'flex',
-    alignItems: 'flex-start',
-    gap: 12,
-    padding: '16px 18px',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderStyle: 'solid',
+    flexDirection: 'column' as const,
+    gap: 2,
   },
   stepNum: {
-    width: 28,
-    height: 28,
-    borderRadius: 999,
-    color: '#fff',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: 13,
-    fontWeight: 700,
-    flexShrink: 0,
+    fontFamily: 'var(--studio-mono)',
+    fontSize: 11,
+    letterSpacing: '0.1em',
+    marginBottom: 6,
   },
   stepTitle: {
     fontSize: 14,
-    fontWeight: 700,
-    marginBottom: 2,
+    fontWeight: 600,
   },
   stepDesc: {
-    fontSize: 12,
-    lineHeight: 1.5,
+    fontSize: 12.5,
+    lineHeight: 1.55,
   },
 };

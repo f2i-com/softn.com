@@ -51,6 +51,13 @@ const appShellStyles = `
       --softn-tab-bar-height: 34px;
     }
   }
+  /* Touch overrides the narrow-window shrink: the bar has to match the 44px
+     targets TabBar gives its controls, or the app area is laid out short. */
+  @media (pointer: coarse) {
+    .softn-shell {
+      --softn-tab-bar-height: 44px;
+    }
+  }
 `;
 import {
   readZip,

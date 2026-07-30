@@ -75,6 +75,12 @@ const tabBarStyles = `
     border-radius: 5px;
     flex-shrink: 0;
     overflow: hidden;
+    /* The letter fallback inherits the bar's line-height, which is taller than
+       the box, so without this the glyph is clipped at every window size. */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
   }
   .softn-tab-app-icon {
     width: 16px; height: 16px;
@@ -156,6 +162,22 @@ const tabBarStyles = `
     .softn-tab-close { width: 14px; height: 14px; font-size: 0.75rem; }
     .softn-tab-add { width: 28px; font-size: 1rem; }
     .softn-home-label { display: none; }
+  }
+
+  /*
+   * A narrow window shrinks these to fit; a touch screen needs the opposite.
+   * Keyed on pointer, so a small desktop window keeps the compact bar and a
+   * phone gets targets a thumb can actually land on.
+   */
+  @media (pointer: coarse) {
+    .softn-tab-bar { height: 44px; }
+    .softn-tab { min-height: 44px; }
+    /* The Home tab drops its label on a narrow screen, leaving only the icon —
+       tall enough after the rule above, but still too narrow to aim at. */
+    .softn-tab-home { min-width: 44px; }
+    .softn-tab-add { width: 44px; min-height: 44px; font-size: 1.15rem; }
+    .softn-tab-close { width: 24px; height: 24px; font-size: 0.9rem; }
+    .softn-tab-app { max-width: 150px; }
   }
 `;
 

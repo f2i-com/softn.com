@@ -101,8 +101,10 @@ export const PWAPrompt: React.FC = () => {
 
 // This renders outside the App subtree that applies the studio tokens, so it
 // depends on App mirroring them onto the document element to follow the theme.
-// The fallbacks are the dark palette, which is what shows in the moment before
-// that effect runs and if the mirroring is ever removed.
+// Literal fallbacks used to be inlined here, but they were a second copy of the
+// palette that silently went stale — they still held the old sky-blue accent
+// after the studio moved to coral. getStudioThemeVars is the only place a
+// colour is spelled out now.
 const styles: Record<string, React.CSSProperties> = {
   dock: {
     position: 'fixed',
@@ -120,29 +122,30 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     padding: '8px 10px 8px 14px',
     borderRadius: 999,
-    background: 'var(--studio-panel, rgba(15,23,42,0.82))',
-    border: '1px solid var(--studio-border, rgba(148,163,184,0.14))',
-    boxShadow: 'var(--studio-shadow, 0 18px 40px rgba(2,6,23,0.24))',
+    background: 'var(--studio-panel)',
+    border: '1px solid var(--studio-border)',
+    boxShadow: 'var(--studio-shadow)',
     backdropFilter: 'blur(8px)',
     fontSize: 12,
-    color: 'var(--studio-text, #f8fafc)',
+    color: 'var(--studio-text)',
   },
   label: {
+    fontFamily: 'var(--studio-mono)',
     whiteSpace: 'nowrap',
   },
   action: {
     padding: '4px 12px',
     borderRadius: 999,
-    border: '1px solid var(--studio-accent, #38bdf8)',
+    border: '1px solid var(--studio-accent)',
     background: 'transparent',
-    color: 'var(--studio-accent, #38bdf8)',
+    color: 'var(--studio-accent)',
     fontSize: 12,
     fontWeight: 600,
     cursor: 'pointer',
   },
   installButton: {
     padding: '8px 16px',
-    color: 'var(--studio-accent, #38bdf8)',
+    color: 'var(--studio-accent)',
     fontWeight: 600,
     cursor: 'pointer',
   },

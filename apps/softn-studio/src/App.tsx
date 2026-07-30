@@ -23,55 +23,84 @@ import { BlueprintReview } from './components/blueprint/BlueprintReview';
 
 type View = 'dashboard' | 'brief' | 'editor';
 
+/**
+ * Studio wears softn.com's identity rather than one of its own.
+ *
+ * The ground is the same cool graphite the landing page uses, the type is the
+ * same Bricolage/Plex pairing, and the accent is coral — the colour of the mark
+ * on softn.com, so the tool reads as part of the product instead of a generic
+ * AI app that happens to export .softn files. The slate-and-sky palette this
+ * replaces belonged to nothing in particular.
+ *
+ * `--studio-live` is separate from `--studio-accent` on purpose and carries the
+ * same meaning it does on the landing page: mint marks something that is
+ * actually executing — a generation in flight, a preview that has booted — and
+ * nothing else is allowed to use it. Coral marks SoftN; mint marks the machine.
+ *
+ * The dim tones are set from the least forgiving surface they appear on rather
+ * than from the page ground, because that is where they fail WCAG AA first.
+ */
 function getStudioThemeVars(theme: 'light' | 'dark'): React.CSSProperties {
+  const type = {
+    '--studio-display': "'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif",
+    '--studio-body': "'IBM Plex Sans', system-ui, -apple-system, sans-serif",
+    '--studio-mono': "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+  };
+
   if (theme === 'light') {
     return {
-      '--studio-bg': '#f0f5fc',
-      '--studio-bg-elevated': '#f8fafb',
-      '--studio-bg-muted': '#e8eef6',
-      '--studio-panel': 'rgba(255,255,255,0.88)',
+      ...type,
+      '--studio-bg': '#f4f6f9',
+      '--studio-bg-elevated': '#ffffff',
+      '--studio-bg-muted': '#eef1f6',
+      '--studio-panel': 'rgba(255,255,255,0.9)',
       '--studio-panel-strong': '#ffffff',
-      '--studio-border': 'rgba(0,0,0,0.09)',
-      '--studio-border-strong': 'rgba(0,0,0,0.15)',
-      '--studio-border-subtle': 'rgba(0,0,0,0.04)',
-      '--studio-text': '#1a2332',
-      '--studio-text-muted': '#5b6b80',
-      '--studio-text-dim': '#94a3b8',
-      '--studio-accent': '#2563eb',
-      '--studio-accent-soft': 'rgba(37,99,235,0.1)',
-      '--studio-shadow': '0 20px 40px rgba(0,0,0,0.06)',
-      '--studio-surface': 'rgba(0,0,0,0.03)',
-      '--studio-surface-hover': 'rgba(0,0,0,0.06)',
-      '--studio-inset': 'rgba(0,0,0,0.04)',
-      '--studio-overlay': 'rgba(0,0,0,0.4)',
-      '--studio-success': '#16a34a',
-      '--studio-error': '#dc2626',
-      '--studio-warning': '#d97706',
+      '--studio-border': '#d5dce5',
+      '--studio-border-strong': '#bcc6d2',
+      '--studio-border-subtle': '#e4e9f0',
+      '--studio-text': '#14181d',
+      '--studio-text-muted': '#5a6472',
+      '--studio-text-dim': '#656e7c',
+      '--studio-accent': '#c2410c',
+      '--studio-accent-soft': 'rgba(194,65,12,0.10)',
+      '--studio-live': '#0f766e',
+      '--studio-live-soft': 'rgba(15,118,110,0.12)',
+      '--studio-shadow': '0 20px 40px rgba(20,24,29,0.07)',
+      '--studio-surface': 'rgba(20,24,29,0.03)',
+      '--studio-surface-hover': 'rgba(20,24,29,0.06)',
+      '--studio-inset': 'rgba(20,24,29,0.04)',
+      '--studio-overlay': 'rgba(20,24,29,0.4)',
+      '--studio-success': '#0f766e',
+      '--studio-error': '#b91c1c',
+      '--studio-warning': '#a16207',
     } as React.CSSProperties;
   }
 
   return {
-    '--studio-bg': '#09090b',
-    '--studio-bg-elevated': '#0b1220',
-    '--studio-bg-muted': '#0f1723',
-    '--studio-panel': 'rgba(15,23,42,0.82)',
-    '--studio-panel-strong': '#101723',
-    '--studio-border': 'rgba(148,163,184,0.14)',
-    '--studio-border-strong': 'rgba(148,163,184,0.2)',
-    '--studio-border-subtle': 'rgba(255,255,255,0.04)',
-    '--studio-text': '#f8fafc',
-    '--studio-text-muted': '#94a3b8',
-    '--studio-text-dim': '#52525b',
-    '--studio-accent': '#38bdf8',
-    '--studio-accent-soft': 'rgba(56,189,248,0.12)',
-    '--studio-shadow': '0 18px 40px rgba(2,6,23,0.24)',
+    ...type,
+    '--studio-bg': '#101317',
+    '--studio-bg-elevated': '#161a20',
+    '--studio-bg-muted': '#1d222a',
+    '--studio-panel': 'rgba(22,26,32,0.84)',
+    '--studio-panel-strong': '#161a20',
+    '--studio-border': '#262c36',
+    '--studio-border-strong': '#333b47',
+    '--studio-border-subtle': '#1c212a',
+    '--studio-text': '#f2f0ec',
+    '--studio-text-muted': '#8b94a2',
+    '--studio-text-dim': '#838c9a',
+    '--studio-accent': '#ff8a4c',
+    '--studio-accent-soft': 'rgba(255,138,76,0.14)',
+    '--studio-live': '#35e0c0',
+    '--studio-live-soft': 'rgba(53,224,192,0.14)',
+    '--studio-shadow': '0 18px 40px rgba(0,0,0,0.35)',
     '--studio-surface': 'rgba(255,255,255,0.04)',
-    '--studio-surface-hover': 'rgba(255,255,255,0.08)',
-    '--studio-inset': 'rgba(15,23,42,0.72)',
-    '--studio-overlay': 'rgba(2,6,23,0.74)',
-    '--studio-success': '#4ade80',
-    '--studio-error': '#f87171',
-    '--studio-warning': '#fbbf24',
+    '--studio-surface-hover': 'rgba(255,255,255,0.07)',
+    '--studio-inset': 'rgba(16,19,23,0.72)',
+    '--studio-overlay': 'rgba(10,12,15,0.76)',
+    '--studio-success': '#35e0c0',
+    '--studio-error': '#ff6b6b',
+    '--studio-warning': '#e8a33d',
   } as React.CSSProperties;
 }
 
