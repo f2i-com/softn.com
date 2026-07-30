@@ -39,17 +39,34 @@ const COLOURS = { web: '\x1b[36m', site: '\x1b[33m', builder: '\x1b[35m', studio
 const RESET = '\x1b[0m';
 const DIM = '\x1b[2m';
 
-function isFree(port) {
+/** True if nothing answers on `host:port` within a moment. */
+function nothingAnswers(port, host) {
   return new Promise((resolve) => {
-    const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.once('listening', () => server.close(() => resolve(true)));
-    // No host, so this binds the unspecified address and fails if anything holds
-    // the port on any interface. Probing 127.0.0.1 specifically reports free for
-    // a port already taken on ::1 or 0.0.0.0, and then every app is told to use
-    // a port Vite cannot bind — which with strictPort is a hard failure.
-    server.listen(port);
+    const socket = net.connect({ port, host });
+    const done = (free) => {
+      socket.destroy();
+      resolve(free);
+    };
+    socket.setTimeout(400);
+    socket.once('connect', () => done(false));
+    socket.once('timeout', () => done(true));
+    socket.once('error', () => done(true));
   });
+}
+
+/**
+ * Whether an app can have this port.
+ *
+ * Asking by connecting rather than by binding, because binding does not answer
+ * the question on Windows: a server already listening on 127.0.0.1 does not stop
+ * a second bind of the wildcard address, so a bind probe cheerfully reports free
+ * and every app is then handed a port Vite cannot have — which under strictPort
+ * takes the whole set down. Both loopback addresses are checked because
+ * `localhost` resolves to either depending on the machine.
+ */
+async function isFree(port) {
+  const [v4, v6] = await Promise.all([nothingAnswers(port, '127.0.0.1'), nothingAnswers(port, '::1')]);
+  return v4 && v6;
 }
 
 async function claimPort(preferred, taken) {
