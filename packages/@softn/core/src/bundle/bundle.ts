@@ -19,17 +19,7 @@ import type {
   LogicImport,
 } from './types';
 import { validateManifest, createDefaultManifest } from './types';
-import { inflate as inflateCallback } from 'fflate';
-
-/** Promisified fflate inflate (non-blocking, runs decompression off the main thread) */
-function inflateAsync(data: Uint8Array): Promise<Uint8Array> {
-  return new Promise<Uint8Array>((resolve, reject) => {
-    inflateCallback(data, (err, result) => {
-      if (err) reject(err);
-      else resolve(result);
-    });
-  });
-}
+import { readBundleEntries } from './zip';
 
 // ============================================================================
 // Bundle Reader
@@ -44,8 +34,11 @@ export async function readBundle(
 ): Promise<SoftNBundle> {
   const { validate = true, eager = true } = options;
 
-  // Use a simple ZIP reader (we'll implement a minimal one)
-  const zipEntries = await readZip(data);
+  // Read through the shared hardened reader. This file used to carry its own
+  // ZIP reader, and the two drifted: this one never checked a CRC, so a bundle
+  // that tampered with a stored entry's bytes opened here while the reader
+  // softn-web and softn-loader use rejected it.
+  const zipEntries = readBundleEntries(data);
 
   // Find and parse manifest
   const manifestEntry = zipEntries.get('manifest.json');
@@ -382,225 +375,8 @@ function resolveImportType(source: string): 'ui' | 'logic' | 'external' {
 }
 
 // ============================================================================
-// Minimal ZIP Implementation
+// Minimal ZIP Writer
 // ============================================================================
-
-/**
- * Read a ZIP file and return entries
- */
-async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>> {
-  const entries = new Map<string, Uint8Array>();
-
-  // Find end of central directory
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  let eocdOffset = -1;
-
-  for (let i = data.length - 22; i >= 0; i--) {
-    if (view.getUint32(i, true) === 0x06054b50) {
-      // Validate that the central directory offset+size actually fits before
-      // this EOCD record. This rejects false positives from binary data
-      // (e.g., images) that happen to contain the EOCD signature bytes.
-      const candidateCdOffset = view.getUint32(i + 16, true);
-      const candidateCdSize = view.getUint32(i + 12, true);
-      if (candidateCdOffset + candidateCdSize <= i) {
-        eocdOffset = i;
-        break;
-      }
-      // Invalid — continue scanning backwards for the real EOCD
-    }
-  }
-
-  if (eocdOffset === -1) {
-    throw new Error('Invalid ZIP file: EOCD not found');
-  }
-
-  // Read central directory
-  const cdOffset = view.getUint32(eocdOffset + 16, true);
-  const cdCount = view.getUint16(eocdOffset + 10, true);
-
-  // Reject ZIP bombs with excessive entry counts or sizes
-  const MAX_ZIP_ENTRIES = 10_000;
-  const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB per file
-  const MAX_TOTAL_SIZE = 500 * 1024 * 1024; // 500 MB total
-  if (cdCount > MAX_ZIP_ENTRIES) {
-    throw new Error(`ZIP file has too many entries (${cdCount} > ${MAX_ZIP_ENTRIES})`);
-  }
-  let totalSize = 0;
-
-  let offset = cdOffset;
-  for (let i = 0; i < cdCount; i++) {
-    // Central directory file header
-    if (view.getUint32(offset, true) !== 0x02014b50) {
-      throw new Error('Invalid central directory');
-    }
-
-    const compressionMethod = view.getUint16(offset + 10, true);
-    const compressedSize = view.getUint32(offset + 20, true);
-    const uncompressedSize = view.getUint32(offset + 24, true);
-    const nameLength = view.getUint16(offset + 28, true);
-    const extraLength = view.getUint16(offset + 30, true);
-    const commentLength = view.getUint16(offset + 32, true);
-    const localHeaderOffset = view.getUint32(offset + 42, true);
-
-    const nameBytes = data.slice(offset + 46, offset + 46 + nameLength);
-    let fileName = new TextDecoder().decode(nameBytes);
-
-    // Sanitize: prevent path traversal attacks from malicious ZIP entries
-    fileName = fileName.replace(/\\/g, '/');  // Normalize backslashes
-    if (
-      fileName.startsWith('/') ||
-      fileName.includes('\0') ||
-      /^[a-zA-Z]:/.test(fileName)
-    ) {
-      // Skip entries with absolute paths, null bytes, or Windows drive letters
-      offset += 46 + nameLength + extraLength + commentLength;
-      continue;
-    }
-    // Canonical segment validation: reject "..", ".", and empty segments
-    // which can survive simple substring checks after normalisation
-    const segments = fileName.split('/');
-    if (segments.some(s => s === '..' || s === '.' || s === '')) {
-      offset += 46 + nameLength + extraLength + commentLength;
-      continue;
-    }
-
-    // Skip directories
-    if (!fileName.endsWith('/')) {
-      // Read from local file header
-      const localOffset = localHeaderOffset;
-      if (localOffset + 30 > data.length) {
-        throw new Error(`Invalid local header offset for "${fileName}"`);
-      }
-      const localNameLength = view.getUint16(localOffset + 26, true);
-      const localExtraLength = view.getUint16(localOffset + 28, true);
-      const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
-      if (dataOffset + compressedSize > data.length) {
-        throw new Error(`File data exceeds ZIP bounds for "${fileName}"`);
-      }
-
-      // Enforce per-file and total size limits to prevent ZIP bombs
-      if (uncompressedSize > MAX_FILE_SIZE) {
-        throw new Error(`File "${fileName}" exceeds size limit (${uncompressedSize} > ${MAX_FILE_SIZE})`);
-      }
-      totalSize += uncompressedSize;
-      if (totalSize > MAX_TOTAL_SIZE) {
-        throw new Error(`ZIP total uncompressed size exceeds limit (${MAX_TOTAL_SIZE} bytes)`);
-      }
-
-      let fileData: Uint8Array;
-
-      if (compressionMethod === 0) {
-        // Stored (no compression)
-        fileData = data.slice(dataOffset, dataOffset + compressedSize);
-      } else if (compressionMethod === 8) {
-        // Deflate - use DecompressionStream if available
-        const compressedData = data.slice(dataOffset, dataOffset + compressedSize);
-        fileData = await decompressDeflate(compressedData, uncompressedSize);
-      } else {
-        throw new Error(`Unsupported compression method: ${compressionMethod}`);
-      }
-
-      // Verify decompressed size matches the declared uncompressed size.
-      // A mismatch indicates a corrupted or maliciously crafted ZIP entry
-      // (e.g., a zip bomb declaring a small size but inflating much larger).
-      if (fileData.length !== uncompressedSize) {
-        throw new Error(
-          `Decompressed size mismatch for "${fileName}": ` +
-          `expected ${uncompressedSize}, got ${fileData.length}`
-        );
-      }
-
-      entries.set(fileName, fileData);
-    }
-
-    offset += 46 + nameLength + extraLength + commentLength;
-  }
-
-  return entries;
-}
-
-/**
- * Decompress deflate data
- */
-/** Ceiling for an entry that declares no size of its own. Mirrors the per-file limit. */
-const MAX_DEFLATE_OUTPUT = 50 * 1024 * 1024;
-
-/**
- * Inflate a raw-deflate entry, refusing to produce more than `expectedSize`.
- *
- * The cap is not a nicety: the size limits enforced against the central
- * directory bound what the archive *claims*, and a bundle can claim a few bytes
- * while carrying a payload that inflates to hundreds of megabytes. Without a
- * ceiling here the whole thing is materialised first and the mismatch noticed
- * afterwards — by which point the memory is already gone.
- */
-async function decompressDeflate(data: Uint8Array, expectedSize: number): Promise<Uint8Array> {
-  // A zero or absent declared size means "unknown", so fall back to the
-  // per-file ceiling rather than refusing everything.
-  const limit = expectedSize > 0 ? expectedSize : MAX_DEFLATE_OUTPUT;
-  // Try using DecompressionStream (modern browsers)
-  if (typeof DecompressionStream !== 'undefined') {
-    // Add zlib header for raw deflate
-    const withHeader = new Uint8Array(data.length + 2);
-    withHeader[0] = 0x78;
-    withHeader[1] = 0x9c;
-    withHeader.set(data, 2);
-
-    try {
-      const ds = new DecompressionStream('deflate');
-      const writer = ds.writable.getWriter();
-      // Use withHeader (raw deflate + zlib header) for 'deflate' DecompressionStream
-      const buffer = new ArrayBuffer(withHeader.byteLength);
-      new Uint8Array(buffer).set(withHeader);
-      await writer.write(buffer);
-      await writer.close();
-
-      const reader = ds.readable.getReader();
-      const chunks: Uint8Array[] = [];
-
-      let done = false;
-      let produced = 0;
-      while (!done) {
-        const { done: doneRead, value } = await reader.read();
-        if (doneRead) {
-          done = true;
-        } else {
-          produced += value.length;
-          if (produced > limit) {
-            await reader.cancel().catch(() => {});
-            throw new Error('ZIP entry inflates beyond its declared size');
-          }
-          chunks.push(value);
-        }
-      }
-
-      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-      const result = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of chunks) {
-        result.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      return result;
-    } catch {
-      // Fall through to manual decompression
-    }
-  }
-
-  // Fallback: async inflate via fflate (non-blocking, uses Web Worker internally)
-  try {
-    const inflated = await inflateAsync(data);
-    if (inflated.length > limit) {
-      throw new Error('ZIP entry inflates beyond its declared size');
-    }
-    return inflated;
-  } catch (e) {
-    // Don't bury the size refusal under the "not available" message.
-    if (e instanceof Error && e.message.startsWith('ZIP entry inflates')) throw e;
-    throw new Error('Deflate decompression not available. Use uncompressed ZIP files.');
-  }
-}
 
 /**
  * Write entries to a ZIP file

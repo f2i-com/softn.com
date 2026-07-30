@@ -7,6 +7,7 @@
  */
 
 import * as React from 'react';
+import { isSafeUrl } from '@softn/core';
 
 export interface TileMapProps {
   /** URL of the tileset sprite sheet */
@@ -82,7 +83,9 @@ export function TileMap({
 
   // Load tileset image
   React.useEffect(() => {
-    if (!src || src === loadedSrcRef.current) {
+    // The tileset is named by the bundle, and this assigns it to a real
+    // `HTMLImageElement`, so it needs the same scheme check an `<img src>` gets.
+    if (!src || !isSafeUrl(src) || src === loadedSrcRef.current) {
       render();
       return;
     }

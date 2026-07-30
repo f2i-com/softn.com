@@ -15,7 +15,11 @@ import { parse } from '../src/parser';
 import { renderDocument, ComponentRegistry } from '../src/renderer';
 import type { SoftNRenderContext } from '../src/types';
 
-function html(source: string, state: Record<string, unknown> = {}): string {
+function html(
+  source: string,
+  state: Record<string, unknown> = {},
+  registry = new ComponentRegistry()
+): string {
   const doc = parse(source);
   const context = {
     state,
@@ -25,7 +29,7 @@ function html(source: string, state: Record<string, unknown> = {}): string {
     computed: {},
   } as unknown as SoftNRenderContext;
   return renderToStaticMarkup(
-    React.createElement(React.Fragment, null, renderDocument(doc, context, new ComponentRegistry()))
+    React.createElement(React.Fragment, null, renderDocument(doc, context, registry))
   );
 }
 
@@ -96,6 +100,88 @@ describe('URLs apps legitimately use', () => {
     expect(html('<audio src={u}/>', { u: 'data:audio/wav;base64,UklGRg==' })).toContain(
       'data:audio/wav'
     );
+  });
+});
+
+/** The <Breadcrumb> shape: a component that forwards a nested href to an <a>. */
+const MockTrail: React.FC<{ items?: { label: string; href?: string }[] }> = ({ items = [] }) => (
+  <nav>
+    {items.map((item, i) => (
+      <a key={i} href={item.href}>
+        {item.label}
+      </a>
+    ))}
+  </nav>
+);
+
+const MockPic: React.FC<{ src?: string }> = ({ src }) => <img src={src} />;
+
+/** A component whose `data` and `action` are not URLs, which is the common case. */
+const MockPlot: React.FC<{ data?: unknown; action?: unknown }> = ({ data, action }) => (
+  <figure>
+    {JSON.stringify(data)}
+    {String(action)}
+  </figure>
+);
+
+describe('registered components', () => {
+  // The check used to run only for intrinsic tags, on the reasoning that a
+  // component decides for itself what to do with its props. <Breadcrumb> does
+  // not decide — it puts `item.href` straight into an <a> — so a bundle got a
+  // javascript: URL onto the page through a component the same way it once did
+  // through a raw <a>.
+  function withComponents(): ComponentRegistry {
+    const registry = new ComponentRegistry();
+    registry.register('Trail', MockTrail);
+    registry.register('Pic', MockPic);
+    registry.register('Plot', MockPlot);
+    return registry;
+  }
+
+  it('drops a scheme from a direct prop', () => {
+    expect(html('<Pic src="javascript:alert(1)"/>', {}, withComponents())).not.toContain(
+      'javascript:'
+    );
+  });
+
+  it('drops one nested inside an array-of-objects prop', () => {
+    const out = html('<Trail items={crumbs}/>', {
+      crumbs: [{ label: 'Home', href: 'javascript:alert(1)' }, { label: 'Now' }],
+    }, withComponents());
+    expect(out).not.toContain('javascript:');
+    expect(out).toContain('Home');
+  });
+
+  it('keeps the safe entries of the same array', () => {
+    const out = html('<Trail items={crumbs}/>', {
+      crumbs: [
+        { label: 'Home', href: '/' },
+        { label: 'Docs', href: 'https://example.com/docs' },
+        { label: 'Now', href: 'javascript:alert(1)' },
+      ],
+    }, withComponents());
+    expect(out).toContain('href="/"');
+    expect(out).toContain('https://example.com/docs');
+    expect(out).not.toContain('javascript:');
+  });
+
+  it('leaves the app state it scrubbed from untouched', () => {
+    // The array reaching a component is the app's own state, so the scrub has
+    // to copy rather than delete in place.
+    const crumbs = [{ label: 'Home', href: 'javascript:alert(1)' }];
+    html('<Trail items={crumbs}/>', { crumbs }, withComponents());
+    expect(crumbs[0].href).toBe('javascript:alert(1)');
+  });
+
+  it('leaves non-URL props alone even when HTML uses the name for a URL', () => {
+    // `data` and `action` are URL attributes on <object> and <form>, but on a
+    // component they are the rows a chart plots and the node it renders — so
+    // they are judged by neither name nor scheme.
+    const out = html('<Plot data={rows} action="Note: retry"/>', {
+      rows: [{ x: 1 }],
+    }, withComponents());
+    expect(out).toContain('x&quot;:1');
+    expect(out).toContain('Note: retry');
   });
 });
 

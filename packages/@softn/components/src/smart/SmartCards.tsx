@@ -16,6 +16,7 @@
  */
 
 import React, { useState, useMemo } from 'react';
+import { isSafeUrl } from '@softn/core';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -317,7 +318,13 @@ export function SmartCards<T extends Record<string, unknown>>({
             const titleValue = getFieldValue(item, title);
             const subtitleValue = subtitle ? getFieldValue(item, subtitle) : null;
             const descValue = description ? getFieldValue(item, description) : null;
-            const imageValue = image ? getFieldValue(item, image) : null;
+            // The image field points at a record property, so the URL is
+            // bundle-supplied and interpolated into a CSS value — the same
+            // trust decision as an `<img src>`. A rejected one falls through to
+            // the initials the card already draws when there is no image.
+            const rawImage = image ? getFieldValue(item, image) : null;
+            const imageValue =
+              typeof rawImage === 'string' && isSafeUrl(rawImage) ? rawImage : null;
 
             return (
               <div
@@ -344,7 +351,7 @@ export function SmartCards<T extends Record<string, unknown>>({
                         height: '2.5rem',
                         borderRadius: 'var(--radius-full, 9999px)',
                         background: imageValue
-                          ? `url(${imageValue}) center/cover`
+                          ? `url("${imageValue.replace(/["\\]/g, '\\$&')}") center/cover`
                           : 'linear-gradient(135deg, var(--color-primary, #6366f1), var(--color-primary-600, #4f46e5))',
                         display: 'flex',
                         alignItems: 'center',

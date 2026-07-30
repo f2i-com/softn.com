@@ -6,6 +6,7 @@
  */
 
 import * as React from 'react';
+import { isSafeUrl } from '@softn/core';
 
 export interface SpriteProps {
   /** URL of the sprite sheet image */
@@ -124,7 +125,9 @@ export function Sprite({
     position: 'absolute',
     width: frameWidth,
     height: frameHeight,
-    backgroundImage: `url(${src})`,
+    // Interpolating the sheet URL into a CSS value is the same trust decision
+    // as putting it in an `<img src>`, and the sheet is named by the bundle.
+    backgroundImage: src && isSafeUrl(src) ? `url("${src.replace(/["\\]/g, '\\$&')}")` : undefined,
     backgroundPosition: `-${initialX}px -${initialY}px`,
     backgroundRepeat: 'no-repeat',
     imageRendering: 'pixelated',

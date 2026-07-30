@@ -5,6 +5,7 @@
  */
 
 import { Token, TokenType, lookupKeyword, createToken } from './token';
+import { SoftNParseError } from './errors';
 
 export class Lexer {
   private source: string;
@@ -13,6 +14,8 @@ export class Lexer {
   private line: number = 1;
   private column: number = 0;
   private ch: string = '';
+  /** Where the last token began, for the no-progress check in nextToken(). */
+  private lastTokenStart: number = -1;
 
   // Context tracking for different parsing modes
   private inTag: boolean = false;
@@ -51,9 +54,35 @@ export class Lexer {
   }
 
   /**
-   * Get the next token from the source
+   * Get the next token from the source.
+   *
+   * The stuck-mode guard lives here rather than in `tokenize()` because
+   * `tokenize()` is not on the path anything actually runs: a bundle reaches the
+   * lexer through `new Parser(source)`, which pulls tokens one at a time and has
+   * a loop of its own. Guarding the wrapper protected the tests and nothing else.
    */
   public nextToken(): Token {
+    const token = this.readNextToken();
+
+    // A token that consumed nothing, at a position one has already been emitted
+    // at, means a context flag was left set at end of input and the lexer cannot
+    // leave the mode. Every further call returns the same token, and whichever
+    // loop is pulling them grows an array until the heap is gone. That is not
+    // catchable — an out-of-memory abort is not an exception — so it has to be
+    // turned into one here, before a caller can spin on it. Twice now a flag has
+    // been missed this way; the next one throws instead of killing the tab.
+    if (token.type !== TokenType.EOF && token.end === token.start && token.start <= this.lastTokenStart) {
+      throw new SoftNParseError(
+        `Lexer made no progress at offset ${token.start} (stuck emitting ${token.type})`,
+        { line: token.line, column: token.column, start: token.start, end: token.end },
+        this.source
+      );
+    }
+    this.lastTokenStart = token.start;
+    return token;
+  }
+
+  private readNextToken(): Token {
     // Handle special blocks (script/logic/style content)
     if (this.inScriptBlock) {
       return this.readScriptContent();
@@ -626,7 +655,13 @@ export class Lexer {
       this.readChar();
     }
 
-    // Unterminated template literal
+    // Unterminated template literal. Leaving template mode set would send every
+    // later `nextToken()` straight back here — `nextToken()` dispatches on
+    // `inTemplateLiteral` before it checks for EOF — each returning another
+    // zero-length token, so the lexer would never reach EOF. Clearing the state
+    // lets the next call fall through to EOF and the parser close the literal.
+    this.inTemplateLiteral = false;
+    this.templateExprStack = [];
     return createToken(
       TokenType.TEMPLATE_STRING,
       content,
@@ -1256,6 +1291,8 @@ export function tokenize(source: string): Token[] {
   const lexer = new Lexer(source);
   const tokens: Token[] = [];
 
+  // No stuck-mode check here: nextToken() cannot return one, so every consumer
+  // of the lexer is covered rather than just this one.
   let token = lexer.nextToken();
   while (token.type !== TokenType.EOF) {
     tokens.push(token);

@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { isSafeUrl } from '@softn/core';
 
 export interface BreadcrumbItem {
   /** Item label */
@@ -73,13 +74,19 @@ export function Breadcrumb({
       {items.map((item, index) => {
         const isLast = index === items.length - 1;
         const linkStyle = getLinkStyle(isLast);
+        // A trail is bundle-supplied data, so `href` is whatever the bundle put
+        // there. React only warns about `javascript:` and emits it anyway, and
+        // one click then runs bundle code on the host origin. An item that
+        // fails the check still renders — as the span below, which keeps its
+        // label and its `onClick`.
+        const href = item.href && isSafeUrl(item.href) ? item.href : undefined;
 
         return (
           <React.Fragment key={index}>
             {index > 0 && <span style={separatorStyle}>{separator}</span>}
-            {item.href && !isLast ? (
+            {href && !isLast ? (
               <a
-                href={item.href}
+                href={href}
                 onClick={(e) => {
                   if (item.onClick) {
                     e.preventDefault();

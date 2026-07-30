@@ -7,24 +7,40 @@
  * truncated file while every other reader sees the whole one — and can inflate
  * far beyond what its compressed size suggests.
  *
+ * The walk over the central directory below is not a preflight in front of
+ * `unzipSync`; it *is* the extractor. It used to be a preflight, and that split
+ * was the bug: the two halves disagreed about which archive they were looking
+ * at. `unzipSync` takes its entry count from EOCD+8 ("entries on this disk")
+ * while the checks read EOCD+10 ("total entries"), so a two-byte edit made the
+ * checks inspect one entry while fflate inflated every one of them — and by the
+ * time control came back the whole archive was already in memory, with the
+ * caps, the checksums and the size declarations all unverified. Owning the loop
+ * means every byte allocated has been charged against a budget first.
+ *
  * This lives in core because it was previously duplicated: softn-web and
  * softn-loader each carried a hardened copy, while the builder opened bundles
  * through a bare `unzipSync` with none of it. Opening a hostile .softn in the
  * builder therefore bypassed every defence the other two paths had.
  */
 
-import { unzipSync } from 'fflate';
+import { inflateSync } from 'fflate';
 
 const MAX_ZIP_INPUT_BYTES = 200 * 1024 * 1024; // 200 MB
 const MAX_ZIP_ENTRIES = 10_000;
 const MAX_ZIP_TOTAL_BYTES = 500 * 1024 * 1024; // 500 MB
 const MAX_ZIP_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
 
+const METHOD_STORED = 0;
+const METHOD_DEFLATE = 8;
 
-/** What the central directory claims about one entry. */
+/** What the central directory claims about one entry, and where its bytes are. */
 interface DeclaredEntry {
+  name: string;
   crc32: number;
+  method: number;
+  compressedSize: number;
   uncompressedSize: number;
+  dataOffset: number;
 }
 
 /**
@@ -54,7 +70,7 @@ function crc32(bytes: Uint8Array): number {
   return (c ^ -1) >>> 0;
 }
 
-function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
+function readCentralDirectory(data: Uint8Array): DeclaredEntry[] {
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const EOCD_SIGNATURE = 0x06054b50;
   const CEN_SIGNATURE = 0x02014b50;
@@ -64,7 +80,13 @@ function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
 
   let eocdOffset = -1;
   for (let i = data.byteLength - 22; i >= eocdMinOffset; i--) {
-    if (view.getUint32(i, true) === EOCD_SIGNATURE) {
+    if (view.getUint32(i, true) !== EOCD_SIGNATURE) continue;
+    // Binary payloads — images especially — contain these four bytes often
+    // enough that the signature alone is not proof. A real EOCD is preceded by
+    // the central directory it describes, so require that to fit.
+    const candidateSize = view.getUint32(i + 12, true);
+    const candidateOffset = view.getUint32(i + 16, true);
+    if (candidateOffset + candidateSize <= i) {
       eocdOffset = i;
       break;
     }
@@ -73,22 +95,25 @@ function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
     throw new Error('Invalid ZIP: missing end-of-central-directory');
   }
 
-  const entryCount = view.getUint16(eocdOffset + 10, true);
-  const centralDirSize = view.getUint32(eocdOffset + 12, true);
+  // The two entry counts are separate 16-bit fields and nothing in the format
+  // forces them to agree. Different readers pick different ones, so an archive
+  // whose fields disagree is one that does not have a single meaning — reject
+  // it rather than choose.
+  const entriesThisDisk = view.getUint16(eocdOffset + 8, true);
+  const entriesTotal = view.getUint16(eocdOffset + 10, true);
+  if (entriesThisDisk !== entriesTotal) {
+    throw new Error('Corrupt ZIP: end-of-central-directory entry counts disagree');
+  }
+  const entryCount = entriesThisDisk;
   const centralDirOffset = view.getUint32(eocdOffset + 16, true);
 
   if (entryCount > MAX_ZIP_ENTRIES) {
     throw new Error('Bundle has too many files');
   }
-  if (centralDirSize > data.byteLength || centralDirOffset > data.byteLength) {
-    throw new Error('Invalid ZIP central directory');
-  }
-  if (centralDirOffset + centralDirSize > data.byteLength) {
-    throw new Error('Corrupt ZIP: central directory out of bounds');
-  }
 
-  const declared = new Map<string, DeclaredEntry>();
+  const declared: DeclaredEntry[] = [];
   const seenLocalHeaders = new Set<number>();
+  const decoder = new TextDecoder();
   let offset = centralDirOffset;
   let totalUncompressed = 0;
   let totalCompressed = 0;
@@ -97,6 +122,7 @@ function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
       throw new Error('Invalid ZIP central directory entry');
     }
 
+    const method = view.getUint16(offset + 10, true);
     const declaredCrc = view.getUint32(offset + 16, true);
     const compressedSize = view.getUint32(offset + 20, true);
     const uncompressedSize = view.getUint32(offset + 24, true);
@@ -107,6 +133,15 @@ function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
 
     if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) {
       throw new Error('ZIP64 bundles are not supported');
+    }
+    if (method !== METHOD_STORED && method !== METHOD_DEFLATE) {
+      throw new Error(`Unsupported compression method in bundle: ${method}`);
+    }
+    // A stored entry is its own compressed form, so the two sizes describing it
+    // have to be the same number. Letting them differ meant the budget was
+    // charged one figure while the extraction copied the other.
+    if (method === METHOD_STORED && compressedSize !== uncompressedSize) {
+      throw new Error('Corrupt ZIP: stored entry declares two different sizes');
     }
     if (uncompressedSize > MAX_ZIP_FILE_BYTES) {
       throw new Error('File too large in bundle');
@@ -140,14 +175,65 @@ function preflightZip(data: Uint8Array): Map<string, DeclaredEntry> {
       throw new Error('Corrupt ZIP: invalid local file header');
     }
 
+    // The name and extra field of the *local* header may differ in length from
+    // the central directory's copy, so the payload can only be located here.
+    const localNameLength = view.getUint16(localHeaderOffset + 26, true);
+    const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+    const dataOffset = localHeaderOffset + 30 + localNameLength + localExtraLength;
+    if (dataOffset + compressedSize > data.byteLength) {
+      throw new Error('Corrupt ZIP: entry data out of bounds');
+    }
+
     const nameBytes = data.slice(offset + 46, offset + 46 + fileNameLength);
-    const entryName = new TextDecoder().decode(nameBytes).replace(/\\/g, '/');
-    declared.set(entryName, { crc32: declaredCrc, uncompressedSize });
+    declared.push({
+      name: decoder.decode(nameBytes).replace(/\\/g, '/'),
+      crc32: declaredCrc,
+      method,
+      compressedSize,
+      uncompressedSize,
+      dataOffset,
+    });
 
     offset += 46 + fileNameLength + extraLength + commentLength;
   }
 
   return declared;
+}
+
+/**
+ * Produce one entry's bytes, allocating no more than it declared.
+ *
+ * fflate writes into the buffer it is handed and never grows it, and a write
+ * past the end of a typed array is discarded rather than resized — so an entry
+ * whose deflate stream expands beyond its declared size costs the declared size
+ * and no more. What comes back is then short or wrong, and the checksum below
+ * refuses it.
+ */
+function extractEntry(data: Uint8Array, entry: DeclaredEntry): Uint8Array {
+  const raw = data.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize);
+  if (entry.method === METHOD_STORED) {
+    return raw.slice();
+  }
+  try {
+    return inflateSync(raw, { out: new Uint8Array(entry.uncompressedSize) });
+  } catch {
+    throw new Error(`Corrupt bundle: could not decompress ${entry.name}`);
+  }
+}
+
+/** Names that cannot refer to a file inside a bundle, and are only ever escapes. */
+function isUnsafeEntryName(path: string): boolean {
+  if (
+    path.startsWith('/') ||
+    path.includes('..') ||
+    path.includes('\0') ||
+    /^[a-zA-Z]:/.test(path)
+  ) {
+    return true;
+  }
+  // `.` and empty segments survive the substring checks above but still make a
+  // path that names the same file two ways.
+  return path.split('/').some((segment) => segment === '.' || segment === '');
 }
 
 /**
@@ -163,51 +249,35 @@ export function readBundleEntries(data: Uint8Array): Map<string, Uint8Array> {
     throw new Error('Bundle too large');
   }
 
-  const declared = preflightZip(data);
-  const unzipped = unzipSync(data);
-  const entries = Object.entries(unzipped);
-  if (entries.length > MAX_ZIP_ENTRIES) {
-    throw new Error('Bundle has too many files');
-  }
-
+  const declared = readCentralDirectory(data);
   const files = new Map<string, Uint8Array>();
   let totalBytes = 0;
 
-  for (const [path, content] of entries) {
-    const normalizedPath = path.replace(/\\/g, '/');
-    if (
-      normalizedPath.startsWith('/') ||
-      normalizedPath.includes('..') ||
-      normalizedPath.includes('\0') ||
-      /^[a-zA-Z]:/.test(normalizedPath)
-    ) {
-      continue;
-    }
-    if (normalizedPath.endsWith('/')) continue;
+  for (const entry of declared) {
+    if (entry.name.endsWith('/')) continue;
+    if (isUnsafeEntryName(entry.name)) continue;
 
-    if (content.byteLength > MAX_ZIP_FILE_BYTES) {
-      throw new Error(`File too large in bundle: ${normalizedPath}`);
-    }
-
-    // Check what came out against what the archive claimed. Without this a
-    // crafted bundle silently hands this reader a truncated file while every
-    // other reader sees the whole one.
-    const claim = declared.get(normalizedPath) ?? declared.get(path);
-    if (claim) {
-      if (content.byteLength !== claim.uncompressedSize) {
-        throw new Error(`Corrupt bundle: size mismatch for ${normalizedPath}`);
-      }
-      if (crc32(content) !== claim.crc32) {
-        throw new Error(`Corrupt bundle: checksum mismatch for ${normalizedPath}`);
-      }
-    }
-
-    totalBytes += content.byteLength;
+    // Charged before the buffer is allocated, not after it is filled: this is
+    // the whole point of extracting entry by entry, so the cap bounds what the
+    // bundle can make this process hold rather than describing it afterwards.
+    totalBytes += entry.uncompressedSize;
     if (totalBytes > MAX_ZIP_TOTAL_BYTES) {
       throw new Error('Bundle contents too large');
     }
 
-    files.set(normalizedPath, content);
+    const content = extractEntry(data, entry);
+
+    // Check what came out against what the archive claimed. Without this a
+    // crafted bundle silently hands this reader a truncated file while every
+    // other reader sees the whole one.
+    if (content.byteLength !== entry.uncompressedSize) {
+      throw new Error(`Corrupt bundle: size mismatch for ${entry.name}`);
+    }
+    if (crc32(content) !== entry.crc32) {
+      throw new Error(`Corrupt bundle: checksum mismatch for ${entry.name}`);
+    }
+
+    files.set(entry.name, content);
   }
 
   return files;
