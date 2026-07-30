@@ -48,7 +48,7 @@ softn.com/
 
 | Repository | Description |
 |-----------|-------------|
-| [zipp-lang](https://github.com/f2i-com/zipp-lang) | zipp -- the JavaScript engine `.logic` runs on (Rust to WebAssembly) |
+| [zipp.org](https://github.com/f2i-com/zipp.org) | zipp -- the JavaScript engine `.logic` runs on (Rust to WebAssembly) |
 | [xdb.org](https://github.com/f2i-com/xdb.org) | XDB database (Tauri/Rust -- SQLite + libp2p + Y-CRDT) |
 
 ---
@@ -250,7 +250,7 @@ MyApp.softn (ZIP archive)
 
 ## Scripting Engine
 
-`.logic` files are JavaScript, executed by [zipp](https://github.com/f2i-com/zipp-lang) -- a clean-sheet
+`.logic` files are JavaScript, executed by [zipp](https://github.com/f2i-com/zipp.org) -- a clean-sheet
 JavaScript engine written in Rust and compiled to WebAssembly.
 
 ```
@@ -349,7 +349,7 @@ dist/studio/     AI studio
 | Layer | Protection |
 |-------|-----------|
 | VM Sandboxing | zipp WASM VM -- no `eval()`, no `new Function()`, no host access |
-| Instruction Limits | Configurable max instructions and wall-clock timeouts |
+| Instruction Limits | **Server only.** `softn-server` builds zipp with `instrument`, giving it a step budget and an abort flag. The browser adapter has no budget: a runaway loop wedges the tab it runs in |
 | Bridge Isolation | `window` and `navigator` are controlled bridge objects |
 | localStorage | App-scoped prefix `softn:{appId}:` prevents cross-app leakage |
 | ZIP Extraction | Rejects `../`, absolute paths, null bytes, Windows drive letters |
@@ -417,4 +417,4 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and
 
 ## Credits
 
-Built with [zipp](https://github.com/f2i-com/zipp-lang), [XDB](https://github.com/f2i-com/xdb.org), [Tauri](https://tauri.app), [React](https://react.dev), [Three.js](https://threejs.org), and [Yjs](https://yjs.dev).
+Built with [zipp](https://github.com/f2i-com/zipp.org), [XDB](https://github.com/f2i-com/xdb.org), [Tauri](https://tauri.app), [React](https://react.dev), [Three.js](https://threejs.org), and [Yjs](https://yjs.dev).
