@@ -74,7 +74,6 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   const [showProviderDropdown, setShowProviderDropdown] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
-  const imgInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -580,64 +579,19 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
                 </div>
               </div>
 
-              <div style={{ ...s.field, marginBottom: 0 }}>
-                <div id="brief-images-label" style={s.label}>Reference images</div>
-                <p style={s.hint}>Upload screenshots or mockups for inspiration (up to 3)</p>
-                <input
-                  ref={imgInputRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  style={{ display: 'none' }}
-                  aria-labelledby="brief-images-label"
-                  onChange={(e) => {
-                    const files = Array.from(e.target.files ?? []).slice(0, 3 - brief.referenceImages.length);
-                    if (files.length > 0) {
-                      set('referenceImages', [...brief.referenceImages, ...files].slice(0, 3));
-                    }
-                    e.target.value = '';
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => imgInputRef.current?.click()}
-                  style={{
-                    ...s.uploadBtn,
-                    borderColor: brief.referenceImages.length > 0 ? 'var(--studio-accent)' : 'var(--studio-border-strong)',
-                    background: brief.referenceImages.length > 0 ? 'var(--studio-accent-soft)' : 'var(--studio-bg-muted)',
-                    color: brief.referenceImages.length > 0 ? 'var(--studio-accent)' : 'var(--studio-text-dim)',
-                  }}
-                  {...ring(brief.referenceImages.length > 0 ? 'var(--studio-accent)' : 'var(--studio-border-strong)')}
-                >
-                  <Icon
-                    name={brief.referenceImages.length > 0 ? 'check' : 'upload'}
-                    size={18}
-                    color={brief.referenceImages.length > 0 ? 'var(--studio-accent)' : 'var(--studio-text-dim)'}
-                  />
-                  <span>{brief.referenceImages.length > 0
-                    ? `${brief.referenceImages.length} image${brief.referenceImages.length > 1 ? 's' : ''} selected`
-                    : 'Drop images here or click to upload'
-                  }</span>
-                </button>
-                {brief.referenceImages.length > 0 && (
-                  <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
-                    {brief.referenceImages.map((f, i) => (
-                      <div key={i} style={s.imgTag}>
-                        <span>{f.name}</span>
-                        <button
-                          type="button"
-                          onClick={() => set('referenceImages', brief.referenceImages.filter((_, j) => j !== i))}
-                          aria-label={`Remove image ${f.name}`}
-                          style={s.tagX}
-                          {...ring('transparent')}
-                        >
-                          <Icon name="x" size={12} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              {/*
+                A "Reference images" upload used to sit here. It worked as an
+                input and did nothing as data: the File objects went into brief
+                state, the button turned accent-coloured, showed a check and
+                said "3 images selected", and then nothing in the app ever read
+                them — no request builder touched referenceImages, so the model
+                never saw a single pixel. A control that confirms receipt and
+                discards the thing is worse than no control.
+
+                Sending them is a real feature, not a wiring fix: it needs a
+                vision-capable request shape per provider and a size budget.
+                Until that exists, the wizard does not ask.
+              */}
             </>
           )}
         </div>

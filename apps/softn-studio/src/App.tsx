@@ -17,6 +17,7 @@ import { SettingsPanel } from './components/panels/SettingsPanel';
 import { FilesPanel } from './components/panels/FilesPanel';
 import { inferBlueprintFromFiles, inferBriefFromBlueprint, generateTaskGraph } from './lib/studioProject';
 import { validateProject } from './lib/validator';
+import { abortAgentTurn } from './lib/agentOrchestrator';
 import { loadAISnapshot, loadRecentProjects, loadVFSSnapshot, loadWorkspaceSnapshot, saveAISnapshot, saveRecentProject, saveVFSSnapshot, saveWorkspaceSnapshot, decodePersistedVFS } from './lib/persistence';
 import { BlueprintReview } from './components/blueprint/BlueprintReview';
 
@@ -145,6 +146,10 @@ const App: React.FC = () => {
   }, [themePreview]);
 
   const handleNewProject = useCallback(() => {
+    // A generation still running would finish against the project that replaces
+    // this one and write its files there. agentOrchestrator already treats an
+    // AbortError as "stop quietly", so nothing is written and no error is shown.
+    abortAgentTurn();
     const currentTheme = useWorkspaceStore.getState().themePreview;
     useWorkspaceStore.getState().reset();
     useWorkspaceStore.getState().setThemePreview(currentTheme);
@@ -213,10 +218,12 @@ const App: React.FC = () => {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleBackToDashboard = useCallback(() => {
+    abortAgentTurn();
     setView('dashboard');
   }, []);
 
   const handleImportProject = useCallback(async (file: File) => {
+    abortAgentTurn();
     try {
     const buffer = await file.arrayBuffer();
     const data = new Uint8Array(buffer);

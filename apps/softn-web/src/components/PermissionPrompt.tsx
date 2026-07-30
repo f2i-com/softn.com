@@ -5,7 +5,7 @@
  * Allow or Deny before the app starts executing.
  */
 
-import React from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import type { PermissionConfig } from '@softn/core';
 
 interface PermissionPromptProps {
@@ -92,6 +92,51 @@ function getRequestedPermissions(config: PermissionConfig): Array<{ key: string;
 
 export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDeny }: PermissionPromptProps): React.ReactElement {
   const requested = getRequestedPermissions(permissions);
+  const titleId = useId();
+  const descId = useId();
+  const cardRef = useRef<HTMLDivElement>(null);
+  const denyRef = useRef<HTMLButtonElement>(null);
+
+  // This asks for consent, so it has to behave like the dialog it looks like.
+  // It was a bare <div>: Chrome computed it as role "generic", focus stayed on
+  // whatever was behind it, a screen reader was never told it had appeared, and
+  // Escape did nothing. Focus lands on Deny — the safe option — rather than on
+  // the button that grants an untrusted bundle the network.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    denyRef.current?.focus();
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onDeny();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      // Keep Tab inside the dialog; behind it sits the whole runtime, and
+      // tabbing into an app that has not been granted anything yet is exactly
+      // what a modal is for preventing.
+      const focusable = cardRef.current?.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable || focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      opener?.focus?.();
+    };
+  }, [onDeny]);
 
   return (
     <div style={{
@@ -104,7 +149,13 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDen
       zIndex: 20,
       padding: '2rem',
     }}>
-      <div style={{
+      <div
+        ref={cardRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descId}
+        style={{
         maxWidth: '440px',
         width: '100%',
         background: '#16161a',
@@ -152,7 +203,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDen
             </div>
           )}
           <div>
-            <div style={{
+            <div id={titleId} style={{
               color: '#ececf0',
               fontWeight: 600,
               fontSize: '1.0625rem',
@@ -160,7 +211,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDen
             }}>
               {appName}
             </div>
-            <div style={{
+            <div id={descId} style={{
               color: '#7a7a86',
               fontSize: '0.75rem',
               marginTop: '2px',
@@ -251,6 +302,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDen
           justifyContent: 'flex-end',
         }}>
           <button
+            ref={denyRef}
             onClick={onDeny}
             style={{
               padding: '0.5rem 1.25rem',

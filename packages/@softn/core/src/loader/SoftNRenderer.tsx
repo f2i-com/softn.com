@@ -56,8 +56,18 @@ export function sanitizeBundleCSS(css: string): string {
   // Strip CSS escape sequences that could bypass protocol detection
   // (e.g. \6a avascript:, \68 ttp:, \75rl)
   let sanitized = css.replace(/\\[0-9a-fA-F]{1,6}\s?/g, '_');
-  // Remove @import rules (with or without url())
-  sanitized = sanitized.replace(/@import\s+(?:url\s*\([^)]*\)|["'][^"']*["'])[^;]*;?/gi, '/* @import removed */');
+  // Remove @import rules (with or without url()).
+  //
+  // The separator is `\b` followed by any run of whitespace OR comments, not
+  // `\s+`. CSS does not require whitespace between an at-keyword and the token
+  // after it, and a comment is a valid separator, so `@import"…";`,
+  // `@import'…';` and `@import/**/"…";` all sailed past the old pattern and
+  // fetched the remote stylesheet. The `\b` is load-bearing: with the separator
+  // now optional, `@importurl(` would otherwise match as `@import` + `url(...)`.
+  sanitized = sanitized.replace(
+    /@import\b(?:\s|\/\*[\s\S]*?\*\/)*(?:url\s*\([^)]*\)|["'][^"']*["'])[^;]*;?/gi,
+    '/* @import removed */'
+  );
   // Remove url() values that reference external or dangerous protocols.
   //
   // Quoted and unquoted forms are matched separately. A single pattern with
@@ -1798,16 +1808,27 @@ export function SoftNWithXDB({
   // Auto-resume sync from localStorage on mount
   const syncResumedRef = useRef(false);
 
-  // Clean up stale sync adapters from previously opened apps on mount.
+  // Clean up THIS app's stale sync adapter on mount.
   // Fires when resumeSavedSyncRoom is not explicitly true (i.e., false or undefined).
+  //
+  // This used to call stopSync() with no arguments, which does not mean "drop my
+  // leftovers" — it iterates every adapter in the module-level map, calls
+  // provider.destroy() on each and clears it. softn-web keeps every open tab
+  // mounted in one realm (App.tsx renders all openTabs and toggles them with
+  // display), so opening a second app silently tore down the first one's live
+  // sync: no error, no callback, and the first app's writes stopped reaching its
+  // peers while still landing locally. Passing appId also clears the correct
+  // namespaced localStorage key instead of the un-namespaced one, which used to
+  // leave storage claiming the app was still in a room it had been cut from.
   useEffect(() => {
     if (props.resumeSavedSyncRoom) return;
-    import('../runtime/xdb-sync').then(({ stopSync }) => {
-      stopSync();
+    import('../runtime/xdb-sync').then(({ stopSync, getSavedSyncRoom }) => {
+      const saved = getSavedSyncRoom(props.appId);
+      if (saved) stopSync(saved, props.appId);
     }).catch(() => {
       // Ignore sync cleanup failures in constrained environments.
     });
-  }, [props.resumeSavedSyncRoom]);
+  }, [props.resumeSavedSyncRoom, props.appId]);
 
   // Auto-resume sync only when explicitly opted in (resumeSavedSyncRoom === true).
   useEffect(() => {
