@@ -71,24 +71,42 @@ import {
   updateGrantedPermissions,
   type CachedApp,
 } from './lib/appCache';
+import { parseAppPath, buildAppPath } from './lib/appUrl';
+import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
 
 // ── URL Routing Helpers ──────────────────────────────────────────
 
 function parseAppUrl(): { appName: string | null; page: string | null } {
-  const path = window.location.pathname;
-  const match = path.match(/^\/app\/([^/]+)(?:\/(.+))?$/);
-  if (!match) return { appName: null, page: null };
-  return {
-    appName: decodeURIComponent(match[1]),
-    page: match[2] ? decodeURIComponent(match[2]) : null,
-  };
+  return parseAppPath(window.location.pathname, import.meta.env.BASE_URL);
 }
 
 function buildAppUrl(appName: string | null, page?: string | null): string {
-  if (!appName) return '/';
-  let url = `/app/${encodeURIComponent(appName)}`;
-  if (page) url += `/${encodeURIComponent(page)}`;
-  return url;
+  return buildAppPath(appName, page, import.meta.env.BASE_URL);
+}
+
+/** The URL as the history API sees it, base and query included. */
+function currentUrl(): string {
+  return window.location.pathname + window.location.search;
+}
+
+/**
+ * How this page was entered.
+ *
+ * `?open=` beats an `/app/` path deliberately: both want the one skeleton tab,
+ * and a bundle arriving over the network racing a bundle arriving from the
+ * cache would leave whichever lost holding a tab that never finishes loading.
+ */
+function readEntry(): {
+  openValue: string | null;
+  appName: string | null;
+  page: string | null;
+  embedded: boolean;
+} {
+  const params = new URLSearchParams(window.location.search);
+  const embedded = params.get('embed') === '1';
+  const openValue = params.get('open');
+  if (openValue) return { openValue, appName: null, page: null, embedded };
+  return { openValue: null, ...parseAppUrl(), embedded };
 }
 
 // ── Types ────────────────────────────────────────────────────────
@@ -113,9 +131,10 @@ interface OpenTab {
 
 function App(): React.ReactElement {
   // Parse URL once for initial state
-  const [urlInit] = useState(() => parseAppUrl());
+  const [urlInit] = useState(readEntry);
   // Pre-create a skeleton tab ID if loading from URL (so tab bar shows immediately)
   const [urlTabId] = useState(() => (urlInit.appName ? crypto.randomUUID() : null));
+  const embedded = urlInit.embedded;
 
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => {
     // Pre-populate tab from URL so it appears in tab bar instantly on reload
@@ -152,6 +171,13 @@ function App(): React.ReactElement {
   const urlReadyRef = useRef(false); // true after initial URL parsing
   const skipNextUrlPushRef = useRef(false); // skip URL push after popstate
 
+  // An embedded frame keeps ?embed=1 through every rewrite, so a frame that
+  // reloads itself does not sprout a tab bar inside somebody else's page.
+  const entryUrl = useCallback(
+    (path: string) => (embedded ? `${path}?embed=1` : path),
+    [embedded]
+  );
+
   // Load cached apps on mount
   useEffect(() => {
     getCachedApps().then(setApps).catch(console.error);
@@ -167,17 +193,36 @@ function App(): React.ReactElement {
     }
   }, [activeTabId, openTabs]);
 
-  /** Process a .softn bundle from raw bytes */
+  /**
+   * Drop a placeholder tab that a load never took over.
+   *
+   * Whoever put the placeholder on screen calls this once the load is done and
+   * did not open anything, so the cleanup does not depend on how far
+   * processBundleData got: `readZip` and every manifest check throw before it
+   * has adopted the tab, and a placeholder nothing will ever fill in renders
+   * "Loading …" for the rest of the session.
+   */
+  const discardPlaceholder = useCallback((tabId: string) => {
+    setOpenTabs((prev) => prev.filter((t) => t.id !== tabId));
+    // Only send the window Home if the tab going away is the one being looked
+    // at; a load that finished elsewhere keeps whatever it selected.
+    setActiveTabId((current) => (current === tabId ? null : current));
+  }, []);
+
+  /** Process a .softn bundle from raw bytes. Resolves with the app's name, or null if it did not open. */
   const processBundleData = useCallback(
-    async (data: Uint8Array, fileName: string, cachedAppId?: string, initialPage?: string) => {
-      // The placeholder tab a URL load creates, if this call created one.
+    async (
+      data: Uint8Array,
+      fileName: string,
+      cachedAppId?: string,
+      initialPage?: string
+    ): Promise<string | null> => {
+      // The placeholder tab this call adopted, once it has adopted one.
       //
-      // Tracked out here so the catch below can remove it. It could not before:
-      // the ids are declared inside the try, so a failure left a tab whose
-      // source is '' on screen forever, rendering "Loading …" with no way back
-      // — dismissing the error card did not remove it, and reopening the app
-      // found the dead tab again. The permission-denied branch already cleaned
-      // up correctly; this is the same cleanup for the failure path.
+      // Tracked out here so the catch below can remove it — but only failures
+      // past the adoption point are its to clean up. Everything that throws
+      // before then is the caller's, which is why the two places that create a
+      // placeholder retire it themselves.
       let skeletonTabId: string | null = null;
 
       try {
@@ -210,12 +255,24 @@ function App(): React.ReactElement {
 
         const appName = manifest.name || fileName.replace(/\.softn$/, '');
 
-        // Check if a tab with this name already exists (use ref for fresh value)
-        const existingTab = openTabsRef.current.find((t) => t.name === appName);
+        // Check if a tab with this name already exists (use ref for fresh value).
+        //
+        // A URL load names its placeholder after the file, which need not match
+        // the name inside — AIChat.softn calls itself "AI Chat" — so a
+        // placeholder still waiting on this file counts as the same tab. Without
+        // that second lookup the bundle would open in a fresh tab and leave the
+        // placeholder loading forever.
+        const placeholderName = fileName.replace(/\.softn$/i, '');
+        const existingTab =
+          openTabsRef.current.find((t) => t.name === appName) ||
+          openTabsRef.current.find((t) => !t.source && t.name === placeholderName);
         if (existingTab && existingTab.source) {
           // Already fully loaded — just switch to it
           setActiveTabId(existingTab.id);
-          return;
+          // A placeholder opened for this file has nothing left to become, and
+          // would otherwise sit in the tab bar loading forever.
+          setOpenTabs((prev) => prev.filter((t) => t.source || t.name !== placeholderName));
+          return appName;
         }
 
         // Use existing skeleton tab ID (from URL pre-populate) or create new
@@ -283,7 +340,7 @@ function App(): React.ReactElement {
               }
               setActiveTabId(null);
               setError(new Error(`Permission denied: "${appName}" was not granted the requested permissions.`));
-              return;
+              return null;
             }
 
             // User allowed — store grant in cache.
@@ -370,6 +427,7 @@ function App(): React.ReactElement {
         setActiveTabId(tabId);
         setLoadingTabId(null);
         setLoadingFileName('');
+        return appName;
       } catch (err) {
         console.error('[SoftN Web] Failed to load bundle:', err);
         setError(err instanceof Error ? err : new Error(String(err)));
@@ -379,6 +437,7 @@ function App(): React.ReactElement {
           setOpenTabs((prev) => prev.filter((t) => t.id !== skeletonTabId));
           setActiveTabId(null);
         }
+        return null;
       }
     },
     []
@@ -390,6 +449,69 @@ function App(): React.ReactElement {
       processBundleData(data, fileName);
     },
     [processBundleData]
+  );
+
+  /**
+   * Open a bundle served from this site — the `?open=` entry point, and what a
+   * demo card on the launcher clicks.
+   */
+  const openFromUrl = useCallback(
+    async (value: string): Promise<string | null> => {
+      let url: URL;
+      try {
+        url = resolveBundleUrl(value, window.location.origin);
+      } catch (err) {
+        // Nothing has been fetched and no tab exists yet, so a rejected value is
+        // only ever the error card.
+        setError(err instanceof Error ? err : new Error(String(err)));
+        setActiveTabId(null);
+        return null;
+      }
+
+      const displayName = bundleNameFromUrl(url);
+      const loadedTab = openTabsRef.current.find((t) => t.name === displayName && t.source);
+      if (loadedTab) {
+        setActiveTabId(loadedTab.id);
+        return loadedTab.name;
+      }
+
+      // The same placeholder the /app/:name flow uses, so the download shows up
+      // in the tab bar instead of leaving the window blank until it lands.
+      // processBundleData adopts it once the real name is known.
+      const skeletonTabId = crypto.randomUUID();
+      setError(null);
+      setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '' }]);
+      setActiveTabId(skeletonTabId);
+
+      let data: Uint8Array;
+      try {
+        data = await fetchRemoteBundle(url);
+      } catch (err) {
+        console.error('[SoftN Web] Failed to fetch bundle:', err);
+        setError(err instanceof Error ? err : new Error(String(err)));
+        discardPlaceholder(skeletonTabId);
+        return null;
+      }
+
+      // Whatever happens from here the placeholder is this function's to
+      // account for: it is gone unless processBundleData reports that it opened
+      // the bundle, in which case the tab it adopted is the running app.
+      let opened: string | null = null;
+      try {
+        opened = await processBundleData(data, `${displayName}.softn`);
+        return opened;
+      } catch (err) {
+        // processBundleData reports its own failures, so anything thrown out of
+        // it is a surprise — surfacing it here keeps the promise this function
+        // returns resolved, which the ?open= caller relies on.
+        console.error('[SoftN Web] Failed to open bundle:', err);
+        setError(err instanceof Error ? err : new Error(String(err)));
+        return null;
+      } finally {
+        if (opened === null) discardPlaceholder(skeletonTabId);
+      }
+    },
+    [processBundleData, discardPlaceholder]
   );
 
   /** Handle opening a cached app */
@@ -469,6 +591,23 @@ function App(): React.ReactElement {
     [handleOpenFile]
   );
 
+  /**
+   * Tell an embedder that the app is actually on screen.
+   *
+   * An iframe's `load` event only says the runtime shell arrived; parsing the
+   * bundle and starting the engine takes another moment, and a page that
+   * announces "running" during that gap is lying to its reader. There is
+   * nothing sensitive in the message, so it is not worth narrowing the target
+   * origin to a list the runtime would then have to maintain.
+   */
+  const announceReady = useCallback(
+    (appName: string) => {
+      if (!embedded || window.parent === window) return;
+      window.parent.postMessage({ type: 'softn:app-ready', app: appName }, '*');
+    },
+    [embedded]
+  );
+
   /** Called by AppRunner when an app's currentPage changes */
   const handlePageChange = useCallback((tabId: string, page: string) => {
     tabPagesRef.current[tabId] = page;
@@ -476,33 +615,53 @@ function App(): React.ReactElement {
     if (activeTabIdRef.current === tabId) {
       const tab = openTabsRef.current.find((t) => t.id === tabId);
       if (tab) {
-        const url = buildAppUrl(tab.name, page);
-        if (window.location.pathname !== url) {
+        const url = entryUrl(buildAppUrl(tab.name, page));
+        if (currentUrl() !== url) {
           window.history.replaceState({}, '', url);
         }
       }
     }
-  }, []);
+  }, [entryUrl]);
 
   // ── URL Routing: Load app from URL on mount ───────────────────
 
   useEffect(() => {
+    if (urlInit.openValue) {
+      // ?open= is a one-shot instruction: once it has been acted on the URL
+      // becomes the ordinary /app/<name> form, so a reload replays the bundle
+      // out of the cache instead of downloading it a second time — and a value
+      // that was rejected does not sit in the address bar reproducing the same
+      // error on every refresh.
+      openFromUrl(urlInit.openValue).then((appName) => {
+        window.history.replaceState({}, '', entryUrl(buildAppUrl(appName)));
+        urlReadyRef.current = true;
+      });
+      return;
+    }
+
     if (urlInit.appName) {
       getCachedAppByName(urlInit.appName).then((cachedApp) => {
         if (cachedApp) {
-          processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined);
+          // The tab this component pre-created is under the same rule as the
+          // one ?open= makes: a cached bundle that no longer reads as a bundle
+          // throws before processBundleData can adopt it, so the placeholder is
+          // retired here rather than in there.
+          processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined)
+            .then((appName) => {
+              if (appName === null && urlTabId) discardPlaceholder(urlTabId);
+            });
         } else {
           // App not in cache — remove skeleton tab and go Home
           setOpenTabs([]);
           setActiveTabId(null);
-          window.history.replaceState({}, '', '/');
+          window.history.replaceState({}, '', entryUrl(buildAppUrl(null)));
         }
         urlReadyRef.current = true;
       });
     } else {
       urlReadyRef.current = true;
     }
-  }, [processBundleData, urlInit]);
+  }, [processBundleData, openFromUrl, entryUrl, urlInit, urlTabId, discardPlaceholder]);
 
   // ── URL Routing: Sync activeTabId → URL ──────────────────────
 
@@ -513,7 +672,7 @@ function App(): React.ReactElement {
       return;
     }
 
-    let url = '/';
+    let url = buildAppUrl(null);
     if (activeTabId) {
       const tab = openTabs.find((t) => t.id === activeTabId);
       if (tab) {
@@ -522,10 +681,11 @@ function App(): React.ReactElement {
       }
     }
 
-    if (window.location.pathname !== url) {
-      window.history.pushState({}, '', url);
+    const next = entryUrl(url);
+    if (currentUrl() !== next) {
+      window.history.pushState({}, '', next);
     }
-  }, [activeTabId, openTabs]);
+  }, [activeTabId, openTabs, entryUrl]);
 
   // ── URL Routing: Browser back/forward ────────────────────────
 
@@ -575,13 +735,17 @@ function App(): React.ReactElement {
       />
 
       <div className="softn-shell">
-        <TabBar
-          tabs={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon }))}
-          activeTabId={activeTabId}
-          onSelectTab={handleSelectTab}
-          onCloseTab={handleCloseTab}
-          onAddTab={handleAddTab}
-        />
+        {/* Embedded in someone else's page: the app is the whole frame, and tabs
+            belong to the host document rather than to us. */}
+        {!embedded && (
+          <TabBar
+            tabs={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon }))}
+            activeTabId={activeTabId}
+            onSelectTab={handleSelectTab}
+            onCloseTab={handleCloseTab}
+            onAddTab={handleAddTab}
+          />
+        )}
 
         {/* Content area below tab bar */}
         <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
@@ -727,6 +891,7 @@ function App(): React.ReactElement {
               apps={apps}
               onOpenFile={handleOpenFile}
               onOpenCached={handleOpenCached}
+              onOpenUrl={openFromUrl}
               onRemove={handleRemove}
             />
           </div>
@@ -745,6 +910,7 @@ function App(): React.ReactElement {
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
               permissionConfig={tab.permissionConfig}
               onPageChange={(page) => handlePageChange(tab.id, page)}
+              onReady={() => announceReady(tab.name)}
               serverUrl={tab.serverUrl}
               serverToken={tab.serverToken}
               serverCollections={tab.serverCollections}

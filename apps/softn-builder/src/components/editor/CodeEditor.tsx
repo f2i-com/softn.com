@@ -3,6 +3,7 @@
  */
 
 import Editor, { OnMount, OnChange } from '@monaco-editor/react';
+import './monacoSetup';
 
 interface Props {
   value: string;

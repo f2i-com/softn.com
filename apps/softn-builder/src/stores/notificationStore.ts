@@ -4,11 +4,19 @@
 
 import { create } from 'zustand';
 
+export interface NotificationAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface Notification {
   id: string;
   type: 'success' | 'error' | 'warning' | 'info';
   message: string;
   duration: number; // ms
+  // A toast that asks the user to do something has to stay up, so pair an
+  // action with duration 0.
+  action?: NotificationAction;
 }
 
 interface NotificationStore {

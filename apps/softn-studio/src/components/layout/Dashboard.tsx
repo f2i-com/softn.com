@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { Icon } from '../common/Icon';
 import { useWorkspaceStore, useVFSStore, useAIStore } from '../../stores';
 import { removeRecentProject, loadRecentProjects, loadWorkspaceSnapshot } from '../../lib/persistence';
+import { STUDIO_ICON } from '../../lib/assets';
 
 interface RecentProject {
   id: string;
@@ -113,7 +114,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
           <div style={{ ...s.header, marginBottom: m ? 24 : 36 }}>
             <div style={s.headerLeft}>
               <div style={{ ...s.logo, width: m ? 36 : 44, height: m ? 36 : 44, borderRadius: m ? 10 : 12 }}>
-                <img src="/studio-icon.png" alt="SoftN Studio" style={{ ...s.logoImg, borderRadius: m ? 10 : 12 }} />
+                <img src={STUDIO_ICON} alt="SoftN Studio" style={{ ...s.logoImg, borderRadius: m ? 10 : 12 }} />
               </div>
               <span style={{ ...s.logoLabel, fontSize: m ? 15 : 17, color: theme.text }}>SoftN Studio</span>
             </div>

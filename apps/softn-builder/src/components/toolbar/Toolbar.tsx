@@ -6,6 +6,7 @@ import React from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { useHistoryStore } from '../../stores/historyStore';
+import { useInstallPrompt } from './useInstallPrompt';
 
 const styles: Record<string, React.CSSProperties> = {
   toolbar: {
@@ -131,6 +132,16 @@ function IconSave() {
   );
 }
 
+function IconInstall() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="8" y1="1.5" x2="8" y2="10" />
+      <polyline points="4.5 6.5 8 10 11.5 6.5" />
+      <path d="M2.5 11.5v1.5A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5v-1.5" />
+    </svg>
+  );
+}
+
 interface ToolbarProps {
   view: 'design' | 'preview' | 'code' | 'data';
   onViewChange: (view: 'design' | 'preview' | 'code' | 'data') => void;
@@ -160,6 +171,7 @@ export function Toolbar({
 }: ToolbarProps) {
   const { name, isDirty } = useProjectStore();
   const { canUndo, canRedo, undo, redo } = useHistoryStore();
+  const { canInstall, promptInstall } = useInstallPrompt();
 
   // The history store never holds the current canvas — callers push before
   // mutating — so stepping in either direction has to hand it over.
@@ -256,6 +268,12 @@ export function Toolbar({
       <button style={styles.button} onClick={onShortcuts} title="Keyboard shortcuts">
         Shortcuts
       </button>
+
+      {canInstall && (
+        <button style={styles.button} onClick={promptInstall} title="Install SoftN Builder as an app">
+          <IconInstall /> Install
+        </button>
+      )}
     </div>
   );
 }

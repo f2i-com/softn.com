@@ -33,10 +33,14 @@ softn.com/
 |       +-- components/        # Built-in component library (86 components)
 |       +-- vite-plugin/       # Vite plugin for .softn files
 +-- apps/
+|   +-- softn-site/            # softn.com landing page
 |   +-- softn-web/             # Web runtime (browser-based bundle runner)
-|   +-- softn-loader/          # Desktop runtime (Tauri)
+|   +-- softn-studio/          # AI studio (brief -> blueprint -> app)
 |   +-- softn-builder/         # Visual IDE / builder
+|   +-- softn-loader/          # Desktop runtime (Tauri)
+|   +-- softn-server/          # Rust host for `.logic` server routes and XDB sync
 |   +-- demo/                  # Demo applications
++-- scripts/                   # dev-all and site assembly
 +-- .github/workflows/         # CI/CD
 ```
 
@@ -75,15 +79,24 @@ cd softn.com
 # Install dependencies
 npm install
 
-# Build all packages (core must build before apps)
-npm run build
+# Build the packages the apps import (core must build before apps)
+npm run build:core
+npm run build:components
 
-# Run the web runtime (dev server on port 1420)
-cd apps/softn-web
+# Start the landing page, the runtime, the builder and the studio together
 npm run dev
 ```
 
-Open `http://localhost:1420` and drag-drop a `.softn` bundle to run it.
+| | |
+|-|-|
+| `http://localhost:1421` | **Landing page** — start here. Runs the demos in place and links to the rest. |
+| `http://localhost:1420` | **Web runtime** — drag-drop a `.softn` bundle, or open one with `?open=/demos/SnakeGame.softn` |
+| `http://localhost:1422` | **Builder** |
+| `http://localhost:1423` | **Studio** |
+
+If a port is already taken, `npm run dev` moves that app to the next free one and
+tells the landing page where it went. To run a single app instead, use
+`npm run dev:site`, `dev:web`, `dev:builder` or `dev:studio`.
 
 ---
 
@@ -293,9 +306,32 @@ All CRUD operations are **synchronous** (XDB caches everything in memory).
 
 | App | Description |
 |-----|-------------|
-| **softn-web** | Browser-based `.softn` runtime with PWA support, multi-tab, URL routing |
+| **softn-site** | The softn.com landing page. Runs the demo bundles in an embedded runtime frame |
+| **softn-web** | Browser-based `.softn` runtime with multi-tab, URL routing and `?open=` deep links. Installable PWA |
+| **softn-studio** | Brief to blueprint to app, against whichever model provider you configure. Installable PWA |
+| **softn-builder** | Visual IDE with drag-and-drop editor, live preview, bundle export. Installable PWA |
 | **softn-loader** | Tauri desktop runtime with `.softn` file association and XDB/SQLite |
-| **softn-builder** | Visual IDE with drag-and-drop editor, live preview, bundle export |
+
+The three browser apps are installable PWAs: each ships a web app manifest and a
+service worker that precaches the runtime, the component library and the
+WebAssembly engine, so they keep working with the network off.
+
+### Deploying softn.com
+
+```bash
+npm run build:site
+```
+
+Builds the packages, then each app with the `VITE_BASE` matching where it will be
+served, and assembles a single uploadable tree:
+
+```
+dist/            landing page
+dist/demos/      .softn bundles
+dist/web/        web runtime
+dist/builder/    visual builder
+dist/studio/     AI studio
+```
 
 ### Demos
 
@@ -338,15 +374,24 @@ npm run build      # Build all packages
 ### Running Apps
 
 ```bash
-# Web runtime (port 1420)
-cd apps/softn-web && npm run dev
+# Everything web, on one command
+npm run dev
+
+# Or one at a time
+npm run dev:site      # landing page   1421
+npm run dev:web       # web runtime    1420
+npm run dev:builder   # visual builder 1422
+npm run dev:studio    # AI studio      1423
 
 # Desktop loader (requires Rust)
-cd apps/softn-loader && npm run tauri dev
+npm run dev:desktop
 
-# Visual builder (requires Rust)
+# Builder in its Tauri shell (requires Rust)
 cd apps/softn-builder && npm run tauri dev
 ```
+
+Rust is only needed for the two Tauri shells and for recompiling the scripting
+engine. The four browser apps need Node alone.
 
 ### Key File Paths
 
@@ -365,7 +410,8 @@ cd apps/softn-builder && npm run tauri dev
 
 ## License
 
-MIT
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
 
 ---
 

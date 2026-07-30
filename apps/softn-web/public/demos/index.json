@@ -1,0 +1,90 @@
+[
+  {
+    "id": "ai-chat",
+    "file": "AIChat.softn",
+    "name": "AI Chat",
+    "description": "AI Chat powered by Qwen3.5-0.8B — runs entirely in the browser",
+    "primary": "#10b981",
+    "size": 37317
+  },
+  {
+    "id": "device-kit",
+    "file": "DeviceKit.softn",
+    "name": "DeviceKit",
+    "description": "Demo app showcasing SoftN capabilities: network, camera, QR, files",
+    "primary": "#3b82f6",
+    "size": 30162
+  },
+  {
+    "id": "glamour-studio",
+    "file": "GlamourStudio.softn",
+    "name": "Glamour Studio",
+    "description": "Professional salon management with multi-file modular structure",
+    "primary": "#d4a574",
+    "size": 86247
+  },
+  {
+    "id": "gpu-demo",
+    "file": "GPUDemo.softn",
+    "name": "GPUDemo",
+    "description": "GPU Compute Demo — WebGPU compute shaders via softn.ai.gpu.*",
+    "primary": "#10b981",
+    "size": 13064
+  },
+  {
+    "id": "maze-escape-3d",
+    "file": "MazeEscape3D.softn",
+    "name": "MazeEscape3D",
+    "description": "3D maze escape game — navigate corridors to reach the golden portal",
+    "primary": "#4ade80",
+    "size": 11351
+  },
+  {
+    "id": "notes",
+    "file": "Notes.softn",
+    "name": "Notes",
+    "description": "Notes CRUD app with real-time server sync via XDB",
+    "primary": "#6366f1",
+    "size": 4757
+  },
+  {
+    "id": "showcase",
+    "file": "Showcase.softn",
+    "name": "SoftN Showcase",
+    "description": "Interactive showcase of SoftN charts, animations, and interactive components",
+    "primary": "#6366f1",
+    "size": 34626
+  },
+  {
+    "id": "snake-game",
+    "file": "SnakeGame.softn",
+    "name": "SnakeGame",
+    "description": "Classic Snake game built with SoftN utility components",
+    "primary": "#4ade80",
+    "size": 7235
+  },
+  {
+    "id": "texas-holdem",
+    "file": "TexasHoldem.softn",
+    "name": "Texas Hold'em",
+    "description": "Multiplayer Texas Hold'em Poker with P2P sync",
+    "primary": "#c8aa6e",
+    "size": 252684
+  },
+  {
+    "id": "the-office",
+    "file": "TheOffice.softn",
+    "name": "TheOffice",
+    "description": "Local AI sim game where 6 Office-inspired characters chat autonomously using Qwen3.5-0.8B",
+    "primary": "#58a6ff",
+    "size": 590090
+  },
+  {
+    "id": "three-demo",
+    "file": "ThreeDemo.softn",
+    "name": "ThreeDemo",
+    "description": "3D Scene demo with animated shapes powered by formlogic",
+    "primary": "#6366f1",
+    "size": 7838
+  }
+]

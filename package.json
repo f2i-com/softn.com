@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "SoftN UI Language and Engine",
+  "license": "Apache-2.0",
   "workspaces": [
     "packages/@softn/*",
     "apps/*"
@@ -11,8 +12,14 @@
     "build": "npm run build --workspaces --if-present",
     "build:core": "npm run build -w @softn/core",
     "build:components": "npm run build -w @softn/components",
+    "build:site": "node scripts/build-site.mjs",
 
-    "dev": "npm run tauri dev -w @softn/loader",
+    "dev": "node scripts/dev-all.mjs",
+    "dev:site": "npm run dev -w @softn/site",
+    "dev:web": "npm run dev -w @softn/web",
+    "dev:builder": "npm run dev -w @softn/builder",
+    "dev:studio": "npm run dev -w @softn/studio",
+    "dev:desktop": "npm run tauri dev -w @softn/loader",
     "bundle:demo": "npm run bundle -w @softn/demo",
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",

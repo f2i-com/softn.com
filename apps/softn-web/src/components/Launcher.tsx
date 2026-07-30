@@ -1,5 +1,6 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { CachedApp } from '../lib/appCache';
+import { publicPath } from '../lib/appUrl';
 
 const launcherStyles = `
   @keyframes softn-launcher-fade-up {
@@ -142,6 +143,25 @@ const launcherStyles = `
   .softn-launcher-empty {
     animation: softn-launcher-fade-up 500ms cubic-bezier(0.16, 1, 0.3, 1) 100ms both;
   }
+  .softn-launcher-section {
+    margin-top: 2.75rem;
+  }
+  .softn-launcher-demo-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  }
+  .softn-launcher-demo-icon span {
+    color: white;
+    font-weight: 700;
+    font-size: 1rem;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
   .softn-launcher-dnd-hint {}
   @media (max-width: 640px) {
     .softn-launcher { padding: 1.25rem; }
@@ -160,7 +180,35 @@ interface LauncherProps {
   apps: CachedApp[];
   onOpenFile: (data: Uint8Array, fileName: string) => void;
   onOpenCached: (app: CachedApp) => void;
+  onOpenUrl: (path: string) => void;
   onRemove: (id: string) => void;
+}
+
+/** One entry of public/demos/index.json — see that file for the full contract. */
+interface DemoEntry {
+  id: string;
+  file: string;
+  name: string;
+  description: string;
+  primary: string;
+  size: number;
+}
+
+function isDemoEntry(value: unknown): value is DemoEntry {
+  const entry = value as Partial<DemoEntry> | null;
+  return (
+    typeof entry === 'object' &&
+    entry !== null &&
+    typeof entry.id === 'string' &&
+    typeof entry.file === 'string' &&
+    typeof entry.name === 'string'
+  );
+}
+
+function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
 }
 
 function formatDate(ts: number): string {
@@ -182,9 +230,28 @@ export function Launcher({
   apps,
   onOpenFile,
   onOpenCached,
+  onOpenUrl,
   onRemove,
 }: LauncherProps): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [demos, setDemos] = useState<DemoEntry[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(publicPath('demos/index.json', import.meta.env.BASE_URL))
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((entries: unknown) => {
+        if (cancelled) return;
+        setDemos(Array.isArray(entries) ? entries.filter(isDemoEntry) : []);
+      })
+      .catch((err) => {
+        // The shelf is a convenience; the launcher still opens files without it.
+        console.warn('[SoftN] Could not load the demo index:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleFileSelect = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -439,6 +506,107 @@ export function Launcher({
               <div style={{ color: '#4a4a56', fontSize: '0.75rem', letterSpacing: '-0.005em' }}>
                 SoftN apps are self-contained bundles with UI, logic, and data.
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Demo shelf — the bundles this site serves out of public/demos */}
+        {demos.length > 0 && (
+          <div className="softn-launcher-section">
+            <div
+              className="softn-launcher-section-label"
+              style={{
+                fontSize: '0.6875rem',
+                fontWeight: 600,
+                color: '#4a4a56',
+                textTransform: 'uppercase',
+                letterSpacing: '0.1em',
+                marginBottom: '1rem',
+              }}
+            >
+              Demos
+            </div>
+            <div className="softn-launcher-grid">
+              {demos.map((demo) => (
+                <div
+                  key={demo.id}
+                  className="softn-launcher-card"
+                  onClick={() => onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL))}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
+                    <div
+                      className="softn-launcher-demo-icon"
+                      style={{
+                        // The bundle's own accent colour, lit from the top left
+                        // the same way the cached-app tiles are.
+                        background: `linear-gradient(135deg, rgba(255, 255, 255, 0.22), rgba(0, 0, 0, 0.18)), ${demo.primary || '#3b82f6'}`,
+                      }}
+                    >
+                      <span>{demo.name.charAt(0).toUpperCase()}</span>
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontWeight: 600,
+                          color: '#ececf0',
+                          fontSize: '0.875rem',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          letterSpacing: '-0.01em',
+                        }}
+                      >
+                        {demo.name}
+                      </div>
+                      <div style={{
+                        fontSize: '0.6875rem',
+                        color: '#4a4a56',
+                        marginTop: '2px',
+                      }}>
+                        {formatSize(demo.size)}
+                      </div>
+                    </div>
+                  </div>
+                  {demo.description && (
+                    <div
+                      style={{
+                        marginTop: '0.875rem',
+                        fontSize: '0.75rem',
+                        color: '#7a7a86',
+                        lineHeight: 1.55,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        letterSpacing: '-0.005em',
+                      }}
+                    >
+                      {demo.description}
+                    </div>
+                  )}
+                  <div
+                    style={{
+                      marginTop: '0.875rem',
+                      fontSize: '0.6875rem',
+                      color: '#3a3a44',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.375rem',
+                    }}
+                  >
+                    <span style={{
+                      width: '4px',
+                      height: '4px',
+                      borderRadius: '50%',
+                      background: demo.primary || '#3b82f6',
+                      opacity: 0.7,
+                      flexShrink: 0,
+                    }} />
+                    Open demo
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}

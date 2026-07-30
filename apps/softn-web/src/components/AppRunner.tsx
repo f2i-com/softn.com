@@ -13,6 +13,8 @@ interface AppRunnerProps {
   preIncludedLogicPaths?: string[];
   permissionConfig?: import('@softn/core').PermissionConfig;
   onPageChange?: (page: string) => void;
+  /** Fires once the document has parsed and the app is on screen rather than its spinner. */
+  onReady?: () => void;
   serverUrl?: string;
   serverToken?: string;
   serverCollections?: string[];
@@ -159,7 +161,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, active, initialPage, permissions, importResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, onPageChange, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ source, appName, active, initialPage, permissions, importResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
   // Build initial state: page from URL + saved sync room from localStorage
   const initialState = useMemo(() => {
     const state: Record<string, unknown> = {};
@@ -233,6 +235,7 @@ export function AppRunner({ source, appName, active, initialPage, permissions, i
             permissionConfig={permissionConfig}
             appId={appName}
             onPageChange={onPageChange}
+            onLoad={onReady}
             serverUrl={serverUrl}
             serverToken={serverToken}
             serverCollections={serverCollections}
