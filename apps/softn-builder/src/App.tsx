@@ -36,6 +36,7 @@ import type { SerializedProject } from './stores/projectStore';
 import { openBundleFile } from './utils/bundleLoader';
 import { exportBundle, exportMultiFileBundle, saveBundleToFile } from './utils/bundleExporter';
 import { ToastContainer } from './components/feedback/ToastContainer';
+import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
 import { debug } from './utils/debug';
 
@@ -1122,6 +1123,7 @@ function App() {
         onCreate={handleCreateNewProject}
       />
       <ToastContainer />
+      <PwaUpdater />
     </div>
   );
 }

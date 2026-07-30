@@ -2,6 +2,7 @@ import React from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { exportAsBundle } from '../../lib/exportBundle';
+import { STUDIO_ICON } from '../../lib/assets';
 
 interface TopBarProps {
   onBackToDashboard?: () => void;
@@ -16,7 +17,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
     <div style={styles.bar}>
       <div style={styles.left}>
         <button onClick={onBackToDashboard} style={styles.homeBtn} title="Back to home">
-          <div style={styles.logo}><img src="/studio-icon.png" alt="SoftN Studio" style={styles.logoImage} /></div>
+          <div style={styles.logo}><img src={STUDIO_ICON} alt="SoftN Studio" style={styles.logoImage} /></div>
           <span>Home</span>
         </button>
         <div style={styles.projectMeta}>

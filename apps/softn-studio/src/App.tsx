@@ -100,6 +100,21 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', check);
   }, []);
 
+  // Each view applies the theme tokens to its own wrapper, so anything mounted
+  // outside App — the install prompt, the dashboard, any future portal —
+  // resolves every var() to the fallback baked into its stylesheet and stops
+  // following the theme. Mirroring the tokens onto the document element makes
+  // them mean the same thing everywhere.
+  useEffect(() => {
+    const root = document.documentElement;
+    const vars = getStudioThemeVars(themePreview) as Record<string, string>;
+    const applied = Object.keys(vars).filter((name) => name.startsWith('--'));
+    for (const name of applied) root.style.setProperty(name, vars[name]);
+    return () => {
+      for (const name of applied) root.style.removeProperty(name);
+    };
+  }, [themePreview]);
+
   const handleNewProject = useCallback(() => {
     const currentTheme = useWorkspaceStore.getState().themePreview;
     useWorkspaceStore.getState().reset();

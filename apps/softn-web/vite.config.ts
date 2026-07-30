@@ -4,6 +4,8 @@ import { VitePWA } from 'vite-plugin-pwa';
 import fs from 'node:fs';
 import path from 'node:path';
 
+const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+
 const coreDistRoot = path.resolve(__dirname, '../../packages/@softn/core/dist');
 
 function copyDirRecursive(srcDir: string, destDir: string) {
@@ -61,13 +63,44 @@ function coreWorkerAssetPlugin() {
 }
 
 export default defineConfig({
+  // Serving from a subpath such as /web/ is a deployment decision, so the base
+  // is an env var rather than a constant.
+  base: env.VITE_BASE || '/',
   plugins: [
     react(),
     coreWorkerAssetPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons/*.png'],
-      manifest: false, // We provide our own manifest.json in public/
+      // Nothing is named here on purpose. Everything in public/ is copied into
+      // dist, and the workbox globs below already sweep dist for png and svg,
+      // so naming the icons again precaches each of them twice — measured, not
+      // assumed: `includeAssets: ['favicon.svg', 'pwa-*.png']` puts four files
+      // in sw.js in duplicate. The list this replaces was `icons/*.png`, which
+      // matched nothing at all, so no icon was ever included by name.
+      includeManifestIcons: false,
+      // Generated rather than a static public/manifest.json so the paths follow
+      // `base`. Every URL in here is relative for the same reason: an installed
+      // copy served from /web/ must not launch itself at the site root.
+      manifest: {
+        name: 'SoftN Web',
+        short_name: 'SoftN',
+        description: 'Run .softn application bundles in the browser',
+        start_url: '.',
+        scope: '.',
+        display: 'standalone',
+        theme_color: '#0c0a09',
+        background_color: '#0c0a09',
+        // PNG, not the SVG this used to name: Chrome on Android accepts an SVG
+        // for neither the install prompt nor a maskable purpose, so a manifest
+        // offering only vectors was promising a maskable icon no launcher could
+        // mask. `npm run generate-icons` draws these from the same mark as
+        // favicon.svg.
+        icons: [
+          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+          { src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        ],
+      },
       workbox: {
         // `wasm` is not optional: the scripting engine is a .wasm, so without
         // it every bundle fails to run offline. It is also larger than
@@ -93,7 +126,7 @@ export default defineConfig({
     }),
   ],
   server: {
-    port: 1420,
+    port: env.VITE_PORT ? Number(env.VITE_PORT) : 1420,
     strictPort: true,
   },
   build: {
