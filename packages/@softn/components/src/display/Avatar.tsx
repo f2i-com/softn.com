@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { isSafeUrl } from '@softn/core';
 
 export interface AvatarProps {
   /** Image source */
@@ -192,7 +193,11 @@ export function Avatar({
 
   const sizeValue = getSizeValue(size);
   const fontSize = typeof size === 'number' ? `${size * 0.4}px` : fontSizes[size];
-  const showInitials = !src || imgError;
+  // A profile picture URL usually arrives with the record it belongs to, so it
+  // is bundle-supplied. Rejecting it here falls back to initials rather than
+  // handing the scheme to the DOM.
+  const imgSrc = src && isSafeUrl(src) ? src : undefined;
+  const showInitials = !imgSrc || imgError;
 
   const borderRadius = shape === 'circle' ? '50%' : shape === 'rounded' ? '0.5rem' : '0.25rem';
 
@@ -337,7 +342,7 @@ export function Avatar({
             )
           ) : (
             <img
-              src={src}
+              src={imgSrc}
               alt={alt ?? name ?? 'Avatar'}
               style={imgStyle}
               onError={() => setImgError(true)}

@@ -9,6 +9,7 @@ import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
+import { parseStringLiteralVariables } from '../../utils/logicStringLiterals';
 import { TokenIcon } from '../icons/TokenIcon';
 import type { CanvasElement as CanvasElementType } from '../../types/builder';
 
@@ -58,39 +59,6 @@ function resolveRelativePath(fromPath: string, relativePath: string): string {
   }
 
   return dir.join('/');
-}
-
-function parseStringLikeVariables(logicSource: string): Record<string, string> {
-  const values: Record<string, string> = {};
-  const lines = logicSource.split(/\r?\n/);
-
-  for (const line of lines) {
-    const m = line.match(/^\s*(?:let|const|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.+?)\s*;?\s*$/);
-    if (!m) continue;
-
-    const varName = m[1];
-    const expr = m[2].trim();
-    if (!expr) continue;
-
-    try {
-      const ctxKeys = Object.keys(values);
-      const ctxVals = ctxKeys.map((k) => values[k]);
-      const fn = new Function(
-        ...ctxKeys,
-        'encodeURIComponent',
-        'decodeURIComponent',
-        `return (${expr});`
-      ) as (...args: unknown[]) => unknown;
-      const result = fn(...ctxVals, encodeURIComponent, decodeURIComponent);
-      if (typeof result === 'string') {
-        values[varName] = result;
-      }
-    } catch {
-      // Skip expressions we can't safely/easily evaluate in design preview.
-    }
-  }
-
-  return values;
 }
 
 const styles: Record<string, React.CSSProperties> = {
@@ -222,7 +190,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
   }, [activeUIFile, logicFiles, projectLogicSource]);
 
   const resolvedLogicStrings = React.useMemo(
-    () => parseStringLikeVariables(linkedLogicSource || ''),
+    () => parseStringLiteralVariables(linkedLogicSource || ''),
     [linkedLogicSource]
   );
 

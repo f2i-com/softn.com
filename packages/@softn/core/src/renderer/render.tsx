@@ -399,8 +399,8 @@ const URL_PROPS = new Set([
 /**
  * Drop unsafe URL props before they reach a raw HTML element.
  *
- * Applied only to intrinsic elements: registered components receive props as
- * ordinary values and decide for themselves what to do with them.
+ * Every name in `URL_PROPS` is safe to judge by name here, because on a raw
+ * element it can only ever mean the URL the browser will fetch.
  */
 function sanitizeUrlProps(props: SoftNProps, tag: string): void {
   for (const name of Object.keys(props)) {
@@ -415,6 +415,113 @@ function sanitizeUrlProps(props: SoftNProps, tag: string): void {
       }
       delete props[name];
     }
+  }
+}
+
+/**
+ * URL prop names scrubbed on registered components too, not just raw elements.
+ *
+ * A registered component is not the boundary the check above assumed it was:
+ * `<Breadcrumb items={[{label, href}]}>` hands the href straight to an `<a>`,
+ * so leaving the guarantee to each of the 86 built-ins holds only for as long
+ * as every one of them remembers. Scrubbing here makes it structural.
+ *
+ * The set is deliberately narrower than `URL_ATTRIBUTES`, because a component
+ * prop is named by whoever wrote the component rather than by HTML. `data` is
+ * the rows a chart plots, `action` is the ReactNode an `<EmptyState>` renders
+ * under its message, and `background` and `cite` read as a colour and a
+ * quotation source — dropping those by name would delete legitimate values.
+ * What is left means a URL and nothing else.
+ */
+const COMPONENT_URL_PROPS = new Set([
+  'href',
+  'src',
+  'srcSet',
+  'srcset',
+  'poster',
+  'formAction',
+  'formaction',
+  'xlinkHref',
+  'xlink:href',
+]);
+
+/**
+ * How far inside a prop value the scrub descends.
+ *
+ * `items={[{href}]}` is already two levels down and a nested menu tree is a few
+ * more, so the walk has to recurse; the cap is what keeps a state object that
+ * refers back to itself from recursing forever.
+ */
+const MAX_SCRUB_DEPTH = 8;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Return `value` with any unsafe URL under a `COMPONENT_URL_PROPS` key removed.
+ *
+ * The same reference comes back when nothing was unsafe, and a copy otherwise:
+ * these arrays and objects are the app's own state, so deleting a key in place
+ * would corrupt the state as well as the render.
+ */
+function scrubUrlsIn(value: unknown, depth: number, blocked: string[]): unknown {
+  if (depth > MAX_SCRUB_DEPTH) return value;
+
+  // Elements arriving as a prop were built by `renderElement`, which already
+  // sanitized them; copying one here would drop the non-enumerable bookkeeping
+  // React puts on it.
+  if (React.isValidElement(value)) return value;
+
+  if (Array.isArray(value)) {
+    let copy: unknown[] | null = null;
+    for (let i = 0; i < value.length; i++) {
+      const next = scrubUrlsIn(value[i], depth + 1, blocked);
+      if (next !== value[i]) {
+        if (!copy) copy = value.slice();
+        copy[i] = next;
+      }
+    }
+    return copy ?? value;
+  }
+
+  if (isPlainObject(value)) {
+    let copy: Record<string, unknown> | null = null;
+    for (const name of Object.keys(value)) {
+      const next = scrubUrlProp(name, value[name], depth + 1, blocked);
+      if (next !== value[name]) {
+        if (!copy) copy = { ...value };
+        copy[name] = next;
+      }
+    }
+    return copy ?? value;
+  }
+
+  return value;
+}
+
+function scrubUrlProp(name: string, value: unknown, depth: number, blocked: string[]): unknown {
+  if (COMPONENT_URL_PROPS.has(name) && typeof value === 'string') {
+    if (isSafeUrl(value)) return value;
+    blocked.push(value);
+    return undefined;
+  }
+  return scrubUrlsIn(value, depth, blocked);
+}
+
+/** Drop unsafe URLs from the props of a registered component. */
+function sanitizeComponentUrlProps(props: SoftNProps, tag: string): void {
+  const blocked: string[] = [];
+
+  for (const name of Object.keys(props)) {
+    const next = scrubUrlProp(name, props[name], 0, blocked);
+    if (next !== props[name]) props[name] = next;
+  }
+
+  if (blocked.length > 0 && isDevelopment) {
+    console.warn(`[SoftN] Blocked unsafe URL in <${tag}>: ${blocked[0].slice(0, 80)}`);
   }
 }
 
@@ -733,11 +840,14 @@ function renderElement(
   // Render non-slot children with parent key for stable keys
   const children = renderNodes(defaultChildren, childContext, registry, String(key));
 
-  // Only intrinsic elements: a string tag means these props go straight to the
-  // DOM, where the browser will act on whatever URL they carry. Registered
-  // components receive props as ordinary values and decide for themselves.
+  // A string tag means these props go straight to the DOM, so every name HTML
+  // treats as a URL can be judged by name. A registered component gets the
+  // narrower, unambiguous set instead, applied through the whole prop value
+  // rather than only its top level.
   if (typeof FinalComponent === 'string') {
     sanitizeUrlProps(props, node.tag);
+  } else {
+    sanitizeComponentUrlProps(props, node.tag);
   }
 
   // Void elements take no children, and React throws rather than ignoring the

@@ -5,6 +5,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { isSafeUrl } from '@softn/core';
 
 export type ModelFormat = 'gltf' | 'obj' | 'fbx' | 'stl';
 
@@ -122,6 +123,12 @@ function detectModelFormat(url: string): ModelFormat {
 
 // Load a 3D model from URL, returns the root Object3D
 function loadModel(url: string, format?: ModelFormat): Promise<THREE.Object3D> {
+  // A scene names its own models, so this URL is bundle-supplied and gets the
+  // same scheme check as every other source a bundle points at. The caller
+  // already catches, and leaves the placeholder group in the scene.
+  if (!isSafeUrl(url)) {
+    return Promise.reject(new Error(`Unsafe model URL: ${url}`));
+  }
   const fmt = format || detectModelFormat(url);
   return new Promise((resolve, reject) => {
     switch (fmt) {

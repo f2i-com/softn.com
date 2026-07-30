@@ -12,13 +12,32 @@
  * pinning down regardless.
  */
 
-import { describe, it, expect } from 'vitest';
-import { parse } from '../src/parser';
+import { describe, it, expect, vi } from 'vitest';
+import { parse, Lexer, tokenize, TokenType, createToken, SoftNParseError } from '../src/parser';
+import type { Token } from '../src/parser';
 
 /** Messages the parser attached, as plain strings. */
 function diagnostics(source: string): string[] {
   const doc = parse(source) as unknown as { diagnostics?: { message: string }[] };
   return (doc.diagnostics ?? []).map((d) => d.message);
+}
+
+/**
+ * Token types the lexer emits, giving up after `cap` calls.
+ *
+ * A lexer that never reaches EOF is the failure under test, so this has to
+ * count calls itself: `tokenize()` would either throw on its own backstop or,
+ * before that existed, take the process down with it.
+ */
+function drainTokenTypes(source: string, cap = 64): TokenType[] {
+  const lexer = new Lexer(source);
+  const types: TokenType[] = [];
+  for (let i = 0; i < cap; i++) {
+    const token = lexer.nextToken();
+    types.push(token.type);
+    if (token.type === TokenType.EOF) break;
+  }
+  return types;
 }
 
 describe('parser termination', () => {
@@ -34,6 +53,22 @@ describe('parser termination', () => {
     expect(diagnostics('<div title={`a${n}`}/>')).toEqual([]);
     expect(diagnostics('<div>{`${a} and ${b}`}</div>')).toEqual([]);
     expect(diagnostics('<div>{`${ {k:1}.k }`}</div>')).toEqual([]);
+  });
+
+  it('reaches EOF on a template literal that is never closed', () => {
+    // At end of input `readTemplateContent` returned its last chunk but left
+    // template mode set, and `nextToken` dispatches on that flag before it
+    // checks for EOF — so every later call returned another empty
+    // TEMPLATE_STRING and `tokenize()` grew its array until the heap was gone.
+    // An out-of-memory abort is not an exception, so no caller could catch it.
+    expect(drainTokenTypes('<Text>{`abc}</Text>')).toContain(TokenType.EOF);
+    expect(diagnostics('<Text>{`abc}</Text>')).toEqual(['Unterminated template literal']);
+  });
+
+  it('reaches EOF on an unclosed literal cut off inside an interpolation', () => {
+    expect(drainTokenTypes('<Text>{`a${b}c</Text>')).toContain(TokenType.EOF);
+    expect(drainTokenTypes('<Text>{`a${b</Text>')).toContain(TokenType.EOF);
+    expect(diagnostics('<Text>{`a${b}c</Text>')).toContain('Unterminated template literal');
   });
 
   it('reports, rather than hangs on, an argument it cannot parse', () => {
@@ -61,6 +96,46 @@ describe('parser termination', () => {
     expect(diagnostics('<div>{items.map((x) => x.name)}</div>')).toEqual([]);
     expect(diagnostics('<div>{fmt(a, b, c)}</div>')).toEqual([]);
     expect(diagnostics('<import { Card } from "./x.ui" />')).toEqual([]);
+  });
+});
+
+describe('stuck-lexer backstop', () => {
+  // The stall is simulated one level below the guard, on the private reader
+  // nextToken() wraps. Mocking nextToken itself would replace the guard rather
+  // than exercise it, and the test would then be the unbounded loop it exists
+  // to prove impossible — it took the whole vitest worker down with an
+  // out-of-memory abort, losing every other result in this file.
+  const stall = () =>
+    vi.spyOn(Lexer.prototype as unknown as { readNextToken(): Token }, 'readNextToken')
+      .mockReturnValue(createToken(TokenType.TEMPLATE_STRING, '', 1, 3, 3, 3));
+
+  it('throws out of tokenize instead of growing the array', () => {
+    const spy = stall();
+    try {
+      expect(() => tokenize('<p>')).toThrow(SoftNParseError);
+      expect(() => tokenize('<p>')).toThrow(/made no progress at offset 3/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('throws out of the parser too, which is the path a bundle takes', () => {
+    // `tokenize` has no callers outside these tests; a .softn reaches the lexer
+    // through the parser, so that is the loop that has to be protected.
+    const spy = stall();
+    try {
+      expect(() => parse('<p>')).toThrow(/made no progress at offset 3/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('leaves the empty tokens a valid document produces alone', () => {
+    // An empty script, logic or style block legitimately yields a zero-length
+    // content token; only one that also fails to advance is stuck.
+    expect(() => tokenize('<script></script>')).not.toThrow();
+    expect(() => tokenize('<style></style>')).not.toThrow();
+    expect(() => tokenize('<div>{``}</div>')).not.toThrow();
   });
 });
 

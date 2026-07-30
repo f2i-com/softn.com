@@ -1713,6 +1713,8 @@ export class Parser {
 
     if (this.curTokenIs(TokenType.BACKTICK)) {
       this.nextToken();
+    } else {
+      this.addDiagnostic(new SoftNParseError('Unterminated template literal', loc, this.source));
     }
 
     if (quasis.length <= expressions.length) {

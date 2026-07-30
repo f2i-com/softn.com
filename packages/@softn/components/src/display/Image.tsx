@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { isSafeUrl } from '@softn/core';
 
 export interface ImageProps {
   /** Image source URL */
@@ -61,17 +62,24 @@ export function Image({
   className,
   style,
 }: ImageProps): React.ReactElement {
+  // Both sources are bundle-supplied — usually read out of the record being
+  // displayed — so neither can be handed to the DOM unchecked. A rejected URL
+  // becomes undefined and renders the same "Failed to load" panel a broken
+  // image does.
+  const safeSrc = src && isSafeUrl(src) ? src : undefined;
+  const safeFallbackSrc = fallbackSrc && isSafeUrl(fallbackSrc) ? fallbackSrc : undefined;
+
   // Data URLs and SVGs load synchronously — skip loading state entirely
-  const isInstantSrc = (s: string) => s?.startsWith('data:') || s?.endsWith('.svg');
-  const [isLoading, setIsLoading] = React.useState(() => !isInstantSrc(src));
+  const isInstantSrc = (s: string | undefined) => s?.startsWith('data:') || s?.endsWith('.svg');
+  const [isLoading, setIsLoading] = React.useState(() => !isInstantSrc(safeSrc));
   const [hasError, setHasError] = React.useState(false);
-  const [currentSrc, setCurrentSrc] = React.useState(src);
+  const [currentSrc, setCurrentSrc] = React.useState(safeSrc);
 
   React.useEffect(() => {
-    setCurrentSrc(src);
-    setIsLoading(!isInstantSrc(src));
+    setCurrentSrc(safeSrc);
+    setIsLoading(!isInstantSrc(safeSrc));
     setHasError(false);
-  }, [src]);
+  }, [safeSrc]);
 
   const radius = radiusValues[borderRadius] ?? borderRadius;
 
@@ -104,8 +112,8 @@ export function Image({
   const handleError = () => {
     setIsLoading(false);
     setHasError(true);
-    if (fallbackSrc && currentSrc !== fallbackSrc) {
-      setCurrentSrc(fallbackSrc);
+    if (safeFallbackSrc && currentSrc !== safeFallbackSrc) {
+      setCurrentSrc(safeFallbackSrc);
       setIsLoading(true);
       setHasError(false);
     }
@@ -123,7 +131,7 @@ export function Image({
 
   return (
     <div className={className} style={containerStyle} onClick={onClick}>
-      {hasError && !fallbackSrc ? (
+      {!currentSrc || (hasError && !safeFallbackSrc) ? (
         <div style={errorStyle}>
           <svg
             width="24"
