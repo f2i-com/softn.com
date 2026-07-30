@@ -76,12 +76,11 @@ softn.com/
 git clone https://github.com/f2i-com/softn.com.git
 cd softn.com
 
-# Install dependencies
-npm install
+# Install exactly the versions package-lock.json pins
+npm ci
 
-# Build the packages the apps import (core must build before apps)
-npm run build:core
-npm run build:components
+# Build the packages the apps import, in dependency order
+npm run build:packages
 
 # Start the landing page, the runtime, the builder and the studio together
 npm run dev
@@ -367,9 +366,13 @@ dist/studio/     AI studio
 ### Setup
 
 ```bash
-npm install
-npm run build      # Build all packages
+npm ci
+npm run build      # packages in dependency order, then every app
 ```
+
+`npm run clean` removes build output and stale Vite caches. To remove `node_modules`
+as well, use `npm run clean -- --deps` — the bare `--` is what stops npm from eating
+the flag before the script sees it.
 
 ### Running Apps
 

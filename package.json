@@ -9,11 +9,12 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build:packages && npm run build:apps",
+    "build:packages": "npm run build -w @softn/core && npm run build -w @softn/components && npm run build -w @softn/vite-plugin",
+    "build:apps": "npm run build --workspace=apps --if-present",
     "build:core": "npm run build -w @softn/core",
     "build:components": "npm run build -w @softn/components",
     "build:site": "node scripts/build-site.mjs",
-
     "dev": "node scripts/dev-all.mjs",
     "dev:site": "npm run dev -w @softn/site",
     "dev:web": "npm run dev -w @softn/web",
@@ -28,9 +29,10 @@
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf node_modules packages/**/node_modules apps/**/node_modules packages/**/dist apps/**/dist"
+    "clean": "node scripts/clean.mjs"
   },
   "devDependencies": {
+    "@napi-rs/canvas": "^0.1.88",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^8.57.0",

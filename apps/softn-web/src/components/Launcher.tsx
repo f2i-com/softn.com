@@ -103,6 +103,12 @@ const launcherStyles = `
       0 0 0 1px rgba(59, 130, 246, 0.08),
       0 0 30px -10px rgba(59, 130, 246, 0.12);
   }
+  /* A focusable div has no focus ring of its own, so a keyboard user would be
+     moving through the cards with nothing on screen saying where they are. */
+  .softn-launcher-card:focus-visible {
+    outline: 2px solid #60a5fa;
+    outline-offset: 3px;
+  }
   .softn-launcher-card:active {
     transform: translateY(-1px) scale(0.99);
   }
@@ -238,6 +244,27 @@ function formatDate(ts: number): string {
   return d.toLocaleDateString();
 }
 
+/**
+ * Enter and Space on a `role="button"` element.
+ *
+ * The launcher's cards were plain divs with an onClick, so every app and every
+ * demo on the runtime's front screen could only be opened with a mouse — the
+ * browser gives keyboard activation to real buttons, and to nothing else. They
+ * cannot simply become buttons: a cached app's card contains its own Remove
+ * button, and a button inside a button is not valid HTML.
+ *
+ * The target check matters. Without it, pressing Space on the nested Remove
+ * button would delete the app and open it in the same keystroke.
+ */
+function activateOnKey(run: () => void) {
+  return (event: React.KeyboardEvent) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    run();
+  };
+}
+
 export function Launcher({
   apps,
   onOpenFile,
@@ -355,7 +382,11 @@ export function Launcher({
                 <div
                   key={app.id}
                   className="softn-launcher-card"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open ${app.name}`}
                   onClick={() => onOpenCached(app)}
+                  onKeyDown={activateOnKey(() => onOpenCached(app))}
                 >
                   {/* Remove button */}
                   <button
@@ -543,7 +574,13 @@ export function Launcher({
                 <div
                   key={demo.id}
                   className="softn-launcher-card"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open the ${demo.name} demo`}
                   onClick={() => onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL))}
+                  onKeyDown={activateOnKey(() =>
+                    onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL)),
+                  )}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
                     <div

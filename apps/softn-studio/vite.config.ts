@@ -25,8 +25,12 @@ export default defineConfig({
         description: 'Design and generate SoftN applications in the browser',
         display: 'standalone',
         orientation: 'any',
-        theme_color: '#09090b',
-        background_color: '#09090b',
+        // The ground the app actually paints (--studio-bg), and the same value
+        // index.html declares. These used to say #09090b, left over from the
+        // palette Studio had before it took softn.com's, so an installed Studio
+        // flashed one near-black on the splash and then repainted in another.
+        theme_color: '#101317',
+        background_color: '#101317',
         // Relative, so the manifest stays correct when the app is served from
         // a subpath such as /studio/ rather than a domain root.
         start_url: '.',

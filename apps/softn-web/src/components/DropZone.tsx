@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 
 interface DropZoneProps {
   onFile: (data: Uint8Array, fileName: string) => void;
@@ -66,10 +66,19 @@ const dropZoneStyles = `
  */
 export function DropZone({ onFile, children }: DropZoneProps): React.ReactElement {
   const [isDragOver, setIsDragOver] = useState(false);
+  // dragenter and dragleave fire as a pair for every element the pointer crosses,
+  // so moving over a child fires leave-then-enter and a naive boolean flickers.
+  // The previous guard — only clear when target === currentTarget — traded that
+  // flicker for a worse bug: dragging out of the window last fires leave on
+  // whatever child the pointer was over, so the condition is false, and the
+  // full-page overlay stays up over the whole app until something else clears
+  // it. Counting enters against leaves is what actually tracks "inside".
+  const depth = useRef(0);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    depth.current += 1;
     setIsDragOver(true);
   }, []);
 
@@ -81,15 +90,15 @@ export function DropZone({ onFile, children }: DropZoneProps): React.ReactElemen
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.currentTarget === e.target) {
-      setIsDragOver(false);
-    }
+    depth.current = Math.max(0, depth.current - 1);
+    if (depth.current === 0) setIsDragOver(false);
   }, []);
 
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      depth.current = 0;
       setIsDragOver(false);
 
       const files = Array.from(e.dataTransfer.files);
