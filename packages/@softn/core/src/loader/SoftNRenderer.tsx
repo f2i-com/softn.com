@@ -1381,7 +1381,7 @@ export function useDataBlock(document: SoftNDocument | null, appId?: string): {
       // signature stays short for a large collection.
       let hash = 0x811c9dc5;
       for (const record of records) {
-        const field = `${record.id} ${record.updated_at || ''}`;
+        const field = `${record.id}\u0000${record.updated_at || ''}\u0001`;
         for (let i = 0; i < field.length; i++) {
           hash ^= field.charCodeAt(i);
           hash = Math.imul(hash, 0x01000193);

@@ -1,8 +1,8 @@
 import React from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
+import { Mark } from '../common/Mark';
 import { exportAsBundle } from '../../lib/exportBundle';
-import { STUDIO_ICON } from '../../lib/assets';
 
 interface TopBarProps {
   onBackToDashboard?: () => void;
@@ -17,7 +17,9 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
     <div style={styles.bar}>
       <div style={styles.left}>
         <button onClick={onBackToDashboard} style={styles.homeBtn} title="Back to home">
-          <div style={styles.logo}><img src={STUDIO_ICON} alt="SoftN Studio" style={styles.logoImage} /></div>
+          {/* The mark keeps its size when the bar gets tight; a bare <svg> in a
+              flex row is shrinkable and squashes before the label wraps. */}
+          <span style={styles.logo}><Mark size={26} radius={8} /></span>
           <span>Home</span>
         </button>
         <div style={styles.projectMeta}>
@@ -91,17 +93,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
   },
   logo: {
-    width: 26,
-    height: 26,
-    borderRadius: 8,
-    overflow: 'hidden',
+    display: 'flex',
     flexShrink: 0,
-  },
-  logoImage: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover' as const,
-    display: 'block',
   },
   projectMeta: {
     display: 'flex',

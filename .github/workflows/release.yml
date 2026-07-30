@@ -136,14 +136,10 @@ jobs:
           cp wasm-dist/* packages/@softn/core/wasm/
 
       - name: Install dependencies
-        run: |
-          rm -f package-lock.json
-          npm install --legacy-peer-deps
+        run: npm ci
 
       - name: Build shared packages
-        run: |
-          npm run build:core
-          npm run build:components
+        run: npm run build:packages
 
       - name: Build Tauri app and attach to release
         uses: tauri-apps/tauri-action@v0

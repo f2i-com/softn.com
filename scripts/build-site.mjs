@@ -86,6 +86,37 @@ const demos = path.join(root, 'apps/softn-web/public/demos');
 requireDir(demos, 'The runtime');
 copyDir(demos, path.join(outDir, 'demos'));
 
+// Apache-2.0 section 4(a) says a distributed copy must carry the licence, and
+// dist/ IS the distributed copy — uploading it is the act of distributing. The
+// site additionally redistributes the font binaries it bundles, which are under
+// the SIL Open Font License, so their text has to travel too.
+function copyLicences() {
+  for (const name of ['LICENSE', 'NOTICE']) {
+    fs.copyFileSync(path.join(root, name), path.join(outDir, name));
+  }
+
+  // Read the font list off the site's own dependencies rather than repeating it,
+  // so adding or dropping a family cannot leave this file lying.
+  const sitePkg = JSON.parse(fs.readFileSync(path.join(root, 'apps/softn-site/package.json'), 'utf8'));
+  const fonts = Object.keys(sitePkg.dependencies || {}).filter((d) => d.startsWith('@fontsource')).sort();
+
+  const sections = [];
+  for (const font of fonts) {
+    const licence = path.join(root, 'node_modules', font, 'LICENSE');
+    if (!fs.existsSync(licence)) throw new Error(`${font} ships no LICENSE; cannot state its terms`);
+    sections.push(`${'='.repeat(72)}\n${font}\n${'='.repeat(72)}\n\n${fs.readFileSync(licence, 'utf8').trim()}\n`);
+  }
+
+  fs.writeFileSync(
+    path.join(outDir, 'THIRD-PARTY-NOTICES.txt'),
+    `This site bundles the font families below. Their licences follow in full.\n` +
+      `Everything else here is part of SoftN and is covered by ./LICENSE.\n\n` +
+      sections.join('\n'),
+  );
+
+  return fonts.length;
+}
+
 function countFiles(dir) {
   let n = 0;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -95,7 +126,10 @@ function countFiles(dir) {
   return n;
 }
 
+const fontCount = copyLicences();
+
 console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
 console.log('  dist/           landing page');
 console.log('  dist/demos/     .softn bundles');
+console.log(`  dist/LICENSE, NOTICE, THIRD-PARTY-NOTICES.txt (${fontCount} font licences)`);
 for (const app of APPS) console.log(`  dist/${app.into}/`.padEnd(18) + app.workspace);

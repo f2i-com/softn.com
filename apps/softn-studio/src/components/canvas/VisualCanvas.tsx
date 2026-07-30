@@ -537,7 +537,14 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
           key={refreshKey}
           src={blobUrl}
           style={styles.iframe}
-          sandbox="allow-scripts allow-same-origin"
+          // allow-scripts WITHOUT allow-same-origin. Together the two cancel the
+          // sandbox out: the blob inherits this origin, so previewed HTML could
+          // read localStorage — where the model API key is kept — and reach back
+          // into the parent document. The HTML being previewed is a model's
+          // output or an imported bundle, so it is not ours to trust. Dropping
+          // the flag costs nothing: the blob still loads and its scripts still
+          // run, they just get an opaque origin and a SecurityError on storage.
+          sandbox="allow-scripts"
           title="App Preview"
         />
       );

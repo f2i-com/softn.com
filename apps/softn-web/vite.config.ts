@@ -109,7 +109,17 @@ export default defineConfig({
         // The ONNX runtime binaries are ~25 MB each and back optional AI
         // features. Precaching them would make first load pay for capabilities
         // most bundles never touch; they are fetched on demand instead.
-        globIgnores: ['**/ort-*.wasm'],
+        //
+        // assets/core-runtime/ is a whole copy of @softn/core's dist, put there
+        // by coreWorkerAssetPlugin above so the off-main-thread script runtime
+        // can reach its worker. That runtime is currently parked — its only
+        // import is commented out in core's SoftNRenderer — so nothing fetches
+        // any of it, yet globbing swept 23 files and 5.68 MiB into the precache,
+        // over half of every visitor's first load, including a second copy of
+        // both WASM engines. The copy stays so re-enabling the worker works in
+        // dev and production alike; precaching a directory the app never
+        // references does not.
+        globIgnores: ['**/ort-*.wasm', '**/core-runtime/**'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
           {

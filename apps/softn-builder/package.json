@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "check:components": "node ./scripts/check-component-registry.mjs",
-    "generate-icons": "node scripts/generate-icons.cjs",
+    "generate-icons": "node ../../scripts/generate-icons.mjs --ground #0c0a09",
     "build": "npm run check:components && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
@@ -27,7 +27,6 @@
     "zustand": "^4.5.0"
   },
   "devDependencies": {
-    "@napi-rs/canvas": "^0.1.88",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/cli": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",

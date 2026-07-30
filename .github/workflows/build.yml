@@ -28,15 +28,20 @@ jobs:
         with:
           node-version: 20
 
+      # `npm ci` installs exactly what package-lock.json pins and fails loudly if
+      # the lockfile has drifted, which is the whole point of running it in CI.
+      # It replaces `npm install --legacy-peer-deps`: the peer conflicts that
+      # flag existed for are resolved, and installing without the lockfile meant
+      # CI silently tested a different dependency set than anyone else runs.
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
+        run: npm ci
 
       # The scripting engine is committed at packages/@softn/core/wasm-zipp/,
       # so there is nothing to compile first and no Rust toolchain needed.
+      # build:packages builds core, then components, then vite-plugin — in that
+      # order, because each needs the one before it to have emitted its types.
       - name: Build packages
-        run: |
-          npm run build:core
-          npm run build:components
+        run: npm run build:packages
 
       - name: Typecheck
         run: npm run typecheck
@@ -61,15 +66,12 @@ jobs:
           node-version: 20
 
       - name: Install dependencies
-        run: |
-          rm -f package-lock.json
-          npm install --legacy-peer-deps
+        run: npm ci
 
       - name: Build packages
         run: |
-          npm run build:core
-          npm run build:components
-          npm run build -w apps/softn-web
+          npm run build:packages
+          npm run build -w @softn/web
 
       - name: Upload web build
         uses: actions/upload-artifact@v4
@@ -135,14 +137,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Install dependencies
-        run: |
-          rm -f package-lock.json
-          npm install --legacy-peer-deps
+        run: npm ci
 
       - name: Build shared packages
-        run: |
-          npm run build:core
-          npm run build:components
+        run: npm run build:packages
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0

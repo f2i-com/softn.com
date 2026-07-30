@@ -3,15 +3,28 @@
   "version": "0.1.0",
   "description": "SoftN Built-in Component Library",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/f2i-com/softn.com.git",
+    "directory": "packages/@softn/components"
+  },
+  "homepage": "https://softn.com",
+  "bugs": "https://github.com/f2i-com/softn.com/issues",
   "type": "module",
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE"
+  ],
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "tsup",
@@ -21,7 +34,7 @@
   },
   "dependencies": {
     "@rc-component/qrcode": "^1.1.1",
-    "@softn/core": "*",
+    "@softn/core": "^0.1.0",
     "@yudiel/react-qr-scanner": "^2.5.1",
     "three": "^0.170.0"
   },

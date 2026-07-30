@@ -11,17 +11,17 @@ import { apply, readChoice, resolve, store, watchSystem, type Theme, type ThemeC
  * follows the OS live, including while it is open.
  */
 export function ThemeToggle(): React.ReactElement {
-  const [choice, setChoice] = useState<ThemeChoice>('system');
-  const [theme, setTheme] = useState<Theme>('dark');
-
-  // The inline script in index.html already picked the theme before paint; this
-  // reads back what it decided rather than deciding again, so the button never
-  // disagrees with the page it is sitting on.
-  useEffect(() => {
-    const stored = readChoice();
-    setChoice(stored);
-    setTheme(resolve(stored));
-  }, []);
+  // Read on the FIRST render, not in an effect. Seeding these with 'system' and
+  // 'dark' and correcting afterwards meant a light-mode reader got one frame of
+  // the dark-mode button — a sun and "Switch to light mode" on an already-light
+  // page — which is precisely the disagreement the comment below promises never
+  // happens. `data-theme` is what the pre-paint script in index.html decided, so
+  // taking it as the seed makes the button agree with the page by construction.
+  const [choice, setChoice] = useState<ThemeChoice>(readChoice);
+  const [theme, setTheme] = useState<Theme>(() => {
+    const painted = document.documentElement.getAttribute('data-theme');
+    return painted === 'light' || painted === 'dark' ? painted : resolve(readChoice());
+  });
 
   useEffect(() => {
     if (choice !== 'system') return;

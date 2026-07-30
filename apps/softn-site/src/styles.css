@@ -1218,6 +1218,13 @@ button {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+    /* Delay too, not just duration. The hero staggers its entrance with inline
+       animation-delay (180ms, 250ms, 330ms...), and zeroing only the duration
+       leaves those intact: each piece still waits its turn and then snaps in, so
+       the page assembles itself in five steps for the reader who asked for
+       exactly none of that. */
+    animation-delay: 0.001ms !important;
+    transition-delay: 0.001ms !important;
   }
 
   .reveal {
