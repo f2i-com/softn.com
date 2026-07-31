@@ -316,6 +316,34 @@ All CRUD operations are **synchronous** (XDB caches everything in memory).
 
 ---
 
+## Audio
+
+`softn.audio` plays sound from a `.logic` script. Paths are resolved inside the
+bundle, the same way `asset()` resolves them for a template.
+
+```javascript
+softn.audio.play("assets/pickup.wav")
+softn.audio.play("assets/theme.mp3", { volume: 0.4, loop: true }, function (r) {
+  themeHandle = r.handle
+})
+softn.audio.setVolume(0.5)      // scales what is playing now, and what comes next
+softn.audio.stop(themeHandle)
+softn.audio.stopAll()
+```
+
+No capability is declared for it: a template can already write
+`<audio src={asset("…")} autoPlay />` with none, so gating the API and not the
+tag would inconvenience the tidier route and secure nothing. Sound reads
+nothing and sends nothing, and everything an app started stops when it closes.
+
+Browsers refuse to make noise before the user has interacted with the page. A
+one-shot that lands in that window reports `{ played: false, blocked: true }`
+rather than throwing — playing it later would be a sound effect at the wrong
+moment. Anything `loop`ing is treated as a soundtrack and starts on the first
+click or keystroke instead.
+
+---
+
 ## Applications
 
 | App | Description |

@@ -89,7 +89,15 @@ function isOptionGroup(option: SelectOption | SelectOptionGroup): option is Sele
 
 /** A bare string is a perfectly reasonable option, and is what SmartForm already accepts. */
 function normaliseOption(option: SelectOption | SelectOptionGroup | string | number): SelectOption | SelectOptionGroup {
-  if (typeof option === 'object' && option !== null) return option;
+  if (typeof option === 'object' && option !== null) {
+    // A group's members can be bare strings too, and only the outer array was
+    // ever being normalised.
+    if (isOptionGroup(option)) {
+      const members = Array.isArray(option.options) ? option.options : [];
+      return { ...option, options: members.map((o) => normaliseOption(o) as SelectOption) };
+    }
+    return option;
+  }
   return { value: String(option), label: String(option) };
 }
 
@@ -152,15 +160,27 @@ export function Select({
   const config = sizeConfig[size];
 
   // Get all flat options for filtering
-  const allOptions = useMemo(() => flattenOptions(options), [options]);
+  // Normalised once, here, and used by everything below.
+  //
+  // The list that gets rendered used to be the caller's array untouched, while
+  // only the lookup list was normalised. With `options={["quiet", "standard"]}`
+  // — the shape SmartForm accepts and the obvious thing to write — the trigger
+  // showed the right label while the menu below it rendered a row per option
+  // with `opt.label` of undefined in it: a dropdown of blank lines, which reads
+  // as text that has come out the same colour as the background.
+  const normalisedOptions = useMemo(
+    () => (Array.isArray(options) ? options.map(normaliseOption) : []),
+    [options]
+  );
+
+  const allOptions = useMemo(() => flattenOptions(normalisedOptions), [normalisedOptions]);
 
   // Filter options based on search query
   const filteredOptions = useMemo(() => {
-    if (!Array.isArray(options)) return [];
-    if (!searchQuery) return options;
+    if (!searchQuery) return normalisedOptions;
 
     const query = searchQuery.toLowerCase();
-    return options
+    return normalisedOptions
       .map((opt) => {
         if (isOptionGroup(opt)) {
           const filtered = opt.options.filter(
@@ -173,7 +193,7 @@ export function Select({
           : null;
       })
       .filter((opt): opt is SelectOption | SelectOptionGroup => opt !== null);
-  }, [options, searchQuery]);
+  }, [normalisedOptions, searchQuery]);
 
   const flatFilteredOptions = useMemo(() => flattenOptions(filteredOptions), [filteredOptions]);
 
@@ -333,7 +353,7 @@ export function Select({
     fontSize: config.fontSize,
     border: `1px solid ${hasError ? 'var(--color-error-500, #ef4444)' : isOpen ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border, rgba(255, 255, 255, 0.08))'}`,
     borderRadius: 'var(--radius-lg, 0.5rem)',
-    backgroundColor: disabled ? 'var(--color-gray-800, #1e1e23)' : 'var(--color-surface, #16161a)',
+    backgroundColor: disabled ? 'var(--color-surface-hover, #1e1e23)' : 'var(--color-surface, #16161a)',
     color: selectedLabels ? 'var(--color-text, #ececf0)' : 'var(--color-text-muted, #a1a1aa)',
     cursor: disabled ? 'not-allowed' : 'pointer',
     outline: 'none',
@@ -375,7 +395,7 @@ export function Select({
     border: 'none',
     borderBottom: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
     outline: 'none',
-    backgroundColor: 'var(--color-gray-800, #1e1e23)',
+    backgroundColor: 'var(--color-surface-hover, #1e1e23)',
     color: 'var(--color-text, #ececf0)',
   };
 
@@ -397,16 +417,20 @@ export function Select({
     fontSize: config.fontSize,
     borderRadius: 'var(--radius-md, 0.375rem)',
     cursor: isDisabled ? 'not-allowed' : 'pointer',
+    // The tint, not the solid. `--color-primary-500` is a full-strength indigo
+    // in both themes, and it was carrying `--color-primary-400` text — a
+    // lighter shade of the same hue on top of it. The selected row was the one
+    // row you could not read. `--color-primary-100` is the tint meant for
+    // this, and the label keeps the ordinary text colour so it stays legible
+    // whichever way the theme goes.
     backgroundColor: isSelected
-      ? 'var(--color-primary-500, rgba(99, 102, 241, 0.15))'
+      ? 'var(--color-primary-100, rgba(99, 102, 241, 0.14))'
       : isHighlighted
-        ? 'var(--color-gray-800, #1e1e23)'
+        ? 'var(--color-surface-hover, #1e1e23)'
         : 'transparent',
     color: isDisabled
       ? 'var(--color-text-muted, #a1a1aa)'
-      : isSelected
-        ? 'var(--color-primary-400, #818cf8)'
-        : 'var(--color-text, #ececf0)',
+      : 'var(--color-text, #ececf0)',
     fontWeight: isSelected ? 600 : 400,
     opacity: isDisabled ? 0.5 : 1,
     transition: 'all 120ms cubic-bezier(0.16, 1, 0.3, 1)',
@@ -422,7 +446,7 @@ export function Select({
     padding: '0.5rem 0.75rem 0.25rem',
     fontSize: '0.75rem',
     fontWeight: 600,
-    color: 'var(--color-gray-500, #6b7280)',
+    color: 'var(--color-text-muted, #8b8b96)',
     textTransform: 'uppercase',
     letterSpacing: '0.05em',
   };
@@ -492,14 +516,14 @@ export function Select({
                 style={{
                   padding: '1rem',
                   textAlign: 'center',
-                  color: 'var(--color-gray-500, #6b7280)',
+                  color: 'var(--color-text-muted, #8b8b96)',
                 }}
               >
                 Loading...
               </div>
             ) : flatFilteredOptions.length === 0 ? (
               <div style={{ padding: '1rem' }}>
-                <div style={{ textAlign: 'center', color: 'var(--color-gray-500, #6b7280)' }}>
+                <div style={{ textAlign: 'center', color: 'var(--color-text-muted, #8b8b96)' }}>
                   {noOptionsText}
                 </div>
                 {onCreate && searchQuery.trim() && (
@@ -547,7 +571,7 @@ export function Select({
                                   width: 16,
                                   height: 16,
                                   borderRadius: 3,
-                                  border: `2px solid ${isSelected ? 'var(--color-primary-500, #6366f1)' : 'var(--color-gray-300, #d1d5db)'}`,
+                                  border: `2px solid ${isSelected ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border-hover, rgba(255, 255, 255, 0.14))'}`,
                                   backgroundColor: isSelected
                                     ? 'var(--color-primary-500, #6366f1)'
                                     : 'transparent',
@@ -577,7 +601,7 @@ export function Select({
                                   style={{
                                     display: 'block',
                                     fontSize: '0.75rem',
-                                    color: 'var(--color-gray-500, #6b7280)',
+                                    color: 'var(--color-text-muted, #8b8b96)',
                                   }}
                                 >
                                   {option.description}
@@ -619,7 +643,7 @@ export function Select({
                           width: 16,
                           height: 16,
                           borderRadius: 3,
-                          border: `2px solid ${isSelected ? 'var(--color-primary-500, #6366f1)' : 'var(--color-gray-300, #d1d5db)'}`,
+                          border: `2px solid ${isSelected ? 'var(--color-primary-500, #6366f1)' : 'var(--color-border-hover, rgba(255, 255, 255, 0.14))'}`,
                           backgroundColor: isSelected
                             ? 'var(--color-primary-500, #6366f1)'
                             : 'transparent',
@@ -649,7 +673,7 @@ export function Select({
                           style={{
                             display: 'block',
                             fontSize: '0.75rem',
-                            color: 'var(--color-gray-500, #6b7280)',
+                            color: 'var(--color-text-muted, #8b8b96)',
                           }}
                         >
                           {opt.description}
@@ -729,7 +753,7 @@ export function Select({
                   padding: 0,
                   border: 'none',
                   background: 'none',
-                  color: 'var(--color-gray-400, #9ca3af)',
+                  color: 'var(--color-text-muted, #8b8b96)',
                   cursor: 'pointer',
                   pointerEvents: 'auto',
                 }}
@@ -751,7 +775,7 @@ export function Select({
               height={config.iconSize}
               viewBox="0 0 16 16"
               fill="none"
-              stroke="var(--color-gray-400, #9ca3af)"
+              stroke="var(--color-text-muted, #8b8b96)"
               strokeWidth="2"
               strokeLinecap="round"
               style={{

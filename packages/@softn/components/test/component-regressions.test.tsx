@@ -34,6 +34,20 @@ afterEach(() => {
 const mount = (node: React.ReactElement) => act(() => root.render(node));
 
 describe('Select given a plain list of strings', () => {
+  it('shows the options in the menu, not a column of blank rows', () => {
+    // Only the lookup list was normalised; the list that got rendered was the
+    // caller's array untouched. So the trigger showed the right label while
+    // every row in the menu rendered `opt.label` of undefined — blank lines,
+    // which look exactly like text the same colour as the background.
+    mount(<Select options={['quiet', 'standard', 'storm'] as never} defaultValue="standard" />);
+    const trigger = container.querySelector('[role=combobox]') ?? container.firstElementChild;
+    act(() => { (trigger as HTMLElement).click(); });
+
+    const text = container.textContent ?? '';
+    expect(text).toContain('quiet');
+    expect(text).toContain('storm');
+  });
+
   it('renders instead of throwing', () => {
     // `'options' in option` throws a TypeError on a primitive, and it ran inside
     // a useMemo on the render path — so this did not degrade, it replaced the

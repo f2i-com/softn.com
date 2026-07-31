@@ -1,0 +1,439 @@
+// Signal Lost — a three-act game across three kinds of scene.
+//
+// Act 1 is ordinary form controls. Act 2 is a top-down PixelGrid deck. Act 3 is
+// a Scene3D array on the hull. They are one app sharing one state: the shift
+// you pick in act 1 sets the difficulty of act 2, and the cells you carry out
+// of act 2 are the lights that come on in act 3.
+
+let scene = "briefing"
+
+// Act 1 — who you are and how bad the shift is
+let crewName = ""
+let shift = "standard"
+let briefingError = ""
+
+// Act 2 — the deck
+let DECK_W = 15
+let DECK_H = 11
+let deckWalls = []
+let cells = []
+let cellsNeeded = 3
+let carried = 0
+let px = 1
+let py = 1
+let droneX = 7
+let droneY = 5
+let dronePath = []
+let droneStep = 0
+let oxygen = 100
+let deckMessage = ""
+let hitFlash = 0
+
+// Act 3 — the array
+let pylonsLit = 0
+let beaconFired = false
+let arrayMessage = ""
+let flare = 0
+let spin = 0
+
+// Sound
+let muted = false
+let themeHandle = ""
+
+// Rendering
+let renderTick = 0
+
+function _init() {
+  buildDeck()
+  listenForKeys()
+}
+
+// Arrow keys and WASD, alongside the on-screen pad.
+//
+// The listener cannot call into the game directly — it fires outside a tick —
+// so it leaves the direction on the window and the input loop picks it up.
+function listenForKeys() {
+  if (window.__signalLostKeys) return
+  window.__signalLostKeys = true
+  window.addEventListener("keydown", function(e) {
+    let d = ""
+    if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") d = "up"
+    if (e.key === "ArrowDown" || e.key === "s" || e.key === "S") d = "down"
+    if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") d = "left"
+    if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") d = "right"
+    if (d) {
+      e.preventDefault()
+      window.__signalLostDir = d
+    }
+  })
+}
+
+// Runs fast, so walking feels like walking rather than like waiting.
+function inputTick() {
+  let d = window.__signalLostDir
+  if (!d) return
+  window.__signalLostDir = ""
+  move(d)
+}
+
+// Sound helpers
+
+function sfx(name) {
+  if (muted) return
+  softn.audio.play("assets/sounds/" + name + ".wav")
+}
+
+function toggleMute() {
+  muted = !muted
+  if (muted) {
+    softn.audio.setVolume(0)
+  } else {
+    softn.audio.setVolume(1)
+    sfx("pickup")
+  }
+}
+
+// Act 1 — briefing
+
+function shiftLabel() {
+  if (shift == "quiet") return "Quiet shift — 3 cells, plenty of air"
+  if (shift == "storm") return "Ion storm — 5 cells, the drone is quick and the air is short"
+  return "Standard shift — 4 cells"
+}
+
+function beginShift() {
+  if (!crewName) {
+    briefingError = "The log needs a name before it will open the deck hatch."
+    return
+  }
+  briefingError = ""
+
+  if (shift == "quiet") {
+    cellsNeeded = 3
+    oxygen = 100
+  } else if (shift == "storm") {
+    cellsNeeded = 5
+    oxygen = 70
+  } else {
+    cellsNeeded = 4
+    oxygen = 85
+  }
+
+  carried = 0
+  pylonsLit = 0
+  beaconFired = false
+  arrayMessage = ""
+  flare = 0
+  deckMessage = "Find " + cellsNeeded + " power cells and get to the airlock."
+  buildDeck()
+  scene = "deck"
+  sfx("arrive")
+}
+
+// Act 2 — the deck
+
+function buildDeck() {
+  // Walls: the hull, plus a few bulkheads to walk around.
+  let walls = []
+  let x = 0
+  while (x < DECK_W) {
+    walls.push([x, 0])
+    walls.push([x, DECK_H - 1])
+    x = x + 1
+  }
+  let y = 0
+  while (y < DECK_H) {
+    walls.push([0, y])
+    walls.push([DECK_W - 1, y])
+    y = y + 1
+  }
+  let i = 2
+  while (i <= 5) {
+    walls.push([4, i])
+    walls.push([10, DECK_H - 1 - i])
+    i = i + 1
+  }
+  walls.push([7, 3])
+  walls.push([7, 4])
+  walls.push([7, 6])
+  walls.push([7, 7])
+  deckWalls = walls
+
+  // Cells: fixed spots, so a run is fair rather than lucky.
+  let spots = [[2, 8], [12, 2], [6, 1], [12, 8], [2, 3], [8, 9], [13, 5]]
+  let placed = []
+  let c = 0
+  while (c < cellsNeeded && c < spots.length) {
+    placed.push({ x: spots[c][0], y: spots[c][1], taken: false })
+    c = c + 1
+  }
+  cells = placed
+
+  px = 1
+  py = 1
+  droneX = 7
+  droneY = 5
+  droneStep = 0
+  dronePath = [[7, 5], [8, 5], [9, 5], [9, 6], [9, 7], [8, 7], [7, 7], [6, 7], [5, 7], [5, 6], [5, 5], [6, 5]]
+  hitFlash = 0
+}
+
+function isWall(x, y) {
+  let i = 0
+  while (i < deckWalls.length) {
+    let w = deckWalls[i]
+    if (w[0] == x && w[1] == y) return true
+    i = i + 1
+  }
+  return false
+}
+
+// The DPad hands its callback a direction name, not a pair of offsets. Reading
+// it as (dx, dy) meant dx was the string "up" and dy was undefined, so the
+// player never moved a pixel and nothing on screen said why.
+function move(direction) {
+  if (scene != "deck") return
+  let dx = 0
+  let dy = 0
+  if (direction == "up") dy = -1
+  if (direction == "down") dy = 1
+  if (direction == "left") dx = -1
+  if (direction == "right") dx = 1
+  if (dx == 0 && dy == 0) return
+
+  let nx = px + dx
+  let ny = py + dy
+  if (nx < 0 || nx >= DECK_W || ny < 0 || ny >= DECK_H) return
+  if (isWall(nx, ny)) return
+
+  px = nx
+  py = ny
+  sfx("step")
+  collect()
+  checkDrone()
+  renderTick = renderTick + 1
+}
+
+function collect() {
+  let i = 0
+  while (i < cells.length) {
+    let cell = cells[i]
+    if (!cell.taken && cell.x == px && cell.y == py) {
+      cell.taken = true
+      carried = carried + 1
+      sfx("pickup")
+      if (carried >= cellsNeeded) {
+        deckMessage = "That is all of them. Head for the airlock at the top right."
+      } else {
+        deckMessage = carried + " of " + cellsNeeded + " cells."
+      }
+      return
+    }
+    i = i + 1
+  }
+}
+
+function atAirlock() {
+  return px == DECK_W - 2 && py == 1
+}
+
+function checkDrone() {
+  if (px == droneX && py == droneY) {
+    oxygen = oxygen - 12
+    hitFlash = 6
+    sfx("alarm")
+    px = 1
+    py = 1
+    deckMessage = "The drone caught you. Back to the hatch, and mind your air."
+    if (oxygen <= 0) endRun()
+  }
+}
+
+// Runs on a Loop while the deck is on screen
+function deckTick() {
+  // The drone walks its patrol; on a storm shift it takes two steps a tick.
+  droneStep = droneStep + 1
+  let stride = 1
+  if (shift == "storm") stride = 2
+  let at = dronePath[(droneStep * stride) % dronePath.length]
+  droneX = at[0]
+  droneY = at[1]
+
+  if (hitFlash > 0) hitFlash = hitFlash - 1
+
+  oxygen = oxygen - 1
+  if (oxygen <= 0) {
+    endRun()
+    return
+  }
+
+  checkDrone()
+
+  if (atAirlock() && carried >= cellsNeeded) {
+    goToArray()
+    return
+  }
+  if (atAirlock() && carried < cellsNeeded) {
+    deckMessage = "The airlock will not cycle until you are carrying " + cellsNeeded + " cells."
+  }
+
+  renderTick = renderTick + 1
+}
+
+function endRun() {
+  oxygen = 0
+  sfx("fail")
+  deckMessage = "Your air ran out. The deck hatch cycles you back to the briefing room."
+  scene = "briefing"
+  briefingError = "That run ended badly. Try a quieter shift."
+}
+
+// What PixelGrid draws. Rebuilt from state each render rather than kept in
+// step by hand, so there is one description of the deck and no way for the
+// picture and the collision test to disagree.
+function deckItems() {
+  let items = []
+  let i = 0
+  while (i < deckWalls.length) {
+    let w = deckWalls[i]
+    items.push({ x: w[0], y: w[1], color: "#2b3444" })
+    i = i + 1
+  }
+
+  // The airlock
+  items.push({ x: DECK_W - 2, y: 1, color: carried >= cellsNeeded ? "#3fb950" : "#30363d", borderRadius: "3px" })
+
+  let c = 0
+  while (c < cells.length) {
+    let cell = cells[c]
+    if (!cell.taken) {
+      items.push({ x: cell.x, y: cell.y, color: "#e3b341", borderRadius: "50%" })
+    }
+    c = c + 1
+  }
+
+  items.push({ x: droneX, y: droneY, color: "#f85149", borderRadius: "50%" })
+  items.push({ x: px, y: py, color: hitFlash > 0 ? "#ffffff" : "#58a6ff", borderRadius: "4px" })
+  return items
+}
+
+function oxygenPercent() {
+  if (oxygen < 0) return 0
+  if (oxygen > 100) return 100
+  return oxygen
+}
+
+function oxygenColor() {
+  if (oxygen > 50) return "#3fb950"
+  if (oxygen > 20) return "#e3b341"
+  return "#f85149"
+}
+
+// Act 3 — the array
+
+function goToArray() {
+  scene = "array"
+  pylonsLit = 0
+  arrayMessage = "Seat each cell in a pylon, then fire the beacon."
+  sfx("arrive")
+}
+
+function seatCell() {
+  if (pylonsLit >= carried) {
+    arrayMessage = "Every cell you carried is seated. Fire the beacon."
+    return
+  }
+  pylonsLit = pylonsLit + 1
+  sfx("charge")
+  if (pylonsLit >= carried) {
+    arrayMessage = "All " + carried + " seated. Fire the beacon."
+  } else {
+    arrayMessage = pylonsLit + " of " + carried + " pylons lit."
+  }
+}
+
+function fireBeacon() {
+  if (pylonsLit < cellsNeeded) {
+    arrayMessage = "The beacon needs " + cellsNeeded + " lit pylons. You have " + pylonsLit + "."
+    return
+  }
+  beaconFired = true
+  flare = 40
+  arrayMessage = crewName + " got the Kestrel talking again. Signal away."
+  sfx("beacon")
+}
+
+function arrayTick() {
+  spin = spin + 0.015
+  if (flare > 0) flare = flare - 1
+  renderTick = renderTick + 1
+}
+
+// The 3D scene is a picture of the game state: one pylon per cell the shift
+// asked for, lit only if it has been seated.
+function arrayObjects() {
+  let objs = []
+
+  objs.push({
+    id: "hull", type: "plane",
+    position: { x: 0, y: -1.2, z: 0 },
+    rotation: { x: -1.5708, y: 0, z: 0 },
+    width: 26, height: 26, color: "#252d3a", roughness: 0.85, metalness: 0.2
+  })
+
+  let i = 0
+  while (i < cellsNeeded) {
+    let a = (i / cellsNeeded) * 6.2832 + spin * 0.3
+    let bx = Math.cos(a) * 3.4
+    let bz = Math.sin(a) * 3.4
+    let lit = i < pylonsLit
+
+    objs.push({
+      id: "pylon" + i, type: "cylinder",
+      position: { x: bx, y: -0.45, z: bz },
+      radius: 0.22, height: 1.5,
+      color: lit ? "#6e7681" : "#3d444d", metalness: 0.6, roughness: 0.35
+    })
+    objs.push({
+      id: "orb" + i, type: "sphere",
+      position: { x: bx, y: 0.55, z: bz },
+      radius: lit ? 0.34 : 0.24,
+      color: lit ? "#e3b341" : "#21262d",
+      emissive: lit ? "#e3b341" : "#000000",
+      emissiveIntensity: lit ? 0.9 : 0
+    })
+    i = i + 1
+  }
+
+  let core = 0.9
+  if (beaconFired) core = 0.9 + flare * 0.06
+  objs.push({
+    id: "beacon", type: "icosahedron",
+    position: { x: 0, y: 0.7 + Math.sin(spin * 2) * 0.12, z: 0 },
+    rotation: { x: spin * 0.6, y: spin, z: 0 },
+    radius: core,
+    color: beaconFired ? "#7ee787" : "#1f6feb",
+    emissive: beaconFired ? "#3fb950" : "#1f6feb",
+    emissiveIntensity: beaconFired ? 1.2 : 0.35,
+    metalness: 0.4, roughness: 0.25
+  })
+
+  return objs
+}
+
+function arrayLights() {
+  return [
+    { type: "ambient", color: "#a8bcd8", intensity: 0.9 },
+    { type: "directional", color: "#ffffff", intensity: 1.4, position: { x: 5, y: 8, z: 5 } },
+    { type: "point", color: beaconFired ? "#7ee787" : "#58a6ff", intensity: beaconFired ? 3 : 1.2, position: { x: 0, y: 1.2, z: 0 } }
+  ]
+}
+
+function backToBriefing() {
+  scene = "briefing"
+  briefingError = ""
+}
+
+function replay() {
+  beginShift()
+}
