@@ -524,31 +524,73 @@ export function Launcher({
                       </div>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
                         {olderVersions.map((older) => (
-                          <button
+                          // Open on the left, remove on the right, so an old
+                          // build can be cleared out rather than accumulating
+                          // for ever — these are whole bundles, and six
+                          // releases of one app is six full copies.
+                          <span
                             key={older.id}
-                            onClick={() => onOpenCached(older)}
-                            title={`Open v${older.version} — its own saved data comes with it`}
                             style={{
-                              minHeight: 28,
-                              padding: '0.25rem 0.5rem',
+                              display: 'inline-flex',
+                              alignItems: 'stretch',
                               borderRadius: 6,
                               border: '1px solid rgba(255,255,255,0.1)',
                               background: 'rgba(255,255,255,0.03)',
-                              color: '#9a9aa6',
-                              fontSize: '0.6875rem',
-                              cursor: 'pointer',
-                              fontFamily: 'inherit',
+                              overflow: 'hidden',
                             }}
                           >
-                            {/* Two builds can carry the same version string —
-                                a rebuild without a version bump is the common
-                                case — and "v1.0.0" twice tells the user nothing
-                                about which is which. When the version does not
-                                distinguish them, when it was last opened does. */}
-                            v{older.version}
-                            {older.version === app.version ? ` · ${formatDate(older.lastOpened)}` : ''}
-                            {hasStoredData(older.origin) ? ' · has data' : ''}
-                          </button>
+                            <button
+                              onClick={() => onOpenCached(older)}
+                              title={`Open v${older.version} — its own saved data comes with it`}
+                              style={{
+                                minHeight: 28,
+                                padding: '0.25rem 0.5rem',
+                                border: 'none',
+                                background: 'transparent',
+                                color: '#9a9aa6',
+                                fontSize: '0.6875rem',
+                                cursor: 'pointer',
+                                fontFamily: 'inherit',
+                              }}
+                            >
+                              {/* Two builds can carry the same version string —
+                                  a rebuild without a version bump is the common
+                                  case — and "v1.0.0" twice tells the user nothing
+                                  about which is which. When the version does not
+                                  distinguish them, when it was last opened does. */}
+                              v{older.version}
+                              {older.version === app.version ? ` · ${formatDate(older.lastOpened)}` : ''}
+                              {hasStoredData(older.origin) ? ' · has data' : ''}
+                            </button>
+                            <button
+                              onClick={() => onRemove(older.id)}
+                              aria-label={
+                                hasStoredData(older.origin)
+                                  ? `Remove version ${older.version} and the data saved in it`
+                                  : `Remove version ${older.version}`
+                              }
+                              title={
+                                hasStoredData(older.origin)
+                                  ? 'Remove this version. Anything saved in it goes too.'
+                                  : 'Remove this version'
+                              }
+                              style={{
+                                minHeight: 28,
+                                minWidth: 24,
+                                padding: '0 0.375rem',
+                                border: 'none',
+                                borderLeft: '1px solid rgba(255,255,255,0.08)',
+                                background: 'transparent',
+                                color: '#6b6b78',
+                                fontSize: '0.75rem',
+                                lineHeight: 1,
+                                cursor: 'pointer',
+                                fontFamily: 'inherit',
+                              }}
+                            >
+                              &times;
+                            </button>
+                          </span>
                         ))}
                       </div>
 
