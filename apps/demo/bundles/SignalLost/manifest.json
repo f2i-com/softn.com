@@ -1,0 +1,16 @@
+{
+  "name": "SignalLost",
+  "version": "1.0.0",
+  "description": "A three-act game across three kinds of scene: a form briefing, a PixelGrid deck, and a Scene3D beacon array, with sound from softn.audio",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": { "title": "Signal Lost", "width": 900, "height": 760 },
+    "theme": { "primary": "#1f6feb", "mode": "dark" }
+  }
+}

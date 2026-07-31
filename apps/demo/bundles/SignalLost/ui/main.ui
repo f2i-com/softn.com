@@ -1,0 +1,148 @@
+<logic src="../logic/main.logic" />
+
+<style>
+@keyframes sl-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes sl-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.sl-scene { animation: sl-in 320ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+.sl-live { animation: sl-pulse 1.4s ease-in-out infinite; }
+.sl-btn { transition: transform 140ms ease, filter 140ms ease; }
+.sl-btn:hover { filter: brightness(1.12); }
+.sl-btn:active { transform: translateY(1px); }
+</style>
+
+<App theme="dark">
+  <Box style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%", background: "#0d1117", color: "#e6edf3", fontFamily: "'Inter', 'Segoe UI', sans-serif" }}>
+
+    <!-- Status strip: one line of state, shared by all three acts -->
+    <Box style={{ display: "flex", alignItems: "center", gap: "14px", padding: "10px 18px", borderBottom: "1px solid #21262d", background: "#0b0f14", flexShrink: 0 }}>
+      <Text style={{ fontWeight: 700, fontSize: "13px", letterSpacing: "0.4px" }}>SIGNAL LOST</Text>
+      <Text style={{ color: "#6e7681", fontSize: "11px" }}>relay station Kestrel</Text>
+      <Box style={{ flex: 1 }} />
+      <Text if={scene !== "briefing"} style={{ color: "#8b949e", fontSize: "11px" }}>{"cells " + carried + "/" + cellsNeeded}</Text>
+      <Button @click={toggleMute} size="sm" className="sl-btn" ariaLabel={muted ? "Unmute" : "Mute"} title={muted ? "Unmute" : "Mute"} style={{ background: "#21262d", color: "#c9d1d9", border: "1px solid #30363d", padding: "4px 10px", borderRadius: "6px", fontSize: "11px" }}>
+        {muted ? "Sound off" : "Sound on"}
+      </Button>
+    </Box>
+
+    <Box style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
+
+      <!-- ACT 1 — ordinary form controls -->
+      <Box className="sl-scene" if={scene === "briefing"} style={{ maxWidth: "560px", margin: "0 auto", padding: "34px 24px" }}>
+        <Heading level={2} style={{ fontSize: "1.4rem", marginBottom: "6px" }}>Shift briefing</Heading>
+        <Text style={{ color: "#8b949e", fontSize: "13px", lineHeight: "1.7", display: "block", marginBottom: "22px" }}>
+          The Kestrel's beacon went dark eleven hours ago. The power cells that feed it are loose on the deck below,
+          and there is a maintenance drone down there that has not been told the shift changed. Collect the cells,
+          get out through the airlock, and light the array on the hull.
+        </Text>
+
+        <Stack direction=vertical gap=md>
+          <Box>
+            <Text style={{ color: "#8b949e", fontSize: "11px", display: "block", marginBottom: "5px" }}>Name for the log</Text>
+            <Input :bind={crewName} placeholder="e.g. Okonkwo" />
+          </Box>
+          <Box>
+            <Text style={{ color: "#8b949e", fontSize: "11px", display: "block", marginBottom: "5px" }}>Shift</Text>
+            <Select :bind={shift} options={["quiet", "standard", "storm"]} />
+            <Text style={{ color: "#6e7681", fontSize: "11px", display: "block", marginTop: "6px" }}>{shiftLabel()}</Text>
+          </Box>
+
+          <Text if={briefingError} style={{ color: "#f85149", fontSize: "12px" }}>{briefingError}</Text>
+
+          <Button @click={beginShift} className="sl-btn" style={{ background: "#238636", color: "#fff", border: "none", padding: "10px 20px", borderRadius: "8px", fontWeight: 600, fontSize: "13px", alignSelf: "flex-start" }}>
+            Cycle the hatch
+          </Button>
+        </Stack>
+      </Box>
+
+      <!-- ACT 2 — the deck, drawn with PixelGrid -->
+      <Box className="sl-scene" if={scene === "deck"} style={{ maxWidth: "760px", margin: "0 auto", padding: "22px 24px" }}>
+        <Box style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+          <Heading level={3} style={{ fontSize: "1.05rem" }}>Lower deck</Heading>
+          <Box style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Text style={{ color: "#6e7681", fontSize: "11px" }}>air</Text>
+            <Box style={{ width: "140px", height: "7px", background: "#21262d", borderRadius: "99px", overflow: "hidden" }}>
+              <Box style={{ width: oxygenPercent() + "%", height: "100%", background: oxygenColor(), transition: "width 200ms linear" }} />
+            </Box>
+          </Box>
+        </Box>
+
+        <Box data-tick={renderTick}>
+          <PixelGrid rows={11} cols={15} cellSize={30} items={deckItems()} background="#0b0f14" gridColor="#161b22" />
+        </Box>
+
+        <Box style={{ display: "flex", alignItems: "center", gap: "22px", marginTop: "14px" }}>
+          <DPad @press={move} />
+          <Box style={{ flex: 1 }}>
+            <Text style={{ color: "#c9d1d9", fontSize: "13px", display: "block", marginBottom: "8px" }}>{deckMessage}</Text>
+            <Box style={{ display: "flex", flexWrap: "wrap", gap: "12px" }}>
+              <Box style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <Box style={{ width: "10px", height: "10px", borderRadius: "3px", background: "#58a6ff" }} />
+                <Text style={{ color: "#6e7681", fontSize: "11px" }}>you</Text>
+              </Box>
+              <Box style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <Box style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#e3b341" }} />
+                <Text style={{ color: "#6e7681", fontSize: "11px" }}>power cell</Text>
+              </Box>
+              <Box style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <Box className="sl-live" style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#f85149" }} />
+                <Text style={{ color: "#6e7681", fontSize: "11px" }}>drone</Text>
+              </Box>
+              <Box style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <Box style={{ width: "10px", height: "10px", borderRadius: "3px", background: carried >= cellsNeeded ? "#3fb950" : "#30363d" }} />
+                <Text style={{ color: "#6e7681", fontSize: "11px" }}>airlock</Text>
+              </Box>
+            </Box>
+          </Box>
+        </Box>
+
+        <Text style={{ color: "#484f58", fontSize: "11px", display: "block", marginTop: "10px" }}>Arrow keys or WASD, or the pad.</Text>
+
+        <Loop interval={110} running={scene === "deck"} @tick={inputTick} />
+        <Loop interval={520} running={scene === "deck"} @tick={deckTick} />
+      </Box>
+
+      <!-- ACT 3 — the array on the hull, drawn with Scene3D -->
+      <Box className="sl-scene" if={scene === "array"} style={{ maxWidth: "760px", margin: "0 auto", padding: "22px 24px" }}>
+        <Heading level={3} style={{ fontSize: "1.05rem", marginBottom: "12px" }}>Beacon array</Heading>
+
+        <Scene3D
+          width={700}
+          height={380}
+          objects={arrayObjects()}
+          lights={arrayLights()}
+          background="#080b10"
+          orbitControls={true}
+          camera={{ position: { x: 0, y: 3.6, z: 8.5 }, lookAt: { x: 0, y: 0.3, z: 0 } }}
+          style={{ borderRadius: "12px", border: "1px solid #21262d", maxWidth: "100%" }}
+        />
+
+        <Text style={{ color: "#c9d1d9", fontSize: "13px", display: "block", marginTop: "12px" }}>{arrayMessage}</Text>
+
+        <Box style={{ display: "flex", gap: "10px", marginTop: "12px", flexWrap: "wrap" }}>
+          <Button if={!beaconFired} @click={seatCell} className="sl-btn" style={{ background: "#1f6feb", color: "#fff", border: "none", padding: "9px 18px", borderRadius: "8px", fontSize: "13px", fontWeight: 600 }}>
+            Seat a cell
+          </Button>
+          <Button if={!beaconFired} @click={fireBeacon} className="sl-btn" style={{ background: pylonsLit >= cellsNeeded ? "#238636" : "#21262d", color: pylonsLit >= cellsNeeded ? "#fff" : "#6e7681", border: "none", padding: "9px 18px", borderRadius: "8px", fontSize: "13px", fontWeight: 600 }}>
+            Fire the beacon
+          </Button>
+          <Button if={beaconFired} @click={replay} className="sl-btn" style={{ background: "#1f6feb", color: "#fff", border: "none", padding: "9px 18px", borderRadius: "8px", fontSize: "13px", fontWeight: 600 }}>
+            Run it again
+          </Button>
+          <Button if={beaconFired} @click={backToBriefing} className="sl-btn" style={{ background: "#21262d", color: "#c9d1d9", border: "1px solid #30363d", padding: "9px 18px", borderRadius: "8px", fontSize: "13px" }}>
+            Back to briefing
+          </Button>
+        </Box>
+
+        <Text style={{ color: "#6e7681", fontSize: "11px", display: "block", marginTop: "10px" }}>Drag the view to look around the array.</Text>
+
+        <Loop interval={40} running={scene === "array"} @tick={arrayTick} />
+      </Box>
+    </Box>
+  </Box>
+</App>

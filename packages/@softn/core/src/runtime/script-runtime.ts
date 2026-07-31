@@ -185,6 +185,21 @@ let softn = {
       host.call("camera.stopLive", [], function(){});
     }
   },
+  audio: {
+    play: function(src, options, callback) {
+      if (typeof options === "function") { callback = options; options = {}; }
+      host.call("audio.play", [src, typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
+    },
+    stop: function(handle, callback) {
+      host.call("audio.stop", [handle == null ? "" : String(handle)], callback || function(){});
+    },
+    stopAll: function(callback) {
+      host.call("audio.stopAll", [], callback || function(){});
+    },
+    setVolume: function(volume, callback) {
+      host.call("audio.setVolume", [String(volume)], callback || function(){});
+    }
+  },
   files: {
     pickFile: function(options, callback) {
       host.call("files.pickFile", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
@@ -594,6 +609,13 @@ export class SoftNScriptRuntime {
   private bundleFileProvider: BundleFileProvider | null = null;
   /** External functions (e.g. wallet bridge) to inject into the VM as callable globals */
   private externalFunctions: Record<string, (...args: unknown[]) => unknown> | null = null;
+
+  /** Sounds this app currently has playing, by the handle its script holds. */
+  private audioPlaying = new Map<string, { el: HTMLAudioElement; volume: number }>();
+  private audioMasterVolume = 1;
+  private audioSeq = 0;
+  /** Gesture listeners waiting to start a soundtrack the browser refused. */
+  private audioUnlockers = new Set<() => void>();
 
   constructor(
     context: ScriptContext,
@@ -1353,6 +1375,11 @@ export class SoftNScriptRuntime {
     this.syncKeys.clear();
     this.windowSyncActive = false;
 
+    // Silence. A looping track has no reason to stop on its own, so closing
+    // the tab on an app playing music would otherwise leave it playing for
+    // the rest of the session with nothing on screen to stop it.
+    this.stopAllAudio();
+
     // Release AI resources
     if (this.onnxManager) {
       this.onnxManager.releaseAll().catch(() => {});
@@ -1641,6 +1668,10 @@ export class SoftNScriptRuntime {
       case 'camera.recordVideo': return this.handleCameraRecord(call);
       case 'camera.startLive': return this.handleCameraStartLive(call);
       case 'camera.stopLive': return this.handleCameraStopLive();
+      case 'audio.play': return this.handleAudioPlay(call);
+      case 'audio.stop': return this.handleAudioStop(call);
+      case 'audio.stopAll': return this.handleAudioStopAll();
+      case 'audio.setVolume': return this.handleAudioSetVolume(call);
       case 'files.pickFile': return this.handleFilesPickFile(call);
       case 'files.readText': return this.handleFilesReadText(call);
       case 'files.readBase64': return this.handleFilesReadBase64(call);
@@ -1815,6 +1846,142 @@ export class SoftNScriptRuntime {
 
   private async handleCameraStopLive(): Promise<unknown> {
     return { stopped: true };
+  }
+
+  // ── Audio ──
+  //
+  // Deliberately ungated. A template can already write `<audio src=… autoPlay>`
+  // with no declared capability, so asking for one here would gate the API and
+  // not the thing it wraps — security theatre that only inconveniences authors
+  // who use the tidier route. Sound is a nuisance, not a disclosure: it reads
+  // nothing, sends nothing, and stops when the app closes.
+
+  /**
+   * Turn whatever the script passed into something an <audio> can load.
+   *
+   * Scripts say `softn.audio.play("assets/blip.wav")` — a path inside their own
+   * bundle, which only the host knows how to resolve. That is the same job
+   * `asset()` does for templates, so it is the same function doing it.
+   */
+  private resolveAudioSrc(src: string): string {
+    if (!src) return '';
+    if (/^(blob:|data:|https?:)/i.test(src)) return src;
+    const asset = this.externalFunctions?.asset;
+    if (typeof asset === 'function') {
+      const resolved = asset(src);
+      if (typeof resolved === 'string' && resolved) return resolved;
+    }
+    return src;
+  }
+
+  private async handleAudioPlay(call: PendingHostCall): Promise<unknown> {
+    if (typeof Audio === 'undefined') return { played: false, reason: 'no audio support' };
+
+    const [rawSrc, optionsJson] = call.args;
+    const options = optionsJson ? (JSON.parse(optionsJson) as {
+      volume?: number; loop?: boolean; rate?: number;
+    }) : {};
+
+    const src = this.resolveAudioSrc(rawSrc);
+    if (!src) return { played: false, reason: `no such sound: ${rawSrc}` };
+
+    const el = new Audio(src);
+    const own = typeof options.volume === 'number' ? Math.max(0, Math.min(1, options.volume)) : 1;
+    el.volume = own * this.audioMasterVolume;
+    el.loop = options.loop === true;
+    if (typeof options.rate === 'number' && options.rate > 0) el.playbackRate = options.rate;
+
+    const handle = `snd-${++this.audioSeq}`;
+    // The sound's own volume is kept beside it: master volume scales it, and
+    // reading it back off the element would fold the master in twice.
+    this.audioPlaying.set(handle, { el, volume: own });
+    // One-shots clear themselves; loops stay until stopped or the app closes.
+    el.addEventListener('ended', () => { this.audioPlaying.delete(handle); }, { once: true });
+
+    try {
+      await el.play();
+      return { played: true, handle };
+    } catch (err) {
+      const name = typeof err === 'object' && err !== null ? (err as { name?: string }).name : undefined;
+      // Browsers refuse to make noise before the user has interacted with the
+      // page. That is the policy working, not a fault, so it is reported rather
+      // than thrown — and a soundtrack (anything looping) is held back and
+      // started on the first gesture instead of being silently lost.
+      if (name === 'NotAllowedError') {
+        if (el.loop) {
+          this.armAudioUnlock(handle, el);
+          return { played: false, blocked: true, pending: true, handle };
+        }
+        this.audioPlaying.delete(handle);
+        return { played: false, blocked: true, reason: 'the page has not been interacted with yet' };
+      }
+      this.audioPlaying.delete(handle);
+      return { played: false, reason: name ?? 'could not play' };
+    }
+  }
+
+  /** Start a blocked loop as soon as the user touches the page, once. */
+  private armAudioUnlock(handle: string, el: HTMLAudioElement): void {
+    if (typeof window === 'undefined') return;
+    const start = () => {
+      window.removeEventListener('pointerdown', start);
+      window.removeEventListener('keydown', start);
+      this.audioUnlockers.delete(start);
+      // It may have been stopped, or the whole runtime torn down, while waiting.
+      if (this.disposed || !this.audioPlaying.has(handle)) return;
+      el.play().catch(() => { this.audioPlaying.delete(handle); });
+    };
+    this.audioUnlockers.add(start);
+    window.addEventListener('pointerdown', start, { once: true });
+    window.addEventListener('keydown', start, { once: true });
+  }
+
+  private async handleAudioStop(call: PendingHostCall): Promise<unknown> {
+    const [handle] = call.args;
+    if (!handle) return this.handleAudioStopAll();
+    const sound = this.audioPlaying.get(handle);
+    if (!sound) return { stopped: false };
+    sound.el.pause();
+    sound.el.currentTime = 0;
+    this.audioPlaying.delete(handle);
+    return { stopped: true };
+  }
+
+  private async handleAudioStopAll(): Promise<unknown> {
+    const count = this.audioPlaying.size;
+    this.stopAllAudio();
+    return { stopped: count };
+  }
+
+  private async handleAudioSetVolume(call: PendingHostCall): Promise<unknown> {
+    const value = Number(call.args[0]);
+    if (!Number.isFinite(value)) return { volume: this.audioMasterVolume };
+    this.audioMasterVolume = Math.max(0, Math.min(1, value));
+    // Applies to what is already playing too, or turning the music down would
+    // only take effect on the next sound.
+    for (const sound of this.audioPlaying.values()) {
+      sound.el.volume = sound.volume * this.audioMasterVolume;
+    }
+    return { volume: this.audioMasterVolume };
+  }
+
+  private stopAllAudio(): void {
+    for (const { el } of this.audioPlaying.values()) {
+      try {
+        el.pause();
+        el.src = '';
+      } catch {
+        // The element may already be detached; nothing left to stop.
+      }
+    }
+    this.audioPlaying.clear();
+    if (typeof window !== 'undefined') {
+      for (const unlock of this.audioUnlockers) {
+        window.removeEventListener('pointerdown', unlock);
+        window.removeEventListener('keydown', unlock);
+      }
+    }
+    this.audioUnlockers.clear();
   }
 
   private async handleFilesPickFile(call: PendingHostCall): Promise<unknown> {
