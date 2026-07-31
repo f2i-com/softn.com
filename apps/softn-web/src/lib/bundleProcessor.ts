@@ -283,13 +283,25 @@ export function processBundle(
         .trim();
 
       const escapedName = escapeRegex(imp.name);
-      const selfClosingRegex = new RegExp(`<${escapedName}\\s*/>`, 'g');
+      // The tag name has to end where the name ends.
+      //
+      // `<${name}[^>]*>` let the character class eat the rest of a longer name,
+      // so an import called Item matched `<ItemList>` — and the paired form then
+      // ran to the first `</Item…>`, replacing that element AND everything
+      // inside it with Item's markup. A component the author never referenced
+      // deleted unrelated parts of their page. The name must be followed by
+      // whitespace, `/` or `>`, which is what makes it that tag and not another
+      // one starting with the same letters.
+      const selfClosingRegex = new RegExp(`<${escapedName}(?:\\s[^>]*?)?\\s*/>`, 'g');
       // Function replacer: a component's markup is content, not a substitution
       // pattern. Passed as a string, `$&` re-inserts the tag it just replaced
       // and `$'` splices in the rest of the document.
       nextSource = nextSource.replace(selfClosingRegex, () => templateContent);
 
-      const pairedRegex = new RegExp(`<${escapedName}[^>]*>.*?</${escapedName}>`, 'gs');
+      const pairedRegex = new RegExp(
+        `<${escapedName}(?:\\s[^>]*?)?>.*?</${escapedName}\\s*>`,
+        'gs'
+      );
       nextSource = nextSource.replace(pairedRegex, () => templateContent);
     }
 
