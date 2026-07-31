@@ -13,6 +13,8 @@ import { act } from 'react-dom/test-utils';
 import { Select } from '../src/form/Select';
 import { Toast } from '../src/feedback/Toast';
 import { DatePicker } from '../src/form/DatePicker';
+import { Slider } from '../src/form/Slider';
+import { List, ListItem } from '../src/data/List';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -70,6 +72,62 @@ describe('Toast whose parent re-renders faster than its duration', () => {
     act(() => { vi.advanceTimersByTime(1200); });
 
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe('Slider without a mouse', () => {
+  it('is focusable and moves with the arrow keys', () => {
+    const onChange = vi.fn();
+    mount(<Slider value={50} min={0} max={100} step={5} onChange={onChange} />);
+
+    const thumb = container.querySelector('[role="slider"]') as HTMLElement;
+    expect(thumb).not.toBeNull();
+    expect(thumb.getAttribute('tabindex')).toBe('0');
+    expect(thumb.getAttribute('aria-valuenow')).toBe('50');
+
+    act(() => {
+      thumb.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith(55);
+
+    act(() => {
+      thumb.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    });
+    expect(onChange).toHaveBeenCalledWith(0);
+  });
+
+  it('is not focusable when disabled', () => {
+    mount(<Slider value={50} disabled onChange={() => {}} />);
+    const thumb = container.querySelector('[role="slider"]') as HTMLElement;
+    expect(thumb.getAttribute('tabindex')).toBe('-1');
+  });
+});
+
+describe('a clickable List item', () => {
+  it('can be activated from the keyboard', () => {
+    const onClick = vi.fn();
+    mount(
+      <List>
+        <ListItem onClick={onClick}>Pick me</ListItem>
+      </List>
+    );
+    const item = container.querySelector('[role="button"]') as HTMLElement;
+    expect(item).not.toBeNull();
+    expect(item.getAttribute('tabindex')).toBe('0');
+
+    act(() => {
+      item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onClick).toHaveBeenCalled();
+  });
+
+  it('leaves a non-clickable item as a plain list item', () => {
+    mount(
+      <List>
+        <ListItem>Just text</ListItem>
+      </List>
+    );
+    expect(container.querySelector('[role="button"]')).toBeNull();
   });
 });
 

@@ -109,6 +109,31 @@ export function Slider({
     [min, max, step, value]
   );
 
+  /** Commit a value through the same clamp/step path the pointer uses. */
+  const commit = (next: number) => {
+    const settled = clamp(roundToStep(next));
+    if (settled === value) return;
+    if (controlledValue === undefined) setInternalValue(settled);
+    onChange?.(settled);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (disabled) return;
+    // A page jump of ten steps, which is what every native range input does.
+    const page = step * 10;
+    const moves: Record<string, number | undefined> = {
+      ArrowRight: step, ArrowUp: step,
+      ArrowLeft: -step, ArrowDown: -step,
+      PageUp: page, PageDown: -page,
+    };
+    if (e.key === 'Home') { e.preventDefault(); commit(min); return; }
+    if (e.key === 'End') { e.preventDefault(); commit(max); return; }
+    const delta = moves[e.key];
+    if (delta === undefined) return;
+    e.preventDefault();
+    commit(value + delta);
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
     if (disabled) return;
     e.preventDefault();
@@ -249,9 +274,23 @@ export function Slider({
     >
       <div ref={trackRef} style={trackStyle} onMouseDown={handleMouseDown}>
         <div style={fillStyle} />
+        {/* A registered form control that only listened for mousedown: no
+            tabIndex, no role, no key handling, so a keyboard or screen-reader
+            user was skipped straight past it and could not set the value at
+            all — on a form that may require it. */}
         <div
+          role="slider"
+          tabIndex={disabled ? -1 : 0}
+          aria-valuemin={min}
+          aria-valuemax={max}
+          aria-valuenow={value}
+          aria-valuetext={formatValue(value)}
+          aria-label="Value"
+          aria-disabled={disabled || undefined}
+          aria-orientation="horizontal"
           style={isDragging || isHovering ? thumbHoverStyle : thumbStyle}
           onMouseDown={handleMouseDown}
+          onKeyDown={handleKeyDown}
         />
         {showTooltip && (
           <div style={tooltipStyle}>

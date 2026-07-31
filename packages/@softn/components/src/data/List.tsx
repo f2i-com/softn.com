@@ -136,6 +136,24 @@ export function ListItem({
       className={className}
       style={itemStyle}
       onClick={disabled ? undefined : onClick}
+      // An <li> with an onClick is reachable by mouse and by nothing else. When
+      // one is given a click handler it becomes a real control: focusable, named
+      // as a button, and operable with Enter and Space — which the browser does
+      // for a <button> and for no other element. Items without onClick stay
+      // ordinary list items and gain nothing they should not have.
+      {...(onClick && !disabled
+        ? {
+            role: 'button' as const,
+            tabIndex: 0,
+            onKeyDown: (event: React.KeyboardEvent) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              if (event.target !== event.currentTarget) return;
+              event.preventDefault();
+              onClick();
+            },
+          }
+        : {})}
+      aria-disabled={onClick && disabled ? true : undefined}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
