@@ -235,6 +235,8 @@ const App: React.FC = () => {
     vfs.reset();
 
     const batch: Array<{ path: string; content: string | Uint8Array }> = [];
+    /** Whether the bytes were a readable archive, regardless of what was in it. */
+    let zipParsed = false;
 
     // Try as ZIP first
     try {
@@ -252,12 +254,20 @@ const App: React.FC = () => {
           content: isText ? decoder.decode(content) : content,
         });
       }
+      zipParsed = true;
     } catch (err) {
       console.log('[SoftN Import] Not a valid ZIP, trying fallback...', err);
     }
 
-    // Fallback: load as single file
-    if (batch.length === 0) {
+    // Fallback: load as single file — only when this was NOT a ZIP.
+    //
+    // A ZIP that parsed and held nothing used to fall through to here, so a
+    // 22-byte empty archive became a "file" whose content was the raw archive
+    // bytes, named after the bundle. The project opened with one unreadable
+    // file in it and nothing said the bundle was empty.
+    if (batch.length === 0 && zipParsed) {
+      ws.addConsoleOutput(`⚠ ${file.name} is a valid bundle but contains no files.`);
+    } else if (batch.length === 0) {
       const text = decoder.decode(data);
       // Try as JSON project manifest
       try {
