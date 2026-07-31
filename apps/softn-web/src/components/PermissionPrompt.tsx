@@ -62,6 +62,44 @@ const PERMISSION_INFO: Record<string, { label: string; description: string; icon
       </svg>
     ),
   },
+  // ai, gpu and sync are enforced by the runtime and were missing here, so a
+  // bundle asking for them was described to the user as "No specific permissions
+  // requested" — the dialog granted what it declined to name. sync is the one
+  // that matters most: it replicates the app's database to peers.
+  ai: {
+    label: 'AI Models',
+    description: 'Download and run machine-learning models in your browser.',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="5" y="8" width="14" height="12" rx="2" />
+        <path d="M12 8V4M9 4h6" />
+        <circle cx="9.5" cy="13.5" r="1" />
+        <circle cx="14.5" cy="13.5" r="1" />
+      </svg>
+    ),
+  },
+  gpu: {
+    label: 'GPU Compute',
+    description: 'Run computations on your graphics hardware via WebGPU.',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="4" y="4" width="16" height="16" rx="2" />
+        <rect x="9" y="9" width="6" height="6" />
+        <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" />
+      </svg>
+    ),
+  },
+  sync: {
+    label: 'Peer-to-Peer Sync',
+    description: "Replicate this app's database to other devices over the network.",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-7.6-4.2" />
+        <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 7.6 4.2" />
+        <path d="M20 4v5h-5M4 20v-5h5" />
+      </svg>
+    ),
+  },
 };
 
 function getRequestedPermissions(config: PermissionConfig): Array<{ key: string; info: typeof PERMISSION_INFO[string]; detail?: string }> {
