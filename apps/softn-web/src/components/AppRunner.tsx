@@ -16,6 +16,8 @@ interface AppRunnerProps {
   initialPage?: string;
   permissions?: import('@softn/core').AppPermissions;
   importResolver?: (path: string) => Promise<string | null>;
+  /** Provides the `asset()` the templates call; without it every image is missing. */
+  assetResolver?: (assetPath: string) => string;
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
   permissionConfig?: import('@softn/core').PermissionConfig;
@@ -168,7 +170,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
   // Build initial state: page from URL + saved sync room from localStorage
   const initialState = useMemo(() => {
     const state: Record<string, unknown> = {};
@@ -237,6 +239,11 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
             initialState={initialState}
             permissions={permissions}
             importResolver={importResolver}
+            functions={
+              assetResolver
+                ? { asset: (...args: unknown[]) => assetResolver(String(args[0] ?? '')) }
+                : undefined
+            }
             logicBasePath={logicBasePath}
             preIncludedLogicPaths={preIncludedLogicPaths}
             permissionConfig={permissionConfig}

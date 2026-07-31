@@ -64,6 +64,7 @@ import {
   loadXDBData,
   processBundle,
   createImportResolver,
+  createAssetResolver,
   extractIconDataUrl,
   extractPermissions,
   requestedCapabilities,
@@ -161,6 +162,8 @@ interface OpenTab {
   permissions?: import('@softn/core').AppPermissions;
   permissionConfig?: PermissionConfig;
   importResolver?: (path: string) => Promise<string | null>;
+  /** Turns a bundle-relative asset path into a URL the browser can load. */
+  assetResolver?: (assetPath: string) => string;
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
   serverUrl?: string;
@@ -490,6 +493,7 @@ function App(): React.ReactElement {
           permissions: manifest.permissions,
           permissionConfig: permissionConfig || undefined,
           importResolver,
+          assetResolver: createAssetResolver(binaryFiles, textFiles),
           logicBasePath,
           preIncludedLogicPaths,
           serverUrl,
@@ -1071,6 +1075,7 @@ function App(): React.ReactElement {
               initialPage={tab.initialPage}
               permissions={tab.permissions}
               importResolver={tab.importResolver}
+              assetResolver={tab.assetResolver}
               logicBasePath={tab.logicBasePath}
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
               permissionConfig={tab.permissionConfig}
