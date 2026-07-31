@@ -204,6 +204,32 @@ function buildBundle(bundleName) {
   const outputPath = path.join(bundlesDir, `${bundleName}.softn`);
   fs.writeFileSync(outputPath, bundleData);
 
+  // And to the directory the runtime actually serves.
+  //
+  // These two were synchronised by hand, and five of eleven bundles had drifted
+  // apart. That is not cosmetic: GlamourStudio's source declared a `sync`
+  // permission its shipped copy did not carry, so the bundle users actually ran
+  // was replicating their database under a permission it never declared. A
+  // build step that writes one copy and trusts a human to place the other will
+  // drift again, so it writes both.
+  // index.json decides what ships, so building a bundle cannot quietly add a
+  // demo to the shelf — only refresh one already on it.
+  const servedDir = path.join(__dirname, '..', '..', 'softn-web', 'public', 'demos');
+  const indexPath = path.join(servedDir, 'index.json');
+  if (fs.existsSync(indexPath)) {
+    let listed = [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+      listed = Array.isArray(parsed) ? parsed : parsed.demos || [];
+    } catch {
+      console.warn('  (demos/index.json is unreadable; not refreshing the served copy)');
+    }
+    if (listed.some((entry) => entry && entry.file === `${bundleName}.softn`)) {
+      fs.writeFileSync(path.join(servedDir, `${bundleName}.softn`), bundleData);
+      console.log(`Served copy:    demos/${bundleName}.softn`);
+    }
+  }
+
   console.log(`Bundle created: ${outputPath}`);
   console.log(`Size: ${(bundleData.length / 1024).toFixed(2)} KB`);
   console.log('Contents:');
