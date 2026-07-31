@@ -22,6 +22,9 @@ export type { DraggableProps, DragPosition, DragBounds } from './Draggable';
 export { SortableList } from './SortableList';
 export type { SortableListProps } from './SortableList';
 
+export { PanView } from './PanView';
+export type { PanViewProps } from './PanView';
+
 export { Sprite } from './Sprite';
 export type { SpriteProps } from './Sprite';
 

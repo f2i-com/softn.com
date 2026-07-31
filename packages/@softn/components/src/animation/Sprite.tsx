@@ -19,7 +19,11 @@ export interface SpriteProps {
   columns?: number;
   /** Number of rows in the sprite sheet (direction rows) */
   rows?: number;
-  /** Row index for direction (0=down, 1=left, 2=right, 3=up) */
+  /**
+   * Row index into the sheet. Which direction each row faces is the sheet's
+   * business, not this component's — the packs differ, and a stated convention
+   * here reads as a promise. Check the sheet.
+   */
   row?: number;
   /** Column offset for color variant (variantIndex × columns) */
   colOffset?: number;

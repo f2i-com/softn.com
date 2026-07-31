@@ -80,6 +80,7 @@ export const CATEGORIES: Category[] = [
       'Typewriter',
       'Draggable',
       'SortableList',
+      'PanView',
       'Sprite',
       'TileMap',
     ],
