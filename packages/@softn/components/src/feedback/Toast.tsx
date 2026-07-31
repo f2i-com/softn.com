@@ -158,6 +158,9 @@ export function Toast({
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
   const remainingTimeRef = useRef<number>(duration);
+  // Always the latest onClose, without making the countdown depend on its identity.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const styles = variantStyles[variant];
 
   useEffect(() => {
@@ -181,7 +184,7 @@ export function Toast({
 
         if (newRemaining <= 0) {
           setVisible(false);
-          onClose?.();
+          onCloseRef.current?.();
           if (timerRef.current) clearInterval(timerRef.current);
         } else {
           const newProgress = (newRemaining / duration) * 100;
@@ -207,7 +210,15 @@ export function Toast({
       // zero and the toast vanished the instant the pointer left. That is the
       // exact opposite of what pause-on-hover is for.
     };
-  }, [visible, duration, isPaused, onClose]);
+    // onClose is deliberately absent from these dependencies. An inline arrow
+    // passed as onClose is a new function on every parent render, so listing it
+    // tore the interval down and started a fresh one — resetting startTimeRef
+    // while remainingTimeRef still held the full duration. Any parent
+    // re-rendering faster than the duration restarted the countdown forever,
+    // and a fixed, z-index 1100 toast sat over the corner of the app swallowing
+    // clicks until it was dismissed by hand. It is read through a ref instead,
+    // the way Typewriter already does.
+  }, [visible, duration, isPaused]);
 
   const handleMouseEnter = useCallback(() => {
     setIsHovered(true);
