@@ -239,11 +239,26 @@ SoftN applications are distributed as `.softn` bundles (ZIP archives).
 ```
 MyApp.softn (ZIP archive)
 +-- manifest.json          # App metadata and configuration
++-- permission.json        # Capabilities the app needs, and what the user approves
 +-- ui/main.ui             # Main entry point
 +-- logic/main.logic       # Application logic
++-- server/*.logic         # Optional: routes run by softn-server, not the browser
 +-- xdb/*.xdb              # Collection data (JSON)
 +-- assets/*               # Images, CSS, etc.
 ```
+
+`permission.json` is not optional in practice. The runtime denies every gated
+capability — network, camera, filesystem, AI, GPU and peer-to-peer sync — to a
+bundle that does not declare it, and the consent prompt is built from what it
+declares, so an app that ships without one can run but cannot reach the host:
+
+```json
+{ "permissions": { "net": { "enabled": true, "allowed_hosts": ["api.example.com"] } } }
+```
+
+An app's identity is a digest of its bundle, not the name in its manifest — two
+bundles calling themselves the same thing are two apps, with separate databases
+and separate grants.
 
 ---
 
@@ -393,8 +408,10 @@ npm run dev:desktop
 cd apps/softn-builder && npm run tauri dev
 ```
 
-Rust is only needed for the two Tauri shells and for recompiling the scripting
-engine. The four browser apps need Node alone.
+Rust is needed for the two Tauri shells, for `softn-server` (the host that runs a
+bundle's `server/` routes and backs XDB sync), and for recompiling the scripting
+engine. The four browser apps — the landing page, the runtime, the builder and
+Studio — need Node alone.
 
 ### Key File Paths
 
