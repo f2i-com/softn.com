@@ -283,6 +283,22 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     Array.from(seedData.entries()).map(([k, v]) => `${k}: ${v.length} records`)
   );
 
+  // Turn the reference names the exporter wrote back into this session's entity
+  // ids. Every id here was generated a moment ago, so a reference stored as an
+  // id would point at an entity from a previous run — which is to say, nothing.
+  // A name that matches nothing is dropped rather than left dangling, so the
+  // picker shows "no collection selected" instead of silently pointing nowhere.
+  const entityIdByName = new Map(entities.map((e) => [e.name, e.id]));
+  for (const entity of entities) {
+    entity.fields = entity.fields.map((field) => {
+      if (!field.refEntity) return field;
+      // A name that matches no collection is dropped rather than kept as a
+      // dangling pointer, so the picker reads as "nothing selected" instead of
+      // silently referring to something that is not there.
+      return { ...field, refEntity: entityIdByName.get(field.refEntity) };
+    });
+  }
+
   if (warnings.length > 0) {
     console.warn('[bundleLoader] Warnings:', warnings);
   }
