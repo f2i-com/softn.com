@@ -667,10 +667,18 @@ function App() {
       const updatedFilesState = useFilesStore.getState();
 
       // 2. Build collections from schema entities (same logic as ExportDialog)
+      // refEntity holds an entity ID, and IDs are generated fresh every time a
+      // bundle is opened — so a reference written as an id points at nothing the
+      // moment the project is reopened. Names survive the round trip; the loader
+      // maps them back. Without this a "supplier" field came back referencing an
+      // entity that no longer exists, and its picker rendered empty.
+      const entityNameById = new Map(schemaState.entities.map((e) => [e.id, e.name]));
       const schemaCollections: import('./types/builder').CollectionDef[] = schemaState.entities.map((entity) => ({
         name: entity.name,
         alias: entity.alias,
-        fields: entity.fields,
+        fields: entity.fields.map((f) =>
+          f.refEntity ? { ...f, refEntity: entityNameById.get(f.refEntity) ?? f.refEntity } : f
+        ),
         seedData: schemaState.seedData.get(entity.id) || [],
       }));
       const schemaNames = new Set(schemaCollections.map((c) => c.name));
