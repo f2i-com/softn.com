@@ -18,7 +18,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: '8px 16px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -26,7 +26,7 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontWeight: 600,
     fontSize: 13,
-    color: '#1e293b',
+    color: '#14181d',
   },
   titleContainer: {
     display: 'flex',
@@ -41,7 +41,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   hint: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: '#656e7c',
   },
   editorWrapper: {
     flex: 1,

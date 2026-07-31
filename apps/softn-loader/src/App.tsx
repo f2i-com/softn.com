@@ -22,6 +22,37 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 // Platform detection
 const isMobile = typeof __ANDROID__ !== 'undefined' && __ANDROID__;
 
+/**
+ * The loader's chrome, in softn.com's palette.
+ *
+ * This app used to wear stone-and-blue — a warm near-black under a bright blue
+ * gradient logo — which belonged to nothing else in the project. What the user
+ * sees before a bundle opens is the whole product's first impression on the
+ * desktop, so it uses the same ground, the same two accents and the same faces
+ * as the landing page: coral marks the language, mint marks the machine.
+ *
+ * These are the loader's own chrome only. Once a bundle is open the app inside
+ * it paints itself, and nothing here reaches into it.
+ */
+const LOADER = {
+  bg: '#101317',
+  panel: '#161a20',
+  inset: '#1d222a',
+  border: '#262c36',
+  text: '#f2f0ec',
+  muted: '#8b94a2',
+  dim: '#838c9a',
+  coral: '#ff8a4c',
+  coralGlow: 'rgba(255,138,76,0.16)',
+  mint: '#35e0c0',
+  // Lifted off the card rather than cut into it — the same value Studio's Mark
+  // uses. A tile darker than the surface it sits on reads as a hole.
+  markTile: '#1d222a',
+  display: "'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif",
+  body: "'IBM Plex Sans', system-ui, -apple-system, sans-serif",
+  mono: "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+} as const;
+
 // Types for bundle content
 interface BundleManifest {
   name: string;
@@ -718,49 +749,52 @@ function App(): React.ReactElement {
             alignItems: 'center',
             height: '100vh',
             width: '100vw',
-            background: isDragOver
-              ? 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)'
-              : 'linear-gradient(135deg, #0c0a09 0%, #1c1917 100%)',
+            // softn.com's ground, not the stone-and-blue this app used to wear.
+            background: LOADER.bg,
+            fontFamily: LOADER.body,
             padding: '2rem',
             transition: 'background 0.2s ease',
           }}
         >
           <Card
             style={{
-              maxWidth: '500px',
+              maxWidth: '460px',
               width: '100%',
-              padding: '3rem',
-              background: '#1c1917',
-              border: isDragOver ? '2px dashed #3b82f6' : '1px solid rgba(255,255,255,0.1)',
-              borderRadius: '16px',
+              padding: '2.75rem 2.5rem',
+              background: LOADER.panel,
+              // Coral on drag, because a drop target is the language accepting a
+              // file, not a status light. Mint is reserved for things running.
+              border: isDragOver ? `2px dashed ${LOADER.coral}` : `1px solid ${LOADER.border}`,
+              borderRadius: '18px',
               textAlign: 'center',
-              transition: 'border 0.2s ease, transform 0.2s ease',
-              transform: isDragOver ? 'scale(1.02)' : 'scale(1)',
+              boxShadow: isDragOver ? `0 24px 60px ${LOADER.coralGlow}` : '0 20px 48px rgba(0,0,0,0.34)',
+              transition: 'border 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease',
+              transform: isDragOver ? 'scale(1.015)' : 'scale(1)',
             }}
           >
             <Stack direction="vertical" gap="lg" style={{ alignItems: 'center' }}>
-              <svg width="80" height="80" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ filter: 'drop-shadow(0 8px 24px rgba(59, 130, 246, 0.3))' }}>
-                <defs>
-                  <linearGradient id="loader-logo" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                    <stop offset="0%" stopColor="#60a5fa"/>
-                    <stop offset="100%" stopColor="#2563eb"/>
-                  </linearGradient>
-                </defs>
-                <rect width="32" height="32" rx="8" fill="url(#loader-logo)"/>
-                <path d="M10.5 9C20 9 21 16 16 16S12 23 21.5 23" fill="none" stroke="#fff" strokeWidth="2.8" strokeLinecap="round"/>
-                <circle cx="10.5" cy="9" r="2.5" fill="#fff"/>
-                <circle cx="21.5" cy="23" r="2.5" fill="#fff"/>
+              {/* The SoftN mark, drawn from the same 32-unit grid as the site
+                  favicon and the icons: coral brackets because they are the
+                  language, a mint dot because it is the thing that runs. */}
+              <svg width="72" height="72" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SoftN">
+                <rect width="32" height="32" rx="7" fill={LOADER.markTile} />
+                <path d="M9 11.5 5.5 16 9 20.5" fill="none" stroke={LOADER.coral} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M23 11.5 26.5 16 23 20.5" fill="none" stroke={LOADER.coral} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                <circle cx="16" cy="16" r="2.8" fill={LOADER.mint} />
               </svg>
               <Stack direction="vertical" gap="sm" style={{ alignItems: 'center' }}>
-                <Text style={{ fontSize: '1.75rem', fontWeight: 'bold', color: 'white' }}>
+                <Text style={{ fontFamily: LOADER.display, fontSize: '2rem', fontWeight: 600, letterSpacing: '-0.03em', color: LOADER.text }}>
                   SoftN
                 </Text>
-                <Text style={{ color: '#a8a29e', fontSize: '0.875rem' }}>Application Runtime</Text>
+                <Text style={{ fontFamily: LOADER.mono, fontSize: '0.6875rem', letterSpacing: '0.14em', textTransform: 'uppercase', color: LOADER.dim }}>
+                  Application Runtime
+                </Text>
               </Stack>
               <Text
                 style={{
-                  color: isDragOver ? '#3b82f6' : '#78716c',
-                  lineHeight: 1.6,
+                  color: isDragOver ? LOADER.coral : LOADER.muted,
+                  fontSize: '0.9375rem',
+                  lineHeight: 1.65,
                   transition: 'color 0.2s ease',
                 }}
               >
@@ -775,25 +809,38 @@ function App(): React.ReactElement {
                   variant="primary"
                   onClick={openFilePicker}
                   style={{
-                    marginTop: '0.5rem',
-                    padding: '0.625rem 1.5rem',
+                    marginTop: '0.25rem',
+                    padding: '0.75rem 1.75rem',
                     fontSize: '0.9375rem',
+                    fontWeight: 600,
+                    fontFamily: LOADER.body,
+                    // Paper on ink, the same primary the landing page uses: the
+                    // one thing to press should not be another shade of the card.
+                    background: LOADER.text,
+                    color: LOADER.bg,
+                    border: 'none',
+                    borderRadius: '10px',
+                    // Comfortable for a finger on the Android build, where this
+                    // button is the only way in.
+                    minHeight: 44,
                   }}
                 >
-                  Open File
+                  Open a .softn file
                 </Button>
               )}
               <Box
                 style={{
-                  marginTop: '0.5rem',
-                  padding: '1rem',
-                  background: '#292524',
-                  borderRadius: '8px',
+                  marginTop: '0.25rem',
+                  padding: '0.875rem 1rem',
+                  background: LOADER.inset,
+                  border: `1px solid ${LOADER.border}`,
+                  borderRadius: '10px',
                   width: '100%',
                 }}
               >
-                <Text style={{ color: '#a8a29e', fontSize: '0.75rem' }}>
-                  SoftN applications are self-contained bundles that include UI, logic, and data.
+                <Text style={{ color: LOADER.dim, fontSize: '0.8125rem', lineHeight: 1.55 }}>
+                  A <span style={{ fontFamily: LOADER.mono, color: LOADER.coral }}>.softn</span> file is
+                  one self-contained app — its interface, its logic and its data in a single bundle.
                 </Text>
               </Box>
             </Stack>

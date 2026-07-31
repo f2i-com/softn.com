@@ -14,14 +14,14 @@ const styles: Record<string, React.CSSProperties> = {
     width: '100%',
     height: '100%',
     background: '#fff',
-    borderLeft: '1px solid #e2e8f0',
+    borderLeft: '1px solid #e4e9f0',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
   },
   header: {
     padding: '12px 16px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -30,12 +30,12 @@ const styles: Record<string, React.CSSProperties> = {
   headerTitle: {
     fontWeight: 600,
     fontSize: 14,
-    color: '#1e293b',
+    color: '#14181d',
   },
   dockBtn: {
-    border: '1px solid #cbd5e1',
+    border: '1px solid #d5dce5',
     background: '#ffffff',
-    color: '#64748b',
+    color: '#5a6472',
     borderRadius: 6,
     fontSize: 11,
     padding: '3px 7px',
@@ -52,28 +52,28 @@ const styles: Record<string, React.CSSProperties> = {
   empty: {
     padding: 24,
     textAlign: 'center' as const,
-    color: '#94a3b8',
+    color: '#656e7c',
     fontSize: 13,
   },
   componentInfo: {
     marginBottom: 16,
     padding: 12,
-    background: '#f8fafc',
+    background: '#f4f6f9',
     borderRadius: 8,
   },
   componentName: {
     fontSize: 16,
     fontWeight: 600,
-    color: '#1e293b',
+    color: '#14181d',
     marginBottom: 4,
   },
   componentDescription: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#5a6472',
   },
   section: {
     marginBottom: 16,
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 8,
     overflow: 'hidden',
     background: '#fff',
@@ -84,21 +84,21 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     gap: 8,
     padding: '8px 10px',
-    background: '#f8fafc',
-    borderBottom: '1px solid #e2e8f0',
+    background: '#f4f6f9',
+    borderBottom: '1px solid #e4e9f0',
   },
   sectionTitle: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#64748b',
+    color: '#5a6472',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
   },
   sectionToggle: {
-    border: '1px solid #cbd5e1',
+    border: '1px solid #d5dce5',
     background: '#fff',
     borderRadius: 6,
-    color: '#64748b',
+    color: '#5a6472',
     fontSize: 11,
     width: 22,
     height: 20,
@@ -122,7 +122,7 @@ const styles: Record<string, React.CSSProperties> = {
   input: {
     width: '100%',
     padding: '8px 10px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 6,
     fontSize: 13,
     outline: 'none',
@@ -130,7 +130,7 @@ const styles: Record<string, React.CSSProperties> = {
   select: {
     width: '100%',
     padding: '8px 10px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 6,
     fontSize: 13,
     outline: 'none',
@@ -149,7 +149,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 40,
     height: 32,
     padding: 2,
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 4,
     cursor: 'pointer',
   },
@@ -161,7 +161,7 @@ const styles: Record<string, React.CSSProperties> = {
   textarea: {
     width: '100%',
     padding: '8px 10px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 6,
     fontSize: 13,
     outline: 'none',
@@ -172,12 +172,12 @@ const styles: Record<string, React.CSSProperties> = {
   fieldHint: {
     marginTop: 4,
     fontSize: 11,
-    color: '#64748b',
+    color: '#5a6472',
   },
   fieldSubLabel: {
     display: 'block',
     fontSize: 11,
-    color: '#64748b',
+    color: '#5a6472',
     marginBottom: 4,
   },
 };
@@ -224,7 +224,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
             checked={Boolean(value)}
             onChange={(e) => onChange(e.target.checked)}
           />
-          <span style={{ fontSize: 12, color: '#64748b' }}>{value ? 'Yes' : 'No'}</span>
+          <span style={{ fontSize: 12, color: '#5a6472' }}>{value ? 'Yes' : 'No'}</span>
         </div>
       );
 
@@ -301,7 +301,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
             placeholder="functionName()"
             title="Enter a function name from Logic tab"
           />
-          <small style={{ fontSize: 10, color: '#94a3b8', marginTop: 2, display: 'block' }}>
+          <small style={{ fontSize: 10, color: '#656e7c', marginTop: 2, display: 'block' }}>
             Function defined in Logic tab
           </small>
         </div>

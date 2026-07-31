@@ -35,7 +35,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: '16px 24px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -43,13 +43,13 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontSize: 18,
     fontWeight: 600,
-    color: '#1e293b',
+    color: '#14181d',
   },
   closeButton: {
     background: 'transparent',
     border: 'none',
     fontSize: 24,
-    color: '#94a3b8',
+    color: '#656e7c',
     cursor: 'pointer',
     padding: 4,
     lineHeight: 1,
@@ -70,7 +70,7 @@ const styles: Record<string, React.CSSProperties> = {
   input: {
     width: '100%',
     padding: '10px 12px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 8,
     fontSize: 14,
     outline: 'none',
@@ -78,7 +78,7 @@ const styles: Record<string, React.CSSProperties> = {
   textarea: {
     width: '100%',
     padding: '10px 12px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 8,
     fontSize: 14,
     outline: 'none',
@@ -88,7 +88,7 @@ const styles: Record<string, React.CSSProperties> = {
   select: {
     width: '100%',
     padding: '10px 12px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 8,
     fontSize: 14,
     outline: 'none',
@@ -96,7 +96,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   footer: {
     padding: '16px 24px',
-    borderTop: '1px solid #e2e8f0',
+    borderTop: '1px solid #e4e9f0',
     display: 'flex',
     justifyContent: 'flex-end',
     gap: 12,
@@ -111,12 +111,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   cancelButton: {
     background: 'transparent',
-    border: '1px solid #e2e8f0',
-    color: '#64748b',
+    border: '1px solid #e4e9f0',
+    color: '#5a6472',
   },
   exportButton: {
-    background: '#3b82f6',
-    border: '1px solid #3b82f6',
+    background: '#c2410c',
+    border: '1px solid #c2410c',
     color: '#fff',
   },
   exportButtonDisabled: {
@@ -126,7 +126,7 @@ const styles: Record<string, React.CSSProperties> = {
   progress: {
     textAlign: 'center' as const,
     padding: 24,
-    color: '#64748b',
+    color: '#5a6472',
   },
   success: {
     textAlign: 'center' as const,

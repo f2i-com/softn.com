@@ -14,7 +14,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    background: '#f1f5f9',
+    background: '#eef1f6',
     padding: 24,
   },
   frame: {
@@ -60,7 +60,7 @@ export function PreviewFrame({ width, height }: PreviewFrameProps) {
           body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             line-height: 1.5;
-            color: #1e293b;
+            color: #14181d;
             background: #fff;
           }
           .preview-container {
@@ -69,11 +69,11 @@ export function PreviewFrame({ width, height }: PreviewFrameProps) {
           .preview-placeholder {
             padding: 24px;
             text-align: center;
-            color: #94a3b8;
+            color: #656e7c;
             font-size: 14px;
           }
           pre {
-            background: #f8fafc;
+            background: #f4f6f9;
             padding: 16px;
             border-radius: 8px;
             overflow: auto;

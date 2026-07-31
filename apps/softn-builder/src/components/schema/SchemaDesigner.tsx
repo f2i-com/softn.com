@@ -28,7 +28,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
-    background: '#f8fafc',
+    background: '#f4f6f9',
   },
   main: {
     display: 'flex',
@@ -41,7 +41,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   toolbar: {
     padding: '8px 16px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     background: '#fff',
     display: 'flex',
     gap: 12,
@@ -50,12 +50,12 @@ const styles: Record<string, React.CSSProperties> = {
   toolbarTitle: {
     fontWeight: 600,
     fontSize: 14,
-    color: '#1e293b',
+    color: '#14181d',
     marginRight: 16,
   },
   btn: {
     padding: '6px 12px',
-    background: '#3b82f6',
+    background: '#c2410c',
     color: '#fff',
     border: 'none',
     borderRadius: 4,
@@ -67,13 +67,13 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
   },
   btnSecondary: {
-    background: '#f1f5f9',
+    background: '#eef1f6',
     color: '#374151',
   },
   hint: {
     marginLeft: 'auto',
     fontSize: 11,
-    color: '#94a3b8',
+    color: '#656e7c',
   },
 };
 
@@ -116,7 +116,7 @@ export function SchemaDesigner() {
         label: rel.type,
         type: 'smoothstep',
         animated: true,
-        style: { stroke: '#94a3b8' },
+        style: { stroke: '#656e7c' },
       })),
     [relationships]
   );
@@ -147,7 +147,7 @@ export function SchemaDesigner() {
         label: rel.type,
         type: 'smoothstep',
         animated: true,
-        style: { stroke: '#94a3b8' },
+        style: { stroke: '#656e7c' },
       }))
     );
   }, [relationships, setEdges]);
@@ -252,11 +252,11 @@ export function SchemaDesigner() {
             snapToGrid
             snapGrid={[16, 16]}
           >
-            <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#cbd5e1" />
+            <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d5dce5" />
             <Controls />
             <MiniMap
-              nodeColor={(node) => (node.selected ? '#3b82f6' : '#94a3b8')}
-              style={{ background: '#f8fafc' }}
+              nodeColor={(node) => (node.selected ? '#c2410c' : '#656e7c')}
+              style={{ background: '#f4f6f9' }}
             />
           </ReactFlow>
         </div>

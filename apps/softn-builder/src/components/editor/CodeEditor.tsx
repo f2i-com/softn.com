@@ -91,7 +91,7 @@ export function CodeEditor({
             alignItems: 'center',
             justifyContent: 'center',
             height: '100%',
-            color: '#94a3b8',
+            color: '#656e7c',
           }}
         >
           Loading editor...

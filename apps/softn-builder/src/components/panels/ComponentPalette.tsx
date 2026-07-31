@@ -16,21 +16,21 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     width: 260,
     background: '#ffffff',
-    borderRight: '1px solid #e2e8f0',
+    borderRight: '1px solid #e4e9f0',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
   },
   header: {
     padding: '12px 16px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     fontWeight: 700,
     fontSize: 14,
-    color: '#0f172a',
-    background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+    color: '#0f1216',
+    background: 'linear-gradient(180deg, #ffffff 0%, #f4f6f9 100%)',
     gap: 8,
   },
   headerLeft: {
@@ -45,16 +45,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   badge: {
     fontSize: 11,
-    color: '#1d4ed8',
+    color: '#7c2d12',
     background: '#dbeafe',
     borderRadius: 999,
     padding: '2px 8px',
     fontWeight: 700,
   },
   dockBtn: {
-    border: '1px solid #cbd5e1',
+    border: '1px solid #d5dce5',
     background: '#ffffff',
-    color: '#64748b',
+    color: '#5a6472',
     borderRadius: 6,
     fontSize: 11,
     padding: '3px 7px',
@@ -63,16 +63,16 @@ const styles: Record<string, React.CSSProperties> = {
   },
   search: {
     padding: '8px 12px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
   },
   searchInput: {
     width: '100%',
     padding: '9px 12px',
-    border: '1px solid #cbd5e1',
+    border: '1px solid #d5dce5',
     borderRadius: 8,
     fontSize: 13,
     outline: 'none',
-    background: '#f8fafc',
+    background: '#f4f6f9',
   },
   list: {
     flex: 1,
@@ -86,7 +86,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 16px',
     fontSize: 11,
     fontWeight: 700,
-    color: '#475569',
+    color: '#3d444f',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.06em',
     cursor: 'pointer',
@@ -115,14 +115,14 @@ const componentStyle: React.CSSProperties = {
   alignItems: 'center',
   gap: 8,
   fontSize: 13,
-  color: '#0f172a',
+  color: '#0f1216',
   transition: 'all 0.15s',
   userSelect: 'none',
   border: '1px solid transparent',
 };
 
 const componentHoverStyle: React.CSSProperties = {
-  background: '#f1f5f9',
+  background: '#eef1f6',
 };
 
 const componentDraggingStyle: React.CSSProperties = {
@@ -134,7 +134,7 @@ const iconChipStyle: React.CSSProperties = {
   width: 20,
   height: 20,
   borderRadius: 6,
-  background: '#e2e8f0',
+  background: '#e4e9f0',
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -327,7 +327,7 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
               <ComponentItem key={comp.name} component={comp} />
             ))}
             {filteredComponents.length === 0 && (
-              <div style={{ padding: 16, color: '#94a3b8', fontSize: 13 }}>No components found</div>
+              <div style={{ padding: 16, color: '#656e7c', fontSize: 13 }}>No components found</div>
             )}
           </div>
         ) : (

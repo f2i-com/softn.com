@@ -33,9 +33,9 @@ const typeStyles: Record<Notification['type'], React.CSSProperties> = {
     borderLeft: '4px solid #b45309',
   },
   info: {
-    background: '#2563eb',
+    background: '#9a3412',
     color: '#fff',
-    borderLeft: '4px solid #1d4ed8',
+    borderLeft: '4px solid #7c2d12',
   },
 };
 
