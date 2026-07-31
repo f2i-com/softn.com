@@ -105,12 +105,35 @@ function currentUrl(): string {
  * and a bundle arriving over the network racing a bundle arriving from the
  * cache would leave whichever lost holding a tab that never finishes loading.
  */
+/**
+ * Put the address back after a static host bounced it here.
+ *
+ * `/web/app/Notes` is a route, not a file, so a host with no SPA rewrite serves
+ * its 404 page — which forwards the original path as `?softn-restore=`. This
+ * restores it before anything reads the URL, so the app sees the address the
+ * visitor actually typed and the address bar shows it. Same-origin paths only:
+ * the value arrives from the query string, so it is not ours to trust.
+ */
+function restoreForwardedPath(): void {
+  const params = new URLSearchParams(window.location.search);
+  const forwarded = params.get('softn-restore');
+  if (!forwarded) return;
+  // A leading single slash and nothing that could read as another origin.
+  if (!forwarded.startsWith('/') || forwarded.startsWith('//')) return;
+  try {
+    window.history.replaceState(null, '', forwarded);
+  } catch {
+    // Some embedded contexts refuse replaceState; the launcher still opens.
+  }
+}
+
 function readEntry(): {
   openValue: string | null;
   appName: string | null;
   page: string | null;
   embedded: boolean;
 } {
+  restoreForwardedPath();
   const params = new URLSearchParams(window.location.search);
   const embedded = params.get('embed') === '1';
   const openValue = params.get('open');
