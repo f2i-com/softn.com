@@ -135,6 +135,19 @@ export async function exportBundle(options: BundleOptions): Promise<Uint8Array> 
   for (const col of options.collections) {
     const xdbFile = {
       collection: col.name,
+      // The schema itself, written down rather than left to be guessed.
+      //
+      // A .softn had nowhere to record what a collection's fields ARE, so
+      // reopening a project rebuilt them by sniffing the first seed row: a
+      // collection with no rows yet came back with no fields at all, every
+      // field became optional, select options and references were gone, and
+      // the alias was replaced by the collection name. The runtime ignores
+      // anything it does not know, so this costs nothing to add and is what
+      // makes save-and-reopen lossless.
+      schema: {
+        alias: col.alias ?? col.name,
+        fields: col.fields ?? [],
+      },
       records: col.seedData.map((data, i) => ({
         id: `seed-${i}`,
         collection: col.name,

@@ -201,9 +201,18 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       const records = xdbData.records || [];
       debug(`[bundleLoader] Loaded XDB: ${collectionName} with ${records.length} records`);
 
-      // Extract field schema from seed data
-      const fields: SchemaField[] = [];
-      if (records.length > 0) {
+      // Prefer the schema the bundle recorded; fall back to sniffing the first
+      // seed row only for bundles written before it was recorded at all.
+      //
+      // Inference cannot recover what it never saw: `required` came back false
+      // for everything, select options and references were dropped, and a
+      // collection with no rows yet came back with no fields — so a save and
+      // reopen silently emptied half the work the Data view exists to do.
+      const declared = (xdbData as { schema?: { alias?: string; fields?: SchemaField[] } }).schema;
+      let fields: SchemaField[] = [];
+      if (declared && Array.isArray(declared.fields) && declared.fields.length > 0) {
+        fields = declared.fields;
+      } else if (records.length > 0) {
         const sampleData = records[0].data || {};
         for (const [key, value] of Object.entries(sampleData)) {
           fields.push({
@@ -220,7 +229,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       entities.push({
         id: entityId,
         name: collectionName,
-        alias: collectionName,
+        alias: declared?.alias || collectionName,
         fields,
         position: { x: 100 + entities.length * 300, y: 100 },
       });
