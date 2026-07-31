@@ -723,7 +723,9 @@ function renderElement(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       props.onChange = (eventOrValue: any) => {
         // Extract path from expression (supports complex paths)
-        const path = getExpressionPath(binding.expression);
+        // The context carries the loop variables, so an index inside #each
+        // resolves to the row actually being edited.
+        const path = getExpressionPath(binding.expression, context);
         if (path) {
           const rootVar = path.split('.')[0].split('[')[0]; // Handle array access
 
@@ -1500,13 +1502,13 @@ export function evaluateExpression(
  * Get the path string from an expression (for state updates)
  * Supports complex paths including computed properties and optional chaining
  */
-function getExpressionPath(expr: Expression): string | null {
+function getExpressionPath(expr: Expression, context?: SoftNRenderContext): string | null {
   if (expr.type === 'Identifier') {
     return expr.name;
   }
 
   if (expr.type === 'MemberExpression') {
-    const objectPath = getExpressionPath(expr.object);
+    const objectPath = getExpressionPath(expr.object, context);
     if (!objectPath) return null;
 
     if (!expr.computed && expr.property.type === 'Identifier') {
@@ -1525,7 +1527,23 @@ function getExpressionPath(expr: Expression): string | null {
         }
       }
       if (expr.property.type === 'Identifier') {
-        // Dynamic index - use placeholder notation
+        // Resolve the index, do not name it.
+        //
+        // This returned `todos[i]` — the identifier's spelling — so a :bind
+        // inside `#each (todo, i in todos)` wrote every row's edit to a literal
+        // key called "i". The real row was never touched and a junk entry
+        // appeared beside the list, so typing in the second row changed nothing
+        // visible and quietly corrupted the data behind it.
+        if (context) {
+          const index = evaluateExpression(expr.property, context);
+          if (typeof index === 'number' || typeof index === 'string') {
+            return typeof index === 'number'
+              ? `${objectPath}[${index}]`
+              : `${objectPath}["${index}"]`;
+          }
+        }
+        // Without a context there is nothing to resolve against; the caller
+        // gets the old placeholder rather than a silently wrong path.
         return `${objectPath}[${expr.property.name}]`;
       }
     }
