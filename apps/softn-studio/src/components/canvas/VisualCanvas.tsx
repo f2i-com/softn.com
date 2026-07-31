@@ -346,12 +346,18 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     if (typeof window === 'undefined' || !window.localStorage) return;
     for (const [collection, records] of Object.entries(initialData)) {
       try {
-        window.localStorage.setItem(`xdb:${collection}`, JSON.stringify(records));
+        // `xdb:<appId>:<collection>`, which is the shape getXDB(previewAppId)
+        // reads. This wrote `xdb:<collection>` — the un-namespaced default —
+        // so the preview's seed data went into the origin's shared bucket that
+        // any softn.com app running without an appId picks up, while the
+        // preview itself, which does pass one, never read a byte of it. Leaky
+        // in one direction and useless in the other.
+        window.localStorage.setItem(`xdb:${previewAppId}:${collection}`, JSON.stringify(records));
       } catch {
         // ignore local preview storage failures
       }
     }
-  }, [initialData]);
+  }, [initialData, previewAppId]);
 
   const resolveAssetUrl = useCallback((assetPath: string) => {
     if (assetPath.startsWith('data:') || assetPath.startsWith('blob:')) return assetPath;
