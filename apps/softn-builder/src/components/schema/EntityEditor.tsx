@@ -277,6 +277,7 @@ export function EntityEditor() {
   } = useSchemaStore();
 
   const entity = entities.find((e) => e.id === selectedEntityId);
+  const keyFieldId = entity?.fields.find((f) => f.name === 'id')?.id;
 
   if (!entity) {
     return (
@@ -328,6 +329,9 @@ export function EntityEditor() {
         <div style={styles.section}>
           <div style={styles.sectionTitle}>Fields</div>
 
+          {/* The entity's key field, decided once by identity. If a schema has
+              somehow ended up with two fields called "id", only the first is
+              protected — the duplicate stays editable so it can be fixed. */}
           {entity.fields.map((field) => (
             <FieldEditor
               key={field.id}
@@ -336,7 +340,15 @@ export function EntityEditor() {
               entities={entities}
               onUpdate={(updates) => updateField(entity.id, field.id, updates)}
               onDelete={() => deleteField(entity.id, field.id)}
-              isIdField={field.name === 'id'}
+              // By identity, not by the text currently in the box. Deriving this
+              // from `field.name === 'id'` meant a field became the protected key
+              // field mid-keystroke: renaming `uid` to `identifier` passed through
+              // "id" on the way, at which point the input disabled itself, the
+              // browser blurred it, and the rest of the word went nowhere. The
+              // field was then stuck — a second field called "id" that could not
+              // be renamed back, retyped, or deleted, because its delete button
+              // is hidden too. The only way out was deleting the whole entity.
+              isIdField={field.id === keyFieldId}
             />
           ))}
 

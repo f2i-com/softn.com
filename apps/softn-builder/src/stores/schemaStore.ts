@@ -4,6 +4,7 @@
 
 import { create } from 'zustand';
 import type { EntityDef, SchemaField, RelationshipDef } from '../types/builder';
+import { useProjectStore } from './projectStore';
 
 function generateId(): string {
   return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -51,7 +52,34 @@ const defaultField = (name: string = 'newField'): SchemaField => ({
   required: false,
 });
 
-export const useSchemaStore = create<SchemaStore>((set, get) => ({
+/** `newField`, or `newField2`, `newField3`… so a new field never shares a name. */
+function uniqueFieldName(fields: SchemaField[], base = 'newField'): string {
+  const taken = new Set(fields.map((f) => f.name));
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}${n}`)) n += 1;
+  return `${base}${n}`;
+}
+
+export const useSchemaStore = create<SchemaStore>((set, get) => {
+  /**
+   * A schema edit is a change to the project.
+   *
+   * Not one action here told projectStore anything, so markDirty had no callers
+   * at all and isDirty never became true for schema work. The unsaved-changes
+   * guards on New and Open read that flag, so twenty minutes of entities, fields
+   * and seed rows could be discarded without the prompt ever appearing, and the
+   * title bar never showed the asterisk that would have warned anyone.
+   *
+   * Wrapping the setter rather than calling markDirty in twelve places means the
+   * thirteenth action cannot forget.
+   */
+  const edit: typeof set = (...args) => {
+    set(...(args as Parameters<typeof set>));
+    useProjectStore.getState().markDirty();
+  };
+
+  return {
   entities: [],
   relationships: [],
   selectedEntityId: null,
@@ -68,7 +96,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => ({
       position,
     };
 
-    set((state) => ({
+    edit((state) => ({
       entities: [...state.entities, entity],
       selectedEntityId: id,
     }));
@@ -77,13 +105,13 @@ export const useSchemaStore = create<SchemaStore>((set, get) => ({
   },
 
   updateEntity: (id, updates) => {
-    set((state) => ({
+    edit((state) => ({
       entities: state.entities.map((e) => (e.id === id ? { ...e, ...updates } : e)),
     }));
   },
 
   deleteEntity: (id) => {
-    set((state) => ({
+    edit((state) => ({
       entities: state.entities.filter((e) => e.id !== id),
       relationships: state.relationships.filter(
         (r) => r.sourceEntityId !== id && r.targetEntityId !== id
@@ -97,28 +125,55 @@ export const useSchemaStore = create<SchemaStore>((set, get) => ({
   },
 
   addField: (entityId) => {
-    set((state) => ({
+    edit((state) => ({
       entities: state.entities.map((e) =>
-        e.id === entityId ? { ...e, fields: [...e.fields, defaultField()] } : e
+        // Seed rows are keyed by field NAME, so two fields called newField are
+        // one column with two headers: typing in either wrote to the same cell
+        // and the second field could never hold a value of its own.
+        e.id === entityId ? { ...e, fields: [...e.fields, defaultField(uniqueFieldName(e.fields))] } : e
       ),
     }));
   },
 
   updateField: (entityId, fieldId, updates) => {
-    set((state) => ({
-      entities: state.entities.map((e) =>
+    edit((state) => {
+      const entity = state.entities.find((e) => e.id === entityId);
+      const previousName = entity?.fields.find((f) => f.id === fieldId)?.name;
+      const entities = state.entities.map((e) =>
         e.id === entityId
-          ? {
-              ...e,
-              fields: e.fields.map((f) => (f.id === fieldId ? { ...f, ...updates } : f)),
-            }
+          ? { ...e, fields: e.fields.map((f) => (f.id === fieldId ? { ...f, ...updates } : f)) }
           : e
-      ),
-    }));
+      );
+
+      // Carry the seed values over when a field is renamed. Rows are keyed by
+      // the field's NAME, so a rename used to leave every value behind on the
+      // dead key: the column blanked out on screen while the values were still
+      // written into the saved bundle under the old name, where nothing would
+      // ever read them again. It looked like deletion, and was worse — the data
+      // was still there and unreachable.
+      const nextName = updates.name;
+      if (previousName === undefined || typeof nextName !== 'string' || nextName === previousName) {
+        return { entities };
+      }
+
+      const rows = state.seedData.get(entityId);
+      if (!rows) return { entities };
+
+      const seedData = new Map(state.seedData);
+      seedData.set(
+        entityId,
+        rows.map((record) => {
+          if (!(previousName in record)) return record;
+          const { [previousName]: carried, ...rest } = record;
+          return { ...rest, [nextName]: carried };
+        })
+      );
+      return { entities, seedData };
+    });
   },
 
   deleteField: (entityId, fieldId) => {
-    set((state) => ({
+    edit((state) => ({
       entities: state.entities.map((e) =>
         e.id === entityId ? { ...e, fields: e.fields.filter((f) => f.id !== fieldId) } : e
       ),
@@ -131,19 +186,19 @@ export const useSchemaStore = create<SchemaStore>((set, get) => ({
 
   addRelationship: (relationship) => {
     const id = generateId();
-    set((state) => ({
+    edit((state) => ({
       relationships: [...state.relationships, { ...relationship, id }],
     }));
   },
 
   deleteRelationship: (id) => {
-    set((state) => ({
+    edit((state) => ({
       relationships: state.relationships.filter((r) => r.id !== id),
     }));
   },
 
   setSeedData: (entityId, data) => {
-    set((state) => {
+    edit((state) => {
       const newSeedData = new Map(state.seedData);
       newSeedData.set(entityId, data);
       return { seedData: newSeedData };
@@ -185,7 +240,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => ({
       }
     }
 
-    set((state) => {
+    edit((state) => {
       const newSeedData = new Map(state.seedData);
       const existing = newSeedData.get(entityId) || [];
       newSeedData.set(entityId, [...existing, record]);
@@ -229,4 +284,5 @@ export const useSchemaStore = create<SchemaStore>((set, get) => ({
       seedData: new Map(),
     });
   },
-}));
+  };
+});
