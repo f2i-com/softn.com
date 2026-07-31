@@ -77,15 +77,28 @@ export interface SelectProps {
   style?: React.CSSProperties;
 }
 
-// Type guard for option groups
+// Type guard for option groups.
+//
+// The object check is not decoration: `in` throws a TypeError on a primitive,
+// and this is reached from a useMemo on the render path — so `options={['red',
+// 'green']}` did not degrade, it threw during render and threw again on every
+// retry, replacing the field with an error box for good.
 function isOptionGroup(option: SelectOption | SelectOptionGroup): option is SelectOptionGroup {
-  return 'options' in option;
+  return typeof option === 'object' && option !== null && 'options' in option;
+}
+
+/** A bare string is a perfectly reasonable option, and is what SmartForm already accepts. */
+function normaliseOption(option: SelectOption | SelectOptionGroup | string | number): SelectOption | SelectOptionGroup {
+  if (typeof option === 'object' && option !== null) return option;
+  return { value: String(option), label: String(option) };
 }
 
 // Flatten options for easier searching
 function flattenOptions(options: SelectOptions): SelectOption[] {
   if (!Array.isArray(options)) return [];
-  return options.flatMap((opt) => (isOptionGroup(opt) ? opt.options : [opt]));
+  return options
+    .map(normaliseOption)
+    .flatMap((opt) => (isOptionGroup(opt) ? opt.options : [opt]));
 }
 
 const sizeConfig = {

@@ -136,11 +136,18 @@ export function DatePicker({
   const errorMessage = typeof error === 'string' ? error : undefined;
 
   useEffect(() => {
+    // When the parent supplies `value` it is the authority, including when it
+    // supplies an empty one. The `if (newDate)` guard here meant a parent could
+    // set a date but never clear it and never refuse a change: after a save that
+    // reset the form, the field kept showing the old date and the named input
+    // kept submitting it, so the screen and the app's state disagreed with
+    // nothing reporting a problem.
+    if (value === undefined) return;
     const newDate = parseDate(value);
-    if (newDate) {
-      setSelectedDate(newDate);
-      setViewDate(newDate);
-    }
+    setSelectedDate(newDate);
+    // The month on view only follows a real date; clearing should not throw the
+    // calendar back to whatever month an empty string parses as.
+    if (newDate) setViewDate(newDate);
   }, [value]);
 
   // Close on click outside
@@ -159,11 +166,14 @@ export function DatePicker({
 
   const handleDateSelect = useCallback(
     (date: Date) => {
-      setSelectedDate(date);
+      // Only move the field ourselves when nobody else is holding it. Writing
+      // internal state unconditionally is what let the control drift away from
+      // a controlling parent — it showed a date the parent had not accepted.
+      if (value === undefined) setSelectedDate(date);
       setIsOpen(false);
       onChange?.(date, formatDateForInput(date));
     },
-    [onChange]
+    [onChange, value]
   );
 
   const handleInputChange = useCallback(

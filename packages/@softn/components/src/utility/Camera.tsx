@@ -58,6 +58,8 @@ export function Camera({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  /** True once this mount (or this `active` state) is over — see startCamera. */
+  const cancelledRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recordStartRef = useRef<number>(0);
@@ -101,6 +103,18 @@ export function Camera({
         },
         audio: mode === 'video',
       });
+
+      // The await above can outlive this component: the permission prompt sits
+      // there while the user closes the modal, then they press Allow. Cleanup
+      // has already run by then, so without this the hardware turns on with
+      // nothing on screen, streamRef is dead, and no code path can ever reach
+      // the tracks to stop them — the recording indicator stays lit for the rest
+      // of the session, and every open/close cycle leaks another camera and, in
+      // video mode, another microphone.
+      if (cancelledRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
 
       streamRef.current = stream;
 
@@ -229,12 +243,18 @@ export function Camera({
 
   // Start/stop camera based on active prop and facing changes
   useEffect(() => {
+    cancelledRef.current = false;
     if (active) {
       startCamera();
     } else {
       cleanup();
     }
-    return cleanup;
+    return () => {
+      // Set before cleanup, so a getUserMedia still in flight stops its own
+      // tracks when it lands rather than handing them to a dead component.
+      cancelledRef.current = true;
+      cleanup();
+    };
   }, [active, facing, mode]);
 
   // Styles
