@@ -8,6 +8,8 @@ interface VFSState {
 
   createFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
   batchCreateFiles(entries: Array<{ path: string; content: string | Uint8Array }>, source?: 'user' | 'ai'): void;
+  /** Restore a saved project without recording it as work the user just did. */
+  hydrateFiles(entries: Array<{ path: string; content: string | Uint8Array }>): void;
   updateFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
   patchFile(path: string, search: string, replace: string, source?: 'user' | 'ai'): boolean;
   deleteFile(path: string, source?: 'user' | 'ai'): void;
@@ -59,6 +61,31 @@ export const useVFSStore = create<VFSState>((set, get) => ({
       files.set(path, file);
       const event: VFSEvent = { type: 'create', path, timestamp: Date.now(), source };
       return { files, history: capHistory([...s.history, event]) };
+    });
+  },
+
+  hydrateFiles(entries) {
+    // Restoring a saved project is not something the user did, so it is not
+    // something they can undo. batchCreateFiles was used for this, and it
+    // records a `create` event per file — so after a reload the History panel
+    // listed the whole project as recent work and three presses of Undo deleted
+    // it, file by file, with the project having existed a moment earlier and no
+    // way back. The files are placed; the history starts empty, because nothing
+    // has happened yet in this session.
+    set(() => {
+      const files = new Map<string, VFSFile>();
+      const now = Date.now();
+      for (const { path, content } of entries) {
+        files.set(path, {
+          path,
+          content,
+          mimeType: mimeFor(path),
+          lastModified: now,
+          lastModifiedBy: 'user',
+          version: 1,
+        });
+      }
+      return { files, history: [] };
     });
   },
 

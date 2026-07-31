@@ -204,7 +204,7 @@ const App: React.FC = () => {
 
     if (vfsSnapshot) {
       useVFSStore.getState().reset();
-      useVFSStore.getState().batchCreateFiles(decodePersistedVFS(vfsSnapshot), 'user');
+      useVFSStore.getState().hydrateFiles(decodePersistedVFS(vfsSnapshot));
     }
 
     return !!workspaceSnapshot?.projectName;
