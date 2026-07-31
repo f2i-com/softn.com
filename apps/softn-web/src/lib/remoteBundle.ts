@@ -52,8 +52,10 @@ export function resolveBundleUrl(value: string, origin: string): URL {
 }
 
 /** Download a bundle, giving up rather than growing without bound. */
-export async function fetchRemoteBundle(url: URL): Promise<Uint8Array> {
-  const response = await fetch(url.href, { credentials: 'same-origin' });
+export async function fetchRemoteBundle(url: URL, signal?: AbortSignal): Promise<Uint8Array> {
+  // The signal lets a closed tab stop its own download rather than leaving a
+  // bundle arriving for a tab that no longer exists.
+  const response = await fetch(url.href, { credentials: 'same-origin', signal });
 
   if (!response.ok) {
     throw new Error(`Could not fetch ${url.pathname} (HTTP ${response.status} ${response.statusText}).`);

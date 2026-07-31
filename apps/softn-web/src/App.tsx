@@ -233,6 +233,8 @@ function App(): React.ReactElement {
   // the tab-reuse check below cannot help, because it can only recognise a tab
   // that has finished loading, and the whole point here is that this one has not.
   const inFlightRef = useRef(new Map<string, Promise<string | null>>());
+  /** Downloads still running, by the placeholder tab they belong to. */
+  const loadAbortsRef = useRef(new Map<string, AbortController>());
 
   // An embedded frame keeps ?embed=1 through every rewrite, so a frame that
   // reloads itself does not sprout a tab bar inside somebody else's page.
@@ -567,13 +569,30 @@ function App(): React.ReactElement {
         setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '' }]);
         setActiveTabId(skeletonTabId);
 
+        // The placeholder is the download's lease. Closing the tab aborts it —
+        // a large bundle used to keep downloading after its tab was gone, and
+        // then open anyway, so the app the user had just dismissed appeared in
+        // a new tab a few seconds later.
+        const controller = new AbortController();
+        loadAbortsRef.current.set(skeletonTabId, controller);
+
         let data: Uint8Array;
         try {
-          data = await fetchRemoteBundle(url);
+          data = await fetchRemoteBundle(url, controller.signal);
         } catch (err) {
+          // An abort is the user closing the tab, not a failure to report.
+          if (controller.signal.aborted) return null;
           console.error('[SoftN Web] Failed to fetch bundle:', err);
           setError(err instanceof Error ? err : new Error(String(err)));
           discardPlaceholder(skeletonTabId);
+          return null;
+        } finally {
+          loadAbortsRef.current.delete(skeletonTabId);
+        }
+
+        // Closed while the bytes were on their way, or between the abort and
+        // the fetch noticing: either way there is nothing left to open into.
+        if (controller.signal.aborted || !openTabsRef.current.some((t) => t.id === skeletonTabId)) {
           return null;
         }
 
@@ -664,6 +683,14 @@ function App(): React.ReactElement {
     (tabId: string) => {
       // Clean up page tracking
       delete tabPagesRef.current[tabId];
+
+      // Stop a download this tab was waiting on. Without it the bytes kept
+      // coming for a tab that no longer existed, and the app opened anyway.
+      const pending = loadAbortsRef.current.get(tabId);
+      if (pending) {
+        pending.abort();
+        loadAbortsRef.current.delete(tabId);
+      }
 
       setOpenTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === tabId);
