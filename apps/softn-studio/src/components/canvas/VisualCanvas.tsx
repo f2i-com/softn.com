@@ -3,12 +3,48 @@ import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { getBundleEntryPath, resolveManifest } from '../../lib/studioProject';
 
+/**
+ * Strip the author's comments from a `.ui` file's TEMPLATE, and only its template.
+ *
+ * Comments in a .ui header would otherwise render as visible text in the
+ * preview, which is the whole reason this exists. What it must not do is reach
+ * inside `<logic>`, `<script>` or `<style>`: those are other languages, they
+ * handle their own comments, and this ran over them with two regexes that know
+ * nothing about string literals.
+ *
+ * That was not theoretical. `stripComments` used to run over the assembled
+ * document — the `.ui` with its external `.logic` already inlined — and the
+ * AIChat demo contains `softn.files.pickFile({ accept: "image/*" }, ...)`. The
+ * `/*` inside that ordinary MIME wildcard opened a comment, and the non-greedy
+ * scan ran forward to the first `*\/` it could find, which was the first CSS
+ * comment in the stylesheet below. Everything between was deleted, including the
+ * `</logic>` that closed the inlined block. The lexer's logic-content mode then
+ * ran to end of file, so the entire stylesheet and every line of markup were
+ * handed to the JavaScript engine, which said, accurately, "unterminated string
+ * literal". The bundle ran perfectly in the web runtime, which inlines its own
+ * logic and never took this path.
+ */
 function stripComments(source: string): string {
-  return source
-    .replace(/^\/\/.*$/gm, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\n\s*\n\s*\n/g, '\n\n')
-    .trim();
+  // Spans that belong to another language, left exactly as their author wrote them.
+  const protectedSpans: Array<[number, number]> = [];
+  const blockTag = /<(logic|script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+  for (const match of source.matchAll(blockTag)) {
+    protectedSpans.push([match.index, match.index + match[0].length]);
+  }
+
+  const stripTemplate = (text: string): string =>
+    text.replace(/^\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of protectedSpans) {
+    out += stripTemplate(source.slice(cursor, start));
+    out += source.slice(start, end);
+    cursor = end;
+  }
+  out += stripTemplate(source.slice(cursor));
+
+  return out.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
 }
 
 function resolveRelativePath(fromPath: string, relativePath: string): string {
