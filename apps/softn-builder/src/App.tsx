@@ -205,12 +205,13 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid #e4e9f0',
     background: '#f4f6f9',
   },
+  // Peer of Files, Components and Properties, so it is set like them.
   logicDockTitle: {
-    fontSize: 11,
-    color: '#5a6472',
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-    fontWeight: 700,
+    fontFamily: 'var(--b-display)',
+    fontSize: 14,
+    color: '#14181d',
+    letterSpacing: '-0.01em',
+    fontWeight: 600,
   },
   logicDockHideBtn: {
     border: '1px solid #d5dce5',
@@ -1039,7 +1040,7 @@ function App() {
                 {hasActiveFile && !isLogicFileActive && !isAssetFileActive && dockLogic && (
                   <div style={styles.centerBottom}>
                     <div style={styles.logicDockHeader}>
-                      <span style={styles.logicDockTitle}>Logic Panel</span>
+                      <span style={styles.logicDockTitle}>Logic</span>
                       <button style={styles.logicDockHideBtn} onClick={() => setDockLogic(false)}>
                         Hide
                       </button>

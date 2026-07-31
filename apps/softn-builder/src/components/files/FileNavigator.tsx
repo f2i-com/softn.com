@@ -26,12 +26,17 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     gap: 8,
   },
+  // A panel header, matching Components and Properties. The four panels used
+  // four different treatments — two title-case at 14px, two small uppercase —
+  // which read as four levels of importance rather than four peers. Small
+  // uppercase stays, but for sections INSIDE a panel (Hierarchy, Data Overview),
+  // so the type says which is which.
   title: {
+    fontFamily: 'var(--b-display)',
     fontWeight: 600,
-    fontSize: 12,
-    color: '#5a6472',
-    textTransform: 'uppercase',
-    letterSpacing: '0.5px',
+    fontSize: 14,
+    letterSpacing: '-0.01em',
+    color: '#14181d',
   },
   actions: {
     display: 'flex',
