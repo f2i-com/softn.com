@@ -227,6 +227,19 @@ function buildBundle(bundleName) {
     if (listed.some((entry) => entry && entry.file === `${bundleName}.softn`)) {
       fs.writeFileSync(path.join(servedDir, `${bundleName}.softn`), bundleData);
       console.log(`Served copy:    demos/${bundleName}.softn`);
+
+      // The demo shelf showed a letter on a coloured tile for every app, because
+      // the icon lives inside the bundle and the launcher has only index.json —
+      // it is not going to download eleven bundles to draw eleven icons. Copying
+      // the icon out beside the bundle costs a few hundred bytes and lets the
+      // shelf show each app as itself.
+      const iconSource = path.join(sourceDir, 'assets', 'icon.svg');
+      if (fs.existsSync(iconSource)) {
+        const iconDir = path.join(servedDir, 'icons');
+        fs.mkdirSync(iconDir, { recursive: true });
+        fs.copyFileSync(iconSource, path.join(iconDir, `${bundleName}.svg`));
+        console.log(`Served icon:    demos/icons/${bundleName}.svg`);
+      }
     }
   }
 

@@ -676,11 +676,31 @@ export function Launcher({
                       className="softn-launcher-demo-icon"
                       style={{
                         // The bundle's own accent colour, lit from the top left
-                        // the same way the cached-app tiles are.
+                        // the same way the cached-app tiles are. This is now the
+                        // backing for the real icon rather than the whole of it,
+                        // and what shows for a bundle that ships no icon.
+                        position: 'relative',
                         background: `linear-gradient(135deg, rgba(255, 255, 255, 0.22), rgba(0, 0, 0, 0.18)), ${demo.primary || '#3b82f6'}`,
                       }}
                     >
                       <span>{demo.name.charAt(0).toUpperCase()}</span>
+                      {/* The app's own icon, extracted beside the bundle at build
+                          time — the launcher only has index.json and is not going
+                          to download every bundle to draw a shelf. A demo without
+                          one 404s here and removes itself, leaving the letter. */}
+                      <img
+                        src={publicPath(`demos/icons/${demo.file.replace(/\.softn$/i, '')}.svg`, import.meta.env.BASE_URL)}
+                        alt=""
+                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          width: '100%',
+                          height: '100%',
+                          borderRadius: '11px',
+                          objectFit: 'cover',
+                        }}
+                      />
                     </div>
                     <div style={{ minWidth: 0 }}>
                       <div
