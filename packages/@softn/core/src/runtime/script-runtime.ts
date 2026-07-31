@@ -1672,22 +1672,20 @@ export class SoftNScriptRuntime {
 
   // ── Permission checks ──
 
-  /** Whether we've already warned about missing permissionConfig (log once) */
-  private static _warnedNoPermConfig = false;
-
   private checkPermission(capability: string): void {
     if (!this.permissionConfig) {
-      // No permission config loaded — allow for backward compatibility but warn once.
-      // Authors should provide permission.json in production bundles; without it
-      // all host APIs are available (equivalent to a dev-mode grant).
-      if (!SoftNScriptRuntime._warnedNoPermConfig) {
-        SoftNScriptRuntime._warnedNoPermConfig = true;
-        console.warn(
-          '[SoftN] No permission.json loaded — all host APIs are allowed. ' +
-          'Add a permission.json to your bundle for production use.'
-        );
-      }
-      return;
+      // No permission.json means no capabilities. This used to allow everything
+      // "for backward compatibility", which inverted the whole model: a bundle
+      // that declared nothing got the network, the camera, the filesystem, AI
+      // and the GPU with no prompt, while an honest bundle that declared what it
+      // needed got a consent dialog the user could refuse. Declaring less bought
+      // more. The user is never asked, because there is nothing to ask about —
+      // the bundle claimed to need nothing.
+      throw new Error(
+        `${capability} access not permitted: this bundle ships no permission.json. ` +
+        `Declare the capabilities it needs — { "permissions": { "${capability}": { "enabled": true } } } — ` +
+        `so the user can see and approve them.`
+      );
     }
     // Permission config IS set — deny by default for any capability not explicitly enabled.
     const perms = this.permissionConfig.permissions;
