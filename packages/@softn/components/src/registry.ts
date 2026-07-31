@@ -96,6 +96,7 @@ import { Marquee } from './animation/Marquee';
 import { Typewriter } from './animation/Typewriter';
 import { Draggable } from './animation/Draggable';
 import { SortableList } from './animation/SortableList';
+import { PanView } from './animation/PanView';
 import { Sprite } from './animation/Sprite';
 import { TileMap } from './animation/TileMap';
 
@@ -210,6 +211,7 @@ export const builtinComponents = {
   Typewriter,
   Draggable,
   SortableList,
+  PanView,
   Sprite,
   TileMap,
 

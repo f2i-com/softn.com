@@ -331,6 +331,8 @@ export const componentRegistry: ComponentMeta[] = [
       { name: 'fullWidth', type: 'boolean', default: false },
       { name: 'type', type: 'select', options: ['button', 'submit', 'reset'], default: 'button' },
       { name: 'onClick', type: 'event', description: 'Click handler' },
+      { name: 'ariaLabel', type: 'string', description: 'Accessible name — needed when the label is only a glyph' },
+      { name: 'title', type: 'string', description: 'Tooltip' },
       { name: 'children', type: 'string', default: 'Click me' },
       { name: 'className', type: 'string' },
     ],
@@ -1564,6 +1566,25 @@ export const componentRegistry: ComponentMeta[] = [
       { name: 'className', type: 'string' },
     ],
     false
+  ),
+  comp(
+    'PanView',
+    'Layout',
+    'move',
+    'Scrollable window onto content larger than the space for it — drag, wheel or arrow keys to pan',
+    { contentWidth: 800, contentHeight: 600, scale: 1, centered: true, draggable: true },
+    [
+      { name: 'contentWidth', type: 'number', default: 800 },
+      { name: 'contentHeight', type: 'number', default: 600 },
+      { name: 'scale', type: 'number', default: 1 },
+      { name: 'centered', type: 'boolean', default: true },
+      { name: 'recenterKey', type: 'expression' },
+      { name: 'draggable', type: 'boolean', default: true },
+      { name: 'background', type: 'string' },
+      { name: 'label', type: 'string' },
+      { name: 'className', type: 'string' },
+    ],
+    true
   ),
   comp(
     'Sprite',

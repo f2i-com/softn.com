@@ -34,9 +34,9 @@
         "clothes": "dress",
         "clothesColor": 1,
         "hasGlasses": false,
-        "x": 432,
-        "y": 208,
-        "row": 2
+        "x": 304,
+        "y": 144,
+        "row": 1
       },
       "createdAt": "2026-03-01T00:00:00.000Z",
       "updatedAt": "2026-03-01T00:00:00.000Z"
@@ -54,8 +54,8 @@
         "clothes": "stripe",
         "clothesColor": 3,
         "hasGlasses": false,
-        "x": 272,
-        "y": 400,
+        "x": 144,
+        "y": 272,
         "row": 0
       },
       "createdAt": "2026-03-01T00:00:00.000Z",
@@ -73,8 +73,8 @@
         "pantsColor": 0,
         "clothes": "suit",
         "clothesColor": 0,
-        "hasGlasses": false,
-        "x": 560,
+        "hasGlasses": true,
+        "x": 336,
         "y": 400,
         "row": 1
       },
@@ -93,10 +93,10 @@
         "pantsColor": 3,
         "clothes": "sporty",
         "clothesColor": 5,
-        "hasGlasses": false,
-        "x": 752,
-        "y": 368,
-        "row": 2
+        "hasGlasses": true,
+        "x": 496,
+        "y": 272,
+        "row": 0
       },
       "createdAt": "2026-03-01T00:00:00.000Z",
       "updatedAt": "2026-03-01T00:00:00.000Z"
@@ -114,9 +114,9 @@
         "clothes": "pants_suit",
         "clothesColor": 0,
         "hasGlasses": false,
-        "x": 432,
-        "y": 560,
-        "row": 0
+        "x": 304,
+        "y": 592,
+        "row": 1
       },
       "createdAt": "2026-03-01T00:00:00.000Z",
       "updatedAt": "2026-03-01T00:00:00.000Z"

@@ -38,6 +38,17 @@ export interface ButtonProps {
   rightIcon?: React.ReactNode;
   /** Click handler */
   onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  /**
+   * Accessible name. Required in practice for `iconOnly` buttons and for any
+   * button whose whole label is a glyph — a screen reader reads "+" as nothing
+   * useful, and until this existed there was no way for a template to say what
+   * such a button does.
+   */
+  ariaLabel?: string;
+  /** Alias, for hosts that pass DOM attribute names straight through. */
+  'aria-label'?: string;
+  /** Native tooltip. */
+  title?: string;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -278,6 +289,9 @@ export function Button({
   leftIcon,
   rightIcon,
   onClick,
+  ariaLabel,
+  'aria-label': ariaLabelAttr,
+  title,
   className,
   style,
   children,
@@ -370,6 +384,8 @@ export function Button({
         type={type}
         disabled={disabled || loading}
         onClick={onClick}
+        aria-label={ariaLabel ?? ariaLabelAttr}
+        title={title}
         className={className}
         style={computedStyle}
         onMouseEnter={handleMouseEnter}

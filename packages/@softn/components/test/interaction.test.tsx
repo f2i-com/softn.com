@@ -11,6 +11,7 @@ import { Input } from '../src/form/Input';
 import { Drawer } from '../src/feedback/Drawer';
 import { Modal } from '../src/feedback/Modal';
 import { Select } from '../src/form/Select';
+import { Button } from '../src/form/Button';
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -138,5 +139,25 @@ describe('Select with search', () => {
     );
 
     expect(seen).toEqual(['b']);
+  });
+});
+
+describe('Button with a glyph for a label', () => {
+  it('can be given an accessible name', () => {
+    // A zoom control reading "+" announces as nothing useful, and there was no
+    // prop that let a template say what the button does — `aria-label` passed
+    // in was dropped on the floor along with every other unlisted prop.
+    const { container } = mount(<Button ariaLabel="Zoom in">+</Button>);
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Zoom in');
+  });
+
+  it('also accepts the DOM attribute spelling', () => {
+    const { container } = mount(<Button aria-label="Zoom out">-</Button>);
+    expect(container.querySelector('button')?.getAttribute('aria-label')).toBe('Zoom out');
+  });
+
+  it('leaves the attribute off when no name was given', () => {
+    const { container } = mount(<Button>Save</Button>);
+    expect(container.querySelector('button')?.hasAttribute('aria-label')).toBe(false);
   });
 });
