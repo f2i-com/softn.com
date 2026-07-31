@@ -39,7 +39,14 @@ export function generateSource(
   if (collections.length > 0) {
     lines.push('<data>');
     for (const col of collections) {
-      lines.push(`${opts.indent}<${col.name} as="${col.alias}" />`);
+      // `<collection name="x" as="y" />`, which is what the runtime's parser
+      // actually reads (parser.ts parseCollectionDeclaration, and the form every
+      // shipped demo uses). The builder used to emit `<clients as="clients" />`
+      // — the collection's own name as the tag — a dialect nothing parses. The
+      // .xdb files shipped, so the data was in the bundle, but no <data> entry
+      // declared it and the running app could not see a single collection the
+      // schema designer had produced.
+      lines.push(`${opts.indent}<collection name="${col.name}" as="${col.alias}" />`);
     }
     lines.push('</data>');
     lines.push('');
