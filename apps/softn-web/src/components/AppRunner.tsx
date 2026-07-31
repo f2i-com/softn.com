@@ -4,7 +4,14 @@ import { ThemeProvider, Spinner, Box, Text, Card } from '@softn/components';
 
 interface AppRunnerProps {
   source: string;
+  /** Shown to the user. Chosen by the bundle, so never used to identify it. */
   appName: string;
+  /**
+   * The app's identity — a digest of its bundle — which is what its database
+   * and its permission grants belong to. This used to be appName, so any
+   * bundle could name itself after another and be handed that app's data.
+   */
+  appId?: string;
   active: boolean;
   initialPage?: string;
   permissions?: import('@softn/core').AppPermissions;
@@ -161,7 +168,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, active, initialPage, permissions, importResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
   // Build initial state: page from URL + saved sync room from localStorage
   const initialState = useMemo(() => {
     const state: Record<string, unknown> = {};
@@ -233,7 +240,7 @@ export function AppRunner({ source, appName, active, initialPage, permissions, i
             logicBasePath={logicBasePath}
             preIncludedLogicPaths={preIncludedLogicPaths}
             permissionConfig={permissionConfig}
-            appId={appName}
+            appId={appId ?? appName}
             onPageChange={onPageChange}
             onLoad={onReady}
             serverUrl={serverUrl}

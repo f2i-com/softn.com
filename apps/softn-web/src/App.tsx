@@ -72,7 +72,9 @@ import {
 import {
   getCachedApps,
   cacheApp,
+  computeAppOrigin,
   getCachedAppByName,
+  getCachedAppByOrigin,
   removeCachedApp,
   updateLastOpened,
   updateGrantedPermissions,
@@ -121,6 +123,12 @@ function readEntry(): {
 interface OpenTab {
   id: string;
   name: string;
+  /**
+   * The app's identity: a digest of its bundle. `name` is for the user to read,
+   * this is what its stored data and its permission grants belong to. Absent on
+   * a skeleton tab, which has no bundle yet.
+   */
+  appId?: string;
   source: string; // empty string = skeleton tab (loading)
   icon?: string;
   initialPage?: string;
@@ -286,6 +294,12 @@ function App(): React.ReactElement {
 
         const appName = manifest.name || fileName.replace(/\.softn$/, '');
 
+        // What the app IS, as distinct from what it calls itself. Everything
+        // that persists — its database, its granted permissions, its cached
+        // copy — hangs off this rather than off manifest.name, which the bundle
+        // chooses for itself and could therefore choose to be someone else's.
+        const appOrigin = await computeAppOrigin(data);
+
         // Check if a tab with this name already exists (use ref for fresh value).
         //
         // A URL load names its placeholder after the file, which need not match
@@ -336,7 +350,10 @@ function App(): React.ReactElement {
           // net + camera + files to a bundle the user had approved for `qr`
           // alone and never see a prompt. The stored grant map was written and
           // then never read by anything.
-          const cachedApp = await getCachedAppByName(appName);
+          // By origin, not by name. A grant belongs to the bundle the user
+          // actually approved; looking it up by name handed it to anything that
+          // later called itself the same thing.
+          const cachedApp = await getCachedAppByOrigin(appOrigin);
           const requested = requestedCapabilities(permissionConfig);
           const granted = cachedApp?.grantedPermissions ?? {};
           const hasGrant =
@@ -397,7 +414,7 @@ function App(): React.ReactElement {
         }
 
         // Load XDB data (per-app isolation)
-        await loadXDBData(textFiles, manifest, manifest.name);
+        await loadXDBData(textFiles, manifest, appOrigin);
 
         // Process source
         const { source, logicBasePath, preIncludedLogicPaths } = processBundle(textFiles, manifest);
@@ -438,6 +455,7 @@ function App(): React.ReactElement {
         const newTab: OpenTab = {
           id: tabId,
           name: appName,
+          appId: appOrigin,
           source,
           icon: icon || undefined,
           initialPage: initialPage || existingTab?.initialPage,
@@ -958,6 +976,7 @@ function App(): React.ReactElement {
               key={tab.id}
               source={tab.source}
               appName={tab.name}
+              appId={tab.appId}
               active={activeTabId === tab.id && !error}
               initialPage={tab.initialPage}
               permissions={tab.permissions}
