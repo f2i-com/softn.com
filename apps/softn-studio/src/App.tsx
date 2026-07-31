@@ -443,7 +443,13 @@ const App: React.FC = () => {
     );
   }
 
-  // Mobile editor
+  // Mobile editor.
+  //
+  // BlueprintReview is rendered here as well as in the desktop return below. It
+  // used to appear only there, and this branch returns before reaching it — so
+  // on a phone a generated blueprint was never put up for approval. The gate it
+  // guards stayed shut with no way to open it: the plan could not be approved,
+  // could not be sent back for revision, and could not even be read.
   if (isMobile) {
     return (
       <div style={{ ...styles.mobileRoot, ...getStudioThemeVars(themePreview) }}>
@@ -498,6 +504,13 @@ const App: React.FC = () => {
             </button>
           ))}
         </div>
+
+        {!blueprintApproved && blueprint && view === 'editor' && (
+          <BlueprintReview
+            onApprove={() => useWorkspaceStore.getState().setMode('design')}
+            onReviseBrief={() => setView('brief')}
+          />
+        )}
       </div>
     );
   }

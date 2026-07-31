@@ -317,7 +317,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   contentGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    // auto-fit, so the pair becomes a stack on a phone rather than two columns
+    // roughly 130px wide. Every other grid in this sheet already does this.
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
     gap: 12,
   },
   sectionCard: {
