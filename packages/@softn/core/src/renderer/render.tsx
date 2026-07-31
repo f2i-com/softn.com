@@ -1024,7 +1024,21 @@ function renderIfBlock(
   key?: number | string,
   branchPath: string = ''
 ): React.ReactNode {
-  const condition = evaluateExpression(node.condition, context);
+  // A throw here used to escape the runtime's own error boundary and replace the
+  // entire app with an error screen, while the identical expression inside a
+  // text node — `{JSON.parse(raw).n}` — is caught and shown as a small inline
+  // marker. The same data being bad should not be survivable in one position and
+  // fatal in another. An expression that cannot be evaluated is treated as
+  // falsy, which is what an unanswerable condition means.
+  let condition: unknown;
+  try {
+    condition = evaluateExpression(node.condition, context);
+  } catch (error) {
+    if (isDevelopment) {
+      console.error('[SoftN] Condition threw; treating it as false:', error);
+    }
+    condition = false;
+  }
 
   // Get a unique identifier for the condition value
   const conditionId = getConditionIdentifier(node.condition);
@@ -1103,7 +1117,18 @@ function renderEachBlock(
           ? String(
               evaluateExpression(node.keyExpression, {
                 ...context,
-                state: { ...context.state, [node.itemName]: item },
+                state: {
+                  ...context.state,
+                  [node.itemName]: item,
+                  // The index variable belongs in scope here too. Without it,
+                  // `#each (row, i in rows) key={i}` evaluated `i` against a
+                  // state that had never heard of it: every row got the key
+                  // "undefined", React warned about duplicate children, and
+                  // component state attached to whichever row happened to be
+                  // matched — so editing one row's input moved the text to
+                  // another when the list reordered.
+                  ...(node.indexName ? { [node.indexName]: index } : {}),
+                },
               })
             )
           : String(index),

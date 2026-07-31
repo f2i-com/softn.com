@@ -611,8 +611,15 @@ function App(): React.ReactElement {
   /** Handle opening a cached app */
   const handleOpenCached = useCallback(
     (app: CachedApp) => {
-      // Check if already open (use ref for fresh value)
-      const existingTab = openTabsRef.current.find((t) => t.name === app.name);
+      // By identity, not by label. Two cached apps can legitimately share a
+      // name — that is precisely what content-addressed identity allows, and
+      // the launcher lists both — so matching on name meant clicking the second
+      // card just re-focused the first one's tab. The user pressed a card for
+      // one app and was shown a different app, with nothing to say so. Name is
+      // kept only as a fallback for records cached before origins existed.
+      const existingTab = openTabsRef.current.find((t) =>
+        app.origin && t.appId ? t.appId === app.origin : t.name === app.name
+      );
       if (existingTab) {
         setActiveTabId(existingTab.id);
         return;
