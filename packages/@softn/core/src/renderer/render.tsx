@@ -695,17 +695,26 @@ function renderElement(
     // its `value` is the constant "on". Binding `value` left `checked`
     // undefined, so the control ran uncontrolled and never reflected the bound
     // variable, while the change wrote the string "on" back over it.
+    const isRadio = node.tag === 'Radio' || props.type === 'radio';
     const isCheckable =
       node.tag === 'Checkbox' ||
       node.tag === 'Switch' ||
       props.type === 'checkbox' ||
-      props.type === 'radio';
+      isRadio;
 
     if (binding.name === 'bind') {
       // Two-way binding shorthand
       // Default to "" when value is undefined/null to keep the input controlled
       // from the first render (avoids React "uncontrolled to controlled" warning)
-      if (isCheckable) {
+      if (isRadio) {
+        // A radio is checkable but not boolean. It is checked when the bound
+        // variable equals THIS radio's value, and choosing it should write that
+        // value. Treated as a checkbox it was `value === true` — never true for
+        // a real choice — so every radio in the group rendered unchecked, and
+        // clicking one wrote `true` over the selection, destroying the answer it
+        // was meant to record.
+        props.checked = value !== undefined && value !== null && String(value) === String(props.value);
+      } else if (isCheckable) {
         props.checked = value === true;
       } else {
         props.value = value ?? '';
@@ -722,7 +731,10 @@ function renderElement(
           // - If it's an event object with target.value (native elements), use that
           // - Otherwise, treat the argument as the value directly (custom components like Select)
           let newValue: unknown;
-          if (isCheckable) {
+          if (isRadio) {
+            // The chosen option, not a boolean. A radio's `value` is the answer.
+            newValue = props.value;
+          } else if (isCheckable) {
             // Read `checked`, and as a boolean: `target.value` on a checkbox is
             // the constant "on", which would make the bound variable a string
             // that never compares false again.
@@ -793,6 +805,18 @@ function renderElement(
   };
 
   for (const event of node.events) {
+    // What :bind already installed for this event, if anything.
+    //
+    // `<input :bind={q} @change={note()} />` used to lose its binding entirely:
+    // the bindings loop sets onChange to write state back, and this loop then
+    // assigned over it. The field stopped updating — every keystroke was
+    // discarded and the input sat frozen on its initial value — while the
+    // handler the author added ran perfectly, so nothing looked broken except
+    // the typing. Both are wanted; both run, binding first so the handler sees
+    // the new value.
+    const boundHandlerName = `on${capitalize(event.name)}`;
+    const boundHandler = props[boundHandlerName];
+
     // If the handler is a function call (e.g., @click={handleClick()}),
     // we need to wrap it in a closure to prevent immediate execution during render.
     // If it's a function reference or arrow function, evaluate it directly.
@@ -826,6 +850,17 @@ function renderElement(
       props[`on${capitalize(event.name)}`] = wrapEventHandler(event.name, () => {
         return evaluateExpression(handlerExpr, callbackContext);
       });
+    }
+
+    const authored = props[boundHandlerName];
+    if (typeof boundHandler === 'function' && authored !== boundHandler) {
+      props[boundHandlerName] = (...args: unknown[]) => {
+        (boundHandler as (...a: unknown[]) => unknown)(...args);
+        if (typeof authored === 'function') {
+          return (authored as (...a: unknown[]) => unknown)(...args);
+        }
+        return undefined;
+      };
     }
   }
 
