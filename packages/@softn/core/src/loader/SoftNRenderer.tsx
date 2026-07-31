@@ -1576,6 +1576,12 @@ export function createXDBHelpers(
   xdb: ReturnType<typeof getXDB>,
   syncEncryptionKeyHex?: string,
   appId?: string,
+  /**
+   * The bundle's permission.json. Omitting it denies sync, which is deliberate:
+   * a caller that has not said the app may replicate its database to peers has
+   * not established that the user agreed to it.
+   */
+  permissionConfig?: PermissionConfig,
 ): Record<string, (...args: unknown[]) => unknown> {
   return {
     /**
@@ -1654,6 +1660,18 @@ export function createXDBHelpers(
     },
 
     startSync: (...args: unknown[]) => {
+      // `sync` has always been in the capability switch, and nothing ever called
+      // checkPermission('sync') — so peer-to-peer replication of the app's whole
+      // database started without the user being asked, in a runtime that asks
+      // before it will so much as read a file. Gated here rather than in the
+      // script runtime because sync is reached through the renderer's xdb
+      // helpers, not the host-call path.
+      if (!permissionConfig?.permissions?.sync?.enabled) {
+        throw new Error(
+          'Sync not permitted: declare { "permissions": { "sync": { "enabled": true } } } ' +
+          'in the bundle\'s permission.json so the user can approve it.'
+        );
+      }
       const room = args[0] as string;
       const options = args[1] as Record<string, unknown> | undefined;
       const syncOpts: Record<string, unknown> = { room, ...(options || {}) };
@@ -1758,7 +1776,10 @@ export function SoftNWithXDB({
   const { data: xdbData, xdb } = useDataBlock(document, props.appId);
 
   // Create XDB helpers for the functions prop
-  const xdbHelpers = useMemo(() => createXDBHelpers(xdb, syncEncryptionKeyHex, props.appId), [xdb, syncEncryptionKeyHex, props.appId]);
+  const xdbHelpers = useMemo(
+    () => createXDBHelpers(xdb, syncEncryptionKeyHex, props.appId, props.permissionConfig),
+    [xdb, syncEncryptionKeyHex, props.appId, props.permissionConfig],
+  );
 
   // Log per-app database path on mount
   useEffect(() => {
