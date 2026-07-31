@@ -200,6 +200,8 @@ interface LauncherProps {
   onOpenCached: (app: CachedApp) => void;
   onOpenUrl: (path: string) => void;
   onRemove: (id: string) => void;
+  /** Copy `from`'s saved records into `to`, then open `to`. */
+  onAdoptData: (from: CachedApp, to: CachedApp) => void;
 }
 
 /** One entry of public/demos/index.json — see that file for the full contract. */
@@ -271,6 +273,7 @@ export function Launcher({
   onOpenCached,
   onOpenUrl,
   onRemove,
+  onAdoptData,
 }: LauncherProps): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [demos, setDemos] = useState<DemoEntry[]>([]);
@@ -385,6 +388,8 @@ export function Launcher({
                 // read, and no reason to show the user four cards called Notes.
                 const app = group.current;
                 const olderVersions = group.versions.slice(1);
+                // The most recently used older build that actually has records.
+                const dataSource = olderVersions.find((v) => hasStoredData(v.origin));
                 return (
                 <div
                   key={app.id}
@@ -535,11 +540,45 @@ export function Launcher({
                               fontFamily: 'inherit',
                             }}
                           >
+                            {/* Two builds can carry the same version string —
+                                a rebuild without a version bump is the common
+                                case — and "v1.0.0" twice tells the user nothing
+                                about which is which. When the version does not
+                                distinguish them, when it was last opened does. */}
                             v{older.version}
+                            {older.version === app.version ? ` · ${formatDate(older.lastOpened)}` : ''}
                             {hasStoredData(older.origin) ? ' · has data' : ''}
                           </button>
                         ))}
                       </div>
+
+                      {/* Carrying records forward is the one thing rollback
+                          cannot do for you, and the runtime will not do it
+                          unasked: nothing proves two bundles share an author.
+                          Offered only when this build has no records of its own,
+                          so it can never write over data already here. */}
+                      {!hasStoredData(app.origin) && dataSource && (
+                        <button
+                          onClick={() => onAdoptData(dataSource, app)}
+                          title={`Copy the records saved under v${dataSource.version} into this version. The older one keeps its own copy.`}
+                          style={{
+                            marginTop: '0.5rem',
+                            minHeight: 30,
+                            width: '100%',
+                            padding: '0.3125rem 0.5rem',
+                            borderRadius: 6,
+                            border: '1px solid rgba(96,165,250,0.3)',
+                            background: 'rgba(96,165,250,0.08)',
+                            color: '#93b8f0',
+                            fontSize: '0.6875rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            fontFamily: 'inherit',
+                          }}
+                        >
+                          Bring my data forward from v{dataSource.version}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

@@ -73,6 +73,7 @@ import {
   getCachedApps,
   cacheApp,
   computeAppOrigin,
+  copyAppData,
   getCachedAppByName,
   getCachedAppByOrigin,
   removeCachedApp,
@@ -609,6 +610,28 @@ function App(): React.ReactElement {
   );
 
   /** Handle opening a cached app */
+  /**
+   * Carry one build's records into another, then open it.
+   *
+   * The runtime will not do this by itself — a digest is what keeps apps apart,
+   * and nothing proves two bundles share an author — but the person who chose to
+   * install the update can say so. The records are copied, not moved, so the
+   * older build still has its own to go back to if the update turns out wrong.
+   */
+  const handleAdoptData = useCallback(
+    (from: CachedApp, to: CachedApp) => {
+      if (!from.origin || !to.origin) return;
+      const copied = copyAppData(from.origin, to.origin);
+      console.info(
+        `[SoftN Web] Copied ${copied} stored keys from "${from.name}" v${from.version} to v${to.version}.`
+      );
+      handleOpenCached(to);
+    },
+    // handleOpenCached is defined below; referenced lazily inside the callback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
   const handleOpenCached = useCallback(
     (app: CachedApp) => {
       // By identity, not by label. Two cached apps can legitimately share a
@@ -997,6 +1020,7 @@ function App(): React.ReactElement {
               onOpenCached={handleOpenCached}
               onOpenUrl={openFromUrl}
               onRemove={handleRemove}
+              onAdoptData={handleAdoptData}
             />
           </div>
 
