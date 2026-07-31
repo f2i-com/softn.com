@@ -117,6 +117,65 @@ function copyLicences() {
   return fonts.length;
 }
 
+/**
+ * Make a shared deep link survive a static host.
+ *
+ * `/web/app/Notes` is a route inside the runtime, not a file on disk. The
+ * service worker binds a navigation route, so it works for anyone who has been
+ * here before — and 404s for exactly the person a shared link is for. Both
+ * conventions below are written because they are inert on hosts that do not use
+ * them: Netlify and Cloudflare read `_redirects` and never reach the 404, GitHub
+ * Pages ignores `_redirects` and serves `404.html`, and a plain file server
+ * ignores both and still works from the second visit onwards.
+ */
+function writeDeepLinkFallbacks() {
+  const apps = APPS.map((a) => a.into);
+
+  fs.writeFileSync(
+    path.join(outDir, '_redirects'),
+    `${apps.map((a) => `/${a}/*  /${a}/index.html  200`).join('\n')}\n/*  /index.html  200\n`,
+  );
+
+  // GitHub Pages hands this file the original URL, so it forwards the path to
+  // the app that owns it; the app puts the address back before first paint.
+  fs.writeFileSync(
+    path.join(outDir, '404.html'),
+    `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SoftN</title>
+    <meta name="robots" content="noindex" />
+    <script>
+      (function () {
+        var apps = ${JSON.stringify(apps)};
+        // Already forwarded once and still nothing here: stop, or this loops.
+        if (location.search.indexOf('softn-restore=') !== -1) {
+          location.replace('/');
+          return;
+        }
+        var path = location.pathname;
+        var owner = apps.filter(function (a) {
+          return path === '/' + a || path.indexOf('/' + a + '/') === 0;
+        })[0];
+        var target = owner ? '/' + owner + '/' : '/';
+        // Nothing to restore for the app root itself.
+        if (path === target) {
+          location.replace(target);
+          return;
+        }
+        location.replace(target + '?softn-restore=' + encodeURIComponent(path + location.search));
+      })();
+    </script>
+  </head>
+  <body></body>
+</html>
+`,
+  );
+
+  return apps.length;
+}
+
 function countFiles(dir) {
   let n = 0;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -127,6 +186,7 @@ function countFiles(dir) {
 }
 
 const fontCount = copyLicences();
+writeDeepLinkFallbacks();
 
 console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
 console.log('  dist/           landing page');
