@@ -127,6 +127,15 @@ export interface CanvasState {
   selectedIds: string[];
   hoveredId: string | null;
   clipboard: CanvasElement[];
+  /**
+   * Every element the clipboard entries depend on, snapshotted at copy time.
+   *
+   * paste used to resolve children out of the LIVE element map, which is fine
+   * after a copy and destroys the subtree after a cut: by then the originals
+   * have been deleted, every child lookup returns undefined, and the pasted
+   * element comes back stripped of everything inside it.
+   */
+  clipboardTree: Map<string, CanvasElement>;
   draggedType: string | null;
   dropTargetId: string | null;
   draggedElementId: string | null;

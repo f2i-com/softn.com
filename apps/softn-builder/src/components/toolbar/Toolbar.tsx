@@ -137,6 +137,16 @@ function IconSave() {
   );
 }
 
+function IconExport() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M8 10.5V1.5" />
+      <polyline points="4.5 5.5 8 1.5 11.5 5.5" />
+      <path d="M2.5 10.5v2.5A1.5 1.5 0 0 0 4 14.5h8a1.5 1.5 0 0 0 1.5-1.5v-2.5" />
+    </svg>
+  );
+}
+
 function IconInstall() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -154,6 +164,7 @@ interface ToolbarProps {
   onNew: () => void;
   onOpen: () => void;
   onShortcuts: () => void;
+  onExport: () => void;
   activeFileType?: 'ui' | 'logic' | 'asset' | null;
 }
 
@@ -172,6 +183,7 @@ export function Toolbar({
   onNew,
   onOpen,
   onShortcuts,
+  onExport,
   activeFileType,
 }: ToolbarProps) {
   const { name, isDirty } = useProjectStore();
@@ -268,6 +280,13 @@ export function Toolbar({
 
       <button style={styles.button} onClick={onSave} title="Save Project (Ctrl+S)">
         <IconSave /> Save
+      </button>
+
+      {/* Export had no control anywhere in the app. Its only route was
+          Ctrl+Shift+E, a shortcut whose condition could never be true, so the
+          feature was unreachable by any means. */}
+      <button style={styles.button} onClick={onExport} title="Export .softn bundle (Ctrl+Shift+E)">
+        <IconExport /> Export
       </button>
 
       <button style={styles.button} onClick={onShortcuts} title="Keyboard shortcuts">

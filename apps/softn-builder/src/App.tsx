@@ -877,11 +877,18 @@ function App() {
         if (e.key === '3') { e.preventDefault(); setView('preview'); return; }
         if (e.key === '4') { e.preventDefault(); setView('code'); return; }
 
-        // File operations
-        if (e.key === 'n' && !e.shiftKey) { e.preventDefault(); handleNew(); return; }
-        if (e.key === 'o' && !e.shiftKey) { e.preventDefault(); handleOpen(); return; }
-        if (e.key === 's' && !e.shiftKey) { e.preventDefault(); handleSave(); return; }
-        if (e.key === 'e' && e.shiftKey) { e.preventDefault(); handleExport(); return; }
+        // File operations.
+        //
+        // Compared lower-cased, because `e.key` carries the shifted character:
+        // with Shift down it is "E", never "e", so `e.key === 'e' && e.shiftKey`
+        // was a condition that could not be satisfied and Ctrl+Shift+E — the
+        // only route to Export anywhere in the app — never fired once. The same
+        // trap catches the other three whenever Caps Lock is on.
+        const key = e.key.toLowerCase();
+        if (key === 'n' && !e.shiftKey) { e.preventDefault(); handleNew(); return; }
+        if (key === 'o' && !e.shiftKey) { e.preventDefault(); handleOpen(); return; }
+        if (key === 's' && !e.shiftKey) { e.preventDefault(); handleSave(); return; }
+        if (key === 'e' && e.shiftKey) { e.preventDefault(); handleExport(); return; }
       }
     };
 
@@ -1126,6 +1133,7 @@ function App() {
         onNew={handleNew}
         onOpen={handleOpen}
         onShortcuts={() => setShowShortcuts(true)}
+        onExport={handleExport}
         activeFileType={activeFileType}
       />
 
