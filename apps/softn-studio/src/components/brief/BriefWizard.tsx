@@ -295,8 +295,12 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
           })}
         </div>
 
-        {!m && (
-          <div
+        {/* Shown on every width. This was desktop-only, so on a phone the
+            Generate button was simply disabled and the only thing that said why
+            had been rendered out — the button did nothing and offered no
+            account of itself. It is the narrow screen that needs the
+            explanation most, because there is no room for anything else. */}
+        <div
             role="status"
             aria-live="polite"
             style={{
@@ -311,9 +315,8 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
               size={12}
               color={canSubmit ? 'var(--studio-text-dim)' : 'var(--studio-accent)'}
             />
-            <span>* name &amp; description required</span>
+            <span>{canSubmit ? 'ready to generate' : 'name & description required'}</span>
           </div>
-        )}
       </div>
 
       {/* Form content — the sheet is centred in whatever height is left over */}

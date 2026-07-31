@@ -126,8 +126,20 @@ export const AIChat: React.FC = () => {
         </div>
       )}
 
-      {/* Messages */}
-      <div ref={scrollRef} style={styles.messages}>
+      {/* Messages.
+          role="log" with a polite live region, because a conversation that
+          appends silently is a conversation a screen reader user never hears:
+          the model's reply, and any error it came back with, arrived on screen
+          with nothing to announce them. Polite rather than assertive so a reply
+          waits its turn instead of interrupting whatever is being read. */}
+      <div
+        ref={scrollRef}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-label="Conversation"
+        style={styles.messages}
+      >
         {messages.length === 0 && (
           <div style={styles.emptyState}>
             <div style={styles.emptyIcon}>
@@ -272,6 +284,8 @@ export const AIChat: React.FC = () => {
         {agentState === 'building' ? (
           <button
             onClick={abortAgentTurn}
+            aria-label="Stop generating"
+            title="Stop generating"
             style={{ ...styles.sendBtn, background: 'var(--studio-error)' }}
           >
             <Icon name="x" size={16} color="var(--studio-bg)" />
@@ -279,6 +293,8 @@ export const AIChat: React.FC = () => {
         ) : (
           <button
             onClick={handleSend}
+            aria-label="Send message"
+            title="Send message"
             disabled={!input.trim() || agentState !== 'idle'}
             style={{
               ...styles.sendBtn,
