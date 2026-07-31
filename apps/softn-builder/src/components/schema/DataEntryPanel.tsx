@@ -142,15 +142,35 @@ function FieldInput({ field, value, onChange, entities, seedData }: FieldInputPr
         />
       );
 
-    case 'number':
+    case 'number': {
+      // Text, not type=number, and the typed characters are kept as typed until
+      // they parse. Round-tripping every keystroke through Number() meant a lone
+      // "-" became NaN and the field snapped back, so a negative number could
+      // not be typed at all; `|| 0` meant it could never be left blank either,
+      // because an empty box immediately re-read as zero. On blur the value is
+      // settled: a real number, or empty.
+      const raw = value === null || value === undefined ? '' : String(value);
+      const partial = (text: string) => text === '' || text === '-' || /[.eE+-]$/.test(text);
       return (
         <input
-          type="number"
-          value={(value as number) || 0}
-          onChange={(e) => onChange(Number(e.target.value))}
+          type="text"
+          inputMode="decimal"
+          value={raw}
+          onChange={(e) => {
+            const text = e.target.value;
+            const parsed = Number(text);
+            onChange(partial(text) || !Number.isFinite(parsed) ? text : parsed);
+          }}
+          onBlur={(e) => {
+            const text = e.target.value.trim();
+            if (text === '') { onChange(''); return; }
+            const parsed = Number(text);
+            onChange(Number.isFinite(parsed) ? parsed : '');
+          }}
           style={styles.input}
         />
       );
+    }
 
     case 'date':
       return (
@@ -187,12 +207,19 @@ function FieldInput({ field, value, onChange, entities, seedData }: FieldInputPr
           onChange={(e) => onChange(e.target.value)}
           style={styles.select}
         >
-          <option value="">Select {refEntity?.name || 'ref'}...</option>
-          {refRecords.map((record, idx) => (
-            <option key={idx} value={(record.id as string) || idx}>
-              {(record.id as string) || `Record ${idx + 1}`}
+          {/* Only rows that can actually be referenced. The index was offered as
+              a fallback id, which matches no record anywhere — picking one wrote
+              a reference that resolves to nothing, and looked like it had worked. */}
+          <option value="">
+            {refRecords.some((r) => r.id)
+              ? `Select ${refEntity?.name || 'ref'}...`
+              : `${refEntity?.name || 'That collection'} has no rows with an id yet`}
+          </option>
+          {refRecords.map((record, idx) => (record.id ? (
+            <option key={idx} value={record.id as string}>
+              {String(record.id)}
             </option>
-          ))}
+          ) : null))}
         </select>
       );
     }

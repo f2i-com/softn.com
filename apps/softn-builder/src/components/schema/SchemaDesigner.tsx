@@ -261,12 +261,15 @@ export function SchemaDesigner() {
   // Handle double-click to add entity
   const onPaneDoubleClick = useCallback(
     (event: React.MouseEvent) => {
-      const bounds = (event.target as HTMLElement).getBoundingClientRect();
-      const position = {
-        x: event.clientX - bounds.left,
-        y: event.clientY - bounds.top,
-      };
-      addEntity(position);
+      // Pane only. This ran for any double-click anywhere inside the flow —
+      // including on a node, or on the zoom buttons — and then measured the
+      // position against whatever had been clicked, so double-clicking an
+      // existing collection spawned a new one on top of it and double-clicking
+      // the zoom control spawned one in the corner.
+      const target = event.target as HTMLElement;
+      if (!target.classList.contains('react-flow__pane')) return;
+      const bounds = target.getBoundingClientRect();
+      addEntity({ x: event.clientX - bounds.left, y: event.clientY - bounds.top });
     },
     [addEntity]
   );
@@ -316,6 +319,10 @@ export function SchemaDesigner() {
             onDoubleClick={onPaneDoubleClick}
             onEdgeClick={onEdgeClick}
             nodeTypes={nodeTypes}
+            // React Flow zooms on double-click by default and consumes the
+            // event, so the gesture the toolbar advertises never reached the
+            // handler above — "double-click canvas to add entity" did nothing.
+            zoomOnDoubleClick={false}
             fitView
             snapToGrid
             snapGrid={[16, 16]}
