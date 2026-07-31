@@ -204,6 +204,8 @@ export function processBundle(
   // Logic files concatenated below. Reported to the runtime so an `import`
   // naming one of them is skipped rather than inlining the file a second time.
   const preIncludedLogic = new Set<string>();
+  /** The manifest's logic files go into the document once, at the first tag. */
+  let manifestLogicEmitted = false;
 
   const inlineLogic = (source: string, basePath: string): string => {
     return source.replace(/<logic\s+src=["']([^"']+)["']\s*\/>/g, (match, rel) => {
@@ -212,9 +214,28 @@ export function processBundle(
 
       const logicFile = textFiles.get(logicPath);
       if (!logicFile) {
-        console.warn('[SoftN Web] Logic file not found:', logicPath);
+        // The tag is left in place and the app loads with no script at all, so
+        // every button in it is inert. That is worth more than a warning: the
+        // app looks finished and answers nothing.
+        console.error(
+          `[SoftN Web] ${logicPath} is referenced by the UI but is not in the bundle. ` +
+            `The app will load with no logic, so its controls will do nothing.`
+        );
         return match;
       }
+
+      // Only the first <logic src> emits the manifest's logic bundle.
+      //
+      // Every tag used to concatenate all manifest-listed .logic files again, so
+      // a second .ui file with its own <logic src> — an ordinary thing in a
+      // multi-page app — redeclared every class and every top-level `let` in the
+      // engine. The whole app then failed to load on a SyntaxError, with no error
+      // card to say why.
+      if (manifestLogicEmitted) {
+        console.info(`[SoftN Web] ${logicPath} is already included; skipping the duplicate block.`);
+        return '';
+      }
+      manifestLogicEmitted = true;
       // Capture the logic file's path for import resolution
       logicBasePath = logicPath;
 
