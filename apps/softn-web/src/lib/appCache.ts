@@ -327,6 +327,35 @@ export async function getCachedApp(id: string): Promise<CachedApp | null> {
 }
 
 /** Remove a cached app */
+/**
+ * Delete everything one build of an app has stored.
+ *
+ * Removing a cached app used to drop the record and leave its records behind:
+ * keys under an origin nothing referenced any more, which no screen could show
+ * and no action could clear. Every removal leaked, and versions accumulating
+ * made it worse. Removing a build now removes what it saved.
+ */
+export function removeAppData(origin: string | undefined): number {
+  if (!origin) return 0;
+  let removed = 0;
+  try {
+    const prefix = `xdb:${origin}:`;
+    // Collect first: deleting while walking the index skips entries.
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(prefix)) keys.push(key);
+    }
+    for (const key of keys) {
+      localStorage.removeItem(key);
+      removed += 1;
+    }
+  } catch {
+    // Storage unavailable; the cache record still goes.
+  }
+  return removed;
+}
+
 export async function removeCachedApp(id: string): Promise<void> {
   try {
     const db = await getDB();

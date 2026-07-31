@@ -70,12 +70,14 @@ import {
   type BundleManifest,
 } from './lib/bundleProcessor';
 import {
+  getCachedApp,
   getCachedApps,
   cacheApp,
   computeAppOrigin,
   copyAppData,
   getCachedAppByName,
   getCachedAppByOrigin,
+  removeAppData,
   removeCachedApp,
   updateLastOpened,
   updateGrantedPermissions,
@@ -673,7 +675,14 @@ function App(): React.ReactElement {
 
   /** Handle removing a cached app */
   const handleRemove = useCallback(async (id: string) => {
+    // Take the build's saved records with it. Leaving them behind meant every
+    // removal orphaned data that nothing could reach or clear again.
+    const going = await getCachedApp(id);
+    const dropped = removeAppData(going?.origin);
     await removeCachedApp(id);
+    if (dropped > 0) {
+      console.info(`[SoftN Web] Removed "${going?.name}" v${going?.version} and its ${dropped} saved keys.`);
+    }
     const updatedApps = await getCachedApps();
     setApps(updatedApps);
   }, []);
