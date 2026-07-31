@@ -412,6 +412,72 @@ export function requestedCapabilities(config: PermissionConfig): string[] {
 }
 
 /** Extract icon as a data URL from bundle binary files */
+/**
+ * Resolve `asset("images/x.png")` to something the browser can load.
+ *
+ * A bundle's images are inside the archive, so a template referencing one has to
+ * be handed a URL rather than a path. Studio's preview has always provided this
+ * function; the runtime provided no functions at all, so every `asset()` call in
+ * a shipped app evaluated to undefined. The Office demo makes eight of them and
+ * carries thirty-five images: every one of them was missing, and the console
+ * filled with "Function asset not found" instead of anything saying why the page
+ * had no pictures on it.
+ *
+ * Object URLs, made once per asset and cached, so a list rendering the same
+ * image fifty times allocates it once. They live as long as the tab does.
+ */
+export function createAssetResolver(
+  binaryFiles: Map<string, Uint8Array>,
+  textFiles: Map<string, string>
+): (assetPath: string) => string {
+  const urls = new Map<string, string>();
+
+  return (assetPath: string): string => {
+    if (typeof assetPath !== 'string' || !assetPath) return '';
+    // Same refusal as the icon path: nothing that climbs out of the bundle.
+    if (assetPath.includes('..') || assetPath.startsWith('/') || /^[a-zA-Z]:/.test(assetPath)) return '';
+
+    const path = assetPath.replace(/^\.\//, '');
+    const cached = urls.get(path);
+    if (cached) return cached;
+
+    const mime = MIME_BY_EXTENSION[path.split('.').pop()?.toLowerCase() ?? ''];
+    if (!mime) return '';
+
+    const binary = binaryFiles.get(path);
+    // An SVG may have been read as text rather than as bytes, depending on how
+    // the bundle was written; both are the same picture.
+    const text = binary ? undefined : textFiles.get(path);
+    if (!binary && text === undefined) return '';
+
+    try {
+      const blob = binary ? new Blob([binary as BlobPart], { type: mime }) : new Blob([text as string], { type: mime });
+      const url = URL.createObjectURL(blob);
+      urls.set(path, url);
+      return url;
+    } catch {
+      return '';
+    }
+  };
+}
+
+/** Formats an <img> can show without running anything embedded in them. */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  ico: 'image/x-icon',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+};
+
 export function extractIconDataUrl(
   binaryFiles: Map<string, Uint8Array>,
   manifest: BundleManifest
