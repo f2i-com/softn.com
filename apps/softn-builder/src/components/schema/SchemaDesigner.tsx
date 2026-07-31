@@ -143,6 +143,7 @@ export function SchemaDesigner() {
     addEntity,
     updateEntity,
     selectEntity,
+    deleteEntity,
     addRelationship,
     deleteRelationship,
   } = useSchemaStore();
@@ -216,9 +217,22 @@ export function SchemaDesigner() {
         if (change.type === 'position' && change.position) {
           updateEntity(change.id, { position: change.position });
         }
+        // Selecting a node with the keyboard, or with React Flow's own selection
+        // rather than our click handler, has to open the editor too — otherwise
+        // a keyboard user can move the highlight around the canvas and the panel
+        // beside it never changes.
+        if (change.type === 'select') {
+          selectEntity(change.selected ? change.id : null);
+        }
+        // Pressing Delete removed the node from the canvas and left the entity
+        // in the schema: it vanished from the diagram, kept its seed rows, and
+        // came straight back on the next render from the store.
+        if (change.type === 'remove') {
+          deleteEntity(change.id);
+        }
       }
     },
-    [onNodesChange, updateEntity]
+    [onNodesChange, updateEntity, selectEntity, deleteEntity]
   );
 
   // Handle edge connections

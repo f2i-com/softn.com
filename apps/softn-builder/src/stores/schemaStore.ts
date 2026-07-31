@@ -87,11 +87,18 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
 
   addEntity: (position) => {
     const id = generateId();
-    const entityCount = get().entities.length;
+    // Not `entities.length + 1`. Delete Entity1 of two and the count says 1, so
+    // the next entity is called Entity2 as well — two collections with one name,
+    // which the exporter then writes to one xdb file, silently discarding one of
+    // them. Take the next number nothing is using instead.
+    const taken = new Set(get().entities.map((e) => e.name));
+    let n = get().entities.length + 1;
+    while (taken.has(`Entity${n}`)) n += 1;
+
     const entity: EntityDef = {
       id,
-      name: `Entity${entityCount + 1}`,
-      alias: `entity${entityCount + 1}`,
+      name: `Entity${n}`,
+      alias: `entity${n}`,
       fields: [{ id: generateId(), name: 'id', type: 'string', required: true }],
       position,
     };
@@ -111,13 +118,34 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   deleteEntity: (id) => {
-    edit((state) => ({
-      entities: state.entities.filter((e) => e.id !== id),
-      relationships: state.relationships.filter(
-        (r) => r.sourceEntityId !== id && r.targetEntityId !== id
-      ),
-      selectedEntityId: state.selectedEntityId === id ? null : state.selectedEntityId,
-    }));
+    edit((state) => {
+      // Its seed rows went with it, and any field elsewhere pointing at it was
+      // left pointing at nothing — a reference to a collection that no longer
+      // exists, which the picker then renders as an empty dropdown with no
+      // explanation. Both are cleaned up here.
+      const seedData = new Map(state.seedData);
+      seedData.delete(id);
+
+      return {
+        entities: state.entities
+          .filter((e) => e.id !== id)
+          .map((e) =>
+            e.fields.some((f) => f.refEntity === id)
+              ? {
+                  ...e,
+                  fields: e.fields.map((f) =>
+                    f.refEntity === id ? { ...f, refEntity: undefined } : f
+                  ),
+                }
+              : e
+          ),
+        relationships: state.relationships.filter(
+          (r) => r.sourceEntityId !== id && r.targetEntityId !== id
+        ),
+        seedData,
+        selectedEntityId: state.selectedEntityId === id ? null : state.selectedEntityId,
+      };
+    });
   },
 
   selectEntity: (id) => {
