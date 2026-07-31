@@ -50,11 +50,11 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
-    background: '#f8fafc',
+    background: '#f4f6f9',
   },
   header: {
     padding: '8px 16px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -63,7 +63,7 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontWeight: 600,
     fontSize: 13,
-    color: '#1e293b',
+    color: '#14181d',
   },
   controls: {
     display: 'flex',
@@ -73,15 +73,15 @@ const styles: Record<string, React.CSSProperties> = {
   deviceButton: {
     padding: '4px 8px',
     background: 'transparent',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 4,
     fontSize: 11,
     cursor: 'pointer',
-    color: '#64748b',
+    color: '#5a6472',
   },
   deviceButtonActive: {
-    background: '#3b82f6',
-    borderColor: '#3b82f6',
+    background: '#c2410c',
+    borderColor: '#c2410c',
     color: '#fff',
   },
   previewWrapper: {
@@ -117,7 +117,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'center',
     height: '100%',
-    color: '#94a3b8',
+    color: '#656e7c',
   },
   infoBanner: {
     margin: '10px 10px 0',
@@ -125,7 +125,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     border: '1px solid #bfdbfe',
     background: '#eff6ff',
-    color: '#1d4ed8',
+    color: '#7c2d12',
     fontSize: 12,
   },
   emptyState: {
@@ -133,7 +133,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: '#64748b',
+    color: '#5a6472',
     fontSize: 13,
     textAlign: 'center',
     padding: 20,
@@ -611,7 +611,7 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
           height: `${Math.round(height * scale)}px`,
           borderRadius: 12,
           overflow: 'hidden',
-          border: '1px solid #cbd5e1',
+          border: '1px solid #d5dce5',
           boxShadow: '0 16px 32px rgba(15, 23, 42, 0.16)',
           background: '#fff',
           flexShrink: 0,
@@ -945,7 +945,7 @@ export function LivePreview() {
         <div style={styles.loading}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ marginBottom: 8 }}>Loading preview...</div>
-            <div style={{ fontSize: 11, color: '#94a3b8' }}>Initializing renderer</div>
+            <div style={{ fontSize: 11, color: '#656e7c' }}>Initializing renderer</div>
           </div>
         </div>
       );
@@ -971,8 +971,8 @@ export function LivePreview() {
       return (
         <div style={{ padding: 24, textAlign: 'center' }}>
           <div style={{ fontSize: 20, marginBottom: 16, color: '#f59e0b' }}>Warning</div>
-          <div style={{ fontWeight: 600, marginBottom: 8, color: '#1e293b' }}>Large Preview</div>
-          <div style={{ color: '#64748b', marginBottom: 16, fontSize: 13 }}>
+          <div style={{ fontWeight: 600, marginBottom: 8, color: '#14181d' }}>Large Preview</div>
+          <div style={{ color: '#5a6472', marginBottom: 16, fontSize: 13 }}>
             This UI has {elements.size} elements ({source.length.toLocaleString()} characters).
             <br />
             Rendering may be slow or cause memory issues.
@@ -981,7 +981,7 @@ export function LivePreview() {
             onClick={() => setForceRender(true)}
             style={{
               padding: '8px 16px',
-              background: '#3b82f6',
+              background: '#c2410c',
               color: '#fff',
               border: 'none',
               borderRadius: 6,
@@ -1004,8 +1004,8 @@ export function LivePreview() {
             }}
             style={{
               padding: '8px 16px',
-              background: '#e2e8f0',
-              color: '#475569',
+              background: '#e4e9f0',
+              color: '#3d444f',
               border: 'none',
               borderRadius: 6,
               cursor: 'pointer',
@@ -1027,7 +1027,7 @@ export function LivePreview() {
       );
 
       const loadingFallback = (
-        <div style={{ padding: 24, textAlign: 'center', color: '#64748b' }}>
+        <div style={{ padding: 24, textAlign: 'center', color: '#5a6472' }}>
           <div style={{ marginBottom: 8 }}>Rendering preview...</div>
           <div style={{ fontSize: 11 }}>Parsing {source.length.toLocaleString()} characters</div>
         </div>
@@ -1120,9 +1120,9 @@ export function LivePreview() {
     debug('[LivePreview] Falling back to source display (no PreviewComponent)');
     // Fallback: render a simplified preview based on the generated source
     return (
-      <div style={{ padding: 16, fontSize: 14, color: '#64748b' }}>
+      <div style={{ padding: 16, fontSize: 14, color: '#5a6472' }}>
         <div style={{ marginBottom: 16, fontWeight: 600 }}>Preview (Source)</div>
-        <div style={{ marginBottom: 8, fontSize: 12, color: '#94a3b8' }}>
+        <div style={{ marginBottom: 8, fontSize: 12, color: '#656e7c' }}>
           Elements: {elements.size} | Source: {source.length.toLocaleString()} chars
         </div>
         <div
@@ -1130,7 +1130,7 @@ export function LivePreview() {
             fontFamily: 'monospace',
             fontSize: 11,
             whiteSpace: 'pre-wrap',
-            background: '#f8fafc',
+            background: '#f4f6f9',
             padding: 12,
             borderRadius: 8,
             maxHeight: 400,

@@ -11,7 +11,7 @@ const styles: Record<string, React.CSSProperties> = {
     right: 4,
     bottom: 4,
     height: 3,
-    background: '#3b82f6',
+    background: '#c2410c',
     borderRadius: 2,
     opacity: 0.8,
     pointerEvents: 'none' as const,

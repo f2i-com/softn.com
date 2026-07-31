@@ -8,20 +8,20 @@ import { useSchemaStore } from '../../stores/schemaStore';
 const styles: Record<string, React.CSSProperties> = {
   container: {
     background: '#fff',
-    borderTop: '1px solid #e2e8f0',
+    borderTop: '1px solid #e4e9f0',
     padding: 16,
   },
   header: {
     fontWeight: 600,
     fontSize: 12,
-    color: '#64748b',
+    color: '#5a6472',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
     marginBottom: 12,
   },
   content: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#5a6472',
   },
   stats: {
     display: 'flex',
@@ -35,11 +35,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   statValue: {
     fontWeight: 600,
-    color: '#1e293b',
+    color: '#14181d',
   },
   hint: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: '#656e7c',
     marginTop: 8,
   },
   entityList: {
@@ -47,7 +47,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   entityItem: {
     padding: '4px 8px',
-    background: '#f8fafc',
+    background: '#f4f6f9',
     borderRadius: 4,
     marginBottom: 4,
     fontSize: 12,
@@ -57,11 +57,11 @@ const styles: Record<string, React.CSSProperties> = {
   },
   entityName: {
     fontWeight: 500,
-    color: '#1e293b',
+    color: '#14181d',
   },
   entityRecords: {
     fontSize: 11,
-    color: '#64748b',
+    color: '#5a6472',
   },
 };
 

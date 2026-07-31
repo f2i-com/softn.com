@@ -8,7 +8,7 @@ interface FileGlyphProps {
   color?: string;
 }
 
-export function FileGlyph({ kind, size = 14, color = '#475569' }: FileGlyphProps) {
+export function FileGlyph({ kind, size = 14, color = '#3d444f' }: FileGlyphProps) {
   const common: React.CSSProperties = {
     width: size,
     height: size,

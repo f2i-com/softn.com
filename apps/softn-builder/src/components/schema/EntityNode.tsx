@@ -10,17 +10,17 @@ import type { EntityDef, SchemaField } from '../../types/builder';
 const styles: Record<string, React.CSSProperties> = {
   node: {
     background: '#fff',
-    border: '2px solid #3b82f6',
+    border: '2px solid #c2410c',
     borderRadius: 8,
     minWidth: 200,
     boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
   },
   nodeSelected: {
-    borderColor: '#1d4ed8',
-    boxShadow: '0 0 0 2px rgba(59, 130, 246, 0.3)',
+    borderColor: '#7c2d12',
+    boxShadow: '0 0 0 2px rgba(194, 65, 12, 0.3)',
   },
   header: {
-    background: '#3b82f6',
+    background: '#c2410c',
     color: '#fff',
     padding: '8px 12px',
     borderRadius: '6px 6px 0 0',
@@ -44,7 +44,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
     padding: '4px 8px',
     fontSize: 12,
-    borderBottom: '1px solid #f1f5f9',
+    borderBottom: '1px solid #eef1f6',
   },
   fieldLast: {
     borderBottom: 'none',
@@ -52,12 +52,12 @@ const styles: Record<string, React.CSSProperties> = {
   fieldName: {
     flex: 1,
     fontWeight: 500,
-    color: '#1e293b',
+    color: '#14181d',
   },
   fieldType: {
-    color: '#64748b',
+    color: '#5a6472',
     fontSize: 11,
-    background: '#f1f5f9',
+    background: '#eef1f6',
     padding: '2px 6px',
     borderRadius: 4,
   },
@@ -72,12 +72,12 @@ const styles: Record<string, React.CSSProperties> = {
   handle: {
     width: 10,
     height: 10,
-    background: '#3b82f6',
+    background: '#c2410c',
     border: '2px solid #fff',
   },
   noFields: {
     padding: '12px 8px',
-    color: '#94a3b8',
+    color: '#656e7c',
     fontSize: 12,
     textAlign: 'center' as const,
   },

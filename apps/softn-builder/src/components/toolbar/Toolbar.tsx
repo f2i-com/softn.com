@@ -13,8 +13,8 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     padding: '10px 16px',
-    background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
-    borderBottom: '1px solid #e2e8f0',
+    background: 'linear-gradient(180deg, #ffffff 0%, #f4f6f9 100%)',
+    borderBottom: '1px solid #e4e9f0',
     gap: 8,
   },
   logo: {
@@ -24,14 +24,16 @@ const styles: Record<string, React.CSSProperties> = {
     marginRight: 16,
   },
   logoText: {
+    fontFamily: 'var(--b-display)',
     fontWeight: 600,
-    fontSize: 15,
-    color: '#1e293b',
+    fontSize: 16,
+    letterSpacing: '-0.02em',
+    color: '#14181d',
   },
   divider: {
     width: 1,
     height: 24,
-    background: '#e2e8f0',
+    background: '#e4e9f0',
     margin: '0 8px',
   },
   button: {
@@ -43,7 +45,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid transparent',
     borderRadius: 6,
     fontSize: 13,
-    color: '#64748b',
+    color: '#5a6472',
     cursor: 'pointer',
     transition: 'all 0.15s',
   },
@@ -56,7 +58,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   projectName: {
     fontSize: 13,
-    color: '#64748b',
+    color: '#5a6472',
     marginLeft: 8,
     maxWidth: 220,
     whiteSpace: 'nowrap',
@@ -65,7 +67,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   viewToggle: {
     display: 'flex',
-    background: '#e2e8f0',
+    background: '#e4e9f0',
     borderRadius: 8,
     padding: 2,
   },
@@ -75,30 +77,33 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     borderRadius: 4,
     fontSize: 12,
-    color: '#64748b',
+    color: '#5a6472',
     cursor: 'pointer',
     transition: 'all 0.15s',
   },
   viewButtonActive: {
     background: '#fff',
-    color: '#1e293b',
+    color: '#14181d',
     boxShadow: '0 2px 6px rgba(15,23,42,0.12)',
   },
 };
 
+/**
+ * The SoftN mark, on the same 32-unit grid as the favicon and the PWA icons.
+ *
+ * This was a gradient tile with an S-curve through it — a different logo from
+ * the one the site, the runtime and Studio all show, so the builder announced
+ * itself as another product. The tile keeps the dark ground even here, where the
+ * chrome is light, because that is what the mark is: coral brackets for the
+ * language, a mint dot for the thing that runs.
+ */
 function SoftNLogo({ size = 28 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="toolbar-logo-bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#60a5fa"/>
-          <stop offset="100%" stopColor="#2563eb"/>
-        </linearGradient>
-      </defs>
-      <rect width="32" height="32" rx="8" fill="url(#toolbar-logo-bg)"/>
-      <path d="M10.5 9C20 9 21 16 16 16S12 23 21.5 23" fill="none" stroke="#fff" strokeWidth="2.8" strokeLinecap="round"/>
-      <circle cx="10.5" cy="9" r="2.5" fill="#fff"/>
-      <circle cx="21.5" cy="23" r="2.5" fill="#fff"/>
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SoftN">
+      <rect width="32" height="32" rx="7" fill="#101317" />
+      <path d="M9 11.5 5.5 16 9 20.5" fill="none" stroke="#FF8A4C" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M23 11.5 26.5 16 23 20.5" fill="none" stroke="#FF8A4C" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="16" cy="16" r="2.8" fill="#35E0C0" />
     </svg>
   );
 }

@@ -30,7 +30,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: '16px 24px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -38,13 +38,13 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontSize: 18,
     fontWeight: 600,
-    color: '#1e293b',
+    color: '#14181d',
   },
   closeButton: {
     background: 'transparent',
     border: 'none',
     fontSize: 24,
-    color: '#94a3b8',
+    color: '#656e7c',
     cursor: 'pointer',
     padding: 4,
     lineHeight: 1,
@@ -59,7 +59,7 @@ const styles: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#64748b',
+    color: '#5a6472',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
     marginBottom: 8,
@@ -69,7 +69,7 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '6px 0',
-    borderBottom: '1px solid #f1f5f9',
+    borderBottom: '1px solid #eef1f6',
   },
   action: {
     fontSize: 13,
@@ -82,18 +82,18 @@ const styles: Record<string, React.CSSProperties> = {
   key: {
     display: 'inline-block',
     padding: '2px 8px',
-    background: '#f1f5f9',
-    border: '1px solid #e2e8f0',
+    background: '#eef1f6',
+    border: '1px solid #e4e9f0',
     borderRadius: 4,
     fontSize: 12,
     fontFamily: 'monospace',
-    color: '#475569',
+    color: '#3d444f',
     minWidth: 24,
     textAlign: 'center' as const,
   },
   plus: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: '#656e7c',
     lineHeight: '24px',
   },
 };

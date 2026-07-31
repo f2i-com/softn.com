@@ -9,7 +9,7 @@ import type { EntityDef, SchemaField, FieldType } from '../../types/builder';
 const styles: Record<string, React.CSSProperties> = {
   container: {
     background: '#fff',
-    borderLeft: '1px solid #e2e8f0',
+    borderLeft: '1px solid #e4e9f0',
     width: 300,
     display: 'flex',
     flexDirection: 'column',
@@ -17,10 +17,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: '12px 16px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     fontWeight: 600,
     fontSize: 14,
-    color: '#1e293b',
+    color: '#14181d',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -30,7 +30,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none',
     cursor: 'pointer',
     fontSize: 18,
-    color: '#64748b',
+    color: '#5a6472',
     padding: 4,
   },
   content: {
@@ -44,7 +44,7 @@ const styles: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: 12,
     fontWeight: 600,
-    color: '#64748b',
+    color: '#5a6472',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
     marginBottom: 8,
@@ -62,15 +62,15 @@ const styles: Record<string, React.CSSProperties> = {
   input: {
     width: '100%',
     padding: '8px 10px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 6,
     fontSize: 13,
     outline: 'none',
     boxSizing: 'border-box' as const,
   },
   fieldCard: {
-    background: '#f8fafc',
-    border: '1px solid #e2e8f0',
+    background: '#f4f6f9',
+    border: '1px solid #e4e9f0',
     borderRadius: 6,
     padding: 12,
     marginBottom: 8,
@@ -100,7 +100,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   select: {
     padding: '6px 8px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 4,
     fontSize: 12,
     outline: 'none',
@@ -116,7 +116,7 @@ const styles: Record<string, React.CSSProperties> = {
   addBtn: {
     width: '100%',
     padding: '8px 12px',
-    background: '#3b82f6',
+    background: '#c2410c',
     color: '#fff',
     border: 'none',
     borderRadius: 6,
@@ -139,7 +139,7 @@ const styles: Record<string, React.CSSProperties> = {
   emptyState: {
     textAlign: 'center' as const,
     padding: 24,
-    color: '#64748b',
+    color: '#5a6472',
     fontSize: 13,
   },
 };

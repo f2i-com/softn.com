@@ -9,7 +9,7 @@ import type { EntityDef, SchemaField } from '../../types/builder';
 const styles: Record<string, React.CSSProperties> = {
   container: {
     background: '#fff',
-    borderTop: '1px solid #e2e8f0',
+    borderTop: '1px solid #e4e9f0',
     maxHeight: 300,
     display: 'flex',
     flexDirection: 'column',
@@ -17,34 +17,34 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: '10px 16px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     fontWeight: 600,
     fontSize: 13,
-    color: '#1e293b',
+    color: '#14181d',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    background: '#f8fafc',
+    background: '#f4f6f9',
   },
   tabs: {
     display: 'flex',
     gap: 4,
     padding: '8px 16px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #e4e9f0',
     overflowX: 'auto',
   },
   tab: {
     padding: '6px 12px',
-    background: '#f1f5f9',
+    background: '#eef1f6',
     border: 'none',
     borderRadius: 4,
     fontSize: 12,
-    color: '#64748b',
+    color: '#5a6472',
     cursor: 'pointer',
     whiteSpace: 'nowrap' as const,
   },
   tabActive: {
-    background: '#3b82f6',
+    background: '#c2410c',
     color: '#fff',
   },
   content: {
@@ -55,7 +55,7 @@ const styles: Record<string, React.CSSProperties> = {
   emptyState: {
     textAlign: 'center' as const,
     padding: 24,
-    color: '#64748b',
+    color: '#5a6472',
     fontSize: 13,
   },
   table: {
@@ -66,19 +66,19 @@ const styles: Record<string, React.CSSProperties> = {
   th: {
     textAlign: 'left' as const,
     padding: '8px 10px',
-    background: '#f8fafc',
-    borderBottom: '1px solid #e2e8f0',
+    background: '#f4f6f9',
+    borderBottom: '1px solid #e4e9f0',
     fontWeight: 600,
     color: '#374151',
   },
   td: {
     padding: '6px 8px',
-    borderBottom: '1px solid #f1f5f9',
+    borderBottom: '1px solid #eef1f6',
   },
   input: {
     width: '100%',
     padding: '6px 8px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 4,
     fontSize: 12,
     outline: 'none',
@@ -87,7 +87,7 @@ const styles: Record<string, React.CSSProperties> = {
   select: {
     width: '100%',
     padding: '6px 8px',
-    border: '1px solid #e2e8f0',
+    border: '1px solid #e4e9f0',
     borderRadius: 4,
     fontSize: 12,
     outline: 'none',
@@ -107,7 +107,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   addBtn: {
     padding: '6px 12px',
-    background: '#3b82f6',
+    background: '#c2410c',
     color: '#fff',
     border: 'none',
     borderRadius: 4,
@@ -117,7 +117,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   recordCount: {
     fontSize: 11,
-    color: '#64748b',
+    color: '#5a6472',
     fontWeight: 400,
   },
 };
