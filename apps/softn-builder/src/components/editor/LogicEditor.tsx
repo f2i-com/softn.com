@@ -60,7 +60,18 @@ export function LogicEditor() {
       }
       return;
     }
+
+    // No logic file is open — this is the dock beneath the canvas, edited while
+    // a .ui file is active. It used to write only to the project's logicSource,
+    // and Save takes the multi-file path whenever a project has more than one
+    // file, which every New Project does (ui/main.ui plus logic/main.logic).
+    // That path reads logicFiles and never looks at logicSource, so everything
+    // typed here was dropped from the saved bundle without a word.
     setLogicSource(next);
+    const mainLogic = useFilesStore.getState().getFileByPath('logic/main.logic');
+    if (mainLogic) {
+      updateLogicFile(mainLogic.id, next);
+    }
   };
 
   return (
