@@ -8,6 +8,45 @@
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 
+/** One per run of the start effect — see the effect at the bottom for why. */
+interface StartAttempt {
+  cancelled: boolean;
+}
+
+/**
+ * True for the `play()` rejections that mean "something else happened to this
+ * element first", rather than "the camera does not work".
+ *
+ * `play()` returns a promise that rejects if the video is detached from the
+ * document, or given a new source, before playback begins. Both are routine
+ * during a remount and neither says anything about the hardware.
+ */
+/**
+ * The reason a media call failed, in words.
+ *
+ * Not `err instanceof Error`: every getUserMedia rejection is a DOMException,
+ * and DOMException does not inherit from Error. That check therefore never
+ * matched, and the one thing the user needed to be told — permission denied,
+ * no camera attached, device already in use — was replaced by "Failed to
+ * access camera" every single time.
+ */
+function describeMediaError(err: unknown, fallback: string): string {
+  if (typeof err === 'object' && err !== null) {
+    const { name, message } = err as { name?: unknown; message?: unknown };
+    if (typeof message === 'string' && message) return message;
+    if (typeof name === 'string' && name) return name;
+  }
+  return fallback;
+}
+
+function isBenignPlayAbort(err: unknown): boolean {
+  const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : undefined;
+  if (name === 'AbortError') return true;
+  return /interrupted|aborted|removed from the document|new load request/i.test(
+    describeMediaError(err, '')
+  );
+}
+
 export interface CameraProps {
   /** Operating mode (default 'photo') */
   mode?: 'photo' | 'video' | 'live';
@@ -58,8 +97,6 @@ export function Camera({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  /** True once this mount (or this `active` state) is over — see startCamera. */
-  const cancelledRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recordStartRef = useRef<number>(0);
@@ -89,10 +126,15 @@ export function Camera({
   }, []);
 
   // Start camera stream
-  const startCamera = useCallback(async () => {
+  const startCamera = useCallback(async (attempt: StartAttempt) => {
     cleanup();
 
     if (!active) return;
+
+    // A previous failure must not outlive the attempt that caused it, or the
+    // component renders its error box forever and no amount of switching away
+    // and back brings the viewfinder back.
+    setError(null);
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -104,41 +146,43 @@ export function Camera({
         audio: mode === 'video',
       });
 
-      // The await above can outlive this component: the permission prompt sits
+      // The await above can outlive this attempt: the permission prompt sits
       // there while the user closes the modal, then they press Allow. Cleanup
       // has already run by then, so without this the hardware turns on with
       // nothing on screen, streamRef is dead, and no code path can ever reach
       // the tracks to stop them — the recording indicator stays lit for the rest
       // of the session, and every open/close cycle leaks another camera and, in
       // video mode, another microphone.
-      if (cancelledRef.current) {
+      if (attempt.cancelled) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
 
       streamRef.current = stream;
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        try {
+          await video.play();
+        } catch (playErr) {
+          // Not a camera failure — see isBenignPlayAbort. The element carries
+          // `autoPlay`, so once it is back in the document it starts on its
+          // own; there is nothing to report and nothing to retry.
+          if (attempt.cancelled) return;
+          if (!isBenignPlayAbort(playErr)) throw playErr;
+        }
       }
 
+      if (attempt.cancelled) return;
       setIsStreaming(true);
-      setError(null);
-
-      // Start live frame capture if in live mode
-      if (mode === 'live' && onFrame) {
-        const intervalMs = Math.max(16, Math.round(1000 / frameRate));
-        frameIntervalRef.current = setInterval(() => {
-          captureFrame();
-        }, intervalMs);
-      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to access camera';
+      if (attempt.cancelled) return;
+      const message = describeMediaError(err, 'Failed to access camera');
       setError(message);
       onError?.(message);
     }
-  }, [active, facing, width, height, mode, frameRate, onFrame, onError, cleanup]);
+  }, [active, facing, width, height, mode, onError, cleanup]);
 
   // Capture a single frame to canvas -> data URL
   const captureFrame = useCallback((): { dataUrl: string; width: number; height: number } | null => {
@@ -160,7 +204,13 @@ export function Camera({
     return { dataUrl, width: vw, height: vh };
   }, [quality]);
 
-  // Live frame capture
+  // Live frame capture.
+  //
+  // `startCamera` used to open a second interval of its own that called
+  // `captureFrame()` and dropped the result on the floor. Because it set the
+  // same ref first, the guard below then saw an interval already running and
+  // skipped — so live mode encoded a JPEG ten times a second and never once
+  // called `onFrame`. There is one interval now, and it is this one.
   useEffect(() => {
     if (mode === 'live' && isStreaming && onFrame && !frameIntervalRef.current) {
       const intervalMs = Math.max(16, Math.round(1000 / frameRate));
@@ -228,7 +278,7 @@ export function Camera({
       recorderRef.current = recorder;
       setIsRecording(true);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to start recording';
+      const message = describeMediaError(err, 'Failed to start recording');
       setError(message);
       onError?.(message);
     }
@@ -241,20 +291,34 @@ export function Camera({
     }
   }, []);
 
-  // Start/stop camera based on active prop and facing changes
+  // Start/stop camera based on active prop and facing changes.
+  //
+  // The cancellation flag belongs to this one run of the effect, not to the
+  // component. It used to be a ref shared across mounts, and React re-runs
+  // this effect on remount — under StrictMode, immediately — so the new run
+  // cleared the flag the previous run's in-flight getUserMedia was about to
+  // check. Both attempts then went ahead, both assigned srcObject, and the
+  // first `play()` was aborted by the second. That rejection was caught as a
+  // camera error, and the component swapped the viewfinder for a permanent
+  // "The play() request was interrupted because the media was removed from
+  // the document" box that nothing could clear.
   useEffect(() => {
-    cancelledRef.current = false;
+    const attempt: StartAttempt = { cancelled: false };
     if (active) {
-      startCamera();
+      void startCamera(attempt);
     } else {
       cleanup();
     }
     return () => {
       // Set before cleanup, so a getUserMedia still in flight stops its own
       // tracks when it lands rather than handing them to a dead component.
-      cancelledRef.current = true;
+      attempt.cancelled = true;
       cleanup();
     };
+    // startCamera is deliberately absent: it is rebuilt whenever the host
+    // passes a fresh onError, and restarting the hardware for that would
+    // retake the camera on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, facing, mode]);
 
   // Styles
@@ -269,11 +333,25 @@ export function Camera({
     ...style,
   };
 
+  // `width` and `height` are what the viewfinder is *for*: how big a picture of
+  // the world to show. It shrinks to fit a narrower container but never grows
+  // past them, and never changes shape.
+  //
+  // Without the caps, a host that widened the container — `width: 100%` inside
+  // a card is the obvious thing to write — got a video whose height grew with
+  // it. On a wide screen that ran past the bottom of the window, taking the
+  // capture button with it, and cropped the feed to a letterbox slice that was
+  // nothing like the full frame `captureFrame` goes on to save. The declared
+  // ratio also stops the layout jumping when the first frame arrives.
   const videoStyle: React.CSSProperties = {
     display: 'block',
     width: '100%',
     height: 'auto',
+    maxWidth: width,
+    maxHeight: height,
+    aspectRatio: `${width} / ${height}`,
     objectFit: 'cover',
+    backgroundColor: '#000',
     transform: facing === 'user' ? 'scaleX(-1)' : undefined,
   };
 
