@@ -49,11 +49,33 @@ const styles: Record<string, React.CSSProperties> = {
     scrollbarGutter: 'stable',
     padding: 16,
   },
+  // The panel is 320px wide and full height, and this used to be one grey
+  // sentence pinned to the top of it, with the rest of the column empty. It
+  // centres now and says what to do rather than only what is missing.
   empty: {
-    padding: 24,
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    padding: '24px 28px',
     textAlign: 'center' as const,
     color: '#656e7c',
     fontSize: 13,
+  },
+  emptyTitle: {
+    fontFamily: 'var(--b-display)',
+    fontSize: 15,
+    fontWeight: 600,
+    letterSpacing: '-0.01em',
+    color: '#14181d',
+  },
+  emptyHint: {
+    fontSize: 12.5,
+    lineHeight: 1.55,
+    color: '#5a6472',
+    maxWidth: 240,
   },
   componentInfo: {
     marginBottom: 16,
@@ -479,7 +501,17 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
     return (
       <div style={styles.container}>
         {header}
-        <div style={styles.empty}>Select an element to edit its properties</div>
+        <div style={styles.empty}>
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#656e7c" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 4h7v7H4z" />
+            <path d="M13.5 13.5 20 20" />
+            <path d="M13 13h3.5M13 13v3.5" />
+          </svg>
+          <div style={styles.emptyTitle}>Nothing selected</div>
+          <div style={styles.emptyHint}>
+            Pick an element on the canvas, or in the hierarchy below, and its properties appear here.
+          </div>
+        </div>
       </div>
     );
   }
