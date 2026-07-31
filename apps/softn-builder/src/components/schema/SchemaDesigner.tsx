@@ -39,6 +39,60 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     position: 'relative' as const,
   },
+  // Sits over the canvas without stealing it: the wrapper ignores the pointer so
+  // double-clicking through it still creates a collection, and only the button
+  // takes clicks back.
+  emptyOverlay: {
+    position: 'absolute' as const,
+    inset: 0,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    padding: 24,
+    textAlign: 'center' as const,
+    pointerEvents: 'none' as const,
+  },
+  emptyTitle: {
+    fontFamily: 'var(--b-display)',
+    fontSize: 19,
+    fontWeight: 600,
+    letterSpacing: '-0.02em',
+    color: '#14181d',
+  },
+  emptyBody: {
+    margin: 0,
+    maxWidth: 430,
+    fontSize: 13.5,
+    lineHeight: 1.6,
+    color: '#5a6472',
+  },
+  emptyCode: {
+    fontFamily: 'var(--b-mono)',
+    fontSize: '0.92em',
+    color: '#c2410c',
+  },
+  emptyBtn: {
+    pointerEvents: 'auto' as const,
+    marginTop: 4,
+    padding: '9px 18px',
+    background: '#c2410c',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 8,
+    fontFamily: 'inherit',
+    fontSize: 13.5,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  emptyHint: {
+    margin: 0,
+    maxWidth: 400,
+    fontSize: 12.5,
+    lineHeight: 1.5,
+    color: '#656e7c',
+  },
   toolbar: {
     padding: '8px 16px',
     borderBottom: '1px solid #e4e9f0',
@@ -254,11 +308,42 @@ export function SchemaDesigner() {
           >
             <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d5dce5" />
             <Controls />
-            <MiniMap
-              nodeColor={(node) => (node.selected ? '#c2410c' : '#656e7c')}
-              style={{ background: '#f4f6f9' }}
-            />
+            {/* A minimap of nothing is a grey rectangle claiming a corner of the
+                canvas for no reason. It appears once there is something to map. */}
+            {entities.length > 0 && (
+              <MiniMap
+                nodeColor={(node) => (node.selected ? '#c2410c' : '#656e7c')}
+                style={{ background: '#f4f6f9' }}
+              />
+            )}
           </ReactFlow>
+
+          {/* The empty canvas used to say nothing at all. The only instructions
+              were eleven-pixel grey text in the far top-right corner, on the
+              opposite side of a 1300px canvas from where anyone looks first —
+              so the screen that opens the Data section read as broken rather
+              than empty. This sits where the eye lands and offers the action. */}
+          {entities.length === 0 && (
+            <div style={styles.emptyOverlay}>
+              <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="#656e7c" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <ellipse cx="12" cy="5.5" rx="7.5" ry="2.8" />
+                <path d="M4.5 5.5v6c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-6" />
+                <path d="M4.5 11.5v6c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-6" />
+              </svg>
+              <div style={styles.emptyTitle}>No collections yet</div>
+              <p style={styles.emptyBody}>
+                A collection is a table your app reads and writes — customers, invoices, whatever
+                it keeps. Add one, give it fields, and it ships inside the bundle as an{' '}
+                <code style={styles.emptyCode}>.xdb</code> file.
+              </p>
+              <button style={styles.emptyBtn} onClick={handleAddEntity}>
+                + Add your first collection
+              </button>
+              <p style={styles.emptyHint}>
+                Or double-click anywhere on the canvas. Drag between two collections to relate them.
+              </p>
+            </div>
+          )}
         </div>
 
         <EntityEditor />
