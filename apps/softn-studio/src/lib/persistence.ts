@@ -58,9 +58,35 @@ function canUseStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 }
 
+/**
+ * Persist one key, and survive a full disk.
+ *
+ * These writes were unguarded. localStorage throws QuotaExceededError once the
+ * origin's few megabytes are used up — which importing one large bundle does —
+ * and the throw escaped an autosave effect, so React unmounted the tree and
+ * Studio went blank. The project was still in memory a moment earlier and there
+ * was no way back to it. Autosave failing is a thing to be told about, not a
+ * thing to lose the work over: it returns false and the caller can say so.
+ */
+function writeItem(key: string, value: string): boolean {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    const quota = error instanceof DOMException && /quota/i.test(error.name + error.message);
+    console.warn(
+      quota
+        ? `[SoftN Studio] Autosave failed: this project is larger than the browser will store. Export it to keep it.`
+        : '[SoftN Studio] Autosave failed:',
+      error
+    );
+    return false;
+  }
+}
+
 export function saveWorkspaceSnapshot(snapshot: PersistedWorkspace): void {
   if (!canUseStorage()) return;
-  window.localStorage.setItem(STORAGE_KEYS.workspace, JSON.stringify(snapshot));
+  writeItem(STORAGE_KEYS.workspace, JSON.stringify(snapshot));
 }
 
 export function loadWorkspaceSnapshot(): PersistedWorkspace | null {
@@ -76,7 +102,7 @@ export function loadWorkspaceSnapshot(): PersistedWorkspace | null {
 
 export function saveAISnapshot(snapshot: PersistedAI): void {
   if (!canUseStorage()) return;
-  window.localStorage.setItem(STORAGE_KEYS.ai, JSON.stringify(snapshot));
+  writeItem(STORAGE_KEYS.ai, JSON.stringify(snapshot));
 }
 
 export function loadAISnapshot(): PersistedAI | null {
@@ -113,7 +139,7 @@ export function saveVFSSnapshot(files: Map<string, VFSFile>): void {
         : arrayBufferToBase64(file.content),
     })),
   };
-  window.localStorage.setItem(STORAGE_KEYS.vfs, JSON.stringify(payload));
+  writeItem(STORAGE_KEYS.vfs, JSON.stringify(payload));
 }
 
 export function loadVFSSnapshot(): PersistedVFS | null {
@@ -153,7 +179,7 @@ export function saveRecentProject(project: RecentProjectRecord): void {
     (item) => item.id !== project.id && item.name !== project.name,
   );
   const next = [project, ...existing].slice(0, 8);
-  window.localStorage.setItem(STORAGE_KEYS.recent, JSON.stringify(next));
+  writeItem(STORAGE_KEYS.recent, JSON.stringify(next));
 }
 
 export function removeRecentProject(id: string): void {
@@ -161,7 +187,7 @@ export function removeRecentProject(id: string): void {
   const all = loadRecentProjects();
   const removed = all.find((item) => item.id === id);
   const next = all.filter((item) => item.id !== id);
-  window.localStorage.setItem(STORAGE_KEYS.recent, JSON.stringify(next));
+  writeItem(STORAGE_KEYS.recent, JSON.stringify(next));
 
   // If the removed project matches the currently saved workspace, clear all snapshots
   const workspace = loadWorkspaceSnapshot();
