@@ -75,6 +75,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   selectedIds: [],
   hoveredId: null,
   clipboard: [],
+  clipboardTree: new Map(),
   draggedType: null,
   dropTargetId: null,
   draggedElementId: null,
@@ -333,7 +334,23 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const clipboard = state.selectedIds
       .map((id) => state.elements.get(id))
       .filter((el): el is CanvasElement => el !== undefined);
-    set({ clipboard });
+
+    // Snapshot the descendants too. paste resolves children from this rather
+    // than from the live map, so a cut cannot empty the clipboard out from
+    // under itself: by paste time the originals are gone, every child lookup
+    // returned undefined, and what came back was the element stripped of
+    // everything it contained — a Card that arrived with no card in it.
+    const clipboardTree = new Map<string, CanvasElement>();
+    const collect = (el: CanvasElement) => {
+      clipboardTree.set(el.id, el);
+      for (const childId of el.children) {
+        const child = state.elements.get(childId);
+        if (child && !clipboardTree.has(childId)) collect(child);
+      }
+    };
+    clipboard.forEach(collect);
+
+    set({ clipboard, clipboardTree });
   },
 
   paste: (parentId) => {
@@ -353,7 +370,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         // Recursively clone children first
         const clonedChildIds = el.children
           .map((childId) => {
-            const child = currentState.elements.get(childId);
+            const child = currentState.clipboardTree.get(childId) ?? currentState.elements.get(childId);
             if (child) {
               return deepCloneElement(child, newId);
             }
@@ -423,6 +440,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       selectedIds: [],
       hoveredId: null,
       clipboard: [],
+  clipboardTree: new Map(),
       draggedType: null,
       dropTargetId: null,
       draggedElementId: null,
@@ -444,6 +462,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
       selectedIds: [],
       hoveredId: null,
       clipboard: [],
+  clipboardTree: new Map(),
       imports,
     });
   },
