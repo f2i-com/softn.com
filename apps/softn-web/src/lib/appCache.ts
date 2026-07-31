@@ -121,6 +121,88 @@ export async function getCachedApps(): Promise<CachedApp[]> {
   }
 }
 
+/** One app, and every build of it the browser is still holding. */
+export interface AppVersions {
+  name: string;
+  /** Most recently opened first; the one the launcher shows. */
+  current: CachedApp;
+  /** Every build, newest opened first. Length 1 is the ordinary case. */
+  versions: CachedApp[];
+}
+
+/**
+ * Group the cache into one entry per app.
+ *
+ * Identity is a digest of the bundle, which is what stops a bundle calling
+ * itself Notes from reaching the real Notes' data. The cost is that rebuilding
+ * an app produces a genuinely different app, so the launcher filled up with
+ * cards that all had the same name — every build of a demo sitting beside every
+ * other. Both facts are worth keeping: the isolation, and one card per app. So
+ * grouping is a presentation decision made here, and says nothing about what any
+ * of these builds may read.
+ */
+export function groupByApp(apps: CachedApp[]): AppVersions[] {
+  const groups = new Map<string, CachedApp[]>();
+  for (const app of apps) {
+    const list = groups.get(app.name);
+    if (list) list.push(app);
+    else groups.set(app.name, [app]);
+  }
+  return [...groups.entries()]
+    .map(([name, versions]) => {
+      const ordered = [...versions].sort((a, b) => b.lastOpened - a.lastOpened);
+      return { name, current: ordered[0], versions: ordered };
+    })
+    .sort((a, b) => b.current.lastOpened - a.current.lastOpened);
+}
+
+/**
+ * Copy one build's stored data onto another.
+ *
+ * This is the "bring my data with me" half of an update. Nothing can prove two
+ * bundles share an author, so the runtime will not do this by itself — but the
+ * person who chose to install the update can say so, and this is what carries
+ * their records across. It copies rather than moves, so the older build still
+ * has its own data to go back to if the update turns out to be wrong.
+ */
+export function copyAppData(fromOrigin: string, toOrigin: string): number {
+  if (!fromOrigin || !toOrigin || fromOrigin === toOrigin) return 0;
+  let copied = 0;
+  try {
+    const from = `xdb:${fromOrigin}:`;
+    const to = `xdb:${toOrigin}:`;
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(from)) keys.push(key);
+    }
+    for (const key of keys) {
+      const value = localStorage.getItem(key);
+      if (value === null) continue;
+      localStorage.setItem(to + key.slice(from.length), value);
+      copied += 1;
+    }
+  } catch {
+    // Storage unavailable or full — the update still opens, without the data.
+  }
+  return copied;
+}
+
+/** Whether a build has any stored records of its own, i.e. whether it has been used. */
+export function hasStoredData(origin: string | undefined): boolean {
+  if (!origin) return false;
+  try {
+    const prefix = `xdb:${origin}:`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(prefix)) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
 /**
  * Move an app's stored data from the old name-based namespace to its origin.
  *

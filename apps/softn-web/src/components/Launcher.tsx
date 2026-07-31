@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { CachedApp } from '../lib/appCache';
+import { groupByApp, hasStoredData, type CachedApp } from '../lib/appCache';
 import { publicPath } from '../lib/appUrl';
 
 const launcherStyles = `
@@ -378,7 +378,14 @@ export function Launcher({
               Recent Apps
             </div>
             <div className="softn-launcher-grid">
-              {apps.map((app) => (
+              {groupByApp(apps).map((group) => {
+                // One card per app. Every build the browser still holds sits
+                // behind it, because identity is the bundle's digest and a
+                // rebuild is genuinely a different app — correct for what it may
+                // read, and no reason to show the user four cards called Notes.
+                const app = group.current;
+                const olderVersions = group.versions.slice(1);
+                return (
                 <div
                   key={app.id}
                   className="softn-launcher-card"
@@ -493,8 +500,51 @@ export function Launcher({
                     }} />
                     {formatDate(app.lastOpened)}
                   </div>
+
+                  {olderVersions.length > 0 && (
+                    // Earlier builds, in the same place rather than as cards of
+                    // their own. Each keeps its own records — that is what makes
+                    // going back to one meaningful rather than just older code.
+                    <div
+                      style={{
+                        marginTop: '0.75rem',
+                        paddingTop: '0.625rem',
+                        borderTop: '1px solid rgba(255,255,255,0.06)',
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => e.stopPropagation()}
+                    >
+                      <div style={{ fontSize: '0.625rem', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#4a4a56', marginBottom: '0.4375rem' }}>
+                        Earlier versions
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
+                        {olderVersions.map((older) => (
+                          <button
+                            key={older.id}
+                            onClick={() => onOpenCached(older)}
+                            title={`Open v${older.version} — its own saved data comes with it`}
+                            style={{
+                              minHeight: 28,
+                              padding: '0.25rem 0.5rem',
+                              borderRadius: 6,
+                              border: '1px solid rgba(255,255,255,0.1)',
+                              background: 'rgba(255,255,255,0.03)',
+                              color: '#9a9aa6',
+                              fontSize: '0.6875rem',
+                              cursor: 'pointer',
+                              fontFamily: 'inherit',
+                            }}
+                          >
+                            v{older.version}
+                            {hasStoredData(older.origin) ? ' · has data' : ''}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </>
         ) : (
