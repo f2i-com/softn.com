@@ -1424,18 +1424,26 @@ export function evaluateExpression(
         });
 
         if (typeof expr.body === 'string') {
-          // Block body - try to extract return value or execute in the VM
-          // For now, attempt to parse simple return statements
+          // A block body is not executed here — running arbitrary statements is
+          // the script VM's job, not the renderer's.
+          //
+          // What matters is that it used to fail in complete silence. The
+          // diagnostic sat inside a `startsWith('return ')` branch, so the one
+          // shape that says nothing at all — `@click={() => { save() }}` — got
+          // no warning, returned undefined, and left a control that looks
+          // ordinary and does nothing when pressed. Nothing in the console,
+          // nothing on screen. Every block body reports itself now, and says
+          // what to write instead.
           const bodyStr = expr.body.trim();
-          if (bodyStr.startsWith('return ')) {
-            // Simple return statement - this is a limitation
-            // Full support would require script-VM integration
-            if (isDevelopment) {
-              console.warn(
-                '[SoftN] Block body arrow functions with complex logic require script-VM integration'
-              );
-            }
-          }
+          const suggestion = bodyStr.startsWith('return ')
+            ? bodyStr.slice('return '.length).replace(/;$/, '')
+            : bodyStr.replace(/;$/, '');
+          console.error(
+            `[SoftN] This handler did not run: an arrow function with a { } body is not ` +
+              `evaluated in a template. Write it without the braces — ` +
+              `{() => ${suggestion || '…'}} — or move it into a <logic> function and ` +
+              `reference that.`
+          );
           return undefined;
         }
 
