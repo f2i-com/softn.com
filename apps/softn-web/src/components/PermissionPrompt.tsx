@@ -16,6 +16,15 @@ interface PermissionPromptProps {
   onDeny: () => void;
 }
 
+/** Stands in for a capability this build has no description for. */
+const UNDESCRIBED_ICON = (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" />
+    <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" />
+    <line x1="12" y1="17" x2="12.01" y2="17" />
+  </svg>
+);
+
 /** Human-readable descriptions for each permission category */
 const PERMISSION_INFO: Record<string, { label: string; description: string; icon: React.ReactNode }> = {
   net: {
@@ -36,6 +45,18 @@ const PERMISSION_INFO: Record<string, { label: string; description: string; icon
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
         <circle cx="12" cy="13" r="4" />
+      </svg>
+    ),
+  },
+  mic: {
+    label: 'Microphone Access',
+    description: 'Listen through your device microphone and record what it hears.',
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+        <line x1="12" y1="19" x2="12" y2="23" />
+        <line x1="8" y1="23" x2="16" y2="23" />
       </svg>
     ),
   },
@@ -108,8 +129,16 @@ function getRequestedPermissions(config: PermissionConfig): Array<{ key: string;
 
   for (const [key, value] of Object.entries(perms)) {
     if (!value || !value.enabled) continue;
-    const info = PERMISSION_INFO[key];
-    if (!info) continue;
+    // A key with no entry above used to be skipped, which is how ai, gpu and
+    // sync came to be enforced by the runtime and described to the user as "No
+    // specific permissions requested" — the dialog granted what it declined to
+    // name. Naming it badly is better than not naming it, and an undescribed
+    // row is loud enough that the missing entry gets noticed.
+    const info = PERMISSION_INFO[key] ?? {
+      label: `${key} access`,
+      description: 'This app asks for a capability this version of SoftN cannot describe.',
+      icon: UNDESCRIBED_ICON,
+    };
 
     let detail: string | undefined;
     if (key === 'net' && 'allowed_hosts' in value && Array.isArray(value.allowed_hosts) && value.allowed_hosts.length > 0) {
@@ -120,6 +149,9 @@ function getRequestedPermissions(config: PermissionConfig): Array<{ key: string;
     }
     if (key === 'camera' && 'modes' in value && Array.isArray(value.modes) && value.modes.length > 0) {
       detail = `Modes: ${value.modes.join(', ')}`;
+    }
+    if (key === 'mic' && 'maxSeconds' in value && typeof value.maxSeconds === 'number' && value.maxSeconds > 0) {
+      detail = `Up to ${value.maxSeconds}s per recording`;
     }
 
     result.push({ key, info, detail });

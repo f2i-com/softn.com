@@ -12,3 +12,4 @@ export * from './xdb-server-sync';
 export * from './helpers';
 export * from './form-binding';
 export * from './file-registry';
+export * from './wav';

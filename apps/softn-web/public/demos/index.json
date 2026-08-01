@@ -94,5 +94,13 @@
     "description": "3D Scene demo with animated shapes powered by formlogic",
     "primary": "#6366f1",
     "size": 7838
+  },
+  {
+    "id": "warble-wire",
+    "file": "WarbleWire.softn",
+    "name": "WarbleWire",
+    "description": "Send a message as synthetic birdsong and decode it back — the QXW acoustic transport",
+    "primary": "#c7ee53",
+    "size": 105401
   }
 ]

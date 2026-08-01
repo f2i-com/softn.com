@@ -23,7 +23,7 @@ export function Hero(): React.ReactElement {
         </h1>
 
         <p className="hero-lede rise" style={{ animationDelay: '180ms' }}>
-          SoftN reads a <code>.ui</code> file and puts a working application on screen: 86 components, a sandboxed
+          SoftN reads a <code>.ui</code> file and puts a working application on screen: 88 components, a sandboxed
           JavaScript engine compiled to WebAssembly, and a local-first database that syncs peer to peer.{' '}
           <strong>What&rsquo;s below isn&rsquo;t a screenshot</strong> — the right panel is the runtime, executing the
           file on the left.

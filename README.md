@@ -2,14 +2,14 @@
 
 **A dynamic, AI-friendly UI language and runtime for building applications -- desktop and web.**
 
-SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 86 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation.
+SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 88 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation.
 
 ---
 
 ## Key Features
 
 - **AI-Friendly DSL** -- Clean, consistent `.ui` syntax optimized for AI code generation
-- **86 Built-in Components** -- Comprehensive library across 12 categories including 3D, charts, and animation
+- **88 Built-in Components** -- Comprehensive library across 12 categories including 3D, charts, and animation
 - **Smart Components** -- Auto-configured, data-driven components with search, sort, pagination, and CRUD
 - **zipp Engine** -- Sandboxed JavaScript engine written in Rust, running in WebAssembly (no `eval`, no `new Function`)
 - **XDB Database** -- Local-first database with CRDT-based P2P synchronization
@@ -30,7 +30,7 @@ softn.com/
 +-- packages/
 |   +-- @softn/
 |       +-- core/              # Core engine (parser, renderer, runtime)
-|       +-- components/        # Built-in component library (86 components)
+|       +-- components/        # Built-in component library (88 components)
 |       +-- vite-plugin/       # Vite plugin for .softn files
 +-- apps/
 |   +-- softn-site/            # softn.com landing page
@@ -112,7 +112,7 @@ tells the landing page where it went. To run a single app instead, use
                                     |
                                     v
                             Component Registry
-                           (86 built-in + custom)
+                           (88 built-in + custom)
 
 .logic Source
       |
@@ -189,7 +189,7 @@ Before each script function call, all React state is synced to VM globals. After
 
 ---
 
-## Component Library (86 Components)
+## Component Library (88 Components)
 
 | Category | Count | Components |
 |----------|-------|-----------|
@@ -199,9 +199,9 @@ Before each script function call, all React state is synced to VM globals. After
 | Feedback | 6 | `Alert`, `Modal`, `Toast`, `Drawer`, `Popover`, `EmptyState` |
 | Data | 6 | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination` |
 | Navigation | 4 | `Tabs`, `Breadcrumb`, `Menu`, `NavItem` |
-| Utility | 9 | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `QRCode`, `QRReader`, `Camera`, `DPad` |
+| Utility | 10 | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `QRCode`, `QRReader`, `Camera`, `Microphone`, `DPad` |
 | Charts | 6 | `LineChart`, `BarChart`, `PieChart`, `AreaChart`, `RadarChart`, `GaugeChart` |
-| Animation | 8 | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList`, `Sprite`, `TileMap` |
+| Animation | 9 | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList`, `PanView`, `Sprite`, `TileMap` |
 | Editors | 3 | `CodeEditor`, `MarkdownEditor`, `RichTextEditor` |
 | 3D | 1 | `Scene3D` (Three.js with GLTF, OBJ, FBX, STL) |
 | Smart | 7 | `SmartGrid`, `SmartView`, `SmartForm`, `SmartCards`, `SmartList`, `SmartTimeline`, `SmartStats` |
@@ -248,7 +248,7 @@ MyApp.softn (ZIP archive)
 ```
 
 `permission.json` is not optional in practice. The runtime denies every gated
-capability — network, camera, filesystem, AI, GPU and peer-to-peer sync — to a
+capability — network, camera, microphone, filesystem, AI, GPU and peer-to-peer sync — to a
 bundle that does not declare it, and the consent prompt is built from what it
 declares, so an app that ships without one can run but cannot reach the host:
 
@@ -344,6 +344,66 @@ click or keystroke instead.
 
 ---
 
+## Microphone
+
+Listening, unlike playing, is gated: `mic` has to be in `permission.json`, and
+the consent prompt names it. The comment above the audio API argues that sound
+is a nuisance rather than a disclosure because it "reads nothing, sends
+nothing" — a microphone is the thing that fails that test.
+
+```json
+{ "permissions": { "mic": { "enabled": true, "maxSeconds": 20 } } }
+```
+
+There are two routes. The `<Microphone>` component puts a level meter and a
+record button on screen:
+
+```xml
+<Microphone
+  mode="clip"          // clip | live | level
+  sampleRate={48000}
+  processing={false}
+  maxSeconds={20}
+  onCapture={handleClip}   // { dataUrl, duration, sampleRate, sampleCount }
+  onSamples={handleWindow} // live mode: { samples, sampleRate, timestamp }
+  onLevel={handleLevel}    // { level, peak, clipping }
+/>
+```
+
+And `softn.mic.*` records without anything visible:
+
+```javascript
+softn.mic.record({ seconds: 5, sampleRate: 48000 }, function (r) {
+  if (r.recorded) softn.audio.play(r.dataUrl)
+})
+softn.mic.stop()          // end it early; the record callback still fires
+```
+
+Both hand back **uncompressed 16-bit WAV** as a `data:` URL, not MediaRecorder's
+Opus. Opus is a speech codec: it reproduces what a voice sounds like, not what
+the waveform was. That is fine for a voice note and useless for anything
+treating sound as a signal — level analysis, pitch detection, or data over
+audio. A WAV is what came off the microphone, so it can be played, saved, or
+taken apart sample by sample.
+
+`processing` is the one switch for the browser's echo cancellation, noise
+suppression and automatic gain control. It defaults to on, which is right for
+speech. Turn it off for anything measuring the sound rather than listening to
+it: all three are trained on speech and treat a steady tone as noise to remove,
+so a level meter reads low, a tuner drifts, and data sent over audio arrives as
+silence.
+
+`sampleRate` is a request, not a promise. The graph is built at the rate asked
+for so the samples really are resampled, but hardware and browser both get a
+say — every callback reports the rate actually in use, and code that cares
+about absolute frequencies must read that rather than assume.
+
+Like `<Camera>`, the component opens the device itself and the browser's own
+permission prompt is what stands in front of the hardware; the `mic` capability
+gates the scripting API and is what the consent dialog shows the user.
+
+---
+
 ## Applications
 
 | App | Description |
@@ -383,6 +443,7 @@ dist/studio/     AI studio
 | **TheOffice** | Office simulation with AI character interactions |
 | **SnakeGame** | Classic snake game using `PixelGrid` and `Loop` |
 | **MazeEscape3D** | 3D maze game using `Scene3D` |
+| **WarbleWire** | The QXW acoustic transport — text becomes synthetic birdsong and is decoded back, over the air through `Microphone` |
 
 ---
 

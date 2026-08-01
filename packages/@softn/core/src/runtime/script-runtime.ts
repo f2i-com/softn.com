@@ -18,6 +18,7 @@ import { deepEqual } from './vm-state';
 import type { ScriptBlock, LogicBlock } from '../parser/ast';
 import type { AppPermissions } from '../bundle/types';
 import { getFileByRef, registerFileRef } from './file-registry';
+import { pcmToWavDataUrl } from './wav';
 import type {
   BundleFileProvider,
   AIPermissionConfig,
@@ -137,6 +138,7 @@ export interface PermissionConfig {
   permissions: {
     net?: { enabled?: boolean; allowed_hosts?: string[]; allow_http?: boolean };
     camera?: { enabled?: boolean; modes?: string[] };
+    mic?: { enabled?: boolean; maxSeconds?: number };
     files?: { enabled?: boolean; scopes?: string[] };
     qr?: { enabled?: boolean };
     ai?: AIPermissionConfig;
@@ -183,6 +185,18 @@ let softn = {
     },
     stopLive: function() {
       host.call("camera.stopLive", [], function(){});
+    }
+  },
+  mic: {
+    record: function(options, callback) {
+      if (typeof options === "function") { callback = options; options = {}; }
+      host.call("mic.record", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});
+    },
+    stop: function(callback) {
+      host.call("mic.stop", [], callback || function(){});
+    },
+    isRecording: function(callback) {
+      host.call("mic.isRecording", [], callback || function(){});
     }
   },
   audio: {
@@ -616,6 +630,16 @@ export class SoftNScriptRuntime {
   private audioSeq = 0;
   /** Gesture listeners waiting to start a soundtrack the browser refused. */
   private audioUnlockers = new Set<() => void>();
+
+  /**
+   * The recording in flight, if any.
+   *
+   * One at a time: two overlapping `softn.mic.record()` calls would fight over
+   * the same device, and the second would take the first's samples with it.
+   * `finish` is how both the duration timer and an early `mic.stop()` end the
+   * same recording without either needing to know about the other.
+   */
+  private micRecording: { stop: (reason: 'complete' | 'stopped') => void } | null = null;
 
   constructor(
     context: ScriptContext,
@@ -1380,6 +1404,11 @@ export class SoftNScriptRuntime {
     // the rest of the session with nothing on screen to stop it.
     this.stopAllAudio();
 
+    // And stop listening. A microphone left open outlives the app that opened
+    // it: the tracks stay live, the OS recording indicator stays lit, and
+    // nothing on screen explains why.
+    this.stopMicrophone();
+
     // Release AI resources
     if (this.onnxManager) {
       this.onnxManager.releaseAll().catch(() => {});
@@ -1668,6 +1697,9 @@ export class SoftNScriptRuntime {
       case 'camera.recordVideo': return this.handleCameraRecord(call);
       case 'camera.startLive': return this.handleCameraStartLive(call);
       case 'camera.stopLive': return this.handleCameraStopLive();
+      case 'mic.record': return this.handleMicRecord(call);
+      case 'mic.stop': return this.handleMicStop();
+      case 'mic.isRecording': return this.handleMicIsRecording();
       case 'audio.play': return this.handleAudioPlay(call);
       case 'audio.stop': return this.handleAudioStop(call);
       case 'audio.stopAll': return this.handleAudioStopAll();
@@ -1726,6 +1758,9 @@ export class SoftNScriptRuntime {
         break;
       case 'camera':
         if (!perms.camera?.enabled) throw new Error('Camera access not permitted. Add camera.enabled to permission.json');
+        break;
+      case 'mic':
+        if (!perms.mic?.enabled) throw new Error('Microphone access not permitted. Add mic.enabled to permission.json');
         break;
       case 'files':
         if (!perms.files?.enabled) throw new Error('File access not permitted. Add files.enabled to permission.json');
@@ -1846,6 +1881,179 @@ export class SoftNScriptRuntime {
 
   private async handleCameraStopLive(): Promise<unknown> {
     return { stopped: true };
+  }
+
+  // ── Microphone ──
+  //
+  // Gated, unlike audio playback. The comment below `── Audio ──` argues that
+  // sound is a nuisance rather than a disclosure because "it reads nothing,
+  // sends nothing" — a microphone is precisely the thing that fails that test.
+  //
+  // This is the script route, for an app that wants a recording without putting
+  // a viewfinder on screen. The `<Microphone>` component is the other route and
+  // opens the device itself, the same way `<Camera>` does; in both cases the
+  // browser's own permission prompt is what stands in front of the hardware.
+
+  /**
+   * Record from the default input and return it as a WAV data URL.
+   *
+   * Raw PCM rather than MediaRecorder's Opus: see runtime/wav.ts. Options are
+   * `seconds` (default 5), `sampleRate` (default 48000) and `processing`
+   * (default true — echo cancellation, noise suppression and gain control,
+   * which are right for speech and wrong for anything measuring the sound).
+   */
+  private async handleMicRecord(call: PendingHostCall): Promise<unknown> {
+    this.checkPermission('mic');
+
+    if (this.micRecording) {
+      return { recorded: false, reason: 'already recording' };
+    }
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      return { recorded: false, reason: 'no microphone support' };
+    }
+
+    const [optionsJson] = call.args;
+    const options = optionsJson ? (JSON.parse(optionsJson) as {
+      seconds?: number; sampleRate?: number; processing?: boolean;
+    }) : {};
+
+    const processing = options.processing !== false;
+    const wantedRate = typeof options.sampleRate === 'number' && options.sampleRate > 0
+      ? options.sampleRate
+      : 48000;
+    // A cap the bundle declared is a promise to the user that the consent
+    // dialog showed them, so it wins over whatever the script asks for.
+    const declaredCap = this.permissionConfig?.permissions.mic?.maxSeconds;
+    const requested = typeof options.seconds === 'number' && options.seconds > 0 ? options.seconds : 5;
+    const seconds = Math.min(requested, typeof declaredCap === 'number' && declaredCap > 0 ? declaredCap : 300);
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: processing,
+          noiseSuppression: processing,
+          autoGainControl: processing,
+          sampleRate: { ideal: wantedRate },
+          channelCount: { ideal: 1 },
+        },
+      });
+    } catch (err) {
+      // A DOMException, which does not inherit from Error — reading `.message`
+      // directly is what keeps "Permission denied" from becoming "failed".
+      const name = typeof err === 'object' && err !== null
+        ? ((err as { message?: string }).message ?? (err as { name?: string }).name)
+        : undefined;
+      return { recorded: false, reason: name ?? 'could not open the microphone' };
+    }
+
+    const AudioContextCtor =
+      (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext ??
+      (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) {
+      stream.getTracks().forEach((t) => t.stop());
+      return { recorded: false, reason: 'no Web Audio support' };
+    }
+
+    // Asking the context for the rate is what actually resamples: the
+    // getUserMedia constraint above is widely ignored, and a graph left at the
+    // hardware rate would hand back 44100 samples labelled 48000.
+    let context: AudioContext;
+    try {
+      context = new AudioContextCtor({ sampleRate: wantedRate });
+    } catch {
+      context = new AudioContextCtor();
+    }
+    const rate = context.sampleRate;
+
+    const blocks: Float32Array[] = [];
+    let total = 0;
+
+    return new Promise<unknown>((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let processor: ScriptProcessorNode | null = null;
+      let source: MediaStreamAudioSourceNode | null = null;
+      let sink: GainNode | null = null;
+
+      const finish = (reason: 'complete' | 'stopped') => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.micRecording = null;
+
+        if (processor) { processor.onaudioprocess = null; processor.disconnect(); }
+        if (source) source.disconnect();
+        if (sink) sink.disconnect();
+        void context.close().catch(() => { /* already closed */ });
+        stream.getTracks().forEach((t) => t.stop());
+
+        const samples = new Float32Array(total);
+        let offset = 0;
+        for (const block of blocks) { samples.set(block, offset); offset += block.length; }
+
+        resolve({
+          recorded: total > 0,
+          reason,
+          dataUrl: pcmToWavDataUrl(samples, rate),
+          sampleRate: rate,
+          sampleCount: total,
+          duration: total / rate,
+          mimeType: 'audio/wav',
+        });
+      };
+
+      try {
+        source = context.createMediaStreamSource(stream);
+        // ScriptProcessorNode rather than an AudioWorklet: a worklet has to be
+        // loaded from a URL, and the only URL the runtime can mint for itself
+        // is a blob — which a strict content security policy will refuse. The
+        // component takes the worklet route and falls back to this one; here,
+        // where there is no visible element to degrade, taking the reliable
+        // route directly is worth the main-thread cost of a short recording.
+        processor = context.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (event) => {
+          if (settled) return;
+          // The buffer belongs to the next callback, so it is copied, not kept.
+          const block = event.inputBuffer.getChannelData(0);
+          blocks.push(new Float32Array(block));
+          total += block.length;
+        };
+        source.connect(processor);
+        // A ScriptProcessorNode only runs while connected to something. A
+        // zero-gain sink keeps it pulling without routing the microphone to the
+        // speakers, which would be a feedback loop.
+        sink = context.createGain();
+        sink.gain.value = 0;
+        processor.connect(sink);
+        sink.connect(context.destination);
+      } catch (err) {
+        settled = true;
+        stream.getTracks().forEach((t) => t.stop());
+        void context.close().catch(() => {});
+        resolve({ recorded: false, reason: String(err) });
+        return;
+      }
+
+      this.micRecording = { stop: finish };
+      timer = setTimeout(() => finish('complete'), Math.round(seconds * 1000));
+    });
+  }
+
+  /** End a recording early. The pending `mic.record` callback still fires. */
+  private async handleMicStop(): Promise<unknown> {
+    if (!this.micRecording) return { stopped: false, reason: 'not recording' };
+    this.micRecording.stop('stopped');
+    return { stopped: true };
+  }
+
+  private async handleMicIsRecording(): Promise<unknown> {
+    return { recording: this.micRecording !== null };
+  }
+
+  /** Close any open microphone. Called from cleanup, and safe when idle. */
+  private stopMicrophone(): void {
+    this.micRecording?.stop('stopped');
   }
 
   // ── Audio ──

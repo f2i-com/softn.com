@@ -7,6 +7,6 @@
   "scripts": {
     "bundle": "node scripts/build-bundle.cjs",
     "bundle:glamour": "node scripts/build-bundle.cjs",
-    "test": "node scripts/test-texasholdem-gameplay.cjs"
+    "test": "node scripts/test-texasholdem-gameplay.cjs && node scripts/test-warblewire-protocol.cjs"
   }
 }

@@ -79,6 +79,7 @@ import { PixelGrid } from './utility/PixelGrid';
 import { QRCode } from './utility/QRCode';
 import { QRReader } from './utility/QRReader';
 import { Camera } from './utility/Camera';
+import { Microphone } from './utility/Microphone';
 import { DPad } from './utility/DPad';
 
 // Chart components
@@ -194,6 +195,7 @@ export const builtinComponents = {
   QRCode,
   QRReader,
   Camera,
+  Microphone,
   DPad,
 
   // Charts
