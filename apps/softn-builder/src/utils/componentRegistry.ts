@@ -1469,6 +1469,33 @@ export const componentRegistry: ComponentMeta[] = [
     true
   ),
   comp(
+    'Microphone',
+    'Utility',
+    'mic',
+    'Record audio as WAV, stream samples live, or meter the level',
+    { mode: 'clip', sampleRate: 48000, processing: true },
+    [
+      { name: 'mode', type: 'select', options: ['clip', 'live', 'level'], default: 'clip' },
+      { name: 'active', type: 'boolean', default: true },
+      { name: 'sampleRate', type: 'number', default: 48000 },
+      { name: 'frameSize', type: 'number', default: 2048 },
+      // Echo cancellation, noise suppression and gain control together. On for
+      // speech; off for anything measuring the sound rather than listening to it.
+      { name: 'processing', type: 'boolean', default: true },
+      { name: 'showControls', type: 'boolean', default: true },
+      { name: 'showMeter', type: 'boolean', default: true },
+      { name: 'maxSeconds', type: 'number', default: 60 },
+      { name: 'autoStart', type: 'boolean', default: false },
+      { name: 'onCapture', type: 'event' },
+      { name: 'onSamples', type: 'event' },
+      { name: 'onLevel', type: 'event' },
+      { name: 'onStart', type: 'event' },
+      { name: 'onStop', type: 'event' },
+      { name: 'onError', type: 'event' },
+    ],
+    true
+  ),
+  comp(
     'DPad',
     'Utility',
     'gamepad',
