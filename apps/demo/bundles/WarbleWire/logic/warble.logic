@@ -1,0 +1,1926 @@
+// WarbleWire — the QXW acoustic modem, in one file.
+//
+// A transliteration of qxw.org/lib/warble/*.ts. The wire format is unchanged:
+// same CRC-8/ATM header check, same CRC-32C frame check, same K=7 rate-1/2
+// convolutional code with the NASA 171/133 generators, same 28x37 block
+// interleaver, same eight-byte mini-header, same Pip-16 frequency contours and
+// envelopes, same pilot schedule. A receiver built from the TypeScript will
+// decode what this produces, and this will decode what it produces.
+//
+// Three things here have no TypeScript original, because the browser gave them
+// to the original for free: UTF-8 in both directions, WAV in both directions,
+// and — the interesting one — acquisition. The TypeScript decoder infers the
+// tempo from the exact length of the buffer and assumes the frame begins at
+// sample zero, which is only ever true of a buffer it generated itself. Audio
+// off a microphone starts whenever the sender felt like starting. findFrameOffset
+// goes and looks for it.
+
+// ---------------------------------------------------------------------------
+// Wire constants. Provisional lab-v0; not a frozen standard.
+// ---------------------------------------------------------------------------
+
+let MAX_PAYLOAD_BYTES = 52
+let MINI_HEADER_BYTES = 8
+let FRAME_BYTES = 64
+let FRAME_CRC_BYTES = 4
+let FRAME_CRC_OFFSET = 60
+
+let SAMPLE_RATE = 48000
+let SAMPLES_PER_SYMBOL = 1536
+
+let TAIL_BIT_COUNT = 6
+let FRAME_BIT_COUNT = 512
+let CONVOLUTIONAL_INPUT_BITS = 518
+let ENCODED_BIT_COUNT = 1036
+let DATA_SYMBOL_COUNT = 259
+let PILOT_SYMBOL_COUNT = 8
+let TOTAL_SYMBOL_COUNT = 267
+let TOTAL_PCM_SAMPLES = 410112
+
+let INTERLEAVER_ROWS = 28
+let INTERLEAVER_COLUMNS = 37
+
+let PILOT_INTERVAL_DATA_SYMBOLS = 31
+
+let PIP_EXCURSION_HZ = 125
+let PIP_OUTPUT_AMPLITUDE = 0.55
+
+let FRAME_TYPE_MANIFEST = 3
+let FRAME_TYPE_DATA = 4
+
+let WARBLE_FEC_PROFILE_MASK = 0x0c
+let WARBLE_FEC_PROFILE_SHIFT = 2
+let WARBLE_SPEED_PROFILE_MASK = 0x03
+let WARBLE_CONVOLUTIONAL_RATE_HALF_FEC_ID = 0
+let WARBLE_VOICE_FLAG_MASK = 0x03
+
+let WARBLE_FUNDAMENTAL_MIN_HZ = 650
+let WARBLE_FUNDAMENTAL_MAX_HZ = 2600
+
+let TAU = 6.283185307179586
+
+// Typed arrays marshal to opaque slots and are skipped by the state sync, so
+// these cost nothing per call. The four Pip registers, the pilot values, and
+// the transmitted positions those pilots land on.
+let _PIP_REGISTER_HZ = Float64Array.from([875, 1312.5, 1750, 2187.5])
+let _PILOT_VALUES = Uint8Array.from([0, 15, 5, 10, 3, 12, 6, 9])
+let _PILOT_TX_INDEX = Uint16Array.from([31, 63, 95, 127, 159, 191, 223, 255])
+
+// ---------------------------------------------------------------------------
+// Profiles, as plain objects for the UI to loop over. Small and unchanging.
+// ---------------------------------------------------------------------------
+
+// Lab tempos for the same Wren/Pip-16 modem. Finch and Swift are deliberately
+// not the proposed Robin or Lark physical profiles from the design notes.
+let WARBLE_SPEEDS = [
+  {
+    id: "wren",
+    wireId: 0,
+    name: "Wren",
+    description: "The most patient and robust Pip-16 lab tempo.",
+    detail: "The most patient and robust Pip-16 lab tempo.",
+    samplesPerSymbol: 1536,
+    symbolDurationSeconds: 1536 / 48000,
+    symbolDurationMs: (1536 / 48000) * 1000,
+    rawBitRate: 4 / (1536 / 48000),
+    frameDurationSeconds: (267 * 1536) / 48000,
+    capacityBitRate: (52 * 8) / ((267 * 1536) / 48000),
+    maxPayloadBitRate: (52 * 8) / ((267 * 1536) / 48000),
+    experimental: false
+  },
+  {
+    id: "finch",
+    wireId: 1,
+    name: "Finch",
+    description: "A brisk experimental Pip-16 lab tempo—not the Robin profile.",
+    detail: "A brisk experimental Pip-16 lab tempo—not the Robin profile.",
+    samplesPerSymbol: 1152,
+    symbolDurationSeconds: 1152 / 48000,
+    symbolDurationMs: (1152 / 48000) * 1000,
+    rawBitRate: 4 / (1152 / 48000),
+    frameDurationSeconds: (267 * 1152) / 48000,
+    capacityBitRate: (52 * 8) / ((267 * 1152) / 48000),
+    maxPayloadBitRate: (52 * 8) / ((267 * 1152) / 48000),
+    experimental: true
+  },
+  {
+    id: "swift",
+    wireId: 2,
+    name: "Swift",
+    description: "The quickest experimental Pip-16 lab tempo—not the Lark profile.",
+    detail: "The quickest experimental Pip-16 lab tempo—not the Lark profile.",
+    samplesPerSymbol: 960,
+    symbolDurationSeconds: 960 / 48000,
+    symbolDurationMs: (960 / 48000) * 1000,
+    rawBitRate: 4 / (960 / 48000),
+    frameDurationSeconds: (267 * 960) / 48000,
+    capacityBitRate: (52 * 8) / ((267 * 960) / 48000),
+    maxPayloadBitRate: (52 * 8) / ((267 * 960) / 48000),
+    experimental: true
+  }
+]
+
+// Imaginary, band-safe synthesis voices. minimumFundamentalHz and
+// maximumFundamentalHz are the register extremes plus every excursion the
+// contour and vibrato can add; both stay inside 650–2600 Hz.
+let WARBLE_VOICES = [
+  {
+    id: "meadow",
+    wireId: 0,
+    name: "Meadow",
+    description: "The clear, balanced original WarbleWire voice.",
+    detail: "The clear, balanced original WarbleWire voice.",
+    pitchOffsetHz: 0,
+    excursionHz: 125,
+    vibratoDepthHz: 0,
+    vibratoCyclesPerSymbol: 0,
+    vibratoPhaseRadians: 0,
+    amplitude: 0.55,
+    attackFraction: 1 / 16,
+    releaseFraction: 1 / 16,
+    envelopePower: 1,
+    minimumFundamentalHz: 750,
+    maximumFundamentalHz: 2312.5
+  },
+  {
+    id: "canopy",
+    wireId: 1,
+    name: "Canopy",
+    description: "A higher, nimble call with a quick leafy shimmer.",
+    detail: "A higher, nimble call with a quick leafy shimmer.",
+    pitchOffsetHz: 170,
+    excursionHz: 105,
+    vibratoDepthHz: 8,
+    vibratoCyclesPerSymbol: 2,
+    vibratoPhaseRadians: 0,
+    amplitude: 0.5,
+    attackFraction: 0.14,
+    releaseFraction: 0.05,
+    envelopePower: 1.45,
+    minimumFundamentalHz: 932,
+    maximumFundamentalHz: 2470.5
+  },
+  {
+    id: "dawn",
+    wireId: 2,
+    name: "Dawn",
+    description: "A wide, bright contour with a crisp opening flourish.",
+    detail: "A wide, bright contour with a crisp opening flourish.",
+    pitchOffsetHz: 0,
+    excursionHz: 150,
+    vibratoDepthHz: 12,
+    vibratoCyclesPerSymbol: 1,
+    vibratoPhaseRadians: 0,
+    amplitude: 0.58,
+    attackFraction: 0.035,
+    releaseFraction: 0.14,
+    envelopePower: 0.82,
+    minimumFundamentalHz: 713,
+    maximumFundamentalHz: 2349.5
+  },
+  {
+    id: "night",
+    wireId: 3,
+    name: "Night",
+    description: "A lower, softer call with a slow nocturnal tremble.",
+    detail: "A lower, softer call with a slow nocturnal tremble.",
+    pitchOffsetHz: -85,
+    excursionHz: 100,
+    vibratoDepthHz: 20,
+    vibratoCyclesPerSymbol: 3,
+    vibratoPhaseRadians: 0,
+    amplitude: 0.46,
+    attackFraction: 0.17,
+    releaseFraction: 0.17,
+    envelopePower: 1.8,
+    minimumFundamentalHz: 670,
+    maximumFundamentalHz: 2222.5
+  }
+]
+
+// ---------------------------------------------------------------------------
+// Caches. Everything expensive to compute lives in a flat typed array with a
+// fixed slot layout, so nothing large is ever a plain top-level array.
+//
+// Slot k = speedIndex * 4 + voiceIndex. Per slot the templates occupy
+// 32 * samplesPerSymbol floats: sixteen sine tables then sixteen cosine tables.
+// ---------------------------------------------------------------------------
+
+let _SPEED_SPS = Uint16Array.from([1536, 1152, 960])
+let _TPL_SPEED_BASE = Uint32Array.from([0, 196608, 344064])
+let _WIN_SPEED_BASE = Uint32Array.from([0, 6144, 10752])
+
+let _TPL = null
+let _TPL_END_PHASE = null
+let _WIN = null
+let _WIN_ENERGY = null
+let _PIP_READY = null
+
+let _TRELLIS_NEXT = null
+let _TRELLIS_OUT0 = null
+let _TRELLIS_OUT1 = null
+
+let _SCORES16 = new Float64Array(16)
+
+// ---------------------------------------------------------------------------
+// UTF-8. The original leaned on TextEncoder/TextDecoder; neither exists here.
+// Decoding is strict in the same way TextDecoder({fatal:true}) is strict —
+// overlongs, surrogates, out-of-range code points and truncations all throw,
+// because decodeWarblePcm relies on that to reject a frame whose CRC happened
+// to pass over bytes that are not text.
+// ---------------------------------------------------------------------------
+
+function utf8Encode(text) {
+  let s = "" + text
+  let n = s.length
+  let out = []
+  let i = 0
+
+  while (i < n) {
+    let unit = s.charCodeAt(i)
+    let cp = unit
+
+    if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < n) {
+      let trail = s.charCodeAt(i + 1)
+      if (trail >= 0xdc00 && trail <= 0xdfff) {
+        cp = 0x10000 + ((unit - 0xd800) << 10) + (trail - 0xdc00)
+        i = i + 1
+      }
+    }
+    // An unpaired surrogate is not a code point; TextEncoder substitutes.
+    if (cp >= 0xd800 && cp <= 0xdfff) { cp = 0xfffd }
+
+    if (cp < 0x80) {
+      out.push(cp)
+    } else if (cp < 0x800) {
+      out.push(0xc0 | (cp >>> 6), 0x80 | (cp & 0x3f))
+    } else if (cp < 0x10000) {
+      out.push(0xe0 | (cp >>> 12), 0x80 | ((cp >>> 6) & 0x3f), 0x80 | (cp & 0x3f))
+    } else {
+      out.push(
+        0xf0 | (cp >>> 18),
+        0x80 | ((cp >>> 12) & 0x3f),
+        0x80 | ((cp >>> 6) & 0x3f),
+        0x80 | (cp & 0x3f)
+      )
+    }
+    i = i + 1
+  }
+
+  return Uint8Array.from(out)
+}
+
+function utf8Decode(bytes) {
+  let n = bytes.length
+  let out = ""
+  let i = 0
+
+  while (i < n) {
+    let lead = bytes[i]
+    let cp = 0
+    let extra = 0
+    let minimum = 0
+
+    if (lead < 0x80) {
+      cp = lead
+      extra = 0
+      minimum = 0
+    } else if (lead >= 0xc2 && lead <= 0xdf) {
+      cp = lead & 0x1f
+      extra = 1
+      minimum = 0x80
+    } else if (lead >= 0xe0 && lead <= 0xef) {
+      cp = lead & 0x0f
+      extra = 2
+      minimum = 0x800
+    } else if (lead >= 0xf0 && lead <= 0xf4) {
+      cp = lead & 0x07
+      extra = 3
+      minimum = 0x10000
+    } else {
+      // 0x80–0xc1 as a lead byte, or 0xf5–0xff.
+      throw new Error("invalid-utf8:lead:" + lead)
+    }
+
+    if (i + extra >= n) { throw new Error("invalid-utf8:truncated") }
+
+    for (let k = 1; k <= extra; k = k + 1) {
+      let cont = bytes[i + k]
+      if (cont < 0x80 || cont > 0xbf) { throw new Error("invalid-utf8:continuation") }
+      cp = (cp << 6) | (cont & 0x3f)
+    }
+
+    if (cp < minimum) { throw new Error("invalid-utf8:overlong") }
+    if (cp > 0x10ffff) { throw new Error("invalid-utf8:range") }
+    if (cp >= 0xd800 && cp <= 0xdfff) { throw new Error("invalid-utf8:surrogate") }
+
+    if (cp < 0x10000) {
+      out = out + String.fromCharCode(cp)
+    } else {
+      let rest = cp - 0x10000
+      out = out + String.fromCharCode(0xd800 + (rest >>> 10), 0xdc00 + (rest & 0x3ff))
+    }
+    i = i + extra + 1
+  }
+
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Bits
+// ---------------------------------------------------------------------------
+
+function bytesToBits(bytes) {
+  let bits = new Uint8Array(bytes.length * 8)
+  let output = 0
+  for (let index = 0; index < bytes.length; index = index + 1) {
+    let byte = bytes[index]
+    for (let shift = 7; shift >= 0; shift = shift - 1) {
+      bits[output] = (byte >>> shift) & 1
+      output = output + 1
+    }
+  }
+  return bits
+}
+
+function bitsToBytes(bits) {
+  if (bits.length % 8 !== 0) { throw new RangeError("Bit count must be divisible by eight") }
+  let bytes = new Uint8Array(bits.length / 8)
+  for (let index = 0; index < bits.length; index = index + 1) {
+    if (bits[index] !== 0 && bits[index] !== 1) {
+      throw new RangeError("Bits must contain only zero or one")
+    }
+    bytes[index >>> 3] = bytes[index >>> 3] | (bits[index] << (7 - (index & 7)))
+  }
+  return bytes
+}
+
+function bitsToNibbles(bits) {
+  if (bits.length % 4 !== 0) { throw new RangeError("Bit count must be divisible by four") }
+  let nibbles = new Uint8Array(bits.length / 4)
+  for (let index = 0; index < bits.length; index = index + 4) {
+    nibbles[index / 4] =
+      (bits[index] << 3) | (bits[index + 1] << 2) | (bits[index + 2] << 1) | bits[index + 3]
+  }
+  return nibbles
+}
+
+// ---------------------------------------------------------------------------
+// Checksums
+// ---------------------------------------------------------------------------
+
+// CRC-8/ATM (HEC): poly=0x07, init=0x00, refin=false, xorout=0x00.
+function crc8Atm(bytes) {
+  let crc = 0
+  for (let index = 0; index < bytes.length; index = index + 1) {
+    crc = crc ^ bytes[index]
+    for (let bit = 0; bit < 8; bit = bit + 1) {
+      if ((crc & 0x80) !== 0) {
+        crc = ((crc << 1) ^ 0x07) & 0xff
+      } else {
+        crc = (crc << 1) & 0xff
+      }
+    }
+  }
+  return crc
+}
+
+// CRC-32C Castagnoli: reflected poly=0x82f63b78, init/xorout=0xffffffff.
+function crc32c(bytes) {
+  let crc = 0xffffffff
+  for (let index = 0; index < bytes.length; index = index + 1) {
+    crc = crc ^ bytes[index]
+    for (let bit = 0; bit < 8; bit = bit + 1) {
+      if ((crc & 1) !== 0) {
+        crc = (crc >>> 1) ^ 0x82f63b78
+      } else {
+        crc = crc >>> 1
+      }
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+// ---------------------------------------------------------------------------
+// Convolutional code: K=7, rate 1/2, generators 171 and 133 octal.
+// ---------------------------------------------------------------------------
+
+let CONVOLUTIONAL_CONSTRAINT_LENGTH = 7
+let CONVOLUTIONAL_STATE_COUNT = 64
+let CONVOLUTIONAL_GENERATOR_A = 121 // 0o171
+let CONVOLUTIONAL_GENERATOR_B = 91 // 0o133
+
+function _parity(value) {
+  value = value ^ (value >>> 16)
+  value = value ^ (value >>> 8)
+  value = value ^ (value >>> 4)
+  value = value & 0x0f
+  return (0x6996 >>> value) & 1
+}
+
+// The trellis is 128 entries and never changes, so it is built once into typed
+// arrays rather than allocating a transition object inside the Viterbi loop.
+function _ensureTrellis() {
+  if (_TRELLIS_NEXT !== null) { return }
+  let next = new Uint8Array(128)
+  let out0 = new Uint8Array(128)
+  let out1 = new Uint8Array(128)
+  for (let state = 0; state < 64; state = state + 1) {
+    for (let input = 0; input < 2; input = input + 1) {
+      let register = ((state << 1) | input) & 0x7f
+      let slot = state * 2 + input
+      next[slot] = register & 0x3f
+      out0[slot] = _parity(register & CONVOLUTIONAL_GENERATOR_A)
+      out1[slot] = _parity(register & CONVOLUTIONAL_GENERATOR_B)
+    }
+  }
+  _TRELLIS_NEXT = next
+  _TRELLIS_OUT0 = out0
+  _TRELLIS_OUT1 = out1
+}
+
+function convolutionalEncode(inputBits) {
+  _ensureTrellis()
+  let output = new Uint8Array(inputBits.length * 2)
+  let state = 0
+  for (let index = 0; index < inputBits.length; index = index + 1) {
+    let input = inputBits[index]
+    if (input !== 0 && input !== 1) {
+      throw new RangeError("Convolutional encoder input must contain only bits")
+    }
+    let slot = state * 2 + input
+    output[index * 2] = _TRELLIS_OUT0[slot]
+    output[index * 2 + 1] = _TRELLIS_OUT1[slot]
+    state = _TRELLIS_NEXT[slot]
+  }
+  return output
+}
+
+// Terminated, start-state-zero Viterbi over soft likelihoods. Positive means a
+// one is more likely, negative means a zero is.
+function viterbiDecodeSoft(softBits) {
+  if (softBits.length % 2 !== 0) {
+    throw new RangeError("A rate-1/2 stream must contain an even number of soft bits")
+  }
+  _ensureTrellis()
+
+  let stepCount = softBits.length / 2
+  let predecessors = new Uint8Array(stepCount * CONVOLUTIONAL_STATE_COUNT)
+  let decisions = new Uint8Array(stepCount * CONVOLUTIONAL_STATE_COUNT)
+  let metrics = new Float64Array(CONVOLUTIONAL_STATE_COUNT)
+  let nextMetrics = new Float64Array(CONVOLUTIONAL_STATE_COUNT)
+  metrics.fill(-Infinity)
+  metrics[0] = 0
+
+  for (let step = 0; step < stepCount; step = step + 1) {
+    nextMetrics.fill(-Infinity)
+    let firstLikelihood = softBits[step * 2]
+    let secondLikelihood = softBits[step * 2 + 1]
+    let rowBase = step * CONVOLUTIONAL_STATE_COUNT
+
+    for (let state = 0; state < CONVOLUTIONAL_STATE_COUNT; state = state + 1) {
+      let previousMetric = metrics[state]
+      if (!Number.isFinite(previousMetric)) { continue }
+
+      for (let input = 0; input < 2; input = input + 1) {
+        let slot = state * 2 + input
+        let branchMetric =
+          (_TRELLIS_OUT0[slot] === 1 ? firstLikelihood : -firstLikelihood) +
+          (_TRELLIS_OUT1[slot] === 1 ? secondLikelihood : -secondLikelihood)
+        let candidate = previousMetric + branchMetric
+        let nextState = _TRELLIS_NEXT[slot]
+
+        if (candidate > nextMetrics[nextState]) {
+          nextMetrics[nextState] = candidate
+          predecessors[rowBase + nextState] = state
+          decisions[rowBase + nextState] = input
+        }
+      }
+    }
+
+    let swap = metrics
+    metrics = nextMetrics
+    nextMetrics = swap
+  }
+
+  if (!Number.isFinite(metrics[0])) { throw new Error("No terminated Viterbi path was found") }
+
+  let decoded = new Uint8Array(stepCount)
+  let state = 0
+  for (let step = stepCount - 1; step >= 0; step = step - 1) {
+    let index = step * CONVOLUTIONAL_STATE_COUNT + state
+    decoded[step] = decisions[index]
+    state = predecessors[index]
+  }
+  return decoded
+}
+
+function viterbiDecodeHard(codedBits) {
+  let softBits = new Float32Array(codedBits.length)
+  for (let index = 0; index < codedBits.length; index = index + 1) {
+    if (codedBits[index] !== 0 && codedBits[index] !== 1) {
+      throw new RangeError("Hard decoder input must contain only bits")
+    }
+    softBits[index] = codedBits[index] === 1 ? 1 : -1
+  }
+  return viterbiDecodeSoft(softBits)
+}
+
+// ---------------------------------------------------------------------------
+// 28 x 37 block interleaver
+// ---------------------------------------------------------------------------
+
+function interleaveBits(bits) {
+  if (bits.length !== ENCODED_BIT_COUNT) {
+    throw new RangeError("Interleaver requires " + ENCODED_BIT_COUNT + " bits")
+  }
+  let interleaved = new Uint8Array(bits.length)
+  let output = 0
+  for (let column = 0; column < INTERLEAVER_COLUMNS; column = column + 1) {
+    for (let row = 0; row < INTERLEAVER_ROWS; row = row + 1) {
+      interleaved[output] = bits[row * INTERLEAVER_COLUMNS + column]
+      output = output + 1
+    }
+  }
+  return interleaved
+}
+
+function deinterleaveBits(bits) {
+  if (bits.length !== ENCODED_BIT_COUNT) {
+    throw new RangeError("Deinterleaver requires " + ENCODED_BIT_COUNT + " bits")
+  }
+  let deinterleaved = new Uint8Array(bits.length)
+  let input = 0
+  for (let column = 0; column < INTERLEAVER_COLUMNS; column = column + 1) {
+    for (let row = 0; row < INTERLEAVER_ROWS; row = row + 1) {
+      deinterleaved[row * INTERLEAVER_COLUMNS + column] = bits[input]
+      input = input + 1
+    }
+  }
+  return deinterleaved
+}
+
+function deinterleaveSoft(softBits) {
+  if (softBits.length !== ENCODED_BIT_COUNT) {
+    throw new RangeError("Deinterleaver requires " + ENCODED_BIT_COUNT + " soft bits")
+  }
+  let deinterleaved = new Float32Array(softBits.length)
+  let input = 0
+  for (let column = 0; column < INTERLEAVER_COLUMNS; column = column + 1) {
+    for (let row = 0; row < INTERLEAVER_ROWS; row = row + 1) {
+      deinterleaved[row * INTERLEAVER_COLUMNS + column] = softBits[input]
+      input = input + 1
+    }
+  }
+  return deinterleaved
+}
+
+// ---------------------------------------------------------------------------
+// Profile lookup
+// ---------------------------------------------------------------------------
+
+function _speedIndex(id) {
+  if (id === undefined || id === null) { return 0 }
+  for (let index = 0; index < WARBLE_SPEEDS.length; index = index + 1) {
+    if (WARBLE_SPEEDS[index].id === id) { return index }
+  }
+  return -1
+}
+
+function _voiceIndex(id) {
+  if (id === undefined || id === null) { return 0 }
+  for (let index = 0; index < WARBLE_VOICES.length; index = index + 1) {
+    if (WARBLE_VOICES[index].id === id) { return index }
+  }
+  return -1
+}
+
+function _speedIndexByWireId(wireId) {
+  for (let index = 0; index < WARBLE_SPEEDS.length; index = index + 1) {
+    if (WARBLE_SPEEDS[index].wireId === wireId) { return index }
+  }
+  return -1
+}
+
+function _voiceIndexByWireId(wireId) {
+  for (let index = 0; index < WARBLE_VOICES.length; index = index + 1) {
+    if (WARBLE_VOICES[index].wireId === wireId) { return index }
+  }
+  return -1
+}
+
+function getWarbleSpeedProfile(id) {
+  let index = _speedIndex(id)
+  if (index < 0) { throw new RangeError("Unknown Warble speed profile: " + id) }
+  return WARBLE_SPEEDS[index]
+}
+
+function getWarbleVoiceProfile(id) {
+  let index = _voiceIndex(id)
+  if (index < 0) { throw new RangeError("Unknown Warble voice profile: " + id) }
+  return WARBLE_VOICES[index]
+}
+
+function inferWarbleSpeedIndex(pcmSampleCount) {
+  for (let index = 0; index < 3; index = index + 1) {
+    if (_SPEED_SPS[index] * TOTAL_SYMBOL_COUNT === pcmSampleCount) { return index }
+  }
+  return -1
+}
+
+// ---------------------------------------------------------------------------
+// Pip-16 synthesis and correlation
+// ---------------------------------------------------------------------------
+
+function _assertNibble(nibble) {
+  if (!Number.isInteger(nibble) || nibble < 0 || nibble > 15) {
+    throw new RangeError("A Pip-16 nibble must be an integer from 0 to 15")
+  }
+}
+
+function _smoothstep(value) {
+  return value * value * (3 - 2 * value)
+}
+
+function _frequencyForVoice(nibble, progress, voice) {
+  let contour = nibble >>> 2
+  let centre = _PIP_REGISTER_HZ[nibble & 0x03] + voice.pitchOffsetHz
+  let shaped = _smoothstep(progress)
+  let contourOffset = 0
+
+  if (contour === 0) {
+    contourOffset = -voice.excursionHz + 2 * voice.excursionHz * shaped
+  } else if (contour === 1) {
+    contourOffset = voice.excursionHz - 2 * voice.excursionHz * shaped
+  } else if (contour === 2) {
+    contourOffset = voice.excursionHz * (2 * Math.abs(2 * shaped - 1) - 1)
+  } else {
+    contourOffset = 0.65 * voice.excursionHz * Math.sin(4 * Math.PI * shaped)
+  }
+
+  let vibrato = 0
+  if (voice.vibratoDepthHz !== 0) {
+    vibrato =
+      voice.vibratoDepthHz *
+      Math.sin(TAU * voice.vibratoCyclesPerSymbol * progress + voice.vibratoPhaseRadians)
+  }
+  return centre + contourOffset + vibrato
+}
+
+function pipFrequencyHz(nibble, progress, options) {
+  _assertNibble(nibble)
+  if (!Number.isFinite(progress) || progress < 0 || progress > 1) {
+    throw new RangeError("Pip progress must be a finite value from 0 to 1")
+  }
+  let voiceId = options && options.voiceId !== undefined ? options.voiceId : "meadow"
+  return _frequencyForVoice(nibble, progress, getWarbleVoiceProfile(voiceId))
+}
+
+function _allocatePipCache() {
+  if (_TPL !== null) { return }
+  // 4 voices x 32 tables x samplesPerSymbol, for each of the three tempos.
+  _TPL = new Float32Array(466944)
+  _TPL_END_PHASE = new Float64Array(192)
+  _WIN = new Float32Array(14592)
+  _WIN_ENERGY = new Float64Array(12)
+  _PIP_READY = new Uint8Array(12)
+}
+
+function _ensurePip(speed, voiceIdx) {
+  _allocatePipCache()
+  let slot = speed * 4 + voiceIdx
+  if (_PIP_READY[slot] === 1) { return }
+
+  let spS = _SPEED_SPS[speed]
+  let voice = WARBLE_VOICES[voiceIdx]
+
+  let windowBase = _WIN_SPEED_BASE[speed] + voiceIdx * spS
+  let attackSamples = Math.max(1, Math.min(spS, Math.round(spS * voice.attackFraction)))
+  let releaseSamples = Math.max(1, Math.min(spS, Math.round(spS * voice.releaseFraction)))
+  let energy = 0
+
+  for (let index = 0; index < spS; index = index + 1) {
+    let gain = 1
+    if (index < attackSamples) {
+      let edge = 0.5 - 0.5 * Math.cos((Math.PI * (index + 1)) / attackSamples)
+      gain = Math.min(gain, Math.pow(edge, voice.envelopePower))
+    }
+    if (index >= spS - releaseSamples) {
+      let edge = 0.5 - 0.5 * Math.cos((Math.PI * (spS - index)) / releaseSamples)
+      gain = Math.min(gain, Math.pow(edge, voice.envelopePower))
+    }
+    _WIN[windowBase + index] = gain
+    energy = energy + gain * gain
+  }
+  _WIN_ENERGY[slot] = energy
+
+  let templateBase = _TPL_SPEED_BASE[speed] + voiceIdx * 32 * spS
+  for (let nibble = 0; nibble < 16; nibble = nibble + 1) {
+    let sineBase = templateBase + nibble * spS
+    let cosineBase = templateBase + (16 + nibble) * spS
+    let phase = 0
+    for (let index = 0; index < spS; index = index + 1) {
+      _TPL[sineBase + index] = Math.sin(phase)
+      _TPL[cosineBase + index] = Math.cos(phase)
+      let progress = (index + 0.5) / spS
+      phase = phase + (TAU * _frequencyForVoice(nibble, progress, voice)) / SAMPLE_RATE
+    }
+    _TPL_END_PHASE[slot * 16 + nibble] = phase
+  }
+
+  _PIP_READY[slot] = 1
+}
+
+// Phase-invariant, energy-normalised match of one expected Pip against pcm.
+function _correlateNibble(pcm, offset, nibble, speed, voiceIdx) {
+  let spS = _SPEED_SPS[speed]
+  let slot = speed * 4 + voiceIdx
+  let sineBase = _TPL_SPEED_BASE[speed] + voiceIdx * 32 * spS + nibble * spS
+  let cosineBase = sineBase + 16 * spS
+  let windowBase = _WIN_SPEED_BASE[speed] + voiceIdx * spS
+
+  let inPhase = 0
+  let quadrature = 0
+  let signalEnergy = 0
+
+  for (let sample = 0; sample < spS; sample = sample + 1) {
+    let input = pcm[offset + sample]
+    let weighted = input * _WIN[windowBase + sample]
+    inPhase = inPhase + weighted * _TPL[sineBase + sample]
+    quadrature = quadrature + weighted * _TPL[cosineBase + sample]
+    signalEnergy = signalEnergy + input * input
+  }
+
+  let windowEnergy = _WIN_ENERGY[slot]
+  if (signalEnergy <= 1e-20 || windowEnergy <= 1e-20) { return 0 }
+  let normalisation = Math.sqrt((signalEnergy * windowEnergy) / 2)
+  return Math.hypot(inPhase, quadrature) / Math.max(normalisation, 1e-20)
+}
+
+let _PIP_CONSONANTS = ["p", "t", "k", "w"]
+let _PIP_VOWELS = ["i", "e", "a", "o"]
+
+function pipSyllable(nibble) {
+  _assertNibble(nibble)
+  return _PIP_CONSONANTS[nibble >>> 2] + _PIP_VOWELS[nibble & 0x03]
+}
+
+function byteToPipSyllables(byte) {
+  if (!Number.isInteger(byte) || byte < 0 || byte > 0xff) {
+    throw new RangeError("A byte must be an integer from 0 to 255")
+  }
+  return [pipSyllable(byte >>> 4), pipSyllable(byte & 0x0f)]
+}
+
+function byteToPipText(byte) {
+  return byteToPipSyllables(byte).join("-")
+}
+
+function synthesizePipSymbols(symbols, options) {
+  let opts = options || {}
+  let speed = _speedIndex(opts.speedId)
+  if (speed < 0) { throw new RangeError("Unknown Warble speed profile: " + opts.speedId) }
+  let voiceIdx = _voiceIndex(opts.voiceId)
+  if (voiceIdx < 0) { throw new RangeError("Unknown Warble voice profile: " + opts.voiceId) }
+
+  let voice = WARBLE_VOICES[voiceIdx]
+  let amplitude = opts.amplitude !== undefined ? opts.amplitude : voice.amplitude
+  if (!Number.isFinite(amplitude) || amplitude < 0 || amplitude > 1) {
+    throw new RangeError("Pip amplitude must be a finite value from 0 to 1")
+  }
+  let initialPhase = opts.initialPhase !== undefined ? opts.initialPhase : 0
+  if (!Number.isFinite(initialPhase)) { throw new RangeError("Initial phase must be finite") }
+
+  _ensurePip(speed, voiceIdx)
+  let spS = _SPEED_SPS[speed]
+  let slot = speed * 4 + voiceIdx
+  let templateBase = _TPL_SPEED_BASE[speed] + voiceIdx * 32 * spS
+  let windowBase = _WIN_SPEED_BASE[speed] + voiceIdx * spS
+
+  let pcm = new Float32Array(symbols.length * spS)
+  let phase = initialPhase
+
+  for (let symbolIndex = 0; symbolIndex < symbols.length; symbolIndex = symbolIndex + 1) {
+    let nibble = symbols[symbolIndex]
+    _assertNibble(nibble)
+    let sineBase = templateBase + nibble * spS
+    let cosineBase = sineBase + 16 * spS
+    let phaseSine = Math.sin(phase)
+    let phaseCosine = Math.cos(phase)
+    let outputOffset = symbolIndex * spS
+
+    for (let sample = 0; sample < spS; sample = sample + 1) {
+      let carrier = _TPL[sineBase + sample] * phaseCosine + _TPL[cosineBase + sample] * phaseSine
+      pcm[outputOffset + sample] = amplitude * _WIN[windowBase + sample] * carrier
+    }
+
+    phase = (phase + _TPL_END_PHASE[slot * 16 + nibble]) % TAU
+  }
+
+  return pcm
+}
+
+function scorePipNibble(pcm, nibble, offset, options) {
+  _assertNibble(nibble)
+  let opts = options || {}
+  let speed = _speedIndex(opts.speedId)
+  let voiceIdx = _voiceIndex(opts.voiceId)
+  if (speed < 0 || voiceIdx < 0) { throw new RangeError("Unknown Warble profile") }
+  let start = offset === undefined ? 0 : offset
+  _ensurePip(speed, voiceIdx)
+  if (start < 0 || start + _SPEED_SPS[speed] > pcm.length) {
+    throw new RangeError("A complete Pip symbol is required")
+  }
+  return _correlateNibble(pcm, start, nibble, speed, voiceIdx)
+}
+
+// One symbol decision: the best-matching nibble, its margin over the runner-up,
+// and four soft bits derived from the best score on each side of every bit.
+function _decodePipSymbolInto(pcm, offset, speed, voiceIdx, softBits, softOffset) {
+  let bestNibble = 0
+  let bestScore = -Infinity
+  let secondScore = -Infinity
+
+  for (let nibble = 0; nibble < 16; nibble = nibble + 1) {
+    let score = _correlateNibble(pcm, offset, nibble, speed, voiceIdx)
+    _SCORES16[nibble] = score
+    if (score > bestScore) {
+      secondScore = bestScore
+      bestScore = score
+      bestNibble = nibble
+    } else if (score > secondScore) {
+      secondScore = score
+    }
+  }
+
+  for (let bit = 0; bit < 4; bit = bit + 1) {
+    let mask = 1 << (3 - bit)
+    let bestZero = 0
+    let bestOne = 0
+    for (let nibble = 0; nibble < 16; nibble = nibble + 1) {
+      if ((nibble & mask) === 0) {
+        bestZero = Math.max(bestZero, _SCORES16[nibble])
+      } else {
+        bestOne = Math.max(bestOne, _SCORES16[nibble])
+      }
+    }
+    softBits[softOffset + bit] = (8 * (bestOne - bestZero)) / Math.max(bestOne, bestZero, 1e-12)
+  }
+
+  let margin = bestScore <= 1e-12 ? 0 : Math.max(0, (bestScore - secondScore) / bestScore)
+  return { nibble: bestNibble, margin: margin, score: bestScore }
+}
+
+function decodePipSymbol(pcm, offset, options) {
+  let opts = options || {}
+  let speed = _speedIndex(opts.speedId)
+  let voiceIdx = _voiceIndex(opts.voiceId)
+  if (speed < 0 || voiceIdx < 0) { throw new RangeError("Unknown Warble profile") }
+  let start = offset === undefined ? 0 : offset
+  _ensurePip(speed, voiceIdx)
+  if (start < 0 || start + _SPEED_SPS[speed] > pcm.length) {
+    throw new RangeError("A complete Pip symbol is required")
+  }
+  let softBits = new Float32Array(4)
+  let decision = _decodePipSymbolInto(pcm, start, speed, voiceIdx, softBits, 0)
+  decision.softBits = softBits
+  return decision
+}
+
+function decodePipSymbols(pcm, symbolCount, offset, options) {
+  let opts = options || {}
+  let speed = _speedIndex(opts.speedId)
+  let voiceIdx = _voiceIndex(opts.voiceId)
+  if (speed < 0 || voiceIdx < 0) { throw new RangeError("Unknown Warble profile") }
+  let start = offset === undefined ? 0 : offset
+  _ensurePip(speed, voiceIdx)
+  let spS = _SPEED_SPS[speed]
+  if (start < 0 || start + symbolCount * spS > pcm.length) {
+    throw new RangeError("PCM does not contain the requested complete symbol sequence")
+  }
+
+  let nibbles = new Uint8Array(symbolCount)
+  let softBits = new Float32Array(symbolCount * 4)
+  let margins = new Float32Array(symbolCount)
+  let marginSum = 0
+
+  for (let index = 0; index < symbolCount; index = index + 1) {
+    let decision = _decodePipSymbolInto(
+      pcm, start + index * spS, speed, voiceIdx, softBits, index * 4
+    )
+    nibbles[index] = decision.nibble
+    margins[index] = decision.margin
+    marginSum = marginSum + decision.margin
+  }
+
+  return {
+    nibbles: nibbles,
+    softBits: softBits,
+    margins: margins,
+    confidence: symbolCount === 0 ? 0 : marginSum / symbolCount
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Frames
+//
+// Mini-header, big-endian throughout:
+//   byte 0  frame type (bits 7..4) | FEC id (bits 3..2) | speed wire id (1..0)
+//   byte 1  application flags (7..2) | voice wire id (1..0)
+//   2..3    object id
+//   4..5    sequence
+//   byte 6  payload length
+//   byte 7  CRC-8/ATM over bytes 0..6
+//   8..59   payload, zero padded
+//   60..63  CRC-32C over bytes 0..59
+// ---------------------------------------------------------------------------
+
+let _KNOWN_FRAME_TYPES = Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0])
+
+function _assertUint(value, maximum, label) {
+  if (!Number.isInteger(value) || value < 0 || value > maximum) {
+    throw new RangeError(label + " must be an integer from 0 to " + maximum)
+  }
+}
+
+function buildWarbleFrame(payload, options) {
+  let opts = options || {}
+  if (payload.length > MAX_PAYLOAD_BYTES) {
+    throw new RangeError(
+      "WarbleWire lab-v0 payloads are limited to " + MAX_PAYLOAD_BYTES +
+      " bytes; received " + payload.length
+    )
+  }
+
+  let frameType = opts.frameType !== undefined ? opts.frameType : FRAME_TYPE_DATA
+  let flags = opts.flags !== undefined ? opts.flags : 0
+  let objectId = opts.objectId !== undefined ? opts.objectId : 0
+  let sequence = opts.sequence !== undefined ? opts.sequence : 0
+  _assertUint(frameType, 0x0f, "Frame type")
+  _assertUint(flags, 0xff, "Flags")
+  _assertUint(objectId, 0xffff, "Object ID")
+  _assertUint(sequence, 0xffff, "Sequence")
+
+  let speed = getWarbleSpeedProfile(opts.speedId)
+  let voice = getWarbleVoiceProfile(opts.voiceId)
+  let encodedFlags = (flags & ~WARBLE_VOICE_FLAG_MASK) | (voice.wireId & WARBLE_VOICE_FLAG_MASK)
+
+  let frame = new Uint8Array(FRAME_BYTES)
+  let view = new DataView(frame.buffer)
+  frame[0] =
+    (frameType << 4) |
+    (WARBLE_CONVOLUTIONAL_RATE_HALF_FEC_ID << WARBLE_FEC_PROFILE_SHIFT) |
+    speed.wireId
+  frame[1] = encodedFlags
+  view.setUint16(2, objectId, false)
+  view.setUint16(4, sequence, false)
+  frame[6] = payload.length
+  frame[7] = crc8Atm(frame.subarray(0, 7))
+  frame.set(payload, MINI_HEADER_BYTES)
+  view.setUint32(FRAME_CRC_OFFSET, crc32c(frame.subarray(0, FRAME_CRC_OFFSET)), false)
+  return frame
+}
+
+function buildTextFrame(text, options) {
+  let opts = options || {}
+  let textBytes = utf8Encode(text)
+  return {
+    textBytes: textBytes,
+    frame: buildWarbleFrame(textBytes, {
+      frameType: opts.frameType !== undefined ? opts.frameType : FRAME_TYPE_MANIFEST,
+      flags: opts.flags,
+      objectId: opts.objectId,
+      sequence: opts.sequence,
+      speedId: opts.speedId,
+      voiceId: opts.voiceId
+    })
+  }
+}
+
+function parseWarbleFrame(frame) {
+  if (frame.length !== FRAME_BYTES) {
+    return { ok: false, reason: "frame-length:" + frame.length }
+  }
+
+  let view = new DataView(frame.buffer, frame.byteOffset, frame.length)
+  let crcExpected = view.getUint32(FRAME_CRC_OFFSET, false)
+  let crcActual = crc32c(frame.subarray(0, FRAME_CRC_OFFSET))
+  let headerCrcExpected = frame[7]
+  let headerCrcActual = crc8Atm(frame.subarray(0, 7))
+
+  if (headerCrcExpected !== headerCrcActual) {
+    return { ok: false, reason: "header-crc", crcExpected: crcExpected, crcActual: crcActual }
+  }
+  if (crcExpected !== crcActual) {
+    return { ok: false, reason: "frame-crc", crcExpected: crcExpected, crcActual: crcActual }
+  }
+
+  let profileFec = frame[0] & 0x0f
+  let fecId = (profileFec & WARBLE_FEC_PROFILE_MASK) >>> WARBLE_FEC_PROFILE_SHIFT
+  if (fecId !== WARBLE_CONVOLUTIONAL_RATE_HALF_FEC_ID) {
+    return { ok: false, reason: "unknown-fec:" + fecId, crcExpected: crcExpected, crcActual: crcActual }
+  }
+
+  let speedIdx = _speedIndexByWireId(profileFec & WARBLE_SPEED_PROFILE_MASK)
+  if (speedIdx < 0) {
+    return {
+      ok: false, reason: "unknown-profile-fec:" + profileFec,
+      crcExpected: crcExpected, crcActual: crcActual
+    }
+  }
+
+  let voiceWireId = frame[1] & WARBLE_VOICE_FLAG_MASK
+  let voiceIdx = _voiceIndexByWireId(voiceWireId)
+  if (voiceIdx < 0) {
+    return {
+      ok: false, reason: "unknown-voice:" + voiceWireId,
+      crcExpected: crcExpected, crcActual: crcActual
+    }
+  }
+
+  let frameType = frame[0] >>> 4
+  if (_KNOWN_FRAME_TYPES[frameType] !== 1) {
+    return {
+      ok: false, reason: "unknown-frame-type:" + frameType,
+      crcExpected: crcExpected, crcActual: crcActual
+    }
+  }
+
+  let payloadLength = frame[6]
+  if (payloadLength > MAX_PAYLOAD_BYTES) {
+    return {
+      ok: false, reason: "payload-length:" + payloadLength,
+      crcExpected: crcExpected, crcActual: crcActual
+    }
+  }
+
+  let paddingStart = MINI_HEADER_BYTES + payloadLength
+  for (let index = paddingStart; index < FRAME_CRC_OFFSET; index = index + 1) {
+    if (frame[index] !== 0) {
+      return { ok: false, reason: "nonzero-padding", crcExpected: crcExpected, crcActual: crcActual }
+    }
+  }
+
+  return {
+    ok: true,
+    frame: frame.slice(),
+    payload: frame.slice(MINI_HEADER_BYTES, MINI_HEADER_BYTES + payloadLength),
+    frameType: frameType,
+    flags: frame[1] & ~WARBLE_VOICE_FLAG_MASK,
+    rawFlags: frame[1],
+    speedIndex: speedIdx,
+    voiceIndex: voiceIdx,
+    speedId: WARBLE_SPEEDS[speedIdx].id,
+    voiceId: WARBLE_VOICES[voiceIdx].id,
+    profileFec: profileFec,
+    fecId: fecId,
+    objectId: view.getUint16(2, false),
+    sequence: view.getUint16(4, false),
+    crcExpected: crcExpected,
+    crcActual: crcActual
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Protocol: frame <-> symbols <-> PCM
+// ---------------------------------------------------------------------------
+
+function insertPilots(dataSymbols) {
+  if (dataSymbols.length !== DATA_SYMBOL_COUNT) {
+    throw new RangeError("Expected " + DATA_SYMBOL_COUNT + " data symbols")
+  }
+
+  let transmitted = new Uint8Array(TOTAL_SYMBOL_COUNT)
+  let source = 0
+  let output = 0
+  let pilot = 0
+
+  while (source < dataSymbols.length) {
+    transmitted[output] = dataSymbols[source]
+    source = source + 1
+    output = output + 1
+    if (source % PILOT_INTERVAL_DATA_SYMBOLS === 0 && pilot < PILOT_SYMBOL_COUNT) {
+      transmitted[output] = _PILOT_VALUES[pilot]
+      output = output + 1
+      pilot = pilot + 1
+    }
+  }
+
+  if (output !== TOTAL_SYMBOL_COUNT || pilot !== PILOT_SYMBOL_COUNT) {
+    throw new Error("Pilot schedule does not fill the lab-v0 frame")
+  }
+  return transmitted
+}
+
+function frameToDataSymbols(frame) {
+  if (frame.length !== FRAME_BYTES) {
+    throw new RangeError("A WarbleWire frame must be " + FRAME_BYTES + " bytes")
+  }
+  let terminated = new Uint8Array(CONVOLUTIONAL_INPUT_BITS)
+  terminated.set(bytesToBits(frame))
+  return bitsToNibbles(interleaveBits(convolutionalEncode(terminated)))
+}
+
+function encodeFrameToWarble(frame, options) {
+  let opts = options || {}
+  let parsed = parseWarbleFrame(frame)
+  if (!parsed.ok) { throw new RangeError("Cannot encode an invalid frame: " + parsed.reason) }
+  if (opts.speedId !== undefined && opts.speedId !== parsed.speedId) {
+    throw new RangeError(
+      "Waveform speed " + opts.speedId + " does not match frame speed " + parsed.speedId
+    )
+  }
+  if (opts.voiceId !== undefined && opts.voiceId !== parsed.voiceId) {
+    throw new RangeError(
+      "Waveform voice " + opts.voiceId + " does not match frame voice " + parsed.voiceId
+    )
+  }
+
+  let speed = WARBLE_SPEEDS[parsed.speedIndex]
+  let voice = WARBLE_VOICES[parsed.voiceIndex]
+  let dataSymbols = frameToDataSymbols(frame)
+  let symbols = insertPilots(dataSymbols)
+  let pcm = synthesizePipSymbols(symbols, {
+    initialPhase: opts.initialPhase,
+    speedId: speed.id,
+    voiceId: voice.id
+  })
+
+  return {
+    frame: frame.slice(),
+    dataSymbols: dataSymbols,
+    symbols: symbols,
+    pcm: pcm,
+    durationSeconds: speed.frameDurationSeconds,
+    encodedBits: ENCODED_BIT_COUNT,
+    speedId: speed.id,
+    voiceId: voice.id,
+    speedName: speed.name,
+    voiceName: voice.name,
+    rawBitRate: speed.rawBitRate,
+    capacityBitRate: speed.capacityBitRate,
+    maxPayloadBitRate: speed.maxPayloadBitRate
+  }
+}
+
+// Pull the data symbols' soft bits back out of the transmitted stream, counting
+// how many pilots landed where they were supposed to on the way past.
+function _extractDataLikelihoods(decodedSymbols, decodedSoftBits) {
+  let interleaved = new Float32Array(ENCODED_BIT_COUNT)
+  let transmitted = 0
+  let data = 0
+  let pilot = 0
+  let pilotMatches = 0
+
+  while (data < DATA_SYMBOL_COUNT) {
+    interleaved.set(decodedSoftBits.subarray(transmitted * 4, transmitted * 4 + 4), data * 4)
+    transmitted = transmitted + 1
+    data = data + 1
+    if (data % PILOT_INTERVAL_DATA_SYMBOLS === 0 && pilot < PILOT_SYMBOL_COUNT) {
+      if (decodedSymbols[transmitted] === _PILOT_VALUES[pilot]) { pilotMatches = pilotMatches + 1 }
+      transmitted = transmitted + 1
+      pilot = pilot + 1
+    }
+  }
+
+  return { interleaved: interleaved, pilotMatches: pilotMatches }
+}
+
+// The mean correlation of the eight known pilots at their scheduled positions.
+// This is the signal acquisition leans on: it needs no payload, no CRC, and no
+// Viterbi, so it is cheap enough to evaluate at hundreds of candidate offsets.
+function _voicePilotScore(pcm, speed, voiceIdx, offset) {
+  _ensurePip(speed, voiceIdx)
+  let spS = _SPEED_SPS[speed]
+  let score = 0
+  for (let index = 0; index < PILOT_SYMBOL_COUNT; index = index + 1) {
+    score = score + _correlateNibble(
+      pcm, offset + _PILOT_TX_INDEX[index] * spS, _PILOT_VALUES[index], speed, voiceIdx
+    )
+  }
+  return score / PILOT_SYMBOL_COUNT
+}
+
+function _decodeVoiceCandidate(pcm, speed, voiceIdx, offset) {
+  let speedProfile = WARBLE_SPEEDS[speed]
+  let voiceProfile = WARBLE_VOICES[voiceIdx]
+  let decisions = decodePipSymbols(pcm, TOTAL_SYMBOL_COUNT, offset, {
+    speedId: speedProfile.id,
+    voiceId: voiceProfile.id
+  })
+  let extracted = _extractDataLikelihoods(decisions.nibbles, decisions.softBits)
+  let pilotConfidence = extracted.pilotMatches / PILOT_SYMBOL_COUNT
+  let confidence = Math.max(0, Math.min(1, 0.85 * decisions.confidence + 0.15 * pilotConfidence))
+
+  let failure = {
+    ok: false,
+    reason: "",
+    confidence: confidence,
+    symbols: decisions.nibbles,
+    pilotMatches: extracted.pilotMatches,
+    detectedSpeedId: speedProfile.id,
+    detectedVoiceId: voiceProfile.id
+  }
+
+  let decoded = null
+  try {
+    decoded = viterbiDecodeSoft(deinterleaveSoft(extracted.interleaved))
+  } catch (error) {
+    failure.reason = "viterbi-decode"
+    return failure
+  }
+
+  for (let index = CONVOLUTIONAL_INPUT_BITS - TAIL_BIT_COUNT; index < CONVOLUTIONAL_INPUT_BITS; index = index + 1) {
+    if (decoded[index] !== 0) {
+      failure.reason = "invalid-tail"
+      return failure
+    }
+  }
+
+  let frame = bitsToBytes(decoded.slice(0, FRAME_BIT_COUNT))
+  let parsed = parseWarbleFrame(frame)
+  if (!parsed.ok) {
+    failure.reason = parsed.reason
+    failure.crcExpected = parsed.crcExpected
+    failure.crcActual = parsed.crcActual
+    return failure
+  }
+
+  // The mini-header says which tempo and voice it was sent with, but it is
+  // never allowed to bootstrap the decode — it is only ever cross-checked
+  // against what the receiver actually locked onto.
+  if (parsed.speedId !== speedProfile.id) {
+    failure.reason = "speed-metadata:" + parsed.speedId + ";detected:" + speedProfile.id
+    failure.crcExpected = parsed.crcExpected
+    failure.crcActual = parsed.crcActual
+    return failure
+  }
+  if (parsed.voiceId !== voiceProfile.id) {
+    failure.reason = "voice-metadata:" + parsed.voiceId + ";detected:" + voiceProfile.id
+    failure.crcExpected = parsed.crcExpected
+    failure.crcActual = parsed.crcActual
+    return failure
+  }
+
+  parsed.confidence = confidence
+  parsed.symbols = decisions.nibbles
+  parsed.pilotMatches = extracted.pilotMatches
+  parsed.detectedSpeedId = speedProfile.id
+  parsed.detectedVoiceId = voiceProfile.id
+  parsed.rawBitRate = speedProfile.rawBitRate
+  parsed.capacityBitRate = speedProfile.capacityBitRate
+  parsed.maxPayloadBitRate = speedProfile.maxPayloadBitRate
+  return parsed
+}
+
+// Rank the four voices by pilot correlation, then try them in that order.
+function _decodeAtOffset(pcm, speed, offset, voiceIdx) {
+  let order = []
+  if (voiceIdx !== undefined && voiceIdx !== null && voiceIdx >= 0) {
+    order.push(voiceIdx)
+  } else {
+    let ranked = []
+    for (let v = 0; v < 4; v = v + 1) {
+      ranked.push({ index: v, score: _voicePilotScore(pcm, speed, v, offset) })
+    }
+    ranked.sort(function (first, second) { return second.score - first.score })
+    for (let r = 0; r < ranked.length; r = r + 1) { order.push(ranked[r].index) }
+  }
+
+  let bestFailure = null
+  for (let o = 0; o < order.length; o = o + 1) {
+    let candidate = _decodeVoiceCandidate(pcm, speed, order[o], offset)
+    if (candidate.ok) { return candidate }
+    if (bestFailure === null || (candidate.confidence || 0) > (bestFailure.confidence || 0)) {
+      bestFailure = candidate
+    }
+  }
+  return bestFailure !== null
+    ? bestFailure
+    : { ok: false, reason: "voice-detection", detectedSpeedId: WARBLE_SPEEDS[speed].id }
+}
+
+// ---------------------------------------------------------------------------
+// Acquisition — the part the TypeScript never needed.
+// ---------------------------------------------------------------------------
+
+// Coarse onset: a short-window energy envelope, and the first window that rises
+// decisively out of the floor. The burst attacks hard from silence, so this
+// lands within a symbol or so of the truth; the correlator does the rest.
+function findOnsetSample(pcm) {
+  let windowSize = 256
+  let count = Math.floor(pcm.length / windowSize)
+  if (count < 8) { return 0 }
+
+  let levels = new Float64Array(count)
+  let floor = Infinity
+  let peak = 0
+
+  for (let w = 0; w < count; w = w + 1) {
+    let base = w * windowSize
+    let sum = 0
+    for (let i = 0; i < windowSize; i = i + 1) {
+      let x = pcm[base + i]
+      sum = sum + x * x
+    }
+    let level = Math.sqrt(sum / windowSize)
+    levels[w] = level
+    if (level < floor) { floor = level }
+    if (level > peak) { peak = level }
+  }
+
+  // Nothing decisive: either silence throughout, or the buffer is all burst.
+  if (peak <= 1e-9) { return 0 }
+  if (peak < floor * 3) { return 0 }
+
+  let threshold = floor + 0.15 * (peak - floor)
+  for (let w = 0; w < count; w = w + 1) {
+    if (levels[w] > threshold) { return Math.max(0, (w - 1) * windowSize) }
+  }
+  return 0
+}
+
+function _searchPilots(pcm, speed, voiceIdx, low, high, step) {
+  let bestOffset = low
+  let bestScore = -1
+  for (let offset = low; offset <= high; offset = offset + step) {
+    let score = _voicePilotScore(pcm, speed, voiceIdx, offset)
+    if (score > bestScore) {
+      bestScore = score
+      bestOffset = offset
+    }
+  }
+  return { offset: bestOffset, score: bestScore }
+}
+
+// Where does the frame start? Coarse-to-fine: an onset-guided sweep at an
+// eighth of a symbol, then a per-sample refinement across that step. A
+// brute-force per-sample search of a whole recording would be minutes.
+function findFrameOffset(pcm, speedId, voiceId) {
+  let speed = _speedIndex(speedId)
+  let voiceIdx = _voiceIndex(voiceId)
+  if (speed < 0 || voiceIdx < 0) { throw new RangeError("Unknown Warble profile") }
+  _ensurePip(speed, voiceIdx)
+
+  let spS = _SPEED_SPS[speed]
+  let maxOffset = pcm.length - TOTAL_SYMBOL_COUNT * spS
+  if (maxOffset < 0) { return { offset: -1, score: 0, onset: 0 } }
+
+  let onset = findOnsetSample(pcm)
+  let step = Math.max(1, Math.round(spS / 8))
+
+  let low = Math.max(0, Math.min(maxOffset, onset - 2 * spS))
+  let high = Math.max(low, Math.min(maxOffset, onset + 3 * spS))
+  let coarse = _searchPilots(pcm, speed, voiceIdx, low, high, step)
+
+  // The onset guess can be wrong — a door closing before the burst, a recorder
+  // that starts mid-song. If the guided sweep found nothing convincing, sweep
+  // the whole recording, still coarsely.
+  if (coarse.score < 0.35 && maxOffset > high - low) {
+    let wideStep = Math.max(step, Math.ceil((maxOffset + 1) / 4000))
+    let wide = _searchPilots(pcm, speed, voiceIdx, 0, maxOffset, wideStep)
+    if (wide.score > coarse.score) {
+      coarse = wide
+      step = wideStep
+    }
+  }
+
+  let fineLow = Math.max(0, Math.min(maxOffset, coarse.offset - step))
+  let fineHigh = Math.max(fineLow, Math.min(maxOffset, coarse.offset + step))
+  let fine = _searchPilots(pcm, speed, voiceIdx, fineLow, fineHigh, 1)
+
+  return { offset: fine.offset, score: fine.score, onset: onset, coarseScore: coarse.score }
+}
+
+// ---------------------------------------------------------------------------
+// Public decode surface
+// ---------------------------------------------------------------------------
+
+function _finishDecode(decoded, offset) {
+  if (!decoded.ok) {
+    return {
+      ok: false,
+      reason: decoded.reason,
+      crcExpected: decoded.crcExpected,
+      crcActual: decoded.crcActual,
+      confidence: decoded.confidence,
+      detectedSpeedId: decoded.detectedSpeedId,
+      detectedVoiceId: decoded.detectedVoiceId,
+      offset: offset
+    }
+  }
+
+  let text = null
+  if (decoded.frameType === FRAME_TYPE_MANIFEST) {
+    try {
+      text = utf8Decode(decoded.payload)
+    } catch (error) {
+      return {
+        ok: false,
+        reason: "invalid-utf8",
+        crcExpected: decoded.crcExpected,
+        crcActual: decoded.crcActual,
+        confidence: decoded.confidence,
+        detectedSpeedId: decoded.detectedSpeedId,
+        detectedVoiceId: decoded.detectedVoiceId,
+        offset: offset
+      }
+    }
+  }
+
+  let speed = WARBLE_SPEEDS[decoded.speedIndex]
+  let voice = WARBLE_VOICES[decoded.voiceIndex]
+
+  return {
+    ok: true,
+    text: text,
+    payload: decoded.payload,
+    frame: decoded.frame,
+    frameType: decoded.frameType,
+    flags: decoded.flags,
+    rawFlags: decoded.rawFlags,
+    objectId: decoded.objectId,
+    sequence: decoded.sequence,
+    crcExpected: decoded.crcExpected,
+    crcActual: decoded.crcActual,
+    confidence: decoded.confidence,
+    pilotMatches: decoded.pilotMatches,
+    symbols: decoded.symbols,
+    speedId: decoded.speedId,
+    voiceId: decoded.voiceId,
+    speedName: speed.name,
+    voiceName: voice.name,
+    detectedSpeedId: decoded.detectedSpeedId,
+    detectedVoiceId: decoded.detectedVoiceId,
+    rawBitRate: decoded.rawBitRate,
+    capacityBitRate: decoded.capacityBitRate,
+    maxPayloadBitRate: decoded.maxPayloadBitRate,
+    durationSeconds: speed.frameDurationSeconds,
+    offset: offset
+  }
+}
+
+// The exact-buffer path, unchanged in behaviour from the TypeScript: the tempo
+// comes from the buffer length and the frame is assumed to start at sample 0.
+function decodeWarblePcm(pcm) {
+  let speed = inferWarbleSpeedIndex(pcm.length)
+  if (speed < 0) {
+    return { ok: false, reason: "pcm-length:" + pcm.length + ";expected-known-lab-tempo" }
+  }
+
+  let signalEnergy = 0
+  for (let index = 0; index < pcm.length; index = index + 1) {
+    signalEnergy = signalEnergy + pcm[index] * pcm[index]
+  }
+  if (signalEnergy <= 1e-20) {
+    return { ok: false, reason: "frame-signal-energy", detectedSpeedId: WARBLE_SPEEDS[speed].id }
+  }
+
+  return _finishDecode(_decodeAtOffset(pcm, speed, 0, -1), 0)
+}
+
+// Decode at a known offset, optionally pinned to one tempo and voice.
+function decodeWarblePcmAt(pcm, offset, speedId, voiceId) {
+  let speed = _speedIndex(speedId)
+  if (speed < 0) { return { ok: false, reason: "unknown-speed:" + speedId, offset: offset } }
+  let voiceIdx = voiceId === undefined || voiceId === null ? -1 : _voiceIndex(voiceId)
+  if (voiceIdx < 0 && voiceId !== undefined && voiceId !== null) {
+    return { ok: false, reason: "unknown-voice:" + voiceId, offset: offset }
+  }
+
+  let spS = _SPEED_SPS[speed]
+  if (offset < 0 || offset + TOTAL_SYMBOL_COUNT * spS > pcm.length) {
+    return { ok: false, reason: "offset-out-of-range:" + offset, offset: offset }
+  }
+
+  return _finishDecode(_decodeAtOffset(pcm, speed, offset, voiceIdx), offset)
+}
+
+// Microphone audio: unknown rate, unknown start, unknown tempo, unknown voice.
+// Resample to the 48 kHz every constant here assumes, acquire once per tempo,
+// score all twelve combinations coarsely, then spend the expensive per-sample
+// refinement and full decode only on the ones that look plausible.
+function decodeCapturedPcm(pcm, sampleRate) {
+  let rate = sampleRate === undefined || sampleRate === null ? SAMPLE_RATE : sampleRate
+  let working = rate === SAMPLE_RATE ? pcm : resamplePcm(pcm, rate, SAMPLE_RATE)
+
+  let energy = 0
+  for (let index = 0; index < working.length; index = index + 1) {
+    energy = energy + working[index] * working[index]
+  }
+  if (energy <= 1e-12) { return { ok: false, reason: "capture-signal-energy", offset: -1 } }
+
+  let onset = findOnsetSample(working)
+  let candidates = []
+  let bestCoarse = -1
+
+  for (let speed = 0; speed < 3; speed = speed + 1) {
+    let spS = _SPEED_SPS[speed]
+    let maxOffset = working.length - TOTAL_SYMBOL_COUNT * spS
+    if (maxOffset < 0) { continue }
+
+    let step = Math.max(1, Math.round(spS / 8))
+    let low = Math.max(0, Math.min(maxOffset, onset - 2 * spS))
+    let high = Math.max(low, Math.min(maxOffset, onset + 3 * spS))
+
+    for (let voiceIdx = 0; voiceIdx < 4; voiceIdx = voiceIdx + 1) {
+      _ensurePip(speed, voiceIdx)
+      let coarse = _searchPilots(working, speed, voiceIdx, low, high, step)
+      if (coarse.score > bestCoarse) { bestCoarse = coarse.score }
+      candidates.push({
+        speed: speed, voiceIdx: voiceIdx, offset: coarse.offset, score: coarse.score,
+        step: step, maxOffset: maxOffset, low: low, high: high
+      })
+    }
+  }
+
+  if (candidates.length === 0) { return { ok: false, reason: "capture-too-short", offset: -1 } }
+
+  // Sweeping every offset of every tempo costs seconds, so it is only paid for
+  // when the onset-guided window turned up nothing that looks like a frame at
+  // all — a recorder that started mid-song, or a door closing before the burst.
+  if (bestCoarse < 0.45) {
+    for (let index = 0; index < candidates.length; index = index + 1) {
+      let candidate = candidates[index]
+      if (candidate.maxOffset <= candidate.high - candidate.low) { continue }
+      let wideStep = Math.max(candidate.step, Math.ceil((candidate.maxOffset + 1) / 2000))
+      let wide = _searchPilots(working, candidate.speed, candidate.voiceIdx, 0, candidate.maxOffset, wideStep)
+      if (wide.score > candidate.score) {
+        candidate.offset = wide.offset
+        candidate.score = wide.score
+        candidate.step = wideStep
+      }
+    }
+  }
+
+  candidates.sort(function (first, second) { return second.score - first.score })
+
+  // Each full attempt is a 267-symbol correlation against sixteen candidate
+  // calls, so only the plausible ones are worth spending it on.
+  let attempts = 1
+  while (attempts < 3 && attempts < candidates.length &&
+         candidates[attempts].score >= candidates[0].score * 0.75) {
+    attempts = attempts + 1
+  }
+  let bestFailure = null
+
+  for (let index = 0; index < attempts; index = index + 1) {
+    let candidate = candidates[index]
+    let fineLow = Math.max(0, Math.min(candidate.maxOffset, candidate.offset - candidate.step))
+    let fineHigh = Math.max(fineLow, Math.min(candidate.maxOffset, candidate.offset + candidate.step))
+    // Two passes rather than one at step 1. Walking 384 offsets a sample at a
+    // time was the single most expensive thing left in a capture decode, and it
+    // buys nothing: the correlator takes the magnitude of I and Q, so it is
+    // phase-invariant, and eight samples out of a 1536-sample symbol moves the
+    // score by less than the noise does. Coarse pass, then a sample-accurate
+    // one over the sixteen offsets either side of the winner.
+    let sweep = _searchPilots(working, candidate.speed, candidate.voiceIdx, fineLow, fineHigh, 8)
+    let fine = _searchPilots(
+      working, candidate.speed, candidate.voiceIdx,
+      Math.max(fineLow, sweep.offset - 8),
+      Math.min(fineHigh, sweep.offset + 8),
+      1
+    )
+    if (sweep.score > fine.score) { fine = sweep }
+
+    let result = _finishDecode(
+      _decodeVoiceCandidate(working, candidate.speed, candidate.voiceIdx, fine.offset),
+      fine.offset
+    )
+    if (result.ok) {
+      result.pilotScore = fine.score
+      result.sampleRate = rate
+      return result
+    }
+    if (bestFailure === null || (result.confidence || 0) > (bestFailure.confidence || 0)) {
+      bestFailure = result
+      bestFailure.pilotScore = fine.score
+    }
+  }
+
+  if (bestFailure === null) { bestFailure = { ok: false, reason: "acquisition", offset: -1 } }
+  bestFailure.sampleRate = rate
+  return bestFailure
+}
+
+// ---------------------------------------------------------------------------
+// Encode surface
+// ---------------------------------------------------------------------------
+
+function _finishEncoding(payload, frame, options) {
+  let opts = options || {}
+  let encoded = encodeFrameToWarble(frame, {
+    initialPhase: opts.initialPhase,
+    speedId: opts.speedId,
+    voiceId: opts.voiceId
+  })
+
+  if (opts.noiseDb !== undefined && opts.noiseDb !== null) {
+    encoded.pcm = addSeededNoise(encoded.pcm, opts.noiseDb, opts.seed)
+  }
+
+  let syllables = []
+  for (let index = 0; index < encoded.symbols.length; index = index + 1) {
+    syllables.push(pipSyllable(encoded.symbols[index]))
+  }
+
+  encoded.payload = payload.slice()
+  encoded.syllables = syllables
+  encoded.payloadBitRate = (payload.length * 8) / encoded.durationSeconds
+  return encoded
+}
+
+function encodeWarblePayload(payload, options) {
+  let opts = options || {}
+  let frame = buildWarbleFrame(payload, {
+    frameType: opts.frameType !== undefined ? opts.frameType : FRAME_TYPE_DATA,
+    flags: opts.flags,
+    objectId: opts.objectId,
+    sequence: opts.sequence,
+    speedId: opts.speedId,
+    voiceId: opts.voiceId
+  })
+  return _finishEncoding(payload, frame, opts)
+}
+
+function encodeWarbleMessage(text, options) {
+  let opts = options || {}
+  let built = buildTextFrame(text, {
+    frameType: FRAME_TYPE_MANIFEST,
+    speedId: opts.speedId,
+    voiceId: opts.voiceId
+  })
+  let encoded = _finishEncoding(built.textBytes, built.frame, opts)
+  encoded.textBytes = built.textBytes
+  encoded.text = "" + text
+  return encoded
+}
+
+// ---------------------------------------------------------------------------
+// Channel
+// ---------------------------------------------------------------------------
+
+function addSeededNoise(pcm, db, seed) {
+  if (db === Infinity) { return pcm.slice() }
+  if (!Number.isFinite(db)) { throw new RangeError("Noise SNR must be finite or positive infinity") }
+
+  let squareSum = 0
+  for (let index = 0; index < pcm.length; index = index + 1) {
+    squareSum = squareSum + pcm[index] * pcm[index]
+  }
+  let signalRms = pcm.length === 0 ? 0 : Math.sqrt(squareSum / pcm.length)
+  if (signalRms === 0) { return pcm.slice() }
+
+  let noiseRms = signalRms / Math.pow(10, db / 20)
+  let state = (seed === undefined || seed === null ? 0x57415242 : seed) >>> 0
+  if (state === 0) { state = 0x6d2b79f5 }
+
+  let noisy = new Float32Array(pcm.length)
+  let spare = 0
+  let hasSpare = false
+
+  for (let index = 0; index < pcm.length; index = index + 1) {
+    let gaussian = 0
+    if (hasSpare) {
+      gaussian = spare
+      hasSpare = false
+    } else {
+      state = state ^ (state << 13)
+      state = state ^ (state >>> 17)
+      state = state ^ (state << 5)
+      let first = Math.max((state >>> 0) / 4294967296, Number.EPSILON)
+      state = state ^ (state << 13)
+      state = state ^ (state >>> 17)
+      state = state ^ (state << 5)
+      let second = (state >>> 0) / 4294967296
+      let radius = Math.sqrt(-2 * Math.log(first))
+      gaussian = radius * Math.cos(2 * Math.PI * second)
+      spare = radius * Math.sin(2 * Math.PI * second)
+      hasSpare = true
+    }
+    noisy[index] = pcm[index] + gaussian * noiseRms
+  }
+
+  return noisy
+}
+
+// ---------------------------------------------------------------------------
+// WAV, in both directions
+// ---------------------------------------------------------------------------
+
+function _writeAscii(view, offset, value) {
+  for (let index = 0; index < value.length; index = index + 1) {
+    view.setUint8(offset + index, value.charCodeAt(index))
+  }
+}
+
+function pcmToWavBytes(pcm, sampleRate) {
+  let rate = sampleRate === undefined || sampleRate === null ? SAMPLE_RATE : sampleRate
+  if (!Number.isInteger(rate) || rate <= 0) {
+    throw new RangeError("WAV sample rate must be a positive integer")
+  }
+
+  let headerBytes = 44
+  let dataBytes = pcm.length * 2
+  let bytes = new Uint8Array(headerBytes + dataBytes)
+  let view = new DataView(bytes.buffer)
+
+  _writeAscii(view, 0, "RIFF")
+  view.setUint32(4, 36 + dataBytes, true)
+  _writeAscii(view, 8, "WAVE")
+  _writeAscii(view, 12, "fmt ")
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, rate, true)
+  view.setUint32(28, rate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  _writeAscii(view, 36, "data")
+  view.setUint32(40, dataBytes, true)
+
+  for (let index = 0; index < pcm.length; index = index + 1) {
+    // Clamp before scaling. A sample of 1.2 scaled first would wrap to a large
+    // negative sixteen-bit value and click.
+    let sample = Math.max(-1, Math.min(1, pcm[index]))
+    let encoded = sample < 0 ? Math.round(sample * 0x8000) : Math.round(sample * 0x7fff)
+    view.setInt16(headerBytes + index * 2, encoded, true)
+  }
+
+  return bytes
+}
+
+function wavDataUrl(pcm, sampleRate) {
+  return "data:audio/wav;base64," + pcmToWavBytes(pcm, sampleRate).toBase64()
+}
+
+function _ascii4(bytes, offset) {
+  return String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3])
+}
+
+// The inverse. Real recorders put LIST and fact chunks in front of the data, so
+// the chunks are walked rather than assuming audio starts at byte 44.
+function pcmFromWavDataUrl(dataUrl) {
+  if (typeof dataUrl !== "string") {
+    return { ok: false, reason: "not-a-data-url", pcm: null, sampleRate: 0 }
+  }
+  let marker = dataUrl.indexOf("base64,")
+  if (marker < 0) {
+    return { ok: false, reason: "not-base64-encoded", pcm: null, sampleRate: 0 }
+  }
+
+  let bytes = null
+  try {
+    bytes = Uint8Array.fromBase64(dataUrl.slice(marker + 7))
+  } catch (error) {
+    return { ok: false, reason: "bad-base64", pcm: null, sampleRate: 0 }
+  }
+
+  if (bytes.length < 12 || _ascii4(bytes, 0) !== "RIFF" || _ascii4(bytes, 8) !== "WAVE") {
+    return { ok: false, reason: "not-a-riff-wave", pcm: null, sampleRate: 0 }
+  }
+
+  let view = new DataView(bytes.buffer, bytes.byteOffset, bytes.length)
+  let audioFormat = 0
+  let channels = 0
+  let sampleRate = 0
+  let bitsPerSample = 0
+  let dataOffset = -1
+  let dataLength = 0
+  let cursor = 12
+
+  while (cursor + 8 <= bytes.length) {
+    let id = _ascii4(bytes, cursor)
+    let size = view.getUint32(cursor + 4, true)
+    let body = cursor + 8
+    if (size > bytes.length - body) { size = bytes.length - body }
+
+    if (id === "fmt " && size >= 16) {
+      audioFormat = view.getUint16(body, true)
+      channels = view.getUint16(body + 2, true)
+      sampleRate = view.getUint32(body + 4, true)
+      bitsPerSample = view.getUint16(body + 14, true)
+      // WAVE_FORMAT_EXTENSIBLE carries the real format in its GUID's first two
+      // bytes; 1 is PCM and 3 is IEEE float, same numbering as the plain tag.
+      if (audioFormat === 0xfffe && size >= 40) {
+        audioFormat = view.getUint16(body + 24, true)
+      }
+    } else if (id === "data") {
+      dataOffset = body
+      dataLength = size
+    }
+
+    cursor = body + size + (size & 1)
+  }
+
+  if (sampleRate <= 0 || channels <= 0) {
+    return { ok: false, reason: "missing-fmt-chunk", pcm: null, sampleRate: 0 }
+  }
+  if (dataOffset < 0) {
+    return { ok: false, reason: "missing-data-chunk", pcm: null, sampleRate: 0 }
+  }
+
+  let pcm = null
+
+  if (audioFormat === 1 && bitsPerSample === 16) {
+    let frames = Math.floor(dataLength / (2 * channels))
+    pcm = new Float32Array(frames)
+    for (let frame = 0; frame < frames; frame = frame + 1) {
+      let sum = 0
+      let base = dataOffset + frame * 2 * channels
+      for (let channel = 0; channel < channels; channel = channel + 1) {
+        sum = sum + view.getInt16(base + channel * 2, true) / 32768
+      }
+      pcm[frame] = sum / channels
+    }
+  } else if (audioFormat === 1 && bitsPerSample === 8) {
+    let frames = Math.floor(dataLength / channels)
+    pcm = new Float32Array(frames)
+    for (let frame = 0; frame < frames; frame = frame + 1) {
+      let sum = 0
+      let base = dataOffset + frame * channels
+      for (let channel = 0; channel < channels; channel = channel + 1) {
+        sum = sum + (bytes[base + channel] - 128) / 128
+      }
+      pcm[frame] = sum / channels
+    }
+  } else if (audioFormat === 3 && bitsPerSample === 32) {
+    let frames = Math.floor(dataLength / (4 * channels))
+    pcm = new Float32Array(frames)
+    for (let frame = 0; frame < frames; frame = frame + 1) {
+      let sum = 0
+      let base = dataOffset + frame * 4 * channels
+      for (let channel = 0; channel < channels; channel = channel + 1) {
+        sum = sum + view.getFloat32(base + channel * 4, true)
+      }
+      pcm[frame] = sum / channels
+    }
+  } else {
+    return {
+      ok: false,
+      reason: "unsupported-format:tag=" + audioFormat + ";bits=" + bitsPerSample,
+      pcm: null,
+      sampleRate: sampleRate
+    }
+  }
+
+  return {
+    ok: true,
+    pcm: pcm,
+    sampleRate: sampleRate,
+    channels: channels,
+    bitsPerSample: bitsPerSample,
+    audioFormat: audioFormat
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rate conversion. A microphone will hand back 44100 even when 48000 was asked
+// for, and every constant in this protocol assumes 48000.
+// ---------------------------------------------------------------------------
+
+function resamplePcm(pcm, fromRate, toRate) {
+  if (!(fromRate > 0) || !(toRate > 0)) { throw new RangeError("Sample rates must be positive") }
+  if (fromRate === toRate) { return pcm.slice() }
+
+  let ratio = fromRate / toRate
+  // Round, not floor. Flooring loses a sample to the truncation, and a
+  // recording that arrives exactly one frame long then comes out one sample
+  // short of holding that frame — so the tempo it actually is gets skipped for
+  // not fitting, and the failure surfaces as "header-crc" from some other
+  // tempo rather than as anything to do with length.
+  let outputLength = Math.max(1, Math.round(pcm.length / ratio))
+  let output = new Float32Array(outputLength)
+
+  // Catmull-Rom rather than linear. Straight-line interpolation between two
+  // samples is a crude low-pass, and it takes the top off exactly the band this
+  // modem lives in — the Pip registers run to 2187 Hz plus excursion, which at
+  // 44100 is high enough that a linear resample smeared the tones until the
+  // frame failed its own header CRC. A cubic fit through four samples tracks the
+  // curve instead of cutting the corner, for about three more multiplies each.
+  let last = pcm.length - 1
+  let at = function (i) {
+    if (i < 0) { return pcm[0] }
+    if (i > last) { return pcm[last] }
+    return pcm[i]
+  }
+
+  for (let index = 0; index < outputLength; index = index + 1) {
+    let source = index * ratio
+    let base = Math.floor(source)
+    let t = source - base
+
+    let p0 = at(base - 1)
+    let p1 = at(base)
+    let p2 = at(base + 1)
+    let p3 = at(base + 2)
+
+    let a = 2 * p1
+    let b = p2 - p0
+    let c = 2 * p0 - 5 * p1 + 4 * p2 - p3
+    let d = 3 * (p1 - p2) + p3 - p0
+    output[index] = 0.5 * (a + b * t + c * t * t + d * t * t * t)
+  }
+
+  return output
+}

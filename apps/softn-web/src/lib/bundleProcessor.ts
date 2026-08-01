@@ -404,7 +404,7 @@ export function extractPermissions(textFiles: Map<string, string>, manifest: Bun
  * One list, read by both the consent check and the grant record, so the two
  * cannot disagree about what was approved.
  */
-const CAPABILITIES = ['net', 'camera', 'files', 'qr', 'ai', 'gpu', 'sync'] as const;
+const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync'] as const;
 
 export function requestedCapabilities(config: PermissionConfig): string[] {
   const perms = (config.permissions ?? {}) as Record<string, { enabled?: boolean } | undefined>;

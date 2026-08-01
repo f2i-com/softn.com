@@ -44,9 +44,11 @@ describe('a permission.json that does not parse', () => {
 });
 
 describe('the capability list a grant is compared against', () => {
-  it('includes ai, gpu and sync', () => {
+  it('includes ai, gpu, sync and mic', () => {
     // The grant record used to enumerate four capabilities by hand and omit
-    // these three, so approval for them was never written down.
+    // ai, gpu and sync, so approval for them was never written down. mic
+    // arrived later and is the same shape of hazard — a capability the runtime
+    // enforces is worthless if consent for it is never asked or recorded.
     const config = extractPermissions(
       files(
         JSON.stringify({
@@ -54,12 +56,13 @@ describe('the capability list a grant is compared against', () => {
             ai: { enabled: true },
             gpu: { enabled: true },
             sync: { enabled: true },
+            mic: { enabled: true },
           },
         })
       ),
       manifest
     );
-    expect(requestedCapabilities(config!).sort()).toEqual(['ai', 'gpu', 'sync']);
+    expect(requestedCapabilities(config!).sort()).toEqual(['ai', 'gpu', 'mic', 'sync']);
   });
 
   it('ignores a capability that is declared but not enabled', () => {

@@ -1,0 +1,85 @@
+// Listen.ui — the half that needed a microphone component to exist at all.
+
+<Stack direction=vertical gap=md if={currentPage === "listen"}>
+
+  <Grid columns={{ sm: 1, lg: 2 }} gap=md>
+
+    // ── The ear ─────────────────────────────────────────────────────────────
+    <Card className="ww-hard" padding=lg style={{ background: "#20343d", borderRadius: "0", color: "#f4eddc" }}>
+      <Stack direction=vertical gap=md>
+        <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#a9dce8" }}>01 — Microphone</Text>
+
+        <Text style={{ fontSize: "0.8125rem", color: "#c4d2d8", lineHeight: 1.55 }}>
+          Play a song on one device and record it on another. Hold the record button
+          down for the whole burst — a Wren frame runs 8.5 seconds.
+        </Text>
+
+        // processing={false} is the entire reason this works. Echo cancellation,
+        // noise suppression and automatic gain control are trained on speech and
+        // treat a steady tone as noise to remove — which is exactly the signal.
+        <Microphone
+          mode="clip"
+          sampleRate={48000}
+          processing={false}
+          maxSeconds={20}
+          height={72}
+          onCapture={handleHeard}
+          onError={handleMicError}
+          onStart={startListening}
+          style={{ background: "#18262d", border: "1px solid #3f4f57", borderRadius: "0" }}
+        />
+
+        <Text if={micRate !== ""} className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>
+          Captured at {micRate}
+        </Text>
+
+        <Box if={heardWaveformSvg !== ""} style={{ background: "#18262d", border: "1px solid #3f4f57" }}>
+          <Icon svg={heardWaveformSvg} size="100%" style={{ width: "100%", display: "block" }} />
+        </Box>
+      </Stack>
+    </Card>
+
+    // ── What came back ──────────────────────────────────────────────────────
+    <Card className="ww-hard" padding=lg style={{
+      background: heardState === "verified" ? "#e9f0dd" : heardState === "rejected" ? "#fde8e3" : "#fffaf0",
+      borderRadius: "0"
+    }}>
+      <Stack direction=vertical gap=md>
+        <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#6d7f88" }}>02 — Recovered</Text>
+
+        <Text style={{ fontSize: "1rem", fontWeight: 700, letterSpacing: "-0.02em" }}>{heardTitle}</Text>
+
+        <Box if={heardText !== ""} className="ww-hard" style={{
+          background: "#f4eddc",
+          padding: "0.875rem",
+          fontSize: "1.0625rem",
+          lineHeight: 1.45
+        }}>
+          <Text>{heardText}</Text>
+        </Box>
+
+        <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.55 }}>{heardDetail}</Text>
+
+        <Stack if={heardConfidence !== ""} direction=vertical gap=xs style={{ borderTop: "1px solid #18262d", paddingTop: "0.625rem" }}>
+          <Box style={{ display: "flex", justifyContent: "space-between" }}>
+            <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>Symbol confidence</Text>
+            <Text className="ww-mono" style={{ fontSize: "0.5625rem" }}>{heardConfidence}</Text>
+          </Box>
+          <Box style={{ display: "flex", justifyContent: "space-between" }}>
+            <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>Frame start</Text>
+            <Text className="ww-mono" style={{ fontSize: "0.5625rem" }}>{heardOffset}</Text>
+          </Box>
+        </Stack>
+
+        <Box className="ww-hard" style={{ background: "#f4eddc", padding: "0.75rem", marginTop: "0.25rem" }}>
+          <Text style={{ fontSize: "0.75rem", color: "#3d4f58", lineHeight: 1.55 }}>
+            Over-the-air decoding is the newest and least settled part of this build. It
+            finds the burst by its onset and refines the alignment against the eight
+            pilot symbols; it does not yet track clock drift between two devices, so a
+            long frame on cheap hardware can still slip out from under the decoder.
+          </Text>
+        </Box>
+      </Stack>
+    </Card>
+  </Grid>
+</Stack>

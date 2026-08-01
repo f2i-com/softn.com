@@ -1,0 +1,413 @@
+// WarbleWire — the QXW acoustic transport, as a SoftN app.
+//
+// Text goes in, a synthetic birdsong comes out, and the same protocol takes it
+// apart again at the other end. warble.logic is the modem itself, ported from
+// the TypeScript at qxw.org; this file is only the app around it.
+
+import "./warble.logic"
+
+// --- What the user is looking at ------------------------------------------
+let currentPage = "compose"
+
+// --- Composing -------------------------------------------------------------
+let message = "Meet me by the old gum tree."
+let byteCount = 27
+let overLimit = false
+let maxBytes = 52
+
+let speedId = "wren"
+let voiceId = "meadow"
+let noiseIndex = 0
+
+// Descriptions of the tempos and voices, for the UI to loop over. Small and
+// unchanging; they exist here because a template cannot call a function that
+// returns an array in an #each.
+let speeds = []
+let voices = []
+let noiseLevels = []
+
+// --- The signal ------------------------------------------------------------
+//
+// signalPcm and cleanPcm are Float32Arrays. Typed arrays marshal to opaque
+// slots and are skipped by the state sync entirely, so holding a 410,112-sample
+// buffer up here costs nothing per call — unlike a plain array, which would be
+// deep-compared on every interaction.
+let cleanPcm = null
+let signalPcm = null
+
+let hasSignal = false
+let generating = false
+let durationLabel = "—"
+let tempoLabel = "—"
+let voiceLabel = "—"
+let payloadLabel = "—"
+let channelLabel = "Clean"
+let channelDetail = "Unaltered generated PCM"
+let rawRateLabel = "—"
+let syllables = ""
+let syllableOverflow = ""
+let waveformSvg = ""
+let errorText = ""
+
+// The generated message as it was at the moment of generation. Verification
+// compares against this, not against whatever is in the box now — otherwise
+// editing the text after generating makes a good decode look like a failure.
+let encodedMessage = ""
+
+// One megabyte of base64, and the only reason it lives in a state variable is
+// that the download link needs an href. Playback goes through softn.audio,
+// which takes the URL straight from the function that built it and never
+// surfaces it to the template.
+let wavUrl = ""
+let wavName = "warble.wav"
+
+// --- Verifying -------------------------------------------------------------
+let verifyState = "idle"
+let verifyTitle = "Waiting for a signal"
+let verifyDetail = "Generate a song, then ask the local decoder to inspect it."
+let verifyMark = "○"
+
+// --- Listening -------------------------------------------------------------
+let listening = false
+let heardState = "idle"
+let heardTitle = "Nothing heard yet"
+let heardDetail = "Play a song on another device, then record it here."
+let heardText = ""
+let heardConfidence = ""
+let heardOffset = ""
+let heardWaveformSvg = ""
+let micRate = ""
+
+function _init() {
+  // Display rows rather than the profiles themselves: symbolDurationMs is
+  // 32.000000000000004 and a template has nowhere to round it.
+  speeds = []
+  for (let i = 0; i < WARBLE_SPEEDS.length; i = i + 1) {
+    let s = WARBLE_SPEEDS[i]
+    speeds.push({
+      id: s.id,
+      name: s.name,
+      symbolMs: Math.round(s.symbolDurationMs),
+      rawBitRate: Math.round(s.rawBitRate),
+      seconds: s.frameDurationSeconds.toFixed(2)
+    })
+  }
+  voices = []
+  for (let i = 0; i < WARBLE_VOICES.length; i = i + 1) {
+    voices.push({ id: WARBLE_VOICES[i].id, name: WARBLE_VOICES[i].name })
+  }
+  noiseLevels = [
+    { id: 0, name: "Clean", detail: "Unaltered generated PCM" },
+    { id: 1, name: "Faint", detail: "34 dB signal-to-noise" },
+    { id: 2, name: "Light", detail: "26 dB signal-to-noise" },
+    { id: 3, name: "Busy", detail: "18 dB signal-to-noise" },
+    { id: 4, name: "Challenging", detail: "10 dB signal-to-noise" }
+  ]
+  maxBytes = MAX_PAYLOAD_BYTES
+  recount()
+}
+
+// --- Composing -------------------------------------------------------------
+
+function recount() {
+  byteCount = utf8Encode(message).length
+  overLimit = byteCount > maxBytes
+}
+
+// Called after :bind has already written the new text into `message`.
+function messageChanged() {
+  recount()
+  // A song generated from different words is no longer this message's song.
+  if (hasSignal && message !== encodedMessage) { forgetSignal() }
+}
+
+function setSpeed(id) {
+  speedId = id
+  forgetSignal()
+}
+
+function setVoice(id) {
+  voiceId = id
+  forgetSignal()
+}
+
+// Changing the channel does not invalidate the encoding — the same song is
+// being listened to through a different amount of noise — so it re-noises the
+// existing PCM rather than making the user generate again.
+function setNoise(index) {
+  noiseIndex = index
+  channelLabel = noiseLevels[index].name
+  channelDetail = noiseLevels[index].detail
+  softn.audio.stopAll()
+  if (!hasSignal) { return }
+  applyChannel()
+  verifyState = "idle"
+  verifyTitle = "Channel changed"
+  verifyDetail = "Verify this version of the signal when ready."
+  verifyMark = "○"
+}
+
+function snrForIndex(index) {
+  if (index === 1) { return 34 }
+  if (index === 2) { return 26 }
+  if (index === 3) { return 18 }
+  if (index === 4) { return 10 }
+  return null
+}
+
+function applyChannel() {
+  let snr = snrForIndex(noiseIndex)
+  if (snr === null) {
+    signalPcm = cleanPcm
+  } else {
+    signalPcm = addSeededNoise(cleanPcm.slice(), snr, 0x717877)
+  }
+  waveformSvg = waveformPath(signalPcm, 360, 96)
+  wavUrl = ""
+}
+
+function forgetSignal() {
+  softn.audio.stopAll()
+  cleanPcm = null
+  signalPcm = null
+  hasSignal = false
+  wavUrl = ""
+  waveformSvg = ""
+  syllables = ""
+  syllableOverflow = ""
+  durationLabel = "—"
+  tempoLabel = "—"
+  voiceLabel = "—"
+  payloadLabel = "—"
+  rawRateLabel = "—"
+  errorText = ""
+  encodedMessage = ""
+  verifyState = "idle"
+  verifyTitle = "Waiting for a signal"
+  verifyDetail = "Generate a song, then ask the local decoder to inspect it."
+  verifyMark = "○"
+}
+
+function generate() {
+  if (overLimit || byteCount === 0 || generating) { return }
+  generating = true
+  errorText = ""
+
+  let encoded = encodeWarbleMessage(message, { speedId: speedId, voiceId: voiceId })
+  if (!encoded || !encoded.pcm) {
+    errorText = "The encoder could not build a frame from that message."
+    generating = false
+    return
+  }
+
+  cleanPcm = encoded.pcm
+  encodedMessage = message
+  hasSignal = true
+
+  durationLabel = encoded.durationSeconds.toFixed(2) + " s"
+  tempoLabel = encoded.speedName
+  voiceLabel = encoded.voiceName
+  rawRateLabel = Math.round(encoded.rawBitRate) + " bit/s"
+  payloadLabel = encoded.textBytes.length + " bytes"
+  channelLabel = noiseLevels[noiseIndex].name
+  channelDetail = noiseLevels[noiseIndex].detail
+  wavName = "qxw-warble-" + encoded.speedId + "-" + encoded.voiceId + ".wav"
+
+  // 28 syllables is about a line and a half; the rest are counted rather than
+  // shown, because 267 of them is a wall of text nobody reads.
+  let shown = []
+  let limit = encoded.syllables.length
+  if (limit > 28) { limit = 28 }
+  for (let i = 0; i < limit; i = i + 1) { shown.push(encoded.syllables[i]) }
+  syllables = shown.join(" ")
+  if (encoded.syllables.length > 28) {
+    syllableOverflow = "+" + (encoded.syllables.length - 28) + " more"
+  } else {
+    syllableOverflow = ""
+  }
+
+  applyChannel()
+
+  verifyState = "idle"
+  verifyTitle = "Ready to verify"
+  verifyDetail = "Ask the local decoder to listen to this signal and check it."
+  verifyMark = "○"
+  generating = false
+}
+
+function play() {
+  if (!hasSignal) { return }
+  // Built here and handed straight to the host: assigning it to a state
+  // variable first would push a megabyte of base64 across the VM boundary on
+  // every subsequent call, for no reason.
+  softn.audio.play(wavDataUrl(signalPcm, 48000), {}, function (r) {
+    if (r && r.blocked) {
+      errorText = "The browser is holding sound back until the page is tapped."
+    }
+  })
+}
+
+function stop() {
+  softn.audio.stopAll()
+}
+
+// The download link needs an href, so this is the one place the base64 has to
+// become state. Built on demand rather than on every generate.
+function prepareDownload() {
+  if (!hasSignal || wavUrl !== "") { return }
+  wavUrl = wavDataUrl(signalPcm, 48000)
+}
+
+function verify() {
+  if (!hasSignal) { return }
+  verifyState = "working"
+  verifyTitle = "Listening closely…"
+  verifyDetail = "Correlating 267 symbols against sixteen candidate calls each."
+  verifyMark = "…"
+
+  let result = decodeWarblePcm(signalPcm)
+  if (!result.ok) {
+    verifyState = "rejected"
+    verifyTitle = "Rejected safely"
+    verifyDetail = "The decoder refused this signal: " + result.reason + "."
+    verifyMark = "×"
+    return
+  }
+
+  // CRC alone is not enough for the lab's purposes. The recovered text has to
+  // be the text that went in — a frame can pass its checksum and still not be
+  // the message we asked for if anything upstream mangled the payload.
+  if (result.text !== encodedMessage) {
+    verifyState = "rejected"
+    verifyTitle = "Rejected safely"
+    verifyDetail = "The recovered text did not match the generated payload, so the lab rejected it."
+    verifyMark = "×"
+    return
+  }
+
+  verifyState = "verified"
+  verifyTitle = "Verified"
+  verifyDetail = "CRC-32 checked and the text matches, at " +
+    Math.round(result.confidence * 100) + "% symbol confidence."
+  verifyMark = "✓"
+}
+
+// --- Listening -------------------------------------------------------------
+
+function startListening() {
+  listening = true
+  heardState = "working"
+  heardTitle = "Listening…"
+  heardDetail = "Recording. Play a WarbleWire song near this device, then stop."
+  heardText = ""
+  heardConfidence = ""
+  heardOffset = ""
+  heardWaveformSvg = ""
+}
+
+function stopListening() {
+  listening = false
+}
+
+// The Microphone component hands back a WAV data URL when a clip ends. It has
+// been asked for raw sound with the voice processing off — echo cancellation
+// and noise suppression are trained on speech and would treat these tones as
+// noise to remove, which is exactly the signal.
+function handleHeard(clip) {
+  listening = false
+  heardState = "working"
+  heardTitle = "Decoding…"
+  heardDetail = "Searching the recording for the start of a frame."
+
+  let audio = pcmFromWavDataUrl(clip.dataUrl)
+  if (!audio || !audio.pcm) {
+    heardState = "rejected"
+    heardTitle = "Could not read the recording"
+    heardDetail = "The clip came back in a format this build cannot take apart."
+    return
+  }
+
+  micRate = audio.sampleRate + " Hz"
+  heardWaveformSvg = waveformPath(audio.pcm, 360, 96)
+
+  let result = decodeCapturedPcm(audio.pcm, audio.sampleRate)
+  if (!result.ok) {
+    heardState = "rejected"
+    heardTitle = "No frame recovered"
+    heardDetail = "Nothing in that recording decoded: " + result.reason +
+      ". Try again with the devices closer together and the room quiet."
+    return
+  }
+
+  heardState = "verified"
+  heardTitle = "Message recovered"
+  heardText = result.text
+  heardConfidence = Math.round(result.confidence * 100) + "%"
+  heardOffset = "found " + (result.offset / 48000).toFixed(2) + " s in"
+  heardDetail = "Decoded as " + result.speedName + " · " + result.voiceName + "."
+}
+
+function handleMicError(reason) {
+  listening = false
+  heardState = "rejected"
+  heardTitle = "The microphone did not open"
+  heardDetail = reason
+}
+
+// --- Drawing ---------------------------------------------------------------
+
+// A min/max envelope, one vertical stroke per column, as a single SVG path.
+//
+// SoftN has no canvas component and a .ui template cannot write <path> itself
+// — 'svg' is an allowed tag but its children are not — so the whole drawing is
+// built here as a string and handed to <Icon svg={...}>, which sanitises and
+// injects it.
+function waveformPath(pcm, columns, height) {
+  if (!pcm || pcm.length === 0) { return "" }
+
+  let mid = height / 2
+  let perColumn = Math.floor(pcm.length / columns)
+  if (perColumn < 1) { perColumn = 1 }
+
+  let d = []
+  for (let x = 0; x < columns; x = x + 1) {
+    let start = x * perColumn
+    let end = start + perColumn
+    if (end > pcm.length) { end = pcm.length }
+    if (start >= end) { break }
+
+    let lo = pcm[start]
+    let hi = pcm[start]
+    for (let i = start + 1; i < end; i = i + 1) {
+      let v = pcm[i]
+      if (v < lo) { lo = v }
+      if (v > hi) { hi = v }
+    }
+
+    // Half a pixel keeps a 1px stroke on the pixel grid instead of straddling
+    // two of them at half intensity.
+    let px = x + 0.5
+    let top = mid - hi * mid
+    let bottom = mid - lo * mid
+    // Always at least a hairline, so silence reads as a centre line rather
+    // than as nothing at all.
+    if (bottom - top < 1) { bottom = top + 1 }
+    d.push("M" + px.toFixed(1) + " " + top.toFixed(1) + "V" + bottom.toFixed(1))
+  }
+
+  return '<svg viewBox="0 0 ' + columns + ' ' + height + '" preserveAspectRatio="none" width="100%" height="' + height + '">' +
+    '<defs><linearGradient id="ww-wave" x1="0" y1="0" x2="1" y2="1">' +
+    '<stop offset="0" stop-color="#c7ee53"/>' +
+    '<stop offset="0.55" stop-color="#7de8cf"/>' +
+    '<stop offset="1" stop-color="#7ab6ff"/>' +
+    '</linearGradient></defs>' +
+    '<path d="' + d.join("") + '" stroke="url(#ww-wave)" stroke-width="1" fill="none"/>' +
+    '</svg>'
+}
+
+// --- Navigation ------------------------------------------------------------
+
+function setPage(page) {
+  if (page !== "listen") { listening = false }
+  currentPage = page
+}

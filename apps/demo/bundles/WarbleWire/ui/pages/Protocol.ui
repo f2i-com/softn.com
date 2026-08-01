@@ -1,0 +1,78 @@
+// Protocol.ui — what actually happens between the text box and the speaker.
+
+<Stack direction=vertical gap=md if={currentPage === "protocol"}>
+
+  <Card className="ww-hard" padding=lg style={{ background: "#fffaf0", borderRadius: "0" }}>
+    <Stack direction=vertical gap=md>
+      <Text style={{ fontSize: "1.375rem", fontWeight: 700, letterSpacing: "-0.04em", lineHeight: 1.05 }}>
+        One message. Many wires.
+      </Text>
+      <Text style={{ fontSize: "0.875rem", color: "#3d4f58", lineHeight: 1.6 }}>
+        QXW is an open experiment in moving the same message across very different
+        physical links. WarbleWire is the first of them: it turns protected data into
+        an audible synthetic birdsong and reconstructs it at the other end. Radio,
+        screen-to-camera, QR and direct local transfer are the wires that would follow.
+      </Text>
+    </Stack>
+  </Card>
+
+  <Grid columns={{ sm: 1, lg: 2 }} gap=md>
+
+    <Card className="ww-hard" padding=lg style={{ background: "#f4eddc", borderRadius: "0" }}>
+      <Stack direction=vertical gap=sm>
+        <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#6d7f88" }}>The path down</Text>
+        <Stack direction=vertical gap=xs>
+          <Text className="ww-mono" style={{ fontSize: "0.6875rem" }}>UTF-8 text, up to 52 bytes</Text>
+          <Text style={{ color: "#6d7f88" }}>↓</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.6875rem" }}>64-byte frame · mini-header + CRC-32</Text>
+          <Text style={{ color: "#6d7f88" }}>↓</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.6875rem" }}>rate-½ convolutional code + tail</Text>
+          <Text style={{ color: "#6d7f88" }}>↓</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.6875rem" }}>28 × 37 block interleave</Text>
+          <Text style={{ color: "#6d7f88" }}>↓</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.6875rem" }}>259 data + 8 pilot Pip-16 symbols</Text>
+          <Text style={{ color: "#6d7f88" }}>↓</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.6875rem" }}>48 kHz PCM · a bird that never existed</Text>
+        </Stack>
+      </Stack>
+    </Card>
+
+    <Card className="ww-hard" padding=lg style={{ background: "#f4eddc", borderRadius: "0" }}>
+      <Stack direction=vertical gap=sm>
+        <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#6d7f88" }}>Pip-16</Text>
+        <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.6 }}>
+          Every symbol carries four bits as one short call. The low two bits pick the
+          register — 875, 1312.5, 1750 or 2187.5 Hz — and the high two pick the shape
+          the pitch traces across it: rising, falling, a peak, or a double warble.
+        </Text>
+        <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.6 }}>
+          Each one gets a spoken name from a four-by-four table, so a frame can be read
+          aloud: <Text className="ww-mono" style={{ fontSize: "0.75rem" }}>pi te ka wo</Text> and so on. The
+          decoder never uses the names; they are there so a person can see the wire.
+        </Text>
+        <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.6 }}>
+          A frame is always 267 symbols, so its length on air depends on the tempo and
+          never on the message. Eight of those symbols are pilots at known positions
+          with known values — which is what makes it possible to find the start of a
+          burst in a recording that begins with a room full of nothing.
+        </Text>
+      </Stack>
+    </Card>
+  </Grid>
+
+  <Card className="ww-hard" padding=lg style={{ background: "#20343d", borderRadius: "0", color: "#f4eddc" }}>
+    <Stack direction=vertical gap=sm>
+      <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#a9dce8" }}>Status</Text>
+      <Text style={{ fontSize: "0.875rem", color: "#c4d2d8", lineHeight: 1.6 }}>
+        These constants are provisional and this is not a frozen wire standard. The
+        three tempos are lab tempos: Finch and Swift shorten the existing Pip symbols
+        and are deliberately not the Robin or Lark physical profiles from the design
+        notes. Acknowledgements, resume, private messaging and photo transfer are all
+        still ahead.
+      </Text>
+      <Text style={{ fontSize: "0.875rem", color: "#c4d2d8", lineHeight: 1.6 }}>
+        QXW is an experimental project, not a life-safety communications system.
+      </Text>
+    </Stack>
+  </Card>
+</Stack>

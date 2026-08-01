@@ -10,4 +10,5 @@ export * from './PixelGrid';
 export * from './QRCode';
 export * from './QRReader';
 export * from './Camera';
+export * from './Microphone';
 export * from './DPad';
