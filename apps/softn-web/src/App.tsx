@@ -387,9 +387,13 @@ function App(): React.ReactElement {
           const cachedApp = await getCachedAppByOrigin(appOrigin);
           const requested = requestedCapabilities(permissionConfig);
           const granted = cachedApp?.grantedPermissions ?? {};
+          // A bundle that asks for nothing has nothing to consent to. Showing a
+          // dialog headed "No specific permissions requested" trains people to
+          // click Allow without reading, which is the opposite of the point.
           const hasGrant =
-            Boolean(cachedApp?.permissionsPromptedAt) &&
-            requested.every((capability) => granted[capability]);
+            requested.length === 0 ||
+            (Boolean(cachedApp?.permissionsPromptedAt) &&
+              requested.every((capability) => granted[capability]));
 
           if (!hasGrant) {
             // Show permission prompt and wait for user decision
