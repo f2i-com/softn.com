@@ -43,6 +43,8 @@ function isDescendantOf(
 interface Props {
   elementId: string;
   depth?: number;
+  focusedElementId?: string | null;
+  onTreeFocusChange?: (elementId: string) => void;
 }
 
 function resolveRelativePath(fromPath: string, relativePath: string): string {
@@ -135,17 +137,22 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-export const CanvasElement = React.memo(function CanvasElement({ elementId, depth = 0 }: Props) {
+export const CanvasElement = React.memo(function CanvasElement({
+  elementId,
+  depth = 0,
+  focusedElementId,
+  onTreeFocusChange,
+}: Props) {
   // Fine-grained store selectors — only re-renders when this element's own state changes.
-  const element = useCanvasStore(s => s.elements.get(elementId));
-  const isSelected = useCanvasStore(s => s.selectedIds.includes(elementId));
-  const isHovered = useCanvasStore(s => s.hoveredId === elementId);
-  const isDragging = useCanvasStore(s => s.draggedElementId === elementId);
-  const draggedType = useCanvasStore(s => s.draggedType);
-  const draggedElementId = useCanvasStore(s => s.draggedElementId);
-  const selectElement = useCanvasStore(s => s.selectElement);
-  const setHoveredId = useCanvasStore(s => s.setHoveredId);
-  const setDraggedElementId = useCanvasStore(s => s.setDraggedElementId);
+  const element = useCanvasStore((s) => s.elements.get(elementId));
+  const isSelected = useCanvasStore((s) => s.selectedIds.includes(elementId));
+  const isHovered = useCanvasStore((s) => s.hoveredId === elementId);
+  const isDragging = useCanvasStore((s) => s.draggedElementId === elementId);
+  const draggedType = useCanvasStore((s) => s.draggedType);
+  const draggedElementId = useCanvasStore((s) => s.draggedElementId);
+  const selectElement = useCanvasStore((s) => s.selectElement);
+  const setHoveredId = useCanvasStore((s) => s.setHoveredId);
+  const setDraggedElementId = useCanvasStore((s) => s.setDraggedElementId);
 
   const meta = element ? getComponentMeta(element.componentType) : null;
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
@@ -193,16 +200,20 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
     () => parseStringLiteralVariables(linkedLogicSource || ''),
     [linkedLogicSource]
   );
+  const elementComponentType = element?.componentType;
+  const elementParentId = element?.parentId;
+  const imageSource = element?.props.src;
+  const imageExpressionProps = element?.expressionProps;
 
   // Check if this element can accept the current drag (reads from store directly for fresh state)
   const canAcceptDrop = useCallback(() => {
-    if (!meta?.allowChildren || !element) return false;
+    if (!meta?.allowChildren || !elementComponentType) return false;
 
     const state = useCanvasStore.getState();
 
     // Check for palette component
     if (state.draggedType) {
-      return canDropOn(element.componentType, state.draggedType);
+      return canDropOn(elementComponentType, state.draggedType);
     }
 
     // Check for canvas element
@@ -215,12 +226,12 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
 
       const draggedElement = state.elements.get(state.draggedElementId);
       if (draggedElement) {
-        return canDropOn(element.componentType, draggedElement.componentType);
+        return canDropOn(elementComponentType, draggedElement.componentType);
       }
     }
 
     return false;
-  }, [meta?.allowChildren, element?.componentType, elementId]);
+  }, [meta?.allowChildren, elementComponentType, elementId]);
 
   // Ref for the wrapper div (used for drop position tracking)
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -228,7 +239,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
   // Track mouse position during drag to compute insertion position
   useEffect(() => {
     const el = wrapperRef.current;
-    if (!el || !element) return;
+    if (!el || !elementParentId) return;
 
     const handleMouseMove = (e: MouseEvent) => {
       const state = useCanvasStore.getState();
@@ -241,10 +252,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
       const relativeY = (e.clientY - rect.top) / rect.height;
       const allowsChildren = meta?.allowChildren ?? false;
 
-      const parentId = element.parentId;
-      if (!parentId) return;
-
-      const parentElement = state.elements.get(parentId);
+      const parentElement = state.elements.get(elementParentId);
       if (!parentElement) return;
       const myIndex = parentElement.children.indexOf(elementId);
       if (myIndex === -1) return;
@@ -254,9 +262,9 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
       if (allowsChildren) {
         // Container: top 25% = before, middle 50% = into, bottom 25% = after
         if (relativeY < 0.25) {
-          indicator = { parentId, index: myIndex };
+          indicator = { parentId: elementParentId, index: myIndex };
         } else if (relativeY > 0.75) {
-          indicator = { parentId, index: myIndex + 1 };
+          indicator = { parentId: elementParentId, index: myIndex + 1 };
         } else {
           // Drop into this container
           const el = state.elements.get(elementId);
@@ -265,15 +273,19 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
       } else {
         // Leaf: top 50% = before, bottom 50% = after
         if (relativeY < 0.5) {
-          indicator = { parentId, index: myIndex };
+          indicator = { parentId: elementParentId, index: myIndex };
         } else {
-          indicator = { parentId, index: myIndex + 1 };
+          indicator = { parentId: elementParentId, index: myIndex + 1 };
         }
       }
 
       // Only update if changed
       const current = state.dropIndicator;
-      if (!current || current.parentId !== indicator.parentId || current.index !== indicator.index) {
+      if (
+        !current ||
+        current.parentId !== indicator.parentId ||
+        current.index !== indicator.index
+      ) {
         state.setDropIndicator(indicator);
       }
     };
@@ -291,7 +303,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
       el.removeEventListener('mousemove', handleMouseMove);
       el.removeEventListener('mouseleave', handleMouseLeave);
     };
-  }, [elementId, element?.parentId, meta?.allowChildren]);
+  }, [elementId, elementParentId, meta?.allowChildren]);
 
   // Mouse-based drag start for moving existing elements
   const handleMouseDown = useCallback(
@@ -374,19 +386,19 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
   }, [setHoveredId]);
 
   useEffect(() => {
-    if (!element || element.componentType !== 'Image') {
+    if (elementComponentType !== 'Image') {
       setImagePreviewUrl(null);
       return;
     }
 
-    const src = String(element.props.src || '').trim();
+    const src = String(imageSource || '').trim();
     if (!src) {
       setImagePreviewUrl(null);
       return;
     }
 
     let resolvedSrc = src;
-    const isExpressionSrc = element.expressionProps?.includes('src');
+    const isExpressionSrc = imageExpressionProps?.includes('src');
     if (isExpressionSrc && resolvedLogicStrings[src]) {
       resolvedSrc = resolvedLogicStrings[src];
     }
@@ -396,9 +408,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
       return;
     }
 
-    const normalizedSrc = resolvedSrc
-      .replace(/^\.?\//, '')
-      .replace(/^assets\//, '');
+    const normalizedSrc = resolvedSrc.replace(/^\.?\//, '').replace(/^assets\//, '');
 
     const matchedAsset = assets.find((a) => {
       const name = a.name.replace(/^assets\//, '');
@@ -417,22 +427,89 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
     );
     setImagePreviewUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
-  }, [element?.componentType, element?.props.src, element?.expressionProps, assets, resolvedLogicStrings]);
+  }, [elementComponentType, imageSource, imageExpressionProps, assets, resolvedLogicStrings]);
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
       setDraggedElementId(null);
+      onTreeFocusChange?.(elementId);
       selectElement(elementId, e.shiftKey);
     },
-    [elementId, selectElement, setDraggedElementId]
+    [elementId, onTreeFocusChange, selectElement, setDraggedElementId]
+  );
+
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        setDraggedElementId(null);
+        selectElement(elementId, e.shiftKey);
+        return;
+      }
+
+      if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(e.key)) {
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+      const current = e.currentTarget as HTMLElement;
+      const tree = current.closest<HTMLElement>('[role="tree"]');
+      if (!tree) return;
+      const items = Array.from(tree.querySelectorAll<HTMLElement>('[data-canvas-treeitem="true"]'));
+      const currentIndex = items.indexOf(current);
+      let target: HTMLElement | undefined;
+
+      if (e.key === 'ArrowDown' && currentIndex >= 0) target = items[currentIndex + 1];
+      else if (e.key === 'ArrowUp' && currentIndex > 0) target = items[currentIndex - 1];
+      else if (e.key === 'Home') target = items[0];
+      else if (e.key === 'End') target = items.at(-1);
+      else if (e.key === 'ArrowRight') {
+        const childGroup = Array.from(current.children).find(
+          (child) => child.getAttribute('role') === 'group'
+        );
+        target =
+          childGroup?.querySelector<HTMLElement>('[data-canvas-treeitem="true"]') ?? undefined;
+      } else if (e.key === 'ArrowLeft') {
+        target =
+          current.parentElement?.closest<HTMLElement>('[data-canvas-treeitem="true"]') ?? undefined;
+      }
+
+      if (!target || target === current) return;
+      const targetId = target.dataset.canvasElementId;
+      if (targetId) onTreeFocusChange?.(targetId);
+      for (const item of items) item.tabIndex = item === target ? 0 : -1;
+      target.focus();
+    },
+    [elementId, onTreeFocusChange, selectElement, setDraggedElementId]
+  );
+
+  const handleFocus = useCallback(
+    (event: React.FocusEvent<HTMLElement>) => {
+      // React focus events bubble. A child tree item taking focus must not make
+      // each ancestor claim the roving tab stop on the way up.
+      if (event.target !== event.currentTarget) return;
+      if (onTreeFocusChange) {
+        const tree = event.currentTarget.closest('[role="tree"]');
+        for (const item of tree?.querySelectorAll<HTMLElement>('[data-canvas-treeitem="true"]') ??
+          []) {
+          item.tabIndex = item === event.currentTarget ? 0 : -1;
+        }
+      }
+      onTreeFocusChange?.(elementId);
+    },
+    [elementId, onTreeFocusChange]
   );
 
   // Drop indicator state
   const dropIndicator = useCanvasStore((s) => s.dropIndicator);
   const { showLineBefore, showLineAfter, showDropInto } = useMemo(() => {
     if (!element) return { showLineBefore: false, showLineAfter: false, showDropInto: false };
-    const parent = element.parentId ? useCanvasStore.getState().elements.get(element.parentId) : null;
+    const parent = element.parentId
+      ? useCanvasStore.getState().elements.get(element.parentId)
+      : null;
     const idx = parent?.children.indexOf(elementId) ?? -1;
     return {
       showLineBefore: dropIndicator?.parentId === element.parentId && dropIndicator?.index === idx,
@@ -473,6 +550,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
       case 'Button':
         return (
           <button
+            tabIndex={-1}
             style={{
               padding: '8px 16px',
               borderRadius: 4,
@@ -490,6 +568,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
       case 'Input':
         return (
           <input
+            tabIndex={-1}
             type="text"
             placeholder={(props.placeholder as string) || 'Input'}
             style={{
@@ -506,6 +585,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
       case 'TextArea':
         return (
           <textarea
+            tabIndex={-1}
             placeholder={(props.placeholder as string) || 'TextArea'}
             style={{
               padding: '8px 12px',
@@ -752,12 +832,20 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
 
   return (
     <div ref={wrapperRef} style={styles.wrapper}>
-      {showLineBefore && (
-        <div style={{ ...indicatorLineStyle, top: -2 }} />
-      )}
+      {showLineBefore && <div style={{ ...indicatorLineStyle, top: -2 }} />}
       <div
         style={containerStyle}
+        role="treeitem"
+        data-canvas-treeitem="true"
+        data-canvas-element-id={elementId}
+        tabIndex={onTreeFocusChange ? (focusedElementId === elementId ? 0 : -1) : 0}
+        aria-selected={isSelected}
+        aria-level={depth + 1}
+        aria-expanded={meta?.allowChildren ? true : undefined}
+        aria-label={`Select ${element.componentType} component`}
         onClick={handleClick}
+        onKeyDown={handleKeyDown}
+        onFocus={handleFocus}
         onMouseDown={handleMouseDown}
         onMouseUp={handleMouseUp}
         onMouseEnter={handleMouseEnter}
@@ -770,13 +858,21 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
           </span>
         )}
 
-        <div style={styles.content}>{renderComponentPreview()}</div>
+        <div style={styles.content} aria-hidden="true">
+          {renderComponentPreview()}
+        </div>
 
         {meta?.allowChildren && (
-          <div style={childrenStyle} data-children-area="true">
+          <div style={childrenStyle} data-children-area="true" role="group">
             {element.children.length > 0 ? (
               element.children.map((childId) => (
-                <CanvasElement key={childId} elementId={childId} depth={depth + 1} />
+                <CanvasElement
+                  key={childId}
+                  elementId={childId}
+                  depth={depth + 1}
+                  focusedElementId={focusedElementId}
+                  onTreeFocusChange={onTreeFocusChange}
+                />
               ))
             ) : (
               <div style={styles.childrenEmpty}>
@@ -788,9 +884,7 @@ export const CanvasElement = React.memo(function CanvasElement({ elementId, dept
 
         {isSelected && <SelectionBox element={element} />}
       </div>
-      {showLineAfter && (
-        <div style={{ ...indicatorLineStyle, bottom: -2 }} />
-      )}
+      {showLineAfter && <div style={{ ...indicatorLineStyle, bottom: -2 }} />}
     </div>
   );
 });

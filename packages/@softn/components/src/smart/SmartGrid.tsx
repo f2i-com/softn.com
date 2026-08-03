@@ -8,7 +8,7 @@
  * <SmartGrid data={items} columns="name, email, status" search sort pagination edit delete add />
  */
 
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useId, useRef } from 'react';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -81,6 +81,22 @@ interface ColumnConfig {
   key: string;
   label: string;
   type: 'string' | 'number' | 'boolean' | 'date' | 'unknown';
+}
+
+const DEFAULT_HIDDEN_COLUMNS = ['id', '_id'];
+const DIALOG_FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function getDialogFocusableElements(dialog: HTMLElement): HTMLElement[] {
+  return Array.from(dialog.querySelectorAll<HTMLElement>(DIALOG_FOCUSABLE_SELECTOR)).filter(
+    (element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true'
+  );
 }
 
 // Utility to capitalize and humanize column names
@@ -228,7 +244,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
   onEdit,
   onDelete,
   renderColumn = {},
-  hideColumns = ['id', '_id'],
+  hideColumns = DEFAULT_HIDDEN_COLUMNS,
   rowKey = 'id',
   emptyMessage = 'No data available',
   loading = false,
@@ -252,9 +268,14 @@ export function SmartGrid<T extends Record<string, unknown>>({
   const [confirmDelete, setConfirmDelete] = useState<T | null>(null);
   const [hoveredRow, setHoveredRow] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const modalTitleId = useId();
+  const deleteTitleId = useId();
+  const fieldIdPrefix = useId().replace(/:/g, '');
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   // Ensure data is an array
-  const safeData = Array.isArray(data) ? data : [];
+  const safeData = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const safePageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 10;
 
   // Infer columns from data or parse from prop
   const columns = useMemo<ColumnConfig[]>(() => {
@@ -302,7 +323,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
         return value != null && String(value).toLowerCase().includes(query);
       })
     );
-  }, [data, searchQuery, columns]);
+  }, [safeData, searchQuery, columns]);
 
   // Sort data
   const sortedData = useMemo(() => {
@@ -312,8 +333,14 @@ export function SmartGrid<T extends Record<string, unknown>>({
       const aVal = getFieldValue(a, sortColumn);
       const bVal = getFieldValue(b, sortColumn);
 
-      if (aVal == null) return 1;
-      if (bVal == null) return -1;
+      const aIsNull = aVal == null;
+      const bIsNull = bVal == null;
+      if (aIsNull && bIsNull) return 0;
+      // Missing values stay together at the end in both directions. Applying
+      // direction after this branch would unexpectedly move them to the front
+      // on the second click.
+      if (aIsNull) return 1;
+      if (bIsNull) return -1;
 
       let comparison = 0;
       if (typeof aVal === 'number' && typeof bVal === 'number') {
@@ -330,11 +357,11 @@ export function SmartGrid<T extends Record<string, unknown>>({
   const paginatedData = useMemo(() => {
     if (!isPageable) return sortedData;
 
-    const start = (currentPage - 1) * pageSize;
-    return sortedData.slice(start, start + pageSize);
-  }, [sortedData, isPageable, currentPage, pageSize]);
+    const start = (currentPage - 1) * safePageSize;
+    return sortedData.slice(start, start + safePageSize);
+  }, [sortedData, isPageable, currentPage, safePageSize]);
 
-  const totalPages = Math.ceil(sortedData.length / pageSize);
+  const totalPages = Math.ceil(sortedData.length / safePageSize);
 
   // Follow the data back when it shrinks under us — deleting the last row of
   // the last page, say. Nothing else moves `currentPage`, so it would sit past
@@ -418,6 +445,58 @@ export function SmartGrid<T extends Record<string, unknown>>({
 
   const getRowKey = (row: T, index: number): string => {
     return String(row[rowKey] ?? index);
+  };
+
+  const handleRowKeyDown = (event: React.KeyboardEvent, row: T) => {
+    if (event.target !== event.currentTarget) return;
+    if (!onSelect || (event.key !== 'Enter' && event.key !== ' ')) return;
+    event.preventDefault();
+    onSelect(row);
+  };
+
+  const activeDialog = isAdding ? 'add' : editingRow ? 'edit' : confirmDelete ? 'delete' : null;
+
+  useEffect(() => {
+    if (!activeDialog || loading) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const firstFocusable = getDialogFocusableElements(dialog)[0];
+    (firstFocusable ?? dialog).focus();
+
+    return () => {
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [activeDialog, loading]);
+
+  const handleDialogKeyDown = (
+    event: React.KeyboardEvent<HTMLDivElement>,
+    onCancel: () => void
+  ) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      onCancel();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const focusable = getDialogFocusableElements(event.currentTarget);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      event.currentTarget.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const focused = document.activeElement;
+    if (event.shiftKey && (focused === first || !event.currentTarget.contains(focused))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && focused === last) {
+      event.preventDefault();
+      first.focus();
+    }
   };
 
   // Mobile detection via media query
@@ -598,8 +677,18 @@ export function SmartGrid<T extends Record<string, unknown>>({
     onCancel: () => void
   ) => (
     <div style={modalOverlayStyle} onClick={onCancel}>
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={modalTitleId}
+        tabIndex={-1}
+        style={modalStyle}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(event) => handleDialogKeyDown(event, onCancel)}
+      >
         <h3
+          id={modalTitleId}
           style={{
             margin: '0 0 1rem',
             fontSize: '1.125rem',
@@ -610,69 +699,75 @@ export function SmartGrid<T extends Record<string, unknown>>({
           {title}
         </h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {columns.map((col) => (
-            <div key={col.key}>
-              <label
-                style={{
-                  display: 'block',
-                  marginBottom: '0.25rem',
-                  fontSize: '0.875rem',
-                  fontWeight: 500,
-                  color: 'var(--color-text-muted, #6b6b80)',
-                }}
-              >
-                {col.label}
-              </label>
-              {col.type === 'boolean' ? (
+          {columns.map((col) => {
+            const fieldId = `${fieldIdPrefix}-${col.key}`;
+            return (
+              <div key={col.key}>
                 <label
+                  htmlFor={fieldId}
                   style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    cursor: 'pointer',
+                    display: 'block',
+                    marginBottom: '0.25rem',
+                    fontSize: '0.875rem',
+                    fontWeight: 500,
+                    color: 'var(--color-text-muted, #6b6b80)',
                   }}
                 >
-                  <input
-                    type="checkbox"
-                    checked={Boolean(formData[col.key])}
-                    onChange={(e) =>
-                      setFormData((prev) => ({ ...prev, [col.key]: e.target.checked }))
-                    }
-                    style={{
-                      width: '1rem',
-                      height: '1rem',
-                      accentColor: 'var(--color-primary, #6366f1)',
-                    }}
-                  />
-                  <span style={{ fontSize: '0.875rem', color: 'var(--color-text, #1a1a2e)' }}>
-                    {formData[col.key] ? 'Yes' : 'No'}
-                  </span>
+                  {col.label}
                 </label>
-              ) : (
-                <input
-                  type={col.type === 'number' ? 'number' : col.type === 'date' ? 'date' : 'text'}
-                  value={formData[col.key] != null ? String(formData[col.key]) : ''}
-                  onChange={(e) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      // The column already declares its type, so keep a number a
-                      // number. `target.value` is always a string, and saving
-                      // "50" for a price made the grid's own numeric sort fall
-                      // back to string compare ("100" before "50") and left
-                      // currency() rendering a blank cell.
-                      [col.key]:
-                        col.type === 'number'
-                          ? e.target.value === ''
-                            ? ''
-                            : Number(e.target.value)
-                          : e.target.value,
-                    }))
-                  }
-                  style={inputStyle}
-                />
-              )}
-            </div>
-          ))}
+                {col.type === 'boolean' ? (
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      id={fieldId}
+                      type="checkbox"
+                      checked={Boolean(formData[col.key])}
+                      onChange={(e) =>
+                        setFormData((prev) => ({ ...prev, [col.key]: e.target.checked }))
+                      }
+                      style={{
+                        width: '1rem',
+                        height: '1rem',
+                        accentColor: 'var(--color-primary, #6366f1)',
+                      }}
+                    />
+                    <span style={{ fontSize: '0.875rem', color: 'var(--color-text, #1a1a2e)' }}>
+                      {formData[col.key] ? 'Yes' : 'No'}
+                    </span>
+                  </label>
+                ) : (
+                  <input
+                    id={fieldId}
+                    type={col.type === 'number' ? 'number' : col.type === 'date' ? 'date' : 'text'}
+                    value={formData[col.key] != null ? String(formData[col.key]) : ''}
+                    onChange={(e) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        // The column already declares its type, so keep a number a
+                        // number. `target.value` is always a string, and saving
+                        // "50" for a price made the grid's own numeric sort fall
+                        // back to string compare ("100" before "50") and left
+                        // currency() rendering a blank cell.
+                        [col.key]:
+                          col.type === 'number'
+                            ? e.target.value === ''
+                              ? ''
+                              : Number(e.target.value)
+                            : e.target.value,
+                      }))
+                    }
+                    style={inputStyle}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
         <div
           style={{
@@ -683,6 +778,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
           }}
         >
           <button
+            type="button"
             onClick={onCancel}
             style={{
               ...buttonStyle,
@@ -692,7 +788,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
           >
             Cancel
           </button>
-          <button onClick={onSave} style={primaryButtonStyle}>
+          <button type="button" onClick={onSave} style={primaryButtonStyle} disabled={isSubmitting}>
             Save
           </button>
         </div>
@@ -703,8 +799,18 @@ export function SmartGrid<T extends Record<string, unknown>>({
   // Render delete confirmation
   const renderDeleteConfirm = () => (
     <div style={modalOverlayStyle} onClick={() => setConfirmDelete(null)}>
-      <div style={modalStyle} onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={deleteTitleId}
+        tabIndex={-1}
+        style={modalStyle}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(event) => handleDialogKeyDown(event, () => setConfirmDelete(null))}
+      >
         <h3
+          id={deleteTitleId}
           style={{
             margin: '0 0 0.5rem',
             fontSize: '1.125rem',
@@ -719,6 +825,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
         </p>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
           <button
+            type="button"
             onClick={() => setConfirmDelete(null)}
             style={{
               ...buttonStyle,
@@ -729,7 +836,9 @@ export function SmartGrid<T extends Record<string, unknown>>({
             Cancel
           </button>
           <button
+            type="button"
             onClick={() => confirmDelete && handleDelete(confirmDelete)}
+            disabled={isSubmitting}
             style={{
               ...buttonStyle,
               background:
@@ -749,6 +858,8 @@ export function SmartGrid<T extends Record<string, unknown>>({
     return (
       <div
         className={className}
+        role="status"
+        aria-label="Loading data"
         style={{
           ...containerStyle,
           display: 'flex',
@@ -758,6 +869,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
         }}
       >
         <div
+          aria-hidden="true"
           style={{
             width: '2rem',
             height: '2rem',
@@ -779,12 +891,13 @@ export function SmartGrid<T extends Record<string, unknown>>({
         <div style={toolbarStyle}>
           {isSearchable && (
             <div style={searchWrapperStyle}>
-              <span style={searchIconStyle}>
+              <span style={searchIconStyle} aria-hidden="true">
                 <SearchIcon />
               </span>
               <input
                 type="text"
                 placeholder="Search..."
+                aria-label="Search rows"
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
@@ -795,7 +908,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
             </div>
           )}
           {add && onAdd && (
-            <button onClick={() => setIsAdding(true)} style={primaryButtonStyle}>
+            <button type="button" onClick={() => setIsAdding(true)} style={primaryButtonStyle}>
               <AddIcon />
               Add New
             </button>
@@ -807,7 +920,13 @@ export function SmartGrid<T extends Record<string, unknown>>({
       {isMobile ? (
         <div style={{ padding: '0.5rem' }}>
           {paginatedData.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--color-gray-500, #6b7280)' }}>
+            <div
+              style={{
+                textAlign: 'center',
+                padding: '2rem',
+                color: 'var(--color-gray-500, #6b7280)',
+              }}
+            >
               {emptyMessage}
             </div>
           ) : (
@@ -816,15 +935,27 @@ export function SmartGrid<T extends Record<string, unknown>>({
                 key={getRowKey(row, index)}
                 style={{
                   padding: '0.875rem',
-                  borderBottom: index < paginatedData.length - 1 ? '1px solid var(--color-border, rgba(0, 0, 0, 0.08))' : 'none',
+                  borderBottom:
+                    index < paginatedData.length - 1
+                      ? '1px solid var(--color-border, rgba(0, 0, 0, 0.08))'
+                      : 'none',
                   cursor: onSelect ? 'pointer' : 'default',
                 }}
                 onClick={() => onSelect?.(row)}
+                role={onSelect ? 'button' : undefined}
+                tabIndex={onSelect ? 0 : undefined}
+                onKeyDown={(event) => handleRowKeyDown(event, row)}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
                   {/* First column as title */}
                   {columns.length > 0 && (
-                    <div style={{ fontWeight: 600, fontSize: '0.9375rem', color: 'var(--color-text, #1a1a2e)' }}>
+                    <div
+                      style={{
+                        fontWeight: 600,
+                        fontSize: '0.9375rem',
+                        color: 'var(--color-text, #1a1a2e)',
+                      }}
+                    >
                       {renderColumn[columns[0].key]
                         ? renderColumn[columns[0].key](getFieldValue(row, columns[0].key), row)
                         : formatValue(getFieldValue(row, columns[0].key), columns[0].type)}
@@ -835,8 +966,13 @@ export function SmartGrid<T extends Record<string, unknown>>({
                     {columns.slice(1).map((col) => {
                       const cellValue = getFieldValue(row, col.key);
                       return (
-                        <div key={col.key} style={{ display: 'flex', gap: '0.25rem', fontSize: '0.8125rem' }}>
-                          <span style={{ color: 'var(--color-gray-400, #a1a1aa)' }}>{col.label}:</span>
+                        <div
+                          key={col.key}
+                          style={{ display: 'flex', gap: '0.25rem', fontSize: '0.8125rem' }}
+                        >
+                          <span style={{ color: 'var(--color-gray-400, #a1a1aa)' }}>
+                            {col.label}:
+                          </span>
                           <span style={{ color: 'var(--color-text, #1a1a2e)', fontWeight: 500 }}>
                             {renderColumn[col.key]
                               ? renderColumn[col.key](cellValue, row)
@@ -849,10 +985,22 @@ export function SmartGrid<T extends Record<string, unknown>>({
                 </div>
                 {/* Mobile actions */}
                 {(isEditable || canDelete) && (
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'flex-end',
+                      gap: '0.5rem',
+                      marginTop: '0.5rem',
+                    }}
+                  >
                     {isEditable && onEdit && (
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleEdit(row); }}
+                        type="button"
+                        aria-label="Edit row"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleEdit(row);
+                        }}
                         style={{ ...iconButtonStyle, color: 'var(--color-primary-500, #6366f1)' }}
                         title="Edit"
                       >
@@ -861,7 +1009,12 @@ export function SmartGrid<T extends Record<string, unknown>>({
                     )}
                     {canDelete && onDelete && (
                       <button
-                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(row); }}
+                        type="button"
+                        aria-label="Delete row"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDelete(row);
+                        }}
                         style={{ ...iconButtonStyle, color: 'var(--color-error-500, #ef4444)' }}
                         title="Delete"
                       >
@@ -875,122 +1028,154 @@ export function SmartGrid<T extends Record<string, unknown>>({
           )}
         </div>
       ) : (
-      /* Desktop Table */
-      <div style={{ overflowX: 'auto' }}>
-        <table style={tableStyle}>
-          <thead>
-            <tr>
-              {columns.map((col) => (
-                <th
-                  key={col.key}
-                  style={{
-                    ...thStyle,
-                    cursor: isSortable ? 'pointer' : 'default',
-                  }}
-                  onClick={() => handleSort(col.key)}
-                >
-                  <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                    {col.label}
-                    {isSortable && (
-                      <SortIcon direction={sortColumn === col.key ? sortDirection : null} />
-                    )}
-                  </span>
-                </th>
-              ))}
-              {(isEditable || canDelete) && (
-                <th style={{ ...thStyle, width: '100px', textAlign: 'center' }}>Actions</th>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {paginatedData.length === 0 ? (
+        /* Desktop Table */
+        <div style={{ overflowX: 'auto' }}>
+          <table style={tableStyle}>
+            <thead>
               <tr>
-                <td
-                  colSpan={columns.length + (isEditable || canDelete ? 1 : 0)}
-                  style={{
-                    ...tdStyle,
-                    textAlign: 'center',
-                    padding: '2rem',
-                    color: 'var(--color-gray-500, #6b7280)',
-                  }}
-                >
-                  {emptyMessage}
-                </td>
+                {columns.map((col) => (
+                  <th
+                    key={col.key}
+                    scope="col"
+                    aria-sort={
+                      !isSortable
+                        ? undefined
+                        : sortColumn === col.key
+                          ? sortDirection === 'asc'
+                            ? 'ascending'
+                            : 'descending'
+                          : 'none'
+                    }
+                    tabIndex={isSortable ? 0 : undefined}
+                    aria-label={isSortable ? `${col.label}, activate to sort` : undefined}
+                    style={{
+                      ...thStyle,
+                      cursor: isSortable ? 'pointer' : 'default',
+                    }}
+                    onClick={() => handleSort(col.key)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleSort(col.key);
+                      }
+                    }}
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                      {col.label}
+                      {isSortable && (
+                        <SortIcon direction={sortColumn === col.key ? sortDirection : null} />
+                      )}
+                    </span>
+                  </th>
+                ))}
+                {(isEditable || canDelete) && (
+                  <th scope="col" style={{ ...thStyle, width: '100px', textAlign: 'center' }}>
+                    Actions
+                  </th>
+                )}
               </tr>
-            ) : (
-              paginatedData.map((row, index) => (
-                <tr
-                  key={getRowKey(row, index)}
-                  style={{
-                    background:
-                      hoveredRow === index ? 'var(--color-gray-50, #f3f3f6)' : 'transparent',
-                    cursor: onSelect ? 'pointer' : 'default',
-                    transition: 'background 0.15s',
-                  }}
-                  onMouseEnter={() => setHoveredRow(index)}
-                  onMouseLeave={() => setHoveredRow(null)}
-                  onClick={() => onSelect?.(row)}
-                >
-                  {columns.map((col) => {
-                    const cellValue = getFieldValue(row, col.key);
-                    return (
-                      <td key={col.key} style={tdStyle}>
-                        {renderColumn[col.key]
-                          ? renderColumn[col.key](cellValue, row)
-                          : formatValue(cellValue, col.type)}
-                      </td>
-                    );
-                  })}
-                  {(isEditable || canDelete) && (
-                    <td style={{ ...tdStyle, textAlign: 'center' }}>
-                      <div style={{ display: 'flex', justifyContent: 'center', gap: '0.25rem' }}>
-                        {isEditable && onEdit && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEdit(row);
-                            }}
-                            style={{
-                              ...iconButtonStyle,
-                              color: 'var(--color-primary-500, #6366f1)',
-                            }}
-                            title="Edit"
-                          >
-                            <EditIcon />
-                          </button>
-                        )}
-                        {canDelete && onDelete && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setConfirmDelete(row);
-                            }}
-                            style={{ ...iconButtonStyle, color: 'var(--color-error-500, #ef4444)' }}
-                            title="Delete"
-                          >
-                            <DeleteIcon />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  )}
+            </thead>
+            <tbody>
+              {paginatedData.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={columns.length + (isEditable || canDelete ? 1 : 0)}
+                    style={{
+                      ...tdStyle,
+                      textAlign: 'center',
+                      padding: '2rem',
+                      color: 'var(--color-gray-500, #6b7280)',
+                    }}
+                  >
+                    {emptyMessage}
+                  </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                paginatedData.map((row, index) => (
+                  <tr
+                    key={getRowKey(row, index)}
+                    style={{
+                      background:
+                        hoveredRow === index ? 'var(--color-gray-50, #f3f3f6)' : 'transparent',
+                      cursor: onSelect ? 'pointer' : 'default',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={() => setHoveredRow(index)}
+                    onMouseLeave={() => setHoveredRow(null)}
+                    onClick={() => onSelect?.(row)}
+                    tabIndex={onSelect ? 0 : undefined}
+                    aria-label={onSelect ? `Select row ${getRowKey(row, index)}` : undefined}
+                    onKeyDown={(event) => handleRowKeyDown(event, row)}
+                  >
+                    {columns.map((col) => {
+                      const cellValue = getFieldValue(row, col.key);
+                      return (
+                        <td key={col.key} style={tdStyle}>
+                          {renderColumn[col.key]
+                            ? renderColumn[col.key](cellValue, row)
+                            : formatValue(cellValue, col.type)}
+                        </td>
+                      );
+                    })}
+                    {(isEditable || canDelete) && (
+                      <td style={{ ...tdStyle, textAlign: 'center' }}>
+                        <div style={{ display: 'flex', justifyContent: 'center', gap: '0.25rem' }}>
+                          {isEditable && onEdit && (
+                            <button
+                              type="button"
+                              aria-label="Edit row"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEdit(row);
+                              }}
+                              style={{
+                                ...iconButtonStyle,
+                                color: 'var(--color-primary-500, #6366f1)',
+                              }}
+                              title="Edit"
+                            >
+                              <EditIcon />
+                            </button>
+                          )}
+                          {canDelete && onDelete && (
+                            <button
+                              type="button"
+                              aria-label="Delete row"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setConfirmDelete(row);
+                              }}
+                              style={{
+                                ...iconButtonStyle,
+                                color: 'var(--color-error-500, #ef4444)',
+                              }}
+                              title="Delete"
+                            >
+                              <DeleteIcon />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {/* Pagination */}
       {isPageable && totalPages > 1 && (
         <div style={paginationStyle}>
           <span>
-            Showing {(currentPage - 1) * pageSize + 1} to{' '}
-            {Math.min(currentPage * pageSize, sortedData.length)} of {sortedData.length}
+            Showing {(currentPage - 1) * safePageSize + 1} to{' '}
+            {Math.min(currentPage * safePageSize, sortedData.length)} of {sortedData.length}
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <button
+              type="button"
+              aria-label="Previous page"
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               disabled={currentPage === 1}
               style={{ ...paginationButtonStyle, opacity: currentPage === 1 ? 0.5 : 1 }}
@@ -1001,6 +1186,8 @@ export function SmartGrid<T extends Record<string, unknown>>({
               Page {currentPage} of {totalPages}
             </span>
             <button
+              type="button"
+              aria-label="Next page"
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
               style={{ ...paginationButtonStyle, opacity: currentPage === totalPages ? 0.5 : 1 }}

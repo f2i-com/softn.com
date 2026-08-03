@@ -26,6 +26,8 @@ export interface SliderProps {
   tooltipAlwaysVisible?: boolean;
   /** Format tooltip value */
   formatTooltip?: (value: number) => string;
+  /** Accessible name for the slider */
+  ariaLabel?: string;
   /** Show marks at intervals */
   marks?: boolean | { value: number; label?: string }[];
   /** Size variant */
@@ -62,6 +64,25 @@ const variantColors: Record<string, string> = {
   danger: 'var(--color-error-500, #ef4444)',
 };
 
+function decimalPlaces(value: number): number {
+  const text = String(value).toLowerCase();
+  if (text.includes('e-')) {
+    const [coefficient, exponent] = text.split('e-');
+    return Number(exponent) + (coefficient.split('.')[1]?.length ?? 0);
+  }
+  return text.split('.')[1]?.length ?? 0;
+}
+
+/** Match native range inputs: steps are anchored to `min`, not zero. */
+function settleValue(value: number, min: number, max: number, step: number): number {
+  if (!Number.isFinite(value) || max <= min) return min;
+  const safeStep = Number.isFinite(step) && step > 0 ? step : 1;
+  const stepped = min + Math.round((value - min) / safeStep) * safeStep;
+  const clamped = Math.min(max, Math.max(min, stepped));
+  const precision = Math.min(12, Math.max(decimalPlaces(min), decimalPlaces(safeStep)));
+  return Number(clamped.toFixed(precision));
+}
+
 export function Slider({
   value: controlledValue,
   defaultValue = 0,
@@ -72,6 +93,7 @@ export function Slider({
   showTooltip = true,
   tooltipAlwaysVisible = false,
   formatTooltip,
+  ariaLabel = 'Value',
   marks = false,
   size = 'md',
   variant = 'primary',
@@ -87,31 +109,33 @@ export function Slider({
   const [isDragging, setIsDragging] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
+  const dragValueRef = useRef(defaultValue);
+  const activePointerIdRef = useRef<number | null>(null);
+  const captureTargetRef = useRef<HTMLDivElement | null>(null);
 
-  const value = controlledValue !== undefined ? controlledValue : internalValue;
-  const percentage = ((value - min) / (max - min)) * 100;
+  const requestedValue = controlledValue !== undefined ? controlledValue : internalValue;
+  const value = settleValue(requestedValue, min, max, step);
+  const percentage = max > min ? ((value - min) / (max - min)) * 100 : 0;
 
   const config = sizeConfig[size];
   const activeColor = fillColor ?? variantColors[variant];
   const inactiveColor = trackColor ?? 'var(--color-gray-200, rgba(255, 255, 255, 0.1))';
   const thumbActiveColor = thumbColor ?? activeColor;
 
-  const clamp = (val: number) => Math.min(max, Math.max(min, val));
-  const roundToStep = (val: number) => Math.round(val / step) * step;
-
   const getValueFromPosition = useCallback(
     (clientX: number) => {
       if (!trackRef.current) return value;
       const rect = trackRef.current.getBoundingClientRect();
+      if (rect.width <= 0) return value;
       const percent = (clientX - rect.left) / rect.width;
-      return clamp(roundToStep(min + percent * (max - min)));
+      return settleValue(min + percent * (max - min), min, max, step);
     },
     [min, max, step, value]
   );
 
   /** Commit a value through the same clamp/step path the pointer uses. */
   const commit = (next: number) => {
-    const settled = clamp(roundToStep(next));
+    const settled = settleValue(next, min, max, step);
     if (settled === value) return;
     if (controlledValue === undefined) setInternalValue(settled);
     onChange?.(settled);
@@ -122,53 +146,122 @@ export function Slider({
     // A page jump of ten steps, which is what every native range input does.
     const page = step * 10;
     const moves: Record<string, number | undefined> = {
-      ArrowRight: step, ArrowUp: step,
-      ArrowLeft: -step, ArrowDown: -step,
-      PageUp: page, PageDown: -page,
+      ArrowRight: step,
+      ArrowUp: step,
+      ArrowLeft: -step,
+      ArrowDown: -step,
+      PageUp: page,
+      PageDown: -page,
     };
-    if (e.key === 'Home') { e.preventDefault(); commit(min); return; }
-    if (e.key === 'End') { e.preventDefault(); commit(max); return; }
+    if (e.key === 'Home') {
+      e.preventDefault();
+      commit(min);
+      return;
+    }
+    if (e.key === 'End') {
+      e.preventDefault();
+      commit(max);
+      return;
+    }
     const delta = moves[e.key];
     if (delta === undefined) return;
     e.preventDefault();
     commit(value + delta);
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (disabled) return;
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (disabled || e.button !== 0 || activePointerIdRef.current !== null) return;
     e.preventDefault();
+    activePointerIdRef.current = e.pointerId;
+    captureTargetRef.current = e.currentTarget;
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      // Pointer capture may be unavailable or already released by the browser.
+    }
+    trackRef.current?.querySelector<HTMLElement>('[role="slider"]')?.focus();
     setIsDragging(true);
     const newValue = getValueFromPosition(e.clientX);
+    dragValueRef.current = newValue;
     if (controlledValue === undefined) {
       setInternalValue(newValue);
     }
     onChange?.(newValue);
   };
 
+  const finishPointer = useCallback(
+    (pointerId: number) => {
+      if (pointerId !== activePointerIdRef.current) return;
+      const track = captureTargetRef.current ?? trackRef.current;
+      // Clear ownership before releasing capture because release can dispatch
+      // lostpointercapture synchronously in some browsers.
+      activePointerIdRef.current = null;
+      try {
+        if (track?.hasPointerCapture?.(pointerId)) {
+          track.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // The browser may release capture before dispatching pointercancel.
+      }
+      captureTargetRef.current = null;
+      setIsDragging(false);
+      onChangeEnd?.(dragValueRef.current);
+    },
+    [onChangeEnd]
+  );
+
+  useEffect(
+    () => () => {
+      const pointerId = activePointerIdRef.current;
+      if (pointerId === null) return;
+      // Unmount is cancellation, not a committed value change. Drop ownership
+      // before releasing so a synchronous lostpointercapture cannot notify the
+      // consumer or schedule state on an unmounted component.
+      activePointerIdRef.current = null;
+      const track = captureTargetRef.current ?? trackRef.current;
+      try {
+        if (track?.hasPointerCapture?.(pointerId)) {
+          track.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // Removing the captured element may already have released the pointer.
+      }
+      captureTargetRef.current = null;
+    },
+    []
+  );
+
   useEffect(() => {
     if (!isDragging) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
+      if (e.pointerId !== activePointerIdRef.current) return;
       const newValue = getValueFromPosition(e.clientX);
+      dragValueRef.current = newValue;
       if (controlledValue === undefined) {
         setInternalValue(newValue);
       }
       onChange?.(newValue);
     };
 
-    const handleMouseUp = () => {
-      setIsDragging(false);
-      onChangeEnd?.(value);
-    };
+    const handlePointerFinish = (e: PointerEvent) => finishPointer(e.pointerId);
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', handlePointerFinish);
+    document.addEventListener('pointercancel', handlePointerFinish);
 
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', handlePointerFinish);
+      document.removeEventListener('pointercancel', handlePointerFinish);
     };
-  }, [isDragging, getValueFromPosition, onChange, onChangeEnd, value, controlledValue]);
+  }, [isDragging, getValueFromPosition, onChange, controlledValue, finishPointer]);
+
+  useEffect(() => {
+    if (disabled && activePointerIdRef.current !== null) {
+      finishPointer(activePointerIdRef.current);
+    }
+  }, [disabled, finishPointer]);
 
   const showTooltipNow = showTooltip && (tooltipAlwaysVisible || isDragging || isHovering);
 
@@ -191,6 +284,7 @@ export function Slider({
     paddingBottom: markItems.length > 0 ? 20 : 0,
     opacity: disabled ? 0.5 : 1,
     cursor: disabled ? 'not-allowed' : 'pointer',
+    touchAction: 'none',
     ...style,
   };
 
@@ -226,7 +320,9 @@ export function Slider({
     border: '2px solid var(--color-surface, #16161a)',
     boxShadow: '0 2px 6px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.06)',
     cursor: disabled ? 'not-allowed' : 'grab',
-    transition: isDragging ? 'none' : 'left 150ms cubic-bezier(0.16, 1, 0.3, 1), transform 180ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1)',
+    transition: isDragging
+      ? 'none'
+      : 'left 150ms cubic-bezier(0.16, 1, 0.3, 1), transform 180ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 180ms cubic-bezier(0.16, 1, 0.3, 1)',
   };
 
   const thumbHoverStyle: React.CSSProperties = {
@@ -272,7 +368,12 @@ export function Slider({
       onMouseEnter={() => setIsHovering(true)}
       onMouseLeave={() => setIsHovering(false)}
     >
-      <div ref={trackRef} style={trackStyle} onMouseDown={handleMouseDown}>
+      <div
+        ref={trackRef}
+        style={trackStyle}
+        onPointerDown={handlePointerDown}
+        onLostPointerCapture={(event) => finishPointer(event.pointerId)}
+      >
         <div style={fillStyle} />
         {/* A registered form control that only listened for mousedown: no
             tabIndex, no role, no key handling, so a keyboard or screen-reader
@@ -285,11 +386,10 @@ export function Slider({
           aria-valuemax={max}
           aria-valuenow={value}
           aria-valuetext={formatValue(value)}
-          aria-label="Value"
+          aria-label={ariaLabel}
           aria-disabled={disabled || undefined}
           aria-orientation="horizontal"
           style={isDragging || isHovering ? thumbHoverStyle : thumbStyle}
-          onMouseDown={handleMouseDown}
           onKeyDown={handleKeyDown}
         />
         {showTooltip && (
@@ -302,7 +402,7 @@ export function Slider({
       {markItems.length > 0 && (
         <div style={{ position: 'relative', marginTop: 8 }}>
           {markItems.map((mark, index) => {
-            const markPercent = ((mark.value - min) / (max - min)) * 100;
+            const markPercent = max > min ? ((mark.value - min) / (max - min)) * 100 : 0;
             return (
               <div
                 key={index}

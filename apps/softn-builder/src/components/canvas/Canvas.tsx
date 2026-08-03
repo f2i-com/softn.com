@@ -2,7 +2,7 @@
  * Canvas - Main drop zone for visual drag-drop building
  */
 
-import React, { useCallback, useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect, useMemo } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { CanvasElement } from './CanvasElement';
@@ -57,12 +57,15 @@ const styles: Record<string, React.CSSProperties> = {
 
 export function Canvas() {
   const [isDragOver, setIsDragOver] = useState(false);
+  const [focusedElementId, setFocusedElementId] = useState<string | null>(null);
 
-  const rootId = useCanvasStore(s => s.rootId);
-  const rootElement = useCanvasStore(s => s.elements.get(s.rootId));
-  const draggedType = useCanvasStore(s => s.draggedType);
-  const deselectAll = useCanvasStore(s => s.deselectAll);
-  const setDraggedType = useCanvasStore(s => s.setDraggedType);
+  const rootId = useCanvasStore((s) => s.rootId);
+  const elements = useCanvasStore((s) => s.elements);
+  const selectedIds = useCanvasStore((s) => s.selectedIds);
+  const rootElement = elements.get(rootId);
+  const draggedType = useCanvasStore((s) => s.draggedType);
+  const deselectAll = useCanvasStore((s) => s.deselectAll);
+  const setDraggedType = useCanvasStore((s) => s.setDraggedType);
 
   // Fallback drop handler for the canvas background (appends to root)
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
@@ -169,7 +172,9 @@ export function Canvas() {
 
     if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
       e.preventDefault();
-      const allElementIds = Array.from(canvasState.elements.keys()).filter((id) => id !== canvasState.rootId);
+      const allElementIds = Array.from(canvasState.elements.keys()).filter(
+        (id) => id !== canvasState.rootId
+      );
       canvasState.selectMultiple(allElementIds);
       return;
     }
@@ -249,6 +254,24 @@ export function Canvas() {
 
   const dropIndicator = useCanvasStore((s) => s.dropIndicator);
   const hasChildren = rootElement && rootElement.children.length > 0;
+  const visibleElementIds = useMemo(() => {
+    if (!rootElement) return [];
+    const visible: string[] = [];
+    const visited = new Set<string>();
+    const visit = (id: string) => {
+      if (visited.has(id)) return;
+      visited.add(id);
+      const element = elements.get(id);
+      if (!element) return;
+      visible.push(id);
+      for (const childId of element.children) visit(childId);
+    };
+    for (const childId of rootElement.children) visit(childId);
+    return visible;
+  }, [elements, rootElement]);
+  const effectiveFocusedElementId = visibleElementIds.includes(focusedElementId ?? '')
+    ? focusedElementId
+    : (selectedIds.find((id) => visibleElementIds.includes(id)) ?? visibleElementIds[0] ?? null);
 
   const rootIndicatorLineStyle: React.CSSProperties = {
     height: 3,
@@ -275,7 +298,10 @@ export function Canvas() {
           onMouseUp={handleMouseUp}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
-          tabIndex={0}
+          tabIndex={hasChildren ? undefined : 0}
+          role="tree"
+          aria-label="Component canvas"
+          aria-multiselectable="true"
         >
           <div style={styles.canvasInner}>
             {hasChildren ? (
@@ -288,7 +314,11 @@ export function Canvas() {
                 return (
                   <React.Fragment key={childId}>
                     {showLineBefore && <div style={rootIndicatorLineStyle} />}
-                    <CanvasElement elementId={childId} />
+                    <CanvasElement
+                      elementId={childId}
+                      focusedElementId={effectiveFocusedElementId}
+                      onTreeFocusChange={setFocusedElementId}
+                    />
                     {showLineAfter && <div style={rootIndicatorLineStyle} />}
                   </React.Fragment>
                 );

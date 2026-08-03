@@ -36,6 +36,17 @@ describe('Bundle Module', () => {
       expect(validateManifest({})).toBe(false);
       expect(validateManifest({ name: '' })).toBe(false);
       expect(validateManifest({ name: 'Test', version: '1.0.0' })).toBe(false);
+      expect(
+        validateManifest({ name: 'Test', version: '1.0.0', main: 'main.ui', files: null })
+      ).toBe(false);
+      expect(
+        validateManifest({
+          name: 'Test',
+          version: '1.0.0',
+          main: 'main.ui',
+          files: { ui: 'main.ui' },
+        })
+      ).toBe(false);
     });
   });
 
@@ -161,6 +172,138 @@ describe('Bundle Module', () => {
       const iconFile = bundle.files.get('icon.png');
       expect(iconFile).toBeDefined();
       expect(iconFile!.type).toBe('asset');
+    });
+
+    it('ignores malformed bundled database records instead of crashing at initialization', async () => {
+      const manifest: SoftNManifest = {
+        name: 'Malformed data app',
+        version: '1.0.0',
+        main: 'main.ui',
+        files: { ui: ['main.ui'], xdb: ['broken.xdb'] },
+      };
+      const bundleData = await createBundleFromFiles(
+        manifest,
+        new Map([
+          ['main.ui', '<div>ready</div>'],
+          ['broken.xdb', JSON.stringify({ collection: 'items', records: { not: 'an array' } })],
+        ])
+      );
+
+      const bundle = await readBundle(bundleData);
+      expect(bundle.xdbData.get('broken.xdb')).toEqual({ collection: 'items', records: [] });
+    });
+
+    it('normalizes the camelCase timestamps used by checked-in demo XDB records', async () => {
+      const manifest: SoftNManifest = {
+        name: 'CamelCase data app',
+        version: '1.0.0',
+        main: 'main.ui',
+        files: { ui: ['main.ui'], xdb: ['characters.xdb'] },
+      };
+      const bundleData = await createBundleFromFiles(
+        manifest,
+        new Map([
+          ['main.ui', '<div>ready</div>'],
+          [
+            'characters.xdb',
+            JSON.stringify({
+              collection: 'characters',
+              records: [
+                {
+                  id: 'characters_1',
+                  collection: 'characters',
+                  data: { name: 'Michael', row: 0 },
+                  createdAt: '2026-03-01T00:00:00.000Z',
+                  updatedAt: '2026-03-02T00:00:00.000Z',
+                },
+              ],
+            }),
+          ],
+        ])
+      );
+
+      const bundle = await readBundle(bundleData);
+      expect(bundle.xdbData.get('characters.xdb')).toEqual({
+        collection: 'characters',
+        records: [
+          {
+            id: 'characters_1',
+            data: { name: 'Michael', row: 0 },
+            created_at: '2026-03-01T00:00:00.000Z',
+            updated_at: '2026-03-02T00:00:00.000Z',
+          },
+        ],
+      });
+    });
+
+    it('normalizes Studio flat records without timestamps into bundled XDB records', async () => {
+      const manifest: SoftNManifest = {
+        name: 'Studio data app',
+        version: '1.0.0',
+        main: 'main.ui',
+        files: { ui: ['main.ui'], xdb: ['data/tasks.xdb'] },
+      };
+      const bundleData = await createBundleFromFiles(
+        manifest,
+        new Map([
+          ['main.ui', '<div>ready</div>'],
+          [
+            'data/tasks.xdb',
+            JSON.stringify({
+              collection: 'tasks',
+              records: [
+                {
+                  id: '1',
+                  title: 'Buy groceries',
+                  status: 'pending',
+                  completed: false,
+                },
+              ],
+            }),
+          ],
+        ])
+      );
+
+      const bundle = await readBundle(bundleData);
+      expect(bundle.xdbData.get('data/tasks.xdb')).toEqual({
+        collection: 'tasks',
+        records: [
+          {
+            id: '1',
+            data: { title: 'Buy groceries', status: 'pending', completed: false },
+            created_at: '1970-01-01T00:00:00.000Z',
+            updated_at: '1970-01-01T00:00:00.000Z',
+          },
+        ],
+      });
+    });
+
+    it('rejects a manifest whose main entry is not in the archive', async () => {
+      const manifest: SoftNManifest = {
+        name: 'Missing main app',
+        version: '1.0.0',
+        main: 'missing.ui',
+        files: { ui: ['missing.ui'] },
+      };
+      const bundleData = await createBundleFromFiles(manifest, new Map());
+      await expect(readBundle(bundleData)).rejects.toThrow('Bundle missing main entry: missing.ui');
+    });
+
+    it('normalizes Windows separators in the manifest main entry', async () => {
+      const manifest: SoftNManifest = {
+        name: 'Windows path app',
+        version: '1.0.0',
+        main: 'ui\\main.ui',
+        files: { ui: ['ui\\main.ui'] },
+      };
+      const bundleData = await createBundleFromFiles(
+        manifest,
+        new Map([['ui/main.ui', '<Text>ready</Text>']])
+      );
+
+      const bundle = await readBundle(bundleData);
+      expect(bundle.manifest.main).toBe('ui/main.ui');
+      expect(bundle.uiFiles.has('ui/main.ui')).toBe(true);
     });
   });
 

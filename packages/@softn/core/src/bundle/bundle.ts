@@ -19,8 +19,9 @@ import type {
   LogicImport,
 } from './types';
 import { validateManifest, createDefaultManifest } from './types';
-import { readBundleEntries } from './zip';
+import { MAX_ZIP_INPUT_BYTES, readBundleEntries } from './zip';
 import { classifyAsset } from './asset-classification';
+import type { XDBService } from '../runtime/xdb';
 
 // ============================================================================
 // Bundle Reader
@@ -53,10 +54,14 @@ export async function readBundle(
   if (validate && !validateManifest(manifest)) {
     throw new Error('Invalid manifest.json');
   }
+  const normalizedMain = manifest.main.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/');
+  if (validate && !zipEntries.has(normalizedMain)) {
+    throw new Error(`Bundle missing main entry: ${manifest.main}`);
+  }
 
   // Create bundle structure
   const bundle: SoftNBundle = {
-    manifest,
+    manifest: normalizedMain === manifest.main ? manifest : { ...manifest, main: normalizedMain },
     files: new Map(),
     uiFiles: new Map(),
     logicFiles: new Map(),
@@ -142,12 +147,70 @@ export async function readBundleFromUrl(
   url: string,
   options: BundleLoadOptions = {}
 ): Promise<SoftNBundle> {
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: options.signal });
   if (!response.ok) {
+    // A failed response can still carry a large body. The caller will never
+    // inspect it, so do not leave the browser downloading it in the background.
+    try {
+      await response.body?.cancel();
+    } catch {
+      // Preserve the useful HTTP error if the stream was already disturbed.
+    }
     throw new Error(`Failed to fetch bundle: ${response.statusText}`);
   }
 
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_ZIP_INPUT_BYTES) {
+    try {
+      await response.body?.cancel();
+    } catch {
+      // The size violation remains the actionable failure.
+    }
+    throw new Error('Bundle archive is too large');
+  }
+
+  // Enforce the compressed-input cap while downloading, not after
+  // response.arrayBuffer() has already allocated attacker-controlled memory.
+  // Content-Length is only a hint and can be absent or dishonest.
+  if (response.body) {
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      let next = await reader.read();
+      while (!next.done) {
+        const { value } = next;
+        if (value) {
+          total += value.byteLength;
+          if (total > MAX_ZIP_INPUT_BYTES) {
+            try {
+              await reader.cancel();
+            } catch {
+              // The size violation remains the actionable failure.
+            }
+            throw new Error('Bundle archive is too large');
+          }
+          chunks.push(value);
+        }
+        next = await reader.read();
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    const data = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      data.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return readBundle(data, options);
+  }
+
   const arrayBuffer = await response.arrayBuffer();
+  if (arrayBuffer.byteLength > MAX_ZIP_INPUT_BYTES) {
+    throw new Error('Bundle archive is too large');
+  }
   return readBundle(new Uint8Array(arrayBuffer), options);
 }
 
@@ -347,19 +410,101 @@ function parseLogicFile(path: string, content: string): LogicFile {
 /**
  * Parse a .xdb file (bundled database)
  */
-function parseXDBFile(path: string, content: string): XDBBundleData {
+const XDB_FALLBACK_TIMESTAMP = '1970-01-01T00:00:00.000Z';
+
+export function parseXDBFile(path: string, content: string): XDBBundleData {
+  const fallbackCollection = path.replace('.xdb', '');
   try {
-    const data = JSON.parse(content);
+    const parsed = JSON.parse(content) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { collection: fallbackCollection, records: [] };
+    }
+    const data = parsed as Record<string, unknown>;
+    const records = Array.isArray(data.records)
+      ? data.records.flatMap((record): XDBBundleData['records'] => {
+          if (!record || typeof record !== 'object' || Array.isArray(record)) return [];
+          const candidate = record as Record<string, unknown>;
+          if (typeof candidate.id !== 'string') return [];
+
+          const hasNestedData = Object.prototype.hasOwnProperty.call(candidate, 'data');
+          let recordData: Record<string, unknown>;
+          if (hasNestedData) {
+            if (
+              !candidate.data ||
+              typeof candidate.data !== 'object' ||
+              Array.isArray(candidate.data)
+            ) {
+              return [];
+            }
+            recordData = candidate.data as Record<string, unknown>;
+          } else {
+            // Studio authors seed records as `{ id, ...fields }`. Keep every
+            // authored field (including date-like fields) in the record data;
+            // only XDB identity belongs outside it.
+            recordData = Object.fromEntries(
+              Object.entries(candidate).filter(([key]) => key !== 'id' && key !== 'collection')
+            );
+          }
+
+          const rawCreatedAt = candidate.created_at ?? candidate.createdAt;
+          const rawUpdatedAt = candidate.updated_at ?? candidate.updatedAt;
+          const createdAt =
+            typeof rawCreatedAt === 'string'
+              ? rawCreatedAt
+              : typeof rawUpdatedAt === 'string'
+                ? rawUpdatedAt
+                : XDB_FALLBACK_TIMESTAMP;
+          const updatedAt = typeof rawUpdatedAt === 'string' ? rawUpdatedAt : createdAt;
+
+          return [
+            {
+              id: candidate.id,
+              data: recordData,
+              created_at: createdAt,
+              updated_at: updatedAt,
+            },
+          ];
+        })
+      : [];
     return {
-      collection: data.collection || path.replace('.xdb', ''),
-      records: data.records || [],
+      collection:
+        typeof data.collection === 'string' && data.collection
+          ? data.collection
+          : fallbackCollection,
+      records,
     };
   } catch {
     return {
-      collection: path.replace('.xdb', ''),
+      collection: fallbackCollection,
       records: [],
     };
   }
+}
+
+/**
+ * Add bundled seed rows without replacing user data or reviving tombstones.
+ * Returns the number of rows that were actually inserted.
+ */
+export function seedXDBBundleData(
+  xdb: Pick<XDBService, 'getAllRaw' | 'writeRecord'>,
+  data: XDBBundleData
+): number {
+  const existingIds = new Set(xdb.getAllRaw(data.collection).map((record) => record.id));
+  let inserted = 0;
+
+  for (const record of data.records) {
+    if (existingIds.has(record.id)) continue;
+
+    xdb.writeRecord(data.collection, {
+      ...record,
+      collection: data.collection,
+      deleted: false,
+    });
+    existingIds.add(record.id);
+    inserted += 1;
+  }
+
+  return inserted;
 }
 
 /**

@@ -1629,6 +1629,12 @@ export function useCollection(
     }
   }, [xdb, collectionName, queryOptions]);
 
+  const hasFiltersOrSort = !!(
+    queryOptions.filter ||
+    queryOptions.sort ||
+    queryOptions.limit !== undefined
+  );
+
   // Initial fetch and subscription
   useEffect(() => {
     if (!options.skip) {
@@ -1637,7 +1643,6 @@ export function useCollection(
 
     // Subscribe to changes — patch state incrementally when possible,
     // fall back to full re-fetch only when filters/sorts need reapplying
-    const hasFiltersOrSort = !!(queryOptions.filter || queryOptions.sort || queryOptions.limit);
     const unsubscribe = xdb.subscribe(collectionName, (event) => {
       if (event.type === 'refresh' || event.type === 'sync') {
         // Full re-fetch for bulk events
@@ -1660,7 +1665,7 @@ export function useCollection(
     });
 
     return unsubscribe;
-  }, [xdb, collectionName, options.skip, fetchRecords]);
+  }, [xdb, collectionName, options.skip, fetchRecords, hasFiltersOrSort]);
 
   // Refresh function
   const refresh = useCallback(() => {

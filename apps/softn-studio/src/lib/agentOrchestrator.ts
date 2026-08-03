@@ -535,12 +535,18 @@ ${buildFileContents(files)}
 // Agent orchestrator — runs a single user turn
 // ---------------------------------------------------------------------------
 
-let abortController: AbortController | null = null;
+interface ActiveAgentTurn {
+  controller: AbortController;
+}
+
+let activeAgentTurn: ActiveAgentTurn | null = null;
 
 export function abortAgentTurn(): void {
-  abortController?.abort();
-  abortController = null;
+  const turn = activeAgentTurn;
+  activeAgentTurn = null;
+  turn?.controller.abort();
   useAIStore.getState().setAgentState('idle');
+  useAIStore.getState().setCurrentStep('');
 }
 
 export async function runAgentTurn(): Promise<void> {
@@ -598,7 +604,8 @@ export async function runAgentTurn(): Promise<void> {
     timestamp: m.timestamp,
   }));
 
-  abortController = new AbortController();
+  const turn: ActiveAgentTurn = { controller: new AbortController() };
+  activeAgentTurn = turn;
 
   try {
     const system = buildSystemPrompt();
@@ -606,9 +613,14 @@ export async function runAgentTurn(): Promise<void> {
     const response = await sendAIRequest(provider, {
       messages: recentMessages,
       system,
-      signal: abortController?.signal,
+      signal: turn.controller.signal,
       modelOverride: builderModel,
     });
+
+    // A provider or test double is not required to honour AbortSignal. The
+    // response still belongs to the project/turn that initiated it, so never
+    // apply it after that turn has been cancelled or replaced.
+    if (activeAgentTurn !== turn || turn.controller.signal.aborted) return;
 
     // Track tokens
     ai.addTokens(response.usage.inputTokens + response.usage.outputTokens);
@@ -693,10 +705,16 @@ export async function runAgentTurn(): Promise<void> {
 
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
+    const superseded = activeAgentTurn !== turn;
 
-    // Don't show error for user-initiated abort
-    if (errorMessage.includes('abort')) {
-      ai.setAgentState('idle');
+    // Don't let a cancelled turn overwrite the state of the turn that
+    // replaced it. Fetch implementations differ in the exact AbortError text,
+    // so the signal/ownership checks are authoritative.
+    if (turn.controller.signal.aborted || superseded || /abort/i.test(errorMessage)) {
+      if (!superseded) {
+        ai.setAgentState('idle');
+        ai.setCurrentStep('');
+      }
       return;
     }
 
@@ -717,6 +735,6 @@ export async function runAgentTurn(): Promise<void> {
       }
     }, 2000);
   } finally {
-    abortController = null;
+    if (activeAgentTurn === turn) activeAgentTurn = null;
   }
 }

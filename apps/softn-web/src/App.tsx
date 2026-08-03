@@ -70,6 +70,7 @@ import {
   requestedCapabilities,
   type BundleManifest,
   type AssetResolver,
+  type DisposableImportResolver,
 } from './lib/bundleProcessor';
 import {
   getCachedApp,
@@ -162,7 +163,7 @@ interface OpenTab {
   initialPage?: string;
   permissions?: import('@softn/core').AppPermissions;
   permissionConfig?: PermissionConfig;
-  importResolver?: (path: string) => Promise<string | null>;
+  importResolver?: DisposableImportResolver;
   /** Turns a bundle-relative asset path into a URL the browser can load. */
   assetResolver?: AssetResolver;
   logicBasePath?: string;
@@ -248,7 +249,10 @@ function App(): React.ReactElement {
   useEffect(() => () => {
     for (const controller of loadAbortsRef.current.values()) controller.abort();
     loadAbortsRef.current.clear();
-    for (const tab of openTabsRef.current) tab.assetResolver?.dispose();
+    for (const tab of openTabsRef.current) {
+      tab.importResolver?.dispose();
+      tab.assetResolver?.dispose();
+    }
   }, []);
 
   // An embedded frame keeps ?embed=1 through every rewrite, so a frame that
@@ -722,7 +726,9 @@ function App(): React.ReactElement {
       // Asset resolvers own blob URLs. A closed SoftN tab should release its
       // images and models now rather than retain every bundle until the browser
       // tab eventually closes.
-      openTabsRef.current.find((tab) => tab.id === tabId)?.assetResolver?.dispose();
+      const closingTab = openTabsRef.current.find((tab) => tab.id === tabId);
+      closingTab?.importResolver?.dispose();
+      closingTab?.assetResolver?.dispose();
 
       setOpenTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === tabId);

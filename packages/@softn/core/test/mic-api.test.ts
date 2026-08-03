@@ -26,16 +26,24 @@ let mediaBehaviour: () => Promise<FakeStream>;
 
 class FakeTrack {
   readyState = 'live';
-  stop() { this.readyState = 'ended'; }
+  stop() {
+    this.readyState = 'ended';
+  }
 }
 class FakeStream {
   tracks = [new FakeTrack()];
-  getTracks() { return this.tracks; }
-  getAudioTracks() { return this.tracks; }
+  getTracks() {
+    return this.tracks;
+  }
+  getAudioTracks() {
+    return this.tracks;
+  }
 }
 
 class FakeProcessor {
-  onaudioprocess: ((e: { inputBuffer: { getChannelData(n: number): Float32Array } }) => void) | null = null;
+  onaudioprocess:
+    | ((e: { inputBuffer: { getChannelData(n: number): Float32Array } }) => void)
+    | null = null;
   connect = vi.fn();
   disconnect = vi.fn();
   /** Deliver a block the way the audio thread would. */
@@ -62,7 +70,10 @@ class FakeAudioContext {
   createGain = vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() }));
   destination = {};
   resume = vi.fn(() => Promise.resolve());
-  close = vi.fn(() => { this.closed = true; return Promise.resolve(); });
+  close = vi.fn(() => {
+    this.closed = true;
+    return Promise.resolve();
+  });
 }
 
 const tone = (n: number, amplitude = 0.5) => new Float32Array(n).fill(amplitude);
@@ -88,13 +99,17 @@ function script(code: string): ScriptBlock {
   return { type: 'ScriptBlock', code, loc: { line: 1, column: 0, start: 0, end: code.length } };
 }
 
-interface RuntimeInternals { setPermissionConfig(config: PermissionConfig): void }
+interface RuntimeInternals {
+  setPermissionConfig(config: PermissionConfig): void;
+}
 
 function makeRuntime(config?: PermissionConfig) {
   const state: Record<string, unknown> = {};
   const context: ScriptContext = {
     state,
-    setState: (path: string, value: unknown) => { state[path] = value; },
+    setState: (path: string, value: unknown) => {
+      state[path] = value;
+    },
     data: {},
     xdb: createMockXDBModule(),
     nav: createMockNavModule(),
@@ -123,27 +138,35 @@ async function recordThenStop(halt: () => Promise<unknown>, block: Float32Array)
 describe('softn.mic.record without permission', () => {
   it('refuses a bundle that ships no permission.json', async () => {
     const runtime = makeRuntime();
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       let problem = ""
       function listen() {
         softn.mic.record({ seconds: 1 }, function(r) { problem = r.error || "" })
       }
-    `));
+    `)
+    );
 
     await result.functions.listen();
     expect(String(runtime.state.problem)).toMatch(/permission\.json/i);
-    expect(navigator.mediaDevices.getUserMedia,
-      'the device must not open before the check').not.toHaveBeenCalled();
+    expect(
+      navigator.mediaDevices.getUserMedia,
+      'the device must not open before the check'
+    ).not.toHaveBeenCalled();
   });
 
   it('refuses a bundle that declared everything except the microphone', async () => {
-    const runtime = makeRuntime({ permissions: { camera: { enabled: true }, net: { enabled: true } } } as PermissionConfig);
-    const result = await runtime.loadScript(script(`
+    const runtime = makeRuntime({
+      permissions: { camera: { enabled: true }, net: { enabled: true } },
+    } as PermissionConfig);
+    const result = await runtime.loadScript(
+      script(`
       let problem = ""
       function listen() {
         softn.mic.record({}, function(r) { problem = r.error || "" })
       }
-    `));
+    `)
+    );
 
     await result.functions.listen();
     expect(String(runtime.state.problem)).toMatch(/microphone access not permitted/i);
@@ -154,7 +177,8 @@ describe('softn.mic.record without permission', () => {
 describe('softn.mic.record with permission', () => {
   it('hands the script a WAV of what it heard', async () => {
     const runtime = makeRuntime(allowMic());
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       let clip = ""
       let rate = 0
       let count = 0
@@ -166,7 +190,8 @@ describe('softn.mic.record with permission', () => {
         })
       }
       function halt() { softn.mic.stop() }
-    `));
+    `)
+    );
 
     const listening = result.functions.listen();
     await recordThenStop(result.functions.halt, tone(800));
@@ -178,7 +203,9 @@ describe('softn.mic.record with permission', () => {
 
     // Decode the header: a WAV with the wrong rate plays at the wrong speed,
     // and nothing about the data URL would show it.
-    const bytes = Uint8Array.from(atob(String(runtime.state.clip).split(',')[1]), (c) => c.charCodeAt(0));
+    const bytes = Uint8Array.from(atob(String(runtime.state.clip).split(',')[1]), (c) =>
+      c.charCodeAt(0)
+    );
     const view = new DataView(bytes.buffer);
     expect(String.fromCharCode(...bytes.subarray(0, 4))).toBe('RIFF');
     expect(view.getUint16(20, true), 'uncompressed PCM').toBe(1);
@@ -191,10 +218,12 @@ describe('softn.mic.record with permission', () => {
     // AudioContext is what actually resamples. Without it the handler would
     // return 44100 samples labelled 48000.
     const runtime = makeRuntime(allowMic());
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       function listen() { softn.mic.record({ seconds: 30, sampleRate: 48000 }, function() {}) }
       function halt() { softn.mic.stop() }
-    `));
+    `)
+    );
     const listening = result.functions.listen();
     await recordThenStop(result.functions.halt, tone(10));
     await listening;
@@ -203,15 +232,18 @@ describe('softn.mic.record with permission', () => {
 
   it('leaves the voice processing off when the script asks for raw sound', async () => {
     const runtime = makeRuntime(allowMic());
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       function listen() { softn.mic.record({ seconds: 30, processing: false }, function() {}) }
       function halt() { softn.mic.stop() }
-    `));
+    `)
+    );
     const listening = result.functions.listen();
     await recordThenStop(result.functions.halt, tone(10));
     await listening;
 
-    const constraints = (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const constraints = (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mock
+      .calls[0][0];
     expect(constraints.audio).toMatchObject({
       echoCancellation: false,
       noiseSuppression: false,
@@ -223,10 +255,12 @@ describe('softn.mic.record with permission', () => {
     // The tracks and the context both have to go. A live AudioContext keeps the
     // browser's recording indicator lit even after the tracks stop.
     const runtime = makeRuntime(allowMic());
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       function listen() { softn.mic.record({ seconds: 30 }, function() {}) }
       function halt() { softn.mic.stop() }
-    `));
+    `)
+    );
     const listening = result.functions.listen();
     await recordThenStop(result.functions.halt, tone(100));
     await listening;
@@ -239,14 +273,16 @@ describe('softn.mic.record with permission', () => {
     // Two recordings would fight over one device, and the second would take the
     // first's samples with it.
     const runtime = makeRuntime(allowMic());
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       let second = ""
       function listen() { softn.mic.record({ seconds: 30 }, function() {}) }
       function listenAgain() {
         softn.mic.record({ seconds: 30 }, function(r) { second = r.reason || "" })
       }
       function halt() { softn.mic.stop() }
-    `));
+    `)
+    );
 
     const listening = result.functions.listen();
     await graphReady();
@@ -259,17 +295,66 @@ describe('softn.mic.record with permission', () => {
     await listening;
   });
 
+  it('reserves the device while the browser permission prompt is still pending', async () => {
+    let resolveMedia!: (stream: FakeStream) => void;
+    mediaBehaviour = () =>
+      new Promise<FakeStream>((resolve) => {
+        resolveMedia = resolve;
+      });
+    const runtime = makeRuntime(allowMic());
+    const result = await runtime.loadScript(
+      script(`
+      let second = ""
+      let pending = false
+      function listen() { softn.mic.record({ seconds: 30 }, function() {}) }
+      function listenAgain() {
+        softn.mic.record({ seconds: 30 }, function(r) { second = r.reason || "" })
+      }
+      function check() {
+        softn.mic.isRecording(function(r) { pending = r.recording })
+      }
+      function halt() { softn.mic.stop() }
+    `)
+    );
+
+    const listening = result.functions.listen();
+    for (
+      let i = 0;
+      i < 20 &&
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mock.calls.length === 0;
+      i += 1
+    ) {
+      await Promise.resolve();
+    }
+    await result.functions.check();
+    await result.functions.listenAgain();
+
+    expect(runtime.state.pending).toBe(true);
+    expect(runtime.state.second).toBe('already recording');
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce();
+    expect(contexts, 'no graph exists before permission resolves').toHaveLength(0);
+
+    const stream = new FakeStream();
+    streams.push(stream);
+    resolveMedia(stream);
+    await graphReady();
+    await result.functions.halt();
+    await listening;
+  });
+
   it('holds the script to the cap the bundle declared', async () => {
     // maxSeconds is what the consent dialog showed the user. A script asking
     // for longer is asking for something nobody approved.
     vi.useFakeTimers();
     const runtime = makeRuntime(allowMic({ maxSeconds: 2 }));
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       let done = false
       function listen() {
         softn.mic.record({ seconds: 600 }, function() { done = true })
       }
-    `));
+    `)
+    );
 
     const listening = result.functions.listen();
     await graphReady();
@@ -284,21 +369,49 @@ describe('softn.mic.record with permission', () => {
 });
 
 describe('softn.mic when the microphone will not open', () => {
-  it('reports the browser\'s own reason rather than a generic failure', async () => {
+  it("reports the browser's own reason rather than a generic failure", async () => {
     // getUserMedia rejects with a DOMException, which does not inherit from
     // Error — reading .message directly is what keeps "Permission denied" from
     // becoming "could not open the microphone".
     mediaBehaviour = () => Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
     const runtime = makeRuntime(allowMic());
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       let why = ""
       function listen() {
         softn.mic.record({ seconds: 1 }, function(r) { why = r.reason || "" })
       }
-    `));
+    `)
+    );
 
     await result.functions.listen();
     expect(runtime.state.why).toBe('Permission denied');
+  });
+
+  it('releases the granted stream when Web Audio cannot create a context', async () => {
+    vi.stubGlobal(
+      'AudioContext',
+      class {
+        constructor() {
+          throw new Error('Audio context unavailable');
+        }
+      }
+    );
+    const runtime = makeRuntime(allowMic());
+    const result = await runtime.loadScript(
+      script(`
+      let why = ""
+      function listen() {
+        softn.mic.record({ seconds: 1 }, function(r) { why = r.reason || "" })
+      }
+    `)
+    );
+
+    await result.functions.listen();
+
+    expect(String(runtime.state.why)).toContain('Audio context unavailable');
+    expect(streams).toHaveLength(1);
+    expect(streams[0].getTracks()[0].readyState).toBe('ended');
   });
 });
 
@@ -307,9 +420,11 @@ describe('softn.mic across app teardown', () => {
     // A microphone left open outlives the app: the tracks stay live, the
     // recording indicator stays lit, and nothing on screen explains why.
     const runtime = makeRuntime(allowMic());
-    const result = await runtime.loadScript(script(`
+    const result = await runtime.loadScript(
+      script(`
       function listen() { softn.mic.record({ seconds: 600 }, function() {}) }
-    `));
+    `)
+    );
 
     const listening = result.functions.listen();
     await graphReady();
@@ -320,5 +435,39 @@ describe('softn.mic across app teardown', () => {
 
     expect(streams[0].getTracks()[0].readyState).toBe('ended');
     expect(contexts[0].closed).toBe(true);
+  });
+
+  it('stops a stream that arrives after teardown during the permission prompt', async () => {
+    let resolveMedia!: (stream: FakeStream) => void;
+    mediaBehaviour = () =>
+      new Promise<FakeStream>((resolve) => {
+        resolveMedia = resolve;
+      });
+    const runtime = makeRuntime(allowMic());
+    const result = await runtime.loadScript(
+      script(`
+      function listen() { softn.mic.record({ seconds: 600 }, function() {}) }
+    `)
+    );
+
+    const listening = result.functions.listen();
+    for (
+      let i = 0;
+      i < 20 &&
+      (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mock.calls.length === 0;
+      i += 1
+    ) {
+      await Promise.resolve();
+    }
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledOnce();
+
+    runtime.cleanup();
+    const delayedStream = new FakeStream();
+    streams.push(delayedStream);
+    resolveMedia(delayedStream);
+    await listening;
+
+    expect(delayedStream.getTracks()[0].readyState).toBe('ended');
+    expect(contexts, 'a disposed runtime must not create an audio graph').toHaveLength(0);
   });
 });

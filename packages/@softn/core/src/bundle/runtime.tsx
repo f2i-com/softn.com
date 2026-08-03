@@ -5,9 +5,9 @@
  * asset loading, and XDB data initialization.
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import type { SoftNBundle, BundleFile } from './types';
-import { readBundle, readBundleFromFile, readBundleFromUrl } from './bundle';
+import { readBundle, readBundleFromFile, readBundleFromUrl, seedXDBBundleData } from './bundle';
 import { parse } from '../parser';
 import { renderDocument } from '../renderer';
 import { getDefaultRegistry } from '../renderer/registry';
@@ -38,7 +38,7 @@ export interface BundleRuntime {
   /** Execute a .logic file and get exports */
   executeLogic: (path: string) => LogicExports;
   /** Initialize XDB with bundled data */
-  initializeXDB: () => void;
+  initializeXDB: (signal?: AbortSignal) => Promise<void>;
   /** Render the main entry point */
   render: (context?: Partial<SoftNRenderContext>) => React.ReactNode;
   /** Dispose of all resources (blob URLs, caches) */
@@ -54,6 +54,39 @@ export interface LogicExports {
   computed: Record<string, () => unknown>;
 }
 
+type WindowAssetResolver = (path: string) => string;
+type SoftNAssetWindow = typeof window & { __softnAsset?: WindowAssetResolver };
+const activeWindowAssetResolvers: WindowAssetResolver[] = [];
+let previousWindowAssetResolver: WindowAssetResolver | undefined;
+
+function registerWindowAssetResolver(resolver: WindowAssetResolver): void {
+  if (typeof window === 'undefined') return;
+  const hostWindow = window as SoftNAssetWindow;
+  const existingIndex = activeWindowAssetResolvers.indexOf(resolver);
+  if (existingIndex !== -1) activeWindowAssetResolvers.splice(existingIndex, 1);
+  if (activeWindowAssetResolvers.length === 0) {
+    previousWindowAssetResolver = hostWindow.__softnAsset;
+  }
+  activeWindowAssetResolvers.push(resolver);
+  hostWindow.__softnAsset = resolver;
+}
+
+function unregisterWindowAssetResolver(resolver: WindowAssetResolver): void {
+  if (typeof window === 'undefined') return;
+  const hostWindow = window as SoftNAssetWindow;
+  const index = activeWindowAssetResolvers.indexOf(resolver);
+  if (index === -1) return;
+  const wasCurrent = hostWindow.__softnAsset === resolver;
+  activeWindowAssetResolvers.splice(index, 1);
+  if (wasCurrent) {
+    const next = activeWindowAssetResolvers.at(-1);
+    if (next) hostWindow.__softnAsset = next;
+    else if (previousWindowAssetResolver) hostWindow.__softnAsset = previousWindowAssetResolver;
+    else delete hostWindow.__softnAsset;
+  }
+  if (activeWindowAssetResolvers.length === 0) previousWindowAssetResolver = undefined;
+}
+
 /**
  * Create a runtime from a loaded bundle
  */
@@ -64,6 +97,7 @@ export function createBundleRuntime(bundle: SoftNBundle): BundleRuntime {
   const logicCache = new Map<string, LogicExports>();
   // Object URLs for assets
   const assetUrls = new Map<string, string>();
+  const windowAssetResolver: WindowAssetResolver = (path) => getAssetUrl(path);
 
   /**
    * Get a file from the bundle
@@ -229,19 +263,17 @@ export function createBundleRuntime(bundle: SoftNBundle): BundleRuntime {
   /**
    * Initialize XDB with bundled data
    */
-  function initializeXDB(): void {
+  async function initializeXDB(signal?: AbortSignal): Promise<void> {
     const xdb = getXDB();
+    // Desktop XDB hydrates from SQLite asynchronously. Seeding before it is
+    // ready can mistake a persisted tombstone for a missing row and upsert the
+    // bundled live copy over it.
+    await xdb.isReady;
+    if (signal?.aborted) return;
 
     for (const [, data] of bundle.xdbData) {
-      // Create records from bundled data
-      for (const record of data.records) {
-        // Check if record already exists
-        const existing = xdb.get(data.collection, record.id);
-        if (!existing) {
-          // Create record with bundled data
-          xdb.create(data.collection, record.data);
-        }
-      }
+      if (signal?.aborted) return;
+      seedXDBBundleData(xdb, data);
     }
   }
 
@@ -251,11 +283,7 @@ export function createBundleRuntime(bundle: SoftNBundle): BundleRuntime {
   function render(contextOverrides: Partial<SoftNRenderContext> = {}): React.ReactNode {
     const mainPath = bundle.manifest.main;
     const doc = parseUI(mainPath);
-    if (typeof window !== 'undefined') {
-      (window as typeof window & { __softnAsset?: (path: string) => string }).__softnAsset = (
-        path: string
-      ) => getAssetUrl(path);
-    }
+    registerWindowAssetResolver(windowAssetResolver);
     const runtimeHelpers = {
       ...(builtinHelpers as Record<string, (...args: unknown[]) => unknown>),
       asset: (path: unknown) => getAssetUrl(String(path || '')),
@@ -287,6 +315,7 @@ export function createBundleRuntime(bundle: SoftNBundle): BundleRuntime {
    * Dispose of all resources: revoke blob URLs, clear caches
    */
   function dispose(): void {
+    unregisterWindowAssetResolver(windowAssetResolver);
     for (const [, url] of assetUrls) {
       // Only revoke blob: URLs (not data: URLs)
       if (url.startsWith('blob:')) {
@@ -354,6 +383,12 @@ export function SoftNBundleRenderer({
   const [error, setError] = useState<Error | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  // A caller may provide an inline callback. Keep the latest callback without
+  // making its identity a bundle source dependency (which would reload and
+  // reinitialize the bundle on every parent render).
+  const onLoadRef = useRef(onLoad);
+  onLoadRef.current = onLoad;
+
   // State management
   const [componentState, setComponentState] = useState<Record<string, unknown>>(initialState);
 
@@ -381,6 +416,7 @@ export function SoftNBundleRenderer({
   useEffect(() => {
     let disposed = false;
     let loadedRuntime: BundleRuntime | null = null;
+    const abortController = new AbortController();
 
     async function loadBundle() {
       try {
@@ -394,7 +430,7 @@ export function SoftNBundleRenderer({
         } else if (data) {
           bundle = await readBundle(data);
         } else if (url) {
-          bundle = await readBundleFromUrl(url);
+          bundle = await readBundleFromUrl(url, { signal: abortController.signal });
         } else if (filePath) {
           bundle = await readBundleFromFile(filePath);
         } else {
@@ -403,21 +439,27 @@ export function SoftNBundleRenderer({
 
         const rt = createBundleRuntime(bundle);
 
-        // Initialize XDB with bundled data
-        rt.initializeXDB();
-
         // The source may have changed (or the component may have unmounted)
         // while the bundle was being read. Never publish an orphaned runtime;
-        // dispose it immediately so any object URLs it owns cannot leak.
+        // dispose it before it can initialize bundled data in the wrong app.
         if (disposed) {
           rt.dispose();
           return;
         }
 
         loadedRuntime = rt;
+        // Initialize XDB with bundled data only after this load has won.
+        await rt.initializeXDB(abortController.signal);
+        if (disposed || abortController.signal.aborted) {
+          rt.dispose();
+          loadedRuntime = null;
+          return;
+        }
         setRuntime(rt);
-        onLoad?.(rt);
+        onLoadRef.current?.(rt);
       } catch (err) {
+        loadedRuntime?.dispose();
+        loadedRuntime = null;
         if (!disposed) {
           setError(err instanceof Error ? err : new Error(String(err)));
         }
@@ -435,18 +477,18 @@ export function SoftNBundleRenderer({
     // never disposed the runtime that the effect eventually created.
     return () => {
       disposed = true;
+      abortController.abort();
       loadedRuntime?.dispose();
     };
-  }, [data, url, filePath, preloadedBundle, onLoad]);
+  }, [data, url, filePath, preloadedBundle]);
 
   // Build render context
-  const context = useMemo<SoftNRenderContext>(
-    () => {
-      const runtimeHelpers = {
-        ...(builtinHelpers as Record<string, (...args: unknown[]) => unknown>),
-        asset: (path: unknown) => (runtime ? runtime.getAssetUrl(String(path || '')) : ''),
-      };
-      return {
+  const context = useMemo<SoftNRenderContext>(() => {
+    const runtimeHelpers = {
+      ...(builtinHelpers as Record<string, (...args: unknown[]) => unknown>),
+      asset: (path: unknown) => (runtime ? runtime.getAssetUrl(String(path || '')) : ''),
+    };
+    return {
       state: componentState,
       setState,
       data: {},
@@ -454,10 +496,8 @@ export function SoftNBundleRenderer({
       computed: {},
       functions: runtimeHelpers,
       asyncFunctions: runtimeHelpers,
-      };
-    },
-    [componentState, setState, props, runtime]
-  );
+    };
+  }, [componentState, setState, props, runtime]);
 
   // Loading state
   if (isLoading) {
@@ -545,18 +585,29 @@ export function useSoftNBundle(source: { data?: Uint8Array; url?: string; filePa
   const [runtime, setRuntime] = useState<BundleRuntime | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    abortRef.current?.abort();
+    const abortController = new AbortController();
+    abortRef.current = abortController;
+
     try {
       setLoading(true);
       setError(null);
+      // A new source supersedes the previous runtime immediately. Keeping it
+      // here after an empty or failed source load exposed a disposed/stale app
+      // alongside the new error to hook consumers.
+      setRuntime(null);
 
       let bundle: SoftNBundle;
 
       if (source.data) {
         bundle = await readBundle(source.data);
       } else if (source.url) {
-        bundle = await readBundleFromUrl(source.url);
+        bundle = await readBundleFromUrl(source.url, { signal: abortController.signal });
       } else if (source.filePath) {
         bundle = await readBundleFromFile(source.filePath);
       } else {
@@ -564,18 +615,47 @@ export function useSoftNBundle(source: { data?: Uint8Array; url?: string; filePa
       }
 
       const rt = createBundleRuntime(bundle);
-      rt.initializeXDB();
+
+      // A newer source or reload won while this request was awaiting I/O.
+      // Dispose the orphan before it can initialize bundled XDB data or replace
+      // the winner.
+      if (requestId !== requestIdRef.current) {
+        rt.dispose();
+        return;
+      }
+      try {
+        await rt.initializeXDB(abortController.signal);
+      } catch (error) {
+        rt.dispose();
+        throw error;
+      }
+      if (requestId !== requestIdRef.current || abortController.signal.aborted) {
+        rt.dispose();
+        return;
+      }
       setRuntime(rt);
     } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
+      if (requestId === requestIdRef.current && !abortController.signal.aborted) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        if (abortRef.current === abortController) abortRef.current = null;
+        setLoading(false);
+      }
     }
   }, [source.data, source.url, source.filePath]);
 
+  const cancelPendingLoad = useCallback(() => {
+    requestIdRef.current++;
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
+
   useEffect(() => {
-    load();
-  }, [load]);
+    void load();
+    return cancelPendingLoad;
+  }, [load, cancelPendingLoad]);
 
   // Separate cleanup effect that tracks `runtime` — avoids stale closure
   // where the cleanup closes over the initial null state.

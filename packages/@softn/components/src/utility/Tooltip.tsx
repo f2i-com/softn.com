@@ -5,7 +5,7 @@
  * animations, and positioning options.
  */
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
 
 export interface TooltipProps {
   /** Tooltip content */
@@ -130,9 +130,11 @@ export function Tooltip({
   const animationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const tooltipId = useId();
 
-  const isOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
-  const triggers = Array.isArray(trigger) ? trigger : [trigger];
+  const requestedOpen = controlledOpen !== undefined ? controlledOpen : internalOpen;
+  const isOpen = !disabled && requestedOpen;
+  const triggers = useMemo(() => (Array.isArray(trigger) ? trigger : [trigger]), [trigger]);
   const variantStyle = variantStyles[variant];
   const sizeStyle = sizeConfig[size];
 
@@ -230,11 +232,18 @@ export function Tooltip({
     }
   }, [triggers, interactive, hide]);
 
-  const handleClick = useCallback(() => {
-    if (triggers.includes('click')) {
-      toggle();
-    }
-  }, [triggers, toggle]);
+  const handleClick = useCallback(
+    (event: React.MouseEvent) => {
+      // Interactive tooltip content lives inside the trigger wrapper, so its
+      // clicks bubble here too. They should activate that content, not toggle the
+      // tooltip closed underneath it.
+      if (tooltipRef.current?.contains(event.target as Node)) return;
+      if (triggers.includes('click')) {
+        toggle();
+      }
+    },
+    [triggers, toggle]
+  );
 
   const handleFocus = useCallback(() => {
     if (triggers.includes('focus')) {
@@ -242,11 +251,20 @@ export function Tooltip({
     }
   }, [triggers, show]);
 
-  const handleBlur = useCallback(() => {
-    if (triggers.includes('focus')) {
-      hide();
-    }
-  }, [triggers, hide]);
+  const handleBlur = useCallback(
+    (event: React.FocusEvent) => {
+      if (
+        event.relatedTarget instanceof Node &&
+        containerRef.current?.contains(event.relatedTarget)
+      ) {
+        return;
+      }
+      if (triggers.includes('focus')) {
+        hide();
+      }
+    },
+    [triggers, hide]
+  );
 
   // Close on outside click for click trigger
   useEffect(() => {
@@ -285,6 +303,15 @@ export function Tooltip({
   useEffect(() => {
     return clearTimeouts;
   }, [clearTimeouts]);
+
+  // A disabled tooltip must not leave delayed work or stale uncontrolled
+  // visibility behind to reappear when it is enabled again.
+  useEffect(() => {
+    if (!disabled) return;
+    clearTimeouts();
+    setIsAnimating(false);
+    if (controlledOpen === undefined) setInternalOpen(false);
+  }, [disabled, controlledOpen, clearTimeouts]);
 
   // Container styles
   const containerStyle: React.CSSProperties = {
@@ -499,20 +526,33 @@ export function Tooltip({
     }
   }, [interactive, triggers, hide]);
 
+  const triggerContent = useMemo(() => {
+    if (!isOpen || !React.isValidElement(children) || children.type === React.Fragment) {
+      return children;
+    }
+    const child = children as React.ReactElement<{ 'aria-describedby'?: string }>;
+    const existing = child.props['aria-describedby'];
+    return React.cloneElement(child, {
+      'aria-describedby': existing ? `${existing} ${tooltipId}` : tooltipId,
+    });
+  }, [children, isOpen, tooltipId]);
+
   return (
     <div
       ref={containerRef}
       className={className}
       style={containerStyle}
+      aria-describedby={isOpen ? tooltipId : undefined}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onClick={handleClick}
       onFocus={handleFocus}
       onBlur={handleBlur}
     >
-      {children}
+      {triggerContent}
       <div
         ref={tooltipRef}
+        id={tooltipId}
         className={tooltipClassName}
         style={tooltipContentStyle}
         role="tooltip"

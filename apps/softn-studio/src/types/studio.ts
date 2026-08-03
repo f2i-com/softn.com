@@ -82,7 +82,7 @@ export interface VFSEvent {
   path: string;
   timestamp: number;
   source: 'user' | 'ai';
-  previousContent?: string;
+  previousContent?: string | Uint8Array;
 }
 
 /** Blueprint page */

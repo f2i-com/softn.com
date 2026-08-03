@@ -12,8 +12,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { generateBlueprintFromBrief, scaffoldProjectFiles } from '../src/lib/studioProject';
-import type { ProjectBrief } from '../src/types/studio';
+import {
+  generateBlueprintFromBrief,
+  resolveActivePreviewPath,
+  scaffoldProjectFiles,
+} from '../src/lib/studioProject';
+import type { ProjectBrief, VFSFile } from '../src/types/studio';
 
 function scaffold(overrides: Partial<ProjectBrief>) {
   const brief: ProjectBrief = {
@@ -30,7 +34,10 @@ function scaffold(overrides: Partial<ProjectBrief>) {
 }
 
 const html = (files: Array<{ path: string; content: unknown }>) =>
-  files.filter((f) => f.path.endsWith('.html')).map((f) => String(f.content)).join('\n');
+  files
+    .filter((f) => f.path.endsWith('.html'))
+    .map((f) => String(f.content))
+    .join('\n');
 
 describe('an app name carrying markup', () => {
   const files = scaffold({ appName: 'PWN</title><script>alert(1)</script>' });
@@ -95,5 +102,40 @@ describe('a name that is only punctuation', () => {
     const pages = files.filter((f) => f.path.endsWith('.html')).map((f) => f.path);
     expect(pages.length).toBeGreaterThan(0);
     for (const p of pages) expect(p).toMatch(/^pages\/[a-z0-9-]+\.html$/);
+  });
+});
+
+describe('preview selection after replacing an imported project', () => {
+  const vfs = (...paths: string[]) =>
+    new Map<string, VFSFile>(
+      paths.map((path) => [
+        path,
+        {
+          path,
+          content: '',
+          mimeType: 'text/plain',
+          lastModified: 0,
+          lastModifiedBy: 'user',
+          version: 1,
+        },
+      ])
+    );
+
+  it('drops a stale local path and selects an entry that exists in the new VFS', () => {
+    const importedFiles = vfs('manifest.json', 'ui/main.ui');
+
+    expect(resolveActivePreviewPath(importedFiles, 'ui/old-project.ui', null)).toBe('ui/main.ui');
+    expect(resolveActivePreviewPath(new Map(), 'ui/old-project.ui', null)).toBeNull();
+  });
+
+  it('honors a workspace selection only when that file exists', () => {
+    const importedFiles = vfs('ui/main.ui', 'ui/details.ui');
+
+    expect(resolveActivePreviewPath(importedFiles, 'ui/main.ui', 'ui/details.ui')).toBe(
+      'ui/details.ui'
+    );
+    expect(resolveActivePreviewPath(importedFiles, 'ui/main.ui', 'ui/missing.ui')).toBe(
+      'ui/main.ui'
+    );
   });
 });

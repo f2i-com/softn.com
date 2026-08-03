@@ -8,11 +8,7 @@
  * engine preamble did not hand over.
  */
 
-import {
-  VmAdapter,
-  VM_BRIDGE_PREAMBLE,
-  type SymbolScope,
-} from './vm-adapter';
+import { VmAdapter, VM_BRIDGE_PREAMBLE, type SymbolScope } from './vm-adapter';
 import { deepEqual } from './vm-state';
 
 import type { ScriptBlock, LogicBlock } from '../parser/ast';
@@ -385,13 +381,32 @@ export function detectWorkerIncompatibilities(code: string): string[] {
  * Names of variables added by BRIDGE_PREAMBLE that should not be treated
  * as user state variables.
  */
-const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn']);
+const EXTERNAL_VALUES_VAR = '__softnExternalValues';
+const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn', EXTERNAL_VALUES_VAR]);
+const EXTERNAL_FUNCTION_RESERVED_NAMES = new Set([...BRIDGE_VARS, 'db', 'localStorage']);
 
 /** Prefix for the functions generated from `$:` declarations. */
 const COMPUTED_PREFIX = '__softnComputed_';
 
 /** A name safe to paste into generated source as an identifier. */
 const VALID_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
+
+type ExternalPrimitive = string | number | boolean | null | undefined;
+const UNSUPPORTED_EXTERNAL_VALUE = Symbol('unsupported external value');
+type ExternalValueRead = ExternalPrimitive | typeof UNSUPPORTED_EXTERNAL_VALUE;
+
+/** Match the value JSON source generation used for external bridge snapshots. */
+function normalizeExternalPrimitive(value: unknown): ExternalValueRead {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    // JSON.stringify was historically used for the injected return literal:
+    // non-finite numbers became null and negative zero became zero.
+    if (!Number.isFinite(value)) return null;
+    return Object.is(value, -0) ? 0 : value;
+  }
+  return UNSUPPORTED_EXTERNAL_VALUE;
+}
 
 /**
  * Extract safe, serializable properties from a browser Event for passing to the VM.
@@ -432,9 +447,7 @@ function extractEventProps(event: Event): Record<string, unknown> {
  * Uses a comment/string-aware scanner to avoid matching inside comments or strings,
  * and supports multi-line expressions by balancing brackets.
  */
-function extractComputedDeclarations(
-  code: string
-): Array<{ name: string; expression: string }> {
+function extractComputedDeclarations(code: string): Array<{ name: string; expression: string }> {
   const results: Array<{ name: string; expression: string }> = [];
   const len = code.length;
   let i = 0;
@@ -627,21 +640,34 @@ export class SoftNScriptRuntime {
   /** Lazy-loaded ONNX manager (created on first softn.ai.onnx.* call) */
   private onnxManager: import('./ai-onnx-manager').OnnxManager | null = null;
   /** Lazy-loaded Transformers.js manager (created on first softn.ai.pipeline/generate/embed/classify call) */
-  private transformersManager: import('./ai-transformers-manager').TransformersManager | null = null;
+  private transformersManager: import('./ai-transformers-manager').TransformersManager | null =
+    null;
   /** Lazy-loaded GPU compute manager (created on first softn.ai.gpu.* call) */
   private gpuComputeManager: import('./ai-gpu-compute-manager').GpuComputeManager | null = null;
   /** Bundle file provider for loading models from .softn bundles */
   private bundleFileProvider: BundleFileProvider | null = null;
   /** External functions (e.g. wallet bridge) to inject into the VM as callable globals */
   private externalFunctions: Record<string, (...args: unknown[]) => unknown> | null = null;
+  /** No-argument external bridge names compiled into the current VM. */
+  private externalFunctionNames: string[] = [];
+  /** Last primitive snapshot written to the VM, parallel to externalFunctionNames. */
+  private externalFunctionValues: ExternalPrimitive[] = [];
+  /** Slot holding the mutable external bridge value table inside the VM. */
+  private externalValuesGlobalIndex = -1;
+  /** Network requests owned by this runtime, cancelled when the app closes. */
+  private netAbortControllers = new Set<AbortController>();
+  private static readonly MAX_NET_RESPONSE_BYTES = 10 * 1024 * 1024;
 
   /** Sounds this app currently has playing, by the handle its script holds.
    *  `watchers` are pending `whenEnded` calls; each hears exactly one outcome. */
-  private audioPlaying = new Map<string, {
-    el: HTMLAudioElement;
-    volume: number;
-    watchers: Array<(outcome: AudioOutcome) => void>;
-  }>();
+  private audioPlaying = new Map<
+    string,
+    {
+      el: HTMLAudioElement;
+      volume: number;
+      watchers: Array<(outcome: AudioOutcome) => void>;
+    }
+  >();
   /** Outcomes of sounds that are gone, so a `whenEnded` asked after the fact
    *  still answers with what happened. Every one-shot lands here, so it is
    *  capped — the oldest is forgotten and reads as unknown. */
@@ -652,6 +678,10 @@ export class SoftNScriptRuntime {
   /** Gesture listeners waiting to start a soundtrack the browser refused. */
   private audioUnlockers = new Set<() => void>();
 
+  /** QR image loads/detections in flight. Cleanup rejects them immediately. */
+  private qrDecodeCancelers = new Set<() => void>();
+  private static readonly QR_OPERATION_TIMEOUT_MS = 10_000;
+
   /**
    * The recording in flight, if any.
    *
@@ -661,6 +691,12 @@ export class SoftNScriptRuntime {
    * same recording without either needing to know about the other.
    */
   private micRecording: { stop: (reason: 'complete' | 'stopped') => void } | null = null;
+  /**
+   * Device access can remain pending while the browser shows its permission
+   * prompt. Reserve that interval too, so cleanup and a second record request
+   * cannot lose track of a stream that has not been handed back yet.
+   */
+  private micAcquisition: { cancelled: boolean } | null = null;
 
   constructor(
     context: ScriptContext,
@@ -696,6 +732,52 @@ export class SoftNScriptRuntime {
     this.permissionConfig = config;
   }
 
+  /** Read the current value of a no-argument host bridge without leaking errors. */
+  private readExternalFunctionValue(name: string): ExternalValueRead {
+    try {
+      const fn = this.externalFunctions?.[name];
+      if (typeof fn !== 'function') return UNSUPPORTED_EXTERNAL_VALUE;
+
+      const result = fn();
+      if (result != null && typeof (result as { then?: unknown }).then === 'function') {
+        // These VM globals are synchronous snapshots. Keep async bridges out of
+        // them, and make sure a rejected promise cannot become unhandled.
+        Promise.resolve(result).catch(() => {});
+        return UNSUPPORTED_EXTERNAL_VALUE;
+      }
+      return normalizeExternalPrimitive(result);
+    } catch {
+      return UNSUPPORTED_EXTERNAL_VALUE;
+    }
+  }
+
+  /**
+   * Refresh compiled host bridge values in place.
+   *
+   * The declarations stay in the same VM, so changing a React `functions`
+   * implementation cannot re-run script top-level code or `_init()`.
+   */
+  private syncExternalFunctionsToVM(): void {
+    if (!this.vmEngine || this.externalValuesGlobalIndex < 0) return;
+
+    const nextValues = this.externalFunctionNames.map((name) => {
+      const value = this.readExternalFunctionValue(name);
+      return value === UNSUPPORTED_EXTERNAL_VALUE ? undefined : value;
+    });
+    const changed = nextValues.some(
+      (value, index) => !Object.is(value, this.externalFunctionValues[index])
+    );
+    // Always restore the table before VM execution. It is an implementation
+    // global in the same compilation unit, so app code must not be able to
+    // leave a forged bridge value behind by assigning to it.
+    this.vmEngine.setGlobal(this.externalValuesGlobalIndex, nextValues);
+    if (!changed) return;
+
+    this.externalFunctionValues = nextValues;
+    // A template helper may already be cached for this render. Its answer was
+    // computed with the previous host snapshot and must not survive the write.
+    this.syncCallCache.clear();
+  }
 
   /**
    * Load and execute a script or logic block inside the WASM VM.
@@ -750,7 +832,9 @@ export class SoftNScriptRuntime {
       try {
         const { getXDB } = await import('./xdb');
         this.xdbService = getXDB(this.appId);
-      } catch { /* XDB not available — batching disabled */ }
+      } catch {
+        /* XDB not available — batching disabled */
+      }
       if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
 
       // 2. Register bridges on the WASM engine BEFORE compilation/execution
@@ -778,30 +862,34 @@ export class SoftNScriptRuntime {
       if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
     }
 
-    // 4. Generate preamble for external functions (e.g. wallet bridge)
-    // Calls each function with no args; if it returns a primitive synchronously,
-    // injects a function declaration so .logic code can call it.
+    // 4. Generate preamble for external functions (e.g. wallet bridge).
+    // Wrappers read a mutable VM-side table so later host implementations can
+    // update without recompiling or re-running script initialization.
     let extFnPreamble = '';
+    this.externalFunctionNames = [];
+    this.externalFunctionValues = [];
+    this.externalValuesGlobalIndex = -1;
     if (this.externalFunctions) {
-      for (const [name, fn] of Object.entries(this.externalFunctions)) {
-        // Skip names that aren't valid JS identifiers or XDB helpers
-        if (!/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(name)) continue;
+      for (const name of Object.keys(this.externalFunctions)) {
+        // Skip names that cannot safely become VM declarations or are served
+        // by another bridge path.
+        if (!VALID_IDENTIFIER.test(name) || EXTERNAL_FUNCTION_RESERVED_NAMES.has(name)) continue;
         if (name.startsWith('xdb_') || name === 'asset') continue;
-        try {
-          const result = fn();
-          // Skip async results (Promises) — swallow their rejections
-          if (result != null && typeof (result as { then?: unknown }).then === 'function') {
-            (result as Promise<unknown>).catch(() => {});
-            continue;
-          }
-          // Only inject primitives + null
-          if (typeof result === 'string' || typeof result === 'number' ||
-              typeof result === 'boolean' || result === null || result === undefined) {
-            const serialized = result === undefined ? 'undefined' : JSON.stringify(result);
-            extFnPreamble += `function ${name}() { return ${serialized}; }\n`;
-          }
-        } catch {
-          // Function needs args or threw — skip
+        const value = this.readExternalFunctionValue(name);
+        // Preserve the established bridge contract: only synchronous
+        // primitive-valued getters become globals in this compilation.
+        if (value === UNSUPPORTED_EXTERNAL_VALUE) continue;
+        this.externalFunctionNames.push(name);
+        this.externalFunctionValues.push(value);
+      }
+
+      if (this.externalFunctionNames.length > 0) {
+        const serializedValues = this.externalFunctionValues
+          .map((value) => (value === undefined ? 'undefined' : JSON.stringify(value)))
+          .join(',');
+        extFnPreamble = `let ${EXTERNAL_VALUES_VAR} = [${serializedValues}];\n`;
+        for (let i = 0; i < this.externalFunctionNames.length; i++) {
+          extFnPreamble += `function ${this.externalFunctionNames[i]}() { return ${EXTERNAL_VALUES_VAR}[${i}]; }\n`;
         }
       }
     }
@@ -816,10 +904,11 @@ export class SoftNScriptRuntime {
     // `// comment`. Each piece therefore gets its own line: on one line a
     // trailing comment would swallow the closing `);` and take the whole
     // script's compilation down with it, not just this one value.
-    const computedDecls = extractComputedDeclarations(script.code)
-      .filter(d => VALID_IDENTIFIER.test(d.name) && d.expression.trim() !== '');
+    const computedDecls = extractComputedDeclarations(script.code).filter(
+      (d) => VALID_IDENTIFIER.test(d.name) && d.expression.trim() !== ''
+    );
     const computedPreamble = computedDecls
-      .map(d => `function ${COMPUTED_PREFIX}${d.name}() {\nreturn (\n${d.expression}\n);\n}`)
+      .map((d) => `function ${COMPUTED_PREFIX}${d.name}() {\nreturn (\n${d.expression}\n);\n}`)
       .join('\n');
 
     // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
@@ -849,6 +938,7 @@ export class SoftNScriptRuntime {
       symbolMap = await this.vmEngine.initializeScript(scriptCode);
     }
     this.symbolMap = symbolMap;
+    this.externalValuesGlobalIndex = symbolMap.get(EXTERNAL_VALUES_VAR)?.index ?? -1;
 
     // 6. Set up window global index (sync keys are discovered dynamically)
     if (useHostBridges) {
@@ -879,15 +969,18 @@ export class SoftNScriptRuntime {
       }
     }
     this.stateVarNames = stateVarNames;
-    this.stateVarIndices = stateVarNames.map(name => symbolMap.get(name)!.index);
-    console.log(`[SoftN] Script loaded: ${functionNames.length} functions, ${stateVarNames.length} state vars`);
+    this.stateVarIndices = stateVarNames.map((name) => symbolMap.get(name)!.index);
+    console.log(
+      `[SoftN] Script loaded: ${functionNames.length} functions, ${stateVarNames.length} state vars`
+    );
 
     // 7. Create async function wrappers (propagate state changes to React)
     // Rapid-fire event handlers (mousemove, scroll, etc.) are marked droppable —
     // safe to skip under queue saturation since they'll be superseded by the next
     // event. All other functions (clicks, submits, etc.) are critical and will
     // queue up to a hard limit to guarantee execution.
-    const DROPPABLE_PATTERN = /^on_?(mouse_?move|pointer_?move|scroll|touch_?move|wheel)|^(tick|update|animate|render)/i;
+    const DROPPABLE_PATTERN =
+      /^on_?(mouse_?move|pointer_?move|scroll|touch_?move|wheel)|^(tick|update|animate|render)/i;
     const functions: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
     for (const name of functionNames) {
       functions[name] = this.createVMFunction(name, { droppable: DROPPABLE_PATTERN.test(name) });
@@ -933,7 +1026,10 @@ export class SoftNScriptRuntime {
   private _perfSyncToVMMs = 0;
   private _perfChangedVars = 0;
 
-  private createVMFunction(name: string, options?: { droppable?: boolean }): (...args: unknown[]) => Promise<unknown> {
+  private createVMFunction(
+    name: string,
+    options?: { droppable?: boolean }
+  ): (...args: unknown[]) => Promise<unknown> {
     const droppable = options?.droppable ?? false;
     // Droppable calls (rapid-fire events) are dropped at the soft limit.
     // Critical calls (user interactions) are only dropped at the hard limit.
@@ -947,7 +1043,9 @@ export class SoftNScriptRuntime {
         return undefined;
       }
       if (this.vmCallQueueDepth >= QUEUE_HARD_LIMIT) {
-        console.error(`[SoftN] Dropping VM call to ${name}: hard queue limit reached (${this.vmCallQueueDepth})`);
+        console.error(
+          `[SoftN] Dropping VM call to ${name}: hard queue limit reached (${this.vmCallQueueDepth})`
+        );
         return undefined;
       }
       this.vmCallQueueDepth++;
@@ -957,7 +1055,9 @@ export class SoftNScriptRuntime {
       // to avoid unbounded promise chain growth.
       await this.vmCallLock;
       let release: (() => void) | undefined;
-      this.vmCallLock = new Promise<void>((r) => { release = r; });
+      this.vmCallLock = new Promise<void>((r) => {
+        release = r;
+      });
 
       const t0 = performance.now();
       try {
@@ -967,6 +1067,7 @@ export class SoftNScriptRuntime {
 
         const tSyncStart = performance.now();
         this.syncReactStateToVM();
+        this.syncExternalFunctionsToVM();
         // Sync real browser window → VM window
         this.syncWindowToVM();
         this._perfSyncToVMMs += performance.now() - tSyncStart;
@@ -1038,11 +1139,11 @@ export class SoftNScriptRuntime {
           const n = this._perfCallCount;
           console.log(
             `[SoftN Perf] ${n} calls in 5s | avg=${(this._perfTotalMs / n).toFixed(1)}ms` +
-            ` | wasm=${(this._perfWasmMs / n).toFixed(1)}ms` +
-            ` | syncToVM=${(this._perfSyncToVMMs / n).toFixed(1)}ms` +
-            ` | syncToReact=${(this._perfSyncToReactMs / n).toFixed(1)}ms` +
-            ` | changedVars=${(this._perfChangedVars / n).toFixed(1)}/tick` +
-            ` | stateVars=${this.stateVarNames.length}`
+              ` | wasm=${(this._perfWasmMs / n).toFixed(1)}ms` +
+              ` | syncToVM=${(this._perfSyncToVMMs / n).toFixed(1)}ms` +
+              ` | syncToReact=${(this._perfSyncToReactMs / n).toFixed(1)}ms` +
+              ` | changedVars=${(this._perfChangedVars / n).toFixed(1)}/tick` +
+              ` | stateVars=${this.stateVarNames.length}`
           );
           this._perfCallCount = 0;
           this._perfTotalMs = 0;
@@ -1078,7 +1179,13 @@ export class SoftNScriptRuntime {
       const a = args[0];
       const t = typeof a;
       if (a === null) return `${name}|null`;
-      if (t === 'string' || t === 'number' || t === 'boolean' || t === 'undefined' || t === 'bigint') {
+      if (
+        t === 'string' ||
+        t === 'number' ||
+        t === 'boolean' ||
+        t === 'undefined' ||
+        t === 'bigint'
+      ) {
         return `${name}|${t}:${String(a)}`;
       }
     }
@@ -1099,6 +1206,7 @@ export class SoftNScriptRuntime {
         if (!this.asyncCallInProgress) {
           this.syncReactStateToVM();
         }
+        this.syncExternalFunctionsToVM();
 
         // Per-render frame cache: if >2ms since the last sync call, we've crossed
         // a render frame boundary — clear the cache so results reflect current state.
@@ -1151,7 +1259,7 @@ export class SoftNScriptRuntime {
     this.syncCallCache.clear();
     if (dirty === null || vmDirty) {
       // Full sync: first call or worker pushed new state
-      const values = this.stateVarNames.map(name => this.context.state[name]);
+      const values = this.stateVarNames.map((name) => this.context.state[name]);
       this.vmEngine.setGlobalsBatch(this.stateVarIndices, values);
     } else {
       // Granular sync: only push keys that actually changed
@@ -1182,13 +1290,15 @@ export class SoftNScriptRuntime {
 
     // Use VM dirty tracking if available (WASM engine only).
     // Only fetch and compare values for globals the VM actually wrote to.
-    const hasDirtyTracking = typeof (this.vmEngine as unknown as Record<string, unknown>).getDirtyGlobals === 'function';
+    const hasDirtyTracking =
+      typeof (this.vmEngine as unknown as Record<string, unknown>).getDirtyGlobals === 'function';
     let indicesToCheck: number[];
     let namesToCheck: string[];
 
     if (hasDirtyTracking) {
-      const dirtyIndices = (this.vmEngine as unknown as { getDirtyGlobals(indices: number[]): number[] })
-        .getDirtyGlobals(this.stateVarIndices);
+      const dirtyIndices = (
+        this.vmEngine as unknown as { getDirtyGlobals(indices: number[]): number[] }
+      ).getDirtyGlobals(this.stateVarIndices);
       if (dirtyIndices.length === 0) {
         (this.vmEngine as unknown as { clearDirty(): void }).clearDirty();
         return;
@@ -1255,6 +1365,7 @@ export class SoftNScriptRuntime {
       if (!this.asyncCallInProgress) {
         this.syncReactStateToVM();
       }
+      this.syncExternalFunctionsToVM();
       return this.vmEngine.callFunctionSync(fnName, []);
     } catch (error) {
       console.error(`[SoftN] Error evaluating computed "${declName}":`, error);
@@ -1270,6 +1381,7 @@ export class SoftNScriptRuntime {
       if (!this.asyncCallInProgress) {
         this.syncReactStateToVM();
       }
+      this.syncExternalFunctionsToVM();
       // WASM returns plain JS values — no conversion needed
       return this.vmEngine.evalSync(expression);
     } catch (error) {
@@ -1286,7 +1398,10 @@ export class SoftNScriptRuntime {
     // After syncVMStateToReact(), context.state and React componentState have
     // the same object references, so !== correctly detects external changes.
     for (const key of Object.keys(newState)) {
-      if ((newState as Record<string, unknown>)[key] !== (this.context.state as Record<string, unknown>)[key]) {
+      if (
+        (newState as Record<string, unknown>)[key] !==
+        (this.context.state as Record<string, unknown>)[key]
+      ) {
         if (!this.dirtyStateKeys) this.dirtyStateKeys = new Set();
         this.dirtyStateKeys.add(key);
       }
@@ -1310,7 +1425,12 @@ export class SoftNScriptRuntime {
     // crossing the WASM bridge. Prevents GC pressure and frame drops from
     // serializing event objects 100+ times/sec.
     const THROTTLED_EVENTS = new Set([
-      'mousemove', 'pointermove', 'scroll', 'resize', 'touchmove', 'wheel',
+      'mousemove',
+      'pointermove',
+      'scroll',
+      'resize',
+      'touchmove',
+      'wheel',
     ]);
     const THROTTLE_MS = 16; // ~60fps
 
@@ -1417,6 +1537,9 @@ export class SoftNScriptRuntime {
     this.nativeListeners.clear();
     this.bridgedEventTypes.clear();
     this.syncCallCache.clear();
+    this.externalFunctionNames = [];
+    this.externalFunctionValues = [];
+    this.externalValuesGlobalIndex = -1;
     this.syncKeys.clear();
     this.windowSyncActive = false;
 
@@ -1429,6 +1552,17 @@ export class SoftNScriptRuntime {
     // it: the tracks stay live, the OS recording indicator stays lit, and
     // nothing on screen explains why.
     this.stopMicrophone();
+
+    // Image decoding has no native AbortSignal. Explicitly settle any pending
+    // load so a malformed image cannot keep an orphaned host call alive.
+    for (const cancel of this.qrDecodeCancelers) cancel();
+    this.qrDecodeCancelers.clear();
+
+    // An app that has been closed no longer owns background network work.
+    // Abort pending fetches so they cannot continue downloading into an
+    // orphaned host-call continuation.
+    for (const controller of this.netAbortControllers) controller.abort();
+    this.netAbortControllers.clear();
 
     // Release AI resources
     if (this.onnxManager) {
@@ -1655,7 +1789,7 @@ export class SoftNScriptRuntime {
         if (++totalResolved > SoftNScriptRuntime.MAX_HOST_CALL_ROUNDS) {
           console.error(
             `[SoftN] Host call limit exceeded (${SoftNScriptRuntime.MAX_HOST_CALL_ROUNDS}) — ` +
-            'aborting to prevent runaway callback chains'
+              'aborting to prevent runaway callback chains'
           );
           return;
         }
@@ -1681,7 +1815,9 @@ export class SoftNScriptRuntime {
         await this.vmCallLock;
         if (!this.vmEngine) return;
         let release: (() => void) | undefined;
-        this.vmCallLock = new Promise<void>((r) => { release = r; });
+        this.vmCallLock = new Promise<void>((r) => {
+          release = r;
+        });
 
         try {
           this.syncCallCache.clear();
@@ -1700,7 +1836,9 @@ export class SoftNScriptRuntime {
       await this.vmCallLock;
       if (!this.vmEngine) return;
       let release2: (() => void) | undefined;
-      this.vmCallLock = new Promise<void>((r) => { release2 = r; });
+      this.vmCallLock = new Promise<void>((r) => {
+        release2 = r;
+      });
       try {
         pending = this.vmEngine.drainPendingHostCalls();
       } finally {
@@ -1711,47 +1849,88 @@ export class SoftNScriptRuntime {
 
   private async executeHostCall(call: PendingHostCall): Promise<unknown> {
     switch (call.kind) {
-      case 'net.fetch': return this.handleNetFetch(call);
-      case 'qr.encode': return this.handleQrEncode(call);
-      case 'qr.decode': return this.handleQrDecode(call);
-      case 'camera.capturePhoto': return this.handleCameraCapture(call);
-      case 'camera.recordVideo': return this.handleCameraRecord(call);
-      case 'camera.startLive': return this.handleCameraStartLive(call);
-      case 'camera.stopLive': return this.handleCameraStopLive();
-      case 'mic.record': return this.handleMicRecord(call);
-      case 'mic.stop': return this.handleMicStop();
-      case 'mic.isRecording': return this.handleMicIsRecording();
-      case 'audio.play': return this.handleAudioPlay(call);
-      case 'audio.stop': return this.handleAudioStop(call);
-      case 'audio.stopAll': return this.handleAudioStopAll();
-      case 'audio.setVolume': return this.handleAudioSetVolume(call);
-      case 'audio.whenEnded': return this.handleAudioWhenEnded(call);
-      case 'files.pickFile': return this.handleFilesPickFile(call);
-      case 'files.readText': return this.handleFilesReadText(call);
-      case 'files.readBase64': return this.handleFilesReadBase64(call);
-      case 'ai.getCapabilities': return this.handleAIGetCapabilities();
-      case 'ai.onnx.loadModel': return this.handleAIOnnxLoadModel(call);
-      case 'ai.onnx.run': return this.handleAIOnnxRun(call);
-      case 'ai.onnx.release': return this.handleAIOnnxRelease(call);
-      case 'ai.pipeline': return this.handleAIPipeline(call);
-      case 'ai.generate': return this.handleAIGenerate(call);
-      case 'ai.embed': return this.handleAIEmbed(call);
-      case 'ai.classify': return this.handleAIClassify(call);
-      case 'ai.run': return this.handleAIRun(call);
-      case 'ai.releaseAll': return this.handleAIReleaseAll();
-      case 'ai.model.load': return this.handleAIModelLoad(call);
-      case 'ai.model.generate': return this.handleAIModelGenerate(call);
-      case 'ai.model.release': return this.handleAIModelRelease(call);
-      case 'ai.gpu.requestDevice': return this.handleGpuRequestDevice(call);
-      case 'ai.gpu.createBuffer': return this.handleGpuCreateBuffer(call);
-      case 'ai.gpu.writeBuffer': return this.handleGpuWriteBuffer(call);
-      case 'ai.gpu.createShader': return this.handleGpuCreateShader(call);
-      case 'ai.gpu.createPipeline': return this.handleGpuCreatePipeline(call);
-      case 'ai.gpu.dispatch': return this.handleGpuDispatch(call);
-      case 'ai.gpu.readBuffer': return this.handleGpuReadBuffer(call);
-      case 'ai.gpu.release': return this.handleGpuRelease(call);
-      case 'ai.gpu.releaseAll': return this.handleGpuReleaseAll();
-      default: throw new Error(`Unknown host call: ${call.kind}`);
+      case 'net.fetch':
+        return this.handleNetFetch(call);
+      case 'qr.encode':
+        return this.handleQrEncode(call);
+      case 'qr.decode':
+        return this.handleQrDecode(call);
+      case 'camera.capturePhoto':
+        return this.handleCameraCapture(call);
+      case 'camera.recordVideo':
+        return this.handleCameraRecord(call);
+      case 'camera.startLive':
+        return this.handleCameraStartLive(call);
+      case 'camera.stopLive':
+        return this.handleCameraStopLive();
+      case 'mic.record':
+        return this.handleMicRecord(call);
+      case 'mic.stop':
+        return this.handleMicStop();
+      case 'mic.isRecording':
+        return this.handleMicIsRecording();
+      case 'audio.play':
+        return this.handleAudioPlay(call);
+      case 'audio.stop':
+        return this.handleAudioStop(call);
+      case 'audio.stopAll':
+        return this.handleAudioStopAll();
+      case 'audio.setVolume':
+        return this.handleAudioSetVolume(call);
+      case 'audio.whenEnded':
+        return this.handleAudioWhenEnded(call);
+      case 'files.pickFile':
+        return this.handleFilesPickFile(call);
+      case 'files.readText':
+        return this.handleFilesReadText(call);
+      case 'files.readBase64':
+        return this.handleFilesReadBase64(call);
+      case 'ai.getCapabilities':
+        return this.handleAIGetCapabilities();
+      case 'ai.onnx.loadModel':
+        return this.handleAIOnnxLoadModel(call);
+      case 'ai.onnx.run':
+        return this.handleAIOnnxRun(call);
+      case 'ai.onnx.release':
+        return this.handleAIOnnxRelease(call);
+      case 'ai.pipeline':
+        return this.handleAIPipeline(call);
+      case 'ai.generate':
+        return this.handleAIGenerate(call);
+      case 'ai.embed':
+        return this.handleAIEmbed(call);
+      case 'ai.classify':
+        return this.handleAIClassify(call);
+      case 'ai.run':
+        return this.handleAIRun(call);
+      case 'ai.releaseAll':
+        return this.handleAIReleaseAll();
+      case 'ai.model.load':
+        return this.handleAIModelLoad(call);
+      case 'ai.model.generate':
+        return this.handleAIModelGenerate(call);
+      case 'ai.model.release':
+        return this.handleAIModelRelease(call);
+      case 'ai.gpu.requestDevice':
+        return this.handleGpuRequestDevice(call);
+      case 'ai.gpu.createBuffer':
+        return this.handleGpuCreateBuffer(call);
+      case 'ai.gpu.writeBuffer':
+        return this.handleGpuWriteBuffer(call);
+      case 'ai.gpu.createShader':
+        return this.handleGpuCreateShader(call);
+      case 'ai.gpu.createPipeline':
+        return this.handleGpuCreatePipeline(call);
+      case 'ai.gpu.dispatch':
+        return this.handleGpuDispatch(call);
+      case 'ai.gpu.readBuffer':
+        return this.handleGpuReadBuffer(call);
+      case 'ai.gpu.release':
+        return this.handleGpuRelease(call);
+      case 'ai.gpu.releaseAll':
+        return this.handleGpuReleaseAll();
+      default:
+        throw new Error(`Unknown host call: ${call.kind}`);
     }
   }
 
@@ -1768,36 +1947,44 @@ export class SoftNScriptRuntime {
       // the bundle claimed to need nothing.
       throw new Error(
         `${capability} access not permitted: this bundle ships no permission.json. ` +
-        `Declare the capabilities it needs — { "permissions": { "${capability}": { "enabled": true } } } — ` +
-        `so the user can see and approve them.`
+          `Declare the capabilities it needs — { "permissions": { "${capability}": { "enabled": true } } } — ` +
+          `so the user can see and approve them.`
       );
     }
     // Permission config IS set — deny by default for any capability not explicitly enabled.
     const perms = this.permissionConfig.permissions;
     switch (capability) {
       case 'net':
-        if (!perms.net?.enabled) throw new Error('Network access not permitted. Add net.enabled to permission.json');
+        if (!perms.net?.enabled)
+          throw new Error('Network access not permitted. Add net.enabled to permission.json');
         break;
       case 'camera':
-        if (!perms.camera?.enabled) throw new Error('Camera access not permitted. Add camera.enabled to permission.json');
+        if (!perms.camera?.enabled)
+          throw new Error('Camera access not permitted. Add camera.enabled to permission.json');
         break;
       case 'mic':
-        if (!perms.mic?.enabled) throw new Error('Microphone access not permitted. Add mic.enabled to permission.json');
+        if (!perms.mic?.enabled)
+          throw new Error('Microphone access not permitted. Add mic.enabled to permission.json');
         break;
       case 'files':
-        if (!perms.files?.enabled) throw new Error('File access not permitted. Add files.enabled to permission.json');
+        if (!perms.files?.enabled)
+          throw new Error('File access not permitted. Add files.enabled to permission.json');
         break;
       case 'qr':
-        if (!perms.qr?.enabled) throw new Error('QR access not permitted. Add qr.enabled to permission.json');
+        if (!perms.qr?.enabled)
+          throw new Error('QR access not permitted. Add qr.enabled to permission.json');
         break;
       case 'ai':
-        if (!perms.ai?.enabled) throw new Error('AI access not permitted. Add ai.enabled to permission.json');
+        if (!perms.ai?.enabled)
+          throw new Error('AI access not permitted. Add ai.enabled to permission.json');
         break;
       case 'gpu':
-        if (!perms.gpu?.enabled) throw new Error('GPU compute access not permitted. Add gpu.enabled to permission.json');
+        if (!perms.gpu?.enabled)
+          throw new Error('GPU compute access not permitted. Add gpu.enabled to permission.json');
         break;
       case 'sync':
-        if (!perms.sync?.enabled) throw new Error('Sync not permitted. Add sync.enabled to permission.json');
+        if (!perms.sync?.enabled)
+          throw new Error('Sync not permitted. Add sync.enabled to permission.json');
         break;
       default:
         throw new Error(`Unknown capability: ${capability}. Add it to permission.json`);
@@ -1821,7 +2008,9 @@ export class SoftNScriptRuntime {
     const netPerms = this.permissionConfig?.permissions.net;
     // Default: HTTPS only unless allow_http is explicitly true
     if (!netPerms?.allow_http && parsed.protocol === 'http:') {
-      throw new Error(`HTTP not allowed (only HTTPS). Set net.allow_http in permission.json to allow: ${url}`);
+      throw new Error(
+        `HTTP not allowed (only HTTPS). Set net.allow_http in permission.json to allow: ${url}`
+      );
     }
     if (netPerms?.allowed_hosts && netPerms.allowed_hosts.length > 0) {
       if (!netPerms.allowed_hosts.includes(parsed.hostname)) {
@@ -1840,22 +2029,84 @@ export class SoftNScriptRuntime {
 
     // Disable redirects to prevent allowlist bypass: a redirect from an
     // allowed host to an internal/disallowed host would skip checkNetHost.
-    const resp = await fetch(url, {
-      method: options.method || 'GET',
-      headers: options.headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: AbortSignal.timeout(options.timeout || 15000),
-      redirect: 'error',
-    });
+    const requestedTimeout = Number(options.timeout);
+    const timeoutMs = Number.isFinite(requestedTimeout)
+      ? Math.max(1, Math.min(60_000, requestedTimeout))
+      : 15_000;
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+    this.netAbortControllers.add(abortController);
 
-    const body = await resp.text();
-    return {
-      ok: resp.ok,
-      status: resp.status,
-      statusText: resp.statusText,
-      body,
-      headers: Object.fromEntries(resp.headers),
-    };
+    try {
+      const resp = await fetch(url, {
+        method: options.method || 'GET',
+        headers: options.headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: abortController.signal,
+        redirect: 'error',
+      });
+
+      const declaredHeader = resp.headers.get('content-length');
+      const declaredLength = declaredHeader === null ? NaN : Number(declaredHeader);
+      if (
+        Number.isFinite(declaredLength) &&
+        declaredLength > SoftNScriptRuntime.MAX_NET_RESPONSE_BYTES
+      ) {
+        try {
+          await resp.body?.cancel();
+        } catch {
+          // Preserve the response-size error if the stream was disturbed.
+        }
+        throw new Error('Network response is too large');
+      }
+
+      let body: string;
+      if (resp.body) {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        const textChunks: string[] = [];
+        let total = 0;
+        try {
+          let next = await reader.read();
+          while (!next.done) {
+            if (next.value) {
+              total += next.value.byteLength;
+              if (total > SoftNScriptRuntime.MAX_NET_RESPONSE_BYTES) {
+                try {
+                  await reader.cancel();
+                } catch {
+                  // Preserve the response-size error if cancellation fails.
+                }
+                throw new Error('Network response is too large');
+              }
+              textChunks.push(decoder.decode(next.value, { stream: true }));
+            }
+            next = await reader.read();
+          }
+          textChunks.push(decoder.decode());
+        } finally {
+          reader.releaseLock();
+        }
+        body = textChunks.join('');
+      } else {
+        const bytes = await resp.arrayBuffer();
+        if (bytes.byteLength > SoftNScriptRuntime.MAX_NET_RESPONSE_BYTES) {
+          throw new Error('Network response is too large');
+        }
+        body = new TextDecoder().decode(bytes);
+      }
+
+      return {
+        ok: resp.ok,
+        status: resp.status,
+        statusText: resp.statusText,
+        body,
+        headers: Object.fromEntries(resp.headers),
+      };
+    } finally {
+      clearTimeout(timeout);
+      this.netAbortControllers.delete(abortController);
+    }
   }
 
   private async handleQrEncode(call: PendingHostCall): Promise<unknown> {
@@ -1871,15 +2122,73 @@ export class SoftNScriptRuntime {
     // Use BarcodeDetector API if available
     if ('BarcodeDetector' in globalThis) {
       try {
-        const detector = new (globalThis as unknown as { BarcodeDetector: new (opts: { formats: string[] }) => { detect: (img: HTMLImageElement) => Promise<Array<{ rawValue: string }>> } }).BarcodeDetector({ formats: ['qr_code'] });
+        const detector = new (
+          globalThis as unknown as {
+            BarcodeDetector: new (opts: { formats: string[] }) => {
+              detect: (img: HTMLImageElement) => Promise<Array<{ rawValue: string }>>;
+            };
+          }
+        ).BarcodeDetector({ formats: ['qr_code'] });
         const img = new Image();
-        img.src = imageDataUrl;
-        await new Promise((resolve) => { img.onload = resolve; });
-        const results = await detector.detect(img);
+        await new Promise<void>((resolve, reject) => {
+          let settled = false;
+          let timeout: ReturnType<typeof setTimeout> | null = null;
+
+          const finish = (error?: Error) => {
+            if (settled) return;
+            settled = true;
+            if (timeout) clearTimeout(timeout);
+            img.onload = null;
+            img.onerror = null;
+            this.qrDecodeCancelers.delete(cancel);
+            if (error) {
+              // Removing the source asks the browser to abandon any decode work
+              // still associated with this detached image.
+              img.removeAttribute('src');
+              reject(error);
+            } else {
+              resolve();
+            }
+          };
+          const cancel = () => finish(new Error('QR image load cancelled'));
+
+          this.qrDecodeCancelers.add(cancel);
+          img.onload = () => finish();
+          img.onerror = () => finish(new Error('Could not load QR image'));
+          timeout = setTimeout(
+            () => finish(new Error('QR image load timed out')),
+            SoftNScriptRuntime.QR_OPERATION_TIMEOUT_MS
+          );
+          img.src = imageDataUrl;
+        });
+        const results = await new Promise<Array<{ rawValue: string }>>((resolve, reject) => {
+          let settled = false;
+          const finish = (result?: Array<{ rawValue: string }>, error?: unknown) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            this.qrDecodeCancelers.delete(cancel);
+            if (error) reject(error);
+            else resolve(result ?? []);
+          };
+          const cancel = () => finish(undefined, new Error('QR detection cancelled'));
+          const timeout = setTimeout(
+            () => finish(undefined, new Error('QR detection timed out')),
+            SoftNScriptRuntime.QR_OPERATION_TIMEOUT_MS
+          );
+
+          this.qrDecodeCancelers.add(cancel);
+          detector.detect(img).then(
+            (result) => finish(result),
+            (error) => finish(undefined, error)
+          );
+        });
         if (results.length > 0) {
           return { data: results[0].rawValue };
         }
-      } catch { /* fallthrough */ }
+      } catch {
+        /* fallthrough */
+      }
     }
     return { data: null, error: 'QR detection not available' };
   }
@@ -1927,7 +2236,7 @@ export class SoftNScriptRuntime {
   private async handleMicRecord(call: PendingHostCall): Promise<unknown> {
     this.checkPermission('mic');
 
-    if (this.micRecording) {
+    if (this.micRecording || this.micAcquisition) {
       return { recorded: false, reason: 'already recording' };
     }
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -1935,19 +2244,29 @@ export class SoftNScriptRuntime {
     }
 
     const [optionsJson] = call.args;
-    const options = optionsJson ? (JSON.parse(optionsJson) as {
-      seconds?: number; sampleRate?: number; processing?: boolean;
-    }) : {};
+    const options = optionsJson
+      ? (JSON.parse(optionsJson) as {
+          seconds?: number;
+          sampleRate?: number;
+          processing?: boolean;
+        })
+      : {};
 
     const processing = options.processing !== false;
-    const wantedRate = typeof options.sampleRate === 'number' && options.sampleRate > 0
-      ? options.sampleRate
-      : 48000;
+    const wantedRate =
+      typeof options.sampleRate === 'number' && options.sampleRate > 0 ? options.sampleRate : 48000;
     // A cap the bundle declared is a promise to the user that the consent
     // dialog showed them, so it wins over whatever the script asks for.
     const declaredCap = this.permissionConfig?.permissions.mic?.maxSeconds;
-    const requested = typeof options.seconds === 'number' && options.seconds > 0 ? options.seconds : 5;
-    const seconds = Math.min(requested, typeof declaredCap === 'number' && declaredCap > 0 ? declaredCap : 300);
+    const requested =
+      typeof options.seconds === 'number' && options.seconds > 0 ? options.seconds : 5;
+    const seconds = Math.min(
+      requested,
+      typeof declaredCap === 'number' && declaredCap > 0 ? declaredCap : 300
+    );
+
+    const acquisition = { cancelled: false };
+    this.micAcquisition = acquisition;
 
     let stream: MediaStream;
     try {
@@ -1963,14 +2282,27 @@ export class SoftNScriptRuntime {
     } catch (err) {
       // A DOMException, which does not inherit from Error — reading `.message`
       // directly is what keeps "Permission denied" from becoming "failed".
-      const name = typeof err === 'object' && err !== null
-        ? ((err as { message?: string }).message ?? (err as { name?: string }).name)
-        : undefined;
+      const name =
+        typeof err === 'object' && err !== null
+          ? ((err as { message?: string }).message ?? (err as { name?: string }).name)
+          : undefined;
+      if (this.micAcquisition === acquisition) this.micAcquisition = null;
       return { recorded: false, reason: name ?? 'could not open the microphone' };
     }
 
+    if (this.micAcquisition === acquisition) this.micAcquisition = null;
+    if (acquisition.cancelled || this.disposed) {
+      stream.getTracks().forEach((track) => track.stop());
+      return { recorded: false, reason: 'stopped' };
+    }
+
     const AudioContextCtor =
-      (globalThis as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext }).AudioContext ??
+      (
+        globalThis as {
+          AudioContext?: typeof AudioContext;
+          webkitAudioContext?: typeof AudioContext;
+        }
+      ).AudioContext ??
       (globalThis as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextCtor) {
       stream.getTracks().forEach((t) => t.stop());
@@ -1982,9 +2314,17 @@ export class SoftNScriptRuntime {
     // hardware rate would hand back 44100 samples labelled 48000.
     let context: AudioContext;
     try {
-      context = new AudioContextCtor({ sampleRate: wantedRate });
-    } catch {
-      context = new AudioContextCtor();
+      try {
+        context = new AudioContextCtor({ sampleRate: wantedRate });
+      } catch {
+        context = new AudioContextCtor();
+      }
+    } catch (err) {
+      // Constructing an AudioContext can fail because the browser has reached
+      // its context limit or disabled Web Audio. The microphone stream was
+      // already granted at this point, so it must still be released.
+      stream.getTracks().forEach((track) => track.stop());
+      return { recorded: false, reason: String(err) };
     }
     const rate = context.sampleRate;
 
@@ -2004,15 +2344,23 @@ export class SoftNScriptRuntime {
         if (timer) clearTimeout(timer);
         this.micRecording = null;
 
-        if (processor) { processor.onaudioprocess = null; processor.disconnect(); }
+        if (processor) {
+          processor.onaudioprocess = null;
+          processor.disconnect();
+        }
         if (source) source.disconnect();
         if (sink) sink.disconnect();
-        void context.close().catch(() => { /* already closed */ });
+        void context.close().catch(() => {
+          /* already closed */
+        });
         stream.getTracks().forEach((t) => t.stop());
 
         const samples = new Float32Array(total);
         let offset = 0;
-        for (const block of blocks) { samples.set(block, offset); offset += block.length; }
+        for (const block of blocks) {
+          samples.set(block, offset);
+          offset += block.length;
+        }
 
         resolve({
           recorded: total > 0,
@@ -2064,17 +2412,22 @@ export class SoftNScriptRuntime {
 
   /** End a recording early. The pending `mic.record` callback still fires. */
   private async handleMicStop(): Promise<unknown> {
-    if (!this.micRecording) return { stopped: false, reason: 'not recording' };
-    this.micRecording.stop('stopped');
+    if (this.micRecording) {
+      this.micRecording.stop('stopped');
+      return { stopped: true };
+    }
+    if (!this.micAcquisition) return { stopped: false, reason: 'not recording' };
+    this.micAcquisition.cancelled = true;
     return { stopped: true };
   }
 
   private async handleMicIsRecording(): Promise<unknown> {
-    return { recording: this.micRecording !== null };
+    return { recording: this.micRecording !== null || this.micAcquisition !== null };
   }
 
   /** Close any open microphone. Called from cleanup, and safe when idle. */
   private stopMicrophone(): void {
+    if (this.micAcquisition) this.micAcquisition.cancelled = true;
     this.micRecording?.stop('stopped');
   }
 
@@ -2108,9 +2461,13 @@ export class SoftNScriptRuntime {
     if (typeof Audio === 'undefined') return { played: false, reason: 'no audio support' };
 
     const [rawSrc, optionsJson] = call.args;
-    const options = optionsJson ? (JSON.parse(optionsJson) as {
-      volume?: number; loop?: boolean; rate?: number;
-    }) : {};
+    const options = optionsJson
+      ? (JSON.parse(optionsJson) as {
+          volume?: number;
+          loop?: boolean;
+          rate?: number;
+        })
+      : {};
 
     const src = this.resolveAudioSrc(rawSrc);
     if (!src) return { played: false, reason: `no such sound: ${rawSrc}` };
@@ -2126,22 +2483,35 @@ export class SoftNScriptRuntime {
     // reading it back off the element would fold the master in twice.
     this.audioPlaying.set(handle, { el, volume: own, watchers: [] });
     // One-shots clear themselves; loops stay until stopped or the app closes.
-    el.addEventListener('ended', () => {
-      const outcome: AudioOutcome = { handle, status: 'ended' };
-      if (Number.isFinite(el.duration)) outcome.durationMs = el.duration * 1000;
-      this.finishAudio(handle, outcome);
-    }, { once: true });
+    el.addEventListener(
+      'ended',
+      () => {
+        const outcome: AudioOutcome = { handle, status: 'ended' };
+        if (Number.isFinite(el.duration)) outcome.durationMs = el.duration * 1000;
+        this.finishAudio(handle, outcome);
+      },
+      { once: true }
+    );
     // A src that fails to decode reports itself here, not through play() — a
     // watcher waiting on the sound would otherwise wait forever.
-    el.addEventListener('error', () => {
-      this.finishAudio(handle, { handle, status: 'error', reason: el.error?.message || 'could not play' });
-    }, { once: true });
+    el.addEventListener(
+      'error',
+      () => {
+        this.finishAudio(handle, {
+          handle,
+          status: 'error',
+          reason: el.error?.message || 'could not play',
+        });
+      },
+      { once: true }
+    );
 
     try {
       await el.play();
       return { played: true, handle };
     } catch (err) {
-      const name = typeof err === 'object' && err !== null ? (err as { name?: string }).name : undefined;
+      const name =
+        typeof err === 'object' && err !== null ? (err as { name?: string }).name : undefined;
       // Browsers refuse to make noise before the user has interacted with the
       // page. That is the policy working, not a fault, so it is reported rather
       // than thrown — and a soundtrack (anything looping) is held back and
@@ -2152,7 +2522,11 @@ export class SoftNScriptRuntime {
           return { played: false, blocked: true, pending: true, handle };
         }
         this.audioPlaying.delete(handle);
-        return { played: false, blocked: true, reason: 'the page has not been interacted with yet' };
+        return {
+          played: false,
+          blocked: true,
+          reason: 'the page has not been interacted with yet',
+        };
       }
       this.audioPlaying.delete(handle);
       return { played: false, reason: name ?? 'could not play' };
@@ -2168,7 +2542,9 @@ export class SoftNScriptRuntime {
       this.audioUnlockers.delete(start);
       // It may have been stopped, or the whole runtime torn down, while waiting.
       if (this.disposed || !this.audioPlaying.has(handle)) return;
-      el.play().catch(() => { this.finishAudio(handle, { handle, status: 'error', reason: 'could not play' }); });
+      el.play().catch(() => {
+        this.finishAudio(handle, { handle, status: 'error', reason: 'could not play' });
+      });
     };
     this.audioUnlockers.add(start);
     window.addEventListener('pointerdown', start, { once: true });
@@ -2235,7 +2611,9 @@ export class SoftNScriptRuntime {
     if (finished) return finished;
     const sound = this.audioPlaying.get(handle);
     if (!sound) return { handle, status: 'ended', known: false };
-    return new Promise<AudioOutcome>((resolve) => { sound.watchers.push(resolve); });
+    return new Promise<AudioOutcome>((resolve) => {
+      sound.watchers.push(resolve);
+    });
   }
 
   private stopAllAudio(): void {
@@ -2268,7 +2646,7 @@ export class SoftNScriptRuntime {
       if (options.multiple) input.multiple = true;
       input.onchange = () => {
         const files = Array.from(input.files || []);
-        const result = files.map(f => ({
+        const result = files.map((f) => ({
           name: f.name,
           size: f.size,
           type: f.type,
@@ -2318,7 +2696,9 @@ export class SoftNScriptRuntime {
     return this.onnxManager;
   }
 
-  private async getTransformersManager(): Promise<import('./ai-transformers-manager').TransformersManager> {
+  private async getTransformersManager(): Promise<
+    import('./ai-transformers-manager').TransformersManager
+  > {
     if (!this.transformersManager) {
       const { TransformersManager } = await import('./ai-transformers-manager');
       this.transformersManager = new TransformersManager();
@@ -2380,7 +2760,11 @@ export class SoftNScriptRuntime {
     this.checkPermission('ai');
     const [pipelineId, textsJson] = call.args;
     let texts: string | string[];
-    try { texts = JSON.parse(textsJson); } catch { texts = textsJson; }
+    try {
+      texts = JSON.parse(textsJson);
+    } catch {
+      texts = textsJson;
+    }
     const mgr = await this.getTransformersManager();
     return mgr.embed(pipelineId, texts);
   }
@@ -2396,7 +2780,11 @@ export class SoftNScriptRuntime {
     this.checkPermission('ai');
     const [pipelineId, inputJson, optionsJson] = call.args;
     let input: unknown;
-    try { input = JSON.parse(inputJson); } catch { input = inputJson; }
+    try {
+      input = JSON.parse(inputJson);
+    } catch {
+      input = inputJson;
+    }
     const options = optionsJson ? JSON.parse(optionsJson) : undefined;
     const mgr = await this.getTransformersManager();
     return mgr.run(pipelineId, input, options);
@@ -2414,7 +2802,9 @@ export class SoftNScriptRuntime {
   private async handleAIModelLoad(call: PendingHostCall): Promise<unknown> {
     this.checkPermission('ai');
     const [modelId, optionsJson] = call.args;
-    const options: DirectModelOptions & { modelClass?: string } = optionsJson ? JSON.parse(optionsJson) : {};
+    const options: DirectModelOptions & { modelClass?: string } = optionsJson
+      ? JSON.parse(optionsJson)
+      : {};
     const mgr = await this.getTransformersManager();
     return mgr.loadModel(modelId, options);
   }
@@ -2438,7 +2828,9 @@ export class SoftNScriptRuntime {
 
   // ── GPU compute host call handlers ──
 
-  private async getGpuComputeManager(): Promise<import('./ai-gpu-compute-manager').GpuComputeManager> {
+  private async getGpuComputeManager(): Promise<
+    import('./ai-gpu-compute-manager').GpuComputeManager
+  > {
     if (!this.gpuComputeManager) {
       const { GpuComputeManager } = await import('./ai-gpu-compute-manager');
       this.gpuComputeManager = new GpuComputeManager();
@@ -2575,9 +2967,7 @@ export function createPersistentXDBModule(appId?: string): XDBModule {
 
     update: async (id: string, data: Record<string, unknown>) => {
       const xdb = await getXDB();
-      const record = xdb.isP2PAvailable()
-        ? await xdb.updateAsync(id, data)
-        : xdb.update(id, data);
+      const record = xdb.isP2PAvailable() ? await xdb.updateAsync(id, data) : xdb.update(id, data);
       if (!record) {
         throw new Error(`Record not found: ${id}`);
       }
@@ -2636,7 +3026,12 @@ export interface DBNamespace {
   clearCollection: (collection: string) => void;
   startSync: (room: string, options?: Record<string, unknown>) => void;
   stopSync: (room?: string) => void;
-  getSyncStatus: (room?: string) => { connected: boolean; peers: number; room: string; peerId: string };
+  getSyncStatus: (room?: string) => {
+    connected: boolean;
+    peers: number;
+    room: string;
+    peerId: string;
+  };
   getSavedSyncRoom: () => string | null;
   /** Wait for the XDB service to finish initializing */
   ready: () => Promise<void>;
@@ -2646,7 +3041,11 @@ export interface DBNamespace {
  * Create a synchronous db namespace for use in <logic> blocks
  * This uses the XDB service synchronously for immediate data access
  */
-export function createDBNamespace(getPermissionConfig?: () => PermissionConfig | null, appId?: string, syncEncryptionKeyHex?: string): DBNamespace {
+export function createDBNamespace(
+  getPermissionConfig?: () => PermissionConfig | null,
+  appId?: string,
+  syncEncryptionKeyHex?: string
+): DBNamespace {
   // Import XDB directly - this module uses a singleton pattern
   // We use a wrapper that will lazily initialize
   let xdbService: import('./xdb').XDBService | null = null;
@@ -2719,7 +3118,11 @@ export function createDBNamespace(getPermissionConfig?: () => PermissionConfig |
       // Shared room: sharedRoom flag, legacy noEncrypt, or persisted from prior session
       let isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;
       if (!isShared && sharedKey) {
-        try { isShared = localStorage.getItem(sharedKey) === 'true'; } catch { /* noop */ }
+        try {
+          isShared = localStorage.getItem(sharedKey) === 'true';
+        } catch {
+          /* noop */
+        }
       }
       if (isShared) {
         // Derive encryption key from room name — all peers use the same key.
@@ -2731,27 +3134,35 @@ export function createDBNamespace(getPermissionConfig?: () => PermissionConfig |
       }
       // Persist shared flag so auto-resume also uses room-key encryption
       if (isShared && sharedKey) {
-        try { localStorage.setItem(sharedKey, 'true'); } catch { /* noop */ }
+        try {
+          localStorage.setItem(sharedKey, 'true');
+        } catch {
+          /* noop */
+        }
       }
       delete syncOpts.noEncrypt;
       delete syncOpts.sharedRoom;
       if (appId && !syncOpts.appId) {
         syncOpts.appId = appId;
       }
-      import('./xdb-sync').then((mod) => {
-        _syncModuleCache = mod;
-        mod.startSync(syncOpts as unknown as import('./xdb-sync').XDBSyncOptions);
-      }).catch((err) => {
-        console.error('[XDB Sync] Failed to start sync:', err);
-      });
+      import('./xdb-sync')
+        .then((mod) => {
+          _syncModuleCache = mod;
+          mod.startSync(syncOpts as unknown as import('./xdb-sync').XDBSyncOptions);
+        })
+        .catch((err) => {
+          console.error('[XDB Sync] Failed to start sync:', err);
+        });
     },
 
     stopSync: (room?: string) => {
-      import('./xdb-sync').then(({ stopSync }) => {
-        stopSync(room, appId);
-      }).catch((err) => {
-        console.error('[XDB Sync] Failed to stop sync:', err);
-      });
+      import('./xdb-sync')
+        .then(({ stopSync }) => {
+          stopSync(room, appId);
+        })
+        .catch((err) => {
+          console.error('[XDB Sync] Failed to stop sync:', err);
+        });
     },
 
     getSyncStatus: (room?: string) => {
@@ -2764,7 +3175,11 @@ export function createDBNamespace(getPermissionConfig?: () => PermissionConfig |
 
     getSavedSyncRoom: () => {
       const key = appId ? `xdb-sync-active-room:${appId}` : 'xdb-sync-active-room';
-      try { return localStorage.getItem(key); } catch { return null; }
+      try {
+        return localStorage.getItem(key);
+      } catch {
+        return null;
+      }
     },
 
     prune: (collection: string, maxRecords: number) => {
