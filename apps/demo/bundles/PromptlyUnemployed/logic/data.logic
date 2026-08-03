@@ -233,6 +233,15 @@ let WF_POLICIES = [
   { id: "never",  label: "Never automate" }
 ]
 
+// Doug's silence, captioned. It rotates, because he has range.
+let DOUG_NOTES = [
+  "[professionally concerned silence]",
+  "[silence, but the kind that has heard you]",
+  "[a silence with excellent posture]",
+  "[the silence of someone who saw the bug three days ago]",
+  "[supportive silence, notarised]"
+]
+
 let NAME_CHOICES = [
   { id: "patchwork", label: "Patchwork",  note: "Small systems, connected carefully" },
   { id: "orderly",   label: "OrderlyAI",  note: "Sounds like a compliance department" },
