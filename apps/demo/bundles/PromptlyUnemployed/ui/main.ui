@@ -212,7 +212,7 @@
   </Box>
 
   <!-- Scene 3: packing progress (the picking itself happens in the world) -->
-  <Box if={scene === "boxes"} className="pu-card" style={{ padding: "14px 18px" }}>
+  <Box if={scene === "boxes" && keptItems.length === 0} className="pu-card" style={{ padding: "14px 18px" }}>
     <Stack direction="horizontal" gap={14} style={{ alignItems: "center", flexWrap: "wrap" }}>
       <Text style={{ fontWeight: 700, color: "#fbbf24", fontSize: "14px" }}>Archive box</Text>
       <Stack direction="horizontal" gap={7} style={{ alignItems: "center" }}>

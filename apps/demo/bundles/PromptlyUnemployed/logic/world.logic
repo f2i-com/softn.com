@@ -733,11 +733,11 @@ function buildBoxes() {
   let objs = officeStatic.slice()
   let hs = []
   // The archive box, open, on the floor beside the desk.
-  objs.push(blob("abox", 8, 6.1, 0.55, 0.3))
-  objs.push({ id: "hs_abox", type: "box", position: { x: 8, y: 0.26, z: 6.1 }, width: 1.02, height: 0.52, depth: 0.78, color: "#8a6f4d" })
-  objs.push({ id: "abox_f1", type: "box", position: { x: 8, y: 0.55, z: 5.72 }, rotation: { x: -0.9, y: 0, z: 0 }, width: 1.02, height: 0.34, depth: 0.04, color: "#7a6142" })
-  objs.push({ id: "abox_f2", type: "box", position: { x: 8, y: 0.55, z: 6.48 }, rotation: { x: 0.9, y: 0, z: 0 }, width: 1.02, height: 0.34, depth: 0.04, color: "#7a6142" })
-  objs.push({ id: "abox_lbl", type: "box", position: { x: 8, y: 0.3, z: 5.69 }, width: 0.5, height: 0.16, depth: 0.02, color: "#efe6cf" })
+  objs.push(blob("abox", 8, 6.7, 0.6, 0.3))
+  objs.push({ id: "hs_abox", type: "box", position: { x: 8, y: 0.26, z: 6.7 }, width: 1.02, height: 0.52, depth: 0.78, color: "#8a6f4d" })
+  objs.push({ id: "abox_f1", type: "box", position: { x: 8, y: 0.55, z: 6.32 }, rotation: { x: -0.9, y: 0, z: 0 }, width: 1.02, height: 0.34, depth: 0.04, color: "#7a6142" })
+  objs.push({ id: "abox_f2", type: "box", position: { x: 8, y: 0.55, z: 7.08 }, rotation: { x: 0.9, y: 0, z: 0 }, width: 1.02, height: 0.34, depth: 0.04, color: "#7a6142" })
+  objs.push({ id: "abox_lbl", type: "box", position: { x: 8, y: 0.3, z: 6.29 }, width: 0.5, height: 0.16, depth: 0.02, color: "#efe6cf" })
   let inBox = 0
   for (let i = 0; i < ITEM_SPOTS.length; i++) {
     let sp = ITEM_SPOTS[i]
@@ -748,10 +748,12 @@ function buildBoxes() {
       inBox = inBox + 1
     } else {
       objs = objs.concat(itemObj("it_" + sp.id, sp.id, sp.x, 0.75, sp.z))
-      hs.push({ id: "it_" + sp.id, x: sp.x, z: sp.z + 0.9, r: 1.25, label: itemName(sp.id) })
+      if (picked.length < 3) {
+        hs.push({ id: "it_" + sp.id, x: sp.x, z: sp.z + 0.75, r: 1.0, label: itemName(sp.id) })
+      }
     }
   }
-  hs.push({ id: "hs_abox", x: 8, z: 6.1, r: 1.7,
+  hs.push({ id: "hs_abox", x: 8, z: 6.7, r: 2.0,
     label: picked.length >= 3 ? "Tape the box shut" : "Archive box — " + picked.length + " of 3" })
   hotspots = hs
   objs = objs.concat(hotspotMarkers())
