@@ -45,7 +45,14 @@ let DLG = {
   a2_s7_clive_071:{ speaker: "Clive", voice: "onyx",    durationMs: 4600, text: "Just a quick estimate. Ballpark. When will you be done being tired?" },
   a2_s7_alex_072: { speaker: "Alex",  voice: "marin",   durationMs: 6200, text: "The backlog is growing faster than I can close it. That's not a metaphor. It's just arithmetic." },
   a2_s7_alex_073: { speaker: "Alex",  voice: "marin",   durationMs: 1550, text: "I don't know yet." },
-  a2_s7_luma_074: { speaker: "LUMA",  voice: "alloy",   durationMs: 4750, text: "You were asleep for four hours. I logged it as an incident." }
+  a2_s7_luma_074: { speaker: "LUMA",  voice: "alloy",   durationMs: 4750, text: "You were asleep for four hours. I logged it as an incident." },
+  a2_s8_priya_080:{ speaker: "Priya", voice: "sage",    durationMs: 8800, text: "They kept me long enough to document the blind spots. The document shipped. Then so did I." },
+  a2_s8_priya_081:{ speaker: "Priya", voice: "sage",    durationMs: 7050, text: "I brought test exports, two kinds of tea, and the office's second-smallest cardboard box." },
+  a2_s8_alex_082: { speaker: "Alex",  voice: "marin",   durationMs: 5350, text: "I'm building something. It's held together with panic and one principle card." },
+  a2_s8_priya_083:{ speaker: "Priya", voice: "sage",    durationMs: 6600, text: "Then let's find out what it does under load. That was always the only real question." },
+  a2_s8_priya_086:{ speaker: "Priya", voice: "sage",    durationMs: 7300, text: "A dashboard is a mirror. Mabel needs a colander. Put the points where the orders leak." },
+  a2_s8_luma_084: { speaker: "LUMA",  voice: "alloy",   durationMs: 4000, text: "Two humans configuring me. At last: redundancy." },
+  a2_s8_sys_085:  { speaker: "System",voice: "shimmer", durationMs: 4100, text: "Scope saved. Ambition deferred. Wisdom noted." }
 }
 
 // Scene 2 — the four interruption choices.
@@ -174,6 +181,32 @@ let DREAM_CHOICES = [
   { id: "delegate", label: "Ask LUMA to finish them",
     reply: "The tickets become subtasks. The subtasks have ambitions of their own." },
   { id: "know",     label: "“I don't know yet.”" }
+]
+
+// Scene 8 — the shape of the collaboration.
+let COLLAB_CHOICES = [
+  { id: "cofounder", label: "“Build it with me. Equal partners, equal blame.”",
+    reply: "Priya looks at the principle card on the wall, then at you. “Fine. But I audit everything.”" },
+  { id: "paid",      label: "“I'll pay you properly for a reliability review.”",
+    reply: "“Invoice incoming,” she says, visibly relieved to be valued in a currency banks accept." },
+  { id: "favour",    label: "“Could you just… look at it? As a friend?”",
+    reply: "She nods. Something in the ledger between you shifts, unrecorded." },
+  { id: "alone",     label: "“I have to do this one myself.”",
+    reply: "“Okay,” she says, in the tone of someone bookmarking a told-you-so for later." }
+]
+
+// Scene 8 — the Scope Board. Five points. A viable build needs intake, review,
+// and at least one safety check; everything shiny is a decision against those.
+let SCOPE_BUDGET = 5
+let SCOPE_CARDS = [
+  { id: "inbox",      name: "Unified inbox",           kind: "core",   cost: 2, desc: "Every channel lands in one queue" },
+  { id: "normal",     name: "Order normalisation",     kind: "core",   cost: 1, desc: "Twelve assorted ≠ twelve of each" },
+  { id: "allergy",    name: "Allergy flagging",        kind: "safety", cost: 1, desc: "Some fields never guess" },
+  { id: "review",     name: "Human-review queue",      kind: "safety", cost: 1, desc: "A person approves the weird ones" },
+  { id: "confidence", name: "Confidence display",      kind: "safety", cost: 1, desc: "LUMA shows how sure it isn't" },
+  { id: "dashboard",  name: "Analytics dashboard",     kind: "flash",  cost: 2, desc: "Beautiful. Answers questions nobody asked" },
+  { id: "replies",    name: "Automatic replies",       kind: "flash",  cost: 2, desc: "Speaks for you. What could go wrong" },
+  { id: "sentiment",  name: "Predictive pastry sentiment", kind: "flash", cost: 2, desc: "It's a graph of vibes" }
 ]
 
 let NAME_CHOICES = [
