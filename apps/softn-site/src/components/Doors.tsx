@@ -22,7 +22,7 @@ const stroke = {
 const DOORS: Door[] = [
   {
     name: 'Studio',
-    copy: 'Describe the app you want, review the blueprint it proposes, then edit what comes back. Bring your own model key — the generation runs against whichever provider you configure.',
+    copy: 'Describe the app you want, review the blueprint it proposes, then edit what comes back. Bring your own model key — it runs against whichever provider you configure.',
     href: STUDIO_HREF,
     action: 'Open Studio',
     badge: 'Installable',
@@ -82,7 +82,7 @@ export function Doors(): React.ReactElement {
           <span className="eyebrow">Three ways in</span>
           <h2 className="band-title">Nothing to install, unless you want to.</h2>
           <p className="band-sub">
-            All three are ordinary web apps. Each one also installs to your dock or start menu and keeps working with
+            All three are ordinary web apps. Each one also installs to your dock or Start menu and keeps working with
             the network off, because the engine, the components and your projects are already on the machine.
           </p>
         </div>

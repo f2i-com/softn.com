@@ -1,0 +1,704 @@
+// Pocket — a handheld console emulator, in SoftN .logic. The state layout.
+//
+// This file is imported first by everything else and owns EVERY piece of
+// machine state. No other module declares storage; they declare functions that
+// read and write what is declared here. `import "./gb_state.logic"` is textual,
+// so all of these names land in one global namespace shared with gb_cart,
+// gb_mmu, gb_ops, gb_cpu, gb_timer, gb_ppu, gb_apu and gb_machine. Nothing in
+// this file may be redeclared anywhere else.
+//
+// ---------------------------------------------------------------------------
+// WHY IT LOOKS LIKE THIS
+// ---------------------------------------------------------------------------
+//
+// zipp has no dirty bits. getDirtyGlobals returns every index unconditionally,
+// so on EVERY host call the runtime reads each top-level `let` out of the VM
+// and deep-compares it. Measured: an equivalent 65536-element plain Array costs
+// 1512us per call. A typed array marshals to an opaque slot, is skipped by the
+// state sync entirely, and costs 0.131us. That is a factor of 11,500.
+//
+// So: all machine state is in typed arrays. The CPU's A register is
+// GB_REG[GB_R_A], not `let a`. The 46KB of framebuffer, the 128KB of external
+// RAM and the 8MB ROM are all typed arrays and all free. What remains as plain
+// top-level values is:
+//
+//   * ~230 scalar index constants (GB_R_A, GB_C_FRAME, ...). One read each,
+//     ~23ns apiece, so ~5us per host call. Worth it — a later agent reading
+//     GB_CTR[12] instead of GB_CTR[GB_C_FRAME] will eventually get it wrong.
+//   * GB_OPS and GB_CBOPS, 256 function slots each. ~12us per host call
+//     combined. There is no typed array of functions, and a 256-arm switch was
+//     measured 6.4x slower over a realistic opcode mix, so this is the cheaper
+//     of the two options. DO NOT add any further large plain arrays; that
+//     budget is spent.
+//   * The dozen UI scalars at the bottom, which the .ui templates bind to.
+//
+// At three host calls per frame the whole plain-value surface costs about
+// 0.05ms/frame against a 16.67ms budget.
+//
+// ---------------------------------------------------------------------------
+// MEMORY MAP AS STORED
+// ---------------------------------------------------------------------------
+//
+//   0000-3FFF  GB_ROM[GB_CART[GB_K_ROMOFF_LO] + addr]
+//   4000-7FFF  GB_ROM[GB_CART[GB_K_ROMOFF_HI] + (addr - 0x4000)]
+//   8000-9FFF  GB_VRAM[(vramBank << 13) + (addr - 0x8000)]
+//   A000-BFFF  GB_ERAM[(GB_CART[GB_K_RAMOFF] + (addr - 0xA000)) & rammask]
+//   C000-CFFF  GB_WRAM[addr - 0xC000]
+//   D000-DFFF  GB_WRAM[(svbk << 12) + (addr - 0xD000)]
+//   E000-FDFF  echo of C000-DDFF
+//   FE00-FE9F  GB_OAM[addr - 0xFE00]
+//   FEA0-FEFF  unmapped, reads 0xFF
+//   FF00-FF7F  GB_IO[addr & 0x7F]  (canonical only for the registers listed in
+//              CONTRACT.md; device-derived registers are computed on read)
+//   FF80-FFFE  GB_HRAM[addr - 0xFF80]
+//   FFFF       GB_IO[GB_IO_IE]      (index 0x80, deliberately outside the 0x7F
+//              wrap so it does not alias FF7F)
+//
+// Both VRAM banks live in ONE array so a bank switch is an offset change rather
+// than an array-of-arrays indirection. Same for WRAM's eight 4KB banks.
+//
+// ---------------------------------------------------------------------------
+// THE TILE-ROW DECODE CACHE
+// ---------------------------------------------------------------------------
+//
+// A naive per-pixel PPU measured 13.8ms/frame, which spends the entire budget
+// before the APU runs. The fix is to decode each 2bpp tile row to eight palette
+// indices once and reuse it until VRAM under it changes.
+//
+// A tile row is two bytes. The cache is indexed by VRAM byte offset >> 1, over
+// the WHOLE of both banks rather than just the 0000-17FF tile-data window:
+//
+//   rowIndex   = flatVramOffset >> 1          flat = (bank << 13) | (addr - 0x8000)
+//   cacheBase  = rowIndex << 3                eight bytes, one per pixel, left to right
+//   sourceByte = rowIndex << 1                back to the low byte of the pair
+//
+// Covering the tilemap region too wastes 16KB and buys an invalidation with no
+// bounds test and no branch — gb_mmu's VRAM write path is literally
+// `GB_TILEDIRTY[flat >> 1] = 1` after the store. Decoding is lazy: gb_ppu calls
+// gbPpu_ensureTileRow(rowIndex) at fetch time, which is one array read and a
+// predictable branch for the 99% of fetches that hit.
+//
+// X-flip is NOT cached separately. Read the eight bytes backwards.
+//
+// ---------------------------------------------------------------------------
+// THE FRAMEBUFFER IS PALETTE SLOTS, NOT COLOURS
+// ---------------------------------------------------------------------------
+//
+// GB_FB holds one byte per pixel: a slot in a 64-entry palette, laid out so DMG
+// and CGB share the encoding.
+//
+//   slot 0..31    background / window.  slot = bgPalette * 4 + colorIndex
+//   slot 32..63   sprite.               slot = 32 + objPalette * 4 + colorIndex
+//
+// On CGB, bgPalette and objPalette are the 0-7 from the tile attribute or OAM
+// attribute, and colorIndex is the raw 0-3 out of the tile. GB_PAL_RGB is
+// rebuilt from GB_CGB_BGPAL / GB_CGB_OBJPAL once per frame.
+//
+// On DMG, bgPalette is always 0 and objPalette is 0 for OBP0 or 1 for OBP1, and
+// colorIndex is the SHADE — the raw colour already run through BGP/OBP0/OBP1 at
+// the moment the pixel was written. That is deliberate: games change BGP
+// mid-frame for raster effects, and resolving the palette at end of frame would
+// lose them. The cost is that the CGB palette RAM equivalent is resolved late,
+// which is much rarer; see CONTRACT.md for the exact deviation.
+//
+// So the DMG occupies slots 0-3 (BG), 32-35 (OBP0) and 36-39 (OBP1), and the
+// host never has to know which mode it is in.
+
+// ===========================================================================
+// Machine constants
+// ===========================================================================
+
+let GB_CPU_HZ = 4194304
+let GB_CYCLES_PER_FRAME = 70224
+let GB_SCREEN_W = 160
+let GB_SCREEN_H = 144
+let GB_FB_BYTES = 23040
+
+let GB_SCANLINE_DOTS = 456
+let GB_MODE2_DOTS = 80
+let GB_TOTAL_LINES = 154
+let GB_MAX_SPRITES_PER_LINE = 10
+
+let GB_MODE_HBLANK = 0
+let GB_MODE_VBLANK = 1
+let GB_MODE_OAM = 2
+let GB_MODE_PIXEL = 3
+
+let GB_IRQ_VBLANK = 0
+let GB_IRQ_STAT = 1
+let GB_IRQ_TIMER = 2
+let GB_IRQ_SERIAL = 3
+let GB_IRQ_JOYPAD = 4
+
+// Flag bits inside GB_REG[GB_R_F]. The low nibble of F is always zero on real
+// hardware; every write to F must mask with 0xF0.
+let GB_FLAG_Z = 0x80
+let GB_FLAG_N = 0x40
+let GB_FLAG_H = 0x20
+let GB_FLAG_C = 0x10
+
+// Mapper identities, using the numbers the world already uses.
+let GB_MBC_NONE = 0
+let GB_MBC_1 = 1
+let GB_MBC_3 = 3
+let GB_MBC_5 = 5
+
+// ===========================================================================
+// CPU registers
+//
+// Eight bytes, in the SM83's own register-field order for the low three bits of
+// an opcode, so gb_ops can index GB_REG directly from the opcode:
+//   0=B 1=C 2=D 3=E 4=H 5=L 6=(HL) 7=A
+// is the ENCODING order, which is NOT the storage order below. gb_ops must map
+// through GB_R8_MAP; the extra indirection is one typed-array read and keeps
+// A and F adjacent for AF push/pop.
+// ===========================================================================
+
+let GB_R_A = 0
+let GB_R_F = 1
+let GB_R_B = 2
+let GB_R_C = 3
+let GB_R_D = 4
+let GB_R_E = 5
+let GB_R_H = 6
+let GB_R_L = 7
+
+let GB_REG = new Uint8Array(8)
+
+// Opcode register field (0=B 1=C 2=D 3=E 4=H 5=L 6=(HL) 7=A) to GB_REG index.
+// Slot 6 is 0xFF — a sentinel meaning "memory at HL", never an array index.
+let GB_R8_MAP = Uint8Array.from([2, 3, 4, 5, 6, 7, 0xff, 0])
+
+// SP and PC do not fit in a byte.
+let GB_R16_SP = 0
+let GB_R16_PC = 1
+let GB_REG16 = new Uint16Array(2)
+
+// CPU-adjacent booleans and mode bits, one byte each (0 or 1).
+let GB_P_IME = 0
+let GB_P_IME_PENDING = 1
+let GB_P_HALTED = 2
+let GB_P_STOPPED = 3
+let GB_P_HALTBUG = 4
+let GB_P_DOUBLE = 5
+let GB_P_SPEEDSW = 6
+let GB_P_GBC = 7
+
+let GB_CPUF = new Uint8Array(8)
+
+// ===========================================================================
+// Memory
+// ===========================================================================
+
+// Eight 4KB banks. DMG uses banks 0 and 1 only.
+let GB_WRAM = new Uint8Array(0x8000)
+
+// FF80-FFFE is 0x7F bytes; the array is 0x80 for a clean power-of-two index.
+let GB_HRAM = new Uint8Array(0x80)
+
+// Two 8KB banks, contiguous. Bank b offset o is at (b << 13) + o.
+let GB_VRAM = new Uint8Array(0x4000)
+
+let GB_OAM = new Uint8Array(0xa0)
+
+// 128KB, the MBC5 maximum. Allocated in full at startup; the live size is
+// GB_CART[GB_K_RAMSIZE] and the wrap mask is GB_CART[GB_K_RAMMASK].
+let GB_ERAM = new Uint8Array(0x20000)
+
+// FF00-FF7F at index (addr & 0x7F), plus IE parked at 0x80 so it cannot alias
+// FF7F. See CONTRACT.md for which entries are canonical and which are stale
+// shadows of device state.
+let GB_IO_IE = 0x80
+let GB_IO = new Uint8Array(0x81)
+
+// The cartridge. Replaced wholesale by gbCart_load; null until a ROM is in.
+// A typed array in a top-level `let` is opaque to the state sync even when it
+// is eight megabytes, so this is free to hold here.
+let GB_ROM = null
+
+// ===========================================================================
+// PPU storage
+// ===========================================================================
+
+// CGB palette RAM: 8 palettes x 4 colours x 2 bytes of BGR555, little-endian.
+let GB_CGB_BGPAL = new Uint8Array(64)
+let GB_CGB_OBJPAL = new Uint8Array(64)
+
+// Tile-row decode cache. 8192 rows of eight palette indices. GB_TILEDIRTY[r]
+// of 1 means row r must be re-decoded before use.
+let GB_TILE_ROWS = 8192
+let GB_TILECACHE = new Uint8Array(65536)
+let GB_TILEDIRTY = new Uint8Array(8192)
+
+// A 32-bit view over the SAME buffer — no extra memory, no copy. A cached row
+// starts at rowIndex << 3, so it is eight-byte aligned and its two words are
+// at (rowIndex << 1) and (rowIndex << 1) + 1. Pulling a tile row out as two
+// words and unpacking the four bytes arithmetically measured 1.46ms a frame
+// against 1.82ms for eight separate byte reads: an element access costs ~27ns
+// and a shift and mask costs almost nothing, so four bytes for the price of
+// one is worth the unpacking. Little-endian, so byte n of the row is bits
+// (n & 3) * 8 of its word — verified on the shipping engine, and the same
+// assumption GB_AUDIO_OUT_U8 already makes.
+let GB_TILECACHE32 = new Uint32Array(GB_TILECACHE.buffer)
+
+// The picture. GB_FB is what the PPU draws into; GB_FB_PRESENT is the last
+// COMPLETE frame, snapshotted at the VBlank edge, and is what getFrame()
+// encodes. Without the split, a getFrame() that lands mid-frame — which it will
+// whenever the host's rAF and the emulated 59.73Hz drift past each other —
+// would hand the canvas a picture that is half this frame and half the last.
+let GB_FB = new Uint8Array(23040)
+let GB_FB_PRESENT = new Uint8Array(23040)
+
+// 64 palette slots x RGB. Rebuilt by gbPpu_buildPalette() once per frame.
+let GB_PAL_RGB = new Uint8Array(192)
+
+// The DMG shade table the user picks: three surfaces (BG, OBP0, OBP1) x four
+// shades x RGB. Index = (surface * 4 + shade) * 3. Defaults to the green LCD.
+let GB_DMG_SHADES = Uint8Array.from([
+  224, 248, 208,  136, 192, 112,  52, 104, 86,  8, 24, 32,
+  224, 248, 208,  136, 192, 112,  52, 104, 86,  8, 24, 32,
+  224, 248, 208,  136, 192, 112,  52, 104, 86,  8, 24, 32
+])
+
+// Per-scanline scratch, rewritten every line, never allocated again.
+//   GB_LINE_BGCOLOR  raw BG colour index 0-3, before palette, for sprite priority
+//   GB_LINE_BGPRIO   CGB BG-attribute priority bit (bit 7 of the map attribute)
+//   GB_LINE_SPROWNER 0 = no sprite claimed this pixel, else OAM index + 1
+let GB_LINE_BGCOLOR = new Uint8Array(160)
+let GB_LINE_BGPRIO = new Uint8Array(160)
+let GB_LINE_SPROWNER = new Uint8Array(160)
+
+// The at-most-ten sprites intersecting the current scanline, as three parallel
+// arrays so the insertion sort never touches an object. Live count is
+// GB_CTR[GB_C_SPR_COUNT].
+let GB_SPR_IDX = new Uint8Array(10)
+let GB_SPR_X = new Uint8Array(10)
+let GB_SPR_Y = new Uint8Array(10)
+
+// ===========================================================================
+// APU storage
+// ===========================================================================
+
+// Four channels, stride 20. Channel c starts at c * 20; c is 0 for NR1x
+// (square + sweep), 1 for NR2x (square), 2 for NR3x (wave), 3 for NR4x (noise).
+let GB_A_STRIDE = 20
+let GB_A_ENABLED = 0
+let GB_A_DAC = 1
+let GB_A_DUTY = 2
+let GB_A_DUTYPOS = 3
+let GB_A_FREQ = 4
+let GB_A_TIMER = 5
+let GB_A_ENV_VOL0 = 6
+let GB_A_ENV_DIR = 7
+let GB_A_ENV_PERIOD = 8
+let GB_A_ENV_COUNT = 9
+let GB_A_VOLUME = 10
+let GB_A_LEN_ON = 11
+let GB_A_LEN_COUNT = 12
+let GB_A_WAVE_POS = 13
+let GB_A_WAVE_VOLCODE = 14
+let GB_A_LFSR = 15
+let GB_A_NOISE_WIDTH = 16
+let GB_A_NOISE_SHIFT = 17
+let GB_A_NOISE_DIV = 18
+let GB_A_SPARE = 19
+
+let GB_APU = new Int32Array(80)
+
+// APU globals.
+let GB_AG_POWER = 0
+let GB_AG_NR50 = 1
+let GB_AG_NR51 = 2
+let GB_AG_FS_COUNT = 3
+let GB_AG_FS_STEP = 4
+let GB_AG_SWEEP_PERIOD = 5
+let GB_AG_SWEEP_DIR = 6
+let GB_AG_SWEEP_SHIFT = 7
+let GB_AG_SWEEP_TIMER = 8
+let GB_AG_SWEEP_ON = 9
+let GB_AG_SHADOW_FREQ = 10
+let GB_AG_RING_WRITE = 11
+let GB_AG_RING_READ = 12
+let GB_AG_RING_COUNT = 13
+// Set by getSamples() the first time the host drains the ring. Until it is 1,
+// gb_machine must not let ring occupancy pace the emulator, or a bundle with
+// audio muted would never advance a frame. 15 counts underruns, for the UI.
+let GB_AG_ACTIVE = 14
+let GB_AG_UNDERRUNS = 15
+
+let GB_APU_G = new Int32Array(16)
+
+// FF30-FF3F. Thirty-two 4-bit samples, high nibble first.
+let GB_WAVERAM = new Uint8Array(16)
+
+// Duty patterns, four duties of eight steps: 12.5%, 25%, 50%, 75%.
+let GB_DUTY = Uint8Array.from([
+  0, 0, 0, 0, 0, 0, 0, 1,
+  1, 0, 0, 0, 0, 0, 0, 1,
+  1, 0, 0, 0, 0, 1, 1, 1,
+  0, 1, 1, 1, 1, 1, 1, 0
+])
+
+let GB_NOISE_DIV_TABLE = Uint16Array.from([8, 16, 32, 48, 64, 80, 96, 112])
+
+// The output ring: stereo, interleaved, signed 16-bit, native (little) endian.
+// 8192 stereo frames is 170ms at 48kHz — ten emulated frames of slack, well
+// past the two-frame minimum, so a host that misses a callback does not click.
+// Both counters are in STEREO FRAMES; the interleaved index is
+// ((frame & GB_AUDIO_FRAME_MASK) << 1).
+let GB_AUDIO_FRAMES = 8192
+let GB_AUDIO_FRAME_MASK = 8191
+let GB_AUDIO_RING = new Int16Array(16384)
+
+// Drain staging. GB_AUDIO_OUT_U8 is a byte view over the SAME buffer, so
+// gb_apu writes Int16 and getSamples() base64s the bytes with no copy and no
+// endian work. 4096 stereo frames per call is five times a 48kHz video frame.
+let GB_AUDIO_OUT_MAX = 4096
+let GB_AUDIO_OUT_I16 = new Int16Array(8192)
+let GB_AUDIO_OUT_U8 = new Uint8Array(GB_AUDIO_OUT_I16.buffer)
+
+// ===========================================================================
+// Counters
+//
+// Two arrays: integers in GB_CTR, and the handful of genuinely fractional
+// accumulators in GB_FCTR. The APU's cycles-per-sample is 87.3813... at 48kHz
+// and truncating it drifts audibly inside a minute, so it has to be a double.
+// ===========================================================================
+
+let GB_C_CYCLE_BUDGET = 0
+let GB_C_DIV = 1
+let GB_C_TIMA_PENDING = 2
+let GB_C_TIMER_BIT = 3
+let GB_C_TIMER_RELOADED = 4
+let GB_C_PPU_MODE = 5
+let GB_C_PPU_DOT = 6
+let GB_C_PPU_MODE3 = 7
+let GB_C_STAT_LINE = 8
+let GB_C_STAT_DELAY = 9
+let GB_C_WINDOW_LINE = 10
+let GB_C_LINE153 = 11
+let GB_C_FRAME = 12
+let GB_C_SPR_COUNT = 13
+let GB_C_ODMA_CYCLES = 14
+let GB_C_ODMA_SRC = 15
+let GB_C_ODMA_BYTES = 16
+let GB_C_ODMA_DELAY = 17
+let GB_C_HDMA_SRC = 18
+let GB_C_HDMA_DST = 19
+let GB_C_HDMA_LEFT = 20
+let GB_C_HDMA_ACTIVE = 21
+let GB_C_PAL_REV = 22
+let GB_C_VRAM_BANK = 23
+let GB_C_WRAM_BANK = 24
+let GB_C_SERIAL_CYCLES = 25
+let GB_C_GUARD = 26
+let GB_C_LAST_FRAME_CYCLES = 27
+let GB_C_CGB_BGPAL_IDX = 28
+let GB_C_CGB_OBJPAL_IDX = 29
+let GB_C_CGB_OPRI = 30
+let GB_C_WINDOW_SEEN = 31
+// 1 when at least one sprite on the current line has its OAM priority bit set,
+// so gb_ppu's background pass knows it has to export GB_LINE_BGCOLOR. Measured:
+// that one extra store per pixel costs 1.3ms a frame, and most DMG lines do not
+// need it. Set by gbPpu_scanSprites, read by gbPpu_renderLine.
+let GB_C_SPR_BGTEST = 32
+// Frames the audio pull had to emulate itself because rAF had fallen behind
+// realtime. Zero on a machine keeping up; a steadily climbing value is the
+// display missing 60Hz while the sound card holds the tempo. Diagnostic only —
+// nothing branches on it.
+let GB_C_CATCHUP = 33
+// 34-39 are deliberately spare. Claim one by naming it here rather than by
+// widening the array somewhere else — every module indexes this by constant.
+let GB_CTR = new Int32Array(40)
+
+// How many frames one getSamples() call may emulate to refill the ring before
+// giving up and letting the audio go short. Four is two AudioStream blocks at
+// the default 90ms lead: enough to ride out a slow frame or a GC pause, few
+// enough that a machine which genuinely cannot keep up degrades smoothly
+// instead of spending progressively longer inside a single host call.
+let GB_MAX_CATCHUP_FRAMES = 4
+
+// ---------------------------------------------------------------------------
+// The two PPU countdowns, and why they are NOT in GB_CTR
+//
+// gb_machine ticks the peripherals in 4-cycle chunks, so gbPpu_step is called
+// 17,556 times a frame — more often than anything else in the bundle. At that
+// rate the cost of reading a counter is the cost of the PPU.
+//
+// Measured on the shipping engine, per access: a plain top-level number is
+// ~2ns; a typed-array element is ~27ns. Thirteen times. Against 17,556 calls
+// that is the difference between 0.1ms and 1.4ms a frame, for one counter.
+//
+// The rule these two are exempt from (§1.3 of CONTRACT.md) is about plain
+// ARRAYS, OBJECTS and STRINGS, which are deep-compared element by element on
+// every host call. A plain number is compared in one operation — the same
+// ~23ns the ~230 index constants above already cost — so two more of them are
+// 0.05us a frame, and they buy back milliseconds.
+//
+// GB_PPU_DOTS counts DOWN the T-cycles left in the current PPU mode, and goes
+// negative by the overshoot when a chunk crosses a mode boundary; gb_ppu
+// carries that spill into the next mode. GB_PPU_STATD is the four-cycle STAT
+// delivery delay, -1 when idle. GB_CTR[GB_C_PPU_DOT] and
+// GB_CTR[GB_C_STAT_DELAY] are kept as cold mirrors, refreshed at every mode
+// boundary, so a save state or a debugger still sees them.
+// ---------------------------------------------------------------------------
+
+let GB_PPU_DOTS = 80
+let GB_PPU_STATD = -1
+
+// Scalar mirror of GB_CTR[GB_C_FRAME]. gb_ppu bumps both in the same statement
+// at the VBlank edge — once a frame, so the second store is free — and
+// gbMachine_runSlice tests THIS one, because that test runs once per
+// instruction and a scalar reads in ~2ns against ~22ns for an Int32Array slot.
+// GB_CTR stays canonical: it is what goes into a save state, and
+// gbMachine_loadState copies it back into here.
+let GB_PPU_FRAME = 0
+
+let GB_F_SAMPLE_ACC = 0
+let GB_F_CYCLES_PER_SAMPLE = 1
+let GB_F_HOST_RATE = 2
+let GB_F_SAMPLES_PER_FRAME = 3
+let GB_F_FPS = 4
+
+let GB_FCTR = new Float64Array(8)
+
+// ===========================================================================
+// Cartridge state
+//
+// GB_K_ROMOFF_LO and GB_K_ROMOFF_HI are precomputed byte offsets into GB_ROM
+// for the 0000-3FFF and 4000-7FFF windows, and GB_K_RAMOFF the same for
+// A000-BFFF. Every bank-register write recomputes them, so a ROM read is one
+// add and one typed-array index — no mapper branch in the hottest path in the
+// whole emulator.
+// ===========================================================================
+
+let GB_K_MBC = 0
+let GB_K_ROMBANKS = 1
+let GB_K_ROMMASK = 2
+let GB_K_RAMSIZE = 3
+let GB_K_RAMMASK = 4
+let GB_K_BATTERY = 5
+let GB_K_HASRTC = 6
+let GB_K_BANKLO = 7
+let GB_K_BANKHI = 8
+let GB_K_MODE = 9
+let GB_K_RAMEN = 10
+let GB_K_RAMBANK = 11
+let GB_K_ROMOFF_LO = 12
+let GB_K_ROMOFF_HI = 13
+let GB_K_RAMOFF = 14
+let GB_K_CGBFLAG = 15
+
+let GB_CART = new Int32Array(16)
+
+// MBC3's clock. Seconds/minutes/hours/day-low/day-high are the LATCHED values;
+// GB_RTC_EPOCH is milliseconds since the epoch at the last latch or write, held
+// as a double because it does not fit in an Int32.
+let GB_RTC_S = 0
+let GB_RTC_M = 1
+let GB_RTC_H = 2
+let GB_RTC_DL = 3
+let GB_RTC_DH = 4
+let GB_RTC_HALT = 5
+let GB_RTC_CARRY = 6
+let GB_RTC_SEL = 7
+
+let GB_RTC = new Int32Array(8)
+let GB_RTC_EPOCH = new Float64Array(2)
+
+// ===========================================================================
+// Input
+//
+// GB_PAD[0] is the live button mask as the host sends it, active HIGH:
+//   bit 0 A, 1 B, 2 Select, 3 Start, 4 Right, 5 Left, 6 Up, 7 Down
+// That ordering is not arbitrary — it is the DMG's own two nibbles, so
+// producing P1 is a shift and a mask rather than eight tests.
+// GB_PAD[1] is the previous mask, for the high-to-low edge that raises the
+// joypad interrupt.
+// ===========================================================================
+
+let GB_PAD_A = 0x01
+let GB_PAD_B = 0x02
+let GB_PAD_SELECT = 0x04
+let GB_PAD_START = 0x08
+let GB_PAD_RIGHT = 0x10
+let GB_PAD_LEFT = 0x20
+let GB_PAD_UP = 0x40
+let GB_PAD_DOWN = 0x80
+
+let GB_PAD = new Uint8Array(2)
+
+// ===========================================================================
+// Dispatch tables and scratch
+// ===========================================================================
+
+// Built once by gbOps_buildTables(). 256 entries each, every slot filled — a
+// hole would be an undefined call at the exact moment a ROM does something
+// unusual. Illegal opcodes get gbOps_illegal, not null.
+let GB_OPS = []
+let GB_CBOPS = []
+
+// General-purpose byte staging for base64 in and out: battery RAM, save states,
+// ROM loading. Never touched by the per-frame path.
+let GB_B64 = new Uint8Array(32768)
+
+// ===========================================================================
+// The UI surface. These, and only these, are plain values the .ui templates
+// bind to. Anything added here is read and deep-compared on every host call.
+// ===========================================================================
+
+let gbTitle = ""
+let gbRunning = false
+let gbRomLoaded = false
+let gbGbcMode = false
+let gbMapperName = "—"
+let gbFps = 0
+let gbFrameCounter = 0
+let gbStatus = "No cartridge"
+let gbError = ""
+
+// ===========================================================================
+// Accessors
+//
+// The 16-bit pair helpers exist for cold code — cartridge headers, save states,
+// the debugger. gb_ops must NOT call them per instruction; it inlines the shift
+// and the mask. A call that does two typed-array reads is not free 4 million
+// times a second.
+// ===========================================================================
+
+function gbState_af() {
+  return (GB_REG[GB_R_A] << 8) | GB_REG[GB_R_F]
+}
+
+function gbState_setAf(v) {
+  GB_REG[GB_R_A] = (v >>> 8) & 0xff
+  GB_REG[GB_R_F] = v & 0xf0
+}
+
+function gbState_bc() {
+  return (GB_REG[GB_R_B] << 8) | GB_REG[GB_R_C]
+}
+
+function gbState_setBc(v) {
+  GB_REG[GB_R_B] = (v >>> 8) & 0xff
+  GB_REG[GB_R_C] = v & 0xff
+}
+
+function gbState_de() {
+  return (GB_REG[GB_R_D] << 8) | GB_REG[GB_R_E]
+}
+
+function gbState_setDe(v) {
+  GB_REG[GB_R_D] = (v >>> 8) & 0xff
+  GB_REG[GB_R_E] = v & 0xff
+}
+
+function gbState_hl() {
+  return (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+}
+
+function gbState_setHl(v) {
+  GB_REG[GB_R_H] = (v >>> 8) & 0xff
+  GB_REG[GB_R_L] = v & 0xff
+}
+
+function gbState_sp() {
+  return GB_REG16[GB_R16_SP]
+}
+
+function gbState_setSp(v) {
+  GB_REG16[GB_R16_SP] = v & 0xffff
+}
+
+function gbState_pc() {
+  return GB_REG16[GB_R16_PC]
+}
+
+function gbState_setPc(v) {
+  GB_REG16[GB_R16_PC] = v & 0xffff
+}
+
+// The whole tile cache is stale. Called on reset, on a save-state load, and
+// after any bulk VRAM write that did not go through gb_mmu.
+function gbState_invalidateTileCache() {
+  GB_TILEDIRTY.fill(1)
+}
+
+// Wipe everything except the ROM and the user's palette choice. gb_machine
+// calls this before applying the post-boot register values.
+function gbState_reset() {
+  GB_REG.fill(0)
+  GB_REG16[GB_R16_SP] = 0xfffe
+  GB_REG16[GB_R16_PC] = 0x0100
+  GB_CPUF.fill(0)
+
+  GB_WRAM.fill(0)
+  GB_HRAM.fill(0)
+  GB_VRAM.fill(0)
+  GB_OAM.fill(0)
+  GB_IO.fill(0)
+
+  GB_CGB_BGPAL.fill(0xff)
+  GB_CGB_OBJPAL.fill(0xff)
+  gbState_invalidateTileCache()
+  GB_TILECACHE.fill(0)
+  GB_FB.fill(0)
+  GB_FB_PRESENT.fill(0)
+  GB_LINE_BGCOLOR.fill(0)
+  GB_LINE_BGPRIO.fill(0)
+  GB_LINE_SPROWNER.fill(0)
+  GB_SPR_IDX.fill(0)
+  GB_SPR_X.fill(0)
+  GB_SPR_Y.fill(0)
+
+  GB_APU.fill(0)
+  GB_APU_G.fill(0)
+  GB_WAVERAM.fill(0)
+  GB_AUDIO_RING.fill(0)
+
+  GB_CTR.fill(0)
+  GB_CTR[GB_C_PPU_MODE] = GB_MODE_OAM
+  GB_CTR[GB_C_PPU_MODE3] = 172
+  GB_CTR[GB_C_STAT_DELAY] = -1
+  GB_CTR[GB_C_ODMA_BYTES] = 160
+
+  GB_PPU_DOTS = GB_MODE2_DOTS
+  GB_PPU_STATD = -1
+  GB_PPU_FRAME = 0
+
+  // GB_CTR and GB_IO were just cleared underneath the two modules that keep
+  // derived scalars over them, so both are re-derived here rather than assumed.
+  gbTimer_syncLive()
+  gbMmu_syncBusy()
+  gbMmu_syncIrq()
+
+  GB_FCTR[GB_F_SAMPLE_ACC] = 0
+  GB_PAD[0] = 0
+  GB_PAD[1] = 0
+
+  // The sample rate the host told us survives a reset — it is a property of the
+  // AudioContext, not of the machine. If nothing has set it yet, assume 48kHz.
+  if (!(GB_FCTR[GB_F_HOST_RATE] > 0)) {
+    gbState_setSampleRate(48000)
+  }
+}
+
+// Called once by the host when the AudioContext is created, and again if it
+// ever changes rate. Everything downstream of the sample clock derives from
+// here: gb_apu's accumulator, and the nominal chunk size AudioStream should
+// expect back from getSamples().
+function gbState_setSampleRate(rate) {
+  let r = rate
+  if (!(r > 0)) { r = 48000 }
+  GB_FCTR[GB_F_HOST_RATE] = r
+  GB_FCTR[GB_F_CYCLES_PER_SAMPLE] = GB_CPU_HZ / r
+  // One emulated frame is 70224 T-cycles, so 4194304 / 70224 = 59.7275006 Hz.
+  // 48000 gives 803.650 samples a frame; 44100 gives 738.353. It is fractional,
+  // so the per-frame count varies by one — getSamples() reports what it sent.
+  GB_FCTR[GB_F_SAMPLES_PER_FRAME] = (r * GB_CYCLES_PER_FRAME) / GB_CPU_HZ
+}
+
+// True while the CPU is locked out of everything but HRAM by an OAM DMA.
+function gbState_oamDmaActive() {
+  return GB_CTR[GB_C_ODMA_CYCLES] > 0
+}

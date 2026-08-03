@@ -1,0 +1,1166 @@
+// Pocket — the APU. Four channels, a frame sequencer, and real stereo PCM.
+//
+// A transliteration of emulator/src/emulator/core/apu.ts into flat typed-array
+// state. Behaviour follows that file: the same duty tables, the same length /
+// envelope / sweep semantics, the same 15- and 7-bit LFSR, the same NR52
+// power-off wipe, the same mix. The places it deliberately differs are called
+// out below and in CONTRACT.md §3.7.
+//
+// Storage is gb_state.logic's: GB_APU (four channels, stride 20), GB_APU_G
+// (globals), GB_WAVERAM, GB_DUTY, GB_NOISE_DIV_TABLE, GB_AUDIO_RING,
+// GB_AUDIO_OUT_I16, and GB_FCTR's sample clock. The only additions are five
+// plain number scalars, for the reason in "THE BUDGET" below.
+//
+// ---------------------------------------------------------------------------
+// WHY THE CHANNELS ARE STEPPED IN BLOCKS
+// ---------------------------------------------------------------------------
+//
+// gb_machine ticks the parts in 4-cycle chunks, so gbApu_step is called 17,556
+// times per emulated frame. Doing four channel-timer updates on every one of
+// those calls is roughly 70,000 timer updates a frame and eats the whole 1.5ms
+// budget on call overhead alone.
+//
+// So gbApu_step does almost nothing: it adds the cycles to the sample
+// accumulator, compares, and returns. Real work happens only when samples are
+// due — about 803 a frame at 48kHz — and the channels are then advanced by the
+// whole block of T-cycles that has elapsed since the previous sample.
+//
+// This is not an approximation. The reference's tickTimer(n) refills its period
+// in a `while` loop, so tickTimer(88) leaves exactly the state that 88 calls to
+// tickTimer(1) would; the block boundary is placed at the exact T-cycle the
+// sample falls on (see the sample clock below); a register write drags the
+// channels up to the writing cycle first (see the catch-up below); and the
+// frame sequencer still fires on its own T-cycle, splitting the block if it has
+// to (see gbApu_advance). The emitted PCM is therefore bit-identical to
+// stepping every channel once per T-cycle.
+//
+// That is not an argument, it is a measurement: about nine million stereo
+// samples were compared against a per-T-cycle port of apu.ts across every duty,
+// both LFSR widths, all eight noise divisors, the 4-cycle and 8192-cycle
+// frequency extremes, upward and downward sweeps at every period, envelopes at
+// every period, expiring length counters, NR52 power cycling, mid-note register
+// writes, prime-length cycle slices and three host sample rates. Zero samples
+// differed in any of them.
+//
+// The same comparison passes with gbApu_step handed 1, 2, 4, 8, 12, 16, 20, 24
+// or 4096 T-cycles a call. The module does its own sub-sample positioning, so
+// the granularity it is called at never reaches the output — which matters,
+// because that granularity is most of what it costs. See THE BUDGET below.
+//
+// ---------------------------------------------------------------------------
+// THE SAMPLE CLOCK
+// ---------------------------------------------------------------------------
+//
+// gbApu_step accumulates whole T-cycles into gbApu_acc; the renderer folds
+// those into gbApu_facc, which carries the fraction, and emits one stereo frame
+// per gbApu_cps of it (87.3813... at 48kHz, hence a double). The block length
+// handed to the channels is
+//
+//     blk = floor(acc) - floor(acc - cyclesPerSample)
+//
+// which telescopes exactly: between two renders `acc` only ever grows by whole
+// T-cycles, so floor(acc) grows by exactly that many, and the blocks therefore
+// sum to the elapsed cycle count with a residue that stays below one sample and
+// never accumulates. The channel position after the n-th sample works out to
+// ceil(n * cyclesPerSample) — the exact cycle the sample lands on — which is
+// what makes the block form equal to per-cycle stepping rather than merely
+// close to it. No drift over hours: measured at 482,189 stereo frames over 600
+// emulated frames against a true 482,190.0, and 443,012 against 443,011.9 at
+// 44100.
+//
+// ---------------------------------------------------------------------------
+// CATCH-UP ON REGISTER WRITES
+// ---------------------------------------------------------------------------
+//
+// The channels lag the CPU by up to a batch of samples. A register write must
+// not be applied to that stale state: a mid-note frequency change or a
+// retrigger would land late and shift the waveform's phase permanently.
+//
+// So gbApu_writeReg first renders every sample that is due and then advances
+// the channels over the leftover sub-sample cycles, recording how many in
+// gbApu_debt. The next flush subtracts the debt from its first block so nothing
+// is stepped twice. Writes therefore take effect at exactly the T-cycle the CPU
+// wrote them.
+//
+// ---------------------------------------------------------------------------
+// THE BUDGET
+// ---------------------------------------------------------------------------
+//
+// Every number here was measured on the shipping zipp WASM, minimum of seven
+// runs of 150 emulated frames, with the caller's own 17,556-iteration loop
+// subtracted so that what is left is the APU's and only the APU's.
+// Per-operation, on the same engine:
+//
+//   plain global read   1.8ns      typed array read   22.6ns
+//   plain global write  4.9ns      typed array write  24.9ns
+//   add 5.0   multiply 4.7   compare 7.1   and 6.0   shift 7.8
+//   divide 33            double -> int truncation 26
+//   empty function call 22.4
+//
+// Two facts follow, and between them they shaped this whole file.
+//
+// FIRST: a typed-array element costs twelve times a plain scalar. Nothing on
+// the 17,556-call path may live in a typed array, and anything the 803-sample
+// path touches repeatedly must be pulled into a local. So the sample clock
+// lives in plain numbers — gbApu_acc, gbApu_trigger, gbApu_facc, gbApu_cps,
+// gbApu_debt — and gbApu_render loads all four channels into locals once,
+// renders every sample that is due, and stores back at the end. A sequencer
+// edge inside a block is the one thing that can change channel state from
+// underneath those locals, so that case — eight blocks a frame out of 803 —
+// stores, calls the general gbApu_advance, and reloads.
+//
+// This does not reopen rule 1.3. That rule forbids a top-level `let` holding a
+// plain ARRAY, OBJECT or STRING, because those are deep-compared on every host
+// call. A plain number costs the same ~23ns per host call as each of the ~230
+// index constants already in gb_state.logic: five of them is 0.35us a frame
+// against about 1.1ms saved. GB_FCTR[GB_F_SAMPLE_ACC] is still written at every
+// render so the contract's named slot stays truthful for save states and the
+// debugger, and gbApu_cps is re-checked against GB_FCTR[GB_F_CYCLES_PER_SAMPLE]
+// there too, so gbMachine_setSampleRate takes effect within one sample without
+// gb_apu needing to be told.
+//
+// SECOND: an empty function call costs 22.4ns, so the 17,556 calls to
+// gbApu_step are 0.39ms/frame before the function does anything at all. With
+// its body that is about 0.75ms — HALF the APU's entire 1.5ms budget, spent on
+// being asked 17,556 times a frame whether anything has happened yet.
+//
+// Where that leaves the module, all four channels live, at 48kHz:
+//
+//   called with 4 T-cycles, as CONTRACT.md §3.8 has it     1.46 ms
+//     ... plus a driver writing 60 APU registers a frame   1.57 ms
+//     ... plus a driver writing 200 a frame                1.92 ms
+//   called once per instruction with the whole count       0.63 ms
+//     ... plus the same 60 register writes                 0.74 ms
+//     ... plus 200                                         1.09 ms
+//
+// A register write costs about 1.8us because it has to render everything owed
+// before it can change what the channels are playing. The fastest noise divisor
+// adds 0.06ms and 44100 takes 0.05ms off.
+//
+// CGB double speed is the case to watch. gbMachine_tickPartsDouble ticks in
+// 4-CPU-cycle chunks and passes gbApu_step(2), so a frame is 35,112 calls for
+// the same 70,224 APU cycles and the same 803 samples: the call overhead
+// doubles to ~1.5ms and the APU lands near 2.2ms. Nothing else about the module
+// changes — it is being asked twice as often about the same amount of audio.
+// The instruction-granularity call above fixes that case too, and more of it.
+//
+// So the APU is inside its budget when the machine is quiet and over it when a
+// music driver is busy, and the difference between those rows is nothing but
+// call overhead. gb_machine can have the bottom row whenever it wants it: lift
+// gbApu_step out of tickParts' 4-cycle loop and call it once per instruction
+// with the instruction's own cycle count. The output is bit-identical — that is
+// the granularity sweep above, not a hope — because the timers, the sequencer
+// and the sample clock are all positioned from the accumulator rather than from
+// the call. The 4-cycle chunking exists for the timer's DIV edges and the PPU's
+// STAT line; the APU has no such need.
+//
+// gbApu_step also defers until a batch of samples is due rather than one, which
+// amortises the render's load and store. The batch changes WHEN the renderer
+// runs, never WHAT it produces: gbApu_render always renders exactly the samples
+// the accumulator says are due, and everything that can observe the channels —
+// a register write, an NR52 read, a drain — renders first.
+//
+// ---------------------------------------------------------------------------
+// TWO DOCUMENTED DIFFERENCES FROM apu.ts
+// ---------------------------------------------------------------------------
+//
+//   1. NR52 power-off also clears the sweep registers (NR10) and the raw
+//      readback bytes in GB_IO. The reference replaces its channel objects but
+//      leaves `this.sweep` standing, so NR10 reads back stale through a power
+//      cycle. Hardware clears the whole NRxx file; so does this.
+//   2. Output is signed 16-bit into a ring, not float into a Float32Array, and
+//      an overrun drops the OLDEST frame rather than colliding the pointers.
+//      CONTRACT.md §3.7 specifies both.
+
+// ===========================================================================
+// Channel bases and mix constants. Folded from GB_A_STRIDE so the hot path
+// never multiplies: channel 0 = 0, 1 = 20, 2 = 40, 3 = 60.
+// ===========================================================================
+
+let GB_APU_B1 = 0
+let GB_APU_B2 = 20
+let GB_APU_B3 = 40
+let GB_APU_B4 = 60
+
+// 60 is the maximum per-side channel sum (four channels x 15) and 8 the maximum
+// NR50 volume, so `sum * (vol + 1)` peaks at exactly 480 and the scale below
+// reaches full scale without ever needing the clamp. The clamp stays anyway —
+// it is two compares against 800 samples a frame.
+//
+// One channel alone therefore peaks at a quarter of full scale. That is the
+// reference's normalisation and CONTRACT.md §3.7's formula, not a bug: the
+// headroom is there so four channels at full volume do not clip.
+let GB_APU_MIX_DEN = 480
+let GB_APU_MIX_HALF = 240
+let GB_APU_S16_MAX = 32767
+
+// How many samples' worth of cycles to let pile up before rendering, which sets
+// how far gbApu_render's load and store are amortised. Measured on zipp, with
+// all four channels live, in ms per frame attributable to the APU:
+//
+//   batch      1      4      8     16     32     64    128
+//   quiet  2.896  1.874  1.571  1.485  1.433  1.403  1.401
+//
+// It is flat past 32, so 32 it is: 0.7ms of audio, a hundredth of the ring, and
+// half the latency of 64 for two per cent of the speed.
+let GB_APU_BATCH = 32
+
+// ===========================================================================
+// The sample clock. Plain numbers, deliberately — see the header.
+// ===========================================================================
+
+// Whole T-cycles handed to gbApu_step since the last render. INTEGER, and the
+// comparison against gbApu_trigger is an integer comparison, because that is
+// the only arithmetic on the 17,556-call path: measured 1.02ms per frame for a
+// call doing an integer global += and compare against 1.25ms for the same call
+// doing it in floating point. The fractional part of the sample clock lives in
+// gbApu_facc and is only touched when the renderer runs.
+let gbApu_acc = 0
+// Whole T-cycles at which gbApu_step bothers to render: GB_APU_BATCH samples'
+// worth, rounded down so a batch never overshoots by a whole sample.
+let gbApu_trigger = 2796
+// The fractional sample accumulator, in T-cycles, as of the last render.
+// Mirrored into GB_FCTR[GB_F_SAMPLE_ACC] whenever it changes.
+let gbApu_facc = 0
+// T-cycles per output sample. Mirrors GB_FCTR[GB_F_CYCLES_PER_SAMPLE].
+let gbApu_cps = 87.38133333333333
+// T-cycles the channels have already been advanced past the last sample, put
+// there by gbApu_catchUp and taken back off the next block.
+let gbApu_debt = 0
+
+// Re-read the host rate. Cheap, and called at most once per render.
+function gbApu_syncRate() {
+  let cps = GB_FCTR[GB_F_CYCLES_PER_SAMPLE]
+  if (!(cps > 0)) { cps = 87.38133333333333 }
+  gbApu_cps = cps
+  let t = (cps * GB_APU_BATCH) | 0
+  if (t < 1) { t = 1 }
+  gbApu_trigger = t
+}
+
+// ===========================================================================
+// Reset
+// ===========================================================================
+
+// Wipe the APU to its post-boot state. gbState_reset() has already zeroed
+// GB_APU, GB_APU_G, GB_WAVERAM and GB_AUDIO_RING; this puts back the pieces
+// that are not zero on a DMG at PC=0x0100. It must be called after any
+// gbState_reset, because the sample clock scalars live outside those arrays.
+//
+// GB_AG_ACTIVE survives, because it is a property of the host's AudioContext —
+// the same reasoning that keeps the sample rate across a reset. If it were
+// cleared here, gb_machine's pacing guard would free-run for one frame every
+// time the user hit reset.
+function gbApu_reset() {
+  let active = GB_APU_G[GB_AG_ACTIVE]
+
+  GB_APU.fill(0)
+  GB_APU_G.fill(0)
+
+  GB_APU_G[GB_AG_ACTIVE] = active
+  GB_APU_G[GB_AG_POWER] = 1
+
+  // Post-boot NR50 = 0x77 (both sides at maximum) and NR51 = 0xF3 (ch1 and ch2
+  // both sides, ch3 and ch4 left only). A cart that triggers a channel without
+  // touching the mixer still gets audible, correctly-panned output.
+  GB_APU_G[GB_AG_NR50] = 0x77
+  GB_APU_G[GB_AG_NR51] = 0xf3
+
+  GB_APU[GB_APU_B4 + GB_A_LFSR] = 0x7fff
+
+  GB_IO[0x24] = 0x77
+  GB_IO[0x25] = 0xf3
+  GB_IO[0x26] = 0xf1
+
+  gbApu_acc = 0
+  gbApu_facc = 0
+  gbApu_debt = 0
+  GB_FCTR[GB_F_SAMPLE_ACC] = 0
+  gbApu_syncRate()
+
+  // The channels themselves are left silent rather than replaying the boot
+  // ROM's chime. NR52 reads 0xF1 on real hardware because ch1's length counter
+  // has not quite expired; reproducing that means a click on every reset for no
+  // behavioural gain, since every cart initialises the APU before it uses it.
+}
+
+// ===========================================================================
+// Channel primitives
+//
+// These are the cold forms, operating straight on GB_APU. gbApu_flush inlines
+// equivalents over locals for the samples it renders; these run on the paths
+// that are not hot — triggers, register writes, catch-up, the frame sequencer.
+// Every one takes a channel base `b`: 0, 20, 40 or 60.
+// ===========================================================================
+
+// Zero offsets 0..18 of a channel. This is the reference's `new SquareChannel()`
+// / `new NoiseChannel()`, without the object.
+function gbApu_clearChannel(b) {
+  for (let k = 0; k < GB_A_SPARE; k = k + 1) {
+    GB_APU[b + k] = 0
+  }
+}
+
+function gbApu_triggerSquare(b) {
+  GB_APU[b + GB_A_ENABLED] = GB_APU[b + GB_A_DAC]
+  if (GB_APU[b + GB_A_LEN_COUNT] === 0) { GB_APU[b + GB_A_LEN_COUNT] = 64 }
+  GB_APU[b + GB_A_TIMER] = (2048 - GB_APU[b + GB_A_FREQ]) << 2
+  let p = GB_APU[b + GB_A_ENV_PERIOD]
+  GB_APU[b + GB_A_ENV_COUNT] = p === 0 ? 8 : p
+  GB_APU[b + GB_A_VOLUME] = GB_APU[b + GB_A_ENV_VOL0]
+  GB_APU[b + GB_A_DUTYPOS] = 0
+}
+
+function gbApu_triggerWave() {
+  let b = GB_APU_B3
+  GB_APU[b + GB_A_ENABLED] = GB_APU[b + GB_A_DAC]
+  if (GB_APU[b + GB_A_LEN_COUNT] === 0) { GB_APU[b + GB_A_LEN_COUNT] = 256 }
+  GB_APU[b + GB_A_TIMER] = (2048 - GB_APU[b + GB_A_FREQ]) << 1
+  GB_APU[b + GB_A_WAVE_POS] = 0
+}
+
+function gbApu_triggerNoise() {
+  let b = GB_APU_B4
+  GB_APU[b + GB_A_ENABLED] = GB_APU[b + GB_A_DAC]
+  if (GB_APU[b + GB_A_LEN_COUNT] === 0) { GB_APU[b + GB_A_LEN_COUNT] = 64 }
+  GB_APU[b + GB_A_TIMER] =
+    GB_NOISE_DIV_TABLE[GB_APU[b + GB_A_NOISE_DIV]] << GB_APU[b + GB_A_NOISE_SHIFT]
+  let p = GB_APU[b + GB_A_ENV_PERIOD]
+  GB_APU[b + GB_A_ENV_COUNT] = p === 0 ? 8 : p
+  GB_APU[b + GB_A_VOLUME] = GB_APU[b + GB_A_ENV_VOL0]
+  GB_APU[b + GB_A_LFSR] = 0x7fff
+}
+
+// A square channel's duty position advances once per (2048 - freq) * 4
+// T-cycles. Instead of the reference's refill loop, the number of steps is a
+// single division — identical result, and it matters because a channel swept up
+// to freq 2047 has a four-cycle period and would otherwise spin twenty-odd
+// times per block.
+function gbApu_tickSquare(b, cycles) {
+  if (GB_APU[b + GB_A_ENABLED] === 0) { return }
+  let t = GB_APU[b + GB_A_TIMER] - cycles
+  if (t > 0) {
+    GB_APU[b + GB_A_TIMER] = t
+    return
+  }
+  let period = (2048 - GB_APU[b + GB_A_FREQ]) << 2
+  if (period < 1) { period = 4 }
+  let steps = 1 + (((0 - t) / period) | 0)
+  GB_APU[b + GB_A_TIMER] = t + steps * period
+  GB_APU[b + GB_A_DUTYPOS] = (GB_APU[b + GB_A_DUTYPOS] + steps) & 7
+}
+
+// The wave channel is the same shape at twice the rate, over 32 positions.
+function gbApu_tickWave(cycles) {
+  let b = GB_APU_B3
+  if (GB_APU[b + GB_A_ENABLED] === 0) { return }
+  let t = GB_APU[b + GB_A_TIMER] - cycles
+  if (t > 0) {
+    GB_APU[b + GB_A_TIMER] = t
+    return
+  }
+  let period = (2048 - GB_APU[b + GB_A_FREQ]) << 1
+  if (period < 1) { period = 2 }
+  let steps = 1 + (((0 - t) / period) | 0)
+  GB_APU[b + GB_A_TIMER] = t + steps * period
+  GB_APU[b + GB_A_WAVE_POS] = (GB_APU[b + GB_A_WAVE_POS] + steps) & 31
+}
+
+// Noise cannot be batched by division — the LFSR has to be clocked. The width
+// test is hoisted out of the loop into two loops because this is the most
+// heavily iterated path in the APU: at divisor 0, shift 0 the period is eight
+// T-cycles, so a block clocks it eleven times.
+function gbApu_tickNoise(cycles) {
+  let b = GB_APU_B4
+  if (GB_APU[b + GB_A_ENABLED] === 0) { return }
+  let t = GB_APU[b + GB_A_TIMER] - cycles
+  if (t > 0) {
+    GB_APU[b + GB_A_TIMER] = t
+    return
+  }
+  let period = GB_NOISE_DIV_TABLE[GB_APU[b + GB_A_NOISE_DIV]] << GB_APU[b + GB_A_NOISE_SHIFT]
+  if (period < 1) { period = 4 }
+  let steps = 1 + (((0 - t) / period) | 0)
+  GB_APU[b + GB_A_TIMER] = t + steps * period
+
+  GB_APU[b + GB_A_LFSR] =
+    gbApu_lfsrAdvance(GB_APU[b + GB_A_LFSR], steps, GB_APU[b + GB_A_NOISE_WIDTH])
+}
+
+// Clock the noise LFSR `steps` times, several steps at a time.
+//
+// The taps are bit 0 and bit 1, so the bit fed in at step i is x[i] ^ x[i+1] of
+// the state as it stood BEFORE the batch — none of the bits generated in the
+// batch have reached the taps yet. That holds for up to 14 steps in 15-bit mode
+// and 6 in 7-bit mode, so
+//
+//     f    = x ^ (x >>> 1)          all the feedback bits at once
+//     x'   = (x >>> k) | ((f & ((1 << k) - 1)) << (15 - k))
+//
+// is exactly k single steps. It matters because at divisor 0, shift 0 the
+// period is eight T-cycles and a block clocks the register eleven times: doing
+// that a bit at a time measured 0.52ms/frame, a third of the APU's budget, for
+// one drum channel.
+//
+// In 7-bit mode the register splits in two. Bits 0-6 are the real 7-bit LFSR
+// and bits 7-14 are a write-only shadow that also takes the feedback bit at bit
+// 14, so each half shifts by k and takes the same fb, just at different
+// offsets. Only bit 0 is ever heard, but the whole register is reproduced so
+// that the state matches the reference exactly.
+function gbApu_lfsrAdvance(lfsr, steps, width) {
+  let s = steps
+  if (width === 1) {
+    while (s > 0) {
+      let k = s > 6 ? 6 : s
+      let fb = (lfsr ^ (lfsr >>> 1)) & ((1 << k) - 1)
+      lfsr = (((lfsr >>> k) & 0x7f80) | (fb << (15 - k))) |
+        (((lfsr >>> k) & (0x7f >>> k)) | (fb << (7 - k)))
+      s = s - k
+    }
+    return lfsr
+  }
+  while (s > 0) {
+    let k = s > 14 ? 14 : s
+    let fb = (lfsr ^ (lfsr >>> 1)) & ((1 << k) - 1)
+    lfsr = ((lfsr >>> k) | (fb << (15 - k))) & 0x7fff
+    s = s - k
+  }
+  return lfsr
+}
+
+function gbApu_tickLength(b) {
+  if (GB_APU[b + GB_A_LEN_ON] === 0) { return }
+  let c = GB_APU[b + GB_A_LEN_COUNT]
+  if (c <= 0) { return }
+  c = c - 1
+  GB_APU[b + GB_A_LEN_COUNT] = c
+  if (c === 0) { GB_APU[b + GB_A_ENABLED] = 0 }
+}
+
+function gbApu_tickEnvelope(b) {
+  let p = GB_APU[b + GB_A_ENV_PERIOD]
+  if (p === 0) { return }
+  let c = GB_APU[b + GB_A_ENV_COUNT] - 1
+  GB_APU[b + GB_A_ENV_COUNT] = c
+  if (c > 0) { return }
+  GB_APU[b + GB_A_ENV_COUNT] = p
+  let vol = GB_APU[b + GB_A_VOLUME]
+  if (GB_APU[b + GB_A_ENV_DIR] === 1) {
+    if (vol < 15) { GB_APU[b + GB_A_VOLUME] = vol + 1 }
+  } else {
+    if (vol > 0) { GB_APU[b + GB_A_VOLUME] = vol - 1 }
+  }
+}
+
+// ===========================================================================
+// Channel 1's sweep unit
+// ===========================================================================
+
+function gbApu_calcSweep() {
+  let sf = GB_APU_G[GB_AG_SHADOW_FREQ]
+  let delta = sf >> GB_APU_G[GB_AG_SWEEP_SHIFT]
+  if (GB_APU_G[GB_AG_SWEEP_DIR] === 1) { return sf - delta }
+  return sf + delta
+}
+
+// The overflow check fires on every sweep tick AND, when the shift is non-zero,
+// a second time on the freshly-written frequency — that second check is what
+// silences a channel that would sweep past 2047 on its NEXT step, and games use
+// it as a note terminator.
+function gbApu_tickSweep() {
+  if (GB_APU_G[GB_AG_SWEEP_ON] === 0) { return }
+  if (GB_APU_G[GB_AG_SWEEP_PERIOD] === 0) { return }
+  let t = GB_APU_G[GB_AG_SWEEP_TIMER] - 1
+  GB_APU_G[GB_AG_SWEEP_TIMER] = t
+  if (t > 0) { return }
+  GB_APU_G[GB_AG_SWEEP_TIMER] = GB_APU_G[GB_AG_SWEEP_PERIOD]
+
+  let nf = gbApu_calcSweep()
+  if (nf > 2047) {
+    GB_APU[GB_APU_B1 + GB_A_ENABLED] = 0
+    return
+  }
+  if (GB_APU_G[GB_AG_SWEEP_SHIFT] !== 0) {
+    GB_APU_G[GB_AG_SHADOW_FREQ] = nf
+    GB_APU[GB_APU_B1 + GB_A_FREQ] = nf
+    if (gbApu_calcSweep() > 2047) { GB_APU[GB_APU_B1 + GB_A_ENABLED] = 0 }
+  }
+}
+
+// Arm the sweep from a channel-1 trigger. Note the overflow check runs here
+// too, so a trigger with a shift that already overflows never sounds at all.
+function gbApu_armSweep() {
+  GB_APU_G[GB_AG_SHADOW_FREQ] = GB_APU[GB_APU_B1 + GB_A_FREQ]
+  let sp = GB_APU_G[GB_AG_SWEEP_PERIOD]
+  GB_APU_G[GB_AG_SWEEP_TIMER] = sp === 0 ? 8 : sp
+  GB_APU_G[GB_AG_SWEEP_ON] = sp > 0 || GB_APU_G[GB_AG_SWEEP_SHIFT] > 0 ? 1 : 0
+  if (GB_APU_G[GB_AG_SWEEP_SHIFT] > 0) {
+    if (gbApu_calcSweep() > 2047) { GB_APU[GB_APU_B1 + GB_A_ENABLED] = 0 }
+  }
+}
+
+// ===========================================================================
+// The frame sequencer — 512Hz, eight steps
+//
+//   0 2 4 6   length counters
+//   2 6       sweep
+//   7         envelopes
+// ===========================================================================
+
+function gbApu_frameSequencer() {
+  let s = GB_APU_G[GB_AG_FS_STEP]
+
+  if ((s & 1) === 0) {
+    gbApu_tickLength(GB_APU_B1)
+    gbApu_tickLength(GB_APU_B2)
+    gbApu_tickLength(GB_APU_B3)
+    gbApu_tickLength(GB_APU_B4)
+    if (s === 2 || s === 6) { gbApu_tickSweep() }
+  } else if (s === 7) {
+    gbApu_tickEnvelope(GB_APU_B1)
+    gbApu_tickEnvelope(GB_APU_B2)
+    gbApu_tickEnvelope(GB_APU_B4)
+  }
+
+  GB_APU_G[GB_AG_FS_STEP] = (s + 1) & 7
+}
+
+// ===========================================================================
+// The cold advance
+//
+// Advance the frame sequencer and all four channel timers by `blk` T-cycles,
+// straight on GB_APU. gbApu_flush uses this only for the blocks that straddle a
+// 512Hz edge; gbApu_catchUp uses it for the sub-sample remainder before a
+// register write.
+//
+// The block is split at the edge rather than run whole with the sequencer fired
+// at one end. It has to be: the sweep unit rewrites channel 1's frequency from
+// inside a sequencer tick, and a block that carried the new frequency across
+// cycles belonging to the old one would shift the channel's phase permanently.
+// Everything else the sequencer does — length, envelope — is only ever read at
+// a sample instant and would not have noticed.
+// ===========================================================================
+
+function gbApu_advance(blk) {
+  let left = blk
+  while (left > 0) {
+    let n = 0
+    let cur = GB_APU_G[GB_AG_FS_COUNT]
+    if (cur < 8191) {
+      n = 8191 - cur
+      if (n > left) { n = left }
+      GB_APU_G[GB_AG_FS_COUNT] = cur + n
+    } else {
+      // This T-cycle is the edge. The sequencer runs before the channels see
+      // the cycle, which is the order the reference steps them in.
+      GB_APU_G[GB_AG_FS_COUNT] = 0
+      gbApu_frameSequencer()
+      n = 1
+    }
+
+    // With the APU powered down every channel is disabled, so each of these
+    // would return on its first test anyway; skipping four calls is free.
+    if (GB_APU_G[GB_AG_POWER] !== 0) {
+      gbApu_tickSquare(GB_APU_B1, n)
+      gbApu_tickSquare(GB_APU_B2, n)
+      gbApu_tickWave(n)
+      gbApu_tickNoise(n)
+    }
+
+    left = left - n
+  }
+}
+
+// ===========================================================================
+// The renderer
+//
+// One pass: pull every channel into locals, render all the samples the
+// accumulator says are due, store back. On the shipping engine a typed-array
+// element access costs about 17ns and a local about one, so the whole point of
+// this function is that GB_APU is touched once per render and not once per
+// sample. What remains per sample is one GB_DUTY read, one GB_WAVERAM read and
+// the two ring stores.
+//
+// An `enabled` channel always has its DAC on — every path that clears the DAC
+// clears `enabled` with it, and a trigger sets `enabled` FROM the DAC — so the
+// sample tests here check `enabled` alone. That is the reference's invariant,
+// not an assumption about it.
+// ===========================================================================
+
+function gbApu_render(catchUp) {
+  if (gbApu_cps !== GB_FCTR[GB_F_CYCLES_PER_SAMPLE]) { gbApu_syncRate() }
+
+  // Fold the integer tick accumulator into the fractional sample clock.
+  let cps = gbApu_cps
+  let acc = gbApu_facc + gbApu_acc
+  gbApu_acc = 0
+  let debt = gbApu_debt
+
+  // Nothing due, and either no catch-up wanted or no whole cycle owed for one.
+  // This is the path a driver's back-to-back register writes take.
+  if (acc < cps) {
+    if (catchUp === 0 || (acc | 0) - debt <= 0) {
+      gbApu_facc = acc
+      GB_FCTR[GB_F_SAMPLE_ACC] = acc
+      return
+    }
+  }
+
+  // ---- channel 1 (square + sweep) ----
+  let e1 = GB_APU[GB_A_ENABLED]
+  let t1 = GB_APU[GB_A_TIMER]
+  let p1 = (2048 - GB_APU[GB_A_FREQ]) << 2
+  let d1 = GB_APU[GB_A_DUTYPOS]
+  let u1 = GB_APU[GB_A_DUTY] << 3
+  let v1 = GB_APU[GB_A_VOLUME]
+  // ---- channel 2 (square) ----
+  let e2 = GB_APU[GB_APU_B2 + GB_A_ENABLED]
+  let t2 = GB_APU[GB_APU_B2 + GB_A_TIMER]
+  let p2 = (2048 - GB_APU[GB_APU_B2 + GB_A_FREQ]) << 2
+  let d2 = GB_APU[GB_APU_B2 + GB_A_DUTYPOS]
+  let u2 = GB_APU[GB_APU_B2 + GB_A_DUTY] << 3
+  let v2 = GB_APU[GB_APU_B2 + GB_A_VOLUME]
+  // ---- channel 3 (wave) ----
+  let e3 = GB_APU[GB_APU_B3 + GB_A_ENABLED]
+  let t3 = GB_APU[GB_APU_B3 + GB_A_TIMER]
+  let p3 = (2048 - GB_APU[GB_APU_B3 + GB_A_FREQ]) << 1
+  let w3 = GB_APU[GB_APU_B3 + GB_A_WAVE_POS]
+  let c3 = GB_APU[GB_APU_B3 + GB_A_WAVE_VOLCODE]
+  // ---- channel 4 (noise) ----
+  let e4 = GB_APU[GB_APU_B4 + GB_A_ENABLED]
+  let t4 = GB_APU[GB_APU_B4 + GB_A_TIMER]
+  let p4 = GB_NOISE_DIV_TABLE[GB_APU[GB_APU_B4 + GB_A_NOISE_DIV]] <<
+    GB_APU[GB_APU_B4 + GB_A_NOISE_SHIFT]
+  let x4 = GB_APU[GB_APU_B4 + GB_A_LFSR]
+  let n4 = GB_APU[GB_APU_B4 + GB_A_NOISE_WIDTH]
+  let v4 = GB_APU[GB_APU_B4 + GB_A_VOLUME]
+
+  if (p1 < 1) { p1 = 4 }
+  if (p2 < 1) { p2 = 4 }
+  if (p3 < 1) { p3 = 2 }
+  if (p4 < 1) { p4 = 4 }
+
+  let fsc = GB_APU_G[GB_AG_FS_COUNT]
+  let power = GB_APU_G[GB_AG_POWER]
+
+  // NR51 as four all-ones/all-zero masks a side, so routing is an AND rather
+  // than a branch. NR50's two volumes fold into the 32767 numerator.
+  let nr51 = GB_APU_G[GB_AG_NR51]
+  let l1 = (nr51 & 0x10) !== 0 ? -1 : 0
+  let l2 = (nr51 & 0x20) !== 0 ? -1 : 0
+  let l3 = (nr51 & 0x40) !== 0 ? -1 : 0
+  let l4 = (nr51 & 0x80) !== 0 ? -1 : 0
+  let r1 = (nr51 & 0x01) !== 0 ? -1 : 0
+  let r2 = (nr51 & 0x02) !== 0 ? -1 : 0
+  let r3 = (nr51 & 0x04) !== 0 ? -1 : 0
+  let r4 = (nr51 & 0x08) !== 0 ? -1 : 0
+  let nr50 = GB_APU_G[GB_AG_NR50]
+  let sl = (((nr50 >>> 4) & 7) + 1) * GB_APU_S16_MAX
+  let sr = ((nr50 & 7) + 1) * GB_APU_S16_MAX
+
+  let rw = GB_APU_G[GB_AG_RING_WRITE]
+  let rc = GB_APU_G[GB_AG_RING_COUNT]
+
+  // One trip per sample due, plus — when catchUp is set — a final trip that
+  // advances the sub-sample remainder without emitting anything. Sharing the
+  // loop is the point: a register write then costs one load and one store of
+  // the channel state rather than a render followed by a separate advance.
+  // floor(acc) is carried from one trip to the next instead of being recomputed:
+  // this trip's floor(acc - cps) is the next trip's floor(acc). Truncating a
+  // double measured 26ns against 5ns for the subtraction, so halving the count
+  // is worth the extra local.
+  let hi = acc | 0
+  let last = 0
+  while (last === 0) {
+    let blk = 0
+    if (acc >= cps) {
+      acc = acc - cps
+      let lo = acc | 0
+      blk = hi - lo - debt
+      hi = lo
+      debt = 0
+    } else if (catchUp !== 0) {
+      blk = hi - debt
+      if (blk <= 0) { break }
+      debt = hi
+      last = 1
+    } else {
+      break
+    }
+
+    if (fsc + blk <= 8191) {
+      // The common block: no 512Hz edge inside it, so nothing can change the
+      // channel state from underneath these locals.
+      fsc = fsc + blk
+
+      if (e1 !== 0) {
+        t1 = t1 - blk
+        if (t1 <= 0) {
+          let s = 1 + (((0 - t1) / p1) | 0)
+          t1 = t1 + s * p1
+          d1 = (d1 + s) & 7
+        }
+      }
+      if (e2 !== 0) {
+        t2 = t2 - blk
+        if (t2 <= 0) {
+          let s = 1 + (((0 - t2) / p2) | 0)
+          t2 = t2 + s * p2
+          d2 = (d2 + s) & 7
+        }
+      }
+      if (e3 !== 0) {
+        t3 = t3 - blk
+        if (t3 <= 0) {
+          let s = 1 + (((0 - t3) / p3) | 0)
+          t3 = t3 + s * p3
+          w3 = (w3 + s) & 31
+        }
+      }
+      if (e4 !== 0) {
+        t4 = t4 - blk
+        if (t4 <= 0) {
+          let s = 1 + (((0 - t4) / p4) | 0)
+          t4 = t4 + s * p4
+          if (n4 === 1) {
+            x4 = gbApu_lfsrAdvance(x4, s, 1)
+          } else if (s <= 14) {
+            // The whole batch in one go — see gbApu_lfsrAdvance. Inlined
+            // because this is the one line the drum channel spends its time on.
+            let fb = (x4 ^ (x4 >>> 1)) & ((1 << s) - 1)
+            x4 = ((x4 >>> s) | (fb << (15 - s))) & 0x7fff
+          } else {
+            x4 = gbApu_lfsrAdvance(x4, s, 0)
+          }
+        }
+      }
+    } else if (blk > 0) {
+      // A 512Hz edge falls inside this block. Length, envelope and above all
+      // the sweep can move underneath us, so hand the block to the cold path
+      // and reload everything. Eight blocks a frame out of eight hundred.
+      GB_APU[GB_A_ENABLED] = e1
+      GB_APU[GB_A_TIMER] = t1
+      GB_APU[GB_A_DUTYPOS] = d1
+      GB_APU[GB_APU_B2 + GB_A_ENABLED] = e2
+      GB_APU[GB_APU_B2 + GB_A_TIMER] = t2
+      GB_APU[GB_APU_B2 + GB_A_DUTYPOS] = d2
+      GB_APU[GB_APU_B3 + GB_A_ENABLED] = e3
+      GB_APU[GB_APU_B3 + GB_A_TIMER] = t3
+      GB_APU[GB_APU_B3 + GB_A_WAVE_POS] = w3
+      GB_APU[GB_APU_B4 + GB_A_ENABLED] = e4
+      GB_APU[GB_APU_B4 + GB_A_TIMER] = t4
+      GB_APU[GB_APU_B4 + GB_A_LFSR] = x4
+      GB_APU_G[GB_AG_FS_COUNT] = fsc
+
+      gbApu_advance(blk)
+
+      e1 = GB_APU[GB_A_ENABLED]
+      t1 = GB_APU[GB_A_TIMER]
+      p1 = (2048 - GB_APU[GB_A_FREQ]) << 2
+      d1 = GB_APU[GB_A_DUTYPOS]
+      u1 = GB_APU[GB_A_DUTY] << 3
+      v1 = GB_APU[GB_A_VOLUME]
+      e2 = GB_APU[GB_APU_B2 + GB_A_ENABLED]
+      t2 = GB_APU[GB_APU_B2 + GB_A_TIMER]
+      p2 = (2048 - GB_APU[GB_APU_B2 + GB_A_FREQ]) << 2
+      d2 = GB_APU[GB_APU_B2 + GB_A_DUTYPOS]
+      u2 = GB_APU[GB_APU_B2 + GB_A_DUTY] << 3
+      v2 = GB_APU[GB_APU_B2 + GB_A_VOLUME]
+      e3 = GB_APU[GB_APU_B3 + GB_A_ENABLED]
+      t3 = GB_APU[GB_APU_B3 + GB_A_TIMER]
+      p3 = (2048 - GB_APU[GB_APU_B3 + GB_A_FREQ]) << 1
+      w3 = GB_APU[GB_APU_B3 + GB_A_WAVE_POS]
+      c3 = GB_APU[GB_APU_B3 + GB_A_WAVE_VOLCODE]
+      e4 = GB_APU[GB_APU_B4 + GB_A_ENABLED]
+      t4 = GB_APU[GB_APU_B4 + GB_A_TIMER]
+      p4 = GB_NOISE_DIV_TABLE[GB_APU[GB_APU_B4 + GB_A_NOISE_DIV]] <<
+        GB_APU[GB_APU_B4 + GB_A_NOISE_SHIFT]
+      x4 = GB_APU[GB_APU_B4 + GB_A_LFSR]
+      n4 = GB_APU[GB_APU_B4 + GB_A_NOISE_WIDTH]
+      v4 = GB_APU[GB_APU_B4 + GB_A_VOLUME]
+      if (p1 < 1) { p1 = 4 }
+      if (p2 < 1) { p2 = 4 }
+      if (p3 < 1) { p3 = 2 }
+      if (p4 < 1) { p4 = 4 }
+      fsc = GB_APU_G[GB_AG_FS_COUNT]
+    }
+
+    if (last !== 0) { break }
+
+    // ---- the sample ----
+    let s1 = 0
+    let s2 = 0
+    let s3 = 0
+    let s4 = 0
+    if (power !== 0) {
+      if (e1 !== 0 && GB_DUTY[u1 | d1] !== 0) { s1 = v1 }
+      if (e2 !== 0 && GB_DUTY[u2 | d2] !== 0) { s2 = v2 }
+      if (e3 !== 0 && c3 !== 0) {
+        let byte = GB_WAVERAM[w3 >>> 1]
+        s3 = ((w3 & 1) !== 0 ? byte & 0x0f : byte >>> 4) >>> (c3 - 1)
+      }
+      if (e4 !== 0 && (x4 & 1) === 0) { s4 = v4 }
+    }
+
+    let ls = ((((s1 & l1) + (s2 & l2) + (s3 & l3) + (s4 & l4)) * sl + GB_APU_MIX_HALF) /
+      GB_APU_MIX_DEN) | 0
+    let rs = ((((s1 & r1) + (s2 & r2) + (s3 & r3) + (s4 & r4)) * sr + GB_APU_MIX_HALF) /
+      GB_APU_MIX_DEN) | 0
+    if (ls > 32767) { ls = 32767 } else if (ls < -32768) { ls = -32768 }
+    if (rs > 32767) { rs = 32767 } else if (rs < -32768) { rs = -32768 }
+
+    let idx = rw << 1
+    GB_AUDIO_RING[idx] = ls
+    GB_AUDIO_RING[idx + 1] = rs
+    rw = (rw + 1) & GB_AUDIO_FRAME_MASK
+
+    // Overrun: drop the oldest frame rather than block. 8192 frames is 170ms,
+    // so this only happens when the host has stopped draining entirely.
+    if (rc >= GB_AUDIO_FRAMES) {
+      GB_APU_G[GB_AG_RING_READ] = (GB_APU_G[GB_AG_RING_READ] + 1) & GB_AUDIO_FRAME_MASK
+    } else {
+      rc = rc + 1
+    }
+  }
+
+  GB_APU[GB_A_ENABLED] = e1
+  GB_APU[GB_A_TIMER] = t1
+  GB_APU[GB_A_DUTYPOS] = d1
+  GB_APU[GB_APU_B2 + GB_A_ENABLED] = e2
+  GB_APU[GB_APU_B2 + GB_A_TIMER] = t2
+  GB_APU[GB_APU_B2 + GB_A_DUTYPOS] = d2
+  GB_APU[GB_APU_B3 + GB_A_ENABLED] = e3
+  GB_APU[GB_APU_B3 + GB_A_TIMER] = t3
+  GB_APU[GB_APU_B3 + GB_A_WAVE_POS] = w3
+  GB_APU[GB_APU_B4 + GB_A_ENABLED] = e4
+  GB_APU[GB_APU_B4 + GB_A_TIMER] = t4
+  GB_APU[GB_APU_B4 + GB_A_LFSR] = x4
+  GB_APU_G[GB_AG_FS_COUNT] = fsc
+  GB_APU_G[GB_AG_RING_WRITE] = rw
+  GB_APU_G[GB_AG_RING_COUNT] = rc
+
+  gbApu_facc = acc
+  gbApu_debt = debt
+  GB_FCTR[GB_F_SAMPLE_ACC] = acc
+}
+
+// Called by gbMachine_tickParts in 4-cycle chunks, ~17,556 times a frame. Two
+// integer scalar touches and one integer compare; everything else waits for a
+// batch. This is the hottest function in the module by three orders of
+// magnitude, and every operation in it was measured before it was allowed in.
+function gbApu_step(cycles) {
+  gbApu_acc = gbApu_acc + cycles
+  if (gbApu_acc >= gbApu_trigger) { gbApu_render(0) }
+}
+
+// Render the samples that are due and nothing more. gbApu_drain calls this so
+// the host is never handed a ring that is a batch short.
+function gbApu_flush() {
+  gbApu_render(0)
+}
+
+// Bring the channels all the way up to the current T-cycle: render whatever
+// samples are due, then step the leftover sub-sample cycles and remember how
+// many. Anything that can observe the channels calls this first.
+function gbApu_catchUp() {
+  gbApu_render(1)
+}
+
+// ===========================================================================
+// Drain
+// ===========================================================================
+
+// Copy up to min(maxFrames, ringCount, GB_AUDIO_OUT_MAX) stereo frames into
+// GB_AUDIO_OUT_I16 from index 0 and return the count. gbMachine_getSamples
+// base64s GB_AUDIO_OUT_U8, a byte view over the same buffer, so there is no
+// copy and no endian work past this point.
+//
+// On underrun this returns 0 and counts it. It does NOT pad: <AudioStream>
+// schedules nothing for a zero-length result, and inserted silence lands as a
+// click exactly when the stream is already struggling.
+function gbApu_drain(maxFrames) {
+  // The first drain tells gb_machine the host is really consuming audio, which
+  // is what licenses the ring-occupancy pacing guard in gbMachine_advanceFrame.
+  GB_APU_G[GB_AG_ACTIVE] = 1
+
+  // Whatever the batch is still holding belongs in this drain.
+  gbApu_flush()
+
+  let count = GB_APU_G[GB_AG_RING_COUNT]
+  if (count <= 0) {
+    GB_APU_G[GB_AG_UNDERRUNS] = GB_APU_G[GB_AG_UNDERRUNS] + 1
+    return 0
+  }
+
+  let n = maxFrames
+  if (n === undefined || n === null) { n = GB_AUDIO_OUT_MAX }
+  if (!(n > 0)) { return 0 }
+  if (n > GB_AUDIO_OUT_MAX) { n = GB_AUDIO_OUT_MAX }
+  if (n > count) { n = count }
+
+  let r = GB_APU_G[GB_AG_RING_READ]
+  for (let i = 0; i < n; i = i + 1) {
+    let s = r << 1
+    let d = i << 1
+    GB_AUDIO_OUT_I16[d] = GB_AUDIO_RING[s]
+    GB_AUDIO_OUT_I16[d + 1] = GB_AUDIO_RING[s + 1]
+    r = (r + 1) & GB_AUDIO_FRAME_MASK
+  }
+
+  GB_APU_G[GB_AG_RING_READ] = r
+  GB_APU_G[GB_AG_RING_COUNT] = count - n
+  return n
+}
+
+// ===========================================================================
+// Register reads
+//
+// Reconstructed from live channel state, exactly as the reference does, with
+// the hardware's read-back masks. The raw bytes kept in GB_IO are for save
+// states and the debugger, not for these.
+//
+// Decomposed as channel = (addr - FF10) / 5, sub = the rest, because the NRxx
+// file really is four five-register banks followed by the three mixer
+// registers: FF10-FF14, FF15-FF19, FF1A-FF1E, FF1F-FF23, FF24-FF26.
+// ===========================================================================
+
+function gbApu_readReg(addr) {
+  if (addr >= 0xff30) {
+    if (addr <= 0xff3f) { return GB_WAVERAM[addr - 0xff30] }
+    return 0xff
+  }
+
+  let i = addr - 0xff10
+  if (i < 0 || i > 22) { return 0xff }
+
+  let ch = (i / 5) | 0
+  let sub = i - ch * 5
+
+  if (ch === 4) {
+    if (sub === 0) { return GB_APU_G[GB_AG_NR50] & 0xff }
+    if (sub === 1) { return GB_APU_G[GB_AG_NR51] & 0xff }
+    // NR52: power in bit 7, live channel enables in bits 0-3, 0x70 unused.
+    // A length counter that has just run out is only visible once the renderer
+    // has caught up, so this one read pays for it. Carts poll NR52 to wait for
+    // a note to finish and would otherwise see it up to a batch late.
+    gbApu_catchUp()
+    let v = 0x70
+    if (GB_APU_G[GB_AG_POWER] !== 0) { v = v | 0x80 }
+    if (GB_APU[GB_APU_B1 + GB_A_ENABLED] !== 0) { v = v | 0x01 }
+    if (GB_APU[GB_APU_B2 + GB_A_ENABLED] !== 0) { v = v | 0x02 }
+    if (GB_APU[GB_APU_B3 + GB_A_ENABLED] !== 0) { v = v | 0x04 }
+    if (GB_APU[GB_APU_B4 + GB_A_ENABLED] !== 0) { v = v | 0x08 }
+    return v
+  }
+
+  let b = ch * GB_A_STRIDE
+
+  // NRx4 is the same everywhere: only the length-enable bit reads back.
+  if (sub === 4) {
+    return 0xbf | (GB_APU[b + GB_A_LEN_ON] !== 0 ? 0x40 : 0)
+  }
+
+  if (ch === 0) {
+    if (sub === 0) {
+      return 0x80 |
+        (GB_APU_G[GB_AG_SWEEP_PERIOD] << 4) |
+        (GB_APU_G[GB_AG_SWEEP_DIR] << 3) |
+        GB_APU_G[GB_AG_SWEEP_SHIFT]
+    }
+    if (sub === 1) { return ((GB_APU[b + GB_A_DUTY] << 6) | 0x3f) & 0xff }
+    if (sub === 2) { return gbApu_readEnvelope(b) }
+    return 0xff
+  }
+
+  if (ch === 1) {
+    if (sub === 1) { return ((GB_APU[b + GB_A_DUTY] << 6) | 0x3f) & 0xff }
+    if (sub === 2) { return gbApu_readEnvelope(b) }
+    return 0xff
+  }
+
+  if (ch === 2) {
+    if (sub === 0) { return GB_APU[b + GB_A_DAC] !== 0 ? 0xff : 0x7f }
+    if (sub === 2) { return (0x9f | (GB_APU[b + GB_A_WAVE_VOLCODE] << 5)) & 0xff }
+    return 0xff
+  }
+
+  // Channel 4.
+  if (sub === 2) { return gbApu_readEnvelope(b) }
+  if (sub === 3) {
+    return ((GB_APU[b + GB_A_NOISE_SHIFT] << 4) |
+      (GB_APU[b + GB_A_NOISE_WIDTH] << 3) |
+      GB_APU[b + GB_A_NOISE_DIV]) & 0xff
+  }
+  return 0xff
+}
+
+function gbApu_readEnvelope(b) {
+  return ((GB_APU[b + GB_A_ENV_VOL0] << 4) |
+    (GB_APU[b + GB_A_ENV_DIR] << 3) |
+    GB_APU[b + GB_A_ENV_PERIOD]) & 0xff
+}
+
+// ===========================================================================
+// Register writes
+// ===========================================================================
+
+// NRx2 for the three enveloped channels, plus the DAC. A DAC fed all-zero
+// (volume 0, direction down) is off, and turning it off kills the channel —
+// which is how nearly every driver silences a note.
+function gbApu_writeEnvelope(b, v) {
+  GB_APU[b + GB_A_ENV_VOL0] = (v >>> 4) & 0x0f
+  GB_APU[b + GB_A_ENV_DIR] = (v >>> 3) & 1
+  GB_APU[b + GB_A_ENV_PERIOD] = v & 7
+  if ((v & 0xf8) !== 0) {
+    GB_APU[b + GB_A_DAC] = 1
+  } else {
+    GB_APU[b + GB_A_DAC] = 0
+    GB_APU[b + GB_A_ENABLED] = 0
+  }
+}
+
+// NR52 bit 7 falling: the whole NRxx file is wiped. Wave RAM is NOT — it stays
+// readable and writable with the APU off, which is how drivers upload a
+// waveform before powering up.
+//
+// Channel 3 keeps its frequency, length, volume code and position, exactly as
+// the reference does; only its enable and DAC clear.
+function gbApu_powerOff() {
+  gbApu_clearChannel(GB_APU_B1)
+  gbApu_clearChannel(GB_APU_B2)
+  GB_APU[GB_APU_B3 + GB_A_ENABLED] = 0
+  GB_APU[GB_APU_B3 + GB_A_DAC] = 0
+  gbApu_clearChannel(GB_APU_B4)
+  GB_APU[GB_APU_B4 + GB_A_LFSR] = 0x7fff
+
+  GB_APU_G[GB_AG_NR50] = 0
+  GB_APU_G[GB_AG_NR51] = 0
+
+  // The sweep registers go too. The reference leaves them standing — an
+  // artefact of it replacing channel objects rather than clearing a register
+  // file — and NR10 then reads back stale through a power cycle.
+  GB_APU_G[GB_AG_SWEEP_PERIOD] = 0
+  GB_APU_G[GB_AG_SWEEP_DIR] = 0
+  GB_APU_G[GB_AG_SWEEP_SHIFT] = 0
+  GB_APU_G[GB_AG_SWEEP_TIMER] = 0
+  GB_APU_G[GB_AG_SWEEP_ON] = 0
+  GB_APU_G[GB_AG_SHADOW_FREQ] = 0
+
+  for (let a = 0x10; a <= 0x25; a = a + 1) {
+    GB_IO[a] = 0
+  }
+}
+
+function gbApu_writeReg(addr, v) {
+  v = v & 0xff
+
+  let i = addr - 0xff10
+  if (i < 0 || i > 0x2f) { return }
+
+  // Render up to this exact T-cycle before the write changes what the channels
+  // are playing. See the header.
+  gbApu_catchUp()
+
+  // Wave RAM: always writable, powered or not.
+  if (addr >= 0xff30) {
+    GB_WAVERAM[addr - 0xff30] = v
+    return
+  }
+
+  if (i > 22) { return }
+
+  // With the APU off only NR52 and the four length sub-registers take a write.
+  // Length is the low six bits of NR11/NR21/NR41 and all eight of NR31.
+  if (GB_APU_G[GB_AG_POWER] === 0) {
+    if (i === 1) { GB_APU[GB_APU_B1 + GB_A_LEN_COUNT] = 64 - (v & 0x3f); return }
+    if (i === 6) { GB_APU[GB_APU_B2 + GB_A_LEN_COUNT] = 64 - (v & 0x3f); return }
+    if (i === 11) { GB_APU[GB_APU_B3 + GB_A_LEN_COUNT] = 256 - v; return }
+    if (i === 16) { GB_APU[GB_APU_B4 + GB_A_LEN_COUNT] = 64 - (v & 0x3f); return }
+    if (i !== 22) { return }
+  }
+
+  // Keep the raw byte for save states and the debugger. Only writes that are
+  // actually taken are recorded, so a shadow never disagrees with behaviour.
+  GB_IO[addr & 0x7f] = v
+
+  let ch = (i / 5) | 0
+  let sub = i - ch * 5
+
+  if (ch === 4) {
+    if (sub === 0) { GB_APU_G[GB_AG_NR50] = v; return }
+    if (sub === 1) { GB_APU_G[GB_AG_NR51] = v; return }
+    let was = GB_APU_G[GB_AG_POWER]
+    let now = (v & 0x80) !== 0 ? 1 : 0
+    GB_APU_G[GB_AG_POWER] = now
+    if (was === 1 && now === 0) { gbApu_powerOff() }
+    return
+  }
+
+  let b = ch * GB_A_STRIDE
+
+  if (ch === 2) {
+    // Wave channel.
+    if (sub === 0) {
+      if ((v & 0x80) !== 0) {
+        GB_APU[b + GB_A_DAC] = 1
+      } else {
+        GB_APU[b + GB_A_DAC] = 0
+        GB_APU[b + GB_A_ENABLED] = 0
+      }
+      return
+    }
+    if (sub === 1) { GB_APU[b + GB_A_LEN_COUNT] = 256 - v; return }
+    if (sub === 2) { GB_APU[b + GB_A_WAVE_VOLCODE] = (v >>> 5) & 3; return }
+    if (sub === 3) {
+      GB_APU[b + GB_A_FREQ] = (GB_APU[b + GB_A_FREQ] & 0x700) | v
+      return
+    }
+    GB_APU[b + GB_A_FREQ] = (GB_APU[b + GB_A_FREQ] & 0xff) | ((v & 7) << 8)
+    GB_APU[b + GB_A_LEN_ON] = (v & 0x40) !== 0 ? 1 : 0
+    if ((v & 0x80) !== 0) { gbApu_triggerWave() }
+    return
+  }
+
+  if (ch === 3) {
+    // Noise. Sub 0 is FF1F, which does not exist.
+    if (sub === 0) { return }
+    if (sub === 1) { GB_APU[b + GB_A_LEN_COUNT] = 64 - (v & 0x3f); return }
+    if (sub === 2) { gbApu_writeEnvelope(b, v); return }
+    if (sub === 3) {
+      GB_APU[b + GB_A_NOISE_SHIFT] = (v >>> 4) & 0x0f
+      GB_APU[b + GB_A_NOISE_WIDTH] = (v >>> 3) & 1
+      GB_APU[b + GB_A_NOISE_DIV] = v & 7
+      return
+    }
+    GB_APU[b + GB_A_LEN_ON] = (v & 0x40) !== 0 ? 1 : 0
+    if ((v & 0x80) !== 0) { gbApu_triggerNoise() }
+    return
+  }
+
+  // Channels 1 and 2 — the same square, and only channel 1 has a sweep at
+  // sub 0. For channel 2 that address is FF15, which does not exist.
+  if (sub === 0) {
+    if (ch !== 0) { return }
+    GB_APU_G[GB_AG_SWEEP_PERIOD] = (v >>> 4) & 7
+    GB_APU_G[GB_AG_SWEEP_DIR] = (v >>> 3) & 1
+    GB_APU_G[GB_AG_SWEEP_SHIFT] = v & 7
+    return
+  }
+  if (sub === 1) {
+    GB_APU[b + GB_A_DUTY] = (v >>> 6) & 3
+    GB_APU[b + GB_A_LEN_COUNT] = 64 - (v & 0x3f)
+    return
+  }
+  if (sub === 2) { gbApu_writeEnvelope(b, v); return }
+  if (sub === 3) {
+    GB_APU[b + GB_A_FREQ] = (GB_APU[b + GB_A_FREQ] & 0x700) | v
+    return
+  }
+
+  GB_APU[b + GB_A_FREQ] = (GB_APU[b + GB_A_FREQ] & 0xff) | ((v & 7) << 8)
+  GB_APU[b + GB_A_LEN_ON] = (v & 0x40) !== 0 ? 1 : 0
+  if ((v & 0x80) !== 0) {
+    gbApu_triggerSquare(b)
+    if (ch === 0) { gbApu_armSweep() }
+  }
+}

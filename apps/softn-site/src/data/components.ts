@@ -65,7 +65,24 @@ export const CATEGORIES: Category[] = [
   },
   {
     name: 'Utility',
-    components: ['Accordion', 'Collapse', 'Tooltip', 'Loop', 'PixelGrid', 'QRCode', 'QRReader', 'Camera', 'DPad'],
+    components: [
+      'Accordion',
+      'Collapse',
+      'Tooltip',
+      'Loop',
+      'PixelGrid',
+      // The canvas-backed counterpart to PixelGrid: sparse cells versus a dense
+      // bitmap, so they sit together.
+      'PixelCanvas',
+      'QRCode',
+      'QRReader',
+      'Camera',
+      'Microphone',
+      // Next to Microphone because they are the two ends of the same wire —
+      // one takes sound in, the other puts generated sound out.
+      'AudioStream',
+      'DPad',
+    ],
   },
   {
     name: 'Charts',

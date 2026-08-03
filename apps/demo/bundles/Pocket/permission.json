@@ -1,0 +1,6 @@
+{
+  "app": { "id": "com.softn.pocket", "name": "Pocket", "version": "0.1.0" },
+  "permissions": {
+    "files": { "enabled": true }
+  }
+}

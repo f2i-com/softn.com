@@ -1,0 +1,1124 @@
+// Pocket — the picture processing unit.
+//
+// Owns FF40-FF4B, FF4F, FF68-FF6C, the interpretation of GB_VRAM and GB_OAM,
+// the tile-row decode cache, the framebuffer and the palette. Every byte it
+// touches is declared in gb_state.logic; this file declares no storage.
+//
+// ---------------------------------------------------------------------------
+// WHAT WAS PORTED, AND WHAT WAS NOT
+// ---------------------------------------------------------------------------
+//
+// The reference (emulator/src/emulator/core/ppu.ts) runs a per-dot pixel FIFO:
+// a BG fetcher, a sprite fetcher and an output mixer, all stepped one dot at a
+// time, 70224 times a frame. Transliterated into .logic that measured 13.8ms a
+// frame — 83% of the whole 16.67ms budget, before the CPU or the APU ran.
+//
+// So the SCHEDULE is kept and the PIXEL PUSHING is not. Mode 2/3/0/1 lengths,
+// LY, LYC, the STAT line and its four-cycle rising-edge delay, the line-153
+// quirk and the LCD-off behaviour are all exactly the reference's, to the dot,
+// because the CPU can see every one of them. What changed is that all 160
+// pixels of a line are produced in one go at the mode 2 -> mode 3 edge, out of
+// flat integer loops over typed arrays.
+//
+// The one behavioural cost is written down in CONTRACT.md §3.6: a mid-LINE
+// write to SCX/SCY/LCDC/WX/WY no longer splits the line. Mid-FRAME writes work
+// normally, so parallax, status bars and BGP fades are all intact; only
+// per-pixel raster tricks inside a single scanline are lost.
+//
+// ---------------------------------------------------------------------------
+// WHAT THE ENGINE ACTUALLY CHARGES FOR — ALL MEASURED, NONE GUESSED
+// ---------------------------------------------------------------------------
+//
+// Every number below was measured on the shipping zipp WASM, and between them
+// they decided the shape of every loop in this file.
+//
+//   a call, with an empty body ......................... ~17ns
+//   a plain top-level number, read or written ........... ~2ns
+//   ONE typed-array element, read or written ........... ~27ns
+//   a typed-array method call (fill, set) .............. ~350ns
+//   a statement, over and above what it computes ....... ~30ns
+//
+// Three consequences, and this file is built on them:
+//
+// 1. STATEMENTS COST MORE THAN ARITHMETIC. Splitting a value into a local so
+//    it can be used twice measured SLOWER than reading the array again. The
+//    per-pixel palette resolve is therefore one statement with the arithmetic
+//    folded into it, and the eight pixels of a tile row are unrolled: dropping
+//    the loop counter and its test took the background from 4.2ms to 3.2ms.
+//
+// 2. THE SCHEDULER IS CALLED 17,556 TIMES A FRAME. gb_machine ticks in
+//    4-cycle chunks, so gbPpu_step runs more often than anything else in the
+//    bundle. Written against GB_CTR it measured 17.7ms a frame — on its own,
+//    more than the entire budget. Written as a countdown over two plain
+//    numbers (GB_PPU_DOTS, GB_PPU_STATD — see the note in gb_state.logic) the
+//    common call is a subtract and two compares, and everything that needs a
+//    typed array happens at the ~600 mode boundaries instead of the 17,556
+//    ticks. That single change is worth about 16ms a frame.
+//
+// 3. NOTHING PER-PIXEL MAY BE OPTIONAL. GB_LINE_BGCOLOR costs 1.3ms a frame to
+//    export, so it is exported only when a sprite on that line actually has
+//    its priority bit set (gbPpu_scanSprites works that out while it is
+//    already reading OAM), and on CGB never — there the background colour is
+//    recoverable from the framebuffer byte itself, because a CGB background
+//    slot is palette*4 + colour and the low two bits ARE the colour.
+//
+// ---------------------------------------------------------------------------
+// WHERE IT LANDED
+// ---------------------------------------------------------------------------
+//
+// Per frame, on a Ryzen 9 9950X3D against the shipping zipp WASM, ticked in
+// 4-cycle chunks exactly as gbMachine_tickParts will:
+//
+//                                        DMG       CGB
+//   an ordinary game frame ............  4.8ms     5.6ms
+//   ... plus 1KB of VRAM rewritten ....  5.0ms     5.9ms
+//   ten sprites on every line, window,
+//   256 distinct tiles, half of them
+//   x-flipped .........................  6.3ms     7.0ms
+//
+// Of the ordinary frame's 4.8ms, 1.2ms is the cost of gbPpu_step being CALLED
+// 17,556 times and returning — an empty function called that often costs the
+// same. The PPU's own work is 3.6ms. gbPpu_step handles any chunk size (it
+// loops), so if the whole-bundle budget ever needs that 1.2ms back,
+// gbMachine_tickParts can hand the PPU larger chunks without changing a line
+// here; the schedule stays dot-accurate either way, because everything it
+// decides is driven off the countdown rather than off the call.
+//
+// The per-dot FIFO this replaced measured 13.8ms.
+//
+// ---------------------------------------------------------------------------
+// THE TILE-ROW DECODE CACHE
+// ---------------------------------------------------------------------------
+//
+// A tile row is two bytes of interleaved bitplanes. Pulling one pixel out of
+// it costs two shifts, two masks and an or, and doing that per pixel per
+// scanline repeats the same eight extractions for every line that shares the
+// row and every frame the tile does not change — which, for a background, is
+// nearly all of them. gbPpu_ensureTileRow decodes a row into eight bytes ONCE
+// and gb_mmu marks it dirty when the VRAM under it moves. In steady state a
+// scanline does 21 dirty-flag reads and no decoding at all.
+//
+// The index arithmetic collapses to nothing because the cache is indexed by
+// VRAM byte offset >> 1 across both banks:
+//
+//     row = tile * 8 + lineInTile          (+ 0x1000 for VRAM bank 1)
+//
+// and $8800 signed addressing is just two hoisted per-line constants — XOR the
+// tile index with 0x80 and add 0x400 rows — so the whole per-tile address
+// calculation is one statement with no branch:
+//
+//     row = ((GB_VRAM[mapAddr] ^ tileXor) << 3) + rowBias
+//
+// ---------------------------------------------------------------------------
+// PALETTE RESOLUTION WITH NO BRANCH AND NO TABLE
+// ---------------------------------------------------------------------------
+//
+// DMG resolves a colour through BGP/OBP as ((bgp >>> (c << 1)) & 3); CGB wants
+// the raw colour with the palette number in the high bits. Rather than branch
+// per pixel — or add a 64-entry lookup, which measured no faster than the
+// arithmetic — both go through ONE expression:
+//
+//     GB_FB[i] = pbase | ((pshift >>> (c << 1)) & 3)
+//
+// DMG passes pshift = BGP/OBP0/OBP1 and pbase = 0/32/36. CGB passes
+// pshift = 0xe4 — the identity permutation 11 10 01 00, so the shift and mask
+// hand back c untouched — and pbase = the palette number times four. Both are
+// hoisted per tile and per sprite, and the pixel loop never asks which machine
+// it is on.
+//
+// ---------------------------------------------------------------------------
+// LAYER ORDER
+// ---------------------------------------------------------------------------
+//
+// Background first, sprites second, and sprites drawn in strict descending
+// priority so the first writer of a pixel always wins. That is what lets the
+// background loop write unconditionally — it never has to ask whether a sprite
+// is already there — and it means no sprite ever has to put a background pixel
+// back. See gbPpu_drawSprites for why CGB's OPRI=0 needs its own traversal
+// order to keep that invariant.
+
+// ===========================================================================
+// The notification from gb_mmu
+//
+// CONTRACT.md §4 fixes this body byte for byte, because gb_mmu is allowed to
+// inline it and the two forms must not drift apart. flat is the VRAM offset
+// across BOTH banks, (bank << 13) | (addr - 0x8000), and flat >>> 1 is exactly
+// tile * 8 + row within the bank — the same index for both bytes of the pair,
+// with no division and no branch. The cache covers the tilemap region too;
+// that wastes 16KB and buys an invalidation with no bounds test at all.
+// ===========================================================================
+
+function gbPpu_dirtyVram(flat) {
+  GB_TILEDIRTY[flat >>> 1] = 1
+}
+
+// Decode one 2bpp tile row into eight palette indices, left pixel first.
+// Lazy: called at fetch time, never on write, because games blit far more VRAM
+// bytes than they ever display. Unrolled — an inner loop over eight bits would
+// cost more in loop overhead than the extractions themselves.
+//
+// X-flip is deliberately NOT cached separately; the drawing code reads these
+// eight bytes backwards instead.
+function gbPpu_ensureTileRow(row) {
+  if (GB_TILEDIRTY[row] === 0) { return }
+  let s = row << 1
+  let lo = GB_VRAM[s]
+  let hi = GB_VRAM[s + 1]
+  let d = row << 3
+  GB_TILECACHE[d] = (((hi >>> 7) & 1) << 1) | ((lo >>> 7) & 1)
+  GB_TILECACHE[d + 1] = (((hi >>> 6) & 1) << 1) | ((lo >>> 6) & 1)
+  GB_TILECACHE[d + 2] = (((hi >>> 5) & 1) << 1) | ((lo >>> 5) & 1)
+  GB_TILECACHE[d + 3] = (((hi >>> 4) & 1) << 1) | ((lo >>> 4) & 1)
+  GB_TILECACHE[d + 4] = (((hi >>> 3) & 1) << 1) | ((lo >>> 3) & 1)
+  GB_TILECACHE[d + 5] = (((hi >>> 2) & 1) << 1) | ((lo >>> 2) & 1)
+  GB_TILECACHE[d + 6] = (((hi >>> 1) & 1) << 1) | ((lo >>> 1) & 1)
+  GB_TILECACHE[d + 7] = ((hi & 1) << 1) | (lo & 1)
+  GB_TILEDIRTY[row] = 0
+}
+
+// ===========================================================================
+// The STAT line
+//
+// STAT's interrupt is edge triggered on the OR of four enables plus the
+// mode-2-on-VBlank-entry case, and it arrives four T-cycles after the line
+// rises. GB_PPU_STATD is that countdown, -1 when idle. It is ticked in
+// gbPpu_step rather than at mode boundaries so the interrupt still lands on
+// the exact cycle even when it was armed by a register write mid-mode.
+// ===========================================================================
+
+function gbPpu_updateStatLine() {
+  let stat = GB_IO[0x41]
+  let mode = GB_CTR[GB_C_PPU_MODE]
+  let line = 0
+
+  if ((stat & 0x40) !== 0 && (stat & 0x04) !== 0) {
+    line = 1
+  } else if ((stat & 0x20) !== 0 && mode === GB_MODE_OAM) {
+    line = 1
+  } else if ((stat & 0x10) !== 0 && mode === GB_MODE_VBLANK) {
+    line = 1
+  } else if ((stat & 0x08) !== 0 && mode === GB_MODE_HBLANK) {
+    line = 1
+  } else if ((stat & 0x20) !== 0 && mode === GB_MODE_VBLANK && GB_IO[0x44] === GB_SCREEN_H) {
+    // The mode-2 source also fires on the VBlank entry line. Hardware quirk,
+    // and Mooneye's stat_irq_blocking leans on it.
+    line = 1
+  }
+
+  if (line === 1 && GB_CTR[GB_C_STAT_LINE] === 0) {
+    GB_PPU_STATD = 4
+    GB_CTR[GB_C_STAT_DELAY] = 4
+  }
+  GB_CTR[GB_C_STAT_LINE] = line
+}
+
+function gbPpu_checkLyc() {
+  if (GB_IO[0x44] === GB_IO[0x45]) {
+    GB_IO[0x41] = GB_IO[0x41] | 0x04
+  } else {
+    GB_IO[0x41] = GB_IO[0x41] & 0xfb
+  }
+  gbPpu_updateStatLine()
+}
+
+function gbPpu_setMode(m) {
+  GB_CTR[GB_C_PPU_MODE] = m
+  GB_IO[0x41] = (GB_IO[0x41] & 0xfc) | (m & 0x03)
+  gbPpu_updateStatLine()
+}
+
+// The LYC compare and the mode change together, for the transitions that do
+// both — which is every one that ends a line. Running them as checkLyc() then
+// setMode() costs two passes over the STAT sources for no benefit: both happen
+// within the same dot, and the interrupt only cares about the rising edge of
+// their OR, which is the same either way.
+function gbPpu_lycMode(m) {
+  let stat = (GB_IO[0x41] & 0xf8) | m
+  if (GB_IO[0x44] === GB_IO[0x45]) { stat = stat | 0x04 }
+  GB_IO[0x41] = stat
+  GB_CTR[GB_C_PPU_MODE] = m
+  gbPpu_updateStatLine()
+}
+
+// ===========================================================================
+// OAM scan — the ten sprites of this line
+//
+// Gathered in OAM order, which is what enforces the ten-sprite limit (the
+// first ten that intersect the line win, not the leftmost ten), then insertion
+// sorted by (x, oamIndex). The sort is stable because it only shifts past a
+// STRICTLY greater x, so equal-x sprites keep their OAM order — and that pair
+// is exactly the DMG priority rule, so drawing the sorted list first-writer-
+// wins needs no further comparisons.
+//
+// The attribute byte is read here as well, purely to set GB_C_SPR_BGTEST: it
+// is the cheapest place to find out whether any sprite on this line can lose
+// to the background, and knowing that lets the background pass skip exporting
+// GB_LINE_BGCOLOR, which is worth 1.3ms a frame.
+// ===========================================================================
+
+function gbPpu_scanSprites() {
+  GB_CTR[GB_C_SPR_COUNT] = 0
+  GB_CTR[GB_C_SPR_BGTEST] = 0
+  let lcdc = GB_IO[0x40]
+  if ((lcdc & 0x02) === 0) { return }
+
+  let h = 8
+  if ((lcdc & 0x04) !== 0) { h = 16 }
+  let ly = GB_IO[0x44]
+  let n = 0
+  let bgtest = 0
+
+  // Forty entries are examined on every one of the 144 lines, so the reject —
+  // which is 39 of 40 of them — has to be a single test. (ly + 16 - y) is the
+  // row within the sprite; shifting it into unsigned space folds the "above
+  // the sprite" case into the "below it" one, so one comparison decides.
+  let top = ly + 16
+
+  for (let i = 0; i < 40 && n < GB_MAX_SPRITES_PER_LINE; i = i + 1) {
+    let o = i << 2
+    if ((top - GB_OAM[o]) >>> 0 < h) {
+      let x = GB_OAM[o + 1]
+      let k = n
+      while (k > 0 && GB_SPR_X[k - 1] > x) {
+        GB_SPR_X[k] = GB_SPR_X[k - 1]
+        GB_SPR_IDX[k] = GB_SPR_IDX[k - 1]
+        GB_SPR_Y[k] = GB_SPR_Y[k - 1]
+        k = k - 1
+      }
+      GB_SPR_X[k] = x
+      GB_SPR_IDX[k] = i
+      GB_SPR_Y[k] = GB_OAM[o]
+      n = n + 1
+      if ((GB_OAM[o + 3] & 0x80) !== 0) { bgtest = 1 }
+    }
+  }
+
+  GB_CTR[GB_C_SPR_COUNT] = n
+  GB_CTR[GB_C_SPR_BGTEST] = bgtest
+}
+
+// ===========================================================================
+// The background / window run
+//
+// Draws screen columns [x0, x1) from one tilemap row. The background and the
+// window are the same code with different arguments: the background starts at
+// column 0 with a sub-tile skip of SCX & 7 and wraps its map X at 31; the
+// window starts at WX-7, tile aligned, from map column 0. Because the caller
+// hands the window the columns the background does NOT get, the two runs never
+// overlap and no pixel is drawn twice.
+//
+// A whole, unflipped tile — nineteen of the twenty-one on a line — goes
+// through the unrolled block. The partial tiles at either end, and the CGB
+// x-flipped ones, fall into the general loop below it. Everything constant
+// across the line (tile addressing, BGP, machine type) is resolved before the
+// loop; everything constant across a tile (cache base, palette, priority) is
+// resolved once per tile.
+//
+// needBg is 1 only when a sprite on this line can lose to the background, in
+// which case the raw colour has to be exported to GB_LINE_BGCOLOR as well.
+// ===========================================================================
+
+function gbPpu_drawTileRun(fbase, x0, x1, mapRowBase, tileX0, skip, rowInTile, needBg) {
+  if (x0 >= x1) { return }
+
+  let lcdc = GB_IO[0x40]
+  let gbc = GB_CPUF[GB_P_GBC]
+
+  // $8800 signed addressing as two constants: XOR the index with 0x80, then
+  // add 0x400 rows. rowBiasFlip is the same for a CGB y-flipped tile.
+  let tileXor = 0
+  let rowBias = rowInTile
+  let rowBiasFlip = 7 - rowInTile
+  if ((lcdc & 0x10) === 0) {
+    tileXor = 0x80
+    rowBias = rowBias + 0x400
+    rowBiasFlip = rowBiasFlip + 0x400
+  }
+
+  let pshift = GB_IO[0x47]
+  let pbase = 0
+  if (gbc === 1) { pshift = 0xe4 }
+
+  let ma = mapRowBase + tileX0
+  let rowEnd = mapRowBase + 32
+  let x = x0
+  let first = skip
+
+  while (x < x1) {
+    let row = 0
+    let flip = 0
+    let prio = 0
+
+    if (gbc === 1) {
+      let attr = GB_VRAM[0x2000 + ma]
+      let rb = rowBias
+      if ((attr & 0x40) !== 0) { rb = rowBiasFlip }
+      if ((attr & 0x08) !== 0) { rb = rb + 0x1000 }
+      row = ((GB_VRAM[ma] ^ tileXor) << 3) + rb
+      pbase = (attr & 0x07) << 2
+      flip = (attr >>> 5) & 1
+      prio = (attr >>> 7) & 1
+    } else {
+      row = ((GB_VRAM[ma] ^ tileXor) << 3) + rowBias
+    }
+
+    if (GB_TILEDIRTY[row] !== 0) { gbPpu_ensureTileRow(row) }
+    let cb = row << 3
+    let xe = x + 8 - first
+    if (xe > x1) { xe = x1 }
+
+    if (flip === 0 && xe === x + 8) {
+      // The whole eight-pixel row as two words. Cache bytes are 0-3, so the
+      // unpack is (w >>> 8k) & 3 with no byte mask needed.
+      let q = row << 1
+      let f0 = fbase + x
+      let w = GB_TILECACHE32[q]
+      if (needBg === 0) {
+        GB_FB[f0] = pbase | ((pshift >>> ((w & 3) << 1)) & 3)
+        GB_FB[f0 + 1] = pbase | ((pshift >>> (((w >>> 8) & 3) << 1)) & 3)
+        GB_FB[f0 + 2] = pbase | ((pshift >>> (((w >>> 16) & 3) << 1)) & 3)
+        GB_FB[f0 + 3] = pbase | ((pshift >>> (((w >>> 24) & 3) << 1)) & 3)
+        w = GB_TILECACHE32[q + 1]
+        GB_FB[f0 + 4] = pbase | ((pshift >>> ((w & 3) << 1)) & 3)
+        GB_FB[f0 + 5] = pbase | ((pshift >>> (((w >>> 8) & 3) << 1)) & 3)
+        GB_FB[f0 + 6] = pbase | ((pshift >>> (((w >>> 16) & 3) << 1)) & 3)
+        GB_FB[f0 + 7] = pbase | ((pshift >>> (((w >>> 24) & 3) << 1)) & 3)
+      } else {
+        GB_LINE_BGCOLOR[x] = w & 3
+        GB_FB[f0] = pbase | ((pshift >>> ((w & 3) << 1)) & 3)
+        GB_LINE_BGCOLOR[x + 1] = (w >>> 8) & 3
+        GB_FB[f0 + 1] = pbase | ((pshift >>> (((w >>> 8) & 3) << 1)) & 3)
+        GB_LINE_BGCOLOR[x + 2] = (w >>> 16) & 3
+        GB_FB[f0 + 2] = pbase | ((pshift >>> (((w >>> 16) & 3) << 1)) & 3)
+        GB_LINE_BGCOLOR[x + 3] = (w >>> 24) & 3
+        GB_FB[f0 + 3] = pbase | ((pshift >>> (((w >>> 24) & 3) << 1)) & 3)
+        w = GB_TILECACHE32[q + 1]
+        GB_LINE_BGCOLOR[x + 4] = w & 3
+        GB_FB[f0 + 4] = pbase | ((pshift >>> ((w & 3) << 1)) & 3)
+        GB_LINE_BGCOLOR[x + 5] = (w >>> 8) & 3
+        GB_FB[f0 + 5] = pbase | ((pshift >>> (((w >>> 8) & 3) << 1)) & 3)
+        GB_LINE_BGCOLOR[x + 6] = (w >>> 16) & 3
+        GB_FB[f0 + 6] = pbase | ((pshift >>> (((w >>> 16) & 3) << 1)) & 3)
+        GB_LINE_BGCOLOR[x + 7] = (w >>> 24) & 3
+        GB_FB[f0 + 7] = pbase | ((pshift >>> (((w >>> 24) & 3) << 1)) & 3)
+      }
+    } else if (flip === 1 && needBg === 0 && xe === x + 8) {
+      // A whole x-flipped tile: the same two words, unpacked right to left.
+      // needBg can never be 1 here — it is only ever set on DMG, and only CGB
+      // has a flip bit — but the test keeps that from becoming a silent wrong
+      // answer if that ever changes.
+      let q = row << 1
+      let f0 = fbase + x
+      let w = GB_TILECACHE32[q + 1]
+      GB_FB[f0] = pbase | ((pshift >>> (((w >>> 24) & 3) << 1)) & 3)
+      GB_FB[f0 + 1] = pbase | ((pshift >>> (((w >>> 16) & 3) << 1)) & 3)
+      GB_FB[f0 + 2] = pbase | ((pshift >>> (((w >>> 8) & 3) << 1)) & 3)
+      GB_FB[f0 + 3] = pbase | ((pshift >>> ((w & 3) << 1)) & 3)
+      w = GB_TILECACHE32[q]
+      GB_FB[f0 + 4] = pbase | ((pshift >>> (((w >>> 24) & 3) << 1)) & 3)
+      GB_FB[f0 + 5] = pbase | ((pshift >>> (((w >>> 16) & 3) << 1)) & 3)
+      GB_FB[f0 + 6] = pbase | ((pshift >>> (((w >>> 8) & 3) << 1)) & 3)
+      GB_FB[f0 + 7] = pbase | ((pshift >>> ((w & 3) << 1)) & 3)
+    } else {
+      // Partial tile at either end of the run, or a CGB x-flip. Always exports
+      // the colour: at most sixteen pixels a line, so it is not worth a second
+      // pair of loops to leave it out.
+      let ci = cb + first
+      let cstep = 1
+      if (flip === 1) {
+        ci = cb + 7 - first
+        cstep = -1
+      }
+      for (let k = x; k < xe; k = k + 1) {
+        GB_LINE_BGCOLOR[k] = GB_TILECACHE[ci]
+        GB_FB[fbase + k] = pbase | ((pshift >>> (GB_LINE_BGCOLOR[k] << 1)) & 3)
+        ci = ci + cstep
+      }
+    }
+
+    // A native fill rather than an eight-iteration loop: the loop is eight
+    // typed-array stores plus eight rounds of interpreted loop overhead, and
+    // a CGB map row can have the priority bit on most of its tiles.
+    if (prio === 1) { GB_LINE_BGPRIO.fill(1, x, xe) }
+
+    x = xe
+    first = 0
+    ma = ma + 1
+    if (ma >= rowEnd) { ma = mapRowBase }
+  }
+}
+
+// ===========================================================================
+// Sprites
+//
+// Drawn after the background, first-writer-wins through GB_LINE_SPROWNER. That
+// only produces the right picture if the traversal order IS priority order:
+//
+//   DMG, and CGB with OPRI=1  — lower X wins, then lower OAM index. That is
+//                               precisely the order gbPpu_scanSprites left the
+//                               list in, so walk it straight through.
+//   CGB with OPRI=0           — lower OAM index wins regardless of X. The list
+//                               is sorted by X, so walk it by ascending OAM
+//                               index instead. Ten entries, so a selection
+//                               walk beats re-sorting, and it only happens on
+//                               CGB carts that clear OPRI.
+//
+// Doing it this way rather than last-writer-wins matters for a real case: two
+// overlapping sprites where the higher-priority one has its BG-priority bit
+// set over non-zero background. It has to lose to the BACKGROUND, not to the
+// lower-priority sprite underneath it — and since a losing sprite here simply
+// never writes, the background pixel already in GB_FB stands.
+//
+// pmode is the background test, resolved once per sprite:
+//   0  the sprite always wins (DMG with the priority bit clear, or CGB with
+//      LCDC.0 clear, where the background has no priority at all)
+//   1  DMG, priority bit set: the background wins wherever it is not colour 0,
+//      read from GB_LINE_BGCOLOR
+//   2  CGB, priority bit clear: the background wins where it is not colour 0
+//      AND its tile attribute claims priority
+//   3  CGB, priority bit set: the background wins wherever it is not colour 0
+//
+// On CGB the background colour is not exported at all — a CGB background slot
+// is palette*4 + colour, so GB_FB[i] & 3 IS the colour, and at the moment this
+// test runs GB_FB still holds the background pixel.
+// ===========================================================================
+
+// Does this sprite pixel beat the background under it? Only reached for a
+// sprite that can actually lose — pmode 0 never calls here — so it is off the
+// hot path by construction.
+//   1  DMG with the priority bit set: the background wins wherever it is not
+//      colour 0, taken from GB_LINE_BGCOLOR
+//   2  CGB with the priority bit clear: the background wins where it is not
+//      colour 0 AND its tile attribute claims priority
+//   3  CGB with the priority bit set: the background wins wherever it is not
+//      colour 0
+// On CGB the background colour is not exported at all — a CGB background slot
+// is palette*4 + colour, so the low two bits of the framebuffer byte ARE the
+// colour, and GB_FB still holds the background pixel at this point.
+function gbPpu_spriteWins(pmode, fi, x) {
+  if (pmode === 1) { return GB_LINE_BGCOLOR[x] === 0 }
+  if ((GB_FB[fi] & 3) === 0) { return true }
+  return pmode === 2 && GB_LINE_BGPRIO[x] === 0
+}
+
+function gbPpu_drawSprites(fbase, ly) {
+  let lcdc = GB_IO[0x40]
+  if ((lcdc & 0x02) === 0) { return }
+  let count = GB_CTR[GB_C_SPR_COUNT]
+  if (count === 0) { return }
+
+  GB_LINE_SPROWNER.fill(0)
+
+  let gbc = GB_CPUF[GB_P_GBC]
+  let h = 8
+  if ((lcdc & 0x04) !== 0) { h = 16 }
+
+  let masterOff = 0
+  if (gbc === 1 && (lcdc & 0x01) === 0) { masterOff = 1 }
+  let oamPriority = 0
+  if (gbc === 1 && GB_CTR[GB_C_CGB_OPRI] === 0) { oamPriority = 1 }
+
+  let obp0 = GB_IO[0x48]
+  let obp1 = GB_IO[0x49]
+  let prevIdx = -1
+
+  for (let s = 0; s < count; s = s + 1) {
+    let e = s
+
+    if (oamPriority === 1) {
+      let best = -1
+      let bestIdx = 256
+      for (let j = 0; j < count; j = j + 1) {
+        let ij = GB_SPR_IDX[j]
+        if (ij > prevIdx && ij < bestIdx) {
+          bestIdx = ij
+          best = j
+        }
+      }
+      if (best < 0) { break }
+      e = best
+      prevIdx = bestIdx
+    }
+
+    let sx = GB_SPR_X[e] - 8
+    // X of 0, or of 168 and up, puts every pixel off screen. Hardware still
+    // spends the sprite's slot on the line, which is why the count — and so
+    // the mode 3 length — was taken before this test.
+    if (sx <= -8 || sx >= GB_SCREEN_W) { continue }
+
+    let idx = GB_SPR_IDX[e]
+    let o = idx << 2
+    let attr = GB_OAM[o + 3]
+    let row = ly - (GB_SPR_Y[e] - 16)
+    if ((attr & 0x40) !== 0) { row = h - 1 - row }
+    let tile = GB_OAM[o + 2]
+    if (h === 16) { tile = tile & 0xfe }
+
+    // Sprite tile data is always unsigned from 0x0000 of its bank, and an 8x16
+    // sprite's lower half is simply the next tile — which (row >>> 3) picks up
+    // without a branch.
+    let crow = ((tile + (row >>> 3)) << 3) + (row & 7)
+
+    let pshift = 0xe4
+    let pbase = 32
+    let pmode = 0
+
+    if (gbc === 1) {
+      if ((attr & 0x08) !== 0) { crow = crow + 0x1000 }
+      pbase = 32 + ((attr & 0x07) << 2)
+      if (masterOff === 0) {
+        pmode = 2
+        if ((attr & 0x80) !== 0) { pmode = 3 }
+      }
+    } else {
+      if ((attr & 0x10) !== 0) {
+        pbase = 36
+        pshift = obp1
+      } else {
+        pshift = obp0
+      }
+      if ((attr & 0x80) !== 0) { pmode = 1 }
+    }
+
+    if (GB_TILEDIRTY[crow] !== 0) { gbPpu_ensureTileRow(crow) }
+    let cb = crow << 3
+
+    let xs = sx
+    let xe = sx + 8
+    if (xs < 0) { xs = 0 }
+    if (xe > GB_SCREEN_W) { xe = GB_SCREEN_W }
+    let owner = idx + 1
+
+    // The cache index is folded into the screen X so the loop carries one
+    // counter instead of two, and x-flip only changes its sign. pmode is
+    // constant for the whole sprite, so the background test is lifted out of
+    // the loop entirely rather than re-decided eight times: a sprite that
+    // cannot lose to the background — most of them on DMG — runs a loop with
+    // no background reads in it at all.
+    let cbase = cb - sx
+    let step = 1
+    if ((attr & 0x20) !== 0) {
+      cbase = cb + 7 + sx
+      step = -1
+    }
+
+    if (pmode === 0) {
+      if (step === 1) {
+        for (let x = xs; x < xe; x = x + 1) {
+          if (GB_TILECACHE[cbase + x] !== 0 && GB_LINE_SPROWNER[x] === 0) {
+            GB_LINE_SPROWNER[x] = owner
+            GB_FB[fbase + x] = pbase | ((pshift >>> (GB_TILECACHE[cbase + x] << 1)) & 3)
+          }
+        }
+      } else {
+        for (let x = xs; x < xe; x = x + 1) {
+          if (GB_TILECACHE[cbase - x] !== 0 && GB_LINE_SPROWNER[x] === 0) {
+            GB_LINE_SPROWNER[x] = owner
+            GB_FB[fbase + x] = pbase | ((pshift >>> (GB_TILECACHE[cbase - x] << 1)) & 3)
+          }
+        }
+      }
+    } else if (step === 1) {
+      for (let x = xs; x < xe; x = x + 1) {
+        if (GB_TILECACHE[cbase + x] !== 0 && GB_LINE_SPROWNER[x] === 0) {
+          GB_LINE_SPROWNER[x] = owner
+          if (gbPpu_spriteWins(pmode, fbase + x, x)) {
+            GB_FB[fbase + x] = pbase | ((pshift >>> (GB_TILECACHE[cbase + x] << 1)) & 3)
+          }
+        }
+      }
+    } else {
+      for (let x = xs; x < xe; x = x + 1) {
+        if (GB_TILECACHE[cbase - x] !== 0 && GB_LINE_SPROWNER[x] === 0) {
+          GB_LINE_SPROWNER[x] = owner
+          if (gbPpu_spriteWins(pmode, fbase + x, x)) {
+            GB_FB[fbase + x] = pbase | ((pshift >>> (GB_TILECACHE[cbase - x] << 1)) & 3)
+          }
+        }
+      }
+    }
+  }
+}
+
+// ===========================================================================
+// One scanline, all at once
+//
+// Called at the mode 2 -> mode 3 edge, after gbPpu_scanSprites, so LY, the
+// sprite list and every register are the ones the line started with.
+// ===========================================================================
+
+function gbPpu_renderLine() {
+  let ly = GB_IO[0x44]
+  if (ly >= GB_SCREEN_H) { return }
+
+  let lcdc = GB_IO[0x40]
+  let gbc = GB_CPUF[GB_P_GBC]
+  let fbase = ly * GB_SCREEN_W
+
+  GB_CTR[GB_C_WINDOW_SEEN] = 0
+
+  // On DMG the attribute priority does not exist and this array stays zero
+  // from gbState_reset onwards, so only CGB pays for the clear.
+  if (gbc === 1) { GB_LINE_BGPRIO.fill(0) }
+
+  // The background only has to export its raw colour when a sprite on this
+  // line can lose to it — and never on CGB, where GB_FB & 3 is the colour.
+  let needBg = 0
+  if (
+    gbc === 0 && GB_CTR[GB_C_SPR_BGTEST] === 1 &&
+    (lcdc & 0x02) !== 0 && GB_CTR[GB_C_SPR_COUNT] !== 0
+  ) {
+    needBg = 1
+  }
+
+  // Where the window takes over, if it does. The reference triggers the window
+  // fetcher when the output X reaches WX-7, which can only happen for WX in
+  // 7..166; WX below 7 never triggers. This is decided even when the
+  // background is switched off, because the window line counter advances on
+  // any line the window was triggered on.
+  let winStart = GB_SCREEN_W
+  if ((lcdc & 0x20) !== 0) {
+    let wx = GB_IO[0x4b]
+    if (ly >= GB_IO[0x4a] && wx >= 7 && wx <= 166) {
+      let ws = wx - 7
+      if (ws < GB_SCREEN_W) {
+        winStart = ws
+        GB_CTR[GB_C_WINDOW_SEEN] = 1
+      }
+    }
+  }
+
+  if (gbc === 0 && (lcdc & 0x01) === 0) {
+    // DMG with LCDC.0 clear: background AND window are blank. Colour 0 still
+    // goes through BGP, and it still counts as colour 0 for sprite priority.
+    GB_FB.fill(GB_IO[0x47] & 0x03, fbase, fbase + GB_SCREEN_W)
+    GB_LINE_BGCOLOR.fill(0)
+  } else {
+    if (winStart > 0) {
+      let scx = GB_IO[0x43]
+      let bgY = (ly + GB_IO[0x42]) & 0xff
+      let mapBase = 0x1800
+      if ((lcdc & 0x08) !== 0) { mapBase = 0x1c00 }
+      gbPpu_drawTileRun(
+        fbase, 0, winStart,
+        mapBase + (((bgY >>> 3) & 31) << 5),
+        (scx >>> 3) & 31, scx & 7, bgY & 7, needBg
+      )
+    }
+    if (winStart < GB_SCREEN_W) {
+      let wl = GB_CTR[GB_C_WINDOW_LINE]
+      let mapBase = 0x1800
+      if ((lcdc & 0x40) !== 0) { mapBase = 0x1c00 }
+      gbPpu_drawTileRun(
+        fbase, winStart, GB_SCREEN_W,
+        mapBase + (((wl >>> 3) & 31) << 5),
+        0, 0, wl & 7, needBg
+      )
+    }
+  }
+
+  gbPpu_drawSprites(fbase, ly)
+}
+
+// ===========================================================================
+// The palette the host paints with
+//
+// GB_FB holds palette SLOTS, not colours: 0-31 background, 32-63 sprite, four
+// colours each. gbPpu_buildPalette turns the machine's palette state into the
+// 64 x RGB table PixelCanvas uses, once a frame at the VBlank edge, and bumps
+// GB_C_PAL_REV only when a byte actually moved so the canvas can skip
+// rebuilding its lookup.
+//
+// DMG resolves BGP/OBP at the moment each pixel is written, not here, so its
+// slots are shades and this table is just the user's chosen LCD colours.
+// ===========================================================================
+
+function gbPpu_storeRgb(slot, r, g, b) {
+  let d = slot * 3
+  if (GB_PAL_RGB[d] === r && GB_PAL_RGB[d + 1] === g && GB_PAL_RGB[d + 2] === b) {
+    return 0
+  }
+  GB_PAL_RGB[d] = r
+  GB_PAL_RGB[d + 1] = g
+  GB_PAL_RGB[d + 2] = b
+  return 1
+}
+
+// BGR555, little endian, expanded with the standard (x << 3) | (x >> 2) so
+// 0x1f reaches 0xff rather than 0xf8.
+function gbPpu_storeCgb(slot, lo, hi) {
+  let v = lo | (hi << 8)
+  let r = v & 31
+  let g = (v >>> 5) & 31
+  let b = (v >>> 10) & 31
+  return gbPpu_storeRgb(
+    slot,
+    (r << 3) | (r >>> 2),
+    (g << 3) | (g >>> 2),
+    (b << 3) | (b >>> 2)
+  )
+}
+
+function gbPpu_buildPalette() {
+  let changed = 0
+
+  if (GB_CPUF[GB_P_GBC] === 1) {
+    for (let p = 0; p < 8; p = p + 1) {
+      let pb = p << 3
+      let sb = p << 2
+      for (let c = 0; c < 4; c = c + 1) {
+        let i = pb + (c << 1)
+        changed = changed | gbPpu_storeCgb(sb + c, GB_CGB_BGPAL[i], GB_CGB_BGPAL[i + 1])
+        changed = changed | gbPpu_storeCgb(32 + sb + c, GB_CGB_OBJPAL[i], GB_CGB_OBJPAL[i + 1])
+      }
+    }
+  } else {
+    // Surface 0 is the background, 1 is OBP0, 2 is OBP1. Everything else is
+    // black — the DMG only ever occupies ten of the sixty-four slots.
+    for (let s = 0; s < 64; s = s + 1) {
+      let src = -1
+      if (s < 4) {
+        src = s * 3
+      } else if (s >= 32 && s < 36) {
+        src = (4 + (s - 32)) * 3
+      } else if (s >= 36 && s < 40) {
+        src = (8 + (s - 36)) * 3
+      }
+      if (src < 0) {
+        changed = changed | gbPpu_storeRgb(s, 0, 0, 0)
+      } else {
+        changed = changed | gbPpu_storeRgb(
+          s, GB_DMG_SHADES[src], GB_DMG_SHADES[src + 1], GB_DMG_SHADES[src + 2]
+        )
+      }
+    }
+  }
+
+  if (changed !== 0) {
+    GB_CTR[GB_C_PAL_REV] = GB_CTR[GB_C_PAL_REV] + 1
+  }
+}
+
+// Thirty-six bytes: three surfaces (BG, OBP0, OBP1) of four shades of RGB.
+// Cold path — the user picking an LCD colour, not anything per frame.
+function gbPpu_setDmgShades(b64) {
+  if (b64 === undefined || b64 === null || b64 === "") { return false }
+  let bytes = Uint8Array.fromBase64(b64)
+  if (bytes.length < 36) { return false }
+  for (let i = 0; i < 36; i = i + 1) {
+    GB_DMG_SHADES[i] = bytes[i]
+  }
+  gbPpu_buildPalette()
+  return true
+}
+
+// ===========================================================================
+// Mode timing
+//
+// Dot accurate, because the CPU can see all of it — but arranged as a
+// countdown rather than an elapsed counter, because gb_machine calls
+// gbPpu_step 17,556 times a frame and the ordinary call must therefore be
+// almost free. GB_PPU_DOTS holds the T-cycles left in the current mode and
+// goes negative by the overshoot when a chunk crosses a boundary;
+// gbPpu_advance carries that spill into the next mode, so nothing is lost and
+// nothing has to be reconstructed.
+//
+// Mode 3 is 172 + (SCX & 7) + 6 per sprite on the line, clamped to 172..289,
+// and HBlank is whatever is left of the 456. The whole scanline is drawn at
+// the mode 2 -> 3 edge, so no dot inside mode 3 needs a decision.
+// ===========================================================================
+
+// Seventeen thousand five hundred and fifty-six calls a frame go through
+// these two statements and nothing else. Both conditions are folded into one
+// test — a second `if` measured 0.35ms a frame on its own — and everything
+// that needs a typed array happens in gbPpu_tickEvent, which runs at the ~600
+// mode boundaries and the handful of STAT deliveries instead.
+function gbPpu_step(cycles) {
+  GB_PPU_DOTS = GB_PPU_DOTS - cycles
+  if (GB_PPU_DOTS <= 0 || GB_PPU_STATD > 0) { gbPpu_tickEvent(cycles) }
+}
+
+function gbPpu_tickEvent(cycles) {
+  if (GB_PPU_STATD > 0) {
+    GB_PPU_STATD = GB_PPU_STATD - cycles
+    if (GB_PPU_STATD <= 0) {
+      GB_PPU_STATD = -1
+      GB_CTR[GB_C_STAT_DELAY] = -1
+      if (GB_CTR[GB_C_STAT_LINE] === 1) { gbMmu_requestIrq(GB_IRQ_STAT) }
+    }
+  }
+  if (GB_PPU_DOTS <= 0) { gbPpu_advance() }
+}
+
+// While the LCD is off nothing advances: LY reads 0, the mode reads 0, and the
+// countdown is parked far enough out that gbPpu_advance effectively never runs
+// again until something turns the LCD back on.
+function gbPpu_lcdOff() {
+  GB_IO[0x44] = 0
+  GB_CTR[GB_C_PPU_MODE] = GB_MODE_HBLANK
+  GB_CTR[GB_C_PPU_DOT] = 0
+  GB_IO[0x41] = GB_IO[0x41] & 0xfc
+  GB_PPU_DOTS = 0x40000000
+}
+
+function gbPpu_advance() {
+  while (GB_PPU_DOTS <= 0) {
+    if ((GB_IO[0x40] & 0x80) === 0) {
+      gbPpu_lcdOff()
+      return
+    }
+
+    let mode = GB_CTR[GB_C_PPU_MODE]
+
+    if (mode === GB_MODE_OAM) {
+      gbPpu_scanSprites()
+      let len = 172 + (GB_IO[0x43] & 7) + 6 * GB_CTR[GB_C_SPR_COUNT]
+      if (len > 289) { len = 289 }
+      GB_CTR[GB_C_PPU_MODE3] = len
+      GB_PPU_DOTS = GB_PPU_DOTS + len
+      gbPpu_renderLine()
+      gbPpu_setMode(GB_MODE_PIXEL)
+
+    } else if (mode === GB_MODE_PIXEL) {
+      GB_PPU_DOTS = GB_PPU_DOTS + (GB_SCANLINE_DOTS - GB_MODE2_DOTS - GB_CTR[GB_C_PPU_MODE3])
+      if (GB_CTR[GB_C_WINDOW_SEEN] === 1) {
+        GB_CTR[GB_C_WINDOW_LINE] = GB_CTR[GB_C_WINDOW_LINE] + 1
+      }
+      gbPpu_setMode(GB_MODE_HBLANK)
+      gbMmu_hblankHdma()
+
+    } else if (mode === GB_MODE_HBLANK) {
+      GB_IO[0x44] = (GB_IO[0x44] + 1) & 0xff
+      if (GB_IO[0x44] === GB_SCREEN_H) {
+        GB_PPU_DOTS = GB_PPU_DOTS + GB_SCANLINE_DOTS
+        gbPpu_lycMode(GB_MODE_VBLANK)
+        GB_PPU_FRAME = GB_PPU_FRAME + 1
+        GB_CTR[GB_C_FRAME] = GB_PPU_FRAME
+        // The frame the host sees is the last COMPLETE one. Encoding the live
+        // buffer would tear every time the host's rAF and the emulated
+        // 59.7275Hz drift past each other, which they do continuously.
+        //
+        // The two buffers are SWAPPED rather than copied. A 23040-byte
+        // .set() measured 0.686ms — a twentieth of the frame budget for one
+        // memcpy — and exchanging two references costs nothing. It is sound
+        // because every one of the 144 lines is rewritten in full on every
+        // frame the LCD is on, so the buffer being drawn into is completely
+        // replaced before it is presented again.
+        let swap = GB_FB
+        GB_FB = GB_FB_PRESENT
+        GB_FB_PRESENT = swap
+        gbPpu_buildPalette()
+        gbMmu_requestIrq(GB_IRQ_VBLANK)
+      } else {
+        GB_PPU_DOTS = GB_PPU_DOTS + GB_MODE2_DOTS
+        gbPpu_lycMode(GB_MODE_OAM)
+      }
+
+    } else if (GB_CTR[GB_C_LINE153] === 1) {
+      // The last 452 dots of line 153 are over; the frame restarts with LY
+      // already reading 0.
+      GB_CTR[GB_C_LINE153] = 0
+      GB_PPU_DOTS = GB_PPU_DOTS + GB_MODE2_DOTS
+      gbPpu_setMode(GB_MODE_OAM)
+
+    } else if (GB_IO[0x44] === 153) {
+      // The line-153 quirk: four dots in, LY starts reading 0 for the rest of
+      // the frame while the PPU is still on line 153.
+      GB_IO[0x44] = 0
+      GB_CTR[GB_C_WINDOW_LINE] = 0
+      GB_CTR[GB_C_LINE153] = 1
+      GB_PPU_DOTS = GB_PPU_DOTS + (GB_SCANLINE_DOTS - 4)
+      gbPpu_checkLyc()
+
+    } else {
+      GB_IO[0x44] = (GB_IO[0x44] + 1) & 0xff
+      if (GB_IO[0x44] >= GB_TOTAL_LINES) {
+        // Only reachable if something wrote LY out from under us.
+        GB_IO[0x44] = 0
+        GB_CTR[GB_C_WINDOW_LINE] = 0
+        GB_CTR[GB_C_LINE153] = 0
+        GB_PPU_DOTS = GB_PPU_DOTS + GB_MODE2_DOTS
+        gbPpu_lycMode(GB_MODE_OAM)
+      } else if (GB_IO[0x44] === 153) {
+        GB_PPU_DOTS = GB_PPU_DOTS + 4
+        gbPpu_checkLyc()
+      } else {
+        GB_PPU_DOTS = GB_PPU_DOTS + GB_SCANLINE_DOTS
+        gbPpu_checkLyc()
+      }
+    }
+
+    // The cold mirror, for save states and the debugger. GB_PPU_DOTS is the
+    // live counter; this is what is left of the mode as of this boundary.
+    GB_CTR[GB_C_PPU_DOT] = GB_PPU_DOTS
+  }
+}
+
+// ===========================================================================
+// Registers
+//
+// gb_mmu forwards FF40-FF4B (bar FF46, which is its own), FF4F and FF68-FF6C.
+// An if-chain rather than a switch — zipp compiles switch to a linear scan
+// anyway — ordered by how often a game touches each: LY and STAT are polled in
+// tight loops, OPRI is written once ever.
+// ===========================================================================
+
+function gbPpu_readReg(addr) {
+  if (addr === 0xff44) { return GB_IO[0x44] }
+  if (addr === 0xff41) { return GB_IO[0x41] | 0x80 }
+  if (addr === 0xff40) { return GB_IO[0x40] }
+  if (addr === 0xff42) { return GB_IO[0x42] }
+  if (addr === 0xff43) { return GB_IO[0x43] }
+  if (addr === 0xff45) { return GB_IO[0x45] }
+  if (addr === 0xff47) { return GB_IO[0x47] }
+  if (addr === 0xff48) { return GB_IO[0x48] }
+  if (addr === 0xff49) { return GB_IO[0x49] }
+  if (addr === 0xff4a) { return GB_IO[0x4a] }
+  if (addr === 0xff4b) { return GB_IO[0x4b] }
+
+  // CGB only below here; on a DMG cart every one of these is open bus.
+  if (GB_CPUF[GB_P_GBC] !== 1) { return 0xff }
+
+  if (addr === 0xff4f) { return GB_CTR[GB_C_VRAM_BANK] | 0xfe }
+  if (addr === 0xff68) { return GB_CTR[GB_C_CGB_BGPAL_IDX] | 0x40 }
+  if (addr === 0xff69) { return GB_CGB_BGPAL[GB_CTR[GB_C_CGB_BGPAL_IDX] & 0x3f] }
+  if (addr === 0xff6a) { return GB_CTR[GB_C_CGB_OBJPAL_IDX] | 0x40 }
+  if (addr === 0xff6b) { return GB_CGB_OBJPAL[GB_CTR[GB_C_CGB_OBJPAL_IDX] & 0x3f] }
+  if (addr === 0xff6c) { return GB_CTR[GB_C_CGB_OPRI] | 0xfe }
+
+  return 0xff
+}
+
+function gbPpu_writeReg(addr, v) {
+  let b = v & 0xff
+
+  if (addr === 0xff40) {
+    let wasOn = (GB_IO[0x40] & 0x80) !== 0
+    GB_IO[0x40] = b
+    let isOn = (b & 0x80) !== 0
+    if (wasOn !== isOn) {
+      // Both edges restart the PPU from line 0 in mode 0. Coming back on, real
+      // hardware spends a warm-up before the first mode 2; entering mode 0
+      // with a zeroed counter approximates it the way the reference does,
+      // which is what Mooneye's lcdon_timing expects.
+      GB_IO[0x44] = 0
+      GB_CTR[GB_C_PPU_MODE] = GB_MODE_HBLANK
+      GB_CTR[GB_C_WINDOW_LINE] = 0
+      GB_CTR[GB_C_WINDOW_SEEN] = 0
+      GB_CTR[GB_C_LINE153] = 0
+      GB_CTR[GB_C_STAT_LINE] = 0
+      GB_CTR[GB_C_STAT_DELAY] = -1
+      GB_PPU_STATD = -1
+      GB_IO[0x41] = GB_IO[0x41] & 0xfc
+      if (isOn) {
+        GB_PPU_DOTS = GB_SCANLINE_DOTS - GB_MODE2_DOTS - GB_CTR[GB_C_PPU_MODE3]
+        GB_CTR[GB_C_PPU_DOT] = GB_PPU_DOTS
+        gbPpu_checkLyc()
+      } else {
+        gbPpu_lcdOff()
+      }
+    }
+    return
+  }
+
+  if (addr === 0xff41) {
+    // Bits 0-2 are the PPU's own; only the four enables are writable.
+    GB_IO[0x41] = (b & 0x78) | (GB_IO[0x41] & 0x07)
+    gbPpu_updateStatLine()
+    return
+  }
+
+  if (addr === 0xff42) { GB_IO[0x42] = b; return }
+  if (addr === 0xff43) { GB_IO[0x43] = b; return }
+
+  // A cart write to LY resets it, exactly as the reference has it — no LYC
+  // re-check, because the hardware compare happens on the PPU's own increment.
+  if (addr === 0xff44) { GB_IO[0x44] = 0; return }
+
+  if (addr === 0xff45) {
+    GB_IO[0x45] = b
+    gbPpu_checkLyc()
+    return
+  }
+
+  // DMG palettes are resolved at pixel-write time, so a mid-frame change to
+  // any of these needs no recomputation here — the rest of the frame simply
+  // comes out with the new mapping, which is the whole point.
+  if (addr === 0xff47) { GB_IO[0x47] = b; return }
+  if (addr === 0xff48) { GB_IO[0x48] = b; return }
+  if (addr === 0xff49) { GB_IO[0x49] = b; return }
+  if (addr === 0xff4a) { GB_IO[0x4a] = b; return }
+  if (addr === 0xff4b) { GB_IO[0x4b] = b; return }
+
+  if (GB_CPUF[GB_P_GBC] !== 1) { return }
+
+  if (addr === 0xff4f) { GB_CTR[GB_C_VRAM_BANK] = b & 1; return }
+
+  if (addr === 0xff68) { GB_CTR[GB_C_CGB_BGPAL_IDX] = b & 0xbf; return }
+  if (addr === 0xff69) {
+    let ix = GB_CTR[GB_C_CGB_BGPAL_IDX]
+    GB_CGB_BGPAL[ix & 0x3f] = b
+    if ((ix & 0x80) !== 0) {
+      GB_CTR[GB_C_CGB_BGPAL_IDX] = 0x80 | ((ix + 1) & 0x3f)
+    }
+    return
+  }
+
+  if (addr === 0xff6a) { GB_CTR[GB_C_CGB_OBJPAL_IDX] = b & 0xbf; return }
+  if (addr === 0xff6b) {
+    let ix = GB_CTR[GB_C_CGB_OBJPAL_IDX]
+    GB_CGB_OBJPAL[ix & 0x3f] = b
+    if ((ix & 0x80) !== 0) {
+      GB_CTR[GB_C_CGB_OBJPAL_IDX] = 0x80 | ((ix + 1) & 0x3f)
+    }
+    return
+  }
+
+  if (addr === 0xff6c) { GB_CTR[GB_C_CGB_OPRI] = b & 1; return }
+}
+
+// ===========================================================================
+// Post-boot state
+//
+// gbState_reset zeroes GB_IO, which leaves LCDC at 0 — an LCD that is switched
+// off and a machine that never produces a frame. Pocket starts post-boot, so
+// somebody has to put the boot ROM's parting values back. gb_machine's reset
+// must call this after gbState_reset and before gbCpu_reset.
+// ===========================================================================
+
+function gbPpu_reset() {
+  GB_IO[0x40] = 0x91
+  GB_IO[0x41] = 0x85
+  GB_IO[0x42] = 0
+  GB_IO[0x43] = 0
+  GB_IO[0x44] = 0
+  GB_IO[0x45] = 0
+  GB_IO[0x47] = 0xfc
+  GB_IO[0x48] = 0xff
+  GB_IO[0x49] = 0xff
+  GB_IO[0x4a] = 0
+  GB_IO[0x4b] = 0
+
+  GB_CTR[GB_C_PPU_MODE] = GB_MODE_OAM
+  GB_CTR[GB_C_PPU_MODE3] = 172
+  GB_CTR[GB_C_STAT_LINE] = 0
+  GB_CTR[GB_C_STAT_DELAY] = -1
+  GB_CTR[GB_C_WINDOW_LINE] = 0
+  GB_CTR[GB_C_WINDOW_SEEN] = 0
+  GB_CTR[GB_C_LINE153] = 0
+  GB_CTR[GB_C_SPR_COUNT] = 0
+  GB_CTR[GB_C_SPR_BGTEST] = 0
+  GB_CTR[GB_C_VRAM_BANK] = 0
+  GB_CTR[GB_C_CGB_BGPAL_IDX] = 0
+  GB_CTR[GB_C_CGB_OBJPAL_IDX] = 0
+  // OPRI defaults to 1 — first-writer-wins, the DMG rule — until a CGB game
+  // says otherwise.
+  GB_CTR[GB_C_CGB_OPRI] = 1
+
+  GB_PPU_DOTS = GB_MODE2_DOTS
+  GB_PPU_STATD = -1
+  GB_CTR[GB_C_PPU_DOT] = GB_PPU_DOTS
+
+  GB_IO[0x41] = (GB_IO[0x41] & 0xfc) | GB_MODE_OAM
+  gbPpu_buildPalette()
+}
