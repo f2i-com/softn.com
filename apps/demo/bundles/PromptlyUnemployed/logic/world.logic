@@ -361,25 +361,25 @@ function waterCoolerAt(id, x, z) {
 
 function deskAt(id, x, z, screen) {
   let out = [
-    { id: id, type: "box", position: { x: x, y: 0.38, z: z },
+    { id: id, type: "box", position: { x: x, y: 0.72, z: z },
       width: 1.7, height: 0.06, depth: 0.85, color: "#5b6b84", metalness: 0.1, roughness: 0.7 },
-    { id: id + "_l1", type: "box", position: { x: x - 0.75, y: 0.18, z: z }, width: 0.08, height: 0.36, depth: 0.7, color: "#3a4356" },
-    { id: id + "_l2", type: "box", position: { x: x + 0.75, y: 0.18, z: z }, width: 0.08, height: 0.36, depth: 0.7, color: "#3a4356" }
+    { id: id + "_l1", type: "box", position: { x: x - 0.75, y: 0.36, z: z }, width: 0.08, height: 0.72, depth: 0.7, color: "#3a4356" },
+    { id: id + "_l2", type: "box", position: { x: x + 0.75, y: 0.36, z: z }, width: 0.08, height: 0.72, depth: 0.7, color: "#3a4356" }
   ]
   if (screen) {
-    out.push({ id: id + "_std", type: "cylinder", position: { x: x, y: 0.47, z: z - 0.22 },
-      radius: 0.035, height: 0.14, color: "#3a4356" })
-    out.push({ id: id + "_bez", type: "box", position: { x: x, y: 0.72, z: z - 0.235 },
+    out.push({ id: id + "_std", type: "cylinder", position: { x: x, y: 0.82, z: z - 0.22 },
+      radius: 0.035, height: 0.16, color: "#3a4356" })
+    out.push({ id: id + "_bez", type: "box", position: { x: x, y: 1.08, z: z - 0.235 },
       width: 0.68, height: 0.46, depth: 0.03, color: "#0a0e18" })
-    out.push({ id: id + "_scr", type: "box", position: { x: x, y: 0.72, z: z - 0.22 },
+    out.push({ id: id + "_scr", type: "box", position: { x: x, y: 1.08, z: z - 0.22 },
       width: 0.6, height: 0.38, depth: 0.03, color: "#0b1220",
       emissive: screen, emissiveIntensity: 1.0 })
-    out.push({ id: id + "_kb", type: "box", position: { x: x, y: 0.43, z: z + 0.15 },
+    out.push({ id: id + "_kb", type: "box", position: { x: x, y: 0.77, z: z + 0.15 },
       width: 0.5, height: 0.03, depth: 0.2, color: "#232b3b" })
-    out.push({ id: id + "_mouse", type: "box", position: { x: x + 0.38, y: 0.43, z: z + 0.15 },
+    out.push({ id: id + "_mouse", type: "box", position: { x: x + 0.38, y: 0.77, z: z + 0.15 },
       width: 0.09, height: 0.04, depth: 0.14, color: "#2c3547" })
   } else {
-    out.push({ id: id + "_pap", type: "box", position: { x: x + 0.3, y: 0.42, z: z },
+    out.push({ id: id + "_pap", type: "box", position: { x: x + 0.3, y: 0.76, z: z },
       width: 0.3, height: 0.015, depth: 0.4, color: "#d7dce6" })
   }
   return out
@@ -424,6 +424,12 @@ function buildOffice() {
   objs.push(posterAt("post1", 6, 1.06, 1.6, 1.6, 1.0, "#38bdf8", true))
   objs.push(posterAt("post2", 17, 1.06, 1.6, 1.6, 1.0, "#f472b6", true))
   objs.push(posterAt("post3", 10, 1.06, 1.55, 1.2, 0.8, "#4ade80", true))
+  objs.push(posterAt("post4", 6.5, 11.08, 1.5, 1.5, 0.95, "#fb923c", true))
+  objs.push(posterAt("post5", 21, 11.08, 1.5, 1.5, 0.95, "#22d3ee", true))
+  objs.push({ id: "clock_f", type: "cylinder", position: { x: 22.5, y: 2.05, z: 1.06 }, rotation: { x: Math.PI / 2, y: 0, z: 0 },
+    radius: 0.3, height: 0.05, color: "#e5e7eb" })
+  objs.push({ id: "clock_h1", type: "box", position: { x: 22.5, y: 2.13, z: 1.1 }, width: 0.035, height: 0.18, depth: 0.02, color: "#1f2430" })
+  objs.push({ id: "clock_h2", type: "box", position: { x: 22.58, y: 2.05, z: 1.1 }, rotation: { x: 0, y: 0, z: Math.PI / 2 }, width: 0.035, height: 0.14, depth: 0.02, color: "#dc2626" })
   let tape = [[14, 17, 4, 0.08], [14, 18.9, 4, 0.08], [12.05, 18, 0.08, 2], [15.95, 18, 0.08, 2]]
   for (let i = 0; i < tape.length; i++) {
     objs.push({ id: "tape" + i, type: "box", position: { x: tape[i][0], y: 0.02, z: tape[i][1] },
@@ -451,10 +457,12 @@ function buildOffice() {
       width: 0.5, height: 0.34, depth: 0.03, color: hexShade(cardCols[i], 0.3),
       emissive: cardCols[i], emissiveIntensity: 0.6 })
   }
-  objs.push({ id: "hs_desk41", type: "box", position: { x: 22, y: 0.5, z: 14 },
-    width: 1.7, height: 1.0, depth: 0.85, color: "#4b5563",
-    emissive: "#a78bfa", emissiveIntensity: notebookSeen ? 0.1 : 0.5 })
-  objs.push({ id: "notebook41", type: "box", position: { x: 22, y: 1.03, z: 14 },
+  objs.push({ id: "hs_desk41", type: "box", position: { x: 22, y: 0.72, z: 14 },
+    width: 1.7, height: 0.06, depth: 0.85, color: "#4b5563",
+    emissive: "#a78bfa", emissiveIntensity: notebookSeen ? 0.12 : 0.5 })
+  objs.push({ id: "d41_l1", type: "box", position: { x: 21.25, y: 0.36, z: 14 }, width: 0.08, height: 0.72, depth: 0.7, color: "#343b4a" })
+  objs.push({ id: "d41_l2", type: "box", position: { x: 22.75, y: 0.36, z: 14 }, width: 0.08, height: 0.72, depth: 0.7, color: "#343b4a" })
+  objs.push({ id: "notebook41", type: "box", position: { x: 22, y: 0.78, z: 14 }, rotation: { x: 0, y: 0.3, z: 0 },
     width: 0.34, height: 0.05, depth: 0.46, color: "#e7e2d5" })
   objs.push({ id: "hs_meeting", type: "box", position: { x: 28, y: 1.1, z: 16 },
     width: 0.3, height: 2.2, depth: 1.8, color: "#1f2937",

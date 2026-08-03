@@ -204,6 +204,7 @@
     </Stack>
     <Stack direction="horizontal" gap={10} style={{ marginTop: "14px", alignItems: "center" }}>
       <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>{scopeValid() ? "Priya nods. This could actually ship." : "Not viable yet: intake + review + one safety check."}</Text>
+      <Button @click={closeScope} style={{ fontSize: "12px" }}>Step back</Button>
       <Button if={scopeValid()} @click={confirmScope} style={{ background: "#38bdf8", color: "#111", fontWeight: 700 }}>Lock the scope</Button>
     </Stack>
   </Box>
