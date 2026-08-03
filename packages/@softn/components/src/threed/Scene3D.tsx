@@ -37,6 +37,14 @@ export interface Scene3DObject {
     floatAmplitude?: number;
     floatSpeed?: number;
   };
+  animation?: {
+    clip?: string;
+    playing?: boolean;
+    loop?: 'once' | 'repeat';
+    speed?: number;
+    crossFadeMs?: number;
+    clampWhenFinished?: boolean;
+  };
 }
 
 export interface Scene3DLight {
@@ -72,6 +80,7 @@ export interface Scene3DProps {
   mouseLookSensitivity?: number;
   onReady?: () => void;
   onClick?: (info: { objectId: string }) => void;
+  onAnimation?: (info: { objectId: string; clip: string; type: 'finished' | 'missing' }) => void;
   style?: React.CSSProperties;
   className?: string;
 }
@@ -121,8 +130,9 @@ function detectModelFormat(url: string): ModelFormat {
   return 'gltf'; // default
 }
 
-// Load a 3D model from URL, returns the root Object3D
-function loadModel(url: string, format?: ModelFormat): Promise<THREE.Object3D> {
+// Load a 3D model from URL, returns the root Object3D plus any animation clips
+// (glTF carries them beside the scene, FBX on the group; OBJ/STL have none)
+function loadModel(url: string, format?: ModelFormat): Promise<{ object: THREE.Object3D; animations: THREE.AnimationClip[] }> {
   // A scene names its own models, so this URL is bundle-supplied and gets the
   // same scheme check as every other source a bundle points at. The caller
   // already catches, and leaves the placeholder group in the scene.
@@ -134,17 +144,17 @@ function loadModel(url: string, format?: ModelFormat): Promise<THREE.Object3D> {
     switch (fmt) {
       case 'gltf': {
         const loader = new GLTFLoader();
-        loader.load(url, (gltf) => resolve(gltf.scene), undefined, reject);
+        loader.load(url, (gltf) => resolve({ object: gltf.scene, animations: gltf.animations ?? [] }), undefined, reject);
         break;
       }
       case 'obj': {
         const loader = new OBJLoader();
-        loader.load(url, (group) => resolve(group), undefined, reject);
+        loader.load(url, (group) => resolve({ object: group, animations: [] }), undefined, reject);
         break;
       }
       case 'fbx': {
         const loader = new FBXLoader();
-        loader.load(url, (group) => resolve(group), undefined, reject);
+        loader.load(url, (group) => resolve({ object: group, animations: group.animations ?? [] }), undefined, reject);
         break;
       }
       case 'stl': {
@@ -152,7 +162,7 @@ function loadModel(url: string, format?: ModelFormat): Promise<THREE.Object3D> {
         loader.load(url, (geometry) => {
           const material = new THREE.MeshStandardMaterial({ color: '#6366f1' });
           const mesh = new THREE.Mesh(geometry, material);
-          resolve(mesh);
+          resolve({ object: mesh, animations: [] });
         }, undefined, reject);
         break;
       }
@@ -308,6 +318,83 @@ interface MeshEntry {
   loadVersion?: number; // tracks in-flight model loads to cancel stale ones
 }
 
+interface AnimationEntry {
+  mixer: THREE.AnimationMixer;
+  clips: THREE.AnimationClip[];
+  actions: Map<string, THREE.AnimationAction>;
+  currentClip: string | null;
+  warnedMissing: Set<string>; // 'missing' fires once per requested clip name
+}
+
+// Default cross-fade duration between clips (ms)
+const DEFAULT_CROSSFADE_MS = 180;
+
+// Apply an object's animation spec to its mixer entry. Callers must guard with
+// a spec-change check — re-applying an unchanged spec would replay a finished
+// one-shot clip.
+function applyAnimationSpec(
+  objectId: string,
+  entry: AnimationEntry,
+  spec: Scene3DObject['animation'],
+  emitMissing: (info: { objectId: string; clip: string; type: 'missing' }) => void
+) {
+  if (!spec) {
+    // Spec removed — stop playback rather than freeze mid-pose
+    if (entry.currentClip) {
+      entry.mixer.stopAllAction();
+      entry.currentClip = null;
+    }
+    return;
+  }
+  const clipName = spec.clip ?? entry.clips[0]?.name;
+  if (!clipName) return;
+  const clip = entry.clips.find((c) => c.name === clipName);
+  if (!clip) {
+    if (!entry.warnedMissing.has(clipName)) {
+      entry.warnedMissing.add(clipName);
+      console.warn(`[Scene3D] Animation clip "${clipName}" not found on model "${objectId}"`);
+      emitMissing({ objectId, clip: clipName, type: 'missing' });
+    }
+    return;
+  }
+  let action = entry.actions.get(clipName);
+  if (!action) {
+    action = entry.mixer.clipAction(clip);
+    entry.actions.set(clipName, action);
+  }
+  if (spec.loop === 'once') {
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = spec.clampWhenFinished ?? true;
+  } else {
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    action.clampWhenFinished = spec.clampWhenFinished ?? false;
+  }
+  action.timeScale = spec.speed ?? 1;
+  if (entry.currentClip !== clipName) {
+    const prev = entry.currentClip ? entry.actions.get(entry.currentClip) : undefined;
+    action.reset().play();
+    if (prev && prev !== action) {
+      prev.crossFadeTo(action, (spec.crossFadeMs ?? DEFAULT_CROSSFADE_MS) / 1000, false);
+    }
+    entry.currentClip = clipName;
+  } else if (spec.playing !== false && spec.loop === 'once' && !action.isRunning() && action.time >= clip.duration) {
+    // Resuming a finished one-shot must replay it — un-pausing the clamped end
+    // state alone would re-fire 'finished' every frame
+    action.reset().play();
+  }
+  action.paused = spec.playing === false;
+}
+
+// Freeing the mixer alone leaks property bindings — stop actions and uncache
+// the root before dropping the entry
+function disposeAnimationEntry(map: Map<string, AnimationEntry>, id: string) {
+  const entry = map.get(id);
+  if (!entry) return;
+  entry.mixer.stopAllAction();
+  entry.mixer.uncacheRoot(entry.mixer.getRoot());
+  map.delete(id);
+}
+
 // Drag detection threshold (pixels)
 const DRAG_THRESHOLD = 4;
 
@@ -333,6 +420,7 @@ export function Scene3D({
   mouseLookSensitivity = 0.003,
   onReady,
   onClick,
+  onAnimation,
   style,
   className,
 }: Scene3DProps) {
@@ -361,12 +449,15 @@ export function Scene3D({
   const controlsRef = useRef<OrbitControls | null>(null);
   const meshMapRef = useRef<Map<string, MeshEntry>>(new Map());
   const loadVersionRef = useRef<Map<string, number>>(new Map());
+  const animationMapRef = useRef<Map<string, AnimationEntry>>(new Map());
   const lightMapRef = useRef<Map<string, THREE.Light>>(new Map());
   const animFrameRef = useRef<number>(0);
   const clockRef = useRef<THREE.Clock>(new THREE.Clock());
   const readyFiredRef = useRef(false);
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
+  const onAnimationRef = useRef(onAnimation);
+  onAnimationRef.current = onAnimation;
   const yawRef = useRef<number>(0);
   const pitchRef = useRef<number>(0);
 
@@ -563,6 +654,9 @@ export function Scene3D({
         }
       });
 
+      // Clip mixers take real delta seconds, not the 60fps-normalised dtScale
+      animationMapRef.current.forEach((entry) => entry.mixer.update(dt));
+
       // Mouse look: apply yaw + pitch to camera every frame (60fps, no React)
       if (enableMouseLook) {
         const yaw = (window as any).__scene3dYaw ?? yawRef.current;
@@ -601,6 +695,11 @@ export function Scene3D({
         delete (window as any).__scene3dPitch;
       }
       if (controls) controls.dispose();
+      animationMapRef.current.forEach((entry) => {
+        entry.mixer.stopAllAction();
+        entry.mixer.uncacheRoot(entry.mixer.getRoot());
+      });
+      animationMapRef.current.clear();
       meshMapRef.current.forEach((entry) => {
         disposeObject3D(entry.mesh);
         scene.remove(entry.mesh);
@@ -746,6 +845,7 @@ export function Scene3D({
     // Remove meshes no longer in objects
     meshMap.forEach((entry, id) => {
       if (!currentIds.has(id)) {
+        disposeAnimationEntry(animationMapRef.current, id);
         scene.remove(entry.mesh);
         disposeObject3D(entry.mesh);
         meshMap.delete(id);
@@ -767,6 +867,7 @@ export function Scene3D({
 
           // Remove old entry if present
           if (existing) {
+            disposeAnimationEntry(animationMapRef.current, obj.id);
             scene.remove(existing.mesh);
             disposeObject3D(existing.mesh);
             meshMap.delete(obj.id);
@@ -778,18 +879,34 @@ export function Scene3D({
           scene.add(placeholder);
           meshMap.set(obj.id, { mesh: placeholder, spec: obj, baseY: obj.position?.y ?? 0, loadVersion: version });
 
-          loadModel(obj.modelUrl, obj.modelFormat).then((loaded) => {
+          loadModel(obj.modelUrl, obj.modelFormat).then(({ object: loaded, animations }) => {
             // Stale check — if version has changed, discard
             if (loadVersionRef.current.get(obj.id) !== version) {
               disposeObject3D(loaded);
               return;
             }
+            // Reconciles during the load update the placeholder entry's spec in
+            // place — the capture from load start may be stale
+            const spec = meshMap.get(obj.id)?.spec ?? obj;
             // Replace placeholder with loaded model
             scene.remove(placeholder);
-            applyTransform(loaded, obj, false);
-            applyMaterialOverrides(loaded, obj);
+            applyTransform(loaded, spec, false);
+            applyMaterialOverrides(loaded, spec);
             scene.add(loaded);
-            meshMap.set(obj.id, { mesh: loaded, spec: obj, baseY: obj.position?.y ?? 0, loadVersion: version });
+            meshMap.set(obj.id, { mesh: loaded, spec, baseY: spec.position?.y ?? 0, loadVersion: version });
+            if (animations.length > 0) {
+              const mixer = new THREE.AnimationMixer(loaded);
+              mixer.addEventListener('finished', (e) => {
+                onAnimationRef.current?.({ objectId: obj.id, clip: e.action.getClip().name, type: 'finished' });
+              });
+              const animEntry: AnimationEntry = { mixer, clips: animations, actions: new Map(), currentClip: null, warnedMissing: new Set() };
+              animationMapRef.current.set(obj.id, animEntry);
+              applyAnimationSpec(obj.id, animEntry, spec.animation, (info) => onAnimationRef.current?.(info));
+            } else if (spec.animation?.clip) {
+              // A clip requested on a clipless model can never resolve — report once here
+              console.warn(`[Scene3D] Animation clip "${spec.animation.clip}" not found on model "${obj.id}"`);
+              onAnimationRef.current?.({ objectId: obj.id, clip: spec.animation.clip, type: 'missing' });
+            }
           }).catch((err) => {
             console.error(`[Scene3D] Failed to load model "${obj.id}" from ${obj.modelUrl}:`, err);
           });
@@ -798,6 +915,11 @@ export function Scene3D({
           applyTransform(existing.mesh, obj, true);
           if (needsMaterialUpdate(existing.spec, obj)) {
             applyMaterialOverrides(existing.mesh, obj);
+          }
+          // Re-apply only on spec change — see applyAnimationSpec's guard note
+          const animEntry = animationMapRef.current.get(obj.id);
+          if (animEntry && JSON.stringify(existing.spec.animation) !== JSON.stringify(obj.animation)) {
+            applyAnimationSpec(obj.id, animEntry, obj.animation, (info) => onAnimationRef.current?.(info));
           }
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
@@ -814,6 +936,7 @@ export function Scene3D({
         // Primitive update
         if (existing.spec.type === 'model') {
           // Switching from model to primitive — remove old model
+          disposeAnimationEntry(animationMapRef.current, obj.id);
           scene.remove(existing.mesh);
           disposeObject3D(existing.mesh);
           loadVersionRef.current.delete(obj.id);
