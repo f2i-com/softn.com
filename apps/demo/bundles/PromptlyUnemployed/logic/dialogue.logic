@@ -90,6 +90,27 @@ function dlgSkip() {
   if (dlgActive) { dlgAdvance() }
 }
 
+// Interacting mid-line should act, not stall. The whole remaining queue drops
+// into the transcript, the continuation tag still fires, and then the player's
+// action goes through — the story fast-forwards instead of the UI freezing.
+function fastForwardDialogue() {
+  if (!dlgActive) { return }
+  if (dlgHandle) { softn.audio.stop(dlgHandle); dlgHandle = "" }
+  dlgSeq = dlgSeq + 1
+  for (let i = 0; i < dlgQueue.length; i++) {
+    let line = DLG[dlgQueue[i]]
+    if (line) { transcript.push({ speaker: line.speaker, text: line.text }) }
+  }
+  transcript = transcript.slice()
+  dlgQueue = []
+  dlgActive = false
+  dlgSpeaker = ""
+  dlgText = ""
+  let tag = dlgDoneTag
+  dlgDoneTag = ""
+  if (tag) { handleDialogueDone(tag) }
+}
+
 function showChoices(list, tag) {
   choiceList = list.slice()
   choiceTag = tag

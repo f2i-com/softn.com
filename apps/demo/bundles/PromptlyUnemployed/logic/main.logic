@@ -193,11 +193,14 @@ function padRelease(dir) {
 // ---- The master tick ------------------------------------------------------
 
 function tick() {
-  if (canMove()) {
+  cutTickFn()
+  if (fadeOp > 0 && !dlgActive) { fadeOp = Math.max(0, fadeOp - 0.055) }
+  if (fadeOp > 0 && dlgActive) { fadeOp = Math.max(0, fadeOp - 0.055) }
+  if (canMove() && !cutActive) {
     moveTick()
     hotspotTick()
   }
-  if (scene === "meeting") { confettiTick() }
+  if (scene === "meeting") { confettiTick(); meetingDriftTick() }
   if (scene === "dream") {
     dreamTick()
     dreamCountTicks = dreamCountTicks + 1
@@ -209,16 +212,20 @@ function tick() {
   }
   if (window.__puUse) {
     window.__puUse = false
-    if (canMove() && choiceList.length === 0 && !dlgActive && hsNearId) { handleHotspot(hsNearId) }
+    if (canMove() && !cutActive && hsNearId) { handleHotspot(hsNearId) }
   }
   if (window.__puSkip) {
     window.__puSkip = false
-    dlgSkip()
+    if (cutActive) { skipCutscene() }
+    else { dlgSkip() }
   }
   if (window.__puWarp) {
     let target = window.__puWarp
     window.__puWarp = ""
-    if (canMove()) { warpTo(target) }
+    if (canMove()) {
+      if (cutActive) { skipCutscene() }
+      warpTo(target)
+    }
   }
   if (window.__puChoiceN) {
     let n = window.__puChoiceN
@@ -253,6 +260,10 @@ function startOffice() {
   window.__scene3dPitch = 0
   buildOffice()
   updateCamera()
+  startCutscene([
+    { x0: 13, y0: 2.3, z0: 2, x1: 8, y1: 1.9, z1: 6, yaw0: 0.15, yaw1: 0.7, ticks: 85 },
+    { x0: 8, y0: 1.9, z0: 6, x1: 4, y1: 1.6, z1: 4, yaw0: 0.7, yaw1: 0, ticks: 75 }
+  ], 4, 4, 0)
   objective = "Monday. Three small tasks before stand-up."
   playMusic("office")
   saveGame()
@@ -260,7 +271,13 @@ function startOffice() {
 }
 
 function handleHotspot(id) {
-  if (dlgActive || choiceList.length > 0) { return }
+  if (choiceList.length > 0) { return }
+  if (dlgActive) {
+    fastForwardDialogue()
+    // The fast-forwarded tag may have opened choices or started a new chain;
+    // in that case the story takes precedence over the interaction.
+    if (choiceList.length > 0 || dlgActive) { return }
+  }
   if (id === "hs_coffee") {
     if (!coffeeFixed) {
       coffeeFixed = true
@@ -373,6 +390,9 @@ function goDream() {
   window.__scene3dPitch = 0
   buildDream()
   updateCamera()
+  startCutscene([
+    { x0: 10, y0: 2.55, z0: 6, x1: 4, y1: 1.6, z1: 4, yaw0: Math.PI * 1.5, yaw1: Math.PI * 0.5, p0: -0.5, p1: 0, ticks: 150 }
+  ], 4, 4, Math.PI / 2)
   playMusic("dream")
   saveGame()
   objective = "Sprint ends in " + fmtCount(dreamCount)
@@ -409,6 +429,7 @@ function goWake() {
   window.__scene3dPitch = 0
   buildFlat()
   updateCamera()
+  fadeOp = 1
   objective = "Morning. Somehow."
   playMusic("flat")
   runDialogue(["a2_s7_luma_074"], "wake_done")
@@ -454,6 +475,9 @@ function enterMeeting() {
   slideTitle = "HUMAN POTENTIAL WEEK ▸ Our Human Efficiency Milestone"
   buildMeeting()
   playMusic("office")
+  startCutscene([
+    { x0: 6, y0: 1.75, z0: 8.6, x1: 6, y1: 1.6, z1: 6.6, yaw0: Math.PI, yaw1: Math.PI, ticks: 110 }
+  ], 6, 6.6, Math.PI)
   saveGame()
   runDialogue(["a1_s2_pax_010"], "meet_milestone")
 }
@@ -651,6 +675,7 @@ function goFlat() {
   window.__scene3dPitch = 0
   buildFlat()
   updateCamera()
+  fadeOp = 1
   objective = "Home. The severance email is open on the laptop."
   playMusic("flat")
   saveGame()
@@ -839,6 +864,12 @@ function goBakery() {
   window.__scene3dPitch = 0
   buildBakery()
   updateCamera()
+  if (!ordersDone) {
+    startCutscene([
+      { x0: 21, y0: 1.9, z0: 3, x1: 12, y1: 1.7, z1: 6.5, yaw0: -0.9, yaw1: -0.3, ticks: 95 },
+      { x0: 12, y0: 1.7, z0: 6.5, x1: 2, y1: 1.6, z1: 14, yaw0: -0.3, yaw1: 0, ticks: 85 }
+    ], 2, 14, 0)
+  } else { fadeOp = 1 }
   playMusic("bakery")
   saveGame()
   sfx("doorbell")
@@ -899,6 +930,7 @@ function goBakeryDay() {
   window.__scene3dPitch = 0
   buildBakery()
   updateCamera()
+  fadeOp = 1
   playMusic("bakery")
   saveGame()
   sfx("doorbell")
@@ -1048,6 +1080,7 @@ function newGame() {
   lumaPhase = ""; wsOpen = false; wsUser = ""; wsPain = ""; wsTone = ""; wsHypeCount = 0
   productName = ""; principleUp = false; debugOpen = false; debugPicked = []
   dougIdx = 0; playTicks = 0
+  cutActive = false; cutSteps = []; fadeOp = 0
   ordersOpen = false; orderPicks = { o1: "", o2: "", o3: "" }; ordersDone = false
   pilotPromised = false; mabelTrust = 0; leoWrongIdx = 0
   priyaHere = false; priyaMode = ""; scopeOpen = false; scopePicks = []; scopeWarned = false; scopeDone = false
