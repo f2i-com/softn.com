@@ -1,7 +1,7 @@
 <logic src="../logic/main.logic" />
 
 <style>
-.pu-wrap { max-width: 1020px; margin: 0 auto; }
+.pu-wrap { max-width: 1150px; margin: 0 auto; }
 .pu-card { background: linear-gradient(165deg, #171d29 0%, #131722 100%); border: 1px solid #2a3242; border-radius: 14px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
 .pu-cap { background: #10141d; border: 1px solid #2a3242; border-left: 3px solid #f59e0b; border-radius: 10px; padding: 12px 16px; min-height: 58px; cursor: pointer; }
 .pu-chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
@@ -19,10 +19,20 @@
 .pu-bar { height: 7px; border-radius: 999px; transition: width 500ms cubic-bezier(0.16, 1, 0.3, 1); }
 .pu-btn-ghost { background: transparent; border: 1px solid #2a3242; }
 .pu-log { background: #090d13; border: 1px solid #1c2431; border-radius: 10px; padding: 12px 14px; }
+.pu-scroll { overflow-y: auto; overflow-x: hidden; padding-right: 8px; }
+.pu-scroll::-webkit-scrollbar { width: 9px; }
+.pu-scroll::-webkit-scrollbar-track { background: #0c111a; border-radius: 999px; }
+.pu-scroll::-webkit-scrollbar-thumb { background: #35405a; border-radius: 999px; }
+.pu-scroll::-webkit-scrollbar-thumb:hover { background: #46536f; }
+.pu-foot { border-top: 1px solid #232b3b; margin-top: 14px; padding-top: 13px; }
+.pu-head { border-bottom: 1px solid #202838; padding-bottom: 11px; margin-bottom: 4px; }
+.pu-panel { padding: 18px 20px; }
+.pu-row { background: #101623; border-radius: 10px; padding: 11px 13px; }
+.pu-cta { background: #f59e0b; color: #111; font-weight: 700; padding: 9px 18px; }
 </style>
 
 <App theme="dark">
-<Stack direction="vertical" gap={10} className="pu-wrap" style={{ height: "100%", padding: "12px" }}>
+<Stack direction="vertical" gap={12} className="pu-wrap pu-scroll" style={{ height: "100%", padding: "12px 14px 28px 14px" }}>
 
   <!-- ============================== TITLE ============================== -->
   <Box if={scene === "title"} className="pu-card pu-title" style={{ textAlign: "center", padding: "48px 24px" }}>
@@ -49,30 +59,34 @@
   </Box>
 
   <!-- ============================== 3D WORLD ============================== -->
-  <Box if={inWorld()}>
-    <Stack direction="horizontal" gap={10} style={{ alignItems: "center", marginBottom: "8px", flexWrap: "wrap" }}>
-      <Text className="pu-chip" style={{ background: "#1f2937", color: "#f59e0b" }}>{scene === "meeting" ? slideTitle : objective}</Text>
-      <Box style={{ flex: 1 }} />
-      <Stack direction="horizontal" gap={6} className="pu-hud" style={{ alignItems: "center" }}>
+  <Stack if={scene !== "title" && scene !== "done"} direction="horizontal" gap={10} style={{ alignItems: "center", flexWrap: "wrap" }}>
+    <Text className="pu-chip" style={{ background: "#1f2937", color: "#f59e0b" }}>{scene === "meeting" ? slideTitle : objective}</Text>
+    <Box style={{ flex: 1 }} />
+    <Stack direction="horizontal" gap={9} className="pu-hud" style={{ alignItems: "center" }}>
+      <Text style={{ fontSize: "11px", color: "#8b97ad", letterSpacing: "0.08em", paddingLeft: "4px" }}>{currentChapter()}</Text>
+      <Stack direction="horizontal" gap={6} style={{ alignItems: "center" }}>
         #each (d, di in chapterDots())
-          <Box className={d.state === "now" ? "pu-dot pu-dot-now" : "pu-dot"} title={d.label}
+          <Box className={d.state === "now" ? "pu-dot pu-dot-now" : "pu-dot"}
                style={{ width: "9px", height: "9px", borderRadius: "999px", background: dotColor(d.state) }} />
         #end
       </Stack>
-      <Text className="pu-chip" style={{ background: "#1f2937", color: "#4ade80" }}>Runway {stat("runway")}</Text>
-      <Button @click={toggleMute} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{muted ? "Unmute" : "Mute"}</Button>
-      <Button @click={toggleTranscript} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>Transcript</Button>
     </Stack>
+    <Text className="pu-chip" style={{ background: "#1f2937", color: "#4ade80" }}>Runway {stat("runway")}</Text>
+    <Button if={inWorld()} @click={toggleTheatre} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{theatre ? "Cosy" : "Theatre"}</Button>
+    <Button @click={toggleMute} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{muted ? "Unmute" : "Mute"}</Button>
+    <Button @click={toggleTranscript} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>Transcript</Button>
+  </Stack>
+
+  <Box if={inWorld()}>
     <Box style={{ position: "relative", width: "fit-content", maxWidth: "100%" }}>
       <Scene3D
-        width={880}
-        height={460}
+        width={sceneW()}
+        height={sceneH()}
         objects={objects}
         lights={lights}
         camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 75 }}
         antialias={true}
         shadows={false}
-        expandable={true}
         mouseLook={true}
         fog={sceneFog}
         background={sceneBg}
@@ -91,10 +105,12 @@
   </Box>
 
   <!-- Scene 1: debug-card puzzle -->
-  <Box if={debugOpen} className="pu-card pu-note">
-    <Text style={{ fontWeight: 700, color: "#fbbf24" }}>Yesterday's incident — assemble the fix</Text>
-    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>{debugMsg}</Text>
-    <Stack direction="horizontal" gap={10} style={{ marginTop: "12px", flexWrap: "wrap" }}>
+  <Box if={debugOpen} className="pu-card pu-note pu-panel">
+    <Box className="pu-head">
+      <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>Yesterday's incident — assemble the fix</Text>
+      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>{debugMsg}</Text>
+    </Box>
+    <Stack direction="horizontal" gap={12} style={{ marginTop: "14px", flexWrap: "wrap" }}>
       #each (card, ci in DEBUG_CARDS)
         <Box className="pu-item" @click={pickDebugCard(card.id)}
              style={{ borderColor: debugPicked.indexOf(card.id) >= 0 ? "#4ade80" : "#374151", minWidth: "200px" }}>
@@ -103,9 +119,9 @@
         </Box>
       #end
     </Stack>
-    <Stack direction="horizontal" gap={8} style={{ marginTop: "12px" }}>
+    <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center" }}>
       <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>Placed: {debugPicked.length} / 3</Text>
-      <Button @click={closeDebug} style={{ fontSize: "12px" }}>Step away</Button>
+      <Button @click={closeDebug} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Step away</Button>
     </Stack>
   </Box>
 
@@ -118,11 +134,13 @@
   </Box>
 
   <!-- Scene 3: desk-matter picker -->
-  <Box if={scene === "boxes"} className="pu-card">
-    <Text style={{ fontWeight: 700, color: "#fbbf24" }}>Personally Attributable Desk Matter</Text>
-    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>One small archive box. Ten years. Keep exactly three.</Text>
+  <Box if={scene === "boxes"} className="pu-card pu-panel">
+    <Box className="pu-head">
+      <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>Personally Attributable Desk Matter</Text>
+      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>One small archive box. Ten years. Keep exactly three.</Text>
+    </Box>
     <Box if={pickerOpen}>
-      <Stack direction="horizontal" gap={10} style={{ marginTop: "12px", flexWrap: "wrap" }}>
+      <Stack direction="horizontal" gap={12} className="pu-scroll" style={{ marginTop: "14px", flexWrap: "wrap", maxHeight: "44vh" }}>
         #each (item, ii in ITEMS)
           <Box className="pu-item" @click={toggleItem(item.id)}
                style={{ borderColor: isPicked(item.id) ? "#f59e0b" : "#374151", width: "300px" }}>
@@ -131,9 +149,9 @@
           </Box>
         #end
       </Stack>
-      <Stack direction="horizontal" gap={10} style={{ marginTop: "14px", alignItems: "center" }}>
+      <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center" }}>
         <Text style={{ fontSize: "13px", color: "#64748b", flex: 1 }}>In the box: {picked.length} / 3</Text>
-        <Button if={picked.length === 3} @click={confirmItems} style={{ background: "#f59e0b", color: "#111", fontWeight: 700 }}>Tape it shut</Button>
+        <Button if={picked.length === 3} @click={confirmItems} className="pu-cta">Tape it shut</Button>
       </Stack>
     </Box>
   </Box>
@@ -146,10 +164,12 @@
   </Box>
 
   <!-- Scene 4: budget overlay -->
-  <Box if={budgetOpen} className="pu-card pu-note">
-    <Text style={{ fontWeight: 700, color: "#fbbf24" }}>The numbers</Text>
-    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>Severance in. Rent out. Everything else is a decision.</Text>
-    <Stack direction="vertical" gap={6} style={{ marginTop: "12px" }}>
+  <Box if={budgetOpen} className="pu-card pu-note pu-panel">
+    <Box className="pu-head">
+      <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>The numbers</Text>
+      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>Severance in. Rent out. Everything else is a decision.</Text>
+    </Box>
+    <Stack direction="vertical" gap={8} className="pu-scroll" style={{ marginTop: "14px", maxHeight: "42vh" }}>
       #each (s, si in SUBS)
         <Stack direction="horizontal" gap={10} style={{ alignItems: "center", background: "#101623", borderRadius: "8px", padding: "8px 12px", opacity: isCancelled(s.id) ? 0.45 : 1 }}>
           <Box style={{ flex: 1 }}>
@@ -161,14 +181,14 @@
         </Stack>
       #end
     </Stack>
-    <Stack direction="horizontal" gap={10} style={{ marginTop: "14px", alignItems: "center" }}>
+    <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center", flexWrap: "wrap" }}>
       <Text style={{ fontSize: "13px", color: "#94a3b8", flex: 1 }}>Burn ${burnMonthly()}/mo · runway ≈ {runwayWeeks()} weeks</Text>
-      <Button @click={finishBudget} style={{ background: "#f59e0b", color: "#111", fontWeight: 700 }}>Enough numbers</Button>
+      <Button @click={finishBudget} className="pu-cta">Enough numbers</Button>
     </Stack>
   </Box>
 
   <!-- Scene 5: LUMA terminal -->
-  <Box if={scene === "luma"} className="pu-card" style={{ borderColor: "#7c3aed" }}>
+  <Box if={scene === "luma"} className="pu-card pu-panel" style={{ borderColor: "#7c3aed" }}>
     <Stack direction="horizontal" gap={8} style={{ alignItems: "center" }}>
       <Text style={{ fontWeight: 800, color: "#a78bfa", letterSpacing: "0.1em" }}>LUMA</Text>
       <Text style={{ fontSize: "12px", color: "#64748b" }}>Logical Utility and Messaging Assistant · build 0.4 · last run: 412 days ago</Text>
@@ -176,8 +196,8 @@
     <Box if={lumaPhase === "greet"} style={{ marginTop: "12px" }}>
       <Button @click={askLuma} style={{ background: "#7c3aed", color: "#fff", fontWeight: 600 }}>“Give me a billion-dollar business idea. No capital, no staff, no emotional resilience.”</Button>
     </Box>
-    <Box if={wsOpen} style={{ marginTop: "12px" }}>
-      <Text style={{ fontSize: "13px", color: "#94a3b8" }}>LUMA refuses to brainstorm further without inputs. Pick one card per question.</Text>
+    <Box if={wsOpen} className="pu-scroll" style={{ marginTop: "12px", maxHeight: "46vh" }}>
+      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8" }}>LUMA refuses to brainstorm further without inputs. Pick one card per question.</Text>
       #each (cat, gi in WS_CATS)
         <Box style={{ marginTop: "10px" }}>
           <Text style={{ fontSize: "12px", fontWeight: 700, color: "#38bdf8", letterSpacing: "0.08em" }}>{cat.title}</Text>
@@ -196,9 +216,12 @@
   </Box>
 
   <!-- Scene 6: missing-orders puzzle -->
-  <Box if={ordersOpen} className="pu-card pu-note">
-    <Text style={{ fontWeight: 700, color: "#fbbf24" }}>The missing orders</Text>
-    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>Three orders, four channels, no shared queue. Match each order to the slip that actually fits the facts.</Text>
+  <Box if={ordersOpen} className="pu-card pu-note pu-panel">
+    <Box className="pu-head">
+      <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>The missing orders</Text>
+      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>Three orders, four channels, no shared queue. Match each order to the slip that actually fits the facts.</Text>
+    </Box>
+    <Box className="pu-scroll" style={{ maxHeight: "44vh", marginTop: "6px" }}>
     #each (o, oi in ORDERS)
       <Box style={{ marginTop: "12px", background: "#101623", borderRadius: "10px", padding: "10px 12px" }}>
         <Text style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0" }}>Known: {o.fact}</Text>
@@ -212,21 +235,24 @@
         </Stack>
       </Box>
     #end
-    <Stack direction="horizontal" gap={8} style={{ marginTop: "12px" }}>
+    </Box>
+    <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center" }}>
       <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>Leo watches, professionally unimpressed.</Text>
-      <Button @click={closeOrders} style={{ fontSize: "12px" }}>Step back</Button>
+      <Button @click={closeOrders} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Step back</Button>
     </Stack>
   </Box>
 
   <!-- Scene 8: the Scope Board -->
-  <Box if={scopeOpen} className="pu-card pu-note" style={{ borderColor: "#38bdf8" }}>
-    <Stack direction="horizontal" gap={10} style={{ alignItems: "center" }}>
-      <Text style={{ fontWeight: 700, color: "#7dd3fc" }}>The Scope Board</Text>
-      <Box style={{ flex: 1 }} />
-      <Text className="pu-chip" style={{ background: "#1f2937", color: "#fbbf24" }}>Points left: {SCOPE_BUDGET - scopeCost()}</Text>
-    </Stack>
-    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>A viable build needs intake, a review queue, and at least one safety check. Everything shiny is a decision against those.</Text>
-    <Stack direction="horizontal" gap={10} style={{ marginTop: "12px", flexWrap: "wrap" }}>
+  <Box if={scopeOpen} className="pu-card pu-note pu-panel" style={{ borderColor: "#38bdf8" }}>
+    <Box className="pu-head">
+      <Stack direction="horizontal" gap={10} style={{ alignItems: "center" }}>
+        <Text style={{ fontWeight: 700, fontSize: "16px", color: "#7dd3fc" }}>The Scope Board</Text>
+        <Box style={{ flex: 1 }} />
+        <Text className="pu-chip" style={{ background: "#1f2937", color: "#fbbf24" }}>Points left: {SCOPE_BUDGET - scopeCost()}</Text>
+      </Stack>
+      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>A viable build needs intake, a review queue, and at least one safety check. Everything shiny is a decision against those.</Text>
+    </Box>
+    <Stack direction="horizontal" gap={12} className="pu-scroll" style={{ marginTop: "14px", flexWrap: "wrap", maxHeight: "42vh" }}>
       #each (card, si in SCOPE_CARDS)
         <Box className="pu-item" @click={toggleScope(card.id)}
              style={{ borderColor: scopeHas(card.id) ? (card.kind === "flash" ? "#f472b6" : "#4ade80") : "#374151", width: "300px" }}>
@@ -238,17 +264,20 @@
         </Box>
       #end
     </Stack>
-    <Stack direction="horizontal" gap={10} style={{ marginTop: "14px", alignItems: "center" }}>
-      <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>{scopeValid() ? "Priya nods. This could actually ship." : "Not viable yet: intake + review + one safety check."}</Text>
-      <Button @click={closeScope} style={{ fontSize: "12px" }}>Step back</Button>
-      <Button if={scopeValid()} @click={confirmScope} style={{ background: "#38bdf8", color: "#111", fontWeight: 700 }}>Lock the scope</Button>
+    <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center", flexWrap: "wrap" }}>
+      <Text style={{ fontSize: "12px", color: "#64748b", flex: 1, minWidth: "180px" }}>{scopeValid() ? "Priya nods. This could actually ship." : "Not viable yet: intake + review + one safety check."}</Text>
+      <Button @click={closeScope} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Step back</Button>
+      <Button if={scopeValid()} @click={confirmScope} style={{ background: "#38bdf8", color: "#111", fontWeight: 700, padding: "9px 18px" }}>Lock the scope</Button>
     </Stack>
   </Box>
 
   <!-- Scene 9: workflow policies -->
-  <Box if={wfOpen} className="pu-card pu-note" style={{ borderColor: "#4ade80" }}>
-    <Text style={{ fontWeight: 700, color: "#86efac" }}>Workflow Archaeology</Text>
-    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>Six real cases from this morning. Give each a policy. LUMA's confidence is shown beside each one — confidence is not the same thing as safety.</Text>
+  <Box if={wfOpen} className="pu-card pu-note pu-panel" style={{ borderColor: "#4ade80" }}>
+    <Box className="pu-head">
+      <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#86efac" }}>Workflow Archaeology</Text>
+      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>Six real cases from this morning. Give each a policy. LUMA's confidence is shown beside each one — confidence is not the same thing as safety.</Text>
+    </Box>
+    <Box className="pu-scroll" style={{ maxHeight: "40vh", marginTop: "6px" }}>
     #each (c, wi in WF_CASES)
       <Box style={{ marginTop: "10px", background: "#101623", borderRadius: "10px", padding: "10px 12px" }}>
         <Stack direction="horizontal" gap={8} style={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -266,10 +295,11 @@
         </Stack>
       </Box>
     #end
-    <Stack direction="horizontal" gap={10} style={{ marginTop: "12px", alignItems: "center" }}>
-      <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>{wfReady() ? "Every case has an owner." : "Every case needs a policy before Tuesday."}</Text>
-      <Button @click={closeWf} style={{ fontSize: "12px" }}>Step back</Button>
-      <Button if={wfReady()} @click={submitWf} style={{ background: "#4ade80", color: "#111", fontWeight: 700 }}>Set the policies</Button>
+    </Box>
+    <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center", flexWrap: "wrap" }}>
+      <Text style={{ fontSize: "12px", color: "#64748b", flex: 1, minWidth: "180px" }}>{wfReady() ? "Every case has an owner." : "Every case needs a policy before Tuesday."}</Text>
+      <Button @click={closeWf} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Step back</Button>
+      <Button if={wfReady()} @click={submitWf} style={{ background: "#4ade80", color: "#111", fontWeight: 700, padding: "9px 18px" }}>Set the policies</Button>
     </Stack>
   </Box>
 
@@ -282,7 +312,7 @@
   </Box>
 
   <!-- End of slice -->
-  <Box if={scene === "done"} className="pu-card" style={{ padding: "32px" }}>
+  <Box if={scene === "done"} className="pu-card" style={{ padding: "30px 32px 34px 32px" }}>
     <Text style={{ display: "block", fontSize: "12px", color: "#f59e0b", letterSpacing: "0.3em" }}>END OF VERTICAL SLICE</Text>
     <Text style={{ display: "block", fontSize: "26px", fontWeight: 800, color: "#f8fafc", marginTop: "8px" }}>{productName + " exists now. It has one customer, zero features, and a deadline."}</Text>
     <Stack direction="horizontal" gap={16} style={{ marginTop: "18px", flexWrap: "wrap" }}>
@@ -344,10 +374,10 @@
   </Box>
 
   <!-- Choice panel -->
-  <Box if={choiceList.length > 0} className="pu-card pu-note" style={{ borderColor: "#38bdf8" }}>
-    <Stack direction="vertical" gap={8}>
+  <Box if={choiceList.length > 0} className="pu-card pu-note" style={{ borderColor: "#38bdf8", padding: "16px 18px" }}>
+    <Stack direction="vertical" gap={9}>
       #each (c, ci in choiceList)
-        <Button @click={pickChoice(c.id)} style={{ textAlign: "left", justifyContent: "flex-start" }}>{(ci + 1) + " · "}{c.label}</Button>
+        <Button @click={pickChoice(c.id)} style={{ textAlign: "left", justifyContent: "flex-start", padding: "12px 16px", fontSize: "14px", lineHeight: "1.4" }}>{(ci + 1) + " · " + c.label}</Button>
       #end
     </Stack>
   </Box>

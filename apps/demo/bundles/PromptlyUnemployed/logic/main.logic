@@ -98,6 +98,7 @@ let debugMsg = ""
 let noteText = ""
 let noteTicks = 0
 
+let theatre = false
 let transcriptOpen = false
 let rngSeed = 1
 let dougIdx = 0
@@ -208,7 +209,7 @@ function tick() {
     if (dreamCountTicks >= 30) {
       dreamCountTicks = 0
       dreamCount = dreamCount - 7
-      if (!dreamCalm) { objective = "Sprint ends in " + fmtCount(dreamCount) }
+      if (!dreamCalm) { objective = "Sprint ends in " + fmtCount(dreamCount) + " · backlog " + dreamTickets2 }
     }
   }
   if (window.__puUse) {
@@ -363,10 +364,16 @@ function handleHotspot(id) {
   } else if (id === "oven") {
     showNote(bakeryDay ? "The oven is furious again. Business as usual, apparently." : "The oven ticks as it cools, like applause slowing down.")
   } else if (id === "wboard") {
-    showNote(dreamCalm ? "The whiteboard is blank now. It was never about the whiteboard." : "The whiteboard says WHEN. Just WHEN.")
+    showNote(dreamCalm ? "The whiteboard is blank now. It was never about the whiteboard." : "Nine tickets, three columns, no dates. Every note is a question ending in WHEN.")
+  } else if (id === "pile0") {
+    dreamTickets2 = dreamTickets2 + 3
+    buildDream()
+    sfx("buzz")
+    showNote("You pick up the top ticket. Three more arrive underneath it. The backlog is now " + dreamTickets2 + ".")
   } else if (id === "hs_dreamdoor") {
     if (dreamCalm) { goWake() }
     else {
+      if (dreamLoop === 0) { showNote("Your hand is on the door. How do you get out of a meeting that has no end?") }
       let opts = []
       for (let i = 0; i < DREAM_CHOICES.length; i++) { opts.push({ id: DREAM_CHOICES[i].id, label: DREAM_CHOICES[i].label }) }
       showChoices(opts, "dream")
@@ -396,6 +403,7 @@ function goDream() {
     { x0: 10, y0: 2.6, z0: 6, x1: 9.2, y1: 2.5, z1: 6.6, yaw0: Math.PI * 1.5, yaw1: Math.PI * 1.62, p0: -0.62, p1: -0.5, ticks: 62 },
     { x0: 9.2, y0: 2.5, z0: 6.6, x1: 4, y1: 1.6, z1: 4, yaw0: Math.PI * 1.62, yaw1: Math.PI * 0.5, p0: -0.5, p1: 0, ticks: 120, e: "in" }
   ], 4, 4, Math.PI / 2, "THE INFINITE STAND-UP", "Seven minutes. It has always been seven minutes.")
+  dreamTickets2 = 9
   playMusic("dream")
   saveGame()
   objective = "Sprint ends in " + fmtCount(dreamCount)
@@ -413,13 +421,25 @@ function fmtCount(n) {
 
 function dreamLoopBack() {
   dreamLoop = dreamLoop + 1
+  dreamTickets2 = dreamTickets2 + 7
   shake(0.1)
-  fadeOp = 0.85
+  fadeOp = 0.9
+  sfx("buzz")
   let s = gridFind(DREAM_ROWS, "S")
   playerX = s.x
   playerZ = s.z
+  window.__scene3dYaw = Math.PI / 2
+  playerAngle = Math.PI / 2
   buildDream()
   updateCamera()
+  objective = "Attempt " + (dreamLoop + 1) + " · backlog " + dreamTickets2
+  if (dreamLoop === 1) {
+    showNote("You walk out through the door. You walk in through the door. The room has not noticed either.")
+  } else if (dreamLoop === 2) {
+    showNote("Same room. Same board. Seven more tickets than the last time you counted.")
+  } else {
+    showNote("Attempt " + (dreamLoop + 1) + ". The door is where the door has always been.")
+  }
 }
 
 function goWake() {
@@ -541,7 +561,12 @@ function handleDialogueDone(tag) {
     musHandle = ""
     musCurrent = ""
     buildDream()
-    objective = "The room is quiet."
+    startCutscene([
+      { x0: 13.4, y0: 1.85, z0: 7.4, x1: 15.0, y1: 1.78, z1: 8.6, yaw0: -1.98, yaw1: -1.72, ticks: 76, e: "out" },
+      { x0: 15.0, y0: 1.78, z0: 8.6, x1: 17.2, y1: 1.6, z1: 10, yaw0: -1.72, yaw1: Math.PI / 2, ticks: 96, e: "in" }
+    ], 17.2, 10, Math.PI / 2, "UNKNOWN", "The only door that was never a stand-up")
+    objective = "The room is quiet. The door is open."
+    showNote("The circle stops talking. The tickets settle. Above the door, the sign has stopped saying EXIT and started saying UNKNOWN.")
     addLog("ADMITTED: 'I don't know yet' — the backlog stopped applauding")
   } else if (tag === "wake_done") {
     principleNum = 2
@@ -685,8 +710,9 @@ function goFlat() {
   buildFlat()
   updateCamera()
   startCutscene([
-    { x0: 9, y0: 2.05, z0: 3.4, x1: 6.4, y1: 1.85, z1: 6.2, yaw0: Math.PI * 1.12, yaw1: Math.PI * 1.3, p0: -0.1, p1: -0.05, ticks: 76, e: "out" },
-    { x0: 6.4, y0: 1.85, z0: 6.2, x1: 2, y1: 1.6, z1: 12, yaw0: Math.PI * 1.3, yaw1: Math.PI, ticks: 78, e: "in" }
+    { x0: 12.2, y0: 2.05, z0: 3.0, x1: 13.6, y1: 1.92, z1: 7.2, yaw0: 3.55, yaw1: 4.0, p0: -0.09, p1: -0.04, ticks: 72, e: "out" },
+    { x0: 13.6, y0: 1.92, z0: 7.2, x1: 13.2, y1: 1.8, z1: 11.6, yaw0: 4.0, yaw1: 4.4, ticks: 56 },
+    { x0: 13.2, y0: 1.8, z0: 11.6, x1: 2, y1: 1.6, z1: 12, yaw0: 4.4, yaw1: Math.PI, ticks: 74, e: "in" }
   ], 2, 12, Math.PI, "HOME", "Rent is still due Friday")
   playMusic("flat")
   saveGame()
@@ -877,9 +903,9 @@ function goBakery() {
   updateCamera()
   if (!ordersDone) {
     startCutscene([
-      { x0: 21, y0: 1.95, z0: 3.2, x1: 15, y1: 1.8, z1: 5.4, yaw0: -1.1, yaw1: -1.35, ticks: 78, e: "out" },
-      { x0: 15, y0: 1.8, z0: 5.4, x1: 8, y1: 1.7, z1: 9.6, yaw0: -1.35, yaw1: -2.1, ticks: 74 },
-      { x0: 8, y0: 1.7, z0: 9.6, x1: 2, y1: 1.6, z1: 14, yaw0: -2.1, yaw1: -Math.PI, ticks: 70, e: "in" }
+      { x0: 21, y0: 1.95, z0: 3.2, x1: 16.6, y1: 1.86, z1: 4.6, yaw0: -1.1, yaw1: -1.4, ticks: 72, e: "out" },
+      { x0: 16.6, y0: 1.86, z0: 4.6, x1: 17.2, y1: 1.8, z1: 10.6, yaw0: -1.4, yaw1: -2.3, ticks: 66 },
+      { x0: 17.2, y0: 1.8, z0: 10.6, x1: 2, y1: 1.6, z1: 14, yaw0: -2.3, yaw1: -Math.PI, ticks: 72, e: "in" }
     ], 2, 14, -Math.PI, "THE LAST CRUMB", "Closing time, and the ovens disagree")
   } else { fadeOp = 1 }
   playMusic("bakery")
@@ -944,8 +970,9 @@ function goBakeryDay() {
   updateCamera()
   if (!wfDone) {
     startCutscene([
-      { x0: 21, y0: 1.95, z0: 3.2, x1: 13, y1: 1.8, z1: 4.4, yaw0: -1.2, yaw1: -1.5, ticks: 76, e: "out" },
-      { x0: 13, y0: 1.8, z0: 4.4, x1: 2, y1: 1.6, z1: 14, yaw0: -1.5, yaw1: -Math.PI, ticks: 82, e: "in" }
+      { x0: 21, y0: 1.95, z0: 3.2, x1: 16.4, y1: 1.86, z1: 4.4, yaw0: -1.2, yaw1: -1.5, ticks: 70, e: "out" },
+      { x0: 16.4, y0: 1.86, z0: 4.4, x1: 17.4, y1: 1.78, z1: 10.8, yaw0: -1.5, yaw1: -2.35, ticks: 62 },
+      { x0: 17.4, y0: 1.78, z0: 10.8, x1: 2, y1: 1.6, z1: 14, yaw0: -2.35, yaw1: -Math.PI, ticks: 74, e: "in" }
     ], 2, 14, -Math.PI, "TUESDAY EVE — THE MORNING RUSH", "Watch everything. Touch nothing that's proofing.")
   } else { fadeOp = 1 }
   playMusic("bakery")
@@ -1103,7 +1130,7 @@ function newGame() {
   priyaHere = false; priyaMode = ""; scopeOpen = false; scopePicks = []; scopeWarned = false; scopeDone = false
   bakeryDay = false; wfOpen = false; wfDone = false; wfScore = 0
   wfPicks = { boxes12: "", nutfree: "", moved: "", moon: "", apt: "", inject: "" }
-  dreamLoop = 0; dreamCalm = false; dreamCount = 420; dreamCountTicks = 0
+  dreamLoop = 0; dreamCalm = false; dreamCount = 420; dreamCountTicks = 0; dreamTickets2 = 9
   saidDontKnow = false; dreamToldBacklog = false; dreamTickets = []
   principleNum = 1; principleText = "Ask before assuming."
   principleFlavor = "Written on an index card. The first thing on the wall that isn't a bill."
@@ -1181,7 +1208,7 @@ function stepIndex() {
   if (scene === "dream") { return 6 }
   if (scene === "bakeryday") { return 8 }
   if (scene === "done") { return 9 }
-  if (scene === "flat") { return priyaHere ? 7 : 3 }
+  if (scene === "flat") { return (priyaHere || saidDontKnow) ? 7 : 3 }
   return -1
 }
 
@@ -1206,6 +1233,14 @@ function inWorld() { return scene === "office" || scene === "meeting" || scene =
 function canMove() { return scene === "office" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
 function showCaptionBar() { return scene !== "title" }
 function toggleTranscript() { transcriptOpen = !transcriptOpen }
+function toggleTheatre() { theatre = !theatre }
+function sceneW() { return theatre ? 1090 : 820 }
+function sceneH() { return theatre ? 560 : 430 }
+function currentChapter() {
+  let i = stepIndex()
+  if (i < 0 || i >= CHAPTERS.length) { return "" }
+  return CHAPTERS[i].label
+}
 function hudPrompt() {
   if (dlgActive || choiceList.length > 0) { return "" }
   if (canMove() && hsNearId) { return hsNearLabel + "  —  E / tap" }
