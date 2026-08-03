@@ -252,32 +252,110 @@ function lightPanel(id, x, z, y, tint) {
     emissive: tint, emissiveIntensity: 1.4 }
 }
 
-// A little person: legs, torso, head. dir turns them; dark makes a silhouette.
-function fig(id, x, z, dir, bodyColor, headColor) {
-  return [
-    { id: id + "_l", type: "box", position: { x: x, y: 0.28, z: z }, rotation: { x: 0, y: dir, z: 0 },
-      width: 0.34, height: 0.56, depth: 0.26, color: hexShade(bodyColor, 0.7) },
-    { id: id + "_t", type: "box", position: { x: x, y: 0.86, z: z }, rotation: { x: 0, y: dir, z: 0 },
-      width: 0.5, height: 0.62, depth: 0.3, color: bodyColor },
-    { id: id + "_h", type: "sphere", position: { x: x, y: 1.4, z: z }, radius: 0.19, color: headColor }
+// A little person — low-poly but person-shaped: legs, hips, chest, arms, head,
+// hair; optional apron and cap. dir turns the whole figure; the same palette in
+// near-black makes a dream silhouette.
+function fig(id, x, z, dir, bodyColor, headColor, opts) {
+  let o = opts || {}
+  let fx = Math.sin(dir), fz = Math.cos(dir)      // facing vector
+  let rx = Math.cos(dir), rz = -Math.sin(dir)     // right-hand vector
+  let pants = o.pants || hexShade(bodyColor, 0.55)
+  let hair = o.hair || hexShade(headColor, 0.45)
+  let out = [
+    { id: id + "_lgL", type: "box", position: { x: x - rx * 0.12, y: 0.33, z: z - rz * 0.12 }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.16, height: 0.62, depth: 0.2, color: pants },
+    { id: id + "_lgR", type: "box", position: { x: x + rx * 0.12, y: 0.33, z: z + rz * 0.12 }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.16, height: 0.62, depth: 0.2, color: pants },
+    { id: id + "_hip", type: "box", position: { x: x, y: 0.7, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.44, height: 0.18, depth: 0.26, color: pants },
+    { id: id + "_chest", type: "box", position: { x: x, y: 1.0, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.48, height: 0.46, depth: 0.28, color: bodyColor },
+    { id: id + "_armL", type: "box", position: { x: x - rx * 0.32, y: 0.93, z: z - rz * 0.32 }, rotation: { x: 0, y: dir, z: 0.09 },
+      width: 0.12, height: 0.5, depth: 0.16, color: bodyColor },
+    { id: id + "_armR", type: "box", position: { x: x + rx * 0.32, y: 0.93, z: z + rz * 0.32 }, rotation: { x: 0, y: dir, z: -0.09 },
+      width: 0.12, height: 0.5, depth: 0.16, color: bodyColor },
+    { id: id + "_head", type: "sphere", position: { x: x, y: 1.4, z: z }, radius: 0.165, color: headColor },
+    { id: id + "_hair", type: "sphere", position: { x: x - fx * 0.05, y: 1.47, z: z - fz * 0.05 }, radius: 0.155, color: hair }
   ]
+  if (o.apron) {
+    out.push({ id: id + "_apron", type: "box", position: { x: x + fx * 0.16, y: 0.82, z: z + fz * 0.16 }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.4, height: 0.6, depth: 0.04, color: o.apron })
+  }
+  if (o.cap) {
+    out.push({ id: id + "_cap", type: "cylinder", position: { x: x, y: 1.56, z: z }, radius: 0.17, height: 0.07, color: o.cap })
+    out.push({ id: id + "_brim", type: "box", position: { x: x + fx * 0.18, y: 1.53, z: z + fz * 0.18 }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.2, height: 0.03, depth: 0.14, color: o.cap })
+  }
+  return out
 }
 
 function chairAt(id, x, z, dir, color) {
   let bx = Math.sin(dir) * -0.22, bz = Math.cos(dir) * -0.22
   return [
-    { id: id + "_s", type: "box", position: { x: x, y: 0.45, z: z }, rotation: { x: 0, y: dir, z: 0 },
-      width: 0.5, height: 0.08, depth: 0.5, color: color },
-    { id: id + "_b", type: "box", position: { x: x + bx, y: 0.78, z: z + bz }, rotation: { x: 0, y: dir, z: 0 },
-      width: 0.5, height: 0.6, depth: 0.08, color: color },
-    { id: id + "_p", type: "cylinder", position: { x: x, y: 0.22, z: z }, radius: 0.05, height: 0.45, color: "#1f2430" }
+    { id: id + "_s", type: "box", position: { x: x, y: 0.48, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.5, height: 0.09, depth: 0.5, color: color },
+    { id: id + "_b", type: "box", position: { x: x + bx, y: 0.82, z: z + bz }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.5, height: 0.62, depth: 0.09, color: color },
+    { id: id + "_col", type: "cylinder", position: { x: x, y: 0.26, z: z }, radius: 0.045, height: 0.4, color: "#565f73", metalness: 0.5, roughness: 0.4 },
+    { id: id + "_base", type: "cylinder", position: { x: x, y: 0.04, z: z }, radius: 0.27, height: 0.05, color: "#2a303d" }
+  ]
+}
+
+// An open laptop: base slab plus a hinged screen tilted back.
+function laptopAt(id, x, y, z, dir, screenColor) {
+  let fx = Math.sin(dir), fz = Math.cos(dir)
+  return [
+    { id: id + "_b", type: "box", position: { x: x, y: y + 0.015, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.5, height: 0.03, depth: 0.36, color: "#334155", metalness: 0.4, roughness: 0.5 },
+    { id: id + "_s", type: "box", position: { x: x - fx * 0.17, y: y + 0.17, z: z - fz * 0.17 }, rotation: { x: -0.42, y: dir, z: 0 },
+      width: 0.5, height: 0.34, depth: 0.02, color: "#0b1220", emissive: screenColor, emissiveIntensity: screenColor === "#0b1220" ? 0 : 0.9 }
+  ]
+}
+
+// Pastry prefabs: a croissant is three spheres in an arc; cakes and cupcakes stack.
+function croissantAt(id, x, y, z, dir) {
+  let rx = Math.cos(dir), rz = -Math.sin(dir)
+  let fx = Math.sin(dir), fz = Math.cos(dir)
+  return [
+    { id: id + "_c", type: "sphere", position: { x: x, y: y, z: z }, radius: 0.1, color: "#dd9a55", roughness: 1 },
+    { id: id + "_l", type: "sphere", position: { x: x - rx * 0.13 + fx * 0.05, y: y - 0.01, z: z - rz * 0.13 + fz * 0.05 }, radius: 0.075, color: "#d18f4b", roughness: 1 },
+    { id: id + "_r", type: "sphere", position: { x: x + rx * 0.13 + fx * 0.05, y: y - 0.01, z: z + rz * 0.13 + fz * 0.05 }, radius: 0.075, color: "#d18f4b", roughness: 1 }
+  ]
+}
+
+function cakeAt(id, x, y, z) {
+  return [
+    { id: id + "_b", type: "cylinder", position: { x: x, y: y + 0.08, z: z }, radius: 0.2, height: 0.16, color: "#f6e7d7", roughness: 1 },
+    { id: id + "_t", type: "cylinder", position: { x: x, y: y + 0.21, z: z }, radius: 0.14, height: 0.1, color: "#f4a4c0", roughness: 1 },
+    { id: id + "_ch", type: "sphere", position: { x: x, y: y + 0.3, z: z }, radius: 0.045, color: "#dc2626" }
+  ]
+}
+
+function cupcakeAt(id, x, y, z, frost) {
+  return [
+    { id: id + "_b", type: "cylinder", position: { x: x, y: y + 0.045, z: z }, radius: 0.075, height: 0.09, color: "#8a5a3a", roughness: 1 },
+    { id: id + "_f", type: "icosahedron", position: { x: x, y: y + 0.13, z: z }, radius: 0.085, color: frost, roughness: 1 }
   ]
 }
 
 function plantAt(id, x, z) {
   return [
-    { id: id + "_pot", type: "cylinder", position: { x: x, y: 0.25, z: z }, radius: 0.22, height: 0.5, color: "#8a5a3a" },
-    { id: id + "_top", type: "icosahedron", position: { x: x, y: 0.85, z: z }, radius: 0.4, color: "#3f8f4f", roughness: 1 }
+    { id: id + "_pot", type: "cylinder", position: { x: x, y: 0.22, z: z }, radius: 0.22, height: 0.44, color: "#8a5a3a" },
+    { id: id + "_soil", type: "cylinder", position: { x: x, y: 0.45, z: z }, radius: 0.19, height: 0.03, color: "#3a2c1c" },
+    { id: id + "_trunk", type: "cylinder", position: { x: x, y: 0.62, z: z }, radius: 0.04, height: 0.36, color: "#6b4a2e" },
+    { id: id + "_top", type: "icosahedron", position: { x: x, y: 0.95, z: z }, radius: 0.34, color: "#3f8f4f", roughness: 1 },
+    { id: id + "_top2", type: "icosahedron", position: { x: x + 0.14, y: 1.16, z: z - 0.06 }, radius: 0.22, color: "#4aa35c", roughness: 1 }
+  ]
+}
+
+// A water cooler: the most recognisable object in any office.
+function waterCoolerAt(id, x, z) {
+  return [
+    { id: id + "_b", type: "box", position: { x: x, y: 0.5, z: z }, width: 0.42, height: 1.0, depth: 0.42, color: "#e5e7eb", roughness: 0.6 },
+    { id: id + "_tapC", type: "box", position: { x: x, y: 0.78, z: z + 0.22 }, width: 0.06, height: 0.06, depth: 0.05, color: "#3b82f6", emissive: "#3b82f6", emissiveIntensity: 0.4 },
+    { id: id + "_tapH", type: "box", position: { x: x + 0.1, y: 0.78, z: z + 0.22 }, width: 0.06, height: 0.06, depth: 0.05, color: "#ef4444", emissive: "#ef4444", emissiveIntensity: 0.4 },
+    { id: id + "_neck", type: "cylinder", position: { x: x, y: 1.04, z: z }, radius: 0.07, height: 0.08, color: "#cbd5e1" },
+    { id: id + "_jug", type: "cylinder", position: { x: x, y: 1.3, z: z }, radius: 0.17, height: 0.44, color: "#a5d8ff", opacity: 0.55 }
   ]
 }
 
@@ -289,11 +367,17 @@ function deskAt(id, x, z, screen) {
     { id: id + "_l2", type: "box", position: { x: x + 0.75, y: 0.18, z: z }, width: 0.08, height: 0.36, depth: 0.7, color: "#3a4356" }
   ]
   if (screen) {
+    out.push({ id: id + "_std", type: "cylinder", position: { x: x, y: 0.47, z: z - 0.22 },
+      radius: 0.035, height: 0.14, color: "#3a4356" })
+    out.push({ id: id + "_bez", type: "box", position: { x: x, y: 0.72, z: z - 0.235 },
+      width: 0.68, height: 0.46, depth: 0.03, color: "#0a0e18" })
     out.push({ id: id + "_scr", type: "box", position: { x: x, y: 0.72, z: z - 0.22 },
-      width: 0.62, height: 0.4, depth: 0.04, color: "#0b1220",
+      width: 0.6, height: 0.38, depth: 0.03, color: "#0b1220",
       emissive: screen, emissiveIntensity: 1.0 })
     out.push({ id: id + "_kb", type: "box", position: { x: x, y: 0.43, z: z + 0.15 },
       width: 0.5, height: 0.03, depth: 0.2, color: "#232b3b" })
+    out.push({ id: id + "_mouse", type: "box", position: { x: x + 0.38, y: 0.43, z: z + 0.15 },
+      width: 0.09, height: 0.04, depth: 0.14, color: "#2c3547" })
   } else {
     out.push({ id: id + "_pap", type: "box", position: { x: x + 0.3, y: 0.42, z: z },
       width: 0.3, height: 0.015, depth: 0.4, color: "#d7dce6" })
@@ -332,8 +416,8 @@ function buildOffice() {
     objs = objs.concat(chairAt("chair" + i, desks[i][0], desks[i][1] + 1.0, desks[i][3], "#2c3547"))
   }
   // The two colleagues who are still here.
-  objs = objs.concat(fig("col1", 18, 3.0, Math.PI, "#4f6180", "#d4b394"))
-  objs = objs.concat(fig("col2", 9.2, 13.6, -1.1, "#5b5470", "#8a5a3a"))
+  objs = objs.concat(fig("col1", 18, 3.0, Math.PI, "#4f6180", "#d4b394", { hair: "#6b4b2a" }))
+  objs = objs.concat(fig("col2", 9.2, 13.6, -1.1, "#5b5470", "#8a5a3a", { hair: "#22262e" }))
   // Plants, posters, and the taped-off Dynamic Collaboration Space.
   objs = objs.concat(plantAt("plant1", 13, 2))
   objs = objs.concat(plantAt("plant2", 2, 17.8))
@@ -346,11 +430,18 @@ function buildOffice() {
       width: tape[i][2], height: 0.02, depth: tape[i][3], color: "#facc15",
       emissive: "#facc15", emissiveIntensity: 0.5 })
   }
-  // Interactive props (ids double as hotspot ids).
-  objs.push({ id: "hs_coffee", type: "box", position: { x: 4, y: 0.7, z: 14 },
-    width: 0.8, height: 1.4, depth: 0.8, color: "#6b7280",
-    emissive: coffeeFixed ? "#4ade80" : "#f87171", emissiveIntensity: coffeeFixed ? 0.3 : 0.9 })
-  objs.push({ id: "coffee_cup", type: "cylinder", position: { x: 4, y: 1.48, z: 13.7 }, radius: 0.08, height: 0.14, color: "#f8fafc" })
+  // Interactive props (ids double as hotspot ids). The coffee machine is an
+  // actual machine: body, top, screen, spout, drip tray, cup, bean hopper.
+  objs.push({ id: "hs_coffee", type: "box", position: { x: 4, y: 0.62, z: 14.1 },
+    width: 0.72, height: 1.24, depth: 0.6, color: "#4b5563", metalness: 0.55, roughness: 0.35 })
+  objs.push({ id: "cm_top", type: "box", position: { x: 4, y: 1.31, z: 14.1 }, width: 0.8, height: 0.16, depth: 0.68, color: "#374151", metalness: 0.5, roughness: 0.4 })
+  objs.push({ id: "cm_panel", type: "box", position: { x: 4, y: 1.02, z: 13.78 }, width: 0.46, height: 0.26, depth: 0.03,
+    color: "#111827", emissive: coffeeFixed ? "#4ade80" : "#f87171", emissiveIntensity: 0.95 })
+  objs.push({ id: "cm_spout", type: "cylinder", position: { x: 4, y: 0.8, z: 13.74 }, radius: 0.035, height: 0.16, color: "#1f2430", metalness: 0.6 })
+  objs.push({ id: "cm_tray", type: "box", position: { x: 4, y: 0.52, z: 13.76 }, width: 0.4, height: 0.04, depth: 0.22, color: "#1f2430" })
+  objs.push({ id: "cm_cup", type: "cylinder", position: { x: 4, y: 0.6, z: 13.74 }, radius: 0.06, height: 0.11, color: "#f8fafc" })
+  objs.push({ id: "cm_hopper", type: "cylinder", position: { x: 4.24, y: 1.5, z: 14.15 }, radius: 0.12, height: 0.22, color: "#6b7280", opacity: 0.8 })
+  objs = objs.concat(waterCoolerAt("cooler", 12.6, 17.6))
   objs.push({ id: "hs_board", type: "box", position: { x: 26, y: 1.4, z: 3.2 },
     width: 2.2, height: 1.3, depth: 0.12, color: "#111827",
     emissive: "#fbbf24", emissiveIntensity: debugDone ? 0.15 : 0.7 })
@@ -444,10 +535,9 @@ function buildMeeting() {
       rotation: { x: 0, y: seats[i][2], z: 0 }, width: 0.52, height: 0.6, depth: 0.32, color: bodyCols[i] })
     objs.push({ id: "mcol" + i + "_h", type: "sphere", position: { x: seats[i][0], y: 1.5, z: seats[i][1] }, radius: 0.2, color: "#d4b394" })
   }
-  // Table props: two laptops, three cups.
-  objs.push({ id: "mlap1", type: "box", position: { x: 4.6, y: 0.82, z: 3.1 }, rotation: { x: 0, y: 0.4, z: 0 }, width: 0.5, height: 0.03, depth: 0.35, color: "#334155" })
-  objs.push({ id: "mlap1s", type: "box", position: { x: 4.6, y: 0.98, z: 3.28 }, rotation: { x: 0, y: 0.4, z: 0 }, width: 0.5, height: 0.32, depth: 0.03, color: "#0b1220", emissive: "#38bdf8", emissiveIntensity: 0.7 })
-  objs.push({ id: "mlap2", type: "box", position: { x: 7.4, y: 0.82, z: 3.6 }, rotation: { x: 0, y: -0.3, z: 0 }, width: 0.5, height: 0.03, depth: 0.35, color: "#334155" })
+  // Table props: two open laptops, three cups.
+  objs = objs.concat(laptopAt("mlap1", 4.6, 0.79, 3.1, 2.9, "#38bdf8"))
+  objs = objs.concat(laptopAt("mlap2", 7.4, 0.79, 3.6, -2.8, "#0b1220"))
   for (let i = 0; i < 3; i++) {
     objs.push({ id: "mcup" + i, type: "cylinder", position: { x: 4 + i * 1.7, y: 0.83, z: 3.9 }, radius: 0.06, height: 0.12, color: "#f8fafc" })
   }
@@ -556,20 +646,25 @@ function buildFlat() {
   objs.push({ id: "boxpile2", type: "box", position: { x: 3.5, y: 1.35, z: 9.3 }, width: 0.9, height: 0.5, depth: 0.8, color: "#77603f" })
   // Desk with the laptop (budget) — hotspot — plus lamp.
   objs.push({ id: "hs_laptop", type: "box", position: { x: 2, y: 0.42, z: 2 }, width: 1.8, height: 0.84, depth: 0.9, color: "#5c4a3d" })
-  objs.push({ id: "laptop_scr", type: "box", position: { x: 2, y: 1.12, z: 1.7 }, width: 0.7, height: 0.45, depth: 0.05,
-    color: "#0b1220", emissive: budgetDone ? "#4ade80" : "#f59e0b", emissiveIntensity: 1.1 })
+  objs = objs.concat(laptopAt("alexlap", 2, 0.85, 1.85, Math.PI, budgetDone ? "#4ade80" : "#f59e0b"))
   objs.push({ id: "lamp_pole", type: "cylinder", position: { x: 1.2, y: 1.0, z: 1.4 }, radius: 0.04, height: 0.9, color: "#2a2018" })
   objs.push({ id: "lamp_head", type: "sphere", position: { x: 1.2, y: 1.5, z: 1.4 }, radius: 0.14,
     color: "#fbbf6b", emissive: "#fbbf6b", emissiveIntensity: 1.4 })
-  // The phone.
-  objs.push({ id: "hs_phone", type: "box", position: { x: 16, y: 0.55, z: 2 }, width: 0.5, height: 1.1, depth: 0.5, color: "#3f3f46",
-    emissive: "#22d3ee", emissiveIntensity: phoneRinging ? 1.5 : 0.12,
+  // The phone, on its little nightstand.
+  objs.push({ id: "ph_stand", type: "box", position: { x: 16, y: 0.32, z: 2 }, width: 0.6, height: 0.64, depth: 0.5, color: "#4a3b2e" })
+  objs.push({ id: "hs_phone", type: "box", position: { x: 16, y: 0.74, z: 2 }, rotation: { x: -0.18, y: 0.3, z: 0 },
+    width: 0.22, height: 0.42, depth: 0.04, color: "#18181b",
+    emissive: "#22d3ee", emissiveIntensity: phoneRinging ? 1.6 : 0.15,
     animate: phoneRinging ? { floatAmplitude: 0.05, floatSpeed: 6 } : { rotateY: 0 } })
-  // LUMA terminal.
-  objs.push({ id: "hs_luma", type: "box", position: { x: 14, y: 0.9, z: 8 }, width: 1.2, height: 1.8, depth: 0.5, color: "#1f2937",
+  // LUMA: a monitor on an arm, with an eye that notices you.
+  objs.push({ id: "luma_base", type: "cylinder", position: { x: 14, y: 0.06, z: 8 }, radius: 0.3, height: 0.1, color: "#1f2430" })
+  objs.push({ id: "luma_arm", type: "cylinder", position: { x: 14, y: 0.6, z: 8 }, radius: 0.05, height: 1.0, color: "#3a4356", metalness: 0.5 })
+  objs.push({ id: "hs_luma", type: "box", position: { x: 14, y: 1.3, z: 7.95 }, rotation: { x: -0.12, y: 0, z: 0 },
+    width: 1.05, height: 0.72, depth: 0.07, color: "#1f2937",
     emissive: "#a78bfa", emissiveIntensity: budgetDone ? 1.3 : 0.3 })
-  objs.push({ id: "luma_eye", type: "sphere", position: { x: 14, y: 1.35, z: 7.7 }, radius: 0.09,
-    color: "#a78bfa", emissive: "#ddd6fe", emissiveIntensity: budgetDone ? 1.8 : 0.4 })
+  objs.push({ id: "luma_eye", type: "sphere", position: { x: 14, y: 1.32, z: 7.88 }, radius: 0.09,
+    color: "#a78bfa", emissive: "#ddd6fe", emissiveIntensity: budgetDone ? 1.8 : 0.4,
+    animate: { floatAmplitude: 0.02, floatSpeed: 1.6 } })
   // Gadgets that die as subscriptions are cancelled.
   if (!isCancelled("mindful")) {
     objs.push({ id: "g_speaker", type: "torus", position: { x: 6, y: 1.0, z: 1.4 }, radius: 0.28,
@@ -597,7 +692,7 @@ function buildFlat() {
     objs.push({ id: "mug", type: "cylinder", position: { x: 1.55, y: 0.92, z: 2.1 }, radius: 0.07, height: 0.12, color: "#f8fafc" })
   }
   if (priyaHere) {
-    objs = objs.concat(fig("priya", 6, 12.6, Math.PI, "#7c3aed", "#8a5a3a"))
+    objs = objs.concat(fig("priya", 6, 12.6, Math.PI, "#7c3aed", "#8a5a3a", { hair: "#1f2937" }))
     objs.push({ id: "priya_box", type: "box", position: { x: 6.8, y: 0.25, z: 12.6 }, width: 0.6, height: 0.5, depth: 0.5, color: "#8a6f4d" })
   }
   objs.push({ id: "flpatch", type: "plane", position: { x: 12, y: 0.006, z: 4 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 6, height: 4, color: "#463930" })
@@ -653,6 +748,15 @@ function buildBakery() {
     objs.push({ id: "bun" + i, type: "sphere", position: { x: 12.4 + i * 0.8, y: 1.18, z: 9.0 }, radius: 0.16, color: "#d9a05f", roughness: 1 })
   }
   objs.push({ id: "cakebox", type: "box", position: { x: 13.6, y: 1.2, z: 7.2 }, width: 0.6, height: 0.3, depth: 0.6, color: "#f8e8ff" })
+  // Actual goods: croissants in a row, a proper cake, cupcakes.
+  for (let i = 0; i < 3; i++) {
+    objs = objs.concat(croissantAt("cro" + i, 9.2 + i * 0.65, 1.14, 7.4, 0.4 + i * 0.7))
+  }
+  objs = objs.concat(cakeAt("cake1", 11.8, 1.07, 7.2))
+  let frost = ["#f4a4c0", "#a78bfa", "#86efac"]
+  for (let i = 0; i < 3; i++) {
+    objs = objs.concat(cupcakeAt("cup" + i, 10.6 + i * 0.45, 1.07, 8.6, frost[i]))
+  }
   // Shelves along the west wall with loaves.
   objs.push({ id: "shelf1", type: "box", position: { x: 1.4, y: 1.0, z: 8 }, width: 0.6, height: 0.08, depth: 6, color: "#7a5f43" })
   objs.push({ id: "shelf2", type: "box", position: { x: 1.4, y: 1.7, z: 8 }, width: 0.6, height: 0.08, depth: 6, color: "#7a5f43" })
@@ -683,12 +787,12 @@ function buildBakery() {
       color: "#ffca85", emissive: "#ffca85", emissiveIntensity: 1.7 })
   }
   // The duelling tablets, the paper board, and the door.
-  objs.push({ id: "hs_tabA", type: "box", position: { x: 4, y: 1.1, z: 4 }, width: 0.55, height: 0.4, depth: 0.06,
-    color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#38bdf8", emissiveIntensity: 1.1 })
-  objs.push({ id: "tabAstand", type: "box", position: { x: 4, y: 0.85, z: 4.05 }, width: 0.2, height: 0.14, depth: 0.15, color: "#26201a" })
-  objs.push({ id: "hs_tabB", type: "box", position: { x: 18, y: 1.1, z: 4 }, width: 0.55, height: 0.4, depth: 0.06,
-    color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#f87171", emissiveIntensity: 1.1 })
-  objs.push({ id: "tabBstand", type: "box", position: { x: 18, y: 0.85, z: 4.05 }, width: 0.2, height: 0.14, depth: 0.15, color: "#26201a" })
+  objs.push({ id: "tabApost", type: "box", position: { x: 4, y: 0.7, z: 4.05 }, width: 0.1, height: 0.7, depth: 0.1, color: "#26201a" })
+  objs.push({ id: "hs_tabA", type: "box", position: { x: 4, y: 1.12, z: 4 }, rotation: { x: -0.28, y: 0, z: 0 },
+    width: 0.55, height: 0.4, depth: 0.05, color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#38bdf8", emissiveIntensity: 1.1 })
+  objs.push({ id: "tabBpost", type: "box", position: { x: 18, y: 0.7, z: 4.05 }, width: 0.1, height: 0.7, depth: 0.1, color: "#26201a" })
+  objs.push({ id: "hs_tabB", type: "box", position: { x: 18, y: 1.12, z: 4 }, rotation: { x: -0.28, y: 0, z: 0 },
+    width: 0.55, height: 0.4, depth: 0.05, color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#f87171", emissiveIntensity: 1.1 })
   objs.push({ id: "hs_paper", type: "box", position: { x: 20, y: 1.4, z: 8 }, width: 1.6, height: 1.1, depth: 0.08,
     color: "#efe6cf", emissive: "#efe6cf", emissiveIntensity: ordersDone ? 0.12 : 0.4 })
   for (let i = 0; i < 4; i++) {
@@ -698,9 +802,8 @@ function buildBakery() {
   objs.push({ id: "hs_exit", type: "box", position: { x: 22, y: 1.1, z: 2 }, width: 0.3, height: 2.2, depth: 1.6,
     color: "#2a2018", emissive: "#f59e0b", emissiveIntensity: pilotPromised ? 1.1 : 0.18 })
   // Mabel and Leo, properly assembled.
-  objs = objs.concat(fig("mabel", 4, 10, 0, "#b45309", "#8a5a3a"))
-  objs.push({ id: "mabel_apron", type: "box", position: { x: 4, y: 0.8, z: 10.18 }, width: 0.4, height: 0.5, depth: 0.03, color: "#fef3c7" })
-  objs = objs.concat(fig("leo", 16.5, 5, -0.7, "#3f6212", "#a16207"))
+  objs = objs.concat(fig("mabel", 4, 10, 0, "#b45309", "#8a5a3a", { apron: "#fef3c7", hair: "#3f2d23" }))
+  objs = objs.concat(fig("leo", 16.5, 5, -0.7, "#3f6212", "#a16207", { cap: "#365314", hair: "#1f2937" }))
   // Steam over the oven, and a warm floor patch behind the counter.
   for (let i = 0; i < 3; i++) {
     objs.push({ id: "steam" + i, type: "sphere", position: { x: 6.1 + i * 0.4, y: 1.8 + i * 0.25, z: 13 }, radius: 0.12 + i * 0.04,
