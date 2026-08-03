@@ -2,10 +2,12 @@
 
 <style>
 .pu-wrap { max-width: 1020px; margin: 0 auto; }
-.pu-card { background: #161b26; border: 1px solid #2a3242; border-radius: 12px; padding: 16px; }
-.pu-cap { background: #10141d; border: 1px solid #2a3242; border-radius: 10px; padding: 12px 16px; min-height: 58px; cursor: pointer; }
+.pu-card { background: linear-gradient(165deg, #171d29 0%, #131722 100%); border: 1px solid #2a3242; border-radius: 14px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
+.pu-cap { background: #10141d; border: 1px solid #2a3242; border-left: 3px solid #f59e0b; border-radius: 10px; padding: 12px 16px; min-height: 58px; cursor: pointer; }
 .pu-chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
-.pu-item { border: 2px solid #374151; border-radius: 10px; padding: 10px 12px; cursor: pointer; background: #101623; }
+.pu-item { border: 2px solid #374151; border-radius: 10px; padding: 10px 12px; cursor: pointer; background: #101623; transition: border-color 140ms ease, translate 140ms ease; }
+.pu-item:hover { border-color: #f59e0b; translate: 0 -2px; }
+.pu-title { background: radial-gradient(120% 130% at 50% 0%, #1d2536 0%, #12151f 55%, #0e1118 100%); border: 1px solid #33405a; }
 .pu-note { animation: pu-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 @keyframes pu-in { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
 </style>
@@ -14,7 +16,7 @@
 <Stack direction="vertical" gap={10} className="pu-wrap" style={{ height: "100%", padding: "12px" }}>
 
   <!-- ============================== TITLE ============================== -->
-  <Box if={scene === "title"} className="pu-card" style={{ textAlign: "center", padding: "48px 24px" }}>
+  <Box if={scene === "title"} className="pu-card pu-title" style={{ textAlign: "center", padding: "48px 24px" }}>
     <Text style={{ fontSize: "13px", letterSpacing: "0.35em", color: "#f59e0b" }}>A SOFTN NARRATIVE GAME · VERTICAL SLICE</Text>
     <Text style={{ fontSize: "44px", fontWeight: 800, color: "#f8fafc", marginTop: "10px" }}>PROMPTLY UNEMPLOYED</Text>
     <Text style={{ fontSize: "16px", color: "#94a3b8", marginTop: "6px", fontStyle: "italic" }}>The future arrived early. Rent is still due Friday.</Text>
@@ -180,6 +182,32 @@
     </Stack>
   </Box>
 
+  <!-- Scene 8: the Scope Board -->
+  <Box if={scopeOpen} className="pu-card pu-note" style={{ borderColor: "#38bdf8" }}>
+    <Stack direction="horizontal" gap={10} style={{ alignItems: "center" }}>
+      <Text style={{ fontWeight: 700, color: "#7dd3fc" }}>The Scope Board</Text>
+      <Box style={{ flex: 1 }} />
+      <Text className="pu-chip" style={{ background: "#1f2937", color: "#fbbf24" }}>Points left: {SCOPE_BUDGET - scopeCost()}</Text>
+    </Stack>
+    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>A viable build needs intake, a review queue, and at least one safety check. Everything shiny is a decision against those.</Text>
+    <Stack direction="horizontal" gap={10} style={{ marginTop: "12px", flexWrap: "wrap" }}>
+      #each (card, si in SCOPE_CARDS)
+        <Box className="pu-item" @click={toggleScope(card.id)}
+             style={{ borderColor: scopeHas(card.id) ? (card.kind === "flash" ? "#f472b6" : "#4ade80") : "#374151", width: "300px" }}>
+          <Stack direction="horizontal" gap={8} style={{ alignItems: "center" }}>
+            <Text style={{ fontWeight: 700, color: "#e2e8f0", flex: 1 }}>{card.name}</Text>
+            <Text className="pu-chip" style={{ background: "#0b1017", color: card.kind === "flash" ? "#f472b6" : "#7dd3fc" }}>{card.cost} pt</Text>
+          </Stack>
+          <Text style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px", fontStyle: "italic" }}>{card.desc}</Text>
+        </Box>
+      #end
+    </Stack>
+    <Stack direction="horizontal" gap={10} style={{ marginTop: "14px", alignItems: "center" }}>
+      <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>{scopeValid() ? "Priya nods. This could actually ship." : "Not viable yet: intake + review + one safety check."}</Text>
+      <Button if={scopeValid()} @click={confirmScope} style={{ background: "#38bdf8", color: "#111", fontWeight: 700 }}>Lock the scope</Button>
+    </Stack>
+  </Box>
+
   <!-- Principle card -->
   <Box if={principleUp} className="pu-card pu-note" style={{ textAlign: "center", padding: "36px 24px", borderColor: "#a78bfa" }}>
     <Text style={{ fontSize: "12px", color: "#64748b", letterSpacing: "0.2em" }}>PRINCIPLE №{principleNum}</Text>
@@ -190,21 +218,21 @@
 
   <!-- End of slice -->
   <Box if={scene === "done"} className="pu-card" style={{ padding: "32px" }}>
-    <Text style={{ fontSize: "12px", color: "#f59e0b", letterSpacing: "0.3em" }}>END OF VERTICAL SLICE</Text>
-    <Text style={{ fontSize: "26px", fontWeight: 800, color: "#f8fafc", marginTop: "8px" }}>{productName} exists now. It has one customer, zero features, and a deadline.</Text>
+    <Text style={{ display: "block", fontSize: "12px", color: "#f59e0b", letterSpacing: "0.3em" }}>END OF VERTICAL SLICE</Text>
+    <Text style={{ display: "block", fontSize: "26px", fontWeight: 800, color: "#f8fafc", marginTop: "8px" }}>{productName + " exists now. It has one customer, zero features, and a deadline."}</Text>
     <Box style={{ marginTop: "16px" }}>
       #each (line, li in summaryLines)
-        <Text style={{ fontSize: "14px", color: "#cbd5e1", marginTop: "4px" }}>· {line}</Text>
+        <Text style={{ display: "block", fontSize: "14px", color: "#cbd5e1", marginTop: "4px" }}>· {line}</Text>
       #end
     </Box>
     <Text style={{ fontSize: "12px", fontWeight: 700, color: "#4ade80", marginTop: "18px", letterSpacing: "0.1em" }}>PATCHWORK RELEASE NOTES (v0.0.1)</Text>
     <Box style={{ marginTop: "6px", background: "#0b1017", borderRadius: "8px", padding: "12px", fontFamily: "monospace" }}>
       #each (entry, ei in changelog)
-        <Text style={{ fontSize: "12px", color: "#86efac", fontFamily: "monospace", marginTop: "2px" }}>+ {entry}</Text>
+        <Text style={{ display: "block", fontSize: "12px", color: "#86efac", fontFamily: "monospace", marginTop: "2px" }}>+ {entry}</Text>
       #end
     </Box>
-    <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "18px" }}>Scenes 8–17 — Priya at the door, the pilot, the printer's 1,204 retries, LaunchPad, and four endings — continue in the full plan.</Text>
-    <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>Voices: OpenAI gpt-4o-mini-tts (marin, coral, alloy, sage, onyx, cedar, echo, shimmer). AI-generated; not human recordings.</Text>
+    <Text style={{ display: "block", fontSize: "12px", color: "#64748b", marginTop: "18px" }}>Scenes 8–17 — Priya at the door, the pilot, the printer's 1,204 retries, LaunchPad, and four endings — continue in the full plan.</Text>
+    <Text style={{ display: "block", fontSize: "12px", color: "#64748b", marginTop: "4px" }}>Voices: OpenAI gpt-4o-mini-tts (marin, coral, alloy, sage, onyx, cedar, echo, shimmer). AI-generated; not human recordings.</Text>
     <Stack direction="horizontal" gap={10} style={{ marginTop: "20px" }}>
       <Button @click={newGame} style={{ background: "#f59e0b", color: "#111", fontWeight: 700 }}>Play again</Button>
       <Button @click={backToTitle}>Title screen</Button>

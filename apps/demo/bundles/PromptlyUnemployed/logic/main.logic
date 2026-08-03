@@ -74,6 +74,14 @@ let principleText = "Ask before assuming."
 let principleFlavor = "Written on an index card. The first thing on the wall that isn't a bill."
 let principleNext = "bakery"
 
+// Scene 8 — Priya and the Scope Board.
+let priyaHere = false
+let priyaMode = ""            // cofounder | paid | favour | alone
+let scopeOpen = false
+let scopePicks = []
+let scopeWarned = false
+let scopeDone = false
+
 // Debug-card puzzle.
 let debugOpen = false
 let debugPicked = []
@@ -115,6 +123,7 @@ function _init() {
   window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false }
   window.__puUse = false
   window.__puSkip = false
+  window.__puWarp = ""       // traversal-harness hook: names a hotspot to teleport beside
 
   function onKeyDown(e) {
     let k = window.__puKeys
@@ -191,6 +200,11 @@ function tick() {
   if (window.__puSkip) {
     window.__puSkip = false
     dlgSkip()
+  }
+  if (window.__puWarp) {
+    let target = window.__puWarp
+    window.__puWarp = ""
+    if (canMove()) { warpTo(target) }
   }
   dlgTick()
   if (noteTicks > 0) {
@@ -270,6 +284,10 @@ function handleHotspot(id) {
   } else if (id === "hs_exit") {
     if (pilotPromised) { goDream() }
     else { showNote("Leaving now would waste the best accident of the week.") }
+  } else if (id === "hs_priya") {
+    if (priyaHere && priyaMode === "") { runDialogue(["a2_s8_priya_080", "a2_s8_priya_081", "a2_s8_alex_082"], "collab_choice") }
+    else if (priyaMode !== "" && !scopeDone) { scopeOpen = true }
+    else { showNote("Priya is reading your principle card. She has opinions. They can wait.") }
   } else if (id === "hs_dreamdoor") {
     if (dreamCalm) { goWake() }
     else {
@@ -434,8 +452,17 @@ function handleDialogueDone(tag) {
     principleNum = 2
     principleText = "Say when you do not know."
     principleFlavor = "Learned in a room that only went quiet when you said it."
-    principleNext = "end"
+    principleNext = "priya"
     principleUp = true
+  } else if (tag === "collab_choice") {
+    let opts = []
+    for (let i = 0; i < COLLAB_CHOICES.length; i++) { opts.push({ id: COLLAB_CHOICES[i].id, label: COLLAB_CHOICES[i].label }) }
+    showChoices(opts, "collab")
+  } else if (tag === "scope_open") {
+    scopeOpen = true
+    objective = "Scope the prototype. Five points. No more."
+  } else if (tag === "scope_done") {
+    endSlice()
   }
 }
 
@@ -483,6 +510,17 @@ function handleChoice(tag, id) {
     else if (id === "vulnerable") { collaboration = collaboration + 1; mabelTrust = mabelTrust + 1; addLog("ADMITTED: it does not exist yet. Mabel respected that") }
     if (c) { showNote(c.reply) }
     runDialogue(["a2_s6_mabel_055", "a2_s6_alex_054", "a2_s6_luma_056", "a2_s6_mabel_057", "a2_s6_leo_058", "a2_s6_alex_059", "a2_s6_sys_060"], "bakery_done")
+  } else if (tag === "collab") {
+    let c = null
+    for (let i = 0; i < COLLAB_CHOICES.length; i++) { if (COLLAB_CHOICES[i].id === id) { c = COLLAB_CHOICES[i] } }
+    priyaMode = id
+    if (id === "cofounder") { collaboration = collaboration + 2; priyaRel = priyaRel + 1; addLog("COFOUNDED: equal partners, equal blame") }
+    else if (id === "paid") { runway = runway - 300; integrity = integrity + 1; addLog("ENGAGED: one reliability review, properly invoiced") }
+    else if (id === "favour") { addLog("ASKED: a favour, off the books") }
+    else { addLog("DECLINED: help. The flat is very quiet") }
+    if (c) { showNote(c.reply) }
+    if (id === "alone") { runDialogue(["a2_s8_luma_084"], "scope_open") }
+    else { runDialogue(["a2_s8_priya_083", "a2_s8_luma_084"], "scope_open") }
   } else if (tag === "dream") {
     let c = null
     for (let i = 0; i < DREAM_CHOICES.length; i++) { if (DREAM_CHOICES[i].id === id) { c = DREAM_CHOICES[i] } }
@@ -648,9 +686,77 @@ function pinPrinciple() {
   if (principleNext === "bakery") {
     showNote("Dinner is unaffordable. The Last Crumb is five minutes away and nearly closing.")
     goBakery()
+  } else if (principleNext === "priya") {
+    sfx("knock")
+    priyaHere = true
+    buildFlat()
+    objective = "Someone is knocking. Analog knocking. A person."
   } else {
     endSlice()
   }
+}
+
+// ---- Scene 8: Minimum Viable Friendship -----------------------------------
+
+function scopeCost() {
+  let total = 0
+  for (let i = 0; i < SCOPE_CARDS.length; i++) {
+    if (scopePicks.indexOf(SCOPE_CARDS[i].id) >= 0) { total = total + SCOPE_CARDS[i].cost }
+  }
+  return total
+}
+
+function scopeHas(id) { return scopePicks.indexOf(id) >= 0 }
+
+function scopeValid() {
+  return scopeHas("inbox") && scopeHas("review") && (scopeHas("allergy") || scopeHas("confidence")) && scopeCost() <= SCOPE_BUDGET
+}
+
+function toggleScope(id) {
+  let card = null
+  for (let i = 0; i < SCOPE_CARDS.length; i++) { if (SCOPE_CARDS[i].id === id) { card = SCOPE_CARDS[i] } }
+  if (!card) { return }
+  let at = scopePicks.indexOf(id)
+  if (at >= 0) {
+    scopePicks.splice(at, 1)
+    scopePicks = scopePicks.slice()
+    sfx("click")
+    return
+  }
+  if (scopeCost() + card.cost > SCOPE_BUDGET) {
+    sfx("buzz")
+    showNote("Five points. The board does not negotiate.")
+    return
+  }
+  scopePicks.push(id)
+  scopePicks = scopePicks.slice()
+  sfx("click")
+  if (card.kind === "flash" && !scopeWarned) {
+    scopeWarned = true
+    if (priyaMode !== "alone" && priyaMode !== "") { runDialogue(["a2_s8_priya_086"], "") }
+    else { showNote("The dashboard would be beautiful. Mabel's orders would still leak.") }
+  }
+}
+
+function confirmScope() {
+  if (!scopeValid()) { return }
+  scopeOpen = false
+  scopeDone = true
+  let names = []
+  let flash = 0
+  let safety = 0
+  for (let i = 0; i < SCOPE_CARDS.length; i++) {
+    let c = SCOPE_CARDS[i]
+    if (scopePicks.indexOf(c.id) < 0) { continue }
+    names.push(c.name.toLowerCase())
+    if (c.kind === "flash") { flash = flash + 1 }
+    if (c.kind === "safety") { safety = safety + 1 }
+  }
+  if (flash > 0) { hype = hype + 1; addLog("SCOPED: " + names.join(", ") + " — one of these is a mirror") }
+  else { integrity = integrity + 1; addLog("SCOPED: " + names.join(", ") + " — nothing shiny survived") }
+  if (safety >= 2) { addLog("SAFEGUARDED: " + safety + " checks between LUMA and a stranger's allergy") }
+  sfx("success")
+  runDialogue(["a2_s8_sys_085"], "scope_done")
 }
 
 // ---- Scene 6: The Last Crumb ----------------------------------------------
@@ -732,6 +838,10 @@ function endingSummary() {
   else if (ruthHonesty === 0) { bits.push("Ruth suspects. Mothers do.") }
   if (pilotPromised) { bits.push("The Last Crumb expects a prototype in one week. Mabel " + (mabelTrust > 0 ? "believes you, cautiously." : "is reserving judgement.")) }
   if (saidDontKnow) { bits.push("You said “I don't know yet,” and the room went quiet.") }
+  if (priyaMode === "cofounder") { bits.push("Priya is in. Equal partners, equal blame.") }
+  else if (priyaMode === "paid") { bits.push("Priya's invoice is itemised, fair, and worth every cent.") }
+  else if (priyaMode === "favour") { bits.push("Priya helped. The ledger between you shifted, unrecorded.") }
+  else if (priyaMode === "alone") { bits.push("You scoped it alone. The flat had opinions anyway.") }
   if (clue8471) { bits.push("Someone left before you did. Desk 41.") }
   return bits
 }
@@ -750,7 +860,7 @@ function saveGame() {
     keptItems: keptItems, cancelledIds: cancelledIds, budgetDone: budgetDone,
     ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId,
     ordersDone: ordersDone, pilotPromised: pilotPromised, mabelTrust: mabelTrust,
-    saidDontKnow: saidDontKnow
+    saidDontKnow: saidDontKnow, priyaMode: priyaMode, scopeDone: scopeDone
   }
   try { localStorage.setItem("pu:autosave", JSON.stringify(save)); hasSave = true } catch (err) {}
 }
@@ -771,7 +881,7 @@ function continueGame() {
   budgetDone = !!s.budgetDone; ruthDone = !!s.ruthDone
   productName = s.productName || ""; meetChoiceId = s.meetChoiceId || ""
   ordersDone = !!s.ordersDone; pilotPromised = !!s.pilotPromised; mabelTrust = s.mabelTrust || 0
-  saidDontKnow = !!s.saidDontKnow
+  saidDontKnow = !!s.saidDontKnow; priyaMode = s.priyaMode || ""; scopeDone = !!s.scopeDone
   // Checkpoints are scene entries; re-enter the saved scene fresh.
   if (s.scene === "meeting") { enterMeeting() }
   else if (s.scene === "boxes") { enterBoxes() }
@@ -794,6 +904,7 @@ function newGame() {
   productName = ""; principleUp = false; debugOpen = false; debugPicked = []
   ordersOpen = false; orderPicks = { o1: "", o2: "", o3: "" }; ordersDone = false
   pilotPromised = false; mabelTrust = 0; leoWrongIdx = 0
+  priyaHere = false; priyaMode = ""; scopeOpen = false; scopePicks = []; scopeWarned = false; scopeDone = false
   dreamLoop = 0; dreamCalm = false; dreamCount = 420; dreamCountTicks = 0
   saidDontKnow = false; dreamToldBacklog = false; dreamTickets = []
   principleNum = 1; principleText = "Ask before assuming."
