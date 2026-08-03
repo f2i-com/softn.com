@@ -105,6 +105,27 @@ function pickChoice(id) {
 
 function toggleMute() {
   muted = !muted
-  if (muted) { softn.audio.stopAll(); dlgHandle = "" }
+  if (muted) { softn.audio.stopAll(); dlgHandle = ""; musHandle = "" }
   softn.audio.setVolume(muted ? 0 : 1)
+  if (!muted && musCurrent) { let m = musCurrent; musCurrent = ""; playMusic(m) }
+}
+
+// One looping cue per world. No buses yet, so the mix is "keep music quiet".
+let musHandle = ""
+let musCurrent = ""
+
+function playMusic(name) {
+  if (name === musCurrent && musHandle) { return }
+  if (musHandle) { softn.audio.stop(musHandle); musHandle = "" }
+  musCurrent = name
+  if (!name || muted) { return }
+  softn.audio.play("assets/audio/music/mus_" + name + ".wav", { loop: true, volume: 0.22 }, function (r) {
+    if (r && r.handle) { musHandle = r.handle }
+  })
+}
+
+function stopMusic() {
+  if (musHandle) { softn.audio.stop(musHandle) }
+  musHandle = ""
+  musCurrent = ""
 }

@@ -82,6 +82,13 @@ let scopePicks = []
 let scopeWarned = false
 let scopeDone = false
 
+// Scene 9 — Workflow Archaeology.
+let bakeryDay = false
+let wfOpen = false
+let wfPicks = { boxes12: "", nutfree: "", moved: "", moon: "", apt: "", inject: "" }
+let wfDone = false
+let wfScore = 0
+
 // Debug-card puzzle.
 let debugOpen = false
 let debugPicked = []
@@ -234,6 +241,7 @@ function startOffice() {
   buildOffice()
   updateCamera()
   objective = "Monday. Three small tasks before stand-up."
+  playMusic("office")
   saveGame()
   runDialogue(["a1_s1_pax_001", "a1_s1_alex_002"], "")
 }
@@ -274,15 +282,28 @@ function handleHotspot(id) {
   } else if (id === "hs_luma") {
     if (budgetDone) { enterLuma() }
     else { showNote("You already know what the dream costs. Face the numbers first.") }
-  } else if (id === "hs_tabA" || id === "hs_tabB" || id === "hs_paper") {
-    if (!ordersDone) { openOrders() }
+  } else if (id === "hs_tabA" || id === "hs_tabB") {
+    if (bakeryDay) { showNote("The tablets are quiet. Today the rush is people-shaped.") }
+    else if (!ordersDone) { openOrders() }
+    else { showNote("The channels agree with each other now. Historic.") }
+  } else if (id === "hs_paper") {
+    if (bakeryDay) {
+      if (!wfDone) { wfOpen = true }
+      else { showNote("Six policies, pinned where the flour can reach them.") }
+    }
+    else if (!ordersDone) { openOrders() }
     else { showNote("The channels agree with each other now. Historic.") }
   } else if (id === "hs_mabel") {
-    if (!ordersDone) { showNote("Mabel is mid-rush. Leo waves you toward the tablets.") }
+    if (bakeryDay) { showNote(wfDone ? "“Tuesday,” says Mabel, like a handshake." : "Mabel is elbow-deep in the rush. The board first.") }
+    else if (!ordersDone) { showNote("Mabel is mid-rush. Leo waves you toward the tablets.") }
     else if (!pilotPromised) { runDialogue(["a2_s6_mabel_053"], "bakery_pitch") }
     else { showNote("Mabel points at the door, then at an imaginary watch. One week.") }
   } else if (id === "hs_exit") {
-    if (pilotPromised) { goDream() }
+    if (bakeryDay) {
+      if (wfDone) { endSlice() }
+      else { showNote("Not before the policies are set. The board is watching.") }
+    }
+    else if (pilotPromised) { goDream() }
     else { showNote("Leaving now would waste the best accident of the week.") }
   } else if (id === "hs_priya") {
     if (priyaHere && priyaMode === "") { runDialogue(["a2_s8_priya_080", "a2_s8_priya_081", "a2_s8_alex_082"], "collab_choice") }
@@ -316,6 +337,7 @@ function goDream() {
   window.__scene3dPitch = 0
   buildDream()
   updateCamera()
+  playMusic("dream")
   saveGame()
   objective = "Sprint ends in " + fmtCount(dreamCount)
   showNote("Home. You build until the lines blur. Somewhere between one keystroke and the next, the office finds you again.")
@@ -352,6 +374,7 @@ function goWake() {
   buildFlat()
   updateCamera()
   objective = "Morning. Somehow."
+  playMusic("flat")
   runDialogue(["a2_s7_luma_074"], "wake_done")
 }
 
@@ -394,6 +417,7 @@ function enterMeeting() {
   slideColor = "#38bdf8"
   slideTitle = "HUMAN POTENTIAL WEEK ▸ Our Human Efficiency Milestone"
   buildMeeting()
+  playMusic("office")
   saveGame()
   runDialogue(["a1_s2_pax_010"], "meet_milestone")
 }
@@ -445,6 +469,8 @@ function handleDialogueDone(tag) {
     dreamCalm = true
     saidDontKnow = true
     softn.audio.stopAll()
+    musHandle = ""
+    musCurrent = ""
     buildDream()
     objective = "The room is quiet."
     addLog("ADMITTED: 'I don't know yet' — the backlog stopped applauding")
@@ -462,6 +488,9 @@ function handleDialogueDone(tag) {
     scopeOpen = true
     objective = "Scope the prototype. Five points. No more."
   } else if (tag === "scope_done") {
+    showNote("Monday, dawn. You walk the prototype to the bakery to watch the real thing happen.")
+    goBakeryDay()
+  } else if (tag === "wf_done") {
     endSlice()
   }
 }
@@ -587,6 +616,7 @@ function goFlat() {
   buildFlat()
   updateCamera()
   objective = "Home. The severance email is open on the laptop."
+  playMusic("flat")
   saveGame()
 }
 
@@ -773,6 +803,7 @@ function goBakery() {
   window.__scene3dPitch = 0
   buildBakery()
   updateCamera()
+  playMusic("bakery")
   saveGame()
   sfx("doorbell")
   if (ordersDone) {
@@ -819,12 +850,76 @@ function pickSlip(orderId, slipId) {
 
 function closeOrders() { ordersOpen = false }
 
+// ---- Scene 9: Workflow Archaeology ----------------------------------------
+
+function goBakeryDay() {
+  scene = "bakeryday"
+  bakeryDay = true
+  let s = gridFind(BAKERY_ROWS, "S")
+  playerX = s.x
+  playerZ = s.z
+  playerAngle = 0
+  window.__scene3dYaw = playerAngle
+  window.__scene3dPitch = 0
+  buildBakery()
+  updateCamera()
+  playMusic("bakery")
+  saveGame()
+  sfx("doorbell")
+  if (wfDone) {
+    objective = "Tuesday is tomorrow. The door is waiting."
+  } else {
+    objective = "Watch the workflow. The paper board holds the cases."
+    let ids = ["a2_s9_mabel_090", "a2_s9_leo_091", "a2_s9_luma_092"]
+    if (priyaMode !== "alone" && priyaMode !== "") { ids.push("a2_s9_priya_093") }
+    runDialogue(ids, "")
+  }
+}
+
+function wfPicked(caseId) { return wfPicks[caseId] || "" }
+
+function pickWf(caseId, policy) {
+  sfx("click")
+  wfPicks[caseId] = policy
+  wfPicks = { boxes12: wfPicks.boxes12, nutfree: wfPicks.nutfree, moved: wfPicks.moved, moon: wfPicks.moon, apt: wfPicks.apt, inject: wfPicks.inject }
+}
+
+function wfReady() {
+  for (let i = 0; i < WF_CASES.length; i++) { if (!wfPicks[WF_CASES[i].id]) { return false } }
+  return true
+}
+
+function closeWf() { wfOpen = false }
+
+function submitWf() {
+  if (!wfReady()) { return }
+  wfOpen = false
+  wfDone = true
+  wfScore = 0
+  for (let i = 0; i < WF_CASES.length; i++) {
+    if (wfPicks[WF_CASES[i].id] === WF_CASES[i].best) { wfScore = wfScore + 1 }
+  }
+  if (wfPicks.nutfree === "never") { addLog("POLICY: allergies are answered by a person, always") }
+  if (wfPicks.inject === "never") { addLog("REFUSED: Steve's friend's refund, and the entire genre of that request") }
+  addLog("POLICIES SET: " + wfScore + " of 6 where ambiguity goes to a human first")
+  if (wfScore >= 4) { integrity = integrity + 1 }
+  sfx("success")
+  objective = "Tuesday is tomorrow. The door is waiting."
+  let ids = []
+  if (wfPicks.nutfree === "never") { ids.push("a2_s9_mabel_094") }
+  ids.push("a2_s9_mabel_096")
+  ids.push("a2_s9_alex_097")
+  ids.push("a2_s9_sys_098")
+  runDialogue(ids, "wf_done")
+}
+
 // ---- End of slice ---------------------------------------------------------
 
 let summaryLines = []
 
 function endSlice() {
   scene = "done"
+  stopMusic()
   objective = ""
   summaryLines = endingSummary()
   saveGame()
@@ -840,6 +935,7 @@ function endingSummary() {
   else if (ruthHonesty === 0) { bits.push("Ruth suspects. Mothers do.") }
   if (pilotPromised) { bits.push("The Last Crumb expects a prototype in one week. Mabel " + (mabelTrust > 0 ? "believes you, cautiously." : "is reserving judgement.")) }
   if (saidDontKnow) { bits.push("You said “I don't know yet,” and the room went quiet.") }
+  if (wfDone) { bits.push(wfScore >= 4 ? "Six policies set. The ambiguous ones go to humans. Mabel noticed." : "Six policies set. Some of them will be revisited. By events.") }
   if (priyaMode === "cofounder") { bits.push("Priya is in. Equal partners, equal blame.") }
   else if (priyaMode === "paid") { bits.push("Priya's invoice is itemised, fair, and worth every cent.") }
   else if (priyaMode === "favour") { bits.push("Priya helped. The ledger between you shifted, unrecorded.") }
@@ -862,7 +958,8 @@ function saveGame() {
     keptItems: keptItems, cancelledIds: cancelledIds, budgetDone: budgetDone,
     ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId,
     ordersDone: ordersDone, pilotPromised: pilotPromised, mabelTrust: mabelTrust,
-    saidDontKnow: saidDontKnow, priyaMode: priyaMode, scopeDone: scopeDone
+    saidDontKnow: saidDontKnow, priyaMode: priyaMode, scopeDone: scopeDone,
+    wfDone: wfDone, wfScore: wfScore
   }
   try { localStorage.setItem("pu:autosave", JSON.stringify(save)); hasSave = true } catch (err) {}
 }
@@ -884,11 +981,13 @@ function continueGame() {
   productName = s.productName || ""; meetChoiceId = s.meetChoiceId || ""
   ordersDone = !!s.ordersDone; pilotPromised = !!s.pilotPromised; mabelTrust = s.mabelTrust || 0
   saidDontKnow = !!s.saidDontKnow; priyaMode = s.priyaMode || ""; scopeDone = !!s.scopeDone
+  wfDone = !!s.wfDone; wfScore = s.wfScore || 0
   // Checkpoints are scene entries; re-enter the saved scene fresh.
   if (s.scene === "meeting") { enterMeeting() }
   else if (s.scene === "boxes") { enterBoxes() }
   else if (s.scene === "bakery") { goBakery() }
   else if (s.scene === "dream") { goDream() }
+  else if (s.scene === "bakeryday") { goBakeryDay() }
   else if (s.scene === "flat" || s.scene === "luma") { goFlat() }
   else if (s.scene === "done") { summaryLines = endingSummary(); scene = "done" }
   else { startOffice() }
@@ -907,6 +1006,8 @@ function newGame() {
   ordersOpen = false; orderPicks = { o1: "", o2: "", o3: "" }; ordersDone = false
   pilotPromised = false; mabelTrust = 0; leoWrongIdx = 0
   priyaHere = false; priyaMode = ""; scopeOpen = false; scopePicks = []; scopeWarned = false; scopeDone = false
+  bakeryDay = false; wfOpen = false; wfDone = false; wfScore = 0
+  wfPicks = { boxes12: "", nutfree: "", moved: "", moon: "", apt: "", inject: "" }
   dreamLoop = 0; dreamCalm = false; dreamCount = 420; dreamCountTicks = 0
   saidDontKnow = false; dreamToldBacklog = false; dreamTickets = []
   principleNum = 1; principleText = "Ask before assuming."
@@ -918,6 +1019,7 @@ function newGame() {
 }
 
 function backToTitle() {
+  stopMusic()
   softn.audio.stopAll()
   dlgActive = false
   dlgQueue = []
@@ -932,8 +1034,8 @@ function backToTitle() {
 
 // ---- Template helpers -----------------------------------------------------
 
-function inWorld() { return scene === "office" || scene === "meeting" || scene === "flat" || scene === "bakery" || scene === "dream" }
-function canMove() { return scene === "office" || scene === "flat" || scene === "bakery" || scene === "dream" }
+function inWorld() { return scene === "office" || scene === "meeting" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
+function canMove() { return scene === "office" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
 function showCaptionBar() { return scene !== "title" }
 function toggleTranscript() { transcriptOpen = !transcriptOpen }
 function hudPrompt() {

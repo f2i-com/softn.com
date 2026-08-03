@@ -209,6 +209,34 @@
     </Stack>
   </Box>
 
+  <!-- Scene 9: workflow policies -->
+  <Box if={wfOpen} className="pu-card pu-note" style={{ borderColor: "#4ade80" }}>
+    <Text style={{ fontWeight: 700, color: "#86efac" }}>Workflow Archaeology</Text>
+    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>Six real cases from this morning. Give each a policy. LUMA's confidence is shown beside each one — confidence is not the same thing as safety.</Text>
+    #each (c, wi in WF_CASES)
+      <Box style={{ marginTop: "10px", background: "#101623", borderRadius: "10px", padding: "10px 12px" }}>
+        <Stack direction="horizontal" gap={8} style={{ alignItems: "center", flexWrap: "wrap" }}>
+          <Text style={{ fontSize: "13px", fontWeight: 600, color: "#e2e8f0", flex: 1 }}>{c.text}</Text>
+          <Text className="pu-chip" style={{ background: "#0b1017", color: "#7dd3fc" }}>{c.conf}</Text>
+          <Text className="pu-chip" style={{ background: "#0b1017", color: "#fbbf24" }}>risk: {c.risk}</Text>
+        </Stack>
+        <Stack direction="horizontal" gap={8} style={{ marginTop: "8px", flexWrap: "wrap" }}>
+          #each (p, pi in WF_POLICIES)
+            <Box className="pu-item" @click={pickWf(c.id, p.id)}
+                 style={{ borderColor: wfPicked(c.id) === p.id ? "#4ade80" : "#374151", padding: "6px 12px" }}>
+              <Text style={{ fontSize: "12px", color: wfPicked(c.id) === p.id ? "#86efac" : "#cbd5e1" }}>{p.label}</Text>
+            </Box>
+          #end
+        </Stack>
+      </Box>
+    #end
+    <Stack direction="horizontal" gap={10} style={{ marginTop: "12px", alignItems: "center" }}>
+      <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>{wfReady() ? "Every case has an owner." : "Every case needs a policy before Tuesday."}</Text>
+      <Button @click={closeWf} style={{ fontSize: "12px" }}>Step back</Button>
+      <Button if={wfReady()} @click={submitWf} style={{ background: "#4ade80", color: "#111", fontWeight: 700 }}>Set the policies</Button>
+    </Stack>
+  </Box>
+
   <!-- Principle card -->
   <Box if={principleUp} className="pu-card pu-note" style={{ textAlign: "center", padding: "36px 24px", borderColor: "#a78bfa" }}>
     <Text style={{ fontSize: "12px", color: "#64748b", letterSpacing: "0.2em" }}>PRINCIPLE №{principleNum}</Text>
@@ -232,7 +260,7 @@
         <Text style={{ display: "block", fontSize: "12px", color: "#86efac", fontFamily: "monospace", marginTop: "2px" }}>+ {entry}</Text>
       #end
     </Box>
-    <Text style={{ display: "block", fontSize: "12px", color: "#64748b", marginTop: "18px" }}>Scenes 8–17 — Priya at the door, the pilot, the printer's 1,204 retries, LaunchPad, and four endings — continue in the full plan.</Text>
+    <Text style={{ display: "block", fontSize: "12px", color: "#64748b", marginTop: "18px" }}>Scenes 10–17 — Tuesday's pilot, the printer's 1,204 retries, LaunchPad, and four endings — continue in the full plan.</Text>
     <Text style={{ display: "block", fontSize: "12px", color: "#64748b", marginTop: "4px" }}>Voices: OpenAI gpt-4o-mini-tts (marin, coral, alloy, sage, onyx, cedar, echo, shimmer). AI-generated; not human recordings.</Text>
     <Stack direction="horizontal" gap={10} style={{ marginTop: "20px" }}>
       <Button @click={newGame} style={{ background: "#f59e0b", color: "#111", fontWeight: 700 }}>Play again</Button>
