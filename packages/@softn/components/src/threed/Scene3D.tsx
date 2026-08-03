@@ -30,6 +30,8 @@ export interface Scene3DObject {
   height?: number;
   depth?: number;
   radius?: number;
+  /** Torus tube thickness. Defaults to 40% of `radius` so small rings stay rings. */
+  tube?: number;
   animate?: {
     rotateX?: number;
     rotateY?: number;
@@ -97,7 +99,10 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
     case 'cylinder': return new THREE.CylinderGeometry(r, r, h, 32);
     case 'cone': return new THREE.ConeGeometry(r, h, 32);
     case 'plane': return new THREE.PlaneGeometry(w, h);
-    case 'torus': return new THREE.TorusGeometry(r, 0.4, 16, 100);
+    // The tube was a fixed 0.4m, so any ring smaller than that came out as a
+    // solid ball — a 4cm mug handle rendered as a 90cm sphere. Scale it with
+    // the radius instead; at r = 1 this is what the old constant gave.
+    case 'torus': return new THREE.TorusGeometry(r, obj.tube ?? r * 0.4, 16, 100);
     case 'ring': return new THREE.RingGeometry(r * 0.5, r, 32);
     case 'dodecahedron': return new THREE.DodecahedronGeometry(r);
     case 'icosahedron': return new THREE.IcosahedronGeometry(r);
@@ -262,7 +267,8 @@ function needsGeometryUpdate(prev: Scene3DObject, next: Scene3DObject): boolean 
     prev.width !== next.width ||
     prev.height !== next.height ||
     prev.depth !== next.depth ||
-    prev.radius !== next.radius;
+    prev.radius !== next.radius ||
+    prev.tube !== next.tube;
 }
 
 function needsMaterialUpdate(prev: Scene3DObject, next: Scene3DObject): boolean {

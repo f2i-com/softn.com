@@ -181,8 +181,10 @@ function _init() {
   buildTitle()
 }
 
-// DPad: direction strings, unified with the keyboard dict.
+// DPad: direction strings, unified with the keyboard dict. Reaching for the pad
+// during a cutscene means the same as reaching for WASD — you want control back.
 function padPress(dir) {
+  if (cutActive) { skipCutscene() }
   let k = window.__puKeys
   if (dir === "up") { k.w = true }
   else if (dir === "down") { k.s = true }
@@ -203,6 +205,10 @@ function padRelease(dir) {
 // droppable and silently skips them when the async queue backs up (audio calls).
 function gameStep() {
   if (scene === "title") { titleTick(); return }
+  // Readout for the traversal harness: where the player is and what, if
+  // anything, is holding them still.
+  window.__puPos = playerX.toFixed(2) + "," + playerZ.toFixed(2) +
+    " scene=" + scene + " cut=" + (cutActive ? 1 : 0) + " dlg=" + (dlgActive ? 1 : 0)
   cutTickFn()
   shakeTick()
   if (fadeOp > 0) { fadeOp = Math.max(0, fadeOp - 0.2) }
@@ -276,9 +282,9 @@ function startOffice() {
   buildOffice()
   updateCamera()
   startCutscene([
-    { x0: 25, y0: 2.3, z0: 4.3, x1: 16, y1: 2.02, z1: 4.05, yaw0: -1.32, yaw1: -1.52, p0: -0.08, p1: -0.03, ticks: 74, e: "out" },
-    { x0: 16, y0: 2.02, z0: 4.05, x1: 8.5, y1: 1.78, z1: 4, yaw0: -1.52, yaw1: -1.72, p0: -0.03, p1: 0, ticks: 58 },
-    { x0: 8.5, y0: 1.78, z0: 4, x1: 4, y1: 1.6, z1: 4, yaw0: -1.72, yaw1: 0, ticks: 64, e: "in" }
+    { x0: 25, y0: 2.3, z0: 4.3, x1: 16, y1: 2.02, z1: 4.05, yaw0: -1.32, yaw1: -1.52, p0: -0.08, p1: -0.03, ticks: 42, e: "out" },
+    { x0: 16, y0: 2.02, z0: 4.05, x1: 8.5, y1: 1.78, z1: 4, yaw0: -1.52, yaw1: -1.72, p0: -0.03, p1: 0, ticks: 34 },
+    { x0: 8.5, y0: 1.78, z0: 4, x1: 4, y1: 1.6, z1: 4, yaw0: -1.72, yaw1: 0, ticks: 38, e: "in" }
   ], 4, 4, 0, "MONDAY, 9:02 A.M.", "CloudSpindle — Human Potential Week")
   objective = "Monday. Three small tasks before stand-up."
   playMusic("office")
@@ -741,13 +747,15 @@ function confirmItems() {
   pickerOpen = false
   addLog("KEPT: " + keptItems.join(", ") + " — one box, three survivors")
   objective = "Carry it out."
-  actorGoTo("guard", 22.5, 13.2)
+  // The guard comes to meet you at the lift and turns to face you; the shot
+  // lands with Alex looking straight at him, because he does all the talking.
+  actorGoTo("guard", 23, 13, 25.2, 14.4)
   // Walk the box to the lift; the lights go out behind you.
   startCutscene([
     { x0: playerX, y0: 1.6, z0: playerZ, x1: 16.5, y1: 1.62, z1: 4.6, yaw0: playerAngle, yaw1: -1.3, ticks: 56, e: "out" },
-    { x0: 16.5, y0: 1.62, z0: 4.6, x1: 20, y1: 1.62, z1: 10.5, yaw0: -1.3, yaw1: -1.0, ticks: 60 },
-    { x0: 20, y0: 1.62, z0: 10.5, x1: 26, y1: 1.6, z1: 15.4, yaw0: -1.0, yaw1: -1.45, ticks: 58, e: "in" }
-  ], 26, 15.4, -1.45, "PERSONALLY ATTRIBUTABLE DESK MATTER", "Alumni access expires on exit")
+    { x0: 16.5, y0: 1.62, z0: 4.6, x1: 20, y1: 1.62, z1: 10.5, yaw0: -1.3, yaw1: -1.6, ticks: 60 },
+    { x0: 20, y0: 1.62, z0: 10.5, x1: 25.2, y1: 1.6, z1: 14.4, yaw0: -1.6, yaw1: -2.14, ticks: 58, e: "in" }
+  ], 25.2, 14.4, -2.14, "PERSONALLY ATTRIBUTABLE DESK MATTER", "Alumni access expires on exit")
   runDialogue(["a1_s3_priya_021"], "priya_line")
 }
 
@@ -1309,6 +1317,24 @@ function statPct(v) { return Math.min(100, Math.max(6, v * 22)) + "%" }
 function inWorld() { return scene === "office" || scene === "boxes" || scene === "meeting" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
 function canMove() { return scene === "office" || scene === "boxes" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
 function showCaptionBar() { return scene !== "title" }
+function captionHasContent() { return dlgActive || noteText !== "" || hudPrompt() !== "" }
+
+// In theatre the D-pad is pinned bottom-left and is wide enough to sit under
+// the caption, so the text steps above it whenever the pad is on screen.
+function controlsShowing() { return canMove() }
+function padClass() { return cutActive ? "pu-controls pu-controls-dim" : "pu-controls" }
+function capClass() {
+  let c = "pu-cap"
+  if (controlsShowing()) { c = c + " pu-lift" }
+  if (choiceList.length > 0) { c = c + " pu-withchoices" }
+  if (!captionHasContent()) { c = c + " pu-cap-off" }
+  return c
+}
+function choiceClass() {
+  let c = "pu-card pu-note pu-choices"
+  if (controlsShowing()) { c = c + " pu-lift" }
+  return c
+}
 function toggleTranscript() { transcriptOpen = !transcriptOpen }
 function toggleTheatre() { theatre = !theatre }
 function quitToTitle() {
@@ -1323,7 +1349,7 @@ function currentChapter() {
   return CHAPTERS[i].label
 }
 function hudPrompt() {
-  if (dlgActive || choiceList.length > 0) { return "" }
+  if (choiceList.length > 0) { return "" }
   if (canMove() && hsNearId) { return hsNearLabel + "  —  E / tap" }
   return ""
 }

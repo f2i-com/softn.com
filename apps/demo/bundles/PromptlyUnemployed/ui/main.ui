@@ -3,7 +3,8 @@
 <style>
 .pu-wrap { max-width: 1150px; margin: 0 auto; }
 .pu-card { background: linear-gradient(165deg, #171d29 0%, #131722 100%); border: 1px solid #2a3242; border-radius: 14px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
-.pu-cap { background: #10141d; border: 1px solid #2a3242; border-left: 3px solid #f59e0b; border-radius: 10px; padding: 12px 16px; min-height: 58px; cursor: pointer; }
+.pu-cap { background: #10141d; border: 1px solid #2a3242; border-left: 3px solid #f59e0b; border-radius: 10px; padding: 12px 16px; min-height: 58px; cursor: pointer; transition: opacity 240ms ease; }
+.pu-cap-off { opacity: 0; pointer-events: none; }
 .pu-chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
 .pu-item { border: 2px solid #374151; border-radius: 10px; padding: 10px 12px; cursor: pointer; background: #101623; transition: border-color 140ms ease, translate 140ms ease; }
 .pu-item:hover { border-color: #f59e0b; translate: 0 -2px; }
@@ -54,17 +55,35 @@
 .pu-cta-big:hover { translate: 0 -2px; box-shadow: 0 14px 38px rgba(245,158,11,0.4); }
 .pu-fs { position: fixed; top: 0; left: 0; right: 0; bottom: 0; max-width: none; margin: 0; padding: 14px 18px 18px 18px; background: #080b11; z-index: 40; overflow: hidden; justify-content: space-between; }
 .pu-fs .pu-holder { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; max-width: none !important; z-index: 1; }
-.pu-fs .pu-holder, .pu-fs .pu-holder > div, .pu-fs .pu-holder > div > div, .pu-fs .pu-holder canvas {
+/* Stretch the render surface ONLY. This used to say "> div", which also caught
+   the letterbox bars and the fade layer and blew each one up into a full-screen
+   black pane — in theatre the meeting was two 92%-opaque covers deep. */
+.pu-fs .pu-holder > div:first-child:not(.pu-ovl),
+.pu-fs .pu-holder > div:first-child:not(.pu-ovl) > div,
+.pu-fs .pu-holder canvas {
   width: 100vw !important; height: 100vh !important; max-width: none !important; max-height: none !important;
   border-radius: 0 !important; border: none !important; display: block !important;
 }
+.pu-fs .pu-ovl { border-radius: 0 !important; }
+.pu-fs .pu-bar { height: 54px !important; }
 .pu-fs .pu-holder canvas { object-fit: cover; }
 .pu-fs .pu-hud { background: rgba(9,13,20,0.86); backdrop-filter: blur(6px); }
 .pu-fs .pu-chip { background: rgba(20,26,38,0.9) !important; }
-.pu-fs .pu-cap { position: absolute; left: 20px; right: 20px; bottom: 104px; z-index: 8; border: 1px solid rgba(60,72,96,0.7); box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+.pu-fs .pu-cap { position: absolute; left: 20px; right: 20px; bottom: 20px; z-index: 8; border: 1px solid rgba(60,72,96,0.7); box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+.pu-fs .pu-choices { position: absolute; left: 20px; right: 20px; bottom: 20px; z-index: 9; max-height: 46vh; overflow-y: auto; }
 .pu-fs .pu-hudrow { position: absolute; top: 16px; left: 20px; right: 20px; z-index: 8; }
-.pu-fs .pu-controls { position: absolute; left: 20px; bottom: 16px; z-index: 8; }
+.pu-fs .pu-controls { position: absolute; left: 20px; bottom: 20px; z-index: 8; }
 .pu-fs .pu-controls > * { opacity: 0.92; }
+.pu-controls-dim { opacity: 0.34; transition: opacity 220ms ease; }
+/* The D-pad owns the bottom-left and is ~470px wide, so whatever shares the
+   bottom strip steps over it instead of trying to sit beside it. */
+.pu-fs .pu-lift { bottom: 216px; }
+/* A choice panel can be 46vh tall; the caption clears its worst case. */
+.pu-fs .pu-cap.pu-withchoices { bottom: calc(46vh + 34px); }
+.pu-fs .pu-cap.pu-withchoices.pu-lift { bottom: calc(46vh + 230px); }
+@media (max-width: 900px) {
+  .pu-fs .pu-lift { bottom: 250px; }
+}
 .pu-fs > * { position: relative; z-index: 5; }
 .pu-fs .pu-cap { background: rgba(10,14,21,0.9); }
 </style>
@@ -164,15 +183,15 @@
         @click={onSceneClick}
         style={{ borderRadius: "12px", border: "1px solid #2a3242", maxWidth: "100%" }}
       />
-      <Box if={dlgActive && !cutActive} className="pu-dlgvig" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: "12px" }} />
-      <Box if={cutActive || scene === "meeting"} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "38px", background: "#000", opacity: 0.92, borderRadius: "12px 12px 0 0", pointerEvents: "none" }} />
-      <Box if={cutActive || scene === "meeting"} style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: "38px", background: "#000", opacity: 0.92, borderRadius: "0 0 12px 12px", pointerEvents: "none" }} />
-      <Box if={cutActive && cutTitle !== ""} style={{ position: "absolute", top: "52px", left: "28px", pointerEvents: "none" }}>
+      <Box if={dlgActive && !cutActive} className="pu-dlgvig pu-ovl" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: "12px" }} />
+      <Box if={cutActive || scene === "meeting"} className="pu-ovl pu-bar" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "38px", background: "#000", opacity: 0.92, borderRadius: "12px 12px 0 0", pointerEvents: "none" }} />
+      <Box if={cutActive || scene === "meeting"} className="pu-ovl pu-bar" style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: "38px", background: "#000", opacity: 0.92, borderRadius: "0 0 12px 12px", pointerEvents: "none" }} />
+      <Box if={cutActive && cutTitle !== ""} className="pu-ovl" style={{ position: "absolute", top: "66px", left: "28px", pointerEvents: "none" }}>
         <Text className="pu-tc" style={{ display: "block", fontSize: "19px", fontWeight: 800, color: "#f8fafc", letterSpacing: "0.2em", textShadow: "0 2px 12px rgba(0,0,0,0.9)" }}>{cutTitle}</Text>
         <Text style={{ display: "block", fontSize: "12px", color: "#cbd5e1", marginTop: "6px", fontStyle: "italic", textShadow: "0 2px 10px rgba(0,0,0,0.9)" }}>{cutSub}</Text>
       </Box>
       <Button if={cutActive} @click={skipCutscene} style={{ position: "absolute", top: "46px", right: "10px", fontSize: "11px", opacity: 0.75, padding: "4px 10px" }}>Skip ▸</Button>
-      <Box if={fadeOp > 0} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", background: "#000", opacity: fadeOp, pointerEvents: "none", borderRadius: "12px" }} />
+      <Box if={fadeOp > 0} className="pu-ovl" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", background: "#000", opacity: fadeOp, pointerEvents: "none", borderRadius: "12px" }} />
     </Box>
   </Box>
 
@@ -448,7 +467,7 @@
   </Box>
 
   <!-- Caption / note bar -->
-  <Box if={showCaptionBar()} className="pu-cap" @click={dlgSkip} style={{ borderLeftColor: dlgActive ? speakerColor(dlgSpeaker) : "#f59e0b" }}>
+  <Box if={showCaptionBar()} className={capClass()} @click={dlgSkip} style={{ borderLeftColor: dlgActive ? speakerColor(dlgSpeaker) : "#f59e0b" }}>
     <Box if={dlgActive}>
       <Stack direction="horizontal" gap={8} style={{ alignItems: "center" }}>
         <Box style={{ width: "8px", height: "8px", borderRadius: "999px", background: speakerColor(dlgSpeaker) }} />
@@ -457,6 +476,7 @@
         <Text style={{ fontSize: "10px", color: "#3f4a5c" }}>space · skip</Text>
       </Stack>
       <Text style={{ display: "block", fontSize: "15px", color: "#f1f5f9", marginTop: "7px", lineHeight: "1.45" }}>{dlgText}</Text>
+      <Text if={hudPrompt() !== ""} style={{ display: "block", fontSize: "11px", color: "#6b7688", marginTop: "7px" }}>{"→ " + hudPrompt()}</Text>
     </Box>
     <Box if={!dlgActive && noteText !== ""} className="pu-note">
       <Text style={{ fontSize: "14px", color: "#94a3b8", fontStyle: "italic" }}>{noteText}</Text>
@@ -467,7 +487,7 @@
   </Box>
 
   <!-- Choice panel -->
-  <Box if={choiceList.length > 0} className="pu-card pu-note" style={{ borderColor: "#38bdf8", padding: "16px 18px" }}>
+  <Box if={choiceList.length > 0} className={choiceClass()} style={{ borderColor: "#38bdf8", padding: "16px 18px" }}>
     <Stack direction="vertical" gap={9}>
       #each (c, ci in choiceList)
         <Button @click={pickChoice(c.id)} style={{ textAlign: "left", justifyContent: "flex-start", padding: "12px 16px", fontSize: "14px", lineHeight: "1.4" }}>{(ci + 1) + " · " + c.label}</Button>
@@ -476,7 +496,7 @@
   </Box>
 
   <!-- Controls -->
-  <Stack if={canMove() && !cutActive} className="pu-controls" direction="horizontal" gap={14} style={{ alignItems: "center" }}>
+  <Stack if={canMove()} className={padClass()} direction="horizontal" gap={14} style={{ alignItems: "center" }}>
     <DPad @press={padPress} @release={padRelease} />
     <Button @click={interactPressed} style={{ padding: "14px 20px", fontWeight: 700 }}>Use (E)</Button>
     <Text style={{ fontSize: "11px", color: "#4b5563" }}>WASD move · ◀▶ turn · drag to look</Text>
