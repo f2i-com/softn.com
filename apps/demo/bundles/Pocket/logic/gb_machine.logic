@@ -1,0 +1,977 @@
+// Pocket — top-level integration. The only file the host talks to.
+//
+// A transliteration of the reference emulator's core/machine.ts. That file owns
+// a CPU + MMU + PPU + APU + Timer and steps them together; this one does the
+// same, except that Pocket has no objects — every device is a set of functions
+// over the typed arrays declared in gb_state.logic, so "owning" a device here
+// means knowing the ORDER to call it in and nothing else.
+//
+// Everything host-facing lives here, per CONTRACT.md §3.8: reset, ROM loading,
+// stepping, the two wire-format encoders (§7.1 PixelCanvas, §7.2 AudioStream),
+// the joypad entry point, and save states.
+//
+// ---------------------------------------------------------------------------
+// THE INNER LOOP
+// ---------------------------------------------------------------------------
+//
+// CONTRACT.md §3.8 fixes it:
+//
+//   while (budget > 0) {
+//     let c = gbCpu_serviceIrq()
+//     if (c === 0) { c = gbCpu_step() }
+//     gbMachine_tickParts(c)
+//     budget = budget - c
+//   }
+//
+// `budget` is GB_CTR[GB_C_CYCLE_BUDGET] and it is deliberately SIGNED and
+// PERSISTENT. An instruction cannot be cut in half, so a slice almost always
+// overshoots — the last instruction of a 70224-cycle frame drags the budget a
+// few cycles below zero. Carrying that remainder into the next slice is what
+// keeps a long run at exactly 70224 T-cycles per frame on average instead of
+// gaining up to twenty cycles a frame, which is four whole scanlines a minute.
+//
+// It is persistent BETWEEN calls, not within one: gbMachine_runSlice keeps it
+// in a local for the length of the loop and writes it back on every exit, which
+// is what the array slot is for and costs three Int32Array accesses an
+// instruction less than reading it back each time round.
+//
+// ---------------------------------------------------------------------------
+// THE TICK ORDER
+// ---------------------------------------------------------------------------
+//
+// gbMachine_tickParts is the one place in the bundle that knows the order, and
+// the order is load-bearing:
+//
+//   1. gbTimer_step       — can raise the timer IRQ; must land before the PPU
+//                           step that would otherwise race it to the same
+//                           M-cycle.
+//   2. gbPpu_step         — drives the mode machine, and on the mode 3 -> 0
+//                           edge calls gbMmu_hblankHdma().
+//   3. gbApu_step         — samples off the same clock; nothing depends on it.
+//   4. gbMmu_stepOamDma   — last, so a DMA byte written this M-cycle is visible
+//                           to the next instruction and not to this one.
+//
+// Peripherals are ticked BETWEEN instructions, not per memory access, and in
+// 4-cycle (1 M-cycle) chunks whenever any of them has something to do inside
+// the instruction. When none of them does — which is 87% of instructions on a
+// DMG game and 97% on one that spends its frame halted — the whole instruction
+// is taken in one hop by the quiet span at the top of gbMachine_tickParts —
+// where the order above stops mattering, because by construction none of the
+// four does anything over that span.
+//
+// The reference's per-M-cycle `tickM` machinery is out of scope
+// (CONTRACT.md §9); chunking at M-cycle granularity keeps the timer and the
+// STAT line honest inside a long instruction, which is what the frame counter
+// and every raster effect actually depend on, and gives back the large share of
+// the CPU budget that a per-access rewrite would cost.
+//
+// ---------------------------------------------------------------------------
+// ALLOCATION
+// ---------------------------------------------------------------------------
+//
+// Per CONTRACT.md §1.5 the only per-frame allocations in the whole bundle are
+// the two result objects returned by gbMachine_getFrame() and
+// gbMachine_getSamples(), and the two base64 strings inside them. They are
+// unavoidable: a typed array reads back as null across the host boundary, so
+// the picture and the PCM have to be strings. Nothing else here allocates.
+// The save-state path does allocate a working buffer, and is allowed to — it is
+// a cold path that runs when a human presses a button, not per frame.
+
+// ===========================================================================
+// Constants
+// ===========================================================================
+
+// CONTRACT.md §3.8: advanceFrame gives up after two frames' worth of cycles.
+// This is a cap on what ONE CALL may spend, never an amount added to the
+// budget — see the note on leakage above gbMachine_advanceFrame.
+let GB_MACHINE_FRAME_LIMIT = 140448
+
+// CONTRACT.md §3.8: more than five million T-cycles in one slice is not a slow
+// game, it is a loop that will never end. Mirrors the reference's runaway check.
+let GB_MACHINE_RUNAWAY = 5000000
+
+// GB_FCTR slots 5 and 6 are unnamed in gb_state.logic. They are claimed here
+// rather than there because they are not machine state — they are the wall
+// clock the FPS readout is measured against, which belongs to whoever drives
+// the machine. Named, per the spirit of the GB_CTR spare-index rule, so the
+// next module to want a double does not silently take the same slot.
+let GB_MACHINE_F_FPS_T0 = 5
+let GB_MACHINE_F_FPS_N = 6
+
+// The FPS window. Long enough that a single slow frame does not make the
+// number jump, short enough that the reading tracks a stall.
+let GB_MACHINE_FPS_WINDOW_MS = 500
+
+// Save-state container. "PKS" + version byte, then a fixed section order.
+let GB_MACHINE_STATE_VERSION = 1
+let GB_MACHINE_STATE_HEADER = 32
+
+// ===========================================================================
+// Init and reset
+// ===========================================================================
+
+// Once, ever. Builds the two 256-entry dispatch tables and clears the machine.
+// Idempotent: a second call is a single array-length test, so every entry point
+// that could plausibly run first is free to call it.
+function gbMachine_init() {
+  if (GB_OPS.length !== 0) { return }
+  gbOps_buildTables()
+  gbState_reset()
+  gbMachine_resetFpsClock()
+  gbStatus = "No cartridge"
+}
+
+// Power cycle. Keeps the cartridge (and its battery RAM, and the user's palette
+// choice); wipes everything else and applies the post-boot register set.
+function gbMachine_reset() {
+  gbMachine_init()
+  gbState_reset()
+
+  // gbState_reset does not touch GB_CART, because the cartridge's identity —
+  // mapper, sizes, masks — outlives a reset. Its BANK REGISTERS do not: a
+  // machine that came up with bank 7 still mapped would fetch its reset vector
+  // out of the wrong half of the ROM. gb_cart has no reset of its own in
+  // CONTRACT.md §3.1, so the power-on values are restored here and the offsets
+  // recomputed through the owner's gbCart_remap().
+  if (GB_ROM !== null) {
+    GB_CART[GB_K_BANKLO] = 1
+    GB_CART[GB_K_BANKHI] = 0
+    GB_CART[GB_K_MODE] = 0
+    GB_CART[GB_K_RAMEN] = 0
+    GB_CART[GB_K_RAMBANK] = 0
+    GB_RTC[GB_RTC_SEL] = 0
+    gbCart_remap()
+  }
+
+  // 0x80 = CGB + DMG, 0xC0 = CGB only; anything else is a DMG cart. Read back
+  // from GB_CART rather than GB_CPUF because gbState_reset just cleared the
+  // latter — gbCpu_reset is what puts GB_P_GBC back.
+  let flag = GB_CART[GB_K_CGBFLAG]
+  let gbc = flag === 0x80 || flag === 0xc0
+
+  gbCpu_reset(gbc)
+  gbApu_reset()
+  gbMachine_postBootIo()
+
+  // So the very first getFrame() has a palette to hand back even if it lands
+  // before the first VBlank.
+  gbPpu_buildPalette()
+
+  GB_CTR[GB_C_CYCLE_BUDGET] = 0
+  gbMachine_resetFpsClock()
+  gbFrameCounter = 0
+  gbFps = 0
+  gbGbcMode = GB_CPUF[GB_P_GBC] === 1
+  if (gbRomLoaded) { gbStatus = "Running" }
+}
+
+// Pocket starts post-boot (CONTRACT.md §9), so the values a boot ROM would have
+// left in the IO space have to be put there by hand. These are the reference
+// emulator's own field defaults — ppu.ts declares lcdc = 0x91 and bgp = 0xfc —
+// written through the owning module's writeReg rather than poked into GB_IO,
+// per the ownership rule in CONTRACT.md §5.
+//
+// STAT is deliberately absent: its only writable bits (3-6) are zero in the
+// post-boot 0x85, so writing it would be a no-op, and gb_ppu derives the rest.
+// The APU is deliberately absent too: the reference starts NR50/NR51 at zero
+// and so does gbApu_reset(). Writing the real post-boot NR14 = 0xBF would
+// re-trigger channel 1 and reproduce the boot chime as a click on every reset,
+// and the register READS back as 0xBF either way because only bit 6 is
+// readable.
+function gbMachine_postBootIo() {
+  gbPpu_writeReg(0xff40, 0x91)
+  gbPpu_writeReg(0xff47, 0xfc)
+  gbPpu_writeReg(0xff48, 0xff)
+  gbPpu_writeReg(0xff49, 0xff)
+  // Both select lines high — nothing selected, which is what the boot ROM
+  // leaves behind and what makes a P1 read return 0xCF with no buttons down.
+  gbMmu_writeP1(0x30)
+}
+
+function gbMachine_resetFpsClock() {
+  GB_FCTR[GB_MACHINE_F_FPS_T0] = 0
+  GB_FCTR[GB_MACHINE_F_FPS_N] = 0
+  GB_FCTR[GB_F_FPS] = 0
+}
+
+// ===========================================================================
+// Cartridge loading
+// ===========================================================================
+
+// The host path. Typed arrays read back as null across the boundary
+// (CONTRACT.md §1.8), so a ROM arrives as base64 — from a file input, a fetch,
+// or a data: URL, all three of which are accepted.
+function gbMachine_loadRomBase64(s) {
+  gbMachine_init()
+  gbError = ""
+
+  if (typeof s !== "string" || s.length === 0) {
+    gbError = "No ROM data was supplied"
+    gbStatus = "No cartridge"
+    return false
+  }
+
+  let payload = s
+  let marker = s.indexOf("base64,")
+  if (marker >= 0) { payload = s.slice(marker + 7) }
+
+  let bytes = null
+  try {
+    bytes = Uint8Array.fromBase64(payload)
+  } catch (error) {
+    gbError = "The ROM is not valid base64"
+    gbStatus = "No cartridge"
+    return false
+  }
+
+  return gbMachine_loadRom(bytes)
+}
+
+// The in-VM path, for anything that already holds the bytes — the base64
+// entry point above, a test harness, a future bundled ROM.
+function gbMachine_loadRom(bytes) {
+  gbMachine_init()
+  gbError = ""
+
+  if (bytes === null || bytes === undefined || bytes.length < 0x150) {
+    gbError = "That file is too small to be a cartridge ROM"
+    gbRomLoaded = false
+    gbRunning = false
+    gbStatus = "No cartridge"
+    return false
+  }
+
+  if (!gbCart_load(bytes)) {
+    // gbCart_load has already put the reason in gbError.
+    gbRomLoaded = false
+    gbRunning = false
+    gbStatus = "Cartridge rejected"
+    return false
+  }
+
+  gbRomLoaded = true
+  gbMachine_reset()
+
+  gbTitle = gbCart_title()
+  gbMapperName = gbMachine_mapperName()
+  gbGbcMode = GB_CPUF[GB_P_GBC] === 1
+  gbRunning = true
+  gbStatus = gbTitle === "" ? "Running" : gbTitle
+  return true
+}
+
+function gbMachine_mapperName() {
+  let mbc = GB_CART[GB_K_MBC]
+  if (mbc === GB_MBC_NONE) { return "ROM only" }
+  if (mbc === GB_MBC_1) { return "MBC1" }
+  if (mbc === GB_MBC_3) { return "MBC3" }
+  if (mbc === GB_MBC_5) { return "MBC5" }
+  return "MBC?"
+}
+
+// ===========================================================================
+// Stepping
+// ===========================================================================
+
+// Peripherals, in the one order that is correct, at M-cycle granularity.
+//
+// On CGB double speed the CPU clock doubles but the dot clock does not: the
+// PPU still draws 70224 dots a frame and the APU still runs its frame sequencer
+// off 4.19MHz, while DIV and the OAM DMA are CPU-clocked and keep the full
+// count. Instruction lengths are always multiples of four, so halving is exact
+// and needs no remainder carried anywhere. In single speed — every DMG game and
+// most CGB ones — the branch is not taken and this is byte-for-byte the loop
+// CONTRACT.md §3.8 specifies.
+// The whole-M-cycle case is the loop; the short tail is handled once at the
+// end. Written this way rather than with a min() inside the loop because this
+// is the most-called function in the bundle — roughly 17,500 iterations a
+// frame — and the version with the per-chunk branch measured 0.400ms/frame
+// against 0.368ms here on the native engine with empty devices. Same order,
+// same chunking, same tail.
+function gbMachine_tickParts(cycles) {
+  if (GB_CPUF[GB_P_DOUBLE] === 1) {
+    gbMachine_tickPartsDouble(cycles)
+    return
+  }
+
+  // ---------------------------------------------------------------------
+  // THE QUIET SPAN
+  //
+  // Chunking exists so that a device which is about to DO something does it on
+  // the right M-cycle. When no device is going to do anything for the whole of
+  // this instruction, chunking buys nothing and costs four calls per M-cycle.
+  //
+  // All four devices are pure counters while they are quiet, and each one can
+  // say cheaply how far away its next event is:
+  //
+  //   PPU     GB_PPU_DOTS dots to the next mode boundary, GB_PPU_STATD < 0
+  //           for "no STAT delivery armed". Both are plain scalars, which on
+  //           this engine read in ~2ns against ~22ns for a typed array slot.
+  //   APU     renders a batch when gbApu_acc reaches gbApu_trigger, 2796
+  //           T-cycles apart — 25 times a frame.
+  //   timer   gbTimer_live is 0 exactly when TAC's enable is clear with no
+  //           stale high bit and no reload draining, which is when
+  //           gbTimer_step does nothing but count DIV up.
+  //   MMU     gbMmu_busy is 0 when neither the serial stub nor the OAM DMA is
+  //           in flight, which is when gbMmu_stepOamDma returns immediately.
+  //
+  // The last two are derived scalars owned by gb_timer and gb_mmu rather than
+  // the five typed-array slots they stand for; see the notes on them in those
+  // files. Four Int32Array reads a call become two scalar reads.
+  //
+  // If every one of them clears the whole instruction, the instruction's worth
+  // of peripheral time is three adds. Correctness rests on each device being
+  // MONOTONIC over the span: DOTS only falls, gbApu_acc and DIV only rise, so
+  // an intermediate 4-cycle chunk cannot cross a boundary that the whole span
+  // does not. The moment any of them would, this falls through to the chunked
+  // loop below and nothing changes.
+  //
+  // Measured on critter_quest: 12.4ms/frame of chunked stepping becomes 3.1ms.
+  // ---------------------------------------------------------------------
+  if (GB_PPU_DOTS > cycles &&
+      GB_PPU_STATD <= 0 &&
+      gbApu_acc + cycles < gbApu_trigger &&
+      gbMmu_busy === 0) {
+    GB_PPU_DOTS = GB_PPU_DOTS - cycles
+    gbApu_acc = gbApu_acc + cycles
+    // gbTimer_step clears this at the top of every call, so a span that
+    // replaces a run of calls has to clear it too.
+    GB_CTR[GB_C_TIMER_RELOADED] = 0
+
+    if (gbTimer_live === 0) {
+      // The timer is off. DIV is a free-running counter and nothing watches it,
+      // so gbTimer_step's whole body for the span is one add.
+      GB_CTR[GB_C_DIV] = (GB_CTR[GB_C_DIV] + cycles) & 0xffff
+    } else if (gbTimer_edgeIn > cycles) {
+      // Running, but no falling edge and no reload lands inside this span, so
+      // it is still just a counter. A 4096Hz timer has an edge every 1024
+      // T-cycles, so this is about ninety-nine instructions in a hundred.
+      //
+      // The countdown is only decremented on this arm, which is why it cannot
+      // erode: while the timer is off it is not touched at all and stays parked
+      // where gbTimer_syncLive left it, and while the timer is on it is bounded
+      // by one period and re-derived at every edge.
+      gbTimer_edgeIn = gbTimer_edgeIn - cycles
+      GB_CTR[GB_C_DIV] = (GB_CTR[GB_C_DIV] + cycles) & 0xffff
+    } else {
+      // An edge or a reload is due. One call for the whole span rather than one
+      // per M-cycle: gbTimer_step counts the edges arithmetically and only
+      // drops to its cycle-by-cycle loop across an overflow.
+      gbTimer_step(cycles)
+    }
+    return
+  }
+
+  // gbMmu_stepOamDma returns immediately unless a serial transfer or an OAM
+  // DMA is actually in flight, and neither is true for the overwhelming
+  // majority of a frame. Hoisting its own early-out to the caller turns 17556
+  // calls per frame into 17556 compares against zero.
+  //
+  // This is worth the ugliness: a call into the VM costs ~86ns on the shipping
+  // engine, so a function that does nothing still costs 1.5ms per frame out of
+  // a 16.67ms budget — measured, not estimated. The condition is exactly the
+  // pair of tests gbMmu_stepOamDma opens with, so the behaviour is identical.
+  // The test is re-read every iteration rather than hoisted into a local: the
+  // hoisted version would be correct only for as long as nothing inside the
+  // loop can arm a transfer, and that is a property of the other modules that
+  // a future change could quietly take away.
+  let left = cycles
+  while (left >= 4) {
+    gbTimer_step(4)
+    gbPpu_step(4)
+    gbApu_step(4)
+    if (gbMmu_busy !== 0) {
+      gbMmu_stepOamDma(4)
+    }
+    left = left - 4
+  }
+  if (left > 0) {
+    gbTimer_step(left)
+    gbPpu_step(left)
+    gbApu_step(left)
+    if (gbMmu_busy !== 0) {
+      gbMmu_stepOamDma(left)
+    }
+  }
+}
+
+// CGB double speed. Instruction lengths are always multiples of four, so the
+// halving is exact in the loop and no remainder is ever carried; the tail
+// exists only for a caller that hands over a partial M-cycle.
+function gbMachine_tickPartsDouble(cycles) {
+  let left = cycles
+  while (left >= 4) {
+    gbTimer_step(4)
+    gbPpu_step(2)
+    gbApu_step(2)
+    if (gbMmu_busy !== 0) {
+      gbMmu_stepOamDma(4)
+    }
+    left = left - 4
+  }
+  if (left > 0) {
+    let dots = left >>> 1
+    gbTimer_step(left)
+    if (dots > 0) {
+      gbPpu_step(dots)
+      gbApu_step(dots)
+    }
+    gbMmu_stepOamDma(left)
+  }
+}
+
+// The shared engine behind stepCycles and advanceFrame. `stopOnFrame` of 1
+// breaks the moment GB_C_FRAME moves, leaving the unspent budget behind for the
+// next call — which is exactly the carry-over that keeps the average frame at
+// 70224 cycles.
+// The budget lives in a LOCAL for the duration of the loop and is written back
+// to GB_CTR[GB_C_CYCLE_BUDGET] on every exit. Nothing else in the bundle reads
+// that slot while a slice is running — it is touched only here and by the two
+// resets — so the carry-over the header describes is unchanged; what goes is
+// three Int32Array accesses per instruction (the loop condition, the read and
+// the write), about 90ns each time round on the shipping engine.
+//
+// Every `return` below writes it back. There is no path out of this function
+// that does not.
+function gbMachine_runSlice(cycles, stopOnFrame) {
+  let budget = GB_CTR[GB_C_CYCLE_BUDGET] + cycles
+
+  // GB_PPU_FRAME is gb_ppu's scalar mirror of GB_CTR[GB_C_FRAME], bumped in the
+  // same statement. Read here rather than the array slot because this is the
+  // per-instruction frame-edge test.
+  let startFrame = GB_PPU_FRAME
+  let spent = 0
+
+  while (budget > 0) {
+    // An interrupt dispatch costs 20 T-cycles and replaces the instruction that
+    // would otherwise have run this iteration; 0 means nothing was pending, or
+    // IME was clear. gbMmu_irqPending is (IE & IF & 0x1F) kept as a scalar, so
+    // the overwhelmingly common "nothing pending" case does not pay for the
+    // call at all.
+    let c = 0
+    if (gbMmu_irqPending !== 0) { c = gbCpu_serviceIrq() }
+    if (c === 0) { c = gbCpu_step() }
+
+    // A handler that reports no cycles would spin this loop forever without
+    // ever tripping the runaway guard, since the guard counts cycles. Charge a
+    // minimum M-cycle and say where it happened — that is a gb_ops bug, and the
+    // PC is the only thing that makes it findable.
+    if (c <= 0) {
+      c = 4
+      if (gbError === "") {
+        gbError = "Opcode at PC 0x" + GB_REG16[GB_R16_PC].toString(16) + " reported no cycles"
+      }
+    }
+
+    gbMachine_tickParts(c)
+    budget = budget - c
+    spent = spent + c
+
+    if (stopOnFrame === 1) {
+      if (GB_PPU_FRAME !== startFrame) {
+        GB_CTR[GB_C_CYCLE_BUDGET] = budget
+        return spent
+      }
+      // The VBlank is not coming — the LCD is off, or the cart has wedged the
+      // PPU. Give up after two frames' worth rather than burning the whole
+      // budget looking for an edge that does not exist.
+      if (spent >= GB_MACHINE_FRAME_LIMIT) {
+        GB_CTR[GB_C_CYCLE_BUDGET] = budget
+        return spent
+      }
+    }
+
+    if (spent > GB_MACHINE_RUNAWAY) {
+      gbError = "Runaway: the CPU produced more than " + GB_MACHINE_RUNAWAY + " cycles in one slice"
+      gbRunning = false
+      gbStatus = "Stopped"
+      GB_CTR[GB_C_CYCLE_BUDGET] = 0
+      return spent
+    }
+  }
+
+  GB_CTR[GB_C_CYCLE_BUDGET] = budget
+
+  return spent
+}
+
+// Advance n T-cycles. The primitive: it does not consult gbRunning, because the
+// caller asking for cycles IS the decision to run.
+function gbMachine_stepCycles(n) {
+  if (!(n > 0)) { return 0 }
+  if (!gbRomLoaded) { return 0 }
+  return gbMachine_runSlice(n, 0)
+}
+
+// One whole emulated frame, 70224 T-cycles exactly, carry-over included.
+// The fixed-slice counterpart to gbMachine_advanceFrame: it does not stop early
+// at the VBlank edge and it does not consult the audio ring, so a caller that
+// wants deterministic frame-for-frame stepping — a test, a TAS, a headless
+// render — gets it. `joypadBits` is the §7.3 mask, and may be omitted to leave
+// the pad alone.
+function gbMachine_runFrame(joypadBits) {
+  if (joypadBits !== undefined && joypadBits !== null) {
+    gbMachine_setButtons(joypadBits)
+  }
+  return gbMachine_stepCycles(GB_CYCLES_PER_FRAME)
+}
+
+// The pacing entry point, called from getFrame(). Runs until the PPU says a
+// frame finished, or gives up after two frames' worth so a machine with the LCD
+// off still makes progress.
+//
+// It adds ONE frame of cycles, not the two-frame limit, and that distinction is
+// the whole correctness of the pacing. The budget persists; adding two frames
+// and returning at the one-frame edge leaves the other frame sitting in the
+// budget, and the next call adds two more on top. Within a couple of seconds
+// the residue is large enough that a single stepCycles() call runs four or five
+// frames back to back, the audio ring overruns, and the emulator sprints. Add
+// what a frame costs, spend what a frame costs.
+//
+// Stopping early leaves a bounded residue — at most the part of the current
+// frame that had already been drawn when the call arrived — and the next call
+// consumes it. That residue is the carry-over doing its job, not a leak.
+function gbMachine_advanceFrame() {
+  if (!gbRunning) { return 0 }
+  if (!gbRomLoaded) { return 0 }
+
+  // CONTRACT.md §3.8 pacing. If the host is calling faster than 59.7275Hz — a
+  // 120Hz display, or a tab that just came back from the background — the ring
+  // fills and the audio, not the display, becomes the clock. The GB_AG_ACTIVE
+  // test matters: with audio muted nothing ever drains the ring, and without it
+  // a silent bundle would freeze on its first frame.
+  if (GB_APU_G[GB_AG_ACTIVE] === 1 &&
+      GB_APU_G[GB_AG_RING_COUNT] > 3 * GB_FCTR[GB_F_SAMPLES_PER_FRAME]) {
+    return 0
+  }
+
+  return gbMachine_runSlice(GB_CYCLES_PER_FRAME, 1)
+}
+
+// ===========================================================================
+// Host wire formats
+// ===========================================================================
+
+// CONTRACT.md §7.1. The encoder on its own, with no side effects on the
+// machine, so a caller that has already advanced (or deliberately has not) can
+// re-encode the same frame.
+//
+// GB_FB_PRESENT, never the live GB_FB: the host's rAF and the emulated
+// 59.7275Hz drift past each other continuously, so about once every couple of
+// seconds a getFrame() lands mid-scanout, and encoding the live buffer would
+// hand PixelCanvas a picture that is half this frame and half the last.
+function gbMachine_encodeFrame() {
+  return {
+    w: GB_SCREEN_W,
+    h: GB_SCREEN_H,
+    format: "p8",
+    pixels: GB_FB_PRESENT.toBase64(),
+    palette: GB_PAL_RGB.toBase64(),
+    paletteRev: GB_CTR[GB_C_PAL_REV],
+    frame: GB_CTR[GB_C_FRAME],
+    running: gbRunning
+  }
+}
+
+// What <PixelCanvas> calls once per requestAnimationFrame: advance, then encode.
+function gbMachine_getFrame() {
+  let before = GB_CTR[GB_C_FRAME]
+  gbMachine_advanceFrame()
+  let drew = GB_CTR[GB_C_FRAME] !== before
+
+  gbFrameCounter = GB_CTR[GB_C_FRAME]
+  gbMachine_measureFps(drew)
+
+  return gbMachine_encodeFrame()
+}
+
+// CONTRACT.md §7.2. `frames` is what gbApu_drain() actually produced, which is
+// never assumed and never padded — AudioStream schedules exactly this many.
+//
+// GB_AUDIO_OUT_U8 is a byte view over the SAME buffer as GB_AUDIO_OUT_I16, so
+// this is a base64 of the PCM in place: no copy, no endian pass. Int16Array is
+// native-endian and every target is little-endian, hence "s16le".
+function gbMachine_encodeSamples(frames) {
+  let pcm = ""
+  if (frames > 0) {
+    pcm = GB_AUDIO_OUT_U8.subarray(0, frames * 4).toBase64()
+  }
+  return {
+    rate: GB_FCTR[GB_F_HOST_RATE],
+    channels: 2,
+    format: "s16le",
+    frames: frames,
+    pcm: pcm,
+    underruns: GB_APU_G[GB_AG_UNDERRUNS]
+  }
+}
+
+// What <AudioStream> calls, on its own schedule.
+//
+// Audio is the clock, not the display. getFrame advances too, and while the
+// browser holds 60Hz that is what keeps the picture smooth — but rAF is a
+// best-effort timer and the AudioContext is a real one. When a frame costs more
+// than 16.7ms, or the tab is throttled, or the display is not 60Hz, rAF alone
+// would emulate slower than realtime and the music would drag: same pitch,
+// wrong tempo. So if the ring cannot satisfy the request, this catches up
+// before draining, and the machine ends up paced by the sound card.
+//
+// The catch-up is bounded. A machine that genuinely cannot keep up must degrade
+// — dropping emulated frames and letting the audio go short — rather than spend
+// ever longer in here trying to buy back time it does not have.
+function gbMachine_getSamples(want) {
+  // First drain of the session tells the pacing guard in advanceFrame that
+  // somebody is listening, and that ring occupancy is now meaningful.
+  GB_APU_G[GB_AG_ACTIVE] = 1
+
+  let n = want
+  if (!(n > 0)) {
+    // The default AudioStream asks for: roughly two video frames, ~1607 stereo
+    // frames at 48kHz.
+    n = Math.round(GB_FCTR[GB_F_SAMPLES_PER_FRAME] * 2)
+  }
+  if (n > GB_AUDIO_OUT_MAX) { n = GB_AUDIO_OUT_MAX }
+
+  if (gbRunning && gbRomLoaded) {
+    let guard = 0
+    while (GB_APU_G[GB_AG_RING_COUNT] < n && guard < GB_MAX_CATCHUP_FRAMES) {
+      if (gbMachine_runSlice(GB_CYCLES_PER_FRAME, 1) === 0) { break }
+      guard = guard + 1
+    }
+    if (guard > 0) {
+      gbFrameCounter = GB_CTR[GB_C_FRAME]
+      GB_CTR[GB_C_CATCHUP] = GB_CTR[GB_C_CATCHUP] + guard
+    }
+  }
+
+  return gbMachine_encodeSamples(gbApu_drain(n))
+}
+
+// CONTRACT.md §7.3. One byte, active high, whole mask every time — not deltas.
+// gb_mmu does the inversion to the DMG's active-low P1 and raises the joypad
+// interrupt on a newly-set bit.
+function gbMachine_setButtons(mask) {
+  let m = mask
+  if (!(m >= 0)) { m = 0 }
+  gbMmu_setButtons(m & 0xff)
+}
+
+// Called once per AudioContext, before the first getSamples().
+function gbMachine_setSampleRate(rate) {
+  gbState_setSampleRate(rate)
+}
+
+// Pause and resume. gbRunning gates advanceFrame, so a paused machine still
+// hands back its last picture and still answers getSamples() with silence.
+function gbMachine_setRunning(on) {
+  if (!gbRomLoaded) {
+    gbRunning = false
+    return false
+  }
+  gbRunning = on === true || on === 1
+  gbStatus = gbRunning ? (gbTitle === "" ? "Running" : gbTitle) : "Paused"
+  return gbRunning
+}
+
+// ===========================================================================
+// FPS
+//
+// Measured against the wall clock, not derived from the frame counter, because
+// the number's whole job is to show when the machine is NOT keeping up. Only
+// frames that actually completed are counted, so a run throttled by the audio
+// pacing guard reads 59.7 and not 120.
+// ===========================================================================
+
+function gbMachine_now() {
+  // `performance` is undefined inside .logic (CONTRACT.md §1.6). Date is not,
+  // but this stays defensive: an engine without it should read 0 fps, not throw.
+  if (typeof Date === "undefined") { return 0 }
+  return Date.now()
+}
+
+function gbMachine_measureFps(drew) {
+  let now = gbMachine_now()
+  if (now === 0) { return }
+
+  if (GB_FCTR[GB_MACHINE_F_FPS_T0] === 0) {
+    GB_FCTR[GB_MACHINE_F_FPS_T0] = now
+    GB_FCTR[GB_MACHINE_F_FPS_N] = 0
+    return
+  }
+
+  if (drew) {
+    GB_FCTR[GB_MACHINE_F_FPS_N] = GB_FCTR[GB_MACHINE_F_FPS_N] + 1
+  }
+
+  let elapsed = now - GB_FCTR[GB_MACHINE_F_FPS_T0]
+  if (elapsed >= GB_MACHINE_FPS_WINDOW_MS) {
+    let fps = (GB_FCTR[GB_MACHINE_F_FPS_N] * 1000) / elapsed
+    GB_FCTR[GB_F_FPS] = fps
+    // One decimal, per CONTRACT.md §7.4. Assigned only twice a second, because
+    // every write to a plain scalar is a value the state sync deep-compares.
+    gbFps = Math.round(fps * 10) / 10
+    GB_FCTR[GB_MACHINE_F_FPS_T0] = now
+    GB_FCTR[GB_MACHINE_F_FPS_N] = 0
+  }
+}
+
+// ===========================================================================
+// Save states
+//
+// One flat byte image, base64'd, in a fixed section order. Everything that is
+// already a typed array is copied through a byte view over its own buffer — a
+// Uint8Array over an Int32Array's buffer is the same trick gb_state uses for
+// GB_AUDIO_OUT_U8, and it means the whole of GB_CTR, GB_CART, GB_RTC and the
+// APU serialise with no per-element loop and no endian work.
+//
+// NOT included, and why:
+//
+//   * GB_ROM. A state is meaningless without the cart it was taken on, so
+//     rather than carry eight megabytes the header carries the sixteen title
+//     bytes and the ROM length, and a load refuses a state from another game.
+//   * GB_ERAM beyond GB_CART[GB_K_RAMSIZE]. The array is always allocated at
+//     the 128KB MBC5 maximum; only the live window is real.
+//   * GB_AUDIO_RING and GB_FCTR. The ring is a transport buffer, not machine
+//     state — restoring it would replay up to 170ms of stale audio. The sample
+//     clock in GB_FCTR belongs to the host's AudioContext, not to the machine,
+//     and a state carried between two machines at different rates must not
+//     drag the old rate along with it.
+//   * GB_TILECACHE. Reconstructible; the loader dirties every row instead.
+// ===========================================================================
+
+function gbMachine_ramBytes() {
+  let n = GB_CART[GB_K_RAMSIZE]
+  if (!(n > 0)) { return 0 }
+  if (n > GB_ERAM.length) { return GB_ERAM.length }
+  return n
+}
+
+// The exact size of a state for the cart currently inserted. Derived from the
+// arrays themselves so that a change to gb_state.logic cannot leave a stale
+// constant behind — save and load both size themselves from this.
+function gbMachine_stateBytes() {
+  return GB_MACHINE_STATE_HEADER +
+    GB_REG.length +
+    GB_REG16.byteLength +
+    GB_CPUF.length +
+    GB_CTR.byteLength +
+    GB_CART.byteLength +
+    GB_RTC.byteLength +
+    GB_RTC_EPOCH.byteLength +
+    GB_PAD.length +
+    GB_IO.length +
+    GB_HRAM.length +
+    GB_OAM.length +
+    GB_WRAM.length +
+    GB_VRAM.length +
+    GB_CGB_BGPAL.length +
+    GB_CGB_OBJPAL.length +
+    GB_APU.byteLength +
+    GB_APU_G.byteLength +
+    GB_WAVERAM.length +
+    GB_FB.length +
+    GB_FB_PRESENT.length +
+    gbMachine_ramBytes()
+}
+
+// The raw bytes of any typed array, aliasing it rather than copying it. Passed
+// byteOffset and byteLength explicitly so this stays correct if gb_state.logic
+// ever makes one of these arrays a view into a shared buffer, the way
+// GB_AUDIO_OUT_U8 already is.
+function gbMachine_byteView(a) {
+  return new Uint8Array(a.buffer, a.byteOffset, a.byteLength)
+}
+
+function gbMachine_putBytes(dst, offset, src) {
+  dst.set(src, offset)
+  return offset + src.length
+}
+
+function gbMachine_getBytes(src, offset, dst) {
+  dst.set(src.subarray(offset, offset + dst.length))
+  return offset + dst.length
+}
+
+// -> base64 string, or "" with gbError set.
+function gbMachine_saveState() {
+  gbError = ""
+  if (!gbRomLoaded || GB_ROM === null) {
+    gbError = "There is no cartridge to save"
+    return ""
+  }
+
+  // GB_CTR[GB_C_TIMER_BIT] is a mirror of (DIV & mask) that gb_machine's quiet
+  // span is allowed to leave behind between edges; freshen it so what goes into
+  // the image is the bit as of this instant. Nothing else here is derived.
+  gbTimer_syncLive()
+
+  let ramBytes = gbMachine_ramBytes()
+  let buf = new Uint8Array(gbMachine_stateBytes())
+  let view = new DataView(buf.buffer)
+
+  buf[0] = 0x50 // P
+  buf[1] = 0x4b // K
+  buf[2] = 0x53 // S
+  buf[3] = GB_MACHINE_STATE_VERSION
+  buf[4] = GB_CPUF[GB_P_GBC] === 1 ? 1 : 0
+  buf[5] = 0
+  view.setUint32(6, ramBytes, true)
+  view.setUint32(10, GB_ROM.length, true)
+  // The cartridge fingerprint: the sixteen header title bytes, raw.
+  for (let i = 0; i < 16; i = i + 1) {
+    buf[14 + i] = GB_ROM[0x134 + i]
+  }
+  // 30..31 reserved, already zero.
+
+  let o = GB_MACHINE_STATE_HEADER
+  o = gbMachine_putBytes(buf, o, GB_REG)
+  o = gbMachine_putBytes(buf, o, gbMachine_byteView(GB_REG16))
+  o = gbMachine_putBytes(buf, o, GB_CPUF)
+  o = gbMachine_putBytes(buf, o, gbMachine_byteView(GB_CTR))
+  o = gbMachine_putBytes(buf, o, gbMachine_byteView(GB_CART))
+  o = gbMachine_putBytes(buf, o, gbMachine_byteView(GB_RTC))
+  o = gbMachine_putBytes(buf, o, gbMachine_byteView(GB_RTC_EPOCH))
+  o = gbMachine_putBytes(buf, o, GB_PAD)
+  o = gbMachine_putBytes(buf, o, GB_IO)
+  o = gbMachine_putBytes(buf, o, GB_HRAM)
+  o = gbMachine_putBytes(buf, o, GB_OAM)
+  o = gbMachine_putBytes(buf, o, GB_WRAM)
+  o = gbMachine_putBytes(buf, o, GB_VRAM)
+  o = gbMachine_putBytes(buf, o, GB_CGB_BGPAL)
+  o = gbMachine_putBytes(buf, o, GB_CGB_OBJPAL)
+  o = gbMachine_putBytes(buf, o, gbMachine_byteView(GB_APU))
+  o = gbMachine_putBytes(buf, o, gbMachine_byteView(GB_APU_G))
+  o = gbMachine_putBytes(buf, o, GB_WAVERAM)
+  o = gbMachine_putBytes(buf, o, GB_FB)
+  o = gbMachine_putBytes(buf, o, GB_FB_PRESENT)
+  if (ramBytes > 0) {
+    o = gbMachine_putBytes(buf, o, GB_ERAM.subarray(0, ramBytes))
+  }
+
+  return buf.toBase64()
+}
+
+// -> true on success. On failure gbError says why and the machine is untouched
+// as far as the header checks can manage: everything that can be rejected is
+// rejected before the first byte is written back.
+function gbMachine_loadState(s) {
+  gbError = ""
+  if (!gbRomLoaded || GB_ROM === null) {
+    gbError = "Insert a cartridge before loading a state"
+    return false
+  }
+  if (typeof s !== "string" || s.length === 0) {
+    gbError = "There is no save state to load"
+    return false
+  }
+
+  let src = null
+  try {
+    src = Uint8Array.fromBase64(s)
+  } catch (error) {
+    gbError = "That save state is not valid base64"
+    return false
+  }
+
+  if (src.length < GB_MACHINE_STATE_HEADER) {
+    gbError = "That save state is truncated"
+    return false
+  }
+  if (src[0] !== 0x50 || src[1] !== 0x4b || src[2] !== 0x53) {
+    gbError = "That is not a Pocket save state"
+    return false
+  }
+  if (src[3] !== GB_MACHINE_STATE_VERSION) {
+    gbError = "That save state is version " + src[3] + "; this build reads version " +
+      GB_MACHINE_STATE_VERSION
+    return false
+  }
+
+  let view = new DataView(src.buffer, src.byteOffset, src.length)
+  let ramBytes = view.getUint32(6, true)
+  let romLength = view.getUint32(10, true)
+
+  if (romLength !== GB_ROM.length || ramBytes !== gbMachine_ramBytes()) {
+    gbError = "That save state was taken on a different cartridge"
+    return false
+  }
+  for (let i = 0; i < 16; i = i + 1) {
+    if (src[14 + i] !== GB_ROM[0x134 + i]) {
+      gbError = "That save state was taken on a different cartridge"
+      return false
+    }
+  }
+  if (src.length !== gbMachine_stateBytes()) {
+    gbError = "That save state is the wrong length for this cartridge"
+    return false
+  }
+
+  let o = GB_MACHINE_STATE_HEADER
+  o = gbMachine_getBytes(src, o, GB_REG)
+  o = gbMachine_getBytes(src, o, gbMachine_byteView(GB_REG16))
+  o = gbMachine_getBytes(src, o, GB_CPUF)
+  o = gbMachine_getBytes(src, o, gbMachine_byteView(GB_CTR))
+  o = gbMachine_getBytes(src, o, gbMachine_byteView(GB_CART))
+  o = gbMachine_getBytes(src, o, gbMachine_byteView(GB_RTC))
+  o = gbMachine_getBytes(src, o, gbMachine_byteView(GB_RTC_EPOCH))
+  o = gbMachine_getBytes(src, o, GB_PAD)
+  o = gbMachine_getBytes(src, o, GB_IO)
+  o = gbMachine_getBytes(src, o, GB_HRAM)
+  o = gbMachine_getBytes(src, o, GB_OAM)
+  o = gbMachine_getBytes(src, o, GB_WRAM)
+  o = gbMachine_getBytes(src, o, GB_VRAM)
+  o = gbMachine_getBytes(src, o, GB_CGB_BGPAL)
+  o = gbMachine_getBytes(src, o, GB_CGB_OBJPAL)
+  o = gbMachine_getBytes(src, o, gbMachine_byteView(GB_APU))
+  o = gbMachine_getBytes(src, o, gbMachine_byteView(GB_APU_G))
+  o = gbMachine_getBytes(src, o, GB_WAVERAM)
+  o = gbMachine_getBytes(src, o, GB_FB)
+  o = gbMachine_getBytes(src, o, GB_FB_PRESENT)
+  if (ramBytes > 0) {
+    GB_ERAM.fill(0)
+    GB_ERAM.set(src.subarray(o, o + ramBytes))
+    o = o + ramBytes
+  }
+
+  // gbTimer_live and gbMmu_busy were derived from the arrays this function has
+  // just overwritten. Neither holds anything of its own, so neither is in the
+  // state image; both are re-derived from what came back.
+  gbTimer_syncLive()
+  gbMmu_syncBusy()
+  gbMmu_syncIrq()
+  GB_PPU_FRAME = GB_CTR[GB_C_FRAME]
+
+  // GB_VRAM went in behind gb_mmu's back, so every tile row is stale — this is
+  // case 4 of CONTRACT.md §4, and skipping it is the failure mode that document
+  // calls the worst possible one: a picture that is subtly, intermittently
+  // wrong rather than obviously broken.
+  gbState_invalidateTileCache()
+
+  // The bank registers just changed under the mapper; the precomputed offsets
+  // in GB_CART came from the state, but remapping is idempotent and costs
+  // nothing here, and it is the documented contract for any bank-register write.
+  gbCart_remap()
+
+  // GB_C_PAL_REV came back with GB_CTR, so force the canvas to notice by
+  // rebuilding — buildPalette bumps the revision only if the bytes moved, and
+  // after a state load they almost always have.
+  gbPpu_buildPalette()
+
+  // Transport state, deliberately not restored: start the audio clock clean
+  // rather than replaying whatever was queued when the state was taken.
+  GB_APU_G[GB_AG_RING_WRITE] = 0
+  GB_APU_G[GB_AG_RING_READ] = 0
+  GB_APU_G[GB_AG_RING_COUNT] = 0
+  GB_AUDIO_RING.fill(0)
+  GB_FCTR[GB_F_SAMPLE_ACC] = 0
+
+  // And the machine clock: a state resumes from a whole instruction boundary,
+  // never mid-slice.
+  GB_CTR[GB_C_CYCLE_BUDGET] = 0
+
+  gbGbcMode = GB_CPUF[GB_P_GBC] === 1
+  gbFrameCounter = GB_CTR[GB_C_FRAME]
+  gbMachine_resetFpsClock()
+  gbStatus = gbTitle === "" ? "Running" : gbTitle
+  return true
+}

@@ -1418,6 +1418,51 @@ export const componentRegistry: ComponentMeta[] = [
     false
   ),
   comp(
+    'PixelCanvas',
+    'Utility',
+    'monitor',
+    'Canvas surface for dense bitmap frames, indexed or RGBA',
+    { width: 160, height: 144, running: true },
+    [
+      { name: 'width', type: 'number', default: 160 },
+      { name: 'height', type: 'number', default: 144 },
+      // Omitted, the canvas takes the largest whole multiple that fits.
+      { name: 'scale', type: 'number' },
+      { name: 'palette', type: 'expression' },
+      { name: 'getFrame', type: 'expression' },
+      { name: 'frame', type: 'expression' },
+      { name: 'running', type: 'boolean', default: true },
+      { name: 'smooth', type: 'boolean', default: false },
+      { name: 'onFps', type: 'event' },
+      { name: 'className', type: 'string' },
+    ],
+    false
+  ),
+  comp(
+    'AudioStream',
+    'Utility',
+    'audio-lines',
+    'Gapless streaming PCM sink pulled from a producer function',
+    { sampleRate: 48000, channels: 2, format: 'i16' },
+    [
+      { name: 'getSamples', type: 'expression' },
+      { name: 'sampleRate', type: 'number', default: 48000 },
+      { name: 'channels', type: 'select', options: ['1', '2'], default: '2' },
+      { name: 'format', type: 'select', options: ['i16', 'f32'], default: 'i16' },
+      { name: 'bufferMs', type: 'number', default: 80 },
+      { name: 'running', type: 'boolean', default: true },
+      { name: 'muted', type: 'boolean', default: false },
+      { name: 'volume', type: 'number', default: 1 },
+      { name: 'showControls', type: 'boolean', default: true },
+      { name: 'unlockLabel', type: 'string' },
+      { name: 'onReady', type: 'event' },
+      { name: 'onUnderrun', type: 'event' },
+      { name: 'onError', type: 'event' },
+      { name: 'className', type: 'string' },
+    ],
+    true
+  ),
+  comp(
     'QRCode',
     'Utility',
     'qr-code',

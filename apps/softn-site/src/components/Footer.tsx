@@ -12,8 +12,8 @@ export function Footer(): React.ReactElement {
               softn
             </a>
             <p className="foot-blurb">
-              A UI language, a component library, a sandboxed JavaScript engine and a local-first database — built to be
-              written by hand or generated, and to run anywhere a browser does.
+              A UI language, a component library, a sandboxed JavaScript engine and a local-first database. Write it
+              yourself or have a model write it — either way it runs anywhere a browser does.
             </p>
           </div>
 
@@ -48,7 +48,6 @@ export function Footer(): React.ReactElement {
 
         <div className="foot-rule">
           <span>Apache License 2.0</span>
-          <span>Bundles are ZIP archives. Nothing here phones home.</span>
         </div>
       </div>
     </footer>

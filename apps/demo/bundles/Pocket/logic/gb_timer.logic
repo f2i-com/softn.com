@@ -1,0 +1,424 @@
+// Pocket — the timer block. FF04 DIV, FF05 TIMA, FF06 TMA, FF07 TAC.
+//
+// A transliteration of the reference emulator/core/timer.ts. Behaviour is
+// identical; only the storage moved, from class fields into the arrays
+// gb_state.logic declares:
+//
+//   this.divCounter            -> GB_CTR[GB_C_DIV]        16-bit, free-running
+//   this.tima                  -> GB_IO[0x05]             canonical
+//   this.tma                   -> GB_IO[0x06]             canonical
+//   this.tac                   -> GB_IO[0x07]             canonical, low 3 bits
+//   this.timerBitWasHigh       -> GB_CTR[GB_C_TIMER_BIT]      0 or 1, and
+//                                 DERIVED from DIV rather than remembered;
+//                                 see the note above gbTimer_syncLive
+//   this.overflowPendingCycles -> GB_CTR[GB_C_TIMA_PENDING]   T-cycles left
+//   this.reloadJustHappened    -> GB_CTR[GB_C_TIMER_RELOADED] 0 or 1
+//
+// GB_IO[0x04] is unused: DIV is always derived from the top byte of
+// GB_CTR[GB_C_DIV], never stored. gbCpu_reset seeds that counter with 0xABCC on
+// DMG or 0x2680 on CGB, which is why the post-boot DIV reads as it does.
+//
+// ---------------------------------------------------------------------------
+// WHY THIS IS AN EDGE DETECTOR AND NOT A DIVIDE-BY-N
+// ---------------------------------------------------------------------------
+//
+// TIMA is not clocked by a periodic counter. It is clocked by the FALLING EDGE
+// of (DIV_bit AND TAC.enable), where DIV_bit is [9, 3, 5, 7][TAC & 3] of the
+// internal 16-bit counter:
+//
+//   TAC&3 = 00   bit 9   every 1024 T-cycles     4096 Hz
+//   TAC&3 = 01   bit 3   every   16 T-cycles   262144 Hz
+//   TAC&3 = 10   bit 5   every   64 T-cycles    65536 Hz
+//   TAC&3 = 11   bit 7   every  256 T-cycles    16384 Hz
+//
+// Written as a divide-by-N it looks the same until something moves the input
+// out from under it. Because it is an edge detector, three things fall out for
+// free, and all three are load-bearing:
+//
+//   * Writing DIV while the selected bit is high drops that bit to zero, which
+//     is a falling edge, which increments TIMA. That is the DMG quirk Pokemon's
+//     RNG rests on — a game that writes FF04 in a tight loop gets a TIMA that
+//     advances with it.
+//   * Writing TAC to select a different bit, or to clear the enable, can
+//     likewise present a falling edge and tick TIMA once.
+//   * The phase of the increment is the phase of the DIV counter, not of the
+//     last write, so resetting DIV mid-period lengthens or shortens the period
+//     exactly as hardware does.
+//
+// So every path that can change DIV or TAC re-evaluates the bit and applies the
+// edge: gbTimer_step, gbTimer_writeDiv and gbTimer_writeTac.
+//
+// gbTimer_step does NOT walk every T-cycle to find those edges. The bit is high
+// for the top half of its period and low for the bottom half, so its falling
+// edges are the multiples of that period the counter crosses, and the count of
+// them over a span is two shifts and a subtract. The cycle-by-cycle loop is
+// still there and is still what runs across a TIMA overflow, where the reload
+// window has to open on the exact cycle.
+//
+// ---------------------------------------------------------------------------
+// THE OVERFLOW WINDOW
+// ---------------------------------------------------------------------------
+//
+// TIMA does not reload the instant it wraps FF -> 00. For four T-cycles it
+// reads 00, no interrupt has fired, and TMA has not been copied in. At the end
+// of that window TIMA takes TMA, the timer IRQ is raised, and a one-M-cycle
+// "just reloaded" window opens. Inside those two windows writes behave oddly,
+// and that is what the Mooneye tima_write_reloading / tma_write_reloading tests
+// measure:
+//
+//   write TIMA during the 4-cycle window   cancels the reload and the IRQ,
+//                                          and the written value sticks
+//   write TIMA on the reload M-cycle       dropped; TIMA keeps the TMA value
+//   write TMA  on the reload M-cycle       adopted; TIMA takes the new TMA
+//
+// GB_C_TIMER_RELOADED is cleared at the top of gbTimer_step, and by the quiet
+// span in gbMachine_tickParts on the instructions where it stands in for a run
+// of gbTimer_step calls. Either way it is visible to exactly the writes that
+// happen between one tick and the next. Pocket does not do per-M-cycle memory access timing (CONTRACT §3.3),
+// so a write landing inside a long instruction is attributed to the instruction
+// boundary; that is the documented accuracy loss and it does not change any of
+// the windows above.
+//
+// TIMA reads need no special case anywhere: during the 4-cycle window the byte
+// in GB_IO[0x05] genuinely is 0x00, because that is what it wrapped to.
+
+// The DIV bit each TAC mode watches, as a pre-shifted mask: bits 9, 3, 5, 7.
+// A typed array marshals to an opaque slot and is skipped by the state sync, so
+// this costs nothing per host call, and the mask saves a shift per T-cycle.
+let gbTimer_DIVMASK = Uint16Array.from([0x0200, 0x0008, 0x0020, 0x0080])
+
+// log2 of the FULL period of each of those bits — one high half plus one low
+// half, so twice the mask: 1024, 16, 64, 256 T-cycles. Used by the counted
+// path in gbTimer_step to turn "how many falling edges are in this span" into
+// two shifts and a subtract. A shift rather than a divide because every period
+// is a power of two and this is the only arithmetic on the path.
+let gbTimer_DIVSHIFT = Uint8Array.from([10, 4, 6, 8])
+
+// ---------------------------------------------------------------------------
+// THE LIVE FLAG
+//
+// 1 when gbTimer_step has anything at all to do beyond counting DIV up: TAC's
+// enable bit is set, or a stale high bit is still waiting to fall, or a reload
+// is draining. It is a pure function of
+//
+//     (GB_IO[0x07] & 0x04), GB_CTR[GB_C_TIMER_BIT], GB_CTR[GB_C_TIMA_PENDING]
+//
+// and holds no information of its own, so it is not in a save state and is
+// recomputed on load.
+//
+// It exists because it is READ once per instruction by gb_machine's quiet-span
+// test and once per call here, and a plain scalar reads in ~2ns on the shipping
+// engine against ~22ns for an Int32Array element — three reads become one, and
+// the arithmetic that derived them disappears.
+//
+// gb_timer is the only module that writes it. Every path that can move any of
+// the three inputs ends in gbTimer_syncLive(): writeDiv, writeTac and writeTima
+// here, plus the slow half of gbTimer_step. gbTimer_writeTma is deliberately
+// not in that list — it can move TIMA, but none of the three inputs.
+// gbState_reset and gbMachine_loadState write the arrays behind this file's
+// back and call gbTimer_syncLive() for that reason.
+// ---------------------------------------------------------------------------
+let gbTimer_live = 0
+
+// T-cycles from where DIV stands now to the next moment gbTimer_step could do
+// anything: the next falling edge of the selected bit, or the end of a reload
+// window. 0x40000000 when the timer is off, which is the same "parked far
+// enough out that it never fires" trick gbPpu_lcdOff uses on GB_PPU_DOTS.
+//
+// This is what gbMachine_tickParts's quiet span actually tests. A running
+// timer at 4096Hz has a falling edge once every 1024 T-cycles — about once in
+// a hundred instructions — so testing "is an edge due" rather than "is the
+// timer on" keeps the span open for the other ninety-nine, and DIV goes up by
+// a plain add exactly as it does with the timer switched off.
+//
+// It is only ever allowed to be too SMALL. A value below the truth costs a
+// call to gbTimer_step, which is always correct; a value above it would skip
+// an edge. Every branch below that cannot prove a distance sets it to 0.
+let gbTimer_edgeIn = 0x40000000
+
+// ---------------------------------------------------------------------------
+// WHY GB_C_TIMER_BIT IS NOW DERIVED AND NOT REMEMBERED
+//
+// The reference keeps timerBitWasHigh as a memory: the previous value of the
+// bit, compared against the new one every T-cycle. That only works if EVERY
+// T-cycle passes through this file, and the quiet span in gb_machine
+// deliberately does not — it advances DIV by a whole instruction without
+// calling in here at all, so a rising edge inside the span would leave the
+// remembered value behind and the next falling edge would be missed.
+//
+// While the enable is set, though, the bit is not independent information: it
+// is (DIV & mask) and nothing else. So the slot is written from DIV at every
+// point that looks at it, and the two places that genuinely need the PREVIOUS
+// value — a DIV write and a TAC write, where the register moves out from under
+// the detector — take it before the write instead of out of storage. The slot
+// stays in GB_CTR because it is in the save state and because it still carries
+// one thing DIV cannot: a bit left high after the enable was cleared, which is
+// the only case the derivation below leaves alone.
+// ---------------------------------------------------------------------------
+function gbTimer_syncLive() {
+  let tac = GB_IO[0x07]
+  let pending = GB_CTR[GB_C_TIMA_PENDING]
+  let div = GB_CTR[GB_C_DIV]
+
+  let mask = 0
+  if ((tac & 0x04) !== 0) { mask = gbTimer_DIVMASK[tac & 0x03] }
+
+  // With the enable set the stored bit is redundant with DIV, so refresh it.
+  // With the enable clear it is the one thing DIV does not know, so leave it.
+  if (mask !== 0) {
+    if ((div & mask) !== 0) {
+      GB_CTR[GB_C_TIMER_BIT] = 1
+    } else {
+      GB_CTR[GB_C_TIMER_BIT] = 0
+    }
+  }
+
+  if (mask === 0 && GB_CTR[GB_C_TIMER_BIT] === 0 && pending === 0) {
+    gbTimer_live = 0
+    gbTimer_edgeIn = 0x40000000
+    return
+  }
+
+  gbTimer_live = 1
+
+  // A reload is draining, or the enable is clear with a stale high bit still to
+  // fall. Neither has a distance that can be computed here, so hand the next
+  // step to the loop.
+  if (pending !== 0 || mask === 0) {
+    gbTimer_edgeIn = 0
+    return
+  }
+
+  // The bit falls when the counter reaches the next multiple of its full
+  // period, and the period is a power of two, so the distance is one mask.
+  let period = mask << 1
+  gbTimer_edgeIn = period - (div & (period - 1))
+}
+
+// ---------------------------------------------------------------------------
+// Register access
+// ---------------------------------------------------------------------------
+
+// DIV is the upper byte of the internal counter.
+function gbTimer_readDiv() {
+  return (GB_CTR[GB_C_DIV] >> 8) & 0xff
+}
+
+function gbTimer_readTima() {
+  return GB_IO[0x05]
+}
+
+function gbTimer_readTma() {
+  return GB_IO[0x06]
+}
+
+// Only three bits exist; the rest read back high.
+function gbTimer_readTac() {
+  return GB_IO[0x07] | 0xf8
+}
+
+// Any write to FF04, whatever the value, clears the whole 16-bit counter. If
+// the selected bit was high, that is a falling edge and TIMA ticks.
+// The "before" bit is taken from the registers as they stand rather than from
+// GB_CTR[GB_C_TIMER_BIT], because the quiet span may have moved DIV under it
+// since this file last looked; see the note above gbTimer_syncLive. With the
+// registers unchanged the two are the same value, so this is the same edge the
+// reference detects.
+function gbTimer_writeDiv() {
+  let before = gbTimer_currentBit()
+  GB_CTR[GB_C_DIV] = 0
+  let after = gbTimer_currentBit()
+  if (before !== 0 && after === 0) { gbTimer_incTima() }
+  // Stored explicitly, because gbTimer_syncLive leaves the slot alone when the
+  // enable is clear and this write may be what cleared it.
+  GB_CTR[GB_C_TIMER_BIT] = after
+  gbTimer_syncLive()
+}
+
+// Changing the selected bit, or clearing the enable while the bit is high,
+// presents a falling edge to the same detector. `before` is read with the OLD
+// TAC still in place, which is the whole point of the quirk.
+function gbTimer_writeTac(v) {
+  let before = gbTimer_currentBit()
+  GB_IO[0x07] = v & 0x07
+  let after = gbTimer_currentBit()
+  if (before !== 0 && after === 0) { gbTimer_incTima() }
+  // Stored explicitly, because gbTimer_syncLive leaves the slot alone when the
+  // enable is clear and this write may be what cleared it.
+  GB_CTR[GB_C_TIMER_BIT] = after
+  gbTimer_syncLive()
+}
+
+// TIMA writes are special-cased inside the two overflow windows; see the header.
+function gbTimer_writeTima(v) {
+  if (GB_CTR[GB_C_TIMA_PENDING] > 0) {
+    // Inside the 4-cycle window: the pending reload and its IRQ are cancelled
+    // outright and the written value is what TIMA keeps.
+    GB_CTR[GB_C_TIMA_PENDING] = 0
+    GB_IO[0x05] = v & 0xff
+    gbTimer_syncLive()
+    return
+  }
+  if (GB_CTR[GB_C_TIMER_RELOADED] !== 0) {
+    // On the M-cycle after the reload the write is swallowed; TIMA stays at TMA.
+    return
+  }
+  GB_IO[0x05] = v & 0xff
+}
+
+// TMA written on the reload M-cycle is picked up by TIMA as well as by TMA.
+function gbTimer_writeTma(v) {
+  GB_IO[0x06] = v & 0xff
+  if (GB_CTR[GB_C_TIMER_RELOADED] !== 0) {
+    GB_IO[0x05] = v & 0xff
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The edge detector
+// ---------------------------------------------------------------------------
+
+// (DIV_bit AND TAC.enable), as 0 or 1.
+function gbTimer_currentBit() {
+  if ((GB_IO[0x07] & 0x04) === 0) { return 0 }
+  if ((GB_CTR[GB_C_DIV] & gbTimer_DIVMASK[GB_IO[0x07] & 0x03]) !== 0) { return 1 }
+  return 0
+}
+
+// One TIMA increment. Wrapping to zero opens the 4-cycle overflow window; the
+// reload and the IRQ happen at the end of it, in gbTimer_step.
+function gbTimer_incTima() {
+  let t = (GB_IO[0x05] + 1) & 0xff
+  GB_IO[0x05] = t
+  if (t === 0) {
+    GB_CTR[GB_C_TIMA_PENDING] = 4
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The tick
+// ---------------------------------------------------------------------------
+
+// Advance by `cycles` T-cycles. gbMachine_tickParts calls this first of the
+// four peripherals and in 4-cycle chunks, so the loop below normally runs four
+// times — cheap enough to keep per-cycle, and per-cycle is the only way to see
+// every falling edge of DIV bit 3 (one edge per 16 T-cycles) and to drain the
+// overflow window on the right cycle.
+//
+// TAC cannot change during a step — nothing inside this function writes it, and
+// the CPU writes it between steps — so the enable test and the bit selection
+// are hoisted out of the loop. Inside the loop the only input is DIV.
+function gbTimer_step(cycles) {
+  // The reload window lasts until the next tick and no longer. Clearing it here
+  // rather than at the end of the previous step is what makes it visible to the
+  // writes that happen in between.
+  GB_CTR[GB_C_TIMER_RELOADED] = 0
+
+  // Timer off, no stale high bit to fall, nothing draining: the loop would do
+  // nothing but count DIV up, so count it up in one go. Most of a frame in a
+  // game that never enables the timer takes this path. gbTimer_live is exactly
+  // the disjunction the three tests used to spell out, cached in a scalar.
+  if (gbTimer_live === 0) {
+    GB_CTR[GB_C_DIV] = (GB_CTR[GB_C_DIV] + cycles) & 0xffff
+    return
+  }
+
+  let tac = GB_IO[0x07]
+  let mask = 0
+  if ((tac & 0x04) !== 0) { mask = gbTimer_DIVMASK[tac & 0x03] }
+
+  let div = GB_CTR[GB_C_DIV]
+  let pending = GB_CTR[GB_C_TIMA_PENDING]
+
+  // Derived from DIV while the enable is set, because the quiet span in
+  // gb_machine advances DIV without coming through here and the stored slot is
+  // therefore only a mirror; see the note above gbTimer_syncLive. With the
+  // enable clear the slot is the only record of a bit left high, so it stands.
+  let was = GB_CTR[GB_C_TIMER_BIT]
+  if (mask !== 0) {
+    was = 0
+    if ((div & mask) !== 0) { was = 1 }
+  }
+
+  // -------------------------------------------------------------------------
+  // THE COUNTED PATH
+  //
+  // With the enable on and nothing draining, the loop below is a very
+  // expensive way to count something arithmetic. The selected bit is high for
+  // the top half of a
+  // period and low for the bottom half, so it FALLS exactly when the counter
+  // crosses a multiple of that period, and the number of crossings in
+  // (div, div+cycles] is the difference of the two counters shifted down by
+  // log2(period). TIMA advances by that many, and the bit ends up wherever the
+  // new counter puts it.
+  //
+  // The wrap at 0x10000 does not disturb the count: every period (16, 64, 256,
+  // 1024) divides 65536, so a multiple of the period is crossed at the wrap
+  // itself and the unwrapped difference is the wrapped one.
+  //
+  // Only an overflow needs the cycle-by-cycle version, because the four-cycle
+  // reload window has to open on the right cycle — and that is one call in
+  // every 256 edges. gbTimer_live is not re-derived here: mask is non-zero, so
+  // TAC's enable bit is set, so live is 1 either way.
+  //
+  // This is what lets gbMachine_tickParts take its quiet span on a machine
+  // whose timer is RUNNING. Without it, every game that enables the timer —
+  // which is most of them once a link cable or a music driver is involved —
+  // falls back to 4-cycle chunking for the whole frame.
+  // -------------------------------------------------------------------------
+  if (pending === 0 && mask !== 0) {
+    let shift = gbTimer_DIVSHIFT[tac & 0x03]
+    let next = div + cycles
+    let tima = GB_IO[0x05] + ((next >>> shift) - (div >>> shift))
+    if (tima < 256) {
+      GB_IO[0x05] = tima
+      next = next & 0xffff
+      GB_CTR[GB_C_DIV] = next
+      if ((next & mask) !== 0) {
+        GB_CTR[GB_C_TIMER_BIT] = 1
+      } else {
+        GB_CTR[GB_C_TIMER_BIT] = 0
+      }
+      // Re-arm the distance to the next edge from where the counter now
+      // stands. gbTimer_live cannot have changed — mask is non-zero, so the
+      // enable bit is set — so only this half of gbTimer_syncLive is needed.
+      let period = mask << 1
+      gbTimer_edgeIn = period - (next & (period - 1))
+      return
+    }
+  }
+
+  for (let i = 0; i < cycles; i = i + 1) {
+    div = (div + 1) & 0xffff
+
+    let high = 0
+    if ((div & mask) !== 0) { high = 1 }
+    if (was !== 0 && high === 0) {
+      // gbTimer_incTima inlined, with the window counter kept in the local.
+      let t = (GB_IO[0x05] + 1) & 0xff
+      GB_IO[0x05] = t
+      if (t === 0) { pending = 4 }
+    }
+    was = high
+
+    // Drain the post-overflow delay one cycle at a time. Note the order: an
+    // increment on this same cycle arms the window at 4 and it is immediately
+    // decremented to 3, which is what gives the window its four-cycle length
+    // measured from the wrap.
+    if (pending > 0) {
+      pending = pending - 1
+      if (pending === 0) {
+        GB_IO[0x05] = GB_IO[0x06]
+        GB_CTR[GB_C_TIMER_RELOADED] = 1
+        // gbMmu_requestIrq is `GB_IO[0x0F] |= (1 << bit)` and reads none of the
+        // timer's state, so the locals above stay authoritative across it.
+        gbMmu_requestIrq(GB_IRQ_TIMER)
+      }
+    }
+  }
+
+  GB_CTR[GB_C_DIV] = div
+  GB_CTR[GB_C_TIMER_BIT] = was
+  GB_CTR[GB_C_TIMA_PENDING] = pending
+  gbTimer_syncLive()
+}

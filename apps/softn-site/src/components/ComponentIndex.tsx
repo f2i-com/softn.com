@@ -10,9 +10,9 @@ export function ComponentIndex(): React.ReactElement {
           <span className="eyebrow">The library</span>
           <h2 className="band-title">{COMPONENT_COUNT} components, and no shopping list.</h2>
           <p className="band-sub">
-            Charts, 3D scenes, a QR reader, a tile map and a sprite renderer are in the same box as the buttons. Nothing
-            here is a separate package to find, version and wire up — the whole list below is available to any bundle
-            the moment you write its tag.
+            Charts, 3D scenes, a QR reader, a tile map, a pixel canvas and a streaming audio sink are in the same box
+            as the buttons. Nothing here is a separate package to find, version and wire up — the whole list below is
+            available to any bundle the moment you write its tag.
           </p>
         </div>
 

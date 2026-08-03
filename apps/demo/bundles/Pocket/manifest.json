@@ -1,0 +1,35 @@
+{
+  "name": "Pocket",
+  "version": "0.1.0",
+  "description": "An 8-bit handheld console emulator in a SoftN bundle — load a .gb or .gbc and play it",
+  "author": "SoftN",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": [
+      "logic/main.logic",
+      "logic/gb_state.logic",
+      "logic/gb_cart.logic",
+      "logic/gb_ppu.logic",
+      "logic/gb_apu.logic",
+      "logic/gb_timer.logic",
+      "logic/gb_mmu.logic",
+      "logic/gb_ops.logic",
+      "logic/gb_cpu.logic",
+      "logic/gb_machine.logic"
+    ],
+    "assets": ["assets/icon.svg"]
+  },
+  "config": {
+    "window": {
+      "title": "Pocket",
+      "width": 900,
+      "height": 860
+    },
+    "theme": {
+      "primary": "#9bbc0f",
+      "mode": "dark"
+    }
+  }
+}

@@ -2,14 +2,14 @@
 
 **A dynamic, AI-friendly UI language and runtime for building applications -- desktop and web.**
 
-SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 88 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation.
+SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 90 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation.
 
 ---
 
 ## Key Features
 
 - **AI-Friendly DSL** -- Clean, consistent `.ui` syntax optimized for AI code generation
-- **88 Built-in Components** -- Comprehensive library across 12 categories including 3D, charts, and animation
+- **90 Built-in Components** -- Comprehensive library across 12 categories including 3D, charts, and animation
 - **Smart Components** -- Auto-configured, data-driven components with search, sort, pagination, and CRUD
 - **zipp Engine** -- Sandboxed JavaScript engine written in Rust, running in WebAssembly (no `eval`, no `new Function`)
 - **XDB Database** -- Local-first database with CRDT-based P2P synchronization
@@ -30,7 +30,7 @@ softn.com/
 +-- packages/
 |   +-- @softn/
 |       +-- core/              # Core engine (parser, renderer, runtime)
-|       +-- components/        # Built-in component library (88 components)
+|       +-- components/        # Built-in component library (90 components)
 |       +-- vite-plugin/       # Vite plugin for .softn files
 +-- apps/
 |   +-- softn-site/            # softn.com landing page
@@ -112,7 +112,7 @@ tells the landing page where it went. To run a single app instead, use
                                     |
                                     v
                             Component Registry
-                           (88 built-in + custom)
+                           (90 built-in + custom)
 
 .logic Source
       |
@@ -189,7 +189,7 @@ Before each script function call, all React state is synced to VM globals. After
 
 ---
 
-## Component Library (88 Components)
+## Component Library (90 Components)
 
 | Category | Count | Components |
 |----------|-------|-----------|
@@ -199,7 +199,7 @@ Before each script function call, all React state is synced to VM globals. After
 | Feedback | 6 | `Alert`, `Modal`, `Toast`, `Drawer`, `Popover`, `EmptyState` |
 | Data | 6 | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination` |
 | Navigation | 4 | `Tabs`, `Breadcrumb`, `Menu`, `NavItem` |
-| Utility | 10 | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `QRCode`, `QRReader`, `Camera`, `Microphone`, `DPad` |
+| Utility | 12 | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `PixelCanvas`, `QRCode`, `QRReader`, `Camera`, `Microphone`, `AudioStream`, `DPad` |
 | Charts | 6 | `LineChart`, `BarChart`, `PieChart`, `AreaChart`, `RadarChart`, `GaugeChart` |
 | Animation | 9 | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList`, `PanView`, `Sprite`, `TileMap` |
 | Editors | 3 | `CodeEditor`, `MarkdownEditor`, `RichTextEditor` |
@@ -404,6 +404,61 @@ gates the scripting API and is what the consent dialog shows the user.
 
 ---
 
+## Pixels and PCM
+
+Two primitives for scripts that generate a signal rather than arrange widgets.
+Neither is gated: both are sinks, and a script that can already draw a `<Box>`
+or play an `<audio>` tag gains nothing it did not have.
+
+`<PixelCanvas>` is the dense-bitmap counterpart to `<PixelGrid>`. PixelGrid
+renders sparse `{x, y, color}` cells as DOM nodes, which is right for a board of
+a few hundred squares and hopeless for a photograph — 160x144 is 23,040 divs and
+around 54ms a frame before the browser paints. PixelCanvas keeps one `ImageData`
+and one canvas, pulls frames through a callable prop on its own
+`requestAnimationFrame` loop, and never re-renders React.
+
+```xml
+<PixelCanvas
+  width={160} height={144}
+  palette={shades}         // present => 1 byte per pixel; absent => RGBA
+  fit="contain"            // fill the box, or "pixel" for whole-number scaling
+  getFrame={nextFrame}     // -> { pixels: "<base64>", ... }, or null to hold
+  @fps={report}
+/>
+```
+
+`fit` is the one choice worth making deliberately. `"pixel"` takes the largest
+whole multiple that fits and centres it, so every source pixel is the same size
+— what pixel art needs, at the cost of a margin. `"contain"` fills the box and
+lets the factor go fractional, which is right when filling the frame matters
+more than exact geometry.
+
+`<AudioStream>` is the output side of `softn.audio`. That API plays *files*;
+this one plays a waveform a script is still generating, which `.logic` cannot do
+by itself — it has no `AudioContext`, no `AudioWorklet` and no `Blob`.
+
+```xml
+<AudioStream
+  getSamples={nextBlock}   // -> { pcm: "<base64>", frames, rate, ... }
+  sampleRate={48000} channels={2} format="i16"
+  bufferMs={90} muted={muted}
+  @ready={started}         // reports the rate the browser ACTUALLY gave
+/>
+```
+
+It owns the graph and schedules successive buffers at explicit start times so
+playback is gapless. `sampleRate` is a request: hardware and browser both get a
+say, so `@ready` reports what was really allocated and a script that cares about
+pitch must read it rather than assume. The `frames` field of each block is
+authoritative too — at 48kHz a 59.7275Hz console frame is 803.65 samples, so the count
+genuinely varies and a caller that assumes a constant drifts.
+
+Both are demonstrated by **Pocket**, an 8-bit handheld emulator: `.logic` runs the CPU,
+PPU, APU and mappers, PixelCanvas shows the screen and AudioStream is the
+speaker.
+
+---
+
 ## Applications
 
 | App | Description |
@@ -444,6 +499,7 @@ dist/studio/     AI studio
 | **SnakeGame** | Classic snake game using `PixelGrid` and `Loop` |
 | **MazeEscape3D** | 3D maze game using `Scene3D` |
 | **WarbleWire** | The QXW acoustic transport — text becomes synthetic birdsong and is decoded back, over the air through `Microphone` |
+| **Pocket** | An 8-bit handheld console emulator. The CPU, PPU, APU, timer and MBC1/2/3/5 mappers are all `.logic`; `PixelCanvas` is the screen and `AudioStream` is the speaker. Runs commercial cartridges at 60fps with sound, save states and battery-backed saves |
 
 ---
 

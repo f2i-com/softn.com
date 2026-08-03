@@ -1,0 +1,1272 @@
+// Pocket — the SM83 instruction set. Two 256-entry function tables.
+//
+// A transliteration of emulator/src/emulator/core/ops.ts. The flag arithmetic is
+// ported byte for byte, not rederived — DAA, the half-carry on ADD HL,rr and the
+// unsigned-low-byte half-carry on ADD SP,e8 are exactly where a rewritten port
+// goes quietly wrong, so they are the reference's own expressions with `cpu.zf`
+// and friends folded into the packed F register.
+//
+// ---------------------------------------------------------------------------
+// WHY IT LOOKS LIKE THIS
+// ---------------------------------------------------------------------------
+//
+// This is the hottest file in the bundle. Four million dispatches a second, so
+// everything here is shaped by three measurements:
+//
+//   1. zipp compiles `switch` to a LINEAR SCAN. Over 1e6 dispatches on a 256-arm
+//      switch: 57.6ms hitting the first arm, 1965ms hitting the last. Real DMG
+//      code lives at 0xC0-0xFF, the expensive end. So there is no switch here at
+//      all — not for the opcode, not for the register field, not for the ALU
+//      selector, not for the branch condition. GB_OPS[op]() and nothing else.
+//
+//   2. The reference's readR8/writeR8 are themselves eight-arm switches, run
+//      twice per LD r,r'. Pocket resolves the register field at BUILD time: each
+//      generated handler closes over a GB_REG index, so `LD B,C` is one typed
+//      array read and one typed array write with no branch and no call.
+//
+//   3. Closures are free here. Rule 1.5 forbids allocating in the hot loop;
+//      gbOps_buildTables() runs once, ever, from gbMachine_init(). The
+//      pattern-regular families (LD r,r', the eight ALU ops, the whole CB table)
+//      are generated in loops by the gbOps_mk* makers below, which is the only
+//      reason 512 branchless handlers fit in a file a human can read.
+//
+// Every handler takes NO arguments, works on the shared arrays from
+// gb_state.logic, and returns the T-cycles the instruction consumed including
+// its memory accesses. Conditional branches return the taken count when taken
+// and the not-taken count otherwise.
+//
+// ---------------------------------------------------------------------------
+// F IS PACKED
+// ---------------------------------------------------------------------------
+//
+// The reference keeps four booleans. Pocket keeps GB_REG[GB_R_F] with
+// GB_FLAG_Z 0x80, GB_FLAG_N 0x40, GB_FLAG_H 0x20, GB_FLAG_C 0x10, low nibble
+// always zero. A typical ALU op therefore sets all four flags in ONE store
+// instead of four, and reading a flag is a mask instead of a field load. Every
+// helper below builds the whole byte in a local and stores once. Where a flag is
+// documented as "unchanged" — C across INC/DEC, Z across ADD HL,rr, Z and C
+// across CPL — the old bits are carried forward explicitly by masking the old F.
+//
+// ---------------------------------------------------------------------------
+// ONE DELIBERATE DEVIATION FROM CONTRACT.md §3.3
+// ---------------------------------------------------------------------------
+//
+// CONTRACT.md gives two incompatible statements about the CB prefix. It says the
+// CB handlers return "8 for register forms, 16 for (HL), 12 for BIT n,(HL)" —
+// which are the full hardware totals, and are what ops.ts returns — and it also
+// gives 0xCB as `function () { let cb = gbCpu_fetchU8(); return 4 + GB_CBOPS[cb]() }`.
+// Both cannot hold: `CB 07` (RLC A) is 8 T-cycles on hardware, and 4 + 8 is 12.
+//
+// The numbers win over the snippet. GB_CBOPS returns 8 / 16 / 12 — the totals
+// the contract names and the reference emits — and GB_OPS[0xCB] returns that
+// figure unmodified, exactly as `ops[0xcb]` does. Taking the other reading would
+// add four T-cycles to every rotate, shift and bit test a game executes, which
+// is a permanent ~2% timing error against the timer and the PPU. If a later
+// agent changes gb_cpu to add the prefix fetch itself, this is the one line that
+// has to move with it.
+//
+// ---------------------------------------------------------------------------
+// WHAT THIS MODULE DOES NOT DO
+// ---------------------------------------------------------------------------
+//
+// The reference's per-M-cycle machinery (`tickM`, `busReadM`, `fetchU8M`, the
+// `cpu.tickM ? 0 : n` return) is out of scope per CONTRACT.md §3.3: Pocket ticks
+// peripherals in 4-cycle chunks between instructions. Every `cpu.tickM ? 0 : n`
+// in ops.ts is therefore read as plain `n`, and the bare `cpu.tickM(1)` internal
+// delays vanish because they are already inside that n.
+//
+// HALT only raises the flag; gb_cpu owns the halt bug and interrupt dispatch.
+// EI only arms GB_P_IME_PENDING; gb_cpu promotes it after the following
+// instruction. This module owns GB_OPS and GB_CBOPS and nothing else.
+
+// ===========================================================================
+// ALU cores
+//
+// Each writes A and/or F and returns nothing, or returns the result byte where
+// the caller has to place it. Ported from alu_* in ops.ts.
+// ===========================================================================
+
+// alu_add(cpu, v, false)
+function gbOps_add8(v) {
+  let a = GB_REG[GB_R_A]
+  let r = a + v
+  let f = 0
+  if (((a & 0x0f) + (v & 0x0f)) > 0x0f) { f = f | GB_FLAG_H }
+  if (r > 0xff) { f = f | GB_FLAG_C }
+  r = r & 0xff
+  if (r === 0) { f = f | GB_FLAG_Z }
+  GB_REG[GB_R_A] = r
+  GB_REG[GB_R_F] = f
+}
+
+// alu_add(cpu, v, true)
+function gbOps_adc8(v) {
+  let a = GB_REG[GB_R_A]
+  let c = (GB_REG[GB_R_F] & GB_FLAG_C) !== 0 ? 1 : 0
+  let r = a + v + c
+  let f = 0
+  if (((a & 0x0f) + (v & 0x0f) + c) > 0x0f) { f = f | GB_FLAG_H }
+  if (r > 0xff) { f = f | GB_FLAG_C }
+  r = r & 0xff
+  if (r === 0) { f = f | GB_FLAG_Z }
+  GB_REG[GB_R_A] = r
+  GB_REG[GB_R_F] = f
+}
+
+// alu_sub(cpu, v, false, true)
+function gbOps_sub8(v) {
+  let a = GB_REG[GB_R_A]
+  let r = a - v
+  let f = GB_FLAG_N
+  if (((a & 0x0f) - (v & 0x0f)) < 0) { f = f | GB_FLAG_H }
+  if (r < 0) { f = f | GB_FLAG_C }
+  r = r & 0xff
+  if (r === 0) { f = f | GB_FLAG_Z }
+  GB_REG[GB_R_A] = r
+  GB_REG[GB_R_F] = f
+}
+
+// alu_sub(cpu, v, true, true)
+function gbOps_sbc8(v) {
+  let a = GB_REG[GB_R_A]
+  let c = (GB_REG[GB_R_F] & GB_FLAG_C) !== 0 ? 1 : 0
+  let r = a - v - c
+  let f = GB_FLAG_N
+  if (((a & 0x0f) - (v & 0x0f) - c) < 0) { f = f | GB_FLAG_H }
+  if (r < 0) { f = f | GB_FLAG_C }
+  r = r & 0xff
+  if (r === 0) { f = f | GB_FLAG_Z }
+  GB_REG[GB_R_A] = r
+  GB_REG[GB_R_F] = f
+}
+
+// alu_sub(cpu, v, false, false) — CP, the same subtraction with no store.
+function gbOps_cp8(v) {
+  let a = GB_REG[GB_R_A]
+  let r = a - v
+  let f = GB_FLAG_N
+  if (((a & 0x0f) - (v & 0x0f)) < 0) { f = f | GB_FLAG_H }
+  if (r < 0) { f = f | GB_FLAG_C }
+  if ((r & 0xff) === 0) { f = f | GB_FLAG_Z }
+  GB_REG[GB_R_F] = f
+}
+
+// alu_and — the one logic op that sets H.
+function gbOps_and8(v) {
+  let r = GB_REG[GB_R_A] & v & 0xff
+  GB_REG[GB_R_A] = r
+  GB_REG[GB_R_F] = r === 0 ? (GB_FLAG_Z | GB_FLAG_H) : GB_FLAG_H
+}
+
+function gbOps_or8(v) {
+  let r = (GB_REG[GB_R_A] | v) & 0xff
+  GB_REG[GB_R_A] = r
+  GB_REG[GB_R_F] = r === 0 ? GB_FLAG_Z : 0
+}
+
+function gbOps_xor8(v) {
+  let r = (GB_REG[GB_R_A] ^ v) & 0xff
+  GB_REG[GB_R_A] = r
+  GB_REG[GB_R_F] = r === 0 ? GB_FLAG_Z : 0
+}
+
+// alu_inc8 / alu_dec8. C is explicitly carried through — the only ALU ops that
+// leave a flag alone.
+function gbOps_inc8(v) {
+  let r = (v + 1) & 0xff
+  let f = GB_REG[GB_R_F] & GB_FLAG_C
+  if (r === 0) { f = f | GB_FLAG_Z }
+  if ((v & 0x0f) === 0x0f) { f = f | GB_FLAG_H }
+  GB_REG[GB_R_F] = f
+  return r
+}
+
+function gbOps_dec8(v) {
+  let r = (v - 1) & 0xff
+  let f = (GB_REG[GB_R_F] & GB_FLAG_C) | GB_FLAG_N
+  if (r === 0) { f = f | GB_FLAG_Z }
+  if ((v & 0x0f) === 0x00) { f = f | GB_FLAG_H }
+  GB_REG[GB_R_F] = f
+  return r
+}
+
+// alu_addHl16. The half-carry is on bit 11 of the SIXTEEN-bit operands, not on
+// bit 3 of the low byte, and Z is untouched. Both are standard port breakages;
+// this is the reference expression verbatim.
+function gbOps_addHl16(v) {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  let r = hl + v
+  let f = GB_REG[GB_R_F] & GB_FLAG_Z
+  if (((hl & 0x0fff) + (v & 0x0fff)) > 0x0fff) { f = f | GB_FLAG_H }
+  if (r > 0xffff) { f = f | GB_FLAG_C }
+  GB_REG[GB_R_F] = f
+  GB_REG[GB_R_H] = (r >>> 8) & 0xff
+  GB_REG[GB_R_L] = r & 0xff
+}
+
+// alu_addSp_signed. Shared by ADD SP,e8 and LD HL,SP+e8.
+//
+// The Pandocs gotcha, and the second place ports break: the address maths uses
+// the SIGNED e, but H and C come from the UNSIGNED low byte of e against the low
+// byte of SP — an 8-bit add, not a 16-bit one. Z and N are both cleared even
+// though the result is sixteen bits wide.
+function gbOps_addSpSigned(e) {
+  let sp = GB_REG16[GB_R16_SP]
+  let r = (sp + e) & 0xffff
+  let ue = e & 0xff
+  let f = 0
+  if (((sp & 0x0f) + (ue & 0x0f)) > 0x0f) { f = f | GB_FLAG_H }
+  if (((sp & 0xff) + (ue & 0xff)) > 0xff) { f = f | GB_FLAG_C }
+  GB_REG[GB_R_F] = f
+  return r
+}
+
+// ===========================================================================
+// Rotate / shift cores
+//
+// These are the CB semantics: Z is set from the result. The four A-register
+// forms in the base table (RLCA/RRCA/RLA/RRA) always CLEAR Z instead, so they
+// are spelled out separately rather than calling these and patching F.
+// ===========================================================================
+
+function gbOps_rlc(v) {
+  let c = (v >>> 7) & 1
+  let r = ((v << 1) | c) & 0xff
+  GB_REG[GB_R_F] = (r === 0 ? GB_FLAG_Z : 0) | (c === 1 ? GB_FLAG_C : 0)
+  return r
+}
+
+function gbOps_rrc(v) {
+  let c = v & 1
+  let r = ((v >>> 1) | (c << 7)) & 0xff
+  GB_REG[GB_R_F] = (r === 0 ? GB_FLAG_Z : 0) | (c === 1 ? GB_FLAG_C : 0)
+  return r
+}
+
+function gbOps_rl(v) {
+  let cIn = (GB_REG[GB_R_F] & GB_FLAG_C) !== 0 ? 1 : 0
+  let cOut = (v >>> 7) & 1
+  let r = ((v << 1) | cIn) & 0xff
+  GB_REG[GB_R_F] = (r === 0 ? GB_FLAG_Z : 0) | (cOut === 1 ? GB_FLAG_C : 0)
+  return r
+}
+
+function gbOps_rr(v) {
+  let cIn = (GB_REG[GB_R_F] & GB_FLAG_C) !== 0 ? 1 : 0
+  let cOut = v & 1
+  let r = ((v >>> 1) | (cIn << 7)) & 0xff
+  GB_REG[GB_R_F] = (r === 0 ? GB_FLAG_Z : 0) | (cOut === 1 ? GB_FLAG_C : 0)
+  return r
+}
+
+function gbOps_sla(v) {
+  let cOut = (v >>> 7) & 1
+  let r = (v << 1) & 0xff
+  GB_REG[GB_R_F] = (r === 0 ? GB_FLAG_Z : 0) | (cOut === 1 ? GB_FLAG_C : 0)
+  return r
+}
+
+// Arithmetic shift right: bit 7 is duplicated, not cleared.
+function gbOps_sra(v) {
+  let cOut = v & 1
+  let r = ((v >>> 1) | (v & 0x80)) & 0xff
+  GB_REG[GB_R_F] = (r === 0 ? GB_FLAG_Z : 0) | (cOut === 1 ? GB_FLAG_C : 0)
+  return r
+}
+
+function gbOps_swap(v) {
+  let r = ((v >>> 4) | (v << 4)) & 0xff
+  GB_REG[GB_R_F] = r === 0 ? GB_FLAG_Z : 0
+  return r
+}
+
+function gbOps_srl(v) {
+  let cOut = v & 1
+  let r = (v >>> 1) & 0xff
+  GB_REG[GB_R_F] = (r === 0 ? GB_FLAG_Z : 0) | (cOut === 1 ? GB_FLAG_C : 0)
+  return r
+}
+
+// ===========================================================================
+// Handler makers
+//
+// Each returns a closure over a GB_REG index (already mapped out of the opcode's
+// register field by GB_R8_MAP) or a precomputed bit mask, so nothing downstream
+// ever branches on which register it is. Called only from gbOps_buildTables().
+// ===========================================================================
+
+// -- LD r,r' ----------------------------------------------------------------
+
+function gbOps_mkLdRR(di, si) {
+  return function () {
+    GB_REG[di] = GB_REG[si]
+    return 4
+  }
+}
+
+function gbOps_mkLdRHl(di) {
+  return function () {
+    GB_REG[di] = gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L])
+    return 8
+  }
+}
+
+function gbOps_mkLdHlR(si) {
+  return function () {
+    gbMmu_write((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L], GB_REG[si])
+    return 8
+  }
+}
+
+function gbOps_mkLdRN(di) {
+  return function () {
+    GB_REG[di] = gbCpu_fetchU8()
+    return 8
+  }
+}
+
+// -- INC r / DEC r ----------------------------------------------------------
+
+function gbOps_mkIncR(ri) {
+  return function () {
+    GB_REG[ri] = gbOps_inc8(GB_REG[ri])
+    return 4
+  }
+}
+
+function gbOps_mkDecR(ri) {
+  return function () {
+    GB_REG[ri] = gbOps_dec8(GB_REG[ri])
+    return 4
+  }
+}
+
+// -- ALU A,r ----------------------------------------------------------------
+
+function gbOps_mkAddR(ri) {
+  return function () { gbOps_add8(GB_REG[ri]); return 4 }
+}
+
+function gbOps_mkAdcR(ri) {
+  return function () { gbOps_adc8(GB_REG[ri]); return 4 }
+}
+
+function gbOps_mkSubR(ri) {
+  return function () { gbOps_sub8(GB_REG[ri]); return 4 }
+}
+
+function gbOps_mkSbcR(ri) {
+  return function () { gbOps_sbc8(GB_REG[ri]); return 4 }
+}
+
+function gbOps_mkAndR(ri) {
+  return function () { gbOps_and8(GB_REG[ri]); return 4 }
+}
+
+function gbOps_mkXorR(ri) {
+  return function () { gbOps_xor8(GB_REG[ri]); return 4 }
+}
+
+function gbOps_mkOrR(ri) {
+  return function () { gbOps_or8(GB_REG[ri]); return 4 }
+}
+
+function gbOps_mkCpR(ri) {
+  return function () { gbOps_cp8(GB_REG[ri]); return 4 }
+}
+
+// -- ALU A,(HL) -------------------------------------------------------------
+
+function gbOps_addM() {
+  gbOps_add8(gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]))
+  return 8
+}
+
+function gbOps_adcM() {
+  gbOps_adc8(gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]))
+  return 8
+}
+
+function gbOps_subM() {
+  gbOps_sub8(gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]))
+  return 8
+}
+
+function gbOps_sbcM() {
+  gbOps_sbc8(gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]))
+  return 8
+}
+
+function gbOps_andM() {
+  gbOps_and8(gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]))
+  return 8
+}
+
+function gbOps_xorM() {
+  gbOps_xor8(gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]))
+  return 8
+}
+
+function gbOps_orM() {
+  gbOps_or8(gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]))
+  return 8
+}
+
+function gbOps_cpM() {
+  gbOps_cp8(gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]))
+  return 8
+}
+
+// -- Branch conditions ------------------------------------------------------
+//
+// The condition field is 0=NZ 1=Z 2=NC 3=C. Rather than test it, each maker
+// takes the flag MASK to look at and the value that mask must equal:
+//   NZ -> (Z, 0)   Z -> (Z, Z)   NC -> (C, 0)   C -> (C, C)
+// so a taken/not-taken decision is one AND and one compare, whichever condition
+// it is, with no ordering penalty between the four.
+
+function gbOps_mkJrCc(mask, want) {
+  return function () {
+    let e = (gbCpu_fetchU8() << 24) >> 24
+    if ((GB_REG[GB_R_F] & mask) === want) {
+      GB_REG16[GB_R16_PC] = (GB_REG16[GB_R16_PC] + e) & 0xffff
+      return 12
+    }
+    return 8
+  }
+}
+
+function gbOps_mkJpCc(mask, want) {
+  return function () {
+    let lo = gbCpu_fetchU8()
+    let hi = gbCpu_fetchU8()
+    if ((GB_REG[GB_R_F] & mask) === want) {
+      GB_REG16[GB_R16_PC] = ((hi << 8) | lo) & 0xffff
+      return 16
+    }
+    return 12
+  }
+}
+
+function gbOps_mkCallCc(mask, want) {
+  return function () {
+    let lo = gbCpu_fetchU8()
+    let hi = gbCpu_fetchU8()
+    if ((GB_REG[GB_R_F] & mask) === want) {
+      gbCpu_push16(GB_REG16[GB_R16_PC])
+      GB_REG16[GB_R16_PC] = ((hi << 8) | lo) & 0xffff
+      return 24
+    }
+    return 12
+  }
+}
+
+function gbOps_mkRetCc(mask, want) {
+  return function () {
+    if ((GB_REG[GB_R_F] & mask) === want) {
+      GB_REG16[GB_R16_PC] = gbCpu_pop16() & 0xffff
+      return 20
+    }
+    return 8
+  }
+}
+
+function gbOps_mkRst(target) {
+  return function () {
+    gbCpu_push16(GB_REG16[GB_R16_PC])
+    GB_REG16[GB_R16_PC] = target
+    return 16
+  }
+}
+
+// -- CB rotate/shift, register form -----------------------------------------
+
+function gbOps_mkCbRlcR(ri) {
+  return function () { GB_REG[ri] = gbOps_rlc(GB_REG[ri]); return 8 }
+}
+
+function gbOps_mkCbRrcR(ri) {
+  return function () { GB_REG[ri] = gbOps_rrc(GB_REG[ri]); return 8 }
+}
+
+function gbOps_mkCbRlR(ri) {
+  return function () { GB_REG[ri] = gbOps_rl(GB_REG[ri]); return 8 }
+}
+
+function gbOps_mkCbRrR(ri) {
+  return function () { GB_REG[ri] = gbOps_rr(GB_REG[ri]); return 8 }
+}
+
+function gbOps_mkCbSlaR(ri) {
+  return function () { GB_REG[ri] = gbOps_sla(GB_REG[ri]); return 8 }
+}
+
+function gbOps_mkCbSraR(ri) {
+  return function () { GB_REG[ri] = gbOps_sra(GB_REG[ri]); return 8 }
+}
+
+function gbOps_mkCbSwapR(ri) {
+  return function () { GB_REG[ri] = gbOps_swap(GB_REG[ri]); return 8 }
+}
+
+function gbOps_mkCbSrlR(ri) {
+  return function () { GB_REG[ri] = gbOps_srl(GB_REG[ri]); return 8 }
+}
+
+// -- CB rotate/shift, (HL) form ---------------------------------------------
+//
+// Read-modify-write: 16 T-cycles, and HL is read into a local so the address is
+// computed once for both bus accesses.
+
+function gbOps_cbRlcHL() {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  gbMmu_write(hl, gbOps_rlc(gbMmu_read(hl)))
+  return 16
+}
+
+function gbOps_cbRrcHL() {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  gbMmu_write(hl, gbOps_rrc(gbMmu_read(hl)))
+  return 16
+}
+
+function gbOps_cbRlHL() {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  gbMmu_write(hl, gbOps_rl(gbMmu_read(hl)))
+  return 16
+}
+
+function gbOps_cbRrHL() {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  gbMmu_write(hl, gbOps_rr(gbMmu_read(hl)))
+  return 16
+}
+
+function gbOps_cbSlaHL() {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  gbMmu_write(hl, gbOps_sla(gbMmu_read(hl)))
+  return 16
+}
+
+function gbOps_cbSraHL() {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  gbMmu_write(hl, gbOps_sra(gbMmu_read(hl)))
+  return 16
+}
+
+function gbOps_cbSwapHL() {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  gbMmu_write(hl, gbOps_swap(gbMmu_read(hl)))
+  return 16
+}
+
+function gbOps_cbSrlHL() {
+  let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+  gbMmu_write(hl, gbOps_srl(gbMmu_read(hl)))
+  return 16
+}
+
+// -- CB BIT / RES / SET -----------------------------------------------------
+//
+// The bit number is resolved at build time into a mask (BIT/SET) or its
+// complement (RES), so there is no shift at run time.
+//
+// BIT: Z from the tested bit, N cleared, H SET, C untouched.
+
+function gbOps_mkCbBitR(ri, mask) {
+  return function () {
+    GB_REG[GB_R_F] =
+      (GB_REG[GB_R_F] & GB_FLAG_C) | GB_FLAG_H |
+      ((GB_REG[ri] & mask) === 0 ? GB_FLAG_Z : 0)
+    return 8
+  }
+}
+
+// BIT n,(HL) is read-only, so it is 12 rather than the 16 of the other (HL)
+// forms — the write-back M-cycle is not there.
+function gbOps_mkCbBitHL(mask) {
+  return function () {
+    let v = gbMmu_read((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L])
+    GB_REG[GB_R_F] =
+      (GB_REG[GB_R_F] & GB_FLAG_C) | GB_FLAG_H |
+      ((v & mask) === 0 ? GB_FLAG_Z : 0)
+    return 12
+  }
+}
+
+// RES and SET touch no flags at all.
+function gbOps_mkCbResR(ri, clear) {
+  return function () {
+    GB_REG[ri] = GB_REG[ri] & clear
+    return 8
+  }
+}
+
+function gbOps_mkCbResHL(clear) {
+  return function () {
+    let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    gbMmu_write(hl, gbMmu_read(hl) & clear)
+    return 16
+  }
+}
+
+function gbOps_mkCbSetR(ri, mask) {
+  return function () {
+    GB_REG[ri] = GB_REG[ri] | mask
+    return 8
+  }
+}
+
+function gbOps_mkCbSetHL(mask) {
+  return function () {
+    let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    gbMmu_write(hl, gbMmu_read(hl) | mask)
+    return 16
+  }
+}
+
+// ===========================================================================
+// Illegal opcodes
+//
+// D3 DB DD E3 E4 EB EC ED F4 FC FD. Real hardware wedges the CPU until reset.
+// The reference throws; throwing out of the frame loop would take the whole
+// bundle down over one stray byte, so Pocket burns an M-cycle and carries on.
+// Every slot is filled with this so a hole can never become an undefined call.
+// ===========================================================================
+
+function gbOps_illegal() {
+  return 4
+}
+
+// ===========================================================================
+// Table construction
+//
+// Called exactly once, from gbMachine_init(). Everything above this line is
+// either a pure helper or a maker; everything below runs at init and never
+// again, so the closures, the small local arrays and the loops here cost
+// nothing per frame.
+// ===========================================================================
+
+function gbOps_buildTables() {
+  let i = 0
+  let r = 0
+  let dst = 0
+  let src = 0
+  let op = 0
+
+  // Fill both tables before installing anything. GB_OPS and GB_CBOPS start as
+  // empty plain arrays in gb_state.logic.
+  for (i = 0; i < 256; i = i + 1) {
+    GB_OPS[i] = gbOps_illegal
+    GB_CBOPS[i] = gbOps_illegal
+  }
+
+  // The four branch conditions as (mask, want) pairs. Locals, so they are never
+  // seen by the state sync.
+  let condMask = [GB_FLAG_Z, GB_FLAG_Z, GB_FLAG_C, GB_FLAG_C]
+  let condWant = [0, GB_FLAG_Z, 0, GB_FLAG_C]
+
+  // =========================================================================
+  // 0x00-0x3F — the misfits, the 16-bit loads, INC/DEC, and the A rotates
+  // =========================================================================
+
+  // 0x00 NOP
+  GB_OPS[0x00] = function () {
+    return 4
+  }
+
+  // 0x10 STOP. Encoded as `10 00`, so the trailing byte is consumed.
+  //
+  // The reference stops here (its comment: "no GBC speed switch yet"). Pocket
+  // carries GB_P_SPEEDSW, armed by a write to KEY1 in gb_mmu, and this is the
+  // only instruction that can consume it: on CGB, STOP with the switch armed
+  // flips the clock and resumes rather than stopping. On DMG, or with nothing
+  // armed, the flag is never set and the behaviour is the reference's exactly.
+  // Hardware also resets DIV across the switch; GB_C_DIV belongs to gb_timer and
+  // is deliberately left alone here.
+  GB_OPS[0x10] = function () {
+    gbCpu_fetchU8()
+    if (GB_CPUF[GB_P_SPEEDSW] === 1) {
+      GB_CPUF[GB_P_DOUBLE] = GB_CPUF[GB_P_DOUBLE] === 1 ? 0 : 1
+      GB_CPUF[GB_P_SPEEDSW] = 0
+      return 4
+    }
+    GB_CPUF[GB_P_STOPPED] = 1
+    return 4
+  }
+
+  // 0x01/0x11/0x21/0x31 LD rr,nn — low byte first, as the bus sees it.
+  GB_OPS[0x01] = function () {
+    GB_REG[GB_R_C] = gbCpu_fetchU8()
+    GB_REG[GB_R_B] = gbCpu_fetchU8()
+    return 12
+  }
+  GB_OPS[0x11] = function () {
+    GB_REG[GB_R_E] = gbCpu_fetchU8()
+    GB_REG[GB_R_D] = gbCpu_fetchU8()
+    return 12
+  }
+  GB_OPS[0x21] = function () {
+    GB_REG[GB_R_L] = gbCpu_fetchU8()
+    GB_REG[GB_R_H] = gbCpu_fetchU8()
+    return 12
+  }
+  GB_OPS[0x31] = function () {
+    let lo = gbCpu_fetchU8()
+    let hi = gbCpu_fetchU8()
+    GB_REG16[GB_R16_SP] = ((hi << 8) | lo) & 0xffff
+    return 12
+  }
+
+  // 0x02 LD (BC),A   0x12 LD (DE),A
+  GB_OPS[0x02] = function () {
+    gbMmu_write((GB_REG[GB_R_B] << 8) | GB_REG[GB_R_C], GB_REG[GB_R_A])
+    return 8
+  }
+  GB_OPS[0x12] = function () {
+    gbMmu_write((GB_REG[GB_R_D] << 8) | GB_REG[GB_R_E], GB_REG[GB_R_A])
+    return 8
+  }
+
+  // 0x22 LD (HL+),A   0x32 LD (HL-),A
+  GB_OPS[0x22] = function () {
+    let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    gbMmu_write(hl, GB_REG[GB_R_A])
+    hl = (hl + 1) & 0xffff
+    GB_REG[GB_R_H] = hl >>> 8
+    GB_REG[GB_R_L] = hl & 0xff
+    return 8
+  }
+  GB_OPS[0x32] = function () {
+    let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    gbMmu_write(hl, GB_REG[GB_R_A])
+    hl = (hl - 1) & 0xffff
+    GB_REG[GB_R_H] = hl >>> 8
+    GB_REG[GB_R_L] = hl & 0xff
+    return 8
+  }
+
+  // 0x0A LD A,(BC)   0x1A LD A,(DE)
+  GB_OPS[0x0a] = function () {
+    GB_REG[GB_R_A] = gbMmu_read((GB_REG[GB_R_B] << 8) | GB_REG[GB_R_C])
+    return 8
+  }
+  GB_OPS[0x1a] = function () {
+    GB_REG[GB_R_A] = gbMmu_read((GB_REG[GB_R_D] << 8) | GB_REG[GB_R_E])
+    return 8
+  }
+
+  // 0x2A LD A,(HL+)   0x3A LD A,(HL-)
+  GB_OPS[0x2a] = function () {
+    let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    GB_REG[GB_R_A] = gbMmu_read(hl)
+    hl = (hl + 1) & 0xffff
+    GB_REG[GB_R_H] = hl >>> 8
+    GB_REG[GB_R_L] = hl & 0xff
+    return 8
+  }
+  GB_OPS[0x3a] = function () {
+    let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    GB_REG[GB_R_A] = gbMmu_read(hl)
+    hl = (hl - 1) & 0xffff
+    GB_REG[GB_R_H] = hl >>> 8
+    GB_REG[GB_R_L] = hl & 0xff
+    return 8
+  }
+
+  // 0x03/0x13/0x23/0x33 INC rr — no flags, ever.
+  GB_OPS[0x03] = function () {
+    let v = (((GB_REG[GB_R_B] << 8) | GB_REG[GB_R_C]) + 1) & 0xffff
+    GB_REG[GB_R_B] = v >>> 8
+    GB_REG[GB_R_C] = v & 0xff
+    return 8
+  }
+  GB_OPS[0x13] = function () {
+    let v = (((GB_REG[GB_R_D] << 8) | GB_REG[GB_R_E]) + 1) & 0xffff
+    GB_REG[GB_R_D] = v >>> 8
+    GB_REG[GB_R_E] = v & 0xff
+    return 8
+  }
+  GB_OPS[0x23] = function () {
+    let v = (((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]) + 1) & 0xffff
+    GB_REG[GB_R_H] = v >>> 8
+    GB_REG[GB_R_L] = v & 0xff
+    return 8
+  }
+  GB_OPS[0x33] = function () {
+    GB_REG16[GB_R16_SP] = (GB_REG16[GB_R16_SP] + 1) & 0xffff
+    return 8
+  }
+
+  // 0x0B/0x1B/0x2B/0x3B DEC rr — likewise no flags.
+  GB_OPS[0x0b] = function () {
+    let v = (((GB_REG[GB_R_B] << 8) | GB_REG[GB_R_C]) - 1) & 0xffff
+    GB_REG[GB_R_B] = v >>> 8
+    GB_REG[GB_R_C] = v & 0xff
+    return 8
+  }
+  GB_OPS[0x1b] = function () {
+    let v = (((GB_REG[GB_R_D] << 8) | GB_REG[GB_R_E]) - 1) & 0xffff
+    GB_REG[GB_R_D] = v >>> 8
+    GB_REG[GB_R_E] = v & 0xff
+    return 8
+  }
+  GB_OPS[0x2b] = function () {
+    let v = (((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]) - 1) & 0xffff
+    GB_REG[GB_R_H] = v >>> 8
+    GB_REG[GB_R_L] = v & 0xff
+    return 8
+  }
+  GB_OPS[0x3b] = function () {
+    GB_REG16[GB_R16_SP] = (GB_REG16[GB_R16_SP] - 1) & 0xffff
+    return 8
+  }
+
+  // 0x09/0x19/0x29/0x39 ADD HL,rr
+  GB_OPS[0x09] = function () {
+    gbOps_addHl16((GB_REG[GB_R_B] << 8) | GB_REG[GB_R_C])
+    return 8
+  }
+  GB_OPS[0x19] = function () {
+    gbOps_addHl16((GB_REG[GB_R_D] << 8) | GB_REG[GB_R_E])
+    return 8
+  }
+  GB_OPS[0x29] = function () {
+    gbOps_addHl16((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L])
+    return 8
+  }
+  GB_OPS[0x39] = function () {
+    gbOps_addHl16(GB_REG16[GB_R16_SP])
+    return 8
+  }
+
+  // 0x04+r*8 INC r, 0x05+r*8 DEC r, 0x06+r*8 LD r,n.
+  // r === 6 is the (HL) form and is installed separately below.
+  for (r = 0; r < 8; r = r + 1) {
+    if (r !== 6) {
+      GB_OPS[0x04 + r * 8] = gbOps_mkIncR(GB_R8_MAP[r])
+      GB_OPS[0x05 + r * 8] = gbOps_mkDecR(GB_R8_MAP[r])
+      GB_OPS[0x06 + r * 8] = gbOps_mkLdRN(GB_R8_MAP[r])
+    }
+  }
+
+  // 0x34 INC (HL)   0x35 DEC (HL)   0x36 LD (HL),n
+  GB_OPS[0x34] = function () {
+    let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    gbMmu_write(hl, gbOps_inc8(gbMmu_read(hl)))
+    return 12
+  }
+  GB_OPS[0x35] = function () {
+    let hl = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    gbMmu_write(hl, gbOps_dec8(gbMmu_read(hl)))
+    return 12
+  }
+  GB_OPS[0x36] = function () {
+    let n = gbCpu_fetchU8()
+    gbMmu_write((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L], n)
+    return 12
+  }
+
+  // 0x08 LD (nn),SP — the only 20-cycle instruction on the chip.
+  GB_OPS[0x08] = function () {
+    let lo = gbCpu_fetchU8()
+    let hi = gbCpu_fetchU8()
+    let addr = ((hi << 8) | lo) & 0xffff
+    let sp = GB_REG16[GB_R16_SP]
+    gbMmu_write(addr, sp & 0xff)
+    gbMmu_write((addr + 1) & 0xffff, (sp >>> 8) & 0xff)
+    return 20
+  }
+
+  // 0x07 RLCA  0x0F RRCA  0x17 RLA  0x1F RRA.
+  //
+  // Same rotations as the CB forms, but Z is ALWAYS cleared here — even when the
+  // result is zero. That single difference is why these are written out instead
+  // of calling gbOps_rlc and friends.
+  GB_OPS[0x07] = function () {
+    let a = GB_REG[GB_R_A]
+    let c = (a >>> 7) & 1
+    GB_REG[GB_R_A] = ((a << 1) | c) & 0xff
+    GB_REG[GB_R_F] = c === 1 ? GB_FLAG_C : 0
+    return 4
+  }
+  GB_OPS[0x0f] = function () {
+    let a = GB_REG[GB_R_A]
+    let c = a & 1
+    GB_REG[GB_R_A] = ((a >>> 1) | (c << 7)) & 0xff
+    GB_REG[GB_R_F] = c === 1 ? GB_FLAG_C : 0
+    return 4
+  }
+  GB_OPS[0x17] = function () {
+    let a = GB_REG[GB_R_A]
+    let cIn = (GB_REG[GB_R_F] & GB_FLAG_C) !== 0 ? 1 : 0
+    let cOut = (a >>> 7) & 1
+    GB_REG[GB_R_A] = ((a << 1) | cIn) & 0xff
+    GB_REG[GB_R_F] = cOut === 1 ? GB_FLAG_C : 0
+    return 4
+  }
+  GB_OPS[0x1f] = function () {
+    let a = GB_REG[GB_R_A]
+    let cIn = (GB_REG[GB_R_F] & GB_FLAG_C) !== 0 ? 1 : 0
+    let cOut = a & 1
+    GB_REG[GB_R_A] = ((a >>> 1) | (cIn << 7)) & 0xff
+    GB_REG[GB_R_F] = cOut === 1 ? GB_FLAG_C : 0
+    return 4
+  }
+
+  // 0x18 JR e — always taken.
+  GB_OPS[0x18] = function () {
+    let e = (gbCpu_fetchU8() << 24) >> 24
+    GB_REG16[GB_R16_PC] = (GB_REG16[GB_R16_PC] + e) & 0xffff
+    return 12
+  }
+
+  // 0x20/0x28/0x30/0x38 JR cc,e — 12 taken, 8 not. The displacement is fetched
+  // either way, so PC is past it before the condition is looked at.
+  for (i = 0; i < 4; i = i + 1) {
+    GB_OPS[0x20 + i * 8] = gbOps_mkJrCc(condMask[i], condWant[i])
+  }
+
+  // 0x27 DAA — decimal adjust after an add or a subtract.
+  //
+  // Ported literally from ops.ts. Everything about it is a trap: the direction
+  // comes from N (which is why N must be preserved, not cleared), the
+  // add-direction path can SET carry but the subtract path can only inherit it,
+  // the `a > 0x99` test is on the pre-adjust accumulator, and H is always
+  // cleared afterwards regardless of what happened. Do not "simplify" this.
+  GB_OPS[0x27] = function () {
+    let a = GB_REG[GB_R_A]
+    let f = GB_REG[GB_R_F]
+    let adjust = 0
+    let setC = (f & GB_FLAG_C) !== 0
+    if ((f & GB_FLAG_N) === 0) {
+      if ((f & GB_FLAG_H) !== 0 || (a & 0x0f) > 9) { adjust = adjust | 0x06 }
+      if ((f & GB_FLAG_C) !== 0 || a > 0x99) {
+        adjust = adjust | 0x60
+        setC = true
+      }
+      a = (a + adjust) & 0xff
+    } else {
+      if ((f & GB_FLAG_H) !== 0) { adjust = adjust | 0x06 }
+      if ((f & GB_FLAG_C) !== 0) { adjust = adjust | 0x60 }
+      a = (a - adjust) & 0xff
+    }
+    GB_REG[GB_R_A] = a
+    let out = f & GB_FLAG_N
+    if (a === 0) { out = out | GB_FLAG_Z }
+    if (setC) { out = out | GB_FLAG_C }
+    GB_REG[GB_R_F] = out
+    return 4
+  }
+
+  // 0x2F CPL — Z and C survive, N and H are forced on.
+  GB_OPS[0x2f] = function () {
+    GB_REG[GB_R_A] = (~GB_REG[GB_R_A]) & 0xff
+    GB_REG[GB_R_F] =
+      (GB_REG[GB_R_F] & (GB_FLAG_Z | GB_FLAG_C)) | GB_FLAG_N | GB_FLAG_H
+    return 4
+  }
+
+  // 0x37 SCF   0x3F CCF — Z survives both.
+  GB_OPS[0x37] = function () {
+    GB_REG[GB_R_F] = (GB_REG[GB_R_F] & GB_FLAG_Z) | GB_FLAG_C
+    return 4
+  }
+  GB_OPS[0x3f] = function () {
+    let f = GB_REG[GB_R_F]
+    GB_REG[GB_R_F] = (f & GB_FLAG_Z) | ((f & GB_FLAG_C) !== 0 ? 0 : GB_FLAG_C)
+    return 4
+  }
+
+  // =========================================================================
+  // 0x40-0x7F — LD r,r', with HALT sitting in the hole at 0x76
+  // =========================================================================
+
+  for (dst = 0; dst < 8; dst = dst + 1) {
+    for (src = 0; src < 8; src = src + 1) {
+      op = 0x40 + (dst << 3) + src
+      if (op !== 0x76) {
+        if (src === 6) {
+          GB_OPS[op] = gbOps_mkLdRHl(GB_R8_MAP[dst])
+        } else if (dst === 6) {
+          GB_OPS[op] = gbOps_mkLdHlR(GB_R8_MAP[src])
+        } else {
+          GB_OPS[op] = gbOps_mkLdRR(GB_R8_MAP[dst], GB_R8_MAP[src])
+        }
+      }
+    }
+  }
+
+  // 0x76 HALT. Raising the flag is all this does — gb_cpu owns the halt bug
+  // (HALT with IME clear and IE & IF non-zero) and the wake-up condition.
+  GB_OPS[0x76] = function () {
+    GB_CPUF[GB_P_HALTED] = 1
+    return 4
+  }
+
+  // =========================================================================
+  // 0x80-0xBF — ALU A,r. Selector in bits 5:3, register in bits 2:0.
+  // =========================================================================
+
+  let aluReg = [
+    gbOps_mkAddR, gbOps_mkAdcR, gbOps_mkSubR, gbOps_mkSbcR,
+    gbOps_mkAndR, gbOps_mkXorR, gbOps_mkOrR, gbOps_mkCpR
+  ]
+  let aluMem = [
+    gbOps_addM, gbOps_adcM, gbOps_subM, gbOps_sbcM,
+    gbOps_andM, gbOps_xorM, gbOps_orM, gbOps_cpM
+  ]
+
+  for (let sel = 0; sel < 8; sel = sel + 1) {
+    for (r = 0; r < 8; r = r + 1) {
+      op = 0x80 + (sel << 3) + r
+      if (r === 6) {
+        GB_OPS[op] = aluMem[sel]
+      } else {
+        GB_OPS[op] = aluReg[sel](GB_R8_MAP[r])
+      }
+    }
+  }
+
+  // 0xC6/0xCE/0xD6/0xDE/0xE6/0xEE/0xF6/0xFE — ALU A,n
+  GB_OPS[0xc6] = function () { gbOps_add8(gbCpu_fetchU8()); return 8 }
+  GB_OPS[0xce] = function () { gbOps_adc8(gbCpu_fetchU8()); return 8 }
+  GB_OPS[0xd6] = function () { gbOps_sub8(gbCpu_fetchU8()); return 8 }
+  GB_OPS[0xde] = function () { gbOps_sbc8(gbCpu_fetchU8()); return 8 }
+  GB_OPS[0xe6] = function () { gbOps_and8(gbCpu_fetchU8()); return 8 }
+  GB_OPS[0xee] = function () { gbOps_xor8(gbCpu_fetchU8()); return 8 }
+  GB_OPS[0xf6] = function () { gbOps_or8(gbCpu_fetchU8()); return 8 }
+  GB_OPS[0xfe] = function () { gbOps_cp8(gbCpu_fetchU8()); return 8 }
+
+  // =========================================================================
+  // 0xC0-0xFF — control flow, the stack, and the high-page loads
+  // =========================================================================
+
+  // Conditional RET / JP / CALL. The asymmetry is real hardware:
+  //   RET cc   20 taken /  8 not — the condition costs an M-cycle by itself
+  //   JP cc    16 taken / 12 not
+  //   CALL cc  24 taken / 12 not
+  for (i = 0; i < 4; i = i + 1) {
+    GB_OPS[0xc0 + i * 8] = gbOps_mkRetCc(condMask[i], condWant[i])
+    GB_OPS[0xc2 + i * 8] = gbOps_mkJpCc(condMask[i], condWant[i])
+    GB_OPS[0xc4 + i * 8] = gbOps_mkCallCc(condMask[i], condWant[i])
+  }
+
+  // 0xC3 JP nn
+  GB_OPS[0xc3] = function () {
+    let lo = gbCpu_fetchU8()
+    let hi = gbCpu_fetchU8()
+    GB_REG16[GB_R16_PC] = ((hi << 8) | lo) & 0xffff
+    return 16
+  }
+
+  // 0xCD CALL nn — both immediate bytes are consumed before the return address
+  // is pushed, so what lands on the stack is the address AFTER the operand.
+  GB_OPS[0xcd] = function () {
+    let lo = gbCpu_fetchU8()
+    let hi = gbCpu_fetchU8()
+    gbCpu_push16(GB_REG16[GB_R16_PC])
+    GB_REG16[GB_R16_PC] = ((hi << 8) | lo) & 0xffff
+    return 24
+  }
+
+  // 0xC9 RET   0xD9 RETI
+  GB_OPS[0xc9] = function () {
+    GB_REG16[GB_R16_PC] = gbCpu_pop16() & 0xffff
+    return 16
+  }
+  GB_OPS[0xd9] = function () {
+    GB_REG16[GB_R16_PC] = gbCpu_pop16() & 0xffff
+    GB_CPUF[GB_P_IME] = 1
+    GB_CPUF[GB_P_IME_PENDING] = 0
+    return 16
+  }
+
+  // 0xC1/0xD1/0xE1/0xF1 POP rr
+  GB_OPS[0xc1] = function () {
+    let v = gbCpu_pop16()
+    GB_REG[GB_R_B] = (v >>> 8) & 0xff
+    GB_REG[GB_R_C] = v & 0xff
+    return 12
+  }
+  GB_OPS[0xd1] = function () {
+    let v = gbCpu_pop16()
+    GB_REG[GB_R_D] = (v >>> 8) & 0xff
+    GB_REG[GB_R_E] = v & 0xff
+    return 12
+  }
+  GB_OPS[0xe1] = function () {
+    let v = gbCpu_pop16()
+    GB_REG[GB_R_H] = (v >>> 8) & 0xff
+    GB_REG[GB_R_L] = v & 0xff
+    return 12
+  }
+  // POP AF is the one place a program can write F directly, and the low nibble
+  // does not exist on hardware — it reads back as zero however it was pushed.
+  GB_OPS[0xf1] = function () {
+    let v = gbCpu_pop16()
+    GB_REG[GB_R_A] = (v >>> 8) & 0xff
+    GB_REG[GB_R_F] = v & 0xf0
+    return 12
+  }
+
+  // 0xC5/0xD5/0xE5/0xF5 PUSH rr
+  GB_OPS[0xc5] = function () {
+    gbCpu_push16((GB_REG[GB_R_B] << 8) | GB_REG[GB_R_C])
+    return 16
+  }
+  GB_OPS[0xd5] = function () {
+    gbCpu_push16((GB_REG[GB_R_D] << 8) | GB_REG[GB_R_E])
+    return 16
+  }
+  GB_OPS[0xe5] = function () {
+    gbCpu_push16((GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L])
+    return 16
+  }
+  GB_OPS[0xf5] = function () {
+    gbCpu_push16((GB_REG[GB_R_A] << 8) | (GB_REG[GB_R_F] & 0xf0))
+    return 16
+  }
+
+  // 0xC7/0xCF/0xD7/0xDF/0xE7/0xEF/0xF7/0xFF RST n
+  for (i = 0; i < 8; i = i + 1) {
+    GB_OPS[0xc7 + i * 8] = gbOps_mkRst(i * 8)
+  }
+
+  // 0xCB — the prefix. See the deviation note in the file header: the CB handler
+  // already returns the full hardware cost, so this returns it unchanged.
+  GB_OPS[0xcb] = function () {
+    let cb = gbCpu_fetchU8()
+    // Split for the same reason as gbCpu_step's dispatch: a member call is a
+    // slow path on this engine, a plain call through a local is not.
+    let handler = GB_CBOPS[cb]
+    return handler()
+  }
+
+  // 0xE0 LDH (n),A   0xF0 LDH A,(n)
+  GB_OPS[0xe0] = function () {
+    gbMmu_write(0xff00 | gbCpu_fetchU8(), GB_REG[GB_R_A])
+    return 12
+  }
+  GB_OPS[0xf0] = function () {
+    GB_REG[GB_R_A] = gbMmu_read(0xff00 | gbCpu_fetchU8())
+    return 12
+  }
+
+  // 0xE2 LDH (C),A   0xF2 LDH A,(C)
+  GB_OPS[0xe2] = function () {
+    gbMmu_write(0xff00 | GB_REG[GB_R_C], GB_REG[GB_R_A])
+    return 8
+  }
+  GB_OPS[0xf2] = function () {
+    GB_REG[GB_R_A] = gbMmu_read(0xff00 | GB_REG[GB_R_C])
+    return 8
+  }
+
+  // 0xE8 ADD SP,e8 — flags from the unsigned low byte; see gbOps_addSpSigned.
+  GB_OPS[0xe8] = function () {
+    let e = (gbCpu_fetchU8() << 24) >> 24
+    GB_REG16[GB_R16_SP] = gbOps_addSpSigned(e)
+    return 16
+  }
+
+  // 0xE9 JP HL — no memory access, no internal cycle. Four, not eight.
+  GB_OPS[0xe9] = function () {
+    GB_REG16[GB_R16_PC] = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    return 4
+  }
+
+  // 0xEA LD (nn),A   0xFA LD A,(nn)
+  GB_OPS[0xea] = function () {
+    let lo = gbCpu_fetchU8()
+    let hi = gbCpu_fetchU8()
+    gbMmu_write(((hi << 8) | lo) & 0xffff, GB_REG[GB_R_A])
+    return 16
+  }
+  GB_OPS[0xfa] = function () {
+    let lo = gbCpu_fetchU8()
+    let hi = gbCpu_fetchU8()
+    GB_REG[GB_R_A] = gbMmu_read(((hi << 8) | lo) & 0xffff)
+    return 16
+  }
+
+  // 0xF3 DI — immediate, and it cancels an EI that has not landed yet.
+  GB_OPS[0xf3] = function () {
+    GB_CPUF[GB_P_IME] = 0
+    GB_CPUF[GB_P_IME_PENDING] = 0
+    return 4
+  }
+  // 0xFB EI — delayed by one instruction; gb_cpu promotes the pending flag.
+  GB_OPS[0xfb] = function () {
+    GB_CPUF[GB_P_IME_PENDING] = 1
+    return 4
+  }
+
+  // 0xF8 LD HL,SP+e8 — the same flag maths as ADD SP,e8, result into HL.
+  GB_OPS[0xf8] = function () {
+    let e = (gbCpu_fetchU8() << 24) >> 24
+    let v = gbOps_addSpSigned(e)
+    GB_REG[GB_R_H] = (v >>> 8) & 0xff
+    GB_REG[GB_R_L] = v & 0xff
+    return 12
+  }
+
+  // 0xF9 LD SP,HL — eight, because of the internal cycle updating SP.
+  GB_OPS[0xf9] = function () {
+    GB_REG16[GB_R16_SP] = (GB_REG[GB_R_H] << 8) | GB_REG[GB_R_L]
+    return 8
+  }
+
+  // =========================================================================
+  // The CB table
+  //
+  //   bits 7:6  family — 00 rotate/shift, 01 BIT, 10 RES, 11 SET
+  //   bits 5:3  sub-op (rotate/shift) or bit number (BIT/RES/SET)
+  //   bits 2:0  register, with (HL) at 6
+  //
+  // 8 cycles for a register form, 16 for a read-modify-write at (HL), 12 for
+  // BIT n,(HL), which never writes back.
+  // =========================================================================
+
+  let cbReg = [
+    gbOps_mkCbRlcR, gbOps_mkCbRrcR, gbOps_mkCbRlR, gbOps_mkCbRrR,
+    gbOps_mkCbSlaR, gbOps_mkCbSraR, gbOps_mkCbSwapR, gbOps_mkCbSrlR
+  ]
+  let cbMem = [
+    gbOps_cbRlcHL, gbOps_cbRrcHL, gbOps_cbRlHL, gbOps_cbRrHL,
+    gbOps_cbSlaHL, gbOps_cbSraHL, gbOps_cbSwapHL, gbOps_cbSrlHL
+  ]
+
+  for (i = 0; i < 256; i = i + 1) {
+    let family = (i >>> 6) & 3
+    let sub = (i >>> 3) & 7
+    r = i & 7
+
+    if (family === 0) {
+      if (r === 6) {
+        GB_CBOPS[i] = cbMem[sub]
+      } else {
+        GB_CBOPS[i] = cbReg[sub](GB_R8_MAP[r])
+      }
+    } else if (family === 1) {
+      if (r === 6) {
+        GB_CBOPS[i] = gbOps_mkCbBitHL(1 << sub)
+      } else {
+        GB_CBOPS[i] = gbOps_mkCbBitR(GB_R8_MAP[r], 1 << sub)
+      }
+    } else if (family === 2) {
+      // The complement is computed here so RES is a single AND at run time.
+      if (r === 6) {
+        GB_CBOPS[i] = gbOps_mkCbResHL(0xff ^ (1 << sub))
+      } else {
+        GB_CBOPS[i] = gbOps_mkCbResR(GB_R8_MAP[r], 0xff ^ (1 << sub))
+      }
+    } else {
+      if (r === 6) {
+        GB_CBOPS[i] = gbOps_mkCbSetHL(1 << sub)
+      } else {
+        GB_CBOPS[i] = gbOps_mkCbSetR(GB_R8_MAP[r], 1 << sub)
+      }
+    }
+  }
+}

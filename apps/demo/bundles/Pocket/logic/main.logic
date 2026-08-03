@@ -1,0 +1,657 @@
+// Pocket — a handheld console emulator in a SoftN bundle.
+//
+// The emulator itself is the nine gb_*.logic modules below; this file is only
+// the app around them. It owns nothing of the machine — no memory, no
+// registers, no timing — and calls exactly the entry points CONTRACT.md §3.8
+// names.
+//
+// Import order is CONTRACT.md §1.2. `import` here is a textual preprocessor
+// directive: every one of these files is inlined into a single translation
+// unit sharing one global namespace, so the order below is the order the
+// source is concatenated in. Function declarations hoist, so it matters for
+// reading rather than for linking — but a later reader should still meet a
+// name after the storage it lives in.
+
+import "./gb_state.logic"
+import "./gb_cart.logic"
+import "./gb_ppu.logic"
+import "./gb_apu.logic"
+import "./gb_timer.logic"
+import "./gb_mmu.logic"
+import "./gb_ops.logic"
+import "./gb_cpu.logic"
+import "./gb_machine.logic"
+
+// ---------------------------------------------------------------------------
+// UI state
+//
+// gb_state.logic already owns the nine machine-facing scalars of CONTRACT.md
+// §7.4 — gbTitle, gbRunning, gbRomLoaded, gbGbcMode, gbMapperName, gbFps,
+// gbFrameCounter, gbStatus, gbError. Nothing here redeclares them.
+//
+// Everything below is shell state and is deliberately short: each plain-value
+// global is read out of the VM and deep-compared on every host call, and a
+// bundle that calls getFrame sixty times a second pays that sixty times a
+// second. Frame pixels, audio and the pad mask are not here — they are typed
+// arrays inside the machine, or they cross as a return value.
+// ---------------------------------------------------------------------------
+
+let romName = ""
+let romSize = ""
+let loading = false
+let hintText = "Choose a .gb or .gbc cartridge to begin"
+let fpsText = "—"
+let audioReady = false
+let audioRate = ""
+let muted = false
+
+// Whether the side panel is showing as a drawer.
+//
+// Only ever true on a narrow or short screen: everywhere else the panel is laid
+// out beside the console and this does nothing. In landscape the console takes
+// the whole viewport height, which put the cartridge chooser and the save slots
+// below the fold with nothing on screen to reach them — including before a
+// cartridge is loaded, when the panel is the only thing worth reaching.
+let menuOpen = false
+
+function toggleMenu() {
+  menuOpen = !menuOpen
+}
+
+function closeMenu() {
+  menuOpen = false
+}
+
+// The live pad mask, active high, CONTRACT.md §7.3 bit order:
+//   0x01 A  0x02 B  0x04 Select  0x08 Start
+//   0x10 Right  0x20 Left  0x40 Up  0x80 Down
+//
+// A plain number rather than a typed array because it is one byte that the
+// template also wants to read back for the pressed-state styling, and because
+// eight booleans would cost eight deep compares instead of one.
+let padMask = 0
+
+// Held flags for the two face buttons, mirrored out of padMask.
+//
+// The template needs these as plain booleans: `padMask & 0x01 ? a : b` inside a
+// style object is a parse error in .ui — the parser reads the `&` as the end of
+// the expression and the next string as another attribute name. Two booleans
+// cost two compares per sync, which is nothing next to getting the bit test out
+// of the template.
+let btnA = false
+let btnB = false
+
+// Countdown per pad bit for tap-latched presses, in emulated frames.
+//
+// A Uint8Array rather than eight scalars or a plain array: typed arrays
+// marshal to an opaque slot and are skipped by the state sync entirely, so
+// this costs nothing on the sixty host calls a second that getFrame makes.
+let padTapFrames = null
+
+function _init() {
+  padTapFrames = new Uint8Array(8)
+  batPending = new Uint8Array(1)
+  // Builds the 512 opcode closures and zeroes the machine. Once, ever —
+  // calling it twice would rebuild tables the dispatch already points at.
+  gbMachine_init()
+
+  // The only route to a real button hold: `@click` is a tap, and `@pointerdown`
+  // capitalises to `onPointerdown`, which React ignores. The runtime bridges
+  // whatever types are registered here to real browser events — it hardcodes no
+  // bindings — so this is what makes the keys on the bezel actually do anything.
+  //
+  // blur matters as much as the other two: a keyup delivered while the window
+  // is not focused lands on whoever took focus, so a direction held during an
+  // alt-tab would stay down forever.
+  window.addEventListener("keydown", keyDown)
+  window.addEventListener("keyup", keyUp)
+  window.addEventListener("blur", padClear)
+
+  gbStatus = "No cartridge"
+}
+
+// ---------------------------------------------------------------------------
+// Loading a cartridge
+//
+// <FileChooser> hands back a descriptor with a `ref`, not the bytes; the bytes
+// come back through softn.files.readBase64, which is why permission.json asks
+// for `files`. base64 is also exactly the form gbMachine_loadRomBase64 wants,
+// so nothing decodes it on this side of the boundary — Uint8Array.fromBase64
+// inside the machine is the only decode, and typed arrays cannot cross the
+// boundary anyway (CONTRACT.md §1.8).
+// ---------------------------------------------------------------------------
+
+function chooseRom(files) {
+  if (!files || files.length === 0) { return }
+  let file = files[0]
+
+  loading = true
+  gbError = ""
+  gbStatus = "Reading " + file.name + "…"
+  romName = file.name
+  romSize = formatSize(file.size)
+
+  softn.files.readBase64(file.ref, function (result) {
+    loading = false
+    let payload = romPayload(result)
+    if (payload === "") {
+      gbError = "Could not read that file."
+      gbStatus = "Load failed"
+      return
+    }
+    acceptRom(payload)
+  })
+}
+
+// files.readBase64 resolves what FileReader.readAsDataURL produced, which is a
+// full data URL — "data:application/octet-stream;base64,TkVUUE..." — and not
+// the bare base64 its name suggests. Uint8Array.fromBase64 rejects the prefix,
+// so it comes off here. Handled defensively rather than assumed, since a host
+// that ever does return bare base64 should keep working.
+function romPayload(result) {
+  let s = result
+  if (s && typeof s === "object") {
+    // Some hosts wrap the value; take the first field that looks like one.
+    if (typeof s.data === "string") { s = s.data }
+    else if (typeof s.dataUrl === "string") { s = s.dataUrl }
+    else { return "" }
+  }
+  if (typeof s !== "string" || s === "") { return "" }
+
+  let comma = s.indexOf(",")
+  if (comma >= 0 && s.slice(0, 5) === "data:") { return s.slice(comma + 1) }
+  return s
+}
+
+// Split from the callback so the load path is testable without a file picker.
+function acceptRom(base64) {
+  if (!gbMachine_loadRomBase64(base64)) {
+    // gbMachine_loadRomBase64 sets gbError itself when it can say why —
+    // a truncated file, a header that is not a cartridge. Only fill in a
+    // generic line when it did not.
+    if (gbError === "") { gbError = "That file is not a supported cartridge." }
+    gbStatus = "Load failed"
+    hintText = "Choose a .gb or .gbc cartridge to begin"
+    return
+  }
+
+  // Before the first frame runs: the cart has to see its own SRAM at boot, or
+  // the game decides the file is corrupt and offers a new one.
+  restoreBattery()
+
+  gbMachine_setRunning(true)
+  hintText = ""
+  padMask = 0
+  btnA = false
+  btnB = false
+  gbMachine_setButtons(0)
+
+  batPending[0] = 0
+  saveStatus = ""
+  refreshSlots()
+  // Straight back to the game once a cartridge is in.
+  closeMenu()
+}
+
+function formatSize(bytes) {
+  if (!(bytes > 0)) { return "" }
+  if (bytes < 1024) { return bytes + " B" }
+  if (bytes < 1048576) { return Math.round(bytes / 1024) + " KB" }
+  return (bytes / 1048576).toFixed(1) + " MB"
+}
+
+// ---------------------------------------------------------------------------
+// The two pull callables
+//
+// <PixelCanvas> calls frameSource() once per requestAnimationFrame and
+// <AudioStream> calls sampleSource() on its own schedule, driven by how far
+// ahead its queue runs. Neither is named tick/update/animate/render —
+// CONTRACT.md §1.7, those are dropped at queue depth 32.
+//
+// Both advance the machine, and which one is really driving depends on whether
+// the browser is keeping up. While rAF holds 60Hz, frameSource does all the
+// stepping and sampleSource just drains a ring that is already full. When a
+// frame runs long — a slow machine, a throttled tab, a display that is not
+// 60Hz — sampleSource finds the ring short and emulates the difference itself,
+// so the clock falls back to the AudioContext. Without that the music slows
+// down with the video: right pitch, wrong tempo, which is far more obvious to a
+// listener than a dropped frame is to a viewer.
+// ---------------------------------------------------------------------------
+
+function frameSource() {
+  releaseExpiredTaps()
+  pollBattery()
+  return gbMachine_getFrame()
+}
+
+function sampleSource(want) {
+  return gbMachine_getSamples(want)
+}
+
+// <AudioStream> reports the rate the browser actually gave it, which is not
+// necessarily the rate that was asked for — Safari refuses rates it cannot do
+// natively. The machine derives its samples-per-frame from this, so it has to
+// arrive before the first drain.
+function audioStarted(rate, info) {
+  audioReady = true
+  audioRate = Math.round(rate) + " Hz"
+  gbMachine_setSampleRate(rate)
+}
+
+function audioFailed(reason) {
+  audioReady = false
+  audioRate = ""
+  // Not fatal: the picture is still worth having. Say so rather than setting
+  // gbError, which the shell renders as a broken machine.
+  hintText = "Sound unavailable — " + reason
+}
+
+// PixelCanvas measures the frames it actually painted, which is the honest
+// number: it counts what reached the screen, not what the emulator believed it
+// produced. gbFps is the machine's own measurement of completed emulated
+// frames; both are shown because a gap between them is the interesting case.
+function fpsReport(fps) {
+  fpsText = fps.toFixed(1)
+}
+
+// ---------------------------------------------------------------------------
+// Joypad
+//
+// The whole mask goes down every time it changes, never deltas — gb_mmu
+// compares against the previous mask to find newly-pressed bits and raise the
+// joypad interrupt, and a delta protocol would desynchronise the moment one
+// update was dropped.
+//
+// Opposing directions are passed straight through. Real hardware allows
+// Left+Right and a few games rely on the glitch; sanitising is the shell's
+// choice to make and this shell chooses not to.
+// ---------------------------------------------------------------------------
+
+function padDown(bit) {
+  let next = padMask | bit
+  if (next === padMask) { return }
+  padMask = next
+  btnA = (padMask & 0x01) !== 0
+  btnB = (padMask & 0x02) !== 0
+  gbMachine_setButtons(padMask)
+}
+
+function padUp(bit) {
+  let next = padMask & ~bit
+  if (next === padMask) { return }
+  padMask = next
+  btnA = (padMask & 0x01) !== 0
+  btnB = (padMask & 0x02) !== 0
+  gbMachine_setButtons(padMask)
+}
+
+// <DPad> reports a direction by name; the emulator wants the bit.
+function dpadPress(dir) {
+  padDown(dirBit(dir))
+}
+
+function dpadRelease(dir) {
+  padUp(dirBit(dir))
+}
+
+function dirBit(dir) {
+  if (dir === "right") { return 0x10 }
+  if (dir === "left") { return 0x20 }
+  if (dir === "up") { return 0x40 }
+  if (dir === "down") { return 0x80 }
+  return 0
+}
+
+// Tap-latched press, for the face buttons.
+//
+// A template can only send `@click` — the event name is capitalised as
+// `on` + first letter, so `@pointerdown` becomes `onPointerdown`, which React
+// does not recognise, and there is no press/release pair to bind. <DPad> is
+// the exception: it exposes onPress/onRelease itself, so the directions use
+// the real thing and only A/B/Start/Select come through here.
+//
+// Four frames is the shortest hold a game reliably samples: the joypad is
+// usually read once per frame, and a one-frame press can land entirely between
+// two reads and be missed.
+function padTap(bit) {
+  let slot = bitSlot(bit)
+  if (slot < 0) { return }
+  padTapFrames[slot] = 4
+  padDown(bit)
+}
+
+// One nullary handler per face button, because the template cannot pass the bit.
+//
+// The .ui lexer's number scanner reads decimal digits only — there is no hex
+// literal — so `@click={padTap(0x01)}` lexed as `0` followed by an identifier
+// `x01`, padTap got 0, bitSlot(0) returned -1 and it returned early. Every
+// on-screen button silently did nothing while the keyboard, which never goes
+// through a template expression, worked fine.
+//
+// Decimal would fix it, but a bit mask does not belong in a template either.
+// These name the button instead, and there is no literal left to mis-lex.
+function tapA() { padTap(0x01) }
+function tapB() { padTap(0x02) }
+function tapSelect() { padTap(0x04) }
+function tapStart() { padTap(0x08) }
+
+function bitSlot(bit) {
+  if (bit === 0x01) { return 0 }
+  if (bit === 0x02) { return 1 }
+  if (bit === 0x04) { return 2 }
+  if (bit === 0x08) { return 3 }
+  if (bit === 0x10) { return 4 }
+  if (bit === 0x20) { return 5 }
+  if (bit === 0x40) { return 6 }
+  if (bit === 0x80) { return 7 }
+  return -1
+}
+
+// Called at the top of every frame. Only touches bits that are actually
+// latched, so the common case is eight compares against zero.
+function releaseExpiredTaps() {
+  if (padTapFrames === null) { return }
+  for (let i = 0; i < 8; i = i + 1) {
+    let left = padTapFrames[i]
+    if (left === 0) { continue }
+    left = left - 1
+    padTapFrames[i] = left
+    if (left === 0) { padUp(1 << i) }
+  }
+}
+
+// A pointer that leaves the window never sends its release, so the button
+// would stay stuck down. The shell calls this on blur.
+function padClear() {
+  // The latches are cleared even when the mask is already empty: a tap started
+  // on the frame focus was lost still has frames on its counter, and leaving it
+  // there would fire a phantom release into the next thing the player does.
+  if (padTapFrames) { padTapFrames.fill(0) }
+  if (padMask === 0) { return }
+  padMask = 0
+  btnA = false
+  btnB = false
+  gbMachine_setButtons(0)
+}
+
+// Physical keys, for a desktop. Mapped here rather than in the template so the
+// two input paths agree on one bit table.
+//
+// Matched on event.code first and event.key second. code is the physical key
+// position, so WASD stays under the same fingers on an AZERTY keyboard where
+// key would report "z" for the W position — and it is unaffected by a held
+// Shift, which turns key into "Z" and would otherwise drop the press. key is
+// still the fallback, because it is the one that names "Shift" and "Enter"
+// without caring which side of the keyboard they are on.
+function keyBit(key) {
+  if (key === "ArrowRight" || key === "KeyD" || key === "d") { return 0x10 }
+  if (key === "ArrowLeft" || key === "KeyA" || key === "a") { return 0x20 }
+  if (key === "ArrowUp" || key === "KeyW" || key === "w") { return 0x40 }
+  if (key === "ArrowDown" || key === "KeyS" || key === "s") { return 0x80 }
+  if (key === "KeyZ" || key === "z" || key === "KeyJ" || key === "j") { return 0x01 }
+  if (key === "KeyX" || key === "x" || key === "KeyK" || key === "k") { return 0x02 }
+  if (key === "Shift" || key === "ShiftLeft" || key === "ShiftRight") { return 0x04 }
+  if (key === "Enter") { return 0x08 }
+  return 0
+}
+
+// The event that reaches here is not a DOM event — it is the plain object the
+// runtime extracts from one, carrying type/key/code/repeat and the modifier
+// flags. preventDefault is a method and does not survive that, so calling it
+// unguarded throws inside the handler and the key is silently dead. Guarded, it
+// works if the runtime ever starts forwarding it.
+function eventBit(event) {
+  let bit = keyBit(event.code)
+  if (bit === 0) { bit = keyBit(event.key) }
+  return bit
+}
+
+function keyDown(event) {
+  let bit = eventBit(event)
+  if (bit === 0) { return }
+  if (event.preventDefault) { event.preventDefault() }
+  // keydown repeats while a key is held. padDown returns early on a bit that is
+  // already set, so a repeat costs one compare and never re-enters the machine.
+  padDown(bit)
+}
+
+function keyUp(event) {
+  let bit = eventBit(event)
+  if (bit === 0) { return }
+  if (event.preventDefault) { event.preventDefault() }
+  // A key released mid-tap-latch has to clear the latch too, or
+  // releaseExpiredTaps lifts a button the player is still holding.
+  let slot = bitSlot(bit)
+  if (slot >= 0) { padTapFrames[slot] = 0 }
+  padUp(bit)
+}
+
+// ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
+
+function togglePause() {
+  if (!gbRomLoaded) { return }
+  gbMachine_setRunning(!gbRunning)
+}
+
+function resetMachine() {
+  if (!gbRomLoaded) { return }
+  gbMachine_reset()
+  padMask = 0
+  btnA = false
+  btnB = false
+  gbMachine_setButtons(0)
+  gbMachine_setRunning(true)
+}
+
+function toggleMute() {
+  muted = !muted
+}
+
+// Whether a pad bit is currently down, for the template's pressed styling.
+function padHeld(bit) {
+  return (padMask & bit) !== 0
+}
+
+// ---------------------------------------------------------------------------
+// Saving
+//
+// Two different things, both called "saving", and a player wants both:
+//
+//   Battery RAM is the cartridge's own save — what the in-game SAVE menu writes.
+//   It is 32KB of SRAM on a real Pokémon cart, kept alive by a coin cell. It
+//   persists automatically here, because on hardware the player never thinks
+//   about it: they save in-game, switch the console off, and it is there.
+//
+//   Save states are a snapshot of the entire machine — every register, all of
+//   WRAM and VRAM, the PPU mid-scanline, the APU's envelopes. They restore the
+//   exact instant they were taken, which no cartridge could ever do. 168KB each.
+//
+// Both live in localStorage, which the runtime scopes to this app (softn:{appId}:)
+// so no other bundle can read a player's save.
+// ---------------------------------------------------------------------------
+
+let slot1 = "Empty"
+let slot2 = "Empty"
+let slot3 = "Empty"
+let saveStatus = ""
+
+// Frames until the battery is written out, or 0 when nothing is pending.
+//
+// A Uint8Array rather than a scalar: this is touched on the 60-times-a-second
+// frameSource path, and a plain number there is deep-compared on every host
+// call for the whole session. Typed arrays are skipped by the state sync.
+let batPending = null
+
+// Which cartridge a save belongs to.
+//
+// Title alone is not enough — every Pokémon Red revision says "POKEMON RED" —
+// so this folds in the header's global checksum and the ROM length. Two dumps
+// of the same game agree; a different game, or a different revision, does not,
+// and nobody loads a Zelda state into Pokémon.
+function cartKey() {
+  if (GB_ROM === null || GB_ROM.length < 0x150) { return "" }
+  let sum = (GB_ROM[0x14e] << 8) | GB_ROM[0x14f]
+  return gbTitle + "-" + sum.toString(16) + "-" + GB_ROM.length.toString(16)
+}
+
+function stateKey(n) {
+  return "pocket:state:" + cartKey() + ":" + n
+}
+
+function batteryKey() {
+  return "pocket:battery:" + cartKey()
+}
+
+function readStore(key) {
+  try {
+    let v = localStorage.getItem(key)
+    if (typeof v === "string") { return v }
+  } catch (error) {}
+  return ""
+}
+
+// Returns "" on success, or a message. Quota is the failure that actually
+// happens: three slots is half a megabyte, and a browser that says no says it
+// here rather than at read time.
+function writeStore(key, value) {
+  try {
+    localStorage.setItem(key, value)
+    return ""
+  } catch (error) {
+    return "No room left to save. Delete a slot and try again."
+  }
+}
+
+function clearStore(key) {
+  try { localStorage.removeItem(key) } catch (error) {}
+}
+
+// ---- Save states ----------------------------------------------------------
+
+function refreshSlots() {
+  slot1 = slotLabel(1)
+  slot2 = slotLabel(2)
+  slot3 = slotLabel(3)
+}
+
+function slotLabel(n) {
+  if (!gbRomLoaded) { return "Empty" }
+  let raw = readStore(stateKey(n))
+  if (raw === "") { return "Empty" }
+  let stamp = readStore(stateKey(n) + ":at")
+  if (stamp === "") { return "Saved" }
+  return stamp
+}
+
+function saveSlot(n) {
+  if (!gbRomLoaded) { return }
+  let s = gbMachine_saveState()
+  if (s === "") {
+    saveStatus = gbError === "" ? "Could not save." : gbError
+    return
+  }
+  let failed = writeStore(stateKey(n), s)
+  if (failed !== "") {
+    saveStatus = failed
+    return
+  }
+  writeStore(stateKey(n) + ":at", stampNow())
+  refreshSlots()
+  saveStatus = "Saved to slot " + n
+}
+
+function loadSlot(n) {
+  if (!gbRomLoaded) { return }
+  let raw = readStore(stateKey(n))
+  if (raw === "") {
+    saveStatus = "Slot " + n + " is empty"
+    return
+  }
+  if (!gbMachine_loadState(raw)) {
+    saveStatus = gbError === "" ? "That state would not load." : gbError
+    return
+  }
+  // A state restores the pad as it was recorded, which is not where the
+  // player's hands are now.
+  padClear()
+  saveStatus = "Loaded slot " + n
+  // Loading is the last thing anyone does in the drawer.
+  closeMenu()
+}
+
+function clearSlot(n) {
+  clearStore(stateKey(n))
+  clearStore(stateKey(n) + ":at")
+  refreshSlots()
+  saveStatus = "Cleared slot " + n
+}
+
+// The template cannot pass anything but a literal, and these read better than
+// a number at the call site anyway.
+function saveSlot1() { saveSlot(1) }
+function saveSlot2() { saveSlot(2) }
+function saveSlot3() { saveSlot(3) }
+function loadSlot1() { loadSlot(1) }
+function loadSlot2() { loadSlot(2) }
+function loadSlot3() { loadSlot(3) }
+
+// A date, without Date. zipp has it, but the state sync would rather not carry
+// a Date object and the frame counter is a truthful enough clock: it is exactly
+// how much of the game has been played.
+function stampNow() {
+  let mins = Math.floor(GB_CTR[GB_C_FRAME] / 3584)
+  if (mins < 1) { return "just started" }
+  if (mins < 60) { return mins + " min in" }
+  let hrs = Math.floor(mins / 60)
+  return hrs + "h " + (mins - hrs * 60) + "m in"
+}
+
+// ---- Battery RAM ----------------------------------------------------------
+
+// Called every frame. The common case is a cart with no battery, or one whose
+// RAM has not moved, and costs one typed-array read.
+function pollBattery() {
+  if (batPending === null) { return }
+
+  if (gbCart_ramDirty()) {
+    gbCart_clearRamDirty()
+    // Restart the countdown rather than writing now. An in-game save touches
+    // SRAM hundreds of times across a second or so; persisting on every touch
+    // would base64 32KB hundreds of times and stutter the frame it lands on.
+    batPending[0] = 90
+    return
+  }
+
+  if (batPending[0] === 0) { return }
+  batPending[0] = batPending[0] - 1
+  if (batPending[0] === 0) { persistBattery() }
+}
+
+function persistBattery() {
+  if (!gbRomLoaded) { return }
+  if (!gbCart_hasBattery()) { return }
+  let data = gbCart_batteryToBase64()
+  if (data === "") { return }
+  writeStore(batteryKey(), data)
+}
+
+function restoreBattery() {
+  if (!gbRomLoaded) { return }
+  if (!gbCart_hasBattery()) { return }
+  let data = readStore(batteryKey())
+  if (data === "") { return }
+  if (!gbCart_batteryFromBase64(data)) {
+    // A corrupt battery must not stop the cart booting — the game will just
+    // offer a new file, which is what a dead coin cell does on hardware.
+    gbError = ""
+    return
+  }
+  gbCart_clearRamDirty()
+}
+
+function eraseBattery() {
+  clearStore(batteryKey())
+  saveStatus = "Cartridge save erased. Reset to see it."
+}

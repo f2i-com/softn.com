@@ -76,6 +76,8 @@ import { Collapse } from './utility/Collapse';
 import { Tooltip } from './utility/Tooltip';
 import { Loop } from './utility/Loop';
 import { PixelGrid } from './utility/PixelGrid';
+import { PixelCanvas } from './utility/PixelCanvas';
+import { AudioStream } from './utility/AudioStream';
 import { QRCode } from './utility/QRCode';
 import { QRReader } from './utility/QRReader';
 import { Camera } from './utility/Camera';
@@ -192,6 +194,8 @@ export const builtinComponents = {
   Tooltip,
   Loop,
   PixelGrid,
+  PixelCanvas,
+  AudioStream,
   QRCode,
   QRReader,
   Camera,
