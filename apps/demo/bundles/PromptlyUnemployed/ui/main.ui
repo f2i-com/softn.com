@@ -48,21 +48,27 @@
       <Button @click={toggleMute} style={{ padding: "4px 12px", fontSize: "12px" }}>{muted ? "Unmute" : "Mute"}</Button>
       <Button @click={toggleTranscript} style={{ padding: "4px 12px", fontSize: "12px" }}>Transcript</Button>
     </Stack>
-    <Scene3D
-      width={880}
-      height={460}
-      objects={objects}
-      lights={lights}
-      camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 75 }}
-      antialias={true}
-      shadows={false}
-      expandable={true}
-      mouseLook={true}
-      fog={sceneFog}
-      background={sceneBg}
-      @click={onSceneClick}
-      style={{ borderRadius: "12px", border: "1px solid #2a3242", maxWidth: "100%" }}
-    />
+    <Box style={{ position: "relative", width: "fit-content", maxWidth: "100%" }}>
+      <Scene3D
+        width={880}
+        height={460}
+        objects={objects}
+        lights={lights}
+        camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 75 }}
+        antialias={true}
+        shadows={false}
+        expandable={true}
+        mouseLook={true}
+        fog={sceneFog}
+        background={sceneBg}
+        @click={onSceneClick}
+        style={{ borderRadius: "12px", border: "1px solid #2a3242", maxWidth: "100%" }}
+      />
+      <Box if={cutActive || scene === "meeting"} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "38px", background: "#000", opacity: 0.92, borderRadius: "12px 12px 0 0", pointerEvents: "none" }} />
+      <Box if={cutActive || scene === "meeting"} style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: "38px", background: "#000", opacity: 0.92, borderRadius: "0 0 12px 12px", pointerEvents: "none" }} />
+      <Button if={cutActive} @click={skipCutscene} style={{ position: "absolute", top: "46px", right: "10px", fontSize: "11px", opacity: 0.75, padding: "4px 10px" }}>Skip ▸</Button>
+      <Box if={fadeOp > 0} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", background: "#000", opacity: fadeOp, pointerEvents: "none", borderRadius: "12px" }} />
+    </Box>
   </Box>
 
   <!-- Scene 1: debug-card puzzle -->
@@ -303,7 +309,7 @@
   </Box>
 
   <!-- Controls -->
-  <Stack if={canMove()} direction="horizontal" gap={14} style={{ alignItems: "center" }}>
+  <Stack if={canMove() && !cutActive} direction="horizontal" gap={14} style={{ alignItems: "center" }}>
     <DPad @press={padPress} @release={padRelease} />
     <Button @click={interactPressed} style={{ padding: "14px 20px", fontWeight: 700 }}>Use (E)</Button>
     <Text style={{ fontSize: "11px", color: "#4b5563" }}>WASD move · ◀▶ turn · drag to look</Text>
