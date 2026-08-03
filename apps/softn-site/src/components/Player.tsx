@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Code } from '../lib/highlight';
 import { runtimeUrlFor } from '../lib/appUrls';
 import { DEFAULT_DEMO_ID, formatBytes, loadDemoIndex, loadDemoSource, type Demo, type DemoSource } from '../lib/demos';
@@ -15,18 +15,35 @@ export function Player(): React.ReactElement {
   const [source, setSource] = useState<DemoSource | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
   const [frameLive, setFrameLive] = useState(false);
+  const frameRef = useRef<HTMLIFrameElement>(null);
+
+  const runtimeOrigin = useMemo(() => {
+    if (typeof window === 'undefined' || !selectedId || !demos) return null;
+    const selectedDemo = demos.find((demo) => demo.id === selectedId);
+    if (!selectedDemo) return null;
+    try {
+      return new URL(runtimeUrlFor(selectedDemo.file, { embed: true }), window.location.href).origin;
+    } catch {
+      return null;
+    }
+  }, [demos, selectedId]);
 
   // The runtime posts this once the bundle has parsed and the app has replaced
   // its own spinner. The iframe's load event fires seconds earlier, so lighting
   // the badge on that instead would claim "live" over a loading screen.
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
+      // `postMessage` is global to the page. An extension, another iframe or a
+      // runtime that navigated away must not be able to make this player claim
+      // the selected demo is live.
+      if (!runtimeOrigin || event.origin !== runtimeOrigin) return;
+      if (event.source !== frameRef.current?.contentWindow) return;
       const data = event.data as { type?: string } | null;
       if (data && typeof data === 'object' && data.type === 'softn:app-ready') setFrameLive(true);
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, []);
+  }, [runtimeOrigin]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -104,6 +121,7 @@ export function Player(): React.ReactElement {
           <div className="panel-stage">
             {selected ? (
               <iframe
+                ref={frameRef}
                 key={selected.file}
                 src={runtimeUrlFor(selected.file, { embed: true })}
                 title={`${selected.name} running in the SoftN web runtime`}

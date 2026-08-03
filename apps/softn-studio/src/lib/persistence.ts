@@ -54,8 +54,22 @@ type PersistedVFS = {
   }>;
 };
 
-function canUseStorage(): boolean {
-  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+function getStorage(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage;
+  } catch {
+    // Accessing the property itself can throw in privacy-restricted contexts.
+    return null;
+  }
+}
+
+function readItem(key: string): string | null {
+  try {
+    return getStorage()?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -70,7 +84,9 @@ function canUseStorage(): boolean {
  */
 function writeItem(key: string, value: string): boolean {
   try {
-    window.localStorage.setItem(key, value);
+    const storage = getStorage();
+    if (!storage) return false;
+    storage.setItem(key, value);
     return true;
   } catch (error) {
     const quota = error instanceof DOMException && /quota/i.test(error.name + error.message);
@@ -85,32 +101,41 @@ function writeItem(key: string, value: string): boolean {
 }
 
 export function saveWorkspaceSnapshot(snapshot: PersistedWorkspace): void {
-  if (!canUseStorage()) return;
   writeItem(STORAGE_KEYS.workspace, JSON.stringify(snapshot));
 }
 
 export function loadWorkspaceSnapshot(): PersistedWorkspace | null {
-  if (!canUseStorage()) return null;
-  const raw = window.localStorage.getItem(STORAGE_KEYS.workspace);
+  const raw = readItem(STORAGE_KEYS.workspace);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as PersistedWorkspace;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || typeof (parsed as { projectName?: unknown }).projectName !== 'string') {
+      return null;
+    }
+    return parsed as PersistedWorkspace;
   } catch {
     return null;
   }
 }
 
 export function saveAISnapshot(snapshot: PersistedAI): void {
-  if (!canUseStorage()) return;
   writeItem(STORAGE_KEYS.ai, JSON.stringify(snapshot));
 }
 
 export function loadAISnapshot(): PersistedAI | null {
-  if (!canUseStorage()) return null;
-  const raw = window.localStorage.getItem(STORAGE_KEYS.ai);
+  const raw = readItem(STORAGE_KEYS.ai);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as PersistedAI;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      !Array.isArray((parsed as { providers?: unknown }).providers) ||
+      !Array.isArray((parsed as { messages?: unknown }).messages)
+    ) {
+      return null;
+    }
+    return parsed as PersistedAI;
   } catch {
     return null;
   }
@@ -125,7 +150,6 @@ function arrayBufferToBase64(bytes: Uint8Array): string {
 }
 
 export function saveVFSSnapshot(files: Map<string, VFSFile>): void {
-  if (!canUseStorage()) return;
   const payload: PersistedVFS = {
     files: Array.from(files.values()).map((file) => ({
       path: file.path,
@@ -143,38 +167,61 @@ export function saveVFSSnapshot(files: Map<string, VFSFile>): void {
 }
 
 export function loadVFSSnapshot(): PersistedVFS | null {
-  if (!canUseStorage()) return null;
-  const raw = window.localStorage.getItem(STORAGE_KEYS.vfs);
+  const raw = readItem(STORAGE_KEYS.vfs);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as PersistedVFS;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { files?: unknown }).files)) {
+      return null;
+    }
+    return parsed as PersistedVFS;
   } catch {
     return null;
   }
 }
 
 export function decodePersistedVFS(snapshot: PersistedVFS): Array<{ path: string; content: string | Uint8Array }> {
-  return snapshot.files.map((file) => ({
-    path: file.path,
-    content: file.kind === 'text'
-      ? file.content
-      : Uint8Array.from(atob(file.content), (char) => char.charCodeAt(0)),
-  }));
+  if (!snapshot || !Array.isArray(snapshot.files)) return [];
+  const decoded: Array<{ path: string; content: string | Uint8Array }> = [];
+  for (const file of snapshot.files) {
+    if (!file || typeof file.path !== 'string' || typeof file.content !== 'string') continue;
+    if (file.kind === 'text') {
+      decoded.push({ path: file.path, content: file.content });
+      continue;
+    }
+    if (file.kind !== 'binary') continue;
+    try {
+      decoded.push({
+        path: file.path,
+        content: Uint8Array.from(atob(file.content), (char) => char.charCodeAt(0)),
+      });
+    } catch {
+      // One corrupt saved asset should not make the whole Studio fail to boot.
+    }
+  }
+  return decoded;
 }
 
 export function loadRecentProjects(): RecentProjectRecord[] {
-  if (!canUseStorage()) return [];
-  const raw = window.localStorage.getItem(STORAGE_KEYS.recent);
+  const raw = readItem(STORAGE_KEYS.recent);
   if (!raw) return [];
   try {
-    return JSON.parse(raw) as RecentProjectRecord[];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is RecentProjectRecord => (
+      !!item &&
+      typeof item === 'object' &&
+      typeof (item as { id?: unknown }).id === 'string' &&
+      typeof (item as { name?: unknown }).name === 'string' &&
+      typeof (item as { target?: unknown }).target === 'string' &&
+      typeof (item as { lastModified?: unknown }).lastModified === 'string'
+    ));
   } catch {
     return [];
   }
 }
 
 export function saveRecentProject(project: RecentProjectRecord): void {
-  if (!canUseStorage()) return;
   const existing = loadRecentProjects().filter(
     (item) => item.id !== project.id && item.name !== project.name,
   );
@@ -183,7 +230,8 @@ export function saveRecentProject(project: RecentProjectRecord): void {
 }
 
 export function removeRecentProject(id: string): void {
-  if (!canUseStorage()) return;
+  const storage = getStorage();
+  if (!storage) return;
   const all = loadRecentProjects();
   const removed = all.find((item) => item.id === id);
   const next = all.filter((item) => item.id !== id);
@@ -192,8 +240,12 @@ export function removeRecentProject(id: string): void {
   // If the removed project matches the currently saved workspace, clear all snapshots
   const workspace = loadWorkspaceSnapshot();
   if (workspace && removed && (workspace.projectId === id || workspace.projectName === removed.name)) {
-    window.localStorage.removeItem(STORAGE_KEYS.workspace);
-    window.localStorage.removeItem(STORAGE_KEYS.ai);
-    window.localStorage.removeItem(STORAGE_KEYS.vfs);
+    try {
+      storage.removeItem(STORAGE_KEYS.workspace);
+      storage.removeItem(STORAGE_KEYS.ai);
+      storage.removeItem(STORAGE_KEYS.vfs);
+    } catch {
+      // Storage may be revoked while the page is open; removal is best effort.
+    }
   }
 }

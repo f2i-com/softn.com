@@ -498,7 +498,13 @@ export function SoftNRenderer({
   useLayoutEffect(() => {
     // Restore scroll position
     if (scrollRef.current) {
-      window.scrollTo(scrollRef.current.x, scrollRef.current.y);
+      const { x, y } = scrollRef.current;
+      // Rendering normally leaves the viewport untouched. Avoid a redundant
+      // scrollTo in that common case (and in non-layout DOMs such as jsdom,
+      // where the API exists only as a noisy "not implemented" stub).
+      if (window.scrollX !== x || window.scrollY !== y) {
+        window.scrollTo(x, y);
+      }
     }
 
     // Restore focus
@@ -513,7 +519,9 @@ export function SoftNRenderer({
 
       // Try to find by name
       if (!element && name) {
-        element = document.querySelector(`${tagName.toLowerCase()}[name="${name}"]`);
+        element = Array.from(document.querySelectorAll<HTMLElement>(tagName.toLowerCase())).find(
+          (candidate) => candidate.getAttribute('name') === name
+        ) ?? null;
       }
 
       // Try to find by tag and index within container

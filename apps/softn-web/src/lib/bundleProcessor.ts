@@ -341,18 +341,94 @@ export function processBundle(
  * For URL imports (http/https), fetches with caching.
  */
 export function createImportResolver(
-  textFiles: Map<string, string>
+  textFiles: Map<string, string>,
+  permissionConfig: PermissionConfig | null = null
 ): (path: string) => Promise<string | null> {
   const urlCache = new Map<string, string>();
+
+  const remoteUrl = (value: string): URL | null => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      return null;
+    }
+
+    const permissions = permissionConfig?.permissions;
+    const net = permissions && typeof permissions === 'object' ? permissions.net : undefined;
+
+    // Remote imports are network access just as surely as fetch() in app logic.
+    // Missing permission.json is therefore deny-by-default too: only an
+    // explicit net.enabled grant reaches the network.
+    if (!net || typeof net !== 'object' || !net.enabled) return null;
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && net?.allow_http)) return null;
+    if (
+      Array.isArray(net?.allowed_hosts) &&
+      net.allowed_hosts.length > 0 &&
+      !net.allowed_hosts.includes(url.hostname)
+    ) {
+      return null;
+    }
+    return url;
+  };
+
+  const MAX_REMOTE_IMPORT_BYTES = 1024 * 1024;
+  const REMOTE_IMPORT_TIMEOUT_MS = 10_000;
+
+  const readBoundedText = async (response: Response): Promise<string | null> => {
+    const declared = response.headers.get('content-length');
+    if (declared !== null && Number(declared) > MAX_REMOTE_IMPORT_BYTES) return null;
+
+    if (!response.body) {
+      const bytes = await response.arrayBuffer();
+      if (bytes.byteLength > MAX_REMOTE_IMPORT_BYTES) return null;
+      return new TextDecoder().decode(bytes);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > MAX_REMOTE_IMPORT_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    return chunks.join('');
+  };
+
   return async (path: string): Promise<string | null> => {
     // URL imports — fetch with caching
     if (path.startsWith('http://') || path.startsWith('https://')) {
-      if (urlCache.has(path)) return urlCache.get(path)!;
-      const resp = await fetch(path);
-      if (!resp.ok) return null;
-      const text = await resp.text();
-      urlCache.set(path, text);
-      return text;
+      const requestedUrl = remoteUrl(path);
+      if (!requestedUrl) return null;
+      if (urlCache.has(requestedUrl.href)) return urlCache.get(requestedUrl.href)!;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REMOTE_IMPORT_TIMEOUT_MS);
+      try {
+        const response = await fetch(requestedUrl.href, { signal: controller.signal });
+        if (!response.ok) return null;
+
+        // Fetch follows redirects. Re-check the destination so an allowed host
+        // cannot bounce the import to a host the user did not approve.
+        if (response.url && !remoteUrl(response.url)) return null;
+
+        const text = await readBoundedText(response);
+        if (text === null) return null;
+        urlCache.set(requestedUrl.href, text);
+        return text;
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
     }
     // Bundle path lookup
     return textFiles.get(path) ?? null;
@@ -421,13 +497,20 @@ export function requestedCapabilities(config: PermissionConfig): string[] {
  * Object URLs, made once per asset and cached, so a list rendering the same
  * image fifty times allocates it once. They live as long as the tab does.
  */
+export interface AssetResolver {
+  (assetPath: string): string;
+  dispose(): void;
+}
+
 export function createAssetResolver(
   binaryFiles: Map<string, Uint8Array>,
   textFiles: Map<string, string>
-): (assetPath: string) => string {
+): AssetResolver {
   const urls = new Map<string, string>();
+  let disposed = false;
 
-  return (assetPath: string): string => {
+  const resolve = ((assetPath: string): string => {
+    if (disposed) return '';
     if (typeof assetPath !== 'string' || !assetPath) return '';
     // Same refusal as the icon path: nothing that climbs out of the bundle.
     if (assetPath.includes('..') || assetPath.startsWith('/') || /^[a-zA-Z]:/.test(assetPath)) return '';
@@ -456,7 +539,16 @@ export function createAssetResolver(
     } catch {
       return '';
     }
+  }) as AssetResolver;
+
+  resolve.dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const url of urls.values()) URL.revokeObjectURL(url);
+    urls.clear();
   };
+
+  return resolve;
 }
 
 /** Extensions already warned about, so a folder of fifty unknowns logs once. */

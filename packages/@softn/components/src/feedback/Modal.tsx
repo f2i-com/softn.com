@@ -57,6 +57,39 @@ const sizeValues: Record<string, string> = {
   full: '100%',
 };
 
+interface BodyScrollLock {
+  count: number;
+  originalOverflow: string;
+}
+
+// A page may contain more than one modal (or briefly overlap them during a
+// transition). Track locks per body so closing either instance cannot restore
+// scrolling while another dialog still owns a lock.
+const bodyScrollLocks = new WeakMap<HTMLElement, BodyScrollLock>();
+
+function lockBodyScroll(body: HTMLElement): () => void {
+  let lock = bodyScrollLocks.get(body);
+  if (!lock) {
+    lock = { count: 0, originalOverflow: body.style.overflow };
+    bodyScrollLocks.set(body, lock);
+  }
+
+  lock.count += 1;
+  body.style.overflow = 'hidden';
+  let released = false;
+
+  return () => {
+    if (released) return;
+    released = true;
+    lock!.count -= 1;
+
+    if (lock!.count === 0) {
+      body.style.overflow = lock!.originalOverflow;
+      bodyScrollLocks.delete(body);
+    }
+  };
+}
+
 // Spinner component
 const Spinner = ({ size = 24 }: { size?: number }) => (
   <svg
@@ -140,13 +173,19 @@ export function Modal({
     };
 
     document.addEventListener('keydown', handleKeyDown);
-    document.body.style.overflow = 'hidden';
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = '';
     };
   }, [isVisible, closeOnEscape, onClose, loading, preventCloseOnLoading]);
+
+  // Keep the lock for as long as the dialog remains in the DOM, including its
+  // closing animation. The release closure is idempotent for StrictMode and
+  // unmount cleanup, and the shared count handles either close order.
+  useEffect(() => {
+    if (!isVisible) return;
+    return lockBodyScroll(document.body);
+  }, [isVisible]);
 
   // Focus trap and restore focus on close.
   //

@@ -3,11 +3,12 @@
 <style>
 .pu-wrap { max-width: 1150px; margin: 0 auto; }
 .pu-card { background: linear-gradient(165deg, #171d29 0%, #131722 100%); border: 1px solid #2a3242; border-radius: 14px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.35); }
-.pu-cap { background: #10141d; border: 1px solid #2a3242; border-left: 3px solid #f59e0b; border-radius: 10px; padding: 12px 16px; min-height: 58px; cursor: pointer; transition: opacity 240ms ease; }
+.pu-cap { background: #10141d; border: 1px solid #2a3242; border-left: 3px solid #f59e0b; border-radius: 10px; padding: 12px 16px; min-height: 58px; transition: opacity 240ms ease; }
 .pu-cap-off { opacity: 0; pointer-events: none; }
 .pu-chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; }
-.pu-item { border: 2px solid #374151; border-radius: 10px; padding: 10px 12px; cursor: pointer; background: #101623; transition: border-color 140ms ease, translate 140ms ease; }
-.pu-item:hover { border-color: #f59e0b; translate: 0 -2px; }
+.pu-item { border: 2px solid #374151; border-radius: 10px; padding: 10px 12px; cursor: pointer; background: #101623; transition: border-color 140ms ease, translate 140ms ease; white-space: normal !important; height: auto !important; min-height: 44px; text-align: left; align-items: stretch !important; justify-content: flex-start !important; line-height: 1.35 !important; }
+.pu-item:hover:not(:disabled) { box-shadow: inset 0 0 0 1px #f59e0b; translate: 0 -2px; }
+.pu-wrap button:focus-visible, .pu-wrap [role="button"]:focus-visible { outline: 3px solid #fbbf24 !important; outline-offset: 2px; }
 .pu-title { background: radial-gradient(120% 130% at 50% 0%, #1d2536 0%, #12151f 55%, #0e1118 100%); border: 1px solid #33405a; }
 .pu-note { animation: pu-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 @keyframes pu-in { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
@@ -83,6 +84,37 @@
 .pu-fs .pu-cap.pu-withchoices.pu-lift { bottom: calc(46vh + 230px); }
 @media (max-width: 900px) {
   .pu-fs .pu-lift { bottom: 250px; }
+  /* Scene3D writes its logical 820x430 size inline. On a narrower viewport the
+     wrapper used to clip the canvas instead of scaling it, hiding most of the
+     room and its interaction targets. Keep the full scene visible at its
+     authored aspect ratio; pointer coordinates still map through the canvas'
+     client rectangle. */
+  .pu-wrap:not(.pu-fs) .pu-holder {
+    width: 100% !important;
+    height: auto !important;
+    aspect-ratio: 820 / 430;
+  }
+  .pu-wrap:not(.pu-fs) .pu-holder > div:first-child,
+  .pu-wrap:not(.pu-fs) .pu-holder > div:first-child > div,
+  .pu-wrap:not(.pu-fs) .pu-holder canvas {
+    width: 100% !important;
+    height: 100% !important;
+  }
+}
+@media (max-width: 620px) {
+  .pu-title-copy { padding: 30px 14px 0 14px !important; }
+  .pu-title-word { font-size: clamp(34px, 12vw, 60px) !important; }
+  .pu-title-tagline { font-size: 13px !important; margin-top: 11px !important; }
+  .pu-story { padding: 28px 16px 26px 16px !important; }
+  .pu-stamp { font-size: 29px !important; }
+  .pu-plate { font-size: 13px !important; padding: 8px 12px !important; }
+  .pu-modal { padding: 8px; }
+  .pu-modal-card { max-height: calc(100vh - 16px); }
+  .pu-panel { padding: 14px 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pu-note, .pu-obj, .pu-tc { animation: none !important; }
+  .pu-item, .pu-bar, .pu-dot, .pu-cta-big { transition: none !important; }
 }
 .pu-fs > * { position: relative; z-index: 5; }
 .pu-fs .pu-cap { background: rgba(10,14,21,0.9); }
@@ -109,12 +141,12 @@
       />
       <Box className="pu-glow" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: "16px" }} />
       <Box className="pu-vig" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: "16px" }} />
-      <Box style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", textAlign: "center", padding: "46px 24px 0 24px" }}>
+      <Box className="pu-title-copy" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", textAlign: "center", padding: "46px 24px 0 24px" }}>
         <Text className="pu-tc pu-brand" style={{ display: "block", fontSize: "11px", color: "#f59e0b", textShadow: "0 2px 14px rgba(0,0,0,0.95)" }}>A SOFTN NARRATIVE GAME</Text>
-        <Text style={{ display: "block", fontSize: "60px", fontWeight: 800, color: "#f8fafc", marginTop: "14px", letterSpacing: "-0.01em", lineHeight: "0.98", textShadow: "0 8px 40px rgba(0,0,0,0.98), 0 0 60px rgba(245,158,11,0.14)" }}>PROMPTLY</Text>
-        <Text style={{ display: "block", fontSize: "60px", fontWeight: 800, color: "#f59e0b", letterSpacing: "-0.01em", lineHeight: "0.98", textShadow: "0 8px 40px rgba(0,0,0,0.98)" }}>UNEMPLOYED</Text>
+        <Text className="pu-title-word" style={{ display: "block", fontSize: "60px", fontWeight: 800, color: "#f8fafc", marginTop: "14px", letterSpacing: "-0.01em", lineHeight: "0.98", textShadow: "0 8px 40px rgba(0,0,0,0.98), 0 0 60px rgba(245,158,11,0.14)" }}>PROMPTLY</Text>
+        <Text className="pu-title-word" style={{ display: "block", fontSize: "60px", fontWeight: 800, color: "#f59e0b", letterSpacing: "-0.01em", lineHeight: "0.98", textShadow: "0 8px 40px rgba(0,0,0,0.98)" }}>UNEMPLOYED</Text>
         <Box className="pu-rule" style={{ width: "260px", marginTop: "20px" }} />
-        <Text style={{ display: "block", fontSize: "16px", color: "#d5dde8", marginTop: "16px", fontStyle: "italic", textShadow: "0 2px 12px rgba(0,0,0,0.95)" }}>The future arrived early. Rent is still due Friday.</Text>
+        <Text className="pu-title-tagline" style={{ display: "block", fontSize: "16px", color: "#d5dde8", marginTop: "16px", fontStyle: "italic", textShadow: "0 2px 12px rgba(0,0,0,0.95)" }}>The future arrived early. Rent is still due Friday.</Text>
         <Stack direction="horizontal" gap={12} style={{ justifyContent: "center", marginTop: "30px", pointerEvents: "auto", flexWrap: "wrap" }}>
           <Button @click={newGame} className="pu-cta-big" style={{ background: "#f59e0b", color: "#10131a", fontWeight: 800, padding: "13px 34px", fontSize: "15px", letterSpacing: "0.04em" }}>New game</Button>
           <Button if={hasSave} @click={continueGame} className="pu-btn-ghost" style={{ padding: "13px 28px", fontSize: "15px", color: "#e2e8f0" }}>Continue</Button>
@@ -152,7 +184,7 @@
     <Text className="pu-chip pu-obj" key={objective} style={{ background: "#1f2937", color: "#f59e0b" }}>{scene === "meeting" ? slideTitle : objective}</Text>
     <Box style={{ flex: 1 }} />
     <Stack direction="horizontal" gap={9} className="pu-hud" style={{ alignItems: "center" }}>
-      <Text style={{ fontSize: "11px", color: "#8b97ad", letterSpacing: "0.08em", paddingLeft: "4px" }}>{currentChapter()}</Text>
+      <Text style={{ fontSize: "11px", color: "#8b97ad", letterSpacing: "0.08em", paddingLeft: "4px" }}>{currentChapter() + " · " + chapterProgress()}</Text>
       <Stack direction="horizontal" gap={6} style={{ alignItems: "center" }}>
         #each (d, di in chapterDots())
           <Box className={d.state === "now" ? "pu-dot pu-dot-now" : "pu-dot"}
@@ -161,8 +193,8 @@
       </Stack>
     </Stack>
     <Text className="pu-chip" style={{ background: "#1f2937", color: "#4ade80" }}>Runway {stat("runway")}</Text>
-    <Button if={inWorld()} @click={toggleTheatre} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{theatre ? "Cosy" : "Theatre"}</Button>
-    <Button @click={toggleMute} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{muted ? "Unmute" : "Mute"}</Button>
+    <Button if={inWorld()} @click={toggleTheatre} ariaLabel={theatre ? "Exit theatre mode" : "Enter theatre mode"} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{theatre ? "Cosy" : "Theatre"}</Button>
+    <Button @click={toggleMute} ariaLabel={muted ? "Unmute game audio" : "Mute game audio"} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{muted ? "Unmute" : "Mute"}</Button>
     <Button @click={toggleTranscript} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>Transcript</Button>
     <Button @click={quitToTitle} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>Menu</Button>
   </Stack>
@@ -204,11 +236,11 @@
     </Box>
     <Stack direction="horizontal" gap={12} style={{ marginTop: "14px", flexWrap: "wrap" }}>
       #each (card, ci in DEBUG_CARDS)
-        <Box className="pu-item" @click={pickDebugCard(card.id)}
-             style={{ borderColor: debugPicked.indexOf(card.id) >= 0 ? "#4ade80" : "#374151", minWidth: "200px" }}>
+        <Button variant="ghost" className="pu-item" @click={pickDebugCard(card.id)}
+             style={{ background: "#101623", borderWidth: "2px", borderStyle: "solid", borderColor: debugPicked.indexOf(card.id) >= 0 ? "#4ade80" : "#374151", minWidth: "200px" }}>
           <Text style={{ fontWeight: 700, fontSize: "12px", letterSpacing: "0.1em", color: "#38bdf8" }}>{card.label}</Text>
           <Text style={{ fontSize: "13px", color: "#cbd5e1", marginTop: "4px" }}>{card.desc}</Text>
-        </Box>
+        </Button>
       #end
     </Stack>
     <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center" }}>
@@ -219,7 +251,7 @@
   </Box>
 
   <!-- Scene 2: title card -->
-  <Box if={titleCardUp} className="pu-story pu-note" @click={dismissTitleCard} style={{ cursor: "pointer" }}>
+  <Box if={titleCardUp} className="pu-story pu-note">
     <Stack direction="horizontal" gap={10} style={{ alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
       <Text className="pu-kicker">ACCOUNT REVOKED · 09:41</Text>
       <Button @click={dismissTitleCard} className="pu-cta-big" style={{ background: "#f59e0b", color: "#10131a", fontWeight: 800, padding: "9px 20px", fontSize: "13px" }}>Collect your things</Button>
@@ -231,7 +263,7 @@
     <Box className="pu-rule" style={{ width: "220px", margin: "26px auto 0 auto" }} />
     <Text className="pu-stamp" style={{ marginTop: "22px" }}>PROMPTLY UNEMPLOYED</Text>
     <Text style={{ display: "block", fontSize: "13px", color: "#7f8ca4", marginTop: "12px", fontStyle: "italic" }}>Please collect your personally attributable desk matter.</Text>
-    <Text style={{ display: "block", fontSize: "11px", color: "#5b6678", marginTop: "22px", letterSpacing: "0.14em" }}>CLICK ANYWHERE TO CONTINUE</Text>
+    <Text style={{ display: "block", fontSize: "11px", color: "#5b6678", marginTop: "22px", letterSpacing: "0.14em" }}>CONTINUE ABOVE</Text>
   </Box>
 
   <!-- Scene 3: packing progress (the picking itself happens in the world) -->
@@ -243,13 +275,38 @@
           <Box style={{ width: "34px", height: "8px", borderRadius: "999px", background: picked.length > bslot ? "#f59e0b" : "#2b3446" }} />
         #end
       </Stack>
-      <Text style={{ fontSize: "13px", color: "#94a3b8", flex: 1, minWidth: "220px" }}>{picked.length < 3 ? "Walk to the desk and take three things. Click one, or press E." : "Full. Tape the box shut."}</Text>
+      <Text style={{ fontSize: "13px", color: "#94a3b8", flex: 1, minWidth: "220px" }}>{picked.length < 3 ? "Walk to the desk and take three things. Use, tap, or review the box." : "Full. Tape it shut, or review the box to swap something."}</Text>
       <Text style={{ fontSize: "12px", color: "#64748b" }}>{picked.length + " / 3"}</Text>
+      <Button @click={openPicker} disabled={cutActive} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Review box</Button>
     </Stack>
   </Box>
 
+  <!-- Accessible packing alternative and a way to revise a choice. -->
+  <Box if={pickerOpen} className="pu-modal">
+  <Box className="pu-card pu-note pu-panel pu-modal-card">
+    <Box className="pu-head">
+      <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>Personally attributable desk matter</Text>
+      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>Choose exactly three. Selected items can be put back until you tape the box.</Text>
+    </Box>
+    <Stack direction="horizontal" gap={10} className="pu-modal-body" style={{ marginTop: "14px", flexWrap: "wrap" }}>
+      #each (item, ii in ITEMS)
+        <Button variant="ghost" className="pu-item" @click={toggleItem(item.id)} disabled={picked.length >= 3 && !isPicked(item.id)}
+             style={{ background: "#101623", borderWidth: "2px", borderStyle: "solid", borderColor: isPicked(item.id) ? "#f59e0b" : "#374151", width: "280px", maxWidth: "100%" }}>
+          <Text style={{ display: "block", fontWeight: 700, fontSize: "13px", color: isPicked(item.id) ? "#fbbf24" : "#e2e8f0" }}>{(isPicked(item.id) ? "✓ " : "") + item.name}</Text>
+          <Text style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginTop: "4px" }}>{item.desc}</Text>
+        </Button>
+      #end
+    </Stack>
+    <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center", flexWrap: "wrap" }}>
+      <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>{picked.length + " of 3 selected"}</Text>
+      <Button @click={closePicker} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Keep looking</Button>
+      <Button if={picked.length === 3} @click={confirmItems} className="pu-cta" style={{ background: "#f59e0b", color: "#111", fontWeight: 700 }}>Tape the box</Button>
+    </Stack>
+  </Box>
+  </Box>
+
   <!-- Chapter card -->
-  <Box if={chapterCard !== ""} className="pu-story pu-note" @click={dismissChapterCard} style={{ cursor: "pointer" }}>
+  <Box if={chapterCard !== ""} className="pu-story pu-note">
     <Stack direction="horizontal" gap={10} style={{ alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
       <Text className="pu-kicker">THE STREET, 10:12</Text>
       <Button @click={dismissChapterCard} className="pu-cta-big" style={{ background: "#f59e0b", color: "#10131a", fontWeight: 800, padding: "9px 20px", fontSize: "13px" }}>Go home</Button>
@@ -259,7 +316,7 @@
     <Box className="pu-rule" style={{ width: "260px", margin: "26px auto 0 auto" }} />
     <Text style={{ display: "block", fontSize: "11px", letterSpacing: "0.3em", color: "#7f8ca4", marginTop: "24px" }}>CHAPTER ONE</Text>
     <Text style={{ display: "block", fontSize: "28px", fontWeight: 700, color: "#f8fafc", marginTop: "8px" }}>Congratulations on Your Transition</Text>
-    <Text style={{ display: "block", fontSize: "11px", color: "#5b6678", marginTop: "22px", letterSpacing: "0.14em" }}>CLICK ANYWHERE TO CONTINUE</Text>
+    <Text style={{ display: "block", fontSize: "11px", color: "#5b6678", marginTop: "22px", letterSpacing: "0.14em" }}>CONTINUE ABOVE</Text>
   </Box>
 
   <!-- Scene 4: budget overlay -->
@@ -305,10 +362,10 @@
           <Text style={{ fontSize: "12px", fontWeight: 700, color: "#38bdf8", letterSpacing: "0.08em" }}>{cat.title}</Text>
           <Stack direction="horizontal" gap={8} style={{ marginTop: "6px", flexWrap: "wrap" }}>
             #each (card, ki in cat.cards)
-              <Box className="pu-item" @click={pickWs(cat.id, card.id, card.kind)}
-                   style={{ borderColor: wsPicked(cat.id) === card.id ? "#a78bfa" : "#374151" }}>
+              <Button variant="ghost" className="pu-item" @click={pickWs(cat.id, card.id, card.kind)}
+                   style={{ background: "#101623", borderWidth: "2px", borderStyle: "solid", borderColor: wsPicked(cat.id) === card.id ? "#a78bfa" : "#374151" }}>
                 <Text style={{ fontSize: "13px", color: "#e2e8f0" }}>{card.label}</Text>
-              </Box>
+              </Button>
             #end
           </Stack>
         </Box>
@@ -330,10 +387,10 @@
         <Text style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0" }}>Known: {o.fact}</Text>
         <Stack direction="horizontal" gap={8} style={{ marginTop: "8px", flexWrap: "wrap" }}>
           #each (slip, si in o.slips)
-            <Box className="pu-item" @click={pickSlip(o.id, slip.id)}
-                 style={{ borderColor: orderPickOf(o.id) === slip.id ? "#4ade80" : "#374151" }}>
+            <Button variant="ghost" className="pu-item" @click={pickSlip(o.id, slip.id)}
+                 style={{ background: "#101623", borderWidth: "2px", borderStyle: "solid", borderColor: orderPickOf(o.id) === slip.id ? "#4ade80" : "#374151" }}>
               <Text style={{ fontSize: "12px", color: orderPickOf(o.id) === slip.id ? "#86efac" : "#cbd5e1" }}>{slip.label}</Text>
-            </Box>
+            </Button>
           #end
         </Stack>
       </Box>
@@ -359,14 +416,14 @@
     </Box>
     <Stack direction="horizontal" gap={12} className="pu-modal-body" style={{ marginTop: "14px", flexWrap: "wrap" }}>
       #each (card, si in SCOPE_CARDS)
-        <Box className="pu-item" @click={toggleScope(card.id)}
-             style={{ borderColor: scopeHas(card.id) ? (card.kind === "flash" ? "#f472b6" : "#4ade80") : "#374151", width: "290px", maxWidth: "100%" }}>
+        <Button variant="ghost" className="pu-item" @click={toggleScope(card.id)}
+             style={{ background: "#101623", borderWidth: "2px", borderStyle: "solid", borderColor: scopeHas(card.id) ? (card.kind === "flash" ? "#f472b6" : "#4ade80") : "#374151", width: "290px", maxWidth: "100%" }}>
           <Stack direction="horizontal" gap={8} style={{ alignItems: "center" }}>
             <Text style={{ fontWeight: 700, color: "#e2e8f0", flex: 1 }}>{card.name}</Text>
             <Text className="pu-chip" style={{ background: "#0b1017", color: card.kind === "flash" ? "#f472b6" : "#7dd3fc" }}>{card.cost} pt</Text>
           </Stack>
           <Text style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px", fontStyle: "italic" }}>{card.desc}</Text>
-        </Box>
+        </Button>
       #end
     </Stack>
     <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -394,10 +451,10 @@
         </Stack>
         <Stack direction="horizontal" gap={8} style={{ marginTop: "8px", flexWrap: "wrap" }}>
           #each (p, pi in WF_POLICIES)
-            <Box className="pu-item" @click={pickWf(c.id, p.id)}
-                 style={{ borderColor: wfPicked(c.id) === p.id ? "#4ade80" : "#374151", padding: "6px 12px" }}>
+            <Button variant="ghost" className="pu-item" @click={pickWf(c.id, p.id)}
+                 style={{ background: "#101623", borderWidth: "2px", borderStyle: "solid", borderColor: wfPicked(c.id) === p.id ? "#4ade80" : "#374151", padding: "6px 12px" }}>
               <Text style={{ fontSize: "12px", color: wfPicked(c.id) === p.id ? "#86efac" : "#cbd5e1" }}>{p.label}</Text>
-            </Box>
+            </Button>
           #end
         </Stack>
       </Box>
@@ -467,13 +524,13 @@
   </Box>
 
   <!-- Caption / note bar -->
-  <Box if={showCaptionBar()} className={capClass()} @click={dlgSkip} style={{ borderLeftColor: dlgActive ? speakerColor(dlgSpeaker) : "#f59e0b" }}>
+  <Box if={showCaptionBar()} className={capClass()} style={{ borderLeftColor: dlgActive ? speakerColor(dlgSpeaker) : "#f59e0b" }}>
     <Box if={dlgActive}>
       <Stack direction="horizontal" gap={8} style={{ alignItems: "center" }}>
         <Box style={{ width: "8px", height: "8px", borderRadius: "999px", background: speakerColor(dlgSpeaker) }} />
         <Text className="pu-chip" style={{ background: "#1a2331", color: speakerColor(dlgSpeaker), letterSpacing: "0.12em" }}>{dlgSpeaker}</Text>
         <Box style={{ flex: 1 }} />
-        <Text style={{ fontSize: "10px", color: "#3f4a5c" }}>space · skip</Text>
+        <Button @click={dlgSkip} ariaLabel="Skip current dialogue line" className="pu-btn-ghost" style={{ fontSize: "10px", color: "#94a3b8", padding: "3px 8px" }}>Skip line</Button>
       </Stack>
       <Text style={{ display: "block", fontSize: "15px", color: "#f1f5f9", marginTop: "7px", lineHeight: "1.45" }}>{dlgText}</Text>
       <Text if={hudPrompt() !== ""} style={{ display: "block", fontSize: "11px", color: "#6b7688", marginTop: "7px" }}>{"→ " + hudPrompt()}</Text>
@@ -496,7 +553,7 @@
   </Box>
 
   <!-- Controls -->
-  <Stack if={canMove()} className={padClass()} direction="horizontal" gap={14} style={{ alignItems: "center" }}>
+  <Stack if={canMove()} className={padClass()} direction="horizontal" gap={14} style={{ alignItems: "center", flexWrap: "wrap" }}>
     <DPad @press={padPress} @release={padRelease} />
     <Button @click={interactPressed} style={{ padding: "14px 20px", fontWeight: 700 }}>Use (E)</Button>
     <Text style={{ fontSize: "11px", color: "#4b5563" }}>WASD move · ◀▶ turn · drag to look</Text>

@@ -1,6 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
-import { readZip, processBundle } from '../src/lib/bundleProcessor';
+import { createAssetResolver, createImportResolver, readZip, processBundle } from '../src/lib/bundleProcessor';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function makeZip(files: Record<string, string | Uint8Array>): Uint8Array {
   const entries: Record<string, Uint8Array> = {};
@@ -74,5 +79,59 @@ describe('bundleProcessor', () => {
   it('rejects oversize bundle input', () => {
     const tooLarge = new Uint8Array(210 * 1024 * 1024);
     expect(() => readZip(tooLarge)).toThrow('Bundle too large');
+  });
+
+  it('applies network permissions to remote imports', async () => {
+    const fetchMock = vi.fn(async () => new Response('remote logic'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const omitted = createImportResolver(new Map());
+    expect(await omitted('https://modules.example/logic.softn')).toBeNull();
+
+    const denied = createImportResolver(new Map(), { permissions: {} });
+    expect(await denied('https://modules.example/logic.softn')).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const allowed = createImportResolver(new Map(), {
+      permissions: { net: { enabled: true, allowed_hosts: ['modules.example'] } },
+    });
+    expect(await allowed('https://modules.example/logic.softn')).toBe('remote logic');
+    expect(await allowed('https://other.example/logic.softn')).toBeNull();
+    expect(await allowed('http://modules.example/logic.softn')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-checks redirects and caps remote import bodies', async () => {
+    const redirected = new Response('not allowed');
+    Object.defineProperty(redirected, 'url', { value: 'https://other.example/logic.softn' });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(redirected)
+      .mockResolvedValueOnce(new Response(new Uint8Array(1024 * 1024 + 1)));
+    vi.stubGlobal('fetch', fetchMock);
+    const resolve = createImportResolver(new Map(), {
+      permissions: { net: { enabled: true, allowed_hosts: ['modules.example'] } },
+    });
+
+    expect(await resolve('https://modules.example/redirect.softn')).toBeNull();
+    expect(await resolve('https://modules.example/large.softn')).toBeNull();
+  });
+
+  it('releases cached asset URLs when a SoftN tab is closed', () => {
+    const create = vi.fn(() => 'blob:asset');
+    const revoke = vi.fn();
+    vi.stubGlobal('URL', { createObjectURL: create, revokeObjectURL: revoke });
+    const resolve = createAssetResolver(
+      new Map([['assets/pixel.png', new Uint8Array([1, 2, 3])]]),
+      new Map(),
+    );
+
+    expect(resolve('assets/pixel.png')).toBe('blob:asset');
+    expect(resolve('assets/pixel.png')).toBe('blob:asset');
+    expect(create).toHaveBeenCalledTimes(1);
+    resolve.dispose();
+    resolve.dispose();
+    expect(revoke).toHaveBeenCalledOnce();
+    expect(resolve('assets/pixel.png')).toBe('');
   });
 });

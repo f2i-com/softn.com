@@ -69,6 +69,7 @@ import {
   extractPermissions,
   requestedCapabilities,
   type BundleManifest,
+  type AssetResolver,
 } from './lib/bundleProcessor';
 import {
   getCachedApp,
@@ -163,7 +164,7 @@ interface OpenTab {
   permissionConfig?: PermissionConfig;
   importResolver?: (path: string) => Promise<string | null>;
   /** Turns a bundle-relative asset path into a URL the browser can load. */
-  assetResolver?: (assetPath: string) => string;
+  assetResolver?: AssetResolver;
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
   serverUrl?: string;
@@ -240,6 +241,15 @@ function App(): React.ReactElement {
   const inFlightRef = useRef(new Map<string, Promise<string | null>>());
   /** Downloads still running, by the placeholder tab they belong to. */
   const loadAbortsRef = useRef(new Map<string, AbortController>());
+
+  // Stop work and release blob URLs when the runtime itself is unmounted.
+  // Closing an individual app does the same below; this covers navigation away
+  // from the entire shell while tabs or downloads are still alive.
+  useEffect(() => () => {
+    for (const controller of loadAbortsRef.current.values()) controller.abort();
+    loadAbortsRef.current.clear();
+    for (const tab of openTabsRef.current) tab.assetResolver?.dispose();
+  }, []);
 
   // An embedded frame keeps ?embed=1 through every rewrite, so a frame that
   // reloads itself does not sprout a tab bar inside somebody else's page.
@@ -453,7 +463,7 @@ function App(): React.ReactElement {
 
         // Process source
         const { source, logicBasePath, preIncludedLogicPaths } = processBundle(textFiles, manifest);
-        const importResolver = createImportResolver(textFiles);
+        const importResolver = createImportResolver(textFiles, permissionConfig);
 
         // Cache the app (may already be cached from permission flow above, cacheApp handles dedup by name)
         await cacheApp(data, manifest, icon);
@@ -708,6 +718,11 @@ function App(): React.ReactElement {
         pending.abort();
         loadAbortsRef.current.delete(tabId);
       }
+
+      // Asset resolvers own blob URLs. A closed SoftN tab should release its
+      // images and models now rather than retain every bundle until the browser
+      // tab eventually closes.
+      openTabsRef.current.find((tab) => tab.id === tabId)?.assetResolver?.dispose();
 
       setOpenTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === tabId);

@@ -1,74 +1,26 @@
 name: Release
 
-# DISABLED. Both jobs build the FormLogic engine from the formlogic-rust
-# repository and copy it into packages/@softn/core/wasm/, but .logic now runs on
-# zipp, whose build is committed at packages/@softn/core/wasm-zipp/. Until these
-# are rewritten against zipp (or dropped, since the engine is vendored), CI would
-# spend its time compiling an engine nothing loads.
-#
-# Re-enable by restoring the trigger commented out below.
+# Manual-only until automated publishing is enabled. The zipp WASM engine used
+# by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so releases build
+# the shared packages directly from the checked-in engine.
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (for example, v0.1.0)
+        required: true
+        type: string
 #  push:
 #    tags:
 #      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
-  WASM_BINDGEN_VERSION: "0.2.114"
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  compile-wasm:
-    name: Compile FormLogic WASM
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout formlogic-rust
-        uses: actions/checkout@v4
-        with:
-          repository: f2i-com/formlogic-rust
-          path: formlogic-rust
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            formlogic-rust/target/
-          key: wasm-cargo-${{ hashFiles('formlogic-rust/Cargo.lock') }}
-          restore-keys: wasm-cargo-
-
-      - name: Install wasm-bindgen-cli
-        run: |
-          if ! command -v wasm-bindgen &> /dev/null || [[ "$(wasm-bindgen --version)" != *"$WASM_BINDGEN_VERSION"* ]]; then
-            cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
-          fi
-
-      - name: Build WASM
-        working-directory: formlogic-rust
-        run: |
-          cargo build -p formlogic-wasm --target wasm32-unknown-unknown --release
-          wasm-bindgen --target web --out-dir dist-wasm ./target/wasm32-unknown-unknown/release/formlogic_wasm.wasm
-
-      - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: formlogic-wasm
-          path: formlogic-rust/dist-wasm/
-          retention-days: 1
-
   release:
     name: Release ${{ matrix.app }} (${{ matrix.platform }})
-    needs: compile-wasm
     permissions:
       contents: write
     strategy:
@@ -93,6 +45,13 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate release tag
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v1.2.3 or v1.2.3-beta.1" >&2
+            exit 1
+          fi
 
       - name: Clone xdb.org (needed by softn-loader Cargo dependency)
         if: matrix.app == 'softn-loader'
@@ -124,17 +83,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
-      - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: formlogic-wasm
-          path: wasm-dist
-
-      - name: Integrate WASM into core
-        run: |
-          cp wasm-dist/* packages/@softn/core/src/runtime/wasm/
-          cp wasm-dist/* packages/@softn/core/wasm/
-
       - name: Install dependencies
         run: npm ci
 
@@ -147,10 +95,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: apps/${{ matrix.app }}
-          tagName: ${{ github.ref_name }}
-          releaseName: 'SoftN ${{ github.ref_name }}'
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'SoftN ${{ env.RELEASE_TAG }}'
           releaseBody: |
-            ## SoftN ${{ github.ref_name }}
+            ## SoftN ${{ env.RELEASE_TAG }}
 
             ### Downloads
 
@@ -178,4 +126,4 @@ jobs:
           APP_NAME=$(basename "$APP_PATH" .app)
           DMG_PATH="$DMG_DIR/$APP_NAME.dmg"
           hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH"
-          gh release upload "${{ github.ref_name }}" "$DMG_PATH" --clobber
+          gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber

@@ -142,6 +142,10 @@ function moveTick() {
   if (keys.d) { strafe = strafe + 1 }
   if (keys.a) { strafe = strafe - 1 }
   if (fwd !== 0 || strafe !== 0) {
+    // Keep diagonal travel at the same speed as a single-axis walk.
+    let inputLen = Math.sqrt(fwd * fwd + strafe * strafe)
+    fwd = fwd / inputLen
+    strafe = strafe / inputLen
     let dx = (Math.sin(playerAngle) * fwd - Math.cos(playerAngle) * strafe) * MOVE_SPEED
     let dz = (Math.cos(playerAngle) * fwd + Math.sin(playerAngle) * strafe) * MOVE_SPEED
     let px = playerX, pz = playerZ
@@ -516,6 +520,7 @@ function hotspotTick() {
   let bestD = 999
   for (let i = 0; i < hotspots.length; i++) {
     let h = hotspots[i]
+    if (h.tapOnly) { continue }
     let dx = playerX - h.x, dz = playerZ - h.z
     let d2 = dx * dx + dz * dz
     if (d2 < h.r * h.r && d2 < bestD) { best = h.id; bestLabel = h.label; bestD = d2 }
@@ -528,14 +533,27 @@ function onSceneClick(info) {
   // Tapping the world during a cutscene hands control back, the same as any
   // movement key would.
   if (cutActive) { skipCutscene(); return }
-  if (!info || !info.objectId) { return }
+  if (!info || !info.objectId || interactionLocked()) { return }
   for (let i = 0; i < hotspots.length; i++) {
     let h = hotspots[i]
-    if (h.id !== info.objectId) { continue }
+    if (!hotspotObjectMatches(h.id, info.objectId)) { continue }
     let dx = playerX - h.x, dz = playerZ - h.z
     if (dx * dx + dz * dz < h.r * h.r * 2.6) { handleHotspot(h.id) }
     return
   }
+}
+
+// Composite props and people have ids such as mabel_chest or window_glass,
+// while their logical hotspot is hs_mabel or window. Treat the whole visible
+// object (and its beacon) as the tap target instead of requiring one tiny mesh.
+function hotspotObjectMatches(hotspotId, objectId) {
+  if (objectId === hotspotId || objectId === "mk_" + hotspotId) { return true }
+  if (objectId.indexOf(hotspotId + "_") === 0) { return true }
+  if (hotspotId.indexOf("hs_") === 0) {
+    let bare = hotspotId.slice(3)
+    if (objectId === bare || objectId.indexOf(bare + "_") === 0) { return true }
+  }
+  return false
 }
 
 // Traversal-harness teleport: place the player beside a named hotspot.
@@ -566,6 +584,7 @@ function hotspotMarkers(color) {
   let out = []
   for (let i = 0; i < hotspots.length; i++) {
     let h = hotspots[i]
+    if (h.tapOnly) { continue }
     let c = h.minor ? "#5b8db8" : (color || "#fbbf24")
     let my = h.my !== undefined ? h.my : (h.minor ? 1.9 : 2.05)
     // A hotspot's centre is where you stand to use it, which for a desk item
@@ -1006,6 +1025,10 @@ function buildBoxes() {
       // Centred in the box (which sits at z 6.7) and proud of the rim.
       let bx = 7.62 + inBox * 0.38
       objs = objs.concat(itemObj("bit_" + sp.id, sp.id, bx, 0.44, 6.7))
+      // A packed item can be tapped to put it back. It is tap-only so keyboard
+      // / D-pad interaction still prioritises taping the box shut when full.
+      hs.push({ id: "bit_" + sp.id, x: 8, z: 6.7, r: 2.0, tapOnly: true,
+        label: "Put back " + itemName(sp.id) })
       inBox = inBox + 1
     } else {
       objs = objs.concat(itemObj("it_" + sp.id, sp.id, sp.x, 0.75, sp.z))

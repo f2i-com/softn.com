@@ -4,7 +4,7 @@
  * Transforms .softn files into React components at build time.
  */
 
-import type { Plugin, TransformResult } from 'vite';
+import type { Plugin } from 'vite';
 import { parse } from '@softn/core';
 import type { SoftNDocument } from '@softn/core';
 
@@ -16,6 +16,22 @@ interface SourceMapGenerator {
   sources: string[];
   sourcesContent: string[];
   names: string[];
+}
+
+interface GeneratedSourceMap extends SourceMapGenerator {
+  version: 3;
+  file: string;
+}
+
+interface CachedTransform {
+  hash: string;
+  output: string;
+  map: GeneratedSourceMap | null;
+}
+
+interface SoftNTransformResult {
+  code: string;
+  map: GeneratedSourceMap | null;
 }
 
 /**
@@ -224,9 +240,6 @@ export interface SoftNPluginOptions {
   verbose?: boolean;
 }
 
-// Cache for parsed documents to speed up rebuilds
-const documentCache = new Map<string, { hash: string; document: SoftNDocument; output: string }>();
-
 // Simple hash function for cache invalidation
 function hashCode(str: string): string {
   let hash = 0;
@@ -252,6 +265,9 @@ export default function softnPlugin(options: SoftNPluginOptions = {}): Plugin {
   } = options;
 
   const log = verbose ? console.log.bind(console, '[softn]') : () => {};
+  // Cache per plugin instance: output depends on options such as HMR and source
+  // maps, so a module-global cache let one Vite config poison another one.
+  const documentCache = new Map<string, CachedTransform>();
 
   return {
     name: 'vite-plugin-softn',
@@ -270,7 +286,7 @@ export default function softnPlugin(options: SoftNPluginOptions = {}): Plugin {
     /**
      * Transform .softn files to JavaScript modules
      */
-    transform(code: string, id: string): TransformResult | null {
+    transform(code: string, id: string): SoftNTransformResult | null {
       // Check if this file should be processed
       if (!shouldTransform(id, include, exclude)) {
         return null;
@@ -286,7 +302,7 @@ export default function softnPlugin(options: SoftNPluginOptions = {}): Plugin {
           log(`Cache hit for ${id}`);
           return {
             code: cached.output,
-            map: null,
+            map: cached.map,
           };
         }
       }
@@ -298,33 +314,30 @@ export default function softnPlugin(options: SoftNPluginOptions = {}): Plugin {
         // Generate JavaScript module
         const output = generateModule(document, id, hmr);
 
-        // Cache the result
-        if (cache) {
-          documentCache.set(id, { hash: codeHash, document, output });
-        }
-
         const elapsed = (performance.now() - startTime).toFixed(2);
         log(`Transformed ${id} in ${elapsed}ms`);
 
         // Generate source map if enabled
+        let map: GeneratedSourceMap | null = null;
         if (sourceMaps) {
           const sourceMapData = generateSourceMap(code, output, id, document);
-          return {
-            code: output,
-            map: {
-              version: 3,
-              file: id.split('/').pop() + '.js',
-              sources: sourceMapData.sources,
-              sourcesContent: sourceMapData.sourcesContent,
-              names: sourceMapData.names,
-              mappings: sourceMapData.mappings,
-            } as any,
+          map = {
+            version: 3,
+            file: `${getSourceFileName(id)}.js`,
+            sources: sourceMapData.sources,
+            sourcesContent: sourceMapData.sourcesContent,
+            names: sourceMapData.names,
+            mappings: sourceMapData.mappings,
           };
+        }
+
+        if (cache) {
+          documentCache.set(id, { hash: codeHash, output, map });
         }
 
         return {
           code: output,
-          map: null,
+          map,
         };
       } catch (error) {
         const err = error as Error;
@@ -369,9 +382,7 @@ export default function softnPlugin(options: SoftNPluginOptions = {}): Plugin {
      * Clear cache on build start
      */
     buildStart() {
-      if (!cache) {
-        documentCache.clear();
-      }
+      documentCache.clear();
     },
   };
 }
@@ -411,7 +422,7 @@ function shouldTransform(
   for (const pattern of exclude) {
     if (typeof pattern === 'string') {
       if (id.includes(pattern)) return false;
-    } else if (pattern.test(id)) {
+    } else if (testPattern(pattern, id)) {
       return false;
     }
   }
@@ -420,12 +431,20 @@ function shouldTransform(
   for (const pattern of include) {
     if (typeof pattern === 'string') {
       if (id.includes(pattern)) return true;
-    } else if (pattern.test(id)) {
+    } else if (testPattern(pattern, id)) {
       return true;
     }
   }
 
   return false;
+}
+
+/** Test user-supplied global/sticky regexes without leaking their lastIndex. */
+function testPattern(pattern: RegExp, value: string): boolean {
+  pattern.lastIndex = 0;
+  const matches = pattern.test(value);
+  pattern.lastIndex = 0;
+  return matches;
 }
 
 /**
@@ -445,9 +464,8 @@ function generateModule(document: SoftNDocument, id: string, hmr: boolean): stri
 
   // Generate the module code
   let code = `
-import React from 'react';
-import { useState, useCallback, useMemo, useEffect } from 'react';
-import { SoftNEngine, getDefaultEngine, SoftNProvider } from '@softn/core';
+import { useState, useCallback, useMemo } from 'react';
+import { getDefaultEngine } from '@softn/core';
 import { registerAllBuiltins } from '@softn/components';
 
 // Register built-in components
@@ -528,13 +546,22 @@ if (import.meta.hot) {
  * Get component name from file path
  */
 function getComponentName(id: string): string {
-  const fileName = id.split('/').pop() ?? 'Component';
-  const name = fileName.replace(/\.softn$/, '');
-  // PascalCase the name
-  return name
-    .split(/[-_]/)
+  const fileName = getSourceFileName(id);
+  const name = fileName.replace(/\.softn$/i, '');
+  const pascalName = name
+    .split(/[^a-zA-Z0-9_$]+/)
+    .filter(Boolean)
     .map((part) => capitalize(part))
     .join('');
+
+  if (!pascalName) return 'SoftNComponent';
+  return /^[a-zA-Z_$]/.test(pascalName) ? pascalName : `SoftN${pascalName}`;
+}
+
+/** File name without Vite query/hash suffixes, on POSIX or Windows paths. */
+function getSourceFileName(id: string): string {
+  const cleanId = id.split(/[?#]/, 1)[0].replace(/\\/g, '/');
+  return cleanId.split('/').pop() || 'Component.softn';
 }
 
 /**
@@ -646,7 +673,7 @@ function generateFunctions(functions: FunctionDef[], stateVars: StateVar[]): str
 
       return `const ${f.name} = useCallback(${f.isAsync ? 'async ' : ''}(${f.params}) => {
     ${body}
-  }, [${stateVars.map((v) => v.name).join(', ')}]);`;
+  }, [${[...stateVars.map((v) => v.name), 'props'].join(', ')}]);`;
     })
     .join('\n\n  ');
 }

@@ -558,6 +558,16 @@ bundle's `server/` routes and backs XDB sync), and for recompiling the scripting
 engine. The four browser apps — the landing page, the runtime, the builder and
 Studio — need Node alone.
 
+The native loader and server use local path dependencies so they can be developed
+alongside zipp and XDB. Clone those repositories as siblings of this checkout
+before running their Cargo commands:
+
+```bash
+git clone https://github.com/f2i-com/zipp.org.git ../zipp-lang
+git clone https://github.com/f2i-com/xdb.org.git ../xdb.org
+cargo test --manifest-path apps/softn-server/Cargo.toml
+```
+
 ### Key File Paths
 
 | File | Purpose |

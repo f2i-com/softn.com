@@ -100,10 +100,16 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
   const onChangeRef = useRef(onChange);
   const onErrorRef = useRef(onError);
   const onLoadStartRef = useRef(onLoadStart);
-  const unlistenRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(true);
-  const initialLoadDoneRef = useRef(false);
+  const currentFilePathRef = useRef(filePath);
+  const requestGenerationRef = useRef(0);
+  const initiallyLoadedPathRef = useRef<string | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Update during render, before effects run. If an old read resolves in the
+  // gap between rendering a new path and starting its effect, the path check
+  // below already knows that result is stale.
+  currentFilePathRef.current = filePath;
 
   // Update refs when callbacks change
   useEffect(() => {
@@ -124,9 +130,16 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
 
   // Load the file - stable callback that doesn't depend on onChange/onError
   const loadFile = useCallback(async () => {
+    const requestPath = filePath;
+    const generation = ++requestGenerationRef.current;
+    const isCurrentRequest = () =>
+      mountedRef.current &&
+      requestGenerationRef.current === generation &&
+      currentFilePathRef.current === requestPath;
+
     const invoke = getTauriInvoke();
     if (!invoke) {
-      if (mountedRef.current) {
+      if (isCurrentRequest()) {
         setError(new Error('Not running in Tauri environment'));
         setLoading(false);
       }
@@ -134,15 +147,15 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
     }
 
     try {
-      if (mountedRef.current) {
+      if (isCurrentRequest()) {
         setLoading(true);
         setError(null);
         onLoadStartRef.current?.();
       }
 
-      const content = await invoke('read_softn_file', { path: filePath });
+      const content = await invoke('read_softn_file', { path: requestPath });
 
-      if (!mountedRef.current) return;
+      if (!isCurrentRequest()) return;
 
       setSource(content);
 
@@ -152,12 +165,12 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
       setLastReload(Date.now());
       onChangeRef.current?.(doc);
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!isCurrentRequest()) return;
       const error = err instanceof Error ? err : new Error(String(err));
       setError(error);
       onErrorRef.current?.(error);
     } finally {
-      if (mountedRef.current) {
+      if (isCurrentRequest()) {
         setLoading(false);
       }
     }
@@ -182,10 +195,12 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
       return;
     }
 
-    // Only load once on mount or when filePath changes
-    if (!initialLoadDoneRef.current) {
-      initialLoadDoneRef.current = true;
-      loadFile();
+    // StrictMode may run this effect twice for the same path, but a genuinely
+    // new path must be read. A single boolean permanently suppressed every
+    // load after the first file, leaving the hook's document/source stale.
+    if (initiallyLoadedPathRef.current !== filePath) {
+      initiallyLoadedPathRef.current = filePath;
+      void loadFile();
     }
 
     if (!watch) return;
@@ -194,9 +209,13 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
     const invoke = getTauriInvoke();
     if (!listen || !invoke) return;
 
-    // Get the directory from the file path
-    const lastSlash = filePath.lastIndexOf('/');
-    const dir = lastSlash > 0 ? filePath.substring(0, lastSlash) : '.';
+    // Tauri reports normalized paths even when the caller uses a Windows path.
+    // Normalize before deriving the directory as well as before comparisons;
+    // otherwise `C:\project\main.ui` incorrectly watches `.`.
+    const normalizedFilePath = filePath.replace(/\\/g, '/');
+    const lastSlash = normalizedFilePath.lastIndexOf('/');
+    const dir =
+      lastSlash < 0 ? '.' : lastSlash === 0 ? '/' : normalizedFilePath.substring(0, lastSlash);
 
     // Skip watching if the path looks invalid (contains ..)
     if (dir.includes('..')) {
@@ -209,12 +228,20 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
       console.warn('[SoftN] File watching not available:', err);
     });
 
-    // Listen for file changes
-    listen('softn-file-change', (event) => {
+    let disposed = false;
+    let effectUnlisten: (() => void) | null = null;
+
+    // Listen for file changes. Registration is asynchronous, so both the
+    // callback and the eventual unlisten handle belong to this effect run.
+    void listen('softn-file-change', (event) => {
+      // A callback retained by a late/stale registration must not start the old
+      // path's load: doing so increments the shared request generation and can
+      // invalidate the current path's in-flight read before it finishes.
+      if (disposed || currentFilePathRef.current !== filePath) return;
+
       const { path, kind } = event.payload;
       // Normalize paths for comparison
       const normalizedPath = path.replace(/\\/g, '/');
-      const normalizedFilePath = filePath.replace(/\\/g, '/');
 
       if (normalizedPath === normalizedFilePath || normalizedPath.endsWith(normalizedFilePath)) {
         if (kind === 'modify' || kind === 'create') {
@@ -222,19 +249,32 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
           debouncedLoad();
         }
       }
-    }).then((unlisten) => {
-      unlistenRef.current = unlisten;
-    });
+    })
+      .then((unlisten) => {
+        if (disposed) {
+          // Cleanup already ran while registration was pending. Release the
+          // newly-created listener immediately instead of leaking it.
+          unlisten();
+          return;
+        }
+        effectUnlisten = unlisten;
+      })
+      .catch((err) => {
+        if (!disposed) {
+          console.warn('[SoftN] File change listener not available:', err);
+        }
+      });
 
     return () => {
-      unlistenRef.current?.();
+      disposed = true;
+      effectUnlisten?.();
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;
       }
       invoke('stop_watching').catch(console.error);
     };
-  }, [filePath, watch, isTauriApp, debouncedLoad]); // Removed loadFile from deps - it's stable now
+  }, [filePath, watch, isTauriApp, debouncedLoad, loadFile]);
 
   return {
     document,

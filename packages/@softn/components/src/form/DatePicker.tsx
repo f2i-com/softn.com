@@ -7,6 +7,8 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 
 export interface DatePickerProps {
+  /** Input id (generated when omitted) */
+  id?: string;
   /** Current date value (ISO string or Date object) */
   value?: string | Date;
   /** Default value */
@@ -105,6 +107,7 @@ function getFirstDayOfMonth(year: number, month: number): number {
 }
 
 export function DatePicker({
+  id,
   value,
   defaultValue,
   name,
@@ -123,6 +126,9 @@ export function DatePicker({
   className,
   style,
 }: DatePickerProps): React.ReactElement {
+  const generatedId = React.useId();
+  const inputId = id ?? generatedId;
+  const errorId = `${inputId}-error`;
   const [selectedDate, setSelectedDate] = useState<Date | null>(
     parseDate(value) ?? parseDate(defaultValue)
   );
@@ -346,9 +352,10 @@ export function DatePicker({
 
   return (
     <div ref={containerRef} className={className} style={containerStyle}>
-      {label && <label style={labelStyle}>{label}</label>}
+      {label && <label htmlFor={inputId} style={labelStyle}>{label}</label>}
       <div style={inputContainerStyle}>
         <input
+          id={inputId}
           type="text"
           name={name}
           value={formatDateForDisplay(selectedDate, format)}
@@ -359,11 +366,14 @@ export function DatePicker({
           onClick={() => !disabled && !readOnly && setIsOpen(true)}
           onChange={handleInputChange}
           style={inputStyle}
+          aria-invalid={hasError}
+          aria-describedby={errorMessage ? errorId : undefined}
         />
         {selectedDate && !disabled && !readOnly && (
           <button
             type="button"
             onClick={handleClear}
+            aria-label="Clear date"
             style={{
               position: 'absolute',
               right: '0.5rem',
@@ -462,7 +472,7 @@ export function DatePicker({
         </div>
       )}
 
-      {errorMessage && <div style={errorStyle}>{errorMessage}</div>}
+      {errorMessage && <div id={errorId} style={errorStyle}>{errorMessage}</div>}
     </div>
   );
 }

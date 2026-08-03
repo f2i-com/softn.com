@@ -48,24 +48,26 @@ function collectFilesRecursive(rootDir, baseDir) {
       }
     }
   }
-  return out;
+  // Bundle bytes are also the application identity, so filesystem enumeration
+  // order must not make identical source trees produce different identities.
+  return out.sort((a, b) => a.localeCompare(b));
 }
 
 // CRC-32 calculation
+const crcTable = new Uint32Array(256);
+for (let i = 0; i < crcTable.length; i++) {
+  let value = i;
+  for (let bit = 0; bit < 8; bit++) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  crcTable[i] = value;
+}
+
 function crc32(data) {
   let crc = 0xffffffff;
-  const table = new Uint32Array(256);
-
-  for (let i = 0; i < 256; i++) {
-    let c = i;
-    for (let j = 0; j < 8; j++) {
-      c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
-    }
-    table[i] = c;
-  }
 
   for (let i = 0; i < data.length; i++) {
-    crc = table[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+    crc = crcTable[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
   }
 
   return (crc ^ 0xffffffff) >>> 0;
@@ -80,6 +82,7 @@ function createZip(entries) {
   for (const [name, data] of entries) {
     const nameBytes = Buffer.from(name, 'utf-8');
     const dataBuffer = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const checksum = crc32(dataBuffer);
 
     // Local file header
     const localHeader = Buffer.alloc(30 + nameBytes.length);
@@ -89,7 +92,7 @@ function createZip(entries) {
     localHeader.writeUInt16LE(0, 8);
     localHeader.writeUInt16LE(0, 10);
     localHeader.writeUInt16LE(0, 12);
-    localHeader.writeUInt32LE(crc32(dataBuffer), 14);
+    localHeader.writeUInt32LE(checksum, 14);
     localHeader.writeUInt32LE(dataBuffer.length, 18);
     localHeader.writeUInt32LE(dataBuffer.length, 22);
     localHeader.writeUInt16LE(nameBytes.length, 26);
@@ -108,7 +111,7 @@ function createZip(entries) {
     cdEntry.writeUInt16LE(0, 10);
     cdEntry.writeUInt16LE(0, 12);
     cdEntry.writeUInt16LE(0, 14);
-    cdEntry.writeUInt32LE(crc32(dataBuffer), 16);
+    cdEntry.writeUInt32LE(checksum, 16);
     cdEntry.writeUInt32LE(dataBuffer.length, 20);
     cdEntry.writeUInt32LE(dataBuffer.length, 24);
     cdEntry.writeUInt16LE(nameBytes.length, 28);
@@ -225,16 +228,24 @@ function buildBundle(bundleName) {
   const servedDir = path.join(__dirname, '..', '..', 'softn-web', 'public', 'demos');
   const indexPath = path.join(servedDir, 'index.json');
   if (fs.existsSync(indexPath)) {
+    let indexDocument;
     let listed = [];
     try {
-      const parsed = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-      listed = Array.isArray(parsed) ? parsed : parsed.demos || [];
+      indexDocument = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
+      listed = Array.isArray(indexDocument) ? indexDocument : indexDocument.demos || [];
     } catch {
       console.warn('  (demos/index.json is unreadable; not refreshing the served copy)');
     }
-    if (listed.some((entry) => entry && entry.file === `${bundleName}.softn`)) {
+    const listedEntry = listed.find((entry) => entry && entry.file === `${bundleName}.softn`);
+    if (listedEntry) {
       fs.writeFileSync(path.join(servedDir, `${bundleName}.softn`), bundleData);
       console.log(`Served copy:    demos/${bundleName}.softn`);
+
+      if (listedEntry.size !== bundleData.length) {
+        listedEntry.size = bundleData.length;
+        fs.writeFileSync(indexPath, `${JSON.stringify(indexDocument, null, 2)}\n`);
+        console.log(`Served metadata: demos/index.json (${bundleData.length} bytes)`);
+      }
 
       // The demo shelf showed a letter on a coloured tile for every app, because
       // the icon lives inside the bundle and the launcher has only index.json —
