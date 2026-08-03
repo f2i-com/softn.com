@@ -738,6 +738,8 @@ function toggleScope(id) {
   }
 }
 
+function closeScope() { scopeOpen = false }
+
 function confirmScope() {
   if (!scopeValid()) { return }
   scopeOpen = false
@@ -917,6 +919,14 @@ function newGame() {
 
 function backToTitle() {
   softn.audio.stopAll()
+  dlgActive = false
+  dlgQueue = []
+  dlgDoneTag = ""
+  dlgHandle = ""
+  choiceList = []
+  choiceTag = ""
+  noteText = ""
+  noteTicks = 0
   scene = "title"
 }
 
