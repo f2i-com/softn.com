@@ -246,6 +246,9 @@ function skipCutscene() { if (cutActive) { endCutscene() } }
 // drag to look; the drift gently re-frames rather than fighting them.
 function meetingDriftTick() {
   if (scene !== "meeting" || cutActive) { return }
+  if (shakeAmt > 0.0005) {
+    cameraPos = { x: 6 + (myRand() - 0.5) * shakeAmt, y: 1.6 + (myRand() - 0.5) * shakeAmt, z: 6.6 }
+  }
   let tx = 6, ty = 1.7, tz = 0.2
   if (dlgSpeaker === "PAX") { tx = 9.6; ty = 1.9; tz = 0.6 }
   else if (dlgSpeaker === "Clive") { tx = 4.2; ty = 1.4; tz = 4.4 }
@@ -323,12 +326,13 @@ function hotspotMarkers(color) {
 // Skirting board around a room's perimeter: four thin strips at floor level.
 // The cheapest trick in the book for making a box read as a room.
 function skirting(id, w, d, color, h) {
-  let t = h || 0.13
+  let t = h || 0.14
+  let o = 1.06
   return [
-    { id: id + "_n", type: "box", position: { x: w / 2, y: t / 2, z: 0.55 }, width: w + 2, height: t, depth: 0.1, color: color },
-    { id: id + "_s", type: "box", position: { x: w / 2, y: t / 2, z: d - 0.55 }, width: w + 2, height: t, depth: 0.1, color: color },
-    { id: id + "_w", type: "box", position: { x: 0.55, y: t / 2, z: d / 2 }, width: 0.1, height: t, depth: d + 2, color: color },
-    { id: id + "_e", type: "box", position: { x: w - 0.55, y: t / 2, z: d / 2 }, width: 0.1, height: t, depth: d + 2, color: color }
+    { id: id + "_n", type: "box", position: { x: w / 2, y: t / 2, z: o }, width: w - 1.6, height: t, depth: 0.1, color: color },
+    { id: id + "_s", type: "box", position: { x: w / 2, y: t / 2, z: d - o }, width: w - 1.6, height: t, depth: 0.1, color: color },
+    { id: id + "_w", type: "box", position: { x: o, y: t / 2, z: d / 2 }, width: 0.1, height: t, depth: d - 1.6, color: color },
+    { id: id + "_e", type: "box", position: { x: w - o, y: t / 2, z: d / 2 }, width: 0.1, height: t, depth: d - 1.6, color: color }
   ]
 }
 
@@ -725,7 +729,6 @@ function buildMeeting() {
   objs.push({ id: "rug", type: "plane", position: { x: 6, y: 0.012, z: 3.6 },
     rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 8, height: 4.4, color: "#2a3145" })
   objs.push(lightPanel("mlp1", 6, 3.4, 2.96, "#dbe6ff"))
-  objs = objs.concat(skirting("msk", 12, 9, "#232c44"))
   // Ceiling projector, aimed at the screen it will shortly betray.
   objs.push({ id: "proj_m", type: "cylinder", position: { x: 6, y: 2.85, z: 3.4 }, radius: 0.03, height: 0.28, color: "#1f2430" })
   objs.push({ id: "proj_b", type: "box", position: { x: 6, y: 2.63, z: 3.4 }, width: 0.34, height: 0.2, depth: 0.44, color: "#2a3245", metalness: 0.3, roughness: 0.6 })
@@ -850,7 +853,7 @@ function buildFlat() {
   let objs = [floorPlane(18, 14, "#41352a"), ceilingPlane(18, 14, 2.5, "#251d15")]
   objs = objs.concat(wallsFrom(FLAT_ROWS, "#4d3e37", 2.5))
   objs = objs.concat(skirting("fsk", 18, 14, "#33291f"))
-  objs = objs.concat(doorwayAt("fdoor", 6, 13.2, 0, "#33291f", "#5c4a3d"))
+  objs = objs.concat(doorwayAt("fdoor", 6, 12.82, 0, "#33291f", "#5c4a3d"))
   // Kitchenette: counter, sink, kettle, two mugs. The founder food pyramid.
   objs.push(blob("kit", 3.4, 5.6, 1.1, 0.2))
   objs.push({ id: "kit_c", type: "box", position: { x: 3.4, y: 0.44, z: 5.6 }, width: 2.4, height: 0.88, depth: 0.7, color: "#5a4a3a" })
@@ -863,16 +866,19 @@ function buildFlat() {
   objs.push({ id: "rug", type: "plane", position: { x: 8, y: 0.012, z: 7 },
     rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 6, height: 4.5, color: "#6b4a3a" })
   // Window: night city on the far wall.
-  objs = objs.concat(windowAt("winx", 9, 1.6, 1.06, 2.6, 1.3, true, "#2a2018", "#16204a", 0.9))
-  objs.push({ id: "window", type: "box", position: { x: 9, y: 1.6, z: 1.1 },
-    width: 2.5, height: 1.2, depth: 0.03, color: "#0b1026", opacity: 0.35 })
-  objs.push({ id: "curtainL", type: "box", position: { x: 7.5, y: 1.55, z: 1.16 }, width: 0.5, height: 1.7, depth: 0.08, color: "#6b4a3a" })
-  objs.push({ id: "curtainR", type: "box", position: { x: 10.5, y: 1.55, z: 1.16 }, width: 0.5, height: 1.7, depth: 0.08, color: "#6b4a3a" })
-  objs.push({ id: "moon", type: "sphere", position: { x: 9.8, y: 2.0, z: 1.12 }, radius: 0.14,
+  objs.push({ id: "winframe", type: "box", position: { x: 9, y: 1.6, z: 1.03 }, width: 3.0, height: 1.7, depth: 0.07, color: "#2a2018" })
+  objs.push({ id: "window", type: "box", position: { x: 9, y: 1.6, z: 1.08 },
+    width: 2.6, height: 1.3, depth: 0.05, color: "#0b1026", emissive: "#16204a", emissiveIntensity: 0.9 })
+  objs.push({ id: "winsill", type: "box", position: { x: 9, y: 0.9, z: 1.2 }, width: 3.1, height: 0.07, depth: 0.26, color: "#3a2c22" })
+  objs.push({ id: "winbar", type: "box", position: { x: 9, y: 1.6, z: 1.15 }, width: 0.05, height: 1.3, depth: 0.03, color: "#2a2018" })
+  objs.push({ id: "winbar2", type: "box", position: { x: 9, y: 1.6, z: 1.15 }, width: 2.6, height: 0.05, depth: 0.03, color: "#2a2018" })
+  objs.push({ id: "curtainL", type: "box", position: { x: 7.35, y: 1.55, z: 1.2 }, width: 0.5, height: 1.75, depth: 0.1, color: "#6b4a3a" })
+  objs.push({ id: "curtainR", type: "box", position: { x: 10.65, y: 1.55, z: 1.2 }, width: 0.5, height: 1.75, depth: 0.1, color: "#6b4a3a" })
+  objs.push({ id: "moon", type: "sphere", position: { x: 9.8, y: 2.0, z: 1.11 }, radius: 0.12,
     color: "#f8fafc", emissive: "#e6ecff", emissiveIntensity: 1.6 })
   let cityCols = [8.2, 8.7, 9.1, 9.5, 10.0]
   for (let i = 0; i < cityCols.length; i++) {
-    objs.push({ id: "city" + i, type: "box", position: { x: cityCols[i], y: 1.15 + (i % 3) * 0.12, z: 1.12 },
+    objs.push({ id: "city" + i, type: "box", position: { x: cityCols[i], y: 1.15 + (i % 3) * 0.12, z: 1.11 },
       width: 0.16, height: 0.3 + (i % 2) * 0.2, depth: 0.03, color: "#0b1026",
       emissive: "#f59e0b", emissiveIntensity: 0.55 })
   }
@@ -1130,86 +1136,120 @@ function buildBakery() {
 let dreamStaticBase = []
 let dreamChairAngle = 0
 let dreamTickets = []
+let dreamTickets2 = 9
 
 function buildDream() {
   loadGrid(DREAM_ROWS)
   if (dreamCalm) {
-    sceneFog = { color: "#0c1018", near: 8, far: 34 }
-    sceneBg = "#080b10"
+    // The room the moment it stops asking: cool, clear, quiet.
+    sceneFog = { color: "#1b2436", near: 14, far: 52 }
+    sceneBg = "#101724"
   } else {
-    sceneFog = { color: "#05060a", near: 2.5, far: 12 + dreamLoop * 1.5 }
-    sceneBg = "#040508"
+    // Desaturated and foggy, but never black — the joke has to be visible.
+    sceneFog = { color: "#38455f", near: 9, far: 34 - Math.min(dreamLoop * 2, 10) }
+    sceneBg = "#1c2536"
   }
-  let objs = [floorPlane(22, 14, "#0e1119"), ceilingPlane(22, 14, 2.8, "#090b12")]
-  objs = objs.concat(wallsFrom(DREAM_ROWS, "#141926", 2.8))
-  objs = objs.concat(skirting("dsk", 22, 14, "#0c1018"))
+  let objs = [floorPlane(22, 14, "#36415a"), ceilingPlane(22, 14, 2.8, "#28324a")]
+  objs = objs.concat(wallsFrom(DREAM_ROWS, "#44526e", 2.8))
+  objs = objs.concat(skirting("dsk", 22, 14, "#232c40"))
+  objs = objs.concat(ceilingBeams("dbm", 22, 14, 2.8, 2, "#232c40"))
+
+  // The whiteboard everyone is standing around, with an actual sprint on it.
+  objs.push({ id: "wboard", type: "box", position: { x: 10, y: 1.5, z: 6 }, width: 3.0, height: 1.7, depth: 0.1,
+    color: "#eef1f5", emissive: "#eef1f5", emissiveIntensity: dreamCalm ? 0.45 : 0.3 })
+  objs.push({ id: "wboard_tray", type: "box", position: { x: 10, y: 0.62, z: 6.04 }, width: 3.0, height: 0.06, depth: 0.16, color: "#8892a6" })
+  objs.push({ id: "wboard_leg1", type: "cylinder", position: { x: 8.8, y: 0.31, z: 6 }, radius: 0.04, height: 0.62, color: "#5a6377" })
+  objs.push({ id: "wboard_leg2", type: "cylinder", position: { x: 11.2, y: 0.31, z: 6 }, radius: 0.04, height: 0.62, color: "#5a6377" })
   if (!dreamCalm) {
-    // Debris that should not float, floating.
-    for (let i = 0; i < 5; i++) {
-      objs.push({ id: "deb" + i, type: "box", position: { x: 4 + i * 3.2, y: 1.4 + (i % 3) * 0.5, z: 3 + (i % 4) * 2.2 },
-        rotation: { x: i * 0.4, y: i * 0.9, z: i * 0.2 }, width: 0.5, height: 0.06, depth: 0.34, color: "#1b2233",
-        animate: { rotateY: 0.006 + i * 0.002, floatAmplitude: 0.12, floatSpeed: 0.5 + i * 0.2 } })
+    objs.push({ id: "wb_hdr", type: "box", position: { x: 10, y: 2.14, z: 5.93 }, width: 2.4, height: 0.1, depth: 0.02, color: "#dc2626", emissive: "#dc2626", emissiveIntensity: 0.5 })
+    // Sticky notes: three columns that never empty.
+    for (let i = 0; i < 9; i++) {
+      let cx = 9.05 + (i % 3) * 0.95
+      let cy = 1.85 - Math.floor(i / 3) * 0.42
+      objs.push({ id: "wb_n" + i, type: "box", position: { x: cx, y: cy, z: 5.93 }, rotation: { x: 0, y: 0, z: (i % 2 === 0 ? 0.05 : -0.06) },
+        width: 0.6, height: 0.3, depth: 0.02, color: "#fde68a", emissive: "#facc15", emissiveIntensity: 0.35 })
     }
   }
-  // The whiteboard everything orbits.
-  objs.push({ id: "wboard", type: "box", position: { x: 10, y: 1.4, z: 6 }, width: 2.4, height: 1.4, depth: 0.1,
-    color: "#e5e7eb", emissive: "#e5e7eb", emissiveIntensity: dreamCalm ? 0.5 : 0.22 })
-  objs.push({ id: "wboard_leg", type: "cylinder", position: { x: 10, y: 0.35, z: 6 }, radius: 0.05, height: 0.7, color: "#1f2430" })
-  // Desks drained of colour.
-  let dDesks = [[4, 10], [16, 10], [4, 3], [16, 3]]
+
+  // Desks, drained of colour, pushed to the edges by the meeting.
+  let dDesks = [[3.4, 11.2], [17.6, 11.2], [3.4, 2.4], [17.6, 2.4]]
   for (let i = 0; i < dDesks.length; i++) {
     objs = objs.concat(deskAt("ddesk" + i, dDesks[i][0], dDesks[i][1], ""))
   }
-  // Ticket cards, glowing like accusations.
-  if (dreamTickets.length === 0) {
-    for (let i = 0; i < 9; i++) {
-      dreamTickets.push({ x: 3 + myRand() * 14, y: 1.1 + myRand() * 0.9, z: 2.5 + myRand() * 8, ph: myRand() * 6 })
-    }
-  }
+
   if (!dreamCalm) {
-    for (let i = 0; i < dreamTickets.length; i++) {
-      let t = dreamTickets[i]
-      objs.push({ id: "ticket" + i, type: "box", position: { x: t.x, y: t.y, z: t.z },
-        rotation: { x: 0, y: t.ph, z: 0 }, width: 0.4, height: 0.28, depth: 0.02,
-        color: "#241a05", emissive: "#f59e0b", emissiveIntensity: 0.9,
-        animate: { floatAmplitude: 0.08, floatSpeed: 0.9 + (i % 3) * 0.3 } })
+    // THE STAND-UP: a ring of people standing around the board. This is the
+    // shape the scene was missing — it now reads as a meeting on sight.
+    let ring = 3 + Math.min(dreamLoop, 5)
+    for (let i = 0; i < ring; i++) {
+      let a = (i / ring) * Math.PI * 2 + 0.35
+      let sx = 10 + Math.sin(a) * 3.1
+      let sz = 6 + Math.cos(a) * 2.9
+      // Facing inward, toward the board.
+      objs = objs.concat(fig("sil" + i, sx, sz, a + Math.PI, "#151c2b", "#1c2437", { hair: "#111825", pants: "#121826" }))
     }
-    // PAX presides.
-    objs.push({ id: "dpax", type: "torus", position: { x: 10, y: 2.2, z: 6 }, radius: 0.4,
-      color: "#f8fafc", emissive: "#fb7185", emissiveIntensity: 1.3,
+    // PAX presides over the ceremony.
+    objs.push({ id: "dpax", type: "torus", position: { x: 10, y: 2.35, z: 6 }, radius: 0.4,
+      color: "#f8fafc", emissive: "#fb7185", emissiveIntensity: 1.5,
       animate: { rotateY: 0.03, floatAmplitude: 0.1, floatSpeed: 1.1 } })
-    // Clive silhouettes multiply with every loop.
-    let n = Math.min(2 + dreamLoop * 2, 10)
-    for (let i = 0; i < n; i++) {
-      let a = (i / n) * Math.PI * 2
-      let sx = 10 + Math.sin(a) * (6 + (i % 2))
-      let sz = 6 + Math.cos(a) * (3.6 + (i % 2) * 0.6)
-      objs = objs.concat(fig("sil" + i, sx, sz, a + Math.PI, "#0a0d14", "#0a0d14"))
+    objs.push({ id: "dpax_core", type: "sphere", position: { x: 10, y: 2.35, z: 6 }, radius: 0.13,
+      color: "#fb7185", emissive: "#fecdd3", emissiveIntensity: 1.8, animate: { floatAmplitude: 0.1, floatSpeed: 1.1 } })
+
+    // The backlog, as an object: a pile that grows every time you try to leave.
+    let stack = Math.min(Math.floor(dreamTickets2 / 3), 14)
+    objs.push(blob("pile", 13.6, 8.6, 0.62, 0.3))
+    for (let i = 0; i < stack; i++) {
+      objs.push({ id: "pile" + i, type: "box", position: { x: 13.6 + (i % 2) * 0.05, y: 0.05 + i * 0.075, z: 8.6 },
+        rotation: { x: 0, y: i * 0.16, z: 0 }, width: 0.86, height: 0.07, depth: 0.62,
+        color: "#f8fafc", emissive: "#fbbf24", emissiveIntensity: 0.28 })
+    }
+    // Loose tickets orbiting the room, capped so the frame stays readable.
+    let float = Math.min(dreamTickets2, 18)
+    for (let i = 0; i < float; i++) {
+      let a = (i / float) * Math.PI * 2
+      objs.push({ id: "ticket" + i, type: "box",
+        position: { x: 10 + Math.sin(a) * (5.2 + (i % 3) * 1.1), y: 1.25 + (i % 4) * 0.42, z: 6 + Math.cos(a) * (3.4 + (i % 2) * 0.9) },
+        rotation: { x: 0, y: a, z: 0 }, width: 0.42, height: 0.3, depth: 0.02,
+        color: "#fef3c7", emissive: "#f59e0b", emissiveIntensity: 0.95,
+        animate: { floatAmplitude: 0.09, floatSpeed: 0.8 + (i % 3) * 0.35 } })
     }
   }
+
+  // The door you keep walking through. Its sign counts your attempts.
+  objs = objs.concat(doorwayAt("ddoor", 20, 10, Math.PI / 2, dreamCalm ? "#cbd5e1" : "#2b3550", ""))
+  objs.push({ id: "hs_dreamdoor", type: "box", position: { x: 20, y: 1.05, z: 10 }, width: 0.24, height: 2.05, depth: 1.6,
+    color: dreamCalm ? "#f8fafc" : "#222c40",
+    emissive: dreamCalm ? "#f8fafc" : "#7dd3fc", emissiveIntensity: dreamCalm ? 1.7 : 0.75 })
+  objs.push({ id: "ddoor_sign", type: "box", position: { x: 19.86, y: 2.45, z: 10 }, rotation: { x: 0, y: Math.PI / 2, z: 0 },
+    width: 1.5, height: 0.34, depth: 0.05, color: "#0d1420",
+    emissive: dreamCalm ? "#f8fafc" : "#f87171", emissiveIntensity: dreamCalm ? 1.4 : 1.0 })
   if (dreamCalm) {
-    objs.push({ id: "doorshaft", type: "plane", position: { x: 18.6, y: 1.2, z: 10 },
-      rotation: { x: 0, y: Math.PI / 2, z: 0.12 }, width: 3.4, height: 2.6, color: "#f8fafc", opacity: 0.1 })
+    objs.push({ id: "doorshaft", type: "plane", position: { x: 18.4, y: 1.2, z: 10 },
+      rotation: { x: 0, y: Math.PI / 2, z: 0.12 }, width: 3.6, height: 2.6, color: "#f8fafc", opacity: 0.13 })
+    objs.push({ id: "doorpool", type: "plane", position: { x: 17.6, y: 0.014, z: 10 },
+      rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 5, height: 3.4, color: "#f8fafc", opacity: 0.09 })
   }
-  // The door: an exit, or the UNKNOWN door once the room goes quiet.
-  objs.push({ id: "hs_dreamdoor", type: "box", position: { x: 20, y: 1.1, z: 10 }, width: 0.3, height: 2.2, depth: 1.6,
-    color: dreamCalm ? "#f8fafc" : "#1a1f2c",
-    emissive: dreamCalm ? "#f8fafc" : "#64748b", emissiveIntensity: dreamCalm ? 1.6 : 0.4 })
+
   dreamStaticBase = objs
-  objects = dreamStaticBase.concat(dreamCalm ? dreamChairObjs(true) : dreamChairObjs(false))
+  objects = dreamStaticBase.concat(dreamChairObjs(dreamCalm))
   lights = dreamCalm ? [
-    { id: "amb", type: "ambient", color: "#c7d2e8", intensity: 1.1 },
-    { id: "door", type: "point", color: "#f8fafc", intensity: 2.6, position: { x: 19, y: 1.6, z: 10 } }
+    { id: "amb", type: "ambient", color: "#dbe4f5", intensity: 1.7 },
+    { id: "hemi", type: "hemisphere", color: "#eaf0fb", groundColor: "#5b6478", intensity: 1.2 },
+    { id: "door", type: "point", color: "#f8fafc", intensity: 3.0, position: { x: 18.4, y: 1.7, z: 10 } },
+    { id: "board", type: "point", color: "#e5e7eb", intensity: 1.2, position: { x: 10, y: 2.2, z: 6.6 } }
   ] : [
-    { id: "amb", type: "ambient", color: "#4a5570", intensity: 0.8 },
-    { id: "board", type: "point", color: "#e5e7eb", intensity: 1.4, position: { x: 10, y: 2, z: 6 } },
-    { id: "red", type: "point", color: "#fb7185", intensity: 0.9, position: { x: 10, y: 2.4, z: 6 } }
+    { id: "amb", type: "ambient", color: "#a7b6d4", intensity: 1.85 },
+    { id: "hemi", type: "hemisphere", color: "#c2cee6", groundColor: "#5b6884", intensity: 1.35 },
+    { id: "board", type: "point", color: "#eef1f5", intensity: 2.2, position: { x: 10, y: 2.0, z: 6.9 } },
+    { id: "red", type: "point", color: "#fb7185", intensity: 1.5, position: { x: 10, y: 2.5, z: 6 } },
+    { id: "doorL", type: "point", color: "#7dd3fc", intensity: 1.6, position: { x: 19, y: 1.6, z: 10 } }
   ]
   hotspots = [
-    { id: "hs_dreamdoor", x: 20, z: 10, r: 2.2, label: dreamCalm ? "The UNKNOWN door" : "The exit" },
-    { id: "wboard", x: 10, z: 6, r: 2.4, label: "The whiteboard", minor: true }
+    { id: "hs_dreamdoor", x: 20, z: 10, r: 2.3, label: dreamCalm ? "The UNKNOWN door" : (dreamLoop > 0 ? "The exit (again)" : "The exit") },
+    { id: "wboard", x: 10, z: 6, r: 2.6, label: "The sprint board", minor: true }
   ]
-  dreamStaticBase = dreamStaticBase.concat(hotspotMarkers(dreamCalm ? "#f8fafc" : "#64748b"))
+  if (!dreamCalm) { hotspots.push({ id: "pile0", x: 13.6, z: 8.6, r: 2.0, label: "The backlog", minor: true }) }
+  dreamStaticBase = dreamStaticBase.concat(hotspotMarkers(dreamCalm ? "#f8fafc" : "#7dd3fc"))
   objects = dreamStaticBase.concat(dreamChairObjs(dreamCalm))
 }
 
@@ -1217,8 +1257,8 @@ function dreamChairObjs(frozen) {
   let out = []
   for (let i = 0; i < 5; i++) {
     let a = dreamChairAngle + (i / 5) * Math.PI * 2
-    let cx = 10 + Math.sin(a) * 2.6
-    let cz = 6 + Math.cos(a) * 2.6
+    let cx = 10 + Math.sin(a) * 4.7
+    let cz = 6 + Math.cos(a) * 4.1
     out = out.concat(chairAt("dchair" + i, cx, cz, a + Math.PI, frozen ? "#3a4356" : "#232b3b"))
   }
   return out
