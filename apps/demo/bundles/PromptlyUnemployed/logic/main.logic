@@ -173,6 +173,7 @@ function _init() {
   }
 
   try { hasSave = !!localStorage.getItem("pu:autosave") } catch (err) { hasSave = false }
+  buildTitle()
 }
 
 // DPad: direction strings, unified with the keyboard dict.
@@ -194,10 +195,10 @@ function padRelease(dir) {
 // ---- The master tick ------------------------------------------------------
 
 function tick() {
+  if (scene === "title") { titleTick(); return }
   cutTickFn()
   shakeTick()
-  if (fadeOp > 0 && !dlgActive) { fadeOp = Math.max(0, fadeOp - 0.055) }
-  if (fadeOp > 0 && dlgActive) { fadeOp = Math.max(0, fadeOp - 0.055) }
+  if (fadeOp > 0) { fadeOp = Math.max(0, fadeOp - 0.14) }
   if (canMove() && !cutActive) {
     moveTick()
     hotspotTick()
@@ -220,6 +221,10 @@ function tick() {
     window.__puSkip = false
     if (cutActive) { skipCutscene() }
     else { dlgSkip() }
+  }
+  if (cutActive) {
+    let k = window.__puKeys || {}
+    if (k.w || k.a || k.s || k.d || k.left || k.right) { skipCutscene() }
   }
   if (window.__puWarp) {
     let target = window.__puWarp
@@ -263,9 +268,9 @@ function startOffice() {
   buildOffice()
   updateCamera()
   startCutscene([
-    { x0: 20, y0: 2.35, z0: 2.6, x1: 13, y1: 2.2, z1: 3.4, yaw0: -0.5, yaw1: 0.2, p0: -0.06, p1: -0.04, ticks: 80, e: "out" },
-    { x0: 13, y0: 2.2, z0: 3.4, x1: 8.4, y1: 1.95, z1: 6.4, yaw0: 0.2, yaw1: 0.72, p0: -0.04, p1: -0.02, ticks: 70 },
-    { x0: 8.4, y0: 1.95, z0: 6.4, x1: 4, y1: 1.6, z1: 4, yaw0: 0.72, yaw1: 0, ticks: 72, e: "in" }
+    { x0: 25, y0: 2.3, z0: 4.3, x1: 16, y1: 2.02, z1: 4.05, yaw0: -1.32, yaw1: -1.52, p0: -0.08, p1: -0.03, ticks: 74, e: "out" },
+    { x0: 16, y0: 2.02, z0: 4.05, x1: 8.5, y1: 1.78, z1: 4, yaw0: -1.52, yaw1: -1.72, p0: -0.03, p1: 0, ticks: 58 },
+    { x0: 8.5, y0: 1.78, z0: 4, x1: 4, y1: 1.6, z1: 4, yaw0: -1.72, yaw1: 0, ticks: 64, e: "in" }
   ], 4, 4, 0, "MONDAY, 9:02 A.M.", "CloudSpindle — Human Potential Week")
   objective = "Monday. Three small tasks before stand-up."
   playMusic("office")
@@ -903,9 +908,10 @@ function goBakery() {
   updateCamera()
   if (!ordersDone) {
     startCutscene([
-      { x0: 21, y0: 1.95, z0: 3.2, x1: 16.6, y1: 1.86, z1: 4.6, yaw0: -1.1, yaw1: -1.4, ticks: 72, e: "out" },
-      { x0: 16.6, y0: 1.86, z0: 4.6, x1: 17.2, y1: 1.8, z1: 10.6, yaw0: -1.4, yaw1: -2.3, ticks: 66 },
-      { x0: 17.2, y0: 1.8, z0: 10.6, x1: 2, y1: 1.6, z1: 14, yaw0: -2.3, yaw1: -Math.PI, ticks: 72, e: "in" }
+      { x0: 20.6, y0: 1.94, z0: 3.4, x1: 18.4, y1: 1.86, z1: 5.8, yaw0: -1.14, yaw1: -1.5, p0: -0.03, p1: -0.08, ticks: 50, e: "out" },
+      { x0: 18.4, y0: 1.86, z0: 5.8, x1: 16.4, y1: 1.78, z1: 9.4, yaw0: -1.5, yaw1: -1.98, p0: -0.08, p1: -0.12, ticks: 48 },
+      { x0: 16.4, y0: 1.78, z0: 9.4, x1: 9.4, y1: 1.7, z1: 13.3, yaw0: -1.98, yaw1: -2.62, p0: -0.12, p1: -0.05, ticks: 54 },
+      { x0: 9.4, y0: 1.7, z0: 13.3, x1: 2, y1: 1.6, z1: 14, yaw0: -2.62, yaw1: -Math.PI, p0: -0.05, p1: 0, ticks: 48, e: "in" }
     ], 2, 14, -Math.PI, "THE LAST CRUMB", "Closing time, and the ovens disagree")
   } else { fadeOp = 1 }
   playMusic("bakery")
@@ -970,9 +976,10 @@ function goBakeryDay() {
   updateCamera()
   if (!wfDone) {
     startCutscene([
-      { x0: 21, y0: 1.95, z0: 3.2, x1: 16.4, y1: 1.86, z1: 4.4, yaw0: -1.2, yaw1: -1.5, ticks: 70, e: "out" },
-      { x0: 16.4, y0: 1.86, z0: 4.4, x1: 17.4, y1: 1.78, z1: 10.8, yaw0: -1.5, yaw1: -2.35, ticks: 62 },
-      { x0: 17.4, y0: 1.78, z0: 10.8, x1: 2, y1: 1.6, z1: 14, yaw0: -2.35, yaw1: -Math.PI, ticks: 74, e: "in" }
+      { x0: 20.6, y0: 1.94, z0: 3.4, x1: 18.2, y1: 1.85, z1: 6.2, yaw0: -1.16, yaw1: -1.55, p0: -0.03, p1: -0.09, ticks: 50, e: "out" },
+      { x0: 18.2, y0: 1.85, z0: 6.2, x1: 16.2, y1: 1.76, z1: 9.8, yaw0: -1.55, yaw1: -2.05, p0: -0.09, p1: -0.1, ticks: 46 },
+      { x0: 16.2, y0: 1.76, z0: 9.8, x1: 9.2, y1: 1.68, z1: 13.3, yaw0: -2.05, yaw1: -2.66, p0: -0.1, p1: -0.04, ticks: 52 },
+      { x0: 9.2, y0: 1.68, z0: 13.3, x1: 2, y1: 1.6, z1: 14, yaw0: -2.66, yaw1: -Math.PI, p0: -0.04, p1: 0, ticks: 46, e: "in" }
     ], 2, 14, -Math.PI, "TUESDAY EVE — THE MORNING RUSH", "Watch everything. Touch nothing that's proofing.")
   } else { fadeOp = 1 }
   playMusic("bakery")
@@ -1173,6 +1180,7 @@ function loadSaveCode() {
 function backToTitle() {
   stopMusic()
   softn.audio.stopAll()
+  buildTitle()
   dlgActive = false
   dlgQueue = []
   dlgDoneTag = ""
@@ -1234,6 +1242,10 @@ function canMove() { return scene === "office" || scene === "flat" || scene === 
 function showCaptionBar() { return scene !== "title" }
 function toggleTranscript() { transcriptOpen = !transcriptOpen }
 function toggleTheatre() { theatre = !theatre }
+function quitToTitle() {
+  saveGame()
+  backToTitle()
+}
 function sceneW() { return theatre ? 1090 : 820 }
 function sceneH() { return theatre ? 560 : 430 }
 function currentChapter() {
