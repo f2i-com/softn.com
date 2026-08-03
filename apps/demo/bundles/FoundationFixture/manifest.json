@@ -1,0 +1,15 @@
+{
+  "name": "FoundationFixture",
+  "version": "1.0.0",
+  "description": "Fixture proving S1 bundled .glb resolution, S2 Scene3D clip animation with @animation events, and S3 audio completion outcomes together",
+  "main": "ui/main.ui",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "assets": ["assets/models/spinner.glb", "assets/audio/beep.wav"]
+  },
+  "config": {
+    "window": { "title": "Foundation Fixture", "width": 900, "height": 700 },
+    "theme": { "primary": "#6366f1", "mode": "dark" }
+  }
+}

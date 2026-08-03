@@ -1,0 +1,57 @@
+<logic src="../logic/main.logic" />
+
+<App theme="dark">
+  <Box style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%", height: "100%", padding: "16px", background: "#0d1117", color: "#e6edf3", fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "auto" }}>
+
+    <Heading level={2} style={{ fontSize: "1.15rem" }}>Foundation Fixture</Heading>
+    <Text style={{ color: "#8b949e", fontSize: "12px" }}>S1 asset resolution · S2 clip animation + @animation · S3 audio outcomes</Text>
+
+    <!-- S1 — the bundled model must resolve to a non-empty URL -->
+    <Text style={{ fontSize: "12px", color: asset("assets/models/spinner.glb") ? "#3fb950" : "#f85149" }}>
+      {asset("assets/models/spinner.glb") ? "S1 PASS — spinner.glb resolved to a non-empty URL" : "S1 FAIL — spinner.glb resolved to an empty URL"}
+    </Text>
+
+    <Scene3D
+      width={640}
+      height={400}
+      objects={sceneObjects(asset("assets/models/spinner.glb"))}
+      lights={lights}
+      camera={{ position: { x: 0, y: 2.2, z: 6 }, lookAt: { x: 0, y: 0, z: 0 } }}
+      background="#080b10"
+      @animation={handleAnimation}
+      style={{ borderRadius: "12px", border: "1px solid #21262d", maxWidth: "100%" }}
+    />
+
+    <!-- S2 — clip playback state and the @animation event feed -->
+    <Box style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+      <Button @click={togglePlaying} style={{ background: "#1f6feb", color: "#fff", border: "none", padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 600 }}>
+        {animPlaying ? "Pause clip" : "Play clip"}
+      </Button>
+      <Button @click={requestMissingClip} style={{ background: "#21262d", color: "#c9d1d9", border: "1px solid #30363d", padding: "8px 16px", borderRadius: "8px", fontSize: "13px" }}>
+        Request clip "Nope" (missing)
+      </Button>
+      <Button @click={requestSpin} style={{ background: "#21262d", color: "#c9d1d9", border: "1px solid #30363d", padding: "8px 16px", borderRadius: "8px", fontSize: "13px" }}>
+        Request clip "Spin"
+      </Button>
+    </Box>
+    <Text style={{ fontSize: "12px", color: "#8b949e" }}>{"S2 — clip requested: " + animClip + " · playing: " + (animPlaying ? "yes" : "no")}</Text>
+    <Box style={{ background: "#0b0f14", border: "1px solid #21262d", borderRadius: "8px", padding: "8px 12px" }}>
+      <Text if={animEvents.length === 0} style={{ fontSize: "12px", color: "#6e7681" }}>no @animation events yet — request clip "Nope" to see a missing event</Text>
+      #each (evt, i in animEvents)
+        <Text style={{ fontSize: "12px", display: "block", color: evt.type === "missing" ? "#e3b341" : "#3fb950" }}>{"@animation " + evt.type + " — object " + evt.objectId + ", clip " + evt.clip}</Text>
+      #end
+    </Box>
+
+    <!-- S3 — whenEnded outcomes; a stop must read 'stopped', never 'ended' -->
+    <Box style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+      <Button @click={playBeep} style={{ background: "#238636", color: "#fff", border: "none", padding: "8px 16px", borderRadius: "8px", fontSize: "13px", fontWeight: 600 }}>
+        Play beep
+      </Button>
+      <Button @click={stopBeep} style={{ background: "#21262d", color: "#c9d1d9", border: "1px solid #30363d", padding: "8px 16px", borderRadius: "8px", fontSize: "13px" }}>
+        Stop mid-play
+      </Button>
+    </Box>
+    <Text style={{ fontSize: "12px", color: "#8b949e" }}>{"S3 — beep: " + beepStatus}</Text>
+
+  </Box>
+</App>
