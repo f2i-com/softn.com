@@ -10,6 +10,15 @@
 .pu-title { background: radial-gradient(120% 130% at 50% 0%, #1d2536 0%, #12151f 55%, #0e1118 100%); border: 1px solid #33405a; }
 .pu-note { animation: pu-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 @keyframes pu-in { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
+.pu-hud { background: rgba(16,20,29,0.82); border: 1px solid #232b3b; border-radius: 999px; padding: 5px 8px; }
+.pu-dot { width: 9px; height: 9px; border-radius: 999px; transition: background 220ms ease, transform 220ms ease; }
+.pu-dot-now { transform: scale(1.45); box-shadow: 0 0 10px rgba(245,158,11,0.7); }
+.pu-tc { animation: pu-tc 620ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+@keyframes pu-tc { from { opacity: 0; letter-spacing: 0.5em; } to { opacity: 1; letter-spacing: 0.2em; } }
+.pu-barwrap { background: #0b1017; border-radius: 999px; height: 7px; overflow: hidden; }
+.pu-bar { height: 7px; border-radius: 999px; transition: width 500ms cubic-bezier(0.16, 1, 0.3, 1); }
+.pu-btn-ghost { background: transparent; border: 1px solid #2a3242; }
+.pu-log { background: #090d13; border: 1px solid #1c2431; border-radius: 10px; padding: 12px 14px; }
 </style>
 
 <App theme="dark">
@@ -41,12 +50,18 @@
 
   <!-- ============================== 3D WORLD ============================== -->
   <Box if={inWorld()}>
-    <Stack direction="horizontal" gap={10} style={{ alignItems: "center", marginBottom: "8px" }}>
+    <Stack direction="horizontal" gap={10} style={{ alignItems: "center", marginBottom: "8px", flexWrap: "wrap" }}>
       <Text className="pu-chip" style={{ background: "#1f2937", color: "#f59e0b" }}>{scene === "meeting" ? slideTitle : objective}</Text>
       <Box style={{ flex: 1 }} />
+      <Stack direction="horizontal" gap={6} className="pu-hud" style={{ alignItems: "center" }}>
+        #each (d, di in chapterDots())
+          <Box className={d.state === "now" ? "pu-dot pu-dot-now" : "pu-dot"} title={d.label}
+               style={{ width: "9px", height: "9px", borderRadius: "999px", background: dotColor(d.state) }} />
+        #end
+      </Stack>
       <Text className="pu-chip" style={{ background: "#1f2937", color: "#4ade80" }}>Runway {stat("runway")}</Text>
-      <Button @click={toggleMute} style={{ padding: "4px 12px", fontSize: "12px" }}>{muted ? "Unmute" : "Mute"}</Button>
-      <Button @click={toggleTranscript} style={{ padding: "4px 12px", fontSize: "12px" }}>Transcript</Button>
+      <Button @click={toggleMute} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{muted ? "Unmute" : "Mute"}</Button>
+      <Button @click={toggleTranscript} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>Transcript</Button>
     </Stack>
     <Box style={{ position: "relative", width: "fit-content", maxWidth: "100%" }}>
       <Scene3D
@@ -66,6 +81,10 @@
       />
       <Box if={cutActive || scene === "meeting"} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "38px", background: "#000", opacity: 0.92, borderRadius: "12px 12px 0 0", pointerEvents: "none" }} />
       <Box if={cutActive || scene === "meeting"} style={{ position: "absolute", bottom: 0, left: 0, width: "100%", height: "38px", background: "#000", opacity: 0.92, borderRadius: "0 0 12px 12px", pointerEvents: "none" }} />
+      <Box if={cutActive && cutTitle !== ""} style={{ position: "absolute", top: "52px", left: "28px", pointerEvents: "none" }}>
+        <Text className="pu-tc" style={{ display: "block", fontSize: "19px", fontWeight: 800, color: "#f8fafc", letterSpacing: "0.2em", textShadow: "0 2px 12px rgba(0,0,0,0.9)" }}>{cutTitle}</Text>
+        <Text style={{ display: "block", fontSize: "12px", color: "#cbd5e1", marginTop: "6px", fontStyle: "italic", textShadow: "0 2px 10px rgba(0,0,0,0.9)" }}>{cutSub}</Text>
+      </Box>
       <Button if={cutActive} @click={skipCutscene} style={{ position: "absolute", top: "46px", right: "10px", fontSize: "11px", opacity: 0.75, padding: "4px 10px" }}>Skip ▸</Button>
       <Box if={fadeOp > 0} style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", background: "#000", opacity: fadeOp, pointerEvents: "none", borderRadius: "12px" }} />
     </Box>
@@ -266,13 +285,33 @@
   <Box if={scene === "done"} className="pu-card" style={{ padding: "32px" }}>
     <Text style={{ display: "block", fontSize: "12px", color: "#f59e0b", letterSpacing: "0.3em" }}>END OF VERTICAL SLICE</Text>
     <Text style={{ display: "block", fontSize: "26px", fontWeight: 800, color: "#f8fafc", marginTop: "8px" }}>{productName + " exists now. It has one customer, zero features, and a deadline."}</Text>
+    <Stack direction="horizontal" gap={16} style={{ marginTop: "18px", flexWrap: "wrap" }}>
+      <Box style={{ minWidth: "190px", flex: 1 }}>
+        <Text style={{ display: "block", fontSize: "11px", color: "#7dd3fc", letterSpacing: "0.14em" }}>INTEGRITY</Text>
+        <Box className="pu-barwrap" style={{ marginTop: "5px" }}>
+          <Box className="pu-bar" style={{ width: statPct(integrity), background: "#38bdf8" }} />
+        </Box>
+      </Box>
+      <Box style={{ minWidth: "190px", flex: 1 }}>
+        <Text style={{ display: "block", fontSize: "11px", color: "#86efac", letterSpacing: "0.14em" }}>COLLABORATION</Text>
+        <Box className="pu-barwrap" style={{ marginTop: "5px" }}>
+          <Box className="pu-bar" style={{ width: statPct(collaboration), background: "#4ade80" }} />
+        </Box>
+      </Box>
+      <Box style={{ minWidth: "190px", flex: 1 }}>
+        <Text style={{ display: "block", fontSize: "11px", color: "#f9a8d4", letterSpacing: "0.14em" }}>HYPE</Text>
+        <Box className="pu-barwrap" style={{ marginTop: "5px" }}>
+          <Box className="pu-bar" style={{ width: statPct(hype), background: "#f472b6" }} />
+        </Box>
+      </Box>
+    </Stack>
     <Box style={{ marginTop: "16px" }}>
       #each (line, li in summaryLines)
         <Text style={{ display: "block", fontSize: "14px", color: "#cbd5e1", marginTop: "4px" }}>· {line}</Text>
       #end
     </Box>
     <Text style={{ fontSize: "12px", fontWeight: 700, color: "#4ade80", marginTop: "18px", letterSpacing: "0.1em" }}>PATCHWORK RELEASE NOTES (v0.0.1)</Text>
-    <Box style={{ marginTop: "6px", background: "#0b1017", borderRadius: "8px", padding: "12px", fontFamily: "monospace" }}>
+    <Box className="pu-log" style={{ marginTop: "6px", fontFamily: "monospace", maxHeight: "240px", overflowY: "auto" }}>
       #each (entry, ei in changelog)
         <Text style={{ display: "block", fontSize: "12px", color: "#86efac", fontFamily: "monospace", marginTop: "2px" }}>+ {entry}</Text>
       #end
@@ -286,10 +325,15 @@
   </Box>
 
   <!-- Caption / note bar -->
-  <Box if={showCaptionBar()} className="pu-cap" @click={dlgSkip}>
+  <Box if={showCaptionBar()} className="pu-cap" @click={dlgSkip} style={{ borderLeftColor: dlgActive ? speakerColor(dlgSpeaker) : "#f59e0b" }}>
     <Box if={dlgActive}>
-      <Text className="pu-chip" style={{ background: "#243044", color: "#7dd3fc" }}>{dlgSpeaker}</Text>
-      <Text style={{ fontSize: "15px", color: "#f1f5f9", marginTop: "6px" }}>{dlgText}</Text>
+      <Stack direction="horizontal" gap={8} style={{ alignItems: "center" }}>
+        <Box style={{ width: "8px", height: "8px", borderRadius: "999px", background: speakerColor(dlgSpeaker) }} />
+        <Text className="pu-chip" style={{ background: "#1a2331", color: speakerColor(dlgSpeaker), letterSpacing: "0.12em" }}>{dlgSpeaker}</Text>
+        <Box style={{ flex: 1 }} />
+        <Text style={{ fontSize: "10px", color: "#3f4a5c" }}>space · skip</Text>
+      </Stack>
+      <Text style={{ display: "block", fontSize: "15px", color: "#f1f5f9", marginTop: "7px", lineHeight: "1.45" }}>{dlgText}</Text>
     </Box>
     <Box if={!dlgActive && noteText !== ""} className="pu-note">
       <Text style={{ fontSize: "14px", color: "#94a3b8", fontStyle: "italic" }}>{noteText}</Text>
@@ -319,7 +363,7 @@
   <Box if={transcriptOpen} className="pu-card" style={{ maxHeight: "220px", overflowY: "auto" }}>
     <Text style={{ fontWeight: 700, color: "#94a3b8", fontSize: "12px", letterSpacing: "0.1em" }}>TRANSCRIPT</Text>
     #each (t, ti in transcript)
-      <Text style={{ fontSize: "12px", color: "#94a3b8", marginTop: "4px" }}>{t.speaker} — {t.text}</Text>
+      <Text style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginTop: "5px" }}><Text style={{ color: speakerColor(t.speaker), fontWeight: 700 }}>{t.speaker}</Text>{"  " + t.text}</Text>
     #end
   </Box>
 

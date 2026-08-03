@@ -233,6 +233,19 @@ let WF_POLICIES = [
   { id: "never",  label: "Never automate" }
 ]
 
+// The nine beats of the slice, for the progress rail.
+let CHAPTERS = [
+  { id: "office",    label: "Stand-up" },
+  { id: "meeting",   label: "Milestone" },
+  { id: "boxes",     label: "The box" },
+  { id: "flat",      label: "Runway" },
+  { id: "luma",      label: "LUMA" },
+  { id: "bakery",    label: "The Last Crumb" },
+  { id: "dream",     label: "Stand-up ∞" },
+  { id: "priya",     label: "Scope" },
+  { id: "bakeryday", label: "Workflow" }
+]
+
 // Doug's silence, captioned. It rotates, because he has range.
 let DOUG_NOTES = [
   "[professionally concerned silence]",
