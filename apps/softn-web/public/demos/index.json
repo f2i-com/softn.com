@@ -110,5 +110,13 @@
     "description": "Send a message as synthetic birdsong and decode it back — the QXW acoustic transport",
     "primary": "#c7ee53",
     "size": 105401
+  },
+  {
+    "id": "promptly-unemployed",
+    "file": "PromptlyUnemployed.softn",
+    "name": "Promptly Unemployed",
+    "description": "First-person 3D narrative tragicomedy (vertical slice) — laid off by an avatar, home by dinner, a business by midnight. Fully voiced.",
+    "primary": "#f59e0b",
+    "size": 6381015
   }
 ]

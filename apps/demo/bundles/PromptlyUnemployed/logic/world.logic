@@ -1,0 +1,402 @@
+// 3D world: authored grids, first-person movement, scene builders, hotspots,
+// and the Scene 2 confetti. Patterns follow MazeEscape3D: axis-separated AABB
+// collision over an ASCII grid, camera derived from our own yaw every frame,
+// static geometry built once and only dynamic pieces rebuilt.
+
+let CELL = 2
+let PLAYER_R = 0.35
+let MOVE_SPEED = 0.11
+let TURN_SPEED = 0.05
+
+let playerX = 4
+let playerZ = 4
+let playerAngle = 0
+let cameraPos = { x: 4, y: 1.6, z: 4 }
+let cameraLookAt = { x: 4, y: 1.6, z: 9 }
+
+let objects = []
+let lights = []
+
+// The office floor. One string per row; width must be uniform (validated in _init).
+let OFFICE_ROWS = [
+  "################",
+  "#....##....#...#",
+  "#.S..........B.#",
+  "#....##....#...#",
+  "#..............#",
+  "###..####..##.##",
+  "#..............#",
+  "#.C........N...#",
+  "#....##....#..D#",
+  "#....##....#...#",
+  "################"
+]
+
+let FLAT_ROWS = [
+  "##########",
+  "#L......P#",
+  "#........#",
+  "#..##....#",
+  "#..##..T.#",
+  "#........#",
+  "#S.......#",
+  "##########"
+]
+
+let grid = []          // active collision grid, 1 = solid
+let gridCols = 0
+let gridRows = 0
+
+function loadGrid(rows) {
+  gridCols = rows[0].length
+  gridRows = rows.length
+  grid = []
+  for (let r = 0; r < gridRows; r++) {
+    if (rows[r].length !== gridCols) { console.error("[PU] grid row " + r + " width mismatch") }
+    for (let c = 0; c < gridCols; c++) {
+      grid.push(rows[r].charAt(c) === "#" ? 1 : 0)
+    }
+  }
+}
+
+function gridFind(rows, ch) {
+  for (let r = 0; r < rows.length; r++) {
+    let c = rows[r].indexOf(ch)
+    if (c >= 0) { return { x: c * CELL, z: r * CELL } }
+  }
+  return { x: CELL, z: CELL }
+}
+
+function collides(px, pz) {
+  let cc = Math.round(px / CELL)
+  let cr = Math.round(pz / CELL)
+  for (let r = cr - 1; r <= cr + 1; r++) {
+    for (let c = cc - 1; c <= cc + 1; c++) {
+      if (r < 0 || c < 0 || r >= gridRows || c >= gridCols) { continue }
+      if (grid[r * gridCols + c] !== 1) { continue }
+      let minX = c * CELL - CELL / 2, maxX = c * CELL + CELL / 2
+      let minZ = r * CELL - CELL / 2, maxZ = r * CELL + CELL / 2
+      if (px + PLAYER_R > minX && px - PLAYER_R < maxX && pz + PLAYER_R > minZ && pz - PLAYER_R < maxZ) { return true }
+    }
+  }
+  return false
+}
+
+function moveTick() {
+  let keys = window.__puKeys || {}
+  if (window.__scene3dYaw !== undefined) { playerAngle = window.__scene3dYaw }
+  // Facing +z, screen-right is -x (three.js right-handed), so turning right
+  // DECREASES yaw and strafing right subtracts the right-hand vector.
+  if (keys.left)  { playerAngle = playerAngle + TURN_SPEED; window.__scene3dYaw = playerAngle }
+  if (keys.right) { playerAngle = playerAngle - TURN_SPEED; window.__scene3dYaw = playerAngle }
+  let fwd = 0
+  if (keys.w) { fwd = fwd + 1 }
+  if (keys.s) { fwd = fwd - 1 }
+  let strafe = 0
+  if (keys.d) { strafe = strafe + 1 }
+  if (keys.a) { strafe = strafe - 1 }
+  if (fwd !== 0 || strafe !== 0) {
+    let dx = (Math.sin(playerAngle) * fwd - Math.cos(playerAngle) * strafe) * MOVE_SPEED
+    let dz = (Math.cos(playerAngle) * fwd + Math.sin(playerAngle) * strafe) * MOVE_SPEED
+    let nx = playerX + dx
+    if (!collides(nx, playerZ)) { playerX = nx }
+    let nz = playerZ + dz
+    if (!collides(playerX, nz)) { playerZ = nz }
+  }
+  updateCamera()
+}
+
+function updateCamera() {
+  cameraPos = { x: playerX, y: 1.6, z: playerZ }
+  cameraLookAt = {
+    x: playerX + Math.sin(playerAngle) * 5,
+    y: 1.55,
+    z: playerZ + Math.cos(playerAngle) * 5
+  }
+}
+
+// ---- Hotspots -------------------------------------------------------------
+
+let hotspots = []      // active set: {id, x, z, r, label}
+let hsNearId = ""
+let hsNearLabel = ""
+
+function hotspotTick() {
+  let best = ""
+  let bestLabel = ""
+  let bestD = 999
+  for (let i = 0; i < hotspots.length; i++) {
+    let h = hotspots[i]
+    let dx = playerX - h.x, dz = playerZ - h.z
+    let d2 = dx * dx + dz * dz
+    if (d2 < h.r * h.r && d2 < bestD) { best = h.id; bestLabel = h.label; bestD = d2 }
+  }
+  hsNearId = best
+  hsNearLabel = bestLabel
+}
+
+function onSceneClick(info) {
+  if (!info || !info.objectId) { return }
+  for (let i = 0; i < hotspots.length; i++) {
+    let h = hotspots[i]
+    if (h.id !== info.objectId) { continue }
+    let dx = playerX - h.x, dz = playerZ - h.z
+    if (dx * dx + dz * dz < h.r * h.r * 2.6) { handleHotspot(h.id) }
+    return
+  }
+}
+
+// ---- Scene builders -------------------------------------------------------
+
+function wallsFrom(rows, color, height) {
+  let out = []
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < rows[r].length; c++) {
+      if (rows[r].charAt(c) !== "#") { continue }
+      out.push({
+        id: "w" + r + "_" + c, type: "box",
+        position: { x: c * CELL, y: height / 2, z: r * CELL },
+        width: CELL, height: height, depth: CELL,
+        color: (r + c) % 2 === 0 ? color : shade(color),
+        metalness: 0.05, roughness: 0.9
+      })
+    }
+  }
+  return out
+}
+
+function shade(hex) {
+  // Cheap two-tone: nudge the blue channel so wall runs read as panels.
+  return hex === "#3b4a63" ? "#33415a" : (hex === "#4a3b36" ? "#42352f" : hex)
+}
+
+function floorPlane(w, d, color) {
+  return {
+    id: "floor", type: "plane",
+    position: { x: w / 2, y: 0, z: d / 2 },
+    rotation: { x: -Math.PI / 2, y: 0, z: 0 },
+    width: w + 4, height: d + 4, color: color, roughness: 1
+  }
+}
+
+function deskAt(id, x, z, screen) {
+  let out = [{
+    id: id, type: "box", position: { x: x, y: 0.38, z: z },
+    width: 1.7, height: 0.76, depth: 0.85, color: "#5b6b84", metalness: 0.1, roughness: 0.8
+  }]
+  if (screen) {
+    out.push({
+      id: id + "_scr", type: "box", position: { x: x, y: 1.05, z: z - 0.25 },
+      width: 0.62, height: 0.4, depth: 0.05, color: "#0b1220",
+      emissive: screen, emissiveIntensity: 0.9
+    })
+  }
+  return out
+}
+
+let officeStatic = []
+
+function buildOffice() {
+  loadGrid(OFFICE_ROWS)
+  let objs = [floorPlane(30, 20, "#232b3b")]
+  objs = objs.concat(wallsFrom(OFFICE_ROWS, "#3b4a63", 2.6))
+  // Desks on the open floor — half of them conspicuously cleared.
+  let desks = [
+    [8, 4, "#38bdf8"], [8, 8, ""], [18, 4, "#38bdf8"], [18, 8, ""],
+    [4, 8, ""], [24, 6, "#38bdf8"], [24, 12, ""], [8, 13, "#38bdf8"]
+  ]
+  for (let i = 0; i < desks.length; i++) {
+    objs = objs.concat(deskAt("desk" + i, desks[i][0], desks[i][1], desks[i][2]))
+  }
+  // Interactive props (ids double as hotspot ids).
+  objs.push({ id: "hs_coffee", type: "box", position: { x: 4, y: 0.7, z: 14 },
+    width: 0.8, height: 1.4, depth: 0.8, color: "#6b7280",
+    emissive: "#f87171", emissiveIntensity: coffeeFixed ? 0 : 0.8 })
+  objs.push({ id: "hs_board", type: "box", position: { x: 26, y: 1.4, z: 3.2 },
+    width: 2.2, height: 1.3, depth: 0.12, color: "#111827",
+    emissive: "#fbbf24", emissiveIntensity: debugDone ? 0.15 : 0.7 })
+  objs.push({ id: "hs_desk41", type: "box", position: { x: 22, y: 0.5, z: 14 },
+    width: 1.7, height: 1.0, depth: 0.85, color: "#4b5563",
+    emissive: "#a78bfa", emissiveIntensity: notebookSeen ? 0.1 : 0.5 })
+  objs.push({ id: "hs_meeting", type: "box", position: { x: 28, y: 1.1, z: 16 },
+    width: 0.3, height: 2.2, depth: 1.8, color: "#1f2937",
+    emissive: "#4ade80", emissiveIntensity: 0.9,
+    animate: { rotateY: 0 } })
+  // “HUMAN POTENTIAL WEEK” lobby screen.
+  objs.push({ id: "lobby_banner", type: "box", position: { x: 13, y: 2.1, z: 1.2 },
+    width: 5, height: 0.9, depth: 0.1, color: "#0b1220", emissive: "#38bdf8", emissiveIntensity: 1.1 })
+  officeStatic = objs
+  objects = officeStatic
+  lights = [
+    { id: "amb", type: "ambient", color: "#aab6d0", intensity: 1.7 },
+    { id: "hemi", type: "hemisphere", color: "#cdd6ea", groundColor: "#4a5570", intensity: 1.0 },
+    { id: "p1", type: "point", color: "#e2e8f0", intensity: 2.2, position: { x: 8, y: 2.4, z: 6 } },
+    { id: "p2", type: "point", color: "#e2e8f0", intensity: 2.2, position: { x: 22, y: 2.4, z: 12 } },
+    { id: "p3", type: "point", color: "#fbe4bb", intensity: 1.8, position: { x: 6, y: 2.4, z: 14 } },
+    { id: "p4", type: "point", color: "#e2e8f0", intensity: 1.8, position: { x: 24, y: 2.4, z: 4 } }
+  ]
+  hotspots = [
+    { id: "hs_coffee",  x: 4,  z: 14, r: 1.9, label: coffeeFixed ? "Coffee machine (fixed)" : "Rescue the coffee machine" },
+    { id: "hs_board",   x: 26, z: 4,  r: 2.1, label: debugDone ? "Incident board" : "Inspect yesterday's incident" },
+    { id: "hs_desk41",  x: 22, z: 14, r: 1.9, label: notebookSeen ? "Desk 41" : "Someone's empty desk" },
+    { id: "hs_meeting", x: 28, z: 16, r: 2.2, label: "Meeting room — stand-up" }
+  ]
+}
+
+let meetingStatic = []
+let confetti = []      // {x,y,z,vy,drift,rot,color,frozen}
+let confettiOn = false
+let slideColor = "#38bdf8"
+
+function buildMeeting() {
+  let objs = [floorPlane(12, 9, "#1d2433")]
+  // Shell walls.
+  objs.push({ id: "mw_back",  type: "box", position: { x: 6, y: 1.5, z: -0.4 }, width: 13, height: 3, depth: 0.6, color: "#2b3550" })
+  objs.push({ id: "mw_left",  type: "box", position: { x: -0.4, y: 1.5, z: 4 }, width: 0.6, height: 3, depth: 10, color: "#2b3550" })
+  objs.push({ id: "mw_right", type: "box", position: { x: 12.4, y: 1.5, z: 4 }, width: 0.6, height: 3, depth: 10, color: "#2b3550" })
+  // The presentation screen and PAX.
+  objs.push({ id: "mscreen", type: "box", position: { x: 6, y: 1.7, z: 0.15 },
+    width: 5.4, height: 2.2, depth: 0.1, color: "#0b1220", emissive: slideColor, emissiveIntensity: 1.2 })
+  objs.push({ id: "pax", type: "torus", position: { x: 9.6, y: 1.9, z: 0.6 }, radius: 0.42,
+    color: "#f8fafc", emissive: "#fb7185", emissiveIntensity: 1.4,
+    animate: { rotateY: 0.02, floatAmplitude: 0.08, floatSpeed: 1.4 } })
+  // Table and colleagues.
+  objs.push({ id: "mtable", type: "box", position: { x: 6, y: 0.72, z: 3.4 }, width: 6.4, height: 0.12, depth: 2.2, color: "#7c6f5a", roughness: 0.7 })
+  let seats = [[3.4, 2.5], [5.1, 2.5], [6.9, 2.5], [8.6, 2.5], [4.2, 4.4]]
+  for (let i = 0; i < seats.length; i++) {
+    objs.push({ id: "col" + i, type: "box", position: { x: seats[i][0], y: 1.05, z: seats[i][1] },
+      width: 0.55, height: 1.15, depth: 0.45, color: i === 2 ? "#94a3b8" : "#64748b" })
+    objs.push({ id: "colh" + i, type: "sphere", position: { x: seats[i][0], y: 1.85, z: seats[i][1] }, radius: 0.24, color: "#d4c3ae" })
+  }
+  meetingStatic = objs
+  objects = meetingStatic
+  lights = [
+    { id: "amb", type: "ambient", color: "#9fb0d6", intensity: 1.0 },
+    { id: "scr", type: "point", color: slideColor, intensity: 2.2, position: { x: 6, y: 2, z: 1.4 } },
+    { id: "fill", type: "point", color: "#e2e8f0", intensity: 1.0, position: { x: 6, y: 2.6, z: 5.5 } }
+  ]
+  hotspots = []
+  cameraPos = { x: 6, y: 1.5, z: 6.6 }
+  cameraLookAt = { x: 6, y: 1.6, z: 0 }
+}
+
+function setSlide(color) {
+  slideColor = color
+  buildMeeting()
+  if (confettiOn) { objects = meetingStatic.concat(confettiObjs()) }
+}
+
+function spawnConfetti() {
+  confetti = []
+  for (let i = 0; i < 60; i++) {
+    confetti.push({
+      x: 2 + myRand() * 8, y: 3.1 + myRand() * 0.8, z: 0.8 + myRand() * 3.6,
+      vy: 0.018 + myRand() * 0.02, drift: (myRand() - 0.5) * 0.02,
+      rot: myRand() * 3.14, color: CONFETTI_COLORS[i % CONFETTI_COLORS.length], frozen: false
+    })
+  }
+  confettiOn = true
+}
+
+let CONFETTI_COLORS = ["#f472b6", "#60a5fa", "#facc15", "#4ade80", "#c084fc"]
+
+function confettiObjs() {
+  let out = []
+  for (let i = 0; i < confetti.length; i++) {
+    let f = confetti[i]
+    out.push({ id: "cf" + i, type: "box", position: { x: f.x, y: f.y, z: f.z },
+      rotation: { x: f.rot, y: f.rot * 1.7, z: 0 },
+      width: 0.09, height: 0.02, depth: 0.14, color: f.color,
+      emissive: f.color, emissiveIntensity: 0.25 })
+  }
+  return out
+}
+
+function confettiTick() {
+  if (!confettiOn) { return }
+  let live = false
+  for (let i = 0; i < confetti.length; i++) {
+    let f = confetti[i]
+    if (f.frozen) { continue }
+    f.y = f.y - f.vy
+    f.x = f.x + f.drift
+    f.rot = f.rot + 0.12
+    if (f.y <= 0.03) { f.y = 0.03; f.frozen = true } else { live = true }
+  }
+  objects = meetingStatic.concat(confettiObjs())
+  if (!live) { confettiOn = false }   // all settled; last rebuild leaves them on the floor
+}
+
+let flatStatic = []
+
+function buildFlat() {
+  loadGrid(FLAT_ROWS)
+  let objs = [floorPlane(18, 14, "#3a3128")]
+  objs = objs.concat(wallsFrom(FLAT_ROWS, "#4a3b36", 2.5))
+  // Window: a dark city rectangle on the far wall.
+  objs.push({ id: "window", type: "box", position: { x: 9, y: 1.6, z: 0.9 },
+    width: 2.6, height: 1.3, depth: 0.08, color: "#0b1026", emissive: "#1e2a55", emissiveIntensity: 0.8 })
+  // Bed and clutter.
+  objs.push({ id: "bed", type: "box", position: { x: 14.5, y: 0.3, z: 10.5 }, width: 2.2, height: 0.6, depth: 3.4, color: "#7a5c68" })
+  objs.push({ id: "boxpile", type: "box", position: { x: 3, y: 0.55, z: 9.5 }, width: 1.4, height: 1.1, depth: 1.2, color: "#8a6f4d" })
+  // Desk with the laptop (budget) — hotspot.
+  objs.push({ id: "hs_laptop", type: "box", position: { x: 2, y: 0.45, z: 2 }, width: 1.8, height: 0.9, depth: 0.9, color: "#5c4a3d" })
+  objs.push({ id: "laptop_scr", type: "box", position: { x: 2, y: 1.15, z: 1.7 }, width: 0.7, height: 0.45, depth: 0.05,
+    color: "#0b1220", emissive: budgetDone ? "#4ade80" : "#f59e0b", emissiveIntensity: 1.0 })
+  // The phone — hotspot once it rings.
+  objs.push({ id: "hs_phone", type: "box", position: { x: 16, y: 0.55, z: 2 }, width: 0.5, height: 1.1, depth: 0.5, color: "#3f3f46",
+    emissive: "#22d3ee", emissiveIntensity: phoneRinging ? 1.4 : 0.1,
+    animate: phoneRinging ? { floatAmplitude: 0.05, floatSpeed: 6 } : { rotateY: 0 } })
+  // LUMA terminal — hotspot, locked until the budget is faced.
+  objs.push({ id: "hs_luma", type: "box", position: { x: 14, y: 0.9, z: 8 }, width: 1.2, height: 1.8, depth: 0.5, color: "#1f2937",
+    emissive: "#a78bfa", emissiveIntensity: budgetDone ? 1.2 : 0.25 })
+  // Gadgets that die as subscriptions are cancelled.
+  if (!isCancelled("mindful")) {
+    objs.push({ id: "g_speaker", type: "torus", position: { x: 6, y: 1.0, z: 1.4 }, radius: 0.28,
+      color: "#0f172a", emissive: "#22d3ee", emissiveIntensity: 1.2, animate: { rotateY: 0.02 } })
+  }
+  if (!isCancelled("clouds")) {
+    objs.push({ id: "g_monitor2", type: "box", position: { x: 3.4, y: 1.15, z: 1.7 }, width: 0.7, height: 0.45, depth: 0.05,
+      color: "#0b1220", emissive: "#38bdf8", emissiveIntensity: 1.0 })
+  }
+  if (!isCancelled("copilot")) {
+    objs.push({ id: "g_kbd", type: "box", position: { x: 2, y: 0.93, z: 2.25 }, width: 0.9, height: 0.04, depth: 0.3,
+      color: "#111827", emissive: "#e879f9", emissiveIntensity: 1.1 })
+  }
+  if (!isCancelled("domain")) {
+    objs.push({ id: "g_router", type: "box", position: { x: 12.5, y: 0.35, z: 12.6 }, width: 0.6, height: 0.15, depth: 0.4,
+      color: "#1f2937", emissive: "#4ade80", emissiveIntensity: 1.3 })
+  }
+  // The plant, if kept, comes home with you.
+  if (hasItem("plant")) {
+    objs.push({ id: "plant", type: "cylinder", position: { x: 16.6, y: 0.35, z: 6 }, radius: 0.22, height: 0.5, color: "#8a5a3a" })
+    objs.push({ id: "plantTop", type: "sphere", position: { x: 16.6, y: 0.85, z: 6 }, radius: 0.35, color: "#4ade80" })
+  }
+  if (hasItem("doug")) {
+    objs.push({ id: "doug", type: "sphere", position: { x: 2.6, y: 1.0, z: 1.9 }, radius: 0.14,
+      color: "#facc15", emissive: "#facc15", emissiveIntensity: 0.4,
+      animate: { floatAmplitude: 0.03, floatSpeed: 1.2 } })
+  }
+  flatStatic = objs
+  objects = flatStatic
+  let ls = [
+    { id: "amb", type: "ambient", color: "#d9b38c", intensity: flatAmbient() },
+    { id: "lamp", type: "point", color: "#fbbf6b", intensity: 2.0, position: { x: 2, y: 1.9, z: 2.4 } }
+  ]
+  if (!isCancelled("mindful")) { ls.push({ id: "gl_spk", type: "point", color: "#22d3ee", intensity: 0.8, position: { x: 6, y: 1.4, z: 1.8 } }) }
+  if (!isCancelled("clouds"))  { ls.push({ id: "gl_mon", type: "point", color: "#38bdf8", intensity: 0.7, position: { x: 3.4, y: 1.5, z: 2.2 } }) }
+  if (!isCancelled("copilot")) { ls.push({ id: "gl_kbd", type: "point", color: "#e879f9", intensity: 0.6, position: { x: 2, y: 1.3, z: 2.6 } }) }
+  lights = ls
+  hotspots = [
+    { id: "hs_laptop", x: 2,  z: 2, r: 2.0, label: budgetDone ? "Laptop — Patchwork notes" : "Laptop — face the numbers" },
+    { id: "hs_phone",  x: 16, z: 2, r: 1.9, label: phoneRinging ? "Phone — Mum calling" : "Phone" },
+    { id: "hs_luma",   x: 14, z: 8, r: 2.0, label: budgetDone ? "The old LUMA project" : "Old side project (later)" }
+  ]
+}
+
+// Cancelling a subscription darkens the room a little each time.
+function flatAmbient() {
+  let n = 0
+  for (let i = 0; i < SUBS.length; i++) { if (!SUBS[i].locked && isCancelled(SUBS[i].id)) { n = n + 1 } }
+  return Math.max(0.45, 1.05 - n * 0.1)
+}

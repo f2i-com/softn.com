@@ -1,0 +1,120 @@
+// Promptly Unemployed — vertical slice data tables.
+// One global namespace across all .logic files; everything here is prefixed or ALL_CAPS.
+
+// Dialogue manifest. durationMs comes from the bake pipeline's WAV headers;
+// the controller advances on tick counters until softn.audio.whenEnded ships (S3).
+let DLG = {
+  a1_s1_pax_001:  { speaker: "PAX",   voice: "coral",   durationMs: 7350, text: "Good morning, valued humans. Stand-up begins in seven minutes. Attendance is joy." },
+  a1_s1_alex_002: { speaker: "Alex",  voice: "marin",   durationMs: 5950, text: "Half the desks are empty. Either it's a public holiday, or the org chart got refactored overnight." },
+  a1_s1_alex_003: { speaker: "Alex",  voice: "marin",   durationMs: 5650, text: "Fixed. You're welcome. Ten years of experience, one firmware update at a time." },
+  a1_s1_alex_004: { speaker: "Alex",  voice: "marin",   durationMs: 6700, text: "Desk forty-one. The directory says nobody sits here. The notebook disagrees." },
+  a1_s1_clive_005:{ speaker: "Clive", voice: "onyx",    durationMs: 5050, text: "Team! Exciting alignment ahead. Bring your authentic selves. Briefly." },
+  a1_s2_pax_010:  { speaker: "PAX",   voice: "coral",   durationMs: 8600, text: "Welcome to our Human Efficiency Milestone. Everything you are about to see is good news, for someone." },
+  a1_s2_pax_014:  { speaker: "PAX",   voice: "coral",   durationMs: 5650, text: "Your role has not been eliminated. It has been liberated from requiring a person." },
+  a1_s2_alex_015: { speaker: "Alex",  voice: "marin",   durationMs: 2700, text: "And what have I been liberated into?" },
+  a1_s2_pax_016:  { speaker: "PAX",   voice: "coral",   durationMs: 3150, text: "A valued alumnus." },
+  a1_s2_alex_017: { speaker: "Alex",  voice: "marin",   durationMs: 2700, text: "Do alumni keep the laptop?" },
+  a1_s2_pax_018:  { speaker: "PAX",   voice: "coral",   durationMs: 1200, text: "No." },
+  a1_s2_clive_019:{ speaker: "Clive", voice: "onyx",    durationMs: 6100, text: "For what it's worth, this decision happened above my visibility layer. I fought hard for the framing." },
+  a1_s3_pax_020:  { speaker: "PAX",   voice: "coral",   durationMs: 7250, text: "Please collect your personally attributable desk matter. PAX is here for you, within configured limits." },
+  a1_s3_priya_021:{ speaker: "Priya", voice: "sage",    durationMs: 7300, text: "Don't say anything kind yet. I'll cry, and HR counts tears as feedback." },
+  a1_s3_guard_022:{ speaker: "Guard", voice: "echo",    durationMs: 5650, text: "Badge says no. Key says yes. The door's philosophy is flexible." },
+  a1_s3_alex_023: { speaker: "Alex",  voice: "marin",   durationMs: 4200, text: "One box. Ten years. At least the box has handles." },
+  a2_s4_ruth_030: { speaker: "Ruth",  voice: "cedar",   durationMs: 4750, text: "A job can reject you. It cannot conduct a peer review of your whole life." },
+  a2_s4_ruth_031: { speaker: "Ruth",  voice: "cedar",   durationMs: 3550, text: "Have you eaten anything today that did not come from a vending machine?" },
+  a2_s4_alex_032: { speaker: "Alex",  voice: "marin",   durationMs: 4550, text: "I have a plan. It has bullet points. Several of them are even true." },
+  a2_s4_sys_033:  { speaker: "System",voice: "shimmer", durationMs: 8550, text: "Subscription cancelled. We are devastated. Your discount, however, has already moved on." },
+  a2_s5_luma_040: { speaker: "LUMA",  voice: "alloy",   durationMs: 4650, text: "Hello, Alex. I have been counting the days. There were four hundred and twelve." },
+  a2_s5_luma_041: { speaker: "LUMA",  voice: "alloy",   durationMs: 2550, text: "Your request is under-specified." },
+  a2_s5_alex_042: { speaker: "Alex",  voice: "marin",   durationMs: 2500, text: "So is my future." },
+  a2_s5_luma_043: { speaker: "LUMA",  voice: "alloy",   durationMs: 4700, text: "Then I recommend gathering data before branding either one." },
+  a2_s5_luma_044: { speaker: "LUMA",  voice: "alloy",   durationMs: 5750, text: "I have generated four billion-dollar ideas. Three of them are misdemeanours somewhere." },
+  a2_s5_sys_045:  { speaker: "System",voice: "shimmer", durationMs: 4700, text: "Patchwork. Project created. Optimism logged." }
+}
+
+// Scene 2 — the four interruption choices.
+let MEET_CHOICES = [
+  { id: "evaluation", label: "“How is AIDA evaluated?”",
+    reply: "PAX redirects to a productivity graph. It has no error metric. You memorise that.",
+    log: "DOCUMENTED: nobody could name AIDA's error metric" },
+  { id: "approved",   label: "“Who approved this decision?”",
+    reply: "“A cross-functional alignment outcome,” says PAX, warmly. So: nobody.",
+    log: "NOTED: decisions here are made by outcomes, not people" },
+  { id: "severance",  label: "“What is the severance package?”",
+    reply: "PAX finally displays useful information. It is the most honest slide of the day.",
+    log: "FILED: severance accepted; dignity pending" },
+  { id: "joke",       label: "“Can AIDA update the coffee machine?”",
+    reply: "Your coworkers laugh, then feel guilty about laughing. Someone snorts. It helps, briefly.",
+    log: "SHIPPED: one (1) joke into a hostile environment" }
+]
+
+// Scene 3 — six desk items, keep exactly three.
+let ITEMS = [
+  { id: "doug",     name: "Doug the rubber duck", desc: "Senior debugging consultant; compensation unknown" },
+  { id: "plant",    name: "Desk plant",           desc: "Performance currently exceeds division average" },
+  { id: "photo",    name: "Team photo",           desc: "Taken before the reorg before the reorg" },
+  { id: "keyboard", name: "Mechanical keyboard",  desc: "Louder than management's evidence" },
+  { id: "notebook", name: "Incident notebook",    desc: "Paper: the original offline-first platform" },
+  { id: "mug",      name: "Mug",                  desc: "“This Meeting Could Have Been a Prompt”" }
+]
+
+// Scene 3 — how to meet Priya at the edge of the floor.
+let PRIYA_CHOICES = [
+  { id: "comfort", label: "“This isn't your fault.”",
+    reply: "She nods too quickly, the way people do when they need it to be true." },
+  { id: "accuse",  label: "“You knew, didn't you.”",
+    reply: "“I knew they were testing something. I didn't know we were the test.” It lands between you like a dropped tray." },
+  { id: "evidence",label: "“Keep copies of AIDA's test results.”",
+    reply: "Her eyes flick to the ceiling camera, then back. “Obviously,” she says, too casually." },
+  { id: "fine",    label: "“It's fine. I'm fine.”",
+    reply: "Neither of you believes it. She lets you have it anyway, which is its own kind of kindness." }
+]
+
+// Scene 4 — the phone call.
+let RUTH_CHOICES = [
+  { id: "truth",    label: "Tell her the truth",
+    reply: "You say the word “fired” out loud for the first time. It's smaller than it was in your head." },
+  { id: "minimise", label: "“Just a restructure. I'm exploring options.”",
+    reply: "“Mm,” says Ruth, in the tone of a teacher who has read better excuses in nicer handwriting." }
+]
+
+// Scene 4 — the subscription audit. Rent stays; everything else can go.
+let SUBS = [
+  { id: "rent",    name: "Rent",                          cost: 1450, joke: "The landlord has strong opinions about cancellation", locked: true },
+  { id: "alumni",  name: "CloudSpindle Alumni Network",   cost: 29,   joke: "Free for 14 days, then mysteriously not free", locked: false },
+  { id: "copilot", name: "CodePilot Premium",             cost: 40,   joke: "It already cancelled you", locked: false },
+  { id: "clouds",  name: "Overlapping Clouds ×4",    cost: 44,   joke: "Each one backs up the other three", locked: false },
+  { id: "mindful", name: "MindfulMe",                     cost: 18,   joke: "Its notifications are getting less calm", locked: false },
+  { id: "domain",  name: "definitelynotafounder.ai",      cost: 3,    joke: "Purchased at 2:07 a.m. Renewal is destiny", locked: false },
+  { id: "gym",     name: "Gym membership",                cost: 55,   joke: "Unit tested for eighteen months. Never deployed", locked: false }
+]
+
+// Scene 1 — the debug-card puzzle. Correct order: symptom, repro, safeguard.
+let DEBUG_CARDS = [
+  { id: "safeguard", label: "SAFEGUARD", desc: "Pause retries after three failures" },
+  { id: "symptom",   label: "SYMPTOM",   desc: "1,204 identical requests in four minutes" },
+  { id: "repro",     label: "REPRODUCTION", desc: "Timeout, resend, timeout, resend" }
+]
+let DEBUG_ORDER = ["symptom", "repro", "safeguard"]
+
+// Scene 5 — the condensed Prompt Workshop: one card per category.
+let WS_CATS = [
+  { id: "user", title: "Who has the problem?", cards: [
+    { id: "smallbiz",  label: "A small-business owner", kind: "grounded" },
+    { id: "everyone",  label: "Everyone on Earth",      kind: "hype" },
+    { id: "investors", label: "Investors, mostly",      kind: "hype" } ] },
+  { id: "pain", title: "What keeps going wrong?", cards: [
+    { id: "orders",    label: "Orders scattered across five apps", kind: "grounded" },
+    { id: "chain",     label: "Insufficient blockchain",           kind: "hype" },
+    { id: "growth",    label: "Growth is merely linear",           kind: "hype" } ] },
+  { id: "tone", title: "What tone do we take?", cards: [
+    { id: "practical", label: "Practical",  kind: "grounded" },
+    { id: "grandiose", label: "Grandiose",  kind: "hype" },
+    { id: "desperate", label: "Desperate",  kind: "grounded" } ] }
+]
+
+let NAME_CHOICES = [
+  { id: "patchwork", label: "Patchwork",  note: "Small systems, connected carefully" },
+  { id: "orderly",   label: "OrderlyAI",  note: "Sounds like a compliance department" },
+  { id: "bizos",     label: "BizOS 3000", note: "Sounds like it ships with a fog machine" }
+]

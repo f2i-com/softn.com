@@ -1,0 +1,88 @@
+// Dialogue controller. Lines play through softn.audio; advancement is tick-counted
+// from the manifest's durationMs because no completion event reaches .logic yet (S3).
+// Continuations are string tags dispatched in handleDialogueDone (main.logic) —
+// functions must never sit in synced state, so the queue carries only data.
+
+let dlgActive = false
+let dlgSpeaker = ""
+let dlgText = ""
+let dlgQueue = []          // line ids still to play after the current one
+let dlgDoneTag = ""        // dispatched when the queue empties
+let dlgTicksLeft = 0
+let dlgHandle = ""
+let choiceList = []        // [{id, label}] — non-empty means a choice panel is up
+let choiceTag = ""
+let transcript = []        // [{speaker, text}]
+let muted = false
+
+let TICK_MS = 33
+let DLG_TAIL_TICKS = 6     // grace after the counted duration so lines never clip
+
+function runDialogue(ids, doneTag) {
+  dlgQueue = ids.slice()
+  dlgDoneTag = doneTag || ""
+  dlgAdvance()
+}
+
+function dlgAdvance() {
+  if (dlgHandle) { softn.audio.stop(dlgHandle); dlgHandle = "" }
+  if (dlgQueue.length === 0) {
+    dlgActive = false
+    dlgSpeaker = ""
+    dlgText = ""
+    let tag = dlgDoneTag
+    dlgDoneTag = ""
+    if (tag) { handleDialogueDone(tag) }
+    return
+  }
+  let id = dlgQueue.shift()
+  dlgQueue = dlgQueue.slice()          // reassign so the binding sees a new array
+  let line = DLG[id]
+  if (!line) {
+    console.error("[PU] unknown dialogue id: " + id)
+    dlgAdvance()
+    return
+  }
+  dlgActive = true
+  dlgSpeaker = line.speaker
+  dlgText = line.text
+  dlgTicksLeft = Math.ceil(line.durationMs / TICK_MS) + DLG_TAIL_TICKS
+  transcript.push({ speaker: line.speaker, text: line.text })
+  transcript = transcript.slice()
+  if (!muted) {
+    softn.audio.play("assets/audio/dialogue/" + id + ".wav", {}, function (r) {
+      if (r && r.played && r.handle) { dlgHandle = r.handle }
+      if (r && r.blocked) { dlgTicksLeft = Math.min(dlgTicksLeft, 45) }
+    })
+  }
+}
+
+// Called every game tick while a line is up.
+function dlgTick() {
+  if (!dlgActive) { return }
+  dlgTicksLeft = dlgTicksLeft - 1
+  if (dlgTicksLeft <= 0) { dlgAdvance() }
+}
+
+// Space / caption tap. Skips the current line, never a pending choice.
+function dlgSkip() {
+  if (dlgActive) { dlgAdvance() }
+}
+
+function showChoices(list, tag) {
+  choiceList = list.slice()
+  choiceTag = tag
+}
+
+function pickChoice(id) {
+  let tag = choiceTag
+  choiceList = []
+  choiceTag = ""
+  handleChoice(tag, id)
+}
+
+function toggleMute() {
+  muted = !muted
+  if (muted) { softn.audio.stopAll(); dlgHandle = "" }
+  softn.audio.setVolume(muted ? 0 : 1)
+}
