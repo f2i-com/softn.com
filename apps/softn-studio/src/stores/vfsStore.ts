@@ -42,6 +42,10 @@ function capHistory(history: VFSEvent[]): VFSEvent[] {
   return history.length > MAX_HISTORY ? history.slice(-MAX_HISTORY) : history;
 }
 
+function snapshotContent(content: VFSFile['content'] | undefined): VFSFile['content'] | undefined {
+  return content instanceof Uint8Array ? content.slice() : content;
+}
+
 export const useVFSStore = create<VFSState>((set, get) => ({
   files: new Map(),
   history: [],
@@ -85,7 +89,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
           version: 1,
         });
       }
-      return { files, history: [] };
+      return { files, history: [], undoStack: [] };
     });
   },
 
@@ -128,7 +132,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
         path,
         timestamp: Date.now(),
         source,
-        previousContent: typeof prev === 'string' ? prev : undefined,
+        previousContent: snapshotContent(prev),
       };
       return { files, history: capHistory([...s.history, event]) };
     });
@@ -148,13 +152,14 @@ export const useVFSStore = create<VFSState>((set, get) => ({
     set((s) => {
       const files = new Map(s.files);
       const existing = files.get(path);
+      if (!existing) return s;
       files.delete(path);
       const event: VFSEvent = {
         type: 'delete',
         path,
         timestamp: Date.now(),
         source,
-        previousContent: typeof existing?.content === 'string' ? existing.content : undefined,
+        previousContent: snapshotContent(existing.content),
       };
       return { files, history: capHistory([...s.history, event]) };
     });

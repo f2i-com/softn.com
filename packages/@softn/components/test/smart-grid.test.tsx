@@ -5,7 +5,8 @@
  * the whole app is then wrong about.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { act } from 'react';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount, click, type, byText } from './dom';
 import { SmartGrid } from '../src/smart/SmartGrid';
 
@@ -20,8 +21,10 @@ const SERVICES = [
 
 /** Open the edit form for the first row. */
 function openEditor(container: HTMLElement) {
-  const edit = Array.from(container.querySelectorAll('button')).find((b) =>
-    /edit|✏|✎/i.test(b.textContent ?? '') || b.getAttribute('title')?.toLowerCase().includes('edit')
+  const edit = Array.from(container.querySelectorAll('button')).find(
+    (b) =>
+      /edit|✏|✎/i.test(b.textContent ?? '') ||
+      b.getAttribute('title')?.toLowerCase().includes('edit')
   );
   click(edit);
 }
@@ -96,5 +99,101 @@ describe('editing a numeric column', () => {
     click(byText(container, /^Save$/i));
 
     expect(saved!.name).toBe('Trim');
+  });
+});
+
+describe('sorting missing values', () => {
+  it('keeps nullish rows stable and last in both directions', () => {
+    const rows = [
+      { id: 'missing-a', name: 'Missing A', rank: null },
+      { id: 'two', name: 'Two', rank: 2 },
+      { id: 'missing-b', name: 'Missing B', rank: undefined },
+      { id: 'one', name: 'One', rank: 1 },
+    ];
+    const { container } = mount(<SmartGrid data={rows} columns="name, rank" sortable />);
+    const rankHeader = Array.from(container.querySelectorAll('th')).find((header) =>
+      header.textContent?.includes('Rank')
+    )!;
+    const names = () =>
+      Array.from(container.querySelectorAll('tbody tr')).map(
+        (row) => row.querySelector('td')?.textContent
+      );
+
+    click(rankHeader);
+    expect(names()).toEqual(['One', 'Two', 'Missing A', 'Missing B']);
+
+    click(rankHeader);
+    expect(names()).toEqual(['Two', 'One', 'Missing A', 'Missing B']);
+  });
+});
+
+describe('dialog focus and keyboard behavior', () => {
+  it('focuses and traps the add form, closes on Escape, and restores its trigger', () => {
+    const { container } = mount(
+      <SmartGrid data={SERVICES} columns="name, price" add onAdd={vi.fn()} />
+    );
+    const addButton = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Add New')
+    )!;
+    addButton.focus();
+    click(addButton);
+
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!;
+    const firstInput = dialog.querySelector<HTMLInputElement>('input')!;
+    const buttons = dialog.querySelectorAll<HTMLButtonElement>('button');
+    const lastButton = buttons[buttons.length - 1];
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(document.activeElement).toBe(firstInput);
+
+    firstInput.focus();
+    act(() =>
+      firstInput.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Tab',
+          shiftKey: true,
+          bubbles: true,
+          cancelable: true,
+        })
+      )
+    );
+    expect(document.activeElement).toBe(lastButton);
+
+    act(() =>
+      lastButton.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+      )
+    );
+    expect(document.activeElement).toBe(firstInput);
+
+    act(() =>
+      firstInput.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      )
+    );
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(addButton);
+  });
+
+  it('focuses the safe action in delete confirmation and restores the delete trigger', () => {
+    const { container } = mount(
+      <SmartGrid data={SERVICES} columns="name" delete onDelete={vi.fn()} />
+    );
+    const deleteButton = container.querySelector<HTMLButtonElement>('button[title="Delete"]')!;
+    deleteButton.focus();
+    click(deleteButton);
+
+    const dialog = container.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    const cancelButton = Array.from(dialog.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Cancel'
+    )!;
+    expect(document.activeElement).toBe(cancelButton);
+
+    act(() =>
+      cancelButton.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      )
+    );
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(document.activeElement).toBe(deleteButton);
   });
 });

@@ -15,6 +15,8 @@ export interface RichTextEditorProps {
   defaultValue?: string;
   /** Placeholder text */
   placeholder?: string;
+  /** Accessible name for the editable region */
+  ariaLabel?: string;
   /** Whether the editor is disabled */
   disabled?: boolean;
   /** Whether the editor is read-only */
@@ -64,6 +66,7 @@ export function RichTextEditor({
   value,
   defaultValue = '',
   placeholder = 'Start writing...',
+  ariaLabel = 'Rich text editor',
   disabled = false,
   readOnly = false,
   showToolbar = true,
@@ -74,6 +77,7 @@ export function RichTextEditor({
   style,
 }: RichTextEditorProps): React.ReactElement {
   const editorRef = useRef<HTMLDivElement>(null);
+  const initialContentRef = useRef(value ?? defaultValue);
   const [isEmpty, setIsEmpty] = useState(true);
 
   // Initialize content.
@@ -82,13 +86,11 @@ export function RichTextEditor({
   // arriving over sync, and assigning it to innerHTML executes whatever markup
   // it carries on the host origin.
   useEffect(() => {
-    if (editorRef.current) {
-      const initialContent = value ?? defaultValue;
-      if (initialContent) {
-        editorRef.current.innerHTML = sanitizeRichText(initialContent);
-        setIsEmpty(false);
-      }
-    }
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    editor.innerHTML = sanitizeRichText(initialContentRef.current);
+    setIsEmpty(!(editor.textContent ?? '').trim());
   }, []);
 
   // Update content when value prop changes externally
@@ -101,14 +103,20 @@ export function RichTextEditor({
       // move the caret to the start each time.
       if (currentHtml !== safe) {
         editorRef.current.innerHTML = safe;
-        setIsEmpty(!value || value === '<br>' || value === '<p><br></p>');
+        setIsEmpty(!(editorRef.current.textContent ?? '').trim());
       }
     }
   }, [value]);
 
   const handleInput = useCallback(() => {
     if (editorRef.current) {
-      const html = editorRef.current.innerHTML;
+      const html = sanitizeRichText(editorRef.current.innerHTML);
+      // Pasted HTML is not guaranteed to be inert. Only rewrite the DOM when
+      // sanitization actually removed something so ordinary typing keeps its
+      // selection and caret position.
+      if (html !== editorRef.current.innerHTML) {
+        editorRef.current.innerHTML = html;
+      }
       const textContent = editorRef.current.textContent || '';
       setIsEmpty(!textContent.trim());
       onChange?.(html);
@@ -226,12 +234,13 @@ export function RichTextEditor({
   return (
     <div className={className} style={containerStyle}>
       {showToolbar && (
-        <div style={toolbarStyle}>
+        <div style={toolbarStyle} role="toolbar" aria-label="Text formatting">
           {toolbarButtons.map((button) => (
             <React.Fragment key={button.label}>
               {/* Add separator before alignment buttons and after list buttons */}
               {(button.command === 'justifyLeft' || button.command === 'createLink') && (
                 <div
+                  aria-hidden="true"
                   style={{
                     width: '1px',
                     height: '1.5rem',
@@ -243,6 +252,7 @@ export function RichTextEditor({
               <button
                 type="button"
                 title={button.label}
+                aria-label={button.label}
                 style={toolbarButtonStyle}
                 onClick={() => execCommand(button.command, button.value)}
                 onMouseEnter={(e) => {
@@ -268,6 +278,11 @@ export function RichTextEditor({
         {isEmpty && !disabled && <div style={placeholderStyle}>{placeholder}</div>}
         <div
           ref={editorRef}
+          role="textbox"
+          aria-label={ariaLabel}
+          aria-multiline="true"
+          aria-disabled={disabled || undefined}
+          aria-readonly={readOnly || undefined}
           contentEditable={!disabled && !readOnly}
           style={editorStyle}
           onInput={handleInput}

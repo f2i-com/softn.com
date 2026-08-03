@@ -15,7 +15,7 @@
  * />
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback, useId } from 'react';
 import { isSafeUrl } from '@softn/core';
 
 /**
@@ -58,7 +58,7 @@ export interface SmartCardsProps<T = Record<string, unknown>> {
   /** Enable selection */
   selectable?: boolean;
   /** Click handler */
-  onSelect?: (item: T) => void;
+  onSelect?: (item: T) => void | Promise<void>;
   /** Custom render for card content */
   renderCard?: (item: T, index: number) => React.ReactNode;
   /** Empty state message */
@@ -159,9 +159,33 @@ export function SmartCards<T extends Record<string, unknown>>({
 }: SmartCardsProps<T>): React.ReactElement {
   const [searchQuery, setSearchQuery] = useState('');
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const instanceId = useId().replace(/:/g, '');
 
   // Ensure data is array
-  const safeData = Array.isArray(data) ? data : [];
+  const safeData = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const canSelect = selectable && typeof onSelect === 'function';
+
+  const selectItem = useCallback(
+    async (item: T) => {
+      if (!canSelect || !onSelect) return;
+      try {
+        await onSelect(item);
+      } catch (err) {
+        console.error('[SmartCards] onSelect error:', err);
+      }
+    },
+    [canSelect, onSelect]
+  );
+
+  const handleSelectKey = useCallback(
+    (event: React.KeyboardEvent, item: T) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      void selectItem(item);
+    },
+    [selectItem]
+  );
 
   // Parse field lists
   const badgeFields = badges?.split(',').map((b) => b.trim()) || [];
@@ -182,9 +206,9 @@ export function SmartCards<T extends Record<string, unknown>>({
   }, [safeData, searchQuery, title, subtitle]);
 
   // Grid columns - handle responsive object or static number
-  const colCount = typeof columns === 'number' ? columns : (columns.lg || 3);
-  const colCountSm = typeof columns === 'object' ? (columns.sm || 1) : undefined;
-  const colCountMd = typeof columns === 'object' ? (columns.md || 2) : undefined;
+  const colCount = typeof columns === 'number' ? columns : columns.lg || 3;
+  const colCountSm = typeof columns === 'object' ? columns.sm || 1 : undefined;
+  const colCountMd = typeof columns === 'object' ? columns.md || 2 : undefined;
 
   // Container style
   const containerStyle: React.CSSProperties = {
@@ -220,7 +244,7 @@ export function SmartCards<T extends Record<string, unknown>>({
   };
 
   // Generate a unique class for responsive grid
-  const gridClassName = `softn-cards-grid-${colCount}`;
+  const gridClassName = `softn-cards-grid-${instanceId}`;
   const gridStyle: React.CSSProperties = {
     display: 'grid',
     gridTemplateColumns: `repeat(${colCount}, 1fr)`,
@@ -232,14 +256,15 @@ export function SmartCards<T extends Record<string, unknown>>({
     border: `1px solid ${hoveredIndex === index ? 'var(--color-border-hover, rgba(255, 255, 255, 0.14))' : 'var(--color-border, rgba(255, 255, 255, 0.08))'}`,
     borderRadius: 'var(--radius-lg, 0.75rem)',
     padding: variant === 'compact' ? '1rem' : '1.25rem',
-    cursor: selectable || onSelect ? 'pointer' : 'default',
+    cursor: canSelect ? 'pointer' : 'default',
     transition: 'all 250ms cubic-bezier(0.16, 1, 0.3, 1)',
     transform: hoveredIndex === index ? 'translateY(-3px)' : 'none',
-    boxShadow: hoveredIndex === index
-      ? '0 8px 24px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1)'
-      : variant === 'elevated'
-        ? '0 4px 12px rgba(0, 0, 0, 0.15)'
-        : 'none',
+    boxShadow:
+      hoveredIndex === index
+        ? '0 8px 24px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1)'
+        : variant === 'elevated'
+          ? '0 4px 12px rgba(0, 0, 0, 0.15)'
+          : 'none',
   });
 
   const emptyStyle: React.CSSProperties = {
@@ -250,14 +275,17 @@ export function SmartCards<T extends Record<string, unknown>>({
   };
 
   // Build responsive CSS if columns is an object
-  const responsiveCss = typeof columns === 'object' ? `
+  const responsiveCss =
+    typeof columns === 'object'
+      ? `
     @media (max-width: 640px) {
       .${gridClassName} { grid-template-columns: repeat(${colCountSm}, 1fr) !important; }
     }
     @media (min-width: 641px) and (max-width: 1024px) {
       .${gridClassName} { grid-template-columns: repeat(${colCountMd}, 1fr) !important; }
     }
-  ` : `
+  `
+      : `
     @media (max-width: 640px) {
       .${gridClassName} { grid-template-columns: 1fr !important; }
     }
@@ -277,6 +305,7 @@ export function SmartCards<T extends Record<string, unknown>>({
           <input
             type="text"
             placeholder="Search..."
+            aria-label="Search cards"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={searchInputStyle}
@@ -289,9 +318,10 @@ export function SmartCards<T extends Record<string, unknown>>({
           <div style={emptyStyle}>{emptyMessage}</div>
         ) : (
           filteredData.map((item, index) => {
-            const itemKey = (item as Record<string, unknown>).id != null
-              ? String((item as Record<string, unknown>).id)
-              : index;
+            const itemKey =
+              (item as Record<string, unknown>).id != null
+                ? String((item as Record<string, unknown>).id)
+                : index;
             // Custom render
             if (renderCard) {
               return (
@@ -300,15 +330,10 @@ export function SmartCards<T extends Record<string, unknown>>({
                   style={getCardStyle(index)}
                   onMouseEnter={() => setHoveredIndex(index)}
                   onMouseLeave={() => setHoveredIndex(null)}
-                  onClick={async () => {
-                    if (onSelect) {
-                      try {
-                        await onSelect(item);
-                      } catch (err) {
-                        console.error('[SmartCards] onSelect error:', err);
-                      }
-                    }
-                  }}
+                  role={canSelect ? 'button' : undefined}
+                  tabIndex={canSelect ? 0 : undefined}
+                  onClick={() => void selectItem(item)}
+                  onKeyDown={(event) => handleSelectKey(event, item)}
                 >
                   {renderCard(item, index)}
                 </div>
@@ -332,7 +357,10 @@ export function SmartCards<T extends Record<string, unknown>>({
                 style={getCardStyle(index)}
                 onMouseEnter={() => setHoveredIndex(index)}
                 onMouseLeave={() => setHoveredIndex(null)}
-                onClick={() => onSelect?.(item)}
+                role={canSelect ? 'button' : undefined}
+                tabIndex={canSelect ? 0 : undefined}
+                onClick={() => void selectItem(item)}
+                onKeyDown={(event) => handleSelectKey(event, item)}
               >
                 {/* Header with image/avatar */}
                 <div

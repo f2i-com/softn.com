@@ -592,7 +592,7 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
 </html>`);
     doc.close();
     setMountNode(doc.getElementById('softn-preview-root'));
-  }, [width, height]);
+  }, []);
 
   return (
     <div
@@ -868,6 +868,7 @@ export function LivePreview() {
 
   // Dynamically import SoftN renderer and ThemeProvider
   useEffect(() => {
+    let active = true;
     const loadRenderer = async () => {
       setIsLoading(true);
       try {
@@ -876,6 +877,7 @@ export function LivePreview() {
         debug('[LivePreview] Loaded @softn/core:', Object.keys(core));
         // Use SoftNRenderer directly (not SoftNWithXDB) to avoid IndexedDB issues
         // The builder preview doesn't need persistent storage
+        if (!active) return;
         if (core.SoftNRenderer) {
           debug('[LivePreview] Using SoftNRenderer (no XDB for preview)');
           setPreviewComponent(() => core.SoftNRenderer);
@@ -886,21 +888,25 @@ export function LivePreview() {
       } catch (e) {
         // If import fails, show placeholder
         console.error('[LivePreview] Failed to load @softn/core:', e);
-        setPreviewComponent(null);
+        if (active) setPreviewComponent(null);
       }
 
+      if (!active) return;
       try {
         // Import ThemeProvider from @softn/components
         const components = await import('@softn/components');
         debug('[LivePreview] Loaded @softn/components ThemeProvider');
-        setThemeProviderComponent(() => components.ThemeProvider);
+        if (active) setThemeProviderComponent(() => components.ThemeProvider);
       } catch (e) {
         console.error('[LivePreview] Failed to load ThemeProvider:', e);
-        setThemeProviderComponent(null);
+        if (active) setThemeProviderComponent(null);
       }
-      setIsLoading(false);
+      if (active) setIsLoading(false);
     };
     loadRenderer();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const dimensions = deviceDimensions[device];

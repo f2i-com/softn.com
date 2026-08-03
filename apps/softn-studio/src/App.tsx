@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
 import { TopBar } from './components/toolbar/TopBar';
 import { LeftRail } from './components/layout/LeftRail';
@@ -14,13 +14,32 @@ import { PagesPanel } from './components/panels/PagesPanel';
 import { HistoryPanel } from './components/panels/HistoryPanel';
 import { SettingsPanel } from './components/panels/SettingsPanel';
 import { FilesPanel } from './components/panels/FilesPanel';
-import { inferBlueprintFromFiles, inferBriefFromBlueprint, generateTaskGraph } from './lib/studioProject';
+import {
+  inferBlueprintFromFiles,
+  inferBriefFromBlueprint,
+  generateTaskGraph,
+} from './lib/studioProject';
 import { validateProject } from './lib/validator';
 import { abortAgentTurn } from './lib/agentOrchestrator';
-import { loadAISnapshot, loadRecentProjects, loadVFSSnapshot, loadWorkspaceSnapshot, saveAISnapshot, saveRecentProject, saveVFSSnapshot, saveWorkspaceSnapshot, decodePersistedVFS } from './lib/persistence';
+import {
+  loadAISnapshot,
+  loadRecentProjects,
+  loadVFSSnapshot,
+  loadWorkspaceSnapshot,
+  saveAISnapshot,
+  saveRecentProject,
+  saveVFSSnapshot,
+  saveWorkspaceSnapshot,
+  decodePersistedVFS,
+} from './lib/persistence';
 import { BlueprintReview } from './components/blueprint/BlueprintReview';
-import { normalizeProjectPath, readJsonProject, readProjectArchive } from './lib/projectImport';
-
+import {
+  hasZipSignature,
+  normalizeProjectPath,
+  readJsonProject,
+  readProjectArchive,
+} from './lib/projectImport';
+import { resetProjectSessionForImport } from './lib/projectSession';
 
 type View = 'dashboard' | 'brief' | 'editor';
 
@@ -43,7 +62,8 @@ type View = 'dashboard' | 'brief' | 'editor';
  */
 function getStudioThemeVars(theme: 'light' | 'dark'): React.CSSProperties {
   const type = {
-    '--studio-display': "'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif",
+    '--studio-display':
+      "'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif",
     '--studio-body': "'IBM Plex Sans', system-ui, -apple-system, sans-serif",
     '--studio-mono': "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
   };
@@ -121,6 +141,7 @@ const App: React.FC = () => {
   const [isMobile, setIsMobile] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<'chat' | 'canvas' | 'inspector'>('canvas');
   const [recentProjects, setRecentProjects] = useState(loadRecentProjects());
+  const importGenerationRef = useRef(0);
 
   // Responsive detection
   useEffect(() => {
@@ -150,6 +171,7 @@ const App: React.FC = () => {
     // this one and write its files there. agentOrchestrator already treats an
     // AbortError as "stop quietly", so nothing is written and no error is shown.
     abortAgentTurn();
+    importGenerationRef.current += 1;
     const currentTheme = useWorkspaceStore.getState().themePreview;
     useWorkspaceStore.getState().reset();
     useWorkspaceStore.getState().setThemePreview(currentTheme);
@@ -223,105 +245,118 @@ const App: React.FC = () => {
   }, []);
 
   const handleImportProject = useCallback(async (file: File) => {
+    const importGeneration = ++importGenerationRef.current;
     abortAgentTurn();
     try {
-    const buffer = await file.arrayBuffer();
-    const data = new Uint8Array(buffer);
-    const vfs = useVFSStore.getState();
-    const ws = useWorkspaceStore.getState();
-    const decoder = new TextDecoder();
+      const buffer = await file.arrayBuffer();
+      // A second selection (or starting a new project) owns the workspace now.
+      // File.arrayBuffer cannot be aborted, so discard the older read here.
+      if (importGenerationRef.current !== importGeneration) return;
+      const data = new Uint8Array(buffer);
+      const decoder = new TextDecoder();
 
-    // Reset VFS before import
-    vfs.reset();
+      const batch: Array<{ path: string; content: string | Uint8Array }> = [];
+      /** Whether the bytes were a readable archive, regardless of what was in it. */
+      let zipParsed = false;
 
-    const batch: Array<{ path: string; content: string | Uint8Array }> = [];
-    /** Whether the bytes were a readable archive, regardless of what was in it. */
-    let zipParsed = false;
+      // Try as ZIP first. The shared reader verifies sizes and checksums before
+      // allocating entry buffers, so a small archive cannot inflate without a
+      // bound just because it was opened in Studio rather than the runtime.
+      try {
+        const entryList = readProjectArchive(data);
+        batch.push(...entryList);
+        zipParsed = true;
+      } catch (err) {
+        // A damaged/unsafe archive is not a plain text project. Falling through
+        // used to decode its bytes into a single gibberish file and, because the
+        // VFS had already been reset, destroy the project the user had open.
+        if (hasZipSignature(data) || /\.(softn|zip)$/i.test(file.name)) {
+          throw err;
+        }
+      }
 
-    // Try as ZIP first. The shared reader verifies sizes and checksums before
-    // allocating entry buffers, so a small archive cannot inflate without a
-    // bound just because it was opened in Studio rather than the runtime.
-    try {
-      const entryList = readProjectArchive(data);
-      console.log(`[SoftN Import] ZIP parsed OK, ${entryList.length} entries`);
-      batch.push(...entryList);
-      zipParsed = true;
-    } catch (err) {
-      console.log('[SoftN Import] Not a valid ZIP, trying fallback...', err);
-    }
+      // Fallback: load as single file — only when this was NOT a ZIP.
+      //
+      // A ZIP that parsed and held nothing used to fall through to here, so a
+      // 22-byte empty archive became a "file" whose content was the raw archive
+      // bytes, named after the bundle. The project opened with one unreadable
+      // file in it and nothing said the bundle was empty.
+      if (batch.length === 0 && zipParsed) {
+        throw new Error(`${file.name} is a valid bundle but contains no files.`);
+      } else if (batch.length === 0) {
+        const text = decoder.decode(data);
+        // Try as JSON project manifest. Unsafe paths and non-string file values
+        // are ignored instead of becoming aliases or "[object Object]" files.
+        batch.push(...readJsonProject(text));
+        // Last resort: single file
+        if (batch.length === 0) {
+          const fallbackPath = normalizeProjectPath(file.name) ?? 'imported.txt';
+          batch.push({ path: fallbackPath, content: text });
+        }
+      }
 
-    // Fallback: load as single file — only when this was NOT a ZIP.
-    //
-    // A ZIP that parsed and held nothing used to fall through to here, so a
-    // 22-byte empty archive became a "file" whose content was the raw archive
-    // bytes, named after the bundle. The project opened with one unreadable
-    // file in it and nothing said the bundle was empty.
-    if (batch.length === 0 && zipParsed) {
-      ws.addConsoleOutput(`⚠ ${file.name} is a valid bundle but contains no files.`);
-    } else if (batch.length === 0) {
-      const text = decoder.decode(data);
-      // Try as JSON project manifest. Unsafe paths and non-string file values
-      // are ignored instead of becoming aliases or "[object Object]" files.
-      batch.push(...readJsonProject(text));
+      // Batch-create all files in a single state update
       if (batch.length > 0) {
-        console.log(`[SoftN Import] JSON manifest parsed, ${batch.length} files`);
+        // Commit only after the complete import has been decoded and validated,
+        // so any failure above leaves the current project intact.
+        resetProjectSessionForImport();
+        useVFSStore.getState().batchCreateFiles(batch, 'user');
       }
-      // Last resort: single file
-      if (batch.length === 0) {
-        const fallbackPath = normalizeProjectPath(file.name) ?? 'imported.txt';
-        batch.push({ path: fallbackPath, content: text });
-        console.log('[SoftN Import] Loaded as single file');
+
+      const importedProjectName = file.name.replace(/\.(softn|zip|json)$/i, '');
+      const importedWorkspace = useWorkspaceStore.getState();
+      const importedVFS = useVFSStore.getState();
+      importedWorkspace.setProjectName(importedProjectName);
+      const inferredBlueprint = inferBlueprintFromFiles(
+        importedProjectName,
+        importedVFS.getSnapshot()
+      );
+      const inferredBrief = inferBriefFromBlueprint(inferredBlueprint);
+      importedWorkspace.setBrief(inferredBrief);
+      importedWorkspace.setBlueprint(inferredBlueprint);
+      importedWorkspace.setBlueprintApproved(true);
+      importedWorkspace.setTaskGraph(generateTaskGraph(inferredBlueprint));
+      importedWorkspace.setActivePage(inferredBlueprint.pages[0]?.id ?? null);
+      // Open AI first so imported bundles are ready for AI-guided editing
+      importedWorkspace.setLeftPanel('ai');
+      importedWorkspace.setMode('design');
+      // Log to console output for user visibility
+      importedWorkspace.addConsoleOutput(`Imported ${batch.length} file(s) from ${file.name}`);
+      for (const entry of batch.slice(0, 10)) {
+        importedWorkspace.addConsoleOutput(`  + ${entry.path}`);
       }
-    }
-
-    // Batch-create all files in a single state update
-    if (batch.length > 0) {
-      vfs.batchCreateFiles(batch, 'user');
-      console.log(`[SoftN Import] ${batch.length} files added to VFS`);
-    }
-
-    ws.setProjectName(file.name.replace(/\.(softn|zip|json)$/, ''));
-    const inferredBlueprint = inferBlueprintFromFiles(file.name.replace(/\.(softn|zip|json)$/, ''), vfs.getSnapshot());
-    const inferredBrief = inferBriefFromBlueprint(inferredBlueprint);
-    ws.setBrief(inferredBrief);
-    ws.setBlueprint(inferredBlueprint);
-    ws.setBlueprintApproved(true);
-    ws.setTaskGraph(generateTaskGraph(inferredBlueprint));
-    ws.setActivePage(inferredBlueprint.pages[0]?.id ?? null);
-    // Open AI first so imported bundles are ready for AI-guided editing
-    ws.setLeftPanel('ai');
-    ws.setMode('design');
-    // Log to console output for user visibility
-    ws.addConsoleOutput(`Imported ${batch.length} file(s) from ${file.name}`);
-    for (const entry of batch.slice(0, 10)) {
-      ws.addConsoleOutput(`  + ${entry.path}`);
-    }
-    if (batch.length > 10) {
-      ws.addConsoleOutput(`  ... and ${batch.length - 10} more`);
-    }
-    useAIStore.getState().resetSession();
-    useAIStore.getState().addMessage({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: `Imported \`${file.name}\` and mapped ${inferredBlueprint.pages.length} page(s). Ask me to restyle screens, reorganize flows, improve data bindings, or prepare the bundle for export.`,
-      timestamp: Date.now(),
-    });
-    const recent = {
-      id: crypto.randomUUID(),
-      name: file.name.replace(/\.(softn|zip|json)$/, ''),
-      target: inferredBlueprint.target,
-      lastModified: new Date().toLocaleString(),
-    };
-    saveRecentProject(recent);
-    setRecentProjects(loadRecentProjects());
-    setView('editor');
+      if (batch.length > 10) {
+        importedWorkspace.addConsoleOutput(`  ... and ${batch.length - 10} more`);
+      }
+      useAIStore.getState().addMessage({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: `Imported \`${file.name}\` and mapped ${inferredBlueprint.pages.length} page(s). Ask me to restyle screens, reorganize flows, improve data bindings, or prepare the bundle for export.`,
+        timestamp: Date.now(),
+      });
+      const recent = {
+        id: crypto.randomUUID(),
+        name: importedProjectName,
+        target: inferredBlueprint.target,
+        lastModified: new Date().toLocaleString(),
+      };
+      saveRecentProject(recent);
+      setRecentProjects(loadRecentProjects());
+      setView('editor');
     } catch (err) {
+      if (importGenerationRef.current !== importGeneration) return;
       const msg = err instanceof Error ? err.message : String(err);
       useWorkspaceStore.getState().addConsoleOutput(`Import failed: ${msg}`);
-      console.error('[SoftN Import] Failed:', err);
     }
   }, []);
 
+  useEffect(
+    () => () => {
+      importGenerationRef.current += 1;
+      abortAgentTurn();
+    },
+    []
+  );
 
   // Persist workspace state whenever it changes (subscription catches all fields)
   useEffect(() => {
@@ -329,7 +364,7 @@ const App: React.FC = () => {
     const unsub = useWorkspaceStore.subscribe(() => {
       const ws = useWorkspaceStore.getState();
       const persistedBrief = ws.brief
-        ? (({ referenceImages, ...rest }) => rest)(ws.brief)
+        ? (({ referenceImages: _referenceImages, ...rest }) => rest)(ws.brief)
         : null;
       saveWorkspaceSnapshot({
         projectName: ws.projectName,
@@ -409,12 +444,18 @@ const App: React.FC = () => {
 
   const renderLeftPanelContent = () => {
     switch (leftPanel) {
-      case 'ai': return <AIChat />;
-      case 'pages': return <PagesPanel />;
-      case 'history': return <HistoryPanel />;
-      case 'settings': return <SettingsPanel />;
-      case 'files': return <FilesPanel />;
-      default: return null;
+      case 'ai':
+        return <AIChat />;
+      case 'pages':
+        return <PagesPanel />;
+      case 'history':
+        return <HistoryPanel />;
+      case 'settings':
+        return <SettingsPanel />;
+      case 'files':
+        return <FilesPanel />;
+      default:
+        return null;
     }
   };
 
@@ -452,12 +493,14 @@ const App: React.FC = () => {
         {/* Compact mobile top bar */}
         <div style={styles.mobileTopBar}>
           <div style={styles.mobileTopLeft}>
-            <button onClick={handleBackToDashboard} style={styles.mobileBackBtn} title="Back to home">
+            <button
+              onClick={handleBackToDashboard}
+              style={styles.mobileBackBtn}
+              title="Back to home"
+            >
               <Icon name="chevron-left" size={20} />
             </button>
-            <span style={styles.mobileProjectName}>
-              {projectName || 'SoftN Studio'}
-            </span>
+            <span style={styles.mobileProjectName}>{projectName || 'SoftN Studio'}</span>
           </div>
           <div style={styles.mobileTopRight}>
             <div style={styles.mobileStatusDot} />
@@ -495,7 +538,11 @@ const App: React.FC = () => {
                 ...(mobilePanel === tab.id ? styles.mobileNavBtnActive : {}),
               }}
             >
-              <Icon name={tab.icon} size={20} color={mobilePanel === tab.id ? 'var(--studio-accent)' : 'var(--studio-text-dim)'} />
+              <Icon
+                name={tab.icon}
+                size={20}
+                color={mobilePanel === tab.id ? 'var(--studio-accent)' : 'var(--studio-text-dim)'}
+              />
               <span style={styles.mobileNavLabel}>{tab.label}</span>
             </button>
           ))}

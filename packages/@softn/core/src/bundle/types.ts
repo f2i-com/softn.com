@@ -289,6 +289,8 @@ export interface BundleLoadOptions {
   eager?: boolean;
   /** Custom XDB instance to use for data */
   xdb?: unknown;
+  /** Abort an in-flight URL load. Ignored for already available byte arrays. */
+  signal?: AbortSignal;
 }
 
 // ============================================================================
@@ -308,8 +310,22 @@ export function validateManifest(manifest: unknown): manifest is SoftNManifest {
   if (typeof m.version !== 'string' || !m.version) return false;
   if (typeof m.main !== 'string' || !m.main) return false;
 
-  // Files must be an object if present
-  if (m.files !== undefined && typeof m.files !== 'object') return false;
+  // Files must be a plain object of string arrays if present. The previous
+  // object-only check accepted null, arrays and arbitrary nested values while
+  // claiming to TypeScript that the full SoftNManifest shape was valid.
+  if (m.files !== undefined) {
+    if (!m.files || typeof m.files !== 'object' || Array.isArray(m.files)) return false;
+    const files = m.files as Record<string, unknown>;
+    for (const key of ['ui', 'logic', 'xdb', 'assets']) {
+      const entries = files[key];
+      if (
+        entries !== undefined &&
+        (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string'))
+      ) {
+        return false;
+      }
+    }
+  }
 
   return true;
 }

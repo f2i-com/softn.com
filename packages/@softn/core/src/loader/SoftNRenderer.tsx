@@ -16,7 +16,6 @@ import React, {
 import { parse } from '../parser';
 import { renderDocument } from '../renderer';
 import { getDefaultRegistry } from '../renderer/registry';
-import { ReactiveState } from '../runtime/reactivity';
 import {
   createScriptRuntime,
   detectWorkerIncompatibilities,
@@ -40,6 +39,20 @@ import type { SoftNDocument } from '../parser/ast';
 import type { Expression, TemplateNode } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { parseStatePath } from '../runtime/state-path';
+
+/**
+ * Permission manifests and pre-included path lists are JSON data, but callers
+ * commonly construct them inline. Preserve the previous reference while their
+ * contents are unchanged so a harmless parent re-render cannot restart the VM.
+ */
+function useStructurallyStableValue<T>(value: T): T {
+  const serialized = JSON.stringify(value);
+  const ref = useRef<{ serialized: string | undefined; value: T }>({ serialized, value });
+  if (ref.current.serialized !== serialized) {
+    ref.current = { serialized, value };
+  }
+  return ref.current.value;
+}
 
 /**
  * Sanitize CSS from bundle style blocks before injection.
@@ -430,6 +443,9 @@ export function SoftNRenderer({
   bundleFileProvider,
   stateRef,
 }: SoftNRendererProps): React.ReactElement | null {
+  const runtimePermissions = useStructurallyStableValue(permissions);
+  const runtimePermissionConfig = useStructurallyStableValue(permissionConfig);
+  const runtimePreIncludedLogicPaths = useStructurallyStableValue(preIncludedLogicPaths);
   const [resolvedSource, setResolvedSource] = useState<string | undefined>(source);
   const [state, setState] = useState<RendererState>({
     document: null,
@@ -447,15 +463,24 @@ export function SoftNRenderer({
   // Sync poll interval ref for cleanup on unmount
   const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Reactive state for computed values
-  const reactiveRef = useRef<ReactiveState | null>(null);
-  const [, forceUpdate] = useState({});
+  // External computed definitions read ordinary React state. Evaluate them
+  // from the current snapshot instead of putting a second, unsynchronised
+  // ReactiveState store beside componentState. The old store was initialized
+  // once and never updated, so both computed values and stateRef reads stayed
+  // pinned to the first render after any state change.
+  const computedValues = useMemo(() => {
+    const computed: Record<string, unknown> = {};
+    for (const [name, fn] of Object.entries(computedDefs)) {
+      computed[name] = fn(state.componentState);
+    }
+    return computed;
+  }, [computedDefs, state.componentState]);
 
   // Keep stateRef up-to-date on every render so snapshot reads latest state
   if (stateRef) {
     stateRef.current = () => ({
       ...state.componentState,
-      ...(reactiveRef.current?.getStateSnapshot() ?? {}),
+      ...computedValues,
     });
   }
 
@@ -519,9 +544,10 @@ export function SoftNRenderer({
 
       // Try to find by name
       if (!element && name) {
-        element = Array.from(document.querySelectorAll<HTMLElement>(tagName.toLowerCase())).find(
-          (candidate) => candidate.getAttribute('name') === name
-        ) ?? null;
+        element =
+          Array.from(document.querySelectorAll<HTMLElement>(tagName.toLowerCase())).find(
+            (candidate) => candidate.getAttribute('name') === name
+          ) ?? null;
       }
 
       // Try to find by tag and index within container
@@ -552,36 +578,14 @@ export function SoftNRenderer({
     }
   }, [state.document]);
 
-  // Initialize reactive state
+  // Clear any outstanding sync poll when the renderer leaves the tree.
   useEffect(() => {
-    if (!reactiveRef.current) {
-      reactiveRef.current = new ReactiveState();
-
-      // Define initial state
-      for (const [name, value] of Object.entries(initialState)) {
-        reactiveRef.current.defineState(name, value);
-      }
-
-      // Define computed values
-      for (const [name, fn] of Object.entries(computedDefs)) {
-        reactiveRef.current.defineComputed(name, () => fn(state.componentState));
-      }
-
-      // Set up effect to trigger re-renders
-      reactiveRef.current.addEffect(() => {
-        reactiveRef.current?.getStateSnapshot();
-        forceUpdate({});
-      });
-    }
-
     return () => {
-      reactiveRef.current?.dispose();
       if (syncPollRef.current) {
         clearInterval(syncPollRef.current);
         syncPollRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Hold the load callbacks in refs so they cannot re-run the parse effect.
@@ -601,6 +605,29 @@ export function SoftNRenderer({
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
+  // Host functions are often supplied inline (the web and native loaders both
+  // do this for asset()). Rebuilding the VM on each identity change would run
+  // script top-level code and _init() again. A stable proxy lets long-lived
+  // runtime bridges call the latest implementation while genuine runtime
+  // configuration changes can remain effect dependencies.
+  const functionsRef = useRef(functions);
+  functionsRef.current = functions;
+  const runtimeFunctions = useMemo(
+    () =>
+      new Proxy({} as Record<string, (...args: unknown[]) => unknown>, {
+        ownKeys: () => Reflect.ownKeys(functionsRef.current),
+        getOwnPropertyDescriptor: (_target, property) => {
+          const descriptor = Object.getOwnPropertyDescriptor(functionsRef.current, property);
+          return descriptor ? { ...descriptor, configurable: true } : undefined;
+        },
+        get: (_target, property) => {
+          if (typeof property !== 'string') return undefined;
+          return (...args: unknown[]) => functionsRef.current[property]?.(...args);
+        },
+      }),
+    []
+  );
+
   // Track if script has been initialized to avoid re-initialization
   const scriptInitializedRef = useRef(false);
 
@@ -608,7 +635,9 @@ export function SoftNRenderer({
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   // Point XDB's no-argument callers at this app.
@@ -671,7 +700,9 @@ export function SoftNRenderer({
                     const cloned = [...current];
                     (current as unknown[])[index] = cloned[index] =
                       typeof cloned[index] === 'object' && cloned[index] !== null
-                        ? Array.isArray(cloned[index]) ? [...cloned[index]] : { ...cloned[index] as Record<string, unknown> }
+                        ? Array.isArray(cloned[index])
+                          ? [...cloned[index]]
+                          : { ...(cloned[index] as Record<string, unknown>) }
                         : {};
                     current = cloned[index];
                   } else {
@@ -679,7 +710,9 @@ export function SoftNRenderer({
                     if (!(part in obj) || typeof obj[part] !== 'object') {
                       obj[part] = {};
                     }
-                    obj[part] = Array.isArray(obj[part]) ? [...obj[part] as unknown[]] : { ...(obj[part] as Record<string, unknown>) };
+                    obj[part] = Array.isArray(obj[part])
+                      ? [...(obj[part] as unknown[])]
+                      : { ...(obj[part] as Record<string, unknown>) };
                     current = obj[part];
                   }
                 }
@@ -709,7 +742,8 @@ export function SoftNRenderer({
           };
 
           // Create script runtime (VM-based, no new Function())
-          let effectiveMode: 'main' | 'worker' | 'hybrid-worker' = scriptExecutionMode === 'worker' ? 'worker' : 'main';
+          let effectiveMode: 'main' | 'worker' | 'hybrid-worker' =
+            scriptExecutionMode === 'worker' ? 'worker' : 'main';
           let requiresSyncMain = false;
           let hasHostBridgeIncompat = false;
           if (scriptExecutionMode === 'worker') {
@@ -728,7 +762,9 @@ export function SoftNRenderer({
             }
             if (templateNeedsSyncCalls) {
               requiresSyncMain = true;
-              incompat.push('template uses call expressions requiring synchronous script functions');
+              incompat.push(
+                'template uses call expressions requiring synchronous script functions'
+              );
             }
             const hardIncompat = incompat.filter(
               (r) =>
@@ -747,10 +783,7 @@ export function SoftNRenderer({
               );
             } else if (requiresSyncMain || hasHostBridgeIncompat) {
               effectiveMode = 'hybrid-worker';
-              console.info(
-                '[SoftN] Worker hybrid mode enabled:',
-                incompat.join('; ')
-              );
+              console.info('[SoftN] Worker hybrid mode enabled:', incompat.join('; '));
             }
           }
 
@@ -766,13 +799,17 @@ export function SoftNRenderer({
             // - State sync complexity between two VMs
             const mainRuntime = createScriptRuntime(
               formLogicContext,
-              permissions,
+              runtimePermissions,
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main', preIncludedLogicPaths, permissionConfig },
+              {
+                mode: 'main',
+                preIncludedLogicPaths: runtimePreIncludedLogicPaths,
+                permissionConfig: runtimePermissionConfig,
+              },
               bundleFileProvider,
-              functions
+              runtimeFunctions
             );
             runtime = {
               loadScript: async (script) => {
@@ -796,13 +833,17 @@ export function SoftNRenderer({
             // is fast enough to run everything on the main thread without blocking UI.
             const mainRuntime = createScriptRuntime(
               formLogicContext,
-              permissions,
+              runtimePermissions,
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main', preIncludedLogicPaths, permissionConfig },
+              {
+                mode: 'main',
+                preIncludedLogicPaths: runtimePreIncludedLogicPaths,
+                permissionConfig: runtimePermissionConfig,
+              },
               bundleFileProvider,
-              functions
+              runtimeFunctions
             );
             runtime = {
               loadScript: async (script) => {
@@ -818,13 +859,17 @@ export function SoftNRenderer({
           } else {
             runtime = createScriptRuntime(
               formLogicContext,
-              permissions,
+              runtimePermissions,
               appId,
               importResolver,
               logicBasePath,
-              { mode: 'main', preIncludedLogicPaths, permissionConfig },
+              {
+                mode: 'main',
+                preIncludedLogicPaths: runtimePreIncludedLogicPaths,
+                permissionConfig: runtimePermissionConfig,
+              },
               bundleFileProvider,
-              functions
+              runtimeFunctions
             );
           }
           scriptRuntimeRef.current = runtime;
@@ -880,7 +925,9 @@ export function SoftNRenderer({
                 try {
                   let savedRoom: string | null = null;
                   try {
-                    const roomKey = appId ? `xdb-sync-active-room:${appId}` : 'xdb-sync-active-room';
+                    const roomKey = appId
+                      ? `xdb-sync-active-room:${appId}`
+                      : 'xdb-sync-active-room';
                     savedRoom = localStorage.getItem(roomKey);
                   } catch {
                     // localStorage may be unavailable in restricted contexts
@@ -890,7 +937,7 @@ export function SoftNRenderer({
                     let polls = 0;
                     let connected = false;
                     let polling = false;
-                if (syncPollRef.current) clearInterval(syncPollRef.current);
+                    if (syncPollRef.current) clearInterval(syncPollRef.current);
                     let pollErrors = 0;
                     const pollInterval = setInterval(() => {
                       if (stale || !mountedRef.current || connected || polls >= 15) {
@@ -904,26 +951,28 @@ export function SoftNRenderer({
                       if (polling) return;
                       polls++;
                       polling = true;
-                      refreshFn().then(() => {
-                        polling = false;
-                        if (stale || !mountedRef.current) return;
-                        pollErrors = 0;
-                        setState((prev) => {
-                          if (prev.componentState['syncConnected'] === true) {
-                            connected = true;
+                      refreshFn()
+                        .then(() => {
+                          polling = false;
+                          if (stale || !mountedRef.current) return;
+                          pollErrors = 0;
+                          setState((prev) => {
+                            if (prev.componentState['syncConnected'] === true) {
+                              connected = true;
+                            }
+                            return prev;
+                          });
+                        })
+                        .catch(() => {
+                          polling = false;
+                          pollErrors++;
+                          if (pollErrors >= 3) {
+                            clearInterval(pollInterval);
+                            if (syncPollRef.current === pollInterval) {
+                              syncPollRef.current = null;
+                            }
                           }
-                          return prev;
                         });
-                      }).catch(() => {
-                        polling = false;
-                        pollErrors++;
-                        if (pollErrors >= 3) {
-                          clearInterval(pollInterval);
-                          if (syncPollRef.current === pollInterval) {
-                            syncPollRef.current = null;
-                          }
-                        }
-                      });
                     }, 2000);
                     syncPollRef.current = pollInterval;
                   }
@@ -985,7 +1034,20 @@ export function SoftNRenderer({
       // Allow re-initialization on next mount (React Strict Mode double-mount)
       scriptInitializedRef.current = false;
     };
-  }, [resolvedSource, captureScrollAndFocus]);
+  }, [
+    appId,
+    bundleFileProvider,
+    captureScrollAndFocus,
+    importResolver,
+    logicBasePath,
+    resolvedSource,
+    resumeSavedSyncRoom,
+    runtimePermissionConfig,
+    runtimePermissions,
+    runtimePreIncludedLogicPaths,
+    runtimeFunctions,
+    scriptExecutionMode,
+  ]);
 
   // Keep resolved source in sync for direct source mode.
   useEffect(() => {
@@ -1024,7 +1086,9 @@ export function SoftNRenderer({
         onErrorRef.current?.(error);
       });
 
-    return () => { abortController.abort(); };
+    return () => {
+      abortController.abort();
+    };
   }, [url]);
 
   // State setter for the context
@@ -1041,7 +1105,9 @@ export function SoftNRenderer({
           const cloned = [...current];
           (current as unknown[])[index] = cloned[index] =
             typeof cloned[index] === 'object' && cloned[index] !== null
-              ? Array.isArray(cloned[index]) ? [...cloned[index]] : { ...cloned[index] as Record<string, unknown> }
+              ? Array.isArray(cloned[index])
+                ? [...cloned[index]]
+                : { ...(cloned[index] as Record<string, unknown>) }
               : {};
           current = cloned[index];
         } else {
@@ -1049,7 +1115,9 @@ export function SoftNRenderer({
           if (!(part in obj) || typeof obj[part] !== 'object') {
             obj[part] = {};
           }
-          obj[part] = Array.isArray(obj[part]) ? [...obj[part] as unknown[]] : { ...(obj[part] as Record<string, unknown>) };
+          obj[part] = Array.isArray(obj[part])
+            ? [...(obj[part] as unknown[])]
+            : { ...(obj[part] as Record<string, unknown>) };
           current = obj[part];
         }
       }
@@ -1143,7 +1211,9 @@ export function SoftNRenderer({
   // When initialData changes (e.g., XDB server sync delivers new records), call
   // the script's _onDataChange() convention so it can refresh derived state.
   useEffect(() => {
-    const fn = state.scriptFunctions['_onDataChange'] as ((...args: unknown[]) => Promise<unknown>) | undefined;
+    const fn = state.scriptFunctions['_onDataChange'] as
+      | ((...args: unknown[]) => Promise<unknown>)
+      | undefined;
     if (fn) {
       fn().catch((e: unknown) => {
         console.warn('[SoftN] _onDataChange error:', e);
@@ -1151,34 +1221,25 @@ export function SoftNRenderer({
     }
   }, [initialData, state.scriptFunctions]);
 
-  // Get computed values from reactive state
-  const computedValues = useMemo(() => {
-    const reactive = reactiveRef.current;
-    if (!reactive) return {};
-
-    const snapshot = reactive.getStateSnapshot();
-    const computed: Record<string, unknown> = {};
-
-    for (const name of Object.keys(computedDefs)) {
-      computed[name] = snapshot[name];
-    }
-
-    return computed;
-  }, [state.componentState, computedDefs]);
-
   // Stable function objects — only recreated when scripts load, not every render.
   // This avoids spreading 3 large objects on every 200ms poll tick.
-  const stableSyncFunctions = useMemo(() => ({
-    ...(builtinHelpers as Record<string, (...args: unknown[]) => unknown>),
-    ...state.scriptSyncFunctions,
-    ...functions,
-  }), [state.scriptSyncFunctions, functions]);
+  const stableSyncFunctions = useMemo(
+    () => ({
+      ...(builtinHelpers as Record<string, (...args: unknown[]) => unknown>),
+      ...state.scriptSyncFunctions,
+      ...functions,
+    }),
+    [state.scriptSyncFunctions, functions]
+  );
 
-  const stableAsyncFunctions = useMemo(() => ({
-    ...(builtinHelpers as Record<string, (...args: unknown[]) => unknown>),
-    ...state.scriptFunctions,
-    ...functions,
-  }), [state.scriptFunctions, functions]);
+  const stableAsyncFunctions = useMemo(
+    () => ({
+      ...(builtinHelpers as Record<string, (...args: unknown[]) => unknown>),
+      ...state.scriptFunctions,
+      ...functions,
+    }),
+    [state.scriptFunctions, functions]
+  );
 
   const scriptLoaded = useMemo(
     () => Object.keys(state.scriptSyncFunctions).length > 0,
@@ -1286,9 +1347,16 @@ export function SoftNRenderer({
     const stateKey = (state.componentState['currentPage'] as string) ?? 'default';
 
     return (
-      <div ref={containerRef} key={`softn-container-${stateKey}`} data-softn-page={stateKey} style={{ height: '100%', minHeight: 0 }}>
+      <div
+        ref={containerRef}
+        key={`softn-container-${stateKey}`}
+        data-softn-page={stateKey}
+        style={{ height: '100%', minHeight: 0 }}
+      >
         {state.document.style?.content && (
-          <style dangerouslySetInnerHTML={{ __html: sanitizeBundleCSS(state.document.style.content) }} />
+          <style
+            dangerouslySetInnerHTML={{ __html: sanitizeBundleCSS(state.document.style.content) }}
+          />
         )}
         <SoftNErrorBoundary
           fallback={(error, reset) =>
@@ -1341,6 +1409,9 @@ export function useSoftN(source: string | undefined): {
         const error = err instanceof Error ? err : new Error(String(err));
         setState({ document: null, error, loading: false });
       }
+    } else {
+      // Clearing the source must also clear the previously parsed document.
+      setState({ document: null, error: null, loading: false });
     }
   }, [source]);
 
@@ -1356,7 +1427,10 @@ export function useSoftN(source: string | undefined): {
  * Supports filter, sort, and limit options:
  * <collection name="tasks" as="tasks" filter={{ completed: false }} sort="createdAt:desc" limit={10} />
  */
-export function useDataBlock(document: SoftNDocument | null, appId?: string): {
+export function useDataBlock(
+  document: SoftNDocument | null,
+  appId?: string
+): {
   data: Record<string, import('../types').XDBRecord[]>;
   loading: boolean;
   error: Error | null;
@@ -1384,31 +1458,53 @@ export function useDataBlock(document: SoftNDocument | null, appId?: string): {
     }));
   }, [document]);
 
-  // Build a signature to detect actual data changes (avoids unnecessary re-renders)
-  const buildDataSignature = useCallback((data: Record<string, import('../types').XDBRecord[]>): string => {
-    const keys = Object.keys(data).sort();
-    const parts: string[] = [];
-    for (const key of keys) {
-      const records = data[key] || [];
-      // Every record contributes. Sampling only the first and last meant an
-      // edit to any record between them produced an identical signature, so
-      // the collection was judged unchanged and nothing re-rendered — editing
-      // an item in the middle of a list did nothing on screen.
-      //
-      // Folded into a rolling hash (FNV-1a) rather than concatenated, so the
-      // signature stays short for a large collection.
-      let hash = 0x811c9dc5;
-      for (const record of records) {
-        const field = `${record.id}\u0000${record.updated_at || ''}\u0001`;
-        for (let i = 0; i < field.length; i++) {
-          hash ^= field.charCodeAt(i);
-          hash = Math.imul(hash, 0x01000193);
-        }
+  // Each XDB/document pairing gets an identity that never repeats, even if a
+  // caller switches A -> B -> A. Async refreshes capture this token and may
+  // only publish while it is still the committed source. A layout effect makes
+  // the hand-off atomic with the commit, before stale records can be painted.
+  const dataSourceToken = useMemo(() => ({ xdb, collectionDefs }), [xdb, collectionDefs]);
+  const activeDataSourceTokenRef = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    activeDataSourceTokenRef.current = dataSourceToken;
+    lastDataSignatureRef.current = '';
+    setCollections({});
+    setError(null);
+
+    return () => {
+      if (activeDataSourceTokenRef.current === dataSourceToken) {
+        activeDataSourceTokenRef.current = null;
       }
-      parts.push(`${key}:${records.length}:${(hash >>> 0).toString(36)}`);
-    }
-    return parts.join('|');
-  }, []);
+    };
+  }, [dataSourceToken]);
+
+  // Build a signature to detect actual data changes (avoids unnecessary re-renders)
+  const buildDataSignature = useCallback(
+    (data: Record<string, import('../types').XDBRecord[]>): string => {
+      const keys = Object.keys(data).sort();
+      const parts: string[] = [];
+      for (const key of keys) {
+        const records = data[key] || [];
+        // Every record contributes. Sampling only the first and last meant an
+        // edit to any record between them produced an identical signature, so
+        // the collection was judged unchanged and nothing re-rendered — editing
+        // an item in the middle of a list did nothing on screen.
+        //
+        // Folded into a rolling hash (FNV-1a) rather than concatenated, so the
+        // signature stays short for a large collection.
+        let hash = 0x811c9dc5;
+        for (const record of records) {
+          const field = `${record.id}\u0000${record.updated_at || ''}\u0001`;
+          for (let i = 0; i < field.length; i++) {
+            hash ^= field.charCodeAt(i);
+            hash = Math.imul(hash, 0x01000193);
+          }
+        }
+        parts.push(`${key}:${records.length}:${(hash >>> 0).toString(36)}`);
+      }
+      return parts.join('|');
+    },
+    []
+  );
 
   /**
    * Fetch all collections synchronously (browser) or async (Tauri P2P).
@@ -1416,71 +1512,74 @@ export function useDataBlock(document: SoftNDocument | null, appId?: string): {
    * This is a plain function — NOT wrapped in useCallback — to avoid
    * stale closure issues with React.StrictMode double-invocation.
    */
-  const doFetch = useCallback(async (
-    defs: typeof collectionDefs
-  ): Promise<Record<string, import('../types').XDBRecord[]> | null> => {
-    if (defs.length === 0) return null;
+  const doFetch = useCallback(
+    async (
+      defs: typeof collectionDefs
+    ): Promise<Record<string, import('../types').XDBRecord[]> | null> => {
+      if (defs.length === 0) return null;
 
-    const data: Record<string, import('../types').XDBRecord[]> = {};
-    const isP2P = xdb.isP2PAvailable();
+      const data: Record<string, import('../types').XDBRecord[]> = {};
+      const isP2P = xdb.isP2PAvailable();
 
-    for (const def of defs) {
-      // Build query options
-      const queryOptions: { filter?: Record<string, unknown> } = {};
+      for (const def of defs) {
+        // Build query options
+        const queryOptions: { filter?: Record<string, unknown> } = {};
 
-      // Evaluate filter expression if present
-      if (def.filter) {
-        if (def.filter.type === 'ObjectExpression') {
-          const filterObj: Record<string, unknown> = {};
-          for (const prop of (def.filter as import('../parser/ast').ObjectExpression)
-            .properties) {
-            if (prop.value.type === 'Literal') {
-              filterObj[prop.key] = (
-                prop.value as import('../parser/ast').LiteralExpression
-              ).value;
-            } else if (prop.value.type === 'Identifier') {
-              filterObj[prop.key] = (
-                prop.value as import('../parser/ast').IdentifierExpression
-              ).name;
+        // Evaluate filter expression if present
+        if (def.filter) {
+          if (def.filter.type === 'ObjectExpression') {
+            const filterObj: Record<string, unknown> = {};
+            for (const prop of (def.filter as import('../parser/ast').ObjectExpression)
+              .properties) {
+              if (prop.value.type === 'Literal') {
+                filterObj[prop.key] = (
+                  prop.value as import('../parser/ast').LiteralExpression
+                ).value;
+              } else if (prop.value.type === 'Identifier') {
+                filterObj[prop.key] = (
+                  prop.value as import('../parser/ast').IdentifierExpression
+                ).name;
+              }
             }
+            queryOptions.filter = filterObj;
           }
-          queryOptions.filter = filterObj;
         }
+
+        // Fetch records
+        let records: import('../types').XDBRecord[];
+        if (isP2P) {
+          records = queryOptions.filter
+            ? await xdb.queryAsync(def.name, queryOptions)
+            : await xdb.getAllAsync(def.name);
+        } else {
+          records = queryOptions.filter ? xdb.query(def.name, queryOptions) : xdb.getAll(def.name);
+        }
+
+        // Apply sorting if specified
+        if (def.sort && Array.isArray(records)) {
+          const [field, order] = def.sort.split(':');
+          const sortOrder = order === 'desc' ? -1 : 1;
+          records = [...records].sort((a, b) => {
+            const aVal = a.data[field] ?? a[field as keyof typeof a];
+            const bVal = b.data[field] ?? b[field as keyof typeof b];
+            if (aVal < bVal) return -1 * sortOrder;
+            if (aVal > bVal) return 1 * sortOrder;
+            return 0;
+          });
+        }
+
+        // Apply limit if specified
+        if (def.limit && Array.isArray(records)) {
+          records = records.slice(0, def.limit);
+        }
+
+        data[def.as] = records;
       }
 
-      // Fetch records
-      let records: import('../types').XDBRecord[];
-      if (isP2P) {
-        records = queryOptions.filter
-          ? await xdb.queryAsync(def.name, queryOptions)
-          : await xdb.getAllAsync(def.name);
-      } else {
-        records = queryOptions.filter ? xdb.query(def.name, queryOptions) : xdb.getAll(def.name);
-      }
-
-      // Apply sorting if specified
-      if (def.sort && Array.isArray(records)) {
-        const [field, order] = def.sort.split(':');
-        const sortOrder = order === 'desc' ? -1 : 1;
-        records = [...records].sort((a, b) => {
-          const aVal = a.data[field] ?? a[field as keyof typeof a];
-          const bVal = b.data[field] ?? b[field as keyof typeof b];
-          if (aVal < bVal) return -1 * sortOrder;
-          if (aVal > bVal) return 1 * sortOrder;
-          return 0;
-        });
-      }
-
-      // Apply limit if specified
-      if (def.limit && Array.isArray(records)) {
-        records = records.slice(0, def.limit);
-      }
-
-      data[def.as] = records;
-    }
-
-    return data;
-  }, [xdb]);
+      return data;
+    },
+    [xdb]
+  );
 
   // Refresh function exposed to callers — uses a ref to always
   // access the latest collectionDefs without stale closures.
@@ -1488,68 +1587,82 @@ export function useDataBlock(document: SoftNDocument | null, appId?: string): {
   collectionDefsRef.current = collectionDefs;
 
   const refresh = useCallback(() => {
+    const sourceToken = dataSourceToken;
+    if (activeDataSourceTokenRef.current !== sourceToken) return;
     const defs = collectionDefsRef.current;
     if (defs.length === 0) return;
-    doFetch(defs).then((data) => {
-      if (!data) return;
-      const signature = buildDataSignature(data);
-      if (signature !== lastDataSignatureRef.current) {
-        lastDataSignatureRef.current = signature;
-        setCollections(data);
-      }
-    }).catch((err) => {
-      console.error('[useDataBlock] Error fetching collections:', err);
-      setError(err instanceof Error ? err : new Error(String(err)));
-    });
-  }, [doFetch, buildDataSignature]);
-
-  // Initial fetch + subscribe to changes.
-  // Runs when collectionDefs or xdb changes.
-  useEffect(() => {
-    let cancelled = false;
-
-    if (collectionDefs.length > 0) {
-      setLoading(true);
-      doFetch(collectionDefs).then((data) => {
-        if (cancelled || !data) return;
+    doFetch(defs)
+      .then((data) => {
+        if (activeDataSourceTokenRef.current !== sourceToken || !data) return;
         const signature = buildDataSignature(data);
         if (signature !== lastDataSignatureRef.current) {
           lastDataSignatureRef.current = signature;
           setCollections(data);
         }
-        setError(null);
-      }).catch((err) => {
-        if (cancelled) return;
+      })
+      .catch((err) => {
+        if (activeDataSourceTokenRef.current !== sourceToken) return;
         console.error('[useDataBlock] Error fetching collections:', err);
         setError(err instanceof Error ? err : new Error(String(err)));
-      }).finally(() => {
-        if (!cancelled) setLoading(false);
       });
+  }, [doFetch, buildDataSignature, dataSourceToken]);
+
+  // Initial fetch + subscribe to changes.
+  // Runs when collectionDefs or xdb changes.
+  useEffect(() => {
+    let cancelled = false;
+    const sourceToken = dataSourceToken;
+    const isCurrentSource = () => !cancelled && activeDataSourceTokenRef.current === sourceToken;
+
+    if (collectionDefs.length > 0) {
+      setLoading(true);
+      doFetch(collectionDefs)
+        .then((data) => {
+          if (!isCurrentSource() || !data) return;
+          const signature = buildDataSignature(data);
+          if (signature !== lastDataSignatureRef.current) {
+            lastDataSignatureRef.current = signature;
+            setCollections(data);
+          }
+          setError(null);
+        })
+        .catch((err) => {
+          if (!isCurrentSource()) return;
+          console.error('[useDataBlock] Error fetching collections:', err);
+          setError(err instanceof Error ? err : new Error(String(err)));
+        })
+        .finally(() => {
+          if (isCurrentSource()) setLoading(false);
+        });
+    } else {
+      setLoading(false);
     }
 
     // Subscribe to changes in all collections (debounced refresh)
     const unsubscribes: (() => void)[] = [];
     for (const def of collectionDefs) {
       const unsubscribe = xdb.subscribe(def.name, () => {
-        if (cancelled) return;
+        if (!isCurrentSource()) return;
         // Debounce high-frequency event bursts from sync
         if (refreshTimerRef.current) {
           clearTimeout(refreshTimerRef.current);
         }
         refreshTimerRef.current = setTimeout(() => {
           refreshTimerRef.current = null;
-          if (!cancelled) {
-            doFetch(collectionDefs).then((data) => {
-              if (cancelled || !data) return;
-              const signature = buildDataSignature(data);
-              if (signature !== lastDataSignatureRef.current) {
-                lastDataSignatureRef.current = signature;
-                setCollections(data);
-              }
-            }).catch((err) => {
-              if (cancelled) return;
-              console.error('[useDataBlock] Error refreshing collections:', err);
-            });
+          if (isCurrentSource()) {
+            doFetch(collectionDefs)
+              .then((data) => {
+                if (!isCurrentSource() || !data) return;
+                const signature = buildDataSignature(data);
+                if (signature !== lastDataSignatureRef.current) {
+                  lastDataSignatureRef.current = signature;
+                  setCollections(data);
+                }
+              })
+              .catch((err) => {
+                if (!isCurrentSource()) return;
+                console.error('[useDataBlock] Error refreshing collections:', err);
+              });
           }
         }, 120);
       });
@@ -1564,7 +1677,7 @@ export function useDataBlock(document: SoftNDocument | null, appId?: string): {
       }
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [xdb, collectionDefs, doFetch, buildDataSignature]);
+  }, [xdb, collectionDefs, doFetch, buildDataSignature, dataSourceToken]);
 
   return {
     data: collections,
@@ -1589,7 +1702,7 @@ export function createXDBHelpers(
    * a caller that has not said the app may replicate its database to peers has
    * not established that the user agreed to it.
    */
-  permissionConfig?: PermissionConfig,
+  permissionConfig?: PermissionConfig
 ): Record<string, (...args: unknown[]) => unknown> {
   return {
     /**
@@ -1677,7 +1790,7 @@ export function createXDBHelpers(
       if (!permissionConfig?.permissions?.sync?.enabled) {
         throw new Error(
           'Sync not permitted: declare { "permissions": { "sync": { "enabled": true } } } ' +
-          'in the bundle\'s permission.json so the user can approve it.'
+            "in the bundle's permission.json so the user can approve it."
         );
       }
       const room = args[0] as string;
@@ -1695,21 +1808,25 @@ export function createXDBHelpers(
       if (appId && !syncOpts.appId) {
         syncOpts.appId = appId;
       }
-      import('../runtime/xdb-sync').then((mod) => {
-        setSyncModuleCache(mod);
-        mod.startSync(syncOpts as unknown as import('../runtime/xdb-sync').XDBSyncOptions);
-      }).catch((err) => {
-        console.error('[XDB Sync] Failed to start sync:', err);
-      });
+      import('../runtime/xdb-sync')
+        .then((mod) => {
+          setSyncModuleCache(mod);
+          mod.startSync(syncOpts as unknown as import('../runtime/xdb-sync').XDBSyncOptions);
+        })
+        .catch((err) => {
+          console.error('[XDB Sync] Failed to start sync:', err);
+        });
     },
 
     stopSync: (...args: unknown[]) => {
       const room = args[0] as string | undefined;
-      import('../runtime/xdb-sync').then(({ stopSync }) => {
-        stopSync(room, appId);
-      }).catch((err) => {
-        console.error('[XDB Sync] Failed to stop sync:', err);
-      });
+      import('../runtime/xdb-sync')
+        .then(({ stopSync }) => {
+          stopSync(room, appId);
+        })
+        .catch((err) => {
+          console.error('[XDB Sync] Failed to stop sync:', err);
+        });
     },
 
     getSyncStatus: (...args: unknown[]) => {
@@ -1724,7 +1841,11 @@ export function createXDBHelpers(
 
     getSavedSyncRoom: () => {
       const key = appId ? `xdb-sync-active-room:${appId}` : 'xdb-sync-active-room';
-      try { return localStorage.getItem(key); } catch { return null; }
+      try {
+        return localStorage.getItem(key);
+      } catch {
+        return null;
+      }
     },
 
     getDbPath: () => {
@@ -1777,6 +1898,9 @@ export function SoftNWithXDB({
   syncEncryptionKeyHex,
   ...props
 }: SoftNWithXDBProps): React.ReactElement | null {
+  const stablePermissionConfig = useStructurallyStableValue(props.permissionConfig);
+  const stableServerCollections = useStructurallyStableValue(serverCollections);
+
   // Parse the document to get data block
   const { document } = useSoftN(source);
 
@@ -1785,8 +1909,8 @@ export function SoftNWithXDB({
 
   // Create XDB helpers for the functions prop
   const xdbHelpers = useMemo(
-    () => createXDBHelpers(xdb, syncEncryptionKeyHex, props.appId, props.permissionConfig),
-    [xdb, syncEncryptionKeyHex, props.appId, props.permissionConfig],
+    () => createXDBHelpers(xdb, syncEncryptionKeyHex, props.appId, stablePermissionConfig),
+    [xdb, syncEncryptionKeyHex, props.appId, stablePermissionConfig]
   );
 
   // Log per-app database path on mount
@@ -1803,39 +1927,41 @@ export function SoftNWithXDB({
     if (!serverUrl) return;
     let sync: import('../runtime/xdb-server-sync').XDBServerSync | null = null;
     let stale = false;
-    import('../runtime/xdb-server-sync').then(({ XDBServerSync }) => {
-      // Guard against StrictMode double-mount: the async import may resolve
-      // after the first mount's cleanup has already run.
-      if (stale) return;
-      sync = new XDBServerSync(xdb, {
-        wsUrl: serverUrl,
-        appVersion: '1.0.0',
-        token: serverToken,
-        collections: serverCollections,
+    import('../runtime/xdb-server-sync')
+      .then(({ XDBServerSync }) => {
+        // Guard against StrictMode double-mount: the async import may resolve
+        // after the first mount's cleanup has already run.
+        if (stale) return;
+        sync = new XDBServerSync(xdb, {
+          wsUrl: serverUrl,
+          appVersion: '1.0.0',
+          token: serverToken,
+          collections: stableServerCollections,
+        });
+        // Listeners first.
+        //
+        // `connect()` can fail synchronously — a non-localhost `ws://` URL is
+        // rejected outright, with no reconnect — and it reports that by calling
+        // the error listeners immediately. Registering afterwards meant the
+        // message was delivered to an empty array: no console output, no UI
+        // state, no retry. The app looked completely normal and simply never
+        // synced.
+        sync.on('error', (err: unknown) => {
+          console.warn('[SoftN] Server sync error:', err);
+        });
+        sync.connect();
+      })
+      .catch(() => {
+        // Server sync module not available
       });
-      // Listeners first.
-      //
-      // `connect()` can fail synchronously — a non-localhost `ws://` URL is
-      // rejected outright, with no reconnect — and it reports that by calling
-      // the error listeners immediately. Registering afterwards meant the
-      // message was delivered to an empty array: no console output, no UI
-      // state, no retry. The app looked completely normal and simply never
-      // synced.
-      sync.on('error', (err: unknown) => {
-        console.warn('[SoftN] Server sync error:', err);
-      });
-      sync.connect();
-    }).catch(() => {
-      // Server sync module not available
-    });
     return () => {
       stale = true;
       sync?.disconnect();
     };
-  }, [xdb, serverUrl, serverToken, serverCollections]);
+  }, [xdb, serverUrl, serverToken, stableServerCollections]);
 
   // Auto-resume sync from localStorage on mount
-  const syncResumedRef = useRef(false);
+  const syncResumedAppRef = useRef<string | null>(null);
 
   // Clean up THIS app's stale sync adapter on mount.
   // Fires when resumeSavedSyncRoom is not explicitly true (i.e., false or undefined).
@@ -1851,19 +1977,26 @@ export function SoftNWithXDB({
   // leave storage claiming the app was still in a room it had been cut from.
   useEffect(() => {
     if (props.resumeSavedSyncRoom) return;
-    import('../runtime/xdb-sync').then(({ stopSync, getSavedSyncRoom }) => {
-      const saved = getSavedSyncRoom(props.appId);
-      if (saved) stopSync(saved, props.appId);
-    }).catch(() => {
-      // Ignore sync cleanup failures in constrained environments.
-    });
+    import('../runtime/xdb-sync')
+      .then(({ stopSync, getSavedSyncRoom }) => {
+        const saved = getSavedSyncRoom(props.appId);
+        if (saved) stopSync(saved, props.appId);
+      })
+      .catch(() => {
+        // Ignore sync cleanup failures in constrained environments.
+      });
   }, [props.resumeSavedSyncRoom, props.appId]);
 
   // Auto-resume sync only when explicitly opted in (resumeSavedSyncRoom === true).
   useEffect(() => {
-    if (!props.resumeSavedSyncRoom) return;
-    if (syncResumedRef.current) return;
-    syncResumedRef.current = true;
+    if (!props.resumeSavedSyncRoom) {
+      // Toggling the option back on should make a fresh resume attempt.
+      syncResumedAppRef.current = null;
+      return;
+    }
+    const appKey = props.appId ?? '_default';
+    if (syncResumedAppRef.current === appKey) return;
+    syncResumedAppRef.current = appKey;
     try {
       const key = props.appId ? `xdb-sync-active-room:${props.appId}` : 'xdb-sync-active-room';
       const savedRoom = localStorage.getItem(key);
@@ -1882,7 +2015,7 @@ export function SoftNWithXDB({
     } catch {
       // localStorage may be unavailable in restricted contexts
     }
-  }, [xdbHelpers, props.resumeSavedSyncRoom]);
+  }, [xdbHelpers, props.appId, props.resumeSavedSyncRoom]);
 
   // Notify parent of data changes
   useEffect(() => {
@@ -1894,16 +2027,16 @@ export function SoftNWithXDB({
   // which triggers _onDataChange() in SoftNRenderer for script-managed state.
   const [serverSyncVersion, setServerSyncVersion] = useState(0);
   useEffect(() => {
-    if (!serverCollections || serverCollections.length === 0) return;
+    if (!stableServerCollections || stableServerCollections.length === 0) return;
     const unsubscribes: (() => void)[] = [];
-    for (const collection of serverCollections) {
+    for (const collection of stableServerCollections) {
       const unsub = xdb.subscribe(collection, () => {
         setServerSyncVersion((v) => v + 1);
       });
       unsubscribes.push(unsub);
     }
     return () => unsubscribes.forEach((fn) => fn());
-  }, [xdb, serverCollections]);
+  }, [xdb, stableServerCollections]);
 
   // Merge XDB data with initial data
   // serverSyncVersion forces a new reference when server sync data arrives,

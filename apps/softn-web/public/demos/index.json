@@ -21,7 +21,7 @@
     "name": "Glamour Studio",
     "description": "Professional salon management with multi-file modular structure",
     "primary": "#d4a574",
-    "size": 86247
+    "size": 90777
   },
   {
     "id": "gpu-demo",
@@ -37,7 +37,7 @@
     "name": "MazeEscape3D",
     "description": "3D maze escape game — navigate corridors to reach the golden portal",
     "primary": "#4ade80",
-    "size": 11351
+    "size": 12999
   },
   {
     "id": "notes",
@@ -45,7 +45,7 @@
     "name": "Notes",
     "description": "Notes CRUD app with real-time server sync via XDB",
     "primary": "#6366f1",
-    "size": 4757
+    "size": 14451
   },
   {
     "id": "pocket",
@@ -61,7 +61,7 @@
     "name": "SoftN Showcase",
     "description": "Interactive showcase of SoftN charts, animations, and interactive components",
     "primary": "#6366f1",
-    "size": 34626
+    "size": 36406
   },
   {
     "id": "signal-lost",
@@ -69,7 +69,7 @@
     "name": "Signal Lost",
     "description": "A three-act game: a form briefing, a PixelGrid deck and a Scene3D beacon array, with sound",
     "primary": "#1f6feb",
-    "size": 203010
+    "size": 203047
   },
   {
     "id": "snake-game",
@@ -77,7 +77,7 @@
     "name": "SnakeGame",
     "description": "Classic Snake game built with SoftN utility components",
     "primary": "#4ade80",
-    "size": 7235
+    "size": 7557
   },
   {
     "id": "texas-holdem",
@@ -85,7 +85,7 @@
     "name": "Texas Hold'em",
     "description": "Multiplayer Texas Hold'em Poker with P2P sync",
     "primary": "#c8aa6e",
-    "size": 252684
+    "size": 252859
   },
   {
     "id": "the-office",
@@ -93,7 +93,7 @@
     "name": "TheOffice",
     "description": "Local AI sim game where 6 Office-inspired characters chat autonomously using Qwen3.5-0.8B",
     "primary": "#58a6ff",
-    "size": 590090
+    "size": 624048
   },
   {
     "id": "three-demo",
@@ -101,7 +101,7 @@
     "name": "ThreeDemo",
     "description": "3D Scene demo with animated shapes powered by formlogic",
     "primary": "#6366f1",
-    "size": 7838
+    "size": 7893
   },
   {
     "id": "warble-wire",

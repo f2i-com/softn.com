@@ -15,7 +15,7 @@
  * />
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -55,7 +55,7 @@ export interface SmartListProps<T = Record<string, unknown>> {
   /** Enable selection */
   selectable?: boolean;
   /** Click handler */
-  onSelect?: (item: T) => void;
+  onSelect?: (item: T) => void | Promise<void>;
   /** Max items to show (for preview lists) */
   maxItems?: number;
   /** Show "View All" link when truncated */
@@ -250,7 +250,30 @@ export function SmartList<T extends Record<string, unknown>>({
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   // Ensure data is array
-  const safeData = Array.isArray(data) ? data : [];
+  const safeData = useMemo(() => (Array.isArray(data) ? data : []), [data]);
+  const canSelect = selectable && typeof onSelect === 'function';
+
+  const selectItem = useCallback(
+    async (item: T) => {
+      if (!canSelect || !onSelect) return;
+      try {
+        await onSelect(item);
+      } catch (err) {
+        console.error('[SmartList] onSelect error:', err);
+      }
+    },
+    [canSelect, onSelect]
+  );
+
+  const handleSelectKey = useCallback(
+    (event: React.KeyboardEvent, item: T) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      void selectItem(item);
+    },
+    [selectItem]
+  );
 
   // Limit items if maxItems set
   const displayData = useMemo(() => {
@@ -265,7 +288,8 @@ export function SmartList<T extends Record<string, unknown>>({
   // Container styles
   const containerStyle: React.CSSProperties = {
     background: variant === 'card' ? 'var(--color-surface, #16161a)' : 'transparent',
-    border: variant === 'card' ? '1px solid var(--color-border, rgba(255, 255, 255, 0.08))' : 'none',
+    border:
+      variant === 'card' ? '1px solid var(--color-border, rgba(255, 255, 255, 0.08))' : 'none',
     borderRadius: variant === 'card' ? 'var(--radius-lg, 0.75rem)' : undefined,
     overflow: 'hidden',
     ...style,
@@ -277,7 +301,7 @@ export function SmartList<T extends Record<string, unknown>>({
     gap: '0.75rem',
     padding: variant === 'compact' ? '0.5rem' : '0.75rem 1rem',
     background: hoveredIndex === index ? 'var(--color-gray-50, #1e1e23)' : 'transparent',
-    cursor: selectable || onSelect ? 'pointer' : 'default',
+    cursor: canSelect ? 'pointer' : 'default',
     transition: 'all 200ms cubic-bezier(0.16, 1, 0.3, 1)',
     transform: hoveredIndex === index ? 'translateX(4px)' : 'none',
     borderBottom:
@@ -309,9 +333,10 @@ export function SmartList<T extends Record<string, unknown>>({
       ) : (
         <>
           {displayData.map((item, index) => {
-            const itemKey = (item as Record<string, unknown>).id != null
-              ? String((item as Record<string, unknown>).id)
-              : index;
+            const itemKey =
+              (item as Record<string, unknown>).id != null
+                ? String((item as Record<string, unknown>).id)
+                : index;
             const primaryValue = getFieldValue(item, primary);
             const secondaryValue = secondary ? getFieldValue(item, secondary) : null;
             const tertiaryValue = tertiary ? getFieldValue(item, tertiary) : null;
@@ -331,7 +356,10 @@ export function SmartList<T extends Record<string, unknown>>({
                 style={getItemStyle(index)}
                 onMouseEnter={() => setHoveredIndex(index)}
                 onMouseLeave={() => setHoveredIndex(null)}
-                onClick={() => onSelect?.(item)}
+                role={canSelect ? 'button' : undefined}
+                tabIndex={canSelect ? 0 : undefined}
+                onClick={() => void selectItem(item)}
+                onKeyDown={(event) => handleSelectKey(event, item)}
               >
                 {/* Icon or Avatar */}
                 {(iconValue != null || avatarValue != null || avatar) && (
@@ -451,6 +479,7 @@ export function SmartList<T extends Record<string, unknown>>({
           {hasMore && showViewAll && onViewAll && (
             <div style={viewAllStyle}>
               <button
+                type="button"
                 onClick={onViewAll}
                 style={{
                   background: 'none',

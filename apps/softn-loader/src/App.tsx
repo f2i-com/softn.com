@@ -7,9 +7,15 @@
 
 import React, { useState, useEffect } from 'react';
 import { registerAllBuiltins, ThemeProvider } from '@softn/components';
-import { SoftNWithXDB, getXDB, readBundleEntries, classifyAsset, type PermissionConfig } from '@softn/core';
+import {
+  SoftNWithXDB,
+  readBundleEntries,
+  classifyAsset,
+  type PermissionConfig,
+} from '@softn/core';
 import { Spinner, Box, Text, Card, Stack, Button } from '@softn/components';
 import { createBundleImportResolver } from './remoteImport';
+import { computeBundleAppId, loadBundleXDBData, processBundleSource } from './bundleRuntime';
 
 // Compile-time constant from Vite define
 declare const __ANDROID__: boolean;
@@ -89,21 +95,6 @@ interface BundleManifest {
   permissions?: import('@softn/core').AppPermissions;
 }
 
-// XDB file format
-interface XDBFile {
-  collection: string;
-  records: Array<{
-    id: string;
-    collection: string;
-    data: Record<string, unknown>;
-    createdAt?: string;
-    updatedAt?: string;
-    created_at?: string;
-    updated_at?: string;
-    deleted?: boolean;
-  }>;
-}
-
 // ZIP reading result with text and binary files
 interface ZipResult {
   textFiles: Map<string, string>;
@@ -117,7 +108,6 @@ function isBinaryFile(fileName: string): boolean {
   // copy now.
   return classifyAsset(fileName).binary;
 }
-
 
 // Read ZIP entries from Uint8Array using fflate
 function readZip(data: Uint8Array): ZipResult {
@@ -140,68 +130,6 @@ function readZip(data: Uint8Array): ZipResult {
   return { textFiles, binaryFiles };
 }
 
-// Load XDB data from bundle files into XDB (async for Tauri backend support)
-async function loadXDBData(
-  textFiles: Map<string, string>,
-  manifest: BundleManifest,
-  appId?: string
-): Promise<void> {
-  const xdb = getXDB(appId);
-  const xdbFiles = manifest.files.xdb || [];
-
-  const normalizeRecord = (
-    collection: string,
-    record: XDBFile['records'][number]
-  ) => {
-    const createdAt = record.created_at || record.createdAt || new Date().toISOString();
-    const updatedAt = record.updated_at || record.updatedAt || createdAt;
-    return {
-      id: record.id,
-      collection: record.collection || collection,
-      data: record.data || {},
-      created_at: createdAt,
-      updated_at: updatedAt,
-      deleted: record.deleted ?? false,
-    };
-  };
-
-  for (const xdbFileName of xdbFiles) {
-    const content = textFiles.get(xdbFileName);
-    if (!content) continue;
-
-    try {
-      const xdbData: XDBFile = JSON.parse(content);
-      const { collection, records } = xdbData;
-
-      // Check if collection already has data (avoid duplicates on reload)
-      // Use async method if available (Tauri mode), fall back to sync
-      let existing: unknown[];
-      if (xdb.isP2PAvailable()) {
-        existing = await xdb.getAllAsync(collection);
-      } else {
-        existing = xdb.query(collection);
-      }
-
-      if (existing.length > 0) {
-        console.log(
-          `[SoftN Loader] Collection ${collection} already has ${existing.length} records, skipping seed`
-        );
-        continue;
-      }
-
-      // Insert each record - preserve IDs/timestamps and use async for Tauri mode
-      for (const record of records) {
-        const normalized = normalizeRecord(collection, record);
-        xdb.writeRecord(collection, normalized);
-      }
-
-      console.log(`[SoftN Loader] Loaded ${records.length} records into ${collection}`);
-    } catch (err) {
-      console.error(`[SoftN Loader] Failed to load XDB file ${xdbFileName}:`, err);
-    }
-  }
-}
-
 // Set window icon from bundle
 async function setWindowIconFromBundle(
   binaryFiles: Map<string, Uint8Array>,
@@ -210,7 +138,14 @@ async function setWindowIconFromBundle(
   if (!manifest.icon) return;
 
   const lowerIconPath = manifest.icon.toLowerCase();
-  if (!(lowerIconPath.endsWith('.png') || lowerIconPath.endsWith('.ico') || lowerIconPath.endsWith('.jpg') || lowerIconPath.endsWith('.jpeg'))) {
+  if (
+    !(
+      lowerIconPath.endsWith('.png') ||
+      lowerIconPath.endsWith('.ico') ||
+      lowerIconPath.endsWith('.jpg') ||
+      lowerIconPath.endsWith('.jpeg')
+    )
+  ) {
     console.log(`[SoftN Loader] Skipping unsupported icon format: ${manifest.icon}`);
     return;
   }
@@ -238,12 +173,17 @@ function App(): React.ReactElement {
   const [error, setError] = useState<Error | null>(null);
   const [mainSource, setMainSource] = useState<string>('');
   const [_manifest, setManifest] = useState<BundleManifest | null>(null);
+  const [runtimeAppId, setRuntimeAppId] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [importResolver, setImportResolver] = useState<((path: string) => Promise<string | null>) | undefined>();
+  const [importResolver, setImportResolver] = useState<
+    ((path: string) => Promise<string | null>) | undefined
+  >();
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
   const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
   const [permissionConfig, setPermissionConfig] = useState<PermissionConfig | null>(null);
-  const [assetResolver, setAssetResolver] = useState<((path: string) => string | null) | undefined>();
+  const [assetResolver, setAssetResolver] = useState<
+    ((path: string) => string | null) | undefined
+  >();
 
   // Open a file picker to choose a .softn file
   const openFilePicker = async () => {
@@ -442,6 +382,8 @@ function App(): React.ReactElement {
         }
 
         const data = new Uint8Array(rawData);
+        const resolvedAppId = await computeBundleAppId(data);
+        if (!active) return;
         const { textFiles, binaryFiles } = readZip(data);
 
         // Keep this load's parsed config in the closure as well as state. React
@@ -452,9 +394,10 @@ function App(): React.ReactElement {
         if (permJson) {
           try {
             const parsed: unknown = JSON.parse(permJson);
-            bundlePermissionConfig = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-              ? parsed as PermissionConfig
-              : { permissions: {} };
+            bundlePermissionConfig =
+              parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                ? (parsed as PermissionConfig)
+                : { permissions: {} };
           } catch (e) {
             console.error('[SoftN Loader] Invalid permission.json — denying all capabilities:', e);
             bundlePermissionConfig = { permissions: {} };
@@ -487,8 +430,7 @@ function App(): React.ReactElement {
         }
 
         // Load XDB data from bundle (await for Tauri backend)
-        const appId = parsedManifest.name || 'softn-app';
-        await loadXDBData(textFiles, parsedManifest, appId);
+        await loadBundleXDBData(textFiles, parsedManifest, resolvedAppId, () => active);
         if (!active) return;
 
         // Set window icon from bundle (desktop only)
@@ -497,136 +439,10 @@ function App(): React.ReactElement {
         }
         if (!active) return;
 
-        const mainUI = textFiles.get(parsedManifest.main);
-        if (!mainUI) {
-          throw new Error(`Main file not found: ${parsedManifest.main}`);
-        }
-
-        // Helper to resolve relative paths from a base file path
-        const resolvePath = (basePath: string, relativePath: string): string => {
-          const baseParts = basePath.split('/');
-          baseParts.pop(); // Remove filename to get directory
-
-          const relativeParts = relativePath.split('/');
-          for (const part of relativeParts) {
-            if (part === '..') {
-              baseParts.pop();
-            } else if (part !== '.') {
-              baseParts.push(part);
-            }
-          }
-          const resolved = baseParts.filter(Boolean).join('/');
-          if (resolved.includes('..') || resolved.startsWith('/')) {
-            throw new Error(`Unsafe import path: ${relativePath}`);
-          }
-          return resolved;
-        };
-
-        let fullSource = mainUI;
-        let logicBasePath: string | undefined;
-        // Logic files concatenated below. Reported to the runtime so an `import`
-        // naming one of them is skipped rather than inlining the file twice.
-        const preIncludedLogic = new Set<string>();
-
-        const escapeRegex = (str: string) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-        const inlineLogic = (source: string, basePath: string): string => {
-          return source.replace(/<logic\s+src=["']([^"']+)["']\s*\/>/g, (match, rel) => {
-            const logicPath = resolvePath(basePath, rel);
-            console.log('[SoftN Loader] Resolving logic:', rel, '->', logicPath);
-            const logicFile = textFiles.get(logicPath);
-            if (!logicFile) {
-              console.warn('[SoftN Loader] Logic file not found:', logicPath);
-              return match;
-            }
-            logicBasePath = logicPath;
-
-            // Concatenate all manifest-listed .logic files into a single block.
-            // Files other than the main entry are prepended so that their class/function
-            // definitions are available when the main file's top-level code runs.
-            const manifestLogicFiles = parsedManifest.files.logic || [];
-            const parts: string[] = [];
-            for (const mlPath of manifestLogicFiles) {
-              if (mlPath === logicPath) continue; // main entry added last
-              const content = textFiles.get(mlPath);
-              if (content) {
-                console.log('[SoftN Loader] Including manifest logic file:', mlPath);
-                parts.push(content);
-                preIncludedLogic.add(mlPath);
-              }
-            }
-            parts.push(logicFile); // main entry last
-
-            return `<logic>\n${parts.join('\n')}\n</logic>`;
-          });
-        };
-
-        const inlineImports = (
-          source: string,
-          basePath: string,
-          stack: Set<string>,
-          cache: Map<string, string>
-        ): string => {
-          let nextSource = inlineLogic(source, basePath);
-          const importRegex = /<import\s+(\w+)\s+from=["']([^"']+)["']\s*\/>/g;
-          const imports: Array<{ name: string; path: string; content: string }> = [];
-
-          let match;
-          while ((match = importRegex.exec(nextSource)) !== null) {
-            const componentName = match[1];
-            const importPath = match[2];
-            const resolvedPath = resolvePath(basePath, importPath);
-            console.log('[SoftN Loader] Resolving import:', componentName, '->', resolvedPath);
-
-            const componentContent = textFiles.get(resolvedPath);
-            if (componentContent) {
-              if (cache.has(resolvedPath)) {
-                imports.push({ name: componentName, path: resolvedPath, content: cache.get(resolvedPath)! });
-                continue;
-              }
-              if (stack.has(resolvedPath)) {
-                console.warn('[SoftN Loader] Skipping circular import:', resolvedPath);
-                continue;
-              }
-              stack.add(resolvedPath);
-              const inlined = inlineImports(componentContent, resolvedPath, stack, cache);
-              stack.delete(resolvedPath);
-              cache.set(resolvedPath, inlined);
-              imports.push({ name: componentName, path: resolvedPath, content: inlined });
-            } else {
-              console.warn('[SoftN Loader] Imported file not found:', resolvedPath);
-            }
-          }
-
-          nextSource = nextSource.replace(/<import\s+\w+\s+from=["'][^"']+["']\s*\/>\n?/g, '');
-
-          for (const imp of imports) {
-            const templateContent = imp.content
-              .replace(/^\/\/[^\n]*\n/gm, '')
-              .trim();
-
-            const escapedName = escapeRegex(imp.name);
-            const selfClosingRegex = new RegExp(`<${escapedName}\\s*/>`, 'g');
-            // Function replacer: a component's markup is content, not a
-            // substitution pattern. Passed as a string, `$&` re-inserts the
-            // tag it just replaced and `$'` splices in the rest of the
-            // document — so a component containing either corrupted the page.
-            nextSource = nextSource.replace(selfClosingRegex, () => templateContent);
-
-            const pairedRegex = new RegExp(`<${escapedName}[^>]*>.*?</${escapedName}>`, 'gs');
-            nextSource = nextSource.replace(pairedRegex, () => templateContent);
-          }
-
-          return nextSource;
-        };
-
-        fullSource = inlineImports(
-          fullSource,
-          parsedManifest.main,
-          new Set([parsedManifest.main]),
-          new Map()
+        const { source, logicBasePath, preIncludedLogicPaths } = processBundleSource(
+          textFiles,
+          parsedManifest
         );
-
         console.log('[SoftN Loader] Final source prepared with inlined components');
 
         const resolver = createBundleImportResolver(textFiles, {
@@ -638,12 +454,18 @@ function App(): React.ReactElement {
           },
         });
 
-        const normalizeAssetPath = (path: string): string => path.replace(/\\/g, '/').replace(/^\.\/+/, '');
+        const normalizeAssetPath = (path: string): string =>
+          path.replace(/\\/g, '/').replace(/^\.\/+/, '');
         const assetUrlCache = new Map<string, string>();
         const resolveAsset = (path: string): string | null => {
           if (!active) return null;
           if (!path) return null;
-          if (path.startsWith('blob:') || path.startsWith('data:') || path.startsWith('http://') || path.startsWith('https://')) {
+          if (
+            path.startsWith('blob:') ||
+            path.startsWith('data:') ||
+            path.startsWith('http://') ||
+            path.startsWith('https://')
+          ) {
             return path;
           }
           const normalized = normalizeAssetPath(path);
@@ -672,9 +494,10 @@ function App(): React.ReactElement {
         if (typeof window !== 'undefined') {
           (window as unknown as Record<string, unknown>).__softnAsset = resolveAsset;
         }
+        setRuntimeAppId(resolvedAppId);
         setLogicBasePath(logicBasePath);
-        setPreIncludedLogicPaths([...preIncludedLogic]);
-        setMainSource(fullSource);
+        setPreIncludedLogicPaths(preIncludedLogicPaths);
+        setMainSource(source);
         setLoading(false);
 
         // Update window title (desktop only)
@@ -694,7 +517,6 @@ function App(): React.ReactElement {
         setLoading(false);
         setAssetResolver(undefined);
       }
-
     }
 
     void loadBundle();
@@ -736,7 +558,9 @@ function App(): React.ReactElement {
               border: isDragOver ? `2px dashed ${LOADER.coral}` : `1px solid ${LOADER.border}`,
               borderRadius: '18px',
               textAlign: 'center',
-              boxShadow: isDragOver ? `0 24px 60px ${LOADER.coralGlow}` : '0 20px 48px rgba(0,0,0,0.34)',
+              boxShadow: isDragOver
+                ? `0 24px 60px ${LOADER.coralGlow}`
+                : '0 20px 48px rgba(0,0,0,0.34)',
               transition: 'border 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease',
               transform: isDragOver ? 'scale(1.015)' : 'scale(1)',
             }}
@@ -745,17 +569,55 @@ function App(): React.ReactElement {
               {/* The SoftN mark, drawn from the same 32-unit grid as the site
                   favicon and the icons: coral brackets because they are the
                   language, a mint dot because it is the thing that runs. */}
-              <svg width="72" height="72" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SoftN">
+              <svg
+                width="72"
+                height="72"
+                viewBox="0 0 32 32"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                role="img"
+                aria-label="SoftN"
+              >
                 <rect width="32" height="32" rx="7" fill={LOADER.markTile} />
-                <path d="M9 11.5 5.5 16 9 20.5" fill="none" stroke={LOADER.coral} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M23 11.5 26.5 16 23 20.5" fill="none" stroke={LOADER.coral} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                <path
+                  d="M9 11.5 5.5 16 9 20.5"
+                  fill="none"
+                  stroke={LOADER.coral}
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M23 11.5 26.5 16 23 20.5"
+                  fill="none"
+                  stroke={LOADER.coral}
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
                 <circle cx="16" cy="16" r="2.8" fill={LOADER.mint} />
               </svg>
               <Stack direction="vertical" gap="sm" style={{ alignItems: 'center' }}>
-                <Text style={{ fontFamily: LOADER.display, fontSize: '2rem', fontWeight: 600, letterSpacing: '-0.03em', color: LOADER.text }}>
+                <Text
+                  style={{
+                    fontFamily: LOADER.display,
+                    fontSize: '2rem',
+                    fontWeight: 600,
+                    letterSpacing: '-0.03em',
+                    color: LOADER.text,
+                  }}
+                >
                   SoftN
                 </Text>
-                <Text style={{ fontFamily: LOADER.mono, fontSize: '0.6875rem', letterSpacing: '0.14em', textTransform: 'uppercase', color: LOADER.dim }}>
+                <Text
+                  style={{
+                    fontFamily: LOADER.mono,
+                    fontSize: '0.6875rem',
+                    letterSpacing: '0.14em',
+                    textTransform: 'uppercase',
+                    color: LOADER.dim,
+                  }}
+                >
                   Application Runtime
                 </Text>
               </Stack>
@@ -808,8 +670,9 @@ function App(): React.ReactElement {
                 }}
               >
                 <Text style={{ color: LOADER.dim, fontSize: '0.8125rem', lineHeight: 1.55 }}>
-                  A <span style={{ fontFamily: LOADER.mono, color: LOADER.coral }}>.softn</span> file is
-                  one self-contained app — its interface, its logic and its data in a single bundle.
+                  A <span style={{ fontFamily: LOADER.mono, color: LOADER.coral }}>.softn</span>{' '}
+                  file is one self-contained app — its interface, its logic and its data in a single
+                  bundle.
                 </Text>
               </Box>
             </Stack>
@@ -887,7 +750,7 @@ function App(): React.ReactElement {
           source={mainSource}
           scriptExecutionMode="main"
           resumeSavedSyncRoom={false}
-          appId={_manifest?.name || 'softn-app'}
+          appId={runtimeAppId ?? undefined}
           permissions={_manifest?.permissions}
           importResolver={importResolver}
           logicBasePath={logicBasePath}

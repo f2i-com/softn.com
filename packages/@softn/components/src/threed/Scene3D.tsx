@@ -7,11 +7,87 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 import { isSafeUrl } from '@softn/core';
 
+type Scene3DWindow = Window & {
+  __scene3dYaw?: number;
+  __scene3dPitch?: number;
+};
+
+interface MouseLookOwner {
+  token: symbol;
+  yawRef: { current: number };
+  pitchRef: { current: number };
+}
+
+interface MouseLookSnapshot {
+  hadYaw: boolean;
+  yaw: number | undefined;
+  hadPitch: boolean;
+  pitch: number | undefined;
+}
+
+// The public window values are retained for backwards compatibility with
+// game logic that steers the active scene directly. Keep an ownership stack so
+// two mounted scenes do not read each other's camera state or delete each
+// other's globals during cleanup.
+const mouseLookOwners: MouseLookOwner[] = [];
+let mouseLookBaseSnapshot: MouseLookSnapshot | null = null;
+
+function activateMouseLookOwner(sceneWindow: Scene3DWindow, owner: MouseLookOwner): void {
+  if (mouseLookOwners.length === 0) {
+    mouseLookBaseSnapshot = {
+      hadYaw: Object.prototype.hasOwnProperty.call(sceneWindow, '__scene3dYaw'),
+      yaw: sceneWindow.__scene3dYaw,
+      hadPitch: Object.prototype.hasOwnProperty.call(sceneWindow, '__scene3dPitch'),
+      pitch: sceneWindow.__scene3dPitch,
+    };
+  }
+  mouseLookOwners.push(owner);
+  sceneWindow.__scene3dYaw = owner.yawRef.current;
+  sceneWindow.__scene3dPitch = owner.pitchRef.current;
+}
+
+function isActiveMouseLookOwner(owner: MouseLookOwner): boolean {
+  return mouseLookOwners.at(-1)?.token === owner.token;
+}
+
+function releaseMouseLookOwner(sceneWindow: Scene3DWindow, owner: MouseLookOwner): void {
+  const index = mouseLookOwners.findIndex((candidate) => candidate.token === owner.token);
+  if (index === -1) return;
+  const wasActive = index === mouseLookOwners.length - 1;
+  mouseLookOwners.splice(index, 1);
+  if (!wasActive) return;
+
+  const nextOwner = mouseLookOwners.at(-1);
+  if (nextOwner) {
+    sceneWindow.__scene3dYaw = nextOwner.yawRef.current;
+    sceneWindow.__scene3dPitch = nextOwner.pitchRef.current;
+    return;
+  }
+
+  const snapshot = mouseLookBaseSnapshot;
+  mouseLookBaseSnapshot = null;
+  if (snapshot?.hadYaw) sceneWindow.__scene3dYaw = snapshot.yaw;
+  else delete sceneWindow.__scene3dYaw;
+  if (snapshot?.hadPitch) sceneWindow.__scene3dPitch = snapshot.pitch;
+  else delete sceneWindow.__scene3dPitch;
+}
+
 export type ModelFormat = 'gltf' | 'obj' | 'fbx' | 'stl';
 
 export interface Scene3DObject {
   id: string;
-  type: 'box' | 'sphere' | 'cylinder' | 'plane' | 'torus' | 'cone' | 'ring' | 'dodecahedron' | 'icosahedron' | 'octahedron' | 'model';
+  type:
+    | 'box'
+    | 'sphere'
+    | 'cylinder'
+    | 'plane'
+    | 'torus'
+    | 'cone'
+    | 'ring'
+    | 'dodecahedron'
+    | 'icosahedron'
+    | 'octahedron'
+    | 'model';
   modelUrl?: string;
   modelFormat?: ModelFormat;
   position?: { x: number; y: number; z: number };
@@ -94,20 +170,31 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
   const r = obj.radius ?? 0.5;
 
   switch (obj.type) {
-    case 'box': return new THREE.BoxGeometry(w, h, d);
-    case 'sphere': return new THREE.SphereGeometry(r, 32, 32);
-    case 'cylinder': return new THREE.CylinderGeometry(r, r, h, 32);
-    case 'cone': return new THREE.ConeGeometry(r, h, 32);
-    case 'plane': return new THREE.PlaneGeometry(w, h);
+    case 'box':
+      return new THREE.BoxGeometry(w, h, d);
+    case 'sphere':
+      return new THREE.SphereGeometry(r, 32, 32);
+    case 'cylinder':
+      return new THREE.CylinderGeometry(r, r, h, 32);
+    case 'cone':
+      return new THREE.ConeGeometry(r, h, 32);
+    case 'plane':
+      return new THREE.PlaneGeometry(w, h);
     // The tube was a fixed 0.4m, so any ring smaller than that came out as a
     // solid ball — a 4cm mug handle rendered as a 90cm sphere. Scale it with
     // the radius instead; at r = 1 this is what the old constant gave.
-    case 'torus': return new THREE.TorusGeometry(r, obj.tube ?? r * 0.4, 16, 100);
-    case 'ring': return new THREE.RingGeometry(r * 0.5, r, 32);
-    case 'dodecahedron': return new THREE.DodecahedronGeometry(r);
-    case 'icosahedron': return new THREE.IcosahedronGeometry(r);
-    case 'octahedron': return new THREE.OctahedronGeometry(r);
-    default: return new THREE.BoxGeometry(w, h, d);
+    case 'torus':
+      return new THREE.TorusGeometry(r, obj.tube ?? r * 0.4, 16, 100);
+    case 'ring':
+      return new THREE.RingGeometry(r * 0.5, r, 32);
+    case 'dodecahedron':
+      return new THREE.DodecahedronGeometry(r);
+    case 'icosahedron':
+      return new THREE.IcosahedronGeometry(r);
+    case 'octahedron':
+      return new THREE.OctahedronGeometry(r);
+    default:
+      return new THREE.BoxGeometry(w, h, d);
   }
 }
 
@@ -137,7 +224,10 @@ function detectModelFormat(url: string): ModelFormat {
 
 // Load a 3D model from URL, returns the root Object3D plus any animation clips
 // (glTF carries them beside the scene, FBX on the group; OBJ/STL have none)
-function loadModel(url: string, format?: ModelFormat): Promise<{ object: THREE.Object3D; animations: THREE.AnimationClip[] }> {
+function loadModel(
+  url: string,
+  format?: ModelFormat
+): Promise<{ object: THREE.Object3D; animations: THREE.AnimationClip[] }> {
   // A scene names its own models, so this URL is bundle-supplied and gets the
   // same scheme check as every other source a bundle points at. The caller
   // already catches, and leaves the placeholder group in the scene.
@@ -149,7 +239,12 @@ function loadModel(url: string, format?: ModelFormat): Promise<{ object: THREE.O
     switch (fmt) {
       case 'gltf': {
         const loader = new GLTFLoader();
-        loader.load(url, (gltf) => resolve({ object: gltf.scene, animations: gltf.animations ?? [] }), undefined, reject);
+        loader.load(
+          url,
+          (gltf) => resolve({ object: gltf.scene, animations: gltf.animations ?? [] }),
+          undefined,
+          reject
+        );
         break;
       }
       case 'obj': {
@@ -159,16 +254,26 @@ function loadModel(url: string, format?: ModelFormat): Promise<{ object: THREE.O
       }
       case 'fbx': {
         const loader = new FBXLoader();
-        loader.load(url, (group) => resolve({ object: group, animations: group.animations ?? [] }), undefined, reject);
+        loader.load(
+          url,
+          (group) => resolve({ object: group, animations: group.animations ?? [] }),
+          undefined,
+          reject
+        );
         break;
       }
       case 'stl': {
         const loader = new STLLoader();
-        loader.load(url, (geometry) => {
-          const material = new THREE.MeshStandardMaterial({ color: '#6366f1' });
-          const mesh = new THREE.Mesh(geometry, material);
-          resolve({ object: mesh, animations: [] });
-        }, undefined, reject);
+        loader.load(
+          url,
+          (geometry) => {
+            const material = new THREE.MeshStandardMaterial({ color: '#6366f1' });
+            const mesh = new THREE.Mesh(geometry, material);
+            resolve({ object: mesh, animations: [] });
+          },
+          undefined,
+          reject
+        );
         break;
       }
       default:
@@ -190,11 +295,15 @@ function applyMaterialOverrides(root: THREE.Object3D, obj: Scene3DObject) {
       const m = mat as THREE.MeshStandardMaterial;
       if (obj.color && m.color) m.color.set(obj.color);
       if (obj.wireframe != null && 'wireframe' in mat) m.wireframe = obj.wireframe;
-      if (obj.opacity != null) { mat.opacity = obj.opacity; mat.transparent = obj.opacity < 1; }
+      if (obj.opacity != null) {
+        mat.opacity = obj.opacity;
+        mat.transparent = obj.opacity < 1;
+      }
       if (obj.metalness != null && 'metalness' in mat) m.metalness = obj.metalness;
       if (obj.roughness != null && 'roughness' in mat) m.roughness = obj.roughness;
       if (obj.emissive && m.emissive) m.emissive.set(obj.emissive);
-      if (obj.emissiveIntensity != null && 'emissiveIntensity' in mat) m.emissiveIntensity = obj.emissiveIntensity;
+      if (obj.emissiveIntensity != null && 'emissiveIntensity' in mat)
+        m.emissiveIntensity = obj.emissiveIntensity;
     }
   });
 }
@@ -263,22 +372,26 @@ function applyTransform(mesh: THREE.Object3D, obj: Scene3DObject, isUpdate: bool
 }
 
 function needsGeometryUpdate(prev: Scene3DObject, next: Scene3DObject): boolean {
-  return prev.type !== next.type ||
+  return (
+    prev.type !== next.type ||
     prev.width !== next.width ||
     prev.height !== next.height ||
     prev.depth !== next.depth ||
     prev.radius !== next.radius ||
-    prev.tube !== next.tube;
+    prev.tube !== next.tube
+  );
 }
 
 function needsMaterialUpdate(prev: Scene3DObject, next: Scene3DObject): boolean {
-  return prev.color !== next.color ||
+  return (
+    prev.color !== next.color ||
     prev.metalness !== next.metalness ||
     prev.roughness !== next.roughness ||
     prev.wireframe !== next.wireframe ||
     prev.opacity !== next.opacity ||
     prev.emissive !== next.emissive ||
-    prev.emissiveIntensity !== next.emissiveIntensity;
+    prev.emissiveIntensity !== next.emissiveIntensity
+  );
 }
 
 function createLight(spec: Scene3DLight): THREE.Light {
@@ -383,7 +496,12 @@ function applyAnimationSpec(
       prev.crossFadeTo(action, (spec.crossFadeMs ?? DEFAULT_CROSSFADE_MS) / 1000, false);
     }
     entry.currentClip = clipName;
-  } else if (spec.playing !== false && spec.loop === 'once' && !action.isRunning() && action.time >= clip.duration) {
+  } else if (
+    spec.playing !== false &&
+    spec.loop === 'once' &&
+    !action.isRunning() &&
+    action.time >= clip.duration
+  ) {
     // Resuming a finished one-shot must replay it — un-pausing the clamped end
     // state alone would re-fire 'finished' every frame
     action.reset().play();
@@ -431,15 +549,19 @@ export function Scene3D({
   className,
 }: Scene3DProps) {
   const safeObjects = useMemo<Scene3DObject[]>(
-    () => Array.isArray(objects)
-      ? objects.filter((obj): obj is Scene3DObject => !!obj && typeof obj.id === 'string' && obj.id.length > 0)
-      : [],
+    () =>
+      Array.isArray(objects)
+        ? objects.filter(
+            (obj): obj is Scene3DObject => !!obj && typeof obj.id === 'string' && obj.id.length > 0
+          )
+        : [],
     [objects]
   );
   const safeLights = useMemo<Scene3DLight[]>(
-    () => Array.isArray(lights)
-      ? lights.filter((light): light is Scene3DLight => !!light && typeof light.type === 'string')
-      : [],
+    () =>
+      Array.isArray(lights)
+        ? lights.filter((light): light is Scene3DLight => !!light && typeof light.type === 'string')
+        : [],
     [lights]
   );
 
@@ -477,6 +599,18 @@ export function Scene3D({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    // Capture the collections owned by this renderer instance. Cleanup must
+    // dispose exactly these resources even if a later setup updates a ref.
+    const meshMap = meshMapRef.current;
+    const loadVersions = loadVersionRef.current;
+    const animationMap = animationMapRef.current;
+    const lightMap = lightMapRef.current;
+    const sceneWindow = window as Scene3DWindow;
+    const mouseLookOwner: MouseLookOwner = {
+      token: Symbol('Scene3D mouse look'),
+      yawRef,
+      pitchRef,
+    };
 
     const renderer = new THREE.WebGLRenderer({ antialias, alpha });
     renderer.setSize(width, height);
@@ -524,15 +658,16 @@ export function Scene3D({
     let mlPointerUp: ((e: PointerEvent) => void) | null = null;
     if (enableMouseLook) {
       const initYaw = Math.atan2(lookAt.x - pos.x, lookAt.z - pos.z);
-      const dx = lookAt.x - pos.x, dy = lookAt.y - pos.y, dz = lookAt.z - pos.z;
+      const dx = lookAt.x - pos.x,
+        dy = lookAt.y - pos.y,
+        dz = lookAt.z - pos.z;
       const hDist = Math.sqrt(dx * dx + dz * dz);
       const initPitch = hDist > 0 ? Math.atan2(dy, hDist) : 0;
       yawRef.current = initYaw;
       pitchRef.current = initPitch;
-      (window as any).__scene3dYaw = initYaw;
-      (window as any).__scene3dPitch = initPitch;
+      activateMouseLookOwner(sceneWindow, mouseLookOwner);
 
-      let isLooking = false;
+      let lookingPointerId: number | null = null;
       let lastMX = 0;
       let lastMY = 0;
 
@@ -540,25 +675,29 @@ export function Scene3D({
       renderer.domElement.style.touchAction = 'none';
 
       mlPointerDown = (e: PointerEvent) => {
-        if (e.button === 0) {
-          e.preventDefault();
-          isLooking = true;
-          lastMX = e.clientX;
-          lastMY = e.clientY;
-          renderer.domElement.style.cursor = 'grabbing';
-          renderer.domElement.setPointerCapture(e.pointerId);
+        if (e.button !== 0 || lookingPointerId !== null) return;
+        e.preventDefault();
+        lookingPointerId = e.pointerId;
+        lastMX = e.clientX;
+        lastMY = e.clientY;
+        renderer.domElement.style.cursor = 'grabbing';
+        try {
+          renderer.domElement.setPointerCapture?.(e.pointerId);
+        } catch {
+          // Capture is optional and can fail for a pointer that has already ended.
         }
       };
 
       mlPointerMove = (e: PointerEvent) => {
-        if (!isLooking) return;
+        if (e.pointerId !== lookingPointerId) return;
         const dx = e.clientX - lastMX;
         const dy = e.clientY - lastMY;
         lastMX = e.clientX;
         lastMY = e.clientY;
 
         // Read latest yaw (game logic keyboard may also write to it)
-        let yaw = (window as any).__scene3dYaw ?? yawRef.current;
+        const ownsGlobals = isActiveMouseLookOwner(mouseLookOwner);
+        let yaw = ownsGlobals ? (sceneWindow.__scene3dYaw ?? yawRef.current) : yawRef.current;
         let pitch = pitchRef.current;
         yaw -= dx * mouseLookSensitivity;
         pitch -= dy * mouseLookSensitivity;
@@ -568,38 +707,56 @@ export function Scene3D({
 
         yawRef.current = yaw;
         pitchRef.current = pitch;
-        (window as any).__scene3dYaw = yaw;
-        (window as any).__scene3dPitch = pitch;
+        if (ownsGlobals) {
+          sceneWindow.__scene3dYaw = yaw;
+          sceneWindow.__scene3dPitch = pitch;
+        }
       };
 
       mlPointerUp = (e: PointerEvent) => {
-        isLooking = false;
+        if (e.pointerId !== lookingPointerId) return;
+        lookingPointerId = null;
         renderer.domElement.style.cursor = 'grab';
-        try {
-          renderer.domElement.releasePointerCapture(e.pointerId);
-        } catch {
-          // The pointer may already have been released by the browser.
-        }
       };
 
       renderer.domElement.addEventListener('pointerdown', mlPointerDown);
       renderer.domElement.addEventListener('pointermove', mlPointerMove);
       renderer.domElement.addEventListener('pointerup', mlPointerUp);
+      renderer.domElement.addEventListener('pointercancel', mlPointerUp);
+      renderer.domElement.addEventListener('lostpointercapture', mlPointerUp);
     }
 
     // Drag-aware click: track mousedown position, only fire click if no significant drag
     let mouseDownX = 0;
     let mouseDownY = 0;
     let isDragging = false;
+    let clickPointerId: number | null = null;
+
+    const releaseClickPointerCapture = (pointerId: number) => {
+      try {
+        if (renderer.domElement.hasPointerCapture?.(pointerId)) {
+          renderer.domElement.releasePointerCapture(pointerId);
+        }
+      } catch {
+        // Capture may already have been released implicitly.
+      }
+    };
 
     const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || clickPointerId !== null) return;
+      clickPointerId = event.pointerId;
       mouseDownX = event.clientX;
       mouseDownY = event.clientY;
       isDragging = false;
+      try {
+        renderer.domElement.setPointerCapture?.(event.pointerId);
+      } catch {
+        // Capture can fail if the pointer has already ended.
+      }
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      if (isDragging) return;
+      if (event.pointerId !== clickPointerId || isDragging) return;
       const dx = event.clientX - mouseDownX;
       const dy = event.clientY - mouseDownY;
       if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
@@ -608,6 +765,9 @@ export function Scene3D({
     };
 
     const handlePointerUp = (event: PointerEvent) => {
+      if (event.pointerId !== clickPointerId) return;
+      clickPointerId = null;
+      releaseClickPointerCapture(event.pointerId);
       if (isDragging || !onClickRef.current) return;
 
       const raycaster = new THREE.Raycaster();
@@ -617,13 +777,13 @@ export function Scene3D({
       mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(mouse, cam);
 
-      const meshes = Array.from(meshMapRef.current.values()).map(e => e.mesh);
+      const meshes = Array.from(meshMap.values()).map((e) => e.mesh);
       const intersects = raycaster.intersectObjects(meshes, true);
       if (intersects.length > 0) {
         const hit = intersects[0].object;
         // Walk up to find which root entry this belongs to (handles model children)
         const findEntry = (obj: THREE.Object3D): [string, MeshEntry] | undefined => {
-          for (const [id, e] of meshMapRef.current.entries()) {
+          for (const [id, e] of meshMap.entries()) {
             if (e.mesh === obj) return [id, e];
           }
           if (obj.parent) return findEntry(obj.parent);
@@ -636,9 +796,18 @@ export function Scene3D({
       }
     };
 
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (event.pointerId !== clickPointerId) return;
+      clickPointerId = null;
+      isDragging = true;
+      if (event.type !== 'lostpointercapture') releaseClickPointerCapture(event.pointerId);
+    };
+
     renderer.domElement.addEventListener('pointerdown', handlePointerDown);
     renderer.domElement.addEventListener('pointermove', handlePointerMove);
     renderer.domElement.addEventListener('pointerup', handlePointerUp);
+    renderer.domElement.addEventListener('pointercancel', handlePointerCancel);
+    renderer.domElement.addEventListener('lostpointercapture', handlePointerCancel);
 
     // Animation loop
     const animate = () => {
@@ -648,7 +817,7 @@ export function Scene3D({
       // Scale rotation by delta time (values are per-frame at 60fps ≈ 0.01667s)
       const dtScale = dt / 0.01667;
 
-      meshMapRef.current.forEach((entry) => {
+      meshMap.forEach((entry) => {
         const anim = entry.spec.animate;
         if (!anim) return;
         if (anim.rotateX) entry.mesh.rotation.x += anim.rotateX * dtScale;
@@ -661,13 +830,16 @@ export function Scene3D({
       });
 
       // Clip mixers take real delta seconds, not the 60fps-normalised dtScale
-      animationMapRef.current.forEach((entry) => entry.mixer.update(dt));
+      animationMap.forEach((entry) => entry.mixer.update(dt));
 
       // Mouse look: apply yaw + pitch to camera every frame (60fps, no React)
       if (enableMouseLook) {
-        const yaw = (window as any).__scene3dYaw ?? yawRef.current;
+        const ownsGlobals = isActiveMouseLookOwner(mouseLookOwner);
+        const yaw = ownsGlobals ? (sceneWindow.__scene3dYaw ?? yawRef.current) : yawRef.current;
         yawRef.current = yaw;
-        const pitch = (window as any).__scene3dPitch ?? pitchRef.current;
+        const pitch = ownsGlobals
+          ? (sceneWindow.__scene3dPitch ?? pitchRef.current)
+          : pitchRef.current;
         pitchRef.current = pitch;
         const cp = Math.cos(pitch);
         cam.lookAt(
@@ -689,40 +861,55 @@ export function Scene3D({
 
     return () => {
       cancelAnimationFrame(animFrameRef.current);
+      if (clickPointerId !== null) {
+        const pointerId = clickPointerId;
+        clickPointerId = null;
+        releaseClickPointerCapture(pointerId);
+      }
       renderer.domElement.removeEventListener('pointerdown', handlePointerDown);
       renderer.domElement.removeEventListener('pointermove', handlePointerMove);
       renderer.domElement.removeEventListener('pointerup', handlePointerUp);
+      renderer.domElement.removeEventListener('pointercancel', handlePointerCancel);
+      renderer.domElement.removeEventListener('lostpointercapture', handlePointerCancel);
       if (mlPointerDown) renderer.domElement.removeEventListener('pointerdown', mlPointerDown);
       if (mlPointerMove) renderer.domElement.removeEventListener('pointermove', mlPointerMove);
-      if (mlPointerUp) renderer.domElement.removeEventListener('pointerup', mlPointerUp);
+      if (mlPointerUp) {
+        renderer.domElement.removeEventListener('pointerup', mlPointerUp);
+        renderer.domElement.removeEventListener('pointercancel', mlPointerUp);
+        renderer.domElement.removeEventListener('lostpointercapture', mlPointerUp);
+      }
       // Clean up window globals used for mouse look communication
       if (enableMouseLook) {
-        delete (window as any).__scene3dYaw;
-        delete (window as any).__scene3dPitch;
+        releaseMouseLookOwner(sceneWindow, mouseLookOwner);
       }
       if (controls) controls.dispose();
-      animationMapRef.current.forEach((entry) => {
+      animationMap.forEach((entry) => {
         entry.mixer.stopAllAction();
         entry.mixer.uncacheRoot(entry.mixer.getRoot());
       });
-      animationMapRef.current.clear();
-      meshMapRef.current.forEach((entry) => {
+      animationMap.clear();
+      meshMap.forEach((entry) => {
         disposeObject3D(entry.mesh);
         scene.remove(entry.mesh);
       });
-      meshMapRef.current.clear();
-      loadVersionRef.current.clear();
-      lightMapRef.current.forEach((light) => {
+      meshMap.clear();
+      loadVersions.clear();
+      lightMap.forEach((light) => {
         scene.remove(light);
         if ('dispose' in light && typeof light.dispose === 'function') light.dispose();
       });
-      lightMapRef.current.clear();
+      lightMap.clear();
       renderer.dispose();
+      renderer.forceContextLoss();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
+      if (rendererRef.current === renderer) rendererRef.current = null;
+      if (sceneRef.current === scene) sceneRef.current = null;
+      if (cameraRef.current === cam) cameraRef.current = null;
+      if (controlsRef.current === controls) controlsRef.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fullscreen toggle
@@ -809,7 +996,11 @@ export function Scene3D({
         cam.position.set(cameraProp.position.x, cameraProp.position.y, cameraProp.position.z);
         // Reset orbit controls target when camera moves programmatically
         if (controlsRef.current && cameraProp.lookAt) {
-          controlsRef.current.target.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
+          controlsRef.current.target.set(
+            cameraProp.lookAt.x,
+            cameraProp.lookAt.y,
+            cameraProp.lookAt.z
+          );
         }
       }
     }
@@ -819,7 +1010,11 @@ export function Scene3D({
       if (lookAtKey !== lastCamLookAtRef.current) {
         lastCamLookAtRef.current = lookAtKey;
         if (controlsRef.current) {
-          controlsRef.current.target.set(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
+          controlsRef.current.target.set(
+            cameraProp.lookAt.x,
+            cameraProp.lookAt.y,
+            cameraProp.lookAt.z
+          );
         } else {
           cam.lookAt(cameraProp.lookAt.x, cameraProp.lookAt.y, cameraProp.lookAt.z);
         }
@@ -830,7 +1025,7 @@ export function Scene3D({
       cam.fov = cameraProp.fov;
       cam.updateProjectionMatrix();
     }
-  }, [cameraProp]);
+  }, [cameraProp, enableMouseLook]);
 
   // Update orbit controls
   useEffect(() => {
@@ -846,7 +1041,7 @@ export function Scene3D({
     if (!scene) return;
 
     const meshMap = meshMapRef.current;
-    const currentIds = new Set(safeObjects.map(o => o.id));
+    const currentIds = new Set(safeObjects.map((o) => o.id));
 
     // Remove meshes no longer in objects
     meshMap.forEach((entry, id) => {
@@ -865,7 +1060,11 @@ export function Scene3D({
 
       if (obj.type === 'model' && obj.modelUrl) {
         // Model objects — load asynchronously
-        const needsLoad = !existing || existing.spec.modelUrl !== obj.modelUrl || existing.spec.modelFormat !== obj.modelFormat || existing.spec.type !== 'model';
+        const needsLoad =
+          !existing ||
+          existing.spec.modelUrl !== obj.modelUrl ||
+          existing.spec.modelFormat !== obj.modelFormat ||
+          existing.spec.type !== 'model';
         if (needsLoad) {
           // Bump load version to invalidate any in-flight load (global counter avoids reset on remove/re-add)
           const version = ++_modelLoadCounter;
@@ -883,39 +1082,77 @@ export function Scene3D({
           const placeholder = new THREE.Group();
           applyTransform(placeholder, obj, false);
           scene.add(placeholder);
-          meshMap.set(obj.id, { mesh: placeholder, spec: obj, baseY: obj.position?.y ?? 0, loadVersion: version });
-
-          loadModel(obj.modelUrl, obj.modelFormat).then(({ object: loaded, animations }) => {
-            // Stale check — if version has changed, discard
-            if (loadVersionRef.current.get(obj.id) !== version) {
-              disposeObject3D(loaded);
-              return;
-            }
-            // Reconciles during the load update the placeholder entry's spec in
-            // place — the capture from load start may be stale
-            const spec = meshMap.get(obj.id)?.spec ?? obj;
-            // Replace placeholder with loaded model
-            scene.remove(placeholder);
-            applyTransform(loaded, spec, false);
-            applyMaterialOverrides(loaded, spec);
-            scene.add(loaded);
-            meshMap.set(obj.id, { mesh: loaded, spec, baseY: spec.position?.y ?? 0, loadVersion: version });
-            if (animations.length > 0) {
-              const mixer = new THREE.AnimationMixer(loaded);
-              mixer.addEventListener('finished', (e) => {
-                onAnimationRef.current?.({ objectId: obj.id, clip: e.action.getClip().name, type: 'finished' });
-              });
-              const animEntry: AnimationEntry = { mixer, clips: animations, actions: new Map(), currentClip: null, warnedMissing: new Set() };
-              animationMapRef.current.set(obj.id, animEntry);
-              applyAnimationSpec(obj.id, animEntry, spec.animation, (info) => onAnimationRef.current?.(info));
-            } else if (spec.animation?.clip) {
-              // A clip requested on a clipless model can never resolve — report once here
-              console.warn(`[Scene3D] Animation clip "${spec.animation.clip}" not found on model "${obj.id}"`);
-              onAnimationRef.current?.({ objectId: obj.id, clip: spec.animation.clip, type: 'missing' });
-            }
-          }).catch((err) => {
-            console.error(`[Scene3D] Failed to load model "${obj.id}" from ${obj.modelUrl}:`, err);
+          meshMap.set(obj.id, {
+            mesh: placeholder,
+            spec: obj,
+            baseY: obj.position?.y ?? 0,
+            loadVersion: version,
           });
+
+          loadModel(obj.modelUrl, obj.modelFormat)
+            .then(({ object: loaded, animations }) => {
+              // Stale check — if version has changed, discard
+              if (loadVersionRef.current.get(obj.id) !== version) {
+                disposeObject3D(loaded);
+                return;
+              }
+              // Reconciles during the load update the placeholder entry's spec in
+              // place — the capture from load start may be stale
+              const spec = meshMap.get(obj.id)?.spec ?? obj;
+              // Replace placeholder with loaded model
+              scene.remove(placeholder);
+              applyTransform(loaded, spec, false);
+              applyMaterialOverrides(loaded, spec);
+              scene.add(loaded);
+              meshMap.set(obj.id, {
+                mesh: loaded,
+                spec,
+                baseY: spec.position?.y ?? 0,
+                loadVersion: version,
+              });
+              if (animations.length > 0) {
+                const mixer = new THREE.AnimationMixer(loaded);
+                mixer.addEventListener('finished', (e) => {
+                  onAnimationRef.current?.({
+                    objectId: obj.id,
+                    clip: e.action.getClip().name,
+                    type: 'finished',
+                  });
+                });
+                const animEntry: AnimationEntry = {
+                  mixer,
+                  clips: animations,
+                  actions: new Map(),
+                  currentClip: null,
+                  warnedMissing: new Set(),
+                };
+                animationMapRef.current.set(obj.id, animEntry);
+                applyAnimationSpec(obj.id, animEntry, spec.animation, (info) =>
+                  onAnimationRef.current?.(info)
+                );
+              } else if (spec.animation?.clip) {
+                // A clip requested on a clipless model can never resolve — report once here
+                console.warn(
+                  `[Scene3D] Animation clip "${spec.animation.clip}" not found on model "${obj.id}"`
+                );
+                onAnimationRef.current?.({
+                  objectId: obj.id,
+                  clip: spec.animation.clip,
+                  type: 'missing',
+                });
+              }
+            })
+            .catch((err) => {
+              // Removal and unmount deliberately invalidate in-flight loads. A
+              // rejection arriving afterwards is expected and must not report a
+              // failure for a scene that no longer owns the request.
+              if (loadVersionRef.current.get(obj.id) === version) {
+                console.error(
+                  `[Scene3D] Failed to load model "${obj.id}" from ${obj.modelUrl}:`,
+                  err
+                );
+              }
+            });
         } else if (existing) {
           // Model URL unchanged — just update transform and material overrides
           applyTransform(existing.mesh, obj, true);
@@ -924,8 +1161,13 @@ export function Scene3D({
           }
           // Re-apply only on spec change — see applyAnimationSpec's guard note
           const animEntry = animationMapRef.current.get(obj.id);
-          if (animEntry && JSON.stringify(existing.spec.animation) !== JSON.stringify(obj.animation)) {
-            applyAnimationSpec(obj.id, animEntry, obj.animation, (info) => onAnimationRef.current?.(info));
+          if (
+            animEntry &&
+            JSON.stringify(existing.spec.animation) !== JSON.stringify(obj.animation)
+          ) {
+            applyAnimationSpec(obj.id, animEntry, obj.animation, (info) =>
+              onAnimationRef.current?.(info)
+            );
           }
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
@@ -993,18 +1235,22 @@ export function Scene3D({
       const existing = lightMap.get(id);
       if (existing) {
         // Detect type change — must recreate the light object
-        const existingType = (existing as any).__lightType;
+        const existingType = existing.userData.__softnLightType as Scene3DLight['type'] | undefined;
         if (existingType && existingType !== spec.type) {
           scene.remove(existing);
           if ('dispose' in existing && typeof existing.dispose === 'function') existing.dispose();
           const light = createLight(spec);
-          (light as any).__lightType = spec.type;
+          light.userData.__softnLightType = spec.type;
           scene.add(light);
           lightMap.set(id, light);
         } else {
           // Update in-place — position, intensity, color, groundColor
           if (spec.position && 'position' in existing) {
-            (existing as THREE.PointLight).position.set(spec.position.x, spec.position.y, spec.position.z);
+            (existing as THREE.PointLight).position.set(
+              spec.position.x,
+              spec.position.y,
+              spec.position.z
+            );
           }
           if (spec.intensity != null) existing.intensity = spec.intensity;
           if (spec.color) existing.color.set(spec.color);
@@ -1014,7 +1260,7 @@ export function Scene3D({
         }
       } else {
         const light = createLight(spec);
-        (light as any).__lightType = spec.type;
+        light.userData.__softnLightType = spec.type;
         scene.add(light);
         lightMap.set(id, light);
       }

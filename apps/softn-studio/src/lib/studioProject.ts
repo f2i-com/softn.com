@@ -537,6 +537,17 @@ export function getBundleEntryPath(files: Map<string, VFSFile>): string | null {
   return htmlFile ?? previewable[0];
 }
 
+/** Keep a local preview selection only while it still belongs to this VFS. */
+export function resolveActivePreviewPath(
+  files: Map<string, VFSFile>,
+  currentPath: string | null,
+  workspacePath: string | null
+): string | null {
+  if (workspacePath && files.has(workspacePath)) return workspacePath;
+  if (currentPath && files.has(currentPath)) return currentPath;
+  return getBundleEntryPath(files);
+}
+
 export function inferBlueprintFromFiles(projectName: string, files: Map<string, VFSFile>): Blueprint {
   const manifest = resolveManifest(files);
   const previewable = getPreviewablePaths(files);

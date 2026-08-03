@@ -40,6 +40,7 @@ import { ToastContainer } from './components/feedback/ToastContainer';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
 import { debug } from './utils/debug';
+import { readLocalStorage, removeLocalStorage } from './utils/safeStorage';
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -796,7 +797,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    const raw = readLocalStorage(SESSION_STORAGE_KEY);
     if (!raw) return;
 
     try {
@@ -849,7 +850,7 @@ function App() {
       debug('[App] Restored session from localStorage');
     } catch (e) {
       console.error('[App] Failed to restore session:', e);
-      localStorage.removeItem(SESSION_STORAGE_KEY);
+      removeLocalStorage(SESSION_STORAGE_KEY);
     }
   }, [clearHistory, loadCanvasState, resetCanvas, resetFiles, resetProject, resetSchema]);
 

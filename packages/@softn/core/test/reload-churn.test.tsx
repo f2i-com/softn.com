@@ -55,6 +55,10 @@ describe('re-rendering with new inline callbacks', () => {
         <SoftNRenderer
           source={SOURCE}
           appId="ChurnProbe"
+          permissions={{ storage: true }}
+          permissionConfig={{ permissions: {} }}
+          preIncludedLogicPaths={[]}
+          functions={{ asset: (path: unknown) => String(path) }}
           onLoad={() => {}}
           onError={() => {}}
         />

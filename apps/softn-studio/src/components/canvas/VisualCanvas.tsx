@@ -1,7 +1,16 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
-import { getBundleEntryPath, resolveManifest } from '../../lib/studioProject';
+import { resolveActivePreviewPath, resolveManifest } from '../../lib/studioProject';
+import { getXDB, type SoftNRendererProps } from '@softn/core';
+import type { ThemeProviderProps } from '@softn/components';
+import { normalizeProjectPath } from '../../lib/projectImport';
+import {
+  assemblePreviewSource,
+  buildPreviewXDBState,
+  clearPreviewXDBCollections,
+  replacePreviewXDBCollections,
+} from '../../lib/previewProject';
 
 /**
  * Strip the author's comments from a `.ui` file's TEMPLATE, and only its template.
@@ -47,29 +56,21 @@ function stripComments(source: string): string {
   return out.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
 }
 
-function resolveRelativePath(fromPath: string, relativePath: string): string {
-  const parts = fromPath.split('/');
-  parts.pop();
-  const dir = parts;
-  for (const part of relativePath.split('/')) {
-    if (part === '..') dir.pop();
-    else if (part !== '.') dir.push(part);
-  }
-  return dir.join('/');
-}
-
-function normalizeUiPath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/^\.?\//, '').replace(/\/+/g, '/').replace(/\/$/, '').toLowerCase();
-}
-
 function normalizeAssetPath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/^\.?\//, '').replace(/^\//, '').toLowerCase();
+  return path
+    .replace(/\\/g, '/')
+    .replace(/^\.?\//, '')
+    .replace(/^\//, '')
+    .toLowerCase();
 }
 
 function rewriteAssetReferences(source: string, resolveAsset: (path: string) => string): string {
-  return source.replace(/(["'])(assets\/[^"']+|\.\.\/assets\/[^"']+|\.\/assets\/[^"']+)(\1)/g, (_match, quote: string, assetPath: string) => {
-    return `${quote}${resolveAsset(assetPath)}${quote}`;
-  });
+  return source.replace(
+    /(["'])(assets\/[^"']+|\.\.\/assets\/[^"']+|\.\/assets\/[^"']+)(\1)/g,
+    (_match, quote: string, assetPath: string) => {
+      return `${quote}${resolveAsset(assetPath)}${quote}`;
+    }
+  );
 }
 
 function fileContentToDataUrl(file: { mimeType?: string; content: string | Uint8Array }): string {
@@ -88,101 +89,147 @@ function fileContentToDataUrl(file: { mimeType?: string; content: string | Uint8
   return `data:${file.mimeType || 'application/octet-stream'};base64,${btoa(binary)}`;
 }
 
-function findUiFileForImport(
-  uiFiles: Map<string, string>,
-  fromUiPath: string,
-  importPath: string,
-  importName: string,
-): [string, string] | undefined {
-  const resolved = resolveRelativePath(fromUiPath, importPath);
-  const candidates = new Set([
-    normalizeUiPath(importPath),
-    normalizeUiPath(resolved),
-    normalizeUiPath(importPath.replace(/^\.\//, '')),
-    normalizeUiPath(resolved.replace(/^\//, '')),
-  ]);
-
-  for (const [path, content] of uiFiles.entries()) {
-    if (candidates.has(normalizeUiPath(path))) return [path, content];
-  }
-
-  const expectedName = `${importName.toLowerCase()}.ui`;
-  for (const [path, content] of uiFiles.entries()) {
-    if ((path.split('/').pop() || '').toLowerCase() === expectedName) return [path, content];
-  }
-
-  return undefined;
-}
-
-function resolveExternalLogic(source: string, uiFilePath: string, logicFiles: Map<string, string>): string {
-  const logicSrcRegex = /<logic\s+src=["']([^"']+)["']\s*\/>/g;
-  return source.replace(logicSrcRegex, (_match, srcPath: string) => {
-    const resolvedPath = resolveRelativePath(uiFilePath, srcPath);
-    const pathsToTry = [resolvedPath, resolvedPath.replace(/^\//, ''), srcPath.replace(/^\.\//, ''), srcPath];
-
-    for (const [path, content] of logicFiles.entries()) {
-      if (pathsToTry.includes(path)) {
-        return `<logic>\n${content}\n</logic>`;
-      }
-    }
-
-    return `<logic>\n// Logic file not found: ${srcPath}\n</logic>`;
-  });
-}
-
-function getExternalLogicPath(source: string, uiFilePath: string): string | null {
-  const match = source.match(/<logic\s+src=["']([^"']+)["']\s*\/>/);
-  if (!match) return null;
-  return resolveRelativePath(uiFilePath, match[1]);
-}
-
-function resolveUIImports(source: string, uiFilePath: string, uiFiles: Map<string, string>, depth = 0): string {
-  if (depth > 8) return source;
-
-  const importRegex = /<import\s+(?:\{\s*([^}]+)\s*\}|(\w+))\s+from=["']([^"']+)["']\s*\/>/g;
-  const imports: { name: string; sourcePath: string }[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = importRegex.exec(source)) !== null) {
-    const names = (match[1] || match[2]).split(',').map((name) => name.trim()).filter(Boolean);
-    for (const name of names) imports.push({ name, sourcePath: match[3] });
-  }
-
-  let result = source.replace(/<import\s+[^>]+\/>/g, '');
-
-  for (const imp of imports) {
-    const matched = findUiFileForImport(uiFiles, uiFilePath, imp.sourcePath, imp.name);
-    if (!matched) continue;
-
-    const [componentPath, componentSource] = matched;
-    const resolvedComponent = resolveUIImports(componentSource, componentPath, uiFiles, depth + 1)
-      .replace(/<data>[\s\S]*?<\/data>/g, '')
-      .replace(/<logic>[\s\S]*?<\/logic>/g, '')
-      .replace(/<logic\s+[^>]*\/>/g, '')
-      .replace(/<import\s+[^>]+\/>/g, '')
-      .trim();
-
-    result = result.replace(new RegExp(`<${imp.name}(\\s+[^>]*)?\\/\\s*>`, 'g'), resolvedComponent);
-    result = result.replace(new RegExp(`<${imp.name}(\\s+[^>]*)?>([\\s\\S]*?)<\\/${imp.name}>`, 'g'), resolvedComponent);
-  }
-
-  return result;
-}
-
 interface VisualCanvasProps {
   onStartBrief?: () => void;
 }
 
+interface StablePreviewSurfaceProps {
+  expanded: boolean;
+  isMobile: boolean;
+  label: string;
+  frameStyle: React.CSSProperties;
+  chrome: React.ReactNode;
+  onClose: () => void;
+  children: React.ReactNode;
+}
+
+/**
+ * The preview child always occupies the same host node. Expanding changes only
+ * that host's presentation, so stateful renderers, iframes, media, and games do
+ * not restart simply because the user asks for more screen space.
+ */
+export function StablePreviewSurface({
+  expanded,
+  isMobile,
+  label,
+  frameStyle,
+  chrome,
+  onClose,
+  children,
+}: StablePreviewSurfaceProps): React.ReactElement {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    return () => {
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [expanded]);
+
+  const trapDialogFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!expanded || event.key !== 'Tab') return;
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    const focusable = Array.from(
+      surface.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter(
+      (element) => !element.hidden && !element.closest<HTMLElement>('[aria-hidden="true"]')
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
+  return (
+    <div
+      ref={surfaceRef}
+      data-softn-preview-surface="true"
+      style={{
+        ...styles.previewFrame,
+        ...frameStyle,
+        ...(expanded ? styles.expandedPreviewFrame : {}),
+      }}
+      role={expanded ? 'dialog' : undefined}
+      aria-modal={expanded ? 'true' : undefined}
+      aria-label={expanded ? `${label} expanded preview` : undefined}
+      onKeyDown={trapDialogFocus}
+    >
+      <div
+        style={{
+          ...styles.previewChrome,
+          ...(isMobile || expanded ? { display: 'none' } : {}),
+        }}
+        aria-hidden={isMobile || expanded || undefined}
+      >
+        {chrome}
+      </div>
+      <div
+        data-softn-preview-content="true"
+        style={{
+          ...styles.previewContentHost,
+          ...(expanded ? styles.expandedContent : {}),
+        }}
+      >
+        {children}
+      </div>
+      {expanded && (
+        <div style={styles.expandedFloatingBar}>
+          <div style={styles.expandedFloatingLabel}>{label}</div>
+          <button
+            ref={closeButtonRef}
+            onClick={onClose}
+            style={styles.expandedCloseBtn}
+            aria-label="Close expanded preview"
+            title="Close expanded preview"
+          >
+            <Icon name="x" size={16} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
-  const { blueprint, devicePreset, zoom, themePreview, activePageId, activeFilePath, projectId, projectName } = useWorkspaceStore();
+  const {
+    blueprint,
+    devicePreset,
+    zoom,
+    themePreview,
+    activePageId,
+    activeFilePath,
+    projectId,
+    projectName,
+  } = useWorkspaceStore();
   const { files } = useVFSStore();
   const [hoveredTool, setHoveredTool] = useState<string | null>(null);
   const [activeVFSFile, setActiveVFSFile] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [isExpandedPreview, setIsExpandedPreview] = useState(false);
-  const [PreviewComponent, setPreviewComponent] = useState<React.ComponentType<any> | null>(null);
-  const [ThemeProviderComponent, setThemeProviderComponent] = useState<React.ComponentType<any> | null>(null);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [binaryImageUrl, setBinaryImageUrl] = useState<string | null>(null);
+  const [binaryMediaUrl, setBinaryMediaUrl] = useState<string | null>(null);
+  const [PreviewComponent, setPreviewComponent] =
+    useState<React.ComponentType<SoftNRendererProps> | null>(null);
+  const [ThemeProviderComponent, setThemeProviderComponent] =
+    useState<React.ComponentType<ThemeProviderProps> | null>(null);
   const [isMobile, setIsMobile] = useState(false);
+  const seededPreviewRef = useRef<{
+    xdb: ReturnType<typeof getXDB>;
+    collections: Set<string>;
+  } | null>(null);
 
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -195,11 +242,15 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
   const currentPage = pages.find((p) => p.id === activePageId) ?? pages[0];
   const previewAppId = useMemo(() => {
     const base = projectId || projectName || blueprint?.appName || 'softn-preview';
-    return `studio-preview-${String(base).toLowerCase().replace(/[^a-z0-9-_]+/g, '-')}`;
+    return `studio-preview-${String(base)
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, '-')}`;
   }, [projectId, projectName, blueprint?.appName]);
 
   const manifest = resolveManifest(files);
-  const manifestPages = Array.isArray(manifest?.pages) ? manifest.pages as Array<Record<string, unknown>> : [];
+  const manifestPages = Array.isArray(manifest?.pages)
+    ? (manifest.pages as Array<Record<string, unknown>>)
+    : [];
 
   const deviceWidths: Record<string, number> = {
     desktop: 1280,
@@ -211,21 +262,13 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
 
   const hasFiles = files.size > 0;
   const selectedSurfaceLabel = activeVFSFile
-    ? activeVFSFile.split('/').pop() ?? activeVFSFile
-    : currentPage?.name ?? 'Preview';
-
-  // Auto-select first UI file if none selected
-  useEffect(() => {
-    if (!activeVFSFile && files.size > 0) {
-      setActiveVFSFile(activeFilePath || getBundleEntryPath(files));
-    }
-  }, [files, activeVFSFile, activeFilePath]);
+    ? (activeVFSFile.split('/').pop() ?? activeVFSFile)
+    : (currentPage?.name ?? 'Preview');
 
   useEffect(() => {
-    if (activeFilePath && activeFilePath !== activeVFSFile) {
-      setActiveVFSFile(activeFilePath);
-    }
-  }, [activeFilePath, activeVFSFile]);
+    const nextPath = resolveActivePreviewPath(files, activeVFSFile, activeFilePath);
+    if (nextPath !== activeVFSFile) setActiveVFSFile(nextPath);
+  }, [files, activeFilePath, activeVFSFile]);
 
   // Get preview content for the active VFS file
   const previewFileContent = activeVFSFile
@@ -235,24 +278,16 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       })()
     : null;
 
-  const fileMimeType = activeVFSFile ? files.get(activeVFSFile)?.mimeType ?? '' : '';
-  const activeBinaryContent = activeVFSFile
-    ? files.get(activeVFSFile)?.content
-    : null;
+  const fileMimeType = activeVFSFile ? (files.get(activeVFSFile)?.mimeType ?? '') : '';
+  const activeBinaryContent = activeVFSFile ? files.get(activeVFSFile)?.content : null;
 
   // Determine if the active file is HTML-renderable
-  const isHtmlFile = activeVFSFile
-    ? /\.(html|htm)$/i.test(activeVFSFile)
-    : false;
-  const isImageFile = activeVFSFile
-    ? /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(activeVFSFile)
-    : false;
+  const isHtmlFile = activeVFSFile ? /\.(html|htm)$/i.test(activeVFSFile) : false;
+  const isImageFile = activeVFSFile ? /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(activeVFSFile) : false;
   const isAudioFile = activeVFSFile
     ? /\.(mp3|wav|ogg|aac|flac|m4a|wma|webm)$/i.test(activeVFSFile)
     : false;
-  const isVideoFile = activeVFSFile
-    ? /\.(mp4|webm|ogv|mov|avi)$/i.test(activeVFSFile)
-    : false;
+  const isVideoFile = activeVFSFile ? /\.(mp4|webm|ogv|mov|avi)$/i.test(activeVFSFile) : false;
   const isManifestFile = activeVFSFile === 'manifest.json';
   const isSoftNUIFile = activeVFSFile ? /\.ui$/i.test(activeVFSFile) : false;
 
@@ -265,7 +300,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
           components.registerAllBuiltins();
         }
         if (mounted && components.ThemeProvider) {
-          setThemeProviderComponent(() => components.ThemeProvider as unknown as React.ComponentType<any>);
+          setThemeProviderComponent(() => components.ThemeProvider);
         }
       } catch {
         if (mounted) setThemeProviderComponent(null);
@@ -273,14 +308,16 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
 
       try {
         const core = await import('@softn/core');
-        if (mounted && core.SoftNRenderer) setPreviewComponent(() => core.SoftNRenderer as React.ComponentType<any>);
+        if (mounted && core.SoftNRenderer) setPreviewComponent(() => core.SoftNRenderer);
       } catch {
         if (mounted) setPreviewComponent(null);
       }
     };
 
     loadRenderer();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const previewUIFiles = useMemo(() => {
@@ -299,169 +336,185 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     return next;
   }, [files]);
 
-  const activeLogicBasePath = useMemo(() => {
-    if (!activeVFSFile || !previewFileContent) return undefined;
-    // If the file has an explicit <logic src="..."> tag, use that path
-    const explicit = getExternalLogicPath(previewFileContent, activeVFSFile);
-    if (explicit) return explicit;
-    // Fall back to the first .logic file in the project (for component previews)
-    if (previewLogicFiles.size > 0) {
-      return previewLogicFiles.keys().next().value as string;
-    }
-    return undefined;
-  }, [activeVFSFile, previewFileContent, previewLogicFiles]);
-
-  const initialData = useMemo(() => {
-    const data: Record<string, unknown[]> = {};
-
-    for (const [path, file] of files.entries()) {
-      if (!/\.xdb$/i.test(path) || typeof file.content !== 'string') continue;
-
-      try {
-        const parsed = JSON.parse(file.content) as {
-          collection?: string;
-          records?: unknown[];
-          data?: unknown[];
-        };
-
-        const collectionName = parsed.collection || path.split('/').pop()?.replace(/\.xdb$/i, '');
-        if (!collectionName) continue;
-
-        if (Array.isArray(parsed.records)) {
-          data[collectionName] = parsed.records;
-        } else if (Array.isArray(parsed.data)) {
-          data[collectionName] = parsed.data;
-        } else {
-          data[collectionName] = [];
-        }
-      } catch {
-        data[path.split('/').pop()?.replace(/\.xdb$/i, '') || path] = [];
-      }
-    }
-
-    return data;
-  }, [files]);
+  const previewXDBState = useMemo(() => buildPreviewXDBState(files), [files]);
+  const initialData = previewXDBState.initialData;
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    for (const [collection, records] of Object.entries(initialData)) {
+    let xdb: ReturnType<typeof getXDB>;
+    try {
+      xdb = getXDB(previewAppId);
+    } catch {
+      // Storage can be unavailable in privacy-restricted contexts.
+      return;
+    }
+    let disposed = false;
+    void xdb.isReady
+      .then(() => {
+        if (disposed) return;
+        const previous = seededPreviewRef.current;
+        if (previous && previous.xdb !== xdb) {
+          clearPreviewXDBCollections(previous.xdb, previous.collections);
+        }
+        const previousCollections = previous?.xdb === xdb ? previous.collections : [];
+        const ownedCollections = new Set([...previousCollections, ...previewXDBState.collections]);
+        seededPreviewRef.current = { xdb, collections: ownedCollections };
+        replacePreviewXDBCollections(xdb, previewXDBState, previousCollections);
+        seededPreviewRef.current = {
+          xdb,
+          collections: new Set(previewXDBState.collections),
+        };
+      })
+      .catch(() => {
+        // SoftNRenderer still receives initialData if persistent preview XDB
+        // is unavailable, so a storage failure does not blank the preview.
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [previewAppId, previewXDBState]);
+
+  useEffect(
+    () => () => {
+      const seeded = seededPreviewRef.current;
+      seededPreviewRef.current = null;
+      if (!seeded) return;
       try {
-        // `xdb:<appId>:<collection>`, which is the shape getXDB(previewAppId)
-        // reads. This wrote `xdb:<collection>` — the un-namespaced default —
-        // so the preview's seed data went into the origin's shared bucket that
-        // any softn.com app running without an appId picks up, while the
-        // preview itself, which does pass one, never read a byte of it. Leaky
-        // in one direction and useless in the other.
-        window.localStorage.setItem(`xdb:${previewAppId}:${collection}`, JSON.stringify(records));
+        clearPreviewXDBCollections(seeded.xdb, seeded.collections);
       } catch {
-        // ignore local preview storage failures
+        // Disposable preview cleanup is best effort if storage is revoked.
       }
-    }
-  }, [initialData, previewAppId]);
+    },
+    []
+  );
 
-  const resolveAssetUrl = useCallback((assetPath: string) => {
-    if (assetPath.startsWith('data:') || assetPath.startsWith('blob:')) return assetPath;
+  const resolveAssetUrl = useCallback(
+    (assetPath: string) => {
+      if (assetPath.startsWith('data:') || assetPath.startsWith('blob:')) return assetPath;
 
-    const candidates = [
-      normalizeAssetPath(assetPath),
-      normalizeAssetPath(`assets/${assetPath}`),
-      normalizeAssetPath(assetPath.replace(/^\.\.\//, '')),
-      normalizeAssetPath(assetPath.replace(/^\.\//, '')),
-    ];
+      const candidates = [
+        normalizeAssetPath(assetPath),
+        normalizeAssetPath(`assets/${assetPath}`),
+        normalizeAssetPath(assetPath.replace(/^\.\.\//, '')),
+        normalizeAssetPath(assetPath.replace(/^\.\//, '')),
+      ];
 
-    for (const [path, file] of files.entries()) {
-      if (!path.startsWith('assets/')) continue;
-      if (candidates.includes(normalizeAssetPath(path))) {
-        return fileContentToDataUrl(file);
+      for (const [path, file] of files.entries()) {
+        if (!path.startsWith('assets/')) continue;
+        if (candidates.includes(normalizeAssetPath(path))) {
+          return fileContentToDataUrl(file);
+        }
       }
-    }
 
-    return assetPath;
-  }, [files]);
+      return assetPath;
+    },
+    [files]
+  );
 
-  const rendererFunctions = useMemo(() => ({
-    asset: (assetPath: string) => resolveAssetUrl(assetPath),
-  }), [resolveAssetUrl]);
+  const rendererFunctions = useMemo<Record<string, (...args: unknown[]) => unknown>>(
+    () => ({
+      asset: (assetPath: unknown) => resolveAssetUrl(String(assetPath ?? '')),
+    }),
+    [resolveAssetUrl]
+  );
 
-  const importResolver = useCallback(async (path: string) => {
-    const normalized = normalizeUiPath(path);
-    for (const [filePath, content] of previewLogicFiles.entries()) {
-      if (normalizeUiPath(filePath) === normalized) {
-        return content;
+  const importResolver = useCallback(
+    async (path: string) => {
+      const normalized = normalizeProjectPath(path);
+      if (!normalized) return null;
+      for (const [filePath, content] of previewLogicFiles.entries()) {
+        if (normalizeProjectPath(filePath) === normalized) {
+          return content;
+        }
       }
-    }
-    return null;
-  }, [previewLogicFiles]);
+      return null;
+    },
+    [previewLogicFiles]
+  );
 
   const { source: softNSource, preIncludedLogicPaths } = useMemo(() => {
     if (!isSoftNUIFile || !activeVFSFile || !previewFileContent) {
       return { source: null as string | null, preIncludedLogicPaths: [] as string[] };
     }
-    let source = previewFileContent;
-    source = resolveExternalLogic(source, activeVFSFile, previewLogicFiles);
-    source = resolveUIImports(source, activeVFSFile, previewUIFiles);
+    const assembled = assemblePreviewSource(
+      activeVFSFile,
+      previewFileContent,
+      previewUIFiles,
+      previewLogicFiles
+    );
+    let source = assembled.source;
     source = rewriteAssetReferences(source, resolveAssetUrl);
     source = stripComments(source);
+    return { source, preIncludedLogicPaths: assembled.preIncludedLogicPaths };
+  }, [
+    isSoftNUIFile,
+    activeVFSFile,
+    previewFileContent,
+    previewLogicFiles,
+    previewUIFiles,
+    resolveAssetUrl,
+  ]);
 
-    // If the resolved source has no <logic> block (e.g. a component .ui file
-    // being previewed standalone), inject all project .logic files so that
-    // shared functions are available to the template.
-    // Files inlined here are already part of this compilation. They are
-    // reported to the runtime so an `import` naming one is skipped rather
-    // than inlining it twice — a repeated class or `let` is a SyntaxError.
-    let preIncluded: string[] = [];
-    if (!/<logic[\s>]/i.test(source) && previewLogicFiles.size > 0) {
-      const combined = Array.from(previewLogicFiles.values()).join('\n');
-      preIncluded = Array.from(previewLogicFiles.keys());
-      source = `<logic>\n${combined}\n</logic>\n${source}`;
-    }
-
-    return { source, preIncludedLogicPaths: preIncluded };
-  }, [isSoftNUIFile, activeVFSFile, previewFileContent, previewLogicFiles, previewUIFiles, resolveAssetUrl]);
-
-  // Create a blob URL for HTML preview in iframe
-  const blobUrl = useMemo(() => {
-    if (!previewFileContent || !isHtmlFile) return null;
+  // Blob URLs are resources, not render calculations. Creating them in
+  // useMemo leaks the URL whenever React abandons a render (and on Strict
+  // Mode's development probe), because no effect cleanup ever owns it.
+  useEffect(() => {
+    setBlobUrl(null);
+    if (!previewFileContent || !isHtmlFile) return;
     const blob = new Blob([previewFileContent], { type: 'text/html' });
-    return URL.createObjectURL(blob);
-  }, [previewFileContent, isHtmlFile, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    const url = URL.createObjectURL(blob);
+    setBlobUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [previewFileContent, isHtmlFile, refreshKey]);
 
-  const binaryImageUrl = useMemo(() => {
-    if (!isImageFile || !activeBinaryContent || typeof activeBinaryContent === 'string') return null;
+  useEffect(() => {
+    setBinaryImageUrl(null);
+    if (!isImageFile || !activeBinaryContent || typeof activeBinaryContent === 'string') return;
     const bytes = new Uint8Array(activeBinaryContent);
-    const blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)], {
-      type: fileMimeType || 'image/png',
-    });
-    return URL.createObjectURL(blob);
+    const blob = new Blob(
+      [bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)],
+      {
+        type: fileMimeType || 'image/png',
+      }
+    );
+    const url = URL.createObjectURL(blob);
+    setBinaryImageUrl(url);
+    return () => URL.revokeObjectURL(url);
   }, [isImageFile, activeBinaryContent, fileMimeType]);
 
-  const binaryMediaUrl = useMemo(() => {
-    if ((!isAudioFile && !isVideoFile) || !activeBinaryContent || typeof activeBinaryContent === 'string') return null;
+  useEffect(() => {
+    setBinaryMediaUrl(null);
+    if (
+      (!isAudioFile && !isVideoFile) ||
+      !activeBinaryContent ||
+      typeof activeBinaryContent === 'string'
+    )
+      return;
     const bytes = new Uint8Array(activeBinaryContent);
-    const blob = new Blob([bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)], {
-      type: fileMimeType || (isAudioFile ? 'audio/mpeg' : 'video/mp4'),
-    });
-    return URL.createObjectURL(blob);
+    const blob = new Blob(
+      [bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)],
+      {
+        type: fileMimeType || (isAudioFile ? 'audio/mpeg' : 'video/mp4'),
+      }
+    );
+    const url = URL.createObjectURL(blob);
+    setBinaryMediaUrl(url);
+    return () => URL.revokeObjectURL(url);
   }, [isAudioFile, isVideoFile, activeBinaryContent, fileMimeType]);
 
-  // Revoke old blob URLs
   useEffect(() => {
-    return () => {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    if (!isExpandedPreview) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsExpandedPreview(false);
     };
-  }, [blobUrl]);
-
-  useEffect(() => {
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
     return () => {
-      if (binaryImageUrl) URL.revokeObjectURL(binaryImageUrl);
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
     };
-  }, [binaryImageUrl]);
-
-  useEffect(() => {
-    return () => {
-      if (binaryMediaUrl) URL.revokeObjectURL(binaryMediaUrl);
-    };
-  }, [binaryMediaUrl]);
+  }, [isExpandedPreview]);
 
   // Toolbar actions
   const handleToolAction = useCallback((id: string) => {
@@ -477,12 +530,17 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
 
   const renderPreviewContent = () => {
     // Binary file types — check before the text-content gate
-    if (isImageFile && (binaryImageUrl || (typeof previewFileContent === 'string' && previewFileContent))) {
+    if (
+      isImageFile &&
+      (binaryImageUrl || (typeof previewFileContent === 'string' && previewFileContent))
+    ) {
       return (
         <div style={styles.assetPreviewWrap}>
           <img
-            src={binaryImageUrl
-              ?? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(previewFileContent ?? '')}`}
+            src={
+              binaryImageUrl ??
+              `data:image/svg+xml;charset=utf-8,${encodeURIComponent(previewFileContent ?? '')}`
+            }
             alt={selectedSurfaceLabel}
             style={styles.assetPreview}
           />
@@ -504,7 +562,11 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     if (isVideoFile && binaryMediaUrl) {
       return (
         <div style={styles.assetPreviewWrap}>
-          <video controls src={binaryMediaUrl} style={{ maxWidth: '100%', maxHeight: '70%', borderRadius: 8 }} />
+          <video
+            controls
+            src={binaryMediaUrl}
+            style={{ maxWidth: '100%', maxHeight: '70%', borderRadius: 8 }}
+          />
           <span style={styles.assetLabel}>{activeVFSFile?.split('/').pop()}</span>
         </div>
       );
@@ -518,7 +580,14 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
           <div style={{ ...styles.previewContent, background: 'var(--studio-bg)' }}>
             <div style={styles.previewPlaceholder}>
               <Icon name="file" size={32} color="var(--studio-border-strong)" />
-              <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--studio-text-muted)', marginTop: 8 }}>
+              <span
+                style={{
+                  fontSize: 14,
+                  fontWeight: 600,
+                  color: 'var(--studio-text-muted)',
+                  marginTop: 8,
+                }}
+              >
                 {activeVFSFile.split('/').pop()}
               </span>
               <span style={{ fontSize: 12, color: 'var(--studio-text-dim)', marginTop: 4 }}>
@@ -545,29 +614,27 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       return ThemeProviderComponent ? (
         <div style={styles.rendererWrap}>
           <ThemeProviderComponent defaultDarkMode={themePreview === 'dark'} followSystem={false}>
-                      <PreviewComponent
-                        source={softNSource}
-                        functions={rendererFunctions}
-                        initialData={initialData}
-                        importResolver={importResolver}
-                        logicBasePath={activeLogicBasePath}
-                        preIncludedLogicPaths={preIncludedLogicPaths}
-                        appId={previewAppId}
-                        resumeSavedSyncRoom={false}
-                      />
+            <PreviewComponent
+              source={softNSource}
+              functions={rendererFunctions}
+              initialData={initialData}
+              importResolver={importResolver}
+              preIncludedLogicPaths={preIncludedLogicPaths}
+              appId={previewAppId}
+              resumeSavedSyncRoom={false}
+            />
           </ThemeProviderComponent>
         </div>
       ) : (
         <div style={styles.rendererWrap}>
-                    <PreviewComponent
-                      source={softNSource}
-                      functions={rendererFunctions}
-                      initialData={initialData}
-                      importResolver={importResolver}
-                      logicBasePath={activeLogicBasePath}
-                      preIncludedLogicPaths={preIncludedLogicPaths}
-                      appId={previewAppId}
-                      resumeSavedSyncRoom={false}
+          <PreviewComponent
+            source={softNSource}
+            functions={rendererFunctions}
+            initialData={initialData}
+            importResolver={importResolver}
+            preIncludedLogicPaths={preIncludedLogicPaths}
+            appId={previewAppId}
+            resumeSavedSyncRoom={false}
           />
         </div>
       );
@@ -596,9 +663,18 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       return (
         <div style={styles.codePreviewCard}>
           <div style={styles.manifestSummary}>
-            <div style={styles.manifestStat}><span style={styles.manifestLabel}>Bundle</span><strong>{String(manifest?.name ?? 'Imported app')}</strong></div>
-            <div style={styles.manifestStat}><span style={styles.manifestLabel}>Entry</span><strong>{String(manifest?.entry ?? manifest?.main ?? 'n/a')}</strong></div>
-            <div style={styles.manifestStat}><span style={styles.manifestLabel}>Pages</span><strong>{manifestPages.length}</strong></div>
+            <div style={styles.manifestStat}>
+              <span style={styles.manifestLabel}>Bundle</span>
+              <strong>{String(manifest?.name ?? 'Imported app')}</strong>
+            </div>
+            <div style={styles.manifestStat}>
+              <span style={styles.manifestLabel}>Entry</span>
+              <strong>{String(manifest?.entry ?? manifest?.main ?? 'n/a')}</strong>
+            </div>
+            <div style={styles.manifestStat}>
+              <span style={styles.manifestLabel}>Pages</span>
+              <strong>{manifestPages.length}</strong>
+            </div>
           </div>
           <pre style={styles.filePreview}>{previewFileContent}</pre>
         </div>
@@ -622,34 +698,48 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     <div style={styles.container}>
       {!isMobile && <div style={styles.atmosphere} />}
       {/* Canvas area */}
-      <div style={{ ...styles.canvasArea, ...(isMobile ? { padding: 0 } : {}) }}>
+      <div
+        style={{
+          ...styles.canvasArea,
+          ...(isMobile ? { padding: 0 } : {}),
+          ...(isExpandedPreview ? { zIndex: 1000, overflow: 'visible' } : {}),
+        }}
+      >
         {hasFiles ? (
-          <div
-            style={{
-              ...styles.previewFrame,
-              ...(isMobile
+          <StablePreviewSurface
+            expanded={isExpandedPreview}
+            isMobile={isMobile}
+            label={selectedSurfaceLabel}
+            frameStyle={
+              isMobile
                 ? { borderRadius: 0, border: 'none', boxShadow: 'none', width: '100%' }
-                : { width: Math.min(previewWidth * scale, previewWidth), maxWidth: '100%' }),
-            }}
-          >
-            {!isMobile && (
-              <div style={styles.previewChrome}>
-                <div style={styles.previewChromeLeft}>
-                  <div style={styles.previewTrafficLights}>
-                    <span style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }} />
-                    <span style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }} />
-                    <span style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }} />
-                  </div>
-                  <div style={styles.previewMeta}>
-                    <span style={styles.previewLabel}>{selectedSurfaceLabel}</span>
-                    <span style={styles.previewSubLabel}>{devicePreset} / {themePreview}</span>
-                  </div>
+                : { width: Math.min(previewWidth * scale, previewWidth), maxWidth: '100%' }
+            }
+            onClose={() => setIsExpandedPreview(false)}
+            chrome={
+              <div style={styles.previewChromeLeft}>
+                <div style={styles.previewTrafficLights}>
+                  <span
+                    style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }}
+                  />
+                  <span
+                    style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }}
+                  />
+                  <span
+                    style={{ ...styles.trafficLight, background: 'var(--studio-border-strong)' }}
+                  />
+                </div>
+                <div style={styles.previewMeta}>
+                  <span style={styles.previewLabel}>{selectedSurfaceLabel}</span>
+                  <span style={styles.previewSubLabel}>
+                    {devicePreset} / {themePreview}
+                  </span>
                 </div>
               </div>
-            )}
-
+            }
+          >
             {renderPreviewContent()}
-          </div>
+          </StablePreviewSurface>
         ) : (
           <div style={styles.emptyCanvas}>
             <div style={styles.emptyGraphic}>
@@ -664,8 +754,8 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
             </div>
             <h3 style={styles.emptyTitle}>No app yet</h3>
             <p style={styles.emptyDesc}>
-              Use the AI chat or guided brief to describe your app.
-              The AI will generate and modify all files for you.
+              Use the AI chat or guided brief to describe your app. The AI will generate and modify
+              all files for you.
             </p>
             <div style={styles.emptyActionRow}>
               <button
@@ -676,10 +766,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
                 <span style={styles.emptyActionTitle}>Open AI chat</span>
               </button>
               {onStartBrief && (
-                <button
-                  onClick={onStartBrief}
-                  style={styles.emptyActionCard}
-                >
+                <button onClick={onStartBrief} style={styles.emptyActionCard}>
                   <span style={styles.emptyActionKicker}>Guided</span>
                   <span style={styles.emptyActionTitle}>Run the brief wizard</span>
                 </button>
@@ -690,40 +777,27 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       </div>
 
       {/* Canvas toolbar (hidden on mobile) */}
-      {!isMobile && <div style={styles.toolbar}>
-        {[
-          { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },
-          { id: 'newtab', icon: 'maximize' as const, label: 'Open in new tab' },
-        ].map((tool) => (
-          <button
-            key={tool.id}
-            onClick={() => handleToolAction(tool.id)}
-            onMouseEnter={() => setHoveredTool(tool.id)}
-            onMouseLeave={() => setHoveredTool(null)}
-            style={{
-              ...styles.toolBtn,
-              ...(hoveredTool === tool.id ? styles.toolBtnHover : {}),
-            }}
-            title={tool.label}
-          >
-            <Icon name={tool.icon} size={15} />
-          </button>
-        ))}
-      </div>}
-
-      {isExpandedPreview && (
-        <div style={styles.expandedOverlay}>
-          <div style={styles.expandedShell}>
-            <div style={styles.expandedContent}>
-              {renderPreviewContent()}
-            </div>
-            <div style={styles.expandedFloatingBar}>
-              <div style={styles.expandedFloatingLabel}>{selectedSurfaceLabel}</div>
-              <button onClick={() => setIsExpandedPreview(false)} style={styles.expandedCloseBtn}>
-                <Icon name="x" size={16} />
-              </button>
-            </div>
-          </div>
+      {!isMobile && (
+        <div style={styles.toolbar}>
+          {[
+            { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },
+            { id: 'newtab', icon: 'maximize' as const, label: 'Open in new tab' },
+          ].map((tool) => (
+            <button
+              key={tool.id}
+              onClick={() => handleToolAction(tool.id)}
+              onMouseEnter={() => setHoveredTool(tool.id)}
+              onMouseLeave={() => setHoveredTool(null)}
+              style={{
+                ...styles.toolBtn,
+                ...(hoveredTool === tool.id ? styles.toolBtnHover : {}),
+              }}
+              title={tool.label}
+              aria-label={tool.label}
+            >
+              <Icon name={tool.icon} size={15} />
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -735,14 +809,16 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     display: 'flex',
     flexDirection: 'column',
-    background: 'radial-gradient(circle at top, var(--studio-accent-soft), transparent 30%), linear-gradient(180deg, var(--studio-bg) 0%, var(--studio-bg-muted) 100%)',
+    background:
+      'radial-gradient(circle at top, var(--studio-accent-soft), transparent 30%), linear-gradient(180deg, var(--studio-bg) 0%, var(--studio-bg-muted) 100%)',
     overflow: 'hidden',
     position: 'relative',
   },
   atmosphere: {
     position: 'absolute',
     inset: 0,
-    background: 'radial-gradient(circle at 20% 20%, var(--studio-surface), transparent 24%), radial-gradient(circle at 80% 0%, var(--studio-accent-soft), transparent 20%)',
+    background:
+      'radial-gradient(circle at 20% 20%, var(--studio-surface), transparent 24%), radial-gradient(circle at 80% 0%, var(--studio-accent-soft), transparent 20%)',
     pointerEvents: 'none',
   },
   canvasArea: {
@@ -770,35 +846,32 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     background: 'var(--studio-bg-elevated)',
   },
+  expandedPreviewFrame: {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 999,
+    width: '100%',
+    maxWidth: 'none',
+    height: '100%',
+    flex: 'none',
+    borderRadius: 0,
+    border: 'none',
+    boxShadow: 'none',
+    background: 'var(--studio-bg-elevated)',
+  },
+  previewContentHost: {
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
+    overflow: 'hidden',
+    background: 'var(--studio-bg-elevated)',
+  },
   rendererWrap: {
     width: '100%',
     flex: 1,
     minHeight: 0,
     overflow: 'auto',
     background: 'var(--studio-bg-elevated)',
-  },
-  expandedOverlay: {
-    position: 'fixed',
-    inset: 0,
-    background: 'var(--studio-overlay)',
-    backdropFilter: 'blur(10px)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    zIndex: 999,
-  },
-  expandedShell: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 0,
-    overflow: 'hidden',
-    border: 'none',
-    background: 'var(--studio-bg-elevated)',
-    boxShadow: 'none',
-    display: 'flex',
-    flexDirection: 'column',
-    position: 'relative',
   },
   expandedFloatingBar: {
     position: 'fixed',

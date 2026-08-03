@@ -15,6 +15,7 @@ import {
   Node,
   BackgroundVariant,
   type NodeTypes,
+  type NodeChange,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
@@ -132,7 +133,7 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 const nodeTypes: NodeTypes = {
-  entity: EntityNode as any,
+  entity: EntityNode,
 };
 
 export function SchemaDesigner() {
@@ -209,7 +210,7 @@ export function SchemaDesigner() {
 
   // Handle node position changes
   const handleNodesChange = useCallback(
-    (changes: any) => {
+    (changes: NodeChange[]) => {
       onNodesChange(changes);
 
       // Update positions in store

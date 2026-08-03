@@ -44,18 +44,32 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-
       - name: Validate release tag
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "Release tag must look like v1.2.3 or v1.2.3-beta.1" >&2
             exit 1
           fi
 
-      - name: Clone xdb.org (needed by softn-loader Cargo dependency)
+      # Build the commit named by the tag, never whichever branch happened to
+      # dispatch the workflow. Requiring an existing tag also prevents a typo
+      # from publishing unrelated artifacts under a new release name.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify checked-out release provenance
+        run: |
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" ]]; then
+            echo "Checked-out commit does not match $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Checkout pinned xdb.org dependency
         if: matrix.app == 'softn-loader'
-        run: git clone --depth 1 https://github.com/f2i-com/xdb.org.git "$GITHUB_WORKSPACE/../xdb.org"
+        run: bash .github/scripts/checkout-xdb.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -86,6 +100,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit dependency lockfile
+        run: npm audit --audit-level=high
+
       - name: Build shared packages
         run: npm run build:packages
 
@@ -109,7 +126,7 @@ jobs:
 
             **Platforms:** Windows (.exe, .msi), macOS (.dmg), Linux (.AppImage, .deb)
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           # Skip Tauri's built-in DMG bundling on macOS — bundle_dmg.sh fails
           # on headless CI runners. We create and upload the DMG manually below.
           args: ${{ startsWith(matrix.platform, 'macos') && '--bundles app' || '' }}

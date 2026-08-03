@@ -36,12 +36,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Include development tooling: the lockfile is part of the shipped build
+      # pipeline, and vulnerable parsers/globbers there can still process
+      # attacker-controlled repository content.
+      - name: Audit dependency lockfile
+        run: npm audit --audit-level=high
+
       # The scripting engine is committed at packages/@softn/core/wasm-zipp/,
       # so there is nothing to compile first and no Rust toolchain needed.
       # build:packages builds core, then components, then vite-plugin — in that
       # order, because each needs the one before it to have emitted its types.
       - name: Build packages
         run: npm run build:packages
+
+      # Production bundling catches configuration, PWA and asset-pipeline
+      # failures that TypeScript and unit tests cannot. This also covers Studio
+      # and the marketing site, which have no platform-specific matrix job.
+      - name: Build browser applications
+        run: npm run build:apps
 
       - name: Typecheck
         run: npm run typecheck
@@ -106,9 +118,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone xdb.org (needed by softn-loader Cargo dependency)
+      - name: Checkout pinned xdb.org dependency
         if: matrix.app == 'softn-loader'
-        run: git clone --depth 1 https://github.com/f2i-com/xdb.org.git "$GITHUB_WORKSPACE/../xdb.org"
+        run: bash .github/scripts/checkout-xdb.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

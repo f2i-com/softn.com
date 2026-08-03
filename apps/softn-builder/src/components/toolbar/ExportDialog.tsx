@@ -285,8 +285,6 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     logicSource,
     collections,
     assets,
-    uiFiles,
-    logicFiles,
     hasMultipleFiles,
     activeFileId,
     updateUIFile,

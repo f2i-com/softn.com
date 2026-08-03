@@ -20,6 +20,7 @@ import { loadBundle } from '../../utils/bundleLoader';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { CanvasElement } from './CanvasElement';
+import { Canvas } from './Canvas';
 
 // fflate decides a value is a file by `instanceof Uint8Array`, and jsdom's
 // TextEncoder — which `strToU8` uses — returns one from another realm, which
@@ -72,6 +73,17 @@ function render(elementId: string): HTMLElement {
   mounted.push(root);
   act(() => {
     root.render(React.createElement(CanvasElement, { elementId }));
+  });
+  return host;
+}
+
+function renderCanvas(): HTMLElement {
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  mounted.push(root);
+  act(() => {
+    root.render(React.createElement(Canvas));
   });
   return host;
 }
@@ -130,10 +142,7 @@ describe('a hostile .logic in an opened bundle', () => {
       'the Function constructor',
       `const x = ''.constructor.constructor('globalThis.__canvasPreviewSideEffect = "ran"')();`,
     ],
-    [
-      'a template substitution',
-      'const x = `${(globalThis.__canvasPreviewSideEffect = "ran")}`;',
-    ],
+    ['a template substitution', 'const x = `${(globalThis.__canvasPreviewSideEffect = "ran")}`;'],
   ])('leaves %s unresolved rather than evaluating it', async (_name, logic) => {
     const mainUI = await openBundle(
       '<Stack>\n  <Image src={x} />\n</Stack>',
@@ -165,8 +174,66 @@ describe('a string constant in an opened bundle', () => {
     const host = render(image.id);
 
     expect(host.querySelector('img')?.getAttribute('src')).toBe(
-      'data:image/svg+xml,' +
-        encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg'/>")
+      'data:image/svg+xml,' + encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg'/>")
     );
+  });
+});
+
+describe('keyboard canvas selection', () => {
+  it('selects a component with Enter and keeps its visual preview out of the tab order', async () => {
+    const mainUI = await openBundle('<Stack>\n  <Button>Save</Button>\n</Stack>', '');
+    const button = Array.from(mainUI.elements.values()).find(
+      (element) => element.componentType === 'Button'
+    )!;
+    const host = render(button.id);
+    const selector = host.querySelector<HTMLElement>('[role="treeitem"]')!;
+
+    expect(selector.getAttribute('aria-label')).toBe('Select Button component');
+    expect(selector.querySelector('button')?.tabIndex).toBe(-1);
+
+    act(() => {
+      selector.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(useCanvasStore.getState().selectedIds).toContain(button.id);
+    expect(selector.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('keeps one tree item tabbable and supports Arrow, Home, and End navigation', async () => {
+    await openBundle(
+      '<Stack>\n  <Button>First</Button>\n  <Stack><Text>Nested</Text></Stack>\n  <Button>Last</Button>\n</Stack>',
+      ''
+    );
+    const host = renderCanvas();
+    const items = Array.from(host.querySelectorAll<HTMLElement>('[data-canvas-treeitem="true"]'));
+    expect(items.length).toBeGreaterThanOrEqual(5);
+    expect(items.filter((item) => item.tabIndex === 0)).toEqual([items[0]]);
+
+    act(() => {
+      items[0].focus();
+      items[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items[1]);
+    expect(items.filter((item) => item.tabIndex === 0)).toEqual([items[1]]);
+
+    act(() => {
+      items[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items[0]);
+
+    act(() => {
+      items[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items.at(-1));
+
+    act(() => {
+      items.at(-1)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items[0]);
+
+    act(() => {
+      items[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(items[1]);
   });
 });
