@@ -29,7 +29,18 @@ let DLG = {
   a2_s5_alex_042: { speaker: "Alex",  voice: "marin",   durationMs: 2500, text: "So is my future." },
   a2_s5_luma_043: { speaker: "LUMA",  voice: "alloy",   durationMs: 4700, text: "Then I recommend gathering data before branding either one." },
   a2_s5_luma_044: { speaker: "LUMA",  voice: "alloy",   durationMs: 5750, text: "I have generated four billion-dollar ideas. Three of them are misdemeanours somewhere." },
-  a2_s5_sys_045:  { speaker: "System",voice: "shimmer", durationMs: 4700, text: "Patchwork. Project created. Optimism logged." }
+  a2_s5_sys_045:  { speaker: "System",voice: "shimmer", durationMs: 4700, text: "Patchwork. Project created. Optimism logged." },
+  a2_s6_mabel_050:{ speaker: "Mabel", voice: "nova",    durationMs: 6050, text: "We're closed. The ovens disagree, but they always do. One croissant left — contested." },
+  a2_s6_leo_051:  { speaker: "Leo",   voice: "ash",     durationMs: 6900, text: "Three orders are missing. Or five exist twice. Depends which tablet you believe." },
+  a2_s6_leo_052:  { speaker: "Leo",   voice: "ash",     durationMs: 4300, text: "The tablets have been fighting all week. Paper's winning." },
+  a2_s6_mabel_053:{ speaker: "Mabel", voice: "nova",    durationMs: 8350, text: "I don't need software that replaces Leo. I need software that stops three people ordering the same croissant through four apps at midnight." },
+  a2_s6_alex_054: { speaker: "Alex",  voice: "marin",   durationMs: 6850, text: "I can build that. Probably. The word probably is doing a lot of work in that sentence." },
+  a2_s6_mabel_055:{ speaker: "Mabel", voice: "nova",    durationMs: 5450, text: "One week. A working prototype. I pay for work — free trials make liars of everyone." },
+  a2_s6_luma_056: { speaker: "LUMA",  voice: "alloy",   durationMs: 6750, text: "Field analysis complete. Ninety-three percent of handling here is repetition. I can eliminate it." },
+  a2_s6_mabel_057:{ speaker: "Mabel", voice: "nova",    durationMs: 3300, text: "Good. Start with the repetition, not the people." },
+  a2_s6_leo_058:  { speaker: "Leo",   voice: "ash",     durationMs: 4550, text: "She likes you. That was her liking-you voice." },
+  a2_s6_alex_059: { speaker: "Alex",  voice: "marin",   durationMs: 5550, text: "A customer. A real one. With money and a deadline. Terrifying." },
+  a2_s6_sys_060:  { speaker: "System",voice: "shimmer", durationMs: 4750, text: "New contact saved: The Last Crumb. Category: hope." }
 }
 
 // Scene 2 — the four interruption choices.
@@ -111,6 +122,44 @@ let WS_CATS = [
     { id: "practical", label: "Practical",  kind: "grounded" },
     { id: "grandiose", label: "Grandiose",  kind: "hype" },
     { id: "desperate", label: "Desperate",  kind: "grounded" } ] }
+]
+
+// Scene 6 — the missing-orders puzzle. Each order states one known fact; one
+// slip per order actually matches it. Wrong picks fail forward through Leo.
+let ORDERS = [
+  { id: "o1", fact: "Nut-free birthday cake, pickup Saturday.",
+    slips: [
+      { id: "o1a", label: "Tablet A — choc cake, Sat, note: ALLERGY!!", right: true },
+      { id: "o1b", label: "Tablet B — choc cake, Sun, extra nuts", right: false },
+      { id: "o1c", label: "Paper — cupcakes?, Sat, no note", right: false } ] },
+  { id: "o2", fact: "Twelve assorted, paid by card ending 41.",
+    slips: [
+      { id: "o2a", label: "Tablet B — 12 assorted, cash on pickup", right: false },
+      { id: "o2b", label: "Tablet A — 12 assorted, card •••41", right: true },
+      { id: "o2c", label: "Delivery app — 12 of EACH item, card •••17", right: false } ] },
+  { id: "o3", fact: "Sourdough, moved pickup to Friday in a second message.",
+    slips: [
+      { id: "o3a", label: "Phone — sourdough, Thursday (first message)", right: false },
+      { id: "o3b", label: "Paper — rye, Friday", right: false },
+      { id: "o3c", label: "Phone — sourdough, Friday (second message)", right: true } ] }
+]
+
+let LEO_WRONG = [
+  "Leo squints. “That one's been picked up. Twice, apparently.”",
+  "“Close. But that customer would riot,” says Leo, gently.",
+  "Leo shakes his head. “Read it again. The details are the whole job.”"
+]
+
+// Scene 6 — how Alex describes the thing that doesn't exist yet.
+let PITCH_CHOICES = [
+  { id: "honest",     label: "“An experiment that might consolidate and flag orders.”",
+    reply: "Mabel nods slowly. Honesty, it turns out, is a novelty in software sales." },
+  { id: "balanced",   label: "“An automation platform — with human approval built in.”",
+    reply: "“Approval by which human?” asks Mabel. It is an excellent question." },
+  { id: "hype",       label: "“An autonomous order-intelligence operating system.”",
+    reply: "Mabel's eyebrow files a formal objection. Leo writes the phrase down to mock later." },
+  { id: "vulnerable", label: "“A thing I haven't built yet, but can probably panic into existence.”",
+    reply: "Mabel laughs — once, sharply, like a till drawer closing. “At least that one I believe.”" }
 ]
 
 let NAME_CHOICES = [
