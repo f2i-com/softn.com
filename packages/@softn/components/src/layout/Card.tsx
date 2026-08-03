@@ -37,6 +37,8 @@ export interface CardProps {
   dividers?: boolean;
   /** Click handler (makes card interactive) */
   onClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
+  /** Keyboard handler */
+  onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -155,6 +157,7 @@ export function Card({
   headerActions,
   dividers = true,
   onClick,
+  onKeyDown,
   className,
   style,
   children,
@@ -165,6 +168,17 @@ export function Card({
 
   const handleMouseEnter = useCallback(() => isInteractive && setIsHovered(true), [isInteractive]);
   const handleMouseLeave = useCallback(() => setIsHovered(false), []);
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      onKeyDown?.(event);
+      if (event.defaultPrevented || event.target !== event.currentTarget || !onClick) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        event.currentTarget.click();
+      }
+    },
+    [onClick, onKeyDown]
+  );
 
   // Handle custom gradient colors
   const getBackground = () => {
@@ -240,10 +254,11 @@ export function Card({
       className={className}
       style={baseStyle}
       onClick={onClick}
+      onKeyDown={onClick || onKeyDown ? handleKeyDown : undefined}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      role={isInteractive ? 'button' : undefined}
-      tabIndex={isInteractive ? 0 : undefined}
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
     >
       {hasHeader && (
         <div style={headerStyle}>

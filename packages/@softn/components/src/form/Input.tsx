@@ -9,6 +9,8 @@
 import React, { useState, useCallback } from 'react';
 
 export interface InputProps {
+  /** Input id (generated when omitted) */
+  id?: string;
   /** Input type */
   type?: 'text' | 'email' | 'password' | 'number' | 'tel' | 'url' | 'search';
   /** Input name */
@@ -134,6 +136,7 @@ const sizeConfig: Record<string, { padding: string; fontSize: string; height: st
 };
 
 export function Input({
+  id,
   type = 'text',
   name,
   value,
@@ -170,6 +173,9 @@ export function Input({
   className,
   style,
 }: InputProps): React.ReactElement {
+  const generatedId = React.useId();
+  const inputId = id ?? generatedId;
+  const helperId = `${inputId}-helper`;
   const [isFocused, setIsFocused] = useState(false);
   const [internalValue, setInternalValue] = useState(value ?? defaultValue ?? '');
   const hasError = Boolean(error);
@@ -434,6 +440,7 @@ export function Input({
         )}
         {leftElement && !showSearchIcon && <div style={leftElementStyle}>{leftElement}</div>}
         <input
+          id={inputId}
           type={type}
           name={name}
           // Render the value the component actually tracks.
@@ -462,7 +469,7 @@ export function Input({
           className={className}
           style={computedStyle}
           aria-invalid={hasError}
-          aria-describedby={helperText || errorMessage ? `${name}-helper` : undefined}
+          aria-describedby={helperText || errorMessage ? helperId : undefined}
         />
         {/* Clear button or custom right element */}
         {showClearButton && (
@@ -497,14 +504,14 @@ export function Input({
       <div style={inputWrapperStyle}>
         <div style={{ width: '100%' }}>
           {label && (
-            <label style={labelStyle}>
+            <label htmlFor={inputId} style={labelStyle}>
               {label}
               {required && <span style={requiredStyle}>*</span>}
             </label>
           )}
           {inputElement}
           {(helperText || errorMessage) && (
-            <div id={`${name}-helper`} style={helperStyle}>
+            <div id={helperId} style={helperStyle}>
               {errorMessage || helperText}
             </div>
           )}

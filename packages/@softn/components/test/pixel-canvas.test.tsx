@@ -8,7 +8,6 @@
  * `requestAnimationFrame` would make every assertion a race.
  */
 
-import React from 'react';
 import { describe, it, expect, beforeAll } from 'vitest';
 import { act } from 'react';
 import { mount } from './dom';

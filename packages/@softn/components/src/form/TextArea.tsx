@@ -8,6 +8,8 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 
 export interface TextAreaProps {
+  /** Textarea id (generated when omitted) */
+  id?: string;
   /** Input name */
   name?: string;
   /** Current value */
@@ -76,6 +78,7 @@ const sizeStyles: Record<string, { padding: string; fontSize: string }> = {
 };
 
 export function TextArea({
+  id,
   name,
   value,
   defaultValue,
@@ -102,6 +105,9 @@ export function TextArea({
   className,
   style,
 }: TextAreaProps): React.ReactElement {
+  const generatedId = React.useId();
+  const textareaId = id ?? generatedId;
+  const helperId = `${textareaId}-helper`;
   const [isFocused, setIsFocused] = useState(false);
   const [charCount, setCharCount] = useState((value || defaultValue || '').length);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -246,6 +252,7 @@ export function TextArea({
 
   const textareaElement = (
     <textarea
+      id={textareaId}
       ref={textareaRef}
       name={name}
       value={value}
@@ -262,7 +269,7 @@ export function TextArea({
       className={className}
       style={computedStyle}
       aria-invalid={hasError}
-      aria-describedby={helperText || errorMessage ? `${name}-helper` : undefined}
+      aria-describedby={helperText || errorMessage ? helperId : undefined}
     />
   );
 
@@ -271,14 +278,14 @@ export function TextArea({
   return (
     <div style={{ width: fullWidth ? '100%' : undefined }}>
       {label && (
-        <label style={labelStyle}>
+        <label htmlFor={textareaId} style={labelStyle}>
           {label}
           {required && <span style={requiredStyle}>*</span>}
         </label>
       )}
       {textareaElement}
       {showFooter && (
-        <div id={`${name}-helper`} style={footerStyle}>
+        <div id={helperId} style={footerStyle}>
           {(helperText || errorMessage) && (
             <span style={helperStyle}>{errorMessage || helperText}</span>
           )}

@@ -3,10 +3,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   createBundle,
   createBundleFromFiles,
   readBundle,
+  readBundleFromFile,
   validateManifest,
   createDefaultManifest,
 } from '../src/bundle';
@@ -181,6 +185,22 @@ describe('Bundle Module', () => {
       const mainFile = bundle.files.get('main.ui');
       expect(mainFile).toBeDefined();
       expect(mainFile!.content).toBe('<div>From Map</div>');
+    });
+  });
+
+  describe('readBundleFromFile', () => {
+    it('preserves bundle validation errors when the filesystem read succeeds', async () => {
+      const directory = mkdtempSync(join(tmpdir(), 'softn-invalid-bundle-'));
+      const file = join(directory, 'invalid.softn');
+      writeFileSync(file, new Uint8Array([1, 2, 3, 4]));
+
+      try {
+        await expect(readBundleFromFile(file)).rejects.toThrow(
+          'Invalid ZIP: missing end-of-central-directory'
+        );
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
     });
   });
 });

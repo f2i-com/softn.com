@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
-import { unzipSync } from 'fflate';
 import { TopBar } from './components/toolbar/TopBar';
 import { LeftRail } from './components/layout/LeftRail';
 import { VisualCanvas } from './components/canvas/VisualCanvas';
@@ -20,6 +19,7 @@ import { validateProject } from './lib/validator';
 import { abortAgentTurn } from './lib/agentOrchestrator';
 import { loadAISnapshot, loadRecentProjects, loadVFSSnapshot, loadWorkspaceSnapshot, saveAISnapshot, saveRecentProject, saveVFSSnapshot, saveWorkspaceSnapshot, decodePersistedVFS } from './lib/persistence';
 import { BlueprintReview } from './components/blueprint/BlueprintReview';
+import { normalizeProjectPath, readJsonProject, readProjectArchive } from './lib/projectImport';
 
 
 type View = 'dashboard' | 'brief' | 'editor';
@@ -238,22 +238,13 @@ const App: React.FC = () => {
     /** Whether the bytes were a readable archive, regardless of what was in it. */
     let zipParsed = false;
 
-    // Try as ZIP first
+    // Try as ZIP first. The shared reader verifies sizes and checksums before
+    // allocating entry buffers, so a small archive cannot inflate without a
+    // bound just because it was opened in Studio rather than the runtime.
     try {
-      const entries = unzipSync(data);
-      const entryList = Object.entries(entries);
+      const entryList = readProjectArchive(data);
       console.log(`[SoftN Import] ZIP parsed OK, ${entryList.length} entries`);
-      for (const [fileName, content] of entryList) {
-        if (fileName.endsWith('/')) continue; // skip directories
-        // Normalize path separators and strip leading slash
-        const path = fileName.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\//, '');
-        if (!path || path.includes('..')) continue;
-        const isText = /\.(ui|logic|json|xdb|md|txt|html|css|js|ts|tsx|jsx|svg|xml|yaml|yml|toml)$/i.test(path);
-        batch.push({
-          path,
-          content: isText ? decoder.decode(content) : content,
-        });
-      }
+      batch.push(...entryList);
       zipParsed = true;
     } catch (err) {
       console.log('[SoftN Import] Not a valid ZIP, trying fallback...', err);
@@ -269,21 +260,16 @@ const App: React.FC = () => {
       ws.addConsoleOutput(`⚠ ${file.name} is a valid bundle but contains no files.`);
     } else if (batch.length === 0) {
       const text = decoder.decode(data);
-      // Try as JSON project manifest
-      try {
-        const manifest = JSON.parse(text);
-        if (manifest.files && typeof manifest.files === 'object') {
-          for (const [path, content] of Object.entries(manifest.files)) {
-            batch.push({ path, content: String(content) });
-          }
-          console.log(`[SoftN Import] JSON manifest parsed, ${batch.length} files`);
-        }
-      } catch {
-        // Not JSON either
+      // Try as JSON project manifest. Unsafe paths and non-string file values
+      // are ignored instead of becoming aliases or "[object Object]" files.
+      batch.push(...readJsonProject(text));
+      if (batch.length > 0) {
+        console.log(`[SoftN Import] JSON manifest parsed, ${batch.length} files`);
       }
       // Last resort: single file
       if (batch.length === 0) {
-        batch.push({ path: file.name, content: text });
+        const fallbackPath = normalizeProjectPath(file.name) ?? 'imported.txt';
+        batch.push({ path: fallbackPath, content: text });
         console.log('[SoftN Import] Loaded as single file');
       }
     }

@@ -99,26 +99,37 @@ export async function readBundleFromFile(
 ): Promise<SoftNBundle> {
   // Try Tauri first
   if (typeof window !== 'undefined' && '__TAURI__' in window) {
+    let tauriFs: { readFile(path: string): Promise<Uint8Array> } | undefined;
     try {
       // Dynamic import to avoid bundler resolving
       const tauriModuleName = '@tauri-apps/plugin-fs';
-      const tauriFs = await import(/* @vite-ignore */ tauriModuleName);
-      const data = await tauriFs.readFile(filePath);
-      return readBundle(data, options);
+      tauriFs = await import(/* @vite-ignore */ tauriModuleName);
     } catch {
       // Tauri fs not available
+    }
+
+    // Keep I/O and bundle-validation errors intact. The old broad catch also
+    // swallowed a missing file or a corrupt archive and eventually reported
+    // "No file system API available", even though the API worked perfectly.
+    if (tauriFs) {
+      const data = await tauriFs.readFile(filePath);
+      return readBundle(data, options);
     }
   }
 
   // Try Node.js (use dynamic import)
+  let fs: typeof import('fs') | undefined;
   try {
     // Dynamic import to avoid bundler resolving
     const fsModuleName = 'fs';
-    const fs = await import(/* @vite-ignore */ fsModuleName);
-    const data = fs.readFileSync(filePath);
-    return readBundle(new Uint8Array(data), options);
+    fs = await import(/* @vite-ignore */ fsModuleName);
   } catch {
     // Node.js fs not available
+  }
+
+  if (fs) {
+    const data = fs.readFileSync(filePath);
+    return readBundle(new Uint8Array(data), options);
   }
 
   throw new Error('No file system API available');

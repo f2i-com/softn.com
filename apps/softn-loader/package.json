@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "tauri": "tauri",
     "generate-icons": "node scripts/generate-icons.cjs",
     "build:shell-extension": "cd shell-extension && cargo build --release",

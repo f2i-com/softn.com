@@ -28,7 +28,8 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "test": "vitest run"
   },
   "dependencies": {
     "@softn/core": "^0.1.0",

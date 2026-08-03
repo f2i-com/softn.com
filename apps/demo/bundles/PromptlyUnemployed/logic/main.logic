@@ -1,10 +1,10 @@
-// Promptly Unemployed — vertical slice (condensed Scenes 1–6).
+// Promptly Unemployed — nine-scene narrative vertical slice.
 // Entry file: game state, scene flow, puzzles, choices, saves.
 // Rules honoured throughout (plan §10.8): no setTimeout — tick counters only;
 // listeners latch to window.__pu* globals and the tick loop consumes them;
 // continuations are string tags, never functions in state.
 
-let scene = "title"          // title | office | meeting | boxes | flat | luma | done
+let scene = "title"          // title | office | meeting | boxes | flat | luma | bakery | dream | bakeryday | done
 let objective = ""
 let hasSave = false
 
@@ -32,6 +32,7 @@ let pickerOpen = false
 let picked = []
 let keptItems = []
 let priyaEvidence = false
+let priyaChoiceId = ""
 let chapterCard = ""
 
 // Scene 4.
@@ -133,6 +134,28 @@ function showNote(text) {
   transcript = transcript.slice()
 }
 
+// Modal decisions own the keyboard while they are open. Without this guard,
+// arrow-key navigation and WASD could walk Alex around behind an overlay and
+// trigger a stale hotspot when the player confirmed a button.
+function interactionLocked() {
+  return debugOpen || pickerOpen || budgetOpen || ordersOpen || scopeOpen || wfOpen ||
+    principleUp || titleCardUp || chapterCard !== "" || choiceList.length > 0 || settingsOpen
+}
+
+function isUiControl(target) {
+  if (!target) { return false }
+  let tag = String(target.tagName || "").toLowerCase()
+  return tag === "input" || tag === "textarea" || tag === "select" ||
+    tag === "button" || tag === "a" || !!target.isContentEditable
+}
+
+function clearInputLatches() {
+  window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false }
+  window.__puUse = false
+  window.__puSkip = false
+  window.__puChoiceN = 0
+}
+
 // ---- Init and input -------------------------------------------------------
 
 function _init() {
@@ -145,6 +168,16 @@ function _init() {
   window.__puChoiceN = 0     // number-key choice selection
 
   function onKeyDown(e) {
+    // Native controls keep their own Space/Enter/arrow behaviour. The listener
+    // runs in capture phase, so failing to opt out here made buttons and the
+    // save-code field fight the game controls.
+    if (isUiControl(e.target)) { return }
+    if (choiceList.length > 0 && e.key >= "1" && e.key <= "4") {
+      window.__puChoiceN = e.key.charCodeAt(0) - 48
+      e.preventDefault()
+      return
+    }
+    if (interactionLocked()) { return }
     let k = window.__puKeys
     if (e.key === "w" || e.key === "W" || e.key === "ArrowUp") { k.w = true; e.preventDefault() }
     else if (e.key === "s" || e.key === "S" || e.key === "ArrowDown") { k.s = true; e.preventDefault() }
@@ -154,7 +187,6 @@ function _init() {
     else if (e.key === "ArrowRight") { k.right = true; e.preventDefault() }
     else if (e.key === "e" || e.key === "E" || e.key === "Enter") { window.__puUse = true }
     else if (e.key === " ") { window.__puSkip = true; e.preventDefault() }
-    else if (e.key >= "1" && e.key <= "4") { window.__puChoiceN = e.key.charCodeAt(0) - 48 }
   }
   function onKeyUp(e) {
     let k = window.__puKeys
@@ -263,6 +295,7 @@ function gameStep() {
 }
 
 function interactPressed() {
+  if (cutActive) { skipCutscene(); return }
   if (canMove() && hsNearId) { handleHotspot(hsNearId) }
 }
 
@@ -366,17 +399,14 @@ function handleHotspot(id) {
   } else if (id === "hs_abox") {
     if (picked.length >= 3) { confirmItems() }
     else { showNote("The box holds three things. You have " + picked.length + ". PAX is counting.") }
+  } else if (id.indexOf("bit_") === 0) {
+    let key = id.slice(4)
+    toggleItem(key)
+    showNote(itemName(key) + " goes back on the desk. Nothing is final until the tape is on.")
   } else if (id === "it_doug" || id === "it_plant" || id === "it_photo" || id === "it_keyboard" || id === "it_notebook" || id === "it_mug") {
     let key = id.slice(3)
-    if (picked.length >= 3) {
-      showNote("The box is full. Take something out first — or accept that this is what ten years fits into.")
-    } else {
-      picked.push(key)
-      picked = picked.slice()
-      sfx("click")
-      buildBoxes()
+    if (toggleItem(key)) {
       showNote(itemName(key) + " — " + itemDesc(key))
-      if (picked.length === 3) { objective = "The box is full. Tape it shut." }
     }
   } else if (id === "hs_kiosk") {
     showNote("The wellbeing kiosk offers a breathing exercise. It requires SSO. The queue is four incidents deep.")
@@ -593,7 +623,9 @@ function handleDialogueDone(tag) {
   } else if (tag === "dream_calm") {
     dreamCalm = true
     saidDontKnow = true
+    saveGame()
     softn.audio.stopAll()
+    musSeq = musSeq + 1
     musHandle = ""
     musCurrent = ""
     buildDream()
@@ -641,10 +673,12 @@ function handleChoice(tag, id) {
   } else if (tag === "priya") {
     let c = null
     for (let i = 0; i < PRIYA_CHOICES.length; i++) { if (PRIYA_CHOICES[i].id === id) { c = PRIYA_CHOICES[i] } }
+    priyaChoiceId = id
     if (id === "comfort") { priyaRel = priyaRel + 1 }
     else if (id === "evidence") { priyaRel = priyaRel + 1; priyaEvidence = true; addLog("REQUESTED: Priya keeps copies of AIDA's test results") }
     else if (id === "accuse") { priyaRel = priyaRel - 1 }
     if (c) { showNote(c.reply) }
+    saveGame()
     runDialogue(["a1_s3_guard_022", "a1_s3_alex_023"], "exit_lines")
   } else if (tag === "ruth") {
     let c = null
@@ -659,6 +693,7 @@ function handleChoice(tag, id) {
     productName = c ? c.label : "Patchwork"
     lumaPhase = "named"
     addLog("NAMED: " + productName + (id === "patchwork" ? " — small systems, connected carefully" : ""))
+    saveGame()
     runDialogue(["a2_s5_sys_045"], "named")
   } else if (tag === "pitch") {
     let c = null
@@ -715,6 +750,7 @@ function itemDesc(id) {
 function enterBoxes() {
   scene = "boxes"
   picked = []
+  pickerOpen = false
   playerX = 12
   playerZ = 4.2
   playerAngle = -Math.PI / 2
@@ -734,12 +770,25 @@ function enterBoxes() {
 
 function toggleItem(id) {
   let i = picked.indexOf(id)
-  if (i >= 0) { picked.splice(i, 1) }
-  else if (picked.length < 3) { picked.push(id) }
+  if (i >= 0) {
+    picked.splice(i, 1)
+  } else if (picked.length < 3) {
+    picked.push(id)
+  } else {
+    sfx("buzz")
+    showNote("The box is full. Put something back or open Review box to swap it.")
+    return false
+  }
   picked = picked.slice()
+  sfx("click")
+  buildBoxes()
+  objective = picked.length === 3 ? "The box is full. Tape it shut." : "Pack three things. Choose carefully."
+  return true
 }
 
 function isPicked(id) { return picked.indexOf(id) >= 0 }
+function openPicker() { if (scene === "boxes" && !cutActive) { pickerOpen = true } }
+function closePicker() { pickerOpen = false }
 
 function confirmItems() {
   if (picked.length !== 3) { return }
@@ -747,6 +796,7 @@ function confirmItems() {
   keptItems = picked.slice()
   pickerOpen = false
   addLog("KEPT: " + keptItems.join(", ") + " — one box, three survivors")
+  saveGame()
   objective = "Carry it out."
   // The guard comes to meet you at the lift and turns to face you; the shot
   // lands with Alex looking straight at him, because he does all the talking.
@@ -783,6 +833,7 @@ function goFlat() {
     { x0: 13.2, y0: 1.8, z0: 11.6, x1: 2, y1: 1.6, z1: 12, yaw0: 4.4, yaw1: Math.PI, ticks: 74, e: "in" }
   ], 2, 12, Math.PI, "HOME", "Rent is still due Friday")
   playMusic("flat")
+  objective = "Face the numbers. The laptop is waiting."
   saveGame()
 }
 
@@ -1157,13 +1208,50 @@ function saveGame() {
     priyaRel: priyaRel, ruthHonesty: ruthHonesty, changelog: changelog,
     coffeeFixed: coffeeFixed, debugDone: debugDone, notebookSeen: notebookSeen,
     clue8471: clue8471, aidaEvidence: aidaEvidence, priyaEvidence: priyaEvidence,
-    keptItems: keptItems, cancelledIds: cancelledIds, budgetDone: budgetDone,
+    priyaChoiceId: priyaChoiceId, keptItems: keptItems, cancelledIds: cancelledIds,
+    budgetDone: budgetDone, firstCancel: firstCancel, phoneRinging: phoneRinging,
     ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId,
     ordersDone: ordersDone, pilotPromised: pilotPromised, mabelTrust: mabelTrust,
-    saidDontKnow: saidDontKnow, priyaMode: priyaMode, scopeDone: scopeDone, pinnedCount: pinnedCount,
-    wfDone: wfDone, wfScore: wfScore, playTicks: playTicks
+    orderPicks: orderPicks, saidDontKnow: saidDontKnow, priyaHere: priyaHere,
+    priyaMode: priyaMode, scopePicks: scopePicks, scopeDone: scopeDone, pinnedCount: pinnedCount,
+    wfPicks: wfPicks, wfDone: wfDone, wfScore: wfScore, playTicks: playTicks
   }
   try { localStorage.setItem("pu:autosave", JSON.stringify(save)); hasSave = true } catch (err) {}
+}
+
+function prepareResume() {
+  stopMusic()
+  softn.audio.stopAll()
+  dlgSeq = dlgSeq + 1
+  dlgActive = false; dlgQueue = []; dlgDoneTag = ""; dlgHandle = ""
+  choiceList = []; choiceTag = ""; noteText = ""; noteTicks = 0; transcript = []
+  titleCardUp = false; pickerOpen = false; chapterCard = ""; budgetOpen = false
+  wsOpen = false; ordersOpen = false; scopeOpen = false; wfOpen = false
+  principleUp = false; debugOpen = false; cutActive = false; cutSteps = []; fadeOp = 0
+  clearConfetti(); actors = []; actorsFor = ""; blockers = []
+  clearInputLatches()
+}
+
+function restoreFlatCheckpoint() {
+  scene = "flat"
+  let pos = gridFind(FLAT_ROWS, "S")
+  playerX = pos.x; playerZ = pos.z; playerAngle = Math.PI
+  window.__scene3dYaw = playerAngle; window.__scene3dPitch = 0
+  buildFlat(); updateCamera(); playMusic("flat")
+}
+
+function restorePackedBox() {
+  scene = "boxes"
+  picked = keptItems.slice()
+  playerX = 25.2; playerZ = 14.4; playerAngle = -2.14
+  window.__scene3dYaw = playerAngle; window.__scene3dPitch = 0
+  buildBoxes(); updateCamera(); playMusic("office")
+  objective = "Carry it out."
+  if (priyaChoiceId) {
+    chapterCard = "Chapter One — Congratulations on Your Transition"
+  } else {
+    runDialogue(["a1_s3_priya_021"], "priya_line")
+  }
 }
 
 function continueGame() {
@@ -1172,35 +1260,81 @@ function continueGame() {
   if (!raw) { newGame(); return }
   let s = null
   try { s = JSON.parse(raw) } catch (err) { s = null }
-  if (!s || s.version !== SAVE_VERSION) { newGame(); return }
-  runway = s.runway; integrity = s.integrity; collaboration = s.collaboration
-  hype = s.hype; priyaRel = s.priyaRel; ruthHonesty = s.ruthHonesty
-  changelog = s.changelog || []
+  if (!s || s.version !== SAVE_VERSION || typeof s.scene !== "string") { newGame(); return }
+  prepareResume()
+  runway = typeof s.runway === "number" ? s.runway : 2400
+  integrity = typeof s.integrity === "number" ? s.integrity : 0
+  collaboration = typeof s.collaboration === "number" ? s.collaboration : 0
+  hype = typeof s.hype === "number" ? s.hype : 0
+  priyaRel = typeof s.priyaRel === "number" ? s.priyaRel : 0
+  ruthHonesty = typeof s.ruthHonesty === "number" ? s.ruthHonesty : -1
+  changelog = Array.isArray(s.changelog) ? s.changelog.slice() : []
   coffeeFixed = !!s.coffeeFixed; debugDone = !!s.debugDone; notebookSeen = !!s.notebookSeen
   clue8471 = !!s.clue8471; aidaEvidence = !!s.aidaEvidence; priyaEvidence = !!s.priyaEvidence
-  keptItems = s.keptItems || []; cancelledIds = s.cancelledIds || []
-  budgetDone = !!s.budgetDone; ruthDone = !!s.ruthDone
+  priyaChoiceId = s.priyaChoiceId || ""
+  keptItems = Array.isArray(s.keptItems) ? s.keptItems.slice() : []
+  cancelledIds = Array.isArray(s.cancelledIds) ? s.cancelledIds.slice() : []
+  budgetDone = !!s.budgetDone; firstCancel = !!s.firstCancel || cancelledIds.length > 0
+  phoneRinging = !!s.phoneRinging; ruthDone = !!s.ruthDone
   productName = s.productName || ""; meetChoiceId = s.meetChoiceId || ""
-  ordersDone = !!s.ordersDone; pilotPromised = !!s.pilotPromised; mabelTrust = s.mabelTrust || 0
-  saidDontKnow = !!s.saidDontKnow; priyaMode = s.priyaMode || ""; scopeDone = !!s.scopeDone
-  wfDone = !!s.wfDone; wfScore = s.wfScore || 0; playTicks = s.playTicks || 0
-  pinnedCount = s.pinnedCount || 0
-  // Checkpoints are scene entries; re-enter the saved scene fresh.
-  if (s.scene === "meeting") { enterMeeting() }
-  else if (s.scene === "boxes") { enterBoxes() }
-  else if (s.scene === "bakery") { goBakery() }
-  else if (s.scene === "dream") { goDream() }
-  else if (s.scene === "bakeryday") { goBakeryDay() }
-  else if (s.scene === "flat" || s.scene === "luma") { goFlat() }
-  else if (s.scene === "done") { summaryLines = endingSummary(); scene = "done" }
-  else { startOffice() }
+  ordersDone = !!s.ordersDone; pilotPromised = !!s.pilotPromised
+  mabelTrust = typeof s.mabelTrust === "number" ? s.mabelTrust : 0
+  orderPicks = s.orderPicks || { o1: "", o2: "", o3: "" }
+  saidDontKnow = !!s.saidDontKnow; priyaHere = !!s.priyaHere; priyaMode = s.priyaMode || ""
+  scopePicks = Array.isArray(s.scopePicks) ? s.scopePicks.slice() : []
+  scopeDone = !!s.scopeDone; pinnedCount = typeof s.pinnedCount === "number" ? s.pinnedCount : 0
+  wfPicks = s.wfPicks || { boxes12: "", nutfree: "", moved: "", moon: "", apt: "", inject: "" }
+  wfDone = !!s.wfDone; wfScore = typeof s.wfScore === "number" ? s.wfScore : 0
+  playTicks = typeof s.playTicks === "number" ? s.playTicks : 0
+
+  // Resume by completed story beats, not just the broad room name. Several
+  // different chapters use the flat; treating them all as Scene 4 could remove
+  // the principle card or Priya and leave no route forward.
+  if (s.scene === "done" || wfDone) { scene = "done"; summaryLines = endingSummary(); return }
+  if (scopeDone) { goBakeryDay(); return }
+  if (saidDontKnow) {
+    if (pinnedCount < 2) {
+      priyaHere = false; restoreFlatCheckpoint()
+      principleNum = 2; principleText = "Say when you do not know."
+      principleFlavor = "Learned in a room that only went quiet when you said it."
+      principleNext = "priya"; principleUp = true
+      objective = "Pin what the dream taught you."
+    } else {
+      priyaHere = true; restoreFlatCheckpoint()
+      objective = priyaMode === "" ? "Someone is knocking. Analog knocking. A person." : "Scope the prototype. Five points. No more."
+    }
+    return
+  }
+  if (productName !== "" && pinnedCount < 1) {
+    scene = "luma"; lumaPhase = "named"; playMusic("flat")
+    principleNum = 1; principleText = "Ask before assuming."
+    principleFlavor = "Written on an index card. The first thing on the wall that isn't a bill."
+    principleNext = "bakery"; principleUp = true
+    objective = "Pin the first principle."
+    return
+  }
+  if (s.scene === "dream") { goDream(); return }
+  if (s.scene === "bakery") { goBakery(); return }
+  if (s.scene === "bakeryday") { goBakeryDay(); return }
+  if (s.scene === "boxes" && keptItems.length === 3) { restorePackedBox(); return }
+  if (s.scene === "boxes") { enterBoxes(); return }
+  if (s.scene === "meeting" && meetChoiceId) { enterBoxes(); return }
+  if (s.scene === "meeting") { enterMeeting(); return }
+  if (s.scene === "flat" || s.scene === "luma") {
+    if (budgetDone && !ruthDone) { phoneRinging = true }
+    restoreFlatCheckpoint()
+    objective = budgetDone ? (ruthDone ? "The old side project is glowing." : "The old side project is glowing. Also: the phone.") : "Face the numbers. The laptop is waiting."
+    return
+  }
+  startOffice()
 }
 
 function newGame() {
+  stopMusic(); softn.audio.stopAll(); dlgSeq = dlgSeq + 1; clearInputLatches()
   runway = 2400; integrity = 0; collaboration = 0; hype = 0
   priyaRel = 0; ruthHonesty = -1; changelog = []
   coffeeFixed = false; debugDone = false; notebookSeen = false
-  clue8471 = false; cliveWarned = false; aidaEvidence = false; priyaEvidence = false
+  clue8471 = false; cliveWarned = false; aidaEvidence = false; priyaEvidence = false; priyaChoiceId = ""
   meetChoiceId = ""; titleCardUp = false; pickerOpen = false; picked = []
   keptItems = []; chapterCard = ""; budgetOpen = false; budgetDone = false
   cancelledIds = []; firstCancel = false; phoneRinging = false; ruthDone = false
@@ -1248,7 +1382,10 @@ function copySaveCode() {
 function loadSaveCode() {
   let s = null
   try { s = JSON.parse(saveCode) } catch (err) { s = null }
-  if (!s || !s.version) { saveCodeMsg = "That doesn't parse as a save. LUMA suggests checking for missing braces."; return }
+  if (!s || s.version !== SAVE_VERSION || typeof s.scene !== "string") {
+    saveCodeMsg = "That is not a compatible save. LUMA suggests checking the full code was copied."
+    return
+  }
   try { localStorage.setItem("pu:autosave", saveCode) } catch (err) {}
   hasSave = true
   settingsOpen = false
@@ -1267,6 +1404,7 @@ function backToTitle() {
   choiceTag = ""
   noteText = ""
   noteTicks = 0
+  clearInputLatches()
   scene = "title"
 }
 
@@ -1316,7 +1454,10 @@ function dotColor(state) {
 function statPct(v) { return Math.min(100, Math.max(6, v * 22)) + "%" }
 
 function inWorld() { return scene === "office" || scene === "boxes" || scene === "meeting" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
-function canMove() { return scene === "office" || scene === "boxes" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
+function canMove() {
+  let movableScene = scene === "office" || scene === "boxes" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream"
+  return movableScene && !interactionLocked()
+}
 function showCaptionBar() { return scene !== "title" }
 function captionHasContent() { return dlgActive || noteText !== "" || hudPrompt() !== "" }
 
@@ -1348,6 +1489,11 @@ function currentChapter() {
   let i = stepIndex()
   if (i < 0 || i >= CHAPTERS.length) { return "" }
   return CHAPTERS[i].label
+}
+function chapterProgress() {
+  let i = stepIndex()
+  if (i < 0) { return "" }
+  return Math.min(i + 1, CHAPTERS.length) + "/" + CHAPTERS.length
 }
 function hudPrompt() {
   if (choiceList.length > 0) { return "" }

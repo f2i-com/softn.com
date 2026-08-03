@@ -7,8 +7,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { registerAllBuiltins, ThemeProvider } from '@softn/components';
-import { SoftNWithXDB, getXDB, readBundleEntries, classifyAsset } from '@softn/core';
+import { SoftNWithXDB, getXDB, readBundleEntries, classifyAsset, type PermissionConfig } from '@softn/core';
 import { Spinner, Box, Text, Card, Stack, Button } from '@softn/components';
+import { createBundleImportResolver } from './remoteImport';
 
 // Compile-time constant from Vite define
 declare const __ANDROID__: boolean;
@@ -241,7 +242,7 @@ function App(): React.ReactElement {
   const [importResolver, setImportResolver] = useState<((path: string) => Promise<string | null>) | undefined>();
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
   const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
-  const [permissionConfig, setPermissionConfig] = useState<import('@softn/core').PermissionConfig | null>(null);
+  const [permissionConfig, setPermissionConfig] = useState<PermissionConfig | null>(null);
   const [assetResolver, setAssetResolver] = useState<((path: string) => string | null) | undefined>();
 
   // Open a file picker to choose a .softn file
@@ -385,8 +386,33 @@ function App(): React.ReactElement {
   useEffect(() => {
     if (!bundlePath) return;
 
+    let active = true;
+    const objectUrls: string[] = [];
+    const remoteControllers = new Set<AbortController>();
+    let publishedAssetResolver: ((path: string) => string | null) | undefined;
+
+    const cleanup = () => {
+      for (const controller of remoteControllers) controller.abort();
+      remoteControllers.clear();
+      try {
+        (screen.orientation as { unlock?: () => void }).unlock?.();
+      } catch {
+        // Orientation lock is not available everywhere.
+      }
+      for (const url of objectUrls.splice(0)) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // Ignore revoke failures.
+        }
+      }
+      if (publishedAssetResolver && typeof window !== 'undefined') {
+        const globals = window as unknown as Record<string, unknown>;
+        if (globals.__softnAsset === publishedAssetResolver) delete globals.__softnAsset;
+      }
+    };
+
     async function loadBundle() {
-      const objectUrls: string[] = [];
       try {
         setLoading(true);
         setError(null);
@@ -410,6 +436,7 @@ function App(): React.ReactElement {
           });
         }
 
+        if (!active) return;
         if (!rawData) {
           throw new Error('Failed to read bundle file');
         }
@@ -417,25 +444,23 @@ function App(): React.ReactElement {
         const data = new Uint8Array(rawData);
         const { textFiles, binaryFiles } = readZip(data);
 
-        // The bundle's declared capabilities. Without this the runtime runs with
-        // no config, which allows most APIs but still refuses plain http:// — so
-        // a bundle that legitimately declared net.allow_http for a LAN or
-        // localhost server could not reach it, and allowed_hosts went unenforced.
+        // Keep this load's parsed config in the closure as well as state. React
+        // state updates are asynchronous; reading `permissionConfig` below
+        // would otherwise inspect the previously opened bundle's policy.
+        let bundlePermissionConfig: PermissionConfig | null = null;
         const permJson = textFiles.get('permission.json');
         if (permJson) {
           try {
-            setPermissionConfig(JSON.parse(permJson));
+            const parsed: unknown = JSON.parse(permJson);
+            bundlePermissionConfig = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+              ? parsed as PermissionConfig
+              : { permissions: {} };
           } catch (e) {
-            // Not null: a null config means "no permission.json at all", which
-            // the runtime treats as a legacy bundle and allows everything. A
-            // file that fails to parse would then grant more than a valid one
-            // declaring nothing. An empty config denies every capability.
             console.error('[SoftN Loader] Invalid permission.json — denying all capabilities:', e);
-            setPermissionConfig({ permissions: {} });
+            bundlePermissionConfig = { permissions: {} };
           }
-        } else {
-          setPermissionConfig(null);
         }
+        setPermissionConfig(bundlePermissionConfig);
 
         const manifestContent = textFiles.get('manifest.json');
         if (!manifestContent) {
@@ -456,15 +481,21 @@ function App(): React.ReactElement {
             }
           }
         }
+        if (!active) {
+          cleanup();
+          return;
+        }
 
         // Load XDB data from bundle (await for Tauri backend)
         const appId = parsedManifest.name || 'softn-app';
         await loadXDBData(textFiles, parsedManifest, appId);
+        if (!active) return;
 
         // Set window icon from bundle (desktop only)
         if (!isMobile) {
           await setWindowIconFromBundle(binaryFiles, parsedManifest);
         }
+        if (!active) return;
 
         const mainUI = textFiles.get(parsedManifest.main);
         if (!mainUI) {
@@ -598,53 +629,19 @@ function App(): React.ReactElement {
 
         console.log('[SoftN Loader] Final source prepared with inlined components');
 
-        // Create import resolver for .logic file imports (looks up in bundle files, fetches URLs)
-        // Remote imports are default-deny: only allowed if the bundle explicitly
-        // declares network permission AND uses HTTPS (no plaintext HTTP).
-        const hasNetworkPermission = !!parsedManifest.permissions?.network;
-        const urlCache = new Map<string, string>();
-        const MAX_REMOTE_IMPORT_BYTES = 1 * 1024 * 1024; // 1MB
-        const REMOTE_IMPORT_TIMEOUT_MS = 10_000;
-        const resolver = async (path: string): Promise<string | null> => {
-          if (path.startsWith('http://') || path.startsWith('https://')) {
-            if (!hasNetworkPermission) {
-              console.warn('[SoftN Loader] Remote import blocked (no network permission):', path);
-              return null;
-            }
-            if (path.startsWith('http://')) {
-              console.warn('[SoftN Loader] Remote import blocked (HTTPS required):', path);
-              return null;
-            }
-            if (urlCache.has(path)) return urlCache.get(path)!;
-            try {
-              const controller = new AbortController();
-              const timer = setTimeout(() => controller.abort(), REMOTE_IMPORT_TIMEOUT_MS);
-              const resp = await fetch(path, { signal: controller.signal });
-              clearTimeout(timer);
-              if (!resp.ok) return null;
-              const contentLength = resp.headers.get('content-length');
-              if (contentLength && parseInt(contentLength, 10) > MAX_REMOTE_IMPORT_BYTES) {
-                console.warn('[SoftN Loader] Remote import too large:', path);
-                return null;
-              }
-              const text = await resp.text();
-              if (text.length > MAX_REMOTE_IMPORT_BYTES) {
-                console.warn('[SoftN Loader] Remote import too large:', path);
-                return null;
-              }
-              urlCache.set(path, text);
-              return text;
-            } catch (e) {
-              console.warn('[SoftN Loader] Remote import failed:', path, e);
-              return null;
-            }
-          }
-          return textFiles.get(path) ?? null;
-        };
+        const resolver = createBundleImportResolver(textFiles, {
+          permissionConfig: bundlePermissionConfig,
+          isActive: () => active,
+          trackController: (controller) => {
+            remoteControllers.add(controller);
+            return () => remoteControllers.delete(controller);
+          },
+        });
 
         const normalizeAssetPath = (path: string): string => path.replace(/\\/g, '/').replace(/^\.\/+/, '');
         const assetUrlCache = new Map<string, string>();
         const resolveAsset = (path: string): string | null => {
+          if (!active) return null;
           if (!path) return null;
           if (path.startsWith('blob:') || path.startsWith('data:') || path.startsWith('http://') || path.startsWith('https://')) {
             return path;
@@ -668,8 +665,10 @@ function App(): React.ReactElement {
           return url;
         };
 
+        if (!active) return;
         setImportResolver(() => resolver);
         setAssetResolver(() => resolveAsset);
+        publishedAssetResolver = resolveAsset;
         if (typeof window !== 'undefined') {
           (window as unknown as Record<string, unknown>).__softnAsset = resolveAsset;
         }
@@ -682,6 +681,7 @@ function App(): React.ReactElement {
         if (!isMobile && (parsedManifest.config?.window?.title || parsedManifest.name)) {
           try {
             const windowModule = await import('@tauri-apps/api/window');
+            if (!active) return;
             const appWindow = windowModule.getCurrentWindow();
             await appWindow.setTitle(parsedManifest.config?.window?.title || parsedManifest.name);
           } catch {
@@ -689,40 +689,21 @@ function App(): React.ReactElement {
           }
         }
       } catch (err) {
+        if (!active) return;
         setError(err instanceof Error ? err : new Error(String(err)));
         setLoading(false);
         setAssetResolver(undefined);
       }
 
-      // Cleanup URLs if this specific load invocation is replaced/unmounted.
-      //
-      // Returned after the try/catch rather than out of a `finally`: a `return`
-      // there discards whatever the block was doing, including an exception the
-      // catch itself raised, so a failure inside the error handler vanished.
-      return () => {
-        // Unlock orientation when leaving app
-        try {
-          (screen.orientation as { unlock?: () => void }).unlock?.();
-        } catch {
-          // Orientation lock is not available everywhere.
-        }
-        for (const url of objectUrls) {
-          try {
-            URL.revokeObjectURL(url);
-          } catch {
-            // Ignore revoke failures.
-          }
-        }
-      };
     }
 
-    const cleanupPromise = loadBundle();
+    void loadBundle();
     return () => {
-      Promise.resolve(cleanupPromise).then((cleanup) => {
-        if (typeof cleanup === 'function') {
-          cleanup();
-        }
-      }).catch(() => {});
+      // React runs this before starting the effect for a newly selected file.
+      // Every awaited continuation below checks the flag before publishing, so
+      // an older read can finish but can no longer replace the newer bundle.
+      active = false;
+      cleanup();
     };
   }, [bundlePath]);
 

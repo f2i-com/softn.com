@@ -37,6 +37,8 @@ export interface BoxProps {
   maxHeight?: string;
   /** Click handler */
   onClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
+  /** Keyboard handler */
+  onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -86,10 +88,20 @@ export function Box({
   maxWidth,
   maxHeight,
   onClick,
+  onKeyDown,
   className,
   style,
   children,
 }: BoxProps): React.ReactElement {
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    onKeyDown?.(event);
+    if (event.defaultPrevented || event.target !== event.currentTarget || !onClick) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      event.currentTarget.click();
+    }
+  };
+
   const computedStyle: React.CSSProperties = {
     padding: padding === 'none' ? undefined : (spacingValues[padding] ?? padding),
     margin: margin === 'none' ? undefined : (spacingValues[margin] ?? margin),
@@ -113,6 +125,7 @@ export function Box({
       className={className}
       style={computedStyle}
       onClick={onClick}
+      onKeyDown={onClick || onKeyDown ? handleKeyDown : undefined}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
     >

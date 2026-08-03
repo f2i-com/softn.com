@@ -379,6 +379,9 @@ export function SoftNBundleRenderer({
 
   // Load bundle
   useEffect(() => {
+    let disposed = false;
+    let loadedRuntime: BundleRuntime | null = null;
+
     async function loadBundle() {
       try {
         setIsLoading(true);
@@ -403,22 +406,36 @@ export function SoftNBundleRenderer({
         // Initialize XDB with bundled data
         rt.initializeXDB();
 
+        // The source may have changed (or the component may have unmounted)
+        // while the bundle was being read. Never publish an orphaned runtime;
+        // dispose it immediately so any object URLs it owns cannot leak.
+        if (disposed) {
+          rt.dispose();
+          return;
+        }
+
+        loadedRuntime = rt;
         setRuntime(rt);
         onLoad?.(rt);
       } catch (err) {
-        setError(err instanceof Error ? err : new Error(String(err)));
+        if (!disposed) {
+          setError(err instanceof Error ? err : new Error(String(err)));
+        }
       } finally {
-        setIsLoading(false);
+        if (!disposed) {
+          setIsLoading(false);
+        }
       }
     }
 
-    loadBundle();
+    void loadBundle();
 
-    // Dispose previous runtime on re-load or unmount
+    // The runtime is local to this effect run. Reading it from React state here
+    // captured the value from before the async load (normally null), so unmount
+    // never disposed the runtime that the effect eventually created.
     return () => {
-      if (runtime) {
-        runtime.dispose();
-      }
+      disposed = true;
+      loadedRuntime?.dispose();
     };
   }, [data, url, filePath, preloadedBundle, onLoad]);
 

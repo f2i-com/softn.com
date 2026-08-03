@@ -62,6 +62,13 @@ function dlgAdvance() {
   if (!muted) {
     softn.audio.play("assets/audio/dialogue/" + id + ".wav", {}, function (r) {
       if (r && r.played && r.handle) {
+        // A skipped line can finish opening after the next one has already
+        // started. Never let that stale callback steal dlgHandle or leave two
+        // voices talking over each other.
+        if (mySeq !== dlgSeq || !dlgActive || muted) {
+          softn.audio.stop(r.handle)
+          return
+        }
         dlgHandle = r.handle
         if (softn.audio.whenEnded) {
           softn.audio.whenEnded(r.handle, function (out) {
@@ -73,7 +80,9 @@ function dlgAdvance() {
           })
         }
       }
-      if (r && r.blocked) { dlgTicksLeft = Math.min(dlgTicksLeft, 45) }
+      // If autoplay is blocked, keep the caption up for its authored duration.
+      // Racing through an eight-second line in 1.5 seconds made the silent
+      // fallback much harder to read than the voiced version.
     })
   }
 }
@@ -126,7 +135,7 @@ function pickChoice(id) {
 
 function toggleMute() {
   muted = !muted
-  if (muted) { softn.audio.stopAll(); dlgHandle = ""; musHandle = "" }
+  if (muted) { musSeq = musSeq + 1; softn.audio.stopAll(); dlgHandle = ""; musHandle = "" }
   softn.audio.setVolume(muted ? 0 : 1)
   if (!muted && musCurrent) { let m = musCurrent; musCurrent = ""; playMusic(m) }
 }
@@ -134,18 +143,27 @@ function toggleMute() {
 // One looping cue per world. No buses yet, so the mix is "keep music quiet".
 let musHandle = ""
 let musCurrent = ""
+let musSeq = 0
 
 function playMusic(name) {
   if (name === musCurrent && musHandle) { return }
+  musSeq = musSeq + 1
+  let mySeq = musSeq
   if (musHandle) { softn.audio.stop(musHandle); musHandle = "" }
   musCurrent = name
   if (!name || muted) { return }
   softn.audio.play("assets/audio/music/mus_" + name + ".wav", { loop: true, volume: 0.22 }, function (r) {
-    if (r && r.handle) { musHandle = r.handle }
+    if (!r || !r.handle) { return }
+    if (mySeq !== musSeq || muted || musCurrent !== name) {
+      softn.audio.stop(r.handle)
+      return
+    }
+    musHandle = r.handle
   })
 }
 
 function stopMusic() {
+  musSeq = musSeq + 1
   if (musHandle) { softn.audio.stop(musHandle) }
   musHandle = ""
   musCurrent = ""
