@@ -100,6 +100,11 @@ let noteTicks = 0
 
 let transcriptOpen = false
 let rngSeed = 1
+let dougIdx = 0
+let playTicks = 0
+let settingsOpen = false
+let saveCode = ""
+let saveCodeMsg = ""
 
 function myRand() {
   // Lehmer LCG — multiplier kept small so the product stays inside 2^53.
@@ -131,6 +136,7 @@ function _init() {
   window.__puUse = false
   window.__puSkip = false
   window.__puWarp = ""       // traversal-harness hook: names a hotspot to teleport beside
+  window.__puChoiceN = 0     // number-key choice selection
 
   function onKeyDown(e) {
     let k = window.__puKeys
@@ -142,6 +148,7 @@ function _init() {
     else if (e.key === "ArrowRight") { k.right = true; e.preventDefault() }
     else if (e.key === "e" || e.key === "E" || e.key === "Enter") { window.__puUse = true }
     else if (e.key === " ") { window.__puSkip = true; e.preventDefault() }
+    else if (e.key >= "1" && e.key <= "4") { window.__puChoiceN = e.key.charCodeAt(0) - 48 }
   }
   function onKeyUp(e) {
     let k = window.__puKeys
@@ -213,6 +220,12 @@ function tick() {
     window.__puWarp = ""
     if (canMove()) { warpTo(target) }
   }
+  if (window.__puChoiceN) {
+    let n = window.__puChoiceN
+    window.__puChoiceN = 0
+    if (choiceList.length >= n) { pickChoice(choiceList[n - 1].id) }
+  }
+  if (scene !== "title" && scene !== "done") { playTicks = playTicks + 1 }
   dlgTick()
   if (noteTicks > 0) {
     noteTicks = noteTicks - 1
@@ -309,6 +322,29 @@ function handleHotspot(id) {
     if (priyaHere && priyaMode === "") { runDialogue(["a2_s8_priya_080", "a2_s8_priya_081", "a2_s8_alex_082"], "collab_choice") }
     else if (priyaMode !== "" && !scopeDone) { scopeOpen = true }
     else { showNote("Priya is reading your principle card. She has opinions. They can wait.") }
+  } else if (id === "hs_kiosk") {
+    showNote("The wellbeing kiosk offers a breathing exercise. It requires SSO. The queue is four incidents deep.")
+  } else if (id === "plant1_top") {
+    showNote("The plant has an asset tag and a quarterly growth objective. It is currently outperforming the division.")
+  } else if (id === "lobby_banner") {
+    showNote("HUMAN POTENTIAL WEEK, says the lobby screen. The T in POTENTIAL flickers like it knows something.")
+  } else if (id === "mcol0_t") {
+    showNote("They're recording the meeting. Phone at 3%. Solidarity.")
+  } else if (id === "mcol2_t") {
+    showNote("Staring straight ahead. Their beach screensaver has more agency right now than anyone in this room.")
+  } else if (id === "mcol4_t") {
+    showNote("Clive mutes and unmutes himself, carefully. He is physically present.")
+  } else if (id === "doug") {
+    showNote(DOUG_NOTES[dougIdx % DOUG_NOTES.length])
+    dougIdx = dougIdx + 1
+  } else if (id === "window") {
+    showNote("The city is hiring. The city is always hiring. The first listing is your old job, retitled.")
+  } else if (id === "bed") {
+    showNote("The bed files a formal request for your attendance. Denied. Pending review.")
+  } else if (id === "oven") {
+    showNote(bakeryDay ? "The oven is furious again. Business as usual, apparently." : "The oven ticks as it cools, like applause slowing down.")
+  } else if (id === "wboard") {
+    showNote(dreamCalm ? "The whiteboard is blank now. It was never about the whiteboard." : "The whiteboard says WHEN. Just WHEN.")
   } else if (id === "hs_dreamdoor") {
     if (dreamCalm) { goWake() }
     else {
@@ -925,8 +961,16 @@ function endSlice() {
   saveGame()
 }
 
+function playTime() {
+  let totalSec = Math.floor(playTicks * TICK_MS / 1000)
+  let m = Math.floor(totalSec / 60)
+  let sec = totalSec % 60
+  return m + ":" + (sec < 10 ? "0" : "") + sec
+}
+
 function endingSummary() {
   let bits = []
+  bits.push("Playtime " + playTime() + " · " + changelog.length + " release notes")
   bits.push("Integrity " + integrity + " · Collaboration " + collaboration + " · Hype " + hype)
   bits.push("Runway $" + runway + " · burn $" + burnMonthly() + "/mo ≈ " + runwayWeeks() + " weeks")
   if (priyaRel > 0) { bits.push("Priya answered on the first ring.") }
@@ -959,7 +1003,7 @@ function saveGame() {
     ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId,
     ordersDone: ordersDone, pilotPromised: pilotPromised, mabelTrust: mabelTrust,
     saidDontKnow: saidDontKnow, priyaMode: priyaMode, scopeDone: scopeDone,
-    wfDone: wfDone, wfScore: wfScore
+    wfDone: wfDone, wfScore: wfScore, playTicks: playTicks
   }
   try { localStorage.setItem("pu:autosave", JSON.stringify(save)); hasSave = true } catch (err) {}
 }
@@ -981,7 +1025,7 @@ function continueGame() {
   productName = s.productName || ""; meetChoiceId = s.meetChoiceId || ""
   ordersDone = !!s.ordersDone; pilotPromised = !!s.pilotPromised; mabelTrust = s.mabelTrust || 0
   saidDontKnow = !!s.saidDontKnow; priyaMode = s.priyaMode || ""; scopeDone = !!s.scopeDone
-  wfDone = !!s.wfDone; wfScore = s.wfScore || 0
+  wfDone = !!s.wfDone; wfScore = s.wfScore || 0; playTicks = s.playTicks || 0
   // Checkpoints are scene entries; re-enter the saved scene fresh.
   if (s.scene === "meeting") { enterMeeting() }
   else if (s.scene === "boxes") { enterBoxes() }
@@ -1003,6 +1047,7 @@ function newGame() {
   cancelledIds = []; firstCancel = false; phoneRinging = false; ruthDone = false
   lumaPhase = ""; wsOpen = false; wsUser = ""; wsPain = ""; wsTone = ""; wsHypeCount = 0
   productName = ""; principleUp = false; debugOpen = false; debugPicked = []
+  dougIdx = 0; playTicks = 0
   ordersOpen = false; orderPicks = { o1: "", o2: "", o3: "" }; ordersDone = false
   pilotPromised = false; mabelTrust = 0; leoWrongIdx = 0
   priyaHere = false; priyaMode = ""; scopeOpen = false; scopePicks = []; scopeWarned = false; scopeDone = false
@@ -1016,6 +1061,36 @@ function newGame() {
   noteText = ""; noteTicks = 0; transcript = []
   dlgActive = false; dlgQueue = []; dlgDoneTag = ""; choiceList = []; choiceTag = ""
   startOffice()
+}
+
+function openSettings() {
+  settingsOpen = !settingsOpen
+  saveCodeMsg = ""
+  if (settingsOpen) {
+    let raw = ""
+    try { raw = localStorage.getItem("pu:autosave") || "" } catch (err) { raw = "" }
+    saveCode = raw
+  }
+}
+
+function copySaveCode() {
+  if (!saveCode) { saveCodeMsg = "No save yet. Play first; the code writes itself."; return }
+  try {
+    navigator.clipboard.writeText(saveCode)
+    saveCodeMsg = "Copied. Keep it somewhere a browser can't lose it."
+  } catch (err) {
+    saveCodeMsg = "Clipboard said no — select the text and copy it the ancient way."
+  }
+}
+
+function loadSaveCode() {
+  let s = null
+  try { s = JSON.parse(saveCode) } catch (err) { s = null }
+  if (!s || !s.version) { saveCodeMsg = "That doesn't parse as a save. LUMA suggests checking for missing braces."; return }
+  try { localStorage.setItem("pu:autosave", saveCode) } catch (err) {}
+  hasSave = true
+  settingsOpen = false
+  continueGame()
 }
 
 function backToTitle() {
