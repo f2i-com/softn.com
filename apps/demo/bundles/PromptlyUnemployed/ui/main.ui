@@ -29,32 +29,58 @@
 .pu-panel { padding: 18px 20px; }
 .pu-row { background: #101623; border-radius: 10px; padding: 11px 13px; }
 .pu-cta { background: #f59e0b; color: #111; font-weight: 700; padding: 9px 18px; }
+.pu-vig { background: radial-gradient(120% 95% at 50% 45%, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 72%, rgba(0,0,0,0.88) 100%); }
 </style>
 
 <App theme="dark">
 <Stack direction="vertical" gap={12} className="pu-wrap pu-scroll" style={{ height: "100%", padding: "12px 14px 28px 14px" }}>
 
   <!-- ============================== TITLE ============================== -->
-  <Box if={scene === "title"} className="pu-card pu-title" style={{ textAlign: "center", padding: "48px 24px" }}>
-    <Text style={{ fontSize: "13px", letterSpacing: "0.35em", color: "#f59e0b" }}>A SOFTN NARRATIVE GAME · VERTICAL SLICE</Text>
-    <Text style={{ fontSize: "44px", fontWeight: 800, color: "#f8fafc", marginTop: "10px" }}>PROMPTLY UNEMPLOYED</Text>
-    <Text style={{ fontSize: "16px", color: "#94a3b8", marginTop: "6px", fontStyle: "italic" }}>The future arrived early. Rent is still due Friday.</Text>
-    <Stack direction="horizontal" gap={12} style={{ justifyContent: "center", marginTop: "28px" }}>
-      <Button @click={newGame} style={{ background: "#f59e0b", color: "#111", fontWeight: 700, padding: "10px 22px" }}>New game</Button>
-      <Button if={hasSave} @click={continueGame} style={{ padding: "10px 22px" }}>Continue</Button>
-    </Stack>
-    <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "26px" }}>Move: WASD / arrows / D-pad · Look: drag · Interact: E / Enter / tap · Skip line: Space</Text>
-    <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "6px" }}>Character voices are AI-generated with OpenAI text-to-speech. They are not human recordings.</Text>
-    <Text style={{ display: "block", fontSize: "11px", color: "#4b5563", marginTop: "14px" }}>v0.1 · Scenes 1–9 · saves live in this browser — a save code survives updates</Text>
-    <Button @click={openSettings} style={{ marginTop: "8px", fontSize: "12px" }}>{settingsOpen ? "Close save code" : "Save code"}</Button>
-    <Box if={settingsOpen} style={{ marginTop: "12px", textAlign: "left", background: "#10141d", borderRadius: "10px", padding: "12px" }}>
-      <Text style={{ display: "block", fontSize: "12px", color: "#94a3b8" }}>Your save, as text. Copy it out to keep it safe; paste one in to restore it.</Text>
-      <Input :bind={saveCode} placeholder="Paste a save code here" style={{ width: "100%", marginTop: "8px", fontFamily: "monospace", fontSize: "11px" }} />
-      <Stack direction="horizontal" gap={8} style={{ marginTop: "8px" }}>
-        <Button @click={copySaveCode} style={{ fontSize: "12px" }}>Copy</Button>
-        <Button @click={loadSaveCode} style={{ fontSize: "12px", background: "#f59e0b", color: "#111", fontWeight: 700 }}>Load</Button>
-        <Text style={{ fontSize: "11px", color: "#4ade80", alignSelf: "center" }}>{saveCodeMsg}</Text>
+  <Box if={scene === "title"}>
+    <Box style={{ position: "relative", width: "fit-content", maxWidth: "100%", margin: "0 auto" }}>
+      <Scene3D
+        width={sceneW()}
+        height={520}
+        objects={objects}
+        lights={lights}
+        camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 58 }}
+        antialias={true}
+        shadows={false}
+        mouseLook={false}
+        fog={sceneFog}
+        background={sceneBg}
+        style={{ borderRadius: "16px", border: "1px solid #232b3b", maxWidth: "100%" }}
+      />
+      <Box className="pu-vig" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: "16px" }} />
+      <Box style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", textAlign: "center", padding: "46px 24px 0 24px" }}>
+        <Text className="pu-tc" style={{ display: "block", fontSize: "12px", letterSpacing: "0.42em", color: "#f59e0b", textShadow: "0 2px 14px rgba(0,0,0,0.95)" }}>A SOFTN NARRATIVE GAME</Text>
+        <Text style={{ display: "block", fontSize: "54px", fontWeight: 800, color: "#f8fafc", marginTop: "12px", letterSpacing: "0.02em", lineHeight: "1.05", textShadow: "0 6px 30px rgba(0,0,0,0.95)" }}>PROMPTLY<br />UNEMPLOYED</Text>
+        <Box style={{ width: "72px", height: "2px", background: "#f59e0b", marginTop: "18px", borderRadius: "999px" }} />
+        <Text style={{ display: "block", fontSize: "16px", color: "#cbd5e1", marginTop: "16px", fontStyle: "italic", textShadow: "0 2px 12px rgba(0,0,0,0.95)" }}>The future arrived early. Rent is still due Friday.</Text>
+        <Stack direction="horizontal" gap={12} style={{ justifyContent: "center", marginTop: "26px", pointerEvents: "auto", flexWrap: "wrap" }}>
+          <Button @click={newGame} style={{ background: "#f59e0b", color: "#111", fontWeight: 700, padding: "12px 28px", fontSize: "15px" }}>New game</Button>
+          <Button if={hasSave} @click={continueGame} className="pu-btn-ghost" style={{ padding: "12px 26px", fontSize: "15px", color: "#e2e8f0" }}>Continue</Button>
+        </Stack>
+        <Text style={{ display: "block", fontSize: "11px", color: "#8b97ad", marginTop: "22px", letterSpacing: "0.1em", textShadow: "0 2px 10px rgba(0,0,0,0.95)" }}>NINE SCENES · FULLY VOICED · ABOUT 15 MINUTES</Text>
+      </Box>
+    </Box>
+    <Box className="pu-card" style={{ marginTop: "14px", padding: "16px 20px" }}>
+      <Stack direction="horizontal" gap={16} style={{ alignItems: "center", flexWrap: "wrap" }}>
+        <Box style={{ flex: 1, minWidth: "280px" }}>
+          <Text style={{ display: "block", fontSize: "12px", color: "#94a3b8" }}>Move WASD / arrows / D-pad · Look: drag · Interact E or tap · Skip line: Space · Choices: 1–4</Text>
+          <Text style={{ display: "block", fontSize: "11px", color: "#5b6678", marginTop: "6px" }}>Character voices are AI-generated with OpenAI text-to-speech — not human recordings. v0.1 · saves live in this browser; a save code survives updates.</Text>
+        </Box>
+        <Button @click={openSettings} className="pu-btn-ghost" style={{ fontSize: "12px" }}>{settingsOpen ? "Close save code" : "Save code"}</Button>
       </Stack>
+      <Box if={settingsOpen} style={{ marginTop: "14px", background: "#10141d", borderRadius: "10px", padding: "14px" }}>
+        <Text style={{ display: "block", fontSize: "12px", color: "#94a3b8" }}>Your save, as text. Copy it out to keep it safe; paste one in to restore it.</Text>
+        <Input :bind={saveCode} placeholder="Paste a save code here" style={{ width: "100%", marginTop: "9px", fontFamily: "monospace", fontSize: "11px" }} />
+        <Stack direction="horizontal" gap={9} style={{ marginTop: "10px", alignItems: "center", flexWrap: "wrap" }}>
+          <Button @click={copySaveCode} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Copy</Button>
+          <Button @click={loadSaveCode} className="pu-cta" style={{ fontSize: "12px" }}>Load</Button>
+          <Text style={{ fontSize: "11px", color: "#4ade80" }}>{saveCodeMsg}</Text>
+        </Stack>
+      </Box>
     </Box>
   </Box>
 
@@ -75,6 +101,7 @@
     <Button if={inWorld()} @click={toggleTheatre} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{theatre ? "Cosy" : "Theatre"}</Button>
     <Button @click={toggleMute} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>{muted ? "Unmute" : "Mute"}</Button>
     <Button @click={toggleTranscript} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>Transcript</Button>
+    <Button @click={quitToTitle} className="pu-btn-ghost" style={{ padding: "4px 12px", fontSize: "12px" }}>Menu</Button>
   </Stack>
 
   <Box if={inWorld()}>
@@ -143,7 +170,7 @@
       <Stack direction="horizontal" gap={12} className="pu-scroll" style={{ marginTop: "14px", flexWrap: "wrap", maxHeight: "44vh" }}>
         #each (item, ii in ITEMS)
           <Box className="pu-item" @click={toggleItem(item.id)}
-               style={{ borderColor: isPicked(item.id) ? "#f59e0b" : "#374151", width: "300px" }}>
+               style={{ borderColor: isPicked(item.id) ? "#f59e0b" : "#374151", width: "290px", maxWidth: "100%" }}>
             <Text style={{ fontWeight: 700, color: "#e2e8f0" }}>{item.name}</Text>
             <Text style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px", fontStyle: "italic" }}>{item.desc}</Text>
           </Box>
@@ -171,8 +198,8 @@
     </Box>
     <Stack direction="vertical" gap={8} className="pu-scroll" style={{ marginTop: "14px", maxHeight: "42vh" }}>
       #each (s, si in SUBS)
-        <Stack direction="horizontal" gap={10} style={{ alignItems: "center", background: "#101623", borderRadius: "8px", padding: "8px 12px", opacity: isCancelled(s.id) ? 0.45 : 1 }}>
-          <Box style={{ flex: 1 }}>
+        <Stack direction="horizontal" gap={10} style={{ alignItems: "center", flexWrap: "wrap", background: "#101623", borderRadius: "10px", padding: "11px 14px", opacity: isCancelled(s.id) ? 0.45 : 1 }}>
+          <Box style={{ flex: 1, minWidth: "210px" }}>
             <Text style={{ color: "#e2e8f0", fontWeight: 600, textDecoration: isCancelled(s.id) ? "line-through" : "none" }}>{s.name} — ${s.cost}/mo</Text>
             <Text style={{ fontSize: "12px", color: "#64748b", fontStyle: "italic" }}>{s.joke}</Text>
           </Box>
@@ -255,7 +282,7 @@
     <Stack direction="horizontal" gap={12} className="pu-scroll" style={{ marginTop: "14px", flexWrap: "wrap", maxHeight: "42vh" }}>
       #each (card, si in SCOPE_CARDS)
         <Box className="pu-item" @click={toggleScope(card.id)}
-             style={{ borderColor: scopeHas(card.id) ? (card.kind === "flash" ? "#f472b6" : "#4ade80") : "#374151", width: "300px" }}>
+             style={{ borderColor: scopeHas(card.id) ? (card.kind === "flash" ? "#f472b6" : "#4ade80") : "#374151", width: "290px", maxWidth: "100%" }}>
           <Stack direction="horizontal" gap={8} style={{ alignItems: "center" }}>
             <Text style={{ fontWeight: 700, color: "#e2e8f0", flex: 1 }}>{card.name}</Text>
             <Text className="pu-chip" style={{ background: "#0b1017", color: card.kind === "flash" ? "#f472b6" : "#7dd3fc" }}>{card.cost} pt</Text>
@@ -281,7 +308,7 @@
     #each (c, wi in WF_CASES)
       <Box style={{ marginTop: "10px", background: "#101623", borderRadius: "10px", padding: "10px 12px" }}>
         <Stack direction="horizontal" gap={8} style={{ alignItems: "center", flexWrap: "wrap" }}>
-          <Text style={{ fontSize: "13px", fontWeight: 600, color: "#e2e8f0", flex: 1 }}>{c.text}</Text>
+          <Text style={{ fontSize: "13px", fontWeight: 600, color: "#e2e8f0", flex: 1, minWidth: "240px", lineHeight: "1.45" }}>{c.text}</Text>
           <Text className="pu-chip" style={{ background: "#0b1017", color: "#7dd3fc" }}>{c.conf}</Text>
           <Text className="pu-chip" style={{ background: "#0b1017", color: "#fbbf24" }}>risk: {c.risk}</Text>
         </Stack>
@@ -390,13 +417,20 @@
   </Stack>
 
   <!-- Transcript -->
-  <Box if={transcriptOpen} className="pu-card" style={{ maxHeight: "220px", overflowY: "auto" }}>
-    <Text style={{ fontWeight: 700, color: "#94a3b8", fontSize: "12px", letterSpacing: "0.1em" }}>TRANSCRIPT</Text>
+  <Box if={transcriptOpen} className="pu-card pu-panel">
+    <Stack direction="horizontal" gap={10} className="pu-head" style={{ alignItems: "center" }}>
+      <Text style={{ fontWeight: 700, color: "#e2e8f0", fontSize: "14px", letterSpacing: "0.1em" }}>TRANSCRIPT</Text>
+      <Box style={{ flex: 1 }} />
+      <Text style={{ fontSize: "11px", color: "#5b6678" }}>{transcript.length + " lines"}</Text>
+      <Button @click={toggleTranscript} className="pu-btn-ghost" style={{ fontSize: "11px" }}>Close</Button>
+    </Stack>
+    <Box className="pu-scroll" style={{ maxHeight: "240px", marginTop: "10px" }}>
     #each (t, ti in transcript)
-      <Text style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginTop: "5px" }}><Text style={{ color: speakerColor(t.speaker), fontWeight: 700 }}>{t.speaker}</Text>{"  " + t.text}</Text>
+      <Text style={{ display: "block", fontSize: "12px", color: "#94a3b8", marginTop: "7px", lineHeight: "1.5" }}><Text style={{ color: speakerColor(t.speaker), fontWeight: 700 }}>{t.speaker}</Text>{"  " + t.text}</Text>
     #end
+    </Box>
   </Box>
 
 </Stack>
-<Loop interval={33} running={scene !== "title"} @tick={tick} />
+<Loop interval={33} running={true} @tick={tick} />
 </App>
