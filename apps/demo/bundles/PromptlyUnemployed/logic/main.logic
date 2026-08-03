@@ -73,6 +73,7 @@ let principleNum = 1
 let principleText = "Ask before assuming."
 let principleFlavor = "Written on an index card. The first thing on the wall that isn't a bill."
 let principleNext = "bakery"
+let pinnedCount = 0
 
 // Scene 8 — Priya and the Scope Board.
 let priyaHere = false
@@ -354,6 +355,21 @@ function handleHotspot(id) {
     if (priyaHere && priyaMode === "") { runDialogue(["a2_s8_priya_080", "a2_s8_priya_081", "a2_s8_alex_082"], "collab_choice") }
     else if (priyaMode !== "" && !scopeDone) { scopeOpen = true }
     else { showNote("Priya is reading your principle card. She has opinions. They can wait.") }
+  } else if (id === "hs_abox") {
+    if (picked.length >= 3) { confirmItems() }
+    else { showNote("The box holds three things. You have " + picked.length + ". PAX is counting.") }
+  } else if (id === "it_doug" || id === "it_plant" || id === "it_photo" || id === "it_keyboard" || id === "it_notebook" || id === "it_mug") {
+    let key = id.slice(3)
+    if (picked.length >= 3) {
+      showNote("The box is full. Take something out first — or accept that this is what ten years fits into.")
+    } else {
+      picked.push(key)
+      picked = picked.slice()
+      sfx("click")
+      buildBoxes()
+      showNote(itemName(key) + " — " + itemDesc(key))
+      if (picked.length === 3) { objective = "The box is full. Tape it shut." }
+    }
   } else if (id === "hs_kiosk") {
     showNote("The wellbeing kiosk offers a breathing exercise. It requires SSO. The queue is four incidents deep.")
   } else if (id === "plant1_top") {
@@ -679,11 +695,33 @@ function dismissTitleCard() {
 
 // ---- Scene 3: desk matter -------------------------------------------------
 
+function itemName(id) {
+  for (let i = 0; i < ITEMS.length; i++) { if (ITEMS[i].id === id) { return ITEMS[i].name } }
+  return id
+}
+function itemDesc(id) {
+  for (let i = 0; i < ITEMS.length; i++) { if (ITEMS[i].id === id) { return ITEMS[i].desc } }
+  return ""
+}
+
 function enterBoxes() {
   scene = "boxes"
   picked = []
+  playerX = 8
+  playerZ = 7.4
+  playerAngle = Math.PI
+  window.__scene3dYaw = playerAngle
+  window.__scene3dPitch = 0
+  buildBoxes()
+  updateCamera()
+  startCutscene([
+    { x0: 8, y0: 2.15, z0: 10.4, x1: 8, y1: 1.85, z1: 8.4, yaw0: Math.PI, yaw1: Math.PI, p0: -0.24, p1: -0.12, ticks: 56, e: "out" },
+    { x0: 8, y0: 1.85, z0: 8.4, x1: 8, y1: 1.6, z1: 7.4, yaw0: Math.PI, yaw1: Math.PI, p0: -0.12, p1: -0.05, ticks: 44, e: "in" }
+  ], 8, 7.4, Math.PI, "PERSONALLY ATTRIBUTABLE DESK MATTER", "One box. Keep three things.")
+  objective = "Pack three things. Choose carefully."
+  playMusic("office")
   saveGame()
-  runDialogue(["a1_s3_pax_020"], "boxes_pax")
+  runDialogue(["a1_s3_pax_020"], "")
 }
 
 function toggleItem(id) {
@@ -697,10 +735,17 @@ function isPicked(id) { return picked.indexOf(id) >= 0 }
 
 function confirmItems() {
   if (picked.length !== 3) { return }
-  sfx("click")
+  sfx("door")
   keptItems = picked.slice()
   pickerOpen = false
   addLog("KEPT: " + keptItems.join(", ") + " — one box, three survivors")
+  objective = "Carry it out."
+  // Walk the box to the lift; the lights go out behind you.
+  startCutscene([
+    { x0: 8, y0: 1.6, z0: 7.2, x1: 14, y1: 1.62, z1: 8.4, yaw0: Math.PI, yaw1: -1.9, ticks: 60, e: "out" },
+    { x0: 14, y0: 1.62, z0: 8.4, x1: 22, y1: 1.62, z1: 12.6, yaw0: -1.9, yaw1: -1.6, ticks: 62 },
+    { x0: 22, y0: 1.62, z0: 12.6, x1: 27, y1: 1.6, z1: 15.6, yaw0: -1.6, yaw1: -1.5, ticks: 58, e: "in" }
+  ], 27, 15.6, -1.5, "PERSONALLY ATTRIBUTABLE DESK MATTER", "Alumni access expires on exit")
   runDialogue(["a1_s3_priya_021"], "priya_line")
 }
 
@@ -829,6 +874,7 @@ function submitWs() {
 
 function pinPrinciple() {
   principleUp = false
+  pinnedCount = pinnedCount + 1
   sfx("chime")
   addLog("PRINCIPLE #" + principleNum + ": " + principleText.toLowerCase().replace(".", ""))
   if (principleNext === "bakery") {
@@ -1103,7 +1149,7 @@ function saveGame() {
     keptItems: keptItems, cancelledIds: cancelledIds, budgetDone: budgetDone,
     ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId,
     ordersDone: ordersDone, pilotPromised: pilotPromised, mabelTrust: mabelTrust,
-    saidDontKnow: saidDontKnow, priyaMode: priyaMode, scopeDone: scopeDone,
+    saidDontKnow: saidDontKnow, priyaMode: priyaMode, scopeDone: scopeDone, pinnedCount: pinnedCount,
     wfDone: wfDone, wfScore: wfScore, playTicks: playTicks
   }
   try { localStorage.setItem("pu:autosave", JSON.stringify(save)); hasSave = true } catch (err) {}
@@ -1127,6 +1173,7 @@ function continueGame() {
   ordersDone = !!s.ordersDone; pilotPromised = !!s.pilotPromised; mabelTrust = s.mabelTrust || 0
   saidDontKnow = !!s.saidDontKnow; priyaMode = s.priyaMode || ""; scopeDone = !!s.scopeDone
   wfDone = !!s.wfDone; wfScore = s.wfScore || 0; playTicks = s.playTicks || 0
+  pinnedCount = s.pinnedCount || 0
   // Checkpoints are scene entries; re-enter the saved scene fresh.
   if (s.scene === "meeting") { enterMeeting() }
   else if (s.scene === "boxes") { enterBoxes() }
@@ -1157,6 +1204,7 @@ function newGame() {
   wfPicks = { boxes12: "", nutfree: "", moved: "", moon: "", apt: "", inject: "" }
   dreamLoop = 0; dreamCalm = false; dreamCount = 420; dreamCountTicks = 0; dreamTickets2 = 9
   saidDontKnow = false; dreamToldBacklog = false; dreamTickets = []
+  pinnedCount = 0
   principleNum = 1; principleText = "Ask before assuming."
   principleFlavor = "Written on an index card. The first thing on the wall that isn't a bill."
   principleNext = "bakery"
@@ -1255,8 +1303,8 @@ function dotColor(state) {
 
 function statPct(v) { return Math.min(100, Math.max(6, v * 22)) + "%" }
 
-function inWorld() { return scene === "office" || scene === "meeting" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
-function canMove() { return scene === "office" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
+function inWorld() { return scene === "office" || scene === "boxes" || scene === "meeting" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
+function canMove() { return scene === "office" || scene === "boxes" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream" }
 function showCaptionBar() { return scene !== "title" }
 function toggleTranscript() { transcriptOpen = !transcriptOpen }
 function toggleTheatre() { theatre = !theatre }

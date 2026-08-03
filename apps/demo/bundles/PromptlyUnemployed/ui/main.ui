@@ -38,13 +38,30 @@
 .pu-modal-body::-webkit-scrollbar-track { background: #0c111a; border-radius: 999px; }
 .pu-modal-body::-webkit-scrollbar-thumb { background: #3a4560; border-radius: 999px; }
 .pu-brand { letter-spacing: 0.42em; }
+.pu-story { background: radial-gradient(110% 130% at 50% 0%, #1c2334 0%, #12161f 55%, #0c0f16 100%); border: 1px solid #33405a; border-radius: 16px; padding: 44px 30px 40px 30px; text-align: center; box-shadow: 0 18px 50px rgba(0,0,0,0.5); }
+.pu-kicker { display: block; font-size: 11px; letter-spacing: 0.34em; color: #7f8ca4; }
+.pu-plate { display: inline-block; background: #0b1017; border: 1px solid #3d4a66; border-radius: 8px; padding: 9px 20px; font-family: monospace; font-size: 17px; letter-spacing: 0.16em; color: #cbd5e1; }
+.pu-stamp { display: block; font-size: 40px; font-weight: 800; color: #f59e0b; letter-spacing: 0.04em; text-shadow: 0 6px 26px rgba(245,158,11,0.28); }
+.pu-index { background: linear-gradient(178deg, #f7f1e0 0%, #efe7d2 100%); border-radius: 8px; padding: 30px 28px 26px 28px; text-align: center; box-shadow: 0 16px 44px rgba(0,0,0,0.55); position: relative; }
+.pu-index-rule { height: 3px; background: #c2544a; border-radius: 2px; }
+.pu-pin { width: 15px; height: 15px; border-radius: 999px; background: #dc2626; box-shadow: 0 3px 8px rgba(0,0,0,0.5); margin: 0 auto 16px auto; }
 .pu-rule { height: 2px; border-radius: 999px; background: linear-gradient(90deg, rgba(245,158,11,0) 0%, #f59e0b 50%, rgba(245,158,11,0) 100%); }
 .pu-feat { background: rgba(15,20,29,0.72); border: 1px solid #2b3446; border-radius: 999px; padding: 5px 14px; font-size: 11px; letter-spacing: 0.12em; color: #a8b4c8; }
 .pu-cta-big { background: #f59e0b; color: #10131a; font-weight: 800; padding: 13px 34px; font-size: 15px; letter-spacing: 0.04em; box-shadow: 0 10px 30px rgba(245,158,11,0.28); transition: translate 160ms ease, box-shadow 160ms ease; }
 .pu-cta-big:hover { translate: 0 -2px; box-shadow: 0 14px 38px rgba(245,158,11,0.4); }
 .pu-fs { position: fixed; top: 0; left: 0; right: 0; bottom: 0; max-width: none; margin: 0; padding: 14px 18px 18px 18px; background: #080b11; z-index: 40; overflow: hidden; justify-content: space-between; }
-.pu-fs .pu-holder { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; max-width: none !important; z-index: 1; border-radius: 0 !important; }
-.pu-fs .pu-holder canvas { width: 100vw !important; height: 100vh !important; border-radius: 0 !important; }
+.pu-fs .pu-holder { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; max-width: none !important; z-index: 1; }
+.pu-fs .pu-holder, .pu-fs .pu-holder > div, .pu-fs .pu-holder > div > div, .pu-fs .pu-holder canvas {
+  width: 100vw !important; height: 100vh !important; max-width: none !important; max-height: none !important;
+  border-radius: 0 !important; border: none !important; display: block !important;
+}
+.pu-fs .pu-holder canvas { object-fit: cover; }
+.pu-fs .pu-hud { background: rgba(9,13,20,0.86); backdrop-filter: blur(6px); }
+.pu-fs .pu-chip { background: rgba(20,26,38,0.9) !important; }
+.pu-fs .pu-cap { position: absolute; left: 20px; right: 20px; bottom: 104px; z-index: 8; border: 1px solid rgba(60,72,96,0.7); box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+.pu-fs .pu-hudrow { position: absolute; top: 16px; left: 20px; right: 20px; z-index: 8; }
+.pu-fs .pu-controls { position: absolute; left: 20px; bottom: 16px; z-index: 8; }
+.pu-fs .pu-controls > * { opacity: 0.92; }
 .pu-fs > * { position: relative; z-index: 5; }
 .pu-fs .pu-cap { background: rgba(10,14,21,0.9); }
 </style>
@@ -109,7 +126,7 @@
   </Box>
 
   <!-- ============================== 3D WORLD ============================== -->
-  <Stack if={scene !== "title" && scene !== "done"} direction="horizontal" gap={10} style={{ alignItems: "center", flexWrap: "wrap" }}>
+  <Stack if={scene !== "title" && scene !== "done"} className="pu-hudrow" direction="horizontal" gap={10} style={{ alignItems: "center", flexWrap: "wrap" }}>
     <Text className="pu-chip" style={{ background: "#1f2937", color: "#f59e0b" }}>{scene === "meeting" ? slideTitle : objective}</Text>
     <Box style={{ flex: 1 }} />
     <Stack direction="horizontal" gap={9} className="pu-hud" style={{ alignItems: "center" }}>
@@ -179,41 +196,47 @@
   </Box>
 
   <!-- Scene 2: title card -->
-  <Box if={titleCardUp} className="pu-card pu-note" style={{ textAlign: "center", padding: "44px 24px", borderColor: "#f59e0b" }}>
-    <Text style={{ fontSize: "13px", color: "#94a3b8" }}>Your account has been revoked. The room display now calls you</Text>
-    <Text style={{ fontSize: "22px", color: "#cbd5e1", marginTop: "4px" }}>Former Employee 8472</Text>
-    <Text style={{ fontSize: "40px", fontWeight: 800, color: "#f59e0b", marginTop: "20px" }}>PROMPTLY UNEMPLOYED</Text>
-    <Button @click={dismissTitleCard} style={{ marginTop: "24px", background: "#f59e0b", color: "#111", fontWeight: 700 }}>Collect your things</Button>
+  <Box if={titleCardUp} className="pu-story pu-note" @click={dismissTitleCard} style={{ cursor: "pointer" }}>
+    <Stack direction="horizontal" gap={10} style={{ alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
+      <Text className="pu-kicker">ACCOUNT REVOKED · 09:41</Text>
+      <Button @click={dismissTitleCard} className="pu-cta-big" style={{ background: "#f59e0b", color: "#10131a", fontWeight: 800, padding: "9px 20px", fontSize: "13px" }}>Collect your things</Button>
+    </Stack>
+    <Text style={{ display: "block", fontSize: "14px", color: "#96a3ba", marginTop: "14px" }}>The room display no longer knows your name. It knows this:</Text>
+    <Box style={{ marginTop: "14px" }}>
+      <Text className="pu-plate">FORMER EMPLOYEE 8472</Text>
+    </Box>
+    <Box className="pu-rule" style={{ width: "220px", margin: "26px auto 0 auto" }} />
+    <Text className="pu-stamp" style={{ marginTop: "22px" }}>PROMPTLY UNEMPLOYED</Text>
+    <Text style={{ display: "block", fontSize: "13px", color: "#7f8ca4", marginTop: "12px", fontStyle: "italic" }}>Please collect your personally attributable desk matter.</Text>
+    <Text style={{ display: "block", fontSize: "11px", color: "#5b6678", marginTop: "22px", letterSpacing: "0.14em" }}>CLICK ANYWHERE TO CONTINUE</Text>
   </Box>
 
-  <!-- Scene 3: desk-matter picker -->
-  <Box if={scene === "boxes"} className="pu-card pu-panel">
-    <Box className="pu-head">
-      <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>Personally Attributable Desk Matter</Text>
-      <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>One small archive box. Ten years. Keep exactly three.</Text>
-    </Box>
-    <Box if={pickerOpen}>
-      <Stack direction="horizontal" gap={12} className="pu-scroll" style={{ marginTop: "14px", flexWrap: "wrap", maxHeight: "52vh" }}>
-        #each (item, ii in ITEMS)
-          <Box className="pu-item" @click={toggleItem(item.id)}
-               style={{ borderColor: isPicked(item.id) ? "#f59e0b" : "#374151", width: "290px", maxWidth: "100%" }}>
-            <Text style={{ fontWeight: 700, color: "#e2e8f0" }}>{item.name}</Text>
-            <Text style={{ fontSize: "12px", color: "#94a3b8", marginTop: "2px", fontStyle: "italic" }}>{item.desc}</Text>
-          </Box>
+  <!-- Scene 3: packing progress (the picking itself happens in the world) -->
+  <Box if={scene === "boxes"} className="pu-card" style={{ padding: "14px 18px" }}>
+    <Stack direction="horizontal" gap={14} style={{ alignItems: "center", flexWrap: "wrap" }}>
+      <Text style={{ fontWeight: 700, color: "#fbbf24", fontSize: "14px" }}>Archive box</Text>
+      <Stack direction="horizontal" gap={7} style={{ alignItems: "center" }}>
+        #each (bslot, sj in [0, 1, 2])
+          <Box style={{ width: "34px", height: "8px", borderRadius: "999px", background: picked.length > bslot ? "#f59e0b" : "#2b3446" }} />
         #end
       </Stack>
-      <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center" }}>
-        <Text style={{ fontSize: "13px", color: "#64748b", flex: 1 }}>In the box: {picked.length} / 3</Text>
-        <Button if={picked.length === 3} @click={confirmItems} className="pu-cta" style={{ background: "#f59e0b", color: "#111", fontWeight: 700, padding: "9px 18px" }}>Tape it shut</Button>
-      </Stack>
-    </Box>
+      <Text style={{ fontSize: "13px", color: "#94a3b8", flex: 1, minWidth: "220px" }}>{picked.length < 3 ? "Walk to the desk and take three things. Click one, or press E." : "Full. Tape the box shut."}</Text>
+      <Text style={{ fontSize: "12px", color: "#64748b" }}>{picked.length + " / 3"}</Text>
+    </Stack>
   </Box>
 
   <!-- Chapter card -->
-  <Box if={chapterCard !== ""} className="pu-card pu-note" style={{ textAlign: "center", padding: "40px 24px" }}>
-    <Text style={{ fontSize: "13px", color: "#64748b" }}>Outside, the recruiter email suggests your old job. Six-month contract.</Text>
-    <Text style={{ fontSize: "26px", fontWeight: 700, color: "#f8fafc", marginTop: "14px" }}>{chapterCard}</Text>
-    <Button @click={dismissChapterCard} style={{ marginTop: "22px" }}>Go home</Button>
+  <Box if={chapterCard !== ""} className="pu-story pu-note" @click={dismissChapterCard} style={{ cursor: "pointer" }}>
+    <Stack direction="horizontal" gap={10} style={{ alignItems: "center", justifyContent: "space-between", marginBottom: "18px" }}>
+      <Text className="pu-kicker">THE STREET, 10:12</Text>
+      <Button @click={dismissChapterCard} className="pu-cta-big" style={{ background: "#f59e0b", color: "#10131a", fontWeight: 800, padding: "9px 20px", fontSize: "13px" }}>Go home</Button>
+    </Stack>
+    <Text style={{ display: "block", fontSize: "14px", color: "#96a3ba", marginTop: "16px", maxWidth: "560px", margin: "16px auto 0 auto", lineHeight: "1.6" }}>Outside, an automated career-transition email arrives. Its first recommended vacancy is your old job, retitled.</Text>
+    <Text style={{ display: "block", fontSize: "13px", color: "#f59e0b", marginTop: "10px", fontFamily: "monospace" }}>AI Delivery Supervisor — 6-month contract</Text>
+    <Box className="pu-rule" style={{ width: "260px", margin: "26px auto 0 auto" }} />
+    <Text style={{ display: "block", fontSize: "11px", letterSpacing: "0.3em", color: "#7f8ca4", marginTop: "24px" }}>CHAPTER ONE</Text>
+    <Text style={{ display: "block", fontSize: "28px", fontWeight: 700, color: "#f8fafc", marginTop: "8px" }}>Congratulations on Your Transition</Text>
+    <Text style={{ display: "block", fontSize: "11px", color: "#5b6678", marginTop: "22px", letterSpacing: "0.14em" }}>CLICK ANYWHERE TO CONTINUE</Text>
   </Box>
 
   <!-- Scene 4: budget overlay -->
@@ -366,11 +389,15 @@
   </Box>
 
   <!-- Principle card -->
-  <Box if={principleUp} className="pu-card pu-note" style={{ textAlign: "center", padding: "36px 24px", borderColor: "#a78bfa" }}>
-    <Text style={{ fontSize: "12px", color: "#64748b", letterSpacing: "0.2em" }}>PRINCIPLE №{principleNum}</Text>
-    <Text style={{ fontSize: "28px", fontWeight: 700, color: "#f8fafc", marginTop: "10px" }}>{principleText}</Text>
-    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "8px", fontStyle: "italic" }}>{principleFlavor}</Text>
-    <Button @click={pinPrinciple} style={{ marginTop: "22px", background: "#a78bfa", color: "#111", fontWeight: 700 }}>Pin it to the wall</Button>
+  <Box if={principleUp} className="pu-note" style={{ display: "flex", justifyContent: "center" }}>
+    <Box className="pu-index" style={{ width: "100%", maxWidth: "520px" }}>
+      <Box className="pu-pin" />
+      <Text style={{ display: "block", fontSize: "11px", letterSpacing: "0.28em", color: "#9a8f78" }}>{"PRINCIPLE №" + principleNum}</Text>
+      <Box className="pu-index-rule" style={{ marginTop: "14px" }} />
+      <Text style={{ display: "block", fontSize: "27px", fontWeight: 700, color: "#20262f", marginTop: "18px", lineHeight: "1.25" }}>{principleText}</Text>
+      <Text style={{ display: "block", fontSize: "13px", color: "#6f6a5c", marginTop: "14px", fontStyle: "italic", lineHeight: "1.5" }}>{principleFlavor}</Text>
+      <Button @click={pinPrinciple} style={{ marginTop: "24px", background: "#20262f", color: "#f6efdc", fontWeight: 700, padding: "11px 26px", fontSize: "14px" }}>Pin it to the wall</Button>
+    </Box>
   </Box>
 
   <!-- End of slice -->
@@ -445,7 +472,7 @@
   </Box>
 
   <!-- Controls -->
-  <Stack if={canMove() && !cutActive} direction="horizontal" gap={14} style={{ alignItems: "center" }}>
+  <Stack if={canMove() && !cutActive} className="pu-controls" direction="horizontal" gap={14} style={{ alignItems: "center" }}>
     <DPad @press={padPress} @release={padRelease} />
     <Button @click={interactPressed} style={{ padding: "14px 20px", fontWeight: 700 }}>Use (E)</Button>
     <Text style={{ fontSize: "11px", color: "#4b5563" }}>WASD move · ◀▶ turn · drag to look</Text>
