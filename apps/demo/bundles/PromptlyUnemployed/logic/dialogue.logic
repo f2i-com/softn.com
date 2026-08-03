@@ -1,5 +1,5 @@
 // Dialogue controller. Lines play through softn.audio; advancement is tick-counted
-// from the manifest's durationMs because no completion event reaches .logic yet (S3).
+// from each WAV's validated manifest duration so speech never holds the game loop open.
 // Continuations are string tags dispatched in handleDialogueDone (main.logic) —
 // functions must never sit in synced state, so the queue carries only data.
 
@@ -16,8 +16,8 @@ let transcript = []        // [{speaker, text}]
 let muted = false
 
 let TICK_MS = 33
-let DLG_TAIL_TICKS = 6     // grace after the counted duration so lines never clip
-let dlgSeq = 0             // increments per line; guards stale whenEnded callbacks
+let DLG_TAIL_TICKS = 6     // 198 ms grace after the counted duration so lines never clip
+let dlgSeq = 0             // increments per line; guards stale audio.play callbacks
 
 function sfx(name) {
   if (muted) { return }
@@ -54,8 +54,10 @@ function dlgAdvance() {
   dlgText = line.text
   dlgSeq = dlgSeq + 1
   let mySeq = dlgSeq
-  // Manifest duration + margin is only the backstop; the real completion signal
-  // is softn.audio.whenEnded below when the runtime provides it.
+  // Deliberately avoid a long-lived audio-end subscription here. If a line is
+  // advanced by gameStep, waiting for its WAV would leave Loop's tick in flight
+  // and pause movement/animation for the whole line. check-audio.cjs verifies
+  // every authored duration against its WAV header (within 100 ms).
   dlgTicksLeft = Math.ceil(line.durationMs / TICK_MS) + DLG_TAIL_TICKS
   transcript.push({ speaker: line.speaker, text: line.text })
   transcript = transcript.slice()
@@ -70,15 +72,6 @@ function dlgAdvance() {
           return
         }
         dlgHandle = r.handle
-        if (softn.audio.whenEnded) {
-          softn.audio.whenEnded(r.handle, function (out) {
-            // 'stopped' means we skipped it ourselves; the seq guard drops
-            // stale callbacks after a skip or scene change.
-            if (mySeq === dlgSeq && dlgActive && out && out.status !== "stopped") {
-              dlgTicksLeft = Math.min(dlgTicksLeft, 2)
-            }
-          })
-        }
       }
       // If autoplay is blocked, keep the caption up for its authored duration.
       // Racing through an eight-second line in 1.5 seconds made the silent

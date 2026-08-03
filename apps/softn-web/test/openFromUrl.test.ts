@@ -64,15 +64,56 @@ function serve(bundle: { url: string; bytes: Uint8Array }) {
   });
 }
 
+/**
+ * A browser fetch that stays pending long enough for Strict Mode to replay the
+ * mount effects, and rejects if that synthetic cleanup aborts it.
+ */
+function serveAfterTask(bundle: { url: string; bytes: Uint8Array }) {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const href = String(input);
+    if (href.includes('demos/index.json')) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => [],
+      } as unknown as Response);
+    }
+
+    return new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          url: bundle.url,
+          headers: new Headers({ 'content-type': 'application/octet-stream' }),
+          body: null,
+          arrayBuffer: async () => bundle.bytes.slice().buffer,
+        } as unknown as Response);
+      }, 0);
+
+      init?.signal?.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        },
+        { once: true }
+      );
+    });
+  });
+}
+
 let container: HTMLElement;
 let root: Root;
 
-function mountApp(): void {
+function mountApp(strict = false): void {
   container = document.createElement('div');
   document.body.appendChild(container);
   act(() => {
     root = createRoot(container);
-    root.render(React.createElement(App));
+    const app = React.createElement(App);
+    root.render(strict ? React.createElement(React.StrictMode, null, app) : app);
   });
 }
 
@@ -158,7 +199,10 @@ describe('?open= pointing at a bundle that does open', () => {
       'ui/main.softn': ascii('page Home {\n}\n'),
     });
 
-    vi.stubGlobal('fetch', serve({ url: `${window.location.origin}/demos/AIChat.softn`, bytes: bundle }));
+    vi.stubGlobal(
+      'fetch',
+      serve({ url: `${window.location.origin}/demos/AIChat.softn`, bytes: bundle })
+    );
     window.history.replaceState({}, '', '/?open=/demos/AIChat.softn');
     mountApp();
 
@@ -170,6 +214,37 @@ describe('?open= pointing at a bundle that does open', () => {
     await settle();
 
     expect(tabNames()).toEqual(['AI Chat']);
+    expect(container.querySelector('.softn-shell-error')).toBeNull();
+  });
+
+  it('survives Strict Mode replay while the entry-point bundle is downloading', async () => {
+    const manifest = {
+      name: 'PromptlyUnemployed',
+      version: '1.0.0',
+      main: 'ui/main.softn',
+      files: { ui: ['ui/main.softn'] },
+    };
+    const bundle = zipSync({
+      'manifest.json': ascii(JSON.stringify(manifest)),
+      'ui/main.softn': ascii('page Home {\n}\n'),
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      serveAfterTask({
+        url: `${window.location.origin}/demos/PromptlyUnemployed.softn`,
+        bytes: bundle,
+      })
+    );
+    window.history.replaceState({}, '', '/?open=/demos/PromptlyUnemployed.softn');
+    mountApp(true);
+
+    expect(tabNames()).toEqual(['PromptlyUnemployed']);
+
+    await settle();
+
+    expect(tabNames()).toEqual(['PromptlyUnemployed']);
+    expect(container.textContent).not.toContain('Loading PromptlyUnemployed');
     expect(container.querySelector('.softn-shell-error')).toBeNull();
   });
 });

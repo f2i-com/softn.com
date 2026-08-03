@@ -2,7 +2,7 @@
 // One global namespace across all .logic files; everything here is prefixed or ALL_CAPS.
 
 // Dialogue manifest. durationMs comes from the bake pipeline's WAV headers;
-// the controller advances on tick counters until softn.audio.whenEnded ships (S3).
+// the controller advances on these validated timings without blocking gameplay.
 let DLG = {
   a1_s1_pax_001:  { speaker: "PAX",   voice: "coral",   durationMs: 7350, text: "Good morning, valued humans. Stand-up begins in seven minutes. Attendance is joy." },
   a1_s1_alex_002: { speaker: "Alex",  voice: "marin",   durationMs: 5950, text: "Half the desks are empty. Either it's a public holiday, or the org chart got refactored overnight." },
