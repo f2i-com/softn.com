@@ -6,7 +6,7 @@
  * until it has proved to be a same-origin bundle of a plausible size.
  */
 
-/** Refuse anything larger than this. The biggest bundle shipped is under 1 MB. */
+/** Refuse anything larger than this. Promptly Unemployed is about 18 MB. */
 export const MAX_REMOTE_BUNDLE_BYTES = 32 * 1024 * 1024;
 
 const MAX_MB = MAX_REMOTE_BUNDLE_BYTES / (1024 * 1024);

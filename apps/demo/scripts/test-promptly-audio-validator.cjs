@@ -42,7 +42,10 @@ try {
     path.join(tempRoot, 'logic', 'data.logic'),
     'let DLG = { a1_s1_test_001: { durationMs: 100, text: "Fixture" } };\n'
   );
-  fs.writeFileSync(path.join(tempRoot, 'logic', 'dialogue.logic'), '');
+  fs.writeFileSync(
+    path.join(tempRoot, 'logic', 'dialogue.logic'),
+    'softn.audio.whenEnded("snd-1", function () {});\n'
+  );
   fs.writeFileSync(path.join(tempRoot, 'logic', 'world.logic'), '');
   fs.writeFileSync(
     path.join(tempRoot, 'logic', 'main.logic'),
@@ -69,7 +72,8 @@ try {
   assert.match(output, /orphaned SFX WAV orphan\.wav/);
   assert.match(output, /missing music WAV for playMusic\("missing"\)/);
   assert.match(output, /orphaned music WAV mus_orphan\.wav/);
-  console.log('PASS: Promptly audio validator checks literal SFX/music references both ways');
+  assert.match(output, /dialogue controller must not wait for audio\.whenEnded/);
+  console.log('PASS: Promptly audio validator checks cues and non-blocking dialogue');
 } finally {
   const resolvedTemp = path.resolve(tempRoot);
   const resolvedParent = path.resolve(os.tmpdir());

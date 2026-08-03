@@ -242,17 +242,35 @@ function App(): React.ReactElement {
   const inFlightRef = useRef(new Map<string, Promise<string | null>>());
   /** Downloads still running, by the placeholder tab they belong to. */
   const loadAbortsRef = useRef(new Map<string, AbortController>());
+  const unmountCleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Stop work and release blob URLs when the runtime itself is unmounted.
   // Closing an individual app does the same below; this covers navigation away
   // from the entire shell while tabs or downloads are still alive.
-  useEffect(() => () => {
-    for (const controller of loadAbortsRef.current.values()) controller.abort();
-    loadAbortsRef.current.clear();
-    for (const tab of openTabsRef.current) {
-      tab.importResolver?.dispose();
-      tab.assetResolver?.dispose();
+  useEffect(() => {
+    const pendingDownloads = loadAbortsRef.current;
+    const tabsRef = openTabsRef;
+
+    // React Strict Mode immediately replays mount effects in development. Its
+    // synthetic cleanup is followed by this setup in the same turn, so cancel
+    // the deferred teardown and let an entry-point bundle keep downloading.
+    // A real unmount has no matching setup, and the timer performs the cleanup.
+    if (unmountCleanupTimerRef.current) {
+      clearTimeout(unmountCleanupTimerRef.current);
+      unmountCleanupTimerRef.current = null;
     }
+
+    return () => {
+      unmountCleanupTimerRef.current = setTimeout(() => {
+        unmountCleanupTimerRef.current = null;
+        for (const controller of pendingDownloads.values()) controller.abort();
+        pendingDownloads.clear();
+        for (const tab of tabsRef.current) {
+          tab.importResolver?.dispose();
+          tab.assetResolver?.dispose();
+        }
+      }, 0);
+    };
   }, []);
 
   // An embedded frame keeps ?embed=1 through every rewrite, so a frame that

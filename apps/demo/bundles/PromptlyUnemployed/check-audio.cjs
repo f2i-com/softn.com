@@ -10,9 +10,12 @@ if (process.argv.length > 3) {
 }
 const root = process.argv[2] ? path.resolve(process.argv[2]) : __dirname;
 const dataSource = fs.readFileSync(path.join(root, 'logic', 'data.logic'), 'utf8');
-const gameSource = ['dialogue.logic', 'world.logic', 'main.logic']
-  .map((name) => fs.readFileSync(path.join(root, 'logic', name), 'utf8'))
-  .join('\n');
+const dialogueSource = fs.readFileSync(path.join(root, 'logic', 'dialogue.logic'), 'utf8');
+const gameSource = [
+  dialogueSource,
+  fs.readFileSync(path.join(root, 'logic', 'world.logic'), 'utf8'),
+  fs.readFileSync(path.join(root, 'logic', 'main.logic'), 'utf8'),
+].join('\n');
 const dialogueDir = path.join(root, 'assets', 'audio', 'dialogue');
 const audioRoot = path.join(root, 'assets', 'audio');
 
@@ -31,6 +34,12 @@ const voiced = new Set(
 );
 
 const problems = [];
+// A long-lived audio completion host call keeps the originating Loop callback
+// pending for the entire line. Promptly advances dialogue from its 33 ms game
+// loop, so an end watcher here would freeze movement and animation during speech.
+if (/\bsoftn\.audio\.whenEnded\s*\(/.test(dialogueSource)) {
+  problems.push('dialogue controller must not wait for audio.whenEnded inside the game loop');
+}
 for (const id of authored.keys()) {
   if (!voiced.has(id)) problems.push(`missing dialogue WAV for ${id}`);
 }
