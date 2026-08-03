@@ -1,0 +1,591 @@
+// Promptly Unemployed — vertical slice (condensed Scenes 1–5).
+// Entry file: game state, scene flow, puzzles, choices, saves.
+// Rules honoured throughout (plan §10.8): no setTimeout — tick counters only;
+// listeners latch to window.__pu* globals and the tick loop consumes them;
+// continuations are string tags, never functions in state.
+
+let scene = "title"          // title | office | meeting | boxes | flat | luma | done
+let objective = ""
+let hasSave = false
+
+// Visible + hidden stats (slice subset).
+let runway = 2400
+let integrity = 0
+let collaboration = 0
+let hype = 0
+let priyaRel = 0
+let ruthHonesty = -1         // -1 = never answered
+let changelog = []
+
+// Scene 1 flags.
+let coffeeFixed = false
+let debugDone = false
+let notebookSeen = false
+let clue8471 = false
+let cliveWarned = false
+let aidaEvidence = false
+
+// Scene 2/3.
+let meetChoiceId = ""
+let titleCardUp = false
+let pickerOpen = false
+let picked = []
+let keptItems = []
+let priyaEvidence = false
+let chapterCard = ""
+
+// Scene 4.
+let budgetOpen = false
+let budgetDone = false
+let cancelledIds = []
+let firstCancel = false
+let phoneRinging = false
+let ruthDone = false
+
+// Scene 5.
+let lumaPhase = ""           // greet | asked | ws | named
+let wsOpen = false
+let wsUser = ""
+let wsPain = ""
+let wsTone = ""
+let wsHypeCount = 0
+let productName = ""
+let principleUp = false
+
+// Debug-card puzzle.
+let debugOpen = false
+let debugPicked = []
+let debugMsg = ""
+
+// Notes: caption-area narration with no audio line.
+let noteText = ""
+let noteTicks = 0
+
+let transcriptOpen = false
+let rngSeed = 1
+
+function myRand() {
+  // Lehmer LCG — multiplier kept small so the product stays inside 2^53.
+  rngSeed = (rngSeed * 48271) % 2147483647
+  return rngSeed / 2147483647
+}
+
+function hasItem(id) { return keptItems.indexOf(id) >= 0 }
+function isCancelled(id) { return cancelledIds.indexOf(id) >= 0 }
+
+function addLog(line) {
+  changelog.push(line)
+  changelog = changelog.slice()
+}
+
+function showNote(text) {
+  noteText = text
+  noteTicks = Math.ceil((2200 + text.length * 45) / TICK_MS)
+  transcript.push({ speaker: "—", text: text })
+  transcript = transcript.slice()
+}
+
+// ---- Init and input -------------------------------------------------------
+
+function _init() {
+  if (window.__puCleanup) { window.__puCleanup() }
+  rngSeed = (Date.now() % 100000) + 7
+  window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false }
+  window.__puUse = false
+  window.__puSkip = false
+
+  function onKeyDown(e) {
+    let k = window.__puKeys
+    if (e.key === "w" || e.key === "W" || e.key === "ArrowUp") { k.w = true; e.preventDefault() }
+    else if (e.key === "s" || e.key === "S" || e.key === "ArrowDown") { k.s = true; e.preventDefault() }
+    else if (e.key === "a" || e.key === "A") { k.a = true }
+    else if (e.key === "d" || e.key === "D") { k.d = true }
+    else if (e.key === "ArrowLeft") { k.left = true; e.preventDefault() }
+    else if (e.key === "ArrowRight") { k.right = true; e.preventDefault() }
+    else if (e.key === "e" || e.key === "E" || e.key === "Enter") { window.__puUse = true }
+    else if (e.key === " ") { window.__puSkip = true; e.preventDefault() }
+  }
+  function onKeyUp(e) {
+    let k = window.__puKeys
+    if (e.key === "w" || e.key === "W" || e.key === "ArrowUp") { k.w = false }
+    else if (e.key === "s" || e.key === "S" || e.key === "ArrowDown") { k.s = false }
+    else if (e.key === "a" || e.key === "A") { k.a = false }
+    else if (e.key === "d" || e.key === "D") { k.d = false }
+    else if (e.key === "ArrowLeft") { k.left = false }
+    else if (e.key === "ArrowRight") { k.right = false }
+  }
+  function onBlur() {
+    window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false }
+  }
+  window.addEventListener("keydown", onKeyDown, true)
+  window.addEventListener("keyup", onKeyUp, true)
+  window.addEventListener("blur", onBlur)
+  window.__puCleanup = function () {
+    window.removeEventListener("keydown", onKeyDown, true)
+    window.removeEventListener("keyup", onKeyUp, true)
+    window.removeEventListener("blur", onBlur)
+  }
+
+  try { hasSave = !!localStorage.getItem("pu:autosave") } catch (err) { hasSave = false }
+}
+
+// DPad: direction strings, unified with the keyboard dict.
+function padPress(dir) {
+  let k = window.__puKeys
+  if (dir === "up") { k.w = true }
+  else if (dir === "down") { k.s = true }
+  else if (dir === "left") { k.left = true }
+  else if (dir === "right") { k.right = true }
+}
+function padRelease(dir) {
+  let k = window.__puKeys
+  if (dir === "up") { k.w = false }
+  else if (dir === "down") { k.s = false }
+  else if (dir === "left") { k.left = false }
+  else if (dir === "right") { k.right = false }
+}
+
+// ---- The master tick ------------------------------------------------------
+
+function tick() {
+  if (scene === "office" || scene === "flat") {
+    moveTick()
+    hotspotTick()
+  }
+  if (scene === "meeting") { confettiTick() }
+  if (window.__puUse) {
+    window.__puUse = false
+    if (canMove() && choiceList.length === 0 && !dlgActive && hsNearId) { handleHotspot(hsNearId) }
+  }
+  if (window.__puSkip) {
+    window.__puSkip = false
+    dlgSkip()
+  }
+  dlgTick()
+  if (noteTicks > 0) {
+    noteTicks = noteTicks - 1
+    if (noteTicks <= 0) { noteText = "" }
+  }
+}
+
+function interactPressed() {
+  if (canMove() && hsNearId) { handleHotspot(hsNearId) }
+}
+
+// ---- Scene 1: office ------------------------------------------------------
+
+function tasksDone() {
+  return (coffeeFixed ? 1 : 0) + (debugDone ? 1 : 0) + (notebookSeen ? 1 : 0)
+}
+
+function startOffice() {
+  scene = "office"
+  let s = gridFind(OFFICE_ROWS, "S")
+  playerX = s.x
+  playerZ = s.z
+  playerAngle = 0
+  window.__scene3dYaw = playerAngle
+  window.__scene3dPitch = 0
+  buildOffice()
+  updateCamera()
+  objective = "Monday. Three small tasks before stand-up."
+  saveGame()
+  runDialogue(["a1_s1_pax_001", "a1_s1_alex_002"], "")
+}
+
+function handleHotspot(id) {
+  if (dlgActive || choiceList.length > 0) { return }
+  if (id === "hs_coffee") {
+    if (!coffeeFixed) {
+      coffeeFixed = true
+      buildOffice()
+      addLog("FIXED: coffee machine firmware, rolled back with prejudice")
+      runDialogue(["a1_s1_alex_003"], "")
+    } else { showNote("The coffee machine hums gratefully. Someone has to keep this place running.") }
+  } else if (id === "hs_board") {
+    if (!debugDone) { debugOpen = true; debugPicked = []; debugMsg = "Order the cards the way a fix actually happens." }
+    else { showNote("The incident board is calm. Suspiciously calm.") }
+  } else if (id === "hs_desk41") {
+    if (!notebookSeen) {
+      notebookSeen = true
+      clue8471 = true
+      buildOffice()
+      addLog("FOUND: a notebook on desk 41. The directory lists nobody")
+      runDialogue(["a1_s1_alex_004"], "")
+    } else { showNote("Desk 41. Cleared like it was never anyone's.") }
+  } else if (id === "hs_meeting") {
+    if (tasksDone() >= 2) { enterMeeting() }
+    else if (!cliveWarned) { cliveWarned = true; runDialogue(["a1_s1_clive_005"], "") }
+    else { showNote("Stand-up can wait ninety more seconds. Maybe fix one more thing first.") }
+  } else if (id === "hs_laptop") {
+    if (!budgetOpen) { budgetOpen = true }
+  } else if (id === "hs_phone") {
+    if (phoneRinging) {
+      phoneRinging = false
+      buildFlat()
+      runDialogue(["a2_s4_ruth_030", "a2_s4_ruth_031"], "ruth_choice")
+    } else { showNote("No new messages. The job boards can keep waiting.") }
+  } else if (id === "hs_luma") {
+    if (budgetDone) { enterLuma() }
+    else { showNote("You already know what the dream costs. Face the numbers first.") }
+  }
+}
+
+// Debug-card puzzle: click the three cards in cause-to-cure order.
+function pickDebugCard(id) {
+  if (debugPicked.indexOf(id) >= 0) { return }
+  let expected = DEBUG_ORDER[debugPicked.length]
+  if (id !== expected) {
+    debugPicked = []
+    debugMsg = "Not quite. A fix starts with what you SAW, then how to MAKE it happen, then how to STOP it happening again."
+    return
+  }
+  debugPicked.push(id)
+  debugPicked = debugPicked.slice()
+  if (debugPicked.length === DEBUG_ORDER.length) {
+    debugDone = true
+    debugOpen = false
+    aidaEvidence = true
+    buildOffice()
+    addLog("PRACTISED: symptom, reproduction, safeguard — in that order")
+    showNote("Yesterday's incident, reconstructed. Odd — AIDA's ticket answer reads exactly like your own report.")
+  } else {
+    debugMsg = debugPicked.length === 1 ? "Yes. Now — how do you make it happen on purpose?" : "And now the part managers skip."
+  }
+}
+
+function closeDebug() { debugOpen = false }
+
+// ---- Scene 2: meeting -----------------------------------------------------
+
+let slideTitle = ""
+
+function enterMeeting() {
+  scene = "meeting"
+  // Mouse-look owns camera direction; face the presentation screen on entry.
+  window.__scene3dYaw = Math.PI
+  window.__scene3dPitch = 0
+  slideColor = "#38bdf8"
+  slideTitle = "HUMAN POTENTIAL WEEK ▸ Our Human Efficiency Milestone"
+  buildMeeting()
+  saveGame()
+  runDialogue(["a1_s2_pax_010"], "meet_milestone")
+}
+
+function handleDialogueDone(tag) {
+  if (tag === "meet_milestone") {
+    spawnConfetti()
+    setSlide("#0ea5e9")
+    slideTitle = "Amplifying Every Employee*"
+    runDialogue(["a1_s2_pax_014", "a1_s2_alex_015", "a1_s2_pax_016", "a1_s2_alex_017", "a1_s2_pax_018"], "meet_choice")
+  } else if (tag === "meet_choice") {
+    let opts = []
+    for (let i = 0; i < MEET_CHOICES.length; i++) { opts.push({ id: MEET_CHOICES[i].id, label: MEET_CHOICES[i].label }) }
+    showChoices(opts, "meet")
+  } else if (tag === "meet_clive") {
+    titleCardUp = true
+  } else if (tag === "boxes_pax") {
+    pickerOpen = true
+  } else if (tag === "priya_line") {
+    let opts = []
+    for (let i = 0; i < PRIYA_CHOICES.length; i++) { opts.push({ id: PRIYA_CHOICES[i].id, label: PRIYA_CHOICES[i].label }) }
+    showChoices(opts, "priya")
+  } else if (tag === "exit_lines") {
+    chapterCard = "Chapter One — Congratulations on Your Transition"
+  } else if (tag === "ruth_choice") {
+    let opts = []
+    for (let i = 0; i < RUTH_CHOICES.length; i++) { opts.push({ id: RUTH_CHOICES[i].id, label: RUTH_CHOICES[i].label }) }
+    showChoices(opts, "ruth")
+  } else if (tag === "luma_idea") {
+    wsOpen = true
+    lumaPhase = "ws"
+  } else if (tag === "ws_result") {
+    let opts = []
+    for (let i = 0; i < NAME_CHOICES.length; i++) { opts.push({ id: NAME_CHOICES[i].id, label: NAME_CHOICES[i].label + " — " + NAME_CHOICES[i].note }) }
+    showChoices(opts, "name")
+  } else if (tag === "named") {
+    principleUp = true
+  }
+}
+
+function handleChoice(tag, id) {
+  if (tag === "meet") {
+    meetChoiceId = id
+    let c = null
+    for (let i = 0; i < MEET_CHOICES.length; i++) { if (MEET_CHOICES[i].id === id) { c = MEET_CHOICES[i] } }
+    if (id === "evaluation") { integrity = integrity + 1; aidaEvidence = true }
+    else if (id === "approved") { integrity = integrity + 1 }
+    else if (id === "severance") { runway = runway + 350 }
+    else if (id === "joke") { collaboration = collaboration + 1 }
+    if (c) { addLog(c.log); showNote(c.reply) }
+    setSlide("#22c55e")
+    slideTitle = "Severance & Alumni Benefits"
+    runDialogue(["a1_s2_clive_019"], "meet_clive")
+  } else if (tag === "priya") {
+    let c = null
+    for (let i = 0; i < PRIYA_CHOICES.length; i++) { if (PRIYA_CHOICES[i].id === id) { c = PRIYA_CHOICES[i] } }
+    if (id === "comfort") { priyaRel = priyaRel + 1 }
+    else if (id === "evidence") { priyaRel = priyaRel + 1; priyaEvidence = true; addLog("REQUESTED: Priya keeps copies of AIDA's test results") }
+    else if (id === "accuse") { priyaRel = priyaRel - 1 }
+    if (c) { showNote(c.reply) }
+    runDialogue(["a1_s3_guard_022", "a1_s3_alex_023"], "exit_lines")
+  } else if (tag === "ruth") {
+    let c = null
+    for (let i = 0; i < RUTH_CHOICES.length; i++) { if (RUTH_CHOICES[i].id === id) { c = RUTH_CHOICES[i] } }
+    ruthHonesty = id === "truth" ? 1 : 0
+    if (id === "truth") { addLog("SAID IT OUT LOUD: fired. The word survived. So did you") }
+    if (c) { showNote(c.reply) }
+    ruthDone = true
+  } else if (tag === "name") {
+    let c = null
+    for (let i = 0; i < NAME_CHOICES.length; i++) { if (NAME_CHOICES[i].id === id) { c = NAME_CHOICES[i] } }
+    productName = c ? c.label : "Patchwork"
+    lumaPhase = "named"
+    addLog("NAMED: " + productName + (id === "patchwork" ? " — small systems, connected carefully" : ""))
+    runDialogue(["a2_s5_sys_045"], "named")
+  }
+}
+
+function dismissTitleCard() {
+  titleCardUp = false
+  enterBoxes()
+}
+
+// ---- Scene 3: desk matter -------------------------------------------------
+
+function enterBoxes() {
+  scene = "boxes"
+  picked = []
+  saveGame()
+  runDialogue(["a1_s3_pax_020"], "boxes_pax")
+}
+
+function toggleItem(id) {
+  let i = picked.indexOf(id)
+  if (i >= 0) { picked.splice(i, 1) }
+  else if (picked.length < 3) { picked.push(id) }
+  picked = picked.slice()
+}
+
+function isPicked(id) { return picked.indexOf(id) >= 0 }
+
+function confirmItems() {
+  if (picked.length !== 3) { return }
+  keptItems = picked.slice()
+  pickerOpen = false
+  addLog("KEPT: " + keptItems.join(", ") + " — one box, three survivors")
+  runDialogue(["a1_s3_priya_021"], "priya_line")
+}
+
+function dismissChapterCard() {
+  chapterCard = ""
+  goFlat()
+}
+
+// ---- Scene 4: the flat ----------------------------------------------------
+
+function goFlat() {
+  scene = "flat"
+  let s = gridFind(FLAT_ROWS, "S")
+  playerX = s.x
+  playerZ = s.z
+  playerAngle = Math.PI
+  window.__scene3dYaw = playerAngle
+  window.__scene3dPitch = 0
+  buildFlat()
+  updateCamera()
+  objective = "Home. The severance email is open on the laptop."
+  saveGame()
+}
+
+function burnMonthly() {
+  let total = 0
+  for (let i = 0; i < SUBS.length; i++) { if (!isCancelled(SUBS[i].id)) { total = total + SUBS[i].cost } }
+  return total
+}
+
+function runwayWeeks() {
+  let weekly = burnMonthly() / 4.33
+  if (weekly <= 0) { return 99 }
+  return Math.floor(runway / weekly)
+}
+
+function cancelSub(id) {
+  let s = null
+  for (let i = 0; i < SUBS.length; i++) { if (SUBS[i].id === id) { s = SUBS[i] } }
+  if (!s || isCancelled(id)) { return }
+  if (s.locked) { showNote("The landlord's cancellation policy is a locked door and a shrug."); return }
+  cancelledIds.push(id)
+  cancelledIds = cancelledIds.slice()
+  addLog("CANCELLED: " + s.name + " — " + s.joke.toLowerCase())
+  if (!firstCancel) {
+    firstCancel = true
+    runDialogue(["a2_s4_sys_033"], "")
+  }
+  buildFlat()
+}
+
+function finishBudget() {
+  budgetOpen = false
+  if (!budgetDone) {
+    budgetDone = true
+    buildFlat()
+    objective = "The old side project is glowing. Also: the phone."
+    runDialogue(["a2_s4_alex_032"], "")
+    phoneRinging = true
+    buildFlat()
+  }
+}
+
+// ---- Scene 5: LUMA --------------------------------------------------------
+
+function enterLuma() {
+  scene = "luma"
+  lumaPhase = "greet"
+  wsUser = ""
+  wsPain = ""
+  wsTone = ""
+  saveGame()
+  runDialogue(["a2_s5_luma_040"], "")
+}
+
+function askLuma() {
+  if (lumaPhase !== "greet") { return }
+  lumaPhase = "asked"
+  runDialogue(["a2_s5_luma_044"], "luma_idea")
+}
+
+function pickWs(cat, cardId, kind) {
+  if (cat === "user") { wsUser = cardId }
+  else if (cat === "pain") { wsPain = cardId }
+  else if (cat === "tone") { wsTone = cardId }
+}
+
+function wsPicked(cat) {
+  if (cat === "user") { return wsUser }
+  if (cat === "pain") { return wsPain }
+  return wsTone
+}
+
+function wsReady() { return wsUser !== "" && wsPain !== "" && wsTone !== "" }
+
+function submitWs() {
+  if (!wsReady()) { return }
+  wsOpen = false
+  let hyped = 0
+  let picks = [wsUser, wsPain, wsTone]
+  for (let c = 0; c < WS_CATS.length; c++) {
+    let cards = WS_CATS[c].cards
+    for (let i = 0; i < cards.length; i++) {
+      if (picks.indexOf(cards[i].id) >= 0 && cards[i].kind === "hype") { hyped = hyped + 1 }
+    }
+  }
+  if (hyped >= 2) { hype = hype + 1; addLog("PITCHED: total addressable market — everyone, apparently") }
+  else { integrity = integrity + 1; addLog("SCOPED: one real customer problem, on purpose") }
+  runDialogue(["a2_s5_luma_041", "a2_s5_alex_042", "a2_s5_luma_043"], "ws_result")
+}
+
+function pinPrinciple() {
+  principleUp = false
+  addLog("PRINCIPLE #1: ask before assuming")
+  endSlice()
+}
+
+// ---- End of slice ---------------------------------------------------------
+
+let summaryLines = []
+
+function endSlice() {
+  scene = "done"
+  objective = ""
+  summaryLines = endingSummary()
+  saveGame()
+}
+
+function endingSummary() {
+  let bits = []
+  bits.push("Integrity " + integrity + " · Collaboration " + collaboration + " · Hype " + hype)
+  bits.push("Runway $" + runway + " · burn $" + burnMonthly() + "/mo ≈ " + runwayWeeks() + " weeks")
+  if (priyaRel > 0) { bits.push("Priya answered on the first ring.") }
+  else if (priyaRel < 0) { bits.push("Priya will need time. Fair.") }
+  if (ruthHonesty === 1) { bits.push("Ruth knows. It helped.") }
+  else if (ruthHonesty === 0) { bits.push("Ruth suspects. Mothers do.") }
+  if (clue8471) { bits.push("Someone left before you did. Desk 41.") }
+  return bits
+}
+
+// ---- Save / load ----------------------------------------------------------
+
+let SAVE_VERSION = 1
+
+function saveGame() {
+  let save = {
+    version: SAVE_VERSION, scene: scene, runway: runway,
+    integrity: integrity, collaboration: collaboration, hype: hype,
+    priyaRel: priyaRel, ruthHonesty: ruthHonesty, changelog: changelog,
+    coffeeFixed: coffeeFixed, debugDone: debugDone, notebookSeen: notebookSeen,
+    clue8471: clue8471, aidaEvidence: aidaEvidence, priyaEvidence: priyaEvidence,
+    keptItems: keptItems, cancelledIds: cancelledIds, budgetDone: budgetDone,
+    ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId
+  }
+  try { localStorage.setItem("pu:autosave", JSON.stringify(save)); hasSave = true } catch (err) {}
+}
+
+function continueGame() {
+  let raw = ""
+  try { raw = localStorage.getItem("pu:autosave") } catch (err) { raw = "" }
+  if (!raw) { newGame(); return }
+  let s = null
+  try { s = JSON.parse(raw) } catch (err) { s = null }
+  if (!s || s.version !== SAVE_VERSION) { newGame(); return }
+  runway = s.runway; integrity = s.integrity; collaboration = s.collaboration
+  hype = s.hype; priyaRel = s.priyaRel; ruthHonesty = s.ruthHonesty
+  changelog = s.changelog || []
+  coffeeFixed = !!s.coffeeFixed; debugDone = !!s.debugDone; notebookSeen = !!s.notebookSeen
+  clue8471 = !!s.clue8471; aidaEvidence = !!s.aidaEvidence; priyaEvidence = !!s.priyaEvidence
+  keptItems = s.keptItems || []; cancelledIds = s.cancelledIds || []
+  budgetDone = !!s.budgetDone; ruthDone = !!s.ruthDone
+  productName = s.productName || ""; meetChoiceId = s.meetChoiceId || ""
+  // Checkpoints are scene entries; re-enter the saved scene fresh.
+  if (s.scene === "meeting") { enterMeeting() }
+  else if (s.scene === "boxes") { enterBoxes() }
+  else if (s.scene === "flat" || s.scene === "luma") { goFlat() }
+  else if (s.scene === "done") { summaryLines = endingSummary(); scene = "done" }
+  else { startOffice() }
+}
+
+function newGame() {
+  runway = 2400; integrity = 0; collaboration = 0; hype = 0
+  priyaRel = 0; ruthHonesty = -1; changelog = []
+  coffeeFixed = false; debugDone = false; notebookSeen = false
+  clue8471 = false; cliveWarned = false; aidaEvidence = false; priyaEvidence = false
+  meetChoiceId = ""; titleCardUp = false; pickerOpen = false; picked = []
+  keptItems = []; chapterCard = ""; budgetOpen = false; budgetDone = false
+  cancelledIds = []; firstCancel = false; phoneRinging = false; ruthDone = false
+  lumaPhase = ""; wsOpen = false; wsUser = ""; wsPain = ""; wsTone = ""; wsHypeCount = 0
+  productName = ""; principleUp = false; debugOpen = false; debugPicked = []
+  noteText = ""; noteTicks = 0; transcript = []
+  dlgActive = false; dlgQueue = []; dlgDoneTag = ""; choiceList = []; choiceTag = ""
+  startOffice()
+}
+
+function backToTitle() {
+  softn.audio.stopAll()
+  scene = "title"
+}
+
+// ---- Template helpers -----------------------------------------------------
+
+function inWorld() { return scene === "office" || scene === "meeting" || scene === "flat" }
+function canMove() { return scene === "office" || scene === "flat" }
+function showCaptionBar() { return scene !== "title" }
+function toggleTranscript() { transcriptOpen = !transcriptOpen }
+function hudPrompt() {
+  if (dlgActive || choiceList.length > 0) { return "" }
+  if ((scene === "office" || scene === "flat") && hsNearId) { return hsNearLabel + "  —  E / tap" }
+  return ""
+}
+function stat(label) {
+  if (label === "runway") { return "$" + runway }
+  return ""
+}
