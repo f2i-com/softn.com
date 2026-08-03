@@ -325,12 +325,17 @@ function actorAt(id, speaker, x, z, dir, body, head, opts) {
 }
 
 // Send an actor to a spot once, rather than round a ring.
-function actorGoTo(id, x, z) {
+// Send an actor somewhere. faceX/faceZ are optional: on arrival they turn to
+// look at that point, so a character who walks over to speak to you ends up
+// facing you instead of facing whichever way they happened to be walking.
+function actorGoTo(id, x, z, faceX, faceZ) {
   for (let i = 0; i < actors.length; i++) {
     if (actors[i].id !== id) { continue }
     actors[i].path = [[x, z]]
     actors[i].wi = 0
     actors[i].pause = 0
+    if (faceX !== undefined) { actors[i].faceAt = [faceX, faceZ] }
+    else { actors[i].faceAt = null }
     return
   }
 }
@@ -381,7 +386,12 @@ function actorTick() {
     let d = Math.sqrt(dx * dx + dz * dz)
     if (d < 0.14) {
       if (a.path.length === 1) {
-        // Arrived at a one-off destination; stay there.
+        // Arrived at a one-off destination; stay there, and turn to whoever
+        // sent us if the errand named someone to look at.
+        if (a.faceAt) {
+          let fd = Math.atan2(a.faceAt[0] - a.x, a.faceAt[1] - a.z)
+          if (Math.abs(fd - a.dir) > 0.01) { a.dir = fd; moved = true }
+        }
         if (a.moving) { a.moving = false; moved = true }
         continue
       }
@@ -503,6 +513,9 @@ function hotspotTick() {
 }
 
 function onSceneClick(info) {
+  // Tapping the world during a cutscene hands control back, the same as any
+  // movement key would.
+  if (cutActive) { skipCutscene(); return }
   if (!info || !info.objectId) { return }
   for (let i = 0; i < hotspots.length; i++) {
     let h = hotspots[i]
@@ -900,13 +913,15 @@ function itemObj(id, kind, x, y, z) {
 
 // The desk you are being asked to empty. Items you have taken are drawn inside
 // the archive box instead of on the desk, so packing is visible.
+// The desk top spans x 7.15..8.85, z 3.58..4.43 — every item must sit inside
+// that, or it hangs in the air off the edge.
 let ITEM_SPOTS = [
-  { id: "doug",     x: 7.35, z: 3.72 },
-  { id: "plant",    x: 8.72, z: 3.66 },
-  { id: "photo",    x: 7.02, z: 4.26 },
-  { id: "keyboard", x: 8.02, z: 4.3 },
-  { id: "notebook", x: 8.78, z: 4.28 },
-  { id: "mug",      x: 7.72, z: 4.32 }
+  { id: "doug",     x: 7.45, z: 3.80 },
+  { id: "mug",      x: 7.98, z: 3.78 },
+  { id: "plant",    x: 8.52, z: 3.78 },
+  { id: "photo",    x: 7.48, z: 4.22 },
+  { id: "keyboard", x: 8.04, z: 4.20 },
+  { id: "notebook", x: 8.56, z: 4.22 }
 ]
 
 function buildBoxes() {
@@ -1125,9 +1140,9 @@ let confettiOn = false
 let slideColor = "#38bdf8"
 
 function buildMeeting() {
-  sceneFog = { color: "#141a2a", near: 12, far: 34 }
-  sceneBg = "#0c101c"
-  let objs = [floorPlane(12, 9, "#20283a"), ceilingPlane(12, 9, 3.0, "#171d2c")]
+  sceneFog = { color: "#232c42", near: 16, far: 44 }
+  sceneBg = "#161d2c"
+  let objs = [floorPlane(12, 9, "#2b344a"), ceilingPlane(12, 9, 3.0, "#222a3d")]
   objs.push({ id: "rug", type: "plane", position: { x: 6, y: 0.012, z: 3.6 },
     rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 8, height: 4.4, color: "#2a3145" })
   objs.push(lightPanel("mlp1", 6, 3.4, 2.96, "#dbe6ff"))
@@ -1177,10 +1192,15 @@ function buildMeeting() {
   }
   meetingStatic = objs
   objects = meetingStatic
+  // The room was lit by three lamps while the office had seven; in fullscreen
+  // that read as almost black. Match the office's level.
   lights = [
-    { id: "amb", type: "ambient", color: "#9fb0d6", intensity: 1.25 },
-    { id: "scr", type: "point", color: slideColor, intensity: 2.6, position: { x: 6, y: 2, z: 1.4 } },
-    { id: "fill", type: "point", color: "#e2e8f0", intensity: 1.2, position: { x: 6, y: 2.6, z: 5.5 } }
+    { id: "amb", type: "ambient", color: "#b3c0dc", intensity: 1.85 },
+    { id: "hemi", type: "hemisphere", color: "#dbe4f5", groundColor: "#525d78", intensity: 1.35 },
+    { id: "dirm", type: "directional", color: "#dbe6ff", intensity: 0.6, position: { x: 4, y: 9, z: 8 } },
+    { id: "scr", type: "point", color: slideColor, intensity: 2.8, position: { x: 6, y: 2, z: 1.4 } },
+    { id: "fill", type: "point", color: "#e2e8f0", intensity: 1.9, position: { x: 6, y: 2.6, z: 5.5 } },
+    { id: "fill2", type: "point", color: "#e8eefc", intensity: 1.5, position: { x: 6, y: 2.5, z: 3.2 } }
   ]
   hotspots = [
     { id: "mcol0_t", x: 3.4, z: 2.5, r: 6, label: "", minor: true },
@@ -1466,7 +1486,7 @@ function buildBakery() {
   let donutCols = ["#f4a4c0", "#b8763e", "#f7dba7"]
   for (let i = 0; i < 3; i++) {
     objs.push({ id: "donut" + i, type: "torus", position: { x: 8.6 + i * 1.1, y: 1.16, z: 9.3 },
-      rotation: { x: -Math.PI / 2, y: 0, z: 0 }, radius: 0.16, color: donutCols[i], roughness: 0.9 })
+      rotation: { x: -Math.PI / 2, y: 0, z: 0 }, radius: 0.16, tube: 0.075, color: donutCols[i], roughness: 0.9 })
   }
   for (let i = 0; i < 3; i++) {
     objs.push({ id: "bun" + i, type: "sphere", position: { x: 12.4 + i * 0.8, y: 1.18, z: 9.0 }, radius: 0.16, color: "#d9a05f", roughness: 1 })
