@@ -29,6 +29,7 @@ class FakeAudio {
   loop = false;
   playbackRate = 1;
   currentTime = 0;
+  duration = NaN;
   paused = true;
   plays = 0;
   private listeners = new Map<string, Array<() => void>>();
@@ -70,6 +71,10 @@ afterEach(() => {
 function script(code: string): ScriptBlock {
   return { type: 'ScriptBlock', code, loc: { line: 1, column: 0, start: 0, end: code.length } };
 }
+
+/** A pending `whenEnded` only registers its watcher across a few microtask
+ *  hops; a macrotask lets all of them land before the test fires the event. */
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 /** The runtime plus the state object its script writes into, so callbacks
  *  that set a variable can be asserted on. */
@@ -249,6 +254,108 @@ describe('softn.audio.stop', () => {
     await result.functions.noise();
     await result.functions.hush();
     expect(built.every((a) => a.paused)).toBe(true);
+  });
+});
+
+describe('softn.audio.whenEnded', () => {
+  it('resolves with "ended" and the duration when the sound finishes on its own', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(script(`
+      let handle = ""
+      let how = ""
+      let ms = -1
+      function ring() {
+        softn.audio.play("https://example.test/ping.wav", {}, function(r) { handle = r.handle })
+      }
+      function watch() {
+        softn.audio.whenEnded(handle, function(r) { how = r.status; ms = r.durationMs || -1 })
+      }
+    `));
+
+    await result.functions.ring();
+    built[0].duration = 1.25;
+    const watching = result.functions.watch();
+    await tick();
+    built[0].emit('ended');
+    await watching;
+
+    expect(runtime.state.how).toBe('ended');
+    expect(runtime.state.ms).toBe(1250);
+  });
+
+  it('answers "stopped" for a sound that was cut off, never "ended"', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(script(`
+      let handle = ""
+      let how = ""
+      function music() {
+        softn.audio.play("https://example.test/theme.mp3", { loop: true }, function(r) { handle = r.handle })
+      }
+      function watch() { softn.audio.whenEnded(handle, function(r) { how = r.status }) }
+      function hush() { softn.audio.stop(handle) }
+    `));
+
+    await result.functions.music();
+    const watching = result.functions.watch();
+    await tick();
+    await result.functions.hush();
+    await watching;
+
+    expect(runtime.state.how).toBe('stopped');
+  });
+
+  it('reports a sound that could not load as an error, not as silence', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(script(`
+      let handle = ""
+      let how = ""
+      function ring() {
+        softn.audio.play("https://example.test/broken.wav", {}, function(r) { handle = r.handle })
+      }
+      function watch() { softn.audio.whenEnded(handle, function(r) { how = r.status }) }
+    `));
+
+    await result.functions.ring();
+    const watching = result.functions.watch();
+    await tick();
+    built[0].emit('error');
+    await watching;
+
+    expect(runtime.state.how).toBe('error');
+  });
+
+  it('still knows how a sound finished after it is gone', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(script(`
+      let handle = ""
+      let how = ""
+      function ring() {
+        softn.audio.play("https://example.test/ping.wav", {}, function(r) { handle = r.handle })
+      }
+      function watch() { softn.audio.whenEnded(handle, function(r) { how = r.status }) }
+    `));
+
+    await result.functions.ring();
+    built[0].emit('ended');
+    await result.functions.watch();
+
+    expect(runtime.state.how).toBe('ended');
+  });
+
+  it('does not wait around on a handle it has never heard of', async () => {
+    const runtime = makeRuntime();
+    const result = await runtime.loadScript(script(`
+      let how = ""
+      let known = true
+      function watch() {
+        softn.audio.whenEnded("snd-404", function(r) { how = r.status; known = r.known !== false })
+      }
+    `));
+
+    await result.functions.watch();
+
+    expect(runtime.state.how).toBe('ended');
+    expect(runtime.state.known).toBe(false);
   });
 });
 

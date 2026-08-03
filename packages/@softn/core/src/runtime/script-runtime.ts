@@ -154,6 +154,14 @@ interface PendingHostCall {
   args: string[];
 }
 
+/** How a sound reached silence — what `audio.whenEnded` resolves with. */
+interface AudioOutcome {
+  handle: string;
+  status: 'ended' | 'stopped' | 'error';
+  durationMs?: number;
+  reason?: string;
+}
+
 /**
  * Bridge preamble for the softn.* namespace.
  * Builds a JS object that delegates to host.call() for each capability.
@@ -212,6 +220,9 @@ let softn = {
     },
     setVolume: function(volume, callback) {
       host.call("audio.setVolume", [String(volume)], callback || function(){});
+    },
+    whenEnded: function(handle, callback) {
+      host.call("audio.whenEnded", [handle == null ? "" : String(handle)], callback || function(){});
     }
   },
   files: {
@@ -624,8 +635,18 @@ export class SoftNScriptRuntime {
   /** External functions (e.g. wallet bridge) to inject into the VM as callable globals */
   private externalFunctions: Record<string, (...args: unknown[]) => unknown> | null = null;
 
-  /** Sounds this app currently has playing, by the handle its script holds. */
-  private audioPlaying = new Map<string, { el: HTMLAudioElement; volume: number }>();
+  /** Sounds this app currently has playing, by the handle its script holds.
+   *  `watchers` are pending `whenEnded` calls; each hears exactly one outcome. */
+  private audioPlaying = new Map<string, {
+    el: HTMLAudioElement;
+    volume: number;
+    watchers: Array<(outcome: AudioOutcome) => void>;
+  }>();
+  /** Outcomes of sounds that are gone, so a `whenEnded` asked after the fact
+   *  still answers with what happened. Every one-shot lands here, so it is
+   *  capped — the oldest is forgotten and reads as unknown. */
+  private audioFinished = new Map<string, AudioOutcome>();
+  private static readonly MAX_AUDIO_FINISHED = 256;
   private audioMasterVolume = 1;
   private audioSeq = 0;
   /** Gesture listeners waiting to start a soundtrack the browser refused. */
@@ -1704,6 +1725,7 @@ export class SoftNScriptRuntime {
       case 'audio.stop': return this.handleAudioStop(call);
       case 'audio.stopAll': return this.handleAudioStopAll();
       case 'audio.setVolume': return this.handleAudioSetVolume(call);
+      case 'audio.whenEnded': return this.handleAudioWhenEnded(call);
       case 'files.pickFile': return this.handleFilesPickFile(call);
       case 'files.readText': return this.handleFilesReadText(call);
       case 'files.readBase64': return this.handleFilesReadBase64(call);
@@ -2102,9 +2124,18 @@ export class SoftNScriptRuntime {
     const handle = `snd-${++this.audioSeq}`;
     // The sound's own volume is kept beside it: master volume scales it, and
     // reading it back off the element would fold the master in twice.
-    this.audioPlaying.set(handle, { el, volume: own });
+    this.audioPlaying.set(handle, { el, volume: own, watchers: [] });
     // One-shots clear themselves; loops stay until stopped or the app closes.
-    el.addEventListener('ended', () => { this.audioPlaying.delete(handle); }, { once: true });
+    el.addEventListener('ended', () => {
+      const outcome: AudioOutcome = { handle, status: 'ended' };
+      if (Number.isFinite(el.duration)) outcome.durationMs = el.duration * 1000;
+      this.finishAudio(handle, outcome);
+    }, { once: true });
+    // A src that fails to decode reports itself here, not through play() — a
+    // watcher waiting on the sound would otherwise wait forever.
+    el.addEventListener('error', () => {
+      this.finishAudio(handle, { handle, status: 'error', reason: el.error?.message || 'could not play' });
+    }, { once: true });
 
     try {
       await el.play();
@@ -2137,11 +2168,29 @@ export class SoftNScriptRuntime {
       this.audioUnlockers.delete(start);
       // It may have been stopped, or the whole runtime torn down, while waiting.
       if (this.disposed || !this.audioPlaying.has(handle)) return;
-      el.play().catch(() => { this.audioPlaying.delete(handle); });
+      el.play().catch(() => { this.finishAudio(handle, { handle, status: 'error', reason: 'could not play' }); });
     };
     this.audioUnlockers.add(start);
     window.addEventListener('pointerdown', start, { once: true });
     window.addEventListener('keydown', start, { once: true });
+  }
+
+  /**
+   * The one place a sound becomes past tense: watchers hear the outcome, the
+   * handle stops being live, and the outcome is kept for late askers. First
+   * outcome wins — a stop landing after an error, or the 'error' that clearing
+   * `src` on teardown fires, must not rewrite what already happened.
+   */
+  private finishAudio(handle: string, outcome: AudioOutcome): void {
+    const sound = this.audioPlaying.get(handle);
+    if (!sound) return;
+    for (const watcher of sound.watchers) watcher(outcome);
+    this.audioPlaying.delete(handle);
+    this.audioFinished.set(handle, outcome);
+    if (this.audioFinished.size > SoftNScriptRuntime.MAX_AUDIO_FINISHED) {
+      const oldest = this.audioFinished.keys().next().value;
+      if (oldest !== undefined) this.audioFinished.delete(oldest);
+    }
   }
 
   private async handleAudioStop(call: PendingHostCall): Promise<unknown> {
@@ -2151,7 +2200,7 @@ export class SoftNScriptRuntime {
     if (!sound) return { stopped: false };
     sound.el.pause();
     sound.el.currentTime = 0;
-    this.audioPlaying.delete(handle);
+    this.finishAudio(handle, { handle, status: 'stopped' });
     return { stopped: true };
   }
 
@@ -2173,14 +2222,31 @@ export class SoftNScriptRuntime {
     return { volume: this.audioMasterVolume };
   }
 
+  /**
+   * Resolves when the sound is over, with how it got there: 'ended' on its
+   * own, 'stopped' by a script or teardown, 'error' if it never could play.
+   * The distinction is the point — being cut off must never read as having
+   * finished. A handle nothing remembers answers immediately: whatever it
+   * once named, it is not playing now.
+   */
+  private async handleAudioWhenEnded(call: PendingHostCall): Promise<unknown> {
+    const [handle] = call.args;
+    const finished = this.audioFinished.get(handle);
+    if (finished) return finished;
+    const sound = this.audioPlaying.get(handle);
+    if (!sound) return { handle, status: 'ended', known: false };
+    return new Promise<AudioOutcome>((resolve) => { sound.watchers.push(resolve); });
+  }
+
   private stopAllAudio(): void {
-    for (const { el } of this.audioPlaying.values()) {
+    for (const [handle, { el }] of this.audioPlaying) {
       try {
         el.pause();
         el.src = '';
       } catch {
         // The element may already be detached; nothing left to stop.
       }
+      this.finishAudio(handle, { handle, status: 'stopped' });
     }
     this.audioPlaying.clear();
     if (typeof window !== 'undefined') {
