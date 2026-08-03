@@ -205,7 +205,7 @@ function gameStep() {
   if (scene === "title") { titleTick(); return }
   cutTickFn()
   shakeTick()
-  if (fadeOp > 0) { fadeOp = Math.max(0, fadeOp - 0.14) }
+  if (fadeOp > 0) { fadeOp = Math.max(0, fadeOp - 0.2) }
   if (canMove() && !cutActive) {
     moveTick()
     hotspotTick()
@@ -708,17 +708,17 @@ function itemDesc(id) {
 function enterBoxes() {
   scene = "boxes"
   picked = []
-  playerX = 10.5
-  playerZ = 7.1
-  playerAngle = -2.46
+  playerX = 12
+  playerZ = 4.2
+  playerAngle = -Math.PI / 2
   window.__scene3dYaw = playerAngle
   window.__scene3dPitch = 0
   buildBoxes()
   updateCamera()
   startCutscene([
-    { x0: 14.5, y0: 2.2, z0: 10.6, x1: 12, y1: 1.9, z1: 8.6, yaw0: -2.1, yaw1: -2.34, p0: -0.24, p1: -0.14, ticks: 56, e: "out" },
-    { x0: 12, y0: 1.9, z0: 8.6, x1: 10.5, y1: 1.6, z1: 7.1, yaw0: -2.34, yaw1: -2.46, p0: -0.14, p1: -0.06, ticks: 44, e: "in" }
-  ], 10.5, 7.1, -2.46, "PERSONALLY ATTRIBUTABLE DESK MATTER", "One box. Keep three things.")
+    { x0: 17.6, y0: 2.15, z0: 5.6, x1: 14.2, y1: 1.9, z1: 4.7, yaw0: -1.95, yaw1: -1.72, p0: -0.2, p1: -0.1, ticks: 54, e: "out" },
+    { x0: 14.2, y0: 1.9, z0: 4.7, x1: 12, y1: 1.6, z1: 4.2, yaw0: -1.72, yaw1: -Math.PI / 2, p0: -0.1, p1: 0, ticks: 44, e: "in" }
+  ], 12, 4.2, -Math.PI / 2, "PERSONALLY ATTRIBUTABLE DESK MATTER", "One box. Keep three things.")
   objective = "Pack three things. Choose carefully."
   playMusic("office")
   saveGame()
@@ -744,10 +744,10 @@ function confirmItems() {
   actorGoTo("guard", 22.5, 13.2)
   // Walk the box to the lift; the lights go out behind you.
   startCutscene([
-    { x0: 10.5, y0: 1.6, z0: 7.1, x1: 15, y1: 1.62, z1: 9.2, yaw0: Math.PI, yaw1: -1.9, ticks: 60, e: "out" },
-    { x0: 14, y0: 1.62, z0: 8.4, x1: 22, y1: 1.62, z1: 12.6, yaw0: -1.9, yaw1: -1.6, ticks: 62 },
-    { x0: 22, y0: 1.62, z0: 12.6, x1: 27, y1: 1.6, z1: 15.6, yaw0: -1.6, yaw1: -1.5, ticks: 58, e: "in" }
-  ], 27, 15.6, -1.5, "PERSONALLY ATTRIBUTABLE DESK MATTER", "Alumni access expires on exit")
+    { x0: playerX, y0: 1.6, z0: playerZ, x1: 16.5, y1: 1.62, z1: 4.6, yaw0: playerAngle, yaw1: -1.3, ticks: 56, e: "out" },
+    { x0: 16.5, y0: 1.62, z0: 4.6, x1: 20, y1: 1.62, z1: 10.5, yaw0: -1.3, yaw1: -1.0, ticks: 60 },
+    { x0: 20, y0: 1.62, z0: 10.5, x1: 26, y1: 1.6, z1: 15.4, yaw0: -1.0, yaw1: -1.45, ticks: 58, e: "in" }
+  ], 26, 15.4, -1.45, "PERSONALLY ATTRIBUTABLE DESK MATTER", "Alumni access expires on exit")
   runDialogue(["a1_s3_priya_021"], "priya_line")
 }
 
@@ -1199,6 +1199,7 @@ function newGame() {
   productName = ""; principleUp = false; debugOpen = false; debugPicked = []
   dougIdx = 0; playTicks = 0
   cutActive = false; cutSteps = []; fadeOp = 0
+  clearConfetti(); actors = []; actorsFor = ""; blockers = []
   ordersOpen = false; orderPicks = { o1: "", o2: "", o3: "" }; ordersDone = false
   pilotPromised = false; mabelTrust = 0; leoWrongIdx = 0
   priyaHere = false; priyaMode = ""; scopeOpen = false; scopePicks = []; scopeWarned = false; scopeDone = false

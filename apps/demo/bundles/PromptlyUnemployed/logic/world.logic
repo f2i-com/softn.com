@@ -113,7 +113,22 @@ function collides(px, pz) {
   return false
 }
 
+// Self-healing spawn: if a scene ever drops the player inside geometry, walk
+// them out rather than leaving them wedged with no way to move.
+function ensureFree() {
+  if (!collides(playerX, playerZ)) { return }
+  for (let r = 1; r <= 10; r++) {
+    let s = r * 0.4
+    let cand = [[s, 0], [-s, 0], [0, s], [0, -s], [s, s], [-s, s], [s, -s], [-s, -s]]
+    for (let i = 0; i < cand.length; i++) {
+      let nx = playerX + cand[i][0], nz = playerZ + cand[i][1]
+      if (!collides(nx, nz)) { playerX = nx; playerZ = nz; updateCamera(); return }
+    }
+  }
+}
+
 function moveTick() {
+  ensureFree()
   let keys = window.__puKeys || {}
   if (window.__scene3dYaw !== undefined) { playerAngle = window.__scene3dYaw }
   // Facing +z, screen-right is -x (three.js right-handed), so turning right
@@ -194,7 +209,7 @@ function startCutscene(steps, endX, endZ, endYaw, title, sub) {
   cutTickN = 0
   cutEnd = { x: endX, z: endZ, yaw: endYaw }
   cutActive = true
-  fadeOp = 0.8
+  fadeOp = 0.55
   cutTitle = title || ""
   cutSub = sub || ""
   hsNearId = ""
@@ -281,7 +296,16 @@ function meetingDriftTick() {
 
 let sceneStatic = []
 let actors = []
+let actorsFor = ""
 let actorPhase = 0
+
+// Replace the cast only when the scene actually changes. Builders are re-run
+// constantly (every pick, every state change) and must not reset walk cycles.
+function ensureActors(tag, list) {
+  if (actorsFor === tag) { return }
+  actors = list
+  actorsFor = tag
+}
 // Furniture is decoration, not grid, so actors carry their own no-go boxes.
 let blockers = []
 
@@ -328,6 +352,18 @@ function actorObjs() {
   return out
 }
 
+function composeScene() {
+  let out = sceneStatic.concat(actorObjs())
+  // Confetti belongs to the meeting alone; it used to follow the player out.
+  if (scene === "meeting" && (confettiOn || confetti.length > 0)) { out = out.concat(confettiObjs()) }
+  objects = out
+}
+
+function clearConfetti() {
+  confetti = []
+  confettiOn = false
+}
+
 function actorTick() {
   if (actors.length === 0) { return }
   actorPhase = actorPhase + 1
@@ -364,8 +400,11 @@ function actorTick() {
       } else if (!actorBlocked(a.x, nz) && !collides(a.x, nz)) {
         a.z = nz
       } else {
-        // Boxed in: give up on this leg and take the next one.
-        a.wi = (a.wi + 1) % a.path.length
+        // Boxed in. Rings move on to the next leg; a one-off errand is
+        // abandoned after a few tries so the actor never jitters forever.
+        a.stuck = (a.stuck || 0) + 1
+        if (a.path.length === 1 && a.stuck > 3) { a.path = [] }
+        else { a.wi = (a.wi + 1) % a.path.length }
         a.pause = 30
         a.moving = false
         moved = true
@@ -373,12 +412,13 @@ function actorTick() {
       }
       a.dir = Math.atan2(dx, dz)
       a.moving = true
+      a.stuck = 0
       a.ph = a.ph + 0.16
     }
     moved = true
   }
   // Mouths need a redraw even when nobody is walking.
-  if (moved || dlgActive) { objects = sceneStatic.concat(actorObjs()) }
+  if (moved || dlgActive) { composeScene() }
 }
 
 // ---- Title diorama --------------------------------------------------------
@@ -1056,6 +1096,7 @@ function buildOffice() {
   // Two colleagues still doing laps, and the guard by the gate.
   sceneStatic = officeStatic
   blockers = []
+  clearConfetti()
   for (let i = 0; i < desks.length; i++) {
     // The desk itself plus the chair tucked behind it.
     blockers.push({ x: desks[i][0], z: desks[i][1] + 0.5, hw: 1.15, hd: 1.35 })
@@ -1068,11 +1109,11 @@ function buildOffice() {
   blockers.push({ x: 22, z: 14, hw: 1.15, hd: 0.8 })      // desk 41
   blockers.push({ x: 13, z: 2, hw: 0.6, hd: 0.6 })        // plant
   blockers.push({ x: 8, z: 6.7, hw: 0.9, hd: 0.8 })       // the archive box
-  actors = [
+  ensureActors("office", [
     actorAt("col1", "", 6, 12, 1.57, "#4f6180", "#d4b394", { hair: "#6b4b2a", path: [[21, 12], [6, 12]], sp: 0.03 }),
     actorAt("col2", "", 14, 16, 1.57, "#5b5470", "#8a5a3a", { hair: "#22262e", path: [[20, 16], [14, 16]], sp: 0.026 }),
     actorAt("guard", "Guard", 26.4, 15.2, -1.5, "#2b3550", "#8a5a3a", { hair: "#1b2130", cap: "#1b2130" })
-  ]
+  ])
   objects = sceneStatic.concat(actorObjs())
 }
 
@@ -1122,9 +1163,11 @@ function buildMeeting() {
   objs.push({ id: "mtable", type: "box", position: { x: 6, y: 0.72, z: 3.4 }, width: 6.4, height: 0.12, depth: 2.2, color: "#7c6f5a", roughness: 0.7 })
   objs.push({ id: "mtleg1", type: "cylinder", position: { x: 3.4, y: 0.36, z: 3.4 }, radius: 0.09, height: 0.72, color: "#4a4336" })
   objs.push({ id: "mtleg2", type: "cylinder", position: { x: 8.6, y: 0.36, z: 3.4 }, radius: 0.09, height: 0.72, color: "#4a4336" })
-  let seats = [[3.4, 2.5, 0], [5.1, 2.5, 0], [6.9, 2.5, 0], [8.6, 2.5, 0], [4.2, 4.4, Math.PI]]
+  // Chairs face wherever their occupant faces — Alex, at (6, 6.6).
+  let seats = [[3.4, 2.4], [5.15, 2.4], [6.9, 2.4], [8.65, 2.4], [4.2, 4.6]]
   for (let i = 0; i < seats.length; i++) {
-    objs = objs.concat(chairAt("mchair" + i, seats[i][0], seats[i][1], seats[i][2], "#2c3547"))
+    let sd = Math.atan2(6 - seats[i][0], 6.6 - seats[i][1])
+    objs = objs.concat(chairAt("mchair" + i, seats[i][0], seats[i][1], sd, "#2c3547"))
   }
   // Table props: two open laptops, three cups.
   objs = objs.concat(laptopAt("mlap1", 4.6, 0.79, 3.1, 2.9, "#38bdf8"))
@@ -1151,12 +1194,15 @@ function buildMeeting() {
   // beside the screen muting himself.
   let mBody = ["#64748b", "#5b6478", "#94a3b8", "#63586e"]
   let mHair = ["#3a2c1c", "#1f2937", "#6b4b2a", "#22262e"]
-  actors = []
+  let cast = []
+  // Everyone turns toward Alex rather than the slide.
   for (let i = 0; i < 4; i++) {
-    actors.push(actorAt("mcol" + i, "", 3.4 + i * 1.75, 2.4, Math.PI, mBody[i], "#d4b394", { hair: mHair[i], sit: true }))
+    let ax = 3.4 + i * 1.75, az = 2.4
+    cast.push(actorAt("mcol" + i, "", ax, az, Math.atan2(6 - ax, 6.6 - az), mBody[i], "#d4b394", { hair: mHair[i], sit: true }))
   }
-  actors.push(actorAt("mcol4", "", 4.2, 4.5, 0, "#4f6180", "#8a5a3a", { hair: "#2b2b33", sit: true }))
-  actors.push(actorAt("clive", "Clive", 2.6, 1.5, 1.15, "#94a3b8", "#d4b394", { hair: "#3f3f46" }))
+  cast.push(actorAt("mcol4", "", 4.2, 4.6, Math.atan2(6 - 4.2, 6.6 - 4.6), "#4f6180", "#8a5a3a", { hair: "#2b2b33", sit: true }))
+  cast.push(actorAt("clive", "Clive", 2.6, 1.6, Math.atan2(6 - 2.6, 6.6 - 1.6), "#94a3b8", "#d4b394", { hair: "#3f3f46" }))
+  ensureActors("meeting", cast)
   objects = sceneStatic.concat(actorObjs())
   if (!cutActive) {
     cameraPos = { x: 6, y: 1.6, z: 6.6 }
@@ -1167,7 +1213,7 @@ function buildMeeting() {
 function setSlide(color) {
   slideColor = color
   buildMeeting()
-  if (confettiOn) { objects = meetingStatic.concat(confettiObjs()) }
+  composeScene()
 }
 
 function spawnConfetti() {
@@ -1207,7 +1253,7 @@ function confettiTick() {
     f.rot = f.rot + 0.12
     if (f.y <= 0.03) { f.y = 0.03; f.frozen = true } else { live = true }
   }
-  objects = meetingStatic.concat(confettiObjs())
+  composeScene()
   if (!live) { confettiOn = false }
 }
 
@@ -1373,10 +1419,12 @@ function buildFlat() {
   flatStatic = flatStatic.concat(hotspotMarkers())
   sceneStatic = flatStatic
   blockers = []
-  actors = []
+  clearConfetti()
+  let cast = []
   if (priyaHere) {
-    actors.push(actorAt("priya", "Priya", 6, 12.6, Math.PI, "#7c3aed", "#8a5a3a", { hair: "#1f2937" }))
+    cast.push(actorAt("priya", "Priya", 6, 12.6, Math.PI, "#7c3aed", "#8a5a3a", { hair: "#1f2937" }))
   }
+  ensureActors(priyaHere ? "flat-priya" : "flat", cast)
   objects = sceneStatic.concat(actorObjs())
 }
 
@@ -1539,17 +1587,19 @@ function buildBakery() {
     { x: 4, z: 10, hw: 0.7, hd: 0.7 },      // Mabel's spot
     { x: 16.5, z: 5, hw: 0.7, hd: 0.7 }     // Leo's spot
   ]
-  actors = [
+  clearConfetti()
+  let cast = [
     actorAt("mabel", "Mabel", 4, 10, 0, "#b45309", "#8a5a3a", { apron: "#fef3c7", hair: "#3f2d23" }),
     actorAt("leo", "Leo", 16.5, 5, -0.7, "#3f6212", "#a16207", { cap: "#365314", hair: "#1f2937" })
   ]
   if (bakeryDay) {
-    actors.push(actorAt("cust1", "", 6, 3, 1.57, "#7a8ba8", "#d4b394", { hair: "#4a3628", path: [[18, 3], [6, 3]], sp: 0.024 }))
-    actors.push(actorAt("cust2", "", 19, 12, -1.57, "#a8707a", "#8a5a3a", { hair: "#22262e", path: [[19, 4], [19, 12]], sp: 0.022 }))
+    cast.push(actorAt("cust1", "", 6, 3, 1.57, "#7a8ba8", "#d4b394", { hair: "#4a3628", path: [[18, 3], [6, 3]], sp: 0.024 }))
+    cast.push(actorAt("cust2", "", 19, 12, -1.57, "#a8707a", "#8a5a3a", { hair: "#22262e", path: [[19, 4], [19, 12]], sp: 0.022 }))
     if (priyaMode !== "alone" && priyaMode !== "") {
-      actors.push(actorAt("priya2", "Priya", 14, 4.6, -0.6, "#7c3aed", "#8a5a3a", { hair: "#1f2937" }))
+      cast.push(actorAt("priya2", "Priya", 14, 4.6, -0.6, "#7c3aed", "#8a5a3a", { hair: "#1f2937" }))
     }
   }
+  ensureActors(bakeryDay ? "bakeryday" : "bakery", cast)
   objects = sceneStatic.concat(actorObjs())
 }
 
@@ -1672,7 +1722,9 @@ function buildDream() {
   ]
   if (!dreamCalm) { hotspots.push({ id: "pile0", x: 13.6, z: 8.6, r: 2.0, label: "The backlog", minor: true }) }
   dreamStaticBase = dreamStaticBase.concat(hotspotMarkers(dreamCalm ? "#f8fafc" : "#7dd3fc"))
-  actors = []
+  sceneStatic = dreamStaticBase
+  blockers = []
+  ensureActors("dream", [])
   objects = dreamStaticBase.concat(dreamChairObjs(dreamCalm))
 }
 
