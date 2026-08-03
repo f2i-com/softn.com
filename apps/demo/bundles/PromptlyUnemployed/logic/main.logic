@@ -60,6 +60,20 @@ let pilotPromised = false
 let mabelTrust = 0
 let leoWrongIdx = 0
 
+// Scene 7 — the dream.
+let dreamLoop = 0
+let dreamCalm = false
+let dreamCount = 420          // the sprint countdown; it only goes down
+let dreamCountTicks = 0
+let saidDontKnow = false
+let dreamToldBacklog = false
+
+// The principle card, generalised — Scene 5 pins №1, the dream pins №2.
+let principleNum = 1
+let principleText = "Ask before assuming."
+let principleFlavor = "Written on an index card. The first thing on the wall that isn't a bill."
+let principleNext = "bakery"
+
 // Debug-card puzzle.
 let debugOpen = false
 let debugPicked = []
@@ -161,6 +175,15 @@ function tick() {
     hotspotTick()
   }
   if (scene === "meeting") { confettiTick() }
+  if (scene === "dream") {
+    dreamTick()
+    dreamCountTicks = dreamCountTicks + 1
+    if (dreamCountTicks >= 30) {
+      dreamCountTicks = 0
+      dreamCount = dreamCount - 7
+      if (!dreamCalm) { objective = "Sprint ends in " + fmtCount(dreamCount) }
+    }
+  }
   if (window.__puUse) {
     window.__puUse = false
     if (canMove() && choiceList.length === 0 && !dlgActive && hsNearId) { handleHotspot(hsNearId) }
@@ -245,9 +268,73 @@ function handleHotspot(id) {
     else if (!pilotPromised) { runDialogue(["a2_s6_mabel_053"], "bakery_pitch") }
     else { showNote("Mabel points at the door, then at an imaginary watch. One week.") }
   } else if (id === "hs_exit") {
-    if (pilotPromised) { endSlice() }
+    if (pilotPromised) { goDream() }
     else { showNote("Leaving now would waste the best accident of the week.") }
+  } else if (id === "hs_dreamdoor") {
+    if (dreamCalm) { goWake() }
+    else {
+      let opts = []
+      for (let i = 0; i < DREAM_CHOICES.length; i++) { opts.push({ id: DREAM_CHOICES[i].id, label: DREAM_CHOICES[i].label }) }
+      showChoices(opts, "dream")
+    }
   }
+}
+
+// ---- Scene 7: the Infinite Stand-up ---------------------------------------
+
+function goDream() {
+  scene = "dream"
+  dreamLoop = 0
+  dreamCalm = false
+  dreamCount = 420
+  dreamCountTicks = 0
+  dreamChairAngle = 0
+  dreamTickets = []
+  let s = gridFind(DREAM_ROWS, "S")
+  playerX = s.x
+  playerZ = s.z
+  playerAngle = Math.PI / 2
+  window.__scene3dYaw = playerAngle
+  window.__scene3dPitch = 0
+  buildDream()
+  updateCamera()
+  saveGame()
+  objective = "Sprint ends in " + fmtCount(dreamCount)
+  showNote("Home. You build until the lines blur. Somewhere between one keystroke and the next, the office finds you again.")
+  runDialogue(["a2_s7_pax_070", "a2_s7_clive_071"], "")
+}
+
+function fmtCount(n) {
+  let neg = n < 0
+  let a = Math.abs(n)
+  let m = Math.floor(a / 60)
+  let sec = a % 60
+  return (neg ? "-" : "") + m + ":" + (sec < 10 ? "0" : "") + sec
+}
+
+function dreamLoopBack() {
+  dreamLoop = dreamLoop + 1
+  let s = gridFind(DREAM_ROWS, "S")
+  playerX = s.x
+  playerZ = s.z
+  buildDream()
+  updateCamera()
+}
+
+function goWake() {
+  scene = "flat"
+  dreamCalm = false
+  phoneRinging = false
+  let s = gridFind(FLAT_ROWS, "S")
+  playerX = s.x
+  playerZ = s.z
+  playerAngle = Math.PI
+  window.__scene3dYaw = playerAngle
+  window.__scene3dPitch = 0
+  buildFlat()
+  updateCamera()
+  objective = "Morning. Somehow."
+  runDialogue(["a2_s7_luma_074"], "wake_done")
 }
 
 // Debug-card puzzle: click the three cards in cause-to-cure order.
@@ -336,6 +423,19 @@ function handleDialogueDone(tag) {
     objective = "Head home. Build the thing."
     addLog("PROMISED: a working prototype for The Last Crumb, one week")
     saveGame()
+  } else if (tag === "dream_calm") {
+    dreamCalm = true
+    saidDontKnow = true
+    softn.audio.stopAll()
+    buildDream()
+    objective = "The room is quiet."
+    addLog("ADMITTED: 'I don't know yet' — the backlog stopped applauding")
+  } else if (tag === "wake_done") {
+    principleNum = 2
+    principleText = "Say when you do not know."
+    principleFlavor = "Learned in a room that only went quiet when you said it."
+    principleNext = "end"
+    principleUp = true
   }
 }
 
@@ -383,6 +483,19 @@ function handleChoice(tag, id) {
     else if (id === "vulnerable") { collaboration = collaboration + 1; mabelTrust = mabelTrust + 1; addLog("ADMITTED: it does not exist yet. Mabel respected that") }
     if (c) { showNote(c.reply) }
     runDialogue(["a2_s6_mabel_055", "a2_s6_alex_054", "a2_s6_luma_056", "a2_s6_mabel_057", "a2_s6_leo_058", "a2_s6_alex_059", "a2_s6_sys_060"], "bakery_done")
+  } else if (tag === "dream") {
+    let c = null
+    for (let i = 0; i < DREAM_CHOICES.length; i++) { if (DREAM_CHOICES[i].id === id) { c = DREAM_CHOICES[i] } }
+    if (id === "know") {
+      runDialogue(["a2_s7_alex_073"], "dream_calm")
+    } else {
+      if (c && c.reply) { showNote(c.reply) }
+      if (!dreamToldBacklog && id === "finish") {
+        dreamToldBacklog = true
+        runDialogue(["a2_s7_alex_072"], "")
+      }
+      dreamLoopBack()
+    }
   }
 }
 
@@ -531,9 +644,13 @@ function submitWs() {
 function pinPrinciple() {
   principleUp = false
   sfx("chime")
-  addLog("PRINCIPLE #1: ask before assuming")
-  showNote("Dinner is unaffordable. The Last Crumb is five minutes away and nearly closing.")
-  goBakery()
+  addLog("PRINCIPLE #" + principleNum + ": " + principleText.toLowerCase().replace(".", ""))
+  if (principleNext === "bakery") {
+    showNote("Dinner is unaffordable. The Last Crumb is five minutes away and nearly closing.")
+    goBakery()
+  } else {
+    endSlice()
+  }
 }
 
 // ---- Scene 6: The Last Crumb ----------------------------------------------
@@ -614,6 +731,7 @@ function endingSummary() {
   if (ruthHonesty === 1) { bits.push("Ruth knows. It helped.") }
   else if (ruthHonesty === 0) { bits.push("Ruth suspects. Mothers do.") }
   if (pilotPromised) { bits.push("The Last Crumb expects a prototype in one week. Mabel " + (mabelTrust > 0 ? "believes you, cautiously." : "is reserving judgement.")) }
+  if (saidDontKnow) { bits.push("You said “I don't know yet,” and the room went quiet.") }
   if (clue8471) { bits.push("Someone left before you did. Desk 41.") }
   return bits
 }
@@ -631,7 +749,8 @@ function saveGame() {
     clue8471: clue8471, aidaEvidence: aidaEvidence, priyaEvidence: priyaEvidence,
     keptItems: keptItems, cancelledIds: cancelledIds, budgetDone: budgetDone,
     ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId,
-    ordersDone: ordersDone, pilotPromised: pilotPromised, mabelTrust: mabelTrust
+    ordersDone: ordersDone, pilotPromised: pilotPromised, mabelTrust: mabelTrust,
+    saidDontKnow: saidDontKnow
   }
   try { localStorage.setItem("pu:autosave", JSON.stringify(save)); hasSave = true } catch (err) {}
 }
@@ -652,10 +771,12 @@ function continueGame() {
   budgetDone = !!s.budgetDone; ruthDone = !!s.ruthDone
   productName = s.productName || ""; meetChoiceId = s.meetChoiceId || ""
   ordersDone = !!s.ordersDone; pilotPromised = !!s.pilotPromised; mabelTrust = s.mabelTrust || 0
+  saidDontKnow = !!s.saidDontKnow
   // Checkpoints are scene entries; re-enter the saved scene fresh.
   if (s.scene === "meeting") { enterMeeting() }
   else if (s.scene === "boxes") { enterBoxes() }
   else if (s.scene === "bakery") { goBakery() }
+  else if (s.scene === "dream") { goDream() }
   else if (s.scene === "flat" || s.scene === "luma") { goFlat() }
   else if (s.scene === "done") { summaryLines = endingSummary(); scene = "done" }
   else { startOffice() }
@@ -673,6 +794,11 @@ function newGame() {
   productName = ""; principleUp = false; debugOpen = false; debugPicked = []
   ordersOpen = false; orderPicks = { o1: "", o2: "", o3: "" }; ordersDone = false
   pilotPromised = false; mabelTrust = 0; leoWrongIdx = 0
+  dreamLoop = 0; dreamCalm = false; dreamCount = 420; dreamCountTicks = 0
+  saidDontKnow = false; dreamToldBacklog = false; dreamTickets = []
+  principleNum = 1; principleText = "Ask before assuming."
+  principleFlavor = "Written on an index card. The first thing on the wall that isn't a bill."
+  principleNext = "bakery"
   noteText = ""; noteTicks = 0; transcript = []
   dlgActive = false; dlgQueue = []; dlgDoneTag = ""; choiceList = []; choiceTag = ""
   startOffice()
@@ -685,8 +811,8 @@ function backToTitle() {
 
 // ---- Template helpers -----------------------------------------------------
 
-function inWorld() { return scene === "office" || scene === "meeting" || scene === "flat" || scene === "bakery" }
-function canMove() { return scene === "office" || scene === "flat" || scene === "bakery" }
+function inWorld() { return scene === "office" || scene === "meeting" || scene === "flat" || scene === "bakery" || scene === "dream" }
+function canMove() { return scene === "office" || scene === "flat" || scene === "bakery" || scene === "dream" }
 function showCaptionBar() { return scene !== "title" }
 function toggleTranscript() { transcriptOpen = !transcriptOpen }
 function hudPrompt() {

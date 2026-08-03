@@ -1,7 +1,11 @@
 // 3D world: authored grids, first-person movement, scene builders, hotspots,
-// and the Scene 2 confetti. Patterns follow MazeEscape3D: axis-separated AABB
+// confetti, and the dream. Patterns follow MazeEscape3D: axis-separated AABB
 // collision over an ASCII grid, camera derived from our own yaw every frame,
-// static geometry built once and only dynamic pieces rebuilt.
+// static geometry built once and only dynamic pieces rebuilt per tick.
+//
+// Look: no engine shadows (the directional shadow frustum is untunable today),
+// so depth comes from fog, ceilings, emissive light panels, two-tone walls,
+// and a strict colour script per scene.
 
 let CELL = 2
 let PLAYER_R = 0.35
@@ -16,8 +20,10 @@ let cameraLookAt = { x: 4, y: 1.6, z: 9 }
 
 let objects = []
 let lights = []
+let sceneFog = { color: "#10141d", near: 18, far: 60 }
+let sceneBg = "#0b0f17"
 
-// The office floor. One string per row; width must be uniform (validated in _init).
+// The office floor. One string per row; width must be uniform.
 let OFFICE_ROWS = [
   "################",
   "#....##....#...#",
@@ -43,7 +49,30 @@ let FLAT_ROWS = [
   "##########"
 ]
 
-let grid = []          // active collision grid, 1 = solid
+let BAKERY_ROWS = [
+  "#############",
+  "#..........D#",
+  "#.A......B..#",
+  "#...####....#",
+  "#...#..#..P.#",
+  "#.M.####....#",
+  "#...........#",
+  "#S..........#",
+  "#############"
+]
+
+let DREAM_ROWS = [
+  "############",
+  "#..........#",
+  "#.S........#",
+  "#....W.....#",
+  "#..........#",
+  "#.........D#",
+  "#..........#",
+  "############"
+]
+
+let grid = []
 let gridCols = 0
 let gridRows = 0
 
@@ -117,7 +146,7 @@ function updateCamera() {
 
 // ---- Hotspots -------------------------------------------------------------
 
-let hotspots = []      // active set: {id, x, z, r, label}
+let hotspots = []
 let hsNearId = ""
 let hsNearLabel = ""
 
@@ -146,10 +175,19 @@ function onSceneClick(info) {
   }
 }
 
-// ---- Scene builders -------------------------------------------------------
+// ---- Shared builders ------------------------------------------------------
+
+function hexShade(hex, f) {
+  let r = Math.round(parseInt(hex.slice(1, 3), 16) * f)
+  let g = Math.round(parseInt(hex.slice(3, 5), 16) * f)
+  let b = Math.round(parseInt(hex.slice(5, 7), 16) * f)
+  let h = (n) => { let s = n.toString(16); return s.length < 2 ? "0" + s : s }
+  return "#" + h(r) + h(g) + h(b)
+}
 
 function wallsFrom(rows, color, height) {
   let out = []
+  let dark = hexShade(color, 0.86)
   for (let r = 0; r < rows.length; r++) {
     for (let c = 0; c < rows[r].length; c++) {
       if (rows[r].charAt(c) !== "#") { continue }
@@ -157,17 +195,12 @@ function wallsFrom(rows, color, height) {
         id: "w" + r + "_" + c, type: "box",
         position: { x: c * CELL, y: height / 2, z: r * CELL },
         width: CELL, height: height, depth: CELL,
-        color: (r + c) % 2 === 0 ? color : shade(color),
+        color: (r + c) % 2 === 0 ? color : dark,
         metalness: 0.05, roughness: 0.9
       })
     }
   }
   return out
-}
-
-function shade(hex) {
-  // Cheap two-tone: nudge the blue channel so wall runs read as panels.
-  return hex === "#3b4a63" ? "#33415a" : (hex === "#4a3b36" ? "#42352f" : hex)
 }
 
 function floorPlane(w, d, color) {
@@ -179,61 +212,152 @@ function floorPlane(w, d, color) {
   }
 }
 
+function ceilingPlane(w, d, y, color) {
+  return {
+    id: "ceiling", type: "plane",
+    position: { x: w / 2, y: y, z: d / 2 },
+    rotation: { x: Math.PI / 2, y: 0, z: 0 },
+    width: w + 4, height: d + 4, color: color, roughness: 1
+  }
+}
+
+function lightPanel(id, x, z, y, tint) {
+  return { id: id, type: "box", position: { x: x, y: y, z: z },
+    width: 2.6, height: 0.06, depth: 1.1, color: "#f8fafc",
+    emissive: tint, emissiveIntensity: 1.4 }
+}
+
+// A little person: legs, torso, head. dir turns them; dark makes a silhouette.
+function fig(id, x, z, dir, bodyColor, headColor) {
+  return [
+    { id: id + "_l", type: "box", position: { x: x, y: 0.28, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.34, height: 0.56, depth: 0.26, color: hexShade(bodyColor, 0.7) },
+    { id: id + "_t", type: "box", position: { x: x, y: 0.86, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.5, height: 0.62, depth: 0.3, color: bodyColor },
+    { id: id + "_h", type: "sphere", position: { x: x, y: 1.4, z: z }, radius: 0.19, color: headColor }
+  ]
+}
+
+function chairAt(id, x, z, dir, color) {
+  let bx = Math.sin(dir) * -0.22, bz = Math.cos(dir) * -0.22
+  return [
+    { id: id + "_s", type: "box", position: { x: x, y: 0.45, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.5, height: 0.08, depth: 0.5, color: color },
+    { id: id + "_b", type: "box", position: { x: x + bx, y: 0.78, z: z + bz }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.5, height: 0.6, depth: 0.08, color: color },
+    { id: id + "_p", type: "cylinder", position: { x: x, y: 0.22, z: z }, radius: 0.05, height: 0.45, color: "#1f2430" }
+  ]
+}
+
+function plantAt(id, x, z) {
+  return [
+    { id: id + "_pot", type: "cylinder", position: { x: x, y: 0.25, z: z }, radius: 0.22, height: 0.5, color: "#8a5a3a" },
+    { id: id + "_top", type: "icosahedron", position: { x: x, y: 0.85, z: z }, radius: 0.4, color: "#3f8f4f", roughness: 1 }
+  ]
+}
+
 function deskAt(id, x, z, screen) {
-  let out = [{
-    id: id, type: "box", position: { x: x, y: 0.38, z: z },
-    width: 1.7, height: 0.76, depth: 0.85, color: "#5b6b84", metalness: 0.1, roughness: 0.8
-  }]
+  let out = [
+    { id: id, type: "box", position: { x: x, y: 0.38, z: z },
+      width: 1.7, height: 0.06, depth: 0.85, color: "#5b6b84", metalness: 0.1, roughness: 0.7 },
+    { id: id + "_l1", type: "box", position: { x: x - 0.75, y: 0.18, z: z }, width: 0.08, height: 0.36, depth: 0.7, color: "#3a4356" },
+    { id: id + "_l2", type: "box", position: { x: x + 0.75, y: 0.18, z: z }, width: 0.08, height: 0.36, depth: 0.7, color: "#3a4356" }
+  ]
   if (screen) {
-    out.push({
-      id: id + "_scr", type: "box", position: { x: x, y: 1.05, z: z - 0.25 },
-      width: 0.62, height: 0.4, depth: 0.05, color: "#0b1220",
-      emissive: screen, emissiveIntensity: 0.9
-    })
+    out.push({ id: id + "_scr", type: "box", position: { x: x, y: 0.72, z: z - 0.22 },
+      width: 0.62, height: 0.4, depth: 0.04, color: "#0b1220",
+      emissive: screen, emissiveIntensity: 1.0 })
+    out.push({ id: id + "_kb", type: "box", position: { x: x, y: 0.43, z: z + 0.15 },
+      width: 0.5, height: 0.03, depth: 0.2, color: "#232b3b" })
+  } else {
+    out.push({ id: id + "_pap", type: "box", position: { x: x + 0.3, y: 0.42, z: z },
+      width: 0.3, height: 0.015, depth: 0.4, color: "#d7dce6" })
   }
   return out
 }
+
+function posterAt(id, x, z, y, w, h, color, faceZ) {
+  return { id: id, type: "box", position: { x: x, y: y, z: z },
+    width: w, height: h, depth: 0.04, color: hexShade(color, 0.25),
+    emissive: color, emissiveIntensity: 0.55, rotation: { x: 0, y: faceZ ? 0 : Math.PI / 2, z: 0 } }
+}
+
+// ---- Office ---------------------------------------------------------------
 
 let officeStatic = []
 
 function buildOffice() {
   loadGrid(OFFICE_ROWS)
-  let objs = [floorPlane(30, 20, "#232b3b")]
-  objs = objs.concat(wallsFrom(OFFICE_ROWS, "#3b4a63", 2.6))
-  // Desks on the open floor — half of them conspicuously cleared.
+  sceneFog = { color: "#1a2233", near: 22, far: 64 }
+  sceneBg = "#0d1119"
+  let objs = [floorPlane(30, 20, "#2d374d"), ceilingPlane(30, 20, 2.6, "#232b3d")]
+  objs = objs.concat(wallsFrom(OFFICE_ROWS, "#48597a", 2.6))
+  // Ceiling light panels.
+  objs.push(lightPanel("lp1", 8, 6, 2.56, "#dbe6ff"))
+  objs.push(lightPanel("lp2", 22, 12, 2.56, "#dbe6ff"))
+  objs.push(lightPanel("lp3", 13, 14, 2.56, "#dbe6ff"))
+  objs.push(lightPanel("lp4", 24, 4, 2.56, "#dbe6ff"))
+  // Desks — half of them conspicuously cleared — with chairs.
   let desks = [
-    [8, 4, "#38bdf8"], [8, 8, ""], [18, 4, "#38bdf8"], [18, 8, ""],
-    [4, 8, ""], [24, 6, "#38bdf8"], [24, 12, ""], [8, 13, "#38bdf8"]
+    [8, 4, "#38bdf8", 0.5], [8, 8, "", -0.4], [18, 4, "#38bdf8", 0.2], [18, 8, "", 0.9],
+    [4, 8, "", 0], [24, 6, "#38bdf8", -0.6], [24, 12, "", 0.3], [8, 13, "#38bdf8", 1.2]
   ]
   for (let i = 0; i < desks.length; i++) {
     objs = objs.concat(deskAt("desk" + i, desks[i][0], desks[i][1], desks[i][2]))
+    objs = objs.concat(chairAt("chair" + i, desks[i][0], desks[i][1] + 1.0, desks[i][3], "#2c3547"))
+  }
+  // The two colleagues who are still here.
+  objs = objs.concat(fig("col1", 18, 3.0, Math.PI, "#4f6180", "#d4b394"))
+  objs = objs.concat(fig("col2", 9.2, 13.6, -1.1, "#5b5470", "#8a5a3a"))
+  // Plants, posters, and the taped-off Dynamic Collaboration Space.
+  objs = objs.concat(plantAt("plant1", 13, 2))
+  objs = objs.concat(plantAt("plant2", 2, 17.8))
+  objs.push(posterAt("post1", 6, 1.06, 1.6, 1.6, 1.0, "#38bdf8", true))
+  objs.push(posterAt("post2", 17, 1.06, 1.6, 1.6, 1.0, "#f472b6", true))
+  objs.push(posterAt("post3", 10, 1.06, 1.55, 1.2, 0.8, "#4ade80", true))
+  let tape = [[14, 17, 4, 0.08], [14, 18.9, 4, 0.08], [12.05, 18, 0.08, 2], [15.95, 18, 0.08, 2]]
+  for (let i = 0; i < tape.length; i++) {
+    objs.push({ id: "tape" + i, type: "box", position: { x: tape[i][0], y: 0.02, z: tape[i][1] },
+      width: tape[i][2], height: 0.02, depth: tape[i][3], color: "#facc15",
+      emissive: "#facc15", emissiveIntensity: 0.5 })
   }
   // Interactive props (ids double as hotspot ids).
   objs.push({ id: "hs_coffee", type: "box", position: { x: 4, y: 0.7, z: 14 },
     width: 0.8, height: 1.4, depth: 0.8, color: "#6b7280",
-    emissive: "#f87171", emissiveIntensity: coffeeFixed ? 0 : 0.8 })
+    emissive: coffeeFixed ? "#4ade80" : "#f87171", emissiveIntensity: coffeeFixed ? 0.3 : 0.9 })
+  objs.push({ id: "coffee_cup", type: "cylinder", position: { x: 4, y: 1.48, z: 13.7 }, radius: 0.08, height: 0.14, color: "#f8fafc" })
   objs.push({ id: "hs_board", type: "box", position: { x: 26, y: 1.4, z: 3.2 },
     width: 2.2, height: 1.3, depth: 0.12, color: "#111827",
     emissive: "#fbbf24", emissiveIntensity: debugDone ? 0.15 : 0.7 })
+  let cardCols = ["#f87171", "#fbbf24", "#4ade80"]
+  for (let i = 0; i < 3; i++) {
+    objs.push({ id: "bcard" + i, type: "box", position: { x: 25.3 + i * 0.7, y: 1.5, z: 3.12 },
+      width: 0.5, height: 0.34, depth: 0.03, color: hexShade(cardCols[i], 0.3),
+      emissive: cardCols[i], emissiveIntensity: 0.6 })
+  }
   objs.push({ id: "hs_desk41", type: "box", position: { x: 22, y: 0.5, z: 14 },
     width: 1.7, height: 1.0, depth: 0.85, color: "#4b5563",
     emissive: "#a78bfa", emissiveIntensity: notebookSeen ? 0.1 : 0.5 })
+  objs.push({ id: "notebook41", type: "box", position: { x: 22, y: 1.03, z: 14 },
+    width: 0.34, height: 0.05, depth: 0.46, color: "#e7e2d5" })
   objs.push({ id: "hs_meeting", type: "box", position: { x: 28, y: 1.1, z: 16 },
     width: 0.3, height: 2.2, depth: 1.8, color: "#1f2937",
-    emissive: "#4ade80", emissiveIntensity: 0.9,
-    animate: { rotateY: 0 } })
-  // “HUMAN POTENTIAL WEEK” lobby screen.
+    emissive: "#4ade80", emissiveIntensity: 0.9 })
+  objs.push({ id: "doorframe", type: "box", position: { x: 28, y: 2.3, z: 16 },
+    width: 0.4, height: 0.2, depth: 2.0, color: "#111827" })
   objs.push({ id: "lobby_banner", type: "box", position: { x: 13, y: 2.1, z: 1.2 },
-    width: 5, height: 0.9, depth: 0.1, color: "#0b1220", emissive: "#38bdf8", emissiveIntensity: 1.1 })
+    width: 5, height: 0.9, depth: 0.1, color: "#0b1220", emissive: "#38bdf8", emissiveIntensity: 1.2 })
   officeStatic = objs
   objects = officeStatic
   lights = [
-    { id: "amb", type: "ambient", color: "#aab6d0", intensity: 1.7 },
-    { id: "hemi", type: "hemisphere", color: "#cdd6ea", groundColor: "#4a5570", intensity: 1.0 },
-    { id: "p1", type: "point", color: "#e2e8f0", intensity: 2.2, position: { x: 8, y: 2.4, z: 6 } },
-    { id: "p2", type: "point", color: "#e2e8f0", intensity: 2.2, position: { x: 22, y: 2.4, z: 12 } },
-    { id: "p3", type: "point", color: "#fbe4bb", intensity: 1.8, position: { x: 6, y: 2.4, z: 14 } },
-    { id: "p4", type: "point", color: "#e2e8f0", intensity: 1.8, position: { x: 24, y: 2.4, z: 4 } }
+    { id: "amb", type: "ambient", color: "#b6c2dc", intensity: 1.8 },
+    { id: "hemi", type: "hemisphere", color: "#dbe4f5", groundColor: "#57648a", intensity: 1.4 },
+    { id: "dir", type: "directional", color: "#dbe6ff", intensity: 0.7, position: { x: 20, y: 14, z: 8 } },
+    { id: "dir2", type: "directional", color: "#c8d4f0", intensity: 0.5, position: { x: -8, y: 12, z: 26 } },
+    { id: "p1", type: "point", color: "#e2e8f0", intensity: 2.0, position: { x: 8, y: 2.3, z: 6 } },
+    { id: "p2", type: "point", color: "#e2e8f0", intensity: 2.0, position: { x: 22, y: 2.3, z: 12 } },
+    { id: "p3", type: "point", color: "#fbe4bb", intensity: 1.6, position: { x: 6, y: 2.3, z: 14 } },
+    { id: "p4", type: "point", color: "#e2e8f0", intensity: 1.6, position: { x: 24, y: 2.3, z: 4 } }
   ]
   hotspots = [
     { id: "hs_coffee",  x: 4,  z: 14, r: 1.9, label: coffeeFixed ? "Coffee machine (fixed)" : "Rescue the coffee machine" },
@@ -243,37 +367,53 @@ function buildOffice() {
   ]
 }
 
+// ---- Meeting --------------------------------------------------------------
+
 let meetingStatic = []
-let confetti = []      // {x,y,z,vy,drift,rot,color,frozen}
+let confetti = []
 let confettiOn = false
 let slideColor = "#38bdf8"
 
 function buildMeeting() {
-  let objs = [floorPlane(12, 9, "#1d2433")]
-  // Shell walls.
-  objs.push({ id: "mw_back",  type: "box", position: { x: 6, y: 1.5, z: -0.4 }, width: 13, height: 3, depth: 0.6, color: "#2b3550" })
-  objs.push({ id: "mw_left",  type: "box", position: { x: -0.4, y: 1.5, z: 4 }, width: 0.6, height: 3, depth: 10, color: "#2b3550" })
-  objs.push({ id: "mw_right", type: "box", position: { x: 12.4, y: 1.5, z: 4 }, width: 0.6, height: 3, depth: 10, color: "#2b3550" })
-  // The presentation screen and PAX.
-  objs.push({ id: "mscreen", type: "box", position: { x: 6, y: 1.7, z: 0.15 },
-    width: 5.4, height: 2.2, depth: 0.1, color: "#0b1220", emissive: slideColor, emissiveIntensity: 1.2 })
+  sceneFog = { color: "#141a2a", near: 12, far: 34 }
+  sceneBg = "#0c101c"
+  let objs = [floorPlane(12, 9, "#20283a"), ceilingPlane(12, 9, 3.0, "#171d2c")]
+  objs.push({ id: "rug", type: "plane", position: { x: 6, y: 0.012, z: 3.6 },
+    rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 8, height: 4.4, color: "#2a3145" })
+  objs.push(lightPanel("mlp1", 6, 3.4, 2.96, "#dbe6ff"))
+  // Shell walls with glass sides.
+  objs.push({ id: "mw_back",  type: "box", position: { x: 6, y: 1.5, z: -0.4 }, width: 13, height: 3.2, depth: 0.6, color: "#2b3550" })
+  objs.push({ id: "mw_glassL", type: "box", position: { x: -0.35, y: 1.5, z: 4 }, width: 0.15, height: 3.0, depth: 9.6, color: "#7dd3fc", opacity: 0.16 })
+  objs.push({ id: "mw_glassR", type: "box", position: { x: 12.35, y: 1.5, z: 4 }, width: 0.15, height: 3.0, depth: 9.6, color: "#7dd3fc", opacity: 0.16 })
+  // The presentation screen in a frame, and PAX.
+  objs.push({ id: "mframe", type: "box", position: { x: 6, y: 1.7, z: 0.1 },
+    width: 5.8, height: 2.6, depth: 0.08, color: "#0a0e18" })
+  objs.push({ id: "mscreen", type: "box", position: { x: 6, y: 1.7, z: 0.16 },
+    width: 5.4, height: 2.2, depth: 0.06, color: "#0b1220", emissive: slideColor, emissiveIntensity: 1.25 })
   objs.push({ id: "pax", type: "torus", position: { x: 9.6, y: 1.9, z: 0.6 }, radius: 0.42,
-    color: "#f8fafc", emissive: "#fb7185", emissiveIntensity: 1.4,
+    color: "#f8fafc", emissive: "#fb7185", emissiveIntensity: 1.5,
     animate: { rotateY: 0.02, floatAmplitude: 0.08, floatSpeed: 1.4 } })
-  // Table and colleagues.
+  objs.push({ id: "pax_core", type: "sphere", position: { x: 9.6, y: 1.9, z: 0.6 }, radius: 0.14,
+    color: "#fb7185", emissive: "#fecdd3", emissiveIntensity: 1.8,
+    animate: { floatAmplitude: 0.08, floatSpeed: 1.4 } })
+  // Table, chairs, colleagues.
   objs.push({ id: "mtable", type: "box", position: { x: 6, y: 0.72, z: 3.4 }, width: 6.4, height: 0.12, depth: 2.2, color: "#7c6f5a", roughness: 0.7 })
-  let seats = [[3.4, 2.5], [5.1, 2.5], [6.9, 2.5], [8.6, 2.5], [4.2, 4.4]]
+  objs.push({ id: "mtleg1", type: "cylinder", position: { x: 3.4, y: 0.36, z: 3.4 }, radius: 0.09, height: 0.72, color: "#4a4336" })
+  objs.push({ id: "mtleg2", type: "cylinder", position: { x: 8.6, y: 0.36, z: 3.4 }, radius: 0.09, height: 0.72, color: "#4a4336" })
+  let seats = [[3.4, 2.5, 0], [5.1, 2.5, 0], [6.9, 2.5, 0], [8.6, 2.5, 0], [4.2, 4.4, Math.PI]]
+  let bodyCols = ["#64748b", "#5b6478", "#94a3b8", "#63586e", "#4f6180"]
   for (let i = 0; i < seats.length; i++) {
-    objs.push({ id: "col" + i, type: "box", position: { x: seats[i][0], y: 1.05, z: seats[i][1] },
-      width: 0.55, height: 1.15, depth: 0.45, color: i === 2 ? "#94a3b8" : "#64748b" })
-    objs.push({ id: "colh" + i, type: "sphere", position: { x: seats[i][0], y: 1.85, z: seats[i][1] }, radius: 0.24, color: "#d4c3ae" })
+    objs = objs.concat(chairAt("mchair" + i, seats[i][0], seats[i][1], seats[i][2], "#2c3547"))
+    objs.push({ id: "mcol" + i + "_t", type: "box", position: { x: seats[i][0], y: 0.95, z: seats[i][1] },
+      rotation: { x: 0, y: seats[i][2], z: 0 }, width: 0.52, height: 0.6, depth: 0.32, color: bodyCols[i] })
+    objs.push({ id: "mcol" + i + "_h", type: "sphere", position: { x: seats[i][0], y: 1.5, z: seats[i][1] }, radius: 0.2, color: "#d4b394" })
   }
   meetingStatic = objs
   objects = meetingStatic
   lights = [
-    { id: "amb", type: "ambient", color: "#9fb0d6", intensity: 1.0 },
-    { id: "scr", type: "point", color: slideColor, intensity: 2.2, position: { x: 6, y: 2, z: 1.4 } },
-    { id: "fill", type: "point", color: "#e2e8f0", intensity: 1.0, position: { x: 6, y: 2.6, z: 5.5 } }
+    { id: "amb", type: "ambient", color: "#9fb0d6", intensity: 1.25 },
+    { id: "scr", type: "point", color: slideColor, intensity: 2.6, position: { x: 6, y: 2, z: 1.4 } },
+    { id: "fill", type: "point", color: "#e2e8f0", intensity: 1.2, position: { x: 6, y: 2.6, z: 5.5 } }
   ]
   hotspots = []
   cameraPos = { x: 6, y: 1.5, z: 6.6 }
@@ -324,64 +464,103 @@ function confettiTick() {
     if (f.y <= 0.03) { f.y = 0.03; f.frozen = true } else { live = true }
   }
   objects = meetingStatic.concat(confettiObjs())
-  if (!live) { confettiOn = false }   // all settled; last rebuild leaves them on the floor
+  if (!live) { confettiOn = false }
 }
+
+// ---- Flat -----------------------------------------------------------------
 
 let flatStatic = []
 
 function buildFlat() {
   loadGrid(FLAT_ROWS)
-  let objs = [floorPlane(18, 14, "#3a3128")]
-  objs = objs.concat(wallsFrom(FLAT_ROWS, "#4a3b36", 2.5))
-  // Window: a dark city rectangle on the far wall.
-  objs.push({ id: "window", type: "box", position: { x: 9, y: 1.6, z: 0.9 },
-    width: 2.6, height: 1.3, depth: 0.08, color: "#0b1026", emissive: "#1e2a55", emissiveIntensity: 0.8 })
-  // Bed and clutter.
-  objs.push({ id: "bed", type: "box", position: { x: 14.5, y: 0.3, z: 10.5 }, width: 2.2, height: 0.6, depth: 3.4, color: "#7a5c68" })
+  sceneFog = { color: "#1c150e", near: 10, far: 32 }
+  sceneBg = "#120d08"
+  let objs = [floorPlane(18, 14, "#41352a"), ceilingPlane(18, 14, 2.5, "#251d15")]
+  objs = objs.concat(wallsFrom(FLAT_ROWS, "#4d3e37", 2.5))
+  objs.push({ id: "rug", type: "plane", position: { x: 8, y: 0.012, z: 7 },
+    rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 6, height: 4.5, color: "#6b4a3a" })
+  // Window: night city on the far wall.
+  objs.push({ id: "winframe", type: "box", position: { x: 9, y: 1.6, z: 1.04 }, width: 2.9, height: 1.6, depth: 0.06, color: "#2a2018" })
+  objs.push({ id: "window", type: "box", position: { x: 9, y: 1.6, z: 1.08 },
+    width: 2.6, height: 1.3, depth: 0.05, color: "#0b1026", emissive: "#16204a", emissiveIntensity: 0.9 })
+  objs.push({ id: "moon", type: "sphere", position: { x: 9.8, y: 2.0, z: 1.12 }, radius: 0.14,
+    color: "#f8fafc", emissive: "#e6ecff", emissiveIntensity: 1.6 })
+  let cityCols = [8.2, 8.7, 9.1, 9.5, 10.0]
+  for (let i = 0; i < cityCols.length; i++) {
+    objs.push({ id: "city" + i, type: "box", position: { x: cityCols[i], y: 1.15 + (i % 3) * 0.12, z: 1.12 },
+      width: 0.16, height: 0.3 + (i % 2) * 0.2, depth: 0.03, color: "#0b1026",
+      emissive: "#f59e0b", emissiveIntensity: 0.55 })
+  }
+  // Bed with mattress, pillow, blanket.
+  objs.push({ id: "bed", type: "box", position: { x: 14.5, y: 0.22, z: 10.5 }, width: 2.2, height: 0.44, depth: 3.4, color: "#5c4033" })
+  objs.push({ id: "mattress", type: "box", position: { x: 14.5, y: 0.5, z: 10.5 }, width: 2.05, height: 0.18, depth: 3.25, color: "#cbb9a2" })
+  objs.push({ id: "pillow", type: "box", position: { x: 14.5, y: 0.63, z: 9.2 }, width: 1.1, height: 0.14, depth: 0.6, color: "#e8ddc9" })
+  objs.push({ id: "blanket", type: "box", position: { x: 14.5, y: 0.61, z: 11.3 }, width: 2.06, height: 0.1, depth: 1.6, color: "#7a5c68" })
+  // Bookshelf.
+  objs.push({ id: "shelf", type: "box", position: { x: 12.5, y: 0.9, z: 12.9 }, width: 2.2, height: 1.8, depth: 0.4, color: "#3a2e24" })
+  let bookCols = ["#f87171", "#38bdf8", "#4ade80", "#facc15", "#c084fc", "#fb923c"]
+  for (let i = 0; i < 6; i++) {
+    objs.push({ id: "book" + i, type: "box", position: { x: 11.7 + i * 0.28, y: 1.35, z: 12.85 },
+      width: 0.18, height: 0.52, depth: 0.3, color: bookCols[i], roughness: 1 })
+  }
+  // Fairy lights along the west wall — they survive every budget cut.
+  for (let i = 0; i < 8; i++) {
+    objs.push({ id: "fairy" + i, type: "sphere", position: { x: 1.15, y: 2.1 - (i % 2) * 0.14, z: 3 + i * 1.1 },
+      radius: 0.045, color: "#fde68a", emissive: "#fde68a", emissiveIntensity: 1.6 })
+  }
+  // Moving boxes.
   objs.push({ id: "boxpile", type: "box", position: { x: 3, y: 0.55, z: 9.5 }, width: 1.4, height: 1.1, depth: 1.2, color: "#8a6f4d" })
-  // Desk with the laptop (budget) — hotspot.
-  objs.push({ id: "hs_laptop", type: "box", position: { x: 2, y: 0.45, z: 2 }, width: 1.8, height: 0.9, depth: 0.9, color: "#5c4a3d" })
-  objs.push({ id: "laptop_scr", type: "box", position: { x: 2, y: 1.15, z: 1.7 }, width: 0.7, height: 0.45, depth: 0.05,
-    color: "#0b1220", emissive: budgetDone ? "#4ade80" : "#f59e0b", emissiveIntensity: 1.0 })
-  // The phone — hotspot once it rings.
+  objs.push({ id: "boxpile2", type: "box", position: { x: 3.5, y: 1.35, z: 9.3 }, width: 0.9, height: 0.5, depth: 0.8, color: "#77603f" })
+  // Desk with the laptop (budget) — hotspot — plus lamp.
+  objs.push({ id: "hs_laptop", type: "box", position: { x: 2, y: 0.42, z: 2 }, width: 1.8, height: 0.84, depth: 0.9, color: "#5c4a3d" })
+  objs.push({ id: "laptop_scr", type: "box", position: { x: 2, y: 1.12, z: 1.7 }, width: 0.7, height: 0.45, depth: 0.05,
+    color: "#0b1220", emissive: budgetDone ? "#4ade80" : "#f59e0b", emissiveIntensity: 1.1 })
+  objs.push({ id: "lamp_pole", type: "cylinder", position: { x: 1.2, y: 1.0, z: 1.4 }, radius: 0.04, height: 0.9, color: "#2a2018" })
+  objs.push({ id: "lamp_head", type: "sphere", position: { x: 1.2, y: 1.5, z: 1.4 }, radius: 0.14,
+    color: "#fbbf6b", emissive: "#fbbf6b", emissiveIntensity: 1.4 })
+  // The phone.
   objs.push({ id: "hs_phone", type: "box", position: { x: 16, y: 0.55, z: 2 }, width: 0.5, height: 1.1, depth: 0.5, color: "#3f3f46",
-    emissive: "#22d3ee", emissiveIntensity: phoneRinging ? 1.4 : 0.1,
+    emissive: "#22d3ee", emissiveIntensity: phoneRinging ? 1.5 : 0.12,
     animate: phoneRinging ? { floatAmplitude: 0.05, floatSpeed: 6 } : { rotateY: 0 } })
-  // LUMA terminal — hotspot, locked until the budget is faced.
+  // LUMA terminal.
   objs.push({ id: "hs_luma", type: "box", position: { x: 14, y: 0.9, z: 8 }, width: 1.2, height: 1.8, depth: 0.5, color: "#1f2937",
-    emissive: "#a78bfa", emissiveIntensity: budgetDone ? 1.2 : 0.25 })
+    emissive: "#a78bfa", emissiveIntensity: budgetDone ? 1.3 : 0.3 })
+  objs.push({ id: "luma_eye", type: "sphere", position: { x: 14, y: 1.35, z: 7.7 }, radius: 0.09,
+    color: "#a78bfa", emissive: "#ddd6fe", emissiveIntensity: budgetDone ? 1.8 : 0.4 })
   // Gadgets that die as subscriptions are cancelled.
   if (!isCancelled("mindful")) {
     objs.push({ id: "g_speaker", type: "torus", position: { x: 6, y: 1.0, z: 1.4 }, radius: 0.28,
       color: "#0f172a", emissive: "#22d3ee", emissiveIntensity: 1.2, animate: { rotateY: 0.02 } })
   }
   if (!isCancelled("clouds")) {
-    objs.push({ id: "g_monitor2", type: "box", position: { x: 3.4, y: 1.15, z: 1.7 }, width: 0.7, height: 0.45, depth: 0.05,
+    objs.push({ id: "g_monitor2", type: "box", position: { x: 3.4, y: 1.12, z: 1.7 }, width: 0.7, height: 0.45, depth: 0.05,
       color: "#0b1220", emissive: "#38bdf8", emissiveIntensity: 1.0 })
   }
   if (!isCancelled("copilot")) {
-    objs.push({ id: "g_kbd", type: "box", position: { x: 2, y: 0.93, z: 2.25 }, width: 0.9, height: 0.04, depth: 0.3,
+    objs.push({ id: "g_kbd", type: "box", position: { x: 2, y: 0.87, z: 2.25 }, width: 0.9, height: 0.04, depth: 0.3,
       color: "#111827", emissive: "#e879f9", emissiveIntensity: 1.1 })
   }
   if (!isCancelled("domain")) {
     objs.push({ id: "g_router", type: "box", position: { x: 12.5, y: 0.35, z: 12.6 }, width: 0.6, height: 0.15, depth: 0.4,
       color: "#1f2937", emissive: "#4ade80", emissiveIntensity: 1.3 })
   }
-  // The plant, if kept, comes home with you.
-  if (hasItem("plant")) {
-    objs.push({ id: "plant", type: "cylinder", position: { x: 16.6, y: 0.35, z: 6 }, radius: 0.22, height: 0.5, color: "#8a5a3a" })
-    objs.push({ id: "plantTop", type: "sphere", position: { x: 16.6, y: 0.85, z: 6 }, radius: 0.35, color: "#4ade80" })
-  }
+  if (hasItem("plant")) { objs = objs.concat(plantAt("plant", 16.6, 6)) }
   if (hasItem("doug")) {
     objs.push({ id: "doug", type: "sphere", position: { x: 2.6, y: 1.0, z: 1.9 }, radius: 0.14,
-      color: "#facc15", emissive: "#facc15", emissiveIntensity: 0.4,
+      color: "#facc15", emissive: "#facc15", emissiveIntensity: 0.5,
       animate: { floatAmplitude: 0.03, floatSpeed: 1.2 } })
+  }
+  if (hasItem("mug")) {
+    objs.push({ id: "mug", type: "cylinder", position: { x: 1.55, y: 0.92, z: 2.1 }, radius: 0.07, height: 0.12, color: "#f8fafc" })
   }
   flatStatic = objs
   objects = flatStatic
   let ls = [
     { id: "amb", type: "ambient", color: "#d9b38c", intensity: flatAmbient() },
-    { id: "lamp", type: "point", color: "#fbbf6b", intensity: 2.0, position: { x: 2, y: 1.9, z: 2.4 } }
+    { id: "hemi", type: "hemisphere", color: "#eed3ac", groundColor: "#4a3a2a", intensity: 1.0 },
+    { id: "lamp", type: "point", color: "#fbbf6b", intensity: 2.6, position: { x: 1.4, y: 1.7, z: 1.6 } },
+    { id: "dirw", type: "directional", color: "#e8c9a0", intensity: 0.5, position: { x: 14, y: 10, z: 16 } },
+    { id: "win", type: "point", color: "#94a8ff", intensity: 0.7, position: { x: 9, y: 1.8, z: 2 } }
   ]
   if (!isCancelled("mindful")) { ls.push({ id: "gl_spk", type: "point", color: "#22d3ee", intensity: 0.8, position: { x: 6, y: 1.4, z: 1.8 } }) }
   if (!isCancelled("clouds"))  { ls.push({ id: "gl_mon", type: "point", color: "#38bdf8", intensity: 0.7, position: { x: 3.4, y: 1.5, z: 2.2 } }) }
@@ -394,56 +573,92 @@ function buildFlat() {
   ]
 }
 
-// ---- Scene 6: The Last Crumb ----------------------------------------------
+function flatAmbient() {
+  let n = 0
+  for (let i = 0; i < SUBS.length; i++) { if (!SUBS[i].locked && isCancelled(SUBS[i].id)) { n = n + 1 } }
+  return Math.max(0.65, 1.35 - n * 0.11)
+}
 
-let BAKERY_ROWS = [
-  "#############",
-  "#..........D#",
-  "#.A......B..#",
-  "#...####....#",
-  "#...#..#..P.#",
-  "#.M.####....#",
-  "#...........#",
-  "#S..........#",
-  "#############"
-]
+// ---- Bakery ---------------------------------------------------------------
 
 let bakeryStatic = []
 
 function buildBakery() {
   loadGrid(BAKERY_ROWS)
-  let objs = [floorPlane(24, 16, "#3e3227")]
-  objs = objs.concat(wallsFrom(BAKERY_ROWS, "#4a3b36", 2.5))
-  // The counter block (the #### island) gets a warm top and a glass front.
+  sceneFog = { color: "#2b1f14", near: 12, far: 36 }
+  sceneBg = "#170f08"
+  let objs = [floorPlane(24, 16, "#4a3a29"), ceilingPlane(24, 16, 2.5, "#2b2015")]
+  objs = objs.concat(wallsFrom(BAKERY_ROWS, "#54413a", 2.5))
+  // Counter island with warm top and glass front.
   objs.push({ id: "counterTop", type: "box", position: { x: 11, y: 1.02, z: 8 }, width: 8.4, height: 0.1, depth: 4.4, color: "#8a6f4d", roughness: 0.6 })
-  objs.push({ id: "glass", type: "box", position: { x: 11, y: 0.6, z: 10.2 }, width: 8.2, height: 0.8, depth: 0.08, color: "#cbd5e1", opacity: 0.25 })
-  // Pastry shelves: pastel spheres on two shelf boxes along the west wall.
+  objs.push({ id: "glass", type: "box", position: { x: 11, y: 0.6, z: 10.2 }, width: 8.2, height: 0.8, depth: 0.08, color: "#cbd5e1", opacity: 0.22 })
+  // Goods on the counter: donuts and buns.
+  let donutCols = ["#f4a4c0", "#b8763e", "#f7dba7"]
+  for (let i = 0; i < 3; i++) {
+    objs.push({ id: "donut" + i, type: "torus", position: { x: 8.6 + i * 1.1, y: 1.16, z: 9.3 },
+      rotation: { x: -Math.PI / 2, y: 0, z: 0 }, radius: 0.16, color: donutCols[i], roughness: 0.9 })
+  }
+  for (let i = 0; i < 3; i++) {
+    objs.push({ id: "bun" + i, type: "sphere", position: { x: 12.4 + i * 0.8, y: 1.18, z: 9.0 }, radius: 0.16, color: "#d9a05f", roughness: 1 })
+  }
+  objs.push({ id: "cakebox", type: "box", position: { x: 13.6, y: 1.2, z: 7.2 }, width: 0.6, height: 0.3, depth: 0.6, color: "#f8e8ff" })
+  // Shelves along the west wall with loaves.
   objs.push({ id: "shelf1", type: "box", position: { x: 1.4, y: 1.0, z: 8 }, width: 0.6, height: 0.08, depth: 6, color: "#7a5f43" })
-  let pastry = ["#f4c27a", "#e8a866", "#f7dba7", "#d98c5f", "#f4c27a", "#e8a866"]
-  for (let i = 0; i < 6; i++) {
-    objs.push({ id: "pastry" + i, type: "sphere", position: { x: 1.4, y: 1.22, z: 5.4 + i * 1.05 }, radius: 0.19, color: pastry[i], roughness: 0.9 })
+  objs.push({ id: "shelf2", type: "box", position: { x: 1.4, y: 1.7, z: 8 }, width: 0.6, height: 0.08, depth: 6, color: "#7a5f43" })
+  for (let i = 0; i < 5; i++) {
+    objs.push({ id: "loaf" + i, type: "cylinder", position: { x: 1.4, y: 1.16, z: 5.6 + i * 1.2 },
+      rotation: { x: Math.PI / 2, y: 0, z: 0 }, radius: 0.16, height: 0.55, color: "#c68b4e", roughness: 1 })
+  }
+  for (let i = 0; i < 4; i++) {
+    objs.push({ id: "loaf2_" + i, type: "sphere", position: { x: 1.4, y: 1.9, z: 6 + i * 1.3 }, radius: 0.17, color: "#e0b078", roughness: 1 })
+  }
+  // The oven, glowing patiently.
+  objs.push({ id: "oven", type: "box", position: { x: 6.5, y: 0.8, z: 13.2 }, width: 1.8, height: 1.6, depth: 1.0, color: "#3a3a40" })
+  objs.push({ id: "ovenDoor", type: "box", position: { x: 6.5, y: 0.7, z: 12.68 }, width: 1.2, height: 0.5, depth: 0.06,
+    color: "#1a1a1e", emissive: "#f97316", emissiveIntensity: 0.9 })
+  // Flour sacks and a menu board.
+  objs.push({ id: "sack1", type: "box", position: { x: 21.5, y: 0.4, z: 12.5 }, width: 0.8, height: 0.8, depth: 0.7, color: "#d8cbb4" })
+  objs.push({ id: "sack2", type: "box", position: { x: 21.0, y: 0.35, z: 13.4 }, width: 0.7, height: 0.7, depth: 0.6, color: "#c9bca3" })
+  objs.push({ id: "menu", type: "box", position: { x: 11, y: 1.9, z: 14.9 }, width: 3.2, height: 1.1, depth: 0.08, color: "#26201a" })
+  for (let i = 0; i < 3; i++) {
+    objs.push({ id: "menuline" + i, type: "box", position: { x: 10.4 + (i % 2) * 0.4, y: 2.15 - i * 0.25, z: 14.84 },
+      width: 1.8 - (i % 2) * 0.5, height: 0.06, depth: 0.02, color: "#e8dcc4", emissive: "#e8dcc4", emissiveIntensity: 0.3 })
+  }
+  // Pendant lamps.
+  let pendants = [[6, 8], [16, 5]]
+  for (let i = 0; i < pendants.length; i++) {
+    objs.push({ id: "pend" + i + "_c", type: "cylinder", position: { x: pendants[i][0], y: 2.3, z: pendants[i][1] }, radius: 0.02, height: 0.4, color: "#26201a" })
+    objs.push({ id: "pend" + i + "_b", type: "sphere", position: { x: pendants[i][0], y: 2.0, z: pendants[i][1] }, radius: 0.16,
+      color: "#ffca85", emissive: "#ffca85", emissiveIntensity: 1.7 })
   }
   // The duelling tablets, the paper board, and the door.
   objs.push({ id: "hs_tabA", type: "box", position: { x: 4, y: 1.1, z: 4 }, width: 0.55, height: 0.4, depth: 0.06,
-    color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#38bdf8", emissiveIntensity: 1.1, animate: { rotateY: 0 } })
+    color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#38bdf8", emissiveIntensity: 1.1 })
+  objs.push({ id: "tabAstand", type: "box", position: { x: 4, y: 0.85, z: 4.05 }, width: 0.2, height: 0.14, depth: 0.15, color: "#26201a" })
   objs.push({ id: "hs_tabB", type: "box", position: { x: 18, y: 1.1, z: 4 }, width: 0.55, height: 0.4, depth: 0.06,
-    color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#f87171", emissiveIntensity: 1.1, animate: { rotateY: 0 } })
+    color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#f87171", emissiveIntensity: 1.1 })
+  objs.push({ id: "tabBstand", type: "box", position: { x: 18, y: 0.85, z: 4.05 }, width: 0.2, height: 0.14, depth: 0.15, color: "#26201a" })
   objs.push({ id: "hs_paper", type: "box", position: { x: 20, y: 1.4, z: 8 }, width: 1.6, height: 1.1, depth: 0.08,
-    color: "#efe6cf", emissive: "#efe6cf", emissiveIntensity: ordersDone ? 0.1 : 0.35 })
+    color: "#efe6cf", emissive: "#efe6cf", emissiveIntensity: ordersDone ? 0.12 : 0.4 })
+  for (let i = 0; i < 4; i++) {
+    objs.push({ id: "slip" + i, type: "box", position: { x: 19.6 + (i % 2) * 0.7, y: 1.55 - Math.floor(i / 2) * 0.4, z: 7.94 },
+      width: 0.4, height: 0.28, depth: 0.02, color: "#fdf6e3", rotation: { x: 0, y: 0, z: (i % 2 === 0 ? 0.06 : -0.08) } })
+  }
   objs.push({ id: "hs_exit", type: "box", position: { x: 22, y: 1.1, z: 2 }, width: 0.3, height: 2.2, depth: 1.6,
-    color: "#2a2018", emissive: "#f59e0b", emissiveIntensity: pilotPromised ? 1.0 : 0.15 })
-  // Mabel behind the counter, Leo by the tablets — same simple figures as the meeting.
-  objs.push({ id: "mabel", type: "box", position: { x: 4, y: 1.05, z: 10 }, width: 0.6, height: 1.3, depth: 0.5, color: "#b45309" })
-  objs.push({ id: "mabelHead", type: "sphere", position: { x: 4, y: 1.95, z: 10 }, radius: 0.26, color: "#8a5a3a" })
-  objs.push({ id: "leo", type: "box", position: { x: 16.5, y: 1.0, z: 5 }, width: 0.55, height: 1.2, depth: 0.45, color: "#3f6212" })
-  objs.push({ id: "leoHead", type: "sphere", position: { x: 16.5, y: 1.85, z: 5 }, radius: 0.24, color: "#a16207" })
+    color: "#2a2018", emissive: "#f59e0b", emissiveIntensity: pilotPromised ? 1.1 : 0.18 })
+  // Mabel and Leo, properly assembled.
+  objs = objs.concat(fig("mabel", 4, 10, 0, "#b45309", "#8a5a3a"))
+  objs.push({ id: "mabel_apron", type: "box", position: { x: 4, y: 0.8, z: 10.18 }, width: 0.4, height: 0.5, depth: 0.03, color: "#fef3c7" })
+  objs = objs.concat(fig("leo", 16.5, 5, -0.7, "#3f6212", "#a16207"))
   bakeryStatic = objs
   objects = bakeryStatic
   lights = [
-    { id: "amb", type: "ambient", color: "#e8c39a", intensity: 1.6 },
-    { id: "hemi", type: "hemisphere", color: "#f7dfc0", groundColor: "#5a4636", intensity: 0.9 },
-    { id: "warm1", type: "point", color: "#ffca85", intensity: 2.4, position: { x: 6, y: 2.2, z: 8 } },
-    { id: "warm2", type: "point", color: "#ffca85", intensity: 2.2, position: { x: 17, y: 2.2, z: 5 } }
+    { id: "amb", type: "ambient", color: "#eccda6", intensity: 1.9 },
+    { id: "hemi", type: "hemisphere", color: "#f7dfc0", groundColor: "#6a543f", intensity: 1.2 },
+    { id: "dirb", type: "directional", color: "#f2d3a4", intensity: 0.5, position: { x: 18, y: 10, z: 14 } },
+    { id: "warm1", type: "point", color: "#ffca85", intensity: 2.6, position: { x: 6, y: 2.0, z: 8 } },
+    { id: "warm2", type: "point", color: "#ffca85", intensity: 2.4, position: { x: 16, y: 2.0, z: 5 } },
+    { id: "ovenGlow", type: "point", color: "#f97316", intensity: 1.0, position: { x: 6.5, y: 0.9, z: 12.2 } }
   ]
   hotspots = [
     { id: "hs_tabA",  x: 4,  z: 4,  r: 1.9, label: ordersDone ? "Delivery tablet A (at peace)" : "Delivery tablet A" },
@@ -454,9 +669,91 @@ function buildBakery() {
   ]
 }
 
-// Cancelling a subscription darkens the room a little each time.
-function flatAmbient() {
-  let n = 0
-  for (let i = 0; i < SUBS.length; i++) { if (!SUBS[i].locked && isCancelled(SUBS[i].id)) { n = n + 1 } }
-  return Math.max(0.45, 1.05 - n * 0.1)
+// ---- The Infinite Stand-up ------------------------------------------------
+
+let dreamStaticBase = []
+let dreamChairAngle = 0
+let dreamTickets = []
+
+function buildDream() {
+  loadGrid(DREAM_ROWS)
+  if (dreamCalm) {
+    sceneFog = { color: "#0c1018", near: 8, far: 34 }
+    sceneBg = "#080b10"
+  } else {
+    sceneFog = { color: "#05060a", near: 2.5, far: 12 + dreamLoop * 1.5 }
+    sceneBg = "#040508"
+  }
+  let objs = [floorPlane(22, 14, "#0e1119"), ceilingPlane(22, 14, 2.8, "#090b12")]
+  objs = objs.concat(wallsFrom(DREAM_ROWS, "#141926", 2.8))
+  // The whiteboard everything orbits.
+  objs.push({ id: "wboard", type: "box", position: { x: 10, y: 1.4, z: 6 }, width: 2.4, height: 1.4, depth: 0.1,
+    color: "#e5e7eb", emissive: "#e5e7eb", emissiveIntensity: dreamCalm ? 0.5 : 0.22 })
+  objs.push({ id: "wboard_leg", type: "cylinder", position: { x: 10, y: 0.35, z: 6 }, radius: 0.05, height: 0.7, color: "#1f2430" })
+  // Desks drained of colour.
+  let dDesks = [[4, 10], [16, 10], [4, 3], [16, 3]]
+  for (let i = 0; i < dDesks.length; i++) {
+    objs = objs.concat(deskAt("ddesk" + i, dDesks[i][0], dDesks[i][1], ""))
+  }
+  // Ticket cards, glowing like accusations.
+  if (dreamTickets.length === 0) {
+    for (let i = 0; i < 9; i++) {
+      dreamTickets.push({ x: 3 + myRand() * 14, y: 1.1 + myRand() * 0.9, z: 2.5 + myRand() * 8, ph: myRand() * 6 })
+    }
+  }
+  if (!dreamCalm) {
+    for (let i = 0; i < dreamTickets.length; i++) {
+      let t = dreamTickets[i]
+      objs.push({ id: "ticket" + i, type: "box", position: { x: t.x, y: t.y, z: t.z },
+        rotation: { x: 0, y: t.ph, z: 0 }, width: 0.4, height: 0.28, depth: 0.02,
+        color: "#241a05", emissive: "#f59e0b", emissiveIntensity: 0.9,
+        animate: { floatAmplitude: 0.08, floatSpeed: 0.9 + (i % 3) * 0.3 } })
+    }
+    // PAX presides.
+    objs.push({ id: "dpax", type: "torus", position: { x: 10, y: 2.2, z: 6 }, radius: 0.4,
+      color: "#f8fafc", emissive: "#fb7185", emissiveIntensity: 1.3,
+      animate: { rotateY: 0.03, floatAmplitude: 0.1, floatSpeed: 1.1 } })
+    // Clive silhouettes multiply with every loop.
+    let n = Math.min(2 + dreamLoop * 2, 10)
+    for (let i = 0; i < n; i++) {
+      let a = (i / n) * Math.PI * 2
+      let sx = 10 + Math.sin(a) * (6 + (i % 2))
+      let sz = 6 + Math.cos(a) * (3.6 + (i % 2) * 0.6)
+      objs = objs.concat(fig("sil" + i, sx, sz, a + Math.PI, "#0a0d14", "#0a0d14"))
+    }
+  }
+  // The door: an exit, or the UNKNOWN door once the room goes quiet.
+  objs.push({ id: "hs_dreamdoor", type: "box", position: { x: 20, y: 1.1, z: 10 }, width: 0.3, height: 2.2, depth: 1.6,
+    color: dreamCalm ? "#f8fafc" : "#1a1f2c",
+    emissive: dreamCalm ? "#f8fafc" : "#64748b", emissiveIntensity: dreamCalm ? 1.6 : 0.4 })
+  dreamStaticBase = objs
+  objects = dreamStaticBase.concat(dreamCalm ? dreamChairObjs(true) : dreamChairObjs(false))
+  lights = dreamCalm ? [
+    { id: "amb", type: "ambient", color: "#c7d2e8", intensity: 1.1 },
+    { id: "door", type: "point", color: "#f8fafc", intensity: 2.6, position: { x: 19, y: 1.6, z: 10 } }
+  ] : [
+    { id: "amb", type: "ambient", color: "#4a5570", intensity: 0.8 },
+    { id: "board", type: "point", color: "#e5e7eb", intensity: 1.4, position: { x: 10, y: 2, z: 6 } },
+    { id: "red", type: "point", color: "#fb7185", intensity: 0.9, position: { x: 10, y: 2.4, z: 6 } }
+  ]
+  hotspots = [
+    { id: "hs_dreamdoor", x: 20, z: 10, r: 2.2, label: dreamCalm ? "The UNKNOWN door" : "The exit" }
+  ]
+}
+
+function dreamChairObjs(frozen) {
+  let out = []
+  for (let i = 0; i < 5; i++) {
+    let a = dreamChairAngle + (i / 5) * Math.PI * 2
+    let cx = 10 + Math.sin(a) * 2.6
+    let cz = 6 + Math.cos(a) * 2.6
+    out = out.concat(chairAt("dchair" + i, cx, cz, a + Math.PI, frozen ? "#3a4356" : "#232b3b"))
+  }
+  return out
+}
+
+function dreamTick() {
+  if (dreamCalm) { return }
+  dreamChairAngle = dreamChairAngle + 0.01 + dreamLoop * 0.008
+  objects = dreamStaticBase.concat(dreamChairObjs(false))
 }

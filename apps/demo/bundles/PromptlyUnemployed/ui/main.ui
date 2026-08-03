@@ -45,7 +45,8 @@
       shadows={false}
       expandable={true}
       mouseLook={true}
-      background="#0b0f17"
+      fog={sceneFog}
+      background={sceneBg}
       @click={onSceneClick}
       style={{ borderRadius: "12px", border: "1px solid #2a3242", maxWidth: "100%" }}
     />
@@ -181,9 +182,9 @@
 
   <!-- Principle card -->
   <Box if={principleUp} className="pu-card pu-note" style={{ textAlign: "center", padding: "36px 24px", borderColor: "#a78bfa" }}>
-    <Text style={{ fontSize: "12px", color: "#64748b", letterSpacing: "0.2em" }}>PRINCIPLE №1</Text>
-    <Text style={{ fontSize: "28px", fontWeight: 700, color: "#f8fafc", marginTop: "10px" }}>Ask before assuming.</Text>
-    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "8px", fontStyle: "italic" }}>Written on an index card. The first thing on the wall that isn't a bill.</Text>
+    <Text style={{ fontSize: "12px", color: "#64748b", letterSpacing: "0.2em" }}>PRINCIPLE №{principleNum}</Text>
+    <Text style={{ fontSize: "28px", fontWeight: 700, color: "#f8fafc", marginTop: "10px" }}>{principleText}</Text>
+    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "8px", fontStyle: "italic" }}>{principleFlavor}</Text>
     <Button @click={pinPrinciple} style={{ marginTop: "22px", background: "#a78bfa", color: "#111", fontWeight: 700 }}>Pin it to the wall</Button>
   </Box>
 
@@ -202,7 +203,7 @@
         <Text style={{ fontSize: "12px", color: "#86efac", fontFamily: "monospace", marginTop: "2px" }}>+ {entry}</Text>
       #end
     </Box>
-    <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "18px" }}>Scenes 7–17 — the burnout dream, the pilot, the printer's 1,204 retries, LaunchPad, and four endings — continue in the full plan.</Text>
+    <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "18px" }}>Scenes 8–17 — Priya at the door, the pilot, the printer's 1,204 retries, LaunchPad, and four endings — continue in the full plan.</Text>
     <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>Voices: OpenAI gpt-4o-mini-tts (marin, coral, alloy, sage, onyx, cedar, echo, shimmer). AI-generated; not human recordings.</Text>
     <Stack direction="horizontal" gap={10} style={{ marginTop: "20px" }}>
       <Button @click={newGame} style={{ background: "#f59e0b", color: "#111", fontWeight: 700 }}>Play again</Button>

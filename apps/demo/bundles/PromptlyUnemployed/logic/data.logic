@@ -40,7 +40,12 @@ let DLG = {
   a2_s6_mabel_057:{ speaker: "Mabel", voice: "nova",    durationMs: 3300, text: "Good. Start with the repetition, not the people." },
   a2_s6_leo_058:  { speaker: "Leo",   voice: "ash",     durationMs: 4550, text: "She likes you. That was her liking-you voice." },
   a2_s6_alex_059: { speaker: "Alex",  voice: "marin",   durationMs: 5550, text: "A customer. A real one. With money and a deadline. Terrifying." },
-  a2_s6_sys_060:  { speaker: "System",voice: "shimmer", durationMs: 4750, text: "New contact saved: The Last Crumb. Category: hope." }
+  a2_s6_sys_060:  { speaker: "System",voice: "shimmer", durationMs: 4750, text: "New contact saved: The Last Crumb. Category: hope." },
+  a2_s7_pax_070:  { speaker: "PAX",   voice: "coral",   durationMs: 6050, text: "Stand-up begins in seven minutes. Stand-up has always been beginning in seven minutes." },
+  a2_s7_clive_071:{ speaker: "Clive", voice: "onyx",    durationMs: 4600, text: "Just a quick estimate. Ballpark. When will you be done being tired?" },
+  a2_s7_alex_072: { speaker: "Alex",  voice: "marin",   durationMs: 6200, text: "The backlog is growing faster than I can close it. That's not a metaphor. It's just arithmetic." },
+  a2_s7_alex_073: { speaker: "Alex",  voice: "marin",   durationMs: 1550, text: "I don't know yet." },
+  a2_s7_luma_074: { speaker: "LUMA",  voice: "alloy",   durationMs: 4750, text: "You were asleep for four hours. I logged it as an incident." }
 }
 
 // Scene 2 — the four interruption choices.
@@ -160,6 +165,15 @@ let PITCH_CHOICES = [
     reply: "Mabel's eyebrow files a formal objection. Leo writes the phrase down to mock later." },
   { id: "vulnerable", label: "“A thing I haven't built yet, but can probably panic into existence.”",
     reply: "Mabel laughs — once, sharply, like a till drawer closing. “At least that one I believe.”" }
+]
+
+// Scene 7 — the only way out is the third answer.
+let DREAM_CHOICES = [
+  { id: "finish",   label: "Finish every ticket",
+    reply: "You close four tickets. Nine arrive. Somewhere, template confetti fires." },
+  { id: "delegate", label: "Ask LUMA to finish them",
+    reply: "The tickets become subtasks. The subtasks have ambitions of their own." },
+  { id: "know",     label: "“I don't know yet.”" }
 ]
 
 let NAME_CHOICES = [
