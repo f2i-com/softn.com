@@ -818,8 +818,27 @@ function buildBakery() {
       color: "#f8fafc", opacity: 0.16, animate: { floatAmplitude: 0.1, floatSpeed: 0.8 + i * 0.3 } })
   }
   objs.push({ id: "bpatch", type: "plane", position: { x: 11, y: 0.006, z: 11.5 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 9, height: 4, color: "#54432f" })
+  if (bakeryDay) {
+    objs = objs.concat(fig("cust1", 8, 3, 2.6, "#7a8ba8", "#d4b394", { hair: "#4a3628" }))
+    objs = objs.concat(fig("cust2", 10.5, 2.6, 3.0, "#a8707a", "#8a5a3a", { hair: "#22262e" }))
+    if (priyaMode !== "alone" && priyaMode !== "") {
+      objs = objs.concat(fig("priya2", 14, 4.5, -0.6, "#7c3aed", "#8a5a3a", { hair: "#1f2937" }))
+    }
+  }
   bakeryStatic = objs
   objects = bakeryStatic
+  if (bakeryDay) {
+    sceneFog = { color: "#443322", near: 16, far: 44 }
+    sceneBg = "#241812"
+    lights = [
+      { id: "amb", type: "ambient", color: "#f5dfc0", intensity: 2.2 },
+      { id: "hemi", type: "hemisphere", color: "#fdf0da", groundColor: "#7a6248", intensity: 1.5 },
+      { id: "day", type: "directional", color: "#fff2d8", intensity: 0.9, position: { x: 20, y: 12, z: 2 } },
+      { id: "warm1", type: "point", color: "#ffd9a0", intensity: 2.2, position: { x: 6, y: 2.0, z: 8 } },
+      { id: "warm2", type: "point", color: "#ffd9a0", intensity: 2.0, position: { x: 16, y: 2.0, z: 5 } },
+      { id: "ovenGlow", type: "point", color: "#f97316", intensity: 1.2, position: { x: 6.5, y: 0.9, z: 12.2 } }
+    ]
+  } else {
   lights = [
     { id: "amb", type: "ambient", color: "#eccda6", intensity: 1.9 },
     { id: "hemi", type: "hemisphere", color: "#f7dfc0", groundColor: "#6a543f", intensity: 1.2 },
@@ -828,12 +847,13 @@ function buildBakery() {
     { id: "warm2", type: "point", color: "#ffca85", intensity: 2.4, position: { x: 16, y: 2.0, z: 5 } },
     { id: "ovenGlow", type: "point", color: "#f97316", intensity: 1.0, position: { x: 6.5, y: 0.9, z: 12.2 } }
   ]
+  }
   hotspots = [
     { id: "hs_tabA",  x: 4,  z: 4,  r: 1.9, label: ordersDone ? "Delivery tablet A (at peace)" : "Delivery tablet A" },
     { id: "hs_tabB",  x: 18, z: 4,  r: 1.9, label: ordersDone ? "Delivery tablet B (at peace)" : "Delivery tablet B" },
-    { id: "hs_paper", x: 20, z: 8,  r: 1.9, label: "The paper orders" },
+    { id: "hs_paper", x: 20, z: 8,  r: 1.9, label: bakeryDay ? (wfDone ? "The policy board" : "The workflow board") : "The paper orders" },
     { id: "hs_mabel", x: 4,  z: 10, r: 2.2, label: "Mabel" },
-    { id: "hs_exit",  x: 22, z: 2,  r: 2.0, label: pilotPromised ? "Head home and build" : "The door" }
+    { id: "hs_exit",  x: 22, z: 2,  r: 2.0, label: bakeryDay ? (wfDone ? "Home. Tuesday is tomorrow" : "The door (not yet)") : (pilotPromised ? "Head home and build" : "The door") }
   ]
   bakeryStatic = bakeryStatic.concat(hotspotMarkers())
   objects = bakeryStatic
