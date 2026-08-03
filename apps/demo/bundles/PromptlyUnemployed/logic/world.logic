@@ -427,8 +427,20 @@ function actorTick() {
     }
     moved = true
   }
-  // Mouths need a redraw even when nobody is walking.
-  if (moved || dlgActive) { composeScene() }
+  // Mouths need a redraw even when nobody is walking — but only a mouth that
+  // is actually on screen, and only as often as a jaw can be seen to move.
+  // This used to rebuild all ~400 objects every frame for the whole of every
+  // line, including Alex's, and she has no body in the scene at all: the cost
+  // was pure waste and it showed up as the player stuttering while she spoke.
+  if (moved || (actorPhase % 3 === 0 && anyoneMouthing())) { composeScene() }
+}
+
+function anyoneMouthing() {
+  if (!dlgActive) { return false }
+  for (let i = 0; i < actors.length; i++) {
+    if (actors[i].speaker !== "" && actors[i].speaker === dlgSpeaker) { return true }
+  }
+  return false
 }
 
 // ---- Title diorama --------------------------------------------------------
@@ -556,7 +568,12 @@ function hotspotMarkers(color) {
     let h = hotspots[i]
     let c = h.minor ? "#5b8db8" : (color || "#fbbf24")
     let my = h.my !== undefined ? h.my : (h.minor ? 1.9 : 2.05)
-    out.push({ id: "mk_" + h.id, type: "icosahedron", position: { x: h.x, y: my, z: h.z }, radius: h.minor ? 0.055 : 0.08,
+    // A hotspot's centre is where you stand to use it, which for a desk item
+    // is 75cm in front of the item itself. mx/mz let the beacon sit over the
+    // object instead of hovering in the air beside it.
+    let mx = h.mx !== undefined ? h.mx : h.x
+    let mz = h.mz !== undefined ? h.mz : h.z
+    out.push({ id: "mk_" + h.id, type: "icosahedron", position: { x: mx, y: my, z: mz }, radius: h.minor ? 0.055 : 0.08,
       color: c, emissive: c, emissiveIntensity: h.minor ? 0.8 : 1.3,
       animate: { rotateY: 0.04, floatAmplitude: 0.06, floatSpeed: 2 } })
   }
@@ -599,8 +616,9 @@ function ceilingBeams(id, w, d, y, n, color) {
   return out
 }
 
-// A doorway: two jambs and a lintel, optionally with a door leaf.
-function doorwayAt(id, x, z, dir, color, leafColor) {
+// A doorway: two jambs and a lintel, optionally with a door leaf hinged on the
+// first jamb. openA is the swing in radians — 0 shut, ~1.5 wide open.
+function doorwayAt(id, x, z, dir, color, leafColor, openA) {
   let rx = Math.cos(dir), rz = -Math.sin(dir)
   let out = [
     { id: id + "_j1", type: "box", position: { x: x - rx * 0.85, y: 1.1, z: z - rz * 0.85 }, rotation: { x: 0, y: dir, z: 0 },
@@ -611,10 +629,48 @@ function doorwayAt(id, x, z, dir, color, leafColor) {
       width: 1.86, height: 0.16, depth: 0.22, color: color }
   ]
   if (leafColor) {
-    out.push({ id: id + "_leaf", type: "box", position: { x: x - rx * 0.42, y: 1.05, z: z - rz * 0.42 }, rotation: { x: 0, y: dir + 0.5, z: 0 },
+    // Hinge the leaf on the first jamb and swing it, instead of floating it
+    // across the middle of the opening — a half-open door parked over the
+    // threshold is exactly where a visitor ends up standing.
+    let th = openA === undefined ? 0.5 : openA
+    let phi = dir + th
+    let ax = Math.cos(phi), az = -Math.sin(phi)
+    let hx = x - rx * 0.85, hz = z - rz * 0.85
+    out.push({ id: id + "_leaf", type: "box",
+      position: { x: hx + ax * 0.79, y: 1.05, z: hz + az * 0.79 }, rotation: { x: 0, y: phi, z: 0 },
       width: 1.5, height: 2.05, depth: 0.06, color: leafColor })
-    out.push({ id: id + "_hnd", type: "sphere", position: { x: x - rx * 1.05, y: 1.0, z: z - rz * 1.05 }, radius: 0.05,
+    out.push({ id: id + "_hnd", type: "sphere",
+      position: { x: hx + ax * 1.4, y: 1.0, z: hz + az * 1.4 }, radius: 0.05,
       color: "#cbd5e1", metalness: 0.7, roughness: 0.3 })
+  }
+  return out
+}
+
+// EXIT in neon: a dark panel and four letters built from strokes, because a
+// glowing blue slab reads as "a light", not "the way out". `s` scales it.
+function neonExit(id, x, y, z, dir, color, s) {
+  let rx = Math.cos(dir), rz = -Math.sin(dir)
+  let k = s || 1
+  let out = [
+    { id: id + "_bk", type: "box", position: { x: x, y: y, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 1.72 * k, height: 0.66 * k, depth: 0.06, color: "#0a0e17" }
+  ]
+  // Strokes as [alongWidth, up, width, height, tilt] in the sign's own plane,
+  // four letters on even 0.34 centres.
+  let strokes = [
+    [-0.635, 0.00, 0.055, 0.40, 0],   [-0.49, 0.175, 0.235, 0.06, 0],    // E
+    [-0.50, 0.00, 0.215, 0.055, 0],   [-0.49, -0.175, 0.235, 0.06, 0],
+    [-0.18, 0.00, 0.06, 0.46, 0.55],  [-0.18, 0.00, 0.06, 0.46, -0.55],  // X
+    [0.18, 0.00, 0.06, 0.40, 0],                                          // I
+    [0.52, 0.175, 0.30, 0.06, 0],     [0.52, -0.03, 0.06, 0.35, 0]        // T
+  ]
+  for (let i = 0; i < strokes.length; i++) {
+    let st = strokes[i]
+    out.push({ id: id + "_s" + i, type: "box",
+      position: { x: x + rx * st[0] * k + rx * 0, y: y + st[1] * k, z: z + rz * st[0] * k },
+      rotation: { x: 0, y: dir, z: st[4] },
+      width: st[2] * k, height: st[3] * k, depth: 0.1,
+      color: "#f8fafc", emissive: color, emissiveIntensity: 2.2 })
   }
   return out
 }
@@ -928,8 +984,12 @@ function buildBoxes() {
   buildOffice()
   // Drop the office's own beacons — this scene marks different things.
   let objs = []
+  let stripped = ["desk0_std", "desk0_bez", "desk0_scr", "desk0_kb", "desk0_mouse"]
   for (let i = 0; i < officeStatic.length; i++) {
-    if (String(officeStatic[i].id).indexOf("mk_") !== 0) { objs.push(officeStatic[i]) }
+    let oid = String(officeStatic[i].id)
+    if (oid.indexOf("mk_") === 0) { continue }
+    if (stripped.indexOf(oid) >= 0) { continue }
+    objs.push(officeStatic[i])
   }
   let hs = []
   // The archive box, open, on the floor beside the desk.
@@ -950,7 +1010,11 @@ function buildBoxes() {
     } else {
       objs = objs.concat(itemObj("it_" + sp.id, sp.id, sp.x, 0.75, sp.z))
       if (picked.length < 3) {
-        hs.push({ id: "it_" + sp.id, x: sp.x, z: sp.z + 0.75, r: 1.0, my: 1.16, label: itemName(sp.id) })
+        // One height for all six, clear of the tallest of them (the plant tops
+        // out at 1.13), so they read as a row of markers rather than as parts
+        // of the objects they sit over.
+        hs.push({ id: "it_" + sp.id, x: sp.x, z: sp.z + 0.75, r: 1.0,
+          mx: sp.x, mz: sp.z, my: 1.34, label: itemName(sp.id) })
       }
     }
   }
@@ -1288,7 +1352,7 @@ function buildFlat() {
   let objs = [floorPlane(18, 14, "#41352a"), ceilingPlane(18, 14, 2.5, "#251d15")]
   objs = objs.concat(wallsFrom(FLAT_ROWS, "#4d3e37", 2.5))
   objs = objs.concat(skirting("fsk", 18, 14, "#33291f"))
-  objs = objs.concat(doorwayAt("fdoor", 6, 12.82, 0, "#33291f", "#5c4a3d"))
+  objs = objs.concat(doorwayAt("fdoor", 6, 12.82, 0, "#33291f", "#5c4a3d", priyaHere ? 1.5 : 0.12))
   // Kitchenette: counter, sink, kettle, two mugs. The founder food pyramid.
   objs.push(blob("kit", 3.4, 5.6, 1.1, 0.2))
   objs.push({ id: "kit_c", type: "box", position: { x: 3.4, y: 0.44, z: 5.6 }, width: 2.4, height: 0.88, depth: 0.7, color: "#5a4a3a" })
@@ -1467,7 +1531,8 @@ function buildBakery() {
   objs = objs.concat(skirting("bsk", 24, 16, "#3a2c22"))
   objs = objs.concat(dado("bdd", 24, 16, "#4a382c", 1.3))
   objs = objs.concat(ceilingBeams("bbm", 24, 16, 2.5, 2, "#3a2c22"))
-  objs = objs.concat(doorwayAt("bdoor", 22, 2, Math.PI / 2, "#3a2c22", ""))
+  objs = objs.concat(doorwayAt("bdoor", 22, 2, Math.PI / 2, "#3a2c22", "#6b5340", -1.35))
+  objs = objs.concat(neonExit("bexit_sign", 21.79, 2.30, 2, -Math.PI / 2, "#4ade80", 0.5))
   // Chequerboard floor in front of the counter — four tiles is enough to read.
   for (let i = 0; i < 8; i++) {
     let tx = 8 + (i % 4) * 2.2
@@ -1681,10 +1746,10 @@ function buildDream() {
       objs = objs.concat(fig("sil" + i, sx, sz, a + Math.PI, "#151c2b", "#1c2437", { hair: "#111825", pants: "#121826" }))
     }
     // PAX presides over the ceremony.
-    objs.push({ id: "dpax", type: "torus", position: { x: 10, y: 2.35, z: 6 }, radius: 0.4,
+    objs.push({ id: "dpax", type: "torus", position: { x: 10, y: 2.12, z: 7.3 }, radius: 0.34, tube: 0.11,
       color: "#f8fafc", emissive: "#fb7185", emissiveIntensity: 1.5,
       animate: { rotateY: 0.03, floatAmplitude: 0.1, floatSpeed: 1.1 } })
-    objs.push({ id: "dpax_core", type: "sphere", position: { x: 10, y: 2.35, z: 6 }, radius: 0.13,
+    objs.push({ id: "dpax_core", type: "sphere", position: { x: 10, y: 2.12, z: 7.3 }, radius: 0.11,
       color: "#fb7185", emissive: "#fecdd3", emissiveIntensity: 1.8, animate: { floatAmplitude: 0.1, floatSpeed: 1.1 } })
 
     // The backlog, as an object: a pile that grows every time you try to leave.
@@ -1708,13 +1773,12 @@ function buildDream() {
   }
 
   // The door you keep walking through. Its sign counts your attempts.
-  objs = objs.concat(doorwayAt("ddoor", 20, 10, Math.PI / 2, dreamCalm ? "#cbd5e1" : "#2b3550", ""))
-  objs.push({ id: "hs_dreamdoor", type: "box", position: { x: 20, y: 1.05, z: 10 }, width: 0.24, height: 2.05, depth: 1.6,
-    color: dreamCalm ? "#f8fafc" : "#222c40",
-    emissive: dreamCalm ? "#f8fafc" : "#7dd3fc", emissiveIntensity: dreamCalm ? 1.7 : 0.75 })
-  objs.push({ id: "ddoor_sign", type: "box", position: { x: 19.86, y: 2.45, z: 10 }, rotation: { x: 0, y: Math.PI / 2, z: 0 },
-    width: 1.5, height: 0.34, depth: 0.05, color: "#0d1420",
-    emissive: dreamCalm ? "#f8fafc" : "#f87171", emissiveIntensity: dreamCalm ? 1.4 : 1.0 })
+  objs = objs.concat(doorwayAt("ddoor", 20, 10, Math.PI / 2, dreamCalm ? "#cbd5e1" : "#2b3550",
+    dreamCalm ? "#e8eef8" : "#3d4c6b", -1.5))
+  objs.push({ id: "hs_dreamdoor", type: "box", position: { x: 20, y: 1.05, z: 10 }, width: 0.1, height: 2.05, depth: 1.6,
+    color: dreamCalm ? "#f8fafc" : "#1b2436",
+    emissive: dreamCalm ? "#f8fafc" : "#7dd3fc", emissiveIntensity: dreamCalm ? 1.7 : 0.6 })
+  objs = objs.concat(neonExit("ddoor_sign", 19.83, 2.57, 10, -Math.PI / 2, dreamCalm ? "#a5f3fc" : "#f87171", 0.62))
   if (dreamCalm) {
     objs.push({ id: "doorshaft", type: "plane", position: { x: 18.4, y: 1.2, z: 10 },
       rotation: { x: 0, y: Math.PI / 2, z: 0.12 }, width: 3.6, height: 2.6, color: "#f8fafc", opacity: 0.13 })

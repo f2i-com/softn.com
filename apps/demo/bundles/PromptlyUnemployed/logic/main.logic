@@ -208,7 +208,8 @@ function gameStep() {
   // Readout for the traversal harness: where the player is and what, if
   // anything, is holding them still.
   window.__puPos = playerX.toFixed(2) + "," + playerZ.toFixed(2) +
-    " scene=" + scene + " cut=" + (cutActive ? 1 : 0) + " dlg=" + (dlgActive ? 1 : 0)
+    " scene=" + scene + " cut=" + (cutActive ? 1 : 0) + " dlg=" + (dlgActive ? 1 : 0) +
+    " t=" + playTicks
   cutTickFn()
   shakeTick()
   if (fadeOp > 0) { fadeOp = Math.max(0, fadeOp - 0.2) }
