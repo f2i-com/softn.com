@@ -29,11 +29,28 @@
 .pu-panel { padding: 18px 20px; }
 .pu-row { background: #101623; border-radius: 10px; padding: 11px 13px; }
 .pu-cta { background: #f59e0b; color: #111; font-weight: 700; padding: 9px 18px; }
-.pu-vig { background: radial-gradient(120% 95% at 50% 45%, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 72%, rgba(0,0,0,0.88) 100%); }
+.pu-vig { background: radial-gradient(120% 95% at 50% 45%, rgba(0,0,0,0) 26%, rgba(0,0,0,0.5) 68%, rgba(0,0,0,0.9) 100%); }
+.pu-glow { background: radial-gradient(58% 42% at 50% 26%, rgba(245,158,11,0.20) 0%, rgba(245,158,11,0.06) 45%, rgba(0,0,0,0) 72%); }
+.pu-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(5,8,13,0.86); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 60; }
+.pu-modal-card { width: 100%; max-width: 900px; max-height: 82vh; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 70px rgba(0,0,0,0.6); }
+.pu-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 8px; }
+.pu-modal-body::-webkit-scrollbar { width: 10px; }
+.pu-modal-body::-webkit-scrollbar-track { background: #0c111a; border-radius: 999px; }
+.pu-modal-body::-webkit-scrollbar-thumb { background: #3a4560; border-radius: 999px; }
+.pu-brand { letter-spacing: 0.42em; }
+.pu-rule { height: 2px; border-radius: 999px; background: linear-gradient(90deg, rgba(245,158,11,0) 0%, #f59e0b 50%, rgba(245,158,11,0) 100%); }
+.pu-feat { background: rgba(15,20,29,0.72); border: 1px solid #2b3446; border-radius: 999px; padding: 5px 14px; font-size: 11px; letter-spacing: 0.12em; color: #a8b4c8; }
+.pu-cta-big { background: #f59e0b; color: #10131a; font-weight: 800; padding: 13px 34px; font-size: 15px; letter-spacing: 0.04em; box-shadow: 0 10px 30px rgba(245,158,11,0.28); transition: translate 160ms ease, box-shadow 160ms ease; }
+.pu-cta-big:hover { translate: 0 -2px; box-shadow: 0 14px 38px rgba(245,158,11,0.4); }
+.pu-fs { position: fixed; top: 0; left: 0; right: 0; bottom: 0; max-width: none; margin: 0; padding: 14px 18px 18px 18px; background: #080b11; z-index: 40; overflow: hidden; justify-content: space-between; }
+.pu-fs .pu-holder { position: fixed !important; top: 0; left: 0; width: 100vw !important; height: 100vh !important; max-width: none !important; z-index: 1; border-radius: 0 !important; }
+.pu-fs .pu-holder canvas { width: 100vw !important; height: 100vh !important; border-radius: 0 !important; }
+.pu-fs > * { position: relative; z-index: 5; }
+.pu-fs .pu-cap { background: rgba(10,14,21,0.9); }
 </style>
 
 <App theme="dark">
-<Stack direction="vertical" gap={12} className="pu-wrap pu-scroll" style={{ height: "100%", padding: "12px 14px 28px 14px" }}>
+<Stack direction="vertical" gap={12} className={theatre ? "pu-wrap pu-scroll pu-fs" : "pu-wrap pu-scroll"} style={{ height: "100%", padding: "12px 14px 28px 14px" }}>
 
   <!-- ============================== TITLE ============================== -->
   <Box if={scene === "title"}>
@@ -51,17 +68,24 @@
         background={sceneBg}
         style={{ borderRadius: "16px", border: "1px solid #232b3b", maxWidth: "100%" }}
       />
+      <Box className="pu-glow" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: "16px" }} />
       <Box className="pu-vig" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", borderRadius: "16px" }} />
       <Box style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-start", textAlign: "center", padding: "46px 24px 0 24px" }}>
-        <Text className="pu-tc" style={{ display: "block", fontSize: "12px", letterSpacing: "0.42em", color: "#f59e0b", textShadow: "0 2px 14px rgba(0,0,0,0.95)" }}>A SOFTN NARRATIVE GAME</Text>
-        <Text style={{ display: "block", fontSize: "54px", fontWeight: 800, color: "#f8fafc", marginTop: "12px", letterSpacing: "0.02em", lineHeight: "1.05", textShadow: "0 6px 30px rgba(0,0,0,0.95)" }}>PROMPTLY<br />UNEMPLOYED</Text>
-        <Box style={{ width: "72px", height: "2px", background: "#f59e0b", marginTop: "18px", borderRadius: "999px" }} />
-        <Text style={{ display: "block", fontSize: "16px", color: "#cbd5e1", marginTop: "16px", fontStyle: "italic", textShadow: "0 2px 12px rgba(0,0,0,0.95)" }}>The future arrived early. Rent is still due Friday.</Text>
-        <Stack direction="horizontal" gap={12} style={{ justifyContent: "center", marginTop: "26px", pointerEvents: "auto", flexWrap: "wrap" }}>
-          <Button @click={newGame} style={{ background: "#f59e0b", color: "#111", fontWeight: 700, padding: "12px 28px", fontSize: "15px" }}>New game</Button>
-          <Button if={hasSave} @click={continueGame} className="pu-btn-ghost" style={{ padding: "12px 26px", fontSize: "15px", color: "#e2e8f0" }}>Continue</Button>
+        <Text className="pu-tc pu-brand" style={{ display: "block", fontSize: "11px", color: "#f59e0b", textShadow: "0 2px 14px rgba(0,0,0,0.95)" }}>A SOFTN NARRATIVE GAME</Text>
+        <Text style={{ display: "block", fontSize: "60px", fontWeight: 800, color: "#f8fafc", marginTop: "14px", letterSpacing: "-0.01em", lineHeight: "0.98", textShadow: "0 8px 40px rgba(0,0,0,0.98), 0 0 60px rgba(245,158,11,0.14)" }}>PROMPTLY</Text>
+        <Text style={{ display: "block", fontSize: "60px", fontWeight: 800, color: "#f59e0b", letterSpacing: "-0.01em", lineHeight: "0.98", textShadow: "0 8px 40px rgba(0,0,0,0.98)" }}>UNEMPLOYED</Text>
+        <Box className="pu-rule" style={{ width: "260px", marginTop: "20px" }} />
+        <Text style={{ display: "block", fontSize: "16px", color: "#d5dde8", marginTop: "16px", fontStyle: "italic", textShadow: "0 2px 12px rgba(0,0,0,0.95)" }}>The future arrived early. Rent is still due Friday.</Text>
+        <Stack direction="horizontal" gap={12} style={{ justifyContent: "center", marginTop: "30px", pointerEvents: "auto", flexWrap: "wrap" }}>
+          <Button @click={newGame} className="pu-cta-big" style={{ background: "#f59e0b", color: "#10131a", fontWeight: 800, padding: "13px 34px", fontSize: "15px", letterSpacing: "0.04em" }}>New game</Button>
+          <Button if={hasSave} @click={continueGame} className="pu-btn-ghost" style={{ padding: "13px 28px", fontSize: "15px", color: "#e2e8f0" }}>Continue</Button>
         </Stack>
-        <Text style={{ display: "block", fontSize: "11px", color: "#8b97ad", marginTop: "22px", letterSpacing: "0.1em", textShadow: "0 2px 10px rgba(0,0,0,0.95)" }}>NINE SCENES · FULLY VOICED · ABOUT 15 MINUTES</Text>
+        <Stack direction="horizontal" gap={9} style={{ justifyContent: "center", marginTop: "26px", flexWrap: "wrap" }}>
+          <Text className="pu-feat">NINE SCENES</Text>
+          <Text className="pu-feat">FULLY VOICED</Text>
+          <Text className="pu-feat">ABOUT 15 MINUTES</Text>
+          <Text className="pu-feat">ONE .SOFTN FILE</Text>
+        </Stack>
       </Box>
     </Box>
     <Box className="pu-card" style={{ marginTop: "14px", padding: "16px 20px" }}>
@@ -77,7 +101,7 @@
         <Input :bind={saveCode} placeholder="Paste a save code here" style={{ width: "100%", marginTop: "9px", fontFamily: "monospace", fontSize: "11px" }} />
         <Stack direction="horizontal" gap={9} style={{ marginTop: "10px", alignItems: "center", flexWrap: "wrap" }}>
           <Button @click={copySaveCode} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Copy</Button>
-          <Button @click={loadSaveCode} className="pu-cta" style={{ fontSize: "12px" }}>Load</Button>
+          <Button @click={loadSaveCode} className="pu-cta" style={{ fontSize: "12px", background: "#f59e0b", color: "#111", fontWeight: 700 }}>Load</Button>
           <Text style={{ fontSize: "11px", color: "#4ade80" }}>{saveCodeMsg}</Text>
         </Stack>
       </Box>
@@ -105,7 +129,7 @@
   </Stack>
 
   <Box if={inWorld()}>
-    <Box style={{ position: "relative", width: "fit-content", maxWidth: "100%" }}>
+    <Box className="pu-holder" style={{ position: "relative", width: "fit-content", maxWidth: "100%" }}>
       <Scene3D
         width={sceneW()}
         height={sceneH()}
@@ -132,7 +156,8 @@
   </Box>
 
   <!-- Scene 1: debug-card puzzle -->
-  <Box if={debugOpen} className="pu-card pu-note pu-panel">
+  <Box if={debugOpen} className="pu-modal">
+  <Box className="pu-card pu-note pu-panel pu-modal-card">
     <Box className="pu-head">
       <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>Yesterday's incident — assemble the fix</Text>
       <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>{debugMsg}</Text>
@@ -151,6 +176,7 @@
       <Button @click={closeDebug} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Step away</Button>
     </Stack>
   </Box>
+  </Box>
 
   <!-- Scene 2: title card -->
   <Box if={titleCardUp} className="pu-card pu-note" style={{ textAlign: "center", padding: "44px 24px", borderColor: "#f59e0b" }}>
@@ -167,7 +193,7 @@
       <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>One small archive box. Ten years. Keep exactly three.</Text>
     </Box>
     <Box if={pickerOpen}>
-      <Stack direction="horizontal" gap={12} className="pu-scroll" style={{ marginTop: "14px", flexWrap: "wrap", maxHeight: "44vh" }}>
+      <Stack direction="horizontal" gap={12} className="pu-scroll" style={{ marginTop: "14px", flexWrap: "wrap", maxHeight: "52vh" }}>
         #each (item, ii in ITEMS)
           <Box className="pu-item" @click={toggleItem(item.id)}
                style={{ borderColor: isPicked(item.id) ? "#f59e0b" : "#374151", width: "290px", maxWidth: "100%" }}>
@@ -178,7 +204,7 @@
       </Stack>
       <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center" }}>
         <Text style={{ fontSize: "13px", color: "#64748b", flex: 1 }}>In the box: {picked.length} / 3</Text>
-        <Button if={picked.length === 3} @click={confirmItems} className="pu-cta">Tape it shut</Button>
+        <Button if={picked.length === 3} @click={confirmItems} className="pu-cta" style={{ background: "#f59e0b", color: "#111", fontWeight: 700, padding: "9px 18px" }}>Tape it shut</Button>
       </Stack>
     </Box>
   </Box>
@@ -191,12 +217,13 @@
   </Box>
 
   <!-- Scene 4: budget overlay -->
-  <Box if={budgetOpen} className="pu-card pu-note pu-panel">
+  <Box if={budgetOpen} className="pu-modal">
+  <Box className="pu-card pu-note pu-panel pu-modal-card">
     <Box className="pu-head">
       <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>The numbers</Text>
       <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>Severance in. Rent out. Everything else is a decision.</Text>
     </Box>
-    <Stack direction="vertical" gap={8} className="pu-scroll" style={{ marginTop: "14px", maxHeight: "42vh" }}>
+    <Stack direction="vertical" gap={8} className="pu-modal-body" style={{ marginTop: "14px" }}>
       #each (s, si in SUBS)
         <Stack direction="horizontal" gap={10} style={{ alignItems: "center", flexWrap: "wrap", background: "#101623", borderRadius: "10px", padding: "11px 14px", opacity: isCancelled(s.id) ? 0.45 : 1 }}>
           <Box style={{ flex: 1, minWidth: "210px" }}>
@@ -210,8 +237,9 @@
     </Stack>
     <Stack direction="horizontal" gap={10} className="pu-foot" style={{ alignItems: "center", flexWrap: "wrap" }}>
       <Text style={{ fontSize: "13px", color: "#94a3b8", flex: 1 }}>Burn ${burnMonthly()}/mo · runway ≈ {runwayWeeks()} weeks</Text>
-      <Button @click={finishBudget} className="pu-cta">Enough numbers</Button>
+      <Button @click={finishBudget} className="pu-cta" style={{ background: "#f59e0b", color: "#111", fontWeight: 700, padding: "9px 18px" }}>Enough numbers</Button>
     </Stack>
+  </Box>
   </Box>
 
   <!-- Scene 5: LUMA terminal -->
@@ -220,9 +248,10 @@
       <Text style={{ fontWeight: 800, color: "#a78bfa", letterSpacing: "0.1em" }}>LUMA</Text>
       <Text style={{ fontSize: "12px", color: "#64748b" }}>Logical Utility and Messaging Assistant · build 0.4 · last run: 412 days ago</Text>
     </Stack>
-    <Box if={lumaPhase === "greet"} style={{ marginTop: "12px" }}>
-      <Button @click={askLuma} style={{ background: "#7c3aed", color: "#fff", fontWeight: 600 }}>“Give me a billion-dollar business idea. No capital, no staff, no emotional resilience.”</Button>
-    </Box>
+    <Stack if={lumaPhase === "greet"} direction="horizontal" gap={10} style={{ marginTop: "14px", flexWrap: "wrap", alignItems: "center" }}>
+      <Button @click={askLuma} style={{ background: "#7c3aed", color: "#fff", fontWeight: 600, padding: "11px 18px", textAlign: "left", flex: 1, minWidth: "260px" }}>“Give me a billion-dollar business idea. No capital, no staff, no emotional resilience.”</Button>
+      <Button @click={leaveLuma} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Step away</Button>
+    </Stack>
     <Box if={wsOpen} className="pu-scroll" style={{ marginTop: "12px", maxHeight: "46vh" }}>
       <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8" }}>LUMA refuses to brainstorm further without inputs. Pick one card per question.</Text>
       #each (cat, gi in WS_CATS)
@@ -243,12 +272,13 @@
   </Box>
 
   <!-- Scene 6: missing-orders puzzle -->
-  <Box if={ordersOpen} className="pu-card pu-note pu-panel">
+  <Box if={ordersOpen} className="pu-modal">
+  <Box className="pu-card pu-note pu-panel pu-modal-card">
     <Box className="pu-head">
       <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#fbbf24" }}>The missing orders</Text>
       <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>Three orders, four channels, no shared queue. Match each order to the slip that actually fits the facts.</Text>
     </Box>
-    <Box className="pu-scroll" style={{ maxHeight: "44vh", marginTop: "6px" }}>
+    <Box className="pu-modal-body" style={{ marginTop: "6px" }}>
     #each (o, oi in ORDERS)
       <Box style={{ marginTop: "12px", background: "#101623", borderRadius: "10px", padding: "10px 12px" }}>
         <Text style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0" }}>Known: {o.fact}</Text>
@@ -268,9 +298,11 @@
       <Button @click={closeOrders} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Step back</Button>
     </Stack>
   </Box>
+  </Box>
 
   <!-- Scene 8: the Scope Board -->
-  <Box if={scopeOpen} className="pu-card pu-note pu-panel" style={{ borderColor: "#38bdf8" }}>
+  <Box if={scopeOpen} className="pu-modal">
+  <Box className="pu-card pu-note pu-panel pu-modal-card" style={{ borderColor: "#38bdf8" }}>
     <Box className="pu-head">
       <Stack direction="horizontal" gap={10} style={{ alignItems: "center" }}>
         <Text style={{ fontWeight: 700, fontSize: "16px", color: "#7dd3fc" }}>The Scope Board</Text>
@@ -279,7 +311,7 @@
       </Stack>
       <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>A viable build needs intake, a review queue, and at least one safety check. Everything shiny is a decision against those.</Text>
     </Box>
-    <Stack direction="horizontal" gap={12} className="pu-scroll" style={{ marginTop: "14px", flexWrap: "wrap", maxHeight: "42vh" }}>
+    <Stack direction="horizontal" gap={12} className="pu-modal-body" style={{ marginTop: "14px", flexWrap: "wrap" }}>
       #each (card, si in SCOPE_CARDS)
         <Box className="pu-item" @click={toggleScope(card.id)}
              style={{ borderColor: scopeHas(card.id) ? (card.kind === "flash" ? "#f472b6" : "#4ade80") : "#374151", width: "290px", maxWidth: "100%" }}>
@@ -297,14 +329,16 @@
       <Button if={scopeValid()} @click={confirmScope} style={{ background: "#38bdf8", color: "#111", fontWeight: 700, padding: "9px 18px" }}>Lock the scope</Button>
     </Stack>
   </Box>
+  </Box>
 
   <!-- Scene 9: workflow policies -->
-  <Box if={wfOpen} className="pu-card pu-note pu-panel" style={{ borderColor: "#4ade80" }}>
+  <Box if={wfOpen} className="pu-modal">
+  <Box className="pu-card pu-note pu-panel pu-modal-card" style={{ borderColor: "#4ade80" }}>
     <Box className="pu-head">
       <Text style={{ display: "block", fontWeight: 700, fontSize: "16px", color: "#86efac" }}>Workflow Archaeology</Text>
       <Text style={{ display: "block", fontSize: "13px", color: "#94a3b8", marginTop: "5px" }}>Six real cases from this morning. Give each a policy. LUMA's confidence is shown beside each one — confidence is not the same thing as safety.</Text>
     </Box>
-    <Box className="pu-scroll" style={{ maxHeight: "40vh", marginTop: "6px" }}>
+    <Box className="pu-modal-body" style={{ marginTop: "6px" }}>
     #each (c, wi in WF_CASES)
       <Box style={{ marginTop: "10px", background: "#101623", borderRadius: "10px", padding: "10px 12px" }}>
         <Stack direction="horizontal" gap={8} style={{ alignItems: "center", flexWrap: "wrap" }}>
@@ -328,6 +362,7 @@
       <Button @click={closeWf} className="pu-btn-ghost" style={{ fontSize: "12px" }}>Step back</Button>
       <Button if={wfReady()} @click={submitWf} style={{ background: "#4ade80", color: "#111", fontWeight: 700, padding: "9px 18px" }}>Set the policies</Button>
     </Stack>
+  </Box>
   </Box>
 
   <!-- Principle card -->
@@ -432,5 +467,5 @@
   </Box>
 
 </Stack>
-<Loop interval={33} running={true} @tick={tick} />
+<Loop interval={33} running={true} @tick={gameStep} />
 </App>
