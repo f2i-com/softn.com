@@ -136,7 +136,12 @@ function moveTick() {
 }
 
 function updateCamera() {
-  cameraPos = { x: playerX, y: 1.6, z: playerZ }
+  let sx = 0, sy = 0
+  if (shakeAmt > 0.0005) {
+    sx = (myRand() - 0.5) * shakeAmt
+    sy = (myRand() - 0.5) * shakeAmt
+  }
+  cameraPos = { x: playerX + sx, y: 1.6 + sy, z: playerZ }
   cameraLookAt = {
     x: playerX + Math.sin(playerAngle) * 5,
     y: 1.55,
@@ -154,29 +159,56 @@ let cutIdx = 0
 let cutTickN = 0
 let cutEnd = null
 let fadeOp = 0
+let cutTitle = ""
+let cutSub = ""
+let shakeAmt = 0
 
 function ease(t) { return t * t * (3 - 2 * t) }
+function easeOut(t) { return 1 - (1 - t) * (1 - t) }
+function easeIn(t) { return t * t }
 
-function startCutscene(steps, endX, endZ, endYaw) {
+// Each step may name a curve: "out" starts fast (arrivals), "in" starts slow
+// (departures), default is smoothstep.
+function curve(s, t) {
+  if (s.e === "out") { return easeOut(t) }
+  if (s.e === "in") { return easeIn(t) }
+  if (s.e === "hold") { return 0 }
+  return ease(t)
+}
+
+function shake(amount) { shakeAmt = Math.max(shakeAmt, amount) }
+
+function startCutscene(steps, endX, endZ, endYaw, title, sub) {
   cutSteps = steps
   cutIdx = 0
   cutTickN = 0
   cutEnd = { x: endX, z: endZ, yaw: endYaw }
   cutActive = true
   fadeOp = 1
+  cutTitle = title || ""
+  cutSub = sub || ""
   hsNearId = ""
   hsNearLabel = ""
   applyCutFrame(steps[0], 0)
 }
 
 function applyCutFrame(s, t) {
-  let e = ease(t)
-  cameraPos = { x: s.x0 + (s.x1 - s.x0) * e, y: s.y0 + (s.y1 - s.y0) * e, z: s.z0 + (s.z1 - s.z0) * e }
+  let e = curve(s, t)
+  let sx = 0, sy = 0
+  if (shakeAmt > 0.0005) {
+    sx = (myRand() - 0.5) * shakeAmt
+    sy = (myRand() - 0.5) * shakeAmt
+  }
+  cameraPos = { x: s.x0 + (s.x1 - s.x0) * e + sx, y: s.y0 + (s.y1 - s.y0) * e + sy, z: s.z0 + (s.z1 - s.z0) * e }
   let yaw = s.yaw0 + (s.yaw1 - s.yaw0) * e
   let pitch = (s.p0 || 0) + ((s.p1 || 0) - (s.p0 || 0)) * e
   window.__scene3dYaw = yaw
   window.__scene3dPitch = pitch
   cameraLookAt = { x: cameraPos.x + Math.sin(yaw) * 5, y: cameraPos.y + Math.sin(pitch) * 5, z: cameraPos.z + Math.cos(yaw) * 5 }
+}
+
+function shakeTick() {
+  if (shakeAmt > 0) { shakeAmt = Math.max(0, shakeAmt - 0.012) }
 }
 
 function cutTickFn() {
@@ -195,6 +227,8 @@ function cutTickFn() {
 
 function endCutscene() {
   cutActive = false
+  cutTitle = ""
+  cutSub = ""
   if (cutEnd) {
     playerX = cutEnd.x
     playerZ = cutEnd.z
@@ -286,6 +320,64 @@ function hotspotMarkers(color) {
 
 // ---- Shared builders ------------------------------------------------------
 
+// Skirting board around a room's perimeter: four thin strips at floor level.
+// The cheapest trick in the book for making a box read as a room.
+function skirting(id, w, d, color, h) {
+  let t = h || 0.13
+  return [
+    { id: id + "_n", type: "box", position: { x: w / 2, y: t / 2, z: 0.55 }, width: w + 2, height: t, depth: 0.1, color: color },
+    { id: id + "_s", type: "box", position: { x: w / 2, y: t / 2, z: d - 0.55 }, width: w + 2, height: t, depth: 0.1, color: color },
+    { id: id + "_w", type: "box", position: { x: 0.55, y: t / 2, z: d / 2 }, width: 0.1, height: t, depth: d + 2, color: color },
+    { id: id + "_e", type: "box", position: { x: w - 0.55, y: t / 2, z: d / 2 }, width: 0.1, height: t, depth: d + 2, color: color }
+  ]
+}
+
+// Ceiling beams: a few long strips read as structure without a full grid.
+function ceilingBeams(id, w, d, y, n, color) {
+  let out = []
+  for (let i = 0; i < n; i++) {
+    out.push({ id: id + i, type: "box", position: { x: w / 2, y: y - 0.05, z: (d / (n + 1)) * (i + 1) },
+      width: w + 2, height: 0.1, depth: 0.16, color: color })
+  }
+  return out
+}
+
+// A doorway: two jambs and a lintel, optionally with a door leaf.
+function doorwayAt(id, x, z, dir, color, leafColor) {
+  let rx = Math.cos(dir), rz = -Math.sin(dir)
+  let out = [
+    { id: id + "_j1", type: "box", position: { x: x - rx * 0.85, y: 1.1, z: z - rz * 0.85 }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.16, height: 2.2, depth: 0.22, color: color },
+    { id: id + "_j2", type: "box", position: { x: x + rx * 0.85, y: 1.1, z: z + rz * 0.85 }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.16, height: 2.2, depth: 0.22, color: color },
+    { id: id + "_lin", type: "box", position: { x: x, y: 2.26, z: z }, rotation: { x: 0, y: dir, z: 0 },
+      width: 1.86, height: 0.16, depth: 0.22, color: color }
+  ]
+  if (leafColor) {
+    out.push({ id: id + "_leaf", type: "box", position: { x: x - rx * 0.42, y: 1.05, z: z - rz * 0.42 }, rotation: { x: 0, y: dir + 0.5, z: 0 },
+      width: 1.5, height: 2.05, depth: 0.06, color: leafColor })
+    out.push({ id: id + "_hnd", type: "sphere", position: { x: x - rx * 1.05, y: 1.0, z: z - rz * 1.05 }, radius: 0.05,
+      color: "#cbd5e1", metalness: 0.7, roughness: 0.3 })
+  }
+  return out
+}
+
+// A window with mullions: frame, glass, one cross bar. faceZ = faces along z.
+function windowAt(id, x, y, z, w, h, faceZ, frameColor, glowColor, glowInt) {
+  let rot = faceZ ? 0 : Math.PI / 2
+  let out = [
+    { id: id + "_f", type: "box", position: { x: x, y: y, z: z }, rotation: { x: 0, y: rot, z: 0 },
+      width: w + 0.18, height: h + 0.18, depth: 0.07, color: frameColor },
+    { id: id + "_g", type: "box", position: { x: x + (faceZ ? 0 : 0.04), y: y, z: z + (faceZ ? 0.04 : 0) }, rotation: { x: 0, y: rot, z: 0 },
+      width: w, height: h, depth: 0.04, color: "#0e1730", emissive: glowColor, emissiveIntensity: glowInt },
+    { id: id + "_mv", type: "box", position: { x: x + (faceZ ? 0 : 0.06), y: y, z: z + (faceZ ? 0.06 : 0) }, rotation: { x: 0, y: rot, z: 0 },
+      width: 0.05, height: h, depth: 0.03, color: frameColor },
+    { id: id + "_mh", type: "box", position: { x: x + (faceZ ? 0 : 0.06), y: y, z: z + (faceZ ? 0.06 : 0) }, rotation: { x: 0, y: rot, z: 0 },
+      width: w, height: 0.05, depth: 0.03, color: frameColor }
+  ]
+  return out
+}
+
 // A fake contact shadow: a flat dark disc. Cheaper than a shadow map, and it
 // grounds everything that floats one pixel above the floor.
 function blob(id, x, z, r, op) {
@@ -366,6 +458,10 @@ function fig(id, x, z, dir, bodyColor, headColor, opts) {
       width: 0.12, height: 0.5, depth: 0.16, color: bodyColor },
     { id: id + "_armR", type: "box", position: { x: x + rx * 0.32, y: 0.93, z: z + rz * 0.32 }, rotation: { x: 0, y: dir, z: -0.09 },
       width: 0.12, height: 0.5, depth: 0.16, color: bodyColor },
+    { id: id + "_shL", type: "box", position: { x: x - rx * 0.12 + fx * 0.03, y: 0.035, z: z - rz * 0.12 + fz * 0.03 }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.17, height: 0.07, depth: 0.26, color: "#1f2430" },
+    { id: id + "_shR", type: "box", position: { x: x + rx * 0.12 + fx * 0.03, y: 0.035, z: z + rz * 0.12 + fz * 0.03 }, rotation: { x: 0, y: dir, z: 0 },
+      width: 0.17, height: 0.07, depth: 0.26, color: "#1f2430" },
     { id: id + "_head", type: "sphere", position: { x: x, y: 1.4, z: z }, radius: 0.165, color: headColor },
     { id: id + "_hair", type: "sphere", position: { x: x - fx * 0.05, y: 1.47, z: z - fz * 0.05 }, radius: 0.155, color: hair }
   ]
@@ -497,6 +593,8 @@ function buildOffice() {
   sceneBg = "#0d1119"
   let objs = [floorPlane(30, 20, "#2d374d"), ceilingPlane(30, 20, 2.6, "#232b3d")]
   objs = objs.concat(wallsFrom(OFFICE_ROWS, "#48597a", 2.6))
+  objs = objs.concat(skirting("osk", 30, 20, "#2b3550"))
+  objs = objs.concat(ceilingBeams("obm", 30, 20, 2.6, 3, "#2b3550"))
   // Ceiling light panels.
   objs.push(lightPanel("lp1", 8, 6, 2.56, "#dbe6ff"))
   objs.push(lightPanel("lp2", 22, 12, 2.56, "#dbe6ff"))
@@ -564,20 +662,28 @@ function buildOffice() {
   objs.push({ id: "d41_l2", type: "box", position: { x: 22.75, y: 0.36, z: 14 }, width: 0.08, height: 0.72, depth: 0.7, color: "#343b4a" })
   objs.push({ id: "notebook41", type: "box", position: { x: 22, y: 0.78, z: 14 }, rotation: { x: 0, y: 0.3, z: 0 },
     width: 0.34, height: 0.05, depth: 0.46, color: "#e7e2d5" })
+  objs = objs.concat(doorwayAt("mtgdoor", 28.2, 16, Math.PI / 2, "#2b3550", ""))
   objs.push({ id: "hs_meeting", type: "box", position: { x: 28, y: 1.1, z: 16 },
-    width: 0.3, height: 2.2, depth: 1.8, color: "#1f2937",
+    width: 0.3, height: 2.05, depth: 1.7, color: "#1f2937",
     emissive: "#4ade80", emissiveIntensity: 0.9 })
-  objs.push({ id: "doorframe", type: "box", position: { x: 28, y: 2.3, z: 16 },
-    width: 0.4, height: 0.2, depth: 2.0, color: "#111827" })
   objs.push({ id: "lobby_banner", type: "box", position: { x: 13, y: 2.1, z: 1.2 },
     width: 5, height: 0.9, depth: 0.1, color: "#0b1220", emissive: "#38bdf8", emissiveIntensity: 1.2 })
   // Dawn windows along the north wall, and floor tone patches.
   for (let i = 0; i < 3; i++) {
-    objs.push({ id: "owinf" + i, type: "box", position: { x: 6 + i * 4, y: 1.9, z: 1.03 },
-      width: 2.6, height: 1.15, depth: 0.04, color: "#1a2233" })
-    objs.push({ id: "owin" + i, type: "box", position: { x: 6 + i * 4, y: 1.9, z: 1.07 },
-      width: 2.4, height: 1.0, depth: 0.05, color: "#0e1730", emissive: "#7fa8e8", emissiveIntensity: 0.55 })
+    objs = objs.concat(windowAt("owin" + i, 6 + i * 4, 1.9, 1.06, 2.4, 1.0, true, "#26304a", "#7fa8e8", 0.6))
+    objs.push({ id: "osill" + i, type: "box", position: { x: 6 + i * 4, y: 1.35, z: 1.2 }, width: 2.7, height: 0.06, depth: 0.24, color: "#37425f" })
+    objs.push({ id: "owpool" + i, type: "plane", position: { x: 6 + i * 4, y: 0.014, z: 2.6 },
+      rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 2.4, height: 2.2, color: "#7fa8e8", opacity: 0.07 })
   }
+  // Reception counter by the lobby, and the office printer nobody trusts yet.
+  objs.push(blob("recep", 20, 1.6, 1.3, 0.2))
+  objs.push({ id: "recep", type: "box", position: { x: 20, y: 0.55, z: 1.9 }, width: 3.2, height: 1.1, depth: 0.7, color: "#54658a", metalness: 0.15, roughness: 0.7 })
+  objs.push({ id: "recep_top", type: "box", position: { x: 20, y: 1.13, z: 1.9 }, width: 3.5, height: 0.08, depth: 0.9, color: "#6a7ba3", metalness: 0.2, roughness: 0.55 })
+  objs.push(blob("prn", 26, 8, 0.5, 0.24))
+  objs.push({ id: "prn_b", type: "box", position: { x: 26, y: 0.34, z: 8 }, width: 0.86, height: 0.68, depth: 0.7, color: "#d7dbe4", roughness: 0.7 })
+  objs.push({ id: "prn_t", type: "box", position: { x: 26, y: 0.72, z: 8 }, width: 0.9, height: 0.1, depth: 0.74, color: "#aeb6c4" })
+  objs.push({ id: "prn_tray", type: "box", position: { x: 26, y: 0.5, z: 7.62 }, rotation: { x: 0.25, y: 0, z: 0 }, width: 0.7, height: 0.03, depth: 0.3, color: "#f1f3f7" })
+  objs.push({ id: "prn_led", type: "sphere", position: { x: 26.3, y: 0.79, z: 7.75 }, radius: 0.035, color: "#4ade80", emissive: "#4ade80", emissiveIntensity: 1.4 })
   objs.push({ id: "fpatch1", type: "plane", position: { x: 9, y: 0.006, z: 7 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 8, height: 5, color: "#333e57" })
   objs.push({ id: "fpatch2", type: "plane", position: { x: 22, y: 0.006, z: 13 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 7, height: 5, color: "#313b52" })
   officeStatic = objs
@@ -619,6 +725,14 @@ function buildMeeting() {
   objs.push({ id: "rug", type: "plane", position: { x: 6, y: 0.012, z: 3.6 },
     rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 8, height: 4.4, color: "#2a3145" })
   objs.push(lightPanel("mlp1", 6, 3.4, 2.96, "#dbe6ff"))
+  objs = objs.concat(skirting("msk", 12, 9, "#232c44"))
+  // Ceiling projector, aimed at the screen it will shortly betray.
+  objs.push({ id: "proj_m", type: "cylinder", position: { x: 6, y: 2.85, z: 3.4 }, radius: 0.03, height: 0.28, color: "#1f2430" })
+  objs.push({ id: "proj_b", type: "box", position: { x: 6, y: 2.63, z: 3.4 }, width: 0.34, height: 0.2, depth: 0.44, color: "#2a3245", metalness: 0.3, roughness: 0.6 })
+  objs.push({ id: "proj_l", type: "cylinder", position: { x: 6, y: 2.63, z: 3.1 }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, radius: 0.06, height: 0.12,
+    color: "#dbe6ff", emissive: slideColor, emissiveIntensity: 1.2 })
+  objs.push({ id: "proj_beam", type: "plane", position: { x: 6, y: 2.2, z: 1.6 }, rotation: { x: -0.35, y: 0, z: 0 },
+    width: 2.4, height: 3.0, color: slideColor, opacity: 0.06 })
   // Shell walls with glass sides.
   objs.push({ id: "mw_back",  type: "box", position: { x: 6, y: 1.5, z: -0.4 }, width: 13, height: 3.2, depth: 0.6, color: "#2b3550" })
   objs.push({ id: "mw_glassL", type: "box", position: { x: -0.35, y: 1.5, z: 4 }, width: 0.15, height: 3.0, depth: 9.6, color: "#7dd3fc", opacity: 0.16 })
@@ -735,12 +849,25 @@ function buildFlat() {
   sceneBg = "#120d08"
   let objs = [floorPlane(18, 14, "#41352a"), ceilingPlane(18, 14, 2.5, "#251d15")]
   objs = objs.concat(wallsFrom(FLAT_ROWS, "#4d3e37", 2.5))
+  objs = objs.concat(skirting("fsk", 18, 14, "#33291f"))
+  objs = objs.concat(doorwayAt("fdoor", 6, 13.2, 0, "#33291f", "#5c4a3d"))
+  // Kitchenette: counter, sink, kettle, two mugs. The founder food pyramid.
+  objs.push(blob("kit", 3.4, 5.6, 1.1, 0.2))
+  objs.push({ id: "kit_c", type: "box", position: { x: 3.4, y: 0.44, z: 5.6 }, width: 2.4, height: 0.88, depth: 0.7, color: "#5a4a3a" })
+  objs.push({ id: "kit_t", type: "box", position: { x: 3.4, y: 0.9, z: 5.6 }, width: 2.5, height: 0.06, depth: 0.76, color: "#7d6a55" })
+  objs.push({ id: "kit_sink", type: "box", position: { x: 2.8, y: 0.92, z: 5.6 }, width: 0.6, height: 0.05, depth: 0.5, color: "#9aa4b2", metalness: 0.6, roughness: 0.35 })
+  objs.push({ id: "kit_tap", type: "cylinder", position: { x: 2.8, y: 1.08, z: 5.85 }, radius: 0.025, height: 0.28, color: "#cbd5e1", metalness: 0.7, roughness: 0.25 })
+  objs.push({ id: "kit_ket", type: "cylinder", position: { x: 4.1, y: 1.02, z: 5.5 }, radius: 0.13, height: 0.2, color: "#e5e7eb", metalness: 0.4, roughness: 0.4 })
+  objs.push({ id: "kit_m1", type: "cylinder", position: { x: 4.45, y: 0.99, z: 5.75 }, radius: 0.06, height: 0.11, color: "#f8fafc" })
+  objs.push({ id: "kit_m2", type: "cylinder", position: { x: 4.62, y: 0.99, z: 5.55 }, radius: 0.06, height: 0.11, color: "#fbbf24" })
   objs.push({ id: "rug", type: "plane", position: { x: 8, y: 0.012, z: 7 },
     rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 6, height: 4.5, color: "#6b4a3a" })
   // Window: night city on the far wall.
-  objs.push({ id: "winframe", type: "box", position: { x: 9, y: 1.6, z: 1.04 }, width: 2.9, height: 1.6, depth: 0.06, color: "#2a2018" })
-  objs.push({ id: "window", type: "box", position: { x: 9, y: 1.6, z: 1.08 },
-    width: 2.6, height: 1.3, depth: 0.05, color: "#0b1026", emissive: "#16204a", emissiveIntensity: 0.9 })
+  objs = objs.concat(windowAt("winx", 9, 1.6, 1.06, 2.6, 1.3, true, "#2a2018", "#16204a", 0.9))
+  objs.push({ id: "window", type: "box", position: { x: 9, y: 1.6, z: 1.1 },
+    width: 2.5, height: 1.2, depth: 0.03, color: "#0b1026", opacity: 0.35 })
+  objs.push({ id: "curtainL", type: "box", position: { x: 7.5, y: 1.55, z: 1.16 }, width: 0.5, height: 1.7, depth: 0.08, color: "#6b4a3a" })
+  objs.push({ id: "curtainR", type: "box", position: { x: 10.5, y: 1.55, z: 1.16 }, width: 0.5, height: 1.7, depth: 0.08, color: "#6b4a3a" })
   objs.push({ id: "moon", type: "sphere", position: { x: 9.8, y: 2.0, z: 1.12 }, radius: 0.14,
     color: "#f8fafc", emissive: "#e6ecff", emissiveIntensity: 1.6 })
   let cityCols = [8.2, 8.7, 9.1, 9.5, 10.0]
@@ -865,6 +992,20 @@ function buildBakery() {
   sceneBg = "#170f08"
   let objs = [floorPlane(24, 16, "#4a3a29"), ceilingPlane(24, 16, 2.5, "#2b2015")]
   objs = objs.concat(wallsFrom(BAKERY_ROWS, "#54413a", 2.5))
+  objs = objs.concat(skirting("bsk", 24, 16, "#3a2c22"))
+  objs = objs.concat(ceilingBeams("bbm", 24, 16, 2.5, 2, "#3a2c22"))
+  objs = objs.concat(doorwayAt("bdoor", 22, 2, Math.PI / 2, "#3a2c22", ""))
+  // Chequerboard floor in front of the counter — four tiles is enough to read.
+  for (let i = 0; i < 8; i++) {
+    let tx = 8 + (i % 4) * 2.2
+    let tz = 11.2 + Math.floor(i / 4) * 2.2
+    objs.push({ id: "tile" + i, type: "plane", position: { x: tx, y: 0.008, z: tz },
+      rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 2.1, height: 2.1,
+      color: (i + Math.floor(i / 4)) % 2 === 0 ? "#5c4835" : "#4a3a2b" })
+  }
+  // The till: a small brass box that has heard everything.
+  objs.push({ id: "till", type: "box", position: { x: 8.6, y: 1.18, z: 7.4 }, width: 0.5, height: 0.26, depth: 0.42, color: "#8a6a3a", metalness: 0.45, roughness: 0.5 })
+  objs.push({ id: "till_k", type: "box", position: { x: 8.6, y: 1.32, z: 7.28 }, rotation: { x: -0.3, y: 0, z: 0 }, width: 0.4, height: 0.03, depth: 0.2, color: "#3a2c1c" })
   // Counter island with warm top and glass front.
   objs.push({ id: "counterTop", type: "box", position: { x: 11, y: 1.02, z: 8 }, width: 8.4, height: 0.1, depth: 4.4, color: "#8a6f4d", roughness: 0.6 })
   objs.push({ id: "glass", type: "box", position: { x: 11, y: 0.6, z: 10.2 }, width: 8.2, height: 0.8, depth: 0.08, color: "#cbd5e1", opacity: 0.22 })
@@ -1001,6 +1142,15 @@ function buildDream() {
   }
   let objs = [floorPlane(22, 14, "#0e1119"), ceilingPlane(22, 14, 2.8, "#090b12")]
   objs = objs.concat(wallsFrom(DREAM_ROWS, "#141926", 2.8))
+  objs = objs.concat(skirting("dsk", 22, 14, "#0c1018"))
+  if (!dreamCalm) {
+    // Debris that should not float, floating.
+    for (let i = 0; i < 5; i++) {
+      objs.push({ id: "deb" + i, type: "box", position: { x: 4 + i * 3.2, y: 1.4 + (i % 3) * 0.5, z: 3 + (i % 4) * 2.2 },
+        rotation: { x: i * 0.4, y: i * 0.9, z: i * 0.2 }, width: 0.5, height: 0.06, depth: 0.34, color: "#1b2233",
+        animate: { rotateY: 0.006 + i * 0.002, floatAmplitude: 0.12, floatSpeed: 0.5 + i * 0.2 } })
+    }
+  }
   // The whiteboard everything orbits.
   objs.push({ id: "wboard", type: "box", position: { x: 10, y: 1.4, z: 6 }, width: 2.4, height: 1.4, depth: 0.1,
     color: "#e5e7eb", emissive: "#e5e7eb", emissiveIntensity: dreamCalm ? 0.5 : 0.22 })
