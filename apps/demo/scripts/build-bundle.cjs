@@ -9,11 +9,19 @@
 const fs = require('fs');
 const path = require('path');
 
-// Binary file extensions
+// Binary file extensions.
+//
+// Kept by hand in step with the registry in
+// packages/@softn/core/src/bundle/asset-classification.ts (the source of
+// truth): this script is CommonJS and cannot import the TS module. Note
+// .gltf is deliberately absent — it is JSON text, unlike its sibling .glb.
+// .obj is text in the registry but stays here: a writer must never transcode
+// bytes it had no need to read, and the readers classify on read regardless.
 const binaryExtensions = [
   '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg', '.bmp', '.avif', '.tiff', '.tif',
   '.glb', '.obj', '.fbx', '.stl', '.3ds', '.dae', '.bin',
-  '.mp3', '.mp4', '.wav', '.ogg', '.webm',
+  '.mp3', '.wav', '.ogg', '.opus', '.aac', '.flac', '.m4a',
+  '.mp4', '.webm',
   '.woff', '.woff2', '.ttf', '.otf', '.eot',
   '.hdr', '.exr', '.pdf',
   '.onnx',

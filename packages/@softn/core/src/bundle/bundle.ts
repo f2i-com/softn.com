@@ -20,6 +20,7 @@ import type {
 } from './types';
 import { validateManifest, createDefaultManifest } from './types';
 import { readBundleEntries } from './zip';
+import { classifyAsset } from './asset-classification';
 
 // ============================================================================
 // Bundle Reader
@@ -219,22 +220,11 @@ function getFileType(path: string): BundleFile['type'] {
   if (path.endsWith('.logic')) return 'logic';
   if (path.endsWith('.xdb')) return 'xdb';
 
-  // Check for common asset extensions
-  const assetExtensions = [
-    '.png',
-    '.jpg',
-    '.jpeg',
-    '.gif',
-    '.svg',
-    '.ico',
-    '.webp',
-    '.woff',
-    '.woff2',
-    '.ttf',
-    '.otf',
-    '.css',
-  ];
-  if (assetExtensions.some((ext) => path.endsWith(ext))) return 'asset';
+  // Anything the shared registry marks binary must stay 'asset': readBundle
+  // decodes every other type as UTF-8, which is not reversible. The list that
+  // lived here knew images and fonts only, so a model or an audio file fell
+  // to 'other' and its bytes were corrupted by the decode.
+  if (classifyAsset(path).binary) return 'asset';
 
   return 'other';
 }

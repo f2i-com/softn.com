@@ -7,7 +7,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { registerAllBuiltins, ThemeProvider } from '@softn/components';
-import { SoftNWithXDB, getXDB, readBundleEntries } from '@softn/core';
+import { SoftNWithXDB, getXDB, readBundleEntries, classifyAsset } from '@softn/core';
 import { Spinner, Box, Text, Card, Stack, Button } from '@softn/components';
 
 // Compile-time constant from Vite define
@@ -111,15 +111,10 @@ interface ZipResult {
 
 // Check if a file should be treated as binary
 function isBinaryFile(fileName: string): boolean {
-  const binaryExtensions = [
-    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg', '.bmp', '.avif', '.tiff', '.tif',
-    '.glb', '.obj', '.fbx', '.stl', '.3ds', '.dae', '.bin',
-    '.mp3', '.mp4', '.wav', '.ogg', '.webm',
-    '.woff', '.woff2', '.ttf', '.otf', '.eot',
-    '.hdr', '.exr', '.pdf',
-  ];
-  const lowerName = fileName.toLowerCase();
-  return binaryExtensions.some((ext) => lowerName.endsWith(ext));
+  // The extension list lived here, in softn-web, in core and in the demo
+  // build script, and the four disagreed. @softn/core's registry is the only
+  // copy now.
+  return classifyAsset(fileName).binary;
 }
 
 
@@ -657,23 +652,16 @@ function App(): React.ReactElement {
           const normalized = normalizeAssetPath(path);
           if (assetUrlCache.has(normalized)) return assetUrlCache.get(normalized)!;
           const bin = binaryFiles.get(normalized);
-          if (!bin) return null;
-          const ext = normalized.split('.').pop()?.toLowerCase() || '';
-          const mimeByExt: Record<string, string> = {
-            wav: 'audio/wav',
-            mp3: 'audio/mpeg',
-            ogg: 'audio/ogg',
-            webm: 'audio/webm',
-            png: 'image/png',
-            jpg: 'image/jpeg',
-            jpeg: 'image/jpeg',
-            gif: 'image/gif',
-            svg: 'image/svg+xml',
-            webp: 'image/webp',
-            ico: 'image/x-icon',
-          };
-          const mime = mimeByExt[ext] || 'application/octet-stream';
-          const blob = new Blob([bin as unknown as BlobPart], { type: mime });
+          // .gltf and .obj are text formats, so readZip lands them in
+          // textFiles; a model is an asset wherever its bytes live.
+          const text = bin ? undefined : textFiles.get(normalized);
+          if (!bin && text === undefined) return null;
+          // The registry answers application/octet-stream for unknown
+          // extensions, which is the fallback the map here used.
+          const mime = classifyAsset(normalized).mime;
+          const blob = bin
+            ? new Blob([bin as unknown as BlobPart], { type: mime })
+            : new Blob([text as string], { type: mime });
           const url = URL.createObjectURL(blob);
           assetUrlCache.set(normalized, url);
           objectUrls.push(url);

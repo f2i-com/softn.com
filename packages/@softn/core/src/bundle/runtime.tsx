@@ -15,6 +15,7 @@ import { getXDB } from '../runtime/xdb';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNRenderContext, SoftNDocument } from '../types';
 import { parseStatePath } from '../runtime/state-path';
+import { classifyAsset } from './asset-classification';
 
 // ============================================================================
 // Bundle Runtime
@@ -505,46 +506,10 @@ function normalizePath(path: string): string {
  * Get MIME type from file extension
  */
 function getMimeType(path: string): string {
-  const ext = path.split('.').pop()?.toLowerCase() || '';
-
-  const mimeTypes: Record<string, string> = {
-    // Images
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    svg: 'image/svg+xml',
-    webp: 'image/webp',
-    ico: 'image/x-icon',
-    bmp: 'image/bmp',
-
-    // Fonts
-    woff: 'font/woff',
-    woff2: 'font/woff2',
-    ttf: 'font/ttf',
-    otf: 'font/otf',
-    eot: 'application/vnd.ms-fontobject',
-
-    // Text
-    css: 'text/css',
-    js: 'application/javascript',
-    json: 'application/json',
-    xml: 'application/xml',
-    html: 'text/html',
-    txt: 'text/plain',
-
-    // Media
-    mp3: 'audio/mpeg',
-    wav: 'audio/wav',
-    ogg: 'audio/ogg',
-    mp4: 'video/mp4',
-    webm: 'video/webm',
-
-    // Documents
-    pdf: 'application/pdf',
-  };
-
-  return mimeTypes[ext] || 'application/octet-stream';
+  // The map that lived here was one of four private copies, and the only one
+  // with no model formats at all. The shared registry answers for every
+  // reader; unknown extensions come back as application/octet-stream.
+  return classifyAsset(path).mime;
 }
 
 // ============================================================================
