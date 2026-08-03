@@ -1,4 +1,4 @@
-// Promptly Unemployed — vertical slice (condensed Scenes 1–5).
+// Promptly Unemployed — vertical slice (condensed Scenes 1–6).
 // Entry file: game state, scene flow, puzzles, choices, saves.
 // Rules honoured throughout (plan §10.8): no setTimeout — tick counters only;
 // listeners latch to window.__pu* globals and the tick loop consumes them;
@@ -51,6 +51,14 @@ let wsTone = ""
 let wsHypeCount = 0
 let productName = ""
 let principleUp = false
+
+// Scene 6.
+let ordersOpen = false
+let orderPicks = { o1: "", o2: "", o3: "" }
+let ordersDone = false
+let pilotPromised = false
+let mabelTrust = 0
+let leoWrongIdx = 0
 
 // Debug-card puzzle.
 let debugOpen = false
@@ -148,7 +156,7 @@ function padRelease(dir) {
 // ---- The master tick ------------------------------------------------------
 
 function tick() {
-  if (scene === "office" || scene === "flat") {
+  if (canMove()) {
     moveTick()
     hotspotTick()
   }
@@ -198,6 +206,7 @@ function handleHotspot(id) {
   if (id === "hs_coffee") {
     if (!coffeeFixed) {
       coffeeFixed = true
+      sfx("success")
       buildOffice()
       addLog("FIXED: coffee machine firmware, rolled back with prejudice")
       runDialogue(["a1_s1_alex_003"], "")
@@ -228,6 +237,16 @@ function handleHotspot(id) {
   } else if (id === "hs_luma") {
     if (budgetDone) { enterLuma() }
     else { showNote("You already know what the dream costs. Face the numbers first.") }
+  } else if (id === "hs_tabA" || id === "hs_tabB" || id === "hs_paper") {
+    if (!ordersDone) { openOrders() }
+    else { showNote("The channels agree with each other now. Historic.") }
+  } else if (id === "hs_mabel") {
+    if (!ordersDone) { showNote("Mabel is mid-rush. Leo waves you toward the tablets.") }
+    else if (!pilotPromised) { runDialogue(["a2_s6_mabel_053"], "bakery_pitch") }
+    else { showNote("Mabel points at the door, then at an imaginary watch. One week.") }
+  } else if (id === "hs_exit") {
+    if (pilotPromised) { endSlice() }
+    else { showNote("Leaving now would waste the best accident of the week.") }
   }
 }
 
@@ -236,6 +255,7 @@ function pickDebugCard(id) {
   if (debugPicked.indexOf(id) >= 0) { return }
   let expected = DEBUG_ORDER[debugPicked.length]
   if (id !== expected) {
+    sfx("buzz")
     debugPicked = []
     debugMsg = "Not quite. A fix starts with what you SAW, then how to MAKE it happen, then how to STOP it happening again."
     return
@@ -246,6 +266,7 @@ function pickDebugCard(id) {
     debugDone = true
     debugOpen = false
     aidaEvidence = true
+    sfx("success")
     buildOffice()
     addLog("PRACTISED: symptom, reproduction, safeguard — in that order")
     showNote("Yesterday's incident, reconstructed. Odd — AIDA's ticket answer reads exactly like your own report.")
@@ -305,6 +326,16 @@ function handleDialogueDone(tag) {
     showChoices(opts, "name")
   } else if (tag === "named") {
     principleUp = true
+  } else if (tag === "bakery_pitch") {
+    let opts = []
+    for (let i = 0; i < PITCH_CHOICES.length; i++) { opts.push({ id: PITCH_CHOICES[i].id, label: PITCH_CHOICES[i].label }) }
+    showChoices(opts, "pitch")
+  } else if (tag === "bakery_done") {
+    pilotPromised = true
+    buildBakery()
+    objective = "Head home. Build the thing."
+    addLog("PROMISED: a working prototype for The Last Crumb, one week")
+    saveGame()
   }
 }
 
@@ -343,6 +374,15 @@ function handleChoice(tag, id) {
     lumaPhase = "named"
     addLog("NAMED: " + productName + (id === "patchwork" ? " — small systems, connected carefully" : ""))
     runDialogue(["a2_s5_sys_045"], "named")
+  } else if (tag === "pitch") {
+    let c = null
+    for (let i = 0; i < PITCH_CHOICES.length; i++) { if (PITCH_CHOICES[i].id === id) { c = PITCH_CHOICES[i] } }
+    if (id === "honest") { integrity = integrity + 1; mabelTrust = mabelTrust + 1; addLog("PITCHED HONESTLY: an experiment, might work") }
+    else if (id === "balanced") { mabelTrust = mabelTrust + 1; addLog("PITCHED: automation with a human approval step") }
+    else if (id === "hype") { hype = hype + 1; addLog("PITCHED: an autonomous order-intelligence operating system (regret pending)") }
+    else if (id === "vulnerable") { collaboration = collaboration + 1; mabelTrust = mabelTrust + 1; addLog("ADMITTED: it does not exist yet. Mabel respected that") }
+    if (c) { showNote(c.reply) }
+    runDialogue(["a2_s6_mabel_055", "a2_s6_alex_054", "a2_s6_luma_056", "a2_s6_mabel_057", "a2_s6_leo_058", "a2_s6_alex_059", "a2_s6_sys_060"], "bakery_done")
   }
 }
 
@@ -371,6 +411,7 @@ function isPicked(id) { return picked.indexOf(id) >= 0 }
 
 function confirmItems() {
   if (picked.length !== 3) { return }
+  sfx("click")
   keptItems = picked.slice()
   pickerOpen = false
   addLog("KEPT: " + keptItems.join(", ") + " — one box, three survivors")
@@ -415,6 +456,7 @@ function cancelSub(id) {
   for (let i = 0; i < SUBS.length; i++) { if (SUBS[i].id === id) { s = SUBS[i] } }
   if (!s || isCancelled(id)) { return }
   if (s.locked) { showNote("The landlord's cancellation policy is a locked door and a shrug."); return }
+  sfx("click")
   cancelledIds.push(id)
   cancelledIds = cancelledIds.slice()
   addLog("CANCELLED: " + s.name + " — " + s.joke.toLowerCase())
@@ -429,6 +471,7 @@ function finishBudget() {
   budgetOpen = false
   if (!budgetDone) {
     budgetDone = true
+    sfx("chime")
     buildFlat()
     objective = "The old side project is glowing. Also: the phone."
     runDialogue(["a2_s4_alex_032"], "")
@@ -487,9 +530,69 @@ function submitWs() {
 
 function pinPrinciple() {
   principleUp = false
+  sfx("chime")
   addLog("PRINCIPLE #1: ask before assuming")
-  endSlice()
+  showNote("Dinner is unaffordable. The Last Crumb is five minutes away and nearly closing.")
+  goBakery()
 }
+
+// ---- Scene 6: The Last Crumb ----------------------------------------------
+
+function goBakery() {
+  scene = "bakery"
+  let s = gridFind(BAKERY_ROWS, "S")
+  playerX = s.x
+  playerZ = s.z
+  playerAngle = 0
+  window.__scene3dYaw = playerAngle
+  window.__scene3dPitch = 0
+  buildBakery()
+  updateCamera()
+  saveGame()
+  sfx("doorbell")
+  if (ordersDone) {
+    objective = pilotPromised ? "Head home. Build the thing." : "Talk to Mabel."
+  } else {
+    objective = "Closing time at The Last Crumb. Three orders are missing."
+    runDialogue(["a2_s6_mabel_050", "a2_s6_leo_051", "a2_s6_leo_052"], "")
+  }
+}
+
+function openOrders() {
+  ordersOpen = true
+}
+
+function orderPickOf(id) { return orderPicks[id] || "" }
+
+function pickSlip(orderId, slipId) {
+  if (ordersDone) { return }
+  let order = null
+  for (let i = 0; i < ORDERS.length; i++) { if (ORDERS[i].id === orderId) { order = ORDERS[i] } }
+  if (!order) { return }
+  let slip = null
+  for (let i = 0; i < order.slips.length; i++) { if (order.slips[i].id === slipId) { slip = order.slips[i] } }
+  if (!slip) { return }
+  if (!slip.right) {
+    sfx("buzz")
+    showNote(LEO_WRONG[leoWrongIdx % LEO_WRONG.length])
+    leoWrongIdx = leoWrongIdx + 1
+    return
+  }
+  sfx("click")
+  orderPicks[orderId] = slipId
+  orderPicks = { o1: orderPicks.o1, o2: orderPicks.o2, o3: orderPicks.o3 }
+  if (orderPicks.o1 !== "" && orderPicks.o2 !== "" && orderPicks.o3 !== "") {
+    ordersDone = true
+    ordersOpen = false
+    sfx("success")
+    buildBakery()
+    addLog("MATCHED: three orders, four channels, zero shared queue — the real problem has a name")
+    objective = "Talk to Mabel."
+    runDialogue(["a2_s6_mabel_053"], "bakery_pitch")
+  }
+}
+
+function closeOrders() { ordersOpen = false }
 
 // ---- End of slice ---------------------------------------------------------
 
@@ -510,6 +613,7 @@ function endingSummary() {
   else if (priyaRel < 0) { bits.push("Priya will need time. Fair.") }
   if (ruthHonesty === 1) { bits.push("Ruth knows. It helped.") }
   else if (ruthHonesty === 0) { bits.push("Ruth suspects. Mothers do.") }
+  if (pilotPromised) { bits.push("The Last Crumb expects a prototype in one week. Mabel " + (mabelTrust > 0 ? "believes you, cautiously." : "is reserving judgement.")) }
   if (clue8471) { bits.push("Someone left before you did. Desk 41.") }
   return bits
 }
@@ -526,7 +630,8 @@ function saveGame() {
     coffeeFixed: coffeeFixed, debugDone: debugDone, notebookSeen: notebookSeen,
     clue8471: clue8471, aidaEvidence: aidaEvidence, priyaEvidence: priyaEvidence,
     keptItems: keptItems, cancelledIds: cancelledIds, budgetDone: budgetDone,
-    ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId
+    ruthDone: ruthDone, productName: productName, meetChoiceId: meetChoiceId,
+    ordersDone: ordersDone, pilotPromised: pilotPromised, mabelTrust: mabelTrust
   }
   try { localStorage.setItem("pu:autosave", JSON.stringify(save)); hasSave = true } catch (err) {}
 }
@@ -546,9 +651,11 @@ function continueGame() {
   keptItems = s.keptItems || []; cancelledIds = s.cancelledIds || []
   budgetDone = !!s.budgetDone; ruthDone = !!s.ruthDone
   productName = s.productName || ""; meetChoiceId = s.meetChoiceId || ""
+  ordersDone = !!s.ordersDone; pilotPromised = !!s.pilotPromised; mabelTrust = s.mabelTrust || 0
   // Checkpoints are scene entries; re-enter the saved scene fresh.
   if (s.scene === "meeting") { enterMeeting() }
   else if (s.scene === "boxes") { enterBoxes() }
+  else if (s.scene === "bakery") { goBakery() }
   else if (s.scene === "flat" || s.scene === "luma") { goFlat() }
   else if (s.scene === "done") { summaryLines = endingSummary(); scene = "done" }
   else { startOffice() }
@@ -564,6 +671,8 @@ function newGame() {
   cancelledIds = []; firstCancel = false; phoneRinging = false; ruthDone = false
   lumaPhase = ""; wsOpen = false; wsUser = ""; wsPain = ""; wsTone = ""; wsHypeCount = 0
   productName = ""; principleUp = false; debugOpen = false; debugPicked = []
+  ordersOpen = false; orderPicks = { o1: "", o2: "", o3: "" }; ordersDone = false
+  pilotPromised = false; mabelTrust = 0; leoWrongIdx = 0
   noteText = ""; noteTicks = 0; transcript = []
   dlgActive = false; dlgQueue = []; dlgDoneTag = ""; choiceList = []; choiceTag = ""
   startOffice()
@@ -576,13 +685,13 @@ function backToTitle() {
 
 // ---- Template helpers -----------------------------------------------------
 
-function inWorld() { return scene === "office" || scene === "meeting" || scene === "flat" }
-function canMove() { return scene === "office" || scene === "flat" }
+function inWorld() { return scene === "office" || scene === "meeting" || scene === "flat" || scene === "bakery" }
+function canMove() { return scene === "office" || scene === "flat" || scene === "bakery" }
 function showCaptionBar() { return scene !== "title" }
 function toggleTranscript() { transcriptOpen = !transcriptOpen }
 function hudPrompt() {
   if (dlgActive || choiceList.length > 0) { return "" }
-  if ((scene === "office" || scene === "flat") && hsNearId) { return hsNearLabel + "  —  E / tap" }
+  if (canMove() && hsNearId) { return hsNearLabel + "  —  E / tap" }
   return ""
 }
 function stat(label) {

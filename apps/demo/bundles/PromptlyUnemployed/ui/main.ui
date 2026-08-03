@@ -156,6 +156,29 @@
     </Box>
   </Box>
 
+  <!-- Scene 6: missing-orders puzzle -->
+  <Box if={ordersOpen} className="pu-card pu-note">
+    <Text style={{ fontWeight: 700, color: "#fbbf24" }}>The missing orders</Text>
+    <Text style={{ fontSize: "13px", color: "#94a3b8", marginTop: "4px" }}>Three orders, four channels, no shared queue. Match each order to the slip that actually fits the facts.</Text>
+    #each (o, oi in ORDERS)
+      <Box style={{ marginTop: "12px", background: "#101623", borderRadius: "10px", padding: "10px 12px" }}>
+        <Text style={{ fontSize: "13px", fontWeight: 700, color: "#e2e8f0" }}>Known: {o.fact}</Text>
+        <Stack direction="horizontal" gap={8} style={{ marginTop: "8px", flexWrap: "wrap" }}>
+          #each (slip, si in o.slips)
+            <Box className="pu-item" @click={pickSlip(o.id, slip.id)}
+                 style={{ borderColor: orderPickOf(o.id) === slip.id ? "#4ade80" : "#374151" }}>
+              <Text style={{ fontSize: "12px", color: orderPickOf(o.id) === slip.id ? "#86efac" : "#cbd5e1" }}>{slip.label}</Text>
+            </Box>
+          #end
+        </Stack>
+      </Box>
+    #end
+    <Stack direction="horizontal" gap={8} style={{ marginTop: "12px" }}>
+      <Text style={{ fontSize: "12px", color: "#64748b", flex: 1 }}>Leo watches, professionally unimpressed.</Text>
+      <Button @click={closeOrders} style={{ fontSize: "12px" }}>Step back</Button>
+    </Stack>
+  </Box>
+
   <!-- Principle card -->
   <Box if={principleUp} className="pu-card pu-note" style={{ textAlign: "center", padding: "36px 24px", borderColor: "#a78bfa" }}>
     <Text style={{ fontSize: "12px", color: "#64748b", letterSpacing: "0.2em" }}>PRINCIPLE №1</Text>
@@ -167,7 +190,7 @@
   <!-- End of slice -->
   <Box if={scene === "done"} className="pu-card" style={{ padding: "32px" }}>
     <Text style={{ fontSize: "12px", color: "#f59e0b", letterSpacing: "0.3em" }}>END OF VERTICAL SLICE</Text>
-    <Text style={{ fontSize: "26px", fontWeight: 800, color: "#f8fafc", marginTop: "8px" }}>{productName} exists now. Nothing works yet. That's tomorrow's problem.</Text>
+    <Text style={{ fontSize: "26px", fontWeight: 800, color: "#f8fafc", marginTop: "8px" }}>{productName} exists now. It has one customer, zero features, and a deadline.</Text>
     <Box style={{ marginTop: "16px" }}>
       #each (line, li in summaryLines)
         <Text style={{ fontSize: "14px", color: "#cbd5e1", marginTop: "4px" }}>· {line}</Text>
@@ -179,7 +202,7 @@
         <Text style={{ fontSize: "12px", color: "#86efac", fontFamily: "monospace", marginTop: "2px" }}>+ {entry}</Text>
       #end
     </Box>
-    <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "18px" }}>Scenes 6–17 — the bakery, the pilot, the printer's 1,204 retries, LaunchPad, and four endings — continue in the full plan.</Text>
+    <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "18px" }}>Scenes 7–17 — the burnout dream, the pilot, the printer's 1,204 retries, LaunchPad, and four endings — continue in the full plan.</Text>
     <Text style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>Voices: OpenAI gpt-4o-mini-tts (marin, coral, alloy, sage, onyx, cedar, echo, shimmer). AI-generated; not human recordings.</Text>
     <Stack direction="horizontal" gap={10} style={{ marginTop: "20px" }}>
       <Button @click={newGame} style={{ background: "#f59e0b", color: "#111", fontWeight: 700 }}>Play again</Button>

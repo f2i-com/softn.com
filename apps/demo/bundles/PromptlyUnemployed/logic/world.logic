@@ -394,6 +394,66 @@ function buildFlat() {
   ]
 }
 
+// ---- Scene 6: The Last Crumb ----------------------------------------------
+
+let BAKERY_ROWS = [
+  "#############",
+  "#..........D#",
+  "#.A......B..#",
+  "#...####....#",
+  "#...#..#..P.#",
+  "#.M.####....#",
+  "#...........#",
+  "#S..........#",
+  "#############"
+]
+
+let bakeryStatic = []
+
+function buildBakery() {
+  loadGrid(BAKERY_ROWS)
+  let objs = [floorPlane(24, 16, "#3e3227")]
+  objs = objs.concat(wallsFrom(BAKERY_ROWS, "#4a3b36", 2.5))
+  // The counter block (the #### island) gets a warm top and a glass front.
+  objs.push({ id: "counterTop", type: "box", position: { x: 11, y: 1.02, z: 8 }, width: 8.4, height: 0.1, depth: 4.4, color: "#8a6f4d", roughness: 0.6 })
+  objs.push({ id: "glass", type: "box", position: { x: 11, y: 0.6, z: 10.2 }, width: 8.2, height: 0.8, depth: 0.08, color: "#cbd5e1", opacity: 0.25 })
+  // Pastry shelves: pastel spheres on two shelf boxes along the west wall.
+  objs.push({ id: "shelf1", type: "box", position: { x: 1.4, y: 1.0, z: 8 }, width: 0.6, height: 0.08, depth: 6, color: "#7a5f43" })
+  let pastry = ["#f4c27a", "#e8a866", "#f7dba7", "#d98c5f", "#f4c27a", "#e8a866"]
+  for (let i = 0; i < 6; i++) {
+    objs.push({ id: "pastry" + i, type: "sphere", position: { x: 1.4, y: 1.22, z: 5.4 + i * 1.05 }, radius: 0.19, color: pastry[i], roughness: 0.9 })
+  }
+  // The duelling tablets, the paper board, and the door.
+  objs.push({ id: "hs_tabA", type: "box", position: { x: 4, y: 1.1, z: 4 }, width: 0.55, height: 0.4, depth: 0.06,
+    color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#38bdf8", emissiveIntensity: 1.1, animate: { rotateY: 0 } })
+  objs.push({ id: "hs_tabB", type: "box", position: { x: 18, y: 1.1, z: 4 }, width: 0.55, height: 0.4, depth: 0.06,
+    color: "#0b1220", emissive: ordersDone ? "#4ade80" : "#f87171", emissiveIntensity: 1.1, animate: { rotateY: 0 } })
+  objs.push({ id: "hs_paper", type: "box", position: { x: 20, y: 1.4, z: 8 }, width: 1.6, height: 1.1, depth: 0.08,
+    color: "#efe6cf", emissive: "#efe6cf", emissiveIntensity: ordersDone ? 0.1 : 0.35 })
+  objs.push({ id: "hs_exit", type: "box", position: { x: 22, y: 1.1, z: 2 }, width: 0.3, height: 2.2, depth: 1.6,
+    color: "#2a2018", emissive: "#f59e0b", emissiveIntensity: pilotPromised ? 1.0 : 0.15 })
+  // Mabel behind the counter, Leo by the tablets — same simple figures as the meeting.
+  objs.push({ id: "mabel", type: "box", position: { x: 4, y: 1.05, z: 10 }, width: 0.6, height: 1.3, depth: 0.5, color: "#b45309" })
+  objs.push({ id: "mabelHead", type: "sphere", position: { x: 4, y: 1.95, z: 10 }, radius: 0.26, color: "#8a5a3a" })
+  objs.push({ id: "leo", type: "box", position: { x: 16.5, y: 1.0, z: 5 }, width: 0.55, height: 1.2, depth: 0.45, color: "#3f6212" })
+  objs.push({ id: "leoHead", type: "sphere", position: { x: 16.5, y: 1.85, z: 5 }, radius: 0.24, color: "#a16207" })
+  bakeryStatic = objs
+  objects = bakeryStatic
+  lights = [
+    { id: "amb", type: "ambient", color: "#e8c39a", intensity: 1.6 },
+    { id: "hemi", type: "hemisphere", color: "#f7dfc0", groundColor: "#5a4636", intensity: 0.9 },
+    { id: "warm1", type: "point", color: "#ffca85", intensity: 2.4, position: { x: 6, y: 2.2, z: 8 } },
+    { id: "warm2", type: "point", color: "#ffca85", intensity: 2.2, position: { x: 17, y: 2.2, z: 5 } }
+  ]
+  hotspots = [
+    { id: "hs_tabA",  x: 4,  z: 4,  r: 1.9, label: ordersDone ? "Delivery tablet A (at peace)" : "Delivery tablet A" },
+    { id: "hs_tabB",  x: 18, z: 4,  r: 1.9, label: ordersDone ? "Delivery tablet B (at peace)" : "Delivery tablet B" },
+    { id: "hs_paper", x: 20, z: 8,  r: 1.9, label: "The paper orders" },
+    { id: "hs_mabel", x: 4,  z: 10, r: 2.2, label: "Mabel" },
+    { id: "hs_exit",  x: 22, z: 2,  r: 2.0, label: pilotPromised ? "Head home and build" : "The door" }
+  ]
+}
+
 // Cancelling a subscription darkens the room a little each time.
 function flatAmbient() {
   let n = 0
