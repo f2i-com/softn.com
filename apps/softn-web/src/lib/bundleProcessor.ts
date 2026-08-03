@@ -6,7 +6,7 @@
  * No Tauri dependencies — uses only browser APIs.
  */
 
-import { getXDB, readBundleEntries } from '@softn/core';
+import { getXDB, readBundleEntries, classifyAsset, ASSET_CLASSIFICATIONS } from '@softn/core';
 import type { PermissionConfig } from '@softn/core';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -65,15 +65,10 @@ export interface ZipResult {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function isBinaryFile(fileName: string): boolean {
-  const binaryExtensions = [
-    '.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg', '.bmp', '.avif', '.tiff', '.tif',
-    '.glb', '.obj', '.fbx', '.stl', '.3ds', '.dae', '.bin',
-    '.mp3', '.mp4', '.wav', '.ogg', '.webm',
-    '.woff', '.woff2', '.ttf', '.otf', '.eot',
-    '.hdr', '.exr', '.pdf',
-  ];
-  const lowerName = fileName.toLowerCase();
-  return binaryExtensions.some((ext) => lowerName.endsWith(ext));
+  // The extension list lived here, in softn-loader, in core and in the demo
+  // build script, and the four disagreed. @softn/core's registry is the only
+  // copy now.
+  return classifyAsset(fileName).binary;
 }
 
 /** Resolve a relative path against a base file path */
@@ -441,8 +436,11 @@ export function createAssetResolver(
     const cached = urls.get(path);
     if (cached) return cached;
 
-    const mime = MIME_BY_EXTENSION[path.split('.').pop()?.toLowerCase() ?? ''];
-    if (!mime) return '';
+    // A MIME miss used to return '' here, so a .glb whose bytes were sitting
+    // in the bundle resolved to an empty URL with nothing logged. An unknown
+    // format is served as opaque bytes instead, and says so once.
+    const { mime } = classifyAsset(path);
+    warnUnknownAssetExtension(path);
 
     const binary = binaryFiles.get(path);
     // An SVG may have been read as text rather than as bytes, depending on how
@@ -461,22 +459,17 @@ export function createAssetResolver(
   };
 }
 
-/** Formats an <img> can show without running anything embedded in them. */
-const MIME_BY_EXTENSION: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  ico: 'image/x-icon',
-  bmp: 'image/bmp',
-  svg: 'image/svg+xml',
-  mp3: 'audio/mpeg',
-  wav: 'audio/wav',
-  ogg: 'audio/ogg',
-  mp4: 'video/mp4',
-  webm: 'video/webm',
-};
+/** Extensions already warned about, so a folder of fifty unknowns logs once. */
+const warnedAssetExtensions = new Set<string>();
+
+function warnUnknownAssetExtension(path: string): void {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  if (ext in ASSET_CLASSIFICATIONS || warnedAssetExtensions.has(ext)) return;
+  warnedAssetExtensions.add(ext);
+  console.warn(
+    `[SoftN Web] No MIME type registered for .${ext}; serving as application/octet-stream`
+  );
+}
 
 export function extractIconDataUrl(
   binaryFiles: Map<string, Uint8Array>,
