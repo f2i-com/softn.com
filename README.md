@@ -86,16 +86,21 @@ npm run build:packages
 npm run dev
 ```
 
-| | |
-|-|-|
-| `http://localhost:1421` | **Landing page** — start here. Runs the demos in place and links to the rest. |
-| `http://localhost:1420` | **Web runtime** — drag-drop a `.softn` bundle, or open one with `?open=/demos/SnakeGame.softn` |
-| `http://localhost:1422` | **Builder** |
-| `http://localhost:1423` | **Studio** |
+Everything is available from one development origin, matching production:
 
-If a port is already taken, `npm run dev` moves that app to the next free one and
-tells the landing page where it went. To run a single app instead, use
-`npm run dev:site`, `dev:web`, `dev:builder` or `dev:studio`.
+| URL | App |
+|-----|-----|
+| `http://localhost:1420/` | Landing page — start here |
+| `http://localhost:1420/web/` | Web runtime |
+| `http://localhost:1420/builder/` | Visual builder |
+| `http://localhost:1420/studio/` | AI studio |
+| `http://localhost:1420/demos/` | Shared `.softn` bundles |
+
+The three app servers still run privately so each keeps fast Vite HMR, but the
+site proxies their path and WebSocket traffic through port 1420. If that port is
+taken, `npm run dev` prints the one replacement origin to use. To run a single
+app directly instead, use `npm run dev:site`, `dev:web`, `dev:builder` or
+`dev:studio`.
 
 ---
 
@@ -480,7 +485,8 @@ npm run build:site
 ```
 
 Builds the packages, then each app with the `VITE_BASE` matching where it will be
-served, and assembles a single uploadable tree:
+served, and assembles a single uploadable tree. Upload `dist/` to one domain; no
+subdomains or cross-origin configuration are required:
 
 ```
 dist/            landing page
@@ -489,6 +495,26 @@ dist/web/        web runtime
 dist/builder/    visual builder
 dist/studio/     AI studio
 ```
+
+Configure the host to serve each app's `index.html` for deep links. The build
+writes Netlify/Cloudflare Pages rules to `dist/_redirects` and a GitHub Pages
+fallback to `dist/404.html`. On another host, apply the equivalent rewrites:
+
+```text
+/web/*     -> /web/index.html
+/builder/* -> /builder/index.html
+/studio/*  -> /studio/index.html
+/*         -> /index.html
+```
+
+To exercise that assembled artifact locally on one port before uploading it:
+
+```bash
+npm run preview:site
+```
+
+This performs a fresh build and serves it at `http://localhost:1420`. Set
+`SOFTN_SITE_PORT` if that port is already occupied.
 
 ### Demos
 
@@ -537,7 +563,7 @@ the flag before the script sees it.
 ### Running Apps
 
 ```bash
-# Everything web, on one command
+# Everything web on one origin: /, /web/, /builder/ and /studio/
 npm run dev
 
 # Or one at a time

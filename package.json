@@ -15,6 +15,7 @@
     "build:core": "npm run build -w @softn/core",
     "build:components": "npm run build -w @softn/components",
     "build:site": "node scripts/build-site.mjs",
+    "preview:site": "npm run build:site && node scripts/serve-site.mjs",
     "dev": "node scripts/dev-all.mjs",
     "dev:site": "npm run dev -w @softn/site",
     "dev:web": "npm run dev -w @softn/web",

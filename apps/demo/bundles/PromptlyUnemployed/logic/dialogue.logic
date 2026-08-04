@@ -14,6 +14,7 @@ let choiceList = []        // [{id, label}] — non-empty means a choice panel i
 let choiceTag = ""
 let transcript = []        // [{speaker, text}]
 let muted = false
+let FOOTSTEP_VOLUME = 0.65
 
 let TICK_MS = 33
 let DLG_TAIL_TICKS = 6     // 198 ms grace after the counted duration so lines never clip
@@ -21,7 +22,12 @@ let dlgSeq = 0             // increments per line; guards stale audio.play callb
 
 function sfx(name) {
   if (muted) { return }
-  softn.audio.play("assets/audio/sfx/" + name + ".wav")
+  let path = "assets/audio/sfx/" + name + ".wav"
+  if (name === "step1" || name === "step2") {
+    softn.audio.play(path, { volume: FOOTSTEP_VOLUME })
+    return
+  }
+  softn.audio.play(path)
 }
 
 function runDialogue(ids, doneTag) {
