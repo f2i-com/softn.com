@@ -14,26 +14,36 @@ export default defineConfig(({ mode }) => {
   // environment variables still win, which is what CI and the site build rely on.
   const env = loadEnv(mode, appDir, 'VITE_');
 
-  // Where the web runtime lives while developing. The site never bundles the
-  // runtime; it points an iframe at it and reads the same `/demos` directory the
-  // runtime serves, so the two only have to agree on a URL.
-  const webRuntimeOrigin = env.VITE_WEB_URL || 'http://localhost:1420';
+  // Standalone site development can point directly at another runtime.
+  // `npm run dev` instead supplies private proxy targets and browser-facing
+  // paths, making this Vite server the one public origin for all four apps.
+  const webRuntimeTarget = env.VITE_WEB_PROXY_TARGET || env.VITE_WEB_URL || 'http://localhost:1420';
+  const appProxies = [
+    ['/web', env.VITE_WEB_PROXY_TARGET],
+    ['/builder', env.VITE_BUILDER_PROXY_TARGET],
+    ['/studio', env.VITE_STUDIO_PROXY_TARGET],
+  ].filter((entry): entry is [string, string] => Boolean(entry[1]));
+  const demoProxy = {
+    target: webRuntimeTarget,
+    changeOrigin: true,
+    // The runtime's public/ directory follows its `/web/` Vite base. Production
+    // also copies those bundles to root `/demos/`; mirror that alias in dev.
+    ...(env.VITE_WEB_PROXY_TARGET && { rewrite: (url: string) => `/web${url}` }),
+  };
 
   return {
     plugins: [react()],
     server: {
       port: env.VITE_PORT ? Number(env.VITE_PORT) : 1421,
       strictPort: true,
-      proxy: {
+      proxy: Object.fromEntries([
+        ...appProxies.map(([route, target]) => [route, { target, changeOrigin: true, ws: true }]),
         // In a deployed build the site and the runtime sit under one origin and
         // `/demos` is a plain directory. Proxying it in dev keeps the fetch
         // same-origin in both places, so the demo shelf needs no CORS handling
         // and no separate code path.
-        '/demos': {
-          target: webRuntimeOrigin,
-          changeOrigin: true,
-        },
-      },
+        ['/demos', demoProxy],
+      ]),
     },
     build: {
       target: 'es2022',

@@ -3,11 +3,10 @@
  *
  * A deployed softn.com serves all four builds from one origin — the site at `/`
  * and each app under its own directory — so the defaults are plain paths and no
- * configuration is needed. While developing, each app is a separate Vite server
- * on its own port, so the defaults switch to localhost. Either default can be
- * replaced with a `VITE_*_URL` entry in `apps/softn-site/.env.local`, which is
- * what you want if a port is already taken: the runtime's 1420 in particular
- * collides easily.
+ * configuration is needed. `npm run dev` provides those same paths through the
+ * site's proxy; a standalone `npm run dev:site` falls back to the apps' direct
+ * localhost ports. Either default can be replaced with a `VITE_*_URL` entry in
+ * `apps/softn-site/.env.local`.
  */
 
 const DEV = import.meta.env.DEV;
