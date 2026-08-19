@@ -7,6 +7,7 @@
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { useConsentPending } from '@softn/core';
 
 /** One per run of the start effect — see the effect at the bottom for why. */
 interface StartAttempt {
@@ -94,6 +95,17 @@ export function Camera({
   style,
   children,
 }: CameraProps): React.ReactElement {
+  // permission.json gates the softn.* API; getUserMedia below is not part of
+  // it, so while the app's consent bar is unanswered the only thing in front of
+  // the hardware is the browser's own prompt — raised by an entry page, on
+  // arrival, over the top of a bar the user has not read yet. Worse, every
+  // bundle is served from one browser origin, so once any app has been granted
+  // the camera there the next bundle gets the device with no prompt at all.
+  // Nothing opens until the bar has been answered; the flag turns false on the
+  // grant and the effect below starts the stream then, with no reload.
+  const consentPending = useConsentPending();
+  const permitted = active && !consentPending;
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -129,7 +141,7 @@ export function Camera({
   const startCamera = useCallback(async (attempt: StartAttempt) => {
     cleanup();
 
-    if (!active) return;
+    if (!permitted) return;
 
     // A previous failure must not outlive the attempt that caused it, or the
     // component renders its error box forever and no amount of switching away
@@ -182,7 +194,7 @@ export function Camera({
       setError(message);
       onError?.(message);
     }
-  }, [active, facing, width, height, mode, onError, cleanup]);
+  }, [permitted, facing, width, height, mode, onError, cleanup]);
 
   // Capture a single frame to canvas -> data URL
   const captureFrame = useCallback((): { dataUrl: string; width: number; height: number } | null => {
@@ -304,7 +316,7 @@ export function Camera({
   // the document" box that nothing could clear.
   useEffect(() => {
     const attempt: StartAttempt = { cancelled: false };
-    if (active) {
+    if (permitted) {
       void startCamera(attempt);
     } else {
       cleanup();
@@ -319,7 +331,7 @@ export function Camera({
     // passes a fresh onError, and restarting the hardware for that would
     // retake the camera on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, facing, mode]);
+  }, [permitted, facing, mode]);
 
   // Styles
   const containerStyle: React.CSSProperties = {
@@ -403,6 +415,32 @@ export function Camera({
     pointerEvents: 'none',
     zIndex: 10,
   };
+
+  // A black rectangle with a dead shutter button under it is the one thing
+  // this state must not look like: the user has to be able to tell that the
+  // app is fine and the answer is one button away, not that the camera broke.
+  if (consentPending) {
+    return (
+      <div style={containerStyle}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width,
+            height,
+            padding: '1rem',
+            textAlign: 'center',
+            color: '#a1a1aa',
+            fontSize: '0.875rem',
+            lineHeight: 1.5,
+          }}
+        >
+          The camera stays off until you choose Allow in the permission bar at the top of this app.
+        </div>
+      </div>
+    );
+  }
 
   if (error) {
     return (

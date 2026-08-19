@@ -1,6 +1,7 @@
-import React, { Component, useMemo, type ErrorInfo } from 'react';
+import React, { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo } from 'react';
 import { SoftNWithXDB } from '@softn/core';
 import { ThemeProvider, Spinner, Box, Text, Card } from '@softn/components';
+import { PermissionBar, type ConsentRequest } from './PermissionBar';
 
 interface AppRunnerProps {
   source: string;
@@ -21,6 +22,12 @@ interface AppRunnerProps {
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
   permissionConfig?: import('@softn/core').PermissionConfig;
+  /**
+   * The bundle declared capabilities the user has not answered yet, so
+   * `permissionConfig` above is the withheld one and this raises the bar that
+   * offers the real one. Absent once a grant exists.
+   */
+  consent?: ConsentRequest;
   onPageChange?: (page: string) => void;
   /** Fires once the document has parsed and the app is on screen rather than its spinner. */
   onReady?: () => void;
@@ -61,7 +68,67 @@ const appRunnerStyles = `
   .softn-runner-loading {
     animation: softn-runner-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
+  /* @softn/components sizes an app root at calc(100vh - var(--softn-tab-bar-height)),
+     off the viewport rather than off this flex box, so a bar inserted above it
+     does not shrink it — it pushes the bundle's own footer that far below the
+     fold. Anything the runtime puts above the app has to be added into that
+     variable instead, and per tab: a bar in one tab must not resize another.
+
+     Neither fallback in the calc() is a guess at the bar's height.
+     --softn-chrome-base falls back to the 38px .softn-shell sets it to, for an
+     AppRunner mounted outside that shell; --softn-consent-bar-height falls back
+     to 0px, the height of a bar that is not there. The real height arrives
+     inline on the element under the identical condition that adds this class,
+     and an inline custom property beats a stylesheet one, so a per-breakpoint
+     guess here could never be read anyway — and there is no frame for one to
+     cover, because before the bar is measured the class is not applied. */
+  .softn-runner-host--consenting {
+    --softn-tab-bar-height: calc(var(--softn-chrome-base, 38px) + var(--softn-consent-bar-height, 0px));
+  }
 `;
+
+/**
+ * Only the text-shaped input types carry a selection. `selectionStart` on a
+ * checkbox or a colour picker throws rather than answering null, so the type is
+ * narrowed before it is read.
+ */
+function isTextEntry(el: Element | null): el is HTMLInputElement | HTMLTextAreaElement {
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (!(el instanceof HTMLInputElement)) return false;
+  return /^(?:text|search|url|tel|password|email|)$/i.test(el.type);
+}
+
+/**
+ * Put focus and caret back where the app had them.
+ *
+ * Only the element is remembered, never the offsets: a browser keeps an
+ * input's selection across a blur, so reading it here — after the user has
+ * finished typing and pressed Allow — is the position they actually left,
+ * while a number captured when the field was first focused would be stale by
+ * every character since. Reading before `focus()` matters too, because
+ * focusing a text field can collapse the selection to its end.
+ *
+ * Returns false when there is nothing to restore or the element has gone. The
+ * grant reloads the script against the granted config, so a field the bundle
+ * renders conditionally may not survive it — that is the app-root fallback's
+ * case, not a failure.
+ */
+function restoreFocus(element: HTMLElement | null): boolean {
+  if (!element || !element.isConnected) return false;
+  const selection = isTextEntry(element)
+    ? { start: element.selectionStart, end: element.selectionEnd, direction: element.selectionDirection ?? 'none' as const }
+    : null;
+  element.focus();
+  if (selection && selection.start !== null && selection.end !== null && isTextEntry(element)) {
+    try {
+      element.setSelectionRange(selection.start, selection.end, selection.direction);
+    } catch {
+      // Still in the document but no longer takes a selection. Focus landed,
+      // which is the part that stops the next keystroke going nowhere.
+    }
+  }
+  return document.activeElement === element;
+}
 
 /** Error boundary for the SoftN renderer */
 class RunnerErrorBoundary extends Component<
@@ -170,7 +237,59 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
+  const [barHeight, setBarHeight] = useState(0);
+  const hostRef = useRef<HTMLDivElement>(null);
+  // Stable, or the bar's ResizeObserver effect tears down and re-observes on
+  // every render of this tab.
+  const handleBarHeight = useCallback((px: number) => setBarHeight(px), []);
+  // The bar unmounts when the grant lands, taking the focused Allow button
+  // with it. Without somewhere for focus to go a keyboard user is dropped on
+  // <body>, at the top of the document, having just pressed a button.
+  //
+  // The app root is the fallback, not the answer. Allow is pressed by someone
+  // who was already using the app, so the field they were typing in is usually
+  // still there afterwards — the grant upgrades the tab in place rather than
+  // remounting it. Measured before this: typing into WarbleWire's textarea at
+  // selectionStart 33 and pressing Allow left activeElement on the app root
+  // DIV, and everything typed next went nowhere. The text survived; the caret
+  // did not.
+  const hadConsentRef = useRef(Boolean(consent));
+  // The last thing inside the app itself to take focus, tracked as it happens
+  // rather than read at Allow: by the time the click handler runs, focus is
+  // already on the Allow button, and a keyboard user tabbed away from the
+  // field before that.
+  const lastAppFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host || !consent) return;
+    const remember = (event: FocusEvent): void => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || target === host) return;
+      // The bar, its collapsed chip and its detail dialog are runtime chrome
+      // that disappears on Allow; restoring focus into them would be restoring
+      // it to nothing.
+      if (target.closest('.softn-consent-bar, .softn-consent-chip-strip, [role="dialog"]')) return;
+      lastAppFocusRef.current = target;
+    };
+    host.addEventListener('focusin', remember);
+    return () => host.removeEventListener('focusin', remember);
+  }, [consent]);
+  useEffect(() => {
+    if (hadConsentRef.current && !consent) {
+      const remembered = lastAppFocusRef.current;
+      lastAppFocusRef.current = null;
+      if (!restoreFocus(remembered)) hostRef.current?.focus();
+    }
+    hadConsentRef.current = Boolean(consent);
+  }, [consent]);
+
+  // Measured height is only meaningful while the bar exists. PermissionBar's
+  // ResizeObserver effect reports 0 when it collapses but not when it
+  // unmounts, so on Allow the last measurement stuck and the app kept a 46px
+  // strip of nothing reserved above it for the rest of the session.
+  const consentBarHeight = consent ? barHeight : 0;
+
   // Build initial state: page from URL + saved sync room from localStorage
   const initialState = useMemo(() => {
     const state: Record<string, unknown> = {};
@@ -179,12 +298,28 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
       const savedRoom = localStorage.getItem('xdb-sync-active-room');
       if (savedRoom) {
         state.syncRoom = savedRoom;
-        state.syncConnecting = true;
+        // Not while the bar is unanswered. startSync is refused in that state
+        // and nothing clears the flag, so an app with a saved room came up
+        // saying "connecting" forever, with nothing on screen connecting it to
+        // the bar that would have.
+        //
+        // Allow does not reconnect it either. The renderer only resumes a saved
+        // room when it is handed resumeSavedSyncRoom, and softn-web never
+        // passes it — the room is seeded into state so the app's own sync
+        // control comes up filled in, and reconnecting is the user's press.
+        // Setting the flag here would therefore be claiming a connection that
+        // nothing is making, which is what it was doing.
+        if (!consent) state.syncConnecting = true;
       }
     } catch {
       // localStorage may be unavailable (privacy mode / sandboxed context)
     }
     return Object.keys(state).length > 0 ? state : undefined;
+    // `consent` is read for the flag above but deliberately absent from the
+    // deps: this is the state the app *starts* from, and rebuilding it on the
+    // grant would re-seed currentPage and throw the user back to the page they
+    // arrived on. The renderer keeps its own componentState across the reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPage]);
 
   // Skeleton tab (source not yet loaded) — show loading inside the tab
@@ -223,15 +358,37 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
 
   return (
     <div
+      ref={hostRef}
+      // Allow unmounts the bar mid-click, so there has to be somewhere for
+      // focus to land other than <body>.
+      tabIndex={-1}
+      className={consentBarHeight > 0 ? 'softn-runner-host softn-runner-host--consenting' : undefined}
       style={{
         position: 'absolute',
         inset: 0,
         overflow: 'hidden',
         display: active ? 'flex' : 'none',
         flexDirection: 'column',
+        outline: 'none',
+        ...(consentBarHeight > 0
+          ? ({ '--softn-consent-bar-height': `${consentBarHeight}px` } as React.CSSProperties)
+          : null),
       }}
     >
       <style dangerouslySetInnerHTML={{ __html: appRunnerStyles }} />
+      {/* Outside ThemeProvider, and above the error boundary, so it cannot be
+          mistaken for the app's own UI: the bundle picks its theme and would
+          otherwise paint this bar in it. */}
+      {consent && (
+        <PermissionBar
+          appName={consent.appName}
+          appIcon={consent.appIcon}
+          config={consent.config}
+          capabilities={consent.capabilities}
+          onHeightChange={handleBarHeight}
+          onAllow={consent.onAllow}
+        />
+      )}
       <RunnerErrorBoundary>
         <ThemeProvider followSystem>
           <SoftNWithXDB

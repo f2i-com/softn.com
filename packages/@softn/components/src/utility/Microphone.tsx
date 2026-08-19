@@ -15,7 +15,7 @@
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { pcmToWavDataUrl } from '@softn/core';
+import { pcmToWavDataUrl, useConsentPending } from '@softn/core';
 
 /** One per run of the start effect — see the effect at the bottom for why. */
 interface StartAttempt {
@@ -216,6 +216,14 @@ export function Microphone({
   handlers.current = { onCapture, onSamples, onLevel, onStart, onStop, onError };
   const settings = useRef({ mode, frameSize, maxSeconds });
   settings.current = { mode, frameSize, maxSeconds };
+
+  // Same exposure as <Camera>: openMicrophone calls getUserMedia from a mount
+  // effect, and permission.json's `mic` entry gates the softn.* API rather than
+  // this. Held on consent state so an entry page cannot raise the browser's
+  // microphone prompt over an unanswered bar; the device opens on the render
+  // that follows the grant, with no reload.
+  const consentPending = useConsentPending();
+  const permitted = active && !consentPending;
 
   const [isOpen, setIsOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -429,7 +437,7 @@ export function Microphone({
 
   const openMicrophone = useCallback(async (attempt: StartAttempt) => {
     cleanup();
-    if (!active) return;
+    if (!permitted) return;
     // A previous failure must not outlive the attempt that caused it, or the
     // component shows its error box forever and toggling `active` never clears it.
     setError(null);
@@ -497,7 +505,7 @@ export function Microphone({
       setError(message);
       handlers.current.onError?.(message);
     }
-  }, [active, processing, sampleRate, autoStart, cleanup, attachCapture, startRecording]);
+  }, [permitted, processing, sampleRate, autoStart, cleanup, attachCapture, startRecording]);
 
   // Open and close the device.
   //
@@ -507,7 +515,7 @@ export function Microphone({
   // both attempts would then go on to claim the hardware.
   useEffect(() => {
     const attempt: StartAttempt = { cancelled: false };
-    if (active) {
+    if (permitted) {
       void openMicrophone(attempt);
     } else {
       cleanup();
@@ -522,7 +530,7 @@ export function Microphone({
     // passes a fresh callback, and reopening the device for that would drop
     // whatever was being recorded.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, processing, sampleRate]);
+  }, [permitted, processing, sampleRate]);
 
   // Draw the meter. Canvas rather than a row of divs because this repaints
   // twenty times a second, and that many React elements churning is visible.
@@ -572,6 +580,30 @@ export function Microphone({
     background: 'var(--softn-surface, #0f172a)',
     ...style,
   };
+
+  // "Opening microphone..." forever is what this used to look like. Say which
+  // button turns it on instead.
+  if (consentPending) {
+    return (
+      <div style={containerStyle}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            minHeight: height,
+            padding: '1rem',
+            textAlign: 'center',
+            color: '#94a3b8',
+            fontSize: '0.875rem',
+            lineHeight: 1.5,
+          }}
+        >
+          The microphone stays off until you choose Allow in the permission bar at the top of this app.
+        </div>
+      </div>
+    );
+  }
 
   if (error) {
     return (

@@ -5,8 +5,13 @@
  * neither produced any visible sign of it.
  */
 
-import { describe, it, expect } from 'vitest';
-import { extractPermissions, requestedCapabilities } from '../src/lib/bundleProcessor';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  createImportResolver,
+  extractPermissions,
+  requestedCapabilities,
+  withheldPermissions,
+} from '../src/lib/bundleProcessor';
 import type { BundleManifest } from '../src/lib/bundleProcessor';
 
 const manifest = { name: 'T', version: '1.0.0', main: 'ui/main.ui' } as unknown as BundleManifest;
@@ -102,5 +107,71 @@ describe('the capability list a grant is compared against', () => {
     const storedGrant: Record<string, boolean> = { qr: true, net: true };
 
     expect(requestedCapabilities(config!).every((c) => storedGrant[c])).toBe(true);
+  });
+});
+
+/**
+ * The consent bar renders the app first and asks afterwards, so the window
+ * between "on screen" and "allowed" is the whole security question. Nothing
+ * the bundle declared may be reachable inside it.
+ */
+describe('a bundle running with consent still pending', () => {
+  const declared = extractPermissions(
+    files(
+      JSON.stringify({
+        app: { name: 'T' },
+        permissions: {
+          net: { enabled: true, allowed_hosts: ['example.com'] },
+          camera: { enabled: true },
+          ai: { enabled: true },
+          sync: { enabled: true },
+        },
+      })
+    ),
+    manifest
+  )!;
+
+  it('asks for nothing, whatever it declared', () => {
+    expect(requestedCapabilities(declared).sort()).toEqual(['ai', 'camera', 'net', 'sync']);
+    expect(requestedCapabilities(withheldPermissions(declared))).toEqual([]);
+  });
+
+  it('is an empty permissions object, never a null config', () => {
+    const withheld = withheldPermissions(declared);
+    // A null config selects the runtime's "this bundle ships no
+    // permission.json" refusal, which is a lie about a bundle that shipped one
+    // and is advice for its author rather than for the person reading the bar.
+    expect(withheld.permissions).toEqual({});
+    expect(withheld.consentPending).toBe(true);
+  });
+
+  it('keeps the app identity so the bar can still name what it is', () => {
+    expect(withheldPermissions(declared).app).toEqual({ name: 'T' });
+  });
+
+  it('refuses a remote import the declared config would have allowed', async () => {
+    // Imports resolve during loadScript, long before anyone could read the bar,
+    // and the resolver captures its config for good — which is why granting
+    // hands the tab a freshly built resolver rather than reusing this one.
+    const fetchMock = vi.fn(async () => new Response('let x = 1', { status: 200 }));
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+    const bundleFiles = files();
+    const granted = createImportResolver(bundleFiles, declared);
+    const withheld = createImportResolver(bundleFiles, withheldPermissions(declared));
+    try {
+      await expect(withheld('https://example.com/lib.logic')).resolves.toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // The same URL is not refused by the granted resolver for some unrelated
+      // reason: it reaches the network, which is exactly the difference.
+      await granted('https://example.com/lib.logic');
+      expect(fetchMock).toHaveBeenCalled();
+    } finally {
+      granted.dispose();
+      withheld.dispose();
+      globalThis.fetch = original;
+    }
   });
 });

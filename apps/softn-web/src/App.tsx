@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import { ThemeProvider, Spinner, Box, Text } from '@softn/components';
 import { DropZone } from './components/DropZone';
 import { Launcher } from './components/Launcher';
 import { AppRunner } from './components/AppRunner';
 import { TabBar } from './components/TabBar';
-import { PermissionPrompt } from './components/PermissionPrompt';
+import type { ConsentRequest } from './components/PermissionBar';
 import type { PermissionConfig } from '@softn/core';
 
 const appShellStyles = `
@@ -17,7 +18,13 @@ const appShellStyles = `
     to { opacity: 1; transform: translateY(0); }
   }
   .softn-shell {
-    --softn-tab-bar-height: 38px;
+    /* Two names for one number, because a tab showing a permission bar has to
+       ADD to this rather than replace it, and a self-referential calc() on one
+       custom property is invalid at computed-value time. --softn-tab-bar-height
+       is the name @softn/components sizes an app root against, so it stays;
+       the base is what the breakpoints below move. */
+    --softn-chrome-base: 38px;
+    --softn-tab-bar-height: var(--softn-chrome-base);
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -48,14 +55,14 @@ const appShellStyles = `
   }
   @media (max-width: 640px) {
     .softn-shell {
-      --softn-tab-bar-height: 34px;
+      --softn-chrome-base: 34px;
     }
   }
   /* Touch overrides the narrow-window shrink: the bar has to match the 44px
      targets TabBar gives its controls, or the app area is laid out short. */
   @media (pointer: coarse) {
     .softn-shell {
-      --softn-tab-bar-height: 44px;
+      --softn-chrome-base: 44px;
     }
   }
 `;
@@ -68,6 +75,7 @@ import {
   extractIconDataUrl,
   extractPermissions,
   requestedCapabilities,
+  withheldPermissions,
   type BundleManifest,
   type AssetResolver,
   type DisposableImportResolver,
@@ -83,7 +91,7 @@ import {
   removeAppData,
   removeCachedApp,
   updateLastOpened,
-  updateGrantedPermissions,
+  recordPermissionGrant,
   type CachedApp,
 } from './lib/appCache';
 import { parseAppPath, buildAppPath } from './lib/appUrl';
@@ -162,7 +170,16 @@ interface OpenTab {
   icon?: string;
   initialPage?: string;
   permissions?: import('@softn/core').AppPermissions;
+  /**
+   * What the runtime is actually running with. While consent is pending this
+   * is the withheld config, not the declared one — the bundle's own request
+   * lives on `consent.config` until the user answers.
+   */
   permissionConfig?: PermissionConfig;
+  /**
+   * Raised by the tab as a bar over the running app. Cleared on Allow.
+   */
+  consent?: ConsentRequest;
   importResolver?: DisposableImportResolver;
   /** Turns a bundle-relative asset path into a URL the browser can load. */
   assetResolver?: AssetResolver;
@@ -171,20 +188,6 @@ interface OpenTab {
   serverUrl?: string;
   serverToken?: string;
   serverCollections?: string[];
-}
-
-/**
- * One bundle waiting on a permission decision.
- *
- * Identity matters: the callbacks close over the entry itself so a decision
- * removes the right one from the queue even when several are outstanding.
- */
-interface PendingPermission {
-  config: PermissionConfig;
-  appName: string;
-  appIcon?: string;
-  onAllow: () => void;
-  onDeny: () => void;
 }
 
 // ── App Component ────────────────────────────────────────────────
@@ -213,14 +216,11 @@ function App(): React.ReactElement {
   const [error, setError] = useState<Error | null>(null);
   const [loadingTabId, setLoadingTabId] = useState<string | null>(null);
   const [loadingFileName, setLoadingFileName] = useState('');
-  // A queue, not a slot. Each entry owns the promise that a processBundleData
-  // call is parked on, and only the head is rendered. It used to be a single
-  // slot: opening a second bundle while the first was still asking replaced the
-  // first entry outright, and with it the only references to that promise's
-  // resolve — so the first tab waited on a promise nothing could ever settle and
-  // sat on "Loading…" for the rest of the session.
-  const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
-  const pendingPermission = pendingPermissions[0] ?? null;
+  // Nothing here queues consent any more. A permission request used to park
+  // processBundleData on a promise the modal resolved, which is why it needed a
+  // queue at all — two bundles asking at once could strand each other's load.
+  // A tab now carries its own request and raises it as a bar over the running
+  // app, so no load waits on an answer and there is no queue to strand.
   const fileInputRef = useRef<HTMLInputElement>(null);
   const openTabsRef = useRef(openTabs);
   openTabsRef.current = openTabs;
@@ -399,95 +399,55 @@ function App(): React.ReactElement {
         // Extract permission config from permission.json or manifest.permissions
         const permissionConfig = extractPermissions(textFiles, manifest);
 
-        // Extract icon early (needed for permission prompt)
+        // Extract icon early (the consent bar's detail dialog shows it)
         const icon = extractIconDataUrl(binaryFiles, manifest);
 
-        // Check if permissions are declared and need consent
-        if (permissionConfig) {
-          // Look up cached app to check for prior grant.
-          //
-          // The grant has to be compared against what *this* bundle asks for.
-          // The old check was a boolean "has this name ever been prompted",
-          // and the lookup is by manifest name — so version 2 of an app, or
-          // any unrelated .softn calling itself the same thing, could add
-          // net + camera + files to a bundle the user had approved for `qr`
-          // alone and never see a prompt. The stored grant map was written and
-          // then never read by anything.
-          // By origin, not by name. A grant belongs to the bundle the user
-          // actually approved; looking it up by name handed it to anything that
-          // later called itself the same thing.
-          const cachedApp = await getCachedAppByOrigin(appOrigin);
-          const requested = requestedCapabilities(permissionConfig);
-          const granted = cachedApp?.grantedPermissions ?? {};
-          // A bundle that asks for nothing has nothing to consent to. Showing a
-          // dialog headed "No specific permissions requested" trains people to
-          // click Allow without reading, which is the opposite of the point.
-          const hasGrant =
-            requested.length === 0 ||
-            (Boolean(cachedApp?.permissionsPromptedAt) &&
-              requested.every((capability) => granted[capability]));
-
-          if (!hasGrant) {
-            // Show permission prompt and wait for user decision
-            const userDecision = await new Promise<boolean>((resolve) => {
-              const entry: PendingPermission = {
-                config: permissionConfig,
-                appName,
-                appIcon: icon,
-                // Drop THIS entry, not whatever happens to be showing — the two
-                // are the same only when nothing else queued up behind it.
-                onAllow: () => {
-                  setPendingPermissions((queue) => queue.filter((item) => item !== entry));
-                  resolve(true);
-                },
-                onDeny: () => {
-                  setPendingPermissions((queue) => queue.filter((item) => item !== entry));
-                  resolve(false);
-                },
-              };
-              setPendingPermissions((queue) => [...queue, entry]);
-            });
-
-            if (!userDecision) {
-              // User denied — clean up and show error
-              setLoadingTabId(null);
-              setLoadingFileName('');
-              // Remove skeleton tab if it was created for URL
-              if (existingTab && !existingTab.source) {
-                setOpenTabs((prev) => prev.filter((t) => t.id !== tabId));
-              }
-              setActiveTabId(null);
-              setError(new Error(`Permission denied: "${appName}" was not granted the requested permissions.`));
-              return null;
-            }
-
-            // User allowed — store grant in cache.
-            //
-            // Recorded from the same list the check above reads, so the two
-            // cannot drift. The previous version enumerated four capabilities
-            // by hand and silently omitted ai, gpu and sync, which meant a
-            // grant for those was never written down.
-            const grantedPerms: Record<string, boolean> = {};
-            for (const capability of requestedCapabilities(permissionConfig)) {
-              grantedPerms[capability] = true;
-            }
-
-            // Cache the app first so we have an ID to store grants against
-            const cached = await cacheApp(data, manifest, icon);
-            if (cached) {
-              await updateGrantedPermissions(cached.id, grantedPerms);
-            }
-          }
-        }
+        // Decide what the app runs with. It runs either way — the bundle's UI
+        // is on screen from the first frame and the request becomes a bar over
+        // it — so this decides whether the runtime is handed the capabilities
+        // the bundle declared or an empty set, not whether it starts.
+        //
+        // The grant has to be compared against what *this* bundle asks for.
+        // The old check was a boolean "has this name ever been prompted",
+        // and the lookup was by manifest name — so version 2 of an app, or
+        // any unrelated .softn calling itself the same thing, could add
+        // net + camera + files to a bundle the user had approved for `qr`
+        // alone and never see a prompt.
+        // By origin, not by name. A grant belongs to the bundle the user
+        // actually approved; looking it up by name handed it to anything that
+        // later called itself the same thing. This read must stay ahead of the
+        // cacheApp below: that call adopts a legacy record on the way past, and
+        // reading after it would find the record it had just written.
+        const cachedApp = permissionConfig ? await getCachedAppByOrigin(appOrigin) : null;
+        const requested = permissionConfig ? requestedCapabilities(permissionConfig) : [];
+        const granted = cachedApp?.grantedPermissions ?? {};
+        // A bundle that asks for nothing has nothing to consent to, and a bar
+        // reading "this app wants to use nothing" trains people to press Allow
+        // without reading — which is what the dialog was already doing wrong.
+        // `granted[c] === true`, not truthy: the map comes off disk unchecked.
+        const hasGrant =
+          !permissionConfig ||
+          requested.length === 0 ||
+          (Boolean(cachedApp?.permissionsPromptedAt) &&
+            requested.every((capability) => granted[capability] === true));
 
         // Load XDB data (per-app isolation)
         await loadXDBData(textFiles, manifest, appOrigin);
 
         // Process source
         const { source, logicBasePath, preIncludedLogicPaths } = processBundle(textFiles, manifest);
-        const importResolver = createImportResolver(textFiles, permissionConfig);
+        // Withheld until the user answers, and withheld here too: a remote
+        // `import` is network access just as surely as fetch() in app logic,
+        // and it resolves during loadScript — before the bar has been on
+        // screen long enough to read, let alone answer.
+        const runningConfig =
+          hasGrant || !permissionConfig ? permissionConfig : withheldPermissions(permissionConfig);
+        const importResolver = createImportResolver(textFiles, runningConfig);
 
-        // Cache the app (may already be cached from permission flow above, cacheApp handles dedup by name)
+        // Unconditional, and before any consent: the app is about to run and
+        // can already write records into its own database, and removing it from
+        // Home is the only thing that deletes those. No record, nothing to
+        // remove them with. Origin dedup means opening it again is an update.
         await cacheApp(data, manifest, icon);
 
         if (cachedAppId) {
@@ -519,6 +479,86 @@ function App(): React.ReactElement {
           }
         }
 
+        // Granting upgrades the running tab in place. It does not remount it.
+        //
+        // The bar's whole premise is that people look first and grant after, so
+        // by the time Allow is pressed they have typed, played, navigated or
+        // started something. A remount threw all of it away with no warning —
+        // measured: text typed into WarbleWire reverted to the bundle's default
+        // and TheOffice went from LIVE back to PAUSED.
+        //
+        // Handing the tab a new permissionConfig and a new importResolver is
+        // enough to rebuild everything that captured the withheld one. Both are
+        // dependencies of the renderer's script-load effect, so it tears the old
+        // VM down, builds a fresh runtime with the granted config — new import
+        // resolution, new AI and GPU managers — reloads the script and runs
+        // `_init()` again, now allowed. What it does not throw away is
+        // `componentState`: the renderer merges reloaded script state under it
+        // (`{...result.state, ...prev.componentState}`), so what the user did
+        // survives, including the page they are on.
+        const onAllow = (): void => {
+          if (!permissionConfig) return;
+          // Recorded from the same list the check above reads, so the two
+          // cannot drift. An earlier version enumerated four capabilities by
+          // hand and omitted ai, gpu and sync, so a grant for those was never
+          // written down.
+          const grantedPerms: Record<string, boolean> = {};
+          for (const capability of requested) grantedPerms[capability] = true;
+          // Not awaited, and its failure does not block the grant. getDB
+          // rejects outright in private browsing, and an Allow that does
+          // nothing until a write succeeds is a button that looks broken to
+          // exactly the users with the most reason to distrust it. The tab is
+          // the authority for this run; IndexedDB is only the memory of it.
+          void recordPermissionGrant(appOrigin, grantedPerms);
+
+          const grantedResolver = createImportResolver(textFiles, permissionConfig);
+          // The resolver being replaced is read out of the updater's own
+          // `prev`, not out of openTabsRef. That ref is only refreshed on
+          // render, so two activations in one frame both read the pre-grant
+          // tab: the second built a resolver that replaced nothing and was
+          // never disposed, and the first one's stayed live for the session.
+          //
+          // Nothing is disposed from inside the updater. A state updater must
+          // be pure — React runs it speculatively and, under StrictMode, twice
+          // — and it may not run at all for a tab that no longer exists, which
+          // is how the granted resolver leaked whole: closing the tab between
+          // pressing Allow and the re-render left `prev.map` matching nothing,
+          // and the blob URLs it holds stayed alive for the session. The
+          // updater only decides; the decision is carried out here, where a
+          // tab that was never matched is an outcome instead of a silence.
+          let adopted = false;
+          let superseded: DisposableImportResolver | undefined;
+          // flushSync so the updater has run by the next line. onAllow is only
+          // ever reached from a click — the bar's Allow, or the detail
+          // dialog's — which is where flushSync is permitted; the alternative
+          // is reading the outcome on a later tick, by which time the tab may
+          // have been closed and the answer is unrecoverable either way.
+          flushSync(() => {
+            setOpenTabs((prev) => {
+              adopted = false;
+              superseded = undefined;
+              return prev.map((t) => {
+                if (t.id !== tabId) return t;
+                // Already granted. A second activation has nothing to replace,
+                // and must not dispose the resolver the app is running on.
+                if (!t.consent) return t;
+                adopted = true;
+                superseded = t.importResolver;
+                return {
+                  ...t,
+                  permissionConfig,
+                  importResolver: grantedResolver,
+                  consent: undefined,
+                };
+              });
+            });
+          });
+          // dispose() is idempotent, so a StrictMode-doubled updater reporting
+          // the same outcome twice is harmless.
+          if (adopted) superseded?.dispose();
+          else grantedResolver.dispose();
+        };
+
         const newTab: OpenTab = {
           id: tabId,
           name: appName,
@@ -527,7 +567,11 @@ function App(): React.ReactElement {
           icon: icon || undefined,
           initialPage: initialPage || existingTab?.initialPage,
           permissions: manifest.permissions,
-          permissionConfig: permissionConfig || undefined,
+          permissionConfig: runningConfig || undefined,
+          consent:
+            hasGrant || !permissionConfig
+              ? undefined
+              : { config: permissionConfig, capabilities: requested, appName, appIcon: icon || undefined, onAllow },
           importResolver,
           assetResolver: createAssetResolver(binaryFiles, textFiles),
           logicBasePath,
@@ -982,17 +1026,6 @@ function App(): React.ReactElement {
             </ThemeProvider>
           )}
 
-          {/* Permission consent prompt */}
-          {pendingPermission && (
-            <PermissionPrompt
-              appName={pendingPermission.appName}
-              appIcon={pendingPermission.appIcon}
-              permissions={pendingPermission.config}
-              onAllow={pendingPermission.onAllow}
-              onDeny={pendingPermission.onDeny}
-            />
-          )}
-
           {/* Error state */}
           {error && !loadingTabId && (
             <ThemeProvider followSystem>
@@ -1122,6 +1155,7 @@ function App(): React.ReactElement {
               logicBasePath={tab.logicBasePath}
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
               permissionConfig={tab.permissionConfig}
+              consent={tab.consent}
               onPageChange={(page) => handlePageChange(tab.id, page)}
               onReady={() => announceReady(tab.name)}
               serverUrl={tab.serverUrl}

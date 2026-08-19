@@ -1,8 +1,10 @@
 /**
- * PermissionPrompt — consent UI for app permission requests.
+ * PermissionPrompt — the full disclosure behind the consent bar.
  *
- * Shows which capabilities an app is requesting and lets the user
- * Allow or Deny before the app starts executing.
+ * Opened from "What this means", never on arrival: the app is already on
+ * screen and already running with its declared capabilities withheld, so this
+ * gates nothing. It names every capability the bundle asked for, including any
+ * this build has no description for, and offers the same Allow the bar does.
  */
 
 import React, { useEffect, useId, useRef } from 'react';
@@ -13,7 +15,8 @@ interface PermissionPromptProps {
   appIcon?: string;
   permissions: PermissionConfig;
   onAllow: () => void;
-  onDeny: () => void;
+  /** Dismiss the dialog. Records nothing: not answering is not an answer. */
+  onClose: () => void;
 }
 
 /** Stands in for a capability this build has no description for. */
@@ -160,26 +163,30 @@ function getRequestedPermissions(config: PermissionConfig): Array<{ key: string;
   return result;
 }
 
-export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDeny }: PermissionPromptProps): React.ReactElement {
+export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClose }: PermissionPromptProps): React.ReactElement {
   const requested = getRequestedPermissions(permissions);
   const titleId = useId();
   const descId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
-  const denyRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   // This asks for consent, so it has to behave like the dialog it looks like.
   // It was a bare <div>: Chrome computed it as role "generic", focus stayed on
   // whatever was behind it, a screen reader was never told it had appeared, and
-  // Escape did nothing. Focus lands on Deny — the safe option — rather than on
-  // the button that grants an untrusted bundle the network.
+  // Escape did nothing. Focus lands on Close — the option that changes nothing
+  // — rather than on the button that grants an untrusted bundle the network.
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
-    denyRef.current?.focus();
+    // preventScroll, or the browser scrolls this button into view and the
+    // dialog opens part-way down: on a 640px-tall viewport the card is taller
+    // than the screen, and the app's name and the first capability it asked
+    // for would be above the fold on arrival.
+    closeRef.current?.focus({ preventScroll: true });
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onDeny();
+        onClose();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -204,20 +211,28 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDen
     document.addEventListener('keydown', onKeyDown, true);
     return () => {
       document.removeEventListener('keydown', onKeyDown, true);
-      opener?.focus?.();
+      // Allow unmounts the bar and the "What this means" button with it, so the
+      // opener can be a detached node by now; focusing one drops the keyboard
+      // user at the top of the document. AppRunner takes focus in that case.
+      if (opener?.isConnected) opener.focus?.();
     };
-  }, [onDeny]);
+  }, [onClose]);
 
   return (
     <div style={{
       position: 'absolute',
       inset: 0,
       display: 'flex',
-      alignItems: 'center',
+      // Top-aligned and scrollable, not centred. A four-capability bundle in a
+      // 640px-tall viewport made a 763px card, and centring put both buttons
+      // and the app name off-screen with no way to scroll to them — the dialog
+      // could be neither allowed nor dismissed on a phone.
+      alignItems: 'flex-start',
       justifyContent: 'center',
+      overflowY: 'auto',
       background: '#0c0c0e',
       zIndex: 20,
-      padding: '2rem',
+      padding: '1rem',
     }}>
       <div
         ref={cardRef}
@@ -365,6 +380,24 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDen
           )}
         </div>
 
+        {/* <Camera>, <Microphone> and <QRReader> call getUserMedia themselves
+            and consult no permission.json, so the browser's own prompt — not
+            this one — is what stands in front of the hardware. Saying so is the
+            difference between a bar people can trust and one that is caught
+            claiming a viewfinder is off while it is visibly running. */}
+        {requested.some(({ key }) => key === 'camera' || key === 'mic' || key === 'qr') && (
+          <div style={{
+            color: '#5a5a66',
+            fontSize: '0.6875rem',
+            lineHeight: 1.5,
+            marginTop: '-0.75rem',
+            marginBottom: '1.5rem',
+          }}>
+            Your browser asks you separately before the camera or microphone actually turns on.
+            This covers what the app&rsquo;s own code may do with what it gets.
+          </div>
+        )}
+
         {/* Buttons */}
         <div style={{
           display: 'flex',
@@ -372,8 +405,8 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDen
           justifyContent: 'flex-end',
         }}>
           <button
-            ref={denyRef}
-            onClick={onDeny}
+            ref={closeRef}
+            onClick={onClose}
             style={{
               padding: '0.5rem 1.25rem',
               background: '#1e1e23',
@@ -395,7 +428,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onDen
               e.currentTarget.style.transform = 'translateY(0)';
             }}
           >
-            Deny
+            Not now
           </button>
           <button
             onClick={onAllow}
