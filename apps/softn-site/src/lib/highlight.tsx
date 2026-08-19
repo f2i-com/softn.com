@@ -88,9 +88,30 @@ export function highlight(source: string): React.ReactElement[] {
   return out;
 }
 
-export function Code({ source, className }: { source: string; className?: string }): React.ReactElement {
+/**
+ * `label` makes the block a named, focusable region. A `<pre>` that scrolls
+ * sideways — which this one does at phone widths, 483px of markup in a 278px
+ * box — is focusable on its own in Chromium and Firefox but not in Safari,
+ * where the code then cannot be reached by keyboard at all. Saying it out loud
+ * also gives a screen reader something to announce when focus lands there,
+ * which an anonymous scroll container does not.
+ */
+export function Code({
+  source,
+  className,
+  label,
+}: {
+  source: string;
+  className?: string;
+  label?: string;
+}): React.ReactElement {
   return (
-    <pre className={className}>
+    <pre
+      className={className}
+      tabIndex={label ? 0 : undefined}
+      role={label ? 'region' : undefined}
+      aria-label={label}
+    >
       <code>{highlight(source)}</code>
     </pre>
   );

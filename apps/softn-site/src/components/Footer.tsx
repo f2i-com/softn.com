@@ -17,32 +17,41 @@ export function Footer(): React.ReactElement {
             </p>
           </div>
 
-          <div className="foot-col">
-            <div className="foot-col-head">Apps</div>
-            <a href={STUDIO_HREF}>Studio</a>
-            <a href={BUILDER_HREF}>Builder</a>
-            <a href={WEB_HREF}>Web runtime</a>
-            <a href="#demos">Demos</a>
-          </div>
+          {/* Wrapped so the three lists can be re-grouped under the brand on a
+              phone. It is display: contents on a desktop, so the four blocks are
+              still four peers in one row there. */}
+          <div className="foot-cols">
+            <div className="foot-col">
+              <div className="foot-col-head">Apps</div>
+              <a href={STUDIO_HREF}>Studio</a>
+              <a href={BUILDER_HREF}>Builder</a>
+              <a href={WEB_HREF}>Web runtime</a>
+            </div>
 
-          <div className="foot-col">
-            <div className="foot-col-head">Source</div>
-            <a href={REPO_URL} target="_blank" rel="noreferrer">
-              softn.com
-            </a>
-            <a href={ZIPP_URL} target="_blank" rel="noreferrer">
-              zipp.org
-            </a>
-            <a href={XDB_URL} target="_blank" rel="noreferrer">
-              xdb.org
-            </a>
-          </div>
+            <div className="foot-col">
+              <div className="foot-col-head">Source</div>
+              <a href={REPO_URL} target="_blank" rel="noreferrer">
+                softn.com
+              </a>
+              <a href={ZIPP_URL} target="_blank" rel="noreferrer">
+                zipp.org
+              </a>
+              <a href={XDB_URL} target="_blank" rel="noreferrer">
+                xdb.org
+              </a>
+            </div>
 
-          <div className="foot-col">
-            <div className="foot-col-head">On this page</div>
-            <a href="#language">Language</a>
-            <a href="#runtime">Runtime</a>
-            <a href="#components">Components</a>
+            <div className="foot-col">
+              <div className="foot-col-head">On this page</div>
+              {/* The nav bar's five section anchors, all of them. Demos used to
+                  sit under "Apps" and #apps was in neither column, so the footer
+                  could not reach every section it claims to list. */}
+              <a href="#demos">Demos</a>
+              <a href="#apps">Apps</a>
+              <a href="#language">Language</a>
+              <a href="#runtime">Runtime</a>
+              <a href="#components">Components</a>
+            </div>
           </div>
         </div>
 
