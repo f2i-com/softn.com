@@ -88,7 +88,15 @@ export function Player(): React.ReactElement {
             <span className="panel-bar-name">{source ? source.path : selected ? 'reading the bundle…' : '—'}</span>
             <span className="panel-bar-tag">source</span>
           </div>
-          <div className="panel-source">
+          {/* The scroller here is the div, not the <pre> inside it, so the
+              region and the tab stop belong on the div — and only while there
+              is source in it to scroll. */}
+          <div
+            className="panel-source"
+            role="region"
+            aria-label="Demo source"
+            tabIndex={source ? 0 : -1}
+          >
             {source ? (
               <Code source={source.source} />
             ) : (

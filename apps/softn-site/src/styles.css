@@ -141,6 +141,16 @@ button {
   border-radius: 2px;
 }
 
+/* Two exceptions, and the same reason for both: these are scrollers, so the
+   browser makes them focusable, and each one sits inside a rounded parent with
+   overflow: hidden — .lang around the code sample, .player around the source
+   pane. A ring 3px outside the border box lands in that clip and comes back as
+   a sliver along one edge. Drawn inside, all four sides survive. */
+.lang-code:focus-visible,
+.panel-source:focus-visible {
+  outline-offset: -3px;
+}
+
 ::selection {
   background: var(--select);
 }
@@ -293,9 +303,74 @@ button {
   background: var(--ink-3);
 }
 
+/*
+ * The five section links used to be deleted here with nothing put in their
+ * place, on a page that is 9,250px tall at 320px: the wordmark and a link off to
+ * GitHub were the whole of it. The footer carries the same anchors, but it is
+ * thirteen screens down — you scroll past every section it links to before you
+ * can use it.
+ *
+ * They do not fit in the bar. At 320px there are 87px between the wordmark and
+ * the theme toggle and the five labels want 365px, so the bar wraps and they
+ * take a second line of their own. row-gap: 0 because the 1.5rem that separates
+ * the controls sideways would open a 24px seam between the two rows.
+ */
 @media (max-width: 720px) {
+  .nav-inner {
+    flex-wrap: wrap;
+    height: auto;
+    row-gap: 0;
+    /* Without the fixed 3.5rem the first row is only as tall as the tallest
+       control in it, which under a coarse pointer is 45px of wordmark against
+       44px of everything else — no room above the toggle and the GitHub pill for
+       a focus ring, which is drawn 5px out and would be cut off by the top of
+       the page. */
+    padding-top: 0.375rem;
+  }
+
+  /* Bled out to the viewport edges so the last label is cut off by the screen
+     rather than stopping short inside the gutter: a word cut in half reads as
+     "there is more this way", a word ending 20px early reads as a mistake.
+     100% is the padded content width, hence the calc. */
   .nav-links {
+    display: flex;
+    order: 1;
+    width: calc(100% + var(--gutter) * 2);
+    margin-inline: calc(var(--gutter) * -1);
+    padding-inline: var(--gutter);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    border-top: 1px solid var(--line-soft);
+  }
+
+  /* No bar under the row. It is a navigation strip, not a body of content, and
+     the clipped last label is the affordance. */
+  .nav-links::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Sized here rather than left to (pointer: coarse): the second row's height is
+     what the scroll-padding below is measured against, and that number cannot
+     depend on the pointer. */
+  .nav-links a {
+    flex: none;
+    white-space: nowrap;
+    padding-block: 0.6875rem;
+  }
+
+  /* The strip is a scroller, so it clips to its padding box, and the links fill
+     it top to bottom — a ring 3px outside has nowhere to land on either edge.
+     This one goes inside. */
+  .nav-links a:focus-visible {
+    outline-offset: -3px;
+  }
+
+  /* The 5.5rem above is calibrated to the one-row 57px bar. Two rows is 97px,
+     and left alone the nav would land on top of whatever section you jumped to.
+     This restores the 31px of clearance the desktop bar gives. */
+  html {
+    scroll-padding-top: 8rem;
   }
 }
 
@@ -527,6 +602,11 @@ button {
 .panel-source {
   margin: 0;
   overflow: auto;
+  /* This, .shelf-row, .lang-list and .lang-code are the page's horizontal
+     scrollers, and every one of them runs out of content inside a single thumb
+     drag. Without containment the rest of that drag chains to the browser's edge
+     back-swipe, so reaching the end of a code line navigates away from the page. */
+  overscroll-behavior-x: contain;
   height: clamp(320px, 52vh, 520px);
   padding: 1rem 1.125rem 1.5rem;
   font-family: var(--mono);
@@ -613,7 +693,14 @@ button {
   display: flex;
   gap: 0.5rem;
   overflow-x: auto;
-  padding-bottom: 0.5rem;
+  overscroll-behavior-x: contain;
+  /* A scroll container clips to its padding box, and the focus ring is drawn 3px
+     outside the chip, so on the top and both sides it had nowhere to land: a
+     focused chip showed two vertical slivers of mint and nothing else. 6px of
+     room for it, handed straight back as negative margin so the chips sit
+     exactly where they did. The bottom keeps its 8px for the scrollbar. */
+  padding: 0.375rem 0.375rem 0.5rem;
+  margin: -0.375rem -0.375rem 0;
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
 }
@@ -766,6 +853,26 @@ button {
   padding: 0.1875rem 0.4375rem;
 }
 
+/*
+ * "Open the runtime" and the badge want 263px between them and a 320px card has
+ * 230px, so the badge ran 8px past the panel and .doors cut the last letters off
+ * it. The two-up window is worse: at 600px the badge overhangs its own card by
+ * 12px and paints on the one beside it.
+ *
+ * Stacking rather than wrapping. Wrapping alone drops the badge on cards two and
+ * three but leaves card one's inline — it fits by 2px — so the stack ends up with
+ * one card laid out unlike the other two. Cards one and two do still share a foot
+ * baseline here, since .doors is two tracks at 700 and 720px, but a baseline is
+ * worth less than a badge whose last letters are legible.
+ */
+@media (max-width: 720px) {
+  .door-foot {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.75rem;
+  }
+}
+
 /* ── Language tabs ─────────────────────────────────────────────── */
 
 .lang {
@@ -793,9 +900,47 @@ button {
 }
 
 @media (max-width: 820px) {
+  /*
+   * Horizontal from here down. Two of the five tabs start off-screen at 320px (737px of tabs in a 278px
+   * port) and this was the only scroller on the page without a bar, so it gets
+   * the same treatment .shelf-row and .panel-source have. scroll-padding matches
+   * the container's own 10px so a tab scrolled into view is not flush against
+   * the clip edge.
+   */
   .lang-list {
     flex-direction: row;
     overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-padding-inline: 0.625rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+
+  .lang-list::-webkit-scrollbar {
+    height: 8px;
+  }
+
+  /*
+   * The 2px that separated the tabs when they were a stack is far too tight once
+   * they are a row a thumb drags along: five 64px-tall targets 2px apart. 0.5rem
+   * is what .shelf-row already puts between its chips, so the page's two
+   * horizontal strips space their targets alike.
+   *
+   * Pointer and not width, for the reason the touch block at the end of the file
+   * gives. The gaps add 24px to the strip, and between 768 and 800 that is the
+   * difference between fitting and not: keyed on width alone this turned a strip
+   * that sat still in a fine-pointer window into a 29px scroller at 768px, and
+   * grew a scrollbar under it that nothing on that screen needed.
+   */
+  @media (pointer: coarse) {
+    .lang-list {
+      gap: 0.5rem;
+    }
+  }
+
+  .lang-list::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 6px;
   }
 }
 
@@ -846,6 +991,7 @@ button {
 .lang-code {
   margin: 0;
   overflow: auto;
+  overscroll-behavior-x: contain;
   padding: 1.125rem 1.25rem 1.5rem;
   font-family: var(--mono);
   font-size: 0.8125rem;
@@ -932,6 +1078,14 @@ button {
 }
 
 @media (max-width: 700px) {
+  /* The filename and its one-line description sit side by side, which is fine
+     until the description is left a 92px column: at 320px "real JavaScript —
+     classes, async, closures, regex" set six lines of one or two words beside an
+     empty half-row under the filename. */
+  .pipe-head {
+    flex-wrap: wrap;
+  }
+
   .pipe-arrow {
     transform: rotate(90deg);
     justify-content: center;
@@ -1029,6 +1183,13 @@ button {
   align-items: start;
 }
 
+/* The three link lists are wrapped in the markup so a phone can re-group them
+   under the brand. Up here they are four peers in one row, exactly as if the
+   wrapper were not there. */
+.foot-cols {
+  display: contents;
+}
+
 .foot-blurb {
   font-size: 0.9375rem;
   color: var(--dim);
@@ -1056,6 +1217,57 @@ button {
 
 .foot-col a:hover {
   color: var(--paper);
+}
+
+/*
+ * The template above is minmax(0, 1.4fr) followed by repeat(auto-fit,
+ * minmax(9rem, 1fr)), and the brand track's zero minimum is what breaks it here:
+ * auto-fit first counts how many 9rem link tracks it can pack, the brand track
+ * surrenders whatever is left over, and below 820px there is nothing left to
+ * surrender. Measured, it resolved to 96px 144px at 320px — the four sections
+ * fell into a ragged 2x2 and the blurb set seventeen lines in a 96px strip — to
+ * 3.98px 144px 144px at 412px, where "softn" painted outside its own track and
+ * landed on "Apps" and Language, Runtime and Components became 4px-wide hit
+ * boxes with their text somewhere else, and to a flat 0px at 600px.
+ *
+ * So the brand stops being a column: one row for it, one grid for the lists.
+ * Splitting them rather than spanning the brand across the tracks, because a
+ * spanning item occupies every track and so keeps auto-fit from collapsing the
+ * ones nothing else uses — measured, that left three 122px lists and 292px of
+ * dead row at 767px. Given a grid of their own the lists collapse the spare
+ * tracks and share the width: 128px each at 320, 174 at 412, 168 at 600, 219 at
+ * 767.
+ *
+ * The floor is the same idiom as .guards and .cats above. 7.5rem clears the
+ * widest label ("Web runtime", 85px) and the widest head ("ON THIS PAGE", 100px
+ * at 12px mono); two lists fit per row from 320 to 412, three from 480 up. The
+ * column gap comes down from 2.5rem because at 320px a 40px gutter is 14% of the
+ * row and leaves the two tracks at exactly the floor with nothing spare.
+ *
+ * Bounded at 819 rather than 767, because the starving does not stop at a phone.
+ * Measured on the desktop template: at 768px the brand gets a 139.5px track and
+ * sets eleven lines, at 790px 160px and nine, at 819px 186px and eight. 768 is
+ * iPad portrait. 820 is where this file already draws its tablet line, and from
+ * there the brand has 187px and the original four-up reads as intended.
+ */
+@media (max-width: 819px) {
+  .foot-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem;
+  }
+
+  .foot-cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 7.5rem), 1fr));
+    gap: 2rem 1.5rem;
+  }
+
+  /* .nav-mark is a flex box with no width of its own, so in a full-width row it
+     takes the whole row as an invisible jump-to-top target — 706px of it at
+     767px. It only needs to be as wide as the word. */
+  .foot .nav-mark {
+    width: max-content;
+  }
 }
 
 .foot-rule {
@@ -1183,6 +1395,50 @@ button {
   .chip {
     min-height: 44px;
   }
+
+  /* The wordmark is the control this block missed, and it is a real link in both
+     places it appears: 29px in the bar, where it is the only way back to the top
+     on a phone, and 29px in the footer, where it is the one short target in a
+     column of 44px ones. Padding rather than min-height, because .nav-mark
+     aligns the dot on the wordmark's baseline and a taller box with
+     align-items: baseline leaves the text at the top of it with the extra space
+     hanging underneath — measured, min-height: 44px lifts the wordmark 7.6px and
+     the dot goes with it. 0.5rem takes it to 45px and no further: the bar is
+     56px, and a mark any taller leaves no room inside it for the focus ring. */
+  .nav-mark {
+    padding-block: 0.5rem;
+  }
+
+  /* In the footer the mark is at the top of its own block, so that padding would
+     push everything under it down. The negative margin puts the top edge back
+     and the blurb hands back the 8px the padding added below, which is the
+     0.875rem it has otherwise. */
+  .foot .nav-mark {
+    margin-top: -0.5rem;
+  }
+
+  .foot-blurb {
+    margin-top: 0.375rem;
+  }
+
+  /* The bar grows to 44px above and the link grows with it, so the link's box is
+     the bar's box — and .player clips to its 12px radius, which leaves the ring
+     as two vertical slivers. This one goes inside. */
+  .panel-bar a:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* The two links in the prose, "zipp" and "XDB", are 22px tall against the 24px
+     WCAG asks for outright. Both are in .band-sub — .hero-lede holds only <code>
+     and <strong>, and the hero's anchors are buttons in .hero-cta. They cannot be
+     given a 44px box without wrecking the paragraph they sit in, but vertical
+     padding on an inline box grows the hit area and contributes nothing to the
+     line box, so no line moves — measured, the five .band-sub heights are
+     identical to 0.1px. There is one link per paragraph, so the grown boxes
+     cannot reach each other. */
+  .band-sub a {
+    padding-block: 0.4375rem;
+  }
 }
 
 /* The mono labels are 11px, which reads as a caption on a desktop and as fine
@@ -1197,8 +1453,7 @@ button {
   .foot-col-head,
   .foot-rule,
   .door-badge,
-  .cat-count,
-  .stepNum {
+  .cat-count {
     font-size: 0.75rem;
   }
 
