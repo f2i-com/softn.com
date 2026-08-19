@@ -93,6 +93,19 @@ export interface SoftNRenderContext {
   // Whether the script block has finished loading (suppresses function-not-found warnings during init)
   scriptLoaded?: boolean;
 
+  /**
+   * The app's declared capabilities are withheld until the user answers the
+   * consent bar, so nothing this render emits may reach another host.
+   *
+   * Carried on the context rather than read from React context because the
+   * renderer is a plain function: it turns markup into elements before any
+   * component mounts, which is exactly where an `<img src="https://…">` or an
+   * inline `backgroundImage` would otherwise be handed to the browser. It is
+   * a per-document value — softn-web mounts every open tab in one realm, and
+   * one tab's grant must not speak for another's.
+   */
+  consentPending?: boolean;
+
   // Current iteration context (for #each)
   each?: {
     item: unknown;

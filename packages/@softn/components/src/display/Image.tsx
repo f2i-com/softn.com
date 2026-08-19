@@ -5,7 +5,7 @@
  */
 
 import React from 'react';
-import { isSafeUrl } from '@softn/core';
+import { isSafeUrl, useConsentPending } from '@softn/core';
 
 export interface ImageProps {
   /** Image source URL */
@@ -69,6 +69,16 @@ export function Image({
   const safeSrc = src && isSafeUrl(src) ? src : undefined;
   const safeFallbackSrc = fallbackSrc && isSafeUrl(fallbackSrc) ? fallbackSrc : undefined;
 
+  // The withholding itself is the renderer's: it strips a remote src from
+  // every URL-bearing prop before any component is constructed, which is the
+  // only place that also covers a raw <img> in the markup and the 90 other
+  // components. What arrives here is therefore already undefined, and all this
+  // does is stop the panel below blaming the bundle for it — "Failed to load"
+  // for an image the runtime chose not to request is a lie about whose fault
+  // it is, and points nowhere. The moment the user allows, the src is passed
+  // through again and the image loads on that render, with no reload.
+  const consentPending = useConsentPending();
+
   // Data URLs and SVGs load synchronously — skip loading state entirely
   const isInstantSrc = (s: string | undefined) => s?.startsWith('data:') || s?.endsWith('.svg');
   const [isLoading, setIsLoading] = React.useState(() => !isInstantSrc(safeSrc));
@@ -131,7 +141,11 @@ export function Image({
 
   return (
     <div className={className} style={containerStyle} onClick={onClick}>
-      {!currentSrc || (hasError && !safeFallbackSrc) ? (
+      {!currentSrc && consentPending ? (
+        <div style={{ ...errorStyle, width: '100%', padding: '0 0.25rem', fontSize: '0.75rem' }}>
+          Images load once you choose Allow in the permission bar.
+        </div>
+      ) : !currentSrc || (hasError && !safeFallbackSrc) ? (
         <div style={errorStyle}>
           <svg
             width="24"

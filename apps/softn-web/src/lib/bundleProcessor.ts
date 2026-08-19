@@ -319,12 +319,42 @@ export function extractPermissions(
 }
 
 /**
+ * The same bundle, with everything it declared withheld.
+ *
+ * This is what the runtime is handed while the consent bar is up, so the app
+ * renders and runs but every softn.* capability fails closed. Two details are
+ * load-bearing:
+ *
+ * `permissions` is an empty object, never null. Both sync gates now refuse a
+ * null config outright — that hole was closed in the same change that added
+ * this — but an empty object is still what the state means, and it selects the
+ * right refusal: a null config makes the runtime say "this bundle ships no
+ * permission.json", which is false here and is advice for an author rather
+ * than for the person looking at the bar.
+ *
+ * `consentPending` only changes what a refusal says: "you have not allowed this
+ * yet" rather than an instruction to edit a file the author already wrote.
+ */
+export function withheldPermissions(declared: PermissionConfig): PermissionConfig {
+  return Object.freeze({
+    app: declared.app,
+    permissions: Object.freeze({}),
+    consentPending: true,
+  }) as PermissionConfig;
+}
+
+/**
  * Every capability a permission config asks for.
  *
- * One list, read by both the consent check and the grant record, so the two
- * cannot disagree about what was approved.
+ * One list, read by the consent check, the grant record and the bar's wording,
+ * so none of the three can disagree about what was approved. Exported for the
+ * last of those: PermissionBar keys its phrasing off `Capability`, so adding a
+ * name here without giving it words fails the build instead of shipping a bar
+ * that says "a capability called \"webusb\"".
  */
-const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync'] as const;
+export const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync'] as const;
+
+export type Capability = (typeof CAPABILITIES)[number];
 
 export function requestedCapabilities(config: PermissionConfig): string[] {
   const perms = (config.permissions ?? {}) as Record<string, { enabled?: boolean } | undefined>;

@@ -16,6 +16,7 @@ import React, {
 import { parse } from '../parser';
 import { renderDocument } from '../renderer';
 import { getDefaultRegistry } from '../renderer/registry';
+import { rewriteCssUrls } from '../renderer/sanitize-html';
 import {
   createScriptRuntime,
   detectWorkerIncompatibilities,
@@ -33,6 +34,7 @@ import {
 // Worker runtime available but currently all calls route through main-thread WASM VM
 // for instant responsiveness. Can re-enable for heavy computation offloading if needed.
 // import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
+import { ConsentPendingProvider } from './consent-gate';
 import { getXDB, setActiveXDBApp } from '../runtime/xdb';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
@@ -83,24 +85,13 @@ export function sanitizeBundleCSS(css: string): string {
   );
   // Remove url() values that reference external or dangerous protocols.
   //
-  // Quoted and unquoted forms are matched separately. A single pattern with
-  // `[^)]*` cannot cross a literal `)`, so a URL that contains one inside its
-  // quotes — `url("https://evil.test/beacon?a=(b)")`, a perfectly ordinary
-  // query string — failed to match and the declaration reached the page
-  // untouched. Confirmed by running the real function: the unquoted form was
-  // removed, the quoted one came back unchanged.
-  const isRemote = (target: string): boolean =>
-    /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/)/i.test(target);
-
-  const stripRemote = (pattern: RegExp) => {
-    sanitized = sanitized.replace(pattern, (match, inner: string) =>
-      isRemote(inner) ? 'url(/* removed */)' : match
-    );
-  };
-
-  stripRemote(/url\s*\(\s*"([^"]*)"\s*\)/gi);
-  stripRemote(/url\s*\(\s*'([^']*)'\s*\)/gi);
-  stripRemote(/url\s*\(\s*([^)'"]*?)\s*\)/gi);
+  // The matching lives in `rewriteCssUrls` because the inline `style={{…}}`
+  // path needs the identical quoted/unquoted handling with a different verdict:
+  // a style block never gets a remote url(), while an inline one only has it
+  // withheld until the user answers the consent bar.
+  sanitized = rewriteCssUrls(sanitized, (target) =>
+    /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/)/i.test(target)
+  );
   // Remove expression() (IE) and -moz-binding (Firefox) — code execution vectors
   sanitized = sanitized.replace(/expression\s*\([^)]*\)/gi, '/* expression removed */');
   sanitized = sanitized.replace(/-moz-binding\s*:[^;]+;?/gi, '/* -moz-binding removed */');
@@ -1277,6 +1268,7 @@ export function SoftNRenderer({
       functions: stableSyncFunctions,
       asyncFunctions: stableAsyncFunctions,
       scriptLoaded,
+      consentPending: runtimePermissionConfig?.consentPending === true,
     };
   }, [
     state.componentState,
@@ -1289,6 +1281,7 @@ export function SoftNRenderer({
     stableAsyncFunctions,
     scriptLoaded,
     state.scriptComputed,
+    runtimePermissionConfig?.consentPending,
   ]);
 
   // Get the default registry
@@ -1347,6 +1340,12 @@ export function SoftNRenderer({
     const stateKey = (state.componentState['currentPage'] as string) ?? 'default';
 
     return (
+      // Outside the keyed container, so a page change does not tear the
+      // provider down with the page. Components below read this instead of a
+      // prop: <Camera>, <QRReader> and <Microphone> open the hardware from
+      // their own effects and permission.json does not cover them, so consent
+      // state is the only thing standing between an entry page and the device.
+      <ConsentPendingProvider value={runtimePermissionConfig?.consentPending === true}>
       <div
         ref={containerRef}
         key={`softn-container-${stateKey}`}
@@ -1375,6 +1374,7 @@ export function SoftNRenderer({
           {renderDocument(state.document, context, registry)}
         </SoftNErrorBoundary>
       </div>
+      </ConsentPendingProvider>
     );
   }
 
@@ -1788,6 +1788,17 @@ export function createXDBHelpers(
       // script runtime because sync is reached through the renderer's xdb
       // helpers, not the host-call path.
       if (!permissionConfig?.permissions?.sync?.enabled) {
+        // The third gate onto sync, and the last one still speaking to the
+        // author. checkPermission and createDBNamespace.startSync both tell a
+        // user who has not pressed Allow yet what to press; this one told them
+        // to edit a file inside the bundle, which they cannot open and whose
+        // author already wrote the line it asks for.
+        if (permissionConfig?.consentPending) {
+          throw new Error(
+            'Sync not permitted yet: this app has asked to use your other devices and you ' +
+              'have not allowed it. Choose Allow in the permission bar at the top of the app.'
+          );
+        }
         throw new Error(
           'Sync not permitted: declare { "permissions": { "sync": { "enabled": true } } } ' +
             "in the bundle's permission.json so the user can approve it."
@@ -1900,6 +1911,7 @@ export function SoftNWithXDB({
 }: SoftNWithXDBProps): React.ReactElement | null {
   const stablePermissionConfig = useStructurallyStableValue(props.permissionConfig);
   const stableServerCollections = useStructurallyStableValue(serverCollections);
+  const consentPending = stablePermissionConfig?.consentPending === true;
 
   // Parse the document to get data block
   const { document } = useSoftN(source);
@@ -1925,6 +1937,14 @@ export function SoftNWithXDB({
   // Server sync: connect to softn-server when serverUrl is provided
   useEffect(() => {
     if (!serverUrl) return;
+    // `manifest.config.server.url` is a host the bundle chose, and connecting
+    // to it replicates the app's collections to it. No entry in permission.json
+    // describes that, so it never appears in the consent bar's list and
+    // withholding the capabilities cannot touch it — the socket opened while
+    // the bar still said nothing had been granted. Held on consent state
+    // directly. The flag is a dependency, so the grant re-runs this effect and
+    // the socket opens then, with no reload.
+    if (consentPending) return;
     let sync: import('../runtime/xdb-server-sync').XDBServerSync | null = null;
     let stale = false;
     import('../runtime/xdb-server-sync')
@@ -1958,7 +1978,7 @@ export function SoftNWithXDB({
       stale = true;
       sync?.disconnect();
     };
-  }, [xdb, serverUrl, serverToken, stableServerCollections]);
+  }, [xdb, serverUrl, serverToken, stableServerCollections, consentPending]);
 
   // Auto-resume sync from localStorage on mount
   const syncResumedAppRef = useRef<string | null>(null);

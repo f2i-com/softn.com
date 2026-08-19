@@ -3,7 +3,7 @@
  * Uses the `idb` library for type-safe IndexedDB access.
  */
 
-import { openDB, type IDBPDatabase } from 'idb';
+import { openDB, type IDBPDatabase, type IDBPObjectStore } from 'idb';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -249,18 +249,23 @@ function migrateAppStorage(fromAppId: string, toAppId: string): number {
  * anything. Every bundle after it gets its own record.
  */
 async function adoptLegacyRecord(
-  db: IDBPDatabase<SoftNAppDB>,
+  store: IDBPObjectStore<SoftNAppDB, ['softn-apps'], 'softn-apps', 'readwrite'>,
   name: string,
   origin: string,
 ): Promise<CachedApp | null> {
-  const sameName = await db.getAllFromIndex('softn-apps', 'by-name', name);
+  const sameName = await store.index('by-name').getAll(name);
   const legacy = sameName.find((app) => !app.origin);
   if (!legacy) return null;
   const moved = migrateAppStorage(name, origin);
   console.info(
     `[SoftN Web] "${name}" adopted its content identity${moved ? `, moving ${moved} stored keys` : ''}.`,
   );
-  return { ...legacy, origin };
+  // Everything on the legacy record was keyed by a name the bundle chose for
+  // itself, so its consent record cannot be carried over: the spread would hand
+  // whatever now claims that name the capabilities the user approved for the
+  // old one. Data and icon move, approval does not — the app asks again.
+  const { grantedPermissions: _dropped, permissionsPromptedAt: _alsoDropped, ...carried } = legacy;
+  return { ...carried, origin };
 }
 
 /** Cache a new app, or update the one with these exact contents. */
@@ -273,12 +278,20 @@ export async function cacheApp(
     const db = await getDB();
     const origin = await computeAppOrigin(bundleData);
 
+    // Read and write in one transaction. Split across two, this raced
+    // recordPermissionGrant: opening the same app in a second tab read the
+    // record before the grant landed, then wrote its stale spread back over
+    // it — and the user's Allow was gone, with the bar up again next launch.
+    // recordPermissionGrant was made atomic; this is its other half.
+    const tx = db.transaction('softn-apps', 'readwrite');
+    const store = tx.objectStore('softn-apps');
+
     // Same bytes as something already cached: the same app, opened again.
     // Matching on origin rather than name is the whole fix — an impostor no
     // longer lands on the record, the grants or the data of the app it names.
     const existing =
-      (await db.getFromIndex('softn-apps', 'by-origin', origin)) ??
-      (await adoptLegacyRecord(db, manifest.name, origin));
+      (await store.index('by-origin').get(origin)) ??
+      (await adoptLegacyRecord(store, manifest.name, origin));
 
     if (existing) {
       const updated: CachedApp = {
@@ -290,7 +303,8 @@ export async function cacheApp(
         lastOpened: Date.now(),
         icon: icon ?? existing.icon,
       };
-      await db.put('softn-apps', updated);
+      await store.put(updated);
+      await tx.done;
       return updated;
     }
 
@@ -308,7 +322,8 @@ export async function cacheApp(
       lastOpened: Date.now(),
       icon,
     };
-    await db.add('softn-apps', app);
+    await store.add(app);
+    await tx.done;
     return app;
   } catch {
     console.warn('[SoftN Web] Failed to cache app:', manifest.name);
@@ -405,17 +420,38 @@ export async function updateLastOpened(id: string): Promise<void> {
   }
 }
 
-/** Update granted permissions for a cached app */
-export async function updateGrantedPermissions(appId: string, perms: Record<string, boolean>): Promise<void> {
+/**
+ * Record that the user granted these capabilities to the bundle with this origin.
+ *
+ * Keyed by origin and read-modify-written inside one transaction. Both matter
+ * now that consent arrives from a bar the user may click minutes after the app
+ * loaded: an `id` captured at load time can point at a record `cacheApp` has
+ * since replaced, and a get/put pair in two transactions loses the grant to any
+ * `cacheApp` for the same origin that interleaves — silently, so the user is
+ * asked again next session having already agreed.
+ *
+ * Writes nothing if no record exists: the user removed the app from Home while
+ * its tab was open, and resurrecting it would undo that. The running instance
+ * keeps its grant in memory either way.
+ */
+export async function recordPermissionGrant(origin: string, perms: Record<string, boolean>): Promise<boolean> {
   try {
     const db = await getDB();
-    const app = await db.get('softn-apps', appId);
+    const tx = db.transaction('softn-apps', 'readwrite');
+    const store = tx.objectStore('softn-apps');
+    const app = await store.index('by-origin').get(origin);
     if (app) {
       app.grantedPermissions = perms;
+      // A grant was recorded. Never "a prompt was shown" — nothing about
+      // displaying the consent bar is written down, so dismissing it leaves no
+      // trace that could later be mistaken for an answer.
       app.permissionsPromptedAt = Date.now();
-      await db.put('softn-apps', app);
+      await store.put(app);
     }
+    await tx.done;
+    return Boolean(app);
   } catch {
-    console.warn('[SoftN Web] Failed to update granted permissions for app:', appId);
+    console.warn('[SoftN Web] Failed to record permission grant for origin:', origin);
+    return false;
   }
 }
