@@ -48,6 +48,17 @@ function fallbackFor(pathname) {
   return 'index.html';
 }
 
+function mayUseSpaFallback(pathname) {
+  // A missing static asset must stay a 404 even when a browser sends
+  // `Accept: text/html` (for example, when an asset URL is pasted in a tab).
+  // Returning an SPA shell with status 200 hides broken builds and produces
+  // confusing MIME errors instead of the real missing-file response.
+  if (/\/[^/]*\.[^/]+$/.test(pathname)) return false;
+  if (/^\/(?:assets|demos|softn-files)(?:\/|$)/.test(pathname)) return false;
+  if (/^\/(?:web|builder|studio)\/(?:assets|demos)(?:\/|$)/.test(pathname)) return false;
+  return true;
+}
+
 function safePath(pathname) {
   let decoded;
   try {
@@ -104,8 +115,7 @@ function handleRequest(req, res) {
 
   let file = existingFile(candidate);
   const acceptsHtml = String(req.headers.accept || '').includes('text/html');
-  const extensionlessHead = req.method === 'HEAD' && path.extname(pathname) === '';
-  if (!file && (acceptsHtml || extensionlessHead)) {
+  if (!file && acceptsHtml && mayUseSpaFallback(pathname)) {
     file = existingFile(path.join(distDir, fallbackFor(pathname)));
   }
   if (!file) {

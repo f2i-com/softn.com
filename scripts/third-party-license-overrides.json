@@ -1,0 +1,41 @@
+{
+  "formatVersion": 1,
+  "packages": {
+    "@react-dnd/invariant@4.0.2": {
+      "files": ["scripts/licenses/react-dnd-MIT.txt"],
+      "reason": "The published subpackage omits the React DnD monorepo licence."
+    },
+    "@react-dnd/shallowequal@4.0.2": {
+      "files": ["scripts/licenses/react-dnd-MIT.txt"],
+      "reason": "The published subpackage omits the React DnD monorepo licence."
+    },
+    "err-code@3.0.1": {
+      "files": ["scripts/licenses/err-code-MIT.txt"],
+      "reason": "The npm package declares MIT but its files allowlist omits a licence file."
+    },
+    "get-browser-rtc@1.1.0": {
+      "files": ["scripts/licenses/get-browser-rtc-MIT.txt"],
+      "reason": "The npm package declares MIT but contains no licence file."
+    },
+    "guid-typescript@1.0.9": {
+      "files": ["scripts/licenses/guid-typescript-ISC.txt"],
+      "reason": "The npm package declares ISC but its files allowlist omits a licence file."
+    },
+    "onnxruntime-common@1.24.0-dev.20251116-b39e144322": {
+      "files": ["scripts/licenses/onnxruntime-MIT.txt"],
+      "reason": "The generated npm subpackage omits the ONNX Runtime repository licence."
+    },
+    "onnxruntime-common@1.27.0": {
+      "files": ["scripts/licenses/onnxruntime-MIT.txt"],
+      "reason": "The generated npm subpackage omits the ONNX Runtime repository licence."
+    },
+    "onnxruntime-web@1.26.0-dev.20260416-b7804b056c": {
+      "files": ["scripts/licenses/onnxruntime-MIT.txt"],
+      "reason": "The generated npm subpackage omits the ONNX Runtime repository licence."
+    },
+    "onnxruntime-web@1.27.0": {
+      "files": ["scripts/licenses/onnxruntime-MIT.txt"],
+      "reason": "The generated npm subpackage omits the ONNX Runtime repository licence."
+    }
+  }
+}
