@@ -84,45 +84,42 @@ ErrorDocument 404 default
 # far too slow to run per request, so the win only exists if the file is already
 # on disk: the engine alone is 5.7MB raw, 1.9MB gzipped and 1.3MB brotlied.
 # mod_deflate above still covers anything without a twin.
-<IfModule mod_headers.c>
+#
+# AddEncoding, not a Header in a FilesMatch. The first version of this set
+# Content-Encoding from <FilesMatch "\.br$"> after the rewrite had already
+# chosen the file, and those sections are merged from the ORIGINAL request, so
+# on a real host the swap happened and the header did not: browsers were handed
+# brotli bytes labelled as JavaScript and reported "Invalid or unexpected
+# token". AddEncoding is the mechanism Apache provides for exactly this — it
+# reads the trailing .br/.gz as an encoding and takes the content type from the
+# extension underneath, so app.js.br serves as application/javascript with
+# Content-Encoding: br, and no per-type rules are needed at all.
+#
+# Both modules are required. Without mod_mime nothing labels the encoding, and
+# serving a compressed body unlabelled is worse than not compressing, so the
+# rewrite is nested inside it rather than left to run alone.
+<IfModule mod_mime.c>
+  AddEncoding br .br
+  AddEncoding gzip .gz
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
 
   RewriteCond %{HTTP:Accept-Encoding} br
-  RewriteCond %{REQUEST_FILENAME}.br -f
+  RewriteCond %{REQUEST_FILENAME}\.br -f
   RewriteRule ^(.*)$ $1.br [QSA,L]
 
   RewriteCond %{HTTP:Accept-Encoding} gzip
-  RewriteCond %{REQUEST_FILENAME}.gz -f
+  RewriteCond %{REQUEST_FILENAME}\.gz -f
   RewriteRule ^(.*)$ $1.gz [QSA,L]
-
-  # The rewrite changes the file, so the type has to be restored by hand or the
-  # browser is handed a .wasm labelled application/x-brotli and refuses it.
-  <FilesMatch "\.wasm\.(br|gz)$">
-    ForceType application/wasm
-  </FilesMatch>
-  <FilesMatch "\.(?:js|mjs)\.(br|gz)$">
-    ForceType application/javascript
-  </FilesMatch>
-  <FilesMatch "\.css\.(br|gz)$">
-    ForceType text/css
-  </FilesMatch>
-  <FilesMatch "\.svg\.(br|gz)$">
-    ForceType image/svg+xml
-  </FilesMatch>
-  <FilesMatch "\.json\.(br|gz)$">
-    ForceType application/json
-  </FilesMatch>
-
-  <FilesMatch "\.br$">
-    Header set Content-Encoding br
-    Header append Vary Accept-Encoding
-  </FilesMatch>
-  <FilesMatch "\.gz$">
-    Header set Content-Encoding gzip
-    Header append Vary Accept-Encoding
-  </FilesMatch>
 </IfModule>
+</IfModule>
+
+<IfModule mod_headers.c>
+  # Caches must not hand a brotli body to a client that did not ask for one.
+  <FilesMatch "\.(?:css|js|mjs|map|wasm|svg|json|html?|txt|webmanifest)$">
+    Header append Vary Accept-Encoding
+  </FilesMatch>
 </IfModule>
 
 <IfModule mod_rewrite.c>
