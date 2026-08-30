@@ -17,6 +17,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,16 +54,22 @@ ErrorDocument 404 default
 
   # Brief caching for unhashed static files. Vite's fingerprinted assets are
   # immutable; HTML, service workers, catalogues and bundles must revalidate.
-  <FilesMatch "\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg|ico)$">
+  #
+  # Each pattern tolerates a trailing .br/.gz because FilesMatch tests the file
+  # Apache ends up serving, not the URL asked for: after the rewrite below picks
+  # a precompressed twin, "app-8f3ac91b.wasm.br" has to match the same rule its
+  # uncompressed original does, or every compressed asset silently drops out of
+  # the immutable bucket and back to an hour.
+  <FilesMatch "\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg|ico)(?:\.(?:br|gz))?$">
     Header set Cache-Control "public, max-age=3600"
   </FilesMatch>
-  <FilesMatch "-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$">
+  <FilesMatch "-[A-Za-z0-9_-]{8,}\.(?:css|js|mjs|map|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)(?:\.(?:br|gz))?$">
     Header set Cache-Control "public, max-age=31536000, immutable"
   </FilesMatch>
-  <FilesMatch "\.(?:html?|json|webmanifest|softn)$">
+  <FilesMatch "\.(?:html?|json|webmanifest|softn)(?:\.(?:br|gz))?$">
     Header set Cache-Control "no-cache, max-age=0, must-revalidate"
   </FilesMatch>
-  <FilesMatch "^(?:registerSW|sw|service-worker)\.js$">
+  <FilesMatch "^(?:registerSW|sw|service-worker)\.js(?:\.(?:br|gz))?$">
     Header set Cache-Control "no-cache, max-age=0, must-revalidate"
   </FilesMatch>
 </IfModule>
@@ -71,6 +78,51 @@ ErrorDocument 404 default
   AddOutputFilterByType DEFLATE text/html text/plain text/css text/javascript
   AddOutputFilterByType DEFLATE application/javascript application/json
   AddOutputFilterByType DEFLATE application/manifest+json application/wasm image/svg+xml
+</IfModule>
+
+# Prefer the .br/.gz twins the build wrote. Brotli at the quality used here is
+# far too slow to run per request, so the win only exists if the file is already
+# on disk: the engine alone is 5.7MB raw, 1.9MB gzipped and 1.3MB brotlied.
+# mod_deflate above still covers anything without a twin.
+<IfModule mod_headers.c>
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  RewriteCond %{HTTP:Accept-Encoding} br
+  RewriteCond %{REQUEST_FILENAME}.br -f
+  RewriteRule ^(.*)$ $1.br [QSA,L]
+
+  RewriteCond %{HTTP:Accept-Encoding} gzip
+  RewriteCond %{REQUEST_FILENAME}.gz -f
+  RewriteRule ^(.*)$ $1.gz [QSA,L]
+
+  # The rewrite changes the file, so the type has to be restored by hand or the
+  # browser is handed a .wasm labelled application/x-brotli and refuses it.
+  <FilesMatch "\.wasm\.(br|gz)$">
+    ForceType application/wasm
+  </FilesMatch>
+  <FilesMatch "\.(?:js|mjs)\.(br|gz)$">
+    ForceType application/javascript
+  </FilesMatch>
+  <FilesMatch "\.css\.(br|gz)$">
+    ForceType text/css
+  </FilesMatch>
+  <FilesMatch "\.svg\.(br|gz)$">
+    ForceType image/svg+xml
+  </FilesMatch>
+  <FilesMatch "\.json\.(br|gz)$">
+    ForceType application/json
+  </FilesMatch>
+
+  <FilesMatch "\.br$">
+    Header set Content-Encoding br
+    Header append Vary Accept-Encoding
+  </FilesMatch>
+  <FilesMatch "\.gz$">
+    Header set Content-Encoding gzip
+    Header append Vary Accept-Encoding
+  </FilesMatch>
+</IfModule>
 </IfModule>
 
 <IfModule mod_rewrite.c>
@@ -142,6 +194,16 @@ server {
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header Cache-Control $softn_cache_control;
+
+    # Serve the .br/.gz twins the build wrote in preference to compressing per
+    # request: brotli at build quality is far too slow to run live, and it is
+    # where the engine's 5.7MB becomes 1.3MB rather than the 1.5MB a live
+    # brotli pass would manage. gzip_static needs nginx built with
+    # --with-http_gzip_static_module; brotli_static needs the ngx_brotli module.
+    # Both degrade to the on-the-fly gzip below when absent or when a file has
+    # no twin.
+    brotli_static on;
+    gzip_static on;
 
     gzip on;
     gzip_vary on;
@@ -218,6 +280,25 @@ The included \`.htaccess\` is ready for Apache 2.4. The host must permit
 \`mod_rewrite\` and \`mod_mime\`;
 \`mod_headers\` and \`mod_deflate\` add the supplied security, cache and
 compression rules when available.
+
+## Compression
+
+The build writes \`.br\` and \`.gz\` twins beside every compressible file.
+They exist because the quality worth having cannot be afforded per request: the
+zipp engine is 5.7MB raw, 1.9MB gzipped, and 1.3MB at the brotli quality used
+here, which is roughly twice as slow as a live pass can justify. Serving the
+twin costs the server nothing.
+
+nginx needs \`gzip_static\` (built in with
+\`--with-http_gzip_static_module\`) and, for the smaller half of the win,
+the third-party \`ngx_brotli\` module for \`brotli_static\`. Apache serves them
+through the supplied rewrite, which needs \`mod_rewrite\` and \`mod_headers\`:
+without \`mod_headers\` the rewrite is skipped entirely, deliberately, because a
+brotli stream served without \`Content-Encoding\` is not a file any browser can
+read. Either way, anything with no twin still falls back to compressing live.
+
+Bundles are left alone: a \`.softn\` is a ZIP, so a second pass would spend CPU
+to produce a slightly larger file.
 
 ## nginx
 
@@ -524,6 +605,83 @@ function writeDeepLinkFallbacks() {
   return apps.length;
 }
 
+/**
+ * Write .br and .gz twins beside everything worth compressing.
+ *
+ * Done at build time because the quality that makes this worthwhile cannot be
+ * afforded per request: the zipp engine is 5.74MB raw, 1.88MB gzipped, 1.51MB
+ * under the brotli quality a live pass can spare, and 1.28MB at quality 11.
+ * Paying that once here is the difference between the last two figures.
+ *
+ * Skipped: anything already compressed, which for a .softn is the whole point —
+ * they are ZIP archives, and a second pass costs CPU to produce a slightly
+ * larger file. Small files are skipped because the win is smaller than a TCP
+ * segment, and any twin that fails to beat 95% of the original is discarded
+ * rather than shipped as dead weight the server has to stat.
+ */
+const COMPRESSIBLE = new Set([
+  '.html', '.js', '.mjs', '.css', '.json', '.webmanifest',
+  '.wasm', '.svg', '.map', '.txt', '.md', '.xml', '.ui', '.logic',
+]);
+const MIN_COMPRESS_BYTES = 1024;
+
+function precompressTree(dir, stats) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      precompressTree(full, stats);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (!COMPRESSIBLE.has(path.extname(entry.name).toLowerCase())) continue;
+
+    const source = fs.readFileSync(full);
+    if (source.length < MIN_COMPRESS_BYTES) continue;
+
+    const brotli = zlib.brotliCompressSync(source, {
+      params: {
+        [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
+        [zlib.constants.BROTLI_PARAM_SIZE_HINT]: source.length,
+      },
+    });
+    const gzip = zlib.gzipSync(source, { level: 9 });
+
+    stats.scanned += 1;
+    stats.raw += source.length;
+    if (brotli.length < source.length * 0.95) {
+      fs.writeFileSync(full + '.br', brotli);
+      stats.brotli += brotli.length;
+      stats.written += 1;
+    } else {
+      stats.brotli += source.length;
+    }
+    if (gzip.length < source.length * 0.95) {
+      fs.writeFileSync(full + '.gz', gzip);
+      stats.gzip += gzip.length;
+      stats.written += 1;
+    } else {
+      stats.gzip += source.length;
+    }
+  }
+  return stats;
+}
+
+function precompressAssets() {
+  const stats = precompressTree(outDir, {
+    scanned: 0,
+    written: 0,
+    raw: 0,
+    gzip: 0,
+    brotli: 0,
+  });
+  const mb = (n) => (n / 1024 / 1024).toFixed(2) + 'MB';
+  console.log(
+    `\nPrecompressed ${stats.scanned} files (${stats.written} twins written)\n` +
+      `  raw ${mb(stats.raw)}  ->  gzip ${mb(stats.gzip)}  ->  brotli ${mb(stats.brotli)}`
+  );
+  return stats;
+}
+
 function countFiles(dir) {
   let n = 0;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -539,6 +697,7 @@ writeDeepLinkFallbacks();
 writeDeploymentFiles();
 run(['run', 'licenses:site']);
 writeBuildInfo();
+precompressAssets();
 
 console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
 console.log('  dist/           landing page');
@@ -546,5 +705,6 @@ console.log('  dist/demos/     .softn bundles');
 console.log(`  dist/softn-files/ canonical .softn bundles (${bundleCount} apps)`);
 console.log('  dist/.htaccess, nginx.conf.example, DEPLOY.md');
 console.log('  dist/BUILD-INFO.json');
+console.log('  *.br / *.gz     precompressed twins for brotli_static / gzip_static');
 console.log('  dist/LICENSE, NOTICE, THIRD-PARTY-NOTICES.txt, THIRD-PARTY-INVENTORY.json');
 for (const app of APPS) console.log(`  dist/${app.into}/`.padEnd(18) + app.workspace);
