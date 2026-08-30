@@ -67,6 +67,56 @@ export interface SymbolInfo {
 }
 
 // ============================================================================
+// Synchronous host capabilities
+// ============================================================================
+
+/*
+ * zipp v0.0.1 separated a bridge handle from authority over it: installing a
+ * bridge grants nothing, and `setSyncHostCapabilities` replaces (never unions)
+ * the allowlist, which freezes the moment `initScript` starts. So the names
+ * live beside the `register*` method that installs the object serving them,
+ * every registration accumulates into one pending set, and
+ * {@link ZippWasmAdapter.initializeScript} flushes that set in a single call as
+ * the last thing before compilation.
+ *
+ * Keeping the grant in the adapter rather than in each host is deliberate: a
+ * host that wires a bridge and forgets the grant gets `SecurityError:
+ * synchronous host capability denied` from the guest's first `db.query`, and
+ * the parked Web Worker host would have shipped that way unnoticed. Here it
+ * cannot happen — wiring is the grant.
+ *
+ * The engine rejects an unknown name and drops the whole update with it, so
+ * these lists are coupled to the engine release vendored in `wasm-zipp/`
+ * (v0.0.1, zipp commit 96dac4e). A rename upstream surfaces as a throw before
+ * `initScript` rather than as a silent denial at runtime.
+ */
+
+/** Everything `db.*` in the preamble can reach. Served by `setDbBridge`. */
+const DB_SYNC_OPS = [
+  'db.query',
+  'db.get',
+  'db.create',
+  'db.update',
+  'db.delete',
+  'db.hardDelete',
+  'db.startSync',
+  'db.stopSync',
+  'db.getSyncStatus',
+  'db.getSavedSyncRoom',
+] as const;
+
+/** Everything `localStorage.*` can reach. Served by `setLocalStorageBridge`. */
+const LOCAL_STORAGE_SYNC_OPS = [
+  'ls.getItem',
+  'ls.setItem',
+  'ls.removeItem',
+  'ls.clear',
+] as const;
+
+/** Everything `navigator.clipboard.*` can reach. Served by `setClipboardBridge`. */
+const CLIPBOARD_SYNC_OPS = ['nav.clipboardWrite', 'nav.clipboardRead'] as const;
+
+// ============================================================================
 // ZippWasmAdapter
 // ============================================================================
 
@@ -79,6 +129,9 @@ export class ZippWasmAdapter {
   private symbolMap: Map<string, SymbolInfo> = new Map();
   private _initialized = false;
   private _disposed = false;
+  private _terminated = false;
+  /** Names accumulated by `register*` calls, flushed once before `initScript`. */
+  private pendingSyncCapabilities = new Set<string>();
 
   private constructor(wasm: Engine) {
     this.wasm = wasm;
@@ -99,7 +152,7 @@ export class ZippWasmAdapter {
    * not recoverable and everything is reported at log level.
    */
   private flushOutput(): void {
-    if (this._disposed) return;
+    if (this._disposed || this._terminated) return;
     let lines: string[];
     try {
       lines = (this.wasm.takeOutput() as string[]) || [];
@@ -112,8 +165,17 @@ export class ZippWasmAdapter {
   /**
    * Register the DB bridge. zipp's `db.*` preamble functions call these
    * methods synchronously from inside VM execution, so none of them may await.
+   *
+   * All ten operations are granted, `db.startSync` included. Sync authority
+   * already lives in `createDBNamespace.startSync`, which refuses without
+   * `sync.enabled` and says "Choose Allow in the permission bar" — withholding
+   * the operation here would fire first and replace that with an opaque
+   * `SecurityError` throw that abandons the rest of the caller's function
+   * mid-way (TexasHoldem resumes a saved room and then keeps going).
    */
   registerDBBridge(db: DBNamespace): void {
+    for (const op of DB_SYNC_OPS) this.pendingSyncCapabilities.add(op);
+
     // The engine sends "" for an omitted room; the DB namespace wants undefined.
     const room = (r: string | undefined) => (r ? r : undefined);
 
@@ -183,10 +245,13 @@ export class ZippWasmAdapter {
    * Register the localStorage bridge, delegating to real browser storage with
    * app-scoped key prefixing so two bundles cannot read each other's keys.
    *
-   * `navigator.clipboard` is served from this same object: the engine routes
-   * its `nav.*` host calls to the localStorage bridge.
+   * `navigator.clipboard` used to be served from this same object — the old
+   * engine routed `nav.*` to the localStorage bridge. v0.0.1 refuses to, so it
+   * moved to {@link registerClipboardBridge}.
    */
   registerLocalStorageBridge(appId?: string): void {
+    for (const op of LOCAL_STORAGE_SYNC_OPS) this.pendingSyncCapabilities.add(op);
+
     const safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
     const prefix = `softn:${safeAppId}:`;
 
@@ -225,7 +290,23 @@ export class ZippWasmAdapter {
           console.error('[zipp bridge] localStorage.clear error:', e);
         }
       },
-      clipboardWrite: (text: string) => {
+    });
+  }
+
+  /**
+   * Register the clipboard bridge backing `navigator.clipboard.*`.
+   *
+   * Split out because v0.0.1 did: the engine now routes `nav.*` to its own
+   * `clipboard` object by the method names `writeText`/`readText`, and
+   * `setLocalStorageBridge` explicitly refuses to supply it. Without this,
+   * `navigator.clipboard.writeText()` — which four shipped bundles call for
+   * their copy buttons — throws instead of copying.
+   */
+  registerClipboardBridge(): void {
+    for (const op of CLIPBOARD_SYNC_OPS) this.pendingSyncCapabilities.add(op);
+
+    this.wasm.setClipboardBridge({
+      writeText: (text: string) => {
         try {
           void navigator.clipboard?.writeText(String(text));
         } catch (e) {
@@ -234,8 +315,11 @@ export class ZippWasmAdapter {
       },
       // The engine's clipboard read is synchronous but the browser's is not,
       // so this can only ever answer empty. `softn.*` async APIs are the
-      // supported path for reading the clipboard.
-      clipboardRead: () => '',
+      // supported path for reading the clipboard. It is still granted and
+      // wired: the preamble's `readText` JSON-parses whatever comes back, so a
+      // script that reads the clipboard gets `''` as it always has, rather
+      // than a thrown SecurityError it never had to handle before.
+      readText: () => '',
     });
   }
 
@@ -249,22 +333,56 @@ export class ZippWasmAdapter {
     removeItem: (key: string) => void;
     clear: () => void;
   }): void {
+    for (const op of LOCAL_STORAGE_SYNC_OPS) this.pendingSyncCapabilities.add(op);
     this.wasm.setLocalStorageBridge(bridge);
+  }
+
+  /**
+   * The synchronous operations registration has accumulated so far — the exact
+   * list {@link initializeScript} will grant. Exposed so a test can assert that
+   * wiring a bridge declares its authority; a `register*` method that forgets
+   * leaves this empty and the guest is denied at its first call.
+   */
+  getPendingSyncCapabilities(): string[] {
+    return [...this.pendingSyncCapabilities].sort();
   }
 
   /**
    * Compile and execute a script, returning symbol name → { index, scope }.
    * Bridges must already be registered: a script's top level commonly reads
-   * `localStorage` or queries `db`.
+   * `localStorage` or queries `db`, and authority freezes here — nothing can be
+   * wired or granted once this has been entered.
    */
   async initializeScript(code: string): Promise<Map<string, SymbolInfo>> {
     await ensureWasm();
 
+    // Grant exactly what registration wired, in the one call the engine allows.
+    // This is the last statement before compilation on purpose: the allowlist is
+    // replaced rather than unioned, and the db/localStorage/clipboard bridges
+    // are installed independently and conditionally.
+    // Guarded because the vendored engine is swappable and this method arrived
+    // in v0.0.1. An engine without it grants authority by wiring alone, which is
+    // exactly what the allowlist replaced, so skipping is correct there — while
+    // calling it unconditionally turns rolling the engine back into a TypeError
+    // at the last statement before every compile.
+    if (typeof this.wasm.setSyncHostCapabilities === 'function') {
+      this.wasm.setSyncHostCapabilities([...this.pendingSyncCapabilities]);
+    }
+
     const symbolMapObj = ((): Record<string, { index: number; scope: string }> => {
       try {
         return this.wasm.initScript(code) as Record<string, { index: number; scope: string }>;
+      } catch (e) {
+        // Drain first: the top level may have logged before a later statement
+        // threw. v0.0.1 then terminates the Engine on any failed or repeated
+        // initScript — state, bridges and the allowlist are all cleared, and
+        // every later call answers "zipp: engine is disposed". Record that so a
+        // caller retrying a compile builds a fresh engine instead of chasing
+        // disposal errors on a corpse.
+        this.flushOutput();
+        this._terminated = true;
+        throw e;
       } finally {
-        // The top level may have logged before a later statement threw.
         this.flushOutput();
       }
     })();
@@ -353,6 +471,15 @@ export class ZippWasmAdapter {
   /** Whether a script has been compiled and run. */
   get initialized(): boolean {
     return this._initialized;
+  }
+
+  /**
+   * Whether the engine tore itself down. True after a failed `initScript`; the
+   * handle still needs {@link dispose} to release its WASM memory, but nothing
+   * else on it will work again.
+   */
+  get terminated(): boolean {
+    return this._terminated;
   }
 
   /** The symbol map, for external inspection. */

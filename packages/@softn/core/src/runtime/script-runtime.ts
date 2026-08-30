@@ -828,6 +828,35 @@ export class SoftNScriptRuntime {
     return true;
   }
 
+  /**
+   * Wire the host objects the engine calls synchronously from inside the VM.
+   *
+   * Its own method because the `$:` compile fallback below has to build a
+   * second engine and repeat all of it: zipp v0.0.1 terminates an Engine whose
+   * `initScript` throws, and that clears its bridges as well as its authority.
+   *
+   * Each `register*` call also declares the operations it serves, inside the
+   * adapter — so a host cannot install a bridge and leave the guest denied.
+   */
+  private installHostBridges(): void {
+    if (!this.vmEngine) return;
+
+    this.vmEngine.registerDBBridge(this.db);
+
+    const perms = this.permissions || {};
+    if (perms.storage !== false) {
+      this.vmEngine.registerLocalStorageBridge(this.appId);
+    }
+    // Clipboard is its own manifest permission and its own engine bridge in
+    // v0.0.1. It used to ride on the localStorage bridge because the old engine
+    // routed `nav.*` there; that coupling was inherited, not intended, so it is
+    // not reproduced. Undefined means granted, matching how `storage` is read
+    // one line up — no shipped manifest declares either key.
+    if (perms.clipboard !== false) {
+      this.vmEngine.registerClipboardBridge();
+    }
+  }
+
   async loadScript(script: CodeBlock): Promise<ScriptLoadResult> {
     const useHostBridges = this.runtimeMode === 'main';
 
@@ -850,12 +879,7 @@ export class SoftNScriptRuntime {
       if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
 
       // 2. Register bridges on the WASM engine BEFORE compilation/execution
-      this.vmEngine.registerDBBridge(this.db);
-
-      const perms = this.permissions || {};
-      if (perms.storage !== false) {
-        this.vmEngine.registerLocalStorageBridge(this.appId);
-      }
+      this.installHostBridges();
     }
 
     // 3. Resolve imports (inline imported .logic files before passing to WASM)
@@ -947,6 +971,15 @@ export class SoftNScriptRuntime {
         compileError
       );
       computedCompiled = false;
+      // The failed compile took the engine with it — v0.0.1 terminates an
+      // Engine whose `initScript` throws, wiping its bridges and its capability
+      // allowlist — so the retry cannot reuse it. Rebuilding also re-wires and
+      // re-grants; retrying in place would compile into a VM that denies every
+      // `db.*` call the fallback was supposed to rescue.
+      this.vmEngine.dispose();
+      this.vmEngine = await VmAdapter.create();
+      if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
+      if (useHostBridges) this.installHostBridges();
       symbolMap = await this.vmEngine.initializeScript(scriptCode);
     }
     this.symbolMap = symbolMap;

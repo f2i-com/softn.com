@@ -30,9 +30,9 @@ export class Engine {
     /**
      * Evaluate `expr` in the script's global context and return its value.
      *
-     * Each call compiles fresh and the compilation is interned for the VM's
-     * lifetime, so this is for one-off host queries — never a per-frame path.
-     * Use [`Engine::callFunction`] there.
+     * Each call compiles fresh and installs stable-address definitions, so this
+     * is for one-off host queries — never a per-frame path. Use
+     * [`Engine::callFunction`] there.
      */
     evalInContext(expr: string): any;
     /**
@@ -66,8 +66,14 @@ export class Engine {
      */
     resolveHostCallback(call_id: number, result: any): void;
     /**
+     * Install the object backing `navigator.clipboard.*`. Clipboard authority
+     * is intentionally separate from local storage authority.
+     */
+    setClipboardBridge(bridge: any): void;
+    /**
      * Install the object backing `db.*`. Its methods are called synchronously
-     * from inside VM execution, so they must not await.
+     * from inside VM execution, so they must not await. Installing a bridge
+     * does not grant any operation; call `setSyncHostCapabilities` separately.
      */
     setDbBridge(bridge: any): void;
     /**
@@ -81,9 +87,18 @@ export class Engine {
      */
     setGlobalsBatch(indices: any, values: any): void;
     /**
-     * Install the object backing `localStorage.*`.
+     * Install the object backing `localStorage.*`. This never provides the
+     * clipboard bridge, even when the object happens to have clipboard-like
+     * methods.
      */
     setLocalStorageBridge(bridge: any): void;
+    /**
+     * Replace the exact allowlist for synchronous guest-to-host operations.
+     * The list is fixed before initialization so guest execution cannot race
+     * or influence a later authority upgrade. Unknown operation names reject
+     * the complete update rather than being silently ignored.
+     */
+    setSyncHostCapabilities(operations: any): void;
     /**
      * Drain `console.log`/`info`/`debug` output produced so far.
      */
@@ -115,21 +130,23 @@ export interface InitOutput {
     readonly engine_callFunction: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly engine_dispatchEvent: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly engine_dispose: (a: number) => void;
-    readonly engine_drainPendingHostCalls: (a: number) => any;
+    readonly engine_drainPendingHostCalls: (a: number) => [number, number, number];
     readonly engine_evalInContext: (a: number, b: number, c: number) => [number, number, number];
-    readonly engine_getEventListenerTypes: (a: number) => any;
-    readonly engine_getGlobalByIndex: (a: number, b: number) => any;
-    readonly engine_getGlobalsBatch: (a: number, b: any) => any;
+    readonly engine_getEventListenerTypes: (a: number) => [number, number, number];
+    readonly engine_getGlobalByIndex: (a: number, b: number) => [number, number, number];
+    readonly engine_getGlobalsBatch: (a: number, b: any) => [number, number, number];
     readonly engine_initScript: (a: number, b: number, c: number) => [number, number, number];
     readonly engine_new: () => number;
     readonly engine_preambleLines: (a: number) => number;
-    readonly engine_pump: (a: number) => void;
+    readonly engine_pump: (a: number) => [number, number];
     readonly engine_resolveHostCallback: (a: number, b: number, c: any) => [number, number];
-    readonly engine_setDbBridge: (a: number, b: any) => void;
-    readonly engine_setGlobalByIndex: (a: number, b: number, c: any) => void;
-    readonly engine_setGlobalsBatch: (a: number, b: any, c: any) => void;
-    readonly engine_setLocalStorageBridge: (a: number, b: any) => void;
-    readonly engine_takeOutput: (a: number) => any;
+    readonly engine_setClipboardBridge: (a: number, b: any) => [number, number];
+    readonly engine_setDbBridge: (a: number, b: any) => [number, number];
+    readonly engine_setGlobalByIndex: (a: number, b: number, c: any) => [number, number];
+    readonly engine_setGlobalsBatch: (a: number, b: any, c: any) => [number, number];
+    readonly engine_setLocalStorageBridge: (a: number, b: any) => [number, number];
+    readonly engine_setSyncHostCapabilities: (a: number, b: any) => [number, number];
+    readonly engine_takeOutput: (a: number) => [number, number, number];
     readonly zipp_install_panic_hook: () => void;
     readonly zipp_start: () => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
