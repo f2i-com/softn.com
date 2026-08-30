@@ -60,14 +60,17 @@ export class Engine {
      */
     drainPendingHostCalls() {
         const ret = wasm.engine_drainPendingHostCalls(this.__wbg_ptr);
-        return ret;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Evaluate `expr` in the script's global context and return its value.
      *
-     * Each call compiles fresh and the compilation is interned for the VM's
-     * lifetime, so this is for one-off host queries — never a per-frame path.
-     * Use [`Engine::callFunction`] there.
+     * Each call compiles fresh and installs stable-address definitions, so this
+     * is for one-off host queries — never a per-frame path. Use
+     * [`Engine::callFunction`] there.
      * @param {string} expr
      * @returns {any}
      */
@@ -86,7 +89,10 @@ export class Engine {
      */
     getEventListenerTypes() {
         const ret = wasm.engine_getEventListenerTypes(this.__wbg_ptr);
-        return ret;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Read the global in `index`. Values that cannot cross as data (functions,
@@ -96,7 +102,10 @@ export class Engine {
      */
     getGlobalByIndex(index) {
         const ret = wasm.engine_getGlobalByIndex(this.__wbg_ptr, index);
-        return ret;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Read many globals in one boundary crossing.
@@ -105,7 +114,10 @@ export class Engine {
      */
     getGlobalsBatch(indices) {
         const ret = wasm.engine_getGlobalsBatch(this.__wbg_ptr, indices);
-        return ret;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Compile `source` behind the preamble, run its top level, and return the
@@ -143,7 +155,10 @@ export class Engine {
      * Run pending microtasks without calling into the script.
      */
     pump() {
-        wasm.engine_pump(this.__wbg_ptr);
+        const ret = wasm.engine_pump(this.__wbg_ptr);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Invoke the callback the script passed to `host.call` for `call_id`.
@@ -157,12 +172,27 @@ export class Engine {
         }
     }
     /**
+     * Install the object backing `navigator.clipboard.*`. Clipboard authority
+     * is intentionally separate from local storage authority.
+     * @param {any} bridge
+     */
+    setClipboardBridge(bridge) {
+        const ret = wasm.engine_setClipboardBridge(this.__wbg_ptr, bridge);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Install the object backing `db.*`. Its methods are called synchronously
-     * from inside VM execution, so they must not await.
+     * from inside VM execution, so they must not await. Installing a bridge
+     * does not grant any operation; call `setSyncHostCapabilities` separately.
      * @param {any} bridge
      */
     setDbBridge(bridge) {
-        wasm.engine_setDbBridge(this.__wbg_ptr, bridge);
+        const ret = wasm.engine_setDbBridge(this.__wbg_ptr, bridge);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Write the global in `index`. A slot currently holding a function or
@@ -172,7 +202,10 @@ export class Engine {
      * @param {any} value
      */
     setGlobalByIndex(index, value) {
-        wasm.engine_setGlobalByIndex(this.__wbg_ptr, index, value);
+        const ret = wasm.engine_setGlobalByIndex(this.__wbg_ptr, index, value);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Write many globals in one boundary crossing.
@@ -180,14 +213,35 @@ export class Engine {
      * @param {any} values
      */
     setGlobalsBatch(indices, values) {
-        wasm.engine_setGlobalsBatch(this.__wbg_ptr, indices, values);
+        const ret = wasm.engine_setGlobalsBatch(this.__wbg_ptr, indices, values);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
-     * Install the object backing `localStorage.*`.
+     * Install the object backing `localStorage.*`. This never provides the
+     * clipboard bridge, even when the object happens to have clipboard-like
+     * methods.
      * @param {any} bridge
      */
     setLocalStorageBridge(bridge) {
-        wasm.engine_setLocalStorageBridge(this.__wbg_ptr, bridge);
+        const ret = wasm.engine_setLocalStorageBridge(this.__wbg_ptr, bridge);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * Replace the exact allowlist for synchronous guest-to-host operations.
+     * The list is fixed before initialization so guest execution cannot race
+     * or influence a later authority upgrade. Unknown operation names reject
+     * the complete update rather than being silently ignored.
+     * @param {any} operations
+     */
+    setSyncHostCapabilities(operations) {
+        const ret = wasm.engine_setSyncHostCapabilities(this.__wbg_ptr, operations);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * Drain `console.log`/`info`/`debug` output produced so far.
@@ -195,7 +249,10 @@ export class Engine {
      */
     takeOutput() {
         const ret = wasm.engine_takeOutput(this.__wbg_ptr);
-        return ret;
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
 }
 if (Symbol.dispose) Engine.prototype[Symbol.dispose] = Engine.prototype.free;
@@ -237,6 +294,10 @@ function __wbg_get_imports() {
             const ret = typeof(val) === 'object' && val !== null;
             return ret;
         },
+        __wbg___wbindgen_is_string_ea5e6cc2e4141dfe: function(arg0) {
+            const ret = typeof(arg0) === 'string';
+            return ret;
+        },
         __wbg___wbindgen_is_undefined_c05833b95a3cf397: function(arg0) {
             const ret = arg0 === undefined;
             return ret;
@@ -258,6 +319,10 @@ function __wbg_get_imports() {
         __wbg___wbindgen_throw_344f42d3211c4765: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
+        __wbg_add_c12b304936d1b8e3: function(arg0, arg1) {
+            const ret = arg0.add(arg1);
+            return ret;
+        },
         __wbg_call_8a2dd23819f8a60a: function() { return handleError(function (arg0, arg1) {
             const ret = arg0.call(arg1);
             return ret;
@@ -270,6 +335,14 @@ function __wbg_get_imports() {
             const ret = arg0.call(arg1, arg2, arg3);
             return ret;
         }, arguments); },
+        __wbg_defineProperty_d680f9c4ff344910: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = Reflect.defineProperty(arg0, arg1, arg2);
+            return ret;
+        }, arguments); },
+        __wbg_delete_e226d79ca00f8589: function(arg0, arg1) {
+            const ret = arg0.delete(arg1);
+            return ret;
+        },
         __wbg_error_a6fa202b58aa1cd3: function(arg0, arg1) {
             let deferred0_0;
             let deferred0_1;
@@ -281,56 +354,28 @@ function __wbg_get_imports() {
                 wasm.__wbindgen_free(deferred0_0, deferred0_1, 1);
             }
         },
-        __wbg_from_13e323c65fc8f464: function(arg0) {
-            const ret = Array.from(arg0);
-            return ret;
-        },
-        __wbg_get_507a50627bffa49b: function(arg0, arg1) {
-            const ret = arg0[arg1 >>> 0];
-            return ret;
-        },
         __wbg_get_78f252d074a84d0b: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;
         }, arguments); },
-        __wbg_get_unchecked_6e0ad6d2a41b06f6: function(arg0, arg1) {
-            const ret = arg0[arg1 >>> 0];
+        __wbg_get_7df959e12c8cb1e0: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(arg0, arg1 >>> 0);
+            return ret;
+        }, arguments); },
+        __wbg_has_a15cf4f0cfaaac24: function(arg0, arg1) {
+            const ret = arg0.has(arg1);
             return ret;
         },
-        __wbg_instanceof_Error_1fdac9f13a8181ba: function(arg0) {
-            let result;
-            try {
-                result = arg0 instanceof Error;
-            } catch (_) {
-                result = false;
-            }
-            const ret = result;
-            return ret;
-        },
-        __wbg_instanceof_Object_33f20e6f12439f3e: function(arg0) {
-            let result;
-            try {
-                result = arg0 instanceof Object;
-            } catch (_) {
-                result = false;
-            }
-            const ret = result;
-            return ret;
-        },
-        __wbg_isArray_0677c962b281d01a: function(arg0) {
+        __wbg_isArray_514a0e087c38120b: function() { return handleError(function (arg0) {
             const ret = Array.isArray(arg0);
             return ret;
-        },
-        __wbg_keys_58421f8f96795607: function(arg0) {
+        }, arguments); },
+        __wbg_keys_ba224165f5e801c0: function() { return handleError(function (arg0) {
             const ret = Object.keys(arg0);
             return ret;
-        },
-        __wbg_length_370319915dc99107: function(arg0) {
+        }, arguments); },
+        __wbg_length_02c64e687322fa34: function(arg0) {
             const ret = arg0.length;
-            return ret;
-        },
-        __wbg_message_8326fb1d549bebc5: function(arg0) {
-            const ret = arg0.message;
             return ret;
         },
         __wbg_new_227d7c05414eb861: function() {
@@ -343,6 +388,10 @@ function __wbg_get_imports() {
         },
         __wbg_new_da52cf8fe3429cb2: function() {
             const ret = new Object();
+            return ret;
+        },
+        __wbg_new_typed_a518d1b29b7e8a7b: function() {
+            const ret = new WeakSet();
             return ret;
         },
         __wbg_new_with_length_f8cbc3a5b9ff9368: function(arg0) {
