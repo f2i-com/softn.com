@@ -1,18 +1,23 @@
 name: Release
 
-# Manual-only until automated publishing is enabled. The zipp WASM engine used
+# A release is built from an existing version tag. The zipp WASM engine used
 # by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so releases build
 # the shared packages directly from the checked-in engine.
+#
+# Pushing the tag is the trigger. The dispatch entry stays for retrying an
+# infrastructure failure without moving a tag that has already been published,
+# and deliberately cannot release an arbitrary branch: both paths check out
+# refs/tags/<tag> and refuse if HEAD is not that tag's commit.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag (for example, v0.1.0)
+        description: Existing release tag (for example, v1.1.0)
         required: true
         type: string
-#  push:
-#    tags:
-#      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
