@@ -11,7 +11,7 @@
 import { VmAdapter, VM_BRIDGE_PREAMBLE, type SymbolScope } from './vm-adapter';
 import { deepEqual } from './vm-state';
 
-import type { ScriptBlock, LogicBlock } from '../parser/ast';
+import type { ScriptBlock, LogicBlock, SoftNDocument } from '../parser/ast';
 import type { AppPermissions } from '../bundle/types';
 import { getFileByRef, registerFileRef } from './file-registry';
 import { pcmToWavDataUrl } from './wav';
@@ -92,6 +92,40 @@ export interface ConsoleModule {
 
 export type ScriptRuntimeMode = 'main' | 'worker';
 
+/** State the framework reads by name, whatever the document happens to say. */
+const FRAMEWORK_OBSERVED_STATE: readonly string[] = ['currentPage'];
+
+/**
+ * Every identifier the document could resolve against React state.
+ *
+ * Pass the result as {@link ScriptRuntimeOptions.observedStateNames} and the
+ * runtime stops mirroring state variables the document never names — see
+ * `partitionStateVars` for why that is worth doing and why it is safe.
+ *
+ * The logic block is excluded because it DECLARES these names: scanning it
+ * would match every one of them and hold nothing back. Everything else is
+ * scanned, markup and styles and data alike, and scanned as text rather than
+ * walked as a tree — a name in a comment or a CSS class needlessly keeps its
+ * variable synced, which costs a little speed, where missing a real reference
+ * would silently freeze part of the UI. Only one of those is worth risking.
+ *
+ * Returns null when the document cannot be scanned, meaning "sync everything".
+ */
+export function collectObservedStateNames(doc: SoftNDocument): ReadonlySet<string> | null {
+  const { script: _script, logic: _logic, ...observable } = doc;
+  let text: string;
+  try {
+    text = JSON.stringify(observable) ?? "";
+  } catch {
+    // Cyclic or otherwise unserialisable: nothing can be proven unobserved.
+    return null;
+  }
+  if (!text) return null;
+  const names = new Set<string>(FRAMEWORK_OBSERVED_STATE);
+  for (const match of text.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) names.add(match[0]);
+  return names;
+}
+
 export interface ScriptRuntimeOptions {
   mode?: ScriptRuntimeMode;
   /**
@@ -112,6 +146,17 @@ export interface ScriptRuntimeOptions {
    * that legitimately declares `net.allow_http` cannot reach its own server.
    */
   permissionConfig?: PermissionConfig;
+  /**
+   * Every identifier the document could resolve against React state.
+   *
+   * State variables outside this set are owned by the VM: the host neither
+   * reads them back nor writes them, because nothing outside the VM can
+   * observe them. See {@link SoftNScriptRuntime.partitionStateVars}.
+   *
+   * Omit it and every state variable is synced, which is what every host did
+   * before this existed and is always correct — just slower.
+   */
+  observedStateNames?: ReadonlySet<string>;
 }
 
 export interface ScriptLoadResult {
@@ -592,6 +637,10 @@ export class SoftNScriptRuntime {
   private stateVarNames: string[] = [];
   /** Cached slot indices for state variables (parallel to stateVarNames) */
   private stateVarIndices: number[] = [];
+  /** Identifiers the document can resolve; null means "assume all of them". */
+  private observedStateNames: ReadonlySet<string> | null = null;
+  /** State variables held back from syncing, for diagnostics only. */
+  private vmOwnedStateNames: string[] = [];
   /** Guard: when true, sync functions must not overwrite VM state (async call in-flight) */
   private asyncCallInProgress = false;
   /** Mutex for async VM calls to prevent concurrent stack corruption.
@@ -724,6 +773,7 @@ export class SoftNScriptRuntime {
     this.permissions = permissions;
     this.appId = appId;
     this.runtimeMode = options?.mode || 'main';
+    this.observedStateNames = options?.observedStateNames ?? null;
     this.externalFunctions = externalFunctions ?? null;
     this.db = createDBNamespace(() => this.permissionConfig, appId);
     if (typeof importResolver === 'function') {
@@ -1013,10 +1063,12 @@ export class SoftNScriptRuntime {
         initialState[name] = this.vmEngine.getGlobal(sym.index);
       }
     }
-    this.stateVarNames = stateVarNames;
-    this.stateVarIndices = stateVarNames.map((name) => symbolMap.get(name)!.index);
+    this.partitionStateVars(stateVarNames, symbolMap);
     console.log(
-      `[SoftN] Script loaded: ${functionNames.length} functions, ${stateVarNames.length} state vars`
+      `[SoftN] Script loaded: ${functionNames.length} functions, ${this.stateVarNames.length} state vars` +
+        (this.vmOwnedStateNames.length
+          ? ` (+${this.vmOwnedStateNames.length} VM-owned, not synced)`
+          : '')
     );
 
     // 7. Create async function wrappers (propagate state changes to React)
@@ -1200,6 +1252,50 @@ export class SoftNScriptRuntime {
         }
       }
     };
+  }
+
+  /**
+   * Split state variables into the ones the host must mirror and the ones the
+   * VM can keep to itself.
+   *
+   * Every sync pulls each synced variable out of the VM and rebuilds it as a
+   * JS value, so the cost is set by what the variables HOLD, not by how many
+   * there are or how many changed. Promptly Unemployed keeps two 51 KB scene
+   * descriptions in globals that no part of its markup names: mirroring them
+   * was 13 of the 24 ms each tick spent, ~28 times a second, to produce values
+   * nothing could read.
+   *
+   * The test is deliberately crude — does this identifier appear anywhere in
+   * the document outside its logic? — because the failure modes are not
+   * symmetric. Keeping a variable that is never read costs a little speed;
+   * dropping one that is read silently freezes part of the UI. So the scan
+   * over-collects on purpose: a name in a comment, a CSS class or an unrelated
+   * string keeps its variable synced.
+   *
+   * Holding a variable back is only sound because the exclusion is symmetric.
+   * {@link syncReactStateToVM} walks the same list, so an excluded variable is
+   * never written back either — otherwise a full push would overwrite the live
+   * VM value with the copy the host stopped updating.
+   */
+  private partitionStateVars(
+    names: string[],
+    symbolMap: Map<string, { index: number; scope: SymbolScope }>
+  ): void {
+    const observed = this.observedStateNames;
+    if (!observed) {
+      this.stateVarNames = names;
+      this.stateVarIndices = names.map((name) => symbolMap.get(name)!.index);
+      this.vmOwnedStateNames = [];
+      return;
+    }
+    const synced: string[] = [];
+    const vmOwned: string[] = [];
+    for (const name of names) {
+      (observed.has(name) ? synced : vmOwned).push(name);
+    }
+    this.stateVarNames = synced;
+    this.stateVarIndices = synced.map((name) => symbolMap.get(name)!.index);
+    this.vmOwnedStateNames = vmOwned;
   }
 
   /**

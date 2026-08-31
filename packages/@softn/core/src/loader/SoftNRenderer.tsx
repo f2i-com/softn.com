@@ -18,6 +18,7 @@ import { renderDocument } from '../renderer';
 import { getDefaultRegistry } from '../renderer/registry';
 import { rewriteCssUrls } from '../renderer/sanitize-html';
 import {
+  collectObservedStateNames,
   createScriptRuntime,
   detectWorkerIncompatibilities,
   createPersistentXDBModule,
@@ -670,6 +671,11 @@ export function SoftNRenderer({
         // Support both <script> and <logic> tags - <logic> is the preferred new syntax
         const codeBlock = doc.script || doc.logic;
 
+        // Which state variables the markup can actually read. Derived here
+        // because this is where the parsed document lives; the runtime only
+        // ever sees the code block.
+        const observedStateNames = collectObservedStateNames(doc) ?? undefined;
+
         if (codeBlock && !scriptInitializedRef.current) {
           scriptInitializedRef.current = true;
 
@@ -798,6 +804,7 @@ export function SoftNRenderer({
                 mode: 'main',
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
+                observedStateNames,
               },
               bundleFileProvider,
               runtimeFunctions
@@ -832,6 +839,7 @@ export function SoftNRenderer({
                 mode: 'main',
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
+                observedStateNames,
               },
               bundleFileProvider,
               runtimeFunctions
@@ -858,6 +866,7 @@ export function SoftNRenderer({
                 mode: 'main',
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
+                observedStateNames,
               },
               bundleFileProvider,
               runtimeFunctions
