@@ -14,7 +14,6 @@
  * Nothing else in the suite feeds a bad `$:`.
  */
 
-import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
