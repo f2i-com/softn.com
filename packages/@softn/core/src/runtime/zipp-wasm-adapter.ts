@@ -508,11 +508,11 @@ export class ZippWasmAdapter {
    * equal values, so the caller can skip reading those slots. `NaN` is the
    * engine saying "unknown" and never compares equal, so it reads.
    */
-  getGlobalsFingerprint(indices: number[]): Float64Array | null {
+  getGlobalsFingerprint(indices: number[]): number[] | null {
     const wasm = this.wasm as unknown as Record<string, unknown>;
     const fn = wasm.getGlobalsFingerprint;
     if (typeof fn !== 'function') return null;
-    return (fn as (i: number[]) => Float64Array).call(this.wasm, indices);
+    return (fn as (i: number[]) => number[]).call(this.wasm, indices);
   }
 
   /**
