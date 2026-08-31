@@ -82,7 +82,7 @@ ErrorDocument 404 default
 
 # Prefer the .br/.gz twins the build wrote. Brotli at the quality used here is
 # far too slow to run per request, so the win only exists if the file is already
-# on disk: the engine alone is 5.7MB raw, 1.9MB gzipped and 1.3MB brotlied.
+# on disk: the engine alone is 5.4MB raw, 1.8MB gzipped and 1.2MB brotlied.
 # mod_deflate above still covers anything without a twin.
 #
 # AddEncoding, not a Header in a FilesMatch. The first version of this set
@@ -194,7 +194,7 @@ server {
 
     # Serve the .br/.gz twins the build wrote in preference to compressing per
     # request: brotli at build quality is far too slow to run live, and it is
-    # where the engine's 5.7MB becomes 1.3MB rather than the 1.5MB a live
+    # where the engine's 5.4MB becomes 1.2MB rather than the 1.4MB a live
     # brotli pass would manage. gzip_static needs nginx built with
     # --with-http_gzip_static_module; brotli_static needs the ngx_brotli module.
     # Both degrade to the on-the-fly gzip below when absent or when a file has
@@ -282,9 +282,10 @@ compression rules when available.
 
 The build writes \`.br\` and \`.gz\` twins beside every compressible file.
 They exist because the quality worth having cannot be afforded per request: the
-zipp engine is 5.7MB raw, 1.9MB gzipped, and 1.3MB at the brotli quality used
-here, which is roughly twice as slow as a live pass can justify. Serving the
-twin costs the server nothing.
+zipp engine is 5.4MB raw, 1.8MB gzipped, and 1.2MB at the brotli quality used
+here -- 6.3s to produce against 0.1s for a live-quality pass, which is why it
+is spent once at build time rather than per request. Serving the twin costs
+the server nothing.
 
 nginx needs \`gzip_static\` (built in with
 \`--with-http_gzip_static_module\`) and, for the smaller half of the win,
