@@ -445,6 +445,16 @@ const EXTERNAL_FUNCTION_RESERVED_NAMES = new Set([...BRIDGE_VARS, 'db', 'localSt
 /** Prefix for the functions generated from `$:` declarations. */
 const COMPUTED_PREFIX = '__softnComputed_';
 
+/**
+ * Cross-check every "unchanged" digest against a full value comparison.
+ *
+ * Set `globalThis.__SOFTN_FP_AUDIT__ = true` before a bundle loads. Costs
+ * exactly what the digests save, so it is for verifying them, not for use.
+ */
+function FINGERPRINT_AUDIT(): boolean {
+  return (globalThis as unknown as Record<string, unknown>).__SOFTN_FP_AUDIT__ === true;
+}
+
 /** A name safe to paste into generated source as an identifier. */
 const VALID_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
 
@@ -637,6 +647,8 @@ export class SoftNScriptRuntime {
   private stateVarNames: string[] = [];
   /** Cached slot indices for state variables (parallel to stateVarNames) */
   private stateVarIndices: number[] = [];
+  /** Digests from the last read, parallel to stateVarIndices. */
+  private stateVarFingerprints: Float64Array | null = null;
   /** Identifiers the document can resolve; null means "assume all of them". */
   private observedStateNames: ReadonlySet<string> | null = null;
   /** State variables held back from syncing, for diagnostics only. */
@@ -1426,36 +1438,69 @@ export class SoftNScriptRuntime {
    * Uses VM-side dirty tracking to only deepEqual globals that were actually
    * written during execution, eliminating O(N) deepEqual scans on unchanged state.
    */
+  /** Digests for the synced globals, or null if this engine has none. */
+  private readFingerprints(): Float64Array | null {
+    const engine = this.vmEngine as unknown as {
+      getGlobalsFingerprint?: (indices: number[]) => Float64Array | null;
+    };
+    if (typeof engine.getGlobalsFingerprint !== 'function') return null;
+    try {
+      const out = engine.getGlobalsFingerprint(this.stateVarIndices);
+      return out && out.length === this.stateVarIndices.length ? out : null;
+    } catch {
+      // A digest is an optimisation. Losing it must never lose an update.
+      return null;
+    }
+  }
+
   private syncVMStateToReact(): void {
     if (!this.symbolMap || !this.vmEngine) return;
 
-    // Use VM dirty tracking if available (WASM engine only).
-    // Only fetch and compare values for globals the VM actually wrote to.
-    const hasDirtyTracking =
-      typeof (this.vmEngine as unknown as Record<string, unknown>).getDirtyGlobals === 'function';
-    let indicesToCheck: number[];
-    let namesToCheck: string[];
+    // Ask the engine which globals moved before reading any of them.
+    //
+    // Reading a global rebuilds its whole value as JS, so the cost is set by
+    // what the globals HOLD. A digest walks the same graph inside the VM and
+    // allocates nothing, which is why it is worth one extra boundary crossing
+    // to avoid the copies: a 51 KB scene description that has not moved costs
+    // microseconds to fingerprint and milliseconds to read.
+    //
+    // Any doubt reads. A missing digest, a length mismatch, a first call with
+    // nothing to compare against, or a NaN cell (the engine reporting "I could
+    // not walk this") all fall through to reading everything, which is exactly
+    // what this method did before the digests existed.
+    let indicesToCheck: number[] = this.stateVarIndices;
+    let namesToCheck: string[] = this.stateVarNames;
+    let nextFingerprints: Float64Array | null = null;
 
-    if (hasDirtyTracking) {
-      const dirtyIndices = (
-        this.vmEngine as unknown as { getDirtyGlobals(indices: number[]): number[] }
-      ).getDirtyGlobals(this.stateVarIndices);
-      if (dirtyIndices.length === 0) {
-        (this.vmEngine as unknown as { clearDirty(): void }).clearDirty();
-        return;
-      }
-      // Build parallel arrays of only the dirty indices/names
-      const dirtySet = new Set(dirtyIndices);
-      indicesToCheck = [];
-      namesToCheck = [];
-      for (let i = 0; i < this.stateVarIndices.length; i++) {
-        if (dirtySet.has(this.stateVarIndices[i])) {
-          indicesToCheck.push(this.stateVarIndices[i]);
-          namesToCheck.push(this.stateVarNames[i]);
+    const fingerprints = this.readFingerprints();
+    if (fingerprints) {
+      nextFingerprints = fingerprints;
+      const previous = this.stateVarFingerprints;
+      if (previous && previous.length === fingerprints.length) {
+        indicesToCheck = [];
+        namesToCheck = [];
+        for (let i = 0; i < fingerprints.length; i++) {
+          // NaN never equals itself, so an "unknown" digest reads. That is the
+          // behaviour we want and the reason this is not written as !==.
+          if (fingerprints[i] !== previous[i]) {
+            indicesToCheck.push(this.stateVarIndices[i]);
+            namesToCheck.push(this.stateVarNames[i]);
+          }
+        }
+        if (indicesToCheck.length === 0 && !FINGERPRINT_AUDIT()) {
+          this.stateVarFingerprints = nextFingerprints;
+          return;
         }
       }
-    } else {
-      // Fallback: check all state variables
+    }
+
+    // The audit reads everything anyway and reports any global the digests
+    // called unchanged that the value comparison disagrees with. Off by
+    // default; the whole design rests on those two never disagreeing, so it
+    // exists to be run against real bundles rather than argued about.
+    const auditing = FINGERPRINT_AUDIT() && nextFingerprints !== null;
+    const skipped = auditing ? new Set(indicesToCheck) : null;
+    if (auditing) {
       indicesToCheck = this.stateVarIndices;
       namesToCheck = this.stateVarNames;
     }
@@ -1472,9 +1517,18 @@ export class SoftNScriptRuntime {
       }
     }
 
-    if (hasDirtyTracking) {
-      (this.vmEngine as unknown as { clearDirty(): void }).clearDirty();
+    if (auditing && skipped) {
+      for (let i = 0; i < namesToCheck.length; i++) {
+        const name = namesToCheck[i];
+        const wasSkipped = !skipped.has(this.stateVarIndices[i]);
+        if (wasSkipped && name in changes) {
+          console.error(
+            '[SoftN] FINGERPRINT MISS: ' + name + ' was reported unchanged but its value moved'
+          );
+        }
+      }
     }
+    if (nextFingerprints) this.stateVarFingerprints = nextFingerprints;
 
     const changedKeys = Object.keys(changes);
     this._perfChangedVars += changedKeys.length;

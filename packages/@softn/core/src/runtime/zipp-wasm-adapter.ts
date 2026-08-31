@@ -502,6 +502,20 @@ export class ZippWasmAdapter {
   }
 
   /**
+   * Digests of `indices`, or null when the engine cannot produce them.
+   *
+   * Equal digests across two calls mean {@link getGlobalsBatch} would return
+   * equal values, so the caller can skip reading those slots. `NaN` is the
+   * engine saying "unknown" and never compares equal, so it reads.
+   */
+  getGlobalsFingerprint(indices: number[]): Float64Array | null {
+    const wasm = this.wasm as unknown as Record<string, unknown>;
+    const fn = wasm.getGlobalsFingerprint;
+    if (typeof fn !== 'function') return null;
+    return (fn as (i: number[]) => Float64Array).call(this.wasm, indices);
+  }
+
+  /**
    * Which of `indices` changed since the last {@link clearDirty}.
    *
    * zipp keeps no per-slot dirty bits, so this answers conservatively — every

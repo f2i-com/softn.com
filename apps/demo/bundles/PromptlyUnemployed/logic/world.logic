@@ -361,8 +361,12 @@ function actorObjs() {
   return out
 }
 
+// `objects` carries only what moves. The scenery goes to Scene3D through
+// staticObjects, because concatenating it here made every tick rebuild the
+// whole room to walk a character across it: 51 KB of scenery through the
+// host boundary, ~28 times a second, to move about 8 KB of actors.
 function composeScene() {
-  let out = sceneStatic.concat(actorObjs())
+  let out = actorObjs()
   // Confetti belongs to the meeting alone; it used to follow the player out.
   if (scene === "meeting" && (confettiOn || confetti.length > 0)) { out = out.concat(confettiObjs()) }
   objects = out
@@ -490,7 +494,8 @@ function buildTitle() {
       radius: 0.016, color: "#fde68a", emissive: "#fde68a", emissiveIntensity: 1.2,
       animate: { floatAmplitude: 0.14, floatSpeed: 0.3 + (i % 4) * 0.16 } })
   }
-  objects = objs
+  sceneStatic = objs
+  objects = []
   lights = [
     { id: "amb", type: "ambient", color: "#8ea0c4", intensity: 0.5 },
     { id: "lamp", type: "point", color: "#fbbf6b", intensity: 3.2, position: { x: 0.95, y: 1.5, z: -0.32 } },
@@ -1046,7 +1051,7 @@ function buildBoxes() {
   hotspots = hs
   objs = objs.concat(hotspotMarkers())
   sceneStatic = objs
-  objects = sceneStatic.concat(actorObjs())
+  objects = actorObjs()
 }
 
 // ---- Office ---------------------------------------------------------------
@@ -1216,7 +1221,7 @@ function buildOffice() {
     actorAt("col2", "", 14, 16, 1.57, "#5b5470", "#8a5a3a", { hair: "#22262e", path: [[20, 16], [14, 16]], sp: 0.026 }),
     actorAt("guard", "Guard", 26.4, 15.2, -1.5, "#2b3550", "#8a5a3a", { hair: "#1b2130", cap: "#1b2130" })
   ])
-  objects = sceneStatic.concat(actorObjs())
+  objects = actorObjs()
 }
 
 // ---- Meeting --------------------------------------------------------------
@@ -1310,7 +1315,7 @@ function buildMeeting() {
   cast.push(actorAt("mcol4", "", 4.2, 4.6, Math.atan2(6 - 4.2, 6.6 - 4.6), "#4f6180", "#8a5a3a", { hair: "#2b2b33", sit: true }))
   cast.push(actorAt("clive", "Clive", 2.6, 1.6, Math.atan2(6 - 2.6, 6.6 - 1.6), "#94a3b8", "#d4b394", { hair: "#3f3f46" }))
   ensureActors("meeting", cast)
-  objects = sceneStatic.concat(actorObjs())
+  objects = actorObjs()
   if (!cutActive) {
     cameraPos = { x: 6, y: 1.6, z: 6.6 }
     cameraLookAt = { x: 6, y: 1.6, z: 0 }
@@ -1532,7 +1537,7 @@ function buildFlat() {
     cast.push(actorAt("priya", "Priya", 6, 12.6, Math.PI, "#7c3aed", "#8a5a3a", { hair: "#1f2937" }))
   }
   ensureActors(priyaHere ? "flat-priya" : "flat", cast)
-  objects = sceneStatic.concat(actorObjs())
+  objects = actorObjs()
 }
 
 function flatAmbient() {
@@ -1708,7 +1713,7 @@ function buildBakery() {
     }
   }
   ensureActors(bakeryDay ? "bakeryday" : "bakery", cast)
-  objects = sceneStatic.concat(actorObjs())
+  objects = actorObjs()
 }
 
 // ---- The Infinite Stand-up ------------------------------------------------
