@@ -49,6 +49,27 @@ export class Engine {
      */
     getGlobalsBatch(indices: any): any;
     /**
+     * Fingerprint many globals in one boundary crossing.
+     *
+     * One number per index: equal numbers mean `getGlobalsBatch` would
+     * return an equal value, so a host can skip reading the ones that have not
+     * moved. `NaN` means "unknown, read it", which is what a value too large
+     * to walk reports — the fallback is always the old always-read behaviour.
+     *
+     * Digests are 53-bit so they land exactly in a JS number. At that width a
+     * collision across a UI's worth of state is not a practical concern, and the
+     * cost of one would be a skipped update, not corruption.
+     *
+     * Built with the same Array and from_f64 that getGlobalsBatch uses, rather
+     * than the Float64Array this obviously wants to be. A typed array pulls in
+     * `__wbg_new_with_length` and `__wbg_set_index`, and the host import surface
+     * is audited: check-wasm-memory.cjs pins the exact set of functions this
+     * module may call out to. Widening that list to save an allocation on a
+     * path that runs once per frame is a bad trade — the point of pinning it is
+     * that it only moves deliberately.
+     */
+    getGlobalsFingerprint(indices: any): any;
+    /**
      * Compile `source` behind the preamble, run its top level, and return the
      * symbol map as `{ name: { index, scope } }`.
      *
@@ -135,6 +156,7 @@ export interface InitOutput {
     readonly engine_getEventListenerTypes: (a: number) => [number, number, number];
     readonly engine_getGlobalByIndex: (a: number, b: number) => [number, number, number];
     readonly engine_getGlobalsBatch: (a: number, b: any) => [number, number, number];
+    readonly engine_getGlobalsFingerprint: (a: number, b: any) => [number, number, number];
     readonly engine_initScript: (a: number, b: number, c: number) => [number, number, number];
     readonly engine_new: () => number;
     readonly engine_preambleLines: (a: number) => number;
