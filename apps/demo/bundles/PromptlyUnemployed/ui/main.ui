@@ -130,6 +130,7 @@
         width={sceneW()}
         height={520}
         objects={objects}
+        staticObjects={sceneStatic}
         lights={lights}
         camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 58 }}
         antialias={true}
@@ -205,6 +206,7 @@
         width={sceneW()}
         height={sceneH()}
         objects={objects}
+        staticObjects={sceneStatic}
         lights={lights}
         camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 75 }}
         antialias={true}

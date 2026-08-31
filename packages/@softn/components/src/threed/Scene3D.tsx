@@ -139,6 +139,16 @@ export interface Scene3DProps {
   width?: number;
   height?: number;
   objects?: Scene3DObject[];
+  /**
+   * Scenery that does not change between frames, kept apart from `objects`.
+   *
+   * The two are concatenated here, so this is purely about what crosses into
+   * the component each frame. A scene's static geometry is usually most of
+   * its bytes and almost none of its motion; passing it through `objects`
+   * means a host that mirrors state rebuilds all of it every tick to move a
+   * few characters. Passed here it is rebuilt only when it actually changes.
+   */
+  staticObjects?: Scene3DObject[];
   lights?: Scene3DLight[];
   camera?: {
     position?: { x: number; y: number; z: number };
@@ -529,6 +539,7 @@ export function Scene3D({
   width = 800,
   height = 600,
   objects = [],
+  staticObjects,
   lights = [],
   camera: cameraProp,
   background = '#1a1a2e',
@@ -548,15 +559,19 @@ export function Scene3D({
   style,
   className,
 }: Scene3DProps) {
-  const safeObjects = useMemo<Scene3DObject[]>(
-    () =>
-      Array.isArray(objects)
-        ? objects.filter(
+  const safeObjects = useMemo<Scene3DObject[]>(() => {
+    const usable = (arr: Scene3DObject[] | undefined) =>
+      Array.isArray(arr)
+        ? arr.filter(
             (obj): obj is Scene3DObject => !!obj && typeof obj.id === 'string' && obj.id.length > 0
           )
-        : [],
-    [objects]
-  );
+        : [];
+    const dynamic = usable(objects);
+    const fixed = usable(staticObjects);
+    // Statics first, so ids stay in the order the scene declared them and a
+    // dynamic object with a clashing id still wins the later reconcile pass.
+    return fixed.length === 0 ? dynamic : fixed.concat(dynamic);
+  }, [objects, staticObjects]);
   const safeLights = useMemo<Scene3DLight[]>(
     () =>
       Array.isArray(lights)
