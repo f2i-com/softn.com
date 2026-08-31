@@ -120,6 +120,35 @@ export class Engine {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Fingerprint many globals in one boundary crossing.
+     *
+     * One number per index: equal numbers mean `getGlobalsBatch` would
+     * return an equal value, so a host can skip reading the ones that have not
+     * moved. `NaN` means "unknown, read it", which is what a value too large
+     * to walk reports — the fallback is always the old always-read behaviour.
+     *
+     * Digests are 53-bit so they land exactly in a JS number. At that width a
+     * collision across a UI's worth of state is not a practical concern, and the
+     * cost of one would be a skipped update, not corruption.
+     *
+     * Built with the same Array and from_f64 that getGlobalsBatch uses, rather
+     * than the Float64Array this obviously wants to be. A typed array pulls in
+     * `__wbg_new_with_length` and `__wbg_set_index`, and the host import surface
+     * is audited: check-wasm-memory.cjs pins the exact set of functions this
+     * module may call out to. Widening that list to save an allocation on a
+     * path that runs once per frame is a bad trade — the point of pinning it is
+     * that it only moves deliberately.
+     * @param {any} indices
+     * @returns {any}
+     */
+    getGlobalsFingerprint(indices) {
+        const ret = wasm.engine_getGlobalsFingerprint(this.__wbg_ptr, indices);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Compile `source` behind the preamble, run its top level, and return the
      * symbol map as `{ name: { index, scope } }`.
      *
@@ -366,11 +395,11 @@ function __wbg_get_imports() {
             const ret = arg0.has(arg1);
             return ret;
         },
-        __wbg_isArray_30ceade29354ef27: function() { return handleError(function (arg0) {
+        __wbg_isArray_f9b1718114b1ad6b: function() { return handleError(function (arg0) {
             const ret = Array.isArray(arg0);
             return ret;
         }, arguments); },
-        __wbg_keys_86c3f631085a1391: function() { return handleError(function (arg0) {
+        __wbg_keys_2fb79c98af6aefb5: function() { return handleError(function (arg0) {
             const ret = Object.keys(arg0);
             return ret;
         }, arguments); },

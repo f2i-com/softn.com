@@ -10,6 +10,7 @@ export const engine_evalInContext: (a: number, b: number, c: number) => [number,
 export const engine_getEventListenerTypes: (a: number) => [number, number, number];
 export const engine_getGlobalByIndex: (a: number, b: number) => [number, number, number];
 export const engine_getGlobalsBatch: (a: number, b: any) => [number, number, number];
+export const engine_getGlobalsFingerprint: (a: number, b: any) => [number, number, number];
 export const engine_initScript: (a: number, b: number, c: number) => [number, number, number];
 export const engine_new: () => number;
 export const engine_preambleLines: (a: number) => number;
