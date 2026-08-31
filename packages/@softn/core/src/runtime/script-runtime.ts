@@ -648,7 +648,7 @@ export class SoftNScriptRuntime {
   /** Cached slot indices for state variables (parallel to stateVarNames) */
   private stateVarIndices: number[] = [];
   /** Digests from the last read, parallel to stateVarIndices. */
-  private stateVarFingerprints: Float64Array | null = null;
+  private stateVarFingerprints: number[] | null = null;
   /** Identifiers the document can resolve; null means "assume all of them". */
   private observedStateNames: ReadonlySet<string> | null = null;
   /** State variables held back from syncing, for diagnostics only. */
@@ -1439,9 +1439,9 @@ export class SoftNScriptRuntime {
    * written during execution, eliminating O(N) deepEqual scans on unchanged state.
    */
   /** Digests for the synced globals, or null if this engine has none. */
-  private readFingerprints(): Float64Array | null {
+  private readFingerprints(): number[] | null {
     const engine = this.vmEngine as unknown as {
-      getGlobalsFingerprint?: (indices: number[]) => Float64Array | null;
+      getGlobalsFingerprint?: (indices: number[]) => number[] | null;
     };
     if (typeof engine.getGlobalsFingerprint !== 'function') return null;
     try {
@@ -1470,7 +1470,7 @@ export class SoftNScriptRuntime {
     // what this method did before the digests existed.
     let indicesToCheck: number[] = this.stateVarIndices;
     let namesToCheck: string[] = this.stateVarNames;
-    let nextFingerprints: Float64Array | null = null;
+    let nextFingerprints: number[] | null = null;
 
     const fingerprints = this.readFingerprints();
     if (fingerprints) {
