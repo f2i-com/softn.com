@@ -1302,7 +1302,14 @@ export function evaluateExpression(
         return context.data[expr.name];
       }
       if (expr.name in context.computed) {
-        return context.computed[expr.name];
+        // A computed is stored as a thunk — `() => callComputed(name)` — because
+        // its value has to be re-derived whenever the state it reads moves.
+        // Returning the thunk handed the template the function instead of the
+        // value, so `#each (todo in filteredTodos)` iterated a function and
+        // rendered its source into the page:
+        //   (...r)=>{let i={...t,state:{...t.state}};if(e.para
+        const value = context.computed[expr.name];
+        return typeof value === 'function' ? (value as () => unknown)() : value;
       }
       if (expr.name in context.props) {
         return context.props[expr.name];

@@ -130,3 +130,62 @@ describe('handler props', () => {
     expect(calls).toBe(0);
   });
 });
+
+describe('computed values in templates', () => {
+  // A `$:` declaration is stored as a thunk, because its value has to be
+  // re-derived whenever the state it reads moves. The lookup returned the thunk
+  // rather than calling it, so a template got the function instead of the value.
+  // Nothing errored — the page just printed the compiled source of the closure:
+  //   (...r)=>{let i={...t,state:{...t.state}};if(e.para
+  it('interpolates the value, not the thunk', () => {
+    const html = render(
+      '<Text>{total}</Text>',
+      context({ computed: { total: () => 42 } as unknown as SoftNRenderContext['computed'] })
+    );
+    expect(html).toContain('42');
+    expect(html).not.toContain('=>');
+  });
+
+  it('iterates what a computed returns', () => {
+    // The shape that showed it: the demo bundle's `#each (todo in filteredTodos)`
+    // rendered the closure's source into the page instead of the list.
+    const html = render(
+      '#each (n in items)\n  <Text>[{n}]</Text>\n#end',
+      context({
+        computed: { items: () => ['a', 'b'] } as unknown as SoftNRenderContext['computed'],
+      })
+    );
+    expect(html).toContain('[a]');
+    expect(html).toContain('[b]');
+    expect(html).not.toContain('=>');
+  });
+
+  it('re-reads the computed rather than caching a first answer', () => {
+    let n = 0;
+    const ctx = context({
+      computed: { tick: () => ++n } as unknown as SoftNRenderContext['computed'],
+    });
+    expect(render('<Text>{tick}</Text>', ctx)).toContain('1');
+    expect(render('<Text>{tick}</Text>', ctx)).toContain('2');
+  });
+
+  it('still passes a plain non-function computed straight through', () => {
+    const html = render(
+      '<Text>{label}</Text>',
+      context({ computed: { label: 'ready' } as unknown as SoftNRenderContext['computed'] })
+    );
+    expect(html).toContain('ready');
+  });
+
+  it('does not shadow state of the same name', () => {
+    // State is consulted first; a computed must not take precedence over it.
+    const html = render(
+      '<Text>{value}</Text>',
+      context({
+        state: { value: 'from-state' },
+        computed: { value: () => 'from-computed' } as unknown as SoftNRenderContext['computed'],
+      })
+    );
+    expect(html).toContain('from-state');
+  });
+});
