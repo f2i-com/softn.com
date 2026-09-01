@@ -271,14 +271,72 @@ export async function createBundle(bundle: SoftNBundleInput): Promise<Uint8Array
 }
 
 /**
- * Create a bundle from a source directory
+ * Create a .softn bundle from a source directory.
+ *
+ * Node only, like {@link readBundleFromFile} beside it, and loaded the same way
+ * — through an indirected dynamic import so a browser bundler never tries to
+ * resolve `fs`.
+ *
+ * This used to throw unconditionally, with a message saying it needed Node or
+ * Tauri. It said that in Node too, which made it a dead end rather than a
+ * direction: the export is in the package's public types, and the bundler CLI's
+ * own help offers `bundle ./demo-bundle ./demo.softn` as the worked example.
+ *
+ * Files are read as bytes and passed through unchanged. Nothing is decoded and
+ * re-encoded on the way in, because a bundle entry has to match the file it
+ * came from byte for byte — the archive is checked against its sources, and a
+ * round trip through a string decides line endings on the reader's behalf.
  */
 export async function createBundleFromDirectory(
-  _options: BundleCreateOptions
+  options: BundleCreateOptions
 ): Promise<Uint8Array> {
-  // This would need file system access - implement based on environment
-  // For now, throw an error indicating it needs to be called from Node/Tauri
-  throw new Error('createBundleFromDirectory requires Node.js or Tauri environment');
+  let fs: typeof import('fs') | undefined;
+  let nodePath: typeof import('path') | undefined;
+  try {
+    // Indirected so the bundler leaves it alone.
+    const fsModuleName = 'fs';
+    const pathModuleName = 'path';
+    fs = await import(/* @vite-ignore */ fsModuleName);
+    nodePath = await import(/* @vite-ignore */ pathModuleName);
+  } catch {
+    // Not Node; reported below.
+  }
+  if (!fs || !nodePath) {
+    throw new Error('createBundleFromDirectory requires a Node.js file system');
+  }
+
+  const { sourceDir, outputPath, exclude = [] } = options;
+  if (!fs.existsSync(sourceDir)) {
+    throw new Error(`Source directory not found: ${sourceDir}`);
+  }
+  const manifestPath = nodePath.join(sourceDir, 'manifest.json');
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`manifest.json not found in ${sourceDir}`);
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as SoftNManifest;
+
+  // POSIX separators: these become ZIP entry names, which are '/' regardless of
+  // the platform that wrote them.
+  const files = new Map<string, string | Uint8Array>();
+  const walk = (dir: string, prefix: string): void => {
+    for (const entry of fs!.readdirSync(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (exclude.includes(rel) || exclude.includes(entry.name)) continue;
+      const full = nodePath!.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, rel);
+      } else if (rel !== 'manifest.json') {
+        // createBundleFromFiles writes the manifest from the parsed object, so
+        // including the file as well would put two of it in the archive.
+        files.set(rel, new Uint8Array(fs!.readFileSync(full)));
+      }
+    }
+  };
+  walk(sourceDir, '');
+
+  const bytes = await createBundleFromFiles(manifest, files);
+  if (outputPath) fs.writeFileSync(outputPath, bytes);
+  return bytes;
 }
 
 // ============================================================================
