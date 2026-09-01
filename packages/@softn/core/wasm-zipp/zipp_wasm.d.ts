@@ -83,6 +83,23 @@ export class Engine {
      */
     pump(): void;
     /**
+     * Restore this engine's instruction budget.
+     *
+     * The budget is a lifetime total, which bounds a runaway script but also
+     * puts a fuse on every long-running embedder: an interactive application
+     * is tens of thousands of small calls, and 50M instructions is minutes of
+     * ordinary use. Call this BEFORE a re-entry and the bound becomes
+     * per-re-entry instead — no single call can run unbounded, which is the
+     * property a browser host actually needs, while the application lives as
+     * long as its host keeps calling it.
+     *
+     * Host-only, and that is the whole design: this is a method on the Engine
+     * binding, unreachable from guest code, so a guest still cannot raise its
+     * own ceiling. Returns false once a budget has actually been spent —
+     * exhaustion stays sticky and a torn-down engine stays torn down.
+     */
+    renewInstructionBudget(): boolean;
+    /**
      * Invoke the callback the script passed to `host.call` for `call_id`.
      */
     resolveHostCallback(call_id: number, result: any): void;
@@ -97,6 +114,17 @@ export class Engine {
      * does not grant any operation; call `setSyncHostCapabilities` separately.
      */
     setDbBridge(bridge: any): void;
+    /**
+     * Key this engine's global fingerprints with host randomness.
+     *
+     * Supply two halves of a 64-bit value from a real random source. The
+     * digest mixer is invertible, so an unkeyed digest can be SOLVED for a
+     * collision — a host skipping reads on matching digests would mirror
+     * stale state while the guest moved on. The key is never exposed to guest
+     * code and never needs to be stable, since digests are only compared with
+     * earlier digests from the same engine.
+     */
+    setFingerprintSeed(lo: number, hi: number): void;
     /**
      * Write the global in `index`. A slot currently holding a function or
      * class is left alone, so a host that reads all globals and writes them
@@ -161,9 +189,11 @@ export interface InitOutput {
     readonly engine_new: () => number;
     readonly engine_preambleLines: (a: number) => number;
     readonly engine_pump: (a: number) => [number, number];
+    readonly engine_renewInstructionBudget: (a: number) => number;
     readonly engine_resolveHostCallback: (a: number, b: number, c: any) => [number, number];
     readonly engine_setClipboardBridge: (a: number, b: any) => [number, number];
     readonly engine_setDbBridge: (a: number, b: any) => [number, number];
+    readonly engine_setFingerprintSeed: (a: number, b: number, c: number) => void;
     readonly engine_setGlobalByIndex: (a: number, b: number, c: any) => [number, number];
     readonly engine_setGlobalsBatch: (a: number, b: any, c: any) => [number, number];
     readonly engine_setLocalStorageBridge: (a: number, b: any) => [number, number];
