@@ -807,9 +807,9 @@ function gbCart_batteryFromBase64(s) {
 
   let data = null
   try {
-    data = Uint8Array.fromBase64(s)
+    data = gbMachine_decodeBase64(s)
   } catch (e) {
-    gbError = "battery save is not valid base64"
+    gbError = "Could not decode the battery save: " + e
     return false
   }
 
