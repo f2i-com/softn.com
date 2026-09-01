@@ -190,6 +190,27 @@ export class Engine {
         }
     }
     /**
+     * Restore this engine's instruction budget.
+     *
+     * The budget is a lifetime total, which bounds a runaway script but also
+     * puts a fuse on every long-running embedder: an interactive application
+     * is tens of thousands of small calls, and 50M instructions is minutes of
+     * ordinary use. Call this BEFORE a re-entry and the bound becomes
+     * per-re-entry instead — no single call can run unbounded, which is the
+     * property a browser host actually needs, while the application lives as
+     * long as its host keeps calling it.
+     *
+     * Host-only, and that is the whole design: this is a method on the Engine
+     * binding, unreachable from guest code, so a guest still cannot raise its
+     * own ceiling. Returns false once a budget has actually been spent —
+     * exhaustion stays sticky and a torn-down engine stays torn down.
+     * @returns {boolean}
+     */
+    renewInstructionBudget() {
+        const ret = wasm.engine_renewInstructionBudget(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Invoke the callback the script passed to `host.call` for `call_id`.
      * @param {number} call_id
      * @param {any} result
@@ -222,6 +243,21 @@ export class Engine {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * Key this engine's global fingerprints with host randomness.
+     *
+     * Supply two halves of a 64-bit value from a real random source. The
+     * digest mixer is invertible, so an unkeyed digest can be SOLVED for a
+     * collision — a host skipping reads on matching digests would mirror
+     * stale state while the guest moved on. The key is never exposed to guest
+     * code and never needs to be stable, since digests are only compared with
+     * earlier digests from the same engine.
+     * @param {number} lo
+     * @param {number} hi
+     */
+    setFingerprintSeed(lo, hi) {
+        wasm.engine_setFingerprintSeed(this.__wbg_ptr, lo, hi);
     }
     /**
      * Write the global in `index`. A slot currently holding a function or
@@ -395,11 +431,11 @@ function __wbg_get_imports() {
             const ret = arg0.has(arg1);
             return ret;
         },
-        __wbg_isArray_37788a788bd518ec: function() { return handleError(function (arg0) {
+        __wbg_isArray_e9db575c69fd953b: function() { return handleError(function (arg0) {
             const ret = Array.isArray(arg0);
             return ret;
         }, arguments); },
-        __wbg_keys_50767f8b259e878d: function() { return handleError(function (arg0) {
+        __wbg_keys_79777aaac5749f83: function() { return handleError(function (arg0) {
             const ret = Object.keys(arg0);
             return ret;
         }, arguments); },

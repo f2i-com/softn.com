@@ -1,8 +1,8 @@
 {
   "repository": "https://github.com/f2i-com/zipp.org",
-  "release": "v0.0.7",
-  "revision": "d69c7b7ba28eb93926f21eaf7b754d6f7b0d29d5",
+  "release": "v0.0.8",
+  "revision": "32680f067dd87e8941e52eb34aa175803a48064a",
   "license": "Apache-2.0",
   "artifact": "zipp_wasm_bg.wasm",
-  "sha256": "8115ac8349ed68c828640b886b0bca49bea66ac8db445e545634db77862230a4"
+  "sha256": "d6f2402497c25748c2b8b490c2284f7a114bce84fb26ba766a9687d0c193bff3"
 }

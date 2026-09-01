@@ -140,7 +140,37 @@ export class ZippWasmAdapter {
   /** Create a new adapter instance. Must be awaited. */
   static async create(): Promise<ZippWasmAdapter> {
     await ensureWasm();
-    return new ZippWasmAdapter(new Engine());
+    const engine = new Engine();
+
+    // Key the global fingerprints before anything can be digested.
+    //
+    // The engine's digest mixer is a chain of bijections, so an unkeyed digest
+    // can be inverted and SOLVED for a collision — two different values with the
+    // same digest, constructed rather than stumbled upon. syncVMStateToReact
+    // skips reading globals whose digest has not moved, so a bundle that did
+    // that would leave the host mirroring state the VM had already changed, and
+    // could show one number while acting on another.
+    //
+    // The key never leaves this side and never needs to be stable: digests are
+    // only ever compared against earlier digests from the same engine.
+    const seedEngine = engine as unknown as {
+      setFingerprintSeed?: (lo: number, hi: number) => void;
+    };
+    if (typeof seedEngine.setFingerprintSeed === 'function') {
+      const seed = new Uint32Array(2);
+      const c = (globalThis as { crypto?: Crypto }).crypto;
+      if (c && typeof c.getRandomValues === 'function') {
+        c.getRandomValues(seed);
+      } else {
+        // No CSPRNG here. Still better than a constant every bundle knows,
+        // and the engine keeps working either way.
+        seed[0] = (Math.random() * 0x1_0000_0000) >>> 0;
+        seed[1] = (Math.random() * 0x1_0000_0000) >>> 0;
+      }
+      seedEngine.setFingerprintSeed(seed[0], seed[1]);
+    }
+
+    return new ZippWasmAdapter(engine);
   }
 
   /**
@@ -441,7 +471,36 @@ export class ZippWasmAdapter {
    * Call a named top-level function. The engine drains microtasks before
    * returning, so promise callbacks the call scheduled have already run.
    */
+  /**
+   * Restore the engine's instruction budget before re-entering it.
+   *
+   * The budget is a LIFETIME total — about 50 million instructions for the
+   * life of an Engine, regardless of how the work is divided. That bounds a
+   * runaway script, and it also puts a fuse on every long-running application:
+   * Pocket's emulator spent it within seconds of a cartridge starting and the
+   * engine was disposed mid-frame, after which every call answered "engine is
+   * disposed" without saying why.
+   *
+   * Renewing HERE, before the call and never after, makes the bound
+   * per-re-entry: a single call still cannot run unbounded — which is the
+   * property that matters in a browser, since that is what would wedge the tab
+   * — while an application runs as long as the host keeps driving it. The host
+   * decides the cadence, the guest cannot reach this, and an engine that has
+   * already spent a budget stays spent.
+   */
+  private renewBudget(): void {
+    const engine = this.wasm as unknown as { renewInstructionBudget?: () => boolean };
+    if (typeof engine.renewInstructionBudget === 'function') {
+      try {
+        engine.renewInstructionBudget();
+      } catch {
+        // An engine too far gone to renew is about to report that itself.
+      }
+    }
+  }
+
   callFunction(name: string, args: unknown[]): unknown {
+    this.renewBudget();
     try {
       return this.wasm.callFunction(name, sanitizeArgs(args));
     } finally {
@@ -494,6 +553,7 @@ export class ZippWasmAdapter {
 
   /** Deliver an event to every VM listener for `eventType`; returns how many ran. */
   dispatchEvent(eventType: string, eventObj: Record<string, unknown>): number {
+    this.renewBudget();
     try {
       return this.wasm.dispatchEvent(eventType, eventObj);
     } finally {
