@@ -756,7 +756,31 @@ function renderElement(
   const callbackContext = createCallbackContext(context);
 
   // Static and dynamic props
+  // `class:active={cond}` adds "active" to the class list when the condition
+  // holds, and contributes nothing when it does not. Collected here and merged
+  // after the loop so it composes with a plain `class="card"` instead of
+  // fighting it for the same prop slot.
+  const classToggles: string[] = [];
+
   for (const prop of node.props) {
+    if (prop.name.startsWith('class:')) {
+      const cssClass = prop.name.slice('class:'.length);
+      let on: unknown;
+      if (prop.value.type === 'expression') {
+        try {
+          on = evaluateExpression(prop.value.value, context);
+        } catch (error) {
+          if (isDevelopment) {
+            console.warn(`Error evaluating class:${cssClass} on <${node.tag}>:`, error);
+          }
+          on = false;
+        }
+      } else {
+        on = prop.value.value;
+      }
+      if (on) classToggles.push(cssClass);
+      continue;
+    }
     if (prop.value.type === 'static' || prop.value.type === 'number' || prop.value.type === 'boolean') {
       props[prop.name] = prop.value.value;
     } else {
@@ -786,6 +810,14 @@ function renderElement(
         props[prop.name] = undefined;
       }
     }
+  }
+
+  if (classToggles.length > 0) {
+    // `class` and `className` are both accepted on the way in; whichever the
+    // author used is the one written back, so nothing else has to change.
+    const key = typeof props.className === 'string' ? 'className' : 'class';
+    const base = typeof props[key] === 'string' ? (props[key] as string) : '';
+    props[key] = [base, ...classToggles].filter(Boolean).join(' ');
   }
 
   // Bindings

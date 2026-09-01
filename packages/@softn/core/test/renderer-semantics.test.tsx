@@ -234,3 +234,54 @@ describe('a throwing expression in a structural position', () => {
     expect(render('<Text if={items}>SHOWN</Text>', good)).toContain('SHOWN');
   });
 });
+
+describe('class:name={cond}', () => {
+  // Documented in softn-studio's language reference, and its generator emits it:
+  //   <div class="box" class:highlighted={selected} class:disabled={!enabled} />
+  // It was not implemented anywhere, and it did not merely do nothing. The
+  // element loop read `class` as an attribute and `:active` as a binding, so the
+  // element got a SECOND `class` prop worth boolean true, which overwrote the
+  // real one:  <div class="card" class:active={on}>x</div>  ->  <div>x</div>
+  it('adds the class when the condition holds', () => {
+    const html = render('<div class="card" class:active={on}>x</div>', context({ state: { on: true } }));
+    expect(html).toContain('class="card active"');
+  });
+
+  it('keeps the base class when it does not', () => {
+    const html = render('<div class="card" class:active={on}>x</div>', context({ state: { on: false } }));
+    expect(html).toContain('class="card"');
+    expect(html).not.toContain('active');
+  });
+
+  it('works with no base class', () => {
+    expect(render('<div class:active={on}>x</div>', context({ state: { on: true } })))
+      .toContain('class="active"');
+  });
+
+  it('applies only the toggles that are true', () => {
+    const html = render(
+      '<div class="box" class:hi={a} class:lo={b}>x</div>',
+      context({ state: { a: true, b: false } })
+    );
+    expect(html).toContain('class="box hi"');
+    expect(html).not.toContain('lo');
+  });
+
+  it('takes a negated condition', () => {
+    expect(render('<div class="box" class:off={!ok}>x</div>', context({ state: { ok: false } })))
+      .toContain('class="box off"');
+  });
+
+  it('never emits the toggle as an attribute of its own', () => {
+    // The old shape put a stray boolean prop on the element.
+    const html = render('<div class="card" class:active={on}>x</div>', context({ state: { on: true } }));
+    expect(html).not.toContain('active="');
+    expect(html).not.toContain('class:');
+  });
+
+  it('leaves a space-separated binding alone', () => {
+    // `<div class :bind={x}>` has always meant an attribute and a binding, and
+    // still does — the colon has to touch the name to namespace it.
+    expect(() => render('<div class :bind={x}>y</div>', context({ state: { x: 1 } }))).not.toThrow();
+  });
+});
