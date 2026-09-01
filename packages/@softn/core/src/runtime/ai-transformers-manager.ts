@@ -271,19 +271,47 @@ export class TransformersManager {
     console.log(`[SoftN AI] Loading model: ${modelId} (class=${options?.modelClass || 'auto'}, device=${device})`);
 
     // Resolve model class
-    let model: TFModel;
     const className = options?.modelClass;
-    if (className && tf[className]) {
-      // Use named class (e.g. Qwen3_5ForConditionalGeneration)
-      const cls = tf[className] as { from_pretrained(id: string, opts?: Record<string, unknown>): Promise<TFModel> };
-      model = await cls.from_pretrained(modelId, modelOpts);
-    } else {
+    const build = async (on: string): Promise<TFModel> => {
+      const opts = { ...modelOpts, device: on };
+      if (className && tf[className]) {
+        // Use named class (e.g. Qwen3_5ForConditionalGeneration)
+        const cls = tf[className] as {
+          from_pretrained(id: string, opts?: Record<string, unknown>): Promise<TFModel>;
+        };
+        return cls.from_pretrained(modelId, opts);
+      }
       // Auto-detect: try AutoModelForImageTextToText first, fall back to AutoModelForCausalLM
       try {
-        model = await tf.AutoModelForCausalLM.from_pretrained(modelId, modelOpts);
+        return await tf.AutoModelForCausalLM.from_pretrained(modelId, opts);
       } catch {
-        model = await tf.AutoModelForImageTextToText.from_pretrained(modelId, modelOpts);
+        return await tf.AutoModelForImageTextToText.from_pretrained(modelId, opts);
       }
+    };
+
+    // WebGPU implements a narrower set of operators than the CPU provider, and
+    // a model only finds out at session creation. Qwen3.5-0.8B quantised to q4
+    // puts a GatherBlockQuantized node in its embedding table; on WebGPU that
+    // is "Could not find an implementation", while the same file loads on the
+    // CPU provider in about 600ms. Nothing in the model id or the options says
+    // which operators a build uses, so this cannot be decided up front — only
+    // attempted.
+    //
+    // Only when WE picked the device. An explicit device is a request to be
+    // held to, not a preference: a caller measuring WebGPU should see it fail
+    // rather than silently get CPU numbers.
+    let model: TFModel;
+    try {
+      model = await build(device);
+    } catch (err) {
+      const chosenByUs = !options?.device || options.device === 'auto';
+      if (device !== 'webgpu' || !chosenByUs) throw err;
+      console.warn(
+        `[SoftN AI] ${modelId} could not load on WebGPU, retrying on the CPU provider. ` +
+          `Original error: ${err instanceof Error ? err.message : String(err)}`
+      );
+      model = await build('wasm');
+      console.log(`[SoftN AI] Loaded ${modelId} on wasm after the WebGPU attempt failed`);
     }
 
     // Load processor (handles chat template + tokenization for VLMs)
