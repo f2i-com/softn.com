@@ -72,6 +72,38 @@ jobs:
             exit 1
           fi
 
+      # tauri-action takes the version it stamps on every artifact from
+      # tauri.conf.json, NOT from the tag. A tag that disagrees with the
+      # manifests therefore does not fail — it quietly publishes artifacts named
+      # after the manifest. v1.1.0 shipped that way: every asset was called
+      # SoftN-0.1.0-* and collided with the identically named ones already
+      # attached to v1.0.0. Nothing reported a problem, because from the
+      # workflow's point of view nothing had gone wrong.
+      - name: Verify the tag matches every manifest
+        run: |
+          set -euo pipefail
+          expected="${RELEASE_TAG#v}"
+          fail=0
+          check() {
+            local name="$1" actual="$2"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "$name is $actual, but the tag says $expected" >&2
+              fail=1
+            fi
+          }
+          check "package.json" "$(node -p "require('./package.json').version")"
+          for app in softn-loader softn-builder; do
+            check "apps/$app/src-tauri/tauri.conf.json" \
+              "$(node -p "require('./apps/$app/src-tauri/tauri.conf.json').version")"
+            check "apps/$app/package.json" \
+              "$(node -p "require('./apps/$app/package.json').version")"
+          done
+          if [[ "$fail" -ne 0 ]]; then
+            echo "Refusing to publish: the tag and the manifests disagree." >&2
+            exit 1
+          fi
+          echo "tag $RELEASE_TAG matches every manifest"
+
       - name: Checkout pinned xdb.org dependency
         if: matrix.app == 'softn-loader'
         run: bash .github/scripts/checkout-xdb.sh
