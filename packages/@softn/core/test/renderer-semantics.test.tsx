@@ -189,3 +189,48 @@ describe('computed values in templates', () => {
     expect(html).toContain('from-state');
   });
 });
+
+describe('a throwing expression in a structural position', () => {
+  // The same bad data should not be survivable in one place and fatal in
+  // another. `{JSON.parse(raw).n}` in a text node is caught and shown inline; in
+  // a condition or an iterable it escaped the error boundary and replaced the
+  // whole app. Commit 8e9366b set out to fix all four and reached one (#if),
+  // and said in its message that it had done all four — so nobody looked again.
+  const BAD = 'JSON.parse(raw).n';
+  const ctx = () => context({ state: { raw: 'not json' } });
+
+  it('does not escape from #if', () => {
+    expect(() => render(`#if (${BAD})\n  <Text>yes</Text>\n#end`, ctx())).not.toThrow();
+  });
+
+  it('does not escape from #each', () => {
+    expect(() => render(`#each (x in ${BAD})\n  <Text>{x}</Text>\n#end`, ctx())).not.toThrow();
+  });
+
+  it('does not escape from an inline if=', () => {
+    expect(() => render(`<Text if={${BAD}}>hi</Text>`, ctx())).not.toThrow();
+  });
+
+  it('does not escape from an inline each=', () => {
+    expect(() => render(`<Text each={${BAD}} as="x">{x}</Text>`, ctx())).not.toThrow();
+  });
+
+  it('treats an unanswerable condition as false, not true', () => {
+    const html = render(`<Text if={${BAD}}>SHOULD-NOT-SHOW</Text>`, ctx());
+    expect(html).not.toContain('SHOULD-NOT-SHOW');
+  });
+
+  it('treats an unevaluatable iterable as empty, so #empty renders', () => {
+    const html = render(
+      `#each (x in ${BAD})\n  <Text>{x}</Text>\n#empty\n  <Text>EMPTY-FALLBACK</Text>\n#end`,
+      ctx()
+    );
+    expect(html).toContain('EMPTY-FALLBACK');
+  });
+
+  it('still renders normally when the expression is fine', () => {
+    const good = context({ state: { raw: '{"n":2}', items: ['a', 'b'] } });
+    expect(render('#each (x in items)\n  <Text>[{x}]</Text>\n#end', good)).toContain('[a]');
+    expect(render('<Text if={items}>SHOWN</Text>', good)).toContain('SHOWN');
+  });
+});
