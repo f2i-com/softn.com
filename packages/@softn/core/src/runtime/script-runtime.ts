@@ -1414,6 +1414,10 @@ export class SoftNScriptRuntime {
       // Full sync: first call or worker pushed new state
       const values = this.stateVarNames.map((name) => this.context.state[name]);
       this.vmEngine.setGlobalsBatch(this.stateVarIndices, values);
+      // The cached digests describe what the host last READ. They are used to
+      // decide whether React still matches the VM, so they stop being an answer
+      // to that question the moment anything moves React's copy on its own.
+      this.stateVarFingerprints = null;
     } else {
       // Granular sync: only push keys that actually changed
       const indices: number[] = [];
@@ -1427,6 +1431,7 @@ export class SoftNScriptRuntime {
       }
       if (indices.length > 0) {
         this.vmEngine.setGlobalsBatch(indices, values);
+        this.forgetFingerprintsFor(dirty);
       }
     }
     this.dirtyStateKeys = new Set();
@@ -1438,6 +1443,35 @@ export class SoftNScriptRuntime {
    * Uses VM-side dirty tracking to only deepEqual globals that were actually
    * written during execution, eliminating O(N) deepEqual scans on unchanged state.
    */
+  /**
+   * Drop the cached digests for `names`, so the next sync reads them.
+   *
+   * A digest answers "has the VM changed since I last looked?", but the skip it
+   * feeds needs "does React's copy still match the VM?". Those are the same
+   * question only while nothing moves React's copy except the read itself.
+   *
+   * When something else does move it, the two come apart permanently rather
+   * than for a frame. Pocket showed it: the files permission is requested at
+   * first use, so the first cartridge fails, and granting it rebuilds the VM
+   * while React keeps the old instance's state. gbError then took a round trip
+   * — "" in the fresh VM, the stale failure pushed back in, "" again once the
+   * retry succeeded — and landed on the digest it started from. The VM was
+   * right, React was wrong, the digests agreed with each other, and nothing
+   * ever read the global again: a loaded, running Game Boy under the words
+   * "Could not read that file."
+   *
+   * NaN rather than deletion: the compare is `!==`, which NaN always satisfies,
+   * so an unknown digest reads and the array stays parallel to the name list.
+   */
+  private forgetFingerprintsFor(names: Iterable<string>): void {
+    const fps = this.stateVarFingerprints;
+    if (!fps) return;
+    for (const name of names) {
+      const i = this.stateVarNames.indexOf(name);
+      if (i >= 0) fps[i] = Number.NaN;
+    }
+  }
+
   /** Digests for the synced globals, or null if this engine has none. */
   private readFingerprints(): number[] | null {
     const engine = this.vmEngine as unknown as {
