@@ -958,8 +958,14 @@ export class Parser {
     const loc = this.currentLoc();
     this.nextToken(); // consume @
 
+    // An event name is a name, not an expression, so a word that happens to be
+    // a keyword is still just a word — `@delete`, `@new`, `@in`. Matching only
+    // IDENTIFIER left the keyword unconsumed and the error surfaced one token
+    // later as `expected EQUALS`, pointing at the name and saying nothing about
+    // it. The bundled demo-bundle/main.ui, which the CLI's own help offers as
+    // the worked example, failed to parse on its `@delete` handler.
     let name = '';
-    if (this.curTokenIs(TokenType.IDENTIFIER)) {
+    if (this.isPropertyName()) {
       name = this.curToken.literal;
       this.nextToken();
     }
@@ -995,8 +1001,9 @@ export class Parser {
     const loc = this.currentLoc();
     this.nextToken(); // consume :
 
+    // Same as the event name above: `:delete`, `:new` and friends are names.
     let name = '';
-    if (this.curTokenIs(TokenType.IDENTIFIER)) {
+    if (this.isPropertyName()) {
       name = this.curToken.literal;
       this.nextToken();
     }

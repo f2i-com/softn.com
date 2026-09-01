@@ -418,3 +418,47 @@ describe('Edge Cases', () => {
     expect(eachBlock.emptyFallback).toHaveLength(1);
   });
 });
+
+describe('Keyword names in event and binding positions', () => {
+  // A component decides its own event names, and nothing stops one being spelled
+  // the same as a language keyword. `@delete` on a to-do row is the obvious case
+  // and it is the one that bit: the bundled demo-bundle/main.ui — the worked
+  // example the bundler CLI's own help points at — did not parse.
+  //
+  // The failure was also badly placed. The keyword was left unconsumed, so the
+  // error surfaced one token later as `expected EQUALS`, naming the token after
+  // the mistake rather than the name itself.
+  const NAMES = ['delete', 'new', 'if', 'each', 'in', 'typeof', 'void', 'this'];
+
+  for (const name of NAMES) {
+    it(`accepts @${name} as an event name`, () => {
+      const doc = parse(`<Row @${name}={handler} />`) as any;
+      const el = doc.template.find((n: any) => n.type === 'Element');
+      expect(el.events.map((e: any) => e.name)).toEqual([name]);
+    });
+
+    it(`accepts :${name} as a binding name`, () => {
+      const doc = parse(`<Row :${name}={value} />`) as any;
+      const el = doc.template.find((n: any) => n.type === 'Element');
+      expect(el.bindings.map((b: any) => b.name)).toEqual([name]);
+    });
+  }
+
+  it('still binds the handler expression, not just the name', () => {
+    const doc = parse('<Row @delete={() => remove(id)} />') as any;
+    const el = doc.template.find((n: any) => n.type === 'Element');
+    expect(el.events).toHaveLength(1);
+    expect(el.events[0].name).toBe('delete');
+    expect(el.events[0].handler).toBeDefined();
+    expect(el.events[0].handler.type).not.toBe('Identifier');
+  });
+
+  it('parses the demo bundle the CLI help offers as its example', async () => {
+    // A plain path from the package root: under jsdom `import.meta.url` is not
+    // a file: URL, and readFileSync refuses it.
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync('demo-bundle/main.ui', 'utf8');
+    const doc = parse(src) as any;
+    expect(doc.template.length).toBeGreaterThan(0);
+  });
+});
