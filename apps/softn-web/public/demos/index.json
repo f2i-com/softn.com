@@ -5,7 +5,7 @@
     "name": "AI Chat",
     "description": "AI Chat powered by Qwen3.5-0.8B — runs entirely in the browser",
     "primary": "#10b981",
-    "size": 37317
+    "size": 36203
   },
   {
     "id": "device-kit",
@@ -13,7 +13,7 @@
     "name": "DeviceKit",
     "description": "Demo app showcasing SoftN capabilities: network, camera, QR, files",
     "primary": "#3b82f6",
-    "size": 30162
+    "size": 29381
   },
   {
     "id": "glamour-studio",
@@ -21,7 +21,7 @@
     "name": "Glamour Studio",
     "description": "Professional salon management with multi-file modular structure",
     "primary": "#d4a574",
-    "size": 90777
+    "size": 88642
   },
   {
     "id": "gpu-demo",
@@ -29,7 +29,7 @@
     "name": "GPUDemo",
     "description": "GPU Compute Demo — WebGPU compute shaders via softn.ai.gpu.*",
     "primary": "#10b981",
-    "size": 13064
+    "size": 12674
   },
   {
     "id": "maze-escape-3d",
@@ -37,7 +37,7 @@
     "name": "MazeEscape3D",
     "description": "3D maze escape game — navigate corridors to reach the golden portal",
     "primary": "#4ade80",
-    "size": 12999
+    "size": 12627
   },
   {
     "id": "notes",
@@ -45,7 +45,7 @@
     "name": "Notes",
     "description": "Notes CRUD app with real-time server sync via XDB",
     "primary": "#6366f1",
-    "size": 14451
+    "size": 13928
   },
   {
     "id": "pocket",
@@ -53,7 +53,7 @@
     "name": "Pocket",
     "description": "An 8-bit handheld emulator — CPU, PPU, APU and mappers all in .logic, drawn by PixelCanvas and heard through AudioStream",
     "primary": "#8ba82a",
-    "size": 347627
+    "size": 344234
   },
   {
     "id": "showcase",
@@ -61,7 +61,7 @@
     "name": "SoftN Showcase",
     "description": "Interactive showcase of SoftN charts, animations, and interactive components",
     "primary": "#6366f1",
-    "size": 36406
+    "size": 35571
   },
   {
     "id": "signal-lost",
@@ -77,7 +77,7 @@
     "name": "SnakeGame",
     "description": "Classic Snake game built with SoftN utility components",
     "primary": "#4ade80",
-    "size": 7557
+    "size": 7354
   },
   {
     "id": "texas-holdem",
@@ -85,7 +85,7 @@
     "name": "Texas Hold'em",
     "description": "Multiplayer Texas Hold'em Poker with P2P sync",
     "primary": "#c8aa6e",
-    "size": 252859
+    "size": 247196
   },
   {
     "id": "the-office",
@@ -93,7 +93,7 @@
     "name": "TheOffice",
     "description": "Local AI sim game where 6 Office-inspired characters chat autonomously using Qwen3.5-0.8B",
     "primary": "#58a6ff",
-    "size": 624048
+    "size": 622217
   },
   {
     "id": "three-demo",
@@ -101,7 +101,7 @@
     "name": "ThreeDemo",
     "description": "3D Scene demo with animated shapes powered by formlogic",
     "primary": "#6366f1",
-    "size": 7893
+    "size": 7682
   },
   {
     "id": "warble-wire",

@@ -1,1 +1,23 @@
 .github/scripts/*.sh text eol=lf
+
+# Bundle sources are packed into .softn archives byte for byte, so an archive
+# and the file it was built from have to agree exactly. On Windows core.autocrlf
+# rewrites text files on checkout, and the packed copy then no longer matches:
+# a fresh clone failed `npm test` with "Archive file is stale" on 10 of Pocket's
+# 14 entries, because the committed archives hold whichever line ending the
+# machine that packed them happened to use. Pinning LF makes the bundle check
+# reproducible on every platform instead of only where it was last built.
+*.ui       text eol=lf
+*.logic    text eol=lf
+*.xdb      text eol=lf
+*.wgsl     text eol=lf
+apps/demo/bundles/**/*.json                text eol=lf
+apps/demo/bundles/**/*.svg                 text eol=lf
+packages/@softn/core/demo-bundle/**/*.json text eol=lf
+packages/@softn/core/demo-bundle/**/*.svg  text eol=lf
+
+# Packed binaries: never touched, and never diffed as text.
+*.wav      binary
+*.png      binary
+*.glb      binary
+*.softn    binary
