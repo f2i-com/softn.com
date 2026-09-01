@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Rebuild the vendored zipp engine in `wasm-zipp/` from a zipp-lang checkout.
+ * Rebuild the vendored zipp engine in `wasm-zipp/` from a zipp.org checkout.
  *
  * The engine is a Rust crate that lives in its own repository, so its build
  * output is committed here rather than produced by `npm run build` — a SoftN
@@ -8,7 +8,7 @@
  * picking up a new engine revision.
  *
  *   node scripts/build-zipp-wasm.mjs
- *   ZIPP_REPO=../../../../zipp-lang node scripts/build-zipp-wasm.mjs
+ *   ZIPP_REPO=../../../../zipp.org node scripts/build-zipp-wasm.mjs
  *
  * Requires: rustup with the wasm32-unknown-unknown target, and wasm-pack.
  */
@@ -19,11 +19,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CORE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const ZIPP = resolve(CORE, process.env.ZIPP_REPO ?? '../../../../zipp-lang');
+const ZIPP = resolve(CORE, process.env.ZIPP_REPO ?? '../../../../zipp.org');
 const OUT = join(CORE, 'wasm-zipp');
 
 if (!existsSync(join(ZIPP, 'crates/zipp-wasm/Cargo.toml'))) {
-  console.error(`No zipp-wasm crate at ${ZIPP}. Set ZIPP_REPO to a zipp-lang checkout.`);
+  console.error(`No zipp-wasm crate at ${ZIPP}. Set ZIPP_REPO to a zipp.org checkout.`);
   process.exit(1);
 }
 
