@@ -462,3 +462,49 @@ describe('Keyword names in event and binding positions', () => {
     expect(doc.template.length).toBeGreaterThan(0);
   });
 });
+
+describe('# in text content', () => {
+  // Any `#` used to switch the lexer into control-flow mode, so ordinary prose
+  // containing one silently ate the rest of the document. No diagnostic — the
+  // parser just produced fewer nodes, which is the worst way for a parser to
+  // fail: there is nothing to search for.
+  const survives = (src: string) => {
+    const doc = parse(src) as any;
+    const errs = (doc.diagnostics ?? []).filter((d: any) => d.severity === 'error');
+    return { doc, errs, all: JSON.stringify(doc.template) };
+  };
+
+  for (const [label, text] of [
+    ['an issue number', 'issue #42 filed'],
+    ['a hex colour', 'use #ff0000 here'],
+    ['a lone hash', 'a # b'],
+    ['a word that starts like #end', 'GET #endpoint now'],
+    ['a hashtag', 'trending #hashtag today'],
+  ] as const) {
+    it(`keeps everything after ${label}`, () => {
+      const { doc, errs, all } = survives(`<Text>${text}</Text><Text>KEEPME</Text>`);
+      expect(errs).toHaveLength(0);
+      expect(all).toContain('KEEPME');
+      expect(doc.template.filter((n: any) => n.type === 'Element')).toHaveLength(2);
+    });
+  }
+
+  it('still opens a block for a real control-flow word', () => {
+    expect((parse('#if (ok)\n<Text>y</Text>\n#end') as any).template[0].type).toBe('IfBlock');
+    expect((parse('#each (x in xs)\n<Text>{x}</Text>\n#end') as any).template[0].type).toBe('EachBlock');
+  });
+
+  it('still handles #empty, #elseif and #else', () => {
+    const each = parse('#each (x in xs)\n<Text>{x}</Text>\n#empty\n<Text>none</Text>\n#end') as any;
+    expect(each.template[0].type).toBe('EachBlock');
+    expect(each.template[0].emptyFallback).toBeDefined();
+    const iff = parse('#if (a)\n<Text>A</Text>\n#elseif (b)\n<Text>B</Text>\n#else\n<Text>C</Text>\n#end') as any;
+    expect(iff.template[0].type).toBe('IfBlock');
+  });
+
+  it('leaves the \# escape working', () => {
+    const { errs, all } = survives('<Text>\#42</Text><Text>KEEPME</Text>');
+    expect(errs).toHaveLength(0);
+    expect(all).toContain('KEEPME');
+  });
+});
