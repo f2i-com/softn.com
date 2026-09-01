@@ -5,7 +5,7 @@
  * It's separate from the UI for better organization and reusability.
  */
 
-import { generateId, formatDate } from "./utils.logic"
+import "./utils.logic"
 
 // ============================================================================
 // State
@@ -24,27 +24,22 @@ let filter = "all"  // "all" | "active" | "completed"
 // Computed Values
 // ============================================================================
 
+// A computed value is a `$:` declaration. The runtime finds these by name,
+// compiles each expression into a function, and re-evaluates it when the state
+// it reads moves. `$computed(() => ...)` was an earlier spelling that nothing
+// defines any more, so it reached the browser as
+// "ReferenceError: $computed is not defined".
+
 // Active todos (not completed)
-const activeTodos = $computed(() => {
-  return todos.filter(t => !t.data.completed)
-})
+$: activeTodos = todos.filter(t => !t.data.completed)
 
 // Completed todos
-const completedTodos = $computed(() => {
-  return todos.filter(t => t.data.completed)
-})
+$: completedTodos = todos.filter(t => t.data.completed)
 
-// Filtered todos based on current filter
-const filteredTodos = $computed(() => {
-  switch (filter) {
-    case "active":
-      return activeTodos
-    case "completed":
-      return completedTodos
-    default:
-      return todos
-  }
-})
+// Filtered todos based on the current filter
+// One line: the extractor reads `$:` declarations a line at a time, so a
+// wrapped expression is truncated at the newline and fails to compile.
+$: filteredTodos = filter === "active" ? activeTodos : filter === "completed" ? completedTodos : todos
 
 // ============================================================================
 // Actions

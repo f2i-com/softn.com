@@ -11,7 +11,7 @@
 /**
  * Generate a unique ID
  */
-export function generateId() {
+function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2)
 }
 
@@ -22,7 +22,7 @@ export function generateId() {
 /**
  * Format a date as a relative time string
  */
-export function formatRelativeTime(dateString) {
+function formatRelativeTime(dateString) {
   const date = new Date(dateString)
   const now = new Date()
   const diff = now - date
@@ -47,7 +47,7 @@ export function formatRelativeTime(dateString) {
 /**
  * Format a date for display
  */
-export function formatDate(dateString) {
+function formatDate(dateString) {
   const date = new Date(dateString)
   return date.toLocaleDateString(undefined, {
     year: "numeric",
@@ -63,7 +63,7 @@ export function formatDate(dateString) {
 /**
  * Truncate a string to a maximum length
  */
-export function truncate(str, maxLength) {
+function truncate(str, maxLength) {
   if (str.length <= maxLength) return str
   return str.slice(0, maxLength - 3) + "..."
 }
@@ -71,7 +71,7 @@ export function truncate(str, maxLength) {
 /**
  * Capitalize the first letter of a string
  */
-export function capitalize(str) {
+function capitalize(str) {
   if (!str) return str
   return str.charAt(0).toUpperCase() + str.slice(1)
 }
@@ -83,7 +83,7 @@ export function capitalize(str) {
 /**
  * Shuffle an array
  */
-export function shuffle(array) {
+function shuffle(array) {
   const result = [...array]
   for (let i = result.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
