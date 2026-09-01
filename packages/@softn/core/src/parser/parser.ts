@@ -908,8 +908,35 @@ export class Parser {
    */
   private parseProp(): PropNode {
     const loc = this.currentLoc();
-    const name = this.curToken.literal;
+    let name = this.curToken.literal;
+    const nameEnd = this.curToken.end;
     this.nextToken();
+
+    // A namespaced attribute — `class:active={cond}` — is ONE name.
+    //
+    // Read as two things it was destructive rather than merely unsupported: the
+    // element loop took `class` as an attribute and `:active` as a binding, so
+    // the element ended up with a SECOND `class` prop whose value was boolean
+    // true. That overwrote the real one, and
+    //
+    //     <div class="card" class:active={on}>x</div>
+    //
+    // rendered as <div>x</div> — the class the author wrote was gone. The
+    // syntax is in softn-studio's language reference, so its generator emits it.
+    //
+    // Adjacency is required: the colon must touch the name. `<div class :bind={x}>`
+    // with a space is still an attribute followed by a binding, which is what it
+    // has always meant.
+    if (
+      this.curTokenIs(TokenType.COLON) &&
+      this.curToken.start === nameEnd &&
+      this.peekToken.literal.length > 0 &&
+      /^[A-Za-z_$][A-Za-z0-9_$-]*$/.test(this.peekToken.literal)
+    ) {
+      this.nextToken(); // consume ':'
+      name = `${name}:${this.curToken.literal}`;
+      this.nextToken(); // consume the suffix
+    }
 
     let value: PropValue = { type: 'boolean', value: true };
 
