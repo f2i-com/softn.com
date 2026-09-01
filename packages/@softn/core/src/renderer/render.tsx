@@ -891,7 +891,7 @@ function renderElement(
     // handler the author added ran perfectly, so nothing looked broken except
     // the typing. Both are wanted; both run, binding first so the handler sees
     // the new value.
-    const boundHandlerName = `on${capitalize(event.name)}`;
+    const boundHandlerName = reactEventProp(event.name);
     const boundHandler = props[boundHandlerName];
 
     // If the handler is a function call (e.g., @click={handleClick()}),
@@ -901,18 +901,18 @@ function renderElement(
 
     if (handlerExpr.type === 'CallExpression') {
       // Wrap in closure - execute the call when the event fires
-      props[`on${capitalize(event.name)}`] = wrapEventHandler(event.name, () => {
+      props[reactEventProp(event.name)] = wrapEventHandler(event.name, () => {
         return evaluateExpression(handlerExpr, callbackContext);
       });
     } else if (handlerExpr.type === 'ArrowFunctionExpression') {
       // Arrow functions are already deferred - evaluate to get the function
       const handler = evaluateExpression(handlerExpr, callbackContext);
-      props[`on${capitalize(event.name)}`] = typeof handler === 'function' ? wrapEventHandler(event.name, handler as (...args: any[]) => any) : handler;
+      props[reactEventProp(event.name)] = typeof handler === 'function' ? wrapEventHandler(event.name, handler as (...args: any[]) => any) : handler;
     } else if (handlerExpr.type === 'Identifier' || handlerExpr.type === 'MemberExpression') {
       // Function reference - evaluate to get the function, wrap to ensure it's callable
       const handler = evaluateExpression(handlerExpr, callbackContext);
       if (typeof handler === 'function') {
-        props[`on${capitalize(event.name)}`] = wrapEventHandler(event.name, handler as (...args: any[]) => any);
+        props[reactEventProp(event.name)] = wrapEventHandler(event.name, handler as (...args: any[]) => any);
       } else {
         // If not a function, wrap in a no-op to prevent errors.
         // Only warn if the script has finished loading — before that, functions
@@ -920,11 +920,11 @@ function renderElement(
         if (isDevelopment && context.scriptLoaded) {
           console.warn(`Event handler for ${event.name} is not a function:`, handler);
         }
-        props[`on${capitalize(event.name)}`] = () => {};
+        props[reactEventProp(event.name)] = () => {};
       }
     } else {
       // Other expression types - wrap in closure for safety
-      props[`on${capitalize(event.name)}`] = wrapEventHandler(event.name, () => {
+      props[reactEventProp(event.name)] = wrapEventHandler(event.name, () => {
         return evaluateExpression(handlerExpr, callbackContext);
       });
     }
@@ -1651,4 +1651,81 @@ function getExpressionPath(expr: Expression, context?: SoftNRenderContext): stri
  */
 function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+/**
+ * DOM event names whose React prop is not `on` + the capitalised name.
+ *
+ * `@click` works because React calls it `onClick`. `@keydown` does not, because
+ * React calls it `onKeyDown` and no rule turns one into the other — `dblclick`
+ * becomes `onDoubleClick`, which no amount of casing gets you to. React silently
+ * ignores a prop it does not recognise, so the handler was simply never wired
+ * up: the control looked normal and did nothing, while `@click` on the same
+ * element worked, which reads as a broken handler rather than a broken name.
+ *
+ * It is reachable from the tools in this repo. The visual builder's event picker
+ * offers 'keydown' and 'keyup' (apps/softn-builder PropertyPanel), and the demo
+ * bundle in @softn/core uses `@keydown` on its edit field and `@dblclick` to
+ * open the editor, so in that bundle neither did anything.
+ *
+ * Only irregular names are listed. Anything absent keeps the old behaviour,
+ * which is what a COMPONENT callback needs: `@press` must stay `onPress`, and a
+ * custom `@clearCompleted` must stay `onClearCompleted`. The lookup is on the
+ * name exactly as authored, so `@keyDown` written in camelCase already resolved
+ * correctly and still does.
+ */
+const REACT_EVENT_PROPS: Readonly<Record<string, string>> = {
+  keydown: 'onKeyDown',
+  keyup: 'onKeyUp',
+  keypress: 'onKeyPress',
+  dblclick: 'onDoubleClick',
+  doubleclick: 'onDoubleClick',
+  mousedown: 'onMouseDown',
+  mouseup: 'onMouseUp',
+  mouseenter: 'onMouseEnter',
+  mouseleave: 'onMouseLeave',
+  mousemove: 'onMouseMove',
+  mouseover: 'onMouseOver',
+  mouseout: 'onMouseOut',
+  contextmenu: 'onContextMenu',
+  pointerdown: 'onPointerDown',
+  pointerup: 'onPointerUp',
+  pointermove: 'onPointerMove',
+  pointerenter: 'onPointerEnter',
+  pointerleave: 'onPointerLeave',
+  pointerover: 'onPointerOver',
+  pointerout: 'onPointerOut',
+  pointercancel: 'onPointerCancel',
+  touchstart: 'onTouchStart',
+  touchend: 'onTouchEnd',
+  touchmove: 'onTouchMove',
+  touchcancel: 'onTouchCancel',
+  dragstart: 'onDragStart',
+  dragend: 'onDragEnd',
+  dragenter: 'onDragEnter',
+  dragleave: 'onDragLeave',
+  dragover: 'onDragOver',
+  animationstart: 'onAnimationStart',
+  animationend: 'onAnimationEnd',
+  animationiteration: 'onAnimationIteration',
+  transitionend: 'onTransitionEnd',
+  compositionstart: 'onCompositionStart',
+  compositionend: 'onCompositionEnd',
+  compositionupdate: 'onCompositionUpdate',
+  timeupdate: 'onTimeUpdate',
+  volumechange: 'onVolumeChange',
+  ratechange: 'onRateChange',
+  durationchange: 'onDurationChange',
+  loadeddata: 'onLoadedData',
+  loadedmetadata: 'onLoadedMetadata',
+  loadstart: 'onLoadStart',
+  canplay: 'onCanPlay',
+  canplaythrough: 'onCanPlayThrough',
+  contextlost: 'onContextLost',
+  contextrestored: 'onContextRestored',
+};
+
+/** The React prop name for an authored `@event`. */
+export function reactEventProp(name: string): string {
+  return REACT_EVENT_PROPS[name] ?? `on${capitalize(name)}`;
 }
