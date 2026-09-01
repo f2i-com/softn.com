@@ -198,6 +198,45 @@ function gbMachine_resetFpsClock() {
 // Cartridge loading
 // ===========================================================================
 
+// Uint8Array.fromBase64 is bounded: one call decodes at most 96 KB before the
+// engine stops it with "native builtin iteration limit exceeded" — a guard on
+// how long a native builtin may run without returning to the interpreter, not
+// a statement about the input. Game Boy cartridges start at 32 KB and run to
+// 8 MB, and MBC5 battery RAM reaches 128 KB, so nearly every real cartridge
+// crossed it and was reported as corrupt.
+//
+// Decoding in pieces stays under the limit. The boundary has to fall on a
+// multiple of 4 characters: base64 carries 3 bytes per 4 characters, and a
+// split anywhere else makes each piece decode with padding the whole never
+// had. 65536 is a multiple of 4 and decodes to 48 KB, half the ceiling.
+let GB_B64_CHUNK_CHARS = 65536
+
+function gbMachine_decodeBase64(payload) {
+  if (payload.length <= GB_B64_CHUNK_CHARS) { return Uint8Array.fromBase64(payload) }
+
+  let parts = []
+  let total = 0
+  let at = 0
+  while (at < payload.length) {
+    let end = at + GB_B64_CHUNK_CHARS
+    if (end > payload.length) { end = payload.length }
+    let piece = Uint8Array.fromBase64(payload.slice(at, end))
+    parts.push(piece)
+    total = total + piece.length
+    at = end
+  }
+
+  let out = new Uint8Array(total)
+  let offset = 0
+  let i = 0
+  while (i < parts.length) {
+    out.set(parts[i], offset)
+    offset = offset + parts[i].length
+    i = i + 1
+  }
+  return out
+}
+
 // The host path. Typed arrays read back as null across the boundary
 // (CONTRACT.md §1.8), so a ROM arrives as base64 — from a file input, a fetch,
 // or a data: URL, all three of which are accepted.
@@ -217,9 +256,12 @@ function gbMachine_loadRomBase64(s) {
 
   let bytes = null
   try {
-    bytes = Uint8Array.fromBase64(payload)
+    bytes = gbMachine_decodeBase64(payload)
   } catch (error) {
-    gbError = "The ROM is not valid base64"
+    // Say what actually went wrong. This reported "not valid base64" for
+    // every failure, so a cartridge that was too big to decode in one call
+    // looked exactly like a corrupt file.
+    gbError = "Could not decode the ROM: " + error
     gbStatus = "No cartridge"
     return false
   }
@@ -867,9 +909,9 @@ function gbMachine_loadState(s) {
 
   let src = null
   try {
-    src = Uint8Array.fromBase64(s)
+    src = gbMachine_decodeBase64(s)
   } catch (error) {
-    gbError = "That save state is not valid base64"
+    gbError = "Could not decode that save state: " + error
     return false
   }
 
