@@ -521,6 +521,7 @@ export class ZippWasmAdapter {
    */
   evalSync(expression: string): unknown {
     try {
+      this.renewBudget();
       return this.wasm.evalInContext(expression);
     } finally {
       this.flushOutput();
@@ -609,6 +610,7 @@ export class ZippWasmAdapter {
   /** Invoke the callback the script passed to `host.call` for `callId`. */
   resolveHostCallback(callId: number, result: unknown): void {
     try {
+      this.renewBudget();
       this.wasm.resolveHostCallback(callId, result);
     } finally {
       this.flushOutput();
