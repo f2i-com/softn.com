@@ -7,6 +7,16 @@
 import { Token, TokenType, lookupKeyword, createToken } from './token';
 import { SoftNParseError } from './errors';
 
+/** The words that may follow `#` to open a control-flow block. */
+const CONTROL_FLOW_WORDS: ReadonlySet<string> = new Set([
+  'if',
+  'elseif',
+  'else',
+  'each',
+  'empty',
+  'end',
+]);
+
 export class Lexer {
   private source: string;
   private position: number = 0;
@@ -125,7 +135,19 @@ export class Lexer {
     }
 
     // Control flow: #if, #each, #else, #end, #empty
-    if (this.ch === '#') {
+    //
+    // Only when the `#` actually begins one. Any `#` used to switch the lexer
+    // into control-flow mode, so ordinary prose containing one silently ate the
+    // rest of the document — no diagnostic, the parser simply produced fewer
+    // nodes:
+    //
+    //   <Text>issue #42 filed</Text><Text>second</Text>
+    //   -> one top-level node, zero errors, the second Text gone
+    //
+    // A hex colour in text did the same. There is a `\#` escape, but nothing
+    // tells an author they need it, and the failure gives them nothing to search
+    // for.
+    if (this.ch === '#' && this.hashStartsControlFlow()) {
       this.inControlFlow = 1; // Start control flow mode (will track () nesting)
       this.controlFlowParenDepth = 0;
       const token = createToken(
@@ -934,9 +956,14 @@ export class Lexer {
         }
       }
 
-      // Stop at # unless escaped
+      // Stop at # only when it opens a control-flow block. A `#` in prose is
+      // prose; breaking here unconditionally is the other half of the bug
+      // described at the `#` branch in nextToken().
       if (this.ch === '#') {
-        break;
+        if (this.hashStartsControlFlow()) break;
+        content += this.ch;
+        this.readChar();
+        continue;
       }
 
       content += this.ch;
@@ -1164,6 +1191,25 @@ export class Lexer {
   /**
    * Read the next character
    */
+  /**
+   * Does the `#` under the cursor open a control-flow block?
+   *
+   * Reads the whole word after it and requires an exact keyword. `#endpoint` is
+   * text, not `#end` followed by "point" — the parser would have lexed
+   * "endpoint" as an identifier and not matched END anyway, so demanding the
+   * whole word only stops the lexer from changing mode for something that was
+   * never going to parse as control flow.
+   */
+  private hashStartsControlFlow(): boolean {
+    let i = this.readPosition;
+    let word = '';
+    while (i < this.source.length && /[A-Za-z]/.test(this.source[i])) {
+      word += this.source[i];
+      i++;
+    }
+    return CONTROL_FLOW_WORDS.has(word);
+  }
+
   private readChar(): void {
     if (this.readPosition >= this.source.length) {
       this.ch = '';
