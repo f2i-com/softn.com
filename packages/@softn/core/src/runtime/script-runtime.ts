@@ -122,7 +122,13 @@ export function collectObservedStateNames(doc: SoftNDocument): ReadonlySet<strin
   }
   if (!text) return null;
   const names = new Set<string>(FRAMEWORK_OBSERVED_STATE);
-  for (const match of text.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*/g)) names.add(match[0]);
+  // Unicode-aware, because the engine is: `let café = 1` compiles, and an
+  // ASCII-only scan tokenised it as "caf" — so the real name never entered the
+  // observed set, the variable was classed VM-owned, and it silently stopped
+  // syncing to React. That is the asymmetry this scan is built around, falling
+  // the wrong way: over-collecting costs a little speed, under-collecting
+  // freezes part of the UI with nothing to suggest why.
+  for (const match of text.matchAll(/[\p{ID_Start}$_][\p{ID_Continue}$_]*/gu)) names.add(match[0]);
   return names;
 }
 
