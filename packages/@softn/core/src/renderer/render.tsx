@@ -617,6 +617,40 @@ function createCallbackContext(context: SoftNRenderContext): SoftNRenderContext 
 }
 
 /**
+ * Evaluate an expression that decides STRUCTURE — a condition or an iterable —
+ * and survive it throwing.
+ *
+ * The same bad data should not be survivable in one position and fatal in
+ * another. `{JSON.parse(raw).n}` in a text node is caught and shown as a small
+ * inline marker; in a condition or an iterable it escaped the runtime's error
+ * boundary and replaced the whole application with an error screen. Which one
+ * you got depended only on where you had written it.
+ *
+ * Commit 8e9366b set out to fix all four positions and reached one: #if. #each,
+ * inline `if=` and inline `each=` still tore the app down, which is how this
+ * came back — the message said it was handled everywhere, so nobody looked.
+ *
+ * An unanswerable condition is false. An iterable that cannot be evaluated is
+ * empty, which also means an `#each` renders its `#empty` fallback — the right
+ * thing to put on screen when the list could not be worked out.
+ */
+function evaluateStructural<T>(
+  expr: Expression,
+  context: SoftNRenderContext,
+  fallback: T,
+  what: string
+): unknown {
+  try {
+    return evaluateExpression(expr, context);
+  } catch (error) {
+    if (isDevelopment) {
+      console.error(`[SoftN] ${what} threw; using ${JSON.stringify(fallback)}:`, error);
+    }
+    return fallback;
+  }
+}
+
+/**
  * Render an element node
  * Supports inline conditionals (if=) and loops (each=/as=)
  */
@@ -634,7 +668,7 @@ function renderElement(
   // with the variable bound and keeps `conditionalIf`, which is where an
   // `each` + `if` pair is meant to be resolved.
   if (node.conditionalIf && !node.inlineEach) {
-    const condition = evaluateExpression(node.conditionalIf, context);
+    const condition = evaluateStructural(node.conditionalIf, context, false, 'if= condition');
     if (!condition) {
       return null; // Don't render if condition is falsy
     }
@@ -642,7 +676,7 @@ function renderElement(
 
   // Check for inline loop
   if (node.inlineEach) {
-    const iterable = evaluateExpression(node.inlineEach.iterable, context);
+    const iterable = evaluateStructural(node.inlineEach.iterable, context, [], 'each= iterable');
 
     if (!Array.isArray(iterable) || iterable.length === 0) {
       return null; // Don't render if iterable is empty
@@ -1140,21 +1174,7 @@ function renderIfBlock(
   key?: number | string,
   branchPath: string = ''
 ): React.ReactNode {
-  // A throw here used to escape the runtime's own error boundary and replace the
-  // entire app with an error screen, while the identical expression inside a
-  // text node — `{JSON.parse(raw).n}` — is caught and shown as a small inline
-  // marker. The same data being bad should not be survivable in one position and
-  // fatal in another. An expression that cannot be evaluated is treated as
-  // falsy, which is what an unanswerable condition means.
-  let condition: unknown;
-  try {
-    condition = evaluateExpression(node.condition, context);
-  } catch (error) {
-    if (isDevelopment) {
-      console.error('[SoftN] Condition threw; treating it as false:', error);
-    }
-    condition = false;
-  }
+  const condition = evaluateStructural(node.condition, context, false, '#if condition');
 
   // Get a unique identifier for the condition value
   const conditionId = getConditionIdentifier(node.condition);
@@ -1204,7 +1224,7 @@ function renderEachBlock(
   registry: ComponentRegistry,
   key?: number | string
 ): React.ReactNode {
-  const iterable = evaluateExpression(node.iterable, context);
+  const iterable = evaluateStructural(node.iterable, context, [], '#each iterable');
 
   if (!Array.isArray(iterable) || iterable.length === 0) {
     if (node.emptyFallback) {
