@@ -282,7 +282,7 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 - Host modules: `db`, `localStorage`, `window`, `navigator`, `host`, plus the `softn.*` async APIs
 
 The compiled engine is committed at `packages/@softn/core/wasm-zipp/`, so building SoftN needs no
-Rust toolchain. To pick up a new engine revision from a `zipp-lang` checkout beside this repo:
+Rust toolchain. To pick up a new engine revision from a `zipp.org` checkout beside this repo:
 
 ```bash
 npm run build:zipp-wasm -w @softn/core   # needs rustup + wasm-pack
@@ -589,7 +589,7 @@ alongside zipp and XDB. Clone those repositories as siblings of this checkout
 before running their Cargo commands:
 
 ```bash
-git clone https://github.com/f2i-com/zipp.org.git ../zipp-lang
+git clone https://github.com/f2i-com/zipp.org.git ../zipp.org
 git clone https://github.com/f2i-com/xdb.org.git ../xdb.org
 cargo test --manifest-path apps/softn-server/Cargo.toml
 ```

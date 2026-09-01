@@ -8,7 +8,7 @@ license = "Apache-2.0"
 # The JavaScript engine `.logic` runs on. `instrument` is what gives the
 # server a step budget and a cooperative abort flag for untrusted scripts;
 # it switches the JIT off, which is the price of the budget being real.
-zipp-vm = { path = "../../../zipp-lang/crates/zipp-vm", features = ["instrument"] }
+zipp-vm = { path = "../../../zipp.org/crates/zipp-vm", features = ["instrument"] }
 xdb = { path = "../../../xdb.org/crates/xdb", default-features = false }
 
 axum = { version = "0.8", features = ["ws"] }

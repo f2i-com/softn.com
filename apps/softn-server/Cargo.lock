@@ -388,12 +388,6 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bitflags"
-version = "1.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
-
-[[package]]
-name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
@@ -838,24 +832,24 @@ checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
 
 [[package]]
 name = "dynasm"
-version = "2.0.0"
+version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33dc03612f42465a8ed7f5e354bc2b79ba54cedefa81d5bd3a064f1835adaba8"
+checksum = "fd358e74d2f8d71a11b7a2c51c67ad5df3de06003b0596875e47bc09126c894e"
 dependencies = [
- "bitflags 1.3.2",
+ "bitflags",
  "byteorder",
  "lazy_static",
- "proc-macro-error",
+ "proc-macro-error3",
  "proc-macro2",
  "quote",
- "syn 1.0.109",
+ "syn 2.0.119",
 ]
 
 [[package]]
 name = "dynasmrt"
-version = "2.0.0"
+version = "5.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7dccc31a678058996aef614f6bd418ced384da70f284e83e2b7bf29b27b6a28"
+checksum = "6efe03f6bd356ae85eeea7ee14c2bf54e664a949d089d238364b5a99afbc4116"
 dependencies = [
  "byteorder",
  "dynasm",
@@ -2152,9 +2146,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memmap2"
-version = "0.5.10"
+version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83faa42c0a078c393f6b29d5db232d8be22776a891f8f56e5284faee4a20b327"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
 ]
@@ -2289,7 +2283,7 @@ version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ce3636fa715e988114552619582b530481fd5ef176a1e5c1bf024077c2c9445"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags",
  "libc",
  "log",
  "netlink-packet-core",
@@ -2329,7 +2323,7 @@ version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags",
  "cfg-if",
  "cfg_aliases",
  "libc",
@@ -2588,27 +2582,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-error"
-version = "1.0.4"
+name = "proc-macro-error-attr3"
+version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
+checksum = "9e564d14133360e1ae169ffde5da25881b5fa47261665b8e5713c212c27799da"
 dependencies = [
- "proc-macro-error-attr",
  "proc-macro2",
  "quote",
- "syn 1.0.109",
- "version_check",
 ]
 
 [[package]]
-name = "proc-macro-error-attr"
-version = "1.0.4"
+name = "proc-macro-error3"
+version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
+checksum = "8f0d4471b3436c22106b21913b1dda531558918ae9b7ec55d58aa84b43552233"
 dependencies = [
+ "proc-macro-error-attr3",
  "proc-macro2",
  "quote",
- "version_check",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -2892,7 +2884,7 @@ version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags",
 ]
 
 [[package]]
@@ -2979,7 +2971,7 @@ version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b838eba278d213a8beaf485bd313fd580ca4505a00d5871caeb1457c55322cae"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags",
  "fallible-iterator",
  "fallible-streaming-iterator",
  "hashlink",
@@ -3017,7 +3009,7 @@ version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags",
  "errno",
  "libc",
  "linux-raw-sys",
@@ -3354,17 +3346,6 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "syn"
-version = "1.0.109"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
-]
-
-[[package]]
-name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
@@ -3408,7 +3389,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a13f3d0daba03132c0aa9767f98351b3488edc2c100cda2d2ec2b04f3d8d3c8b"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags",
  "core-foundation",
  "system-configuration-sys",
 ]
@@ -3609,7 +3590,7 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags",
  "bytes",
  "futures-core",
  "futures-util",
@@ -4449,7 +4430,7 @@ dependencies = [
 
 [[package]]
 name = "zipp-vm"
-version = "0.0.1"
+version = "0.0.6"
 dependencies = [
  "dynasm",
  "dynasmrt",
