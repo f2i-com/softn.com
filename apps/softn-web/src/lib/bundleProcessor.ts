@@ -354,7 +354,7 @@ export function withheldPermissions(declared: PermissionConfig): PermissionConfi
  * name here without giving it words fails the build instead of shipping a bar
  * that says "a capability called \"webusb\"".
  */
-export const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync'] as const;
+export const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage'] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
 

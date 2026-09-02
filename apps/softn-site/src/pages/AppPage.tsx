@@ -1,0 +1,435 @@
+import React, { useEffect, useState } from 'react';
+import { ApiError, getApp, getRating, rate, type AppDetail, type Category, type Rating } from '../lib/api';
+import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
+import { WEB_URL } from '../lib/appUrls';
+import { Thumb } from '../components/directory/AppCard';
+import { StarInput, Stars } from '../components/directory/Stars';
+import { ShareMenu } from '../components/directory/ShareMenu';
+import { Comments } from '../components/directory/Comments';
+import { SourceViewer } from '../components/directory/SourceViewer';
+
+const CAPABILITY_NAMES: Record<string, string> = {
+  net: 'Network',
+  camera: 'Camera',
+  mic: 'Microphone',
+  files: 'Files',
+  qr: 'QR codes',
+  ai: 'AI models',
+  gpu: 'GPU',
+  sync: 'Sync',
+  storage: 'Server storage',
+};
+
+function Badges({ capabilities, execution }: { capabilities: string[]; execution: string }): React.ReactElement {
+  const { safe } = capabilitySummary(capabilities);
+  return (
+    <div className="badges" aria-label="What this app can reach">
+      <span className={`badge ${safe ? 'badge-safe' : ''}`}>
+        <span className="badge-dot" aria-hidden="true" />
+        Sandboxed
+      </span>
+      {capabilities.length === 0 ? (
+        <span className="badge">No capabilities</span>
+      ) : (
+        capabilities.map((c) => (
+          <span key={c} className={`badge ${c === 'net' || c === 'camera' || c === 'mic' || c === 'files' ? 'badge-warn' : ''}`}>
+            {CAPABILITY_NAMES[c] ?? c}
+          </span>
+        ))
+      )}
+      {!capabilities.includes('net') && <span className="badge">No network</span>}
+      {execution === 'worker' && (
+        <span className="badge" title="Its script runs in a worker thread, so the page stays responsive">
+          Off-main-thread
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function AppPage({ slug, categories }: { slug: string; categories: Category[] }): React.ReactElement {
+  const [app, setApp] = useState<AppDetail | null>(null);
+  const [error, setError] = useState<{ status: number; message: string } | null>(null);
+  const [rating, setRating] = useState<Rating | null>(null);
+  const [rateBusy, setRateBusy] = useState(false);
+  const [rateError, setRateError] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [showSource, setShowSource] = useState(false);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    setApp(null);
+    setError(null);
+    setPlaying(false);
+    setShowSource(false);
+    getApp(slug, ac.signal)
+      .then((a) => {
+        setApp(a);
+        document.title = `${a.name} — SoftN`;
+        // A link opened by its manifest name lands on the slug.
+        if (a.slug !== slug) window.history.replaceState({}, '', `/app/${a.slug}`);
+      })
+      .catch((e) => {
+        if (ac.signal.aborted) return;
+        setError({ status: e instanceof ApiError ? e.status : 0, message: e instanceof Error ? e.message : String(e) });
+      });
+    getRating(slug, ac.signal)
+      .then(setRating)
+      .catch(() => {
+        /* ratings are optional */
+      });
+    return () => ac.abort();
+  }, [slug]);
+
+  const onRate = async (stars: number) => {
+    if (!app) return;
+    setRateBusy(true);
+    setRateError(null);
+    try {
+      const r = await rate(app.slug, stars);
+      setRating(r);
+      setApp({ ...app, rating: { average: r.average, count: r.count } });
+    } catch (e) {
+      setRateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRateBusy(false);
+    }
+  };
+
+  if (error) {
+    return (
+      <main className="app-page">
+        <div className="wrap">
+          <div className="empty">
+            <p className="eyebrow">{error.status === 404 ? 'Not here' : 'Something went wrong'}</p>
+            <h1 className="page-title">{error.status === 404 ? 'No app is published under that name.' : 'Could not load this app.'}</h1>
+            <p className="muted">{error.message}</p>
+            <p>
+              <a className="cta cta-primary" href="/apps">
+                Browse the directory
+              </a>
+            </p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+  if (!app) {
+    return (
+      <main className="app-page">
+        <div className="wrap">
+          <p className="muted">Loading…</p>
+        </div>
+      </main>
+    );
+  }
+
+  const category = categories.find((c) => c.id === app.category);
+  const embedUrl = `${WEB_URL}/?${new URLSearchParams({ open: app.urls.bundle, embed: '1' })}`;
+  const shareTitle = `${app.name} on SoftN`;
+  const shareText = app.description || `${app.name}, a SoftN app`;
+  const breakdown = app.ratingBreakdown;
+  const maxBreak = Math.max(1, ...Object.values(breakdown));
+  const canStore = app.capabilities.includes('storage');
+
+  return (
+    <main className="app-page">
+      <div className="wrap">
+        <nav className="crumbs" aria-label="Breadcrumb">
+          <a href="/apps">Apps</a>
+          <span aria-hidden="true">›</span>
+          {category ? (
+            <a href={`/apps?category=${encodeURIComponent(category.id)}`}>
+              {category.emoji} {category.name}
+            </a>
+          ) : (
+            <a href="/apps">All</a>
+          )}
+          <span aria-hidden="true">›</span>
+          <span>{app.name}</span>
+        </nav>
+
+        {playing && (
+          <div className="app-frame" id="play">
+            <div className="app-frame-bar">
+              <span className="app-frame-live">
+                <span className="badge-dot" aria-hidden="true" />
+                Running {app.name}
+              </span>
+              <span className="app-frame-actions">
+                <button
+                  type="button"
+                  className="app-frame-btn"
+                  onClick={() => {
+                    const el = document.getElementById('play');
+                    if (el && document.fullscreenElement !== el) void el.requestFullscreen?.();
+                    else void document.exitFullscreen?.();
+                  }}
+                >
+                  Fullscreen
+                </button>
+                <a className="app-frame-btn" href={app.urls.run}>
+                  Open in the runtime
+                </a>
+                <button type="button" className="app-frame-btn" onClick={() => setPlaying(false)} aria-label="Stop the preview">
+                  Close
+                </button>
+              </span>
+            </div>
+            <iframe src={embedUrl} title={`${app.name}, running`} allow="camera; microphone; clipboard-write; autoplay; fullscreen" loading="eager" />
+          </div>
+        )}
+
+        <div className="app-head">
+          <div className="app-head-media">
+            {playing ? (
+              <button type="button" className="app-hero-thumb app-hero-thumb-playing" onClick={() => document.getElementById('play')?.scrollIntoView({ behavior: 'smooth' })}>
+                <Thumb app={app} />
+                <span className="app-hero-play">Running above</span>
+              </button>
+            ) : (
+              <button type="button" className="app-hero-thumb" onClick={() => setPlaying(true)} aria-label={`Play ${app.name} here`}>
+                <Thumb app={app} />
+                <span className="app-hero-play">
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                  Play here
+                </span>
+              </button>
+            )}
+          </div>
+          <div className="app-head-body">
+            <h1 className="page-title app-title">{app.name}</h1>
+            <p className="app-byline">
+              by <strong>{app.author}</strong>
+              {app.parent && (
+                <>
+                  {' '}
+                  · remix of <a href={`/app/${app.parent.slug}`}>{app.parent.name}</a>
+                </>
+              )}
+              {' · '}
+              <span title={app.createdAt}>published {timeAgo(app.createdAt)}</span>
+              {app.version > 1 && <> · updated {timeAgo(app.updatedAt)}</>}
+            </p>
+            <Badges capabilities={app.capabilities} execution={app.execution} />
+            <div className="stats">
+              <span className="stat">
+                <Stars average={app.rating.average} count={app.rating.count} size={14} showCount={false} />
+                <strong>{app.rating.count > 0 ? app.rating.average.toFixed(1) : '–'}</strong>
+                <span className="stat-label">{app.rating.count} rating{app.rating.count === 1 ? '' : 's'}</span>
+              </span>
+              <span className="stat">
+                <strong>{formatCount(app.remixes)}</strong>
+                <span className="stat-label">remix{app.remixes === 1 ? '' : 'es'}</span>
+              </span>
+              <span className="stat">
+                <strong>{formatCount(app.runs)}</strong>
+                <span className="stat-label">run{app.runs === 1 ? '' : 's'}</span>
+              </span>
+              <span className="stat">
+                <strong>{formatCount(app.comments)}</strong>
+                <span className="stat-label">comment{app.comments === 1 ? '' : 's'}</span>
+              </span>
+              <span className="stat">
+                <strong>v{app.version}</strong>
+                <span className="stat-label">{formatBytes(app.size)}</span>
+              </span>
+            </div>
+            <div className="app-actions">
+              <button
+                type="button"
+                className="cta cta-primary"
+                onClick={() => {
+                  setPlaying(true);
+                  setTimeout(() => document.getElementById('play')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                Play
+              </button>
+              <a className="cta" href={app.urls.run}>
+                Open in the runtime
+              </a>
+              <a className="cta" href={app.urls.studio}>
+                Edit in Studio
+              </a>
+              <a className="cta" href={app.urls.builder}>
+                Edit in Builder
+              </a>
+              <a className="cta" href={app.urls.remix}>
+                Remix
+              </a>
+              <button type="button" className="cta" onClick={() => setShowSource((s) => !s)} aria-expanded={showSource} aria-controls="source">
+                {showSource ? 'Hide source' : 'View source'}
+              </button>
+              <a className="cta" href={app.urls.download} download={`${app.slug}.softn`}>
+                Download
+              </a>
+              <ShareMenu url={app.urls.page} title={shareTitle} text={shareText} />
+            </div>
+          </div>
+        </div>
+
+        <div className="app-columns">
+          <div className="app-main">
+            {app.description && (
+              <section className="app-section">
+                <h2 className="section-title">About</h2>
+                <p className="app-desc">{app.description}</p>
+              </section>
+            )}
+            {app.tags.length > 0 && (
+              <div className="tags">
+                {app.tags.map((t) => (
+                  <a key={t} className="tag" href={`/apps?tag=${encodeURIComponent(t)}`}>
+                    #{t}
+                  </a>
+                ))}
+              </div>
+            )}
+
+            {showSource && (
+              <section className="app-section" id="source">
+                <h2 className="section-title">Source</h2>
+                <p className="muted">
+                  Every file in the bundle, as published. Open it in <a href={app.urls.studio}>Studio</a> or <a href={app.urls.builder}>Builder</a>{' '}
+                  to change it.
+                </p>
+                <SourceViewer slug={app.slug} main={app.manifest?.main} />
+              </section>
+            )}
+
+            <Comments slug={app.slug} onCount={(n) => setApp((a) => (a ? { ...a, comments: n } : a))} />
+          </div>
+
+          <aside className="app-side">
+            <section className="side-card">
+              <h2 className="side-title">Rate it</h2>
+              <StarInput mine={rating?.mine ?? null} onRate={onRate} busy={rateBusy} />
+              {rateError && <p className="form-error">{rateError}</p>}
+              <div className="breakdown" aria-label="Rating breakdown">
+                {[5, 4, 3, 2, 1].map((n) => {
+                  const count = breakdown[String(n) as '1' | '2' | '3' | '4' | '5'] ?? 0;
+                  return (
+                    <div key={n} className="breakdown-row">
+                      <span className="breakdown-n">{n}</span>
+                      <span className="breakdown-bar">
+                        <span className="breakdown-fill" style={{ width: `${(count / maxBreak) * 100}%` }} />
+                      </span>
+                      <span className="breakdown-count">{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="side-card">
+              <h2 className="side-title">What it can reach</h2>
+              <ul className="side-list">
+                <li>
+                  <span className="badge-dot" aria-hidden="true" /> Runs in the zipp sandbox: no DOM, no filesystem, no ambient network.
+                </li>
+                {app.capabilities.length === 0 && <li>Declares no capabilities at all.</li>}
+                {app.capabilities.map((c) => (
+                  <li key={c}>
+                    <strong>{CAPABILITY_NAMES[c] ?? c}</strong>
+                    {c === 'storage' && ' — keeps records in its own database on this site.'}
+                    {c === 'net' && ' — may call the internet; the runtime asks you first.'}
+                    {c === 'camera' && ' — may take pictures, with your permission.'}
+                    {c === 'mic' && ' — may record audio, with your permission.'}
+                    {c === 'files' && ' — may read files you choose.'}
+                    {c === 'ai' && ' — downloads and runs a model in your browser.'}
+                    {c === 'gpu' && ' — uses your graphics card for compute.'}
+                    {c === 'sync' && ' — replicates its data to your other devices.'}
+                    {c === 'qr' && ' — scans QR codes.'}
+                  </li>
+                ))}
+              </ul>
+              {canStore && (
+                <p className="muted">
+                  Stored here so far: {app.storage.records} record{app.storage.records === 1 ? '' : 's'} in {app.storage.collections} collection
+                  {app.storage.collections === 1 ? '' : 's'}
+                  {app.storage.keys > 0 ? `, ${app.storage.keys} key${app.storage.keys === 1 ? '' : 's'}` : ''} ({formatBytes(app.storage.bytes)}).
+                </p>
+              )}
+            </section>
+
+            {(app.lineage.length > 0 || app.remixList.length > 0) && (
+              <section className="side-card">
+                <h2 className="side-title">Lineage</h2>
+                {app.lineage.length > 0 && (
+                  <p className="side-lineage">
+                    {[...app.lineage].reverse().map((l) => (
+                      <React.Fragment key={l.slug}>
+                        <a href={`/app/${l.slug}`}>{l.name}</a>
+                        <span aria-hidden="true"> → </span>
+                      </React.Fragment>
+                    ))}
+                    <strong>{app.name}</strong>
+                  </p>
+                )}
+                {app.remixList.length > 0 && (
+                  <>
+                    <p className="muted">
+                      {app.remixes} remix{app.remixes === 1 ? '' : 'es'} of this app:
+                    </p>
+                    <ul className="side-list">
+                      {app.remixList.map((r) => (
+                        <li key={r.slug}>
+                          <a href={`/app/${r.slug}`}>{r.name}</a> <span className="muted">by {r.author}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </section>
+            )}
+
+            <section className="side-card">
+              <h2 className="side-title">Versions</h2>
+              <ul className="side-list">
+                {app.versions.map((v) => (
+                  <li key={v.version}>
+                    <a href={`${v.bundle}&download=1`} download={`${app.slug}-v${v.version}.softn`}>
+                      v{v.version}
+                    </a>{' '}
+                    <span className="muted">
+                      {v.manifestVersion && `(${v.manifestVersion}) `}
+                      {formatDate(v.createdAt)} · {formatBytes(v.size)}
+                    </span>
+                    {v.notes && <div className="side-note">{v.notes}</div>}
+                  </li>
+                ))}
+              </ul>
+              {app.manifest && (
+                <p className="muted">
+                  Entry <code>{app.manifest.main}</code>
+                  {Object.entries(app.manifest.files).length > 0 && (
+                    <>
+                      {' · '}
+                      {Object.entries(app.manifest.files)
+                        .map(([k, n]) => `${n} ${k}`)
+                        .join(', ')}
+                    </>
+                  )}
+                </p>
+              )}
+            </section>
+
+            <section className="side-card">
+              <h2 className="side-title">Yours to update?</h2>
+              <p className="muted">
+                Publishing handed out an edit key. With it, <a href={`/publish?update=${app.slug}`}>publish a new version</a> or change the
+                listing. Without it, <a href={app.urls.remix}>remix</a> instead.
+              </p>
+            </section>
+          </aside>
+        </div>
+      </div>
+    </main>
+  );
+}

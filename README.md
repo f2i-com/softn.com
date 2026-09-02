@@ -39,6 +39,7 @@ softn.com/
 |   +-- softn-builder/         # Visual IDE / builder
 |   +-- softn-loader/          # Desktop runtime (Tauri)
 |   +-- softn-server/          # Rust host for `.logic` server routes and XDB sync
+|   +-- softn-api/             # The app directory: PHP + SQLite, deployed as /api/ beside the site
 |   +-- demo/                  # Demo applications
 +-- scripts/                   # dev-all and site assembly
 +-- .github/workflows/         # CI/CD

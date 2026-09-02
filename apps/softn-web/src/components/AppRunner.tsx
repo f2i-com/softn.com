@@ -36,6 +36,8 @@ interface AppRunnerProps {
   serverUrl?: string;
   serverToken?: string;
   serverCollections?: string[];
+  /** The app's storage endpoint in the directory it was opened from, if any. */
+  storageEndpoint?: string;
 }
 
 interface ErrorBoundaryState {
@@ -239,7 +241,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, executionPreference, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, executionPreference, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections, storageEndpoint }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
   const hostRef = useRef<HTMLDivElement>(null);
   // Stable, or the bar's ResizeObserver effect tears down and re-observes on
@@ -413,6 +415,7 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
             serverUrl={serverUrl}
             serverToken={serverToken}
             serverCollections={serverCollections}
+            storageEndpoint={storageEndpoint}
             loading={
               <Box
                 className="softn-runner-loading"

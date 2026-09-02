@@ -190,6 +190,19 @@ interface OpenTab {
   serverUrl?: string;
   serverToken?: string;
   serverCollections?: string[];
+  /** The app's slug in the site's directory, when it was opened from there. */
+  directorySlug?: string;
+}
+
+/** The directory slug a bundle URL names, if it is one of the directory's. */
+function directorySlugOf(url: URL): string | undefined {
+  const m = url.pathname.match(/^\/api\/apps\/([^/]+)\//);
+  if (!m) return undefined;
+  try {
+    return decodeURIComponent(m[1]);
+  } catch {
+    return undefined;
+  }
 }
 
 // ── App Component ────────────────────────────────────────────────
@@ -319,7 +332,8 @@ function App(): React.ReactElement {
       data: Uint8Array,
       fileName: string,
       cachedAppId?: string,
-      initialPage?: string
+      initialPage?: string,
+      directorySlug?: string
     ): Promise<string | null> => {
       // The placeholder tab this call adopted, once it has adopted one.
       //
@@ -450,7 +464,7 @@ function App(): React.ReactElement {
         // can already write records into its own database, and removing it from
         // Home is the only thing that deletes those. No record, nothing to
         // remove them with. Origin dedup means opening it again is an update.
-        await cacheApp(data, manifest, icon);
+        await cacheApp(data, manifest, icon, directorySlug);
 
         if (cachedAppId) {
           await updateLastOpened(cachedAppId);
@@ -582,6 +596,7 @@ function App(): React.ReactElement {
           serverUrl,
           serverToken: serverConfig?.token,
           serverCollections: serverConfig?.collections,
+          directorySlug,
         };
         setOpenTabs((prev) => {
           const idx = prev.findIndex((t) => t.id === tabId);
@@ -635,7 +650,10 @@ function App(): React.ReactElement {
         return Promise.resolve(null);
       }
 
-      const displayName = bundleNameFromUrl(url);
+      // A bundle from the directory is known by its slug; the placeholder tab
+      // wears it until the manifest's own name arrives.
+      const directorySlug = directorySlugOf(url);
+      const displayName = directorySlug ?? bundleNameFromUrl(url);
       const loadedTab = openTabsRef.current.find((t) => t.name === displayName && t.source);
       if (loadedTab) {
         setActiveTabId(loadedTab.id);
@@ -690,7 +708,12 @@ function App(): React.ReactElement {
         // opened the bundle, in which case the tab it adopted is the running app.
         let opened: string | null = null;
         try {
-          opened = await processBundleData(data, `${displayName}.softn`);
+          opened = await processBundleData(data, `${displayName}.softn`, undefined, undefined, directorySlug);
+          // One run, counted where the app is published. Best effort: a
+          // directory that is down must not be a reason the app does not open.
+          if (opened && directorySlug) {
+            void fetch(`/api/apps/${encodeURIComponent(directorySlug)}/runs`, { method: 'POST' }).catch(() => {});
+          }
           return opened;
         } catch (err) {
           // processBundleData reports its own failures, so anything thrown out
@@ -755,7 +778,7 @@ function App(): React.ReactElement {
         setActiveTabId(existingTab.id);
         return;
       }
-      processBundleData(app.bundleData, `${app.name}.softn`, app.id);
+      processBundleData(app.bundleData, `${app.name}.softn`, app.id, undefined, app.directorySlug);
     },
     [processBundleData]
   );
@@ -772,6 +795,27 @@ function App(): React.ReactElement {
     }
     const updatedApps = await getCachedApps();
     setApps(updatedApps);
+  }, []);
+
+  /**
+   * Hand the running app's bundle back as a file. What is downloaded is the
+   * exact bytes that were opened — the cache keeps them — so what someone
+   * takes away is what they were running, not a re-export of it.
+   */
+  const handleDownloadTab = useCallback(async (tabId: string) => {
+    const tab = openTabsRef.current.find((t) => t.id === tabId);
+    if (!tab || !tab.appId) return;
+    const cached = await getCachedAppByOrigin(tab.appId);
+    if (!cached) return;
+    const blob = new Blob([cached.bundleData as BlobPart], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(tab.directorySlug || tab.name).replace(/[\\/:*?"<>|]+/g, '-')}.softn`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }, []);
 
   /** Close a tab */
@@ -903,17 +947,29 @@ function App(): React.ReactElement {
           // one ?open= makes: a cached bundle that no longer reads as a bundle
           // throws before processBundleData can adopt it, so the placeholder is
           // retired here rather than in there.
-          processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined)
+          processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined, cachedApp.directorySlug)
             .then((appName) => {
               if (appName === null && urlTabId) discardPlaceholder(urlTabId);
             });
-        } else {
-          // App not in cache — remove skeleton tab and go Home
-          setOpenTabs([]);
-          setActiveTabId(null);
-          window.history.replaceState({}, '', entryUrl(buildAppUrl(null)));
+          urlReadyRef.current = true;
+          return;
         }
-        urlReadyRef.current = true;
+        // Not in this browser's cache. The name may be an app's slug in the
+        // site's directory — a link someone shared to an app this browser has
+        // never seen — and the directory serves it as a bundle, so a shared
+        // link opens the app rather than landing on Home. The placeholder this
+        // component made is retired first; openFromUrl makes its own.
+        if (urlTabId) discardPlaceholder(urlTabId);
+        openFromUrl(`/api/apps/${encodeURIComponent(urlInit.appName!)}/bundle.softn`).then((appName) => {
+          if (appName) {
+            window.history.replaceState({}, '', entryUrl(buildAppUrl(appName, urlInit.page)));
+          } else {
+            setOpenTabs([]);
+            setActiveTabId(null);
+            window.history.replaceState({}, '', entryUrl(buildAppUrl(null)));
+          }
+          urlReadyRef.current = true;
+        });
       });
     } else {
       urlReadyRef.current = true;
@@ -996,11 +1052,12 @@ function App(): React.ReactElement {
             belong to the host document rather than to us. */}
         {!embedded && (
           <TabBar
-            tabs={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon }))}
+            tabs={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon, directorySlug: t.directorySlug }))}
             activeTabId={activeTabId}
             onSelectTab={handleSelectTab}
             onCloseTab={handleCloseTab}
             onAddTab={handleAddTab}
+            onDownloadTab={handleDownloadTab}
           />
         )}
 
@@ -1165,6 +1222,9 @@ function App(): React.ReactElement {
               serverUrl={tab.serverUrl}
               serverToken={tab.serverToken}
               serverCollections={tab.serverCollections}
+              storageEndpoint={
+                tab.directorySlug ? `/api/apps/${encodeURIComponent(tab.directorySlug)}/storage` : undefined
+              }
             />
           ))}
         </div>

@@ -24,6 +24,12 @@ export interface CachedApp {
    * manifest name; see adoptLegacyRecord below.
    */
   origin?: string;
+  /**
+   * The app's slug in the site's directory, when it was opened from there.
+   * Opening it again from Home then still knows its page, its bundle URL and
+   * its server storage.
+   */
+  directorySlug?: string;
 }
 
 interface SoftNAppDB {
@@ -272,7 +278,8 @@ async function adoptLegacyRecord(
 export async function cacheApp(
   bundleData: Uint8Array,
   manifest: { name: string; version: string; description?: string },
-  icon?: string
+  icon?: string,
+  directorySlug?: string
 ): Promise<CachedApp | null> {
   try {
     const db = await getDB();
@@ -302,6 +309,7 @@ export async function cacheApp(
         bundleData,
         lastOpened: Date.now(),
         icon: icon ?? existing.icon,
+        directorySlug: directorySlug ?? existing.directorySlug,
       };
       await store.put(updated);
       await tx.done;
@@ -321,6 +329,7 @@ export async function cacheApp(
       cachedAt: Date.now(),
       lastOpened: Date.now(),
       icon,
+      directorySlug,
     };
     await store.add(app);
     await tx.done;
