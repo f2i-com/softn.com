@@ -198,6 +198,37 @@ const MAX_BLOCKS_PER_PUMP = 32;
 /** Blocks discarded, at most, when catching up after the tab was backgrounded. */
 const MAX_STALE_BLOCKS = 32;
 
+/**
+ * How long one pump may hold the main thread, in milliseconds.
+ *
+ * Both loops in `pump` are bounded by a block COUNT. That is the right bound
+ * for a source that hands back audio it already has: thirty-two blocks drain in
+ * microseconds. It is the wrong bound for a source that has to make the audio —
+ * an emulator, a synthesiser — because for those the loop's own cost decides
+ * whether it can ever finish.
+ *
+ * The fill loop runs until the cursor is a full lead ahead of `currentTime`,
+ * re-reading the clock after every block. If a block takes longer to produce
+ * than the audio it contains, the clock gains on the cursor with every
+ * iteration and the exit condition recedes: all thirty-two blocks run, after
+ * the stale-drop loop before it ran its thirty-two. Each pump then holds the
+ * thread for seconds, the audio clock falls that far behind while it does, and
+ * the next pump repeats it. requestAnimationFrame ran four times a second, the
+ * emulator's own counter read 0.1 fps, and it looked like the machine was
+ * hundreds of times too slow. It was fully busy the whole time.
+ *
+ * It needs the source to be slower than real time to start, which is why an
+ * x86 desktop never sees it and a Snapdragon laptop always does. Reproduced on
+ * the desktop with Chrome's CPU throttle at 4x: single tasks of 22 seconds.
+ *
+ * So the pump also has a wall-clock budget, checked between blocks in both
+ * loops. A fast source never notices — it is done long before this — and a slow
+ * one gets one block per tick and an underrun, which this component already
+ * treats as the right thing when audio is short: come back next tick, never
+ * pad, never pile up. Half a 60Hz frame leaves the display the other half.
+ */
+const PUMP_BUDGET_MS = 8;
+
 /** Smallest request worth making, as a fraction of a second. */
 const MIN_WANT_SECONDS = 0.005;
 
@@ -370,6 +401,8 @@ export function AudioStream({
   const startedRef = useRef(false);
   const pumpingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Wall time the last pump took. Feeds the tick's back-off; see PUMP_BUDGET_MS. */
+  const lastPumpMsRef = useRef(0);
   const listeningForGestureRef = useRef(false);
   const lastResumeAttemptRef = useRef(0);
   const readyFiredRef = useRef(false);
@@ -729,6 +762,8 @@ export function AudioStream({
     if (typeof produce !== 'function') return;
 
     pumpingRef.current = true;
+    const startedAt = performance.now();
+    const overBudget = () => performance.now() - startedAt > PUMP_BUDGET_MS;
     try {
       const lead = clamp(settings.current.bufferMs, 10, 2000) / 1000;
       // Far enough behind that the queue cannot be caught up by playing what is
@@ -750,6 +785,10 @@ export function AudioStream({
           // the gap. Discard it and restart from the current instant.
           const dropWant = Math.max(1, Math.round(lead * actualRateRef.current));
           for (let dropped = 0; dropped < MAX_STALE_BLOCKS; dropped += 1) {
+            // Dropping is only cheap for a source that already has the audio. One
+            // that must make it pays a full block per iteration, and the cursor
+            // resync below is what actually repairs the timing anyway.
+            if (overBudget()) break;
             const pending = produce(dropWant);
             const stale: AudioStreamResult = isThenable(pending)
               ? ((await pending) as AudioStreamResult)
@@ -770,6 +809,13 @@ export function AudioStream({
       for (let i = 0; i < MAX_BLOCKS_PER_PUMP; i += 1) {
         const queued = cursor - now;
         if (queued >= lead) break;
+        if (i > 0 && overBudget()) {
+          // Out of time before the lead was filled: the source cannot outrun
+          // the clock right now. An underrun is the honest result — see
+          // PUMP_BUDGET_MS — and the next tick gets its own budget.
+          if (startedRef.current) noteUnderrun(cursor - now);
+          break;
+        }
 
         const wantSeconds = Math.max(MIN_WANT_SECONDS, lead - queued);
         const want = Math.max(1, Math.round(wantSeconds * actualRateRef.current));
@@ -803,6 +849,7 @@ export function AudioStream({
 
       cursorRef.current = cursor;
     } finally {
+      lastPumpMsRef.current = performance.now() - startedAt;
       pumpingRef.current = false;
     }
   }, [noteUnderrun, scheduleBlock]);
@@ -975,7 +1022,15 @@ export function AudioStream({
 
     // A third of the lead: often enough that a single missed tick cannot empty
     // the queue, rare enough not to be a busy loop.
-    const interval = clamp(settings.current.bufferMs / 3, 8, 60);
+    let interval = clamp(settings.current.bufferMs / 3, 8, 60);
+    // A pump that blew its budget means the source is slower than the clock.
+    // Re-arming the timer at the usual cadence would run it back to back and
+    // hand the whole thread to audio anyway, one block at a time. Waiting at
+    // least as long as it took keeps audio to half the thread; the display
+    // gets the rest, and audio underruns — which is the intended trade.
+    if (lastPumpMsRef.current > PUMP_BUDGET_MS) {
+      interval = Math.max(interval, Math.min(lastPumpMsRef.current, 250));
+    }
     timerRef.current = setTimeout(tick, interval);
   }, [pump, attemptResume, markRunning]);
 

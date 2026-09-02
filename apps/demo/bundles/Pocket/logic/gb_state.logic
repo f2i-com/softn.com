@@ -416,7 +416,14 @@ let GB_CTR = new Int32Array(40)
 // the default 90ms lead: enough to ride out a slow frame or a GC pause, few
 // enough that a machine which genuinely cannot keep up degrades smoothly
 // instead of spending progressively longer inside a single host call.
-let GB_MAX_CATCHUP_FRAMES = 4
+// One slice per drain, where it was four. A slice can run two frames' worth,
+// so four slices was up to eight emulated frames inside a single synchronous
+// audio pull — and the host's pump could make that pull thirty-two times per
+// tick. On a machine slower than real time that is what pinned the main thread
+// for seconds at a stretch (see PUMP_BUDGET_MS in AudioStream). Letting the
+// audio go short is the documented degradation; this makes each pull cost at
+// most two frames, so it actually can.
+let GB_MAX_CATCHUP_FRAMES = 1
 
 // ---------------------------------------------------------------------------
 // The two PPU countdowns, and why they are NOT in GB_CTR
