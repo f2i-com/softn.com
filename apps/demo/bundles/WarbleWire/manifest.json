@@ -16,6 +16,7 @@
     "assets": ["assets/icon.svg"]
   },
   "config": {
+    "execution": "worker",
     "window": {
       "title": "WarbleWire",
       "width": 1100,
