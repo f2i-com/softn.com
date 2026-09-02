@@ -14,11 +14,14 @@ const coreDistRoot = path.resolve(__dirname, '../../packages/@softn/core/dist');
 // actually loads. Copying core's dist wholesale duplicated 6 MB next to chunks
 // that do not reference it — dead weight in every deployment and every upload.
 //
-// If the off-main-thread script runtime is ever unparked, its worker resolves
-// the binary relative to ITSELF, here, so this line has to come back in the
-// same commit that re-enables it. Dev is unaffected either way: the middleware
-// above serves these files straight from core's dist.
-const WORKER_COPY_SKIP = new Set(['zipp_wasm_bg.wasm']);
+// The off-main-thread script runtime is now reachable (`?exec=worker`, see
+// SoftNRenderer), and its worker resolves the binary relative to ITSELF, here,
+// so the engine is copied after all. That is a second 5.5 MB of the same bytes
+// in every deployment for as long as the worker path is opt-in; when it is the
+// default, the main thread and the worker should share one URL instead. Dev is
+// unaffected either way: the middleware above serves these files straight from
+// core's dist.
+const WORKER_COPY_SKIP = new Set<string>();
 
 function copyDirRecursive(srcDir: string, destDir: string) {
   if (!fs.existsSync(srcDir)) return;

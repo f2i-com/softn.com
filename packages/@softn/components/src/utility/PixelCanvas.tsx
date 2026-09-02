@@ -392,7 +392,7 @@ export interface PixelCanvasProps {
    * up and nothing is decoded. A producer slower than the display should do
    * exactly that rather than resending the frame already on screen.
    */
-  getFrame?: () => PixelCanvasSource;
+  getFrame?: () => PixelCanvasSource | Promise<PixelCanvasSource>;
   /**
    * A frame as a prop, repainted whenever it changes.
    *
@@ -415,6 +415,14 @@ export interface PixelCanvasProps {
 
 /** `useLayoutEffect` on the client, `useEffect` where there is no layout. */
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+function isThenable<T>(value: unknown): value is Promise<T> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as { then?: unknown }).then === 'function'
+  );
+}
 
 /* -------------------------------------------------------------------------- */
 /* Component                                                                   */
@@ -471,6 +479,9 @@ export function PixelCanvas({
   const framesPaintedRef = useRef(0);
   const fpsSinceRef = useRef(0);
   const warnedRef = useRef(false);
+  /** A pull whose promise has not settled; see `issue` in `startLoop`. */
+  const inFlightRef = useRef(false);
+  const loopGenerationRef = useRef(0);
 
   // Everything the loop reads lives here, refreshed each render, so that a host
   // passing a fresh closure or a fresh palette array every render never
@@ -765,6 +776,69 @@ export function PixelCanvas({
     framesPaintedRef.current = 0;
     fpsSinceRef.current = -1;
 
+    // Each start is a generation. A pull that was in flight when the loop
+    // stopped resolves later; the generation it captured no longer matches, so
+    // its frame is dropped rather than painted onto a canvas that has since
+    // been told to stop, and a loop restarted in the meantime is not blocked by
+    // the old pull's `inFlight`.
+    const generation = ++loopGenerationRef.current;
+    inFlightRef.current = false;
+
+    const warnOnce = (error: unknown) => {
+      // A producer that throws is a bug in the producer. Tearing the canvas
+      // down over it would take the rest of the page's animation with it, so
+      // the frame is dropped and the last image stays up — and it is said
+      // once, because saying it sixty times a second helps nobody.
+      if (!warnedRef.current) {
+        warnedRef.current = true;
+        console.warn('PixelCanvas: getFrame threw; keeping the previous frame.', error);
+      }
+    };
+
+    // One pull. A synchronous producer is painted on the spot. An asynchronous
+    // one — a script function running in a worker returns a promise — is
+    // painted when it resolves, off the animation frame, and if that frame was
+    // new the next pull is issued immediately rather than at the next frame:
+    // the producer, not this loop, sets the pace, so a worker that can make
+    // 45 frames a second shows 45 and one that can make 90 is held by its own
+    // pacing (a frame that is not new stops the chain until the next
+    // requestAnimationFrame). At most one pull is ever in flight.
+    const issue = () => {
+      if (rafRef.current === 0 || inFlightRef.current) return;
+      const { getFrame: pull } = configRef.current;
+      if (!pull) return;
+      let produced: PixelCanvasSource | Promise<PixelCanvasSource> = null;
+      try {
+        produced = pull() as PixelCanvasSource | Promise<PixelCanvasSource>;
+      } catch (error) {
+        warnOnce(error);
+        return;
+      }
+      if (isThenable(produced)) {
+        inFlightRef.current = true;
+        produced.then(
+          (frame) => {
+            if (generation !== loopGenerationRef.current) return;
+            inFlightRef.current = false;
+            if (rafRef.current === 0) return;
+            if (frame !== null && frame !== undefined && paint(frame)) {
+              framesPaintedRef.current += 1;
+              issue();
+            }
+          },
+          (error) => {
+            if (generation !== loopGenerationRef.current) return;
+            inFlightRef.current = false;
+            warnOnce(error);
+          }
+        );
+        return;
+      }
+      if (produced !== null && produced !== undefined && paint(produced)) {
+        framesPaintedRef.current += 1;
+      }
+    };
+
     // Named `step` rather than `render` or `animate` on purpose: those names
     // are load-bearing elsewhere in SoftN, and a frame loop is the last place
     // to find out.
@@ -775,25 +849,8 @@ export function PixelCanvas({
       // frame lands inside the window it was drawn in.
       if (fpsSinceRef.current < 0) fpsSinceRef.current = time;
 
-      const { getFrame: pull, onFps: report } = configRef.current;
-      if (pull) {
-        let produced: PixelCanvasSource = null;
-        try {
-          produced = pull();
-        } catch (error) {
-          // A producer that throws is a bug in the producer. Tearing the canvas
-          // down over it would take the rest of the page's animation with it,
-          // so the frame is dropped and the last image stays up — and it is
-          // said once, because saying it sixty times a second helps nobody.
-          if (!warnedRef.current) {
-            warnedRef.current = true;
-            console.warn('PixelCanvas: getFrame threw; keeping the previous frame.', error);
-          }
-        }
-        if (produced !== null && produced !== undefined && paint(produced)) {
-          framesPaintedRef.current += 1;
-        }
-      }
+      const { onFps: report } = configRef.current;
+      issue();
 
       const elapsed = time - fpsSinceRef.current;
       if (elapsed >= 1000) {
