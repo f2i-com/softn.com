@@ -358,6 +358,44 @@ const App: React.FC = () => {
     []
   );
 
+  // `?open=<bundle url>`: the site's app pages link here with the bundle to
+  // edit. Same-origin .softn URLs only, read once on mount, and taken out of
+  // the address bar so a reload does not import it over edited work.
+  const handleImportProjectRef = useRef(handleImportProject);
+  handleImportProjectRef.current = handleImportProject;
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const open = params.get('open');
+    if (!open) return;
+    let url: URL;
+    try {
+      url = new URL(open, window.location.origin);
+    } catch {
+      return;
+    }
+    if (url.origin !== window.location.origin || !/\.softn$/i.test(url.pathname)) {
+      useWorkspaceStore.getState().addConsoleOutput('Only a .softn served by this site can be opened from a link.');
+      return;
+    }
+    params.delete('open');
+    const rest = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : ''));
+    void (async () => {
+      try {
+        const resp = await fetch(url.href, { credentials: 'same-origin' });
+        if (!resp.ok) throw new Error(`${url.pathname} responded ${resp.status}`);
+        const bytes = await resp.arrayBuffer();
+        // The directory serves every bundle as bundle.softn; the app's own
+        // name is the path segment before it.
+        const segments = url.pathname.split('/').filter(Boolean);
+        const name = segments.length >= 2 && /^bundle\.softn$/i.test(segments[segments.length - 1]) ? segments[segments.length - 2] : segments[segments.length - 1].replace(/\.softn$/i, '');
+        await handleImportProjectRef.current(new File([bytes], `${decodeURIComponent(name)}.softn`));
+      } catch (e) {
+        useWorkspaceStore.getState().addConsoleOutput(`Could not open ${url.pathname}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  }, []);
+
   // Persist workspace state whenever it changes (subscription catches all fields)
   useEffect(() => {
     if (!isHydrated) return;

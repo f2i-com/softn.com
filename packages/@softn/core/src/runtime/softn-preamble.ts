@@ -162,6 +162,48 @@ let softn = {
         host.call("ai.gpu.releaseAll", [], callback);
       }
     }
+  },
+  // The app's own database on the directory that publishes it. Records live
+  // in named collections; a query is {where, orderBy, limit, offset}; every
+  // result arrives in the callback, and a refusal arrives as {error}.
+  storage: {
+    insert: function(collection, data, callback) {
+      host.call("storage.op", ["insert", JSON.stringify({ collection: collection, data: data })], callback || function(){});
+    },
+    get: function(collection, id, callback) {
+      host.call("storage.op", ["get", JSON.stringify({ collection: collection, id: id })], callback || function(){});
+    },
+    update: function(collection, id, data, callback) {
+      host.call("storage.op", ["update", JSON.stringify({ collection: collection, id: id, data: data })], callback || function(){});
+    },
+    set: function(collection, id, data, callback) {
+      host.call("storage.op", ["set", JSON.stringify({ collection: collection, id: id, data: data })], callback || function(){});
+    },
+    remove: function(collection, id, callback) {
+      host.call("storage.op", ["remove", JSON.stringify({ collection: collection, id: id })], callback || function(){});
+    },
+    query: function(collection, options, callback) {
+      var q = typeof options === "object" && options !== null ? options : {};
+      host.call("storage.op", ["query", JSON.stringify({ collection: collection, where: q.where, orderBy: q.orderBy, limit: q.limit, offset: q.offset })], callback || function(){});
+    },
+    count: function(collection, where, callback) {
+      host.call("storage.op", ["count", JSON.stringify({ collection: collection, where: where })], callback || function(){});
+    },
+    collections: function(callback) {
+      host.call("storage.op", ["collections", "{}"], callback || function(){});
+    },
+    clear: function(collection, callback) {
+      host.call("storage.op", ["clear", JSON.stringify({ collection: collection })], callback || function(){});
+    },
+    kvGet: function(key, callback) {
+      host.call("storage.op", ["kvGet", JSON.stringify({ key: key })], callback || function(){});
+    },
+    kvSet: function(key, value, callback) {
+      host.call("storage.op", ["kvSet", JSON.stringify({ key: key, value: value })], callback || function(){});
+    },
+    kvRemove: function(key, callback) {
+      host.call("storage.op", ["kvRemove", JSON.stringify({ key: key })], callback || function(){});
+    }
   }
 };
 `;

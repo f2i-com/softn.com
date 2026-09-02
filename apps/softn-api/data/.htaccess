@@ -1,0 +1,11 @@
+# The directory's state lives here: the catalogue, every uploaded bundle,
+# each app's own database and the site's config with its admin key. None of
+# it is ever served; the API reads it from disk.
+<IfModule mod_authz_core.c>
+  Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order deny,allow
+  Deny from all
+</IfModule>
+Options -Indexes

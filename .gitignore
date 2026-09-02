@@ -31,3 +31,9 @@ target/
 
 # Test coverage
 coverage/
+
+# The directory API keeps its state under data/ when run in place; only the
+# rules that keep that directory unserved are part of the source.
+apps/softn-api/data/*
+!apps/softn-api/data/.htaccess
+!apps/softn-api/data/README.txt

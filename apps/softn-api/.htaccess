@@ -1,0 +1,20 @@
+# Everything under /api/ is answered by index.php. The site's own .htaccess
+# routes here too; this one is for a host that applies per-directory rules
+# first, and for serving this directory on its own.
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+# The library is included by index.php and is never a page of its own.
+<FilesMatch "^(lib/.*|.*\.md)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Deny from all
+  </IfModule>
+</FilesMatch>

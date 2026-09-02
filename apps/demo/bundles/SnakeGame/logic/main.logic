@@ -9,6 +9,16 @@
   let direction = "right"
   let gameOver = false
 
+  // The leaderboard lives on softn.com, in this app's own storage — the one
+  // capability permission.json asks for. Anyone playing can post a score and
+  // everyone sees the same top ten. Opened from a file rather than from the
+  // directory, the app has no server storage; the board says so and the game
+  // is unchanged.
+  let playerName = ""
+  let leaderboard = []
+  let boardStatus = "Loading the top ten…"
+  let lastPostedScore = -1
+
   function _init() {
     snake = [{x: 10, y: 10}, {x: 9, y: 10}, {x: 8, y: 10}]
     food = {x: 15, y: 10}
@@ -17,6 +27,9 @@
 
     let stored = localStorage.getItem("softn-snake-highscore")
     if (stored) { highScore = parseInt(stored) || 0 }
+    let storedName = localStorage.getItem("softn-snake-name")
+    if (storedName) { playerName = storedName }
+    loadLeaderboard()
 
     buildGridItems()
 
@@ -101,6 +114,7 @@
       }
       overlayText = "Game Over — Score: " + score
       buildGridItems()
+      postScore()
       return
     }
 
@@ -115,6 +129,7 @@
         }
         overlayText = "Game Over — Score: " + score
         buildGridItems()
+        postScore()
         return
       }
       si = si + 1
@@ -142,6 +157,43 @@
     buildGridItems()
   }
 
+  function setPlayerName(val) {
+    playerName = String(val).slice(0, 24)
+    localStorage.setItem("softn-snake-name", playerName)
+  }
+
+  function loadLeaderboard() {
+    softn.storage.query("scores", { orderBy: ["score", "desc"], limit: 10 }, function (r) {
+      if (!r || r.error) {
+        leaderboard = []
+        boardStatus = r && r.error ? r.error : "The leaderboard is not available."
+        return
+      }
+      let rows = []
+      let i = 0
+      while (i < r.records.length) {
+        let rec = r.records[i]
+        rows.push({ rank: i + 1, name: rec.data.name, score: rec.data.score })
+        i = i + 1
+      }
+      leaderboard = rows
+      boardStatus = rows.length === 0 ? "No scores yet. Be the first." : ""
+    })
+  }
+
+  function postScore() {
+    if (score <= 0 || score === lastPostedScore) { return }
+    lastPostedScore = score
+    let name = playerName.trim() === "" ? "Anonymous" : playerName.trim()
+    softn.storage.insert("scores", { name: name, score: score }, function (r) {
+      if (r && r.error) {
+        boardStatus = r.error
+        return
+      }
+      loadLeaderboard()
+    })
+  }
+
   function handleDPad(direction) {
     window.__snakeNextDir = direction
   }
@@ -157,6 +209,7 @@
     score = 0
     speed = 150
     gameOver = false
+    lastPostedScore = -1
     overlayText = ""
     spawnFood()
     running = true

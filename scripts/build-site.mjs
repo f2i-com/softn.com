@@ -125,6 +125,21 @@ ErrorDocument 404 default
 <IfModule mod_rewrite.c>
   RewriteEngine On
 
+  # The directory API: everything under /api/ is one PHP script. Before the
+  # static rules, because /api/apps/x/bundle.softn has an extension and would
+  # otherwise be refused as a missing asset.
+  RewriteRule ^api(?:/.*)?$ api/index.php [QSA,L]
+
+  # The directory's state — its database, every uploaded bundle, the config
+  # with the admin key — is never served. The data/.htaccess says so too.
+  RewriteRule ^data(?:/|$) - [R=404,L]
+
+  # An app's page, when a browser asks for it, comes through the API so the
+  # <meta> tags carry the app's own name and picture: a link pasted into a
+  # chat unfurls as the app, not as the site. Every other page is the SPA.
+  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  RewriteRule ^app/[^/]+/?$ api/index.php [L]
+
   # Canonical app roots keep relative assets and service-worker scopes correct.
   RewriteRule ^(web|builder|studio)$ $1/ [R=308,L,NE]
 
@@ -199,6 +214,20 @@ server {
     # --with-http_gzip_static_module; brotli_static needs the ngx_brotli module.
     # Both degrade to the on-the-fly gzip below when absent or when a file has
     # no twin.
+    # The directory API is PHP: hand /api/ to PHP-FPM, refuse /data/ outright,
+    # and let an app's page go through the API so its <meta> tags are its own.
+    location /data/ { return 404; }
+    location ~ ^/api(/|$) {
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
+        include fastcgi_params;
+    }
+    location ~ ^/app/[^/]+/?$ {
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
+        include fastcgi_params;
+    }
+
     brotli_static on;
     gzip_static on;
 
@@ -270,6 +299,34 @@ website document root so that this file sits beside \`index.html\`; keep the
 directory layout intact and make sure your upload includes the hidden
 \`.htaccess\` file.
 
+## The directory API (PHP)
+
+\`/api/\` is the app directory: the catalogue, uploads, comments, ratings,
+remixes and each published app's own database. It is plain PHP (8.1 or newer)
+with SQLite, and it keeps every piece of state as files under \`data/\`, so the
+host needs no database server and no accounts.
+
+What it needs from the host:
+
+- PHP 8.1+ with the \`pdo_sqlite\` and \`zip\` extensions (both are standard on
+  cPanel hosts; \`/api/health\` reports what it found).
+- \`data/\` writable by PHP. Upload it with the site and, if the first request
+  to \`/api/health\` says it is not writable, give it write permission (0775 or
+  0777 on shared hosting).
+- Upload limits large enough for a bundle: \`api/.user.ini\` asks for 64 MB on
+  PHP-FPM and CGI hosts. A mod_php host reads \`php_value\` from .htaccess
+  instead; if publishing a large bundle fails, raise \`upload_max_filesize\`
+  and \`post_max_size\` wherever this host takes them.
+
+On first use the API publishes the demo bundles into the directory and writes
+\`data/config.json\` — which holds the site's **admin key**. Keep that file
+private (it is, by the rules above) and use the key to moderate: approve or
+rename suggested categories, hide apps, remove comments. Back the directory up
+by copying \`data/\`; move it by copying it; reset it by emptying it.
+
+Publishing from a script: \`POST /api/apps\` with the bundle as a multipart
+field, as the raw body, or as base64 in JSON. \`GET /api\` lists the routes.
+
 ## Apache / cPanel
 
 The included \`.htaccess\` is ready for Apache 2.4. The host must permit
@@ -317,6 +374,7 @@ workers and browser permissions outside localhost.
 - \`/studio/\` — AI studio
 - \`/demos/\` — bundles used by the live site
 - \`/softn-files/\` — clearly separated, canonical \`.softn\` files for download
+- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
 \`BUILD-INFO.json\` records the exact SoftN revision, whether the source tree had
 uncommitted changes, and the Zipp revision/hash used by the browser runtime.
@@ -535,6 +593,29 @@ const demos = path.join(root, 'apps/softn-web/public/demos');
 requireDir(demos, 'The runtime');
 copyDir(demos, path.join(outDir, 'demos'));
 
+// The directory API travels with the site: the PHP under apps/softn-api goes
+// to dist/api, and dist/data — its state — starts out holding only the rules
+// that keep it unserved. Nothing in api/ or data/ is precompressed: PHP is
+// executed, not served, and the data is not ours to touch.
+function copyDirectoryApi() {
+  const apiSrc = path.join(root, 'apps/softn-api');
+  requireDir(apiSrc, 'The directory API');
+  const apiDest = path.join(outDir, 'api');
+  fs.mkdirSync(apiDest, { recursive: true });
+  for (const entry of fs.readdirSync(apiSrc, { withFileTypes: true })) {
+    if (['test', 'node_modules', 'package.json', 'data'].includes(entry.name)) continue;
+    const src = path.join(apiSrc, entry.name);
+    const dest = path.join(apiDest, entry.name);
+    if (entry.isDirectory()) copyDir(src, dest);
+    else if (entry.isFile()) fs.copyFileSync(src, dest);
+  }
+  const dataDest = path.join(outDir, 'data');
+  fs.mkdirSync(dataDest, { recursive: true });
+  for (const name of ['.htaccess', 'README.txt']) {
+    fs.copyFileSync(path.join(apiSrc, 'data', name), path.join(dataDest, name));
+  }
+}
+
 // Apache-2.0 section 4(a) says a distributed copy must carry the licence, and
 // dist/ IS the distributed copy — uploading it is the act of distributing.
 // Third-party terms are generated separately from the exact dependency graph.
@@ -560,7 +641,7 @@ function writeDeepLinkFallbacks() {
 
   fs.writeFileSync(
     path.join(outDir, '_redirects'),
-    `${apps.map((a) => `/${a}/*  /${a}/index.html  200`).join('\n')}\n/*  /index.html  200\n`,
+    `${apps.map((a) => `/${a}/*  /${a}/index.html  200`).join('\n')}\n/api/*  /api/index.php  200\n/*  /index.html  200\n`,
   );
 
   // GitHub Pages hands this file the original URL, so it forwards the path to
@@ -627,6 +708,8 @@ function precompressTree(dir, stats) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
+      // PHP is executed, not served, and the data directory is the API's own.
+      if (dir === outDir && (entry.name === 'api' || entry.name === 'data')) continue;
       precompressTree(full, stats);
       continue;
     }
@@ -690,6 +773,7 @@ function countFiles(dir) {
 }
 
 copyProjectLicences();
+copyDirectoryApi();
 const bundleCount = copyCanonicalBundles(demos);
 writeDeepLinkFallbacks();
 writeDeploymentFiles();
@@ -701,6 +785,7 @@ console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
 console.log('  dist/           landing page');
 console.log('  dist/demos/     .softn bundles');
 console.log(`  dist/softn-files/ canonical .softn bundles (${bundleCount} apps)`);
+console.log('  dist/api/       the directory API (PHP + SQLite); dist/data/ its state');
 console.log('  dist/.htaccess, nginx.conf.example, DEPLOY.md');
 console.log('  dist/BUILD-INFO.json');
 console.log('  *.br / *.gz     precompressed twins for brotli_static / gzip_static');

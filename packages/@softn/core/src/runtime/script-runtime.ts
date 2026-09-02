@@ -164,6 +164,12 @@ export interface ScriptRuntimeOptions {
    * before this existed and is always correct — just slower.
    */
   observedStateNames?: ReadonlySet<string>;
+  /**
+   * Where `softn.storage.*` sends its operations: the storage endpoint of
+   * the app in the directory that published it. Absent for an app opened
+   * from a file, which then has no server storage and is told so.
+   */
+  storageEndpoint?: string;
 }
 
 export interface ScriptLoadResult {
@@ -193,6 +199,12 @@ export interface PermissionConfig {
     ai?: AIPermissionConfig;
     gpu?: GpuPermissionConfig;
     sync?: { enabled?: boolean };
+    /**
+     * The app's own database on the directory that publishes it, reached
+     * through `softn.storage.*`. Unrelated to the manifest's legacy
+     * `permissions.storage` flag, which is about localStorage.
+     */
+    storage?: { enabled?: boolean };
   };
   /**
    * The bundle declared capabilities and the user has not answered yet.
@@ -498,6 +510,7 @@ export class SoftNScriptRuntime {
   private stateVarFingerprints: number[] | null = null;
   /** Identifiers the document can resolve; null means "assume all of them". */
   private observedStateNames: ReadonlySet<string> | null = null;
+  private storageEndpoint: string | null = null;
   /** State variables held back from syncing, for diagnostics only. */
   private vmOwnedStateNames: string[] = [];
   /** Guard: when true, sync functions must not overwrite VM state (async call in-flight) */
@@ -633,6 +646,7 @@ export class SoftNScriptRuntime {
     this.appId = appId;
     this.runtimeMode = options?.mode || 'main';
     this.observedStateNames = options?.observedStateNames ?? null;
+    this.storageEndpoint = options?.storageEndpoint ?? null;
     this.externalFunctions = externalFunctions ?? null;
     this.db = createDBNamespace(() => this.permissionConfig, appId);
     if (typeof importResolver === 'function') {
@@ -2036,6 +2050,8 @@ export class SoftNScriptRuntime {
         return this.handleGpuRelease(call);
       case 'ai.gpu.releaseAll':
         return this.handleGpuReleaseAll();
+      case 'storage.op':
+        return this.handleStorageOp(call);
       default:
         throw new Error(`Unknown host call: ${call.kind}`);
     }
@@ -2102,6 +2118,10 @@ export class SoftNScriptRuntime {
       case 'sync':
         if (!perms.sync?.enabled)
           throw new Error('Sync not permitted. Add sync.enabled to permission.json');
+        break;
+      case 'storage':
+        if (!perms.storage?.enabled)
+          throw new Error('Server storage not permitted. Add storage.enabled to permission.json');
         break;
       default:
         throw new Error(`Unknown capability: ${capability}. Add it to permission.json`);
@@ -2814,6 +2834,67 @@ export class SoftNScriptRuntime {
       reader.onerror = () => reject(new Error('Failed to read file'));
       reader.readAsDataURL(file);
     });
+  }
+
+  // ── Server storage (softn.storage.*) ──
+
+  /**
+   * One operation against the app's own database on the directory that
+   * published it. The runtime knows nothing of SQL: the script asks for
+   * records and keys, the request carries the operation and its arguments as
+   * JSON, and the server enforces its quotas and its limits. An app opened
+   * from a file rather than from a directory has no endpoint and is told so,
+   * in the same `{error}` shape every other refused call uses.
+   */
+  private async handleStorageOp(call: PendingHostCall): Promise<unknown> {
+    this.checkPermission('storage');
+    const [op, argsJson] = call.args;
+    if (!this.storageEndpoint) {
+      return {
+        error: 'This app has no server storage: it was not opened from a directory that publishes it.',
+      };
+    }
+    let args: Record<string, unknown> = {};
+    if (argsJson) {
+      try {
+        args = JSON.parse(argsJson) as Record<string, unknown>;
+      } catch {
+        return { error: 'The storage arguments are not valid JSON.' };
+      }
+    }
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 20_000);
+    this.netAbortControllers.add(abortController);
+    try {
+      const resp = await fetch(this.storageEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op, ...args }),
+        signal: abortController.signal,
+        credentials: 'same-origin',
+      });
+      const text = await resp.text();
+      let json: { ok?: boolean; result?: unknown; error?: string; retryAfter?: number } | null = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = null;
+      }
+      if (!resp.ok || !json || json.ok !== true) {
+        return {
+          error: json?.error ?? `The storage server answered ${resp.status}.`,
+          status: resp.status,
+          retryAfter: json?.retryAfter,
+        };
+      }
+      return json.result ?? null;
+    } catch (err) {
+      if (abortController.signal.aborted) return { error: 'The storage request timed out.' };
+      return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      clearTimeout(timeout);
+      this.netAbortControllers.delete(abortController);
+    }
   }
 
   // ── AI host call handlers ──

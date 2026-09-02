@@ -49,6 +49,8 @@ export interface WorkerRuntimeOptions {
    * host calls run here keep the live functions (`asset`, for audio sources).
    */
   externalFunctions?: Record<string, (...args: unknown[]) => unknown>;
+  /** Where `softn.storage.*` sends its operations; see ScriptRuntimeOptions. */
+  storageEndpoint?: string;
 }
 
 /**
@@ -204,7 +206,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       appId,
       importResolver,
       logicBasePath,
-      { mode: 'main', permissionConfig: options?.permissionConfig },
+      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint },
       options?.bundleFileProvider,
       options?.externalFunctions
     );

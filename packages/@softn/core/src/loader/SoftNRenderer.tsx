@@ -242,6 +242,13 @@ export interface SoftNRendererProps {
   executionPreference?: 'worker' | 'main';
 
   /**
+   * Where the script's `softn.storage.*` calls go: the storage endpoint of
+   * this app in the directory that published it. Absent for an app opened
+   * from a file, which then has no server storage.
+   */
+  storageEndpoint?: string;
+
+  /**
    * The bundle's parsed `permission.json`, forwarded to the script runtime so
    * capability checks reflect what the bundle actually declared.
    */
@@ -438,6 +445,7 @@ export function SoftNRenderer({
   logicBasePath,
   preIncludedLogicPaths,
   executionPreference,
+  storageEndpoint,
   permissionConfig,
   scriptExecutionMode = 'worker',
   resumeSavedSyncRoom = false,
@@ -856,6 +864,7 @@ export function SoftNRenderer({
                 mode: 'main',
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
+                storageEndpoint,
                 observedStateNames,
               },
               bundleFileProvider,
@@ -889,6 +898,7 @@ export function SoftNRenderer({
                 observedStateNames,
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
+                storageEndpoint,
                 bundleFileProvider,
                 externalFunctions: runtimeFunctions,
               }
@@ -906,6 +916,7 @@ export function SoftNRenderer({
                 mode: 'main',
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
+                storageEndpoint,
                 observedStateNames,
               },
               bundleFileProvider,
@@ -933,6 +944,7 @@ export function SoftNRenderer({
                 mode: 'main',
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
+                storageEndpoint,
                 observedStateNames,
               },
               bundleFileProvider,
@@ -1122,6 +1134,7 @@ export function SoftNRenderer({
     resolvedSource,
     resumeSavedSyncRoom,
     runtimePermissionConfig,
+    storageEndpoint,
     runtimePermissions,
     runtimePreIncludedLogicPaths,
     runtimeFunctions,

@@ -1,9 +1,11 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface TabInfo {
   id: string;
   name: string;
   icon?: string;
+  /** The app's slug in the site's directory, when it was opened from there. */
+  directorySlug?: string;
 }
 
 interface TabBarProps {
@@ -12,6 +14,8 @@ interface TabBarProps {
   onSelectTab: (id: string | null) => void;
   onCloseTab: (id: string) => void;
   onAddTab: () => void;
+  /** Hands the running app's bundle back as a file. */
+  onDownloadTab?: (id: string) => void;
 }
 
 const tabBarStyles = `
@@ -179,7 +183,174 @@ const tabBarStyles = `
     .softn-tab-close { width: 24px; height: 24px; font-size: 0.9rem; }
     .softn-tab-app { max-width: 150px; }
   }
+  .softn-tab-menu {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .softn-tab-menu-btn {
+    width: 32px;
+    height: calc(100% - 8px);
+    margin: 4px 0;
+    display: flex; align-items: center; justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #5a5a66;
+    font-size: 1.05rem;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .softn-tab-menu-btn:hover,
+  .softn-tab-menu-btn[aria-expanded="true"] {
+    color: #ececf0;
+    background: rgba(255, 255, 255, 0.05);
+  }
+  .softn-tab-menu-list {
+    position: absolute;
+    top: calc(100% + 2px);
+    right: 0;
+    min-width: 230px;
+    max-width: min(320px, calc(100vw - 16px));
+    background: #16161a;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    animation: softn-tab-slide-in 160ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .softn-tab-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border-radius: 6px;
+    color: #d4d4dc;
+    font-size: 0.8rem;
+    text-align: left;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    white-space: normal;
+    line-height: 1.35;
+  }
+  .softn-tab-menu-item:hover { background: rgba(255, 255, 255, 0.06); color: #fff; }
+  .softn-tab-menu-note { color: #8b8b96; font-size: 0.75rem; padding: 6px 10px 8px; line-height: 1.4; }
+  .softn-tab-menu-note a { color: #93c5fd; }
+  .softn-tab-menu-sep { height: 1px; background: rgba(255, 255, 255, 0.06); margin: 4px 6px; }
+  @media (pointer: coarse) {
+    .softn-tab-menu-btn { width: 44px; }
+    .softn-tab-menu-item { padding: 12px 12px; }
+  }
 `;
+
+/**
+ * What can be done with the app in the active tab, beyond running it: take
+ * its bundle away as a file — the exact bytes that were opened — and, for an
+ * app that came from the site's directory, go to its page, open it in Studio
+ * or Builder, or copy the link that opens it anywhere.
+ */
+function AppMenu({ tab, onDownload }: { tab: TabInfo; onDownload?: (id: string) => void }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const slug = tab.directorySlug ? encodeURIComponent(tab.directorySlug) : null;
+  const bundle = slug ? `/api/apps/${slug}/bundle.softn` : null;
+  const share = slug ? `${window.location.origin}/app/${slug}` : null;
+
+  const copy = async () => {
+    if (!share) return;
+    try {
+      await navigator.clipboard.writeText(share);
+      setCopied(true);
+      setTimeout(() => {
+        setCopied(false);
+        setOpen(false);
+      }, 900);
+    } catch {
+      setOpen(false);
+    }
+  };
+
+  return (
+    <div className="softn-tab-menu" ref={ref}>
+      <button
+        className="softn-tab-menu-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Actions for ${tab.name}`}
+        title={`Actions for ${tab.name}`}
+        onClick={() => setOpen((o) => !o)}
+      >
+        ⋯
+      </button>
+      {open && (
+        <div className="softn-tab-menu-list" role="menu">
+          {onDownload && (
+            <button
+              role="menuitem"
+              className="softn-tab-menu-item"
+              onClick={() => {
+                onDownload(tab.id);
+                setOpen(false);
+              }}
+            >
+              Download {tab.directorySlug || tab.name}.softn
+            </button>
+          )}
+          {slug ? (
+            <>
+              <div className="softn-tab-menu-sep" />
+              <a role="menuitem" className="softn-tab-menu-item" href={`/app/${slug}`}>
+                App page: comments, ratings, source
+              </a>
+              <a role="menuitem" className="softn-tab-menu-item" href={`/studio/?open=${encodeURIComponent(bundle!)}`}>
+                Edit in Studio
+              </a>
+              <a role="menuitem" className="softn-tab-menu-item" href={`/builder/?open=${encodeURIComponent(bundle!)}`}>
+                Edit in Builder
+              </a>
+              <a role="menuitem" className="softn-tab-menu-item" href={`/publish?remix=${slug}`}>
+                Publish a remix
+              </a>
+              <button role="menuitem" className="softn-tab-menu-item" onClick={copy}>
+                {copied ? 'Copied' : 'Copy share link'}
+              </button>
+            </>
+          ) : (
+            <div className="softn-tab-menu-note">
+              This app was opened from a file. <a href="/publish">Publish it</a> to share it, remix it or edit it
+              online.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function TabBar({
   tabs,
@@ -187,6 +358,7 @@ export function TabBar({
   onSelectTab,
   onCloseTab,
   onAddTab,
+  onDownloadTab,
 }: TabBarProps): React.ReactElement {
   const handleMiddleClick = useCallback(
     (e: React.MouseEvent, tabId: string) => {
@@ -199,6 +371,7 @@ export function TabBar({
   );
 
   const isHome = activeTabId === null;
+  const activeTab = isHome ? null : tabs.find((t) => t.id === activeTabId) ?? null;
 
   return (
     <>
@@ -268,6 +441,8 @@ export function TabBar({
             );
           })}
         </div>
+
+        {activeTab && <AppMenu tab={activeTab} onDownload={onDownloadTab} />}
 
         {/* Add tab button */}
         <button className="softn-tab-add" onClick={onAddTab} title="Open .softn file">

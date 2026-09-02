@@ -34,7 +34,7 @@ import type {
   UIFileState,
 } from './types/builder';
 import type { SerializedProject } from './stores/projectStore';
-import { openBundleFile } from './utils/bundleLoader';
+import { openBundleFile, loadBundle, type LoadedBundle } from './utils/bundleLoader';
 import { exportBundle, exportMultiFileBundle, saveBundleToFile } from './utils/bundleExporter';
 import { ToastContainer } from './components/feedback/ToastContainer';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
@@ -505,19 +505,13 @@ function App() {
     setShowNewProjectDialog(true);
   }, []);
 
-  const handleOpen = useCallback(async () => {
+  /**
+   * Put a loaded bundle on the canvas, replacing whatever is there. The file
+   * picker and a `?open=` link both end here; asking about unsaved work is
+   * the caller's, since a fresh page has none.
+   */
+  const applyLoadedBundle = useCallback(async (bundle: LoadedBundle) => {
     try {
-      const bundle = await openBundleFile();
-      if (!bundle) return;
-
-      // Confirm if there are unsaved changes
-      const isDirty = useProjectStore.getState().isDirty;
-      if (isDirty) {
-        if (!window.confirm('Open a new project? Unsaved changes will be lost.')) {
-          return;
-        }
-      }
-
       // Reset everything first (including saved file handle)
       fileHandleRef.current = null;
       resetCanvas();
@@ -648,6 +642,50 @@ function App() {
     loadSchemaEntities,
     loadSeedData,
   ]);
+
+  const handleOpen = useCallback(async () => {
+    const bundle = await openBundleFile();
+    if (!bundle) return;
+    if (useProjectStore.getState().isDirty) {
+      if (!window.confirm('Open a new project? Unsaved changes will be lost.')) return;
+    }
+    await applyLoadedBundle(bundle);
+  }, [applyLoadedBundle]);
+
+  // `?open=<bundle url>`: the site's app pages link here with the bundle to
+  // edit. Same-origin .softn URLs only — the value comes from the address bar
+  // and is not ours to trust — read once, on mount, and taken out of the
+  // address bar so a reload does not open it a second time over edited work.
+  const applyLoadedBundleRef = useRef(applyLoadedBundle);
+  applyLoadedBundleRef.current = applyLoadedBundle;
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const open = params.get('open');
+    if (!open) return;
+    let url: URL;
+    try {
+      url = new URL(open, window.location.origin);
+    } catch {
+      return;
+    }
+    if (url.origin !== window.location.origin || !/\.softn$/i.test(url.pathname)) {
+      toast.error('Only a .softn served by this site can be opened from a link.');
+      return;
+    }
+    params.delete('open');
+    const rest = params.toString();
+    window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : ''));
+    void (async () => {
+      try {
+        const resp = await fetch(url.href, { credentials: 'same-origin' });
+        if (!resp.ok) throw new Error(`${url.pathname} responded ${resp.status}`);
+        const bundle = await loadBundle(new Uint8Array(await resp.arrayBuffer()));
+        await applyLoadedBundleRef.current(bundle);
+      } catch (e) {
+        toast.error(`Could not open ${url.pathname}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  }, []);
 
   const handleSave = useCallback(async () => {
     try {
