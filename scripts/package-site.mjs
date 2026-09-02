@@ -94,8 +94,18 @@ function walk(dir, prefix = '') {
   }
   return out;
 }
-const files = walk(distDir).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+// The directory API's state lives under data/ and is never part of a release:
+// a dist/ that has been served locally holds a database, uploaded bundles and
+// a config with the site's admin key, none of which belongs on another host.
+// Only the rules that keep the directory unserved travel.
+const DATA_KEEP = new Set(['data/.htaccess', 'data/README.txt']);
+const files = walk(distDir)
+  .filter((name) => !(name === 'data' || name.startsWith('data/')) || DATA_KEEP.has(name))
+  .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 if (files.length === 0) fail('dist/ has no files.');
+for (const required of DATA_KEEP) {
+  if (!files.includes(required)) fail(`dist/${required} is missing; the directory would deploy unprotected.`);
+}
 if (files.length >= 0xffff) fail(`${files.length} files is more than a zip without zip64 can list.`);
 
 // Already compressed on disk; stored as they are.
@@ -287,6 +297,9 @@ for (let i = 0; i < count; i++) {
 for (const name of files) if (!seen.has(name)) problem(`${name}: in dist/ but not in the archive`);
 for (const name of seen) if (!files.includes(name)) problem(`${name}: in the archive but not in dist/`);
 if (!seen.has('.htaccess')) problem('.htaccess is not in the archive');
+for (const name of seen) {
+  if (/\.sqlite$/.test(name) || name === 'data/config.json' || name === 'data/seeded') problem(`${name}: the directory's state must not ship`);
+}
 
 if (problems > 0) {
   fs.rmSync(archivePath, { force: true });
