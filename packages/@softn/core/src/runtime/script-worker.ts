@@ -72,6 +72,9 @@ const workerImportResolver: ImportResolver = (path: string) => {
 // Import resolution utility (mirrors SoftNScriptRuntime.resolveImports)
 // ============================================================================
 
+/** Every path inlined so far in this script; reset per `init`. */
+let includedPaths = new Set<string>();
+
 async function resolveImports(
   code: string,
   visited: Set<string>,
@@ -97,14 +100,26 @@ async function resolveImports(
         `Circular import detected: "${resolvedPath}" is already in the import chain: ${[...visited].join(' → ')} → ${resolvedPath}`
       );
     }
+    // Once only, wherever it is imported from — the second inclusion of a file
+    // is a redeclaration of everything in it.
+    if (includedPaths.has(resolvedPath)) {
+      result = result.replace(full, () => `// [import already included: ${source}]`);
+      continue;
+    }
+    includedPaths.add(resolvedPath);
     visited.add(resolvedPath);
     const importedSource = await workerImportResolver(resolvedPath);
+    // The replacement is a function on purpose: a string replacement expands
+    // `$&`, `$'` and friends, and a source file with a `$'` in a comment came
+    // back spliced together with the code around the import — every
+    // declaration after it twice.
     if (importedSource) {
       const nested = await resolveImports(importedSource, visited, resolvedPath);
-      result = result.replace(full, nested);
+      result = result.replace(full, () => nested);
     } else {
-      result = result.replace(full, `// [import not found: ${source}]`);
+      result = result.replace(full, () => `// [import not found: ${source}]`);
     }
+    visited.delete(resolvedPath);
   }
   return result;
 }
@@ -171,8 +186,12 @@ self.onmessage = async (evt: MessageEvent) => {
         wasmAdapter.registerLocalStorageBridgeCustom(lsBridge);
       }
 
-      // Resolve imports
+      // Resolve imports. The shell may already have inlined some of the logic
+      // files and left their `import` lines in place; those paths arrive as
+      // pre-included and are skipped, as the main-thread runtime skips them.
       let resolvedCode = script.code;
+      const preIncluded = payload.preIncludedLogicPaths;
+      includedPaths = new Set<string>(Array.isArray(preIncluded) ? (preIncluded as string[]) : []);
       if (logicBasePath) {
         resolvedCode = await resolveImports(
           resolvedCode,
@@ -185,7 +204,12 @@ self.onmessage = async (evt: MessageEvent) => {
       const fullCode = VM_BRIDGE_PREAMBLE + resolvedCode;
       symbolMap = await wasmAdapter.initializeScript(fullCode);
 
-      // Extract state and functions
+      // Extract state and functions. A variable the template cannot observe is
+      // VM-owned: never read out, never written back — the main-thread
+      // runtime's partition, and the difference between mirroring 21 numbers a
+      // call and a 2 MB cartridge.
+      const observedNames = payload.observedStateNames;
+      const observed = Array.isArray(observedNames) ? new Set(observedNames as string[]) : null;
       stateVarNames = [];
       stateVarIndices = [];
       functionNames = [];
@@ -193,7 +217,7 @@ self.onmessage = async (evt: MessageEvent) => {
         if (BRIDGE_VARS.has(name)) continue;
         if (sym.scope === 'function') {
           functionNames.push(name);
-        } else {
+        } else if (!observed || observed.has(name)) {
           stateVarNames.push(name);
           workerState[name] = wasmAdapter.getGlobal(sym.index);
         }

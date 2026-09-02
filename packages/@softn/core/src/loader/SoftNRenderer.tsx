@@ -32,9 +32,10 @@ import {
   type BundleFileProvider,
   type PermissionConfig,
 } from '../runtime/script-runtime';
-// Worker runtime available but currently all calls route through main-thread WASM VM
-// for instant responsiveness. Can re-enable for heavy computation offloading if needed.
-// import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
+// The off-main-thread runtime. Reached only by `?exec=worker` for now; every
+// other path routes calls through the main-thread VM. See the note where
+// `forceWorker` is decided.
+import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
 import { ConsentPendingProvider } from './consent-gate';
 import { getXDB, setActiveXDBApp } from '../runtime/xdb';
 import { builtinHelpers } from '../runtime/helpers';
@@ -784,6 +785,31 @@ export function SoftNRenderer({
             }
           }
 
+          // Off-main-thread execution, opt-in by URL while it is a spike: the
+          // script runs in a dedicated worker and every script function the
+          // template binds returns a promise. What this buys is the main thread:
+          // an emulator that costs more than a display frame to advance no
+          // longer blocks the frame it is drawn in. What it does not yet have is
+          // the window-event, `softn.*` and file bridges — see script-worker.ts —
+          // so it is a measurement, not a mode.
+          // The shell rewrites the URL to /app/<name> before this runs, so the
+          // query is read from wherever it survives: the URL if it is still
+          // there, else a global a harness set before the app loaded.
+          const execParam =
+            (typeof location !== 'undefined'
+              ? new URLSearchParams(location.search).get('exec')
+              : null) ??
+            ((globalThis as unknown as Record<string, unknown>).__softnExec as string | undefined) ??
+            null;
+          const forceWorker = scriptExecutionMode === 'worker' && execParam === 'worker';
+          // `?exec=main` keeps the ordinary path but still installs the hook, so
+          // both sides of a measurement drive the script the same way.
+          const spikeHook = execParam !== null;
+          if (forceWorker) {
+            effectiveMode = 'worker';
+            console.info('[SoftN] Worker mode forced by ?exec=worker');
+          }
+
           let runtime: ScriptRuntimeHandle;
           if (effectiveMode === 'hybrid-worker') {
             // Main-thread-first hybrid: ALL function calls execute on the main-thread
@@ -826,6 +852,16 @@ export function SoftNRenderer({
                 mainRuntime.cleanup();
               },
             };
+          } else if (effectiveMode === 'worker' && forceWorker) {
+            runtime = createWorkerScriptRuntime(
+              formLogicContext,
+              runtimePermissions,
+              appId,
+              importResolver,
+              logicBasePath,
+              observedStateNames,
+              runtimePreIncludedLogicPaths
+            );
           } else if (effectiveMode === 'worker') {
             // Same as hybrid: use main-thread VM for all calls. The WASM engine
             // is fast enough to run everything on the main thread without blocking UI.
@@ -890,6 +926,18 @@ export function SoftNRenderer({
 
               // Populate the mutable context state for subsequent function calls
               Object.assign(scriptState, result.state);
+
+              // The spike's way in for a harness: the file bridge is not in the
+              // worker yet, so a cartridge is handed to the script directly.
+              if (spikeHook && typeof window !== 'undefined') {
+                (window as unknown as Record<string, unknown>).__softnSpike = {
+                  call: (name: string, ...args: unknown[]) => {
+                    const fn = result.functions[name];
+                    if (typeof fn !== 'function') throw new Error(`no script function ${name}`);
+                    return fn(...args);
+                  },
+                };
+              }
 
               // Merge script state into componentState and set functions
               setState((prev) => {

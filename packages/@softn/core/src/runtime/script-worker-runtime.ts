@@ -105,6 +105,19 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private lsDirty = true;
   /** Maps worker-created temp IDs (_wk_*) to real XDB IDs. */
   private tempIdMap = new Map<string, string>();
+  /**
+   * The state variables the template can observe. The worker mirrors only
+   * these; everything else stays VM-owned — the same partition the main-thread
+   * runtime makes, for the same reason (see its `partitionStateVars`): a
+   * variable nothing reads must not be pulled out of the VM on every call, and
+   * one that is never read out must never be written back either.
+   */
+  private observedStateNames: ReadonlySet<string> | null = null;
+  /**
+   * Logic files the shell inlined before handing the script over; their
+   * `import` lines are already satisfied and must not be resolved again.
+   */
+  private preIncludedLogicPaths: string[] = [];
   /** Performance tracking for worker RPC calls. */
   private perfCallCount = 0;
   private perfTotalMs = 0;
@@ -115,13 +128,17 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     permissions?: AppPermissions,
     appId?: string,
     importResolver?: ImportResolver,
-    logicBasePath?: string
+    logicBasePath?: string,
+    observedStateNames?: ReadonlySet<string>,
+    preIncludedLogicPaths?: readonly string[]
   ) {
     this.context = context;
     this.importResolver = importResolver;
     this.permissions = permissions;
     this.appId = appId;
     this.logicBasePath = logicBasePath;
+    this.observedStateNames = observedStateNames ?? null;
+    this.preIncludedLogicPaths = preIncludedLogicPaths ? [...preIncludedLogicPaths] : [];
     this.safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
     // Use a static URL reference so bundlers can emit and rewrite the worker asset path.
     this.workerUrl = new URL('./core-runtime/runtime/script-worker.js', import.meta.url);
@@ -384,6 +401,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       permissions: this.permissions,
       appId: this.appId,
       logicBasePath: this.logicBasePath,
+      observedStateNames: this.observedStateNames ? [...this.observedStateNames] : null,
+      preIncludedLogicPaths: this.preIncludedLogicPaths,
       dbSnapshot: this.getDBSnapshot(),
       lsSnapshot: this.getLocalStorageSnapshot(),
       syncStatus: this.getSyncStatus(),
@@ -527,7 +546,17 @@ export function createWorkerScriptRuntime(
   permissions?: AppPermissions,
   appId?: string,
   importResolver?: ImportResolver,
-  logicBasePath?: string
+  logicBasePath?: string,
+  observedStateNames?: ReadonlySet<string>,
+  preIncludedLogicPaths?: readonly string[]
 ): ScriptRuntimeHandle {
-  return new WorkerScriptRuntime(context, permissions, appId, importResolver, logicBasePath);
+  return new WorkerScriptRuntime(
+    context,
+    permissions,
+    appId,
+    importResolver,
+    logicBasePath,
+    observedStateNames,
+    preIncludedLogicPaths
+  );
 }
