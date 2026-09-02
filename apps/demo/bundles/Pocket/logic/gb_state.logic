@@ -461,6 +461,18 @@ let GB_PPU_STATD = -1
 // gbMachine_loadState copies it back into here.
 let GB_PPU_FRAME = 0
 
+// 1 while the machine is emulating a frame that nobody will present. Set and
+// cleared by gbMachine_getSamples around its catch-up, and read by
+// gbPpu_advance at the one point per scanline where the pixels would be
+// produced: the schedule — modes, LY, STAT, the window line counter, VBlank,
+// the frame count — runs exactly as before and only the pixel work is left
+// out. A frame with any line skipped is not swapped into GB_FB_PRESENT
+// (gbPpu_skipped remembers), so what the host is handed is always a whole,
+// rendered frame. Neither is in the save state: SKIP is only ever 1 inside a
+// single getSamples call, and skipped is reset at the VBlank edge and on load.
+let GB_PPU_SKIP = 0
+let gbPpu_skipped = 0
+
 let GB_F_SAMPLE_ACC = 0
 let GB_F_CYCLES_PER_SAMPLE = 1
 let GB_F_HOST_RATE = 2
@@ -638,6 +650,8 @@ function gbState_reset() {
   GB_REG16[GB_R16_SP] = 0xfffe
   GB_REG16[GB_R16_PC] = 0x0100
   GB_CPUF.fill(0)
+  // The seven runtime flags are plain numbers over that array — gb_cpu.logic.
+  gbCpu_syncFlagsIn()
 
   GB_WRAM.fill(0)
   GB_HRAM.fill(0)
@@ -664,6 +678,9 @@ function gbState_reset() {
   GB_AUDIO_RING.fill(0)
 
   GB_CTR.fill(0)
+  // DIV and the reload flag are plain numbers over two of those slots —
+  // gb_timer.logic. Before gbTimer_syncLive(), which reads DIV.
+  gbTimer_syncIn()
   GB_CTR[GB_C_PPU_MODE] = GB_MODE_OAM
   GB_CTR[GB_C_PPU_MODE3] = 172
   GB_CTR[GB_C_STAT_DELAY] = -1

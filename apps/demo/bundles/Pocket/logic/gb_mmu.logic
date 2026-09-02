@@ -311,7 +311,7 @@ function gbMmu_readIo(addr) {
     // itself happens in STOP, not here.
     if (r === 0x4d) {
       if (GB_CPUF[GB_P_GBC] === 0) { return 0xff }
-      return ((GB_CPUF[GB_P_DOUBLE] << 7) | GB_CPUF[GB_P_SPEEDSW] | 0x7e) & 0xff
+      return ((gbCpu_double << 7) | gbCpu_speedSw | 0x7e) & 0xff
     }
 
     // HDMA source/destination are write-only.
@@ -403,7 +403,7 @@ function gbMmu_writeIo(addr, v) {
 
     // KEY1 — arm a speed switch. STOP performs it.
     if (r === 0x4d) {
-      if (GB_CPUF[GB_P_GBC] === 1) { GB_CPUF[GB_P_SPEEDSW] = val & 1 }
+      if (GB_CPUF[GB_P_GBC] === 1) { gbCpu_speedSw = val & 1 }
       return
     }
 

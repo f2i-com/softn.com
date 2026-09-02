@@ -87,6 +87,20 @@
 // The per-dot FIFO this replaced measured 13.8ms.
 //
 // ---------------------------------------------------------------------------
+// FRAMES NOBODY SEES
+// ---------------------------------------------------------------------------
+//
+// A frame emulated inside gbMachine_getSamples' catch-up is never the one
+// getFrame presents — the next getFrame emulates and presents its own. While
+// GB_PPU_SKIP is 1, gbPpu_advance calls gbPpu_skipLine instead of
+// gbPpu_renderLine: the schedule is untouched, the window line counter is
+// maintained, and the pixels are simply not produced. The VBlank swap is
+// withheld for a frame with any skipped line, so GB_FB_PRESENT only ever holds
+// a whole rendered frame. Measured on Pokémon Yellow: a catch-up call drops
+// from 11.5ms to 8.1ms, and on a machine that cannot hold 60Hz about half the
+// emulated frames are catch-up frames.
+//
+// ---------------------------------------------------------------------------
 // THE TILE-ROW DECODE CACHE
 // ---------------------------------------------------------------------------
 //
@@ -647,6 +661,26 @@ function gbPpu_drawSprites(fbase, ly) {
 // sprite list and every register are the ones the line started with.
 // ===========================================================================
 
+// The schedule's share of gbPpu_renderLine and none of the pixels. Everything a
+// later line or frame can observe has to come out the same: the early return
+// for a line off the bottom, GB_C_WINDOW_SEEN (which gbPpu_advance turns into
+// the window line counter at the end of mode 3), and the window test itself,
+// clause for clause. Sprite scanning has already happened — it sets the mode
+// 3 length and is done by the caller either way.
+function gbPpu_skipLine() {
+  gbPpu_skipped = 1
+  let ly = GB_IO[0x44]
+  if (ly >= GB_SCREEN_H) { return }
+  GB_CTR[GB_C_WINDOW_SEEN] = 0
+  let lcdc = GB_IO[0x40]
+  if ((lcdc & 0x20) !== 0) {
+    let wx = GB_IO[0x4b]
+    if (ly >= GB_IO[0x4a] && wx >= 7 && wx <= 166 && wx - 7 < GB_SCREEN_W) {
+      GB_CTR[GB_C_WINDOW_SEEN] = 1
+    }
+  }
+}
+
 function gbPpu_renderLine() {
   let ly = GB_IO[0x44]
   if (ly >= GB_SCREEN_H) { return }
@@ -876,7 +910,11 @@ function gbPpu_advance() {
       if (len > 289) { len = 289 }
       GB_CTR[GB_C_PPU_MODE3] = len
       GB_PPU_DOTS = GB_PPU_DOTS + len
-      gbPpu_renderLine()
+      if (GB_PPU_SKIP === 0) {
+        gbPpu_renderLine()
+      } else {
+        gbPpu_skipLine()
+      }
       gbPpu_setMode(GB_MODE_PIXEL)
 
     } else if (mode === GB_MODE_PIXEL) {
@@ -904,9 +942,14 @@ function gbPpu_advance() {
         // because every one of the 144 lines is rewritten in full on every
         // frame the LCD is on, so the buffer being drawn into is completely
         // replaced before it is presented again.
-        let swap = GB_FB
-        GB_FB = GB_FB_PRESENT
-        GB_FB_PRESENT = swap
+        // A frame with a skipped line is not a picture; keep presenting the
+        // last one that is. See FRAMES NOBODY SEES above.
+        if (gbPpu_skipped === 0) {
+          let swap = GB_FB
+          GB_FB = GB_FB_PRESENT
+          GB_FB_PRESENT = swap
+        }
+        gbPpu_skipped = 0
         gbPpu_buildPalette()
         gbMmu_requestIrq(GB_IRQ_VBLANK)
       } else {
@@ -1087,6 +1130,8 @@ function gbPpu_writeReg(addr, v) {
 // ===========================================================================
 
 function gbPpu_reset() {
+  GB_PPU_SKIP = 0
+  gbPpu_skipped = 0
   GB_IO[0x40] = 0x91
   GB_IO[0x41] = 0x85
   GB_IO[0x42] = 0

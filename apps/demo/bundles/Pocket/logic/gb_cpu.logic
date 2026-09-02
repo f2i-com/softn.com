@@ -88,6 +88,56 @@ let gbCpu_BOOT_REGS = Uint8Array.from([
 let gbCpu_BOOT_DIV = Uint16Array.from([0xabcc, 0xabcc, 0xabcc, 0xd80a, 0xd80a, 0x2680])
 
 // ---------------------------------------------------------------------------
+// THE SEVEN FLAGS gbCpu_step READS EVERY INSTRUCTION ARE PLAIN NUMBERS
+//
+// IME, the pending EI, halted, stopped, the halt bug, double speed and the
+// armed speed switch are consulted on the way into and out of every single
+// instruction: two reads before the fetch, one inside it, two after the
+// handler, and gb_machine's quiet span reads the speed. As Uint8Array slots
+// that was six typed-array reads an instruction at ~17ns each on the shipping
+// engine, against ~4ns for a plain top-level number. Measured on Pokémon
+// Yellow, together with the timer's two slots (gb_timer.logic): about 8% of a
+// frame.
+//
+// GB_CPUF[GB_P_*] stays the canonical form, because it is what goes into a
+// save state (CONTRACT.md §2.1). gbCpu_syncFlagsOut() copies the seven into
+// it before a save; gbCpu_syncFlagsIn() copies them back after a load or a
+// reset has written the array behind this file's back. Nothing reads the
+// array slots in between. GB_P_GBC is read per scanline, not per instruction,
+// and stays where it is.
+//
+// The writers outside this file are gb_ops (HALT, STOP, EI, DI, RETI) and
+// gb_mmu (KEY1); gb_machine reads the speed. All of them use the scalars.
+// ---------------------------------------------------------------------------
+let gbCpu_ime = 0
+let gbCpu_imePending = 0
+let gbCpu_halted = 0
+let gbCpu_stopped = 0
+let gbCpu_haltBug = 0
+let gbCpu_double = 0
+let gbCpu_speedSw = 0
+
+function gbCpu_syncFlagsOut() {
+  GB_CPUF[GB_P_IME] = gbCpu_ime
+  GB_CPUF[GB_P_IME_PENDING] = gbCpu_imePending
+  GB_CPUF[GB_P_HALTED] = gbCpu_halted
+  GB_CPUF[GB_P_STOPPED] = gbCpu_stopped
+  GB_CPUF[GB_P_HALTBUG] = gbCpu_haltBug
+  GB_CPUF[GB_P_DOUBLE] = gbCpu_double
+  GB_CPUF[GB_P_SPEEDSW] = gbCpu_speedSw
+}
+
+function gbCpu_syncFlagsIn() {
+  gbCpu_ime = GB_CPUF[GB_P_IME]
+  gbCpu_imePending = GB_CPUF[GB_P_IME_PENDING]
+  gbCpu_halted = GB_CPUF[GB_P_HALTED]
+  gbCpu_stopped = GB_CPUF[GB_P_STOPPED]
+  gbCpu_haltBug = GB_CPUF[GB_P_HALTBUG]
+  gbCpu_double = GB_CPUF[GB_P_DOUBLE]
+  gbCpu_speedSw = GB_CPUF[GB_P_SPEEDSW]
+}
+
+// ---------------------------------------------------------------------------
 // Reset
 // ---------------------------------------------------------------------------
 
@@ -116,16 +166,16 @@ function gbCpu_resetModel(model, gbc) {
   GB_REG16[GB_R16_SP] = 0xfffe
   GB_REG16[GB_R16_PC] = 0x0100
 
-  GB_CPUF[GB_P_IME] = 0
-  GB_CPUF[GB_P_IME_PENDING] = 0
-  GB_CPUF[GB_P_HALTED] = 0
-  GB_CPUF[GB_P_STOPPED] = 0
-  GB_CPUF[GB_P_HALTBUG] = 0
-  GB_CPUF[GB_P_DOUBLE] = 0
-  GB_CPUF[GB_P_SPEEDSW] = 0
+  gbCpu_ime = 0
+  gbCpu_imePending = 0
+  gbCpu_halted = 0
+  gbCpu_stopped = 0
+  gbCpu_haltBug = 0
+  gbCpu_double = 0
+  gbCpu_speedSw = 0
   GB_CPUF[GB_P_GBC] = gbc ? 1 : 0
 
-  GB_CTR[GB_C_DIV] = gbCpu_BOOT_DIV[m]
+  gbTimer_div = gbCpu_BOOT_DIV[m]
 }
 
 // The entry point gb_machine calls. Model selection is the reference's 'auto':
@@ -171,8 +221,8 @@ function gbCpu_fetchU8() {
     v = gbMmu_read(pc)
   }
 
-  if (GB_CPUF[GB_P_HALTBUG] === 1) {
-    GB_CPUF[GB_P_HALTBUG] = 0
+  if (gbCpu_haltBug === 1) {
+    gbCpu_haltBug = 0
   } else {
     GB_REG16[GB_R16_PC] = (pc + 1) & 0xffff
   }
@@ -223,7 +273,7 @@ function gbCpu_step() {
   // fetch, so PC does not move and no bus access happens. gbCpu_serviceIrq
   // is what wakes it, and gb_machine calls that first, so by the time we get
   // here the sleep is real.
-  if (GB_CPUF[GB_P_HALTED] === 1) { return 4 }
+  if (gbCpu_halted === 1) { return 4 }
 
   // Stopped: as halted, but the wake condition is a button rather than an
   // interrupt. GB_PAD[0] is the live mask, active high, so any held button
@@ -236,9 +286,9 @@ function gbCpu_step() {
   // one that stops with the LCD still running, which the reference's two-byte-
   // NOP STOP let it get away with — wedges the emulator permanently, and a
   // frozen screen is a far worse failure than a stop that ends a frame early.
-  if (GB_CPUF[GB_P_STOPPED] === 1) {
+  if (gbCpu_stopped === 1) {
     if (GB_PAD[0] !== 0 || gbMmu_irqPending !== 0) {
-      GB_CPUF[GB_P_STOPPED] = 0
+      gbCpu_stopped = 0
     } else {
       return 4
     }
@@ -249,9 +299,28 @@ function gbCpu_step() {
   // still set coming out, a whole instruction has passed since EI and IME can
   // be promoted. EI itself is the case where it was clear going in, so EI does
   // not enable itself. DI clears both, so a DI immediately after an EI wins.
-  let eiBefore = GB_CPUF[GB_P_IME_PENDING]
+  let eiBefore = gbCpu_imePending
 
-  let op = gbCpu_fetchU8()
+  // The opcode fetch is gbCpu_fetchU8's body, inline. It is the one fetch
+  // every instruction makes, and a call into the VM costs ~30ns on the
+  // shipping engine — measured at 1.7% of a frame. Immediates still go through
+  // gbCpu_fetchU8, and the two must stay byte for byte the same.
+  let pc = GB_REG16[GB_R16_PC]
+  let op = 0
+  if (pc < 0x8000 && gbMmu_busy === 0 && gbCart_present === 1) {
+    if (pc < 0x4000) {
+      op = GB_ROM[gbCart_baseLo + pc]
+    } else {
+      op = GB_ROM[gbCart_baseHi + pc]
+    }
+  } else {
+    op = gbMmu_read(pc) & 0xff
+  }
+  if (gbCpu_haltBug === 1) {
+    gbCpu_haltBug = 0
+  } else {
+    GB_REG16[GB_R16_PC] = (pc + 1) & 0xffff
+  }
   // The table read and the call are two statements on purpose. zipp evaluates
   // `GB_OPS[op]()` as a member call — it re-resolves the callee with a receiver
   // and takes a slow path that measured 88ns against 39ns for the split form
@@ -260,9 +329,9 @@ function gbCpu_step() {
   let handler = GB_OPS[op]
   let cycles = handler()
 
-  if (eiBefore === 1 && GB_CPUF[GB_P_IME_PENDING] === 1) {
-    GB_CPUF[GB_P_IME] = 1
-    GB_CPUF[GB_P_IME_PENDING] = 0
+  if (eiBefore === 1 && gbCpu_imePending === 1) {
+    gbCpu_ime = 1
+    gbCpu_imePending = 0
   }
 
   if (op === 0x76) {
@@ -273,12 +342,12 @@ function gbCpu_step() {
     // inside the opcode because the answer depends on the interrupt state at
     // the instant the instruction retired.
     if (
-      GB_CPUF[GB_P_HALTED] === 1 &&
-      GB_CPUF[GB_P_IME] === 0 &&
+      gbCpu_halted === 1 &&
+      gbCpu_ime === 0 &&
       gbMmu_irqPending !== 0
     ) {
-      GB_CPUF[GB_P_HALTED] = 0
-      GB_CPUF[GB_P_HALTBUG] = 1
+      gbCpu_halted = 0
+      gbCpu_haltBug = 1
     }
   } else if (op === 0x10) {
     // STOP on a CGB with KEY1 bit 0 armed is not a stop at all — it is the
@@ -290,13 +359,13 @@ function gbCpu_step() {
     // Hardware stalls about 2050 M-cycles across the switch with the LCD
     // blanked. That is not modelled: the instruction keeps the 4 T-cycles
     // gb_ops returned, as in the reference.
-    if (GB_CPUF[GB_P_SPEEDSW] === 1) {
-      GB_CPUF[GB_P_SPEEDSW] = 0
-      GB_CPUF[GB_P_STOPPED] = 0
-      if (GB_CPUF[GB_P_DOUBLE] === 1) {
-        GB_CPUF[GB_P_DOUBLE] = 0
+    if (gbCpu_speedSw === 1) {
+      gbCpu_speedSw = 0
+      gbCpu_stopped = 0
+      if (gbCpu_double === 1) {
+        gbCpu_double = 0
       } else {
-        GB_CPUF[GB_P_DOUBLE] = 1
+        gbCpu_double = 1
       }
     }
   }
@@ -325,13 +394,13 @@ function gbCpu_serviceIrq() {
   // A pending enabled interrupt wakes the CPU whether or not IME is set — that
   // is how a HALT with interrupts disabled is meant to end (Pan Docs §Halt).
   // The wake happens even when the dispatch below does not.
-  if (GB_CPUF[GB_P_HALTED] === 1) { GB_CPUF[GB_P_HALTED] = 0 }
-  if (GB_CPUF[GB_P_STOPPED] === 1) { GB_CPUF[GB_P_STOPPED] = 0 }
+  if (gbCpu_halted === 1) { gbCpu_halted = 0 }
+  if (gbCpu_stopped === 1) { gbCpu_stopped = 0 }
 
-  if (GB_CPUF[GB_P_IME] === 0) { return 0 }
+  if (gbCpu_ime === 0) { return 0 }
 
-  GB_CPUF[GB_P_IME] = 0
-  GB_CPUF[GB_P_IME_PENDING] = 0
+  gbCpu_ime = 0
+  gbCpu_imePending = 0
 
   // Priority: lowest bit number first. An if-chain rather than a loop — five
   // iterations of loop overhead on every dispatch, and VBlank is by far the
