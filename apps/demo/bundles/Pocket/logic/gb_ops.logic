@@ -686,12 +686,12 @@ function gbOps_buildTables() {
   // is deliberately left alone here.
   GB_OPS[0x10] = function () {
     gbCpu_fetchU8()
-    if (GB_CPUF[GB_P_SPEEDSW] === 1) {
-      GB_CPUF[GB_P_DOUBLE] = GB_CPUF[GB_P_DOUBLE] === 1 ? 0 : 1
-      GB_CPUF[GB_P_SPEEDSW] = 0
+    if (gbCpu_speedSw === 1) {
+      gbCpu_double = gbCpu_double === 1 ? 0 : 1
+      gbCpu_speedSw = 0
       return 4
     }
-    GB_CPUF[GB_P_STOPPED] = 1
+    gbCpu_stopped = 1
     return 4
   }
 
@@ -1000,7 +1000,7 @@ function gbOps_buildTables() {
   // 0x76 HALT. Raising the flag is all this does — gb_cpu owns the halt bug
   // (HALT with IME clear and IE & IF non-zero) and the wake-up condition.
   GB_OPS[0x76] = function () {
-    GB_CPUF[GB_P_HALTED] = 1
+    gbCpu_halted = 1
     return 4
   }
 
@@ -1077,8 +1077,8 @@ function gbOps_buildTables() {
   }
   GB_OPS[0xd9] = function () {
     GB_REG16[GB_R16_PC] = gbCpu_pop16() & 0xffff
-    GB_CPUF[GB_P_IME] = 1
-    GB_CPUF[GB_P_IME_PENDING] = 0
+    gbCpu_ime = 1
+    gbCpu_imePending = 0
     return 16
   }
 
@@ -1192,13 +1192,13 @@ function gbOps_buildTables() {
 
   // 0xF3 DI — immediate, and it cancels an EI that has not landed yet.
   GB_OPS[0xf3] = function () {
-    GB_CPUF[GB_P_IME] = 0
-    GB_CPUF[GB_P_IME_PENDING] = 0
+    gbCpu_ime = 0
+    gbCpu_imePending = 0
     return 4
   }
   // 0xFB EI — delayed by one instruction; gb_cpu promotes the pending flag.
   GB_OPS[0xfb] = function () {
-    GB_CPUF[GB_P_IME_PENDING] = 1
+    gbCpu_imePending = 1
     return 4
   }
 

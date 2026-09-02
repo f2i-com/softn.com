@@ -125,6 +125,14 @@ exact. Read that file's header comment for the reasoning; this is the index.
 | `GB_REG16` | `Uint16Array(2)` | `GB_R16_SP=0 GB_R16_PC=1` |
 | `GB_CPUF` | `Uint8Array(8)` | `GB_P_IME=0 GB_P_IME_PENDING=1 GB_P_HALTED=2 GB_P_STOPPED=3 GB_P_HALTBUG=4 GB_P_DOUBLE=5 GB_P_SPEEDSW=6 GB_P_GBC=7`, each 0 or 1 |
 
+At runtime the first seven live in plain numbers — `gbCpu_ime`,
+`gbCpu_imePending`, `gbCpu_halted`, `gbCpu_stopped`, `gbCpu_haltBug`,
+`gbCpu_double`, `gbCpu_speedSw` — because `gbCpu_step` reads them on every
+instruction (the note in `gb_cpu.logic` has the measurement). `GB_CPUF` is the
+save-state form: `gbCpu_syncFlagsOut()` fills it before a save and
+`gbCpu_syncFlagsIn()` reloads the seven after a load or a reset. Code reads and
+writes the scalars, never those slots. `GB_P_GBC` stays in the array.
+
 `F` is stored **packed**, not as four booleans. `GB_FLAG_Z=0x80 GB_FLAG_N=0x40
 GB_FLAG_H=0x20 GB_FLAG_C=0x10`. The low nibble is always zero on hardware:
 **every** write to `GB_REG[GB_R_F]` masks with `0xF0`. A typical ALU op sets all
@@ -194,6 +202,11 @@ elsewhere. `GB_FCTR` is `Float64Array(8)` and holds the genuinely fractional
 values: `GB_F_SAMPLE_ACC`, `GB_F_CYCLES_PER_SAMPLE`, `GB_F_HOST_RATE`,
 `GB_F_SAMPLES_PER_FRAME`, `GB_F_FPS`. Cycles-per-sample is 87.3813… at 48kHz;
 truncating it drifts audibly inside a minute, so it has to be a double.
+
+`GB_C_DIV` and `GB_C_TIMER_RELOADED` are touched on every instruction and live
+in `gbTimer_div` / `gbTimer_reloaded` at runtime; the slots are the save-state
+form, written by `gbTimer_syncOut()` before a save and read back by
+`gbTimer_syncIn()` after a load or a reset, before `gbTimer_syncLive()`.
 
 ### 2.6 Cartridge
 
@@ -407,6 +420,8 @@ gbPpu_dirtyVram(flat)       // exactly: GB_TILEDIRTY[flat >>> 1] = 1
 gbPpu_ensureTileRow(row)    // decode row if dirty; returns nothing
 gbPpu_scanSprites()         // fill GB_SPR_* for the current LY
 gbPpu_renderLine()          // draw one whole scanline into GB_FB
+gbPpu_skipLine()            // renderLine's bookkeeping with no pixels; taken
+                            // instead of renderLine while GB_PPU_SKIP is 1
 gbPpu_buildPalette()        // rebuild GB_PAL_RGB, bump GB_CTR[GB_C_PAL_REV]
 gbPpu_setDmgShades(b64)     // 36 bytes, 3 surfaces x 4 shades x RGB
 ```
@@ -528,14 +543,18 @@ gbMachine_setButtons(mask)  // §7.3
 gbMachine_setSampleRate(r)  // wraps gbState_setSampleRate
 ```
 
-The inner loop of `gbMachine_stepCycles`:
+The inner loop of `gbMachine_runSlice`, which is what `stepCycles` and
+`advanceFrame` share:
 
 ```
-while (budget > 0) {
-  let c = gbCpu_serviceIrq()
-  if (c === 0) { c = gbCpu_step() }
-  gbMachine_tickParts(c)
+while (budget > floor) {              // floor folds the frame limit and the runaway guard
+  let c = 0
+  if (gbMmu_irqPending !== 0) { c = gbCpu_serviceIrq(); if (c === 0) { c = gbCpu_step() } }
+  else { c = gbCpu_step() }
+  if (<no device has an event inside c cycles>) { <count DOTS, APU, DIV by c> }   // the quiet span
+  else { gbMachine_tickParts(c) }
   budget = budget - c
+  if (GB_PPU_FRAME > frameStop) { break }
 }
 ```
 
@@ -546,7 +565,15 @@ knows the order, and the order matters: timer first (it can raise an IRQ the PPU
 step then races), PPU second (it drives HBlank HDMA), APU third, OAM DMA last.
 
 A runaway guard mirrors the reference: more than 5,000,000 cycles in one slice
-sets `gbError`, clears `gbRunning`, and returns.
+sets `gbError`, clears `gbRunning`, and returns. It is folded into the loop
+bound rather than tested per instruction; so is `advanceFrame`'s two-frame limit.
+
+**Frames nobody sees.** `gbMachine_getSamples` emulates its catch-up frames with
+`GB_PPU_SKIP = 1`: the PPU runs its whole schedule and produces no pixels, and a
+frame with a skipped line is never swapped into `GB_FB_PRESENT`. The next
+`getFrame` emulates and presents its own frame, so nothing the host is handed
+changes; what changes is that a machine which cannot hold 60Hz spends a third
+less on the half of its frames that were never going to be shown.
 
 **Pacing.** `gbMachine_advanceFrame()` runs at most one emulated frame per call,
 and skips even that when the audio ring is already more than three frames ahead:
@@ -886,6 +913,13 @@ zipp WASM:
 
 If the PPU exceeds 4ms the frame is gone. Any change to it should be measured,
 not reasoned about.
+
+Re-measured 2026-09-02 on Pokémon Yellow, in the engine under Node, after the
+per-instruction pass (scalar CPU flags and DIV, the run loop's bounds folded,
+the opcode fetch and the quiet span inline): a rendered frame went from 11.85ms
+to 8.9ms, and a `getSamples` call that catches up one frame from 11.5ms to
+8.1ms. The bit-for-bit check was 3,000 frames in lockstep against the previous
+build with the same inputs.
 
 ---
 

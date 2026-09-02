@@ -341,79 +341,17 @@ function gbMachine_mapperName() {
 // against 0.368ms here on the native engine with empty devices. Same order,
 // same chunking, same tail.
 function gbMachine_tickParts(cycles) {
-  if (GB_CPUF[GB_P_DOUBLE] === 1) {
+  if (gbCpu_double === 1) {
     gbMachine_tickPartsDouble(cycles)
     return
   }
 
-  // ---------------------------------------------------------------------
-  // THE QUIET SPAN
+  // Reached only when some device has an event inside this instruction. The
+  // quiet span that covers the other ninety-odd instructions in a hundred is
+  // inline in gbMachine_runSlice, where it costs no call; see THE QUIET SPAN
+  // there. The test it made is repeated by the caller, so arriving here means
+  // the chunked walk below is the right thing.
   //
-  // Chunking exists so that a device which is about to DO something does it on
-  // the right M-cycle. When no device is going to do anything for the whole of
-  // this instruction, chunking buys nothing and costs four calls per M-cycle.
-  //
-  // All four devices are pure counters while they are quiet, and each one can
-  // say cheaply how far away its next event is:
-  //
-  //   PPU     GB_PPU_DOTS dots to the next mode boundary, GB_PPU_STATD < 0
-  //           for "no STAT delivery armed". Both are plain scalars, which on
-  //           this engine read in ~2ns against ~22ns for a typed array slot.
-  //   APU     renders a batch when gbApu_acc reaches gbApu_trigger, 2796
-  //           T-cycles apart — 25 times a frame.
-  //   timer   gbTimer_live is 0 exactly when TAC's enable is clear with no
-  //           stale high bit and no reload draining, which is when
-  //           gbTimer_step does nothing but count DIV up.
-  //   MMU     gbMmu_busy is 0 when neither the serial stub nor the OAM DMA is
-  //           in flight, which is when gbMmu_stepOamDma returns immediately.
-  //
-  // The last two are derived scalars owned by gb_timer and gb_mmu rather than
-  // the five typed-array slots they stand for; see the notes on them in those
-  // files. Four Int32Array reads a call become two scalar reads.
-  //
-  // If every one of them clears the whole instruction, the instruction's worth
-  // of peripheral time is three adds. Correctness rests on each device being
-  // MONOTONIC over the span: DOTS only falls, gbApu_acc and DIV only rise, so
-  // an intermediate 4-cycle chunk cannot cross a boundary that the whole span
-  // does not. The moment any of them would, this falls through to the chunked
-  // loop below and nothing changes.
-  //
-  // Measured on critter_quest: 12.4ms/frame of chunked stepping becomes 3.1ms.
-  // ---------------------------------------------------------------------
-  if (GB_PPU_DOTS > cycles &&
-      GB_PPU_STATD <= 0 &&
-      gbApu_acc + cycles < gbApu_trigger &&
-      gbMmu_busy === 0) {
-    GB_PPU_DOTS = GB_PPU_DOTS - cycles
-    gbApu_acc = gbApu_acc + cycles
-    // gbTimer_step clears this at the top of every call, so a span that
-    // replaces a run of calls has to clear it too.
-    GB_CTR[GB_C_TIMER_RELOADED] = 0
-
-    if (gbTimer_live === 0) {
-      // The timer is off. DIV is a free-running counter and nothing watches it,
-      // so gbTimer_step's whole body for the span is one add.
-      GB_CTR[GB_C_DIV] = (GB_CTR[GB_C_DIV] + cycles) & 0xffff
-    } else if (gbTimer_edgeIn > cycles) {
-      // Running, but no falling edge and no reload lands inside this span, so
-      // it is still just a counter. A 4096Hz timer has an edge every 1024
-      // T-cycles, so this is about ninety-nine instructions in a hundred.
-      //
-      // The countdown is only decremented on this arm, which is why it cannot
-      // erode: while the timer is off it is not touched at all and stays parked
-      // where gbTimer_syncLive left it, and while the timer is on it is bounded
-      // by one period and re-derived at every edge.
-      gbTimer_edgeIn = gbTimer_edgeIn - cycles
-      GB_CTR[GB_C_DIV] = (GB_CTR[GB_C_DIV] + cycles) & 0xffff
-    } else {
-      // An edge or a reload is due. One call for the whole span rather than one
-      // per M-cycle: gbTimer_step counts the edges arithmetically and only
-      // drops to its cycle-by-cycle loop across an overflow.
-      gbTimer_step(cycles)
-    }
-    return
-  }
-
   // gbMmu_stepOamDma returns immediately unless a serial transfer or an OAM
   // DMA is actually in flight, and neither is true for the overwhelming
   // majority of a frame. Hoisting its own early-out to the caller turns 17556
@@ -476,75 +414,140 @@ function gbMachine_tickPartsDouble(cycles) {
 // breaks the moment GB_C_FRAME moves, leaving the unspent budget behind for the
 // next call — which is exactly the carry-over that keeps the average frame at
 // 70224 cycles.
-// The budget lives in a LOCAL for the duration of the loop and is written back
-// to GB_CTR[GB_C_CYCLE_BUDGET] on every exit. Nothing else in the bundle reads
-// that slot while a slice is running — it is touched only here and by the two
-// resets — so the carry-over the header describes is unchanged; what goes is
-// three Int32Array accesses per instruction (the loop condition, the read and
-// the write), about 90ns each time round on the shipping engine.
 //
-// Every `return` below writes it back. There is no path out of this function
-// that does not.
+// This loop runs once per instruction — 6,500 to 17,500 times a frame — so
+// everything in it was priced per iteration on the shipping engine, where a
+// compare-and-branch is ~12ns, a call ~30ns and a statement ~7ns:
+//
+//   - The budget lives in a LOCAL and is written back to
+//     GB_CTR[GB_C_CYCLE_BUDGET] on every exit. Nothing else in the bundle reads
+//     that slot while a slice is running.
+//   - The frame limit and the runaway guard are folded into the loop bound.
+//     "spent >= GB_MACHINE_FRAME_LIMIT" is "budget <= start - LIMIT", and
+//     "spent > GB_MACHINE_RUNAWAY" is "budget < start - RUNAWAY", so both ride
+//     on the one compare the loop already makes, and spent is start - budget
+//     at the exit rather than an add per instruction. Which bound ended the
+//     loop is decided afterwards, once; the frame edge wins a tie exactly as
+//     it did when the checks were in sequence.
+//   - The frame edge is one compare in both modes. GB_PPU_FRAME only ever
+//     rises, so "past frameStop" is the edge test when stopOnFrame is set, and
+//     with frameStop parked at 2^31-1 it cannot fire.
+//   - The "handler reported no cycles" guard is gone: gbCpu_step charges a
+//     minimum M-cycle itself, on its last line, and gbCpu_serviceIrq returns 0
+//     or 20, so c is never below 4 here.
+//   - The no-interrupt path makes one compare, not two.
+//   - THE QUIET SPAN, below, is inline rather than a call.
+//
+// Measured on Pokémon Yellow: the loop shape took a frame from 11.7ms to
+// 10.9ms, and the inline span a further 0.5ms, against calling
+// gbMachine_tickParts on every instruction.
+//
+// Every exit below writes the budget back. There is no path out of this
+// function that does not.
 function gbMachine_runSlice(cycles, stopOnFrame) {
   let budget = GB_CTR[GB_C_CYCLE_BUDGET] + cycles
+  let start = budget
+  let floor = 0
+  let frameStop = 0x7fffffff
+  if (stopOnFrame === 1) {
+    frameStop = GB_PPU_FRAME
+    // The VBlank is not coming — the LCD is off, or the cart has wedged the
+    // PPU. Give up after two frames' worth rather than burning the whole
+    // budget looking for an edge that does not exist.
+    if (start - GB_MACHINE_FRAME_LIMIT > floor) { floor = start - GB_MACHINE_FRAME_LIMIT }
+  }
+  let runaway = start - GB_MACHINE_RUNAWAY - 1
+  if (runaway > floor) { floor = runaway }
 
-  // GB_PPU_FRAME is gb_ppu's scalar mirror of GB_CTR[GB_C_FRAME], bumped in the
-  // same statement. Read here rather than the array slot because this is the
-  // per-instruction frame-edge test.
-  let startFrame = GB_PPU_FRAME
-  let spent = 0
-
-  while (budget > 0) {
+  while (budget > floor) {
     // An interrupt dispatch costs 20 T-cycles and replaces the instruction that
-    // would otherwise have run this iteration; 0 means nothing was pending, or
-    // IME was clear. gbMmu_irqPending is (IE & IF & 0x1F) kept as a scalar, so
-    // the overwhelmingly common "nothing pending" case does not pay for the
-    // call at all.
+    // would otherwise have run this iteration; 0 means IME was clear.
+    // gbMmu_irqPending is (IE & IF & 0x1F) kept as a scalar, so the
+    // overwhelmingly common "nothing pending" case does not pay for the call.
     let c = 0
-    if (gbMmu_irqPending !== 0) { c = gbCpu_serviceIrq() }
-    if (c === 0) { c = gbCpu_step() }
-
-    // A handler that reports no cycles would spin this loop forever without
-    // ever tripping the runaway guard, since the guard counts cycles. Charge a
-    // minimum M-cycle and say where it happened — that is a gb_ops bug, and the
-    // PC is the only thing that makes it findable.
-    if (c <= 0) {
-      c = 4
-      if (gbError === "") {
-        gbError = "Opcode at PC 0x" + GB_REG16[GB_R16_PC].toString(16) + " reported no cycles"
-      }
+    if (gbMmu_irqPending !== 0) {
+      c = gbCpu_serviceIrq()
+      if (c === 0) { c = gbCpu_step() }
+    } else {
+      c = gbCpu_step()
     }
 
-    gbMachine_tickParts(c)
+    // -------------------------------------------------------------------
+    // THE QUIET SPAN
+    //
+    // Chunking exists so that a device which is about to DO something does
+    // it on the right M-cycle. When no device is going to do anything for the
+    // whole of this instruction, chunking buys nothing and costs four calls
+    // per M-cycle.
+    //
+    // All four devices are pure counters while they are quiet, and each one
+    // can say cheaply how far away its next event is:
+    //
+    //   PPU     GB_PPU_DOTS dots to the next mode boundary, GB_PPU_STATD < 0
+    //           for "no STAT delivery armed". Both plain scalars.
+    //   APU     renders a batch when gbApu_acc reaches gbApu_trigger, 2796
+    //           T-cycles apart — 25 times a frame.
+    //   timer   gbTimer_live is 0 exactly when TAC's enable is clear with no
+    //           stale high bit and no reload draining, which is when
+    //           gbTimer_step does nothing but count DIV up; gbTimer_edgeIn
+    //           is the distance to the next edge or reload while it is on.
+    //   MMU     gbMmu_busy is 0 when neither the serial stub nor the OAM DMA
+    //           is in flight, which is when gbMmu_stepOamDma returns at once.
+    //
+    // If every one of them clears the whole instruction, the instruction's
+    // worth of peripheral time is three adds. Correctness rests on each
+    // device being MONOTONIC over the span: DOTS only falls, gbApu_acc and
+    // DIV only rise, so an intermediate 4-cycle chunk cannot cross a boundary
+    // that the whole span does not. The moment any of them would, this falls
+    // through to gbMachine_tickParts and the chunked loop, and nothing
+    // changes. Double speed never takes the span: the dot clock and the CPU
+    // clock disagree there, and tickParts halves for the PPU and APU.
+    //
+    // gbTimer_step clears the reload flag at the top of every call, so a span
+    // that replaces a run of calls has to clear it too. DIV is only counted
+    // on the two arms that prove no edge lands inside the span — the
+    // countdown cannot erode, because while the timer is off it is not
+    // touched, and while it is on it is bounded by one period and re-derived
+    // at every edge.
+    //
+    // Measured on critter_quest: 12.4ms/frame of chunked stepping became
+    // 3.1ms as a call, and inlining the call here is a further 5.7% of a
+    // frame on Pokémon Yellow.
+    // -------------------------------------------------------------------
+    if (gbCpu_double === 0 &&
+        GB_PPU_DOTS > c &&
+        GB_PPU_STATD <= 0 &&
+        gbApu_acc + c < gbApu_trigger &&
+        gbMmu_busy === 0) {
+      GB_PPU_DOTS = GB_PPU_DOTS - c
+      gbApu_acc = gbApu_acc + c
+      gbTimer_reloaded = 0
+      if (gbTimer_live === 0) {
+        gbTimer_div = (gbTimer_div + c) & 0xffff
+      } else if (gbTimer_edgeIn > c) {
+        gbTimer_edgeIn = gbTimer_edgeIn - c
+        gbTimer_div = (gbTimer_div + c) & 0xffff
+      } else {
+        gbTimer_step(c)
+      }
+    } else {
+      gbMachine_tickParts(c)
+    }
+
     budget = budget - c
-    spent = spent + c
+    if (GB_PPU_FRAME > frameStop) { break }
+  }
 
-    if (stopOnFrame === 1) {
-      if (GB_PPU_FRAME !== startFrame) {
-        GB_CTR[GB_C_CYCLE_BUDGET] = budget
-        return spent
-      }
-      // The VBlank is not coming — the LCD is off, or the cart has wedged the
-      // PPU. Give up after two frames' worth rather than burning the whole
-      // budget looking for an edge that does not exist.
-      if (spent >= GB_MACHINE_FRAME_LIMIT) {
-        GB_CTR[GB_C_CYCLE_BUDGET] = budget
-        return spent
-      }
-    }
-
-    if (spent > GB_MACHINE_RUNAWAY) {
-      gbError = "Runaway: the CPU produced more than " + GB_MACHINE_RUNAWAY + " cycles in one slice"
-      gbRunning = false
-      gbStatus = "Stopped"
-      GB_CTR[GB_C_CYCLE_BUDGET] = 0
-      return spent
-    }
+  if (budget <= runaway && GB_PPU_FRAME <= frameStop) {
+    gbError = "Runaway: the CPU produced more than " + GB_MACHINE_RUNAWAY + " cycles in one slice"
+    gbRunning = false
+    gbStatus = "Stopped"
+    GB_CTR[GB_C_CYCLE_BUDGET] = 0
+    return start - budget
   }
 
   GB_CTR[GB_C_CYCLE_BUDGET] = budget
-
-  return spent
+  return start - budget
 }
 
 // Advance n T-cycles. The primitive: it does not consult gbRunning, because the
@@ -709,11 +712,18 @@ function gbMachine_getSamples(want) {
   if (n > GB_AUDIO_OUT_MAX) { n = GB_AUDIO_OUT_MAX }
 
   if (gbRunning && gbRomLoaded) {
+    // A frame emulated here is never the one getFrame presents — the next
+    // getFrame emulates and presents its own — so its pixels are work nobody
+    // sees. The PPU keeps its whole schedule and leaves them out; see FRAMES
+    // NOBODY SEES in gb_ppu.logic. On a machine that cannot hold 60Hz about
+    // half the emulated frames come through here, and each is a third cheaper.
     let guard = 0
+    GB_PPU_SKIP = 1
     while (GB_APU_G[GB_AG_RING_COUNT] < n && guard < GB_MAX_CATCHUP_FRAMES) {
       if (gbMachine_runSlice(GB_CYCLES_PER_FRAME, 1) === 0) { break }
       guard = guard + 1
     }
+    GB_PPU_SKIP = 0
     if (guard > 0) {
       gbFrameCounter = GB_CTR[GB_C_FRAME]
       GB_CTR[GB_C_CATCHUP] = GB_CTR[GB_C_CATCHUP] + guard
@@ -880,6 +890,10 @@ function gbMachine_saveState() {
   // span is allowed to leave behind between edges; freshen it so what goes into
   // the image is the bit as of this instant. Nothing else here is derived.
   gbTimer_syncLive()
+  // The CPU flags and DIV live in plain numbers at runtime; the arrays are the
+  // save form. See gb_cpu.logic and gb_timer.logic.
+  gbCpu_syncFlagsOut()
+  gbTimer_syncOut()
 
   let ramBytes = gbMachine_ramBytes()
   let buf = new Uint8Array(gbMachine_stateBytes())
@@ -1012,10 +1026,17 @@ function gbMachine_loadState(s) {
   // gbTimer_live and gbMmu_busy were derived from the arrays this function has
   // just overwritten. Neither holds anything of its own, so neither is in the
   // state image; both are re-derived from what came back.
+  // The runtime scalars over GB_CPUF and GB_CTR first — gbTimer_syncLive
+  // derives its two from DIV, so DIV has to be back before it runs.
+  gbCpu_syncFlagsIn()
+  gbTimer_syncIn()
   gbTimer_syncLive()
   gbMmu_syncBusy()
   gbMmu_syncIrq()
   GB_PPU_FRAME = GB_CTR[GB_C_FRAME]
+  // Both framebuffers came back whole, so the frame under construction is not
+  // a skipped one whatever was true when the state was taken.
+  gbPpu_skipped = 0
 
   // GB_VRAM went in behind gb_mmu's back, so every tile row is stale — this is
   // case 4 of CONTRACT.md §4, and skipping it is the failure mode that document

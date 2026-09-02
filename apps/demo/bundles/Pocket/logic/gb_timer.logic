@@ -4,7 +4,7 @@
 // identical; only the storage moved, from class fields into the arrays
 // gb_state.logic declares:
 //
-//   this.divCounter            -> GB_CTR[GB_C_DIV]        16-bit, free-running
+//   this.divCounter            -> gbTimer_div        16-bit, free-running
 //   this.tima                  -> GB_IO[0x05]             canonical
 //   this.tma                   -> GB_IO[0x06]             canonical
 //   this.tac                   -> GB_IO[0x07]             canonical, low 3 bits
@@ -12,10 +12,10 @@
 //                                 DERIVED from DIV rather than remembered;
 //                                 see the note above gbTimer_syncLive
 //   this.overflowPendingCycles -> GB_CTR[GB_C_TIMA_PENDING]   T-cycles left
-//   this.reloadJustHappened    -> GB_CTR[GB_C_TIMER_RELOADED] 0 or 1
+//   this.reloadJustHappened    -> gbTimer_reloaded 0 or 1
 //
 // GB_IO[0x04] is unused: DIV is always derived from the top byte of
-// GB_CTR[GB_C_DIV], never stored. gbCpu_reset seeds that counter with 0xABCC on
+// gbTimer_div, never stored. gbCpu_reset seeds that counter with 0xABCC on
 // DMG or 0x2680 on CGB, which is why the post-boot DIV reads as it does.
 //
 // ---------------------------------------------------------------------------
@@ -136,6 +136,34 @@ let gbTimer_live = 0
 // an edge. Every branch below that cannot prove a distance sets it to 0.
 let gbTimer_edgeIn = 0x40000000
 
+// DIV, and the "TIMA was reloaded this M-cycle" flag, as plain numbers.
+//
+// Both are touched on EVERY instruction: the quiet span in gbMachine_runSlice
+// adds the instruction's cycles to DIV and clears the reload flag whether or
+// not the timer is running, because DIV is free-running and the flag is
+// per-M-cycle. As GB_CTR slots that was a typed-array read and two typed-array
+// writes an instruction — about 55ns on the shipping engine against ~10ns for
+// the same work on plain numbers.
+//
+// GB_CTR[GB_C_DIV] and GB_CTR[GB_C_TIMER_RELOADED] stay the canonical form for
+// the save state (CONTRACT.md §2.5). gbTimer_syncOut() writes them back before
+// a save; gbTimer_syncIn() reads them after a load or a reset has written
+// GB_CTR behind this file's back. Nothing reads the two slots in between, and
+// gbTimer_syncLive — which derives gbTimer_live and gbTimer_edgeIn from DIV —
+// reads the scalar, so syncIn must run before it.
+let gbTimer_div = 0
+let gbTimer_reloaded = 0
+
+function gbTimer_syncOut() {
+  GB_CTR[GB_C_DIV] = gbTimer_div
+  GB_CTR[GB_C_TIMER_RELOADED] = gbTimer_reloaded
+}
+
+function gbTimer_syncIn() {
+  gbTimer_div = GB_CTR[GB_C_DIV]
+  gbTimer_reloaded = GB_CTR[GB_C_TIMER_RELOADED]
+}
+
 // ---------------------------------------------------------------------------
 // WHY GB_C_TIMER_BIT IS NOW DERIVED AND NOT REMEMBERED
 //
@@ -158,7 +186,7 @@ let gbTimer_edgeIn = 0x40000000
 function gbTimer_syncLive() {
   let tac = GB_IO[0x07]
   let pending = GB_CTR[GB_C_TIMA_PENDING]
-  let div = GB_CTR[GB_C_DIV]
+  let div = gbTimer_div
 
   let mask = 0
   if ((tac & 0x04) !== 0) { mask = gbTimer_DIVMASK[tac & 0x03] }
@@ -201,7 +229,7 @@ function gbTimer_syncLive() {
 
 // DIV is the upper byte of the internal counter.
 function gbTimer_readDiv() {
-  return (GB_CTR[GB_C_DIV] >> 8) & 0xff
+  return (gbTimer_div >> 8) & 0xff
 }
 
 function gbTimer_readTima() {
@@ -226,7 +254,7 @@ function gbTimer_readTac() {
 // reference detects.
 function gbTimer_writeDiv() {
   let before = gbTimer_currentBit()
-  GB_CTR[GB_C_DIV] = 0
+  gbTimer_div = 0
   let after = gbTimer_currentBit()
   if (before !== 0 && after === 0) { gbTimer_incTima() }
   // Stored explicitly, because gbTimer_syncLive leaves the slot alone when the
@@ -259,7 +287,7 @@ function gbTimer_writeTima(v) {
     gbTimer_syncLive()
     return
   }
-  if (GB_CTR[GB_C_TIMER_RELOADED] !== 0) {
+  if (gbTimer_reloaded !== 0) {
     // On the M-cycle after the reload the write is swallowed; TIMA stays at TMA.
     return
   }
@@ -269,7 +297,7 @@ function gbTimer_writeTima(v) {
 // TMA written on the reload M-cycle is picked up by TIMA as well as by TMA.
 function gbTimer_writeTma(v) {
   GB_IO[0x06] = v & 0xff
-  if (GB_CTR[GB_C_TIMER_RELOADED] !== 0) {
+  if (gbTimer_reloaded !== 0) {
     GB_IO[0x05] = v & 0xff
   }
 }
@@ -281,7 +309,7 @@ function gbTimer_writeTma(v) {
 // (DIV_bit AND TAC.enable), as 0 or 1.
 function gbTimer_currentBit() {
   if ((GB_IO[0x07] & 0x04) === 0) { return 0 }
-  if ((GB_CTR[GB_C_DIV] & gbTimer_DIVMASK[GB_IO[0x07] & 0x03]) !== 0) { return 1 }
+  if ((gbTimer_div & gbTimer_DIVMASK[GB_IO[0x07] & 0x03]) !== 0) { return 1 }
   return 0
 }
 
@@ -312,14 +340,14 @@ function gbTimer_step(cycles) {
   // The reload window lasts until the next tick and no longer. Clearing it here
   // rather than at the end of the previous step is what makes it visible to the
   // writes that happen in between.
-  GB_CTR[GB_C_TIMER_RELOADED] = 0
+  gbTimer_reloaded = 0
 
   // Timer off, no stale high bit to fall, nothing draining: the loop would do
   // nothing but count DIV up, so count it up in one go. Most of a frame in a
   // game that never enables the timer takes this path. gbTimer_live is exactly
   // the disjunction the three tests used to spell out, cached in a scalar.
   if (gbTimer_live === 0) {
-    GB_CTR[GB_C_DIV] = (GB_CTR[GB_C_DIV] + cycles) & 0xffff
+    gbTimer_div = (gbTimer_div + cycles) & 0xffff
     return
   }
 
@@ -327,7 +355,7 @@ function gbTimer_step(cycles) {
   let mask = 0
   if ((tac & 0x04) !== 0) { mask = gbTimer_DIVMASK[tac & 0x03] }
 
-  let div = GB_CTR[GB_C_DIV]
+  let div = gbTimer_div
   let pending = GB_CTR[GB_C_TIMA_PENDING]
 
   // Derived from DIV while the enable is set, because the quiet span in
@@ -373,7 +401,7 @@ function gbTimer_step(cycles) {
     if (tima < 256) {
       GB_IO[0x05] = tima
       next = next & 0xffff
-      GB_CTR[GB_C_DIV] = next
+      gbTimer_div = next
       if ((next & mask) !== 0) {
         GB_CTR[GB_C_TIMER_BIT] = 1
       } else {
@@ -409,7 +437,7 @@ function gbTimer_step(cycles) {
       pending = pending - 1
       if (pending === 0) {
         GB_IO[0x05] = GB_IO[0x06]
-        GB_CTR[GB_C_TIMER_RELOADED] = 1
+        gbTimer_reloaded = 1
         // gbMmu_requestIrq is `GB_IO[0x0F] |= (1 << bit)` and reads none of the
         // timer's state, so the locals above stay authoritative across it.
         gbMmu_requestIrq(GB_IRQ_TIMER)
@@ -417,7 +445,7 @@ function gbTimer_step(cycles) {
     }
   }
 
-  GB_CTR[GB_C_DIV] = div
+  gbTimer_div = div
   GB_CTR[GB_C_TIMER_BIT] = was
   GB_CTR[GB_C_TIMA_PENDING] = pending
   gbTimer_syncLive()
