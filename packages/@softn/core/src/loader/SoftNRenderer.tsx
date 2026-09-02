@@ -235,6 +235,13 @@ export interface SoftNRendererProps {
   preIncludedLogicPaths?: string[];
 
   /**
+   * The bundle's `config.execution` from its manifest. `'worker'` runs the
+   * script in a dedicated thread when nothing in it needs the main thread
+   * synchronously; see the decision where the runtime is created.
+   */
+  executionPreference?: 'worker' | 'main';
+
+  /**
    * The bundle's parsed `permission.json`, forwarded to the script runtime so
    * capability checks reflect what the bundle actually declared.
    */
@@ -430,6 +437,7 @@ export function SoftNRenderer({
   importResolver,
   logicBasePath,
   preIncludedLogicPaths,
+  executionPreference,
   permissionConfig,
   scriptExecutionMode = 'worker',
   resumeSavedSyncRoom = false,
@@ -744,6 +752,7 @@ export function SoftNRenderer({
             scriptExecutionMode === 'worker' ? 'worker' : 'main';
           let requiresSyncMain = false;
           let hasHostBridgeIncompat = false;
+          let hasHardIncompat = false;
           if (scriptExecutionMode === 'worker') {
             const templateNeedsSyncCalls = templateRequiresSyncCalls(doc.template || []);
             const incompat = detectWorkerIncompatibilities(codeBlock.code || '');
@@ -774,6 +783,7 @@ export function SoftNRenderer({
                 r !== 'template uses call expressions requiring synchronous script functions'
             );
             if (hardIncompat.length > 0) {
+              hasHardIncompat = true;
               effectiveMode = 'main';
               console.info(
                 '[SoftN] Worker mode fallback to main-thread runtime:',
@@ -785,29 +795,45 @@ export function SoftNRenderer({
             }
           }
 
-          // Off-main-thread execution, opt-in by URL while it is a spike: the
-          // script runs in a dedicated worker and every script function the
-          // template binds returns a promise. What this buys is the main thread:
-          // an emulator that costs more than a display frame to advance no
-          // longer blocks the frame it is drawn in. What it does not yet have is
-          // the window-event, `softn.*` and file bridges — see script-worker.ts —
-          // so it is a measurement, not a mode.
-          // The shell rewrites the URL to /app/<name> before this runs, so the
-          // query is read from wherever it survives: the URL if it is still
-          // there, else a global a harness set before the app loaded.
+          // Off-main-thread execution. The script runs in a dedicated worker and
+          // every script function the template binds returns a promise; what
+          // that buys is the main thread — an emulator that costs more than a
+          // display frame to advance no longer blocks the frame it is drawn in.
+          // The worker has the storage, `softn.*` and window-event bridges, so
+          // the only things that keep a script on this thread are the ones the
+          // hybrid mode exists for: computed `$:` declarations and call
+          // expressions in the template, both of which need an answer before
+          // the next line. A bundle asks with `config.execution: "worker"` in
+          // its manifest; a harness can ask with `?exec=worker` — read from the
+          // URL if the shell has not rewritten it yet, else from a global set
+          // before the app loaded. Functions the host injects into the script
+          // are handed over as the same snapshot of getter values the
+          // main-thread runtime compiles them into.
           const execParam =
             (typeof location !== 'undefined'
               ? new URLSearchParams(location.search).get('exec')
               : null) ??
             ((globalThis as unknown as Record<string, unknown>).__softnExec as string | undefined) ??
             null;
-          const forceWorker = scriptExecutionMode === 'worker' && execParam === 'worker';
+          const wantsWorker =
+            scriptExecutionMode === 'worker' &&
+            (execParam === 'worker' || executionPreference === 'worker');
           // `?exec=main` keeps the ordinary path but still installs the hook, so
           // both sides of a measurement drive the script the same way.
           const spikeHook = execParam !== null;
-          if (forceWorker) {
-            effectiveMode = 'worker';
-            console.info('[SoftN] Worker mode forced by ?exec=worker');
+          let forceWorker = false;
+          if (wantsWorker) {
+            if (hasHardIncompat || requiresSyncMain) {
+              console.info(
+                '[SoftN] Worker execution requested but the script needs the main thread: synchronous evaluation'
+              );
+            } else {
+              forceWorker = true;
+              effectiveMode = 'worker';
+              console.info(
+                `[SoftN] Worker execution ${execParam === 'worker' ? 'forced by ?exec=worker' : 'requested by the manifest'}`
+              );
+            }
           }
 
           let runtime: ScriptRuntimeHandle;
@@ -859,8 +885,13 @@ export function SoftNRenderer({
               appId,
               importResolver,
               logicBasePath,
-              observedStateNames,
-              runtimePreIncludedLogicPaths
+              {
+                observedStateNames,
+                preIncludedLogicPaths: runtimePreIncludedLogicPaths,
+                permissionConfig: runtimePermissionConfig,
+                bundleFileProvider,
+                externalFunctions: runtimeFunctions,
+              }
             );
           } else if (effectiveMode === 'worker') {
             // Same as hybrid: use main-thread VM for all calls. The WASM engine

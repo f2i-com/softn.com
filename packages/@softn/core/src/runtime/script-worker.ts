@@ -15,6 +15,7 @@ import {
   SnapshotDBBridge,
   SnapshotLocalStorageBridge,
 } from './script-worker-bridges';
+import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { deepEqual } from './vm-state';
 
 // Type-only import from script-runtime (no runtime dependency on DOM-heavy module)
@@ -128,10 +129,74 @@ async function resolveImports(
 // State sync helpers
 // ============================================================================
 
+/**
+ * Main-thread state the VM has not seen yet. `update_context` raises it; the
+ * next entry pushes. Pushing every mirrored variable on every call was a
+ * setGlobalsBatch a frame for values that had not moved.
+ */
+let mainStateDirty = false;
+
 function syncStateToVM(): void {
-  if (!wasmAdapter || stateVarIndices.length === 0) return;
+  if (!wasmAdapter || stateVarIndices.length === 0 || !mainStateDirty) return;
+  mainStateDirty = false;
   const values = stateVarNames.map(name => workerState[name]);
   wasmAdapter.setGlobalsBatch(stateVarIndices, values);
+}
+
+/**
+ * What every entry into the VM hands back: the mirrored variables that
+ * changed, the `host.call`s the script queued, the event types it has
+ * listeners for, and the storage mutations. The main thread executes each
+ * host call and returns its result as a `resolve_host_call`, which is another
+ * entry and yields another one of these — the main-thread runtime's host-call
+ * loop, cut across the RPC boundary.
+ */
+function afterEntry(): Record<string, unknown> {
+  const adapter = wasmAdapter!;
+  // Narrow to the globals the VM may have written, then diff them. The engine
+  // reports conservatively when it has no dirty bits of its own, so the diff —
+  // not the report — is what decides a value actually changed; posting
+  // unchanged state back would re-render the tree on every call.
+  const dirtyIndices = adapter.getDirtyGlobals(stateVarIndices);
+  const changedState: Record<string, unknown> = {};
+  if (dirtyIndices.length > 0) {
+    const dirtyValues = adapter.getGlobalsBatch(dirtyIndices) as unknown[];
+    for (let i = 0; i < dirtyIndices.length; i++) {
+      const varIdx = stateVarIndices.indexOf(dirtyIndices[i]);
+      if (varIdx === -1) continue;
+      const varName = stateVarNames[varIdx];
+      const value = dirtyValues[i];
+      if (deepEqual(value, workerState[varName])) continue;
+      workerState[varName] = value;
+      changedState[varName] = value;
+    }
+  }
+  return {
+    state: changedState,
+    hostCalls: adapter.drainPendingHostCalls(),
+    eventTypes: adapter.getEventListenerTypes(),
+    dbMutations: dbBridge.flushMutations(),
+    lsMutations: lsBridge.flushMutations(),
+  };
+}
+
+/** Bring the main thread's view of storage and state into the VM before an entry. */
+function beforeEntry(payload: Record<string, unknown>): void {
+  const dbSnapshot = payload.dbSnapshot as Record<string, unknown[]> | undefined;
+  const lsSnapshot = payload.lsSnapshot as Record<string, string> | undefined;
+  const syncStatus = payload.syncStatus as { connected: boolean; peers: number; room: string; peerId: string } | undefined;
+  const savedSyncRoom = payload.savedSyncRoom as string | null | undefined;
+  // Use mergeDelta for incremental updates when the main thread sends only
+  // changed collections (dbDelta), else a full snapshot (dbSnapshot).
+  const dbDelta = payload.dbDelta as Record<string, unknown[]> | undefined;
+  if (dbDelta) {
+    dbBridge.mergeDelta(dbDelta as Record<string, never>, syncStatus, savedSyncRoom);
+  } else if (dbSnapshot) {
+    dbBridge.updateSnapshot(dbSnapshot as Record<string, never>, syncStatus, savedSyncRoom);
+  }
+  if (lsSnapshot) lsBridge.updateSnapshot(lsSnapshot);
+  syncStateToVM();
+  wasmAdapter!.clearDirty();
 }
 
 // ============================================================================
@@ -200,8 +265,12 @@ self.onmessage = async (evt: MessageEvent) => {
         );
       }
 
-      // Compile and run
-      const fullCode = VM_BRIDGE_PREAMBLE + resolvedCode;
+      // Compile and run. The `softn.*` namespace is the same preamble the
+      // main-thread runtime prepends; its calls queue in the engine and the
+      // main thread drains them from every entry's result.
+      const externalPreamble = typeof payload.externalPreamble === 'string' ? payload.externalPreamble : '';
+      const fullCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + externalPreamble + resolvedCode;
+      mainStateDirty = false;
       symbolMap = await wasmAdapter.initializeScript(fullCode);
 
       // Extract state and functions. A variable the template cannot observe is
@@ -224,19 +293,19 @@ self.onmessage = async (evt: MessageEvent) => {
       }
       stateVarIndices = stateVarNames.map(name => symbolMap!.get(name)!.index);
 
-      const dbMutations = dbBridge.flushMutations();
-      const lsMutations = lsBridge.flushMutations();
+      // Top-level code ran inside initializeScript: whatever it queued or
+      // registered comes back with the initial state.
+      const entry = afterEntry();
 
       self.postMessage({
         id,
         ok: true,
         result: {
+          ...entry,
           state: { ...workerState },
           functionNames,
           syncFunctionNames: functionNames,
           computedNames: [],
-          dbMutations,
-          lsMutations,
         },
       });
       return;
@@ -246,62 +315,34 @@ self.onmessage = async (evt: MessageEvent) => {
       if (!wasmAdapter || !symbolMap) throw new Error('runtime_not_initialized');
       const name = payload.name as string;
       const args = (payload.args || []) as unknown[];
-      const dbSnapshot = payload.dbSnapshot as Record<string, unknown[]> | undefined;
-      const lsSnapshot = payload.lsSnapshot as Record<string, string> | undefined;
-      const syncStatus = payload.syncStatus as { connected: boolean; peers: number; room: string; peerId: string } | undefined;
-      const savedSyncRoom = payload.savedSyncRoom as string | null | undefined;
-
-      // Update snapshots — use mergeDelta for incremental updates when
-      // the main thread sends only changed collections (dbDelta), or
-      // fall back to full updateSnapshot for full snapshots (dbSnapshot).
-      const dbDelta = payload.dbDelta as Record<string, unknown[]> | undefined;
-      if (dbDelta) {
-        dbBridge.mergeDelta(dbDelta as Record<string, never>, syncStatus, savedSyncRoom);
-      } else if (dbSnapshot) {
-        dbBridge.updateSnapshot(dbSnapshot as Record<string, never>, syncStatus, savedSyncRoom);
-      }
-      if (lsSnapshot) lsBridge.updateSnapshot(lsSnapshot);
-
-      // Sync state from main thread → VM
-      syncStateToVM();
-      wasmAdapter.clearDirty();
-
-      // Call the function
+      beforeEntry(payload);
       const result = wasmAdapter.callFunction(name, args);
+      self.postMessage({ id, ok: true, result: { result, ...afterEntry() } });
+      return;
+    }
 
-      // Narrow to the globals the VM may have written, then diff them. The
-      // engine reports conservatively when it has no dirty bits of its own, so
-      // the diff — not the report — is what decides a value actually changed;
-      // posting unchanged state back would re-render the tree on every call.
-      const dirtyIndices = wasmAdapter.getDirtyGlobals(stateVarIndices);
-      const changedState: Record<string, unknown> = {};
-      if (dirtyIndices.length > 0) {
-        const dirtyValues = wasmAdapter.getGlobalsBatch(dirtyIndices) as unknown[];
-        for (let i = 0; i < dirtyIndices.length; i++) {
-          const varIdx = stateVarIndices.indexOf(dirtyIndices[i]);
-          if (varIdx === -1) continue;
-          const varName = stateVarNames[varIdx];
-          const value = dirtyValues[i];
-          if (deepEqual(value, workerState[varName])) continue;
-          workerState[varName] = value;
-          changedState[varName] = value;
-        }
-      }
+    // The main thread finished one of the `host.call`s a previous entry
+    // reported: hand the script its result, in the callback it registered.
+    if (type === 'resolve_host_call') {
+      if (!wasmAdapter || !symbolMap) throw new Error('runtime_not_initialized');
+      beforeEntry(payload);
+      wasmAdapter.resolveHostCallback(Number(payload.callId), payload.result);
+      self.postMessage({ id, ok: true, result: afterEntry() });
+      return;
+    }
 
-      // Collect mutations
-      const dbMutations = dbBridge.flushMutations();
-      const lsMutations = lsBridge.flushMutations();
-
-      self.postMessage({
-        id,
-        ok: true,
-        result: {
-          result,
-          state: changedState,
-          dbMutations,
-          lsMutations,
-        },
-      });
+    // A browser event for a listener the script registered through the
+    // engine's `window.addEventListener`. The main thread owns the DOM and
+    // forwards what the listener can use; the engine runs every handler for
+    // the type, as it does on the main thread.
+    if (type === 'dispatch_event') {
+      if (!wasmAdapter || !symbolMap) throw new Error('runtime_not_initialized');
+      beforeEntry(payload);
+      wasmAdapter.dispatchEvent(
+        String(payload.eventType),
+        (payload.event || {}) as Record<string, unknown>
+      );
+      self.postMessage({ id, ok: true, result: afterEntry() });
       return;
     }
 
@@ -309,6 +350,7 @@ self.onmessage = async (evt: MessageEvent) => {
       const state = (payload.state || {}) as Record<string, unknown>;
       // Merge diff into existing state (main thread sends only changed keys)
       Object.assign(workerState, state);
+      mainStateDirty = true;
       syncStateToVM();
       self.postMessage({ id, ok: true, result: true });
       return;
@@ -323,6 +365,7 @@ self.onmessage = async (evt: MessageEvent) => {
       stateVarNames = [];
       stateVarIndices = [];
       functionNames = [];
+      mainStateDirty = false;
       for (const key of Object.keys(workerState)) delete workerState[key];
       self.postMessage({ id, ok: true, result: true });
       return;

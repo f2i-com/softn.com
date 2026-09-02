@@ -185,6 +185,8 @@ interface OpenTab {
   assetResolver?: AssetResolver;
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
+  /** The manifest's `config.execution`: where the bundle asked its script to run. */
+  execution?: 'worker' | 'main';
   serverUrl?: string;
   serverToken?: string;
   serverCollections?: string[];
@@ -576,6 +578,7 @@ function App(): React.ReactElement {
           assetResolver: createAssetResolver(binaryFiles, textFiles),
           logicBasePath,
           preIncludedLogicPaths,
+          execution: manifest.config?.execution,
           serverUrl,
           serverToken: serverConfig?.token,
           serverCollections: serverConfig?.collections,
@@ -1154,6 +1157,7 @@ function App(): React.ReactElement {
               assetResolver={tab.assetResolver}
               logicBasePath={tab.logicBasePath}
               preIncludedLogicPaths={tab.preIncludedLogicPaths}
+              executionPreference={tab.execution}
               permissionConfig={tab.permissionConfig}
               consent={tab.consent}
               onPageChange={(page) => handlePageChange(tab.id, page)}

@@ -3,18 +3,63 @@ import type { DBMutation, LSMutation } from './script-worker-bridges';
 
 type ImportResolver = (path: string) => Promise<string | null>;
 import type {
+  BundleFileProvider,
   CodeBlock,
+  HostCallExecutor,
+  PendingHostCall,
+  PermissionConfig,
   ScriptContext,
   ScriptLoadResult,
   ScriptRuntimeHandle,
 } from './script-runtime';
-import { getSyncModuleCache } from './script-runtime';
+import {
+  buildExternalValuesPreamble,
+  createHostCallExecutor,
+  getSyncModuleCache,
+} from './script-runtime';
 
 type WorkerPayloadMap = {
   init: Record<string, unknown>;
   call_fn: Record<string, unknown>;
+  resolve_host_call: Record<string, unknown>;
+  dispatch_event: Record<string, unknown>;
   update_context: { state: Record<string, unknown> };
 };
+
+/** What every entry into the worker's VM hands back; `afterEntry` in script-worker.ts. */
+type EntryResult = {
+  state?: Record<string, unknown>;
+  hostCalls?: PendingHostCall[];
+  eventTypes?: string[];
+  dbMutations?: DBMutation[];
+  lsMutations?: LSMutation[];
+};
+
+export interface WorkerRuntimeOptions {
+  /** The state variables the template can observe; the rest stay VM-owned. */
+  observedStateNames?: ReadonlySet<string>;
+  /** Logic files the shell already inlined; their `import` lines are satisfied. */
+  preIncludedLogicPaths?: readonly string[];
+  /** The bundle's `permission.json`, for the host calls run on this thread. */
+  permissionConfig?: PermissionConfig;
+  bundleFileProvider?: BundleFileProvider;
+  /**
+   * Functions the host injects into the script. The worker is handed the same
+   * snapshot of primitive getter values the main-thread runtime compiles; the
+   * host calls run here keep the live functions (`asset`, for audio sources).
+   */
+  externalFunctions?: Record<string, (...args: unknown[]) => unknown>;
+}
+
+/**
+ * Events the browser fires faster than a script can use them. Delivered at
+ * most once a frame, as the main-thread runtime does.
+ */
+const THROTTLED_EVENTS = new Set(['mousemove', 'pointermove', 'scroll', 'resize', 'touchmove', 'wheel']);
+const THROTTLE_MS = 16;
+
+/** Host calls resolved per chain before it is judged a runaway. */
+const MAX_HOST_CALL_ROUNDS = 256;
 
 type WorkerResponse = {
   id: number;
@@ -122,6 +167,20 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private perfCallCount = 0;
   private perfTotalMs = 0;
   private perfLastReport = 0;
+  /**
+   * Runs the script's `softn.*` calls on this thread. The worker reports what
+   * the script queued after every entry; each result goes back as a
+   * `resolve_host_call`.
+   */
+  private hostExecutor: HostCallExecutor;
+  private externalFunctions: Record<string, (...args: unknown[]) => unknown> | null = null;
+  /** Event types with a DOM listener forwarding into the worker. */
+  private bridgedEventTypes = new Set<string>();
+  private nativeListeners: Array<[string, (e: Event) => void]> = [];
+  private disposed = false;
+  /** State changes not yet handed to React; flushed once a frame. */
+  private pendingReactState: Record<string, unknown> = {};
+  private reactFlushScheduled = false;
 
   constructor(
     context: ScriptContext,
@@ -129,16 +188,26 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     appId?: string,
     importResolver?: ImportResolver,
     logicBasePath?: string,
-    observedStateNames?: ReadonlySet<string>,
-    preIncludedLogicPaths?: readonly string[]
+    options?: WorkerRuntimeOptions
   ) {
     this.context = context;
     this.importResolver = importResolver;
     this.permissions = permissions;
     this.appId = appId;
     this.logicBasePath = logicBasePath;
-    this.observedStateNames = observedStateNames ?? null;
-    this.preIncludedLogicPaths = preIncludedLogicPaths ? [...preIncludedLogicPaths] : [];
+    this.observedStateNames = options?.observedStateNames ?? null;
+    this.preIncludedLogicPaths = options?.preIncludedLogicPaths ? [...options.preIncludedLogicPaths] : [];
+    this.externalFunctions = options?.externalFunctions ?? null;
+    this.hostExecutor = createHostCallExecutor(
+      context,
+      permissions,
+      appId,
+      importResolver,
+      logicBasePath,
+      { mode: 'main', permissionConfig: options?.permissionConfig },
+      options?.bundleFileProvider,
+      options?.externalFunctions
+    );
     this.safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
     // Use a static URL reference so bundlers can emit and rewrite the worker asset path.
     this.workerUrl = new URL('./core-runtime/runtime/script-worker.js', import.meta.url);
@@ -360,6 +429,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
 
   private call<T = unknown>(type: 'init', payload: WorkerPayloadMap['init']): Promise<T>;
   private call<T = unknown>(type: 'call_fn', payload: WorkerPayloadMap['call_fn']): Promise<T>;
+  private call<T = unknown>(type: 'resolve_host_call', payload: WorkerPayloadMap['resolve_host_call']): Promise<T>;
+  private call<T = unknown>(type: 'dispatch_event', payload: WorkerPayloadMap['dispatch_event']): Promise<T>;
   private call<T = unknown>(type: 'update_context', payload: WorkerPayloadMap['update_context']): Promise<T>;
   private call<T = unknown>(type: string, payload: unknown): Promise<T> {
     const id = this.nextId++;
@@ -403,6 +474,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       logicBasePath: this.logicBasePath,
       observedStateNames: this.observedStateNames ? [...this.observedStateNames] : null,
       preIncludedLogicPaths: this.preIncludedLogicPaths,
+      externalPreamble: buildExternalValuesPreamble(this.externalFunctions),
       dbSnapshot: this.getDBSnapshot(),
       lsSnapshot: this.getLocalStorageSnapshot(),
       syncStatus: this.getSyncStatus(),
@@ -413,27 +485,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // Track initial worker state for diffing in updateContext
     this.lastKnownWorkerState = { ...(res.state || {}) };
 
-    // Apply any mutations from script initialization (_init, top-level code)
-    void this.applyDBMutations(res.dbMutations || []);
-    this.applyLSMutations(res.lsMutations || []);
-
-    const applyState = (nextState: Record<string, unknown>) => {
-      if (!nextState || Object.keys(nextState).length === 0) return;
-      // Track what the worker reported so updateContext can skip redundant sends
-      Object.assign(this.lastKnownWorkerState, nextState);
-      // Update context.state immediately so template Identifier lookups (e.g. {pot})
-      // resolve correctly. Also set _vmDirty so the main-thread WASM VM knows to
-      // push these values on the next sync function call.
-      Object.assign(this.context.state, nextState);
-      (this.context as unknown as Record<string, unknown>)._vmDirty = true;
-      if (this.context.batchSetState) {
-        this.context.batchSetState(nextState);
-      } else {
-        for (const [k, v] of Object.entries(nextState)) {
-          this.context.setState(k, v);
-        }
-      }
-    };
+    // Whatever top-level code queued or registered. The initial state is the
+    // caller's to merge, so it is not re-applied here.
+    void this.applyEntry({ ...res, state: {} });
 
     const makeAsyncFn = (name: string) => async (...args: unknown[]) => {
       const safeArgs = args.map(a => sanitizeForPostMessage(a));
@@ -467,28 +521,21 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       payload.savedSyncRoom = this.getSavedSyncRoom();
 
       const t0 = performance.now();
-      const out = await this.call<{
-        result: unknown;
-        state: Record<string, unknown>;
-        dbMutations: DBMutation[];
-        lsMutations: LSMutation[];
-      }>('call_fn', payload);
+      const out = await this.call<EntryResult & { result: unknown }>('call_fn', payload);
       const elapsed = performance.now() - t0;
       this.perfCallCount++;
       this.perfTotalMs += elapsed;
       if (t0 - this.perfLastReport > 5000) {
-        console.log(`[Worker RPC] ${this.perfCallCount} calls, avg ${(this.perfTotalMs / Math.max(1, this.perfCallCount)).toFixed(1)}ms, total ${this.perfTotalMs.toFixed(0)}ms (last 5s)`);
+        console.debug(`[Worker RPC] ${this.perfCallCount} calls, avg ${(this.perfTotalMs / Math.max(1, this.perfCallCount)).toFixed(1)}ms, total ${this.perfTotalMs.toFixed(0)}ms (last 5s)`);
         this.perfCallCount = 0;
         this.perfTotalMs = 0;
         this.perfLastReport = t0;
       }
 
-      // Apply mutations from worker to real storage (fire-and-forget for DB)
-      void this.applyDBMutations(out.dbMutations || []);
-      this.applyLSMutations(out.lsMutations || []);
-
-      // Apply state changes to React
-      applyState(out.state || {});
+      // State, storage and listeners are applied before the first await in
+      // applyEntry, so the caller sees them; the host calls it queued resolve
+      // on their own time and must not hold a frame source's promise.
+      void this.applyEntry(out);
       return out.result;
     };
 
@@ -534,7 +581,154 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     void this.call('update_context', { state: diff }).catch(() => {});
   }
 
+  // ==========================================================================
+  // After every entry into the VM
+  // ==========================================================================
+
+  /**
+   * Hand the worker's state changes to the template and to React.
+   *
+   * `context.state` is updated at once, so a template lookup made in the same
+   * tick sees the new value. React is told once a frame rather than once an
+   * entry: a frame source and an audio source together make ~130 entries a
+   * second, and each one that moved a counter was a re-render of the whole
+   * tree — measured as the difference between 46 and 60 painted fps on a
+   * main thread throttled 2x. A hidden tab has no frames, so it flushes on a
+   * timer instead.
+   */
+  private applyState(nextState: Record<string, unknown>): void {
+    if (!nextState || Object.keys(nextState).length === 0) return;
+    Object.assign(this.lastKnownWorkerState, nextState);
+    Object.assign(this.context.state, nextState);
+    (this.context as unknown as Record<string, unknown>)._vmDirty = true;
+    Object.assign(this.pendingReactState, nextState);
+    if (this.reactFlushScheduled) return;
+    this.reactFlushScheduled = true;
+    const flush = () => {
+      this.reactFlushScheduled = false;
+      const batch = this.pendingReactState;
+      this.pendingReactState = {};
+      if (this.disposed || Object.keys(batch).length === 0) return;
+      if (this.context.batchSetState) {
+        this.context.batchSetState(batch);
+      } else {
+        for (const [k, v] of Object.entries(batch)) this.context.setState(k, v);
+      }
+    };
+    const hidden = typeof document !== 'undefined' && document.hidden;
+    if (!hidden && typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
+    else setTimeout(flush, 0);
+  }
+
+  /**
+   * Everything an entry into the VM produced. The synchronous part — state,
+   * storage, new listeners — is applied before the first await; the host
+   * calls the script queued are then executed here, on this thread, and each
+   * result is handed back to the script as another entry, whose own result is
+   * applied in turn. `rounds` is shared down a chain so a callback that queues
+   * a call that queues a call cannot run forever.
+   */
+  private async applyEntry(out: EntryResult, rounds = { n: 0 }): Promise<void> {
+    if (this.disposed) return;
+    void this.applyDBMutations(out.dbMutations || []);
+    this.applyLSMutations(out.lsMutations || []);
+    this.applyState(out.state || {});
+    if (Array.isArray(out.eventTypes)) this.bridgeEventTypes(out.eventTypes);
+    const calls = Array.isArray(out.hostCalls) ? out.hostCalls : [];
+    for (const call of calls) {
+      if (++rounds.n > MAX_HOST_CALL_ROUNDS) {
+        console.error(
+          `[SoftN] Host call limit exceeded (${MAX_HOST_CALL_ROUNDS}) — aborting to prevent runaway callback chains`
+        );
+        return;
+      }
+      let result: unknown;
+      try {
+        result = await this.hostExecutor.executeHostCall(call);
+      } catch (err) {
+        result = { error: String(err) };
+        console.warn(`[SoftN] ${call.kind} failed: ${String(err)}`);
+      }
+      if (this.disposed) return;
+      let next: EntryResult;
+      try {
+        next = await this.call<EntryResult>('resolve_host_call', {
+          callId: call.id,
+          result,
+          lsSnapshot: this.takeLocalStorageSnapshotIfDirty(),
+          syncStatus: this.getSyncStatus(),
+          savedSyncRoom: this.getSavedSyncRoom(),
+        });
+      } catch (err) {
+        console.error('[SoftN] Error resolving host callback:', err);
+        return;
+      }
+      await this.applyEntry(next, rounds);
+    }
+  }
+
+  private takeLocalStorageSnapshotIfDirty(): Record<string, string> | undefined {
+    if (!this.lsDirty) return undefined;
+    this.lsDirty = false;
+    return this.getLocalStorageSnapshot();
+  }
+
+  /**
+   * A DOM listener for every event type the script has registered through
+   * the engine's `window.addEventListener`, forwarding what a handler can use
+   * into the worker. The engine runs the script's handlers there, exactly as
+   * it does on the main thread; only the DOM side lives here. Types are
+   * reported after every entry, so a listener added in `_init` or in any
+   * later handler is bridged by the time the entry's result is applied.
+   */
+  private bridgeEventTypes(types: string[]): void {
+    if (typeof window === 'undefined') return;
+    for (const eventType of types) {
+      if (this.bridgedEventTypes.has(eventType)) continue;
+      this.bridgedEventTypes.add(eventType);
+      const dispatch = (event: Event) => {
+        if (this.disposed) return;
+        this.call<EntryResult>('dispatch_event', {
+          eventType,
+          event: extractEventProps(event),
+          lsSnapshot: this.takeLocalStorageSnapshotIfDirty(),
+          syncStatus: this.getSyncStatus(),
+          savedSyncRoom: this.getSavedSyncRoom(),
+        })
+          .then((out) => this.applyEntry(out))
+          .catch((err) => console.warn(`[SoftN Worker] ${eventType} handler failed: ${String(err)}`));
+      };
+      let listener: (event: Event) => void = dispatch;
+      if (THROTTLED_EVENTS.has(eventType)) {
+        let lastCall = 0;
+        let pendingFrame: number | null = null;
+        listener = (event: Event) => {
+          const now = performance.now();
+          if (now - lastCall >= THROTTLE_MS) {
+            lastCall = now;
+            dispatch(event);
+          } else if (pendingFrame === null) {
+            pendingFrame = requestAnimationFrame(() => {
+              pendingFrame = null;
+              lastCall = performance.now();
+              dispatch(event);
+            });
+          }
+        };
+      }
+      window.addEventListener(eventType, listener);
+      this.nativeListeners.push([eventType, listener]);
+    }
+  }
+
   cleanup(): void {
+    this.disposed = true;
+    if (typeof window !== 'undefined') {
+      for (const [type, listener] of this.nativeListeners) window.removeEventListener(type, listener);
+    }
+    this.nativeListeners = [];
+    this.bridgedEventTypes.clear();
+    this.hostExecutor.cleanup();
     for (const [, p] of this.pending) p.reject(new Error('worker_terminated'));
     this.pending.clear();
     this.worker.terminate();
@@ -547,16 +741,7 @@ export function createWorkerScriptRuntime(
   appId?: string,
   importResolver?: ImportResolver,
   logicBasePath?: string,
-  observedStateNames?: ReadonlySet<string>,
-  preIncludedLogicPaths?: readonly string[]
+  options?: WorkerRuntimeOptions
 ): ScriptRuntimeHandle {
-  return new WorkerScriptRuntime(
-    context,
-    permissions,
-    appId,
-    importResolver,
-    logicBasePath,
-    observedStateNames,
-    preIncludedLogicPaths
-  );
+  return new WorkerScriptRuntime(context, permissions, appId, importResolver, logicBasePath, options);
 }
