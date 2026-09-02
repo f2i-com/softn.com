@@ -53,7 +53,7 @@
     "name": "Pocket",
     "description": "An 8-bit handheld emulator — CPU, PPU, APU and mappers all in .logic, drawn by PixelCanvas and heard through AudioStream",
     "primary": "#8ba82a",
-    "size": 344234
+    "size": 346236
   },
   {
     "id": "showcase",

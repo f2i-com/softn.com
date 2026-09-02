@@ -126,6 +126,7 @@ function gbMachine_init() {
 function gbMachine_reset() {
   gbMachine_init()
   gbState_reset()
+  gbMachine_pacingStalls = 0
 
   // gbState_reset does not touch GB_CART, because the cartridge's identity —
   // mapper, sizes, masks — outlives a reset. Its BANK REGISTERS do not: a
@@ -210,6 +211,15 @@ function gbMachine_resetFpsClock() {
 // split anywhere else makes each piece decode with padding the whole never
 // had. 65536 is a multiple of 4 and decodes to 48 KB, half the ceiling.
 let GB_B64_CHUNK_CHARS = 65536
+
+// Consecutive advanceFrame calls the pacing guard has deferred with no drain in
+// between. The limit is in rAF calls, so it has to sit above the longest a
+// HEALTHY audio path can leave the ring full: the ring holds 8192 stereo frames,
+// about 170ms, and a tab returning from the background drains that in ~10 calls
+// at 60Hz. Thirty is half a second — never reached while audio is really
+// playing, and a dead audio path is noticed well before anyone reads 0 FPS.
+let GB_PACING_STALL_LIMIT = 30
+let gbMachine_pacingStalls = 0
 
 function gbMachine_decodeBase64(payload) {
   if (payload.length <= GB_B64_CHUNK_CHARS) { return Uint8Array.fromBase64(payload) }
@@ -584,8 +594,30 @@ function gbMachine_advanceFrame() {
   // a silent bundle would freeze on its first frame.
   if (GB_APU_G[GB_AG_ACTIVE] === 1 &&
       GB_APU_G[GB_AG_RING_COUNT] > 3 * GB_FCTR[GB_F_SAMPLES_PER_FRAME]) {
-    return 0
+    // A full ring that nobody is emptying is not a clock.
+    //
+    // ACTIVE is set by the FIRST drain and never cleared, so once audio has
+    // started, this guard trusts it forever. When the AudioContext is then
+    // suspended and the browser refuses to resume it — an OS interruption, a
+    // battery-saver policy, an output device that went away, or simply a
+    // browser stricter than this one — draining stops, the ring stays full,
+    // and every call here returns 0. The picture froze at 0 FPS while the
+    // machine sat idle, and it looked like the emulator had become 750x
+    // slower on that device. Reproduced on an x86 desktop by suspending the
+    // context with resume() stubbed out: 60 FPS to 0.0 in one step.
+    //
+    // A drain resets this counter. If the ring has been full with no drain
+    // for GB_PACING_STALL_LIMIT consecutive calls, audio has stopped being a
+    // clock: hand it back to the display and let the ring overrun (it drops
+    // the oldest frame, bounded). The next real drain sets ACTIVE again and
+    // the guard re-arms — the existing lifecycle, just no longer one-way.
+    gbMachine_pacingStalls = gbMachine_pacingStalls + 1
+    if (gbMachine_pacingStalls <= GB_PACING_STALL_LIMIT) {
+      return 0
+    }
+    GB_APU_G[GB_AG_ACTIVE] = 0
   }
+  gbMachine_pacingStalls = 0
 
   return gbMachine_runSlice(GB_CYCLES_PER_FRAME, 1)
 }
@@ -663,8 +695,10 @@ function gbMachine_encodeSamples(frames) {
 // ever longer in here trying to buy back time it does not have.
 function gbMachine_getSamples(want) {
   // First drain of the session tells the pacing guard in advanceFrame that
-  // somebody is listening, and that ring occupancy is now meaningful.
+  // somebody is listening, and that ring occupancy is now meaningful. Every
+  // drain also proves the clock is still alive — see the stall counter there.
   GB_APU_G[GB_AG_ACTIVE] = 1
+  gbMachine_pacingStalls = 0
 
   let n = want
   if (!(n > 0)) {
