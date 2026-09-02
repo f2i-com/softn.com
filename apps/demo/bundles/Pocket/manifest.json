@@ -22,6 +22,7 @@
     "assets": ["assets/icon.svg"]
   },
   "config": {
+    "execution": "worker",
     "window": {
       "title": "Pocket",
       "width": 900,

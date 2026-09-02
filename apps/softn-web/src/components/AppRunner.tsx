@@ -21,6 +21,8 @@ interface AppRunnerProps {
   assetResolver?: (assetPath: string) => string;
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
+  /** The manifest's `config.execution`, forwarded to the renderer. */
+  executionPreference?: 'worker' | 'main';
   permissionConfig?: import('@softn/core').PermissionConfig;
   /**
    * The bundle declared capabilities the user has not answered yet, so
@@ -237,7 +239,7 @@ class RunnerErrorBoundary extends Component<
   }
 }
 
-export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
+export function AppRunner({ source, appName, appId, active, initialPage, permissions, importResolver, assetResolver, logicBasePath, preIncludedLogicPaths, executionPreference, permissionConfig, consent, onPageChange, onReady, serverUrl, serverToken, serverCollections }: AppRunnerProps): React.ReactElement {
   const [barHeight, setBarHeight] = useState(0);
   const hostRef = useRef<HTMLDivElement>(null);
   // Stable, or the bar's ResizeObserver effect tears down and re-observes on
@@ -403,6 +405,7 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
             }
             logicBasePath={logicBasePath}
             preIncludedLogicPaths={preIncludedLogicPaths}
+            executionPreference={executionPreference}
             permissionConfig={permissionConfig}
             appId={appId ?? appName}
             onPageChange={onPageChange}

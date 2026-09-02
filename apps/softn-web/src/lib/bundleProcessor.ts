@@ -41,6 +41,8 @@ export interface BundleManifest {
       primary?: string;
       mode?: 'light' | 'dark' | 'system';
     };
+    /** Where the script runs: `AppConfig.execution` in @softn/core. */
+    execution?: 'worker' | 'main';
     server?: {
       url?: string;
       token?: string;

@@ -92,6 +92,16 @@ export interface AppConfig {
     /** Screen orientation preference: portrait, landscape, or auto (default) */
     orientation?: 'portrait' | 'landscape' | 'auto';
   };
+  /**
+   * Where the bundle's script runs. `"worker"` asks for a dedicated thread:
+   * every script function the template binds then returns a promise, and a
+   * script that costs more than a display frame to advance — an emulator — no
+   * longer blocks the frame it is drawn in. The host falls back to the main
+   * thread when the script needs something only that thread can give it
+   * (computed `$:` declarations, call expressions in the template). The
+   * default is the main thread, where a call returns before the next line.
+   */
+  execution?: 'worker' | 'main';
 }
 
 /**
