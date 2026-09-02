@@ -4,6 +4,10 @@ name: Release
 # by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so releases build
 # the shared packages directly from the checked-in engine.
 #
+# Two kinds of artifact go on the release: the desktop apps, one job per app
+# and platform, and the website — the complete static softn.com as one archive
+# whose contents drop into a web host's document root (`website` below).
+#
 # Pushing the tag is the trigger. The dispatch entry stays for retrying an
 # infrastructure failure without moving a tag that has already been published,
 # and deliberately cannot release an arbitrary branch: both paths check out
@@ -160,6 +164,7 @@ jobs:
             |-----|-------------|
             | **SoftN Loader** | Desktop runtime for running `.softn` bundles |
             | **SoftN Builder** | Visual IDE for creating SoftN applications |
+            | **Website** | The complete static softn.com (`softn-com-*.zip`): upload its contents to a web host's document root; `DEPLOY.md` inside explains the rest |
 
             **Platforms:** Windows (.exe, .msi), macOS (.dmg), Linux (.AppImage, .deb)
           releaseDraft: false
@@ -181,3 +186,134 @@ jobs:
           DMG_PATH="$DMG_DIR/$APP_NAME.dmg"
           hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH"
           gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
+
+  # The website: everything softn.com serves — the landing page, the web
+  # runtime, the builder, the studio, the demo bundles, the precompressed twins,
+  # `.htaccess` and DEPLOY.md — built from the tagged commit and packaged as
+  # one archive by scripts/package-site.mjs, which reads the archive back and
+  # compares every entry with dist/ before the file is allowed to exist.
+  #
+  # Independent of the desktop matrix on purpose: a failed macOS build must not
+  # hold back the website, and the website takes minutes where the apps take
+  # tens. The release itself is created by whichever job gets there first;
+  # tauri-action attaches to an existing release, and this job creates one if
+  # none exists yet.
+  website:
+    name: Package the website
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate release tag
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v1.2.3 or v1.2.3-beta.1" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: Verify checked-out release provenance
+        run: |
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" ]]; then
+            echo "Checked-out commit does not match $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      # BUILD-INFO.json inside the archive records the commit; the archive's
+      # name records the tag. The two must agree with package.json, or the
+      # site would announce one version and be another.
+      - name: Verify the tag matches package.json
+        run: |
+          expected="${RELEASE_TAG#v}"
+          actual="$(node -p "require('./package.json').version")"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "package.json is $actual, but the tag says $expected" >&2
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dependency lockfile
+        run: npm audit --audit-level=high
+
+      # The vendored engine's SOURCE.json must name the artifact that is really
+      # there, and every shipped dependency must have its licence text: both
+      # end up inside the archive.
+      - name: Check engine provenance and licence notices
+        run: npm run licenses:check
+
+      # The build stamps BUILD-INFO.json with SOURCE_DATE_EPOCH when set, so
+      # `builtAt` is the tagged commit's own time rather than the runner's
+      # clock, and two runs of one tag produce the same record.
+      - name: Build the website
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)"
+          npm run build:site
+          test -f dist/index.html && test -f dist/.htaccess && test -f dist/BUILD-INFO.json
+          if [[ "$(node -p "require('./dist/BUILD-INFO.json').softn.dirty")" != "false" ]]; then
+            echo "BUILD-INFO.json reports a dirty tree; the build did not come from the tag alone" >&2
+            exit 1
+          fi
+
+      - name: Package and verify the archive
+        run: node scripts/package-site.mjs --tag "$RELEASE_TAG" --out release
+
+      # A second opinion from a tool that shares no code with the packager.
+      - name: Test the archive with unzip
+        run: |
+          set -euo pipefail
+          zip="$(ls release/*.zip)"
+          unzip -tq "$zip"
+          listed="$(unzip -Z1 "$zip" | wc -l)"
+          onDisk="$(find dist -type f | wc -l)"
+          if [[ "$listed" != "$onDisk" ]]; then
+            echo "archive lists $listed entries, dist/ has $onDisk files" >&2
+            exit 1
+          fi
+          unzip -Z1 "$zip" | grep -qx '.htaccess'
+          (cd release && sha256sum -c ./*.sha256 --strict)
+          echo "$zip: $listed entries, $(du -h "$zip" | cut -f1)"
+
+      - name: Keep the archive with the workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-${{ env.RELEASE_TAG }}
+          path: |
+            release/*.zip
+            release/*.sha256
+          if-no-files-found: error
+
+      - name: Attach the archive to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Whichever job reaches the release first creates it. If a desktop
+          # job creates it between the check and the create below, the create
+          # fails harmlessly and the upload goes to the release that exists.
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            prerelease=""
+            if [[ "$RELEASE_TAG" == *-* ]]; then prerelease="--prerelease"; fi
+            notes="$(cat .github/release-notes.md)"
+            notes="${notes//RELEASE_TAG/$RELEASE_TAG}"
+            gh release create "$RELEASE_TAG" --title "SoftN $RELEASE_TAG" $prerelease --notes "$notes" \
+              || echo "release already exists; attaching to it"
+          fi
+          gh release upload "$RELEASE_TAG" release/*.zip release/*.sha256 --clobber
+          echo "attached: $(ls release | tr '\n' ' ')"
