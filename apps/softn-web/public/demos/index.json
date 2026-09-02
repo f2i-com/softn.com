@@ -109,7 +109,7 @@
     "name": "WarbleWire",
     "description": "Send a message as synthetic birdsong and decode it back — the QXW acoustic transport",
     "primary": "#c7ee53",
-    "size": 105401
+    "size": 105428
   },
   {
     "id": "promptly-unemployed",

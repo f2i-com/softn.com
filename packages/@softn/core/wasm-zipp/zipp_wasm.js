@@ -284,6 +284,29 @@ export class Engine {
         }
     }
     /**
+     * Set this engine's instruction budget to `steps`, clamped to
+     * `[1, MAX_INSTRUCTION_BUDGET_STEPS]`.
+     *
+     * The default lifetime budget is sized for an interactive host. An
+     * embedder that runs the SAME script on more than one runtime — this
+     * module in the browser, the engine natively or under WASI on a server —
+     * needs the budgets to agree, or an expression can complete on one side
+     * and be cut off on the other. This is the host-side knob for that; the
+     * clamp is the fuse it cannot remove.
+     *
+     * Host-only, like renewal: a method on the Engine binding, unreachable
+     * from guest code. Setting the budget restores nothing else — heap,
+     * output and dynamic-code ceilings stay where setup left them. Returns
+     * false once a budget has actually been spent, exactly as renewal does;
+     * call it before the first re-entry.
+     * @param {number} steps
+     * @returns {boolean}
+     */
+    setInstructionBudget(steps) {
+        const ret = wasm.engine_setInstructionBudget(this.__wbg_ptr, steps);
+        return ret !== 0;
+    }
+    /**
      * Install the object backing `localStorage.*`. This never provides the
      * clipboard bridge, even when the object happens to have clipboard-like
      * methods.
@@ -431,11 +454,11 @@ function __wbg_get_imports() {
             const ret = arg0.has(arg1);
             return ret;
         },
-        __wbg_isArray_ca1a7018312b74ab: function() { return handleError(function (arg0) {
+        __wbg_isArray_aa50616e458d96c2: function() { return handleError(function (arg0) {
             const ret = Array.isArray(arg0);
             return ret;
         }, arguments); },
-        __wbg_keys_1c59cbfffd14124b: function() { return handleError(function (arg0) {
+        __wbg_keys_4592b99f9c2b8bff: function() { return handleError(function (arg0) {
             const ret = Object.keys(arg0);
             return ret;
         }, arguments); },

@@ -22,6 +22,7 @@ export const engine_setDbBridge: (a: number, b: any) => [number, number];
 export const engine_setFingerprintSeed: (a: number, b: number, c: number) => void;
 export const engine_setGlobalByIndex: (a: number, b: number, c: any) => [number, number];
 export const engine_setGlobalsBatch: (a: number, b: any, c: any) => [number, number];
+export const engine_setInstructionBudget: (a: number, b: number) => number;
 export const engine_setLocalStorageBridge: (a: number, b: any) => [number, number];
 export const engine_setSyncHostCapabilities: (a: number, b: any) => [number, number];
 export const engine_takeOutput: (a: number) => [number, number, number];

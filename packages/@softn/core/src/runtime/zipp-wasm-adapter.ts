@@ -130,6 +130,8 @@ export class ZippWasmAdapter {
   private _initialized = false;
   private _disposed = false;
   private _terminated = false;
+  /** Per-re-entry step budget; see {@link setInstructionBudget}. */
+  private instructionBudget: number | undefined = undefined;
   /** Names accumulated by `register*` calls, flushed once before `initScript`. */
   private pendingSyncCapabilities = new Set<string>();
 
@@ -489,14 +491,39 @@ export class ZippWasmAdapter {
    * already spent a budget stays spent.
    */
   private renewBudget(): void {
-    const engine = this.wasm as unknown as { renewInstructionBudget?: () => boolean };
-    if (typeof engine.renewInstructionBudget === 'function') {
-      try {
+    const engine = this.wasm as unknown as {
+      renewInstructionBudget?: () => boolean;
+      setInstructionBudget?: (steps: number) => boolean;
+    };
+    try {
+      // v0.0.13's setInstructionBudget goes through the same renewal as
+      // renewInstructionBudget, with the host's size instead of the default;
+      // an older engine has only the default.
+      if (this.instructionBudget !== undefined && typeof engine.setInstructionBudget === 'function') {
+        engine.setInstructionBudget(this.instructionBudget);
+      } else if (typeof engine.renewInstructionBudget === 'function') {
         engine.renewInstructionBudget();
-      } catch {
-        // An engine too far gone to renew is about to report that itself.
       }
+    } catch {
+      // An engine too far gone to renew is about to report that itself.
     }
+  }
+
+  /**
+   * How many engine steps one re-entry may spend before it is judged a
+   * runaway. `undefined` is the engine's default, 50M — right for a script on
+   * the page's main thread, where every step of a call is a step the page is
+   * frozen for. A host that runs the script where a long call blocks nothing
+   * (the worker runtime) grants more, so a legitimately long computation is
+   * not cut off by the fuse meant for an infinite loop. Guest code cannot
+   * reach this; exhaustion stays sticky either way.
+   */
+  setInstructionBudget(steps: number | undefined): void {
+    // The engine clamps to [1, 2e9]; anything else here means the default.
+    this.instructionBudget =
+      typeof steps === 'number' && Number.isFinite(steps) && steps >= 1
+        ? Math.min(Math.floor(steps), 2_000_000_000)
+        : undefined;
   }
 
   callFunction(name: string, args: unknown[]): unknown {

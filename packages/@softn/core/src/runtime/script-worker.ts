@@ -43,6 +43,9 @@ const workerState: Record<string, unknown> = {};
 // variable would round-trip its methods through the host and back.
 const BRIDGE_VARS = new Set(['window', 'navigator', 'host', 'softn']);
 
+/** Engine steps one re-entry may spend in the worker; see where it is applied. */
+const WORKER_INSTRUCTION_BUDGET = 1_000_000_000;
+
 // ============================================================================
 // Import resolution (RPC to main thread)
 // ============================================================================
@@ -244,6 +247,13 @@ self.onmessage = async (evt: MessageEvent) => {
 
       // Create WASM adapter
       wasmAdapter = await VmAdapter.create();
+      // A call here blocks nothing the user can see, so one re-entry may spend
+      // twenty times what it may on the main thread: a modem decoding a whole
+      // recording needs ~100M steps in one call, which the main-thread fuse of
+      // 50M — a bound on how long a page can freeze — refuses as a runaway.
+      // This is still a bound: a genuine infinite loop is caught in seconds,
+      // and the engine is spent afterwards exactly as before.
+      wasmAdapter.setInstructionBudget(WORKER_INSTRUCTION_BUDGET);
 
       // Register snapshot-based bridges
       wasmAdapter.registerDBBridge(dbBridge as never);
