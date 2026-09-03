@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="100%" stop-color="#0f172a" />
+    </linearGradient>
+    <linearGradient id="roof" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#b45309" />
+    </linearGradient>
+    <filter id="drop" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-opacity="0.4" />
+    </filter>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#bg)" />
+  <!-- Grid paper -->
+  <g stroke="#334155" stroke-width="1" opacity="0.7">
+    <path d="M16 32H112M16 48H112M16 64H112M16 80H112M16 96H112" />
+    <path d="M32 16V112M48 16V112M64 16V112M80 16V112M96 16V112" />
+  </g>
+  <!-- House -->
+  <g filter="url(#drop)">
+    <rect x="34" y="60" width="60" height="44" rx="3" fill="#e7e5e2" />
+    <path d="M26 64L64 30L102 64Z" fill="url(#roof)" />
+    <rect x="56" y="76" width="16" height="28" rx="2" fill="#7c4a24" />
+    <rect x="40" y="70" width="12" height="12" rx="1.5" fill="#7dd3fc" />
+    <rect x="76" y="70" width="12" height="12" rx="1.5" fill="#7dd3fc" />
+    <rect x="80" y="36" width="8" height="14" fill="#78350f" />
+  </g>
+  <!-- Pencil -->
+  <g transform="rotate(-40 100 100)">
+    <rect x="94" y="78" width="12" height="34" rx="2" fill="#fbbf24" />
+    <path d="M94 112L100 122L106 112Z" fill="#fde68a" />
+    <rect x="94" y="78" width="12" height="6" fill="#ef4444" />
+  </g>
+</svg>

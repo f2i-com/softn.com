@@ -14,7 +14,7 @@ final class Seed
         'snake-game' => 'games', 'pocket' => 'games', 'maze-escape-3d' => 'games', 'texas-holdem' => 'games',
         'promptly-unemployed' => 'games', 'the-office' => 'games', 'blockscape' => 'games', 'dead-hours' => 'games', 'twenty48' => 'games', 'blockfall' => 'games',
         'train-yard' => 'simulations', 'predator-prey' => 'simulations',
-        'warble-wire' => 'tools', 'ai-chat' => 'ai',
+        'warble-wire' => 'tools', 'ai-chat' => 'ai', 'house-builder' => 'creative',
         // Sample apps: they show what the runtime can do rather than being
         // things to rely on, and the directory files them as such.
         'notes' => 'demos', 'glamour-studio' => 'demos', 'device-kit' => 'demos', 'showcase' => 'demos',
@@ -28,6 +28,7 @@ final class Seed
         'the-office' => 'simulation', 'train-yard' => '3d,simulation,railway', 'predator-prey' => 'ecosystem,simulation,biology,3d',
         'notes' => 'notes,local-first', 'glamour-studio' => 'business,scheduling',
         'device-kit' => 'camera,qr,network', 'warble-wire' => 'audio,modem,dsp', 'ai-chat' => 'llm,chat',
+        'house-builder' => '3d,floor-plan,architecture,design',
         'ai-demo' => 'llm', 'gpu-demo' => 'webgpu,compute', 'three-demo' => '3d,webgl', 'showcase' => 'components',
     ];
 

@@ -1,0 +1,6 @@
+{
+  "app": { "id": "com.softn.housebuilder", "name": "HouseBuilder", "version": "1.0.0" },
+  "permissions": {
+    "files": { "enabled": true, "scopes": ["user_selected"] }
+  }
+}
