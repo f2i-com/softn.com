@@ -125,9 +125,11 @@ final class Apps
             'version' => (int) $row['latest_version'],
             'size' => (int) $row['size'],
             'primary' => $row['primary_color'] ?: null,
-            'thumbnail' => "/api/apps/$slug/thumbnail",
+            // Versioned by the last update, so a replaced picture is never the
+            // cached one: the images are served with a ten-minute max-age.
+            'thumbnail' => "/api/apps/$slug/thumbnail?v=" . (int) $row['updated_at'],
             'thumbnailKind' => $row['thumb'] ? 'image' : ($row['icon'] ? 'icon' : 'placeholder'),
-            'icon' => $row['icon'] ? "/api/apps/$slug/icon" : null,
+            'icon' => $row['icon'] ? "/api/apps/$slug/icon?v=" . (int) $row['updated_at'] : null,
             'runs' => (int) $row['runs'],
             'remixes' => (int) $row['remixes'],
             'rating' => ['average' => $count > 0 ? round((int) $row['rating_sum'] / $count, 2) : 0, 'count' => $count],
