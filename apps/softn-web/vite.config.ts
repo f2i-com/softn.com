@@ -118,6 +118,9 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Every document the worker serves gets the isolation headers, from
+        // the precache as much as from the network — see public/coi.js.
+        importScripts: ['coi.js'],
         // `wasm` is not optional: the scripting engine is a .wasm, so without
         // it every bundle fails to run offline. It is also larger than
         // Workbox's 2 MiB default cap, which would silently skip the file.

@@ -186,7 +186,7 @@ test('search finds by name and description, category filters, pages paginate', s
 
 test('an app has a detail, a bundle, a thumbnail and readable source', skip, async () => {
   const { json } = await api('GET', '/api/apps/snake-game');
-  assert.equal(json.app.name, 'SnakeGame');
+  assert.equal(json.app.name, 'Snake');
   assert.equal(json.app.versions.length, 1);
   assert.deepEqual(json.app.ratingBreakdown, { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 });
   const bundle = await fetch(`${base}/api/apps/snake-game/bundle.softn`);
@@ -477,7 +477,7 @@ test('the share page carries the app into its meta tags', skip, async () => {
   const res = await fetch(`${base}/app/snake-game`, { headers: { Accept: 'text/html' } });
   assert.equal(res.status, 200);
   const html = await res.text();
-  assert.match(html, /<title>SnakeGame — SoftN<\/title>/);
+  assert.match(html, /<title>Snake — SoftN<\/title>/);
   assert.match(html, /property="og:image" content="http:\/\/127\.0\.0\.1:\d+\/api\/apps\/snake-game\/thumbnail\?v=\d+"/);
   assert.match(html, /property="og:url" content="http:\/\/127\.0\.0\.1:\d+\/app\/snake-game"/);
   assert.match(html, /name="softn:app" content="snake-game"/);
