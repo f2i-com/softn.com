@@ -428,6 +428,55 @@ SQL)->execute([
         return self::detail(self::row($slug, true));
     }
 
+    /**
+     * Refresh an existing seeded app from its updated bundle on disk.
+     * Keeps slug, metadata, and replaces the bundle payload while refreshing version digest.
+     *
+     * @param array<string, mixed> $meta
+     */
+    public static function updateSeedApp(string $slug, string $bundlePath, array $meta = []): void
+    {
+        $info = Bundle::inspect($bundlePath);
+        $name = Text::clean($meta['name'] ?? '', 64) ?: $info['name'];
+        $description = Text::clean($meta['description'] ?? '', 600, true) ?: $info['description'];
+        $category = Categories::resolve(Text::clean($meta['category'] ?? '', 40));
+        $tags = Text::tags($meta['tags'] ?? null);
+        $primary = self::color($meta['primary'] ?? null) ?? self::color($info['manifest']['config']['theme']['primary'] ?? null);
+
+        $dir = self::dir($slug);
+        $file = 'v1.softn';
+        if (!@copy($bundlePath, "$dir/$file")) throw new ApiError(500, 'Could not store the bundle.');
+        $icon = self::storeIcon($dir, $info['icon']);
+        $now = time();
+
+        $pdo = Db::catalog();
+        $pdo->beginTransaction();
+        try {
+            $pdo->prepare(<<<'SQL'
+UPDATE apps SET name = :name, description = :description, category = :category, tags = :tags,
+  capabilities = :capabilities, execution = :execution, icon = COALESCE(:icon, icon),
+  primary_color = :primary, size = :size, updated_at = :now WHERE slug = :slug
+SQL)->execute([
+                ':slug' => $slug, ':name' => $name, ':description' => $description,
+                ':category' => $category, ':tags' => json_encode($tags),
+                ':capabilities' => json_encode($info['capabilities']), ':execution' => $info['execution'],
+                ':icon' => $icon, ':primary' => $primary, ':size' => $info['size'], ':now' => $now,
+            ]);
+            $pdo->prepare(<<<'SQL'
+UPDATE versions SET file = :file, size = :size, sha256 = :sha256, manifest_version = :mver, created_at = :now
+WHERE slug = :slug AND version = 1
+SQL)->execute([
+                ':slug' => $slug, ':file' => $file, ':size' => $info['size'],
+                ':sha256' => $info['sha256'], ':mver' => $info['version'], ':now' => $now,
+            ]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+        self::indexForSearch($slug);
+    }
+
     /** @param array<string, mixed> $fields @return array<string, mixed> */
     public static function patch(string $slug, array $fields): array
     {
