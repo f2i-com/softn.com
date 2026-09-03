@@ -341,6 +341,14 @@ function normalizeExternalPrimitive(value: unknown): ExternalValueRead {
 function extractEventProps(event: Event): Record<string, unknown> {
   const props: Record<string, unknown> = { type: event.type };
 
+  // Enough about the target for a handler to leave native controls alone: a
+  // game's WASD listener must not swallow typing in the app's own inputs.
+  const target = event.target as (Element & { isContentEditable?: boolean }) | null;
+  if (target && typeof target.tagName === 'string') {
+    props.targetTag = target.tagName.toLowerCase();
+    props.targetEditable = target.isContentEditable === true;
+  }
+
   if (event instanceof KeyboardEvent) {
     props.key = event.key;
     props.code = event.code;
@@ -360,6 +368,11 @@ function extractEventProps(event: Event): Record<string, unknown> {
     props.ctrlKey = event.ctrlKey;
     props.shiftKey = event.shiftKey;
     props.metaKey = event.metaKey;
+    if (typeof WheelEvent !== 'undefined' && event instanceof WheelEvent) {
+      props.deltaX = event.deltaX;
+      props.deltaY = event.deltaY;
+      props.deltaMode = event.deltaMode;
+    }
   } else if (event instanceof TouchEvent) {
     props.touches = event.touches.length;
     props.changedTouches = event.changedTouches.length;

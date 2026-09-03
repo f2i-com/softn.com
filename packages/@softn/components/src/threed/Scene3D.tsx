@@ -10,6 +10,8 @@ import { isSafeUrl } from '@softn/core';
 type Scene3DWindow = Window & {
   __scene3dYaw?: number;
   __scene3dPitch?: number;
+  /** True while a `pointerLock` scene owns the mouse; a game reads it to pause. */
+  __scene3dLocked?: boolean;
 };
 
 interface MouseLookOwner {
@@ -74,22 +76,41 @@ function releaseMouseLookOwner(sceneWindow: Scene3DWindow, owner: MouseLookOwner
 
 export type ModelFormat = 'gltf' | 'obj' | 'fbx' | 'stl';
 
+export type Scene3DShape =
+  | 'box'
+  | 'sphere'
+  | 'cylinder'
+  | 'plane'
+  | 'torus'
+  | 'cone'
+  | 'ring'
+  | 'dodecahedron'
+  | 'icosahedron'
+  | 'octahedron';
+
 export interface Scene3DObject {
   id: string;
-  type:
-    | 'box'
-    | 'sphere'
-    | 'cylinder'
-    | 'plane'
-    | 'torus'
-    | 'cone'
-    | 'ring'
-    | 'dodecahedron'
-    | 'icosahedron'
-    | 'octahedron'
-    | 'model';
+  type: Scene3DShape | 'model' | 'instanced';
   modelUrl?: string;
   modelFormat?: ModelFormat;
+  /**
+   * For `type: 'instanced'`: one mesh, drawn once, standing in for thousands
+   * of copies of `shape` — a voxel world, a forest, a crowd of the same crate.
+   * `instances` is flat: x, y, z and a palette index per copy (stride 4) when
+   * `palette` is given, x, y, z (stride 3) when every copy is `color`. A flat
+   * number array is the cheapest thing that crosses the scripting boundary.
+   */
+  shape?: Scene3DShape;
+  instances?: number[];
+  palette?: string[];
+  /**
+   * `'camera'` pins the object to the camera: `position` becomes an offset in
+   * camera space (x right, y up, z forward is negative) and `rotation` a local
+   * turn — a first-person weapon, a held block, a helmet edge. It is moved by
+   * the render loop every frame, so it never lags the view, and it is left out
+   * of the centre-ray picking a pointer-locked scene reports.
+   */
+  attach?: 'camera';
   position?: { x: number; y: number; z: number };
   rotation?: { x: number; y: number; z: number };
   scale?: { x: number; y: number; z: number } | number;
@@ -125,6 +146,23 @@ export interface Scene3DObject {
   };
 }
 
+/**
+ * What a click landed on. `objectId` is the empty string when the ray hit
+ * nothing, which a pointer-locked scene still reports so a game can fire into
+ * the sky. `instanceId` is set for an `instanced` object; `normal` is the face
+ * that was hit, in world space, which is what tells a builder where a new
+ * block goes.
+ */
+export interface Scene3DHit {
+  objectId: string;
+  button: number;
+  locked: boolean;
+  instanceId: number | null;
+  distance: number | null;
+  point: { x: number; y: number; z: number } | null;
+  normal: { x: number; y: number; z: number } | null;
+}
+
 export interface Scene3DLight {
   id?: string;
   type: 'ambient' | 'directional' | 'point' | 'spot' | 'hemisphere';
@@ -133,11 +171,29 @@ export interface Scene3DLight {
   intensity?: number;
   position?: { x: number; y: number; z: number };
   castShadow?: boolean;
+  /** Spot cone half-angle in radians (default 0.5), and how soft its edge is, 0..1. */
+  angle?: number;
+  penumbra?: number;
+  /** Point and spot: how far the light reaches (0 = no limit) and how fast it falls off. */
+  distance?: number;
+  decay?: number;
+  /**
+   * `'camera'` carries the light with the view: `position` is an offset in
+   * camera space, and a spot light points where the camera points — a torch
+   * in the player's hand, a miner's lamp on a helmet.
+   */
+  attach?: 'camera';
 }
 
 export interface Scene3DProps {
   width?: number;
   height?: number;
+  /**
+   * Size the canvas to whatever box it sits in, instead of `width`/`height`,
+   * and follow that box as it changes — a game that wants the whole viewport
+   * puts the scene in a fixed, inset-0 container and says `fill`.
+   */
+  fill?: boolean;
   objects?: Scene3DObject[];
   /**
    * Scenery that does not change between frames, kept apart from `objects`.
@@ -166,8 +222,17 @@ export interface Scene3DProps {
   expandable?: boolean;
   mouseLook?: boolean;
   mouseLookSensitivity?: number;
+  /**
+   * First-person mouse capture. A click on the canvas locks the pointer (the
+   * browser's Escape releases it); while locked, moving the mouse turns the
+   * camera and every button press is reported through `onClick` with what the
+   * centre of the screen is pointing at. Implies `mouseLook`.
+   */
+  pointerLock?: boolean;
+  /** How far the view may tilt, in radians (default 0.8 — about 45°). */
+  pitchLimit?: number;
   onReady?: () => void;
-  onClick?: (info: { objectId: string }) => void;
+  onClick?: (info: Scene3DHit) => void;
   onAnimation?: (info: { objectId: string; clip: string; type: 'finished' | 'missing' }) => void;
   style?: React.CSSProperties;
   className?: string;
@@ -178,8 +243,9 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
   const h = obj.height ?? 1;
   const d = obj.depth ?? 1;
   const r = obj.radius ?? 0.5;
+  const shape = obj.type === 'instanced' ? (obj.shape ?? 'box') : obj.type;
 
-  switch (obj.type) {
+  switch (shape) {
     case 'box':
       return new THREE.BoxGeometry(w, h, d);
     case 'sphere':
@@ -210,8 +276,10 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
 
 function createMaterial(obj: Scene3DObject): THREE.MeshStandardMaterial {
   const opacity = obj.opacity ?? 1;
+  // Instance colours multiply the material's, so a palette needs a white base.
+  const usesPalette = obj.type === 'instanced' && Array.isArray(obj.palette) && obj.palette.length > 0;
   return new THREE.MeshStandardMaterial({
-    color: obj.color || '#6366f1',
+    color: usesPalette ? '#ffffff' : obj.color || '#6366f1',
     metalness: obj.metalness ?? 0.1,
     roughness: obj.roughness ?? 0.5,
     wireframe: obj.wireframe ?? false,
@@ -220,6 +288,51 @@ function createMaterial(obj: Scene3DObject): THREE.MeshStandardMaterial {
     ...(obj.emissive ? { emissive: new THREE.Color(obj.emissive) } : {}),
     ...(obj.emissiveIntensity != null ? { emissiveIntensity: obj.emissiveIntensity } : {}),
   });
+}
+
+/** How many numbers describe one instance: a palette index rides along when there is a palette. */
+function instanceStride(obj: Scene3DObject): number {
+  return Array.isArray(obj.palette) && obj.palette.length > 0 ? 4 : 3;
+}
+
+function instanceCount(obj: Scene3DObject): number {
+  return Array.isArray(obj.instances) ? Math.floor(obj.instances.length / instanceStride(obj)) : 0;
+}
+
+/**
+ * Write every instance's matrix and colour. The mesh is sized for exactly
+ * `count` copies, so a change in count recreates it; a change in placement
+ * only rewrites the buffers, which is the cheap path a builder edits through.
+ */
+function fillInstances(mesh: THREE.InstancedMesh, obj: Scene3DObject): void {
+  const data = obj.instances ?? [];
+  const stride = instanceStride(obj);
+  const count = instanceCount(obj);
+  const palette = stride === 4 ? (obj.palette ?? []).map((c) => new THREE.Color(c)) : null;
+  const m = new THREE.Matrix4();
+  const fallback = new THREE.Color(obj.color || '#6366f1');
+  for (let i = 0; i < count; i++) {
+    const o = i * stride;
+    m.makeTranslation(data[o] ?? 0, data[o + 1] ?? 0, data[o + 2] ?? 0);
+    mesh.setMatrixAt(i, m);
+    if (palette) {
+      const idx = data[o + 3] | 0;
+      mesh.setColorAt(i, palette[idx] ?? fallback);
+    }
+  }
+  mesh.count = count;
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  // Without this the mesh is culled by its geometry's own bounds at the origin.
+  mesh.computeBoundingSphere();
+}
+
+function createInstanced(obj: Scene3DObject): THREE.InstancedMesh {
+  const count = Math.max(1, instanceCount(obj));
+  const mesh = new THREE.InstancedMesh(createGeometry(obj), createMaterial(obj), count);
+  mesh.frustumCulled = true;
+  fillInstances(mesh, obj);
+  return mesh;
 }
 
 // Detect model format from URL extension
@@ -347,7 +460,9 @@ function disposeObject3D(obj: THREE.Object3D) {
 function applyTransform(mesh: THREE.Object3D, obj: Scene3DObject, isUpdate: boolean) {
   const anim = obj.animate;
 
-  if (obj.position) {
+  // A camera-attached object is placed by the render loop from its offset;
+  // its own position and rotation fields are read there, not here.
+  if (obj.position && obj.attach !== 'camera') {
     mesh.position.x = obj.position.x;
     // Skip Y if float animation is active on update — animation loop owns position.y
     if (!isUpdate || !anim?.floatAmplitude) {
@@ -356,7 +471,7 @@ function applyTransform(mesh: THREE.Object3D, obj: Scene3DObject, isUpdate: bool
     mesh.position.z = obj.position.z;
   }
 
-  if (obj.rotation) {
+  if (obj.rotation && obj.attach !== 'camera') {
     // On update, skip axes owned by rotation animation to avoid snapping
     if (!isUpdate || !anim?.rotateX) mesh.rotation.x = obj.rotation.x;
     if (!isUpdate || !anim?.rotateY) mesh.rotation.y = obj.rotation.y;
@@ -369,6 +484,19 @@ function applyTransform(mesh: THREE.Object3D, obj: Scene3DObject, isUpdate: bool
     } else {
       mesh.scale.set(obj.scale.x, obj.scale.y, obj.scale.z);
     }
+  }
+  // A camera-attached object is drawn last and without a depth test, so a
+  // weapon held against a wall stays in front of the wall.
+  if (obj.attach === 'camera') {
+    mesh.renderOrder = 1000;
+    mesh.traverse((child) => {
+      const m = (child as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+      const mats = Array.isArray(m) ? m : m ? [m] : [];
+      for (const mat of mats) {
+        mat.depthTest = false;
+        mat.depthWrite = false;
+      }
+    });
   }
   const castShadow = obj.castShadow ?? false;
   const receiveShadow = obj.receiveShadow ?? false;
@@ -384,6 +512,7 @@ function applyTransform(mesh: THREE.Object3D, obj: Scene3DObject, isUpdate: bool
 function needsGeometryUpdate(prev: Scene3DObject, next: Scene3DObject): boolean {
   return (
     prev.type !== next.type ||
+    prev.shape !== next.shape ||
     prev.width !== next.width ||
     prev.height !== next.height ||
     prev.depth !== next.depth ||
@@ -395,6 +524,7 @@ function needsGeometryUpdate(prev: Scene3DObject, next: Scene3DObject): boolean 
 function needsMaterialUpdate(prev: Scene3DObject, next: Scene3DObject): boolean {
   return (
     prev.color !== next.color ||
+    (prev.palette?.length ?? 0) !== (next.palette?.length ?? 0) ||
     prev.metalness !== next.metalness ||
     prev.roughness !== next.roughness ||
     prev.wireframe !== next.wireframe ||
@@ -422,13 +552,13 @@ function createLight(spec: Scene3DLight): THREE.Light {
       return light;
     }
     case 'point': {
-      const light = new THREE.PointLight(color, intensity);
+      const light = new THREE.PointLight(color, intensity, spec.distance ?? 0, spec.decay ?? 2);
       if (spec.position) light.position.set(spec.position.x, spec.position.y, spec.position.z);
       if (spec.castShadow) light.castShadow = true;
       return light;
     }
     case 'spot': {
-      const light = new THREE.SpotLight(color, intensity);
+      const light = new THREE.SpotLight(color, intensity, spec.distance ?? 0, spec.angle ?? 0.5, spec.penumbra ?? 0.3, spec.decay ?? 2);
       if (spec.position) light.position.set(spec.position.x, spec.position.y, spec.position.z);
       if (spec.castShadow) light.castShadow = true;
       return light;
@@ -438,6 +568,13 @@ function createLight(spec: Scene3DLight): THREE.Light {
     default:
       return new THREE.AmbientLight(color, intensity);
   }
+}
+
+/** What the render loop needs to know about a light it may have to carry. */
+function tagLight(light: THREE.Light, spec: Scene3DLight): void {
+  light.userData.__softnLightType = spec.type;
+  light.userData.__softnAttach = spec.attach;
+  light.userData.__softnOffset = new THREE.Vector3(spec.position?.x ?? 0, spec.position?.y ?? 0, spec.position?.z ?? 0);
 }
 
 interface MeshEntry {
@@ -536,8 +673,9 @@ const DRAG_THRESHOLD = 4;
 let _modelLoadCounter = 0;
 
 export function Scene3D({
-  width = 800,
-  height = 600,
+  width: widthProp = 800,
+  height: heightProp = 600,
+  fill = false,
   objects = [],
   staticObjects,
   lights = [],
@@ -551,8 +689,10 @@ export function Scene3D({
   autoRotate = false,
   autoRotateSpeed = 2,
   expandable = false,
-  mouseLook: enableMouseLook = false,
+  mouseLook: mouseLookProp = false,
   mouseLookSensitivity = 0.003,
+  pointerLock: enablePointerLock = false,
+  pitchLimit = 0.8,
   onReady,
   onClick,
   onAnimation,
@@ -580,12 +720,33 @@ export function Scene3D({
     [lights]
   );
 
-  // Mouse look takes priority over orbit controls — they cannot coexist
+  // Pointer lock is mouse look with the cursor captured; either wins over
+  // orbit controls, which cannot coexist with a steered camera.
+  const enableMouseLook = mouseLookProp || enablePointerLock;
   const enableOrbitControls = _enableOrbitControls && !enableMouseLook;
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // With `fill`, the box the scene sits in is the size; measured, not declared.
+  const [measured, setMeasured] = useState<{ w: number; h: number } | null>(null);
+  useEffect(() => {
+    if (!fill) return undefined;
+    const el = wrapperRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const read = () => {
+      const r = el.getBoundingClientRect();
+      const w = Math.max(1, Math.round(r.width));
+      const h = Math.max(1, Math.round(r.height));
+      setMeasured((m) => (m && m.w === w && m.h === h ? m : { w, h }));
+    };
+    read();
+    const ro = new ResizeObserver(read);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fill]);
+  const width = fill ? (measured?.w ?? widthProp) : widthProp;
+  const height = fill ? (measured?.h ?? heightProp) : heightProp;
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -637,6 +798,8 @@ export function Scene3D({
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
+    // A handle for tests and debugging: what the canvas is drawing.
+    (renderer.domElement as HTMLCanvasElement & { __softnScene?: THREE.Scene; __softnCamera?: THREE.Camera }).__softnScene = scene;
     if (!alpha) {
       scene.background = new THREE.Color(background);
     }
@@ -645,6 +808,7 @@ export function Scene3D({
     const cam = new THREE.PerspectiveCamera(fov, width / height, 0.1, 1000);
     const pos = cameraProp?.position ?? { x: 0, y: 3, z: 8 };
     cam.position.set(pos.x, pos.y, pos.z);
+    (renderer.domElement as HTMLCanvasElement & { __softnCamera?: THREE.Camera }).__softnCamera = cam;
     const lookAt = cameraProp?.lookAt ?? { x: 0, y: 0, z: 0 };
     cam.lookAt(lookAt.x, lookAt.y, lookAt.z);
 
@@ -667,10 +831,76 @@ export function Scene3D({
       controlsRef.current = controls;
     }
 
+    // Turn the view by a mouse delta, whether it came from a drag or from a
+    // captured pointer. Game logic may have written the yaw since the last
+    // frame, so the current value is read back before it is moved.
+    const turnBy = (dx: number, dy: number) => {
+      const ownsGlobals = isActiveMouseLookOwner(mouseLookOwner);
+      let yaw = ownsGlobals ? (sceneWindow.__scene3dYaw ?? yawRef.current) : yawRef.current;
+      let pitch = ownsGlobals ? (sceneWindow.__scene3dPitch ?? pitchRef.current) : pitchRef.current;
+      yaw -= dx * mouseLookSensitivity;
+      pitch -= dy * mouseLookSensitivity;
+      const limit = Math.min(Math.max(pitchLimit, 0.1), 1.55);
+      if (pitch > limit) pitch = limit;
+      if (pitch < -limit) pitch = -limit;
+      yawRef.current = yaw;
+      pitchRef.current = pitch;
+      if (ownsGlobals) {
+        sceneWindow.__scene3dYaw = yaw;
+        sceneWindow.__scene3dPitch = pitch;
+      }
+    };
+
+    // What the centre of the view, or a pointer, is aimed at. Camera-attached
+    // objects (a held weapon) sit in front of everything and are skipped.
+    const raycaster = new THREE.Raycaster();
+    const pick = (ndcX: number, ndcY: number): Omit<Scene3DHit, 'button' | 'locked'> => {
+      raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), cam);
+      const meshes: THREE.Object3D[] = [];
+      meshMap.forEach((e) => {
+        if (e.spec.attach !== 'camera') meshes.push(e.mesh);
+      });
+      const intersects = raycaster.intersectObjects(meshes, true);
+      const empty = { objectId: '', instanceId: null, distance: null, point: null, normal: null };
+      if (intersects.length === 0) return empty;
+      const hit = intersects[0];
+      // Walk up to find which root entry this belongs to (handles model children)
+      const findEntry = (obj: THREE.Object3D): string | undefined => {
+        for (const [id, e] of meshMap.entries()) {
+          if (e.mesh === obj) return id;
+        }
+        if (obj.parent) return findEntry(obj.parent);
+        return undefined;
+      };
+      const id = findEntry(hit.object);
+      if (id === undefined) return empty;
+      let normal: Scene3DHit['normal'] = null;
+      if (hit.face) {
+        const n = hit.face.normal.clone();
+        const m = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
+        n.applyMatrix3(m).normalize();
+        normal = { x: n.x, y: n.y, z: n.z };
+      }
+      return {
+        objectId: id,
+        instanceId: typeof hit.instanceId === 'number' ? hit.instanceId : null,
+        distance: hit.distance,
+        point: { x: hit.point.x, y: hit.point.y, z: hit.point.z },
+        normal,
+      };
+    };
+
     // Mouse-look: click/touch-and-drag on canvas to rotate camera (yaw + pitch)
     let mlPointerDown: ((e: PointerEvent) => void) | null = null;
     let mlPointerMove: ((e: PointerEvent) => void) | null = null;
     let mlPointerUp: ((e: PointerEvent) => void) | null = null;
+    // Pointer lock: the canvas owns the mouse until Escape.
+    const canvas = renderer.domElement;
+    const isLocked = () => enablePointerLock && document.pointerLockElement === canvas;
+    let plMouseMove: ((e: MouseEvent) => void) | null = null;
+    let plLockChange: (() => void) | null = null;
+    let plMouseDown: ((e: MouseEvent) => void) | null = null;
+    const swallowContextMenu = (e: Event) => e.preventDefault();
     if (enableMouseLook) {
       const initYaw = Math.atan2(lookAt.x - pos.x, lookAt.z - pos.z);
       const dx = lookAt.x - pos.x,
@@ -691,6 +921,32 @@ export function Scene3D({
 
       mlPointerDown = (e: PointerEvent) => {
         if (e.button !== 0 || lookingPointerId !== null) return;
+        // With the pointer captured there is nothing to drag: the mouse itself
+        // steers. A click while unlocked (re)takes the lock instead.
+        if (enablePointerLock) {
+          if (!isLocked() && e.pointerType === 'mouse') {
+            const request = canvas.requestPointerLock as ((opts?: { unadjustedMovement?: boolean }) => Promise<void> | void) | undefined;
+            try {
+              const result = request?.call(canvas, { unadjustedMovement: true });
+              if (result && typeof (result as Promise<void>).catch === 'function') {
+                (result as Promise<void>).catch(() => {
+                  try {
+                    canvas.requestPointerLock();
+                  } catch {
+                    // The page may not be allowed to capture the pointer.
+                  }
+                });
+              }
+            } catch {
+              try {
+                canvas.requestPointerLock();
+              } catch {
+                // Same: capture is a request, and the browser may refuse it.
+              }
+            }
+          }
+          if (isLocked() || e.pointerType === 'mouse') return;
+        }
         e.preventDefault();
         lookingPointerId = e.pointerId;
         lastMX = e.clientX;
@@ -709,23 +965,7 @@ export function Scene3D({
         const dy = e.clientY - lastMY;
         lastMX = e.clientX;
         lastMY = e.clientY;
-
-        // Read latest yaw (game logic keyboard may also write to it)
-        const ownsGlobals = isActiveMouseLookOwner(mouseLookOwner);
-        let yaw = ownsGlobals ? (sceneWindow.__scene3dYaw ?? yawRef.current) : yawRef.current;
-        let pitch = pitchRef.current;
-        yaw -= dx * mouseLookSensitivity;
-        pitch -= dy * mouseLookSensitivity;
-        // Clamp pitch to ~45 degrees up/down
-        if (pitch > 0.8) pitch = 0.8;
-        if (pitch < -0.8) pitch = -0.8;
-
-        yawRef.current = yaw;
-        pitchRef.current = pitch;
-        if (ownsGlobals) {
-          sceneWindow.__scene3dYaw = yaw;
-          sceneWindow.__scene3dPitch = pitch;
-        }
+        turnBy(dx, dy);
       };
 
       mlPointerUp = (e: PointerEvent) => {
@@ -739,6 +979,31 @@ export function Scene3D({
       renderer.domElement.addEventListener('pointerup', mlPointerUp);
       renderer.domElement.addEventListener('pointercancel', mlPointerUp);
       renderer.domElement.addEventListener('lostpointercapture', mlPointerUp);
+      canvas.addEventListener('contextmenu', swallowContextMenu);
+    }
+
+    if (enablePointerLock) {
+      canvas.style.cursor = 'crosshair';
+      plMouseMove = (e: MouseEvent) => {
+        if (!isLocked()) return;
+        turnBy(e.movementX, e.movementY);
+      };
+      plLockChange = () => {
+        const locked = isLocked();
+        canvas.style.cursor = locked ? 'none' : 'crosshair';
+        if (isActiveMouseLookOwner(mouseLookOwner)) sceneWindow.__scene3dLocked = locked;
+      };
+      // Every button is a game action while locked; the browser's own drag
+      // and context menu have no meaning with the cursor hidden.
+      plMouseDown = (e: MouseEvent) => {
+        if (!isLocked() || !onClickRef.current) return;
+        e.preventDefault();
+        onClickRef.current({ ...pick(0, 0), button: e.button, locked: true });
+      };
+      document.addEventListener('mousemove', plMouseMove);
+      document.addEventListener('pointerlockchange', plLockChange);
+      canvas.addEventListener('mousedown', plMouseDown);
+      if (isActiveMouseLookOwner(mouseLookOwner)) sceneWindow.__scene3dLocked = false;
     }
 
     // Drag-aware click: track mousedown position, only fire click if no significant drag
@@ -758,7 +1023,7 @@ export function Scene3D({
     };
 
     const handlePointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 || clickPointerId !== null) return;
+      if (event.button !== 0 || clickPointerId !== null || isLocked()) return;
       clickPointerId = event.pointerId;
       mouseDownX = event.clientX;
       mouseDownY = event.clientY;
@@ -785,30 +1050,12 @@ export function Scene3D({
       releaseClickPointerCapture(event.pointerId);
       if (isDragging || !onClickRef.current) return;
 
-      const raycaster = new THREE.Raycaster();
-      const mouse = new THREE.Vector2();
       const rect = renderer.domElement.getBoundingClientRect();
-      mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(mouse, cam);
-
-      const meshes = Array.from(meshMap.values()).map((e) => e.mesh);
-      const intersects = raycaster.intersectObjects(meshes, true);
-      if (intersects.length > 0) {
-        const hit = intersects[0].object;
-        // Walk up to find which root entry this belongs to (handles model children)
-        const findEntry = (obj: THREE.Object3D): [string, MeshEntry] | undefined => {
-          for (const [id, e] of meshMap.entries()) {
-            if (e.mesh === obj) return [id, e];
-          }
-          if (obj.parent) return findEntry(obj.parent);
-          return undefined;
-        };
-        const entry = findEntry(hit);
-        if (entry) {
-          onClickRef.current({ objectId: entry[0] });
-        }
-      }
+      const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      const hit = pick(ndcX, ndcY);
+      // A plain click keeps its old contract: it reports only what it landed on.
+      if (hit.objectId !== '') onClickRef.current({ ...hit, button: event.button, locked: false });
     };
 
     const handlePointerCancel = (event: PointerEvent) => {
@@ -823,6 +1070,10 @@ export function Scene3D({
     renderer.domElement.addEventListener('pointerup', handlePointerUp);
     renderer.domElement.addEventListener('pointercancel', handlePointerCancel);
     renderer.domElement.addEventListener('lostpointercapture', handlePointerCancel);
+
+    const attachedOffset = new THREE.Vector3();
+    const attachedRotation = new THREE.Euler();
+    const attachedQuat = new THREE.Quaternion();
 
     // Animation loop
     const animate = () => {
@@ -865,6 +1116,30 @@ export function Scene3D({
       }
 
       if (controls) controls.update();
+
+      // Camera-attached objects follow the view after it has settled for the
+      // frame, so a weapon never trails a turn by a frame.
+      lightMap.forEach((light) => {
+        if (light.userData.__softnAttach !== 'camera') return;
+        const off = (light.userData.__softnOffset as THREE.Vector3 | undefined) ?? new THREE.Vector3();
+        attachedOffset.copy(off).applyQuaternion(cam.quaternion).add(cam.position);
+        light.position.copy(attachedOffset);
+        if (light instanceof THREE.SpotLight) {
+          // Aim along the view: the target is a point well ahead of the camera.
+          attachedOffset.set(0, 0, -30).applyQuaternion(cam.quaternion).add(cam.position);
+          light.target.position.copy(attachedOffset);
+          light.target.updateMatrixWorld();
+        }
+      });
+      meshMap.forEach((entry) => {
+        if (entry.spec.attach !== 'camera') return;
+        const off = entry.spec.position ?? { x: 0, y: 0, z: 0 };
+        attachedOffset.set(off.x, off.y, off.z).applyQuaternion(cam.quaternion).add(cam.position);
+        entry.mesh.position.copy(attachedOffset);
+        const rot = entry.spec.rotation;
+        attachedRotation.set(rot?.x ?? 0, rot?.y ?? 0, rot?.z ?? 0);
+        entry.mesh.quaternion.copy(cam.quaternion).multiply(attachedQuat.setFromEuler(attachedRotation));
+      });
       renderer.render(scene, cam);
     };
     animate();
@@ -892,6 +1167,20 @@ export function Scene3D({
         renderer.domElement.removeEventListener('pointerup', mlPointerUp);
         renderer.domElement.removeEventListener('pointercancel', mlPointerUp);
         renderer.domElement.removeEventListener('lostpointercapture', mlPointerUp);
+      }
+      canvas.removeEventListener('contextmenu', swallowContextMenu);
+      if (plMouseMove) document.removeEventListener('mousemove', plMouseMove);
+      if (plLockChange) document.removeEventListener('pointerlockchange', plLockChange);
+      if (plMouseDown) canvas.removeEventListener('mousedown', plMouseDown);
+      if (enablePointerLock) {
+        if (document.pointerLockElement === canvas) {
+          try {
+            document.exitPointerLock();
+          } catch {
+            // Already released.
+          }
+        }
+        if (isActiveMouseLookOwner(mouseLookOwner)) delete sceneWindow.__scene3dLocked;
       }
       // Clean up window globals used for mouse look communication
       if (enableMouseLook) {
@@ -1187,6 +1476,34 @@ export function Scene3D({
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
         }
+      } else if (obj.type === 'instanced') {
+        // One mesh for many copies. Count, shape or material changes rebuild
+        // it; a new placement array only rewrites the instance buffers.
+        const rebuild =
+          !existing ||
+          existing.spec.type !== 'instanced' ||
+          needsGeometryUpdate(existing.spec, obj) ||
+          needsMaterialUpdate(existing.spec, obj) ||
+          instanceCount(existing.spec) !== instanceCount(obj);
+        if (rebuild) {
+          if (existing) {
+            disposeAnimationEntry(animationMapRef.current, obj.id);
+            scene.remove(existing.mesh);
+            disposeObject3D(existing.mesh);
+            loadVersionRef.current.delete(obj.id);
+          }
+          const mesh = createInstanced(obj);
+          applyTransform(mesh, obj, false);
+          scene.add(mesh);
+          meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
+        } else if (existing) {
+          if (existing.spec.instances !== obj.instances || existing.spec.palette !== obj.palette) {
+            fillInstances(existing.mesh as THREE.InstancedMesh, obj);
+          }
+          applyTransform(existing.mesh, obj, true);
+          existing.spec = obj;
+          existing.baseY = obj.position?.y ?? 0;
+        }
       } else if (!existing) {
         // Primitive objects — create synchronously
         const geometry = createGeometry(obj);
@@ -1197,8 +1514,8 @@ export function Scene3D({
         meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
       } else {
         // Primitive update
-        if (existing.spec.type === 'model') {
-          // Switching from model to primitive — remove old model
+        if (existing.spec.type === 'model' || existing.spec.type === 'instanced') {
+          // Switching from a model or a batch to a primitive — remove the old mesh
           disposeAnimationEntry(animationMapRef.current, obj.id);
           scene.remove(existing.mesh);
           disposeObject3D(existing.mesh);
@@ -1255,12 +1572,22 @@ export function Scene3D({
           scene.remove(existing);
           if ('dispose' in existing && typeof existing.dispose === 'function') existing.dispose();
           const light = createLight(spec);
-          light.userData.__softnLightType = spec.type;
+          tagLight(light, spec);
           scene.add(light);
           lightMap.set(id, light);
         } else {
           // Update in-place — position, intensity, color, groundColor
-          if (spec.position && 'position' in existing) {
+          tagLight(existing, spec);
+          if (existing instanceof THREE.SpotLight) {
+            if (spec.angle != null) existing.angle = spec.angle;
+            if (spec.penumbra != null) existing.penumbra = spec.penumbra;
+            if (spec.distance != null) existing.distance = spec.distance;
+            if (spec.decay != null) existing.decay = spec.decay;
+          } else if (existing instanceof THREE.PointLight) {
+            if (spec.distance != null) existing.distance = spec.distance;
+            if (spec.decay != null) existing.decay = spec.decay;
+          }
+          if (spec.position && 'position' in existing && spec.attach !== 'camera') {
             (existing as THREE.PointLight).position.set(
               spec.position.x,
               spec.position.y,
@@ -1275,7 +1602,7 @@ export function Scene3D({
         }
       } else {
         const light = createLight(spec);
-        light.userData.__softnLightType = spec.type;
+        tagLight(light, spec);
         scene.add(light);
         lightMap.set(id, light);
       }
@@ -1288,8 +1615,8 @@ export function Scene3D({
       className={className}
       style={{
         position: 'relative',
-        width: isFullscreen ? '100vw' : width,
-        height: isFullscreen ? '100vh' : height,
+        width: isFullscreen ? '100vw' : fill ? '100%' : width,
+        height: isFullscreen ? '100vh' : fill ? '100%' : height,
         overflow: 'hidden',
         ...(isFullscreen ? { background: '#000' } : style),
       }}

@@ -58,6 +58,12 @@ const appShellStyles = `
       --softn-chrome-base: 34px;
     }
   }
+  /* Embedded, there is no tab bar, so there is no chrome to subtract: without
+     this an app in a host page's frame stopped 38px short of the bottom. */
+  .softn-shell.softn-shell--embedded,
+  .softn-shell.softn-shell--embedded .softn-runner-host {
+    --softn-chrome-base: 0px !important;
+  }
   /* Touch overrides the narrow-window shrink: the bar has to match the 44px
      targets TabBar gives its controls, or the app area is laid out short. */
   @media (pointer: coarse) {
@@ -1047,7 +1053,7 @@ function App(): React.ReactElement {
         style={{ display: 'none' }}
       />
 
-      <div className="softn-shell">
+      <div className={embedded ? 'softn-shell softn-shell--embedded' : 'softn-shell'}>
         {/* Embedded in someone else's page: the app is the whole frame, and tabs
             belong to the host document rather than to us. */}
         {!embedded && (
