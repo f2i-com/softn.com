@@ -55,7 +55,7 @@ ErrorDocument 404 default
   # Cross-origin isolation gives the page SharedArrayBuffer, which is what
   # lets a language model on the CPU provider use every core instead of one:
   # on a machine without a usable GPU that is the difference between slow and
-  # apparently hung. `credentialless` rather than `require-corp`, so images and
+  # apparently hung. credentialless rather than require-corp, so images and
   # model files fetched from other origins keep working without CORP headers.
   Header always set Cross-Origin-Opener-Policy "same-origin"
   Header always set Cross-Origin-Embedder-Policy "credentialless"
