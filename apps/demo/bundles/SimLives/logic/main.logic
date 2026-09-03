@@ -358,30 +358,58 @@ function addHair(out, p, s, headY) {
 // Navigation: a 0.5 m grid over the lot, blocked by walls (except through
 // doors) and by furniture footprints, searched with A*.
 // ---------------------------------------------------------------------------
-function navBlockedAt(x, z) {
-  let R = 0.2;
+// Per-wall and per-item data for the blocked test, rebuilt when the plan
+// changes so each cell test is a handful of multiplies rather than a
+// catalogue lookup and a trig call per item.
+let navWalls = [];
+let navItems = [];
+function prepareNav() {
+  navWalls = [];
   for (let i = 0; i < plan.walls.length; i = i + 1) {
     let w = plan.walls[i];
-    let pr = wallProject(w, x, z);
-    if (pr.d < WALL_T / 2 + R) {
-      let ops = openingsOn(w.id);
-      let clear = false;
-      for (let k = 0; k < ops.length; k = k + 1) {
-        if (ops[k].kind === "door" && Math.abs(ops[k].pos - pr.pos) < ops[k].w / 2 - 0.1) clear = true;
-      }
-      if (!clear) return true;
-    }
+    let dx = w.x2 - w.x1, dz = w.z2 - w.z1;
+    let L2 = dx * dx + dz * dz || 1;
+    let L = Math.sqrt(L2);
+    let doors = [];
+    let ops = openingsOn(w.id);
+    for (let k = 0; k < ops.length; k = k + 1) if (ops[k].kind === "door") doors.push({ a: ops[k].pos - (ops[k].w / 2 - 0.1), b: ops[k].pos + (ops[k].w / 2 - 0.1) });
+    navWalls.push({ x1: w.x1, z1: w.z1, dx: dx, dz: dz, L2: L2, L: L, doors: doors, minX: Math.min(w.x1, w.x2) - 0.5, maxX: Math.max(w.x1, w.x2) + 0.5, minZ: Math.min(w.z1, w.z2) - 0.5, maxZ: Math.max(w.z1, w.z2) + 0.5 });
   }
+  navItems = [];
   for (let i = 0; i < plan.items.length; i = i + 1) {
     let it = plan.items[i];
     let def = CATALOGUE[it.kind];
     if (!def) continue;
     let foot = NAV_FOOT[it.kind] === undefined ? { w: def.w, d: def.d } : NAV_FOOT[it.kind];
     if (!foot) continue;
-    let c = Math.cos(-it.rot), s = Math.sin(-it.rot);
+    let hw = foot.w / 2 + 0.06, hd = foot.d / 2 + 0.06;
+    let r = Math.max(hw, hd) + 0.01;
+    navItems.push({ x: it.x, z: it.z, c: Math.cos(-it.rot), s: Math.sin(-it.rot), hw: hw, hd: hd, r2: r * r });
+  }
+}
+
+function navBlockedAt(x, z) {
+  let R = 0.2;
+  let reach = WALL_T / 2 + R;
+  for (let i = 0; i < navWalls.length; i = i + 1) {
+    let w = navWalls[i];
+    if (x < w.minX || x > w.maxX || z < w.minZ || z > w.maxZ) continue;
+    let t = ((x - w.x1) * w.dx + (z - w.z1) * w.dz) / w.L2;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    let px = w.x1 + w.dx * t - x, pz = w.z1 + w.dz * t - z;
+    if (px * px + pz * pz < reach * reach) {
+      let pos = t * w.L;
+      let clear = false;
+      for (let k = 0; k < w.doors.length; k = k + 1) if (pos > w.doors[k].a && pos < w.doors[k].b) { clear = true; break; }
+      if (!clear) return true;
+    }
+  }
+  for (let i = 0; i < navItems.length; i = i + 1) {
+    let it = navItems[i];
     let dx = x - it.x, dz = z - it.z;
-    let lx = dx * c - dz * s, lz = dx * s + dz * c;
-    if (Math.abs(lx) < foot.w / 2 + 0.06 && Math.abs(lz) < foot.d / 2 + 0.06) return true;
+    if (dx * dx + dz * dz > it.r2) continue;
+    let lx = dx * it.c - dz * it.s, lz = dx * it.s + dz * it.c;
+    if (Math.abs(lx) < it.hw && Math.abs(lz) < it.hd) return true;
   }
   return Math.abs(x) > WORLD - 0.5 || Math.abs(z) > WORLD - 0.5;
 }
@@ -394,14 +422,18 @@ function navIndex(x, z) {
 function navX(i) { return (i % NAV_N) * NAV_CELL - WORLD; }
 function navZ(i) { return Math.floor(i / NAV_N) * NAV_CELL - WORLD; }
 
+// The grid is filled lazily: a cell is tested the first time a search
+// touches it and remembered until the plan changes. Filling all 37k cells
+// up front cost more than a VM call may spend and killed the engine at init.
 function rebuildNav() {
+  prepareNav();
   navCells = new Array(NAV_N * NAV_N);
-  for (let iz = 0; iz < NAV_N; iz = iz + 1) {
-    for (let ix = 0; ix < NAV_N; ix = ix + 1) {
-      navCells[iz * NAV_N + ix] = navBlockedAt(ix * NAV_CELL - WORLD, iz * NAV_CELL - WORLD) ? 1 : 0;
-    }
-  }
   navDirty = false;
+}
+function navCell(i) {
+  let v = navCells[i];
+  if (v === undefined) { v = navBlockedAt(navX(i), navZ(i)) ? 1 : 0; navCells[i] = v; }
+  return v;
 }
 
 function nearestFreeCell(x, z, maxR) {
@@ -413,7 +445,7 @@ function nearestFreeCell(x, z, maxR) {
       let ix = ci + dx, iz = cz + dz;
       if (ix < 0 || iz < 0 || ix >= NAV_N || iz >= NAV_N) continue;
       let i = iz * NAV_N + ix;
-      if (navCells[i]) continue;
+      if (navCell(i)) continue;
       let d = Math.hypot(navX(i) - x, navZ(i) - z);
       if (d < bd) { bd = d; best = i; }
     }
@@ -458,7 +490,7 @@ function findPath(sx, sz, gx, gz) {
   gScore[s] = 0;
   push(s, h(s));
   let steps = 0;
-  while (heap.length > 0 && steps < 160000) {
+  while (heap.length > 0 && steps < 30000) {
     steps = steps + 1;
     let cur = pop().i;
     if (cur === g) {
@@ -478,9 +510,9 @@ function findPath(sx, sz, gx, gz) {
         let nx = cx + dx, nz = cz + dz;
         if (nx < 0 || nz < 0 || nx >= NAV_N || nz >= NAV_N) continue;
         let ni = nz * NAV_N + nx;
-        if (navCells[ni] || closed[ni]) continue;
+        if (closed[ni] || navCell(ni)) continue;
         // No cutting corners through a blocked cell.
-        if (dx !== 0 && dz !== 0 && (navCells[cz * NAV_N + nx] || navCells[nz * NAV_N + cx])) continue;
+        if (dx !== 0 && dz !== 0 && (navCell(cz * NAV_N + nx) || navCell(nz * NAV_N + cx))) continue;
         let ng = gScore[cur] + ((dx !== 0 && dz !== 0) ? 1.414 : 1);
         if (gScore[ni] === undefined || ng < gScore[ni]) {
           gScore[ni] = ng;
@@ -499,7 +531,7 @@ function lineClear(x1, z1, x2, z2) {
   for (let i = 1; i < n; i = i + 1) {
     let t = i / n;
     let i2 = navIndex(x1 + (x2 - x1) * t, z1 + (z2 - z1) * t);
-    if (i2 < 0 || navCells[i2]) return false;
+    if (i2 < 0 || navCell(i2)) return false;
   }
   return true;
 }
@@ -519,7 +551,7 @@ function approachSpot(it) {
     let wx = it.x + t.lx * Math.cos(it.rot) + t.lz * Math.sin(it.rot);
     let wz = it.z - t.lx * Math.sin(it.rot) + t.lz * Math.cos(it.rot);
     let i = navIndex(wx, wz);
-    if (i >= 0 && !navCells[i] && !navBlockedAt(wx, wz)) return { x: wx, z: wz, rot: Math.atan2(it.x - wx, it.z - wz) };
+    if (i >= 0 && !navCell(i) && !navBlockedAt(wx, wz)) return { x: wx, z: wz, rot: Math.atan2(it.x - wx, it.z - wz) };
   }
   let i = nearestFreeCell(it.x, it.z, 2.5);
   if (i < 0) return null;
@@ -1394,7 +1426,7 @@ function setAppMode(mode) {
     for (let i = 0; i < sims.length; i = i + 1) {
       let s = sims[i];
       let idx = navIndex(s.x, s.z);
-      if (idx < 0 || navCells[idx]) { let f = nearestFreeCell(s.x, s.z, 6); if (f >= 0) { s.x = navX(f); s.z = navZ(f); } }
+      if (idx < 0 || navCell(idx)) { let f = nearestFreeCell(s.x, s.z, 6); if (f >= 0) { s.x = navX(f); s.z = navZ(f); } }
     }
     setLiveCam("orbit");
     buildLiveLights();
