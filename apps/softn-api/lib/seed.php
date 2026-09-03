@@ -13,6 +13,7 @@ final class Seed
     private const CATEGORY = [
         'snake-game' => 'games', 'pocket' => 'games', 'maze-escape-3d' => 'games', 'texas-holdem' => 'games',
         'promptly-unemployed' => 'games', 'the-office' => 'games', 'blockscape' => 'games', 'dead-hours' => 'games', 'twenty48' => 'games', 'blockfall' => 'games',
+        'train-yard' => 'simulations', 'predator-prey' => 'simulations',
         'warble-wire' => 'tools', 'ai-chat' => 'ai',
         // Sample apps: they show what the runtime can do rather than being
         // things to rely on, and the directory files them as such.
@@ -24,7 +25,8 @@ final class Seed
         'snake-game' => 'arcade,classic', 'pocket' => 'emulator,handheld,retro', 'maze-escape-3d' => '3d,maze',
         'texas-holdem' => 'cards,poker', 'promptly-unemployed' => 'story,comedy',
         'blockscape' => '3d,sandbox,voxel', 'dead-hours' => '3d,shooter,zombies', 'twenty48' => 'puzzle,classic', 'blockfall' => 'arcade,puzzle,classic',
-        'the-office' => 'simulation', 'notes' => 'notes,local-first', 'glamour-studio' => 'business,scheduling',
+        'the-office' => 'simulation', 'train-yard' => '3d,simulation,railway', 'predator-prey' => 'ecosystem,simulation,biology,3d',
+        'notes' => 'notes,local-first', 'glamour-studio' => 'business,scheduling',
         'device-kit' => 'camera,qr,network', 'warble-wire' => 'audio,modem,dsp', 'ai-chat' => 'llm,chat',
         'ai-demo' => 'llm', 'gpu-demo' => 'webgpu,compute', 'three-demo' => '3d,webgl', 'showcase' => 'components',
     ];
@@ -34,13 +36,8 @@ final class Seed
         if (!Config::get('seedDemos', true)) return;
         $dir = Config::dataDir();
         $flag = "$dir/seeded";
-        if (is_file($flag)) return;
         $pdo = Db::catalog();
         Categories::ensure();
-        if ((int) $pdo->query('SELECT COUNT(*) FROM apps')->fetchColumn() > 0) {
-            @touch($flag);
-            return;
-        }
         $demos = dirname(__DIR__, 2) . '/demos';
         if (!is_dir($demos)) {
             $candidate = dirname(__DIR__, 3) . '/apps/softn-web/public/demos';
@@ -54,16 +51,25 @@ final class Seed
         if (!is_file($indexPath)) return;
         $index = json_decode((string) file_get_contents($indexPath), true);
         if (!is_array($index)) return;
+
+        // Bring seeded app categories up to date
+        foreach (self::CATEGORY as $slug => $cat) {
+            $pdo->prepare('UPDATE apps SET category = ? WHERE slug = ? AND category != ?')->execute([$cat, $slug, $cat]);
+        }
+
+        $existingSlugs = $pdo->query('SELECT slug FROM apps')->fetchAll(PDO::FETCH_COLUMN);
+        $existingSet = array_flip($existingSlugs);
+
         // A second request arriving while this one seeds must not seed too.
         $lock = fopen("$dir/seed.lock", 'c');
         if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) return;
         try {
-            if ((int) $pdo->query('SELECT COUNT(*) FROM apps')->fetchColumn() > 0) return;
             foreach ($index as $entry) {
                 if (!is_array($entry) || !is_string($entry['file'] ?? null)) continue;
                 $file = "$demos/" . basename($entry['file']);
                 if (!is_file($file)) continue;
                 $id = is_string($entry['id'] ?? null) ? $entry['id'] : Apps::slugify((string) ($entry['name'] ?? $entry['file']));
+                if (isset($existingSet[$id])) continue;
                 try {
                     $created = Apps::create($file, [
                         'slug' => $id,
