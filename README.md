@@ -2,7 +2,7 @@
 
 **A dynamic, AI-friendly UI language and runtime for building applications -- desktop and web.**
 
-SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 90 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation.
+SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 90 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation. softn.com itself is an app directory: anyone can publish a `.softn` bundle, and every app plays in the browser from its own page.
 
 ---
 
@@ -17,8 +17,10 @@ SoftN is a complete system for creating modular, reactive UI applications using 
 - **Desktop Runtime** -- Tauri-based loader for running `.softn` bundles natively
 - **Visual Builder** -- Full IDE for visually creating SoftN applications
 - **Bundle System** -- Portable `.softn` files (ZIP archives) for distribution
+- **App Directory** -- softn.com lists, plays, rates and remixes published bundles, and gives each app its own server-side storage
 - **Theme System** -- Built-in light/dark theme support with CSS custom properties
-- **3D Support** -- Three.js integration with Scene3D component (GLTF, OBJ, FBX, STL)
+- **3D Support** -- Three.js integration with Scene3D component (GLTF, OBJ, FBX, STL), plus instanced batches, pointer lock and camera-attached objects for first-person games
+- **Sound** -- `softn.audio` for scripts, `AudioStream` for generated waveforms, `Microphone` for capture
 - **Animation** -- Built-in animation components (draggable, sortable, typewriter, marquee)
 
 ---
@@ -40,8 +42,8 @@ softn.com/
 |   +-- softn-loader/          # Desktop runtime (Tauri)
 |   +-- softn-server/          # Rust host for `.logic` server routes and XDB sync
 |   +-- softn-api/             # The app directory: PHP + SQLite, deployed as /api/ beside the site
-|   +-- demo/                  # Demo applications
-+-- scripts/                   # dev-all and site assembly
+|   +-- demo/                  # The demo bundles, with their build and test scripts
++-- scripts/                   # dev-all, site assembly, release packaging, demo screenshots
 +-- .github/workflows/         # CI/CD
 ```
 
@@ -67,6 +69,7 @@ softn.com/
 | Build Tooling | Vite 5+ / tsup |
 | State Management | React Context + Zustand (builder) |
 | 3D Graphics | Three.js |
+| App Directory | PHP 8.1 + SQLite (full-text search when the host's SQLite has FTS5) |
 
 ---
 
@@ -102,6 +105,8 @@ site proxies their path and WebSocket traffic through port 1420. If that port is
 taken, `npm run dev` prints the one replacement origin to use. To run a single
 app directly instead, use `npm run dev:site`, `dev:web`, `dev:builder` or
 `dev:studio`.
+
+The directory API is PHP and is not part of `npm run dev`; [The app directory](#the-app-directory) below explains how to run it against a built site.
 
 ---
 
@@ -192,6 +197,15 @@ Before each script function call, all React state is synced to VM globals. After
   <Text>No tasks yet!</Text>
 #end
 ```
+
+A handler bound in a template is called without the DOM event: `@click={fn}`
+runs `fn()` with the event reduced to `null`, while component callbacks that
+carry data (`DPad`'s `@press`, `Slider`'s `@change`) pass it through. A script
+that needs pointer coordinates listens on the window instead —
+`window.addEventListener("pointerdown", fn)` hands `fn` a plain object with
+`clientX`, `clientY`, `key`, `targetTag` and the like. `Box` and `Button`
+forward `@pointerdown`, `@pointerup`, `@pointercancel` and `@pointerleave`,
+which is enough for a hold-to-press control.
 
 ---
 
@@ -465,15 +479,41 @@ speaker.
 
 ---
 
+## 3D Scenes
+
+`<Scene3D>` wraps Three.js. Beyond loading models, it carries what a
+first-person game needs:
+
+- `type: "instanced"` objects draw thousands of identical meshes in one call:
+  a flat `instances` array of positions, with an optional `palette` and a
+  fourth number per instance to pick a colour from it.
+- `pointerLock` captures the mouse for mouse-look. The scene reports the view
+  through `window.__scene3dYaw` and `__scene3dPitch`, whether the lock is held
+  through `__scene3dLocked`, and a script asks for it by setting
+  `__scene3dWantLock`. `pitchLimit` clamps the look, `cameraSmoothing` eases
+  it and `mouseLookSensitivity` scales it. On a touch screen a drag looks
+  around instead.
+- `attach: "camera"` on an object or light keeps it in front of the player: a
+  held block, a torch, a muzzle flash.
+- `fill` sizes the canvas to its container, `maxPixelRatio` caps the render
+  resolution on high-density screens, and `staticObjects` holds geometry that
+  never changes so only the moving list is diffed each frame.
+
+Blockscape, Dead Hours and Maze Escape 3D are built on these. F8 in any of
+them shows the engine's debug readout.
+
+---
+
 ## Applications
 
 | App | Description |
 |-----|-------------|
-| **softn-site** | The softn.com landing page. Runs the demo bundles in an embedded runtime frame |
+| **softn-site** | The softn.com landing page and app directory: browse, search and filter apps, play them in a popup, publish and update your own |
 | **softn-web** | Browser-based `.softn` runtime with multi-tab, URL routing and `?open=` deep links. Installable PWA |
 | **softn-studio** | Brief to blueprint to app, against whichever model provider you configure. Installable PWA |
 | **softn-builder** | Visual IDE with drag-and-drop editor, live preview, bundle export. Installable PWA |
 | **softn-loader** | Tauri desktop runtime with `.softn` file association and XDB/SQLite |
+| **softn-api** | The directory behind softn.com: PHP and SQLite, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes and per-app storage |
 
 The three browser apps are installable PWAs: each ships a web app manifest and a
 service worker that precaches the runtime, the component library and the
@@ -490,11 +530,15 @@ served, and assembles a single uploadable tree. Upload `dist/` to one domain; no
 subdomains or cross-origin configuration are required:
 
 ```
-dist/            landing page
-dist/demos/      .softn bundles
-dist/web/        web runtime
-dist/builder/    visual builder
-dist/studio/     AI studio
+dist/             landing page and app directory
+dist/demos/       .softn bundles
+dist/softn-files/ the same bundles with a download page
+dist/web/         web runtime
+dist/builder/     visual builder
+dist/studio/      AI studio
+dist/api/         the directory API (PHP)
+dist/data/        the directory's state; never served
+dist/.htaccess    Apache rules, with nginx.conf.example and DEPLOY.md alongside
 ```
 
 Configure the host to serve each app's `index.html` for deep links. The build
@@ -508,6 +552,19 @@ fallback to `dist/404.html`. On another host, apply the equivalent rewrites:
 /*         -> /index.html
 ```
 
+Two things the host must do beyond rewrites. It runs PHP for `/api/`, the
+directory. And it sends `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless` on **every** response, not
+only documents: the runtime's worker mode (Pocket, WarbleWire) is a dedicated
+worker, and a cross-origin isolated page refuses one whose script arrives
+without the embedder policy. The generated `.htaccess` and
+`nginx.conf.example` do both; `DEPLOY.md` in `dist/` walks through the rest,
+and `GET /api/health` reports what the server found.
+
+Pushing a `v*` tag builds the site in CI and attaches `softn-com-<tag>.zip`
+to the GitHub release. `npm run package:site -- --tag vX.Y.Z` makes the same
+archive locally.
+
 To exercise that assembled artifact locally on one port before uploading it:
 
 ```bash
@@ -517,20 +574,85 @@ npm run preview:site
 This performs a fresh build and serves it at `http://localhost:1420`. Set
 `SOFTN_SITE_PORT` if that port is already occupied.
 
+### The app directory
+
+softn.com is a directory of `.softn` apps. Anyone can publish: `POST /api/apps`
+with the bundle answers with an **edit key**, and that key, not an account, is
+what updates, re-thumbnails or unpublishes the listing later. The site
+remembers the keys it has been given in the browser, so "Your apps" on the
+publish page finds them again. Visitors can run, rate, comment on and remix
+any app; a remix is a new listing that records its parent.
+
+Apps that declare the `storage` capability get a small database of their own
+on the server, reached from a script as `softn.storage.*`. Snake's shared top
+ten and the Notes board are the worked examples. The routes are described in
+[`apps/softn-api/README.md`](apps/softn-api/README.md), and `GET /api` lists
+them.
+
+To run the directory locally against a built site (PHP 8.1+ with
+`pdo_sqlite` and `zip`):
+
+```bash
+npm run build:site
+php -S 127.0.0.1:5500 -t dist apps/softn-api/router.php
+```
+
+The router does what the deployed `.htaccess` does: `/api/` to PHP, `/data/`
+refused, `/app/<slug>` a share page with Open Graph tags, and every static
+file served with the isolation headers. The directory seeds itself from the
+demo bundles on the first request; delete
+`dist/data/{apps,directory.sqlite,seeded,seed.lock}` to seed again after the
+demos change.
+
 ### Demos
+
+Every bundle under `apps/demo/bundles/` is published on softn.com, and each is
+a worked example of some part of the runtime.
+
+**Games**
 
 | Demo | Description |
 |------|-------------|
-| **GlamourStudio** | Salon management app |
-| **TheOffice** | Office simulation with AI character interactions |
-| **SnakeGame** | Classic snake game using `PixelGrid` and `Loop`, with a shared top ten in the app's own server storage |
 | **Blockscape** | A first-person voxel sandbox: a 64×64×40 island meshed into `Scene3D` `instanced` batches, pointer-locked camera, gravity, swimming, flight, a day-night cycle, and a world that saves itself |
 | **DeadHours** | A first-person zombie shooter: waves through the gates of a fenced yard at night, a pistol, a shotgun, a camera-attached torch, headshots, pickups and a shared leaderboard |
-| **Twenty48** | The sliding-tile classic with undo, a best score and a game that resumes |
+| **MazeEscape3D** | A first-person maze carved fresh every game, with a minimap that fills in as you explore and a best time that sticks |
+| **PromptlyUnemployed** | A first-person narrative tragicomedy, fully voiced: laid off by an avatar, home by dinner, a business by midnight |
+| **TexasHoldem** | Multiplayer poker over peer-to-peer sync, with bots for a table of one |
+| **SnakeGame** | The classic on a `PixelGrid`, with a shared top ten in the app's own server storage |
+| **Twenty48** | The sliding-tile classic with swipes, undo, a best score and a game that resumes |
 | **Blockfall** | Falling blocks in a 10×20 `PixelGrid` well: seven pieces, wall kicks, a ghost piece, hold, preview and levels |
-| **MazeEscape3D** | 3D maze game using `Scene3D` |
-| **WarbleWire** | The QXW acoustic transport — text becomes synthetic birdsong and is decoded back, over the air through `Microphone` |
+
+**Apps**
+
+| Demo | Description |
+|------|-------------|
+| **TheOffice** | Six characters who talk to each other through a small language model running on the device, on the GPU when there is one and the CPU when there is not |
+| **AIChat** | A private chat with a model that downloads once and then never leaves the browser |
+| **WarbleWire** | The QXW acoustic transport: text becomes synthetic birdsong and is decoded back, over the air through `Microphone` |
 | **Pocket** | An 8-bit handheld console emulator. The CPU, PPU, APU, timer and MBC1/2/3/5 mappers are all `.logic`; `PixelCanvas` is the screen and `AudioStream` is the speaker. Runs commercial cartridges at 60fps with sound, save states and battery-backed saves |
+
+**Examples** (the directory's Examples category)
+
+| Demo | Description |
+|------|-------------|
+| **GlamourStudio** | A salon's front desk on `SmartGrid` and `SmartForm`, syncing between devices |
+| **DeviceKit** | What a sandboxed app may ask for, one page per permission: network, camera, files, QR codes |
+| **Showcase** | Every chart, animation and interactive component the runtime ships |
+| **Notes** | A shared notes board in the app's server-side storage |
+| **ThreeDemo** | Shapes drifting over a floor in `Scene3D`: look around, pick one, add more |
+| **GPUDemo** | Vector maths in two compute shaders through the WebGPU bridge |
+
+Each demo is source under `apps/demo/bundles/<Name>/`. From `apps/demo`,
+`node scripts/build-bundle.cjs <Name>` packs it and copies the archive into
+the runtime's `public/demos/`, and `npm test -w @softn/demo` checks that every
+archive is complete and current, runs the poker and WarbleWire logic tests,
+and validates Promptly Unemployed's geometry and audio. The games' sound
+effects are synthesized rather than recorded: `apps/demo/scripts/sfx-lib.cjs`
+writes 16-bit WAVs from a few tone and noise primitives, and each game's
+`assets-src/make-sfx.cjs` describes its own. `npm run screenshot:demos`
+photographs every demo in a headless browser for the directory's thumbnails;
+pass `--base http://127.0.0.1:5500/web` for the worker-mode apps, which need
+the built site.
 
 ---
 
@@ -582,6 +704,9 @@ npm run dev:desktop
 
 # Builder in its Tauri shell (requires Rust)
 cd apps/softn-builder && npm run tauri dev
+
+# The app directory, against a built site (requires PHP)
+npm run build:site && php -S 127.0.0.1:5500 -t dist apps/softn-api/router.php
 ```
 
 Rust is needed for the two Tauri shells, for `softn-server` (the host that runs a
@@ -599,6 +724,17 @@ git clone https://github.com/f2i-com/xdb.org.git ../xdb.org
 cargo test --manifest-path apps/softn-server/Cargo.toml
 ```
 
+### Testing
+
+```bash
+npm test                      # every workspace: core, components, web, api, demo
+npm test -w @softn/core       # one of them
+npm run lint && npm run typecheck
+```
+
+The API suite starts its own `php -S` on a temporary root; the demo suite
+rebuilds nothing and fails if a bundle's archive is older than its source.
+
 ### Key File Paths
 
 | File | Purpose |
@@ -611,6 +747,9 @@ cargo test --manifest-path apps/softn-server/Cargo.toml
 | `packages/@softn/core/src/bundle/bundle.ts` | ZIP bundle reader |
 | `packages/@softn/core/src/loader/SoftNRenderer.tsx` | Main renderer component |
 | `packages/@softn/components/src/registry.ts` | Built-in component registration |
+| `packages/@softn/components/src/threed/Scene3D.tsx` | The 3D scene: instancing, pointer lock, attached objects |
+| `apps/softn-api/index.php` | The directory API's routes |
+| `scripts/build-site.mjs` | Assembles `dist/` and writes `.htaccess`, `nginx.conf.example` and `DEPLOY.md` |
 
 ---
 

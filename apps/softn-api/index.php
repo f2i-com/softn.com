@@ -57,6 +57,7 @@ function match_route(string $method, string $path, array $routes): ?array
 $routes = [
     ['GET', '#^/?$#', 'index'],
     ['GET', '#^/health$#', 'health'],
+    ['GET', '#^/README\.md$#', 'readme'],
     ['GET', '#^/categories$#', 'categories'],
     ['POST', '#^/categories$#', 'suggestCategory'],
     ['GET', '#^/apps$#', 'listApps'],
@@ -139,6 +140,10 @@ function handle(string $handler, array $args, Request $req): Response
                     'POST /api/categories  {name, description, emoji}',
                 ],
             ]);
+
+        case 'readme':
+            // The docs the index route points at, served as the markdown they are.
+            return Response::file(__DIR__ . '/README.md', 'text/markdown; charset=utf-8');
 
         case 'health': {
             $fts = false;

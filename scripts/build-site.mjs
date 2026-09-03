@@ -2,14 +2,21 @@
 /**
  * Build everything softn.com serves, into one `dist/` you can upload anywhere.
  *
- *   dist/            the landing page
+ *   dist/            the landing page and app directory
  *   dist/demos/      the .softn bundles, at the root so `?open=/demos/x.softn`
  *                    resolves the same way from the site and from the runtime
  *   dist/softn-files/ a clearly named copy of the canonical portable bundles
  *   dist/web/        the web runtime
  *   dist/builder/    the visual builder
  *   dist/studio/     the AI studio
- *   dist/.htaccess   Apache deployment rules (with an nginx example alongside)
+ *   dist/api/        the directory API (PHP), executed by the host, never served
+ *   dist/data/       the directory's state; starts out holding only the rules
+ *                    that keep it unserved
+ *   dist/.htaccess   Apache deployment rules, with nginx.conf.example and
+ *                    DEPLOY.md alongside; both configs send the cross-origin
+ *                    isolation headers on every response, which the runtime's
+ *                    worker mode depends on
+ *   dist/BUILD-INFO.json  what was built, from which revision
  *
  * The three apps are built with a `VITE_BASE` matching where they land, which
  * is what makes their assets, their service worker scope and their own internal
