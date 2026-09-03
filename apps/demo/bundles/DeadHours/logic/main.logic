@@ -655,10 +655,9 @@ function buildLights() {
   // The torch rides the camera and flickers a little, as a cheap one would.
   let flicker = 0.9 + 0.1 * Math.sin(bobPhase * 2.3) * Math.sin(bobPhase * 0.7)
   let ls = [
-    { id: "torch", type: "spot", attach: "camera", color: "#fff1d0", intensity: started && torchOn ? 420 * flicker : 0, angle: 0.36, penumbra: 0.55, distance: 42, decay: 1.6, position: { x: -0.28, y: -0.05, z: 0.05 } },
+    { id: "torch", type: "spot", attach: "camera", color: flashTicks > 0 ? "#ffd9a0" : "#fff1d0", intensity: (started && torchOn ? 420 * flicker : 0) + (flashTicks > 0 ? 900 : 0), angle: flashTicks > 0 ? 0.55 : 0.36, penumbra: 0.55, distance: 42, decay: 1.6, position: { x: -0.28, y: -0.05, z: 0.05 } },
     { id: "hemi", type: "hemisphere", color: "#4c5f8a", groundColor: "#141a22", intensity: 1.15 },
-    { id: "moon", type: "directional", color: "#9db2ea", intensity: 0.9, position: { x: -60, y: 55, z: -90 } },
-    { id: "flash", type: "point", color: "#ffd27a", intensity: flashTicks > 0 ? 160 : 0, position: { x: px + Math.sin(yaw) * 0.8, y: P_EYE - 0.1, z: pz + Math.cos(yaw) * 0.8 } }
+    { id: "moon", type: "directional", color: "#9db2ea", intensity: 0.9, position: { x: -60, y: 55, z: -90 } }
   ]
   let i = 0
   while (i < lampPosts.length) {

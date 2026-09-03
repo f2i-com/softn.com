@@ -231,6 +231,19 @@ export interface Scene3DProps {
   pointerLock?: boolean;
   /** How far the view may tilt, in radians (default 0.8 — about 45°). */
   pitchLimit?: number;
+  /**
+   * Ease the camera toward each new `camera.position` instead of jumping to
+   * it, 0..1 per frame (0 = off). A game that moves its player thirty times
+   * a second reads as sixty when the render loop closes the gap between
+   * ticks; 0.35 keeps under a frame of lag.
+   */
+  cameraSmoothing?: number;
+  /**
+   * The most device pixels drawn per CSS pixel (default 2). A full-viewport
+   * game on a high-density screen pays four times the fill rate at 2; 1 or
+   * 1.25 keeps it fast with little visible cost.
+   */
+  maxPixelRatio?: number;
   onReady?: () => void;
   onClick?: (info: Scene3DHit) => void;
   onAnimation?: (info: { objectId: string; clip: string; type: 'finished' | 'missing' }) => void;
@@ -693,6 +706,8 @@ export function Scene3D({
   mouseLookSensitivity = 0.003,
   pointerLock: enablePointerLock = false,
   pitchLimit = 0.8,
+  cameraSmoothing = 0,
+  maxPixelRatio = 2,
   onReady,
   onClick,
   onAnimation,
@@ -764,6 +779,9 @@ export function Scene3D({
   onAnimationRef.current = onAnimation;
   const yawRef = useRef<number>(0);
   const pitchRef = useRef<number>(0);
+  const camTargetRef = useRef<THREE.Vector3>(new THREE.Vector3());
+  const cameraSmoothingRef = useRef(cameraSmoothing);
+  cameraSmoothingRef.current = cameraSmoothing;
 
   // Track last prop values to avoid resetting on reference-only changes
   const lastFogRef = useRef<string>('');
@@ -790,7 +808,7 @@ export function Scene3D({
 
     const renderer = new THREE.WebGLRenderer({ antialias, alpha });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, Math.max(0.5, maxPixelRatio)));
     if (shadows) {
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -799,7 +817,8 @@ export function Scene3D({
 
     const scene = new THREE.Scene();
     // A handle for tests and debugging: what the canvas is drawing.
-    (renderer.domElement as HTMLCanvasElement & { __softnScene?: THREE.Scene; __softnCamera?: THREE.Camera }).__softnScene = scene;
+    (renderer.domElement as HTMLCanvasElement & { __softnScene?: THREE.Scene; __softnRenderer?: THREE.WebGLRenderer }).__softnScene = scene;
+    (renderer.domElement as HTMLCanvasElement & { __softnRenderer?: THREE.WebGLRenderer }).__softnRenderer = renderer;
     if (!alpha) {
       scene.background = new THREE.Color(background);
     }
@@ -808,6 +827,7 @@ export function Scene3D({
     const cam = new THREE.PerspectiveCamera(fov, width / height, 0.1, 1000);
     const pos = cameraProp?.position ?? { x: 0, y: 3, z: 8 };
     cam.position.set(pos.x, pos.y, pos.z);
+    camTargetRef.current.set(pos.x, pos.y, pos.z);
     (renderer.domElement as HTMLCanvasElement & { __softnCamera?: THREE.Camera }).__softnCamera = cam;
     const lookAt = cameraProp?.lookAt ?? { x: 0, y: 0, z: 0 };
     cam.lookAt(lookAt.x, lookAt.y, lookAt.z);
@@ -925,24 +945,18 @@ export function Scene3D({
         // steers. A click while unlocked (re)takes the lock instead.
         if (enablePointerLock) {
           if (!isLocked() && e.pointerType === 'mouse') {
-            const request = canvas.requestPointerLock as ((opts?: { unadjustedMovement?: boolean }) => Promise<void> | void) | undefined;
+            // Plain (OS-adjusted) movement: raw input is not the same on
+            // every platform, and a first-person view wants the pointer to
+            // behave like the pointer does everywhere else.
             try {
-              const result = request?.call(canvas, { unadjustedMovement: true });
+              const result = canvas.requestPointerLock() as unknown;
               if (result && typeof (result as Promise<void>).catch === 'function') {
                 (result as Promise<void>).catch(() => {
-                  try {
-                    canvas.requestPointerLock();
-                  } catch {
-                    // The page may not be allowed to capture the pointer.
-                  }
+                  // The page may not be allowed to capture the pointer.
                 });
               }
             } catch {
-              try {
-                canvas.requestPointerLock();
-              } catch {
-                // Same: capture is a request, and the browser may refuse it.
-              }
+              // Capture is a request, and the browser may refuse it.
             }
           }
           if (isLocked() || e.pointerType === 'mouse') return;
@@ -1097,6 +1111,13 @@ export function Scene3D({
 
       // Clip mixers take real delta seconds, not the 60fps-normalised dtScale
       animationMap.forEach((entry) => entry.mixer.update(dt));
+
+      // Ease toward the last position the host gave, frame-rate independent.
+      const smoothing = cameraSmoothingRef.current;
+      if (smoothing > 0) {
+        const k = 1 - Math.pow(1 - Math.min(0.95, smoothing), dtScale);
+        cam.position.lerp(camTargetRef.current, k);
+      }
 
       // Mouse look: apply yaw + pitch to camera every frame (60fps, no React)
       if (enableMouseLook) {
@@ -1297,7 +1318,11 @@ export function Scene3D({
       const posKey = JSON.stringify(cameraProp.position);
       if (posKey !== lastCamPosRef.current) {
         lastCamPosRef.current = posKey;
-        cam.position.set(cameraProp.position.x, cameraProp.position.y, cameraProp.position.z);
+        camTargetRef.current.set(cameraProp.position.x, cameraProp.position.y, cameraProp.position.z);
+        // A jump larger than a few metres is a teleport, not a step: no easing.
+        if (!(cameraSmoothing > 0) || camTargetRef.current.distanceTo(cam.position) > 4) {
+          cam.position.copy(camTargetRef.current);
+        }
         // Reset orbit controls target when camera moves programmatically
         if (controlsRef.current && cameraProp.lookAt) {
           controlsRef.current.target.set(
