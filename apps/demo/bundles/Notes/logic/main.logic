@@ -1,51 +1,92 @@
-// Client-side logic for the Notes app
-// Uses softn.net.fetch() to call the server HTTP API endpoints
-// Server handles all CRUD operations via db bridge
+// Notes: a shared board. Opened from the directory the notes live in the
+// app's own storage on the site (softn.storage); opened any other way it
+// falls back to the local softn-server this bundle also ships routes for.
 
 let notes = []
 let newTitle = ""
 let newContent = ""
 let noteCount = 0
 let searchQuery = ""
+let storageMode = ""          // "site" | "server" | "none"
+let statusText = "Connecting…"
+let statusDetail = ""
+let formError = ""
+let busy = false
 let serverUrl = "http://localhost:9876"
 
+function _init() {
+  refreshNotes()
+}
+
+function refreshNotes() {
+  busy = true
+  softn.storage.query("notes", { orderBy: ["createdAt", "desc"], limit: 200 }, function (r) {
+    if (r && !r.error && r.records) {
+      storageMode = "site"
+      statusText = "Stored on this site"
+      notes = r.records
+      noteCount = notes.length
+      busy = false
+      return
+    }
+    softn.net.fetch(serverUrl + "/api/notes", {}, function (result) {
+      busy = false
+      if (result && result.ok) {
+        let data = JSON.parse(result.body)
+        storageMode = "server"
+        statusText = "Local server"
+        notes = data.notes
+        noteCount = data.count
+        return
+      }
+      storageMode = "none"
+      statusText = "Nowhere to keep notes"
+      statusDetail = r && r.error ? r.error : "Open this app from the directory and its notes have somewhere to live."
+      notes = []
+      noteCount = 0
+    })
+  })
+}
+
 function addNote() {
-  if (!newTitle) return
-  let noteData = {
-    title: newTitle,
-    content: newContent,
-    createdAt: new Date().toISOString()
+  let title = String(newTitle || "").trim()
+  if (title === "") {
+    formError = "Give the note a title."
+    return
   }
-  softn.net.fetch(serverUrl + "/api/create-note", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: noteData
-  }, function(result) {
-    if (result.ok) {
+  if (storageMode === "none") {
+    formError = "There is nowhere to keep it. " + statusDetail
+    return
+  }
+  formError = ""
+  let noteData = { title: title, content: String(newContent || ""), createdAt: new Date().toISOString() }
+  if (storageMode === "site") {
+    softn.storage.insert("notes", noteData, function (r) {
+      if (r && r.error) { formError = r.error; return }
       newTitle = ""
       newContent = ""
       refreshNotes()
+    })
+    return
+  }
+  softn.net.fetch(serverUrl + "/api/create-note", { method: "POST", headers: { "Content-Type": "application/json" }, body: noteData }, function (result) {
+    if (result && result.ok) {
+      newTitle = ""
+      newContent = ""
+      refreshNotes()
+    } else {
+      formError = "The server did not take the note."
     }
   })
 }
 
 function deleteNote(id) {
-  softn.net.fetch(serverUrl + "/api/delete-note", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: { id: id }
-  }, function(result) {
+  if (storageMode === "site") {
+    softn.storage.remove("notes", id, function (r) { refreshNotes() })
+    return
+  }
+  softn.net.fetch(serverUrl + "/api/delete-note", { method: "POST", headers: { "Content-Type": "application/json" }, body: { id: id } }, function (result) {
     refreshNotes()
-  })
-}
-
-function refreshNotes() {
-  softn.net.fetch(serverUrl + "/api/notes", {}, function(result) {
-    if (result.ok) {
-      let data = JSON.parse(result.body)
-      notes = data.notes
-      noteCount = data.count
-    }
   })
 }
 
@@ -78,8 +119,4 @@ function formatDate(isoString) {
   if (hours === 0) hours = 12
   let minStr = mins < 10 ? "0" + mins : "" + mins
   return month + " " + day + " at " + hours + ":" + minStr + " " + ampm
-}
-
-function _init() {
-  refreshNotes()
 }

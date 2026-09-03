@@ -90,6 +90,12 @@ function loadModel() {
       decoder_model_merged: "q4"
     }
   }, function(result) {
+    if (!result || result.error || !result.modelHandle) {
+      modelLoading = false
+      modelLoaded = false
+      statusText = "Could not load the model: " + (result && result.error ? result.error : "no model handle") + ". Try again."
+      return
+    }
     modelHandle = result.modelHandle
     modelLoaded = true
     modelLoading = false
@@ -250,6 +256,11 @@ function sendMessage() {
     top_k: 20,
     do_sample: true
   }, function(result) {
+    if (!result || result.error) {
+      generating = false
+      statusText = "The model could not answer: " + (result && result.error ? result.error : "unknown error")
+      return
+    }
     let responseText = result.text || ""
     let respNow = new Date().toISOString()
     db.create("messages", {

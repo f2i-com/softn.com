@@ -1,7 +1,7 @@
 {
   "name": "SoftN Showcase",
   "version": "1.0.0",
-  "description": "Interactive showcase of SoftN charts, animations, and interactive components",
+  "description": "Every chart, animation and interactive component the runtime ships, on three pages, in light and dark",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
   "files": {
@@ -12,9 +12,13 @@
       "ui/pages/AnimationsPage.ui",
       "ui/pages/InteractivePage.ui"
     ],
-    "logic": ["logic/main.logic"],
+    "logic": [
+      "logic/main.logic"
+    ],
     "xdb": [],
-    "assets": ["assets/icon.svg"]
+    "assets": [
+      "assets/icon.svg"
+    ]
   },
   "config": {
     "window": {

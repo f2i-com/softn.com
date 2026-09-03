@@ -96,6 +96,9 @@ interface DirectModelEntry {
   tokenizer: TFTokenizer;
   modelId: string;
   createdAt: number;
+  /** Where the model runs now, and how to move it to the CPU provider if the GPU fails mid-flight. */
+  device: string;
+  rebuild: (() => Promise<TFModel>) | null;
 }
 
 export class TransformersManager {
@@ -123,19 +126,67 @@ export class TransformersManager {
     }
   }
 
-  /** Determine the device option based on availability */
+  /**
+   * Whether WebGPU has been seen to work here. `null` until the first check;
+   * set false by a failed device request or by a model that died on the GPU,
+   * after which everything goes to the CPU provider without asking again.
+   */
+  private webgpuUsable: boolean | null = null;
+
+  /**
+   * Determine the device option based on availability.
+   *
+   * An adapter is not a working GPU. Windows on ARM, some virtual machines
+   * and remote desktops hand out an adapter that then fails at
+   * `requestDevice()`, at shader compilation or at the first dispatch; the
+   * old check stopped at the adapter and sent every model to a GPU that could
+   * not run it. So a device is actually acquired, with a time limit because a
+   * broken driver can also simply never answer, and the answer is remembered.
+   */
   private async resolveDevice(preferred?: 'webgpu' | 'wasm' | 'auto'): Promise<string> {
     if (preferred && preferred !== 'auto') return preferred;
+    if (this.webgpuUsable !== null) return this.webgpuUsable ? 'webgpu' : 'wasm';
 
-    // Auto-detect: prefer WebGPU, fall back to WASM
+    let usable = false;
     if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
       try {
-        const gpu = (navigator as unknown as { gpu: { requestAdapter(): Promise<unknown | null> } }).gpu;
-        const adapter = await gpu.requestAdapter();
-        if (adapter) return 'webgpu';
-      } catch { /* fall through */ }
+        type Adapter = { isFallbackAdapter?: boolean; requestDevice(): Promise<{ lost: Promise<unknown> } | null> };
+        const gpu = (navigator as unknown as { gpu: { requestAdapter(): Promise<Adapter | null> } }).gpu;
+        const timeout = <T,>(p: Promise<T>, ms: number) =>
+          Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('WebGPU did not answer')), ms))]);
+        const adapter = await timeout(gpu.requestAdapter(), 3000);
+        if (adapter && !adapter.isFallbackAdapter) {
+          const device = await timeout(adapter.requestDevice(), 3000);
+          if (device) {
+            usable = true;
+            void device.lost.then(() => {
+              console.warn('[SoftN AI] The WebGPU device was lost; models load on the CPU provider from now on.');
+              this.webgpuUsable = false;
+            });
+          }
+        }
+      } catch (err) {
+        console.warn(`[SoftN AI] WebGPU is present but not usable here (${err instanceof Error ? err.message : String(err)}); using the CPU provider.`);
+      }
     }
-    return 'wasm';
+    this.webgpuUsable = usable;
+    return usable ? 'webgpu' : 'wasm';
+  }
+
+  /**
+   * A dtype chosen for the GPU, made safe for the CPU provider: the wasm
+   * backend has no fp16, so half-precision requests become full precision
+   * and the mixed q4f16 becomes plain q4. Anything else is left alone.
+   */
+  private cpuDtype(dtype: unknown): unknown {
+    const fix = (v: unknown) => (v === 'fp16' ? 'fp32' : v === 'q4f16' ? 'q4' : v);
+    if (typeof dtype === 'string') return fix(dtype);
+    if (dtype && typeof dtype === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(dtype as Record<string, unknown>)) out[k] = fix(v);
+      return out;
+    }
+    return dtype;
   }
 
   /**
@@ -165,7 +216,21 @@ export class TransformersManager {
     if (options?.dtype) pipelineOpts.dtype = options.dtype;
     if (options?.revision) pipelineOpts.revision = options.revision;
 
-    const pipeline = await tf.pipeline(task, modelId, pipelineOpts);
+    // The same retry loadModel has: a GPU that takes the adapter and then
+    // cannot run the graph is only found out by trying, and only when the
+    // device was ours to choose.
+    let pipeline: TransformersPipeline;
+    try {
+      pipeline = await tf.pipeline(task, modelId, pipelineOpts);
+    } catch (err) {
+      const chosenByUs = !options?.device || options.device === 'auto';
+      if (device !== 'webgpu' || !chosenByUs) throw err;
+      console.warn(`[SoftN AI] ${task} pipeline could not start on WebGPU, retrying on the CPU provider: ${err instanceof Error ? err.message : String(err)}`);
+      this.webgpuUsable = false;
+      const cpuOpts: Record<string, unknown> = { ...pipelineOpts, device: 'wasm' };
+      if (cpuOpts.dtype) cpuOpts.dtype = this.cpuDtype(cpuOpts.dtype);
+      pipeline = await tf.pipeline(task, modelId, cpuOpts);
+    }
 
     const pipelineId = `tf-${this.nextPipelineId++}`;
     this.pipelines.set(pipelineId, {
@@ -273,7 +338,8 @@ export class TransformersManager {
     // Resolve model class
     const className = options?.modelClass;
     const build = async (on: string): Promise<TFModel> => {
-      const opts = { ...modelOpts, device: on };
+      const opts: Record<string, unknown> = { ...modelOpts, device: on };
+      if (on === 'wasm' && opts.dtype) opts.dtype = this.cpuDtype(opts.dtype);
       if (className && tf[className]) {
         // Use named class (e.g. Qwen3_5ForConditionalGeneration)
         const cls = tf[className] as {
@@ -301,6 +367,7 @@ export class TransformersManager {
     // held to, not a preference: a caller measuring WebGPU should see it fail
     // rather than silently get CPU numbers.
     let model: TFModel;
+    let loadedOn = device;
     try {
       model = await build(device);
     } catch (err) {
@@ -310,7 +377,9 @@ export class TransformersManager {
         `[SoftN AI] ${modelId} could not load on WebGPU, retrying on the CPU provider. ` +
           `Original error: ${err instanceof Error ? err.message : String(err)}`
       );
+      this.webgpuUsable = false;
       model = await build('wasm');
+      loadedOn = 'wasm';
       console.log(`[SoftN AI] Loaded ${modelId} on wasm after the WebGPU attempt failed`);
     }
 
@@ -326,7 +395,8 @@ export class TransformersManager {
     }
 
     const handle = `model-${this.nextModelId++}`;
-    this.models.set(handle, { model, processor, tokenizer, modelId, createdAt: Date.now() });
+    const chosenByUs = !options?.device || options.device === 'auto';
+    this.models.set(handle, { model, processor, tokenizer, modelId, createdAt: Date.now(), device: loadedOn, rebuild: chosenByUs && loadedOn === 'webgpu' ? () => build('wasm') : null });
 
     console.log(`[SoftN AI] Model loaded: ${handle} (${modelId})`);
     return { modelHandle: handle, modelId };
@@ -396,7 +466,22 @@ export class TransformersManager {
     if (options?.presence_penalty != null) genOpts.presence_penalty = options.presence_penalty;
 
     console.log(`[SoftN AI] Generating from ${modelHandle}...`);
-    const outputs = await model.generate(genOpts);
+    let outputs: unknown;
+    try {
+      outputs = await model.generate(genOpts);
+    } catch (err) {
+      // A GPU that loaded the model can still die on the first real
+      // dispatch (shader compilation, memory). If the device was ours to
+      // choose, rebuild on the CPU provider once and answer from there.
+      if (!entry.rebuild) throw err;
+      console.warn(`[SoftN AI] Generation failed on WebGPU, moving ${modelHandle} to the CPU provider: ${err instanceof Error ? err.message : String(err)}`);
+      this.webgpuUsable = false;
+      const cpuModel = await entry.rebuild();
+      entry.model = cpuModel;
+      entry.device = 'wasm';
+      entry.rebuild = null;
+      outputs = await cpuModel.generate(genOpts);
+    }
 
     // Decode — skip the prompt tokens
     let decoded: string;

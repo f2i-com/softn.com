@@ -526,6 +526,8 @@ export class SoftNScriptRuntime {
   private storageEndpoint: string | null = null;
   /** State variables held back from syncing, for diagnostics only. */
   private vmOwnedStateNames: string[] = [];
+  /** The same names as a set, for the per-key push to consult on every call. */
+  private vmOwnedStateSet = new Set<string>();
   /** Guard: when true, sync functions must not overwrite VM state (async call in-flight) */
   private asyncCallInProgress = false;
   /** Mutex for async VM calls to prevent concurrent stack corruption.
@@ -1172,6 +1174,7 @@ export class SoftNScriptRuntime {
       this.stateVarNames = names;
       this.stateVarIndices = names.map((name) => symbolMap.get(name)!.index);
       this.vmOwnedStateNames = [];
+      this.vmOwnedStateSet = new Set();
       return;
     }
     const synced: string[] = [];
@@ -1182,6 +1185,7 @@ export class SoftNScriptRuntime {
     this.stateVarNames = synced;
     this.stateVarIndices = synced.map((name) => symbolMap.get(name)!.index);
     this.vmOwnedStateNames = vmOwned;
+    this.vmOwnedStateSet = new Set(vmOwned);
   }
 
   /**
@@ -1293,10 +1297,16 @@ export class SoftNScriptRuntime {
       // to that question the moment anything moves React's copy on its own.
       this.stateVarFingerprints = null;
     } else {
-      // Granular sync: only push keys that actually changed
+      // Granular sync: only push keys that actually changed — and, as the
+      // full sync above does, only keys the host is allowed to own. A VM-owned
+      // variable reaches React once, at script load, and is never refreshed;
+      // after a permission grant rebuilds the VM that stale copy compares
+      // unequal to the fresh one, and pushing it would wipe what _init() had
+      // just built (TheOffice lost every character this way).
       const indices: number[] = [];
       const values: unknown[] = [];
       for (const key of dirty) {
+        if (this.vmOwnedStateSet.has(key)) continue;
         const sym = this.symbolMap!.get(key);
         if (sym) {
           indices.push(sym.index);

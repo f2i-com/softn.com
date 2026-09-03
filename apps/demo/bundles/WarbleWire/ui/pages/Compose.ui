@@ -30,7 +30,7 @@
 
         <Box style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <Text className="ww-mono" style={{ fontSize: "0.625rem", color: overLimit ? "#a7291b" : "#6d7f88" }}>
-            {byteCount} / {maxBytes} UTF-8 bytes
+            {byteCount + " / " + maxBytes + " UTF-8 bytes"}
           </Text>
           <Text if={overLimit} className="ww-mono" style={{ fontSize: "0.625rem", color: "#a7291b" }}>Too long for one frame</Text>
         </Box>
@@ -51,7 +51,7 @@
             }}>
               <Text style={{ fontSize: "0.8125rem", fontWeight: 600 }}>{choice.name}</Text>
               <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>
-                {choice.symbolMs} ms · {choice.rawBitRate} raw bit/s
+                {choice.symbolMs + " ms · " + choice.rawBitRate + " raw bit/s"}
               </Text>
             </Box>
           #end
@@ -129,7 +129,7 @@
           </Box>
           <Box style={{ display: "flex", justifyContent: "space-between" }}>
             <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>Tempo</Text>
-            <Text className="ww-mono" style={{ fontSize: "0.5625rem" }}>{tempoLabel} · {rawRateLabel}</Text>
+            <Text className="ww-mono" style={{ fontSize: "0.5625rem" }}>{tempoLabel + " · " + rawRateLabel}</Text>
           </Box>
           <Box style={{ display: "flex", justifyContent: "space-between" }}>
             <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>Voice</Text>

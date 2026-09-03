@@ -1,13 +1,19 @@
 {
   "name": "SnakeGame",
   "version": "1.0.0",
-  "description": "Classic Snake game built with SoftN utility components",
+  "description": "The classic: eat, grow, don't hit the walls — with a shared top ten kept on the site",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
   "files": {
-    "ui": ["ui/main.ui"],
-    "logic": ["logic/main.logic"],
-    "assets": ["assets/icon.svg"]
+    "ui": [
+      "ui/main.ui"
+    ],
+    "logic": [
+      "logic/main.logic"
+    ],
+    "assets": [
+      "assets/icon.svg"
+    ]
   },
   "config": {
     "window": {

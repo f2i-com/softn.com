@@ -85,7 +85,7 @@
       <Card padding=md style={{ background: getCardBg(), borderRadius: "14px", border: "1px solid " + getBorderColor(), transition: "background 0.3s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1)" }}>
         <Stack direction=vertical gap=md>
           <Stack direction=horizontal justify="space-between" align=center>
-            <Text fontWeight=semibold size=sm style={{ color: getHeadingColor(), textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.8125rem" }}>Today's Appointments</Text>
+            <Text fontWeight=semibold size=sm style={{ color: getHeadingColor(), textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.8125rem" }}>Appointments</Text>
             <Button variant=ghost size=sm @click=viewAllAppointments style={{ opacity: 0.6, fontSize: "0.75rem", color: getAccentColor() }}>View All</Button>
           </Stack>
           <SmartList
@@ -176,7 +176,7 @@
         <Stack direction=vertical gap=md>
           <Stack direction=horizontal justify="space-between" align=center>
             <Text fontWeight=semibold size=sm style={{ color: getHeadingColor(), textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.8125rem" }}>Top Clients</Text>
-            <Badge variant=warning size=sm>By Visits</Badge>
+            <Badge variant=warning size=sm>Recent</Badge>
           </Stack>
           <SmartList
             data={clients}

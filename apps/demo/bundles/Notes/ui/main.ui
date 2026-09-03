@@ -196,7 +196,7 @@
 }
 
 .delete-btn {
-  opacity: 0;
+  opacity: 0.35;
   transition: opacity 0.15s ease, color 0.15s ease;
   cursor: pointer;
   background: none;
@@ -272,8 +272,9 @@
       </Box>
       <Box className="top-bar-right">
         <Box className="sync-label">
-          <Box className="sync-dot" />
-          <Text style={{ color: "#52525b", fontSize: "0.75rem" }}>Synced</Text>
+          <Box className="sync-dot" style={{ background: storageMode === "none" ? "#ef4444" : (storageMode === "" ? "#71717a" : "#22c55e") }} />
+          <Text style={{ color: "#71717a", fontSize: "0.75rem" }}>{statusText}</Text>
+          <Button if={storageMode === "none"} variant="ghost" @click={refreshNotes} style={{ fontSize: "0.75rem", padding: "2px 8px", color: "#a5b4fc" }}>Retry</Button>
         </Box>
       </Box>
     </Box>
@@ -299,6 +300,7 @@
               rows={5}
               style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "8px", resize: "vertical", width: "100%", boxSizing: "border-box", fontSize: "0.8rem", flex: 1 }}
             />
+            <Text if={formError !== ""} style={{ color: "#f87171", fontSize: "0.75rem" }}>{formError}</Text>
             <Button
               @click={addNote}
               variant="primary"
@@ -326,11 +328,11 @@
           <Box className="notes-grid">
             <Box each={getFilteredNotes()} as="note" className="note-card">
               <Box>
-                <Text className="note-title">{note.data.title}</Text>
-                <Text className="note-content" if={note.data.content}>{note.data.content}</Text>
+                <Text style={{ display: "block", fontWeight: 600, fontSize: "0.9rem", color: "#fafafa", lineHeight: 1.4 }}>{note.data.title}</Text>
+                <Text if={note.data.content} style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden", color: "#a1a1aa", fontSize: "0.8rem", marginTop: "0.375rem", lineHeight: 1.55 }}>{note.data.content}</Text>
               </Box>
               <Box className="note-meta">
-                <Text className="note-date">{formatDate(note.data.createdAt)}</Text>
+                <Text style={{ fontSize: "0.7rem", color: "#71717a" }}>{formatDate(note.data.createdAt)}</Text>
                 <Box className="delete-btn" @click={deleteNote(note.id)}>
                   <Icon name="trash" size={13} color="currentColor" />
                 </Box>
@@ -338,6 +340,9 @@
             </Box>
           </Box>
 
+          <Box if={noteCount > 0 && getFilteredNotes().length === 0} className="empty-state">
+            <Text style={{ color: "#a1a1aa", fontSize: "0.9rem", fontWeight: 500 }}>{"Nothing matches \"" + searchQuery + "\""}</Text>
+          </Box>
           <Box if={noteCount === 0} className="empty-state">
             <Box className="empty-icon">
               <Icon name="edit" size={26} color="#6366f1" />
@@ -345,8 +350,8 @@
             <Text style={{ color: "#a1a1aa", fontSize: "0.9rem", fontWeight: 500, marginBottom: "0.375rem" }}>
               No notes yet
             </Text>
-            <Text style={{ color: "#3f3f46", fontSize: "0.8rem" }}>
-              Create your first note using the sidebar
+            <Text style={{ color: "#71717a", fontSize: "0.8rem" }}>
+              {storageMode === "none" ? statusDetail : "Write the first one in the sidebar. Everyone who opens this app here sees the same board."}
             </Text>
           </Box>
         </Box>

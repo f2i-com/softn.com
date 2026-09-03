@@ -1,7 +1,7 @@
 {
   "name": "Glamour Studio",
   "version": "2.0.0",
-  "description": "Professional salon management with multi-file modular structure",
+  "description": "A salon's front desk: appointments, clients, staff and services in a local-first database that syncs between devices",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
   "files": {
@@ -25,7 +25,9 @@
       "ui/modals/DataModal.ui",
       "ui/modals/SyncModal.ui"
     ],
-    "logic": ["logic/main.logic"],
+    "logic": [
+      "logic/main.logic"
+    ],
     "xdb": [
       "xdb/staff.xdb",
       "xdb/clients.xdb",
@@ -33,7 +35,9 @@
       "xdb/appointments.xdb",
       "xdb/activity.xdb"
     ],
-    "assets": ["assets/icon.svg"]
+    "assets": [
+      "assets/icon.svg"
+    ]
   },
   "server": {
     "main": "server/backend.logic"

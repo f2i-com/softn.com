@@ -1,7 +1,7 @@
 {
   "name": "DeviceKit",
   "version": "1.0.0",
-  "description": "Demo app showcasing SoftN capabilities: network, camera, QR, files",
+  "description": "A tour of what a sandboxed app may ask for: fetch a URL, read and make QR codes, take a photo, open a file — each behind the permission that gates it",
   "author": "SoftN",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
@@ -13,7 +13,22 @@
       "ui/pages/CameraDemo.ui",
       "ui/pages/FileBrowser.ui"
     ],
-    "logic": ["logic/main.logic"],
-    "assets": ["assets/icon.svg"]
+    "logic": [
+      "logic/main.logic"
+    ],
+    "assets": [
+      "assets/icon.svg"
+    ]
+  },
+  "config": {
+    "window": {
+      "title": "Device Kit",
+      "width": 1000,
+      "height": 720
+    },
+    "theme": {
+      "primary": "#3b82f6",
+      "mode": "light"
+    }
   }
 }

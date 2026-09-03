@@ -35,6 +35,9 @@ if ($real !== false && $rootReal !== false && str_starts_with(str_replace('\\', 
         $types = ['softn' => 'application/octet-stream', 'wasm' => 'application/wasm', 'webmanifest' => 'application/manifest+json', 'mjs' => 'text/javascript'];
         if (isset($types[$ext])) {
             header('Content-Type: ' . $types[$ext]);
+            // What the deployed .htaccess sets: cross-origin isolation for the runtime's threads.
+            header('Cross-Origin-Opener-Policy: same-origin');
+            header('Cross-Origin-Embedder-Policy: credentialless');
             header('Content-Length: ' . (string) filesize($real));
             readfile($real);
             return true;
@@ -47,6 +50,8 @@ if ($real !== false && $rootReal !== false && str_starts_with(str_replace('\\', 
             return true;
         }
         header('Content-Type: text/html; charset=utf-8');
+        header('Cross-Origin-Opener-Policy: same-origin');
+        header('Cross-Origin-Embedder-Policy: credentialless');
         readfile("$real/index.html");
         return true;
     }
