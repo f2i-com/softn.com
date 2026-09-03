@@ -920,6 +920,8 @@ export function Scene3D({
     let plMouseMove: ((e: MouseEvent) => void) | null = null;
     let plLockChange: (() => void) | null = null;
     let plMouseDown: ((e: MouseEvent) => void) | null = null;
+    // Whether the lock in force reports raw device movement.
+    let rawInput = false;
     const swallowContextMenu = (e: Event) => e.preventDefault();
     if (enableMouseLook) {
       const initYaw = Math.atan2(lookAt.x - pos.x, lookAt.z - pos.z);
@@ -953,6 +955,7 @@ export function Scene3D({
             // ever reports the device.
             const request = canvas.requestPointerLock as ((opts?: { unadjustedMovement?: boolean }) => Promise<void> | void) | undefined;
             const plain = () => {
+              rawInput = false;
               try {
                 canvas.requestPointerLock();
               } catch {
@@ -960,6 +963,7 @@ export function Scene3D({
               }
             };
             try {
+              rawInput = true;
               const result = request?.call(canvas, { unadjustedMovement: true });
               if (result && typeof (result as Promise<void>).catch === 'function') (result as Promise<void>).catch(plain);
             } catch {
@@ -1007,9 +1011,10 @@ export function Scene3D({
       canvas.style.cursor = 'crosshair';
       plMouseMove = (e: MouseEvent) => {
         if (!isLocked()) return;
-        // No hand moves a mouse a quarter of a screen between two events;
-        // a delta that size is the browser's invention, not the player's.
-        if (Math.abs(e.movementX) > 400 || Math.abs(e.movementY) > 400) return;
+        // Only the adjusted-movement fallback invents deltas (see above),
+        // and only it needs them screened; raw input's large values are a
+        // real flick of the wrist, coalesced into one event, and are kept.
+        if (!rawInput && (Math.abs(e.movementX) > 400 || Math.abs(e.movementY) > 400)) return;
         turnBy(e.movementX, e.movementY);
       };
       plLockChange = () => {
