@@ -1,16 +1,30 @@
 {
   "name": "MazeEscape3D",
   "version": "1.0.0",
-  "description": "3D maze escape game — navigate corridors to reach the golden portal",
+  "description": "A first-person maze, carved fresh every game: find the golden ring with the pointer locked, a minimap that fills in as you explore, and a best time that sticks.",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
   "files": {
-    "ui": ["ui/main.ui"],
-    "logic": ["logic/main.logic"],
-    "assets": ["assets/icon.svg"]
+    "ui": [
+      "ui/main.ui"
+    ],
+    "logic": [
+      "logic/main.logic"
+    ],
+    "assets": [
+      "assets/icon.svg"
+    ]
   },
   "config": {
-    "window": { "title": "Maze Escape 3D", "width": 900, "height": 750 },
-    "theme": { "primary": "#4ade80", "mode": "dark" }
-  }
+    "window": {
+      "title": "Maze Escape 3D",
+      "width": 1100,
+      "height": 720
+    },
+    "theme": {
+      "primary": "#4ade80",
+      "mode": "dark"
+    }
+  },
+  "author": "SoftN"
 }
