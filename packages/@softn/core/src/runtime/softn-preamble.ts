@@ -77,6 +77,13 @@ let softn = {
     },
     readBase64: function(fileRef, callback) {
       host.call("files.readBase64", [fileRef], callback);
+    },
+    // Hand the user a file to save. The content is text unless
+    // options.base64 is true, in which case it is base64-encoded bytes;
+    // options.mime names the type. The browser shows its usual download.
+    saveFile: function(name, content, options, callback) {
+      if (typeof options === "function") { callback = options; options = {}; }
+      host.call("files.saveFile", [String(name), typeof content === "string" ? content : String(content), typeof options === "object" && options !== null ? JSON.stringify(options) : "{}"], callback || function(){});
     }
   },
   ai: {

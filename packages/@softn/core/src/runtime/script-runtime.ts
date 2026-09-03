@@ -2041,6 +2041,8 @@ export class SoftNScriptRuntime {
         return this.handleFilesReadText(call);
       case 'files.readBase64':
         return this.handleFilesReadBase64(call);
+      case 'files.saveFile':
+        return this.handleFilesSaveFile(call);
       case 'ai.getCapabilities':
         return this.handleAIGetCapabilities();
       case 'ai.onnx.loadModel':
@@ -2869,6 +2871,66 @@ export class SoftNScriptRuntime {
       reader.onerror = () => reject(new Error('Failed to read file'));
       reader.readAsDataURL(file);
     });
+  }
+
+  /**
+   * Save a file the app produced: the content becomes a Blob and the browser's
+   * own download handles the rest, so where it lands and whether it is
+   * confirmed is the user's setting, not the app's. Text by default; with
+   * `base64: true` the content is decoded to bytes first, which is how an
+   * app hands over an image or a zip. Gated with the other file calls: an
+   * app that may open the user's files may also give them one.
+   */
+  private async handleFilesSaveFile(call: PendingHostCall): Promise<unknown> {
+    this.checkPermission('files');
+    const [rawName, content, optionsJson] = call.args;
+    let options: { mime?: string; base64?: boolean } = {};
+    if (optionsJson) {
+      try {
+        options = JSON.parse(optionsJson) as { mime?: string; base64?: boolean };
+      } catch {
+        return { error: 'The save options are not valid JSON.' };
+      }
+    }
+    // A file name is a leaf, never a path: strip separators and control
+    // characters so an app cannot suggest "../.bashrc" to the download dialog.
+    const name = String(rawName || 'download')
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+      .replace(/^\.+/, '')
+      .slice(0, 200) || 'download';
+    const mime = typeof options.mime === 'string' && options.mime ? options.mime : (options.base64 ? 'application/octet-stream' : 'text/plain;charset=utf-8');
+    let blob: Blob;
+    if (options.base64) {
+      let buffer: ArrayBuffer;
+      try {
+        const bin = atob(String(content || '').replace(/^data:[^,]*,/, ''));
+        buffer = new ArrayBuffer(bin.length);
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      } catch {
+        return { error: 'The content is not valid base64.' };
+      }
+      blob = new Blob([buffer], { type: mime });
+    } else {
+      blob = new Blob([String(content ?? '')], { type: mime });
+    }
+    if (typeof document === 'undefined' || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+      return { error: 'Saving files is not available here.' };
+    }
+    const url = URL.createObjectURL(blob);
+    try {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } finally {
+      // The click has started the download; the URL only needs to outlive it.
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    }
+    return { ok: true, name, size: blob.size };
   }
 
   // ── Server storage (softn.storage.*) ──
