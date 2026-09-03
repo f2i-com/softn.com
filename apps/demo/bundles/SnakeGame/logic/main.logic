@@ -16,6 +16,9 @@ let direction = "right"
 let gameOver = false
 let newBest = false
 let muted = false
+// When the last game ended. A key still being mashed at the moment of death
+// must not start the next game before the score has even been read.
+let gameOverAt = 0
 
 // The leaderboard lives on softn.com, in this app's own storage — the one
 // capability permission.json asks for. Anyone playing can post a score and
@@ -34,6 +37,7 @@ function _init() {
   food = {x: 15, y: 10}
   direction = "right"
   window.__snakeNextDir = null
+  window.__snakeNextDir2 = null
   window.__snakeCmd = ""
 
   let stored = localStorage.getItem("softn-snake-highscore")
@@ -50,16 +54,44 @@ function _init() {
     window.addEventListener("keydown", function(e) {
       let tag = e.targetTag || ""
       if (tag === "input" || tag === "textarea") { return }
+      // A held key auto-repeats; the snake only needs the first press, and a
+      // repeat must never count as "start" or "pause" again.
+      if (e.repeat) { return }
       let key = e.key || ""
-      if (key === "ArrowUp" || key === "w" || key === "W") { e.preventDefault(); window.__snakeNextDir = "up" }
-      else if (key === "ArrowDown" || key === "s" || key === "S") { e.preventDefault(); window.__snakeNextDir = "down" }
-      else if (key === "ArrowLeft" || key === "a" || key === "A") { e.preventDefault(); window.__snakeNextDir = "left" }
-      else if (key === "ArrowRight" || key === "d" || key === "D") { e.preventDefault(); window.__snakeNextDir = "right" }
+      if (key === "ArrowUp" || key === "w" || key === "W") { e.preventDefault(); queueDir("up") }
+      else if (key === "ArrowDown" || key === "s" || key === "S") { e.preventDefault(); queueDir("down") }
+      else if (key === "ArrowLeft" || key === "a" || key === "A") { e.preventDefault(); queueDir("left") }
+      else if (key === "ArrowRight" || key === "d" || key === "D") { e.preventDefault(); queueDir("right") }
       else if (key === " " || key === "Enter") { e.preventDefault(); window.__snakeCmd = "start" }
       else if (key === "p" || key === "P" || key === "Escape") { window.__snakeCmd = "pause" }
       else if (key === "m" || key === "M") { window.__snakeCmd = "mute" }
     })
+    // Losing the window mid-game is a pause, not a death.
+    window.addEventListener("blur", function() {
+      if (running && !paused && !gameOver) { togglePause() }
+    })
   }
+}
+
+// Two turns can be queued: "up then left" pressed within one tick turns the
+// snake up on this tick and left on the next, instead of losing the first
+// press. Each queued turn is still checked against the direction the snake is
+// actually moving when it is applied, so a reversal into the body is impossible.
+function queueDir(d) {
+  if (!window.__snakeNextDir) { window.__snakeNextDir = d }
+  else if (window.__snakeNextDir !== d) { window.__snakeNextDir2 = d }
+}
+
+function clearDirQueue() {
+  window.__snakeNextDir = null
+  window.__snakeNextDir2 = null
+}
+
+function applyDir(nextDir) {
+  if (nextDir === "up" && direction !== "down") { direction = nextDir }
+  if (nextDir === "down" && direction !== "up") { direction = nextDir }
+  if (nextDir === "left" && direction !== "right") { direction = nextDir }
+  if (nextDir === "right" && direction !== "left") { direction = nextDir }
 }
 
 function play(name, volume) {
@@ -84,30 +116,30 @@ function buildGridItems() {
   snakeLength = snake.length
 }
 
+// Called after the snake has grown, so the new head is never a candidate.
+// Picks uniformly among the free cells, so it still lands somewhere when only
+// a handful are left (a random-retry loop can miss the last free cell).
 function spawnFood() {
-  if (snake.length >= 400) {
+  let taken = []
+  let t = 0
+  while (t < 400) { taken.push(false); t = t + 1 }
+  let j = 0
+  while (j < snake.length) {
+    taken[snake[j].y * 20 + snake[j].x] = true
+    j = j + 1
+  }
+  let free = []
+  let c = 0
+  while (c < 400) {
+    if (!taken[c]) { free.push(c) }
+    c = c + 1
+  }
+  if (free.length === 0) {
     food = null
     return
   }
-  let attempts = 0
-  let placed = false
-  while (!placed && attempts < 1000) {
-    let fx = Math.floor(Math.random() * 20)
-    let fy = Math.floor(Math.random() * 20)
-    let onSnake = false
-    let j = 0
-    while (j < snake.length) {
-      if (snake[j].x === fx && snake[j].y === fy) {
-        onSnake = true
-      }
-      j = j + 1
-    }
-    if (!onSnake) {
-      food = {x: fx, y: fy}
-      placed = true
-    }
-    attempts = attempts + 1
-  }
+  let pick = free[Math.floor(Math.random() * free.length)]
+  food = {x: pick % 20, y: Math.floor(pick / 20)}
 }
 
 // Keys and the pad between games: Space starts, P pauses, a direction on the
@@ -121,24 +153,37 @@ function idleStep() {
     if (cmd === "mute") { toggleMute(); return }
   }
   if (window.__snakeNextDir && !paused) {
+    // Just after a death the player is usually still pressing the key that
+    // killed them; those presses are dropped for a moment rather than
+    // starting a fresh game before the score has been seen.
+    if (gameOver && Date.now() - gameOverAt < 900) { clearDirQueue(); return }
+    let first = window.__snakeNextDir
     startGame()
+    // The snake starts heading right; the press that started the game is its
+    // first turn, unless it would reverse straight into the body.
+    if (first !== "left") { window.__snakeNextDir = first }
   }
 }
 
-function die() {
+function endGame(text, sound) {
   gameOver = true
   running = false
   paused = false
+  gameOverAt = Date.now()
   newBest = score > highScore && score > 0
   if (newBest) {
     highScore = score
     localStorage.setItem("softn-snake-highscore", String(highScore))
   }
-  window.__snakeNextDir = null
-  overlayText = newBest ? ("New best · " + score) : ("Game over · " + score)
-  play(newBest ? "best" : "die", 0.5)
+  clearDirQueue()
+  overlayText = newBest ? ("New best · " + score) : (text + " · " + score)
+  play(newBest ? "best" : sound, 0.5)
   buildGridItems()
   postScore()
+}
+
+function die() {
+  endGame("Game over", "die")
 }
 
 function snakeStep() {
@@ -148,17 +193,17 @@ function snakeStep() {
   if (cmd !== "") {
     window.__snakeCmd = ""
     if (cmd === "pause") { togglePause(); return }
-    if (cmd === "start") { startGame(); return }
+    // Space mid-game pauses rather than wiping the game; the Restart button
+    // is the deliberate way to start over.
+    if (cmd === "start") { togglePause(); return }
     if (cmd === "mute") { toggleMute() }
   }
 
   let nextDir = window.__snakeNextDir
   if (nextDir) {
-    if (nextDir === "up" && direction !== "down") { direction = nextDir }
-    if (nextDir === "down" && direction !== "up") { direction = nextDir }
-    if (nextDir === "left" && direction !== "right") { direction = nextDir }
-    if (nextDir === "right" && direction !== "left") { direction = nextDir }
-    window.__snakeNextDir = null
+    applyDir(nextDir)
+    window.__snakeNextDir = window.__snakeNextDir2 || null
+    window.__snakeNextDir2 = null
   }
 
   let head = snake[0]
@@ -191,18 +236,28 @@ function snakeStep() {
     ci = ci + 1
   }
 
-  if (food && nx === food.x && ny === food.y) {
+  let ate = food !== null && nx === food.x && ny === food.y
+  if (!ate) {
+    newSnake = newSnake.slice(0, newSnake.length - 1)
+  }
+  // The snake grows before the next food is placed, so it can never land
+  // under the head that just ate.
+  snake = newSnake
+  if (ate) {
     score = score + 1
     play("eat", 0.35)
     spawnFood()
     if (speed > 60) {
       speed = speed - 5
     }
-  } else {
-    newSnake = newSnake.slice(0, newSnake.length - 1)
+    if (food === null) {
+      // Every cell is snake: there is nothing left to eat.
+      buildGridItems()
+      endGame("Board full", "best")
+      return
+    }
   }
 
-  snake = newSnake
   buildGridItems()
 }
 
@@ -246,7 +301,7 @@ function postScore() {
 }
 
 function handleDPad(dir) {
-  window.__snakeNextDir = dir
+  queueDir(dir)
 }
 
 function handleDPadRelease(dir) {
@@ -268,7 +323,7 @@ function toggleMute() {
 function startGame() {
   snake = [{x: 10, y: 10}, {x: 9, y: 10}, {x: 8, y: 10}]
   direction = "right"
-  window.__snakeNextDir = null
+  clearDirQueue()
   window.__snakeCmd = ""
   score = 0
   speed = 150

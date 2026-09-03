@@ -693,7 +693,7 @@
             <TextArea
               value={inputText}
               @change={updateInput}
-              placeholder={modelLoaded ? "Type a message..." : "Download the model to start chatting..."}
+              placeholder={modelLoaded ? "Type a message… Enter sends, Shift+Enter for a new line" : "Download the model to start chatting…"}
               rows=1
               autoResize={true}
               fullWidth={true}

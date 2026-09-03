@@ -54,7 +54,7 @@
     </Box>
 
     <Text style={{ display: "block", textAlign: "center", fontSize: "12px", color: "#8b8ba8" }}>
-      <Text className="sn-kbd" style={{ fontSize: "11px", color: "#fff" }}>← ↑ → ↓</Text> or WASD · <Text className="sn-kbd" style={{ fontSize: "11px", color: "#fff" }}>Space</Text> start · <Text className="sn-kbd" style={{ fontSize: "11px", color: "#fff" }}>P</Text> pause · <Text className="sn-kbd" style={{ fontSize: "11px", color: "#fff" }}>M</Text> sound
+      <Text className="sn-kbd" style={{ fontSize: "11px", color: "#fff" }}>← ↑ → ↓</Text> or WASD · <Text className="sn-kbd" style={{ fontSize: "11px", color: "#fff" }}>Space</Text> start or pause · <Text className="sn-kbd" style={{ fontSize: "11px", color: "#fff" }}>P</Text> pause · <Text className="sn-kbd" style={{ fontSize: "11px", color: "#fff" }}>M</Text> sound
     </Text>
 
     <DPad @press={handleDPad} @release={handleDPadRelease} />

@@ -5,7 +5,7 @@
     "name": "AI Chat",
     "description": "A chat with a small language model that downloads once and runs entirely in your browser; nothing you type leaves the machine",
     "primary": "#10b981",
-    "size": 41867
+    "size": 42367
   },
   {
     "id": "device-kit",
@@ -37,7 +37,7 @@
     "name": "Maze Escape 3D",
     "description": "A first-person maze carved fresh every game: find the golden ring, with a minimap that fills in as you explore and a best time that sticks",
     "primary": "#4ade80",
-    "size": 88552
+    "size": 88846
   },
   {
     "id": "notes",
@@ -53,7 +53,7 @@
     "name": "Pocket",
     "description": "An 8-bit handheld emulator — CPU, PPU, APU and mappers all in .logic, drawn by PixelCanvas and heard through AudioStream",
     "primary": "#9bbc0f",
-    "size": 357909
+    "size": 358284
   },
   {
     "id": "showcase",
@@ -69,7 +69,7 @@
     "name": "Snake",
     "description": "The classic: eat, grow, don't hit the walls — with a shared top ten kept on the site",
     "primary": "#4ade80",
-    "size": 62004
+    "size": 64351
   },
   {
     "id": "texas-holdem",
@@ -77,7 +77,7 @@
     "name": "Texas Hold'em",
     "description": "Multiplayer Texas Hold'em Poker with P2P sync",
     "primary": "#c8aa6e",
-    "size": 250160
+    "size": 252642
   },
   {
     "id": "the-office",
@@ -107,9 +107,9 @@
     "id": "promptly-unemployed",
     "file": "PromptlyUnemployed.softn",
     "name": "Promptly Unemployed",
-    "description": "First-person 3D narrative tragicomedy (vertical slice) — laid off by an avatar, home by dinner, a business by midnight. Fully voiced.",
+    "description": "First-person 3D narrative tragicomedy, part one: laid off by an avatar, home by dinner, a business by midnight. Fully voiced, and one file.",
     "primary": "#f59e0b",
-    "size": 17898541
+    "size": 17903428
   },
   {
     "id": "blockscape",
@@ -117,7 +117,7 @@
     "name": "Blockscape",
     "description": "A first-person voxel sandbox: an island of blocks to mine, build on and save, with gravity, swimming, flight and a day-night cycle",
     "primary": "#5cae4a",
-    "size": 74097
+    "size": 78440
   },
   {
     "id": "dead-hours",
@@ -125,7 +125,7 @@
     "name": "Dead Hours",
     "description": "A first-person zombie shooter: hold a fenced yard at night against waves of the dead with a pistol and a shotgun",
     "primary": "#ff5a3c",
-    "size": 255773
+    "size": 258089
   },
   {
     "id": "twenty48",
@@ -133,7 +133,7 @@
     "name": "2048",
     "description": "The sliding-tile classic: merge equal tiles to reach 2048 and beyond, with undo and a best score",
     "primary": "#edc22e",
-    "size": 77445
+    "size": 80437
   },
   {
     "id": "blockfall",
@@ -141,6 +141,6 @@
     "name": "Blockfall",
     "description": "Falling blocks in a 10×20 well: seven pieces, wall kicks, a ghost piece, hold, a preview, and levels that speed up",
     "primary": "#22d3ee",
-    "size": 101791
+    "size": 103452
   }
 ]

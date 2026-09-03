@@ -64,6 +64,8 @@ function _init() {
   // before they reach a script), so these are window listeners.
   function onPointerDown(e) {
     if (isUiControl(e) || e.targetTag === "button") { window.__t48SwipeX = -1; return }
+    // Only the primary button (or a finger) swipes; a right-button drag is not a move.
+    if (typeof e.button === "number" && e.button !== 0) { window.__t48SwipeX = -1; return }
     window.__t48SwipeX = e.clientX || 0
     window.__t48SwipeY = e.clientY || 0
   }
@@ -91,19 +93,65 @@ function _init() {
     let raw = localStorage.getItem("twenty48:game")
     if (raw) {
       let g = JSON.parse(raw)
-      if (g && g.board && g.board.length > 0) {
-        board = g.board
-        score = g.score || 0
-        moves = g.moves || 0
+      if (g && validTiles(g.board)) {
+        // Rebuild the tiles rather than trust the stored objects: a save
+        // from an older build, or one edited by hand, must not put a tile
+        // without an id or an animation flag on the board.
+        board = []
+        let maxId = 0
+        let ti = 0
+        while (ti < g.board.length) {
+          let t = g.board[ti]
+          let id = typeof t.id === "number" && t.id > 0 ? Math.floor(t.id) : 0
+          if (id === 0) { maxId = maxId + 1; id = maxId }
+          if (id > maxId) { maxId = id }
+          board.push({ id: id, value: t.value, r: t.r, c: t.c, merged: false, fresh: false })
+          ti = ti + 1
+        }
+        score = typeof g.score === "number" && g.score >= 0 ? Math.floor(g.score) : 0
+        moves = typeof g.moves === "number" && g.moves >= 0 ? Math.floor(g.moves) : 0
         won = !!g.won
         keepGoing = !!g.keepGoing
-        nextId = g.nextId || 100
+        nextId = typeof g.nextId === "number" && g.nextId > maxId ? Math.floor(g.nextId) : maxId + 1
         restored = true
       }
     }
   } catch (err) { restored = false }
   if (!restored) { newGame() }
-  else { over = !anyMoves() }
+  else {
+    over = !anyMoves()
+    // A saved game can be ahead of the saved best (the best is written on
+    // each move, but a cleared or older best key must still catch up).
+    if (score > best) {
+      best = score
+      try { localStorage.setItem("twenty48:best", String(best)) } catch (err) {}
+    }
+  }
+}
+
+// A saved board is a list of 1..16 tiles, each a power of two at a distinct
+// cell inside the grid. Anything else is treated as no save at all.
+function validTiles(list) {
+  if (!Array.isArray(list) || list.length === 0 || list.length > SIZE * SIZE) { return false }
+  let seen = {}
+  let i = 0
+  while (i < list.length) {
+    let t = list[i]
+    if (!t || typeof t !== "object") { return false }
+    if (typeof t.value !== "number" || typeof t.r !== "number" || typeof t.c !== "number") { return false }
+    if (t.value < 2 || t.value !== Math.floor(t.value) || (t.value & (t.value - 1)) !== 0) { return false }
+    if (t.r < 0 || t.r >= SIZE || t.c < 0 || t.c >= SIZE || t.r !== Math.floor(t.r) || t.c !== Math.floor(t.c)) { return false }
+    let key = t.r + "," + t.c
+    if (seen[key]) { return false }
+    seen[key] = true
+    i = i + 1
+  }
+  return true
+}
+
+function showToast(msg) {
+  toast = msg
+  toastTicks = 45
 }
 
 function newGame() {
@@ -166,7 +214,9 @@ function cellFor(dir, line, k) {
 
 function move(dir) {
   if (over) { return }
-  let snapshot = JSON.stringify({ board: board, score: score, moves: moves })
+  // The win state is part of the snapshot: undoing the move that made 2048
+  // must take the "You made 2048" overlay away with it.
+  let snapshot = JSON.stringify({ board: board, score: score, moves: moves, won: won, keepGoing: keepGoing })
   let changed = false
   let gained = 0
   let next = []
@@ -247,12 +297,18 @@ function anyMoves() {
 }
 
 function undo() {
-  if (history.length === 0) { return }
+  if (history.length === 0) { showToast("Nothing to undo"); return }
   let snap = JSON.parse(history[history.length - 1])
   history = history.slice(0, history.length - 1)
   board = snap.board
+  // The snapshot was taken before the move cleared the previous move's
+  // animation flags; restored tiles should sit still, not pop again.
+  let i = 0
+  while (i < board.length) { board[i].merged = false; board[i].fresh = false; i = i + 1 }
   score = snap.score
   moves = snap.moves
+  won = !!snap.won
+  keepGoing = !!snap.keepGoing
   over = false
   persist()
 }
@@ -267,10 +323,12 @@ function pump() {
   let d = window.__t48Dir
   if (d === "") { return }
   window.__t48Dir = ""
-  if (won && !keepGoing) { return }
   if (d === "undo") { undo() }
   else if (d === "new") { newGame() }
   else if (d === "mute") { toggleMute() }
+  // While the win overlay is up, moves wait for "Keep going"; undo and a new
+  // game (which the overlay's own buttons offer) still work from the keys.
+  else if (won && !keepGoing) { return }
   else { move(d) }
 }
 

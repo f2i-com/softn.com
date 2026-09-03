@@ -1,22 +1,33 @@
 {
   "name": "PromptlyUnemployed",
-  "version": "0.1.0",
-  "description": "First-person 3D narrative tragicomedy — vertical slice: laid off by an avatar, home by dinner, a business by midnight. Fully voiced.",
+  "version": "0.2.0",
+  "description": "First-person 3D narrative tragicomedy, part one: laid off by an avatar, home by dinner, a business by midnight. Fully voiced.",
   "author": "SoftN",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
   "files": {
-    "ui": ["ui/main.ui"],
+    "ui": [
+      "ui/main.ui"
+    ],
     "logic": [
       "logic/data.logic",
       "logic/dialogue.logic",
       "logic/world.logic",
       "logic/main.logic"
     ],
-    "assets": ["assets/icon.svg"]
+    "assets": [
+      "assets/icon.svg"
+    ]
   },
   "config": {
-    "window": { "title": "Promptly Unemployed", "width": 1060, "height": 900 },
-    "theme": { "primary": "#f59e0b", "mode": "dark" }
+    "window": {
+      "title": "Promptly Unemployed",
+      "width": 1060,
+      "height": 900
+    },
+    "theme": {
+      "primary": "#f59e0b",
+      "mode": "dark"
+    }
   }
 }

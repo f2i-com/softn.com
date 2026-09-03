@@ -88,6 +88,7 @@ function _init() {
   window.__vxTouch = false
   window.__scene3dLocked = false
   window.__scene3dWantLock = false
+  window.__scene3dReleaseLock = false
 
   let i = 0
   let bar = []
@@ -182,15 +183,27 @@ function swatchFor(t) {
 
 // ---- Starting a world ---------------------------------------------------
 
-function newWorld() {
-  if (started || placedCount > 0) { generateWorld(Math.floor(Date.now() % 100000) + 1) }
+// The island behind the title screen becomes the first world; after that,
+// or when a caller asks for one outright, a new island is grown.
+function newWorld(fresh) {
+  if (fresh === true || started || placedCount > 0) { generateWorld(Math.floor(Date.now() % 100000) + 1) }
+  particles = []
+  flying = false
+  underwater = false
+  hitOk = false
   spawnPlayer()
   placedCount = 0
+  autosaveTicks = 0
   dirty = true
   started = true
   paused = false
+  showHelp = false
   window.__scene3dWantLock = true
   showToast("Welcome to a new island.")
+}
+
+function isNum(v) {
+  return typeof v === "number" && v === v && v - v === 0
 }
 
 function continueWorld() {
@@ -201,19 +214,36 @@ function continueWorld() {
     meta = JSON.parse(localStorage.getItem("blockscape:player") || "null")
   } catch (err) { raw = "" }
   if (raw === "" || !decodeWorld(raw)) {
-    newWorld()
+    try { localStorage.removeItem("blockscape:world"); localStorage.removeItem("blockscape:player") } catch (err) {}
+    hasSave = false
+    newWorld(true)
+    showToast("The saved island could not be read, so here is a new one.")
     return
   }
-  if (meta && typeof meta.x === "number") {
+  particles = []
+  hitOk = false
+  // A player record is only trusted whole: finite numbers, on or above the
+  // island, and not inside a block (a NaN here would sink the camera for good).
+  let placeOk = meta && isNum(meta.x) && isNum(meta.y) && isNum(meta.z) &&
+    meta.y > -1 && meta.y < 200 && Math.abs(meta.x - WX / 2) < WX && Math.abs(meta.z - WZ / 2) < WZ &&
+    !boxBlocked(meta.x, meta.y, meta.z)
+  if (placeOk) {
     px = meta.x; py = meta.y; pz = meta.z
-    yaw = meta.yaw || 0; pitch = meta.pitch || 0
-    dayPhase = typeof meta.day === "number" ? meta.day : dayPhase
-    placedCount = meta.placed || 0
-    slotIdx = meta.slot || 0
+    vx = 0; vy = 0; vz = 0
+    yaw = isNum(meta.yaw) ? meta.yaw : 0
+    pitch = isNum(meta.pitch) ? Math.max(-1.5, Math.min(1.5, meta.pitch)) : 0
     flying = !!meta.flying
   } else {
     spawnPlayer()
   }
+  if (meta) {
+    if (isNum(meta.day)) { dayPhase = meta.day >= 0 && meta.day < 1 ? meta.day : ((meta.day % 1) + 1) % 1 }
+    placedCount = isNum(meta.placed) ? Math.max(0, Math.floor(meta.placed)) : 0
+    slotIdx = isNum(meta.slot) ? Math.max(0, Math.min(hotbar.length - 1, Math.floor(meta.slot))) : 0
+  }
+  showHelp = false
+  autosaveTicks = 0
+  dirty = false
   window.__scene3dYaw = yaw
   window.__scene3dPitch = pitch
   updateCamera()
@@ -240,6 +270,21 @@ function spawnPlayer() {
     }
     dx = dx + 2
   }
+  if (best < 0) {
+    // A low middle: the highest dry ground anywhere on the island instead,
+    // rather than feet in the bedrock.
+    let x = 2
+    while (x < WX - 2) {
+      let z = 2
+      while (z < WZ - 2) {
+        let h = groundHeight(x, z)
+        if (h > best && blockAt(x, h + 1, z) === B_AIR && blockAt(x, h + 2, z) === B_AIR) { best = h; bx = x; bz = z }
+        z = z + 3
+      }
+      x = x + 3
+    }
+  }
+  if (best < 0) { best = surfaceHeight(sx, sz); bx = sx; bz = sz }
   px = bx + 0.5
   pz = bz + 0.5
   py = best + 1.02
@@ -284,6 +329,7 @@ function toggleHelp() {
 
 function resumeGame() {
   paused = false
+  showHelp = false
   window.__scene3dWantLock = true
 }
 
@@ -363,8 +409,6 @@ function gameStep() {
   if (window.__vxTouch) { touchMode = true }
 
   if (toastTicks > 0) { toastTicks = toastTicks - 1; if (toastTicks === 0) { toast = "" } }
-  dayPhase = dayPhase + DT / DAY_SECONDS
-  if (dayPhase >= 1) { dayPhase = dayPhase - 1 }
 
   if (window.__vxSlot >= 0) { slotIdx = window.__vxSlot; window.__vxSlot = -1 }
   if (window.__vxWheel !== 0) {
@@ -377,15 +421,28 @@ function gameStep() {
     vy = 0
     showToast(flying ? "Flying. Space to rise, C to sink." : "Walking.")
   }
-  if (window.__vxAction === 3) { window.__vxAction = 0; showHelp = !showHelp }
+  if (window.__vxAction === 3) {
+    window.__vxAction = 0
+    showHelp = !showHelp
+    // Help opened over a locked pointer hands the cursor back so its Back
+    // button can be clicked (the game pauses as the lock goes); closing it
+    // with H again takes the cursor straight back.
+    if (showHelp && locked) { window.__scene3dReleaseLock = true }
+    else if (!showHelp && paused && !touchMode) { resumeGame() }
+  }
 
-  if (!paused) {
+  let running = !paused && !showHelp
+  if (running) {
+    dayPhase = dayPhase + DT / DAY_SECONDS
+    if (dayPhase >= 1) { dayPhase = dayPhase - 1 }
     if (window.__scene3dYaw !== undefined) { yaw = window.__scene3dYaw }
     if (window.__scene3dPitch !== undefined) { pitch = window.__scene3dPitch }
     movePlayer()
     aim()
     if (window.__vxAction === 1) { window.__vxAction = 0; doBreak() }
     else if (window.__vxAction === 2) { window.__vxAction = 0; doPlace() }
+  } else {
+    window.__vxAction = 0
   }
   if (breakCooldown > 0) { breakCooldown = breakCooldown - 1 }
   if (placeCooldown > 0) { placeCooldown = placeCooldown - 1 }
@@ -437,21 +494,41 @@ function movePlayer() {
     if (k.jump) { vy = vy + 14 * DT }
     if (vy < -2.2) { vy = -2.2 }
     if (vy > 2.6) { vy = 2.6 }
+    // Standing on the bottom of shallow water, a jump is a real jump.
+    if (k.jump && onGround) { vy = JUMP_V * 0.85; onGround = false }
   } else {
     vy = vy - GRAVITY * DT
     if (k.jump && onGround) { vy = JUMP_V; onGround = false }
     if (vy < -40) { vy = -40 }
   }
 
-  // Sweep each axis separately, so a wall slides rather than stops.
+  // Sweep each axis separately, so a wall slides rather than stops. In water
+  // the push is kept, so a swimmer climbing a bank keeps pressing onto it.
+  let wall = false
   let nx = px + vx * DT
-  if (boxBlocked(nx, py, pz)) { vx = 0 } else { px = nx }
+  if (boxBlocked(nx, py, pz)) { if (!wet) { vx = 0 }; wall = true } else { px = nx }
   let nz = pz + vz * DT
-  if (boxBlocked(px, py, nz)) { vz = 0 } else { pz = nz }
+  if (boxBlocked(px, py, nz)) { if (!wet) { vz = 0 }; wall = true } else { pz = nz }
+  // Swimming against a bank no more than a block above the water: climb out.
+  // Deep down, the same push against an underwater cliff does nothing.
+  if (wet && wall && len > 0 && vy < 4 && blockAt(Math.floor(px), Math.floor(py) + 1, Math.floor(pz)) !== B_WATER) {
+    let tx = px + wx * 0.5
+    let tz = pz + wz * 0.5
+    let fy = Math.floor(py)
+    if (!boxBlocked(tx, fy + 1.001, tz) || !boxBlocked(tx, fy + 2.001, tz)) { vy = JUMP_V }
+  }
   let ny = py + vy * DT
   onGround = false
   if (boxBlocked(px, ny, pz)) {
-    if (vy < 0) { onGround = true; py = Math.floor(py) + 0.001 }
+    if (vy < 0) {
+      // Land on the top of the block that stopped the fall, not the cell the
+      // feet happened to be in: a fast fall crosses a whole block in a tick.
+      let landY = Math.floor(ny) + 1.001
+      while (landY < py && boxBlocked(px, landY, pz)) { landY = landY + 1 }
+      if (landY > py) { landY = py }
+      onGround = true
+      py = landY
+    }
     vy = 0
   } else {
     py = ny

@@ -69,6 +69,7 @@
       </Box>
     </Box>
 
+    <Text if={toast !== ""} style={{ display: "block", textAlign: "center", marginTop: "12px", fontSize: "13px", fontWeight: 600, color: "#edc22e" }}>{toast}</Text>
     <Box className="t-foot">
       <Text style={{ fontSize: "12px", color: "#a89f93" }}><Text className="t-kbd" style={{ fontSize: "11px", color: "#f9f6f2" }}>← ↑ → ↓</Text> or WASD · <Text className="t-kbd" style={{ fontSize: "11px", color: "#f9f6f2" }}>Z</Text> undo · <Text className="t-kbd" style={{ fontSize: "11px", color: "#f9f6f2" }}>R</Text> new · swipe on touch</Text>
       <Stack direction="horizontal" gap={6}>

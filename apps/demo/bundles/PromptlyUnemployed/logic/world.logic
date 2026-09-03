@@ -17,6 +17,8 @@ let playerZ = 4
 let playerAngle = 0
 let stepDist = 0
 let stepFoot = false
+let bobPhase = 0
+let bobAmt = 0             // eases toward 1 while walking, 0 while still
 let cameraPos = { x: 4, y: 1.6, z: 4 }
 let cameraLookAt = { x: 4, y: 1.6, z: 9 }
 
@@ -146,14 +148,17 @@ function moveTick() {
     let inputLen = Math.sqrt(fwd * fwd + strafe * strafe)
     fwd = fwd / inputLen
     strafe = strafe / inputLen
-    let dx = (Math.sin(playerAngle) * fwd - Math.cos(playerAngle) * strafe) * MOVE_SPEED
-    let dz = (Math.cos(playerAngle) * fwd + Math.sin(playerAngle) * strafe) * MOVE_SPEED
+    let speed = keys.run ? MOVE_SPEED * 1.6 : MOVE_SPEED
+    let dx = (Math.sin(playerAngle) * fwd - Math.cos(playerAngle) * strafe) * speed
+    let dz = (Math.cos(playerAngle) * fwd + Math.sin(playerAngle) * strafe) * speed
     let px = playerX, pz = playerZ
     let nx = playerX + dx
     if (!collides(nx, playerZ)) { playerX = nx }
     let nz = playerZ + dz
     if (!collides(playerX, nz)) { playerZ = nz }
     let moved = Math.abs(playerX - px) + Math.abs(playerZ - pz)
+    bobPhase = bobPhase + moved * 2.4
+    bobAmt = bobAmt + (1 - bobAmt) * 0.18
     stepDist = stepDist + moved
     if (stepDist > 1.15) {
       stepDist = 0
@@ -161,6 +166,7 @@ function moveTick() {
       sfx(stepFoot ? "step1" : "step2")
     }
   }
+  if (fwd === 0 && strafe === 0) { bobAmt = bobAmt * 0.82 }
   updateCamera()
 }
 
@@ -170,7 +176,8 @@ function updateCamera() {
     sx = (myRand() - 0.5) * shakeAmt
     sy = (myRand() - 0.5) * shakeAmt
   }
-  cameraPos = { x: playerX + sx, y: 1.6 + sy, z: playerZ }
+  let bob = Math.sin(bobPhase) * 0.028 * bobAmt
+  cameraPos = { x: playerX + sx, y: 1.6 + sy + bob, z: playerZ }
   cameraLookAt = {
     x: playerX + Math.sin(playerAngle) * 5,
     y: 1.55,
@@ -519,16 +526,26 @@ let hotspots = []
 let hsNearId = ""
 let hsNearLabel = ""
 
+// The hotspot E acts on: within reach, and preferring the one you are facing.
+// Distance alone always picked the front row of a cluttered desk — standing
+// in front of Doug offered the team photo, and the only way to reach the back
+// row was to walk into the furniture. Facing breaks the tie: the score is the
+// squared distance scaled by how far off-axis the thing is.
 function hotspotTick() {
   let best = ""
   let bestLabel = ""
-  let bestD = 999
+  let bestScore = 999
+  let fx = Math.sin(playerAngle), fz = Math.cos(playerAngle)
   for (let i = 0; i < hotspots.length; i++) {
     let h = hotspots[i]
     if (h.tapOnly) { continue }
-    let dx = playerX - h.x, dz = playerZ - h.z
+    let dx = h.x - playerX, dz = h.z - playerZ
     let d2 = dx * dx + dz * dz
-    if (d2 < h.r * h.r && d2 < bestD) { best = h.id; bestLabel = h.label; bestD = d2 }
+    if (d2 >= h.r * h.r) { continue }
+    let d = Math.sqrt(d2)
+    let dot = d > 0.05 ? (dx * fx + dz * fz) / d : 1
+    let score = d2 * (1.7 - dot)
+    if (score < bestScore) { best = h.id; bestLabel = h.label; bestScore = score }
   }
   hsNearId = best
   hsNearLabel = bestLabel
@@ -572,16 +589,28 @@ function warpTo(id) {
     for (let j = 0; j < offs.length; j++) {
       let nx = h.x + offs[j][0], nz = h.z + offs[j][1]
       // Furniture is not in the grid, so check the actor blockers too.
-      if (!collides(nx, nz) && !actorBlocked(nx, nz)) { playerX = nx; playerZ = nz; updateCamera(); return }
+      if (!collides(nx, nz) && !actorBlocked(nx, nz)) { warpLand(nx, nz, h); return }
     }
     for (let j = 0; j < offs.length; j++) {
       let nx = h.x + offs[j][0], nz = h.z + offs[j][1]
-      if (!collides(nx, nz)) { playerX = nx; playerZ = nz; updateCamera(); return }
+      if (!collides(nx, nz)) { warpLand(nx, nz, h); return }
     }
-    playerX = h.x
-    playerZ = h.z
-    updateCamera()
+    warpLand(h.x, h.z, h)
   }
+}
+
+// Land beside a hotspot facing it, the way a player who walked there would
+// be: E picks by facing as well as distance, so a warp that arrived looking
+// the other way could be offered a neighbour instead.
+function warpLand(nx, nz, h) {
+  playerX = nx
+  playerZ = nz
+  let dx = h.x - nx, dz = h.z - nz
+  if (dx * dx + dz * dz > 0.0001) {
+    playerAngle = Math.atan2(dx, dz)
+    window.__scene3dYaw = playerAngle
+  }
+  updateCamera()
 }
 
 // A slow-turning beacon above every interactive hotspot.
@@ -1060,13 +1089,13 @@ let officeStatic = []
 
 function buildOffice() {
   loadGrid(OFFICE_ROWS)
-  sceneFog = { color: "#1a2233", near: 22, far: 64 }
-  sceneBg = "#0d1119"
-  let objs = [floorPlane(30, 20, "#2d374d"), ceilingPlane(30, 20, 2.6, "#232b3d")]
-  objs = objs.concat(wallsFrom(OFFICE_ROWS, "#48597a", 2.6))
-  objs = objs.concat(skirting("osk", 30, 20, "#2b3550"))
-  objs = objs.concat(dado("odd", 30, 20, "#3a4a66", 1.22))
-  objs = objs.concat(ceilingBeams("obm", 30, 20, 2.6, 3, "#2b3550"))
+  sceneFog = { color: "#232d45", near: 26, far: 70 }
+  sceneBg = "#111726"
+  let objs = [floorPlane(30, 20, "#374260"), ceilingPlane(30, 20, 2.6, "#39435e")]
+  objs = objs.concat(wallsFrom(OFFICE_ROWS, "#5a6c92", 2.6))
+  objs = objs.concat(skirting("osk", 30, 20, "#33405e"))
+  objs = objs.concat(dado("odd", 30, 20, "#46587a", 1.22))
+  objs = objs.concat(ceilingBeams("obm", 30, 20, 2.6, 3, "#33405e"))
   // Ceiling light panels.
   objs.push(lightPanel("lp1", 8, 6, 2.56, "#dbe6ff"))
   objs.push(lightPanel("lp2", 22, 12, 2.56, "#dbe6ff"))
@@ -1181,9 +1210,9 @@ function buildOffice() {
   officeStatic = objs
   objects = officeStatic
   lights = [
-    { id: "amb", type: "ambient", color: "#b6c2dc", intensity: 1.8 },
-    { id: "hemi", type: "hemisphere", color: "#dbe4f5", groundColor: "#57648a", intensity: 1.4 },
-    { id: "dir", type: "directional", color: "#dbe6ff", intensity: 0.7, position: { x: 20, y: 14, z: 8 } },
+    { id: "amb", type: "ambient", color: "#c4cfe6", intensity: 2.1 },
+    { id: "hemi", type: "hemisphere", color: "#e4ebf8", groundColor: "#66739a", intensity: 1.7 },
+    { id: "dir", type: "directional", color: "#e2ecff", intensity: 0.9, position: { x: 20, y: 14, z: 8 } },
     { id: "dir2", type: "directional", color: "#c8d4f0", intensity: 0.5, position: { x: -8, y: 12, z: 26 } },
     { id: "p1", type: "point", color: "#e2e8f0", intensity: 2.0, position: { x: 8, y: 2.3, z: 6 } },
     { id: "p2", type: "point", color: "#e2e8f0", intensity: 2.0, position: { x: 22, y: 2.3, z: 12 } },

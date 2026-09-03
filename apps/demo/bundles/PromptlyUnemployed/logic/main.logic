@@ -100,7 +100,14 @@ let debugMsg = ""
 let noteText = ""
 let noteTicks = 0
 
-let theatre = false
+// Presentation. The scene fills the viewport; the mouse is captured while the
+// player is free to move and handed back whenever a panel needs clicking.
+let touchMode = false        // a touch has been seen: pad + Use button instead of a reticle
+let uiRev = 0                // bumped on picks the template cannot see (see touchUi)
+let noteScene = ""           // the scene the current note belongs to
+let lockedNow = false        // mirror of window.__scene3dLocked, so templates re-render on it
+let wasFree = false          // last tick's "a panel wants the pointer" state
+let wasInWorld = false       // last tick's inWorld(), to notice a world opening
 let transcriptOpen = false
 let rngSeed = 1
 let dougIdx = 0
@@ -127,6 +134,13 @@ function addLog(line) {
   changelog = changelog.slice()
 }
 
+// The puzzle panels read their picks through helpers (wsPicked, orderPickOf,
+// scopeHas, wfPicked), so those variables are never named in the template and
+// the runtime leaves them VM-owned: a click changed them and nothing redrew
+// until some other state moved. uiRev is named in the template; touching it
+// is a redraw.
+function touchUi() { uiRev = uiRev + 1 }
+
 function showNote(text) {
   noteText = text
   noteTicks = Math.ceil((2200 + text.length * 45) / TICK_MS)
@@ -150,7 +164,7 @@ function isUiControl(target) {
 }
 
 function clearInputLatches() {
-  window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false }
+  window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false, run: false }
   window.__puUse = false
   window.__puSkip = false
   window.__puChoiceN = 0
@@ -161,7 +175,13 @@ function clearInputLatches() {
 function _init() {
   if (window.__puCleanup) { window.__puCleanup() }
   rngSeed = (Date.now() % 100000) + 7
-  window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false }
+  window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false, run: false }
+  window.__puTouch = false
+  // Named here so the runtime bridges them: a key the script never wrote is
+  // a key it never reads back.
+  window.__scene3dLocked = false
+  window.__scene3dReleaseLock = false
+  window.__scene3dWantLock = false
   window.__puUse = false
   window.__puSkip = false
   window.__puWarp = ""       // traversal-harness hook: names a hotspot to teleport beside
@@ -185,6 +205,7 @@ function _init() {
     else if (e.key === "d" || e.key === "D") { k.d = true }
     else if (e.key === "ArrowLeft") { k.left = true; e.preventDefault() }
     else if (e.key === "ArrowRight") { k.right = true; e.preventDefault() }
+    else if (e.key === "Shift") { k.run = true }
     else if (e.key === "e" || e.key === "E" || e.key === "Enter") { window.__puUse = true }
     else if (e.key === " ") { window.__puSkip = true; e.preventDefault() }
   }
@@ -196,17 +217,21 @@ function _init() {
     else if (e.key === "d" || e.key === "D") { k.d = false }
     else if (e.key === "ArrowLeft") { k.left = false }
     else if (e.key === "ArrowRight") { k.right = false }
+    else if (e.key === "Shift") { k.run = false }
   }
   function onBlur() {
-    window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false }
+    window.__puKeys = { w: false, a: false, s: false, d: false, left: false, right: false, run: false }
   }
+  function onTouch(e) { window.__puTouch = true }
   window.addEventListener("keydown", onKeyDown, true)
   window.addEventListener("keyup", onKeyUp, true)
   window.addEventListener("blur", onBlur)
+  window.addEventListener("touchstart", onTouch)
   window.__puCleanup = function () {
     window.removeEventListener("keydown", onKeyDown, true)
     window.removeEventListener("keyup", onKeyUp, true)
     window.removeEventListener("blur", onBlur)
+    window.removeEventListener("touchstart", onTouch)
   }
 
   try { hasSave = !!localStorage.getItem("pu:autosave") } catch (err) { hasSave = false }
@@ -236,7 +261,11 @@ function padRelease(dir) {
 // NOTE: must not be named tick/update/animate/render — the runtime marks those
 // droppable and silently skips them when the async queue backs up (audio calls).
 function gameStep() {
+  if (window.__puTouch) { touchMode = true }
+  lockedNow = !!window.__scene3dLocked
+  if (scene !== noteScene) { noteScene = scene; noteText = ""; noteTicks = 0 }
   if (scene === "title") { titleTick(); return }
+  pointerTick()
   // Readout for the traversal harness: where the player is and what, if
   // anything, is holding them still.
   window.__puPos = playerX.toFixed(2) + "," + playerZ.toFixed(2) +
@@ -292,6 +321,28 @@ function gameStep() {
     noteTicks = noteTicks - 1
     if (noteTicks <= 0) { noteText = "" }
   }
+}
+
+// The mouse belongs to the scene while the player is free, and to the page
+// while anything needs clicking. A panel opening hands the pointer back; the
+// click that closes it is the gesture that lets the scene take it again.
+function pointerWantsFree() {
+  return interactionLocked() || transcriptOpen || scene === "luma" || scene === "done"
+}
+function pointerTick() {
+  let free = pointerWantsFree()
+  let world = inWorld()
+  if (free && lockedNow) { window.__scene3dReleaseLock = true }
+  // Two moments deserve the mouse without a click on the scene: a panel has
+  // just closed, or a world has just opened (from the title, the terminal or a
+  // chapter card). Both follow a button press, which is the gesture the browser
+  // wants before it grants a lock.
+  if (!free && !touchMode && world && (wasFree || !wasInWorld)) { window.__scene3dWantLock = true }
+  wasFree = free
+  wasInWorld = world
+}
+function lookHint() {
+  return inWorld() && canMove() && !cutActive && !touchMode && !lockedNow && !pointerWantsFree()
 }
 
 function interactPressed() {
@@ -530,6 +581,7 @@ function goWake() {
 
 // Debug-card puzzle: click the three cards in cause-to-cure order.
 function pickDebugCard(id) {
+  touchUi()
   if (debugPicked.indexOf(id) >= 0) { return }
   let expected = DEBUG_ORDER[debugPicked.length]
   if (id !== expected) {
@@ -769,6 +821,7 @@ function enterBoxes() {
 }
 
 function toggleItem(id) {
+  touchUi()
   let i = picked.indexOf(id)
   if (i >= 0) {
     picked.splice(i, 1)
@@ -905,6 +958,7 @@ function askLuma() {
 }
 
 function pickWs(cat, cardId, kind) {
+  touchUi()
   if (cat === "user") { wsUser = cardId }
   else if (cat === "pain") { wsPain = cardId }
   else if (cat === "tone") { wsTone = cardId }
@@ -972,6 +1026,7 @@ function scopeValid() {
 }
 
 function toggleScope(id) {
+  touchUi()
   let card = null
   for (let i = 0; i < SCOPE_CARDS.length; i++) { if (SCOPE_CARDS[i].id === id) { card = SCOPE_CARDS[i] } }
   if (!card) { return }
@@ -1058,6 +1113,7 @@ function openOrders() {
 function orderPickOf(id) { return orderPicks[id] || "" }
 
 function pickSlip(orderId, slipId) {
+  touchUi()
   if (ordersDone) { return }
   let order = null
   for (let i = 0; i < ORDERS.length; i++) { if (ORDERS[i].id === orderId) { order = ORDERS[i] } }
@@ -1124,6 +1180,7 @@ function goBakeryDay() {
 function wfPicked(caseId) { return wfPicks[caseId] || "" }
 
 function pickWf(caseId, policy) {
+  touchUi()
   sfx("click")
   wfPicks[caseId] = policy
   wfPicks = { boxes12: wfPicks.boxes12, nutfree: wfPicks.nutfree, moved: wfPicks.moved, moon: wfPicks.moon, apt: wfPicks.apt, inject: wfPicks.inject }
@@ -1458,33 +1515,28 @@ function canMove() {
   let movableScene = scene === "office" || scene === "boxes" || scene === "flat" || scene === "bakery" || scene === "bakeryday" || scene === "dream"
   return movableScene && !interactionLocked()
 }
-function showCaptionBar() { return scene !== "title" }
-function captionHasContent() { return dlgActive || noteText !== "" || hudPrompt() !== "" }
+function showCaptionBar() { return scene !== "title" && scene !== "done" }
+function captionHasContent() { return dlgActive || noteText !== "" }
 
-// In theatre the D-pad is pinned bottom-left and is wide enough to sit under
-// the caption, so the text steps above it whenever the pad is on screen.
-function controlsShowing() { return canMove() }
+// On a phone the D-pad owns the bottom-left corner, so the caption and the
+// choices step up to clear it.
 function padClass() { return cutActive ? "pu-controls pu-controls-dim" : "pu-controls" }
 function capClass() {
-  let c = "pu-cap"
-  if (controlsShowing()) { c = c + " pu-lift" }
-  if (choiceList.length > 0) { c = c + " pu-withchoices" }
+  let c = "pu-glass pu-cap"
+  if (touchMode && canMove()) { c = c + " pu-padded" }
   if (!captionHasContent()) { c = c + " pu-cap-off" }
   return c
 }
 function choiceClass() {
-  let c = "pu-card pu-note pu-choices"
-  if (controlsShowing()) { c = c + " pu-lift" }
+  let c = "pu-glass pu-choices"
+  if (touchMode && canMove()) { c = c + " pu-padded" }
   return c
 }
 function toggleTranscript() { transcriptOpen = !transcriptOpen }
-function toggleTheatre() { theatre = !theatre }
 function quitToTitle() {
   saveGame()
   backToTitle()
 }
-function sceneW() { return theatre ? 1280 : 820 }
-function sceneH() { return theatre ? 720 : 430 }
 function currentChapter() {
   let i = stepIndex()
   if (i < 0 || i >= CHAPTERS.length) { return "" }
@@ -1497,7 +1549,7 @@ function chapterProgress() {
 }
 function hudPrompt() {
   if (choiceList.length > 0) { return "" }
-  if (canMove() && hsNearId) { return hsNearLabel + "  —  E / tap" }
+  if (canMove() && hsNearId) { return touchMode ? hsNearLabel : (hsNearLabel + "  ·  E") }
   return ""
 }
 function stat(label) {

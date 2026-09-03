@@ -171,6 +171,7 @@ function romPayload(result) {
 
 // Split from the callback so the load path is testable without a file picker.
 function acceptRom(base64) {
+  eraseArmed = false
   if (!gbMachine_loadRomBase64(base64)) {
     // gbMachine_loadRomBase64 sets gbError itself when it can say why —
     // a truncated file, a header that is not a cartridge. Only fill in a
@@ -324,14 +325,15 @@ function padTap(bit) {
   if (slot < 0) { return }
   // The click after a pointer press-and-release is the same gesture, already
   // delivered; and a button a pointer is still holding needs no latch.
-  if (padHeldPtr[slot] !== 0 || padClickGuard[slot] !== 0) { return }
+  if (padHeldPtr[slot] !== 0) { return }
+  if (padClickGuard[slot] !== 0) { padClickGuard[slot] = 0; return }
   padTapFrames[slot] = 4
   padDown(bit)
 }
 
 // Pointer press and release, for the face buttons: down for as long as the
-// pointer is, exactly like the D-pad. The click that follows is swallowed by
-// the guard for a few frames so it does not land as a second press.
+// pointer is, exactly like the D-pad. The click that follows a release is the
+// same gesture already delivered, so the guard swallows exactly one.
 function padHold(bit) {
   let slot = bitSlot(bit)
   if (slot < 0) { return }
@@ -345,7 +347,7 @@ function padRelease(bit) {
   let slot = bitSlot(bit)
   if (slot < 0 || padHeldPtr[slot] === 0) { return }
   padHeldPtr[slot] = 0
-  padClickGuard[slot] = 8
+  padClickGuard[slot] = 1
   padUp(bit)
 }
 
@@ -390,7 +392,6 @@ function bitSlot(bit) {
 function releaseExpiredTaps() {
   if (padTapFrames === null) { return }
   for (let i = 0; i < 8; i = i + 1) {
-    if (padClickGuard[i] !== 0) { padClickGuard[i] = padClickGuard[i] - 1 }
     let left = padTapFrames[i]
     if (left === 0) { continue }
     left = left - 1
@@ -473,16 +474,16 @@ function keyUp(event) {
 
 function togglePause() {
   if (!gbRomLoaded) { return }
+  // A tap latched on the last frame before a pause would otherwise stay down
+  // until the machine runs again.
+  if (gbRunning) { padClear() }
   gbMachine_setRunning(!gbRunning)
 }
 
 function resetMachine() {
   if (!gbRomLoaded) { return }
   gbMachine_reset()
-  padMask = 0
-  btnA = false
-  btnB = false
-  gbMachine_setButtons(0)
+  padClear()
   gbMachine_setRunning(true)
 }
 
@@ -701,6 +702,12 @@ function eraseBattery() {
   }
   eraseArmed = false
   clearStore(batteryKey())
+  // The copy in memory goes too, and the pending write with it: otherwise the
+  // next time the game touches SRAM the old save is written straight back.
+  let size = GB_CART[GB_K_RAMSIZE]
+  if (size > 0) { GB_ERAM.fill(0, 0, size) }
+  gbCart_clearRamDirty()
+  if (batPending) { batPending[0] = 0 }
   saveStatus = "Cartridge save erased. Reset to see it."
 }
 
