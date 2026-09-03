@@ -166,5 +166,13 @@
     "description": "Draw a house from above and see it in 3D: walls, doors, windows, room floors, a roof, furniture and garden, then walk through it in first person",
     "primary": "#f59e0b",
     "size": 110487
+  },
+  {
+    "id": "sim-lives",
+    "file": "SimLives.softn",
+    "name": "Sim Lives",
+    "description": "Build a house, design avatars and move a household in: steer them to eat, sleep, wash, play and chat, or switch on free will and watch their day",
+    "primary": "#22c55e",
+    "size": 201837
   }
 ]

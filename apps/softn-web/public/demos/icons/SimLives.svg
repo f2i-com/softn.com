@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7dd3fc" />
+      <stop offset="70%" stop-color="#bae6fd" />
+      <stop offset="100%" stop-color="#e0f2fe" />
+    </linearGradient>
+    <linearGradient id="grass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4ade80" />
+      <stop offset="100%" stop-color="#16a34a" />
+    </linearGradient>
+    <linearGradient id="roof" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f87171" />
+      <stop offset="100%" stop-color="#b91c1c" />
+    </linearGradient>
+    <linearGradient id="wall" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fff7ed" />
+      <stop offset="100%" stop-color="#fde2c4" />
+    </linearGradient>
+    <linearGradient id="plumbob" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#86efac" />
+      <stop offset="50%" stop-color="#22c55e" />
+      <stop offset="100%" stop-color="#15803d" />
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%" stop-color="#fef3c7" />
+      <stop offset="60%" stop-color="#fde047" />
+      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0" />
+    </radialGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="2.5" flood-color="#0f172a" flood-opacity="0.28" />
+    </filter>
+    <clipPath id="round"><rect width="128" height="128" rx="26" /></clipPath>
+  </defs>
+
+  <g clip-path="url(#round)">
+    <rect width="128" height="128" fill="url(#sky)" />
+    <circle cx="104" cy="26" r="22" fill="url(#sun)" />
+    <!-- Rolling lawn -->
+    <ellipse cx="64" cy="128" rx="96" ry="44" fill="url(#grass)" />
+    <ellipse cx="18" cy="118" rx="34" ry="16" fill="#22c55e" opacity="0.55" />
+
+    <!-- Cloud -->
+    <g fill="#ffffff" opacity="0.9">
+      <circle cx="26" cy="30" r="7" />
+      <circle cx="35" cy="27" r="9" />
+      <circle cx="44" cy="31" r="6" />
+      <rect x="22" y="30" width="26" height="7" rx="3.5" />
+    </g>
+
+    <!-- House -->
+    <g filter="url(#soft)">
+      <rect x="40" y="56" width="62" height="46" rx="3" fill="url(#wall)" />
+      <path d="M33 60 L71 28 L109 60 Z" fill="url(#roof)" />
+      <rect x="88" y="34" width="8" height="16" rx="1.5" fill="#7f1d1d" />
+      <!-- Smoke -->
+      <circle cx="93" cy="27" r="3.2" fill="#ffffff" opacity="0.8" />
+      <circle cx="97" cy="21" r="2.4" fill="#ffffff" opacity="0.6" />
+      <!-- Door and windows, lit warm -->
+      <rect x="66" y="78" width="12" height="24" rx="2" fill="#92400e" />
+      <circle cx="75.5" cy="90" r="1.1" fill="#fde68a" />
+      <rect x="46" y="66" width="14" height="12" rx="1.5" fill="#fde68a" />
+      <path d="M53 66 V78 M46 72 H60" stroke="#b45309" stroke-width="1.2" />
+      <rect x="84" y="66" width="14" height="12" rx="1.5" fill="#fde68a" />
+      <path d="M91 66 V78 M84 72 H98" stroke="#b45309" stroke-width="1.2" />
+    </g>
+
+    <!-- Two sims in front -->
+    <g filter="url(#soft)">
+      <!-- Left sim -->
+      <rect x="18" y="86" width="16" height="22" rx="6" fill="#dc2626" />
+      <rect x="20" y="106" width="5" height="12" rx="2" fill="#1e3a5f" />
+      <rect x="27" y="106" width="5" height="12" rx="2" fill="#1e3a5f" />
+      <circle cx="26" cy="76" r="9" fill="#e8b894" />
+      <path d="M17 76 a9 9 0 0 1 18 0 v2 a9 9 0 0 0 -18 0 z" fill="#5c3a21" />
+      <path d="M17 76 v8 a3 3 0 0 0 3 0 v-8 z M32 76 v8 a3 3 0 0 0 3 0 v-8 z" fill="#5c3a21" />
+      <circle cx="23" cy="77" r="1.1" fill="#1c1917" />
+      <circle cx="29" cy="77" r="1.1" fill="#1c1917" />
+      <path d="M23 81 q3 2.5 6 0" stroke="#1c1917" stroke-width="1" fill="none" stroke-linecap="round" />
+      <!-- Right sim, waving -->
+      <rect x="44" y="90" width="16" height="20" rx="6" fill="#2563eb" />
+      <rect x="46" y="108" width="5" height="10" rx="2" fill="#57534e" />
+      <rect x="53" y="108" width="5" height="10" rx="2" fill="#57534e" />
+      <rect x="58" y="80" width="5" height="14" rx="2.5" fill="#2563eb" transform="rotate(-35 60 94)" />
+      <circle cx="52" cy="80" r="9" fill="#8d5524" />
+      <path d="M43 80 a9 9 0 0 1 18 0 v1 a9 9 0 0 0 -18 0 z" fill="#1c1917" />
+      <circle cx="49" cy="81" r="1.1" fill="#1c1917" />
+      <circle cx="55" cy="81" r="1.1" fill="#1c1917" />
+      <path d="M49 85 q3 2.5 6 0" stroke="#1c1917" stroke-width="1" fill="none" stroke-linecap="round" />
+    </g>
+
+    <!-- Plumbob over the active sim -->
+    <g filter="url(#soft)">
+      <path d="M26 52 L34 62 L26 72 L18 62 Z" fill="url(#plumbob)" />
+      <path d="M26 52 L34 62 L26 62 Z" fill="#bbf7d0" opacity="0.7" />
+      <path d="M26 62 L18 62 L26 72 Z" fill="#14532d" opacity="0.5" />
+    </g>
+  </g>
+</svg>
