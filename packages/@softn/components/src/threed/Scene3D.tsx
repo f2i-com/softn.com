@@ -19,6 +19,8 @@ type Scene3DWindow = Window & {
    * mouse back.
    */
   __scene3dWantLock?: boolean;
+  /** Set by a script to give the pointer back (a panel opened); consumed each frame. */
+  __scene3dReleaseLock?: boolean;
   /** Set false to lock with the platform's adjusted movement instead of raw input. */
   __scene3dRawInput?: boolean;
 };
@@ -1180,6 +1182,14 @@ export function Scene3D({
           requestLock();
         } else if (sceneWindow.__scene3dWantLock && isLocked()) {
           sceneWindow.__scene3dWantLock = false;
+        }
+        // The opposite request: a script that has just opened a panel the
+        // player must click on hands the pointer back. The flag is consumed
+        // whether or not a lock was held, so setting it every frame is cheap
+        // and harmless.
+        if (sceneWindow.__scene3dReleaseLock) {
+          sceneWindow.__scene3dReleaseLock = false;
+          if (isLocked()) document.exitPointerLock();
         }
         if (debugEl) {
           const now = performance.now();

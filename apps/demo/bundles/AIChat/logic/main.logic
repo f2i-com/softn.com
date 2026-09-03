@@ -78,6 +78,17 @@ function reloadChatMessages() {
 
 function _init() {
   refreshConversations()
+  // Enter sends, Shift+Enter breaks the line. A template handler is never
+  // handed the key, so this is a window listener; the composer is the only
+  // textarea on the page.
+  if (!window.__aicKeyBound) {
+    window.__aicKeyBound = true
+    window.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" || e.shiftKey || e.targetTag !== "textarea") { return }
+      e.preventDefault()
+      if (canSend()) { sendMessage() }
+    }, true)
+  }
   // Detect mobile on init
   try {
     isMobile = window.innerWidth < 640

@@ -40,10 +40,18 @@
     return getMyBet() + getMyChips()
   }
 
+  // The increment doRaise will actually use: never below the minimum raise,
+  // so the button's "Raise to $X" is the X the engine puts in.
   function getRaiseIncrementInput() {
     let parsed = parseInt(raiseAmount)
-    if (!parsed || parsed < 0) return getMinRaise()
+    if (!parsed || parsed < getMinRaise()) return getMinRaise()
     return parsed
+  }
+
+  // A raise needs chips beyond the call; with only a call's worth left the
+  // choice is call (all-in) or fold, and the raise controls are not shown.
+  function canAffordRaise() {
+    return getMaxTotalBet() > currentBet
   }
 
   function getRaiseTargetBet() {
@@ -66,6 +74,7 @@
     if (!isMyTurn()) return false
     if (!TableStateClass.isLiveHandPhase(gamePhase)) return false
     if (getMyChips() <= 0) return false
+    if (!canAffordRaise()) return false
     if (isActionBusy()) return false
     return true
   }
@@ -240,6 +249,7 @@
   function topStatusMain() {
     let turn = turnIndicator()
     if (turn) return turn
+    if (gamePhase === TableStateClass.phaseShowdown() && resultSummary) return resultSummary
     return gamePhaseDisplay()
   }
 

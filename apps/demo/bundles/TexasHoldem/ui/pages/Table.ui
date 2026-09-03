@@ -29,7 +29,8 @@
       display: "flex",
       flexDirection: "column",
       alignItems: "center",
-      flex: "0 0 auto",
+      flex: "0 1 auto",
+      maxWidth: "min(48vw, 460px)",
       background: "rgba(0,0,0,0.35)",
       border: "1px solid rgba(255,255,255,0.12)",
       borderRadius: "8px",
@@ -356,12 +357,13 @@
     display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", justifyContent: "center",
     width: "min(94vw, 640px)"
   }}>
-    <Button if={gamePhase === "waiting" && countSeatedPlayers() >= 2} @click={startHand} style={{
+    // At showdown the host deals again after a short countdown; this skips the wait.
+    <Button if={(gamePhase === "waiting" || gamePhase === "showdown") && countSeatedPlayers() >= 2} @click={startHand} style={{
       background: "linear-gradient(135deg, #c8aa6e, #a08040)", color: "#1c1917", border: "none",
       borderRadius: "10px", padding: "12px 32px", fontSize: "16px", fontWeight: "700",
       cursor: "pointer", boxShadow: "0 4px 16px rgba(200,170,110,0.3)"
     }}>
-      Deal Cards
+      {gamePhase === "showdown" ? "Next Hand" : "Deal Cards"}
     </Button>
     <Button if={(gamePhase === "waiting" || gamePhase === "showdown") && countSeatedPlayers() < 6} @click={addBot} style={{
       background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)",

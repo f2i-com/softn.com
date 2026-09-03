@@ -50,6 +50,7 @@ let rngSeed = 1
 let lastLocked = false
 let bobPhase = 0
 let steps = 0
+let lastCell = -1
 
 let muted = false
 
@@ -80,6 +81,7 @@ function _init() {
   window.__mzTouch = false
   window.__scene3dLocked = false
   window.__scene3dWantLock = false
+  window.__scene3dReleaseLock = false
 
   function onKeyDown(e) {
     if (isUiControl(e)) { return }
@@ -284,6 +286,8 @@ function startGame() {
   startTime = Date.now()
   elapsedMs = 0
   steps = 0
+  lastCell = -1
+  bobPhase = 0
   won = false
   paused = false
   started = true
@@ -366,11 +370,17 @@ function gameStep() {
 
   let cc = Math.floor(px / CELL + 0.5)
   let cr = Math.floor(pz / CELL + 0.5)
-  if (cr >= 0 && cr < ROWS && cc >= 0 && cc < COLS && visited[cr * COLS + cc] === 0) {
-    visited[cr * COLS + cc] = 1
-    steps = steps + 1
-    play("found", 0.18)
-    buildMap()
+  if (cr >= 0 && cr < ROWS && cc >= 0 && cc < COLS) {
+    let cell = cr * COLS + cc
+    if (cell !== lastCell) {
+      lastCell = cell
+      if (visited[cell] === 0) {
+        visited[cell] = 1
+        steps = steps + 1
+        play("found", 0.18)
+      }
+      buildMap()
+    }
   }
 
   elapsedMs = Date.now() - startTime
@@ -385,6 +395,8 @@ function gameStep() {
 
 function finish() {
   won = true
+  // The card that follows has buttons to click: hand the cursor back.
+  window.__scene3dReleaseLock = true
   play("win", 0.5)
   if (bestMs === 0 || elapsedMs < bestMs) {
     bestMs = elapsedMs

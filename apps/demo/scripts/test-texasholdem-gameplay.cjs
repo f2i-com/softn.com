@@ -924,6 +924,152 @@ function testHostReconnectShowdownDoesNotInstantlyStartHand() {
   assert.equal(startsAfterThird, 1, 'Auto-start should happen only after refreshed countdown expires');
 }
 
+function testForceResetAtShowdownDoesNotRefundTwice() {
+  const ctx = loadTexasRuntime();
+
+  // Showdown: the pot (150) has already been paid to P1, but the players'
+  // handContribution still records what went in.
+  const tbl = ctx.db.create('poker_table', {
+    gamePhase: 'showdown',
+    handNumber: 3,
+    dealerSeat: 0,
+    currentTurnSeat: -1,
+    currentBet: 0,
+    pot: 150,
+    deck: [],
+    deckPosition: 0,
+    communityCards: [0, 31, 46, 22, 28],
+    smallBlind: 10,
+    bigBlind: 20,
+    lastFullRaise: 20,
+    lastBigBlindSeat: 1,
+    resultSummary: 'P1 wins $150 · Pair',
+  });
+  const p1 = ctx.db.create('poker_players', {
+    peerId: 'peer-1', name: 'P1', seat: 0, chips: 1050, holeCards: [12, 25], bet: 0,
+    handContribution: 100, status: 'active', hasActed: true,
+  });
+  const p2 = ctx.db.create('poker_players', {
+    peerId: 'peer-2', name: 'P2', seat: 1, chips: 950, holeCards: [3, 19], bet: 0,
+    handContribution: 50, status: 'folded', hasActed: true,
+  });
+
+  ctx.exec(`
+    tableId = "${tbl.id}"
+    gamePhase = "showdown"
+    players = db.query("poker_players")
+    bigBlind = 20
+  `);
+  ctx.forceReset();
+
+  const p1After = ctx.db.query('poker_players').find((p) => p.id === p1.id);
+  const p2After = ctx.db.query('poker_players').find((p) => p.id === p2.id);
+  const tAfter = ctx.db.query('poker_table').find((t) => t.id === tbl.id);
+  assert.equal(p1After.data.chips + p2After.data.chips, 2000, 'Reset at showdown must not mint chips');
+  assert.equal(p1After.data.chips, 1050, 'Paid-out winner keeps the pot, no second refund');
+  assert.equal(p1After.data.handContribution, 0, 'Contributions are cleared by reset');
+  assert.equal(tAfter.data.gamePhase, 'waiting', 'Table returns to waiting');
+  assert.equal(tAfter.data.resultSummary, '', 'Last-hand summary is cleared by reset');
+
+  // Mid-hand, the bets on the table do go back.
+  const tbl2 = ctx.db.create('poker_table', {
+    gamePhase: 'flop', handNumber: 4, dealerSeat: 0, currentTurnSeat: 0, currentBet: 40, pot: 80,
+    deck: [], deckPosition: 0, communityCards: [1, 2, 3], smallBlind: 10, bigBlind: 20, lastFullRaise: 20, lastBigBlindSeat: 1,
+  });
+  ctx.db.delete(tbl.id);
+  const q1 = ctx.db.create('poker_players', {
+    peerId: 'peer-q1', name: 'Q1', seat: 2, chips: 960, holeCards: [4, 5], bet: 40, handContribution: 40, status: 'active', hasActed: false,
+  });
+  ctx.db.delete(p1.id);
+  ctx.db.delete(p2.id);
+  ctx.exec(`
+    tableId = "${tbl2.id}"
+    gamePhase = "flop"
+    players = db.query("poker_players")
+  `);
+  ctx.forceReset();
+  const q1After = ctx.db.query('poker_players').find((p) => p.id === q1.id);
+  assert.equal(q1After.data.chips, 1000, 'Reset mid-hand refunds the chips still in the pot');
+}
+
+function testRaiseIncrementNeverBelowMinimum() {
+  const ctx = loadTexasRuntime();
+  // A raise size left over from an earlier street is under the current minimum.
+  ctx.exec(`
+    currentBet = 200
+    bigBlind = 20
+    lastFullRaise = 100
+    raiseAmount = "20"
+  `);
+  assert.equal(ctx.getMinRaise(), 100, 'Minimum raise follows the last full raise');
+  assert.equal(ctx.getRaiseIncrementInput(), 100, 'Stale increment below the minimum is lifted to it');
+  ctx.exec('raiseAmount = "140"');
+  assert.equal(ctx.getRaiseIncrementInput(), 140, 'A legal increment is used as given');
+}
+
+function testStreetChangeClearsRaiseAmount() {
+  const ctx = loadTexasRuntime();
+  ctx.exec(`
+    handNumber = 2
+    gamePhase = "preflop"
+    raiseAmount = "80"
+  `);
+  const same = { id: 't', data: { gamePhase: 'preflop', handNumber: 2, communityCards: [], currentTurnSeat: 0, pot: 30 } };
+  ctx.applyTableSnapshotSafe(same);
+  assert.equal(ctx.exec('raiseAmount'), '80', 'Same street keeps the chosen raise');
+  const flop = { id: 't', data: { gamePhase: 'flop', handNumber: 2, communityCards: [1, 2, 3], currentTurnSeat: 0, pot: 60 } };
+  ctx.applyTableSnapshotSafe(flop);
+  assert.equal(ctx.exec('raiseAmount'), '', 'A new street clears the chosen raise');
+}
+
+function testRaiseControlsHiddenWhenOnlyACallIsAffordable() {
+  const ctx = loadTexasRuntime();
+  ctx.db.create('poker_players', {
+    peerId: 'peer-me', name: 'Me', seat: 0, chips: 60, holeCards: [0, 1], bet: 40, handContribution: 40, status: 'active', hasActed: false,
+  });
+  ctx.exec(`
+    players = db.query("poker_players")
+    peerId = "peer-me"
+    mySeat = 0
+    gamePhase = "turn"
+    currentTurnSeat = 0
+    currentBet = 100
+    bigBlind = 20
+    lastFullRaise = 60
+  `);
+  assert.equal(ctx.canAffordRaise(), false, 'With exactly a call left there is no raise to make');
+  assert.equal(ctx.getRaiseToMin() <= ctx.getMaxTotalBet(), true, 'Slider minimum never exceeds its maximum');
+  ctx.exec('currentBet = 80');
+  assert.equal(ctx.canAffordRaise(), true, 'With chips beyond the call a raise is on');
+  assert.equal(ctx.getRaiseToMin(), 100, 'Short stack: the minimum raise-to is all-in');
+  assert.equal(ctx.getMaxTotalBet(), 100, 'All-in total is bet plus stack');
+}
+
+function testShowdownWritesResultSummaryToTable() {
+  const ctx = loadTexasRuntime();
+  const tbl = ctx.db.create('poker_table', {
+    gamePhase: 'river', handNumber: 5, dealerSeat: 0, currentTurnSeat: -1, currentBet: 0, pot: 200,
+    deck: [], deckPosition: 0, communityCards: [0, 31, 46, 22, 28], smallBlind: 10, bigBlind: 20, lastFullRaise: 20, lastBigBlindSeat: 1,
+  });
+  ctx.db.create('poker_players', {
+    peerId: 'peer-1', name: 'Ace', seat: 0, chips: 900, holeCards: [12, 25], bet: 0, handContribution: 100, status: 'active', hasActed: true,
+  });
+  ctx.db.create('poker_players', {
+    peerId: 'peer-2', name: 'Low', seat: 1, chips: 900, holeCards: [3, 19], bet: 0, handContribution: 100, status: 'active', hasActed: true,
+  });
+  ctx.exec(`
+    tableId = "${tbl.id}"
+    gamePhase = "river"
+    players = db.query("poker_players")
+  `);
+  ctx.resolveShowdown();
+  const tAfter = ctx.db.query('poker_table').find((t) => t.id === tbl.id);
+  assert.equal(tAfter.data.resultSummary, 'Ace wins $200 · Pair', 'Table carries a one-line result for every peer');
+  ctx.exec('handNumber = 5; gamePhase = "river"; communityCards = [0, 31, 46, 22, 28]');
+  ctx.applyTableSnapshotSafe(tAfter);
+  assert.equal(ctx.topStatusMain(), 'Ace wins $200 · Pair', 'Status bar shows the result at showdown');
+}
+
 function main() {
   const tests = [
     ['round-robin deal order', testRoundRobinDeal],
@@ -942,6 +1088,11 @@ function main() {
     ['card visibility rules', testCardVisibilityRules],
     ['table repository latest/sticky selection', testTableRepositoryPrefersLatestHandThenPhase],
     ['host reconnect does not instantly auto-start hand', testHostReconnectShowdownDoesNotInstantlyStartHand],
+    ['reset at showdown does not refund a paid-out pot', testForceResetAtShowdownDoesNotRefundTwice],
+    ['raise increment never below the minimum', testRaiseIncrementNeverBelowMinimum],
+    ['new street clears the chosen raise size', testStreetChangeClearsRaiseAmount],
+    ['raise controls hidden when only a call is affordable', testRaiseControlsHiddenWhenOnlyACallIsAffordable],
+    ['showdown writes a result summary every peer can show', testShowdownWritesResultSummaryToTable],
   ];
 
   let passed = 0;

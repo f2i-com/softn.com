@@ -106,6 +106,7 @@ function _init() {
   window.__dhTouch = false
   window.__scene3dLocked = false
   window.__scene3dWantLock = false
+  window.__scene3dReleaseLock = false
 
   function onKeyDown(e) {
     if (isUiControl(e)) { return }
@@ -184,12 +185,20 @@ function startGame() {
   ammo = [12, 6]
   reserve = [-1, 18]
   fireCooldown = 0; reloadTicks = 0
+  toSpawn = 0; spawnTimer = 0
+  hurtTicks = 0; hurtFlash = 0; hitMark = 0; recoil = 0; flashTicks = 0; bobPhase = 0
+  toast = ""; toastTicks = 0
   waveState = "between"
   waveTimer = Math.ceil(4000 / TICK_MS)
   scorePosted = false
   gameOver = false
   paused = false
+  showHelp = false
   started = true
+  // Whatever was pressed on the last card must not fire on the first tick.
+  window.__dhFire = false
+  window.__dhReload = false
+  window.__dhSwap = -1
   window.__scene3dYaw = yaw
   window.__scene3dPitch = pitch
   window.__scene3dWantLock = true
@@ -201,6 +210,9 @@ function backToTitle() {
   started = false
   gameOver = false
   paused = false
+  showHelp = false
+  waveBanner = ""; bannerTicks = 0
+  toast = ""; toastTicks = 0
   zombies = []
   pickups = []
   particles = []
@@ -245,6 +257,8 @@ function endWave() {
 function die() {
   gameOver = true
   hud.hp = 0
+  // The card that follows wants a name typed and a button clicked.
+  window.__scene3dReleaseLock = true
   if (score > hud.best) {
     hud.best = score
     try { localStorage.setItem("deadhours:best", String(score)) } catch (err) {}
@@ -292,7 +306,14 @@ function gameStep() {
   composeObjects()
   let w = weapons[weaponIdx]
   hud = { hp: Math.max(0, Math.round(hp)), ammo: ammo[weaponIdx], reserve: reserve[weaponIdx], weapon: w.name, wave: wave, kills: kills, score: score, reloading: reloadTicks > 0, best: hud.best,
-    countdown: waveState === "between" ? Math.ceil(waveTimer * TICK_MS / 1000) : 0, left: zombies.length + toSpawn }
+    countdown: waveState === "between" ? Math.ceil(waveTimer * TICK_MS / 1000) : 0, left: countAlive() + toSpawn }
+}
+
+function countAlive() {
+  let n = 0
+  let i = 0
+  while (i < zombies.length) { if (zombies[i].state !== "dead") { n = n + 1 }; i = i + 1 }
+  return n
 }
 
 function updateCamera(extraY) {
@@ -318,10 +339,6 @@ function movePlayer() {
   slide(px, pz, vx * DT, vz * DT, P_R)
   px = moveX
   pz = moveZ
-  // The yard is the whole world: past a gate there is only fog.
-  let lim = ARENA + 1.2
-  if (px > lim) { px = lim } else if (px < -lim) { px = -lim }
-  if (pz > lim) { pz = lim } else if (pz < -lim) { pz = -lim }
   if ((vx * vx + vz * vz) > 1) { bobPhase = bobPhase + 0.3 } else { bobPhase = bobPhase + 0.05 }
 }
 
@@ -344,7 +361,9 @@ function handleWeaponInput() {
 }
 
 function swapWeapon(i) {
-  if (i === weaponIdx || reloadTicks > 0) { return }
+  if (i === weaponIdx) { return }
+  // A swap mid-reload abandons the reload; the rounds stay in the box.
+  reloadTicks = 0
   weaponIdx = i
   fireCooldown = 8
   showToast(weapons[i].name)
@@ -434,8 +453,9 @@ function shootRay(ox, oy, oz, dx, dy, dz, dmg) {
   bestZ.hp = bestZ.hp - dealt
   bestZ.flash = 4
   // A hit shoves the walker back a touch and slows a runner's charge.
-  bestZ.x = bestZ.x + dx * 0.12
-  bestZ.z = bestZ.z + dz * 0.12
+  slide(bestZ.x, bestZ.z, dx * 0.12, dz * 0.12, 0.36 * bestZ.scale)
+  bestZ.x = moveX
+  bestZ.z = moveZ
   spawnPuff(ox + dx * best, oy + dy * best, oz + dz * best, "#7a1b1b", headshot ? 7 : 4)
   if (bestZ.hp <= 0) { killZombie(bestZ, headshot) }
   else { softn.audio.play("assets/sfx/hit.wav", { volume: 0.35 }) }
@@ -491,7 +511,8 @@ function spawnZombie() {
   zombies.push({
     id: nextZid, type: type, x: g.x + (myRand() - 0.5) * 2, z: g.z + (myRand() - 0.5) * 2,
     hp: t.hp * mult, speed: t.speed * (0.9 + myRand() * 0.25), scale: t.scale * (0.92 + myRand() * 0.16),
-    dir: 0, phase: myRand() * 6.28, state: "walk", flash: 0, attackTicks: 0, deadTicks: 0, groan: Math.floor(myRand() * 200), gate: gi
+    dir: 0, phase: myRand() * 6.28, state: "walk", flash: 0, attackTicks: 0, deadTicks: 0, groan: Math.floor(myRand() * 200), gate: gi,
+    side: (nextZid % 2 === 0) ? 1 : -1, stuck: 0, evade: 0
   })
   nextZid = nextZid + 1
 }
@@ -517,6 +538,7 @@ function stepZombies() {
     let tx = dx
     let tz = dz
     if (outside) {
+      z.gate = nearestGate(z.x, z.z)
       let g = gates[z.gate]
       let gx = g.x === 0 ? 0 : (g.x > 0 ? ARENA - 2 : -(ARENA - 2))
       let gz = g.z === 0 ? 0 : (g.z > 0 ? ARENA - 2 : -(ARENA - 2))
@@ -550,12 +572,29 @@ function stepZombies() {
         }
         j = j + 1
       }
-      let before = z.x
-      slide(z.x, z.z, mx * DT, mz * DT, 0.36 * z.scale)
-      // Stuck against something: sidestep around it.
-      if (Math.abs(moveX - z.x) + Math.abs(moveZ - z.z) < 0.004) {
-        let side = (z.id % 2 === 0) ? 1 : -1
-        slide(z.x, z.z, -mz / sp * side * sp * DT, mx / sp * side * sp * DT, 0.36 * z.scale)
+      let rad = 0.36 * z.scale
+      slide(z.x, z.z, mx * DT, mz * DT, rad)
+      // Progress along the way it wants to go. A wall it creeps along makes
+      // some movement but no progress, and that is being stuck too.
+      let want = Math.sqrt(mx * mx + mz * mz)
+      let prog = want > 0 ? ((moveX - z.x) * mx + (moveZ - z.z) * mz) / want : 0
+      if (z.evade > 0 || prog < want * DT * 0.3) {
+        // Sidestep, and stay with it for a while so the obstacle's edge is
+        // actually reached; when that way is blocked as well (a corner),
+        // try the other side.
+        if (z.evade <= 0) { z.evade = 24 }
+        let sx = -mz * z.side + mx * 0.3
+        let sz = mx * z.side + mz * 0.3
+        slide(z.x, z.z, sx * DT, sz * DT, rad)
+        if (Math.abs(moveX - z.x) + Math.abs(moveZ - z.z) < 0.004) {
+          z.stuck = z.stuck + 1
+          if (z.stuck > 3) { z.side = -z.side; z.stuck = 0; z.evade = 24 }
+        } else {
+          z.stuck = 0
+        }
+        z.evade = z.evade - 1
+      } else {
+        z.stuck = 0
       }
       z.x = moveX
       z.z = moveZ
@@ -579,6 +618,20 @@ function stepZombies() {
   zombies = keep
 }
 
+function nearestGate(x, z) {
+  let best = 0
+  let bestD = 1e9
+  let i = 0
+  while (i < gates.length) {
+    let dx = gates[i].x - x
+    let dz = gates[i].z - z
+    let d = dx * dx + dz * dz
+    if (d < bestD) { bestD = d; best = i }
+    i = i + 1
+  }
+  return best
+}
+
 function hurtPlayer(dmg) {
   if (gameOver || hurtTicks > 6) { return }
   hp = hp - dmg
@@ -588,7 +641,11 @@ function hurtPlayer(dmg) {
 }
 
 function checkPlayer() {
-  // Standing in a gate leaves you outside the fence with them; nudge back.
+  // The fence line is the edge of the yard: a gate is their way in, not your
+  // way out. Past it the dead spawn on top of you and the rest lose the path.
+  let lim = ARENA - 0.5
+  if (px > lim) { px = lim } else if (px < -lim) { px = -lim }
+  if (pz > lim) { pz = lim } else if (pz < -lim) { pz = -lim }
 }
 
 // ---- Pickups ----------------------------------------------------------------
@@ -597,6 +654,16 @@ function dropPickup(x, z, kind) {
   let lim = ARENA - 1
   if (x > lim) { x = lim } else if (x < -lim) { x = -lim }
   if (z > lim) { z = lim } else if (z < -lim) { z = -lim }
+  // Not inside a car or a shed, where it could never be picked up.
+  let tries = 0
+  while (circleBlocked(x, z, 0.3) && tries < 12) {
+    let ang = myRand() * Math.PI * 2
+    let r = 1.5 + tries * 0.5
+    x = Math.max(-lim, Math.min(lim, x + Math.cos(ang) * r))
+    z = Math.max(-lim, Math.min(lim, z + Math.sin(ang) * r))
+    tries = tries + 1
+  }
+  if (circleBlocked(x, z, 0.3)) { x = px; z = pz }
   pickups.push({ id: nextPid, x: x, z: z, kind: kind, age: 0 })
   nextPid = nextPid + 1
 }

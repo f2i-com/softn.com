@@ -62,6 +62,9 @@
   let resultHandName = ""
   let resultPotAmount = 0
   let resultDetails = ""
+  // The last hand's outcome, one line, kept on the table record so every
+  // peer sees it — the toast only ever showed on the host that resolved it.
+  let resultSummary = ""
   let debugHandBankrollBaseline = 0
 
   // Raise input
@@ -411,7 +414,8 @@
       smallBlind: 10,
       bigBlind: 20,
       lastFullRaise: 20,
-      lastBigBlindSeat: -1
+      lastBigBlindSeat: -1,
+      resultSummary: ""
     }
     db.create("poker_table", tableData)
 
@@ -554,11 +558,15 @@
   }
 
   function copySyncRoom() {
-    if (syncRoom) {
+    if (!syncRoom) return
+    if (typeof navigator !== "undefined" && navigator && navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(syncRoom)
       toastMessage = "Room code copied!"
       toastType = "success"
+      return
     }
+    toastMessage = "Clipboard unavailable — the code is " + syncRoom
+    toastType = "warning"
   }
 
   function buildDebugSnapshotText() {
@@ -901,9 +909,15 @@
       }
     }
 
+    // A raise size chosen on one street (or in one hand) is not the size
+    // wanted on the next; a stale one could be under the new minimum.
+    if (nextPhase !== gamePhase || nextHand !== handNumber) {
+      raiseAmount = ""
+    }
     tableId = t.id
     gamePhase = nextPhase
     handNumber = nextHand
+    resultSummary = t.data.resultSummary || ""
     dealerSeat = t.data.dealerSeat || 0
     currentTurnSeat = t.data.currentTurnSeat !== undefined ? t.data.currentTurnSeat : -1
     currentBet = t.data.currentBet || 0

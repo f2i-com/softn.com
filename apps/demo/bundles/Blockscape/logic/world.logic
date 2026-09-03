@@ -261,6 +261,12 @@ function placeTree(x, y, z, trunk) {
 // material. A block is exposed when any of its six neighbours is see-through;
 // for a see-through block (water, glass, leaves) the neighbour must also not
 // be the same kind, so a lake is a shell and not a stack of sheets.
+//
+// A cell (x, y, z) is the unit cube [x, x+1) × [y, y+1) × [z, z+1): that is
+// what the collision box, the raycast, the aim cube and the spawn all assume.
+// An instance is placed by its centre, so every block sits at the cell's
+// midpoint; a batch placed at the integer corner would draw the world half a
+// block away from where the player walks and digs.
 function buildChunk(cx, cz) {
   let opaque = []
   let tops = []
@@ -294,18 +300,22 @@ function buildChunk(cx, cz) {
           if (vis) {
             let v = ((x * 7 + y * 13 + z * 3) % 3 + 3) % 3
             // Batches without a palette take three numbers an instance.
+            let mx = x + 0.5
+            let my = y + 0.5
+            let mz = z + 0.5
             if (t === B_WATER) {
-              water.push(x, y, z)
+              // Water stands a little below the top of its cell.
+              water.push(mx, y + 0.45, mz)
             } else if (t === B_GLASS) {
-              glass.push(x, y, z)
+              glass.push(mx, my, mz)
             } else if (t === B_GLOW) {
-              glow.push(x, y, z)
+              glow.push(mx, my, mz)
             } else if (t === B_LEAVES) {
-              leaves.push(x, y, z, t * 3 + v)
+              leaves.push(mx, my, mz, t * 3 + v)
             } else {
-              opaque.push(x, y, z, t * 3 + v)
+              opaque.push(mx, my, mz, t * 3 + v)
               if (t === B_GRASS && (y === WY - 1 || OPAQUE[cells[idx + 1]] === 0)) {
-                tops.push(x, y + 0.412, z, v)
+                tops.push(mx, y + 0.912, mz, v)
               }
             }
           }
@@ -363,9 +373,11 @@ function publishStatic() {
     c = c + 1
   }
   // Bedrock: a dark plane under the world so a hole never opens onto sky.
-  out.push({ id: "bedrock", type: "plane", position: { x: WX / 2 - 0.5, y: 0.5, z: WZ / 2 - 0.5 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: WX, height: WZ, color: "#1c1f24", roughness: 1 })
-  // The sea continues past the island's edge to the fog.
-  out.push({ id: "ocean", type: "plane", position: { x: WX / 2 - 0.5, y: SEA + 0.44, z: WZ / 2 - 0.5 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 900, height: 900, color: "#2f6fd6", opacity: 0.75, roughness: 0.3, metalness: 0.2 })
+  // The y = 0 layer is never meshed; this sits just under its top face.
+  out.push({ id: "bedrock", type: "plane", position: { x: WX / 2, y: 0.98, z: WZ / 2 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: WX, height: WZ, color: "#1c1f24", roughness: 1 })
+  // The sea continues past the island's edge to the fog, level with the
+  // surface of the water cells (which stand 0.9 high in their cell).
+  out.push({ id: "ocean", type: "plane", position: { x: WX / 2, y: SEA + 0.89, z: WZ / 2 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 900, height: 900, color: "#2f6fd6", opacity: 0.75, roughness: 0.3, metalness: 0.2 })
   staticObjects = out
 }
 
@@ -499,10 +511,17 @@ function decodeWorld(text) {
   let parts = String(text).split(",")
   let i = 0
   let pos = 0
+  // Start from an empty grid, so a short or broken save cannot leave the
+  // previous island showing through the gaps.
+  while (i < cells.length) { cells[i] = 0; i = i + 1 }
+  i = 0
   while (i < parts.length && pos < cells.length) {
     let pair = parts[i].split(":")
     let t = parseInt(pair[0]) || 0
     let count = parseInt(pair[1]) || 0
+    // An id this build does not know has no solidity, no palette entry and
+    // no place in the world.
+    if (!(t >= 0 && t < B_TYPES)) { t = B_AIR }
     let k = 0
     while (k < count && pos < cells.length) {
       cells[pos] = t

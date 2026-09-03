@@ -51,6 +51,10 @@ let KICKS = [[0, 0], [-1, 0], [1, 0], [0, -1], [-2, 0], [2, 0], [0, -2]]
 
 let muted = false
 let hardDropped = false
+let newBest = false
+// When the last game ended: Space or Enter still being hammered at that
+// moment must not start the next game before the score has been seen.
+let overAt = 0
 
 function play(name, volume) {
   if (muted) { return }
@@ -68,7 +72,10 @@ function idleStep() {
   if (act === "") { return }
   window.__bfAct = ""
   if (act === "mute") { toggleMute() }
-  else if (act === "start" || (act === "hard" && !running)) { startGame() }
+  else if (act === "start" || (act === "hard" && !running)) {
+    if (over && Date.now() - overAt < 900) { return }
+    startGame()
+  }
   else if (act === "pause" && running && paused) { togglePause() }
 }
 
@@ -111,7 +118,11 @@ function _init() {
     else if (key === "ArrowRight" || key === "d" || key === "D") { k.right = false }
     else if (key === "ArrowDown" || key === "s" || key === "S") { k.down = false }
   }
-  function onBlur() { window.__bfKeys = { left: false, right: false, down: false } }
+  function onBlur() {
+    window.__bfKeys = { left: false, right: false, down: false }
+    // Losing the window mid-game is a pause, not a lost piece.
+    if (running && !paused && !over) { togglePause() }
+  }
   window.addEventListener("keydown", onKeyDown, true)
   window.addEventListener("keyup", onKeyUp, true)
   window.addEventListener("blur", onBlur)
@@ -138,16 +149,37 @@ function resetWell() {
 }
 
 function startGame() {
+  // A restart mid-game still counts the score it abandons.
+  commitBest()
   resetWell()
   score = 0
   lines = 0
   level = 1
   over = false
   paused = false
+  newBest = false
   overlayText = ""
   running = true
   spawn()
   render()
+}
+
+function commitBest() {
+  if (score > best) {
+    best = score
+    try { localStorage.setItem("blockfall:best", String(best)) } catch (err) {}
+  }
+}
+
+function endGame() {
+  over = true
+  running = false
+  paused = false
+  overAt = Date.now()
+  newBest = score > best && score > 0
+  commitBest()
+  overlayText = newBest ? ("New best · " + score) : ("Game over · " + score)
+  play("over", 0.5)
 }
 
 function togglePause() {
@@ -175,19 +207,18 @@ function spawn() {
   let kind = queue[0]
   queue = queue.slice(1)
   while (queue.length < 3) { queue.push(nextKind()) }
-  cur = { kind: kind, rot: 0, x: 3, y: kind === 0 ? -1 : 0 }
   holdUsed = false
+  placePiece(kind)
+}
+
+// Puts a piece at the top of the well — from the queue or out of the hold
+// box. A piece that overlaps the stack the moment it appears is the end.
+function placePiece(kind) {
+  cur = { kind: kind, rot: 0, x: 3, y: kind === 0 ? -1 : 0 }
   dropTimer = 0
   lockTimer = 0
   if (collides(cur.kind, cur.rot, cur.x, cur.y)) {
-    over = true
-    running = false
-    overlayText = "Game over"
-    play("over", 0.5)
-    if (score > best) {
-      best = score
-      try { localStorage.setItem("blockfall:best", String(best)) } catch (err) {}
-    }
+    endGame()
   }
 }
 
@@ -247,7 +278,7 @@ function hardDrop() {
 }
 
 function hold() {
-  if (!cur || holdUsed) { return }
+  if (!cur || holdUsed || over) { return }
   let k = cur.kind
   if (held < 0) {
     held = k
@@ -255,22 +286,31 @@ function hold() {
   } else {
     let h = held
     held = k
-    cur = { kind: h, rot: 0, x: 3, y: h === 0 ? -1 : 0 }
-    dropTimer = 0
+    // The swapped-in piece gets the same overlap check as a fresh spawn;
+    // it used to be placed blind, straight through a stack at the top.
+    placePiece(h)
   }
   holdUsed = true
 }
 
 function lockPiece() {
   let cells = SHAPES[cur.kind][cur.rot]
+  let above = false
   let i = 0
   while (i < 4) {
     let cx = cur.x + cells[i][0]
     let cy = cur.y + cells[i][1]
-    if (cy >= 0) { well[cy * COLS + cx] = cur.kind + 1 }
+    if (cy >= 0) { well[cy * COLS + cx] = cur.kind + 1 } else { above = true }
     i = i + 1
   }
   cur = null
+  if (above) {
+    // Part of the piece settled above the well: the stack has reached the
+    // top. Those cells used to vanish silently, leaving a three-cell piece.
+    hardDropped = false
+    endGame()
+    return
+  }
   // Full rows flash before they fall.
   let full = []
   let r = 0
@@ -325,6 +365,13 @@ function dropInterval() {
 function gameStep() {
   if (!running || paused || over) { return }
   if (clearTicks > 0) {
+    // Rows are flashing. Pause and mute act at once; a hard drop pressed now
+    // is thrown away rather than slamming down a piece nobody has seen yet.
+    // Anything else stays buffered for the next piece.
+    let flashAct = window.__bfAct
+    if (flashAct === "pause") { window.__bfAct = ""; togglePause(); render(); return }
+    if (flashAct === "mute") { window.__bfAct = ""; toggleMute() }
+    if (flashAct === "hard") { window.__bfAct = "" }
     clearTicks = clearTicks - 1
     if (clearTicks === 0) { finishClear() }
     render()

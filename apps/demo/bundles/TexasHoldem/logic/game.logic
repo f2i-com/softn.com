@@ -27,7 +27,8 @@
         smallBlind: 10,
         bigBlind: 20,
         lastFullRaise: 20,
-        lastBigBlindSeat: -1
+        lastBigBlindSeat: -1,
+        resultSummary: ""
       }
       db.create("poker_table", tableData)
       tableRec = getFreshTableRecord()
@@ -186,7 +187,8 @@
       pot: 0,
       deck: newDeck,
       deckPosition: dp,
-      communityCards: []
+      communityCards: [],
+      resultSummary: ""
     })
 
     // Post blinds
@@ -561,7 +563,7 @@
         toastMessage = fallbackWinner.data.name + " wins $" + totalPot + " (Awarded)"
         toastType = "success"
       }
-      db.update(tableId, { gamePhase: TableStateClass.phaseShowdown(), currentTurnSeat: -1, currentBet: 0, showdownStartedAtMs: Date.now() })
+      db.update(tableId, { gamePhase: TableStateClass.phaseShowdown(), currentTurnSeat: -1, currentBet: 0, showdownStartedAtMs: Date.now(), resultSummary: toastMessage })
       return
     }
 
@@ -761,11 +763,22 @@
     }
     toastType = "success"
 
+    // A short line for the table's status bar, on every peer's screen.
+    let summary = mainWinnerNames + (mainWinnerNames.indexOf(",") >= 0 ? " split $" : " wins $") + displayMainPot + " · " + handRankName(winningRank)
+    if (sidePotCount > 0) {
+      if (sidePotSummary) {
+        summary = summary + " · side " + sidePotSummary
+      } else {
+        summary = summary + " · " + sidePotCount + " side pot" + (sidePotCount > 1 ? "s" : "")
+      }
+    }
+
     db.update(tableId, {
       gamePhase: TableStateClass.phaseShowdown(),
       currentTurnSeat: -1,
       currentBet: 0,
-      showdownStartedAtMs: Date.now()
+      showdownStartedAtMs: Date.now(),
+      resultSummary: summary
     })
   }
 
@@ -796,7 +809,8 @@
       gamePhase: TableStateClass.phaseShowdown(),
       currentTurnSeat: -1,
       currentBet: 0,
-      showdownStartedAtMs: Date.now()
+      showdownStartedAtMs: Date.now(),
+      resultSummary: winner.data.name + " wins $" + totalPot + " · everyone else folded"
     })
   }
 
@@ -821,13 +835,18 @@
     // Re-read fresh table ID
     let resetTable = getFreshTableRecord()
     if (!resetTable) return
-    // Emergency reset: return all bets to players, reset table to waiting
+    // Emergency reset: return all bets to players, reset table to waiting.
+    // Only a hand still being played has money to give back: at showdown the
+    // pot has already been paid out, and refunding the contributions again
+    // would mint chips.
+    let resetPhase = resetTable.data.gamePhase || TableStateClass.phaseWaiting()
+    let refundBets = TableStateClass.isLiveHandPhase(resetPhase)
     let allP = db.query("poker_players")
     let fri = 0
     while (fri < allP.length) {
       if (allP[fri].data) {
         db.update(allP[fri].id, {
-          chips: allP[fri].data.chips + (allP[fri].data.handContribution || 0),
+          chips: allP[fri].data.chips + (refundBets ? (allP[fri].data.handContribution || 0) : 0),
           bet: 0,
           handContribution: 0,
           holeCards: [],
@@ -848,7 +867,8 @@
       communityCards: [],
       deck: [],
       deckPosition: 0,
-      lastBigBlindSeat: -1
+      lastBigBlindSeat: -1,
+      resultSummary: ""
     })
     showResultsModal = false
     myHandName = ""
