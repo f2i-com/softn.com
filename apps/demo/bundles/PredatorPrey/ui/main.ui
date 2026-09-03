@@ -177,6 +177,8 @@
       <!-- Camera Mode Selector -->
       <Box className="pp-row">
         <Button size="xs" variant={cameraMode === "overview" ? "primary" : "secondary"} @click={() => setCameraView("overview")}>Reserve</Button>
+        <Button size="xs" variant={cameraMode === "lake" ? "primary" : "secondary"} @click={() => setCameraView("lake")}>💧 Lake</Button>
+        <Button size="xs" variant={cameraMode === "forest" ? "primary" : "secondary"} @click={() => setCameraView("forest")}>🌲 Forest</Button>
         <Button size="xs" variant={cameraMode === "topdown" ? "primary" : "secondary"} @click={() => setCameraView("topdown")}>Top Map</Button>
         <Button size="xs" variant={cameraMode === "cinematic" ? "primary" : "secondary"} @click={() => setCameraView("cinematic")}>Cinematic</Button>
       </Box>

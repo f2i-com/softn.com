@@ -1,4 +1,5 @@
 // Predator-Prey Sustainable Ecosystem 3D Simulation Logic
+// Free-roaming, natural open reserve with central watering hole and smooth steering
 
 // Simulation State
 let isRunning = true;
@@ -15,7 +16,7 @@ let selectedEntity = null;
 let inspectorOpen = false;
 
 // Camera State
-let cameraMode = "overview"; // "overview", "topdown", "follow", "cinematic"
+let cameraMode = "overview"; // "overview", "lake", "forest", "topdown", "follow", "cinematic"
 let cameraPos = { x: 0, y: 26.0, z: 28.0 };
 let cameraLookAt = { x: 0, y: 0.5, z: 0 };
 let cameraFov = 46;
@@ -35,10 +36,10 @@ let totalPreyBorn = 0;
 let totalPredBorn = 0;
 let totalHunts = 0;
 
-// Pre-computed visual sparkline bars (14 columns)
-let sparkPreyBars = [30, 35, 40, 38, 42, 45, 41, 37, 34, 38, 42, 44, 40, 38];
-let sparkFoxBars = [20, 22, 25, 28, 30, 27, 24, 21, 18, 22, 26, 28, 25, 24];
-let sparkGrassBars = [60, 58, 55, 52, 50, 54, 58, 62, 65, 61, 57, 54, 56, 58];
+// Pre-computed visual sparkline bars (16 columns)
+let sparkPreyBars = [32, 35, 40, 38, 42, 45, 41, 37, 34, 38, 42, 44, 40, 38, 36, 39];
+let sparkFoxBars = [20, 22, 25, 28, 30, 27, 24, 21, 18, 22, 26, 28, 25, 24, 22, 25];
+let sparkGrassBars = [65, 62, 58, 55, 52, 56, 60, 64, 67, 63, 59, 56, 58, 62, 65, 68];
 
 // Dynamic Scene collections
 let objects = [];
@@ -47,21 +48,25 @@ let lights = [];
 // Expanded World Bounds: 42.0 x 42.0 Floating Biome Island (-19.0 to +19.0)
 const BOUNDS = 18.5;
 
-// River geometry: curved river running diagonally across the island
-function isRiver(x, z) {
-  let riverCenterZ = x * 0.45 - 2.5;
-  let distToCenter = Math.abs(z - riverCenterZ);
-  // Footbridge allows crossing at x = 0
-  let isBridge = Math.abs(x) < 2.0 && Math.abs(z - (-2.5)) < 1.6;
-  if (isBridge) return false;
-  return distToCenter < 2.2;
+// Central Serene Lake / Watering Hole (Open circular pond - easy 360° shoreline access)
+const LAKE_X = 2.5;
+const LAKE_Z = -2.0;
+const LAKE_RADIUS = 4.2;
+
+function isInsideLake(x, z) {
+  return Math.hypot(x - LAKE_X, z - LAKE_Z) < LAKE_RADIUS;
 }
 
-// Forest cover detection (Refuges where rabbits are harder to hunt)
+function isNearLakeShore(x, z) {
+  let d = Math.hypot(x - LAKE_X, z - LAKE_Z);
+  return d >= LAKE_RADIUS && d < LAKE_RADIUS + 2.0;
+}
+
+// Forest cover detection (Refuges where rabbits have high concealment)
 function hasForestCover(x, z) {
   // Pine forest in North-West
   let nwForest = x < -6.0 && z < -5.0;
-  // Oak grove in South-East
+  // Oak & birch grove in South-East
   let seGrove = x > 6.0 && z > 5.0;
   // Rocky crags in South-West
   let swRocks = x < -7.0 && z > 6.0;
@@ -75,12 +80,25 @@ function genId(prefix) {
   return id;
 }
 
-// Build 3D Static Scenery (Expanded 42x42 Floating Island Meadow Reserve)
+// Angle interpolation helper for smooth turning
+function lerpAngle(cur, target, t) {
+  let diff = target - cur;
+  while (diff < -Math.PI) diff = diff + Math.PI * 2;
+  while (diff > Math.PI) diff = diff - Math.PI * 2;
+  return cur + diff * t;
+}
+
+// Distance helper
+function dist(x1, z1, x2, z2) {
+  return Math.hypot(x1 - x2, z1 - z2);
+}
+
+// Build 3D Static Scenery (Expanded 42x42 Floating Island with Central Lake & Groves)
 function buildStaticMeadow() {
   let list = [];
 
-  // 1. Layered Floating Island Deck
-  // Top Meadow Turf (Lush green deck with natural bevel)
+  // 1. Floating Island Terrain Base
+  // Lush Meadow Turf Deck
   list.push({
     id: "meadow-turf",
     type: "box",
@@ -92,7 +110,7 @@ function buildStaticMeadow() {
     receiveShadow: true,
     roughness: 0.9
   });
-  // Rich Earth Strata
+  // Rich Soil Strata
   list.push({
     id: "meadow-earth",
     type: "box",
@@ -103,7 +121,7 @@ function buildStaticMeadow() {
     color: "#78350f",
     roughness: 0.95
   });
-  // Dark Bedrock Cliffs
+  // Slate Bedrock Cliffs
   list.push({
     id: "meadow-bedrock",
     type: "box",
@@ -115,96 +133,97 @@ function buildStaticMeadow() {
     roughness: 0.8
   });
 
-  // 2. Winding River Water Channel
+  // 2. Central Natural Lake / Watering Hole
+  // Shoreline Sand & Pebble Ring
   list.push({
-    id: "river-water",
-    type: "box",
-    width: 44.0,
-    height: 0.12,
-    depth: 4.2,
-    position: { x: 0, y: 0.54, z: -2.5 },
-    rotation: { x: 0, y: -0.42, z: 0 },
+    id: "lake-shore",
+    type: "cylinder",
+    radius: LAKE_RADIUS + 0.9,
+    height: 0.05,
+    position: { x: LAKE_X, y: 0.605, z: LAKE_Z },
+    color: "#d97706",
+    roughness: 0.95
+  });
+  // Azure Lake Water
+  list.push({
+    id: "lake-water",
+    type: "cylinder",
+    radius: LAKE_RADIUS,
+    height: 0.08,
+    position: { x: LAKE_X, y: 0.61, z: LAKE_Z },
     color: "#0284c7",
     opacity: 0.88,
     metalness: 0.35,
     roughness: 0.1
   });
 
-  // Timber Footbridge across the river at the center
-  list.push({
-    id: "bridge-deck",
-    type: "box",
-    width: 3.2,
-    height: 0.15,
-    depth: 4.8,
-    position: { x: 0, y: 0.68, z: -2.5 },
-    color: "#92400e",
-    castShadow: true,
-    receiveShadow: true
-  });
-  // Bridge handrails
-  list.push({
-    id: "bridge-rail-l",
-    type: "box",
-    width: 0.1,
-    height: 0.5,
-    depth: 4.8,
-    position: { x: -1.5, y: 0.95, z: -2.5 },
-    color: "#78350f"
-  });
-  list.push({
-    id: "bridge-rail-r",
-    type: "box",
-    width: 0.1,
-    height: 0.5,
-    depth: 4.8,
-    position: { x: 1.5, y: 0.95, z: -2.5 },
-    color: "#78350f"
-  });
-
-  // Floating Lily Pads on river
+  // Floating Water Lilies
   let lilypads = [
-    { x: -7.5, z: -6.2 },
-    { x: -5.8, z: -5.0 },
-    { x: 5.5, z: -0.2 },
-    { x: 8.2, z: 1.2 }
+    { x: LAKE_X - 1.5, z: LAKE_Z - 1.2 },
+    { x: LAKE_X + 1.8, z: LAKE_Z + 1.0 },
+    { x: LAKE_X - 0.8, z: LAKE_Z + 1.8 },
+    { x: LAKE_X + 1.2, z: LAKE_Z - 1.9 }
   ];
   for (let l = 0; l < lilypads.length; l = l + 1) {
     list.push({
       id: "lilypad-" + l,
       type: "cylinder",
-      radius: 0.35,
+      radius: 0.38,
       height: 0.04,
-      position: { x: lilypads[l].x, y: 0.62, z: lilypads[l].z },
+      position: { x: lilypads[l].x, y: 0.66, z: lilypads[l].z },
       color: "#22c55e"
     });
     list.push({
       id: "lilypad-flower-" + l,
       type: "sphere",
-      radius: 0.09,
-      position: { x: lilypads[l].x, y: 0.66, z: lilypads[l].z },
+      radius: 0.10,
+      position: { x: lilypads[l].x, y: 0.70, z: lilypads[l].z },
       color: "#ffffff"
     });
   }
 
-  // 3. Dense Pine Forest (North-West) & Deciduous Groves (South-East)
-  let treeList = [
-    // NW Pine Forest (Prey refuge)
-    { x: -14.5, z: -13.5, type: "pine", scale: 1.2 },
-    { x: -11.0, z: -15.2, type: "pine", scale: 1.4 },
-    { x: -15.2, z: -10.0, type: "pine", scale: 1.1 },
-    { x: -10.5, z: -9.5, type: "pine", scale: 1.3 },
-    { x: -8.0, z: -13.0, type: "pine", scale: 1.0 },
-    { x: -13.0, z: -6.5, type: "pine", scale: 1.1 },
+  // 3. Sandy Winding Nature Trails (Decorative Paths connecting biomes)
+  let pathStrips = [
+    { x: -5.0, z: 0, w: 1.2, d: 14.0, rot: 0.3 },
+    { x: 7.0, z: 4.0, w: 1.2, d: 16.0, rot: -0.4 },
+    { x: -2.0, z: -8.0, w: 1.2, d: 12.0, rot: 0.8 }
+  ];
+  for (let p = 0; p < pathStrips.length; p = p + 1) {
+    list.push({
+      id: "trail-" + p,
+      type: "box",
+      width: pathStrips[p].w,
+      height: 0.03,
+      depth: pathStrips[p].d,
+      position: { x: pathStrips[p].x, y: 0.605, z: pathStrips[p].z },
+      rotation: { x: 0, y: pathStrips[p].rot, z: 0 },
+      color: "#b45309",
+      roughness: 0.95
+    });
+  }
 
-    // SE Oak Grove (Prey refuge)
+  // 4. Diverse Natural Forests & Tree Groves
+  let treeList = [
+    // North-West Pine Forest (Tall Conifers)
+    { x: -14.5, z: -13.5, type: "pine", scale: 1.3 },
+    { x: -11.0, z: -15.2, type: "pine", scale: 1.4 },
+    { x: -15.5, z: -9.5, type: "pine", scale: 1.1 },
+    { x: -10.5, z: -9.0, type: "pine", scale: 1.3 },
+    { x: -8.0, z: -13.5, type: "pine", scale: 1.0 },
+    { x: -13.0, z: -6.0, type: "pine", scale: 1.1 },
+
+    // South-East Deciduous Oak & Birch Grove
     { x: 12.0, z: 12.5, type: "oak", scale: 1.3 },
     { x: 15.5, z: 10.2, type: "oak", scale: 1.2 },
     { x: 11.2, z: 15.8, type: "oak", scale: 1.4 },
     { x: 8.5, z: 13.0, type: "oak", scale: 1.1 },
-    { x: 14.0, z: 7.5, type: "oak", scale: 1.0 },
+    { x: 14.5, z: 7.0, type: "oak", scale: 1.0 },
 
-    // Perimeter Border Trees
+    // Lakeside Weeping Willow
+    { x: LAKE_X - 4.8, z: LAKE_Z - 1.0, type: "willow", scale: 1.25 },
+    { x: LAKE_X + 4.6, z: LAKE_Z + 1.2, type: "willow", scale: 1.2 },
+
+    // Perimeter Trees
     { x: -17.5, z: 0, type: "pine", scale: 1.2 },
     { x: 17.5, z: -5.0, type: "pine", scale: 1.3 },
     { x: 0, z: 17.5, type: "oak", scale: 1.2 },
@@ -243,6 +262,15 @@ function buildStaticMeadow() {
         color: "#166534",
         castShadow: true
       });
+    } else if (tr.type === "willow") {
+      list.push({
+        id: "tree-willow-" + t,
+        type: "sphere",
+        radius: 1.6 * tr.scale,
+        position: { x: tr.x, y: 0.6 + 2.5 * tr.scale, z: tr.z },
+        color: "#16a34a",
+        castShadow: true
+      });
     } else {
       list.push({
         id: "tree-foliage-" + t,
@@ -255,14 +283,15 @@ function buildStaticMeadow() {
     }
   }
 
-  // 4. Mossy Granite Boulder Outcrops (South-West Rocky Refuge)
+  // 5. Granite Mossy Boulders
   let boulders = [
     { x: -12.5, z: 11.5, r: 1.2 },
     { x: -11.0, z: 13.2, r: 0.85 },
     { x: -14.0, z: 9.8, r: 0.95 },
-    { x: 7.5, z: -10.5, r: 1.1 },
-    { x: 9.0, z: -9.0, r: 0.75 },
-    { x: -3.5, z: 7.5, r: 0.8 }
+    { x: LAKE_X + 4.2, z: LAKE_Z - 2.8, r: 0.75 },
+    { x: LAKE_X - 3.8, z: LAKE_Z + 2.6, r: 0.65 },
+    { x: 8.0, z: -10.5, r: 1.1 },
+    { x: -4.0, z: 8.0, r: 0.85 }
   ];
   for (let b = 0; b < boulders.length; b = b + 1) {
     list.push({
@@ -276,24 +305,24 @@ function buildStaticMeadow() {
     });
   }
 
-  // 5. Wooden Perimeter Fence Posts around Island Edge
-  let fenceSpacing = 3.5;
+  // 6. Perimeter Wooden Fence Posts around Island Rim
+  let fenceSpacing = 4.0;
   let fCount = 0;
   for (let x = -BOUNDS; x <= BOUNDS; x = x + fenceSpacing) {
     list.push({
       id: "fence-n-" + fCount,
       type: "cylinder",
       radius: 0.08,
-      height: 0.8,
-      position: { x: x, y: 0.9, z: -BOUNDS },
+      height: 0.85,
+      position: { x: x, y: 0.95, z: -BOUNDS },
       color: "#78350f"
     });
     list.push({
       id: "fence-s-" + fCount,
       type: "cylinder",
       radius: 0.08,
-      height: 0.8,
-      position: { x: x, y: 0.9, z: BOUNDS },
+      height: 0.85,
+      position: { x: x, y: 0.95, z: BOUNDS },
       color: "#78350f"
     });
     fCount = fCount + 1;
@@ -304,12 +333,12 @@ function buildStaticMeadow() {
 
 const staticObjects = buildStaticMeadow();
 
-// Spawn Rabbit
+// Spawn Rabbit (Prey)
 function addRabbit(x, z, initialEnergy) {
   let posX = x !== undefined ? x : (Math.random() - 0.5) * BOUNDS * 1.8;
   let posZ = z !== undefined ? z : (Math.random() - 0.5) * BOUNDS * 1.8;
-  if (isRiver(posX, posZ)) {
-    posX = posX + 3.0;
+  if (isInsideLake(posX, posZ)) {
+    posX = posX + (posX > LAKE_X ? LAKE_RADIUS : -LAKE_RADIUS);
   }
   let id = genId("prey");
   rabbits.push({
@@ -325,19 +354,19 @@ function addRabbit(x, z, initialEnergy) {
     maxEnergy: 55,
     age: 0,
     maxAge: 1600 + Math.floor(Math.random() * 400),
-    state: "Wandering",
+    state: "Wandering", // Wandering, Grazing, Drinking, Fleeing
     hopPhase: Math.random() * Math.PI * 2,
     offspringCount: 0
   });
   rabbitCount = rabbits.length;
 }
 
-// Spawn Fox
+// Spawn Fox (Predator)
 function addFox(x, z, initialEnergy) {
   let posX = x !== undefined ? x : (Math.random() - 0.5) * BOUNDS * 1.8;
   let posZ = z !== undefined ? z : (Math.random() - 0.5) * BOUNDS * 1.8;
-  if (isRiver(posX, posZ)) {
-    posX = posX - 3.0;
+  if (isInsideLake(posX, posZ)) {
+    posX = posX - (posX > LAKE_X ? LAKE_RADIUS : -LAKE_RADIUS);
   }
   let id = genId("pred");
   foxes.push({
@@ -353,7 +382,7 @@ function addFox(x, z, initialEnergy) {
     maxEnergy: 80,
     age: 0,
     maxAge: 2200 + Math.floor(Math.random() * 600),
-    state: "Stalking",
+    state: "Stalking", // Stalking, Chasing, Satiated, Drinking
     runPhase: Math.random() * Math.PI * 2,
     targetId: null,
     catchCount: 0,
@@ -363,15 +392,15 @@ function addFox(x, z, initialEnergy) {
   foxCount = foxes.length;
 }
 
-// Initialize 110 Grass Patches across the vast 42x42 Meadow
+// Initialize 115 Grass Patches across the entire 42x42 Meadow
 function initGrassGrid() {
   grassList = [];
-  let numPatches = 110;
+  let numPatches = 115;
   for (let i = 0; i < numPatches; i = i + 1) {
     let gx = (Math.random() - 0.5) * BOUNDS * 1.9;
     let gz = (Math.random() - 0.5) * BOUNDS * 1.9;
-    if (isRiver(gx, gz)) {
-      gx = gx + 3.2;
+    if (isInsideLake(gx, gz)) {
+      gx = gx + (gx > LAKE_X ? LAKE_RADIUS + 1.0 : -(LAKE_RADIUS + 1.0));
     }
     grassList.push({
       id: "grass-" + i,
@@ -419,7 +448,7 @@ function updateParticles() {
   particlePuffs = kept;
 }
 
-// Reset Ecosystem Scenarios
+// Reset Scenarios
 function resetScenario(type) {
   rabbits = [];
   foxes = [];
@@ -432,28 +461,21 @@ function resetScenario(type) {
   initGrassGrid();
 
   if (type === "rabbit_boom") {
-    // Prey explosion scenario
     for (let i = 0; i < 50; i = i + 1) addRabbit();
     for (let i = 0; i < 3; i = i + 1) addFox();
   } else if (type === "predator_pack") {
-    // Apex pack scenario
     for (let i = 0; i < 28; i = i + 1) addRabbit();
     for (let i = 0; i < 16; i = i + 1) addFox();
   } else if (type === "sparse") {
-    // Sparse survival scenario
     for (let i = 0; i < 18; i = i + 1) addRabbit();
     for (let i = 0; i < 4; i = i + 1) addFox();
   } else {
-    // Perfectly Balanced Dynamic Equilibrium Scenario
+    // Perfectly Balanced Dynamic Equilibrium
     for (let i = 0; i < 36; i = i + 1) addRabbit();
     for (let i = 0; i < 8; i = i + 1) addFox();
   }
 
   updateStats();
-}
-
-function dist(x1, z1, x2, z2) {
-  return Math.hypot(x1 - x2, z1 - z2);
 }
 
 // Sustainable Ecosystem Physics & Agent AI Step
@@ -470,10 +492,9 @@ function updateEcosystem(delta) {
   for (let g = 0; g < grassList.length; g = g + 1) {
     let grass = grassList[g];
     if (grass.nutrition < grass.maxNutrition) {
-      // Regrowth speed modulated by season
       let regrowSpeed = season === "Spring" ? 1.4 : (season === "Winter" ? 0.35 : 1.0);
       grass.regrowTimer = grass.regrowTimer + delta * regrowSpeed;
-      if (grass.regrowTimer > 5.5) {
+      if (grass.regrowTimer > 5.2) {
         grass.nutrition = grass.nutrition + 1;
         grass.regrowTimer = 0;
       }
@@ -493,17 +514,15 @@ function updateEcosystem(delta) {
     rab.hopPhase = rab.hopPhase + delta * (isFleeing ? 13.0 : 7.0);
     rab.y = 0.62 + Math.abs(Math.sin(rab.hopPhase)) * (isFleeing ? 0.28 : 0.16);
 
-    // Forest cover reduces threat exposure
     let inCover = hasForestCover(rab.x, rab.z);
 
-    // Find nearest predator (Threat Detection)
+    // Threat Detection (Reduced detection in forest cover)
     let nearestFox = null;
-    let detectionRadius = inCover ? 3.5 : 6.8; // Cover protects prey!
+    let detectionRadius = inCover ? 3.8 : 7.2;
     let minFoxDist = detectionRadius;
 
     for (let f = 0; f < foxes.length; f = f + 1) {
       let fox = foxes[f];
-      // Satiated foxes resting don't trigger extreme panic
       if (fox.satiatedTicks <= 0) {
         let d = dist(rab.x, rab.z, fox.x, fox.z);
         if (d < minFoxDist) {
@@ -514,7 +533,7 @@ function updateEcosystem(delta) {
     }
 
     if (nearestFox) {
-      // FLEE! Sprint directly away from predator
+      // FLEE: Sprint away from predator
       rab.state = "Fleeing";
       let dx = rab.x - nearestFox.x;
       let dz = rab.z - nearestFox.z;
@@ -522,12 +541,13 @@ function updateEcosystem(delta) {
       let sprintSpeed = 0.155;
       rab.vx = (dx / len) * sprintSpeed;
       rab.vz = (dz / len) * sprintSpeed;
-      rab.rot = Math.atan2(rab.vx, rab.vz);
+      let targetRot = Math.atan2(rab.vx, rab.vz);
+      rab.rot = lerpAngle(rab.rot, targetRot, 0.22);
       rab.energy = rab.energy - 0.065 * delta * 30;
     } else {
-      // SAFE: Seek Grass or Wander
+      // SAFE: Look for Grass or Watering Hole
       let nearestGrass = null;
-      let minGrassDist = 8.5;
+      let minGrassDist = 9.0;
       for (let g = 0; g < grassList.length; g = g + 1) {
         if (grassList[g].nutrition > 0) {
           let d = dist(rab.x, rab.z, grassList[g].x, grassList[g].z);
@@ -544,7 +564,7 @@ function updateEcosystem(delta) {
         let dz = nearestGrass.z - rab.z;
         let len = Math.hypot(dx, dz) || 1;
         if (len < 0.6) {
-          // Nibble grass
+          // Nibble Grass
           rab.energy = Math.min(rab.maxEnergy, rab.energy + 12.0);
           nearestGrass.nutrition = nearestGrass.nutrition - 1;
           spawnPuff(rab.x, rab.y, rab.z, "#22c55e", 4);
@@ -554,37 +574,62 @@ function updateEcosystem(delta) {
           let wanderSpeed = 0.075;
           rab.vx = (dx / len) * wanderSpeed;
           rab.vz = (dz / len) * wanderSpeed;
-          rab.rot = Math.atan2(rab.vx, rab.vz);
+          let targetRot = Math.atan2(rab.vx, rab.vz);
+          rab.rot = lerpAngle(rab.rot, targetRot, 0.16);
         }
+      } else if (isNearLakeShore(rab.x, rab.z) && Math.random() < 0.1) {
+        // Drinking at lake shore
+        rab.state = "Drinking";
+        rab.energy = Math.min(rab.maxEnergy, rab.energy + 2.0);
+        rab.vx = 0;
+        rab.vz = 0;
       } else {
         rab.state = "Wandering";
         if (Math.random() < 0.04) {
-          rab.rot = rab.rot + (Math.random() - 0.5) * 1.4;
+          let targetRot = rab.rot + (Math.random() - 0.5) * 1.4;
           let speed = 0.042;
-          rab.vx = Math.sin(rab.rot) * speed;
-          rab.vz = Math.cos(rab.rot) * speed;
+          rab.vx = Math.sin(targetRot) * speed;
+          rab.vz = Math.cos(targetRot) * speed;
+          rab.rot = lerpAngle(rab.rot, targetRot, 0.15);
         }
       }
       rab.energy = rab.energy - 0.028 * delta * 30;
+    }
+
+    // Soft Herd Separation (Avoid overlapping same species)
+    for (let o = 0; o < rabbits.length; o = o + 1) {
+      if (o !== r) {
+        let od = dist(rab.x, rab.z, rabbits[o].x, rabbits[o].z);
+        if (od < 0.65 && od > 0.01) {
+          let push = 0.015 * (0.65 - od);
+          rab.vx = rab.vx + ((rab.x - rabbits[o].x) / od) * push;
+          rab.vz = rab.vz + ((rab.z - rabbits[o].z) / od) * push;
+        }
+      }
     }
 
     // Apply Velocity
     rab.x = rab.x + rab.vx;
     rab.z = rab.z + rab.vz;
 
-    // Meadow Bounds
+    // Soft Meadow Boundaries (Smooth steering away from edges)
     if (rab.x > BOUNDS) { rab.x = BOUNDS; rab.vx = -Math.abs(rab.vx); }
     if (rab.x < -BOUNDS) { rab.x = -BOUNDS; rab.vx = Math.abs(rab.vx); }
     if (rab.z > BOUNDS) { rab.z = BOUNDS; rab.vz = -Math.abs(rab.vz); }
     if (rab.z < -BOUNDS) { rab.z = -BOUNDS; rab.vz = Math.abs(rab.vz); }
 
-    // River avoidance (except bridge at x = 0)
-    if (isRiver(rab.x, rab.z)) {
-      rab.z = rab.z + (rab.z > -2.5 ? 0.3 : -0.3);
-      rab.vz = -rab.vz;
+    // Lake Shore Boundary: Smooth circular avoidance (No getting stuck!)
+    let distLake = Math.hypot(rab.x - LAKE_X, rab.z - LAKE_Z);
+    if (distLake < LAKE_RADIUS) {
+      let angleFromCenter = Math.atan2(rab.z - LAKE_Z, rab.x - LAKE_X);
+      rab.x = LAKE_X + Math.cos(angleFromCenter) * (LAKE_RADIUS + 0.15);
+      rab.z = LAKE_Z + Math.sin(angleFromCenter) * (LAKE_RADIUS + 0.15);
+      rab.vx = Math.cos(angleFromCenter) * 0.04;
+      rab.vz = Math.sin(angleFromCenter) * 0.04;
+      rab.rot = lerpAngle(rab.rot, angleFromCenter, 0.3);
     }
 
-    // Self-Balancing Reproduction (Logistic carrying capacity)
+    // Reproduction
     if (rab.energy > 44 && rab.age > 90 && rabbits.length < 75) {
       rab.energy = rab.energy - 18;
       rab.offspringCount = rab.offspringCount + 1;
@@ -622,7 +667,7 @@ function updateEcosystem(delta) {
   }
   rabbits = survivingRabbits;
 
-  // 3. Foxes (Predators) AI, Hunting & Satiation
+  // 3. Foxes (Predators) AI, Stalking, Chasing & Satiation
   let survivingFoxes = [];
   let newFoxes = [];
   let eatenRabbitIds = {};
@@ -631,31 +676,31 @@ function updateEcosystem(delta) {
     let fox = foxes[f];
     fox.age = fox.age + 1;
 
-    // Satiation timer (After eating, fox rests and digests before hunting again)
+    // Satiation timer (After catching prey, rest and digest)
     if (fox.satiatedTicks > 0) {
       fox.satiatedTicks = fox.satiatedTicks - 1;
       fox.state = "Satiated";
-      fox.runPhase = fox.runPhase + delta * 3.0;
-      // Gentle strolling
+      fox.runPhase = fox.runPhase + delta * 2.8;
+      // Strolling leisurely
       if (Math.random() < 0.03) {
-        fox.rot = fox.rot + (Math.random() - 0.5) * 0.8;
+        let targetRot = fox.rot + (Math.random() - 0.5) * 0.8;
         let speed = 0.035;
-        fox.vx = Math.sin(fox.rot) * speed;
-        fox.vz = Math.cos(fox.rot) * speed;
+        fox.vx = Math.sin(targetRot) * speed;
+        fox.vz = Math.cos(targetRot) * speed;
+        fox.rot = lerpAngle(fox.rot, targetRot, 0.12);
       }
       fox.energy = fox.energy - 0.025 * delta * 30;
     } else {
-      fox.runPhase = fox.runPhase + delta * (fox.state === "Hunting" ? 11.0 : 5.5);
+      fox.runPhase = fox.runPhase + delta * (fox.state === "Chasing" ? 11.5 : 5.5);
 
-      // Search for prey in sight
+      // Search for prey
       let nearestRab = null;
-      let minRabDist = 9.5;
+      let minRabDist = 10.0;
       for (let r = 0; r < rabbits.length; r = r + 1) {
         let rab = rabbits[r];
         if (!eatenRabbitIds[rab.id]) {
           let inCover = hasForestCover(rab.x, rab.z);
-          // Forest cover reduces predator detection distance
-          let effectiveVision = inCover ? 4.8 : minRabDist;
+          let effectiveVision = inCover ? 5.0 : minRabDist;
           let d = dist(fox.x, fox.z, rab.x, rab.z);
           if (d < effectiveVision) {
             minRabDist = d;
@@ -665,41 +710,71 @@ function updateEcosystem(delta) {
       }
 
       if (nearestRab) {
-        // HUNT!
-        fox.state = "Hunting";
-        fox.targetId = nearestRab.id;
         let dx = nearestRab.x - fox.x;
         let dz = nearestRab.z - fox.z;
         let len = Math.hypot(dx, dz) || 1;
 
-        if (len < 0.72) {
-          // CATCH PREY!
+        if (len < 0.75) {
+          // CATCH PREY: Pounce!
           eatenRabbitIds[nearestRab.id] = true;
           fox.energy = Math.min(fox.maxEnergy, fox.energy + 32.0);
           fox.catchCount = fox.catchCount + 1;
           totalHunts = totalHunts + 1;
-          fox.satiatedTicks = 75; // 2.5 seconds resting cooldown
+          fox.satiatedTicks = 85; // ~2.8 seconds resting cooldown
           fox.state = "Satiated";
           spawnPuff(nearestRab.x, nearestRab.y + 0.3, nearestRab.z, "#fb923c", 9);
           fox.vx = 0;
           fox.vz = 0;
+        } else if (len < 4.5) {
+          // CHASING: Full sprint towards prey
+          fox.state = "Chasing";
+          fox.targetId = nearestRab.id;
+          let sprintSpeed = 0.142;
+          fox.vx = (dx / len) * sprintSpeed;
+          fox.vz = (dz / len) * sprintSpeed;
+          let targetRot = Math.atan2(fox.vx, fox.vz);
+          fox.rot = lerpAngle(fox.rot, targetRot, 0.22);
+          fox.energy = fox.energy - 0.075 * delta * 30;
         } else {
-          let chaseSpeed = 0.138;
-          fox.vx = (dx / len) * chaseSpeed;
-          fox.vz = (dz / len) * chaseSpeed;
-          fox.rot = Math.atan2(fox.vx, fox.vz);
+          // STALKING: Creep closer quietly
+          fox.state = "Stalking";
+          fox.targetId = nearestRab.id;
+          let stalkSpeed = 0.065;
+          fox.vx = (dx / len) * stalkSpeed;
+          fox.vz = (dz / len) * stalkSpeed;
+          let targetRot = Math.atan2(fox.vx, fox.vz);
+          fox.rot = lerpAngle(fox.rot, targetRot, 0.15);
+          fox.energy = fox.energy - 0.040 * delta * 30;
         }
-        fox.energy = fox.energy - 0.075 * delta * 30;
+      } else if (isNearLakeShore(fox.x, fox.z) && Math.random() < 0.08) {
+        // Drinking at lake
+        fox.state = "Drinking";
+        fox.energy = Math.min(fox.maxEnergy, fox.energy + 1.5);
+        fox.vx = 0;
+        fox.vz = 0;
       } else {
-        // Stalking / Wandering
+        // Wandering / patrolling
         fox.state = "Stalking";
         if (Math.random() < 0.035) {
-          fox.rot = fox.rot + (Math.random() - 0.5) * 1.1;
+          let targetRot = fox.rot + (Math.random() - 0.5) * 1.1;
           let speed = 0.052;
-          fox.vx = Math.sin(fox.rot) * speed;
-          fox.vz = Math.cos(fox.rot) * speed;
+          fox.vx = Math.sin(targetRot) * speed;
+          fox.vz = Math.cos(targetRot) * speed;
+          fox.rot = lerpAngle(fox.rot, targetRot, 0.14);
         }
-        fox.energy = fox.energy - 0.040 * delta * 30;
+        fox.energy = fox.energy - 0.038 * delta * 30;
+      }
+    }
+
+    // Soft Pack Separation
+    for (let o = 0; o < foxes.length; o = o + 1) {
+      if (o !== f) {
+        let od = dist(fox.x, fox.z, foxes[o].x, foxes[o].z);
+        if (od < 0.9 && od > 0.01) {
+          let push = 0.02 * (0.9 - od);
+          fox.vx = fox.vx + ((fox.x - foxes[o].x) / od) * push;
+          fox.vz = fox.vz + ((fox.z - foxes[o].z) / od) * push;
+        }
       }
     }
 
@@ -707,19 +782,24 @@ function updateEcosystem(delta) {
     fox.x = fox.x + fox.vx;
     fox.z = fox.z + fox.vz;
 
-    // Meadow Bounds
+    // Boundaries
     if (fox.x > BOUNDS) { fox.x = BOUNDS; fox.vx = -Math.abs(fox.vx); }
     if (fox.x < -BOUNDS) { fox.x = -BOUNDS; fox.vx = Math.abs(fox.vx); }
     if (fox.z > BOUNDS) { fox.z = BOUNDS; fox.vz = -Math.abs(fox.vz); }
     if (fox.z < -BOUNDS) { fox.z = -BOUNDS; fox.vz = Math.abs(fox.vz); }
 
-    // River avoidance
-    if (isRiver(fox.x, fox.z)) {
-      fox.z = fox.z + (fox.z > -2.5 ? 0.3 : -0.3);
-      fox.vz = -fox.vz;
+    // Lake Shore Avoidance
+    let distLake = Math.hypot(fox.x - LAKE_X, fox.z - LAKE_Z);
+    if (distLake < LAKE_RADIUS) {
+      let angleFromCenter = Math.atan2(fox.z - LAKE_Z, fox.x - LAKE_X);
+      fox.x = LAKE_X + Math.cos(angleFromCenter) * (LAKE_RADIUS + 0.2);
+      fox.z = LAKE_Z + Math.sin(angleFromCenter) * (LAKE_RADIUS + 0.2);
+      fox.vx = Math.cos(angleFromCenter) * 0.05;
+      fox.vz = Math.sin(angleFromCenter) * 0.05;
+      fox.rot = lerpAngle(fox.rot, angleFromCenter, 0.3);
     }
 
-    // Fox Reproduction (Calibrated threshold for ecological stability)
+    // Fox Reproduction
     if (fox.energy > 64 && fox.age > 160 && foxes.length < 24) {
       fox.energy = fox.energy - 30;
       fox.offspringCount = fox.offspringCount + 1;
@@ -747,7 +827,7 @@ function updateEcosystem(delta) {
       });
     }
 
-    // Fox Starvation / Natural Death
+    // Fox Starvation / Age Death
     if (fox.energy <= 0 || fox.age > fox.maxAge) {
       spawnPuff(fox.x, fox.y, fox.z, "#94a3b8", 8);
     } else {
@@ -755,7 +835,7 @@ function updateEcosystem(delta) {
     }
   }
 
-  // Remove caught rabbits
+  // Filter out caught rabbits
   rabbits = rabbits.filter(function(rab) {
     return !eatenRabbitIds[rab.id];
   });
@@ -765,7 +845,7 @@ function updateEcosystem(delta) {
   }
   foxes = survivingFoxes;
 
-  // Update Statistics
+  // Update Stats
   updateStats();
 }
 
@@ -773,7 +853,7 @@ function updateStats() {
   rabbitCount = rabbits.length;
   foxCount = foxes.length;
 
-  // Sustainable Ecological Health Status
+  // Ecological Balance Status
   if (rabbitCount === 0 && foxCount === 0) {
     ecosystemStatus = "Ecological Collapse";
     statusColor = "#ef4444";
@@ -786,7 +866,7 @@ function updateStats() {
   } else if (foxCount >= 14) {
     ecosystemStatus = "Predator Surplus Phase";
     statusColor = "#fb923c";
-  } else if (rabbitCount >= 50) {
+  } else if (rabbitCount >= 52) {
     ecosystemStatus = "Abundant Prey Phase";
     statusColor = "#38bdf8";
   } else {
@@ -794,7 +874,7 @@ function updateStats() {
     statusColor = "#22c55e";
   }
 
-  // Update pre-computed sparkline trend bars
+  // Pre-computed visual sparkline bars
   if (simTick % 16 === 0) {
     sparkPreyBars.shift();
     sparkPreyBars.push(Math.min(100, Math.round((rabbitCount / 65) * 100)));
@@ -803,10 +883,10 @@ function updateStats() {
     sparkFoxBars.push(Math.min(100, Math.round((foxCount / 20) * 100)));
 
     sparkGrassBars.shift();
-    sparkGrassBars.push(Math.min(100, Math.round((grassCount / 110) * 100)));
+    sparkGrassBars.push(Math.min(100, Math.round((grassCount / 115) * 100)));
   }
 
-  // Sync selected entity details
+  // Sync selected entity
   if (selectedId) {
     let found = null;
     for (let r = 0; r < rabbits.length; r = r + 1) {
@@ -843,7 +923,7 @@ function buildDynamicObjects() {
         color: gr.nutrition === 3 ? "#16a34a" : "#22c55e",
         castShadow: true
       });
-      // Blooming Wildflowers on Lush Patches
+      // Blooming Wildflowers on Mature Patches
       if (gr.nutrition === 3) {
         let flowerColor = (g % 3 === 0) ? "#fbbf24" : ((g % 3 === 1) ? "#f43f5e" : "#38bdf8");
         list.push({
@@ -1053,14 +1133,14 @@ function buildDynamicObjects() {
         position: { x: 0.11, y: 0.52, z: 0.28 },
         color: "#9a3412"
       },
-      // Bushy Tail
+      // Bushy Tail (Sways slightly with runPhase)
       {
         id: fox.id + "-tail",
         type: "capsule",
         radius: 0.12,
         height: 0.44,
-        position: { x: 0, y: 0.32, z: -0.44 },
-        rotation: { x: -0.55, y: 0, z: 0 },
+        position: { x: Math.sin(fox.runPhase) * 0.04, y: 0.32, z: -0.44 },
+        rotation: { x: -0.55, y: Math.sin(fox.runPhase) * 0.15, z: 0 },
         color: "#ea580c"
       },
       // White Tail Tip
@@ -1068,7 +1148,7 @@ function buildDynamicObjects() {
         id: fox.id + "-tail-tip",
         type: "sphere",
         radius: 0.10,
-        position: { x: 0, y: 0.45, z: -0.60 },
+        position: { x: Math.sin(fox.runPhase) * 0.06, y: 0.45, z: -0.60 },
         color: "#ffffff"
       }
     ];
@@ -1119,7 +1199,7 @@ function buildDynamicObjects() {
   return list;
 }
 
-// Build Nature Lighting
+// Nature Lighting
 function buildLights() {
   let list = [];
 
@@ -1144,7 +1224,7 @@ function buildLights() {
     position: { x: -20, y: 22, z: -18 }
   });
 
-  // Soft Ambient Meadow Tone
+  // Ambient Tone
   list.push({
     id: "ambient-light",
     type: "ambient",
@@ -1213,6 +1293,14 @@ function setCameraView(mode) {
     cameraPos = { x: 0, y: 26.0, z: 28.0 };
     cameraLookAt = { x: 0, y: 0.5, z: 0 };
     cameraFov = 46;
+  } else if (mode === "lake") {
+    cameraPos = { x: LAKE_X - 1.0, y: 9.0, z: LAKE_Z + 12.0 };
+    cameraLookAt = { x: LAKE_X, y: 0.6, z: LAKE_Z };
+    cameraFov = 40;
+  } else if (mode === "forest") {
+    cameraPos = { x: -14.0, y: 11.0, z: -3.0 };
+    cameraLookAt = { x: -11.0, y: 0.6, z: -11.0 };
+    cameraFov = 42;
   } else if (mode === "topdown") {
     cameraPos = { x: 0, y: 36.0, z: 0.1 };
     cameraLookAt = { x: 0, y: 0, z: 0 };
@@ -1256,6 +1344,9 @@ function spawnPredatorAction() {
 function plantGrassAction() {
   let gx = (Math.random() - 0.5) * BOUNDS * 1.8;
   let gz = (Math.random() - 0.5) * BOUNDS * 1.8;
+  if (isInsideLake(gx, gz)) {
+    gx = gx + (gx > LAKE_X ? LAKE_RADIUS + 1.0 : -(LAKE_RADIUS + 1.0));
+  }
   grassList.push({
     id: genId("grass"),
     x: gx,
