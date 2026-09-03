@@ -44,21 +44,30 @@ function barrelAt(out, id, x, z) {
 }
 
 function carAt(out, id, x, z, rot, color) {
+  // The body is turned by `rot` about Y. In world terms its length axis is
+  // (cos rot, -sin rot) and its width axis (sin rot, cos rot); every part is
+  // placed along those two, so the wheels stay under the car it belongs to.
   let c = Math.cos(rot)
   let s = Math.sin(rot)
+  let lx = c
+  let lz = -s
+  let wx = s
+  let wz = c
   out.push(box(id + "b", x, 0.62, z, 4.4, 0.75, 2.0, color, { rot: rot, metal: 0.4, rough: 0.5 }))
-  out.push(box(id + "c", x - s * 0.2, 1.28, z - c * 0.2, 2.2, 0.62, 1.8, "#1c2026", { rot: rot, metal: 0.2, rough: 0.35 }))
+  out.push(box(id + "c", x - lx * 0.2, 1.28, z - lz * 0.2, 2.2, 0.62, 1.8, "#1c2026", { rot: rot, metal: 0.2, rough: 0.35 }))
   let wheels = [[1.5, 1.0], [1.5, -1.0], [-1.5, 1.0], [-1.5, -1.0]]
   let i = 0
   while (i < 4) {
-    let wx = x + wheels[i][0] * c - wheels[i][1] * s
-    let wz = z + wheels[i][0] * s + wheels[i][1] * c
-    out.push({ id: id + "w" + i, type: "cylinder", position: { x: wx, y: 0.36, z: wz }, rotation: { x: Math.PI / 2, y: 0, z: rot }, radius: 0.36, height: 0.3, color: "#15181c", roughness: 0.9 })
+    let px = x + lx * wheels[i][0] + wx * wheels[i][1]
+    let pz = z + lz * wheels[i][0] + wz * wheels[i][1]
+    // A cylinder stands on Y; tipped by x = PI/2 after a turn of -rot about
+    // Z, its axle lies along the car's width.
+    out.push({ id: id + "w" + i, type: "cylinder", position: { x: px, y: 0.36, z: pz }, rotation: { x: Math.PI / 2, y: 0, z: -rot }, radius: 0.36, height: 0.3, color: "#15181c", roughness: 0.9 })
     i = i + 1
   }
-  // Headlights, dead but for a glow.
-  out.push(box(id + "h1", x + c * 2.21 - s * 0.7, 0.7, z + s * 2.21 + c * 0.7, 0.05, 0.2, 0.4, "#ffe9b0", { rot: rot, emissive: "#ffd27a", emissiveIntensity: 0.6 }))
-  out.push(box(id + "h2", x + c * 2.21 + s * 0.7, 0.7, z + s * 2.21 - c * 0.7, 0.05, 0.2, 0.4, "#ffe9b0", { rot: rot, emissive: "#ffd27a", emissiveIntensity: 0.6 }))
+  // Headlights at the front, dead but for a glow.
+  out.push(box(id + "h1", x + lx * 2.21 + wx * 0.7, 0.7, z + lz * 2.21 + wz * 0.7, 0.05, 0.2, 0.4, "#ffe9b0", { rot: rot, emissive: "#ffd27a", emissiveIntensity: 0.6 }))
+  out.push(box(id + "h2", x + lx * 2.21 - wx * 0.7, 0.7, z + lz * 2.21 - wz * 0.7, 0.05, 0.2, 0.4, "#ffe9b0", { rot: rot, emissive: "#ffd27a", emissiveIntensity: 0.6 }))
   // A car at an angle gets a blocker box big enough to cover its corners.
   let ex = Math.abs(c) * 2.3 + Math.abs(s) * 1.1
   let ez = Math.abs(s) * 2.3 + Math.abs(c) * 1.1
