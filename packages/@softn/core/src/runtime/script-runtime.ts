@@ -755,6 +755,8 @@ export class SoftNScriptRuntime {
    * appeared where the author wrote one.
    */
   private disposed = false;
+  /** Logged once: the engine is dead and calls are being dropped. */
+  private terminationLogged = false;
 
   /** Stop and clean up if this runtime was disposed during an await. */
   private abandonIfDisposed(): boolean {
@@ -1022,6 +1024,18 @@ export class SoftNScriptRuntime {
     const QUEUE_HARD_LIMIT = 128;
 
     return async (...args: unknown[]): Promise<unknown> => {
+      // A runtime that has been torn down answers nothing. Without this, a
+      // 30 Hz game loop keeps landing calls on the disposed engine — each one
+      // an "engine is disposed" error in the console — until its renderer
+      // notices.
+      if (this.disposed) return undefined;
+      if (this.vmEngine?.terminated) {
+        if (!this.terminationLogged) {
+          this.terminationLogged = true;
+          console.error(`[SoftN] The script engine has stopped (a call exceeded its budget or failed to compile); ignoring ${name} and later calls until the app is reloaded.`);
+        }
+        return undefined;
+      }
       // Guard against unbounded queue growth from rapid async events.
       if (droppable && this.vmCallQueueDepth >= QUEUE_SOFT_LIMIT) {
         // Safe to drop: rapid-fire events are superseded by the next one
@@ -1043,6 +1057,14 @@ export class SoftNScriptRuntime {
       this.vmCallLock = new Promise<void>((r) => {
         release = r;
       });
+      // The wait for the lock is where a tear-down usually lands: the calls
+      // queued behind the one that was running when the grant rebuilt the
+      // runtime would otherwise each wake up and hit a corpse.
+      if (this.disposed) {
+        this.vmCallQueueDepth--;
+        release!();
+        return undefined;
+      }
 
       const t0 = performance.now();
       try {
@@ -1083,6 +1105,8 @@ export class SoftNScriptRuntime {
         // for the entire duration of async operations like AI generation.
         let pendingCalls: unknown[] | null = null;
         try {
+          // Disposed during the call: there is no engine left to read back from.
+          if (this.disposed) throw null;
           const tSyncReact = performance.now();
           this.syncVMStateToReact();
           this.syncWindowFromVM();
@@ -1102,7 +1126,7 @@ export class SoftNScriptRuntime {
           this.bridgeEventListeners();
           this.discoverWindowSyncKeys();
         } catch (syncError) {
-          console.error(`[SoftN] Error syncing state after ${name}:`, syncError);
+          if (syncError !== null) console.error(`[SoftN] Error syncing state after ${name}:`, syncError);
         }
         this.asyncCallInProgress = false;
         this.vmCallQueueDepth--;

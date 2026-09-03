@@ -530,6 +530,13 @@ export class ZippWasmAdapter {
     this.renewBudget();
     try {
       return this.wasm.callFunction(name, sanitizeArgs(args));
+    } catch (e) {
+      // A call that blew its budget takes the engine with it, and every call
+      // after that answers "engine is disposed". Remember it so the runtime
+      // stops driving a corpse instead of logging the same line thirty times
+      // a second.
+      if (e instanceof Error && /engine is disposed/i.test(e.message)) this._terminated = true;
+      throw e;
     } finally {
       this.flushOutput();
     }
