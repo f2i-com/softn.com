@@ -14,7 +14,7 @@ final class Seed
         'snake-game' => 'games', 'pocket' => 'games', 'maze-escape-3d' => 'games', 'texas-holdem' => 'games',
         'promptly-unemployed' => 'games', 'the-office' => 'games', 'blockscape' => 'games', 'dead-hours' => 'games', 'twenty48' => 'games', 'blockfall' => 'games',
         'train-yard' => 'simulations', 'predator-prey' => 'simulations',
-        'warble-wire' => 'tools', 'ai-chat' => 'ai', 'house-builder' => 'creative',
+        'warble-wire' => 'tools', 'ai-chat' => 'ai', 'house-builder' => 'creative', 'sim-lives' => 'games',
         // Sample apps: they show what the runtime can do rather than being
         // things to rely on, and the directory files them as such.
         'notes' => 'demos', 'glamour-studio' => 'demos', 'device-kit' => 'demos', 'showcase' => 'demos',
@@ -28,7 +28,7 @@ final class Seed
         'the-office' => 'simulation', 'train-yard' => '3d,simulation,railway', 'predator-prey' => 'ecosystem,simulation,biology,3d',
         'notes' => 'notes,local-first', 'glamour-studio' => 'business,scheduling',
         'device-kit' => 'camera,qr,network', 'warble-wire' => 'audio,modem,dsp', 'ai-chat' => 'llm,chat',
-        'house-builder' => '3d,floor-plan,architecture,design',
+        'house-builder' => '3d,floor-plan,architecture,design', 'sim-lives' => '3d,life-simulation,house,sandbox',
         'ai-demo' => 'llm', 'gpu-demo' => 'webgpu,compute', 'three-demo' => '3d,webgl', 'showcase' => 'components',
     ];
 
@@ -119,6 +119,24 @@ SQL)->fetchAll(PDO::FETCH_ASSOC);
                     }
                 } catch (Throwable $e) {
                     error_log("softn-api: could not seed $file: " . $e->getMessage());
+                }
+            }
+            // A seeded demo that has left the index is retired with it: the
+            // rows it owns go, and so does its bundle on disk. Only rows the
+            // seed created are touched; anything published by a person stays.
+            $indexed = [];
+            foreach ($index as $entry) {
+                if (!is_array($entry)) continue;
+                $id = is_string($entry['id'] ?? null) ? $entry['id'] : Apps::slugify((string) ($entry['name'] ?? $entry['file'] ?? ''));
+                if ($id !== '') $indexed[$id] = true;
+            }
+            $seeded = $pdo->query("SELECT slug FROM apps WHERE source = 'seed'")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($seeded as $slug) {
+                if (isset($indexed[$slug])) continue;
+                try {
+                    Apps::remove((string) $slug);
+                } catch (Throwable $e) {
+                    error_log("softn-api: could not retire seed app $slug: " . $e->getMessage());
                 }
             }
             @touch($flag);
