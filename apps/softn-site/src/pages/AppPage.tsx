@@ -62,13 +62,17 @@ function Badges({ capabilities, execution, official }: { capabilities: string[];
 }
 
 /**
- * The app, running, with a bar that says so. The runtime posts
- * `softn:app-ready` once the bundle has parsed and painted; until then the
- * frame shows a starting state rather than a black box.
+ * The app, running, over the whole viewport: a game in a box the size of a
+ * paragraph is not a game. A slim bar names the app and offers fullscreen,
+ * the runtime and Close; the bar folds away to a corner tab so the app can
+ * have every pixel. The runtime posts `softn:app-ready` once the bundle has
+ * parsed and painted; until then the frame shows a starting state rather
+ * than a black box.
  */
 function Player({ app, onClose }: { app: AppDetail; onClose: () => void }): React.ReactElement {
   const [live, setLive] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [barHidden, setBarHidden] = useState(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const embedUrl = `${WEB_URL}/?${new URLSearchParams({ open: app.urls.bundle, embed: '1' })}`;
@@ -87,49 +91,75 @@ function Player({ app, onClose }: { app: AppDetail; onClose: () => void }): Reac
       if (data && typeof data === 'object' && data.type === 'softn:app-ready') setLive(true);
     };
     const onFs = () => setFullscreen(document.fullscreenElement === boxRef.current);
+    // Escape closes the popup, but only once the app has let the pointer go:
+    // a pointer-locked game takes the first Escape for itself.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !document.pointerLockElement) onClose();
+    };
     window.addEventListener('message', onMessage);
     document.addEventListener('fullscreenchange', onFs);
+    document.addEventListener('keydown', onKey);
+    // The page behind must not scroll under the popup.
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     return () => {
       window.removeEventListener('message', onMessage);
       document.removeEventListener('fullscreenchange', onFs);
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
     };
-  }, [embedUrl]);
+  }, [embedUrl, onClose]);
 
   useEffect(() => {
     void recordRun(app.slug);
   }, [app.slug]);
 
   return (
-    <div className="app-frame" id="play" ref={boxRef}>
-      <div className="app-frame-bar">
-        <span className="app-frame-live">
+    <div className={`app-popup ${barHidden ? 'app-popup-bare' : ''}`} id="play" ref={boxRef} role="dialog" aria-label={`${app.name}, running`}>
+      {barHidden ? (
+        <button type="button" className="app-popup-peek" onClick={() => setBarHidden(false)} title="Show the bar">
           <span className="live" data-on={live}>
             <span className="live-dot" aria-hidden="true" />
-            {live ? 'live' : 'starting'}
           </span>
-          <span className="app-frame-name">{app.name}</span>
-        </span>
-        <span className="app-frame-actions">
-          <button
-            type="button"
-            className="app-frame-btn"
-            onClick={() => {
-              const el = boxRef.current;
-              if (!el) return;
-              if (document.fullscreenElement !== el) void el.requestFullscreen?.();
-              else void document.exitFullscreen?.();
-            }}
-          >
-            {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-          </button>
-          <a className="app-frame-btn" href={app.urls.run}>
-            Open in the runtime
-          </a>
-          <button type="button" className="app-frame-btn" onClick={onClose} aria-label="Stop the app">
-            Close
-          </button>
-        </span>
-      </div>
+          {app.name}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+      ) : (
+        <div className="app-frame-bar">
+          <span className="app-frame-live">
+            <span className="live" data-on={live}>
+              <span className="live-dot" aria-hidden="true" />
+              {live ? 'live' : 'starting'}
+            </span>
+            <span className="app-frame-name">{app.name}</span>
+          </span>
+          <span className="app-frame-actions">
+            <button type="button" className="app-frame-btn" onClick={() => setBarHidden(true)} title="Hide this bar and give the app the whole screen">
+              Hide bar
+            </button>
+            <button
+              type="button"
+              className="app-frame-btn"
+              onClick={() => {
+                const el = boxRef.current;
+                if (!el) return;
+                if (document.fullscreenElement !== el) void el.requestFullscreen?.();
+                else void document.exitFullscreen?.();
+              }}
+            >
+              {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+            </button>
+            <a className="app-frame-btn" href={app.urls.run}>
+              Open in the runtime
+            </a>
+            <button type="button" className="app-frame-btn app-frame-close" onClick={onClose} aria-label="Stop the app and close">
+              Close
+            </button>
+          </span>
+        </div>
+      )}
       {!live && (
         <div className="app-frame-starting" aria-hidden="true">
           <Thumb app={app} className="app-frame-poster" />
@@ -244,10 +274,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
     }
   };
 
-  const play = () => {
-    setPlaying(true);
-    setTimeout(() => document.getElementById('play')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
-  };
+  const play = () => setPlaying(true);
 
   if (error) {
     return (
@@ -316,9 +343,9 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
         <div className="app-head">
           <div className="app-head-media">
             {playing ? (
-              <button type="button" className="app-hero-thumb app-hero-thumb-playing" onClick={() => document.getElementById('play')?.scrollIntoView({ behavior: 'smooth' })}>
+              <button type="button" className="app-hero-thumb app-hero-thumb-playing" onClick={play}>
                 <Thumb app={app} />
-                <span className="app-hero-play">Running above</span>
+                <span className="app-hero-play">Running</span>
               </button>
             ) : (
               <button type="button" className="app-hero-thumb" onClick={play} aria-label={`Play ${app.name} here`}>

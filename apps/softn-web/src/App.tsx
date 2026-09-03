@@ -59,11 +59,36 @@ const appShellStyles = `
     }
   }
   /* Embedded, there is no tab bar, so there is no chrome to subtract: without
-     this an app in a host page's frame stopped 38px short of the bottom. */
+     this an app in a host page's frame stopped 38px short of the bottom. The
+     same holds when the bar has been folded away. */
   .softn-shell.softn-shell--embedded,
-  .softn-shell.softn-shell--embedded .softn-runner-host {
+  .softn-shell.softn-shell--embedded .softn-runner-host,
+  .softn-shell.softn-shell--bare,
+  .softn-shell.softn-shell--bare .softn-runner-host {
     --softn-chrome-base: 0px !important;
   }
+  /* The corner tab that brings a hidden bar back. */
+  .softn-chrome-peek {
+    position: fixed;
+    top: 0;
+    right: 12px;
+    z-index: 50;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-top: 0;
+    border-radius: 0 0 8px 8px;
+    background: rgba(20, 20, 26, 0.72);
+    color: #c9c9d4;
+    font-size: 0.72rem;
+    cursor: pointer;
+    opacity: 0.5;
+    backdrop-filter: blur(6px);
+    transition: opacity 160ms ease;
+  }
+  .softn-chrome-peek:hover, .softn-chrome-peek:focus-visible { opacity: 1; color: #fff; }
   /* Touch overrides the narrow-window shrink: the bar has to match the 44px
      targets TabBar gives its controls, or the app area is laid out short. */
   @media (pointer: coarse) {
@@ -219,6 +244,23 @@ function App(): React.ReactElement {
   // Pre-create a skeleton tab ID if loading from URL (so tab bar shows immediately)
   const [urlTabId] = useState(() => (urlInit.appName ? crypto.randomUUID() : null));
   const embedded = urlInit.embedded;
+  // The tab bar can be folded away for a game that wants the whole viewport;
+  // the choice is remembered, and a fresh session keeps it.
+  const [chromeHidden, setChromeHiddenState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('softn.web.chromeHidden') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const setChromeHidden = useCallback((hidden: boolean) => {
+    setChromeHiddenState(hidden);
+    try {
+      localStorage.setItem('softn.web.chromeHidden', hidden ? '1' : '0');
+    } catch {
+      // Storage blocked: the bar simply comes back next time.
+    }
+  }, []);
 
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => {
     // Pre-populate tab from URL so it appears in tab bar instantly on reload
@@ -1053,10 +1095,19 @@ function App(): React.ReactElement {
         style={{ display: 'none' }}
       />
 
-      <div className={embedded ? 'softn-shell softn-shell--embedded' : 'softn-shell'}>
+      <div className={`softn-shell${embedded ? ' softn-shell--embedded' : ''}${chromeHidden ? ' softn-shell--bare' : ''}`}>
         {/* Embedded in someone else's page: the app is the whole frame, and tabs
-            belong to the host document rather than to us. */}
-        {!embedded && (
+            belong to the host document rather than to us. Folded away, the
+            bar leaves a corner tab to come back by. */}
+        {!embedded && chromeHidden && (
+          <button type="button" className="softn-chrome-peek" onClick={() => setChromeHidden(false)} title="Show the tab bar">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+            tabs
+          </button>
+        )}
+        {!embedded && !chromeHidden && (
           <TabBar
             tabs={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon, directorySlug: t.directorySlug }))}
             activeTabId={activeTabId}
@@ -1064,6 +1115,7 @@ function App(): React.ReactElement {
             onCloseTab={handleCloseTab}
             onAddTab={handleAddTab}
             onDownloadTab={handleDownloadTab}
+            onHide={() => setChromeHidden(true)}
           />
         )}
 
