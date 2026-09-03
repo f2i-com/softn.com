@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { ApiError, getApp, getRating, rate, type AppDetail, type Category, type Rating } from '../lib/api';
+import React, { useEffect, useRef, useState } from 'react';
+import { ApiError, getApp, getRating, listApps, rate, recordRun, savedKey, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
 import { WEB_URL } from '../lib/appUrls';
-import { Thumb } from '../components/directory/AppCard';
+import type { Route } from '../lib/router';
+import { AppGrid, Thumb } from '../components/directory/AppCard';
 import { StarInput, Stars } from '../components/directory/Stars';
 import { ShareMenu } from '../components/directory/ShareMenu';
 import { Comments } from '../components/directory/Comments';
@@ -20,7 +21,15 @@ const CAPABILITY_NAMES: Record<string, string> = {
   storage: 'Server storage',
 };
 
-function Badges({ capabilities, execution }: { capabilities: string[]; execution: string }): React.ReactElement {
+function PlayGlyph({ size = 14 }: { size?: number }): React.ReactElement {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  );
+}
+
+function Badges({ capabilities, execution, official }: { capabilities: string[]; execution: string; official: boolean }): React.ReactElement {
   const { safe } = capabilitySummary(capabilities);
   return (
     <div className="badges" aria-label="What this app can reach">
@@ -43,31 +52,169 @@ function Badges({ capabilities, execution }: { capabilities: string[]; execution
           Off-main-thread
         </span>
       )}
+      {official && (
+        <span className="badge badge-official" title="One of the demos that ship with the site">
+          Ships with SoftN
+        </span>
+      )}
     </div>
   );
 }
 
-export function AppPage({ slug, categories }: { slug: string; categories: Category[] }): React.ReactElement {
+/**
+ * The app, running, with a bar that says so. The runtime posts
+ * `softn:app-ready` once the bundle has parsed and painted; until then the
+ * frame shows a starting state rather than a black box.
+ */
+function Player({ app, onClose }: { app: AppDetail; onClose: () => void }): React.ReactElement {
+  const [live, setLive] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const embedUrl = `${WEB_URL}/?${new URLSearchParams({ open: app.urls.bundle, embed: '1' })}`;
+
+  useEffect(() => {
+    let origin: string | null = null;
+    try {
+      origin = new URL(embedUrl, window.location.href).origin;
+    } catch {
+      origin = null;
+    }
+    const onMessage = (event: MessageEvent) => {
+      if (!origin || event.origin !== origin) return;
+      if (event.source !== frameRef.current?.contentWindow) return;
+      const data = event.data as { type?: string } | null;
+      if (data && typeof data === 'object' && data.type === 'softn:app-ready') setLive(true);
+    };
+    const onFs = () => setFullscreen(document.fullscreenElement === boxRef.current);
+    window.addEventListener('message', onMessage);
+    document.addEventListener('fullscreenchange', onFs);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      document.removeEventListener('fullscreenchange', onFs);
+    };
+  }, [embedUrl]);
+
+  useEffect(() => {
+    void recordRun(app.slug);
+  }, [app.slug]);
+
+  return (
+    <div className="app-frame" id="play" ref={boxRef}>
+      <div className="app-frame-bar">
+        <span className="app-frame-live">
+          <span className="live" data-on={live}>
+            <span className="live-dot" aria-hidden="true" />
+            {live ? 'live' : 'starting'}
+          </span>
+          <span className="app-frame-name">{app.name}</span>
+        </span>
+        <span className="app-frame-actions">
+          <button
+            type="button"
+            className="app-frame-btn"
+            onClick={() => {
+              const el = boxRef.current;
+              if (!el) return;
+              if (document.fullscreenElement !== el) void el.requestFullscreen?.();
+              else void document.exitFullscreen?.();
+            }}
+          >
+            {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          </button>
+          <a className="app-frame-btn" href={app.urls.run}>
+            Open in the runtime
+          </a>
+          <button type="button" className="app-frame-btn" onClick={onClose} aria-label="Stop the app">
+            Close
+          </button>
+        </span>
+      </div>
+      {!live && (
+        <div className="app-frame-starting" aria-hidden="true">
+          <Thumb app={app} className="app-frame-poster" />
+          <span className="app-frame-starting-text">Starting the runtime…</span>
+        </div>
+      )}
+      <iframe
+        ref={frameRef}
+        src={embedUrl}
+        title={`${app.name}, running`}
+        allow="camera; microphone; clipboard-write; autoplay; fullscreen; pointer-lock; gamepad"
+        loading="eager"
+      />
+    </div>
+  );
+}
+
+/** More to try: the same category, and the same author, without repeating the app itself. */
+function Related({ app, categories }: { app: AppDetail; categories: Category[] }): React.ReactElement | null {
+  const [same, setSame] = useState<AppCardData[]>([]);
+  const [byAuthor, setByAuthor] = useState<AppCardData[]>([]);
+  useEffect(() => {
+    const ac = new AbortController();
+    listApps({ category: app.category, sort: 'trending', perPage: 9 }, ac.signal)
+      .then((r) => setSame(r.items.filter((a) => a.slug !== app.slug).slice(0, 4)))
+      .catch(() => setSame([]));
+    listApps({ author: app.author, sort: 'newest', perPage: 9 }, ac.signal)
+      .then((r) => setByAuthor(r.items.filter((a) => a.slug !== app.slug).slice(0, 4)))
+      .catch(() => setByAuthor([]));
+    return () => ac.abort();
+  }, [app.slug, app.category, app.author]);
+  const category = categories.find((c) => c.id === app.category);
+  if (same.length === 0 && byAuthor.length === 0) return null;
+  return (
+    <>
+      {same.length > 0 && (
+        <section className="app-section app-related">
+          <h2 className="section-title">
+            More in {category ? `${category.emoji} ${category.name}` : 'this category'}
+            <a className="section-more" href={`/apps?category=${encodeURIComponent(app.category)}`}>
+              See all
+            </a>
+          </h2>
+          <AppGrid apps={same} categories={categories} />
+        </section>
+      )}
+      {byAuthor.length > 0 && (
+        <section className="app-section app-related">
+          <h2 className="section-title">
+            More by {app.author}
+            <a className="section-more" href={`/apps?author=${encodeURIComponent(app.author)}`}>
+              See all
+            </a>
+          </h2>
+          <AppGrid apps={byAuthor} categories={categories} />
+        </section>
+      )}
+    </>
+  );
+}
+
+export function AppPage({ slug, categories, route }: { slug: string; categories: Category[]; route: Route }): React.ReactElement {
   const [app, setApp] = useState<AppDetail | null>(null);
   const [error, setError] = useState<{ status: number; message: string } | null>(null);
   const [rating, setRating] = useState<Rating | null>(null);
   const [rateBusy, setRateBusy] = useState(false);
   const [rateError, setRateError] = useState<string | null>(null);
-  const [playing, setPlaying] = useState(false);
+  const [playing, setPlaying] = useState(route.query.get('play') === '1');
   const [showSource, setShowSource] = useState(false);
+  const [sourceVersion, setSourceVersion] = useState<number | undefined>(undefined);
+  const editable = Boolean(savedKey(slug));
 
   useEffect(() => {
     const ac = new AbortController();
     setApp(null);
     setError(null);
-    setPlaying(false);
+    setPlaying(route.query.get('play') === '1');
     setShowSource(false);
+    setSourceVersion(undefined);
     getApp(slug, ac.signal)
       .then((a) => {
         setApp(a);
         document.title = `${a.name} — SoftN`;
         // A link opened by its manifest name lands on the slug.
-        if (a.slug !== slug) window.history.replaceState({}, '', `/app/${a.slug}`);
+        if (a.slug !== slug) window.history.replaceState({}, '', `/app/${a.slug}${window.location.search}`);
       })
       .catch((e) => {
         if (ac.signal.aborted) return;
@@ -79,6 +226,7 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
         /* ratings are optional */
       });
     return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
 
   const onRate = async (stars: number) => {
@@ -94,6 +242,11 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
     } finally {
       setRateBusy(false);
     }
+  };
+
+  const play = () => {
+    setPlaying(true);
+    setTimeout(() => document.getElementById('play')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
   };
 
   if (error) {
@@ -118,19 +271,28 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
     return (
       <main className="app-page">
         <div className="wrap">
-          <p className="muted">Loading…</p>
+          <div className="app-head app-head-skeleton" aria-busy="true">
+            <div className="app-head-media">
+              <div className="thumb" />
+            </div>
+            <div className="app-head-body">
+              <span className="page-title">&nbsp;</span>
+              <span className="app-byline">&nbsp;</span>
+              <p className="app-desc">&nbsp;</p>
+            </div>
+          </div>
         </div>
       </main>
     );
   }
 
   const category = categories.find((c) => c.id === app.category);
-  const embedUrl = `${WEB_URL}/?${new URLSearchParams({ open: app.urls.bundle, embed: '1' })}`;
   const shareTitle = `${app.name} on SoftN`;
   const shareText = app.description || `${app.name}, a SoftN app`;
   const breakdown = app.ratingBreakdown;
   const maxBreak = Math.max(1, ...Object.values(breakdown));
   const canStore = app.capabilities.includes('storage');
+  const official = app.source === 'seed';
 
   return (
     <main className="app-page">
@@ -149,36 +311,7 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
           <span>{app.name}</span>
         </nav>
 
-        {playing && (
-          <div className="app-frame" id="play">
-            <div className="app-frame-bar">
-              <span className="app-frame-live">
-                <span className="badge-dot" aria-hidden="true" />
-                Running {app.name}
-              </span>
-              <span className="app-frame-actions">
-                <button
-                  type="button"
-                  className="app-frame-btn"
-                  onClick={() => {
-                    const el = document.getElementById('play');
-                    if (el && document.fullscreenElement !== el) void el.requestFullscreen?.();
-                    else void document.exitFullscreen?.();
-                  }}
-                >
-                  Fullscreen
-                </button>
-                <a className="app-frame-btn" href={app.urls.run}>
-                  Open in the runtime
-                </a>
-                <button type="button" className="app-frame-btn" onClick={() => setPlaying(false)} aria-label="Stop the preview">
-                  Close
-                </button>
-              </span>
-            </div>
-            <iframe src={embedUrl} title={`${app.name}, running`} allow="camera; microphone; clipboard-write; autoplay; fullscreen" loading="eager" />
-          </div>
-        )}
+        {playing && <Player app={app} onClose={() => setPlaying(false)} />}
 
         <div className="app-head">
           <div className="app-head-media">
@@ -188,12 +321,10 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
                 <span className="app-hero-play">Running above</span>
               </button>
             ) : (
-              <button type="button" className="app-hero-thumb" onClick={() => setPlaying(true)} aria-label={`Play ${app.name} here`}>
+              <button type="button" className="app-hero-thumb" onClick={play} aria-label={`Play ${app.name} here`}>
                 <Thumb app={app} />
                 <span className="app-hero-play">
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
+                  <PlayGlyph size={22} />
                   Play here
                 </span>
               </button>
@@ -202,7 +333,7 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
           <div className="app-head-body">
             <h1 className="page-title app-title">{app.name}</h1>
             <p className="app-byline">
-              by <strong>{app.author}</strong>
+              by <a href={`/apps?author=${encodeURIComponent(app.author)}`}>{app.author}</a>
               {app.parent && (
                 <>
                   {' '}
@@ -213,7 +344,7 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
               <span title={app.createdAt}>published {timeAgo(app.createdAt)}</span>
               {app.version > 1 && <> · updated {timeAgo(app.updatedAt)}</>}
             </p>
-            <Badges capabilities={app.capabilities} execution={app.execution} />
+            <Badges capabilities={app.capabilities} execution={app.execution} official={official} />
             <div className="stats">
               <span className="stat">
                 <Stars average={app.rating.average} count={app.rating.count} size={14} showCount={false} />
@@ -221,12 +352,12 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
                 <span className="stat-label">{app.rating.count} rating{app.rating.count === 1 ? '' : 's'}</span>
               </span>
               <span className="stat">
-                <strong>{formatCount(app.remixes)}</strong>
-                <span className="stat-label">remix{app.remixes === 1 ? '' : 'es'}</span>
-              </span>
-              <span className="stat">
                 <strong>{formatCount(app.runs)}</strong>
                 <span className="stat-label">run{app.runs === 1 ? '' : 's'}</span>
+              </span>
+              <span className="stat">
+                <strong>{formatCount(app.remixes)}</strong>
+                <span className="stat-label">remix{app.remixes === 1 ? '' : 'es'}</span>
               </span>
               <span className="stat">
                 <strong>{formatCount(app.comments)}</strong>
@@ -238,27 +369,12 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
               </span>
             </div>
             <div className="app-actions">
-              <button
-                type="button"
-                className="cta cta-primary"
-                onClick={() => {
-                  setPlaying(true);
-                  setTimeout(() => document.getElementById('play')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
+              <button type="button" className="cta cta-primary" onClick={play}>
+                <PlayGlyph />
                 Play
               </button>
               <a className="cta" href={app.urls.run}>
                 Open in the runtime
-              </a>
-              <a className="cta" href={app.urls.studio}>
-                Edit in Studio
-              </a>
-              <a className="cta" href={app.urls.builder}>
-                Edit in Builder
               </a>
               <a className="cta" href={app.urls.remix}>
                 Remix
@@ -270,7 +386,15 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
                 Download
               </a>
               <ShareMenu url={app.urls.page} title={shareTitle} text={shareText} />
+              {editable && (
+                <a className="cta cta-edit" href={`/publish?update=${encodeURIComponent(app.slug)}`}>
+                  Update
+                </a>
+              )}
             </div>
+            <p className="app-edit-links muted">
+              Change it: <a href={app.urls.studio}>Studio</a> (have a model rewrite it) or <a href={app.urls.builder}>Builder</a> (by hand).
+            </p>
           </div>
         </div>
 
@@ -294,12 +418,23 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
 
             {showSource && (
               <section className="app-section" id="source">
-                <h2 className="section-title">Source</h2>
+                <h2 className="section-title">
+                  Source
+                  {app.versions.length > 1 && (
+                    <select className="section-select" value={sourceVersion ?? app.version} onChange={(e) => setSourceVersion(Number(e.target.value))} aria-label="Version to read">
+                      {app.versions.map((v) => (
+                        <option key={v.version} value={v.version}>
+                          v{v.version}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </h2>
                 <p className="muted">
                   Every file in the bundle, as published. Open it in <a href={app.urls.studio}>Studio</a> or <a href={app.urls.builder}>Builder</a>{' '}
                   to change it.
                 </p>
-                <SourceViewer slug={app.slug} main={app.manifest?.main} />
+                <SourceViewer slug={app.slug} version={sourceVersion} main={app.manifest?.main} />
               </section>
             )}
 
@@ -421,14 +556,27 @@ export function AppPage({ slug, categories }: { slug: string; categories: Catego
             </section>
 
             <section className="side-card">
-              <h2 className="side-title">Yours to update?</h2>
-              <p className="muted">
-                Publishing handed out an edit key. With it, <a href={`/publish?update=${app.slug}`}>publish a new version</a> or change the
-                listing. Without it, <a href={app.urls.remix}>remix</a> instead.
-              </p>
+              <h2 className="side-title">{editable ? 'Yours' : 'Yours to update?'}</h2>
+              {editable ? (
+                <p className="muted">
+                  This browser holds the edit key. <a href={`/publish?update=${encodeURIComponent(app.slug)}`}>Publish a new version</a>, change the listing,
+                  replace the screenshot or take it down.
+                </p>
+              ) : official ? (
+                <p className="muted">
+                  This one ships with the site. To make it yours, <a href={app.urls.remix}>remix it</a>.
+                </p>
+              ) : (
+                <p className="muted">
+                  Publishing handed out an edit key. With it, <a href={`/publish?update=${encodeURIComponent(app.slug)}`}>publish a new version</a> or change
+                  the listing. Without it, <a href={app.urls.remix}>remix</a> instead.
+                </p>
+              )}
             </section>
           </aside>
         </div>
+
+        <Related app={app} categories={categories} />
       </div>
     </main>
   );

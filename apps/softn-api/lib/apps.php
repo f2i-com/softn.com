@@ -252,6 +252,18 @@ final class Apps
             $where[] = 'a.author = :author COLLATE NOCASE';
             $params[':author'] = $author;
         }
+        // What an app may reach, as the visitor filters for it: nothing at
+        // all, no network, its own server storage, or an off-main-thread script.
+        $cap = Text::clean($q['cap'] ?? '', 16);
+        if ($cap === 'none') {
+            $where[] = "json_array_length(a.capabilities) = 0";
+        } elseif ($cap === 'nonet') {
+            $where[] = "NOT EXISTS (SELECT 1 FROM json_each(a.capabilities) WHERE json_each.value = 'net')";
+        } elseif ($cap === 'storage') {
+            $where[] = "EXISTS (SELECT 1 FROM json_each(a.capabilities) WHERE json_each.value = 'storage')";
+        } elseif ($cap === 'worker') {
+            $where[] = "a.execution = 'worker'";
+        }
         $join = '';
         $relevance = '0';
         if ($search !== '') {

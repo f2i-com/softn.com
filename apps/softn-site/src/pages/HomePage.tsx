@@ -131,7 +131,7 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
               <span className="how-n">02</span>
               <h3 className="how-name">Read it, remix it</h3>
               <p className="how-copy">
-                Every app's source is on its page. Open it in <a href="/studio/">Studio</a> to have a model change it, or in{' '}
+                Every app&rsquo;s source is on its page. Open it in <a href="/studio/">Studio</a> to have a model change it, or in{' '}
                 <a href="/builder/">Builder</a> to change it by hand, then publish the result as a remix that credits where it came
                 from.
               </p>
