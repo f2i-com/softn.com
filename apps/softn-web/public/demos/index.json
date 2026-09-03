@@ -150,5 +150,13 @@
     "description": "An animated HO-scale model train yard diorama on a wooden table with running trains, turntable, busy harbor, town, day-night cycle, and tactile physical controls",
     "primary": "#3b82f6",
     "size": 66340
+  },
+  {
+    "id": "predator-prey",
+    "file": "PredatorPrey.softn",
+    "name": "Predator-Prey Simulator",
+    "description": "An interactive 3D ecosystem diorama: watch foxes hunt rabbits, rabbits graze on grass, and population dynamics balance in real time",
+    "primary": "#10b981",
+    "size": 46655
   }
 ]

@@ -609,6 +609,7 @@ final class Categories
     /** The categories the site starts with. A visitor can suggest more. */
     private const CORE = [
         ['games', 'Games', 'Things to play', '🎮', 10],
+        ['simulations', 'Simulations', 'Interactive worlds, ecosystems and models', '🌐', 15],
         ['tools', 'Tools', 'Utilities that do one job well', '🧰', 20],
         ['creative', 'Creative', 'Drawing, music, generators', '🎨', 30],
         ['productivity', 'Productivity', 'Notes, planners, trackers', '📝', 40],

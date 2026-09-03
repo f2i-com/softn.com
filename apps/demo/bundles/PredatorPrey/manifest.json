@@ -1,0 +1,29 @@
+{
+  "name": "PredatorPrey",
+  "version": "1.0.0",
+  "description": "Interactive 3D predator-prey ecosystem diorama: foxes hunt rabbits, rabbits graze on lush grass, and population dynamics balance in real time.",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": [
+      "ui/main.ui"
+    ],
+    "logic": [
+      "logic/main.logic"
+    ],
+    "assets": [
+      "assets/icon.svg"
+    ]
+  },
+  "config": {
+    "window": {
+      "title": "Predator-Prey Simulator",
+      "width": 1024,
+      "height": 768
+    },
+    "theme": {
+      "primary": "#10b981",
+      "mode": "dark"
+    }
+  }
+}
