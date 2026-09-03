@@ -6,7 +6,9 @@
  *   node scripts/screenshot-demos.mjs [--base http://localhost:1420] [--only Name,Name]
  *
  * Opens each bundle from apps/softn-web/public/demos/index.json in the web
- * runtime (a dev server or a built site; the default is `npm run dev:web`),
+ * runtime (a dev server or a built site; the default is `npm run dev:web`,
+ * but apps that run their script in a worker only start on a built site,
+ * so pass --base http://127.0.0.1:5500/web for those),
  * in headless Edge or Chrome, follows a short per-app recipe where a title
  * screen needs a click or a keypress, and writes a 1280×800 WebP to
  * apps/softn-web/public/demos/thumbs/<Name>.webp. The site build copies the
@@ -272,6 +274,12 @@ async function main() {
       const ready = await waitForApp(page, 25000);
       await page.wait(ready ? 900 : 0);
       await runRecipe(page, RECIPES[name] ?? [{ wait: 1500 }]);
+      // A frame that shows the runtime's own error card is not a picture of
+      // the app. Apps that run in a worker cannot start on the Vite dev
+      // server (its worker URL differs); photograph those against a built
+      // site: --base http://127.0.0.1:5500/web
+      const failed = await page.eval(`/worker_error|Failed to load|could not be loaded/i.test(document.body.innerText.slice(0, 400))`);
+      if (failed) throw new Error('the runtime shows an error card instead of the app');
       const file = path.join(outDir, `${name}.webp`);
       await page.shot(file);
       const kb = Math.round(fs.statSync(file).size / 1024);
