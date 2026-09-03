@@ -1,0 +1,2270 @@
+// HO-Scale Model Train Yard Simulation Logic
+
+// Simulation state
+let trainSpeed = 0.6;
+let targetSpeed = 0.6;
+let trainProgress = 0.0;
+let trainDirection = 1; // 1 = FWD, -1 = REV
+let whistleActive = false;
+let whistleTimer = 0.0;
+
+// Day-Night cycle
+let timeProgress = 0.2; // 0.2 = bright sunny day, 0.48 = golden hour sunset, 0.72 = starry night
+let isNight = false;
+let lightsEnabled = true;
+let timeSpeed = 0.003;
+let skyColor = "#60a5fa";
+let timeLabel = "12:00 PM (Midday)";
+
+// Turntable state
+let turntableAngle = 0.0;
+let targetTurntableAngle = 0.0;
+let turntableStall = 0;
+
+// Harbor crane state
+let cranePhase = 0.0;
+let craneAngle = 0.35;
+let craneHoistY = 2.1;
+
+// Town vehicles state (spaced exactly half a lap apart on a two-lane street loop to prevent head-on collisions)
+let carProgress1 = 0.15;
+let carProgress2 = 0.65;
+
+// Camera preset
+let cameraMode = "front"; // "front", "cab", "tower", "harbor", "overhead"
+let cameraPos = { x: 0, y: 7.2, z: 15.5 };
+let cameraLookAt = { x: 0, y: 0.8, z: 1.0 };
+let cameraFov = 46;
+
+// Dynamic Scene collections
+let objects = [];
+let lights = [];
+
+// Track Spline Geometry with Arc-Length Parameterization
+function rawTrackPoint(t) {
+  let normT = ((t % 1) + 1) % 1;
+  let rad = normT * Math.PI * 2;
+  let cosT = Math.cos(rad);
+  let sinT = Math.sin(rad);
+  let signX = cosT >= 0 ? 1 : -1;
+  let signZ = sinT >= 0 ? 1 : -1;
+  // Superellipse creates a realistic layout loop with gentle curved corners
+  let powX = Math.pow(Math.abs(cosT), 0.65) * signX;
+  let powZ = Math.pow(Math.abs(sinT), 0.65) * signZ;
+  let x = powX * 11.2;
+  let z = powZ * 5.8;
+  let y = 0.68;
+  // Scenic elevation: gentle climb over scenic viaduct in rear right
+  if (x > 1.5 && z < -1.5) {
+    let grade = Math.sin(((x - 1.5) / 9.5) * Math.PI);
+    y = 0.68 + Math.max(0, grade) * 0.52;
+  }
+  return { x: x, y: y, z: z };
+}
+
+// Precompute cumulative arc length for perfectly uniform motion and car spacing
+let TRACK_SAMPLES = 360;
+let trackCumDist = [0];
+let trackRawPts = [rawTrackPoint(0)];
+for (let i = 1; i <= TRACK_SAMPLES; i = i + 1) {
+  let p = rawTrackPoint(i / TRACK_SAMPLES);
+  trackRawPts.push(p);
+  let prev = trackRawPts[i - 1];
+  let d = Math.hypot(p.x - prev.x, p.z - prev.z);
+  trackCumDist.push(trackCumDist[i - 1] + d);
+}
+let totalTrackLength = trackCumDist[TRACK_SAMPLES];
+
+function getTrackPoint(u) {
+  let normU = ((u % 1) + 1) % 1;
+  let targetDist = normU * totalTrackLength;
+  let low = 0;
+  let high = TRACK_SAMPLES;
+  while (low <= high) {
+    let mid = Math.floor((low + high) / 2);
+    if (trackCumDist[mid] < targetDist) {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+  let idx = Math.max(1, Math.min(TRACK_SAMPLES, low));
+  let d0 = trackCumDist[idx - 1];
+  let d1 = trackCumDist[idx];
+  let alpha = (targetDist - d0) / (d1 - d0 || 1);
+  let p0 = trackRawPts[idx - 1];
+  let p1 = trackRawPts[idx];
+  return {
+    x: p0.x + (p1.x - p0.x) * alpha,
+    y: p0.y + (p1.y - p0.y) * alpha,
+    z: p0.z + (p1.z - p0.z) * alpha
+  };
+}
+
+function getTrackHeading(u) {
+  let delta = 0.003;
+  let p1 = getTrackPoint(u - delta);
+  let p2 = getTrackPoint(u + delta);
+  let dx = p2.x - p1.x;
+  let dz = p2.z - p1.z;
+  return Math.atan2(dx, dz);
+}
+
+// Town Road Circuit (Two distinct lanes with smooth turnaround loops, zero head-on collisions)
+function getRoadPoint(t) {
+  let normT = ((t % 1) + 1) % 1;
+  let r = 0.27;
+  let zMid = 8.05;
+  let xSpan = 4.5;
+  let x = 0;
+  let z = zMid;
+  let rot = 0;
+
+  if (normT < 0.40) {
+    // South lane: traveling East (+x)
+    let u = normT / 0.40;
+    x = -xSpan + u * (2 * xSpan);
+    z = zMid + r;
+    rot = Math.PI / 2;
+  } else if (normT < 0.50) {
+    // East turnaround loop (smooth 180° curve)
+    let u = (normT - 0.40) / 0.10;
+    let angle = -Math.PI / 2 + u * Math.PI;
+    x = xSpan + Math.cos(angle) * r;
+    z = zMid - Math.sin(angle) * r;
+    rot = Math.PI / 2 - u * Math.PI;
+  } else if (normT < 0.90) {
+    // North lane: traveling West (-x)
+    let u = (normT - 0.50) / 0.40;
+    x = xSpan - u * (2 * xSpan);
+    z = zMid - r;
+    rot = -Math.PI / 2;
+  } else {
+    // West turnaround loop (smooth 180° curve)
+    let u = (normT - 0.90) / 0.10;
+    let angle = Math.PI / 2 + u * Math.PI;
+    x = -xSpan + Math.cos(angle) * r;
+    z = zMid - Math.sin(angle) * r;
+    rot = -Math.PI / 2 - u * Math.PI;
+  }
+
+  return { x: x, y: 0.58, z: z, rot: rot };
+}
+
+// Particle smoke storage
+let smokePositions = [];
+let smokePuffs = [];
+for (let i = 0; i < 32; i = i + 1) {
+  smokePuffs.push({
+    x: 0,
+    y: -100,
+    z: 0,
+    life: 0,
+    maxLife: 26 + Math.random() * 22,
+    vx: (Math.random() - 0.5) * 0.012,
+    vy: 0.045 + Math.random() * 0.03,
+    vz: (Math.random() - 0.5) * 0.012
+  });
+}
+
+function updateSmoke(chimneyX, chimneyY, chimneyZ, speed) {
+  smokePositions = [];
+  for (let i = 0; i < smokePuffs.length; i = i + 1) {
+    let p = smokePuffs[i];
+    p.life = p.life + 1;
+    if (p.life >= p.maxLife) {
+      if (Math.abs(speed) > 0.04 || whistleActive) {
+        p.life = 0;
+        p.x = chimneyX;
+        p.y = chimneyY;
+        p.z = chimneyZ;
+        let spread = whistleActive ? 0.045 : 0.018;
+        p.vx = (Math.random() - 0.5) * spread;
+        p.vy = (whistleActive ? 0.10 : 0.05) + Math.random() * 0.035;
+        p.vz = (Math.random() - 0.5) * spread;
+      } else {
+        p.y = -100;
+      }
+    } else {
+      p.x = p.x + p.vx;
+      p.y = p.y + p.vy;
+      p.z = p.z + p.vz;
+      p.vy = p.vy * 0.975;
+    }
+    smokePositions.push(p.x, p.y, p.z);
+  }
+}
+
+// Build Static Scenery
+function buildStaticScenery() {
+  let list = [];
+
+  // Room floor (rich hardwood parquet)
+  list.push({
+    id: "room-floor",
+    type: "box",
+    width: 48,
+    height: 0.2,
+    depth: 38,
+    position: { x: 0, y: -4.0, z: 0 },
+    color: "#382213",
+    roughness: 0.8
+  });
+
+  // Room back wall (slate blue studio wall)
+  list.push({
+    id: "room-backwall",
+    type: "box",
+    width: 48,
+    height: 24,
+    depth: 0.4,
+    position: { x: 0, y: 7.0, z: -17.5 },
+    color: "#334155",
+    roughness: 0.9
+  });
+
+  // Framed railway poster on wall
+  list.push({
+    id: "room-poster-frame",
+    type: "box",
+    width: 8.8,
+    height: 5.8,
+    depth: 0.12,
+    position: { x: 0, y: 8.5, z: -17.2 },
+    color: "#78350f"
+  });
+  list.push({
+    id: "room-poster-art",
+    type: "box",
+    width: 8.2,
+    height: 5.2,
+    depth: 0.14,
+    position: { x: 0, y: 8.5, z: -17.14 },
+    color: "#0284c7"
+  });
+
+  // Table Plywood Base
+  list.push({
+    id: "table-plywood",
+    type: "box",
+    width: 29.8,
+    height: 0.4,
+    depth: 17.8,
+    position: { x: 0, y: 0.3, z: 0 },
+    color: "#5c3a21",
+    receiveShadow: true
+  });
+
+  // Dark Mahogany Table Edge Fascia Panels
+  list.push({
+    id: "table-fascia-front",
+    type: "box",
+    width: 30.4,
+    height: 1.2,
+    depth: 0.4,
+    position: { x: 0, y: 0.3, z: 9.1 },
+    color: "#381c0d",
+    roughness: 0.35
+  });
+  list.push({
+    id: "table-fascia-back",
+    type: "box",
+    width: 30.4,
+    height: 1.2,
+    depth: 0.4,
+    position: { x: 0, y: 0.3, z: -9.1 },
+    color: "#381c0d",
+    roughness: 0.35
+  });
+  list.push({
+    id: "table-fascia-left",
+    type: "box",
+    width: 0.4,
+    height: 1.2,
+    depth: 18.6,
+    position: { x: -15.1, y: 0.3, z: 0 },
+    color: "#381c0d",
+    roughness: 0.35
+  });
+  list.push({
+    id: "table-fascia-right",
+    type: "box",
+    width: 0.4,
+    height: 1.2,
+    depth: 18.6,
+    position: { x: 15.1, y: 0.3, z: 0 },
+    color: "#381c0d",
+    roughness: 0.35
+  });
+
+  // 4 Turned Heavy Mahogany Table Legs
+  let legs = [
+    { x: -14.2, z: -8.2 },
+    { x: 14.2, z: -8.2 },
+    { x: -14.2, z: 8.2 },
+    { x: 14.2, z: 8.2 }
+  ];
+  for (let i = 0; i < legs.length; i = i + 1) {
+    list.push({
+      id: "table-leg-" + i,
+      type: "cylinder",
+      radius: 0.38,
+      height: 4.1,
+      position: { x: legs[i].x, y: -1.8, z: legs[i].z },
+      color: "#2b1509",
+      roughness: 0.45
+    });
+  }
+
+  // Layout Green Turf Mat
+  list.push({
+    id: "layout-turf",
+    type: "box",
+    width: 29.8,
+    height: 0.08,
+    depth: 17.8,
+    position: { x: 0, y: 0.52, z: 0 },
+    color: "#3f6212",
+    receiveShadow: true,
+    roughness: 0.95
+  });
+
+  // Continuous Mainline Track: 90 Uniform Segments with Ballast, Wood Ties & Twin Steel Rails
+  let NUM_TIES = 90;
+  for (let i = 0; i < NUM_TIES; i = i + 1) {
+    let u = i / NUM_TIES;
+    let pt = getTrackPoint(u);
+    let head = getTrackHeading(u);
+    let cosH = Math.cos(head);
+    let sinH = Math.sin(head);
+
+    // Ballast roadbed box
+    list.push({
+      id: "ballast-" + i,
+      type: "box",
+      width: 0.92,
+      height: 0.06,
+      depth: 0.72,
+      position: { x: pt.x, y: pt.y - 0.035, z: pt.z },
+      rotation: { x: 0, y: head, z: 0 },
+      color: "#6b7280",
+      receiveShadow: true,
+      flatShading: true
+    });
+
+    // Dark creosote wood cross-tie (sleeper)
+    list.push({
+      id: "tie-" + i,
+      type: "box",
+      width: 0.74,
+      height: 0.035,
+      depth: 0.16,
+      position: { x: pt.x, y: pt.y - 0.005, z: pt.z },
+      rotation: { x: 0, y: head, z: 0 },
+      color: "#3e2723",
+      receiveShadow: true
+    });
+
+    // Left Steel Rail
+    list.push({
+      id: "rail-l-" + i,
+      type: "box",
+      width: 0.04,
+      height: 0.05,
+      depth: 0.72,
+      position: {
+        x: pt.x - cosH * 0.22,
+        y: pt.y + 0.02,
+        z: pt.z + sinH * 0.22
+      },
+      rotation: { x: 0, y: head, z: 0 },
+      color: "#e2e8f0",
+      metalness: 0.9,
+      roughness: 0.18
+    });
+
+    // Right Steel Rail
+    list.push({
+      id: "rail-r-" + i,
+      type: "box",
+      width: 0.04,
+      height: 0.05,
+      depth: 0.72,
+      position: {
+        x: pt.x + cosH * 0.22,
+        y: pt.y + 0.02,
+        z: pt.z - sinH * 0.22
+      },
+      rotation: { x: 0, y: head, z: 0 },
+      color: "#e2e8f0",
+      metalness: 0.9,
+      roughness: 0.18
+    });
+  }
+
+  // Masonry Stone Arch Viaduct (Piers sit strictly under the track roadbed)
+  let viaductPiers = [
+    { x: 3.2, z: -5.76, height: 0.58 },
+    { x: 5.5, z: -5.62, height: 0.78 },
+    { x: 7.6, z: -5.35, height: 0.65 }
+  ];
+  for (let v = 0; v < viaductPiers.length; v = v + 1) {
+    let vp = viaductPiers[v];
+    list.push({
+      id: "viaduct-pier-" + v,
+      type: "box",
+      width: 0.72,
+      height: vp.height,
+      depth: 0.72,
+      position: { x: vp.x, y: 0.52 + vp.height / 2, z: vp.z },
+      color: "#78716c",
+      flatShading: true,
+      castShadow: true,
+      receiveShadow: true
+    });
+  }
+
+  // Alpine Mountain Backdrop along Rear Table Edge (Positioned at z = -8.2, well behind track at z = -5.8)
+  list.push({
+    id: "mountain-ridge-right",
+    type: "cone",
+    radius: 2.5,
+    height: 4.8,
+    position: { x: 10.5, y: 2.8, z: -8.2 },
+    color: "#57534e",
+    flatShading: true,
+    castShadow: true
+  });
+  list.push({
+    id: "mountain-ridge-center",
+    type: "box",
+    width: 12.0,
+    height: 3.5,
+    depth: 1.8,
+    position: { x: 0.0, y: 2.2, z: -8.2 },
+    color: "#44403c",
+    flatShading: true,
+    castShadow: true
+  });
+  list.push({
+    id: "mountain-ridge-left",
+    type: "cone",
+    radius: 2.5,
+    height: 4.5,
+    position: { x: -9.5, y: 2.6, z: -8.2 },
+    color: "#57534e",
+    flatShading: true,
+    castShadow: true
+  });
+
+  // Classification Yard Tracks (3 Staging tracks in the yard area, clear of mainline)
+  let yardTracks = [
+    { z: 0.6, x1: -7.5, x2: 0.5 },
+    { z: 1.8, x1: -7.0, x2: -0.5 },
+    { z: 3.0, x1: -6.5, x2: -1.5 }
+  ];
+  for (let y = 0; y < yardTracks.length; y = y + 1) {
+    let yt = yardTracks[y];
+    let len = yt.x2 - yt.x1;
+    let midX = (yt.x1 + yt.x2) / 2;
+    list.push({
+      id: "yard-bed-" + y,
+      type: "box",
+      width: len,
+      height: 0.05,
+      depth: 0.8,
+      position: { x: midX, y: 0.54, z: yt.z },
+      color: "#57534e",
+      receiveShadow: true
+    });
+    list.push({
+      id: "yard-rail-l-" + y,
+      type: "box",
+      width: len,
+      height: 0.04,
+      depth: 0.035,
+      position: { x: midX, y: 0.58, z: yt.z - 0.22 },
+      color: "#cbd5e1",
+      metalness: 0.85
+    });
+    list.push({
+      id: "yard-rail-r-" + y,
+      type: "box",
+      width: len,
+      height: 0.04,
+      depth: 0.035,
+      position: { x: midX, y: 0.58, z: yt.z + 0.22 },
+      color: "#cbd5e1",
+      metalness: 0.85
+    });
+    list.push({
+      id: "yard-bumper-" + y,
+      type: "box",
+      width: 0.4,
+      height: 0.45,
+      depth: 0.65,
+      position: { x: yt.x1 - 0.2, y: 0.75, z: yt.z },
+      color: "#b91c1c",
+      castShadow: true
+    });
+  }
+
+  // Staged Rolling Stock on Yard Tracks
+  list.push({
+    id: "staged-boxcar",
+    type: "box",
+    width: 2.8,
+    height: 1.0,
+    depth: 0.72,
+    position: { x: -4.5, y: 1.15, z: 0.6 },
+    color: "#991b1b",
+    castShadow: true
+  });
+  list.push({
+    id: "staged-tanker",
+    type: "capsule",
+    radius: 0.38,
+    height: 2.0,
+    position: { x: -2.0, y: 1.1, z: 0.6 },
+    rotation: { x: 0, y: 0, z: Math.PI / 2 },
+    color: "#cbd5e1",
+    metalness: 0.85,
+    castShadow: true
+  });
+  list.push({
+    id: "staged-flatcar",
+    type: "box",
+    width: 2.6,
+    height: 0.2,
+    depth: 0.72,
+    position: { x: -4.0, y: 0.75, z: 3.0 },
+    color: "#1e293b",
+    castShadow: true
+  });
+  for (let l = 0; l < 3; l = l + 1) {
+    list.push({
+      id: "staged-log-" + l,
+      type: "capsule",
+      radius: 0.15,
+      height: 2.1,
+      position: { x: -4.0, y: 0.95 + (l === 2 ? 0.22 : 0), z: 2.88 + (l === 2 ? 0.12 : l * 0.24) },
+      rotation: { x: 0, y: 0, z: Math.PI / 2 },
+      color: "#78350f",
+      castShadow: true
+    });
+  }
+
+  // Two Yard Lattice Floodlight Towers
+  let floodlights = [
+    { x: -7.5, z: 2.4 },
+    { x: -1.2, z: 2.4 }
+  ];
+  for (let f = 0; f < floodlights.length; f = f + 1) {
+    let fl = floodlights[f];
+    list.push({
+      id: "yard-tower-pole-" + f,
+      type: "cylinder",
+      radius: 0.08,
+      height: 4.8,
+      position: { x: fl.x, y: 2.9, z: fl.z },
+      color: "#64748b",
+      metalness: 0.7
+    });
+    list.push({
+      id: "yard-tower-head-" + f,
+      type: "box",
+      width: 0.45,
+      height: 0.25,
+      depth: 0.35,
+      position: { x: fl.x, y: 5.2, z: fl.z },
+      color: "#334155"
+    });
+    list.push({
+      id: "yard-tower-beacon-" + f,
+      type: "sphere",
+      radius: 0.12,
+      position: { x: fl.x, y: 5.15, z: fl.z - 0.15 },
+      color: "#fef08a",
+      emissive: lightsEnabled ? "#fef08a" : "#000000",
+      emissiveIntensity: lightsEnabled ? 2.5 : 0.0
+    });
+  }
+
+  // Engine Terminal: Turntable Pit safely centered at x = -4.5, z = -1.2
+  list.push({
+    id: "turntable-pit",
+    type: "cylinder",
+    radius: 1.8,
+    height: 0.18,
+    position: { x: -4.5, y: 0.53, z: -1.2 },
+    color: "#57534e",
+    receiveShadow: true
+  });
+  list.push({
+    id: "turntable-pivot",
+    type: "cylinder",
+    radius: 0.32,
+    height: 0.32,
+    position: { x: -4.5, y: 0.65, z: -1.2 },
+    color: "#1c1917"
+  });
+
+  // 3-Stall Brick Roundhouse (Safely positioned at z = -3.2, facing turntable with > 0.71 clearance)
+  let roundhouseStalls = [
+    { x: -5.8, z: -3.1, rot: 0.25 },
+    { x: -4.5, z: -3.3, rot: 0.0 },
+    { x: -3.2, z: -3.1, rot: -0.25 }
+  ];
+  for (let r = 0; r < 3; r = r + 1) {
+    let st = roundhouseStalls[r];
+    list.push({
+      id: "roundhouse-" + r,
+      type: "box",
+      width: 1.6,
+      height: 1.8,
+      depth: 2.2,
+      position: { x: st.x, y: 1.45, z: st.z },
+      rotation: { x: 0, y: st.rot, z: 0 },
+      color: "#831843",
+      castShadow: true
+    });
+    list.push({
+      id: "roundhouse-door-" + r,
+      type: "box",
+      width: 1.2,
+      height: 1.4,
+      depth: 0.18,
+      position: {
+        x: st.x,
+        y: 1.25,
+        z: st.z + 1.05
+      },
+      rotation: { x: 0, y: st.rot, z: 0 },
+      color: "#0f172a"
+    });
+  }
+
+  // Wooden Water Tank Tower on Timber Trestle
+  list.push({
+    id: "water-tank-body",
+    type: "cylinder",
+    radius: 0.75,
+    height: 1.4,
+    position: { x: -7.2, y: 2.2, z: -1.2 },
+    color: "#78350f",
+    castShadow: true
+  });
+  list.push({
+    id: "water-tank-roof",
+    type: "cone",
+    radius: 0.9,
+    height: 0.6,
+    position: { x: -7.2, y: 3.1, z: -1.2 },
+    color: "#451a03"
+  });
+
+  // Harbor Basin, Quays & Moored Cargo Coaster Ship
+  list.push({
+    id: "harbor-water",
+    type: "box",
+    width: 4.8,
+    height: 0.08,
+    depth: 3.8,
+    position: { x: 6.2, y: 0.42, z: 1.8 },
+    color: "#0284c7",
+    opacity: 0.85,
+    roughness: 0.08,
+    metalness: 0.35
+  });
+  list.push({
+    id: "harbor-ship-hull",
+    type: "box",
+    width: 3.4,
+    height: 0.7,
+    depth: 1.2,
+    position: { x: 6.0, y: 0.65, z: 1.8 },
+    color: "#991b1b",
+    castShadow: true
+  });
+  list.push({
+    id: "harbor-ship-cab",
+    type: "box",
+    width: 1.0,
+    height: 0.75,
+    depth: 0.9,
+    position: { x: 4.8, y: 1.15, z: 1.8 },
+    color: "#f8fafc",
+    castShadow: true
+  });
+  list.push({
+    id: "harbor-ship-funnel",
+    type: "cylinder",
+    radius: 0.14,
+    height: 0.55,
+    position: { x: 5.6, y: 1.45, z: 1.8 },
+    color: "#fbbf24"
+  });
+
+  // Triple Stainless Steel Grain Silos
+  for (let s = 0; s < 3; s = s + 1) {
+    list.push({
+      id: "grain-silo-" + s,
+      type: "capsule",
+      radius: 0.5,
+      height: 2.2,
+      position: { x: 5.2 + s * 1.2, y: 1.7, z: -1.2 },
+      color: "#e2e8f0",
+      metalness: 0.75,
+      roughness: 0.25,
+      castShadow: true
+    });
+  }
+
+  // Victorian Passenger Station Platform
+  list.push({
+    id: "station-platform",
+    type: "box",
+    width: 6.8,
+    height: 0.18,
+    depth: 0.45,
+    position: { x: 0.0, y: 0.65, z: 6.45 },
+    color: "#a8a29e",
+    receiveShadow: true
+  });
+
+  // Station Depot Building
+  list.push({
+    id: "station-depot",
+    type: "box",
+    width: 3.4,
+    height: 1.5,
+    depth: 0.75,
+    position: { x: -0.2, y: 1.35, z: 7.15 },
+    color: "#991b1b",
+    castShadow: true
+  });
+  list.push({
+    id: "station-roof",
+    type: "prism",
+    width: 3.8,
+    height: 0.85,
+    depth: 0.95,
+    position: { x: -0.2, y: 2.5, z: 7.15 },
+    color: "#1e293b",
+    flatShading: true,
+    castShadow: true
+  });
+
+  // Town Commercial Shops (Hotel, General Store, Bakery at z = 7.15)
+  let shops = [
+    { x: 3.5, name: "hotel", color: "#fef3c7", roofColor: "#15803d", width: 2.2, height: 2.0, depth: 0.75 },
+    { x: -3.5, name: "store", color: "#dc2626", roofColor: "#475569", width: 1.9, height: 1.6, depth: 0.75 },
+    { x: -5.6, name: "bakery", color: "#f59e0b", roofColor: "#78350f", width: 1.8, height: 1.5, depth: 0.75 }
+  ];
+  for (let s = 0; s < shops.length; s = s + 1) {
+    let sh = shops[s];
+    list.push({
+      id: "shop-" + sh.name,
+      type: "box",
+      width: sh.width,
+      height: sh.height,
+      depth: sh.depth,
+      position: { x: sh.x, y: 0.55 + sh.height / 2, z: 7.15 },
+      color: sh.color,
+      castShadow: true
+    });
+    list.push({
+      id: "roof-" + sh.name,
+      type: "prism",
+      width: sh.width + 0.25,
+      height: 0.75,
+      depth: sh.depth + 0.25,
+      position: { x: sh.x, y: 0.55 + sh.height + 0.37, z: 7.15 },
+      color: sh.roofColor,
+      flatShading: true,
+      castShadow: true
+    });
+  }
+
+  // Paved Town Street (Straight two-lane roadway with turnarounds strictly on the table deck at z = 8.05)
+  list.push({
+    id: "street-asphalt",
+    type: "box",
+    width: 10.2,
+    height: 0.02,
+    depth: 0.96,
+    position: { x: 0, y: 0.54, z: 8.05 },
+    color: "#334155",
+    receiveShadow: true
+  });
+  // East turnaround loop pavement
+  list.push({
+    id: "street-turn-e",
+    type: "cylinder",
+    radius: 0.48,
+    height: 0.02,
+    position: { x: 4.5, y: 0.54, z: 8.05 },
+    color: "#334155"
+  });
+  // West turnaround loop pavement
+  list.push({
+    id: "street-turn-w",
+    type: "cylinder",
+    radius: 0.48,
+    height: 0.02,
+    position: { x: -4.5, y: 0.54, z: 8.05 },
+    color: "#334155"
+  });
+  // Yellow Center Lane Divider Stripe
+  list.push({
+    id: "street-line",
+    type: "box",
+    width: 9.0,
+    height: 0.022,
+    depth: 0.035,
+    position: { x: 0, y: 0.542, z: 8.05 },
+    color: "#fbbf24"
+  });
+  // Rear Sidewalk in front of shops
+  list.push({
+    id: "sidewalk-rear",
+    type: "box",
+    width: 13.8,
+    height: 0.035,
+    depth: 0.25,
+    position: { x: 0, y: 0.545, z: 7.55 },
+    color: "#94a3b8"
+  });
+  // Front Sidewalk curb along front table edge
+  list.push({
+    id: "sidewalk-front",
+    type: "box",
+    width: 13.8,
+    height: 0.035,
+    depth: 0.30,
+    position: { x: 0, y: 0.545, z: 8.58 },
+    color: "#94a3b8"
+  });
+
+  // Front Fascia Control Board Backing & Brass Bezel Mounts
+  list.push({
+    id: "ctrl-plate",
+    type: "box",
+    width: 14.6,
+    height: 0.95,
+    depth: 0.06,
+    position: { x: 0, y: 0.35, z: 9.32 },
+    color: "#0f172a"
+  });
+
+  // 1. Throttle Bezel & Slot
+  list.push({
+    id: "ctrl-bezel-throttle",
+    type: "box",
+    width: 3.4,
+    height: 0.46,
+    depth: 0.04,
+    position: { x: -4.5, y: 0.35, z: 9.34 },
+    color: "#b45309",
+    metalness: 0.8
+  });
+  list.push({
+    id: "ctrl-slot",
+    type: "box",
+    width: 2.8,
+    height: 0.14,
+    depth: 0.06,
+    position: { x: -4.5, y: 0.35, z: 9.36 },
+    color: "#020617"
+  });
+  let ticks = [
+    { x: -5.8, label: "0" },
+    { x: -4.9, label: "35" },
+    { x: -4.0, label: "70" },
+    { x: -3.2, label: "100" }
+  ];
+  for (let k = 0; k < ticks.length; k = k + 1) {
+    list.push({
+      id: "ctrl-tick-" + k,
+      type: "box",
+      width: 0.03,
+      height: 0.08,
+      depth: 0.02,
+      position: { x: ticks[k].x, y: 0.50, z: 9.36 },
+      color: "#fbbf24"
+    });
+  }
+
+  // 2. Direction Bezel
+  list.push({
+    id: "ctrl-bezel-dir",
+    type: "box",
+    width: 1.4,
+    height: 0.65,
+    depth: 0.04,
+    position: { x: -1.8, y: 0.35, z: 9.34 },
+    color: "#b45309",
+    metalness: 0.8
+  });
+
+  // 3. Whistle Bezel
+  list.push({
+    id: "ctrl-bezel-whistle",
+    type: "cylinder",
+    radius: 0.32,
+    height: 0.04,
+    position: { x: 0.0, y: 0.35, z: 9.34 },
+    rotation: { x: Math.PI / 2, y: 0, z: 0 },
+    color: "#b45309",
+    metalness: 0.8
+  });
+
+  // 4. Turntable Dial Bezel
+  list.push({
+    id: "ctrl-bezel-turntable",
+    type: "cylinder",
+    radius: 0.34,
+    height: 0.04,
+    position: { x: 1.8, y: 0.35, z: 9.34 },
+    rotation: { x: Math.PI / 2, y: 0, z: 0 },
+    color: "#b45309",
+    metalness: 0.8
+  });
+
+  // 5. Lights Switch Bezel
+  list.push({
+    id: "ctrl-bezel-lights",
+    type: "box",
+    width: 1.4,
+    height: 0.65,
+    depth: 0.04,
+    position: { x: 3.8, y: 0.35, z: 9.34 },
+    color: "#b45309",
+    metalness: 0.8
+  });
+
+  return list;
+}
+
+const staticObjects = buildStaticScenery();
+
+// Build Dynamic Objects on each tick with Fully Connected Consist & Non-Colliding Traffic
+function buildDynamicObjects() {
+  let list = [];
+
+  // Wheel rotation calculation for mechanical drive rods
+  let wheelRot = trainProgress * 208.6;
+  let rodOffsetY = Math.sin(wheelRot) * 0.12;
+  let rodOffsetZ = Math.cos(wheelRot) * 0.12;
+
+  // 1. STEAM LOCOMOTIVE
+  let locoPt = getTrackPoint(trainProgress);
+  let locoHead = getTrackHeading(trainProgress);
+
+  let locoChildren = [
+    // Boiler (Graphite steel)
+    {
+      id: "loco-boiler",
+      type: "cylinder",
+      radius: 0.38,
+      height: 1.8,
+      position: { x: 0, y: 0.65, z: 0.2 },
+      rotation: { x: Math.PI / 2, y: 0, z: 0 },
+      color: "#334155",
+      metalness: 0.75,
+      roughness: 0.3,
+      castShadow: true
+    },
+    // Brass Boiler Bands
+    {
+      id: "loco-band-1",
+      type: "cylinder",
+      radius: 0.39,
+      height: 0.05,
+      position: { x: 0, y: 0.65, z: 0.6 },
+      rotation: { x: Math.PI / 2, y: 0, z: 0 },
+      color: "#fbbf24",
+      metalness: 0.9,
+      roughness: 0.15
+    },
+    {
+      id: "loco-band-2",
+      type: "cylinder",
+      radius: 0.39,
+      height: 0.05,
+      position: { x: 0, y: 0.65, z: 0.0 },
+      rotation: { x: Math.PI / 2, y: 0, z: 0 },
+      color: "#fbbf24",
+      metalness: 0.9,
+      roughness: 0.15
+    },
+    // Locomotive Cab
+    {
+      id: "loco-cab",
+      type: "box",
+      width: 0.86,
+      height: 0.95,
+      depth: 0.9,
+      position: { x: 0, y: 0.72, z: -0.7 },
+      color: "#1e3a5f",
+      castShadow: true
+    },
+    // Cab Windows (Glow warmly at night)
+    {
+      id: "loco-window",
+      type: "box",
+      width: 0.88,
+      height: 0.28,
+      depth: 0.45,
+      position: { x: 0, y: 0.85, z: -0.65 },
+      color: isNight && lightsEnabled ? "#fef08a" : "#bae6fd",
+      emissive: isNight && lightsEnabled ? "#fef08a" : "#000000",
+      emissiveIntensity: isNight && lightsEnabled ? 2.0 : 0.0
+    },
+    // Smokestack Chimney
+    {
+      id: "loco-stack",
+      type: "cylinder",
+      radius: 0.12,
+      height: 0.45,
+      position: { x: 0, y: 1.15, z: 0.95 },
+      color: "#0f172a"
+    },
+    // Brass Steam Dome & Bell
+    {
+      id: "loco-dome",
+      type: "sphere",
+      radius: 0.18,
+      position: { x: 0, y: 1.05, z: 0.4 },
+      color: "#fbbf24",
+      metalness: 0.9,
+      roughness: 0.15
+    },
+    // Cowcatcher (Pilot wedge)
+    {
+      id: "loco-cowcatcher",
+      type: "box",
+      width: 0.78,
+      height: 0.28,
+      depth: 0.35,
+      position: { x: 0, y: 0.22, z: 1.25 },
+      color: "#1e293b"
+    },
+    // Front Headlight with Forward Glowing Lens
+    {
+      id: "loco-headlight-housing",
+      type: "cylinder",
+      radius: 0.14,
+      height: 0.24,
+      position: { x: 0, y: 0.96, z: 1.15 },
+      rotation: { x: Math.PI / 2, y: 0, z: 0 },
+      color: "#fbbf24",
+      metalness: 0.9
+    },
+    {
+      id: "loco-headlight-lens",
+      type: "sphere",
+      radius: 0.12,
+      position: { x: 0, y: 0.96, z: 1.27 },
+      color: "#ffffff",
+      emissive: lightsEnabled ? "#fef08a" : "#333333",
+      emissiveIntensity: lightsEnabled ? 3.0 : 0.0
+    },
+    // 6 Large Drive Wheels with Brass Counterweights
+    {
+      id: "loco-wheel-1",
+      type: "cylinder",
+      radius: 0.28,
+      height: 0.86,
+      position: { x: 0, y: 0.28, z: 0.6 },
+      rotation: { x: wheelRot, y: 0, z: Math.PI / 2 },
+      color: "#1e293b",
+      metalness: 0.8
+    },
+    {
+      id: "loco-wheel-2",
+      type: "cylinder",
+      radius: 0.28,
+      height: 0.86,
+      position: { x: 0, y: 0.28, z: 0.0 },
+      rotation: { x: wheelRot, y: 0, z: Math.PI / 2 },
+      color: "#1e293b",
+      metalness: 0.8
+    },
+    {
+      id: "loco-wheel-3",
+      type: "cylinder",
+      radius: 0.28,
+      height: 0.86,
+      position: { x: 0, y: 0.28, z: -0.6 },
+      rotation: { x: wheelRot, y: 0, z: Math.PI / 2 },
+      color: "#1e293b",
+      metalness: 0.8
+    },
+    // Mechanical Connecting Side-Rods
+    {
+      id: "loco-rod-l",
+      type: "box",
+      width: 0.04,
+      height: 0.06,
+      depth: 1.25,
+      position: { x: -0.45, y: 0.28 + rodOffsetY, z: 0.0 + rodOffsetZ },
+      color: "#cbd5e1",
+      metalness: 0.9,
+      roughness: 0.15
+    },
+    {
+      id: "loco-rod-r",
+      type: "box",
+      width: 0.04,
+      height: 0.06,
+      depth: 1.25,
+      position: { x: 0.45, y: 0.28 + rodOffsetY, z: 0.0 + rodOffsetZ },
+      color: "#cbd5e1",
+      metalness: 0.9,
+      roughness: 0.15
+    },
+    // Rear Drawbar & Knuckle Coupler
+    {
+      id: "loco-drawbar-rear",
+      type: "box",
+      width: 0.12,
+      height: 0.10,
+      depth: 0.45,
+      position: { x: 0, y: 0.32, z: -1.25 },
+      color: "#0f172a",
+      metalness: 0.85
+    },
+    {
+      id: "loco-knuckle-rear",
+      type: "box",
+      width: 0.18,
+      height: 0.14,
+      depth: 0.18,
+      position: { x: 0, y: 0.32, z: -1.45 },
+      color: "#1e293b",
+      metalness: 0.9
+    }
+  ];
+
+  list.push({
+    id: "train-loco",
+    type: "group",
+    position: { x: locoPt.x, y: locoPt.y, z: locoPt.z },
+    rotation: { x: 0, y: locoHead, z: 0 },
+    children: locoChildren
+  });
+
+  // Update Chimney Smoke Particles
+  let chimneyX = locoPt.x + Math.sin(locoHead) * 0.95;
+  let chimneyZ = locoPt.z + Math.cos(locoHead) * 0.95;
+  let chimneyY = locoPt.y + 1.25;
+  updateSmoke(chimneyX, chimneyY, chimneyZ, trainSpeed);
+
+  // 2. COAL TENDER (Articulated group firmly coupled to locomotive)
+  let tenderProg = trainProgress - 0.038;
+  let tenderPt = getTrackPoint(tenderProg);
+  let tenderHead = getTrackHeading(tenderProg);
+
+  list.push({
+    id: "train-tender",
+    type: "group",
+    position: { x: tenderPt.x, y: tenderPt.y, z: tenderPt.z },
+    rotation: { x: 0, y: tenderHead, z: 0 },
+    children: [
+      {
+        id: "tender-body",
+        type: "box",
+        width: 0.82,
+        height: 0.65,
+        depth: 1.4,
+        position: { x: 0, y: 0.52, z: 0 },
+        color: "#1e293b",
+        castShadow: true
+      },
+      {
+        id: "tender-coal",
+        type: "box",
+        width: 0.72,
+        height: 0.28,
+        depth: 1.0,
+        position: { x: 0, y: 0.75, z: 0.05 },
+        color: "#09090b",
+        roughness: 0.95
+      },
+      // Cab-to-Tender Gangway Footplate
+      {
+        id: "tender-footplate",
+        type: "box",
+        width: 0.62,
+        height: 0.04,
+        depth: 0.45,
+        position: { x: 0, y: 0.46, z: 0.82 },
+        color: "#09090b"
+      },
+      // Front Drawbar (Interlocks with locomotive rear knuckle)
+      {
+        id: "tender-drawbar-front",
+        type: "box",
+        width: 0.12,
+        height: 0.10,
+        depth: 0.45,
+        position: { x: 0, y: 0.32, z: 0.85 },
+        color: "#0f172a",
+        metalness: 0.85
+      },
+      {
+        id: "tender-knuckle-front",
+        type: "box",
+        width: 0.18,
+        height: 0.14,
+        depth: 0.18,
+        position: { x: 0, y: 0.32, z: 1.05 },
+        color: "#1e293b",
+        metalness: 0.9
+      },
+      // Rear Coupler (Connects with boxcar)
+      {
+        id: "tender-coupler-rear",
+        type: "box",
+        width: 0.10,
+        height: 0.09,
+        depth: 0.38,
+        position: { x: 0, y: 0.32, z: -0.85 },
+        color: "#0f172a"
+      },
+      {
+        id: "tender-knuckle-rear",
+        type: "box",
+        width: 0.16,
+        height: 0.13,
+        depth: 0.15,
+        position: { x: 0, y: 0.32, z: -1.02 },
+        color: "#1e293b",
+        metalness: 0.85
+      },
+      {
+        id: "tender-wheel-1",
+        type: "cylinder",
+        radius: 0.18,
+        height: 0.82,
+        position: { x: 0, y: 0.18, z: 0.4 },
+        rotation: { x: wheelRot * 1.5, y: 0, z: Math.PI / 2 },
+        color: "#0f172a"
+      },
+      {
+        id: "tender-wheel-2",
+        type: "cylinder",
+        radius: 0.18,
+        height: 0.82,
+        position: { x: 0, y: 0.18, z: -0.4 },
+        rotation: { x: wheelRot * 1.5, y: 0, z: Math.PI / 2 },
+        color: "#0f172a"
+      }
+    ]
+  });
+
+  // 3. VINTAGE BURGUNDY BOXCAR (Articulated group with front and rear interlocking couplers)
+  let boxcarProg = trainProgress - 0.076;
+  let boxcarPt = getTrackPoint(boxcarProg);
+  let boxcarHead = getTrackHeading(boxcarProg);
+
+  list.push({
+    id: "train-boxcar",
+    type: "group",
+    position: { x: boxcarPt.x, y: boxcarPt.y, z: boxcarPt.z },
+    rotation: { x: 0, y: boxcarHead, z: 0 },
+    children: [
+      {
+        id: "boxcar-body",
+        type: "box",
+        width: 0.82,
+        height: 0.82,
+        depth: 1.7,
+        position: { x: 0, y: 0.65, z: 0 },
+        color: "#991b1b",
+        castShadow: true
+      },
+      {
+        id: "boxcar-roof",
+        type: "box",
+        width: 0.86,
+        height: 0.08,
+        depth: 1.76,
+        position: { x: 0, y: 1.1, z: 0 },
+        color: "#334155"
+      },
+      // Front Coupler (Interlocks with tender rear coupler)
+      {
+        id: "boxcar-coupler-front",
+        type: "box",
+        width: 0.10,
+        height: 0.09,
+        depth: 0.38,
+        position: { x: 0, y: 0.32, z: 0.98 },
+        color: "#0f172a"
+      },
+      {
+        id: "boxcar-knuckle-front",
+        type: "box",
+        width: 0.16,
+        height: 0.13,
+        depth: 0.15,
+        position: { x: 0, y: 0.32, z: 1.15 },
+        color: "#1e293b",
+        metalness: 0.85
+      },
+      // Rear Coupler (Extends back to connect with tanker)
+      {
+        id: "boxcar-coupler-rear",
+        type: "box",
+        width: 0.10,
+        height: 0.09,
+        depth: 0.38,
+        position: { x: 0, y: 0.32, z: -0.98 },
+        color: "#0f172a"
+      },
+      {
+        id: "boxcar-knuckle-rear",
+        type: "box",
+        width: 0.16,
+        height: 0.13,
+        depth: 0.15,
+        position: { x: 0, y: 0.32, z: -1.15 },
+        color: "#1e293b",
+        metalness: 0.85
+      },
+      {
+        id: "boxcar-wheel-1",
+        type: "cylinder",
+        radius: 0.18,
+        height: 0.82,
+        position: { x: 0, y: 0.18, z: 0.55 },
+        rotation: { x: wheelRot * 1.5, y: 0, z: Math.PI / 2 },
+        color: "#0f172a"
+      },
+      {
+        id: "boxcar-wheel-2",
+        type: "cylinder",
+        radius: 0.18,
+        height: 0.82,
+        position: { x: 0, y: 0.18, z: -0.55 },
+        rotation: { x: wheelRot * 1.5, y: 0, z: Math.PI / 2 },
+        color: "#0f172a"
+      }
+    ]
+  });
+
+  // 4. CHEMICAL TANK CAR (Articulated group with front and rear interlocking couplers)
+  let tankerProg = trainProgress - 0.114;
+  let tankerPt = getTrackPoint(tankerProg);
+  let tankerHead = getTrackHeading(tankerProg);
+
+  list.push({
+    id: "train-tanker",
+    type: "group",
+    position: { x: tankerPt.x, y: tankerPt.y, z: tankerPt.z },
+    rotation: { x: 0, y: tankerHead, z: 0 },
+    children: [
+      {
+        id: "tanker-cylinder",
+        type: "capsule",
+        radius: 0.36,
+        height: 1.3,
+        position: { x: 0, y: 0.64, z: 0 },
+        rotation: { x: Math.PI / 2, y: 0, z: 0 },
+        color: "#cbd5e1",
+        metalness: 0.85,
+        roughness: 0.18,
+        castShadow: true
+      },
+      {
+        id: "tanker-dome",
+        type: "cylinder",
+        radius: 0.15,
+        height: 0.16,
+        position: { x: 0, y: 1.05, z: 0 },
+        color: "#94a3b8",
+        metalness: 0.8
+      },
+      {
+        id: "tanker-frame",
+        type: "box",
+        width: 0.78,
+        height: 0.12,
+        depth: 1.7,
+        position: { x: 0, y: 0.28, z: 0 },
+        color: "#1e293b"
+      },
+      // Front Coupler (Interlocks with boxcar rear coupler)
+      {
+        id: "tanker-coupler-front",
+        type: "box",
+        width: 0.10,
+        height: 0.09,
+        depth: 0.38,
+        position: { x: 0, y: 0.32, z: 0.98 },
+        color: "#0f172a"
+      },
+      {
+        id: "tanker-knuckle-front",
+        type: "box",
+        width: 0.16,
+        height: 0.13,
+        depth: 0.15,
+        position: { x: 0, y: 0.32, z: 1.15 },
+        color: "#1e293b",
+        metalness: 0.85
+      },
+      // Rear Coupler (Extends back to connect with caboose)
+      {
+        id: "tanker-coupler-rear",
+        type: "box",
+        width: 0.10,
+        height: 0.09,
+        depth: 0.38,
+        position: { x: 0, y: 0.32, z: -0.98 },
+        color: "#0f172a"
+      },
+      {
+        id: "tanker-knuckle-rear",
+        type: "box",
+        width: 0.16,
+        height: 0.13,
+        depth: 0.15,
+        position: { x: 0, y: 0.32, z: -1.15 },
+        color: "#1e293b",
+        metalness: 0.85
+      },
+      {
+        id: "tanker-wheel-1",
+        type: "cylinder",
+        radius: 0.18,
+        height: 0.82,
+        position: { x: 0, y: 0.18, z: 0.55 },
+        rotation: { x: wheelRot * 1.5, y: 0, z: Math.PI / 2 },
+        color: "#0f172a"
+      },
+      {
+        id: "tanker-wheel-2",
+        type: "cylinder",
+        radius: 0.18,
+        height: 0.82,
+        position: { x: 0, y: 0.18, z: -0.55 },
+        rotation: { x: wheelRot * 1.5, y: 0, z: Math.PI / 2 },
+        color: "#0f172a"
+      }
+    ]
+  });
+
+  // 5. BRIGHT RED CABOOSE WITH CUPOLA (Articulated group with front coupler and rear marker lamps)
+  let cabooseProg = trainProgress - 0.152;
+  let caboosePt = getTrackPoint(cabooseProg);
+  let cabooseHead = getTrackHeading(cabooseProg);
+
+  list.push({
+    id: "train-caboose",
+    type: "group",
+    position: { x: caboosePt.x, y: caboosePt.y, z: caboosePt.z },
+    rotation: { x: 0, y: cabooseHead, z: 0 },
+    children: [
+      {
+        id: "caboose-body",
+        type: "box",
+        width: 0.82,
+        height: 0.72,
+        depth: 1.5,
+        position: { x: 0, y: 0.6, z: 0 },
+        color: "#dc2626",
+        castShadow: true
+      },
+      {
+        id: "caboose-cupola",
+        type: "box",
+        width: 0.68,
+        height: 0.38,
+        depth: 0.55,
+        position: { x: 0, y: 1.1, z: 0.05 },
+        color: "#f59e0b"
+      },
+      {
+        id: "caboose-pipe",
+        type: "cylinder",
+        radius: 0.04,
+        height: 0.35,
+        position: { x: 0.22, y: 1.25, z: -0.4 },
+        color: "#0f172a"
+      },
+      // Front Coupler (Interlocks with tanker rear coupler)
+      {
+        id: "caboose-coupler-front",
+        type: "box",
+        width: 0.10,
+        height: 0.09,
+        depth: 0.38,
+        position: { x: 0, y: 0.32, z: 0.90 },
+        color: "#0f172a"
+      },
+      {
+        id: "caboose-knuckle-front",
+        type: "box",
+        width: 0.16,
+        height: 0.13,
+        depth: 0.15,
+        position: { x: 0, y: 0.32, z: 1.08 },
+        color: "#1e293b",
+        metalness: 0.85
+      },
+      // Rear Marker Lamps (Glow red at night)
+      {
+        id: "caboose-marker-l",
+        type: "sphere",
+        radius: 0.06,
+        position: { x: -0.38, y: 0.75, z: -0.78 },
+        color: "#ef4444",
+        emissive: "#ef4444",
+        emissiveIntensity: lightsEnabled ? 2.5 : 0.5
+      },
+      {
+        id: "caboose-marker-r",
+        type: "sphere",
+        radius: 0.06,
+        position: { x: 0.38, y: 0.75, z: -0.78 },
+        color: "#ef4444",
+        emissive: "#ef4444",
+        emissiveIntensity: lightsEnabled ? 2.5 : 0.5
+      },
+      {
+        id: "caboose-wheel-1",
+        type: "cylinder",
+        radius: 0.18,
+        height: 0.82,
+        position: { x: 0, y: 0.18, z: 0.45 },
+        rotation: { x: wheelRot * 1.5, y: 0, z: Math.PI / 2 },
+        color: "#0f172a"
+      },
+      {
+        id: "caboose-wheel-2",
+        type: "cylinder",
+        radius: 0.18,
+        height: 0.82,
+        position: { x: 0, y: 0.18, z: -0.45 },
+        rotation: { x: wheelRot * 1.5, y: 0, z: Math.PI / 2 },
+        color: "#0f172a"
+      }
+    ]
+  });
+
+  // Billowing Steam Particles
+  list.push({
+    id: "smoke-particles",
+    type: "particles",
+    particlePositions: smokePositions,
+    particleSize: whistleActive ? 0.35 : 0.22,
+    color: "#ffffff",
+    opacity: 0.75
+  });
+
+  // 6. Turntable Rotating Bridge (Group, Safely centered at x = -4.5, z = -1.2)
+  list.push({
+    id: "turntable-bridge",
+    type: "group",
+    position: { x: -4.5, y: 0.65, z: -1.2 },
+    rotation: { x: 0, y: turntableAngle, z: 0 },
+    children: [
+      {
+        id: "bridge-deck",
+        type: "box",
+        width: 0.76,
+        height: 0.08,
+        depth: 3.4,
+        position: { x: 0, y: 0, z: 0 },
+        color: "#334155",
+        castShadow: true
+      },
+      {
+        id: "bridge-girder-l",
+        type: "box",
+        width: 0.06,
+        height: 0.35,
+        depth: 3.4,
+        position: { x: -0.4, y: 0.14, z: 0 },
+        color: "#1e293b"
+      },
+      {
+        id: "bridge-girder-r",
+        type: "box",
+        width: 0.06,
+        height: 0.35,
+        depth: 3.4,
+        position: { x: 0.4, y: 0.14, z: 0 },
+        color: "#1e293b"
+      },
+      {
+        id: "bridge-rail-l",
+        type: "box",
+        width: 0.04,
+        height: 0.04,
+        depth: 3.4,
+        position: { x: -0.22, y: 0.06, z: 0 },
+        color: "#cbd5e1",
+        metalness: 0.9
+      },
+      {
+        id: "bridge-rail-r",
+        type: "box",
+        width: 0.04,
+        height: 0.04,
+        depth: 3.4,
+        position: { x: 0.22, y: 0.06, z: 0 },
+        color: "#cbd5e1",
+        metalness: 0.9
+      },
+      {
+        id: "bridge-shack",
+        type: "box",
+        width: 0.35,
+        height: 0.5,
+        depth: 0.45,
+        position: { x: 0.58, y: 0.28, z: 0 },
+        color: "#f59e0b"
+      }
+    ]
+  });
+
+  // 7. Working Harbor Gantry Crane
+  list.push({
+    id: "harbor-crane",
+    type: "group",
+    position: { x: 4.5, y: 0.65, z: 0.6 },
+    rotation: { x: 0, y: craneAngle, z: 0 },
+    children: [
+      {
+        id: "crane-leg-l",
+        type: "box",
+        width: 0.1,
+        height: 2.4,
+        depth: 0.1,
+        position: { x: -0.45, y: 1.2, z: 0 },
+        color: "#f59e0b"
+      },
+      {
+        id: "crane-leg-r",
+        type: "box",
+        width: 0.1,
+        height: 2.4,
+        depth: 0.1,
+        position: { x: 0.45, y: 1.2, z: 0 },
+        color: "#f59e0b"
+      },
+      {
+        id: "crane-cab",
+        type: "box",
+        width: 0.9,
+        height: 0.75,
+        depth: 0.9,
+        position: { x: 0, y: 2.7, z: 0 },
+        color: "#d97706"
+      },
+      {
+        id: "crane-boom",
+        type: "box",
+        width: 0.15,
+        height: 0.15,
+        depth: 3.2,
+        position: { x: 0, y: 3.0, z: 1.3 },
+        rotation: { x: -0.22, y: 0, z: 0 },
+        color: "#f59e0b"
+      },
+      {
+        id: "crane-container",
+        type: "box",
+        width: 0.65,
+        height: 0.5,
+        depth: 1.4,
+        position: { x: 0, y: craneHoistY, z: 2.4 },
+        color: "#0284c7",
+        castShadow: true
+      }
+    ]
+  });
+
+  // 8. Town Delivery Truck (Moves East on South lane, smooth turn at cul-de-sac)
+  let carPt1 = getRoadPoint(carProgress1);
+  list.push({
+    id: "town-truck",
+    type: "group",
+    position: { x: carPt1.x, y: carPt1.y, z: carPt1.z },
+    rotation: { x: 0, y: carPt1.rot, z: 0 },
+    children: [
+      {
+        id: "truck-cab",
+        type: "box",
+        width: 0.38,
+        height: 0.42,
+        depth: 0.48,
+        position: { x: 0, y: 0.28, z: 0.28 },
+        color: "#15803d"
+      },
+      {
+        id: "truck-bed",
+        type: "box",
+        width: 0.40,
+        height: 0.38,
+        depth: 0.62,
+        position: { x: 0, y: 0.25, z: -0.28 },
+        color: "#d97706"
+      },
+      // 4 Rubber Tires with Hubcaps
+      {
+        id: "truck-wheel-fl",
+        type: "cylinder",
+        radius: 0.09,
+        height: 0.08,
+        position: { x: -0.22, y: 0.09, z: 0.28 },
+        rotation: { x: 0, y: 0, z: Math.PI / 2 },
+        color: "#09090b"
+      },
+      {
+        id: "truck-wheel-fr",
+        type: "cylinder",
+        radius: 0.09,
+        height: 0.08,
+        position: { x: 0.22, y: 0.09, z: 0.28 },
+        rotation: { x: 0, y: 0, z: Math.PI / 2 },
+        color: "#09090b"
+      },
+      {
+        id: "truck-wheel-rl",
+        type: "cylinder",
+        radius: 0.09,
+        height: 0.08,
+        position: { x: -0.22, y: 0.09, z: -0.28 },
+        rotation: { x: 0, y: 0, z: Math.PI / 2 },
+        color: "#09090b"
+      },
+      {
+        id: "truck-wheel-rr",
+        type: "cylinder",
+        radius: 0.09,
+        height: 0.08,
+        position: { x: 0.22, y: 0.09, z: -0.28 },
+        rotation: { x: 0, y: 0, z: Math.PI / 2 },
+        color: "#09090b"
+      },
+      // Headlights
+      {
+        id: "truck-light-l",
+        type: "sphere",
+        radius: 0.05,
+        position: { x: -0.14, y: 0.2, z: 0.54 },
+        color: "#fef08a",
+        emissive: lightsEnabled && isNight ? "#fef08a" : "#000000"
+      },
+      {
+        id: "truck-light-r",
+        type: "sphere",
+        radius: 0.05,
+        position: { x: 0.14, y: 0.2, z: 0.54 },
+        color: "#fef08a",
+        emissive: lightsEnabled && isNight ? "#fef08a" : "#000000"
+      }
+    ]
+  });
+
+  // 9. Town Classic Coupe Sedan (Positioned exactly half a lap apart from truck, moving in opposite lane)
+  let carPt2 = getRoadPoint(carProgress2);
+  list.push({
+    id: "town-sedan",
+    type: "group",
+    position: { x: carPt2.x, y: carPt2.y, z: carPt2.z },
+    rotation: { x: 0, y: carPt2.rot, z: 0 },
+    children: [
+      {
+        id: "sedan-body",
+        type: "box",
+        width: 0.36,
+        height: 0.26,
+        depth: 0.82,
+        position: { x: 0, y: 0.20, z: 0 },
+        color: "#0284c7"
+      },
+      {
+        id: "sedan-roof",
+        type: "box",
+        width: 0.32,
+        height: 0.22,
+        depth: 0.44,
+        position: { x: 0, y: 0.36, z: -0.05 },
+        color: "#f8fafc"
+      },
+      {
+        id: "sedan-wheel-fl",
+        type: "cylinder",
+        radius: 0.08,
+        height: 0.07,
+        position: { x: -0.20, y: 0.08, z: 0.26 },
+        rotation: { x: 0, y: 0, z: Math.PI / 2 },
+        color: "#09090b"
+      },
+      {
+        id: "sedan-wheel-fr",
+        type: "cylinder",
+        radius: 0.08,
+        height: 0.07,
+        position: { x: 0.20, y: 0.08, z: 0.26 },
+        rotation: { x: 0, y: 0, z: Math.PI / 2 },
+        color: "#09090b"
+      },
+      {
+        id: "sedan-wheel-rl",
+        type: "cylinder",
+        radius: 0.08,
+        height: 0.07,
+        position: { x: -0.20, y: 0.08, z: -0.26 },
+        rotation: { x: 0, y: 0, z: Math.PI / 2 },
+        color: "#09090b"
+      },
+      {
+        id: "sedan-wheel-rr",
+        type: "cylinder",
+        radius: 0.08,
+        height: 0.07,
+        position: { x: 0.20, y: 0.08, z: -0.26 },
+        rotation: { x: 0, y: 0, z: Math.PI / 2 },
+        color: "#09090b"
+      },
+      {
+        id: "sedan-light-l",
+        type: "sphere",
+        radius: 0.045,
+        position: { x: -0.13, y: 0.18, z: 0.43 },
+        color: "#fef08a",
+        emissive: lightsEnabled && isNight ? "#fef08a" : "#000000"
+      },
+      {
+        id: "sedan-light-r",
+        type: "sphere",
+        radius: 0.045,
+        position: { x: 0.13, y: 0.18, z: 0.43 },
+        color: "#fef08a",
+        emissive: lightsEnabled && isNight ? "#fef08a" : "#000000"
+      }
+    ]
+  });
+
+  // 10. Physical Front-of-Table Controls
+  // Control 1: Throttle Lever
+  let throttleX = -5.8 + trainSpeed * 2.6;
+  list.push({
+    id: "ctrl-throttle-lever",
+    type: "group",
+    position: { x: throttleX, y: 0.35, z: 9.42 },
+    cursor: "grab",
+    interactive: true,
+    children: [
+      {
+        id: "ctrl-throttle-shaft",
+        type: "cylinder",
+        radius: 0.04,
+        height: 0.44,
+        position: { x: 0, y: 0, z: 0.06 },
+        color: "#cbd5e1",
+        metalness: 0.9
+      },
+      {
+        id: "ctrl-throttle-knob",
+        type: "sphere",
+        radius: 0.15,
+        position: { x: 0, y: 0.25, z: 0.08 },
+        color: "#fbbf24",
+        metalness: 0.85,
+        roughness: 0.2
+      }
+    ]
+  });
+
+  // Control 2: Direction Switch
+  list.push({
+    id: "ctrl-switch-dir",
+    type: "box",
+    width: 0.12,
+    height: 0.36,
+    depth: 0.14,
+    position: { x: -1.8, y: 0.35, z: 9.44 },
+    rotation: { x: trainDirection > 0 ? 0.38 : -0.38, y: 0, z: 0 },
+    color: trainDirection > 0 ? "#38bdf8" : "#f59e0b",
+    cursor: "pointer",
+    interactive: true
+  });
+
+  // Control 3: Steam Whistle Plunger Button
+  list.push({
+    id: "ctrl-btn-whistle",
+    type: "cylinder",
+    radius: 0.20,
+    height: 0.14,
+    position: { x: 0.0, y: 0.35, z: whistleActive ? 9.38 : 9.46 },
+    rotation: { x: Math.PI / 2, y: 0, z: 0 },
+    color: "#ef4444",
+    emissive: whistleActive ? "#ef4444" : "#000000",
+    emissiveIntensity: whistleActive ? 2.0 : 0.0,
+    cursor: "pointer",
+    interactive: true
+  });
+
+  // Control 4: Turntable Rotary Dial
+  list.push({
+    id: "ctrl-turntable",
+    type: "cylinder",
+    radius: 0.24,
+    height: 0.14,
+    position: { x: 1.8, y: 0.35, z: 9.44 },
+    rotation: { x: Math.PI / 2, y: 0, z: turntableAngle * 2.0 },
+    color: "#d97706",
+    metalness: 0.75,
+    cursor: "pointer",
+    interactive: true
+  });
+  list.push({
+    id: "ctrl-turntable-pointer",
+    type: "box",
+    width: 0.04,
+    height: 0.22,
+    depth: 0.16,
+    position: {
+      x: 1.8 + Math.sin(-turntableAngle * 2.0) * 0.12,
+      y: 0.35 + Math.cos(-turntableAngle * 2.0) * 0.12,
+      z: 9.48
+    },
+    rotation: { x: 0, y: 0, z: turntableAngle * 2.0 },
+    color: "#ffffff"
+  });
+
+  // Control 5: Night Lights Toggle Switch & Green Neon Indicator Lamp
+  list.push({
+    id: "ctrl-switch-lights",
+    type: "box",
+    width: 0.12,
+    height: 0.36,
+    depth: 0.14,
+    position: { x: 3.8, y: 0.35, z: 9.44 },
+    rotation: { x: lightsEnabled ? 0.38 : -0.38, y: 0, z: 0 },
+    color: lightsEnabled ? "#22c55e" : "#64748b",
+    cursor: "pointer",
+    interactive: true
+  });
+  list.push({
+    id: "ctrl-lamp-lights",
+    type: "sphere",
+    radius: 0.08,
+    position: { x: 3.8, y: 0.58, z: 9.42 },
+    color: lightsEnabled ? "#4ade80" : "#1e293b",
+    emissive: lightsEnabled ? "#22c55e" : "#000000",
+    emissiveIntensity: lightsEnabled ? 3.0 : 0.0,
+    cursor: "pointer",
+    interactive: true
+  });
+
+  return list;
+}
+
+// Build Lighting based on Day-Night cycle
+function buildLights() {
+  let list = [];
+
+  let locoPt = getTrackPoint(trainProgress);
+  let locoHead = getTrackHeading(trainProgress);
+
+  if (timeProgress >= 0.1 && timeProgress <= 0.42) {
+    // Bright Sunny Midday (Cinematic Warm Sunlight + Rich Ambient Fill)
+    timeLabel = "12:00 PM (Midday)";
+    skyColor = "#60a5fa";
+
+    // Primary High Sun
+    list.push({
+      id: "sun-main",
+      type: "directional",
+      color: "#fffbeb",
+      intensity: 1.6,
+      position: { x: 8, y: 18, z: 12 },
+      castShadow: true,
+      shadowCameraSize: 20,
+      shadowBias: -0.0003
+    });
+
+    // Opposite Sky Fill Light
+    list.push({
+      id: "sky-fill",
+      type: "directional",
+      color: "#bae6fd",
+      intensity: 0.7,
+      position: { x: -10, y: 14, z: -10 }
+    });
+
+    // Rich Ambient Daylight
+    list.push({
+      id: "ambient",
+      type: "ambient",
+      color: "#cbd5e1",
+      intensity: 0.65
+    });
+
+  } else if (timeProgress > 0.42 && timeProgress <= 0.58) {
+    // Golden Hour Sunset
+    timeLabel = "06:45 PM (Golden Hour)";
+    skyColor = "#fb923c";
+
+    list.push({
+      id: "sun-sunset",
+      type: "directional",
+      color: "#f97316",
+      intensity: 1.5,
+      position: { x: 16, y: 7, z: 8 },
+      castShadow: true,
+      shadowCameraSize: 20,
+      shadowBias: -0.0003
+    });
+
+    list.push({
+      id: "sunset-fill",
+      type: "directional",
+      color: "#a855f7",
+      intensity: 0.5,
+      position: { x: -12, y: 8, z: -8 }
+    });
+
+    list.push({
+      id: "ambient",
+      type: "ambient",
+      color: "#fed7aa",
+      intensity: 0.55
+    });
+
+  } else {
+    // Starry Night
+    timeLabel = "11:00 PM (Night)";
+    skyColor = "#090d16";
+
+    // Soft cool moonlight
+    list.push({
+      id: "moon",
+      type: "directional",
+      color: "#93c5fd",
+      intensity: 0.45,
+      position: { x: -8, y: 16, z: -6 },
+      castShadow: true,
+      shadowCameraSize: 20,
+      shadowBias: -0.0003
+    });
+
+    list.push({
+      id: "ambient",
+      type: "ambient",
+      color: "#1e1b4b",
+      intensity: 0.38
+    });
+
+    if (lightsEnabled) {
+      // Forward Locomotive Headlight Beam
+      list.push({
+        id: "light-loco-beam",
+        type: "point",
+        color: "#fef08a",
+        intensity: 2.2,
+        distance: 7.5,
+        position: {
+          x: locoPt.x + Math.sin(locoHead) * 1.5,
+          y: locoPt.y + 0.9,
+          z: locoPt.z + Math.cos(locoHead) * 1.5
+        }
+      });
+
+      // Warm station platform glow
+      list.push({
+        id: "light-station",
+        type: "point",
+        color: "#fef08a",
+        intensity: 2.0,
+        distance: 8.5,
+        position: { x: 0.0, y: 2.0, z: 6.7 }
+      });
+
+      // Town street lamp glow
+      list.push({
+        id: "light-town",
+        type: "point",
+        color: "#fed7aa",
+        intensity: 1.8,
+        distance: 7.5,
+        position: { x: 3.5, y: 2.4, z: 7.2 }
+      });
+
+      // Roundhouse Terminal interior glow
+      list.push({
+        id: "light-roundhouse",
+        type: "point",
+        color: "#fbbf24",
+        intensity: 2.0,
+        distance: 9.0,
+        position: { x: -4.5, y: 2.2, z: -3.0 }
+      });
+
+      // Yard Floodlight Tower Pool
+      list.push({
+        id: "light-yard-pool",
+        type: "point",
+        color: "#fef08a",
+        intensity: 2.2,
+        distance: 9.5,
+        position: { x: -4.5, y: 4.8, z: 1.8 }
+      });
+    }
+  }
+
+  return list;
+}
+
+// Game Step Loop
+function gameStep(dt) {
+  let delta = dt ? Math.min(dt, 0.1) : 0.033;
+
+  // 1. Train speed physics
+  let speedDelta = targetSpeed - trainSpeed;
+  trainSpeed = trainSpeed + speedDelta * Math.min(1.0, delta * 3.0);
+  let speedFactor = 0.030;
+  trainProgress = (trainProgress + trainSpeed * trainDirection * delta * speedFactor) % 1.0;
+  if (trainProgress < 0) trainProgress = trainProgress + 1.0;
+
+  // 2. Day-Night cycle
+  timeProgress = (timeProgress + delta * timeSpeed) % 1.0;
+  isNight = timeProgress > 0.58 || timeProgress < 0.1;
+
+  // 3. Turntable rotation
+  let turnDelta = targetTurntableAngle - turntableAngle;
+  if (Math.abs(turnDelta) > 0.01) {
+    turntableAngle = turntableAngle + Math.sign(turnDelta) * Math.min(Math.abs(turnDelta), delta * 0.8);
+  }
+
+  // 4. Harbor Crane animation
+  cranePhase = cranePhase + delta * 0.4;
+  craneAngle = 0.35 + Math.sin(cranePhase) * 0.55;
+  craneHoistY = 1.6 + Math.abs(Math.sin(cranePhase * 1.5)) * 0.9;
+
+  // 5. Town road vehicles animation (Cruising in opposite lanes separated by half a lap, zero head-on collisions)
+  carProgress1 = (carProgress1 + delta * 0.036) % 1.0;
+  carProgress2 = (carProgress1 + 0.50) % 1.0;
+
+  // 6. Whistle timer
+  if (whistleActive) {
+    whistleTimer = whistleTimer + delta;
+    if (whistleTimer > 1.8) {
+      whistleActive = false;
+      whistleTimer = 0;
+    }
+  }
+
+  // 7. Dynamic Camera tracking for "cab" ride mode
+  if (cameraMode === "cab") {
+    let locoPt = getTrackPoint(trainProgress);
+    let locoHead = getTrackHeading(trainProgress);
+    let backDist = 2.4;
+    let eyeH = 1.35;
+    cameraPos = {
+      x: locoPt.x - Math.sin(locoHead) * backDist,
+      y: locoPt.y + eyeH,
+      z: locoPt.z - Math.cos(locoHead) * backDist
+    };
+    cameraLookAt = {
+      x: locoPt.x + Math.sin(locoHead) * 5.0,
+      y: locoPt.y + 0.8,
+      z: locoPt.z + Math.cos(locoHead) * 5.0
+    };
+  }
+
+  // 8. Rebuild dynamic objects and lights
+  objects = buildDynamicObjects();
+  lights = buildLights();
+}
+
+// User Actions
+function setSpeed(sp) {
+  targetSpeed = Math.max(0.0, Math.min(1.0, sp));
+}
+
+function toggleDirection() {
+  trainDirection = trainDirection * -1;
+}
+
+function blowWhistle() {
+  whistleActive = true;
+  whistleTimer = 0.0;
+}
+
+function rotateTurntableNext() {
+  turntableStall = (turntableStall + 1) % 4;
+  let angles = [0.0, 0.28, 0.56, -0.28];
+  targetTurntableAngle = angles[turntableStall];
+}
+
+function cycleTimeOfDay() {
+  if (timeProgress < 0.35) {
+    timeProgress = 0.48; // Sunset
+  } else if (timeProgress < 0.65) {
+    timeProgress = 0.72; // Night
+  } else {
+    timeProgress = 0.2; // Midday
+  }
+}
+
+function toggleLights() {
+  lightsEnabled = !lightsEnabled;
+}
+
+function setCameraView(mode) {
+  cameraMode = mode;
+  if (mode === "front") {
+    cameraPos = { x: 0, y: 7.2, z: 15.5 };
+    cameraLookAt = { x: 0, y: 0.8, z: 1.0 };
+    cameraFov = 46;
+  } else if (mode === "tower") {
+    cameraPos = { x: -9.5, y: 8.5, z: 6.5 };
+    cameraLookAt = { x: -3.5, y: 1.0, z: -1.0 };
+    cameraFov = 50;
+  } else if (mode === "harbor") {
+    cameraPos = { x: 12.0, y: 4.8, z: 8.5 };
+    cameraLookAt = { x: 6.0, y: 1.2, z: 1.8 };
+    cameraFov = 45;
+  } else if (mode === "overhead") {
+    cameraPos = { x: 0, y: 22.0, z: 0.1 };
+    cameraLookAt = { x: 0, y: 0, z: 0 };
+    cameraFov = 52;
+  }
+}
+
+// In-World 3D Object Click Handler
+function handleSceneClick(hit) {
+  if (!hit || !hit.objectId) return;
+  let id = hit.objectId;
+
+  if (id.indexOf("ctrl-throttle") !== -1 || id === "ctrl-slot" || id === "ctrl-bezel-throttle" || id.indexOf("ctrl-tick") !== -1) {
+    if (trainSpeed < 0.25) {
+      setSpeed(0.5);
+    } else if (trainSpeed < 0.65) {
+      setSpeed(1.0);
+    } else {
+      setSpeed(0.0);
+    }
+  } else if (id === "ctrl-switch-dir" || id === "ctrl-bezel-dir") {
+    toggleDirection();
+  } else if (id === "ctrl-btn-whistle" || id === "ctrl-bezel-whistle") {
+    blowWhistle();
+  } else if (id.indexOf("ctrl-turntable") !== -1 || id === "ctrl-bezel-turntable") {
+    rotateTurntableNext();
+  } else if (id === "ctrl-switch-lights" || id === "ctrl-lamp-lights" || id === "ctrl-bezel-lights") {
+    toggleLights();
+  }
+}
+
+// Initialize on load
+gameStep(0.033);

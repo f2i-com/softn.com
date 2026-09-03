@@ -318,11 +318,23 @@ A .ui file has these sections in order: imports, component declaration, data, lo
 **Feedback:** Alert, Modal, Toast, Drawer, Popover, EmptyState
 **Data:** List, ListItem, Table, TreeView, Pagination, DataGrid
 **Navigation:** Tabs, Breadcrumb, Menu, NavItem
-**Utility:** Accordion, Collapse, Tooltip, Loop
+**Utility:** Accordion, Collapse, Tooltip, Loop, PixelGrid, PixelCanvas, DPad
 **Charts:** LineChart, BarChart, PieChart, AreaChart, RadarChart, GaugeChart
-**Animation:** AnimatedBox, AnimatedNumber, Marquee, Typewriter, Draggable, SortableList
+**Animation:** AnimatedBox, AnimatedNumber, Marquee, Typewriter, Draggable, SortableList, PanView, Sprite, TileMap
 **Editors:** CodeEditor, MarkdownEditor, RichTextEditor
+**3D & Games:** Scene3D (Three.js with box, sphere, cylinder, capsule, prism, torus, cone, plane, group, particles, instanced, model)
 **Smart:** SmartGrid, SmartView, SmartForm, SmartStats, SmartCards, SmartList, SmartTimeline
+
+### 3D Graphics and Game Development (<Scene3D>)
+
+Use \`<Scene3D>\` to build 3D scenes, dioramas, and games:
+- **Shapes:** \`box\`, \`sphere\`, \`cylinder\`, \`capsule\`, \`prism\` (triangular roof/wedge), \`cone\`, \`torus\`, \`plane\`.
+- **Hierarchical Groups (\`type: 'group'\`):** Define composite models with \`children: [...]\`. Child transforms are local to parent group. Moving the parent moves all parts together seamlessly with zero trigonometry or clipping!
+- **Particles (\`type: 'particles'\`):** \`particlePositions: [x, y, z, ...]\`, \`particleSize: 0.3\`, \`color: "#fff"\`, \`opacity: 0.8\`. High-speed steam, smoke, rain, sparks.
+- **Materials:** \`color\`, \`emissive\`, \`emissiveIntensity\`, \`roughness\`, \`metalness\`, \`opacity\`, \`wireframe\`, \`flatShading\` (for crisp low-poly diorama aesthetic).
+- **Interactive Cursor:** Set \`cursor: "pointer"\` or \`interactive: true\` on interactive objects (levers, switches, buttons).
+- **Local Animations:** \`animate: { rotateY: 0.05, floatAmplitude: 0.2 }\` runs smoothly in the Three.js loop.
+- **Game Loops:** \`<Loop interval={33} running={true} @tick={gameStep} />\` drives 30/60fps simulation updates.
 
 ### Common Component Props
 

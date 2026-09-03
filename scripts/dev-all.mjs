@@ -27,14 +27,18 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const vitePkgPath = createRequire(import.meta.url).resolve('vite/package.json');
 const viteBin = path.join(path.dirname(vitePkgPath), createRequire(vitePkgPath)('./package.json').bin.vite);
 
+const phpCheck = spawnSync('php', ['-v'], { encoding: 'utf8' });
+const havePhp = phpCheck.status === 0;
+
 const APPS = [
   { dir: 'apps/softn-site', label: 'site', port: 1420, base: '/' },
   { dir: 'apps/softn-web', label: 'web', port: 1421, base: '/web/' },
   { dir: 'apps/softn-builder', label: 'builder', port: 1422, base: '/builder/' },
   { dir: 'apps/softn-studio', label: 'studio', port: 1423, base: '/studio/' },
+  ...(havePhp ? [{ dir: 'apps/softn-api', label: 'api', port: 1424, isPhp: true }] : []),
 ];
 
-const COLOURS = { web: '\x1b[36m', site: '\x1b[33m', builder: '\x1b[35m', studio: '\x1b[32m' };
+const COLOURS = { web: '\x1b[36m', site: '\x1b[33m', builder: '\x1b[35m', studio: '\x1b[32m', api: '\x1b[34m' };
 const RESET = '\x1b[0m';
 const DIM = '\x1b[2m';
 
@@ -96,8 +100,10 @@ console.log(`  ${COLOURS.site}softn.com${RESET} ${publicUrl}${siteNote}`);
 console.log(`  ${DIM}/web/     runtime`);
 console.log(`  /builder/  visual builder`);
 console.log(`  /studio/   AI studio`);
-console.log(`  /demos/    app bundles${RESET}`);
-console.log(`${DIM}  Internal Vite ports: ${resolved
+console.log(`  /demos/    app bundles`);
+if (havePhp) console.log(`  /api/      directory API${RESET}`);
+else console.log(`${RESET}`);
+console.log(`${DIM}  Internal servers: ${resolved
   .filter((app) => app.label !== 'site')
   .map((app) => `${app.label} ${app.port}`)
   .join(', ')}${RESET}`);
@@ -107,23 +113,34 @@ const children = [];
 let shuttingDown = false;
 
 for (const app of resolved) {
-  const child = spawn(process.execPath, [viteBin], {
-    cwd: path.join(root, app.dir),
-    // Browser-facing URLs stay on the gateway; proxy targets are private Vite
-    // origins. Production bases also give each HMR socket a distinct route.
-    env: {
-      ...process.env,
-      VITE_PORT: String(app.port),
-      VITE_BASE: app.base,
-      VITE_WEB_URL: '/web',
-      VITE_BUILDER_URL: '/builder',
-      VITE_STUDIO_URL: '/studio',
-      VITE_WEB_PROXY_TARGET: urlFor('web'),
-      VITE_BUILDER_PROXY_TARGET: urlFor('builder'),
-      VITE_STUDIO_PROXY_TARGET: urlFor('studio'),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const isPhp = app.isPhp;
+  const child = isPhp
+    ? spawn('php', ['-S', `127.0.0.1:${app.port}`, path.join(root, 'apps/softn-api/index.php')], {
+        cwd: path.join(root, app.dir),
+        env: {
+          ...process.env,
+          SOFTN_DATA_DIR: path.join(root, 'apps/softn-api/data'),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    : spawn(process.execPath, [viteBin], {
+        cwd: path.join(root, app.dir),
+        // Browser-facing URLs stay on the gateway; proxy targets are private Vite
+        // origins. Production bases also give each HMR socket a distinct route.
+        env: {
+          ...process.env,
+          VITE_PORT: String(app.port),
+          VITE_BASE: app.base,
+          VITE_WEB_URL: '/web',
+          VITE_BUILDER_URL: '/builder',
+          VITE_STUDIO_URL: '/studio',
+          VITE_WEB_PROXY_TARGET: urlFor('web'),
+          VITE_BUILDER_PROXY_TARGET: urlFor('builder'),
+          VITE_STUDIO_PROXY_TARGET: urlFor('studio'),
+          VITE_API_PROXY_TARGET: resolved.some((a) => a.label === 'api') ? urlFor('api') : undefined,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
 
   const prefix = `${COLOURS[app.label]}${app.label.padEnd(8)}${RESET}`;
   const forward = (stream, out) => {

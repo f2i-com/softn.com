@@ -115,7 +115,7 @@ async function call<T>(route: string, init: RequestInit = {}): Promise<T> {
     json = null;
   }
   if (!res.ok || !json || json.ok !== true) {
-    const message = json?.error ?? (res.status === 503 ? 'The directory is not available on this host.' : `The directory answered ${res.status}.`);
+    const message = json?.error ?? (res.status === 503 || !json ? 'The directory is not available on this host.' : `The directory answered ${res.status}.`);
     throw new ApiError(res.status, message, typeof json?.retryAfter === 'number' ? json.retryAfter : undefined);
   }
   return json as T;

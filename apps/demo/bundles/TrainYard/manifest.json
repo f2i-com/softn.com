@@ -1,0 +1,29 @@
+{
+  "name": "TrainYard",
+  "version": "1.0.0",
+  "description": "Animated HO-scale model train yard diorama on a wooden table with running trains, turntable, busy harbor, town, day-night cycle, and tactile front-edge controls.",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": [
+      "ui/main.ui"
+    ],
+    "logic": [
+      "logic/main.logic"
+    ],
+    "assets": [
+      "assets/icon.svg"
+    ]
+  },
+  "config": {
+    "window": {
+      "title": "HO-Scale Model Train Yard",
+      "width": 1024,
+      "height": 768
+    },
+    "theme": {
+      "primary": "#3b82f6",
+      "mode": "dark"
+    }
+  }
+}

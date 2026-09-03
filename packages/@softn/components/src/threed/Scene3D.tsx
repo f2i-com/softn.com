@@ -91,6 +91,8 @@ export type Scene3DShape =
   | 'box'
   | 'sphere'
   | 'cylinder'
+  | 'capsule'
+  | 'prism'
   | 'plane'
   | 'torus'
   | 'cone'
@@ -101,7 +103,7 @@ export type Scene3DShape =
 
 export interface Scene3DObject {
   id: string;
-  type: Scene3DShape | 'model' | 'instanced';
+  type: Scene3DShape | 'model' | 'instanced' | 'group' | 'particles';
   modelUrl?: string;
   modelFormat?: ModelFormat;
   /**
@@ -114,6 +116,23 @@ export interface Scene3DObject {
   shape?: Scene3DShape;
   instances?: number[];
   palette?: string[];
+  /**
+   * For `type: 'group'`: a composite object made of child objects.
+   * All child positions, rotations, and scales are local to the parent group.
+   * Moving or rotating the group moves all children together without clipping or trig.
+   */
+  children?: Scene3DObject[];
+  /**
+   * For `type: 'particles'`: high-performance particle system using THREE.Points.
+   * Flat array of x, y, z positions.
+   */
+  particlePositions?: number[];
+  particleColors?: number[];
+  particleSize?: number;
+  /** Custom cursor when hovering over this object (e.g. 'pointer', 'grab'). */
+  cursor?: string;
+  /** If true, hover sets cursor to pointer. */
+  interactive?: boolean;
   /**
    * `'camera'` pins the object to the camera: `position` becomes an offset in
    * camera space (x right, y up, z forward is negative) and `rotation` a local
@@ -132,6 +151,8 @@ export interface Scene3DObject {
   metalness?: number;
   roughness?: number;
   wireframe?: boolean;
+  /** Low-poly faceted shading for stylized diorama / retro aesthetics. */
+  flatShading?: boolean;
   castShadow?: boolean;
   receiveShadow?: boolean;
   width?: number;
@@ -166,6 +187,8 @@ export interface Scene3DObject {
  */
 export interface Scene3DHit {
   objectId: string;
+  rootObjectId?: string;
+  cursor?: string;
   button: number;
   locked: boolean;
   instanceId: number | null;
@@ -188,6 +211,14 @@ export interface Scene3DLight {
   /** Point and spot: how far the light reaches (0 = no limit) and how fast it falls off. */
   distance?: number;
   decay?: number;
+  /** Shadow map resolution in pixels (e.g. 1024 or 2048). Defaults to 1024. */
+  shadowMapSize?: number;
+  /** Directional light shadow camera frustum half-width/height (default 15). */
+  shadowCameraSize?: number;
+  /** Shadow bias to avoid self-shadowing acne (default -0.0005). */
+  shadowBias?: number;
+  shadowNear?: number;
+  shadowFar?: number;
   /**
    * `'camera'` carries the light with the view: `position` is an offset in
    * camera space, and a spot light points where the camera points — a torch
@@ -255,11 +286,30 @@ export interface Scene3DProps {
    * 1.25 keeps it fast with little visible cost.
    */
   maxPixelRatio?: number;
+  /** Tone mapping curve for cinematic highlights. Defaults to 'aces'. */
+  toneMapping?: 'aces' | 'linear' | 'reinhard' | 'cineon' | 'none';
+  /** Exposure multiplier for tone mapping (default 1.0). */
+  toneMappingExposure?: number;
   onReady?: () => void;
   onClick?: (info: Scene3DHit) => void;
+  onPointerDown?: (info: Scene3DHit) => void;
+  onPointerMove?: (info: Scene3DHit) => void;
+  onPointerUp?: (info: Scene3DHit) => void;
+  onHover?: (info: Scene3DHit) => void;
   onAnimation?: (info: { objectId: string; clip: string; type: 'finished' | 'missing' }) => void;
   style?: React.CSSProperties;
   className?: string;
+}
+
+function createPrismGeometry(w: number, h: number, d: number): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(-w / 2, -h / 2);
+  shape.lineTo(w / 2, -h / 2);
+  shape.lineTo(0, h / 2);
+  shape.closePath();
+  const geom = new THREE.ExtrudeGeometry(shape, { depth: d, bevelEnabled: false });
+  geom.center();
+  return geom;
 }
 
 function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
@@ -276,6 +326,13 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
       return new THREE.SphereGeometry(r, 32, 32);
     case 'cylinder':
       return new THREE.CylinderGeometry(r, r, h, 32);
+    case 'capsule': {
+      const capR = obj.radius ?? 0.5;
+      const capH = Math.max(0.01, (obj.height ?? 1) - 2 * capR);
+      return new THREE.CapsuleGeometry(capR, capH, 8, 16);
+    }
+    case 'prism':
+      return createPrismGeometry(w, h, d);
     case 'cone':
       return new THREE.ConeGeometry(r, h, 32);
     case 'plane':
@@ -307,6 +364,7 @@ function createMaterial(obj: Scene3DObject): THREE.MeshStandardMaterial {
     metalness: obj.metalness ?? 0.1,
     roughness: obj.roughness ?? 0.5,
     wireframe: obj.wireframe ?? false,
+    flatShading: obj.flatShading ?? false,
     opacity,
     transparent: opacity < 1,
     ...(obj.emissive ? { emissive: new THREE.Color(obj.emissive) } : {}),
@@ -442,6 +500,10 @@ function applyMaterialOverrides(root: THREE.Object3D, obj: Scene3DObject) {
       const m = mat as THREE.MeshStandardMaterial;
       if (obj.color && m.color) m.color.set(obj.color);
       if (obj.wireframe != null && 'wireframe' in mat) m.wireframe = obj.wireframe;
+      if (obj.flatShading != null && 'flatShading' in mat) {
+        m.flatShading = obj.flatShading;
+        mat.needsUpdate = true;
+      }
       if (obj.opacity != null) {
         mat.opacity = obj.opacity;
         mat.transparent = obj.opacity < 1;
@@ -458,7 +520,7 @@ function applyMaterialOverrides(root: THREE.Object3D, obj: Scene3DObject) {
 // Dispose all geometries, materials, and textures in an Object3D hierarchy
 function disposeObject3D(obj: THREE.Object3D) {
   obj.traverse((child) => {
-    if ((child as THREE.Mesh).isMesh) {
+    if ((child as THREE.Mesh).isMesh || (child as THREE.Points).isPoints) {
       const mesh = child as THREE.Mesh;
       mesh.geometry?.dispose();
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -478,6 +540,85 @@ function disposeObject3D(obj: THREE.Object3D) {
       }
     }
   });
+}
+
+function createParticles(obj: Scene3DObject): THREE.Points {
+  const geom = new THREE.BufferGeometry();
+  const positions = obj.particlePositions ?? [];
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  if (obj.particleColors && obj.particleColors.length > 0) {
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(obj.particleColors, 3));
+  }
+  const mat = new THREE.PointsMaterial({
+    size: obj.particleSize ?? 0.3,
+    color: obj.color || '#ffffff',
+    transparent: (obj.opacity ?? 1) < 1,
+    opacity: obj.opacity ?? 0.8,
+    vertexColors: !!(obj.particleColors && obj.particleColors.length > 0),
+    depthWrite: false,
+  });
+  const points = new THREE.Points(geom, mat);
+  points.userData.__softnId = obj.id;
+  return points;
+}
+
+function updateParticles(points: THREE.Points, obj: Scene3DObject): void {
+  const geom = points.geometry;
+  const positions = obj.particlePositions ?? [];
+  const currentPos = geom.getAttribute('position');
+  if (!currentPos || currentPos.count !== Math.floor(positions.length / 3)) {
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  } else {
+    (currentPos as THREE.BufferAttribute).copyArray(positions);
+    currentPos.needsUpdate = true;
+  }
+  if (obj.particleColors && obj.particleColors.length > 0) {
+    const currentCols = geom.getAttribute('color');
+    if (!currentCols || currentCols.count !== Math.floor(obj.particleColors.length / 3)) {
+      geom.setAttribute('color', new THREE.Float32BufferAttribute(obj.particleColors, 3));
+    } else {
+      (currentCols as THREE.BufferAttribute).copyArray(obj.particleColors);
+      currentCols.needsUpdate = true;
+    }
+  }
+  geom.computeBoundingSphere();
+}
+
+function createSubObject(child: Scene3DObject, parentId: string): THREE.Object3D {
+  let sub: THREE.Object3D;
+  if (child.type === 'group') {
+    sub = createGroup(child);
+  } else if (child.type === 'particles') {
+    sub = createParticles(child);
+  } else if (child.type === 'instanced') {
+    sub = createInstanced(child);
+  } else {
+    const geom = createGeometry(child);
+    const mat = createMaterial(child);
+    sub = new THREE.Mesh(geom, mat);
+  }
+  sub.userData.__softnId = child.id;
+  sub.userData.__softnParentId = parentId;
+  if (child.cursor) sub.userData.__softnCursor = child.cursor;
+  if (child.interactive) sub.userData.__softnInteractive = child.interactive;
+  applyTransform(sub, child, false);
+  return sub;
+}
+
+function createGroup(obj: Scene3DObject): THREE.Group {
+  const group = new THREE.Group();
+  group.userData.__softnId = obj.id;
+  group.userData.__softnGroup = true;
+  if (obj.cursor) group.userData.__softnCursor = obj.cursor;
+  if (obj.interactive) group.userData.__softnInteractive = obj.interactive;
+  if (Array.isArray(obj.children)) {
+    for (const child of obj.children) {
+      if (!child || typeof child.id !== 'string') continue;
+      const childObj = createSubObject(child, obj.id);
+      group.add(childObj);
+    }
+  }
+  return group;
 }
 
 // Apply transform but preserve animated axes to avoid snapping
@@ -552,6 +693,7 @@ function needsMaterialUpdate(prev: Scene3DObject, next: Scene3DObject): boolean 
     prev.metalness !== next.metalness ||
     prev.roughness !== next.roughness ||
     prev.wireframe !== next.wireframe ||
+    prev.flatShading !== next.flatShading ||
     prev.opacity !== next.opacity ||
     prev.emissive !== next.emissive ||
     prev.emissiveIntensity !== next.emissiveIntensity
@@ -570,8 +712,17 @@ function createLight(spec: Scene3DLight): THREE.Light {
       if (spec.position) light.position.set(spec.position.x, spec.position.y, spec.position.z);
       if (spec.castShadow) {
         light.castShadow = true;
-        light.shadow.mapSize.width = 1024;
-        light.shadow.mapSize.height = 1024;
+        const mapSize = spec.shadowMapSize ?? 1024;
+        light.shadow.mapSize.width = mapSize;
+        light.shadow.mapSize.height = mapSize;
+        light.shadow.bias = spec.shadowBias ?? -0.0005;
+        const camSize = spec.shadowCameraSize ?? 15;
+        light.shadow.camera.left = -camSize;
+        light.shadow.camera.right = camSize;
+        light.shadow.camera.top = camSize;
+        light.shadow.camera.bottom = -camSize;
+        light.shadow.camera.near = spec.shadowNear ?? 0.5;
+        light.shadow.camera.far = spec.shadowFar ?? 150;
       }
       return light;
     }
@@ -719,8 +870,14 @@ export function Scene3D({
   pitchLimit = 0.8,
   cameraSmoothing = 0,
   maxPixelRatio = 2,
+  toneMapping = 'aces',
+  toneMappingExposure = 1,
   onReady,
   onClick,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onHover,
   onAnimation,
   style,
   className,
@@ -786,6 +943,14 @@ export function Scene3D({
   const readyFiredRef = useRef(false);
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
+  const onPointerDownRef = useRef(onPointerDown);
+  onPointerDownRef.current = onPointerDown;
+  const onPointerMoveRef = useRef(onPointerMove);
+  onPointerMoveRef.current = onPointerMove;
+  const onPointerUpRef = useRef(onPointerUp);
+  onPointerUpRef.current = onPointerUp;
+  const onHoverRef = useRef(onHover);
+  onHoverRef.current = onHover;
   const onAnimationRef = useRef(onAnimation);
   onAnimationRef.current = onAnimation;
   const yawRef = useRef<number>(0);
@@ -823,6 +988,17 @@ export function Scene3D({
     if (shadows) {
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+    if ('outputColorSpace' in renderer) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    }
+    if ('toneMapping' in renderer) {
+      if (toneMapping === 'linear') renderer.toneMapping = THREE.LinearToneMapping;
+      else if (toneMapping === 'reinhard') renderer.toneMapping = THREE.ReinhardToneMapping;
+      else if (toneMapping === 'cineon') renderer.toneMapping = THREE.CineonToneMapping;
+      else if (toneMapping === 'none') renderer.toneMapping = THREE.NoToneMapping;
+      else renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = toneMappingExposure;
     }
     container.appendChild(renderer.domElement);
 
@@ -895,16 +1071,34 @@ export function Scene3D({
       const empty = { objectId: '', instanceId: null, distance: null, point: null, normal: null };
       if (intersects.length === 0) return empty;
       const hit = intersects[0];
-      // Walk up to find which root entry this belongs to (handles model children)
-      const findEntry = (obj: THREE.Object3D): string | undefined => {
+      // Walk up to find which entry this belongs to (handles group children, model children, and tagged parts)
+      const findHitId = (obj: THREE.Object3D): string | undefined => {
+        if (obj.userData?.__softnId) return obj.userData.__softnId;
         for (const [id, e] of meshMap.entries()) {
           if (e.mesh === obj) return id;
         }
-        if (obj.parent) return findEntry(obj.parent);
+        if (obj.parent) return findHitId(obj.parent);
         return undefined;
       };
-      const id = findEntry(hit.object);
+      const id = findHitId(hit.object);
       if (id === undefined) return empty;
+
+      let rootId = id;
+      for (const [mid, e] of meshMap.entries()) {
+        if (e.mesh === hit.object) {
+          rootId = mid;
+          break;
+        }
+        let p = hit.object.parent;
+        while (p) {
+          if (e.mesh === p) {
+            rootId = mid;
+            break;
+          }
+          p = p.parent;
+        }
+      }
+
       let normal: Scene3DHit['normal'] = null;
       if (hit.face) {
         const n = hit.face.normal.clone();
@@ -912,8 +1106,25 @@ export function Scene3D({
         n.applyMatrix3(m).normalize();
         normal = { x: n.x, y: n.y, z: n.z };
       }
+
+      let cursor: string | undefined = undefined;
+      let cur: THREE.Object3D | null = hit.object;
+      while (cur) {
+        if (cur.userData?.__softnCursor) {
+          cursor = cur.userData.__softnCursor;
+          break;
+        }
+        if (cur.userData?.__softnInteractive) {
+          cursor = 'pointer';
+          break;
+        }
+        cur = cur.parent;
+      }
+
       return {
         objectId: id,
+        rootObjectId: rootId,
+        cursor,
         instanceId: typeof hit.instanceId === 'number' ? hit.instanceId : null,
         distance: hit.distance,
         point: { x: hit.point.x, y: hit.point.y, z: hit.point.z },
@@ -1111,14 +1322,42 @@ export function Scene3D({
       } catch {
         // Capture can fail if the pointer has already ended.
       }
+      if (onPointerDownRef.current) {
+        const rect = renderer.domElement.getBoundingClientRect();
+        const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+        const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+        const hit = pick(ndcX, ndcY);
+        onPointerDownRef.current({ ...hit, button: event.button, locked: false });
+      }
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      if (event.pointerId !== clickPointerId || isDragging) return;
-      const dx = event.clientX - mouseDownX;
-      const dy = event.clientY - mouseDownY;
-      if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
-        isDragging = true;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+      if (event.pointerId === clickPointerId) {
+        const dx = event.clientX - mouseDownX;
+        const dy = event.clientY - mouseDownY;
+        if (dx * dx + dy * dy > DRAG_THRESHOLD * DRAG_THRESHOLD) {
+          isDragging = true;
+        }
+        if (onPointerMoveRef.current) {
+          const hit = pick(ndcX, ndcY);
+          onPointerMoveRef.current({ ...hit, button: event.button, locked: false });
+        }
+      } else if (!isLocked()) {
+        const hit = pick(ndcX, ndcY);
+        if (onHoverRef.current) {
+          onHoverRef.current({ ...hit, button: -1, locked: false });
+        }
+        if (hit.cursor) {
+          renderer.domElement.style.cursor = hit.cursor;
+        } else if (enableMouseLook) {
+          renderer.domElement.style.cursor = 'grab';
+        } else {
+          renderer.domElement.style.cursor = 'default';
+        }
       }
     };
 
@@ -1126,12 +1365,17 @@ export function Scene3D({
       if (event.pointerId !== clickPointerId) return;
       clickPointerId = null;
       releaseClickPointerCapture(event.pointerId);
-      if (isDragging || !onClickRef.current) return;
 
       const rect = renderer.domElement.getBoundingClientRect();
       const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       const ndcY = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       const hit = pick(ndcX, ndcY);
+
+      if (onPointerUpRef.current) {
+        onPointerUpRef.current({ ...hit, button: event.button, locked: false });
+      }
+
+      if (isDragging || !onClickRef.current) return;
       // A plain click keeps its old contract: it reports only what it landed on.
       if (hit.objectId !== '') onClickRef.current({ ...hit, button: event.button, locked: false });
     };
@@ -1623,6 +1867,50 @@ export function Scene3D({
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
         }
+      } else if (obj.type === 'group') {
+        const needsGroupRebuild =
+          !existing ||
+          existing.spec.type !== 'group' ||
+          JSON.stringify(existing.spec.children) !== JSON.stringify(obj.children);
+        if (needsGroupRebuild) {
+          if (existing) {
+            disposeAnimationEntry(animationMapRef.current, obj.id);
+            scene.remove(existing.mesh);
+            disposeObject3D(existing.mesh);
+            loadVersionRef.current.delete(obj.id);
+          }
+          const group = createGroup(obj);
+          applyTransform(group, obj, false);
+          scene.add(group);
+          meshMap.set(obj.id, { mesh: group, spec: obj, baseY: obj.position?.y ?? 0 });
+        } else if (existing) {
+          applyTransform(existing.mesh, obj, true);
+          existing.spec = obj;
+          existing.baseY = obj.position?.y ?? 0;
+        }
+      } else if (obj.type === 'particles') {
+        const needsParticleRebuild =
+          !existing ||
+          existing.spec.type !== 'particles' ||
+          existing.spec.color !== obj.color ||
+          existing.spec.particleSize !== obj.particleSize;
+        if (needsParticleRebuild) {
+          if (existing) {
+            disposeAnimationEntry(animationMapRef.current, obj.id);
+            scene.remove(existing.mesh);
+            disposeObject3D(existing.mesh);
+            loadVersionRef.current.delete(obj.id);
+          }
+          const points = createParticles(obj);
+          applyTransform(points, obj, false);
+          scene.add(points);
+          meshMap.set(obj.id, { mesh: points, spec: obj, baseY: obj.position?.y ?? 0 });
+        } else if (existing) {
+          updateParticles(existing.mesh as THREE.Points, obj);
+          applyTransform(existing.mesh, obj, true);
+          existing.spec = obj;
+          existing.baseY = obj.position?.y ?? 0;
+        }
       } else if (!existing) {
         // Primitive objects — create synchronously
         const geometry = createGeometry(obj);
@@ -1633,8 +1921,8 @@ export function Scene3D({
         meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
       } else {
         // Primitive update
-        if (existing.spec.type === 'model' || existing.spec.type === 'instanced') {
-          // Switching from a model or a batch to a primitive — remove the old mesh
+        if (existing.spec.type === 'model' || existing.spec.type === 'instanced' || existing.spec.type === 'group' || existing.spec.type === 'particles') {
+          // Switching from a model/batch/group/particles to a primitive — remove the old mesh
           disposeAnimationEntry(animationMapRef.current, obj.id);
           scene.remove(existing.mesh);
           disposeObject3D(existing.mesh);
@@ -1697,6 +1985,17 @@ export function Scene3D({
         } else {
           // Update in-place — position, intensity, color, groundColor
           tagLight(existing, spec);
+          if (existing instanceof THREE.DirectionalLight && spec.castShadow) {
+            if (spec.shadowBias != null) existing.shadow.bias = spec.shadowBias;
+            if (spec.shadowCameraSize != null) {
+              const camSize = spec.shadowCameraSize;
+              existing.shadow.camera.left = -camSize;
+              existing.shadow.camera.right = camSize;
+              existing.shadow.camera.top = camSize;
+              existing.shadow.camera.bottom = -camSize;
+              existing.shadow.camera.updateProjectionMatrix();
+            }
+          }
           if (existing instanceof THREE.SpotLight) {
             if (spec.angle != null) existing.angle = spec.angle;
             if (spec.penumbra != null) existing.penumbra = spec.penumbra;

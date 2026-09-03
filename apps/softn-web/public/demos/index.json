@@ -142,5 +142,13 @@
     "description": "Falling blocks in a 10×20 well: seven pieces, wall kicks, a ghost piece, hold, a preview, and levels that speed up",
     "primary": "#22d3ee",
     "size": 103452
+  },
+  {
+    "id": "train-yard",
+    "file": "TrainYard.softn",
+    "name": "Model Train Yard",
+    "description": "An animated HO-scale model train yard diorama on a wooden table with running trains, turntable, busy harbor, town, day-night cycle, and tactile physical controls",
+    "primary": "#3b82f6",
+    "size": 66340
   }
 ]

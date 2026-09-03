@@ -42,6 +42,14 @@ final class Seed
             return;
         }
         $demos = dirname(__DIR__, 2) . '/demos';
+        if (!is_dir($demos)) {
+            $candidate = dirname(__DIR__, 3) . '/apps/softn-web/public/demos';
+            if (is_dir($candidate)) $demos = $candidate;
+            else {
+                $candidate = dirname(__DIR__, 3) . '/dist/demos';
+                if (is_dir($candidate)) $demos = $candidate;
+            }
+        }
         $indexPath = "$demos/index.json";
         if (!is_file($indexPath)) return;
         $index = json_decode((string) file_get_contents($indexPath), true);

@@ -1,0 +1,212 @@
+<logic src="../logic/main.logic" />
+
+<style>
+.ty-root {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #090d16;
+  overflow: hidden;
+  user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.ty-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(15, 23, 42, 0.95);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  z-index: 10;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.ty-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #b91c1c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fbbf24;
+  box-shadow: 0 0 10px rgba(251, 191, 36, 0.4);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.ty-viewport {
+  flex: 1;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ty-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: rgba(15, 23, 42, 0.95);
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  z-index: 10;
+  flex-shrink: 0;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ty-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ty-tip {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  background: rgba(15, 23, 42, 0.94);
+  padding: 8px 14px;
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  max-width: 540px;
+}
+
+@media (max-width: 860px) {
+  .ty-header {
+    padding: 6px 10px;
+  }
+  .ty-sub {
+    display: none;
+  }
+  .ty-bottom {
+    padding: 6px 10px;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 640px) {
+  .ty-tip {
+    display: none;
+  }
+  .ty-telemetry {
+    display: none;
+  }
+}
+</style>
+
+<Box className="ty-root">
+  <Loop interval={33} running={true} @tick={gameStep} />
+
+  <!-- Top Header Bar -->
+  <Box className="ty-header">
+    <!-- Title & Layout Badge -->
+    <Box className="ty-row">
+      <Box className="ty-badge">🚂</Box>
+      <Stack direction="vertical" gap="none">
+        <Heading level={5} style={{ margin: 0, color: "#f8fafc", fontSize: "14px", fontWeight: 700 }}>Model Train Yard</Heading>
+        <Text size="xs" style={{ color: "#94a3b8", fontSize: "11px" }} className="ty-sub">HO-Scale 3D Diorama</Text>
+      </Stack>
+    </Box>
+
+    <!-- Telemetry & Camera Views -->
+    <Box className="ty-row">
+      <!-- Speed & Direction Readout -->
+      <Box className="ty-telemetry" style={{ background: "rgba(0, 0, 0, 0.4)", padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(255, 255, 255, 0.15)" }}>
+        <Stack direction="horizontal" gap="xs" align="center">
+          <Text size="xs" style={{ color: "#94a3b8" }}>THROTTLE:</Text>
+          <Text size="xs" style={{ fontWeight: "bold", color: "#38bdf8", minWidth: 32 }}>{Math.round(trainSpeed * 100)}%</Text>
+          <Badge variant={trainDirection > 0 ? "success" : "warning"}>{trainDirection > 0 ? "FWD" : "REV"}</Badge>
+        </Stack>
+      </Box>
+
+      <!-- Time of Day Readout -->
+      <Box className="ty-telemetry" style={{ background: "rgba(0, 0, 0, 0.4)", padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(255, 255, 255, 0.15)" }}>
+        <Text size="xs" style={{ fontWeight: "bold", color: isNight ? "#818cf8" : "#fbbf24" }}>{timeLabel}</Text>
+      </Box>
+
+      <!-- Camera Views (Compact for mobile and desktop) -->
+      <Box className="ty-row">
+        <Button size="xs" variant={cameraMode === "front" ? "primary" : "secondary"} @click={() => setCameraView("front")}>Front Table</Button>
+        <Button size="xs" variant={cameraMode === "cab" ? "primary" : "secondary"} @click={() => setCameraView("cab")}>Cab Ride</Button>
+        <Button size="xs" variant={cameraMode === "tower" ? "primary" : "secondary"} @click={() => setCameraView("tower")}>Yard Tower</Button>
+        <Button size="xs" variant={cameraMode === "harbor" ? "primary" : "secondary"} @click={() => setCameraView("harbor")}>Harbor Quay</Button>
+        <Button size="xs" variant={cameraMode === "overhead" ? "primary" : "secondary"} @click={() => setCameraView("overhead")}>Overhead</Button>
+      </Box>
+    </Box>
+  </Box>
+
+  <!-- 3D Scene Viewport (Flex: 1 and minHeight: 0 guarantees fit within window) -->
+  <Box className="ty-viewport">
+    <Scene3D
+      fill={true}
+      objects={objects}
+      staticObjects={staticObjects}
+      lights={lights}
+      camera={{ position: cameraPos, lookAt: cameraLookAt, fov: cameraFov }}
+      shadows={true}
+      toneMapping="aces"
+      background={skyColor}
+      orbitControls={cameraMode !== "cab"}
+      @click={handleSceneClick}
+    />
+
+    <!-- Front Fascia Controls Helper Banner (High contrast, bright readable text) -->
+    <Box className="ty-tip">
+      <Text size="xs" style={{ color: "#f8fafc", fontSize: "12px", lineHeight: "1.4" }}>
+        💡 <span style={{ color: "#38bdf8", fontWeight: 700 }}>Orbit:</span> Drag <span style={{ color: "#64748b" }}>•</span> <span style={{ color: "#38bdf8", fontWeight: 700 }}>Zoom:</span> Scroll <span style={{ color: "#64748b" }}>•</span> <span style={{ color: "#fbbf24", fontWeight: 700 }}>Controls:</span> Click levers & buttons on the front table fascia!
+      </Text>
+    </Box>
+  </Box>
+
+  <!-- Bottom Tactile Console Control Bar -->
+  <Box className="ty-bottom">
+    <!-- Throttle & Speed Controls -->
+    <Box className="ty-row">
+      <Text size="xs" style={{ fontWeight: "bold", color: "#f8fafc", marginRight: 2 }}>Throttle:</Text>
+      <Button size="xs" variant="secondary" @click={() => setSpeed(0.0)}>STOP</Button>
+      <Button size="xs" variant="secondary" @click={() => setSpeed(0.35)}>SLOW (35%)</Button>
+      <Button size="xs" variant="primary" @click={() => setSpeed(0.7)}>CRUISE (70%)</Button>
+      <Button size="xs" variant="danger" @click={() => setSpeed(1.0)}>MAX (100%)</Button>
+      <Button size="xs" variant="secondary" @click={toggleDirection}>⇄ Reverse</Button>
+    </Box>
+
+    <!-- Whistle, Turntable, Lighting & Time Actions -->
+    <Box className="ty-row">
+      <Button
+        size="xs"
+        variant="danger"
+        style={{ fontWeight: "bold", boxShadow: whistleActive ? "0 0 12px #ef4444" : "none" }}
+        @click={blowWhistle}
+      >
+        💨 Steam Whistle
+      </Button>
+
+      <Button size="xs" variant="secondary" @click={rotateTurntableNext}>
+        🔄 Turntable
+      </Button>
+
+      <Button size="xs" variant="secondary" @click={cycleTimeOfDay}>
+        ☀️ Time
+      </Button>
+
+      <Button size="xs" variant={lightsEnabled ? "primary" : "secondary"} @click={toggleLights}>
+        💡 Night Lights
+      </Button>
+    </Box>
+  </Box>
+</Box>
