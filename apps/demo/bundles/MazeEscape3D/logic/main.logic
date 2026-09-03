@@ -201,6 +201,17 @@ function blocked(x, z) {
 
 // ---- Scene ---------------------------------------------------------------
 
+let emberPositions = []
+function initEmbers() {
+  emberPositions = []
+  for (let i = 0; i < 75; i++) {
+    emberPositions.push(1 + ((i * 17) % ((COLS - 2) * CELL)))
+    emberPositions.push(0.3 + ((i * 11) % 22) * 0.1)
+    emberPositions.push(1 + ((i * 23) % ((ROWS - 2) * CELL)))
+  }
+}
+initEmbers()
+
 function buildScene() {
   let out = []
   let shades = ["#525b6b", "#5d6778", "#485163"]
@@ -212,7 +223,76 @@ function buildScene() {
         // Interior walls that no corridor touches are never seen: skip them.
         let exposed = !wallAt(c - 1, r) || !wallAt(c + 1, r) || !wallAt(c, r - 1) || !wallAt(c, r + 1)
         if (exposed) {
-          out.push({ id: "w" + r + "_" + c, type: "box", position: { x: c * CELL, y: 1.3, z: r * CELL }, width: CELL, height: 2.6, depth: CELL, color: shades[(r * 3 + c * 5) % 3], roughness: 0.9, metalness: 0.05 })
+          out.push({
+            id: "w" + r + "_" + c,
+            type: "box",
+            position: { x: c * CELL, y: 1.3, z: r * CELL },
+            width: CELL,
+            height: 2.6,
+            depth: CELL,
+            color: shades[(r * 3 + c * 5) % 3],
+            texture: "stone",
+            textureRepeat: { x: 2, y: 2 },
+            roughness: 0.85,
+            metalness: 0.05,
+            bumpScale: 0.06
+          })
+        }
+      } else {
+        // Decorate open corridors with wall torch sconces at regular intervals.
+        // Each one is mounted on a neighbouring wall face: a short iron bracket
+        // goes into the wall, the torch hangs off its end, tight enough to the
+        // wall that a player hugging it (P_R = 0.32) never clips through.
+        if ((r * 7 + c * 11) % 19 === 0 && (r !== 1 || c !== 1) && (r !== exitZ || c !== exitX)) {
+          let dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]]
+          let first = (r + c) % 4
+          let nx = 0
+          let nz = 0
+          let found = false
+          let k = 0
+          while (k < 4 && !found) {
+            let d = dirs[(first + k) % 4]
+            if (wallAt(c + d[0], r + d[1])) { nx = d[0]; nz = d[1]; found = true }
+            k = k + 1
+          }
+          if (found) {
+            let cx = c * CELL
+            let cz = r * CELL
+            // The wall face is CELL / 2 from the cell centre along (nx, nz).
+            let face = CELL / 2
+            let along = nx !== 0
+            out.push({
+              id: "bracket_" + r + "_" + c,
+              type: "box",
+              position: { x: cx + nx * (face - 0.1), y: 1.62, z: cz + nz * (face - 0.1) },
+              width: along ? 0.24 : 0.06,
+              height: 0.06,
+              depth: along ? 0.06 : 0.24,
+              color: "#1f2937",
+              metalness: 0.7,
+              roughness: 0.4
+            })
+            out.push({
+              id: "sconce_" + r + "_" + c,
+              type: "box",
+              position: { x: cx + nx * (face - 0.2), y: 1.5, z: cz + nz * (face - 0.2) },
+              width: 0.1,
+              height: 0.36,
+              depth: 0.1,
+              color: "#78350f",
+              texture: "wood"
+            })
+            out.push({
+              id: "flame_" + r + "_" + c,
+              type: "cone",
+              position: { x: cx + nx * (face - 0.2), y: 1.8, z: cz + nz * (face - 0.2) },
+              radius: 0.1,
+              height: 0.28,
+              color: "#f59e0b",
+              emissive: "#ea580c",
+              emissiveIntensity: 2.2
+            })
+          }
         }
       }
       c = c + 1
@@ -220,30 +300,155 @@ function buildScene() {
     r = r + 1
   }
   let mid = (COLS - 1) * CELL / 2
-  out.push({ id: "floor", type: "plane", position: { x: mid, y: 0, z: mid }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: COLS * CELL + 4, height: ROWS * CELL + 4, color: "#2a3140", roughness: 1 })
+  out.push({
+    id: "floor",
+    type: "plane",
+    position: { x: mid, y: 0, z: mid },
+    rotation: { x: -Math.PI / 2, y: 0, z: 0 },
+    width: COLS * CELL + 4,
+    height: ROWS * CELL + 4,
+    color: "#2a3140",
+    texture: "tile",
+    textureRepeat: { x: 15, y: 15 },
+    roughness: 0.7,
+    bumpScale: 0.04
+  })
   if (started) {
-    out.push({ id: "ceiling", type: "plane", position: { x: mid, y: 2.6, z: mid }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, width: COLS * CELL + 4, height: ROWS * CELL + 4, color: "#1b2029", roughness: 1 })
+    out.push({
+      id: "ceiling",
+      type: "plane",
+      position: { x: mid, y: 2.6, z: mid },
+      rotation: { x: Math.PI / 2, y: 0, z: 0 },
+      width: COLS * CELL + 4,
+      height: ROWS * CELL + 4,
+      color: "#181d26",
+      texture: "stone",
+      textureRepeat: { x: 12, y: 12 },
+      roughness: 0.9
+    })
   }
-  // Skirting along the corridors gives the eye a line to follow in the fog.
-  out.push({ id: "exit", type: "torus", position: { x: exitX * CELL, y: 1.2, z: exitZ * CELL }, radius: 0.7, tube: 0.12, color: "#fbbf24", emissive: "#f59e0b", emissiveIntensity: 1.6, animate: { rotateY: 0.03, rotateX: 0.015 } })
-  out.push({ id: "exitpad", type: "cylinder", position: { x: exitX * CELL, y: 0.03, z: exitZ * CELL }, radius: 0.8, height: 0.06, color: "#fbbf24", emissive: "#f59e0b", emissiveIntensity: 0.5 })
-  out.push({ id: "startpad", type: "cylinder", position: { x: CELL, y: 0.03, z: CELL }, radius: 0.8, height: 0.06, color: "#4ade80", emissive: "#22c55e", emissiveIntensity: 0.35 })
+
+  // Golden Exit Portal with tiered stone altar dais and runic pillars
+  out.push({
+    id: "exit_dais1",
+    type: "cylinder",
+    position: { x: exitX * CELL, y: 0.05, z: exitZ * CELL },
+    radius: 1.25,
+    height: 0.1,
+    color: "#374151",
+    texture: "stone",
+    textureRepeat: { x: 2, y: 2 },
+    roughness: 0.8
+  })
+  out.push({
+    id: "exit_dais2",
+    type: "cylinder",
+    position: { x: exitX * CELL, y: 0.13, z: exitZ * CELL },
+    radius: 0.95,
+    height: 0.08,
+    color: "#4b5563",
+    texture: "tile",
+    textureRepeat: { x: 2, y: 2 },
+    roughness: 0.7
+  })
+  out.push({
+    id: "exitpad",
+    type: "cylinder",
+    position: { x: exitX * CELL, y: 0.18, z: exitZ * CELL },
+    radius: 0.75,
+    height: 0.04,
+    color: "#fbbf24",
+    emissive: "#f59e0b",
+    emissiveIntensity: 0.8
+  })
+  out.push({
+    id: "exit",
+    type: "torus",
+    position: { x: exitX * CELL, y: 1.35, z: exitZ * CELL },
+    radius: 0.75,
+    tube: 0.12,
+    color: "#fbbf24",
+    emissive: "#f59e0b",
+    emissiveIntensity: 2.2,
+    animate: { rotateY: 0.035, rotateX: 0.015 }
+  })
+  out.push({
+    id: "exit_core",
+    type: "octahedron",
+    position: { x: exitX * CELL, y: 1.35, z: exitZ * CELL },
+    radius: 0.35,
+    color: "#fef08a",
+    emissive: "#fbbf24",
+    emissiveIntensity: 3.0,
+    animate: { rotateY: -0.05, rotateZ: 0.03, floatAmplitude: 0.12, floatSpeed: 2 }
+  })
+  // 4 Corner Runic Pillars
+  let pDist = 0.8
+  let pIdx = 0
+  let pillarOffsets = [
+    { x: -pDist, z: -pDist }, { x: pDist, z: -pDist },
+    { x: -pDist, z: pDist }, { x: pDist, z: pDist }
+  ]
+  for (let i = 0; i < pillarOffsets.length; i++) {
+    let po = pillarOffsets[i]
+    out.push({
+      id: "exit_pillar_" + i,
+      type: "prism",
+      position: { x: exitX * CELL + po.x, y: 0.55, z: exitZ * CELL + po.z },
+      width: 0.25,
+      height: 0.8,
+      depth: 0.25,
+      color: "#475569",
+      texture: "stone",
+      roughness: 0.8
+    })
+  }
+
+  // Start spawn pad with glowing emerald emblem
+  out.push({
+    id: "startpad_base",
+    type: "cylinder",
+    position: { x: CELL, y: 0.04, z: CELL },
+    radius: 0.95,
+    height: 0.08,
+    color: "#374151",
+    texture: "stone",
+    roughness: 0.8
+  })
+  out.push({
+    id: "startpad",
+    type: "cylinder",
+    position: { x: CELL, y: 0.09, z: CELL },
+    radius: 0.75,
+    height: 0.04,
+    color: "#4ade80",
+    emissive: "#22c55e",
+    emissiveIntensity: 0.6
+  })
   sceneStatic = out
 }
 
 function buildLights() {
+  let flicker = started ? (Math.sin(Date.now() * 0.015) * 0.8 + Math.cos(Date.now() * 0.033) * 0.4) : 0
   lights = [
-    { id: "ambient", type: "ambient", color: "#9fb0d0", intensity: started ? 0.3 : 1.6 },
-    { id: "hemi", type: "hemisphere", color: "#b8c6e6", groundColor: "#3b4252", intensity: started ? 0.7 : 1.4 },
-    // A hand torch: bright enough to read the corridor, dim enough that a
-    // wall at arm's length is a wall and not a white sheet.
-    { id: "torch", type: "point", color: "#ffd9a0", intensity: 9, distance: 14, decay: 2, position: { x: px, y: 2.1, z: pz } },
-    { id: "exitglow", type: "point", color: "#fbbf24", intensity: 18, distance: 16, decay: 2, position: { x: exitX * CELL, y: 2, z: exitZ * CELL } }
+    { id: "ambient", type: "ambient", color: "#8a9ab8", intensity: started ? 0.35 : 1.6 },
+    { id: "hemi", type: "hemisphere", color: "#a5b4fc", groundColor: "#1e1b4b", intensity: started ? 0.6 : 1.4 },
+    { id: "torch", type: "point", color: "#ffb366", intensity: 9.5 + flicker, distance: 15, decay: 2, position: { x: px, y: 2.1, z: pz } },
+    { id: "exitglow", type: "point", color: "#fbbf24", intensity: 20, distance: 18, decay: 2, position: { x: exitX * CELL, y: 2, z: exitZ * CELL } }
   ]
 }
 
 function composeObjects() {
-  objects = []
+  objects = [
+    {
+      id: "sparks",
+      type: "particles",
+      particlePositions: emberPositions,
+      particleSize: 0.07,
+      color: "#ffbe3b",
+      opacity: 0.8
+    }
+  ]
 }
 
 // ---- Flow ----------------------------------------------------------------

@@ -21,6 +21,13 @@ let cameraPos = { x: 0, y: 38.0, z: 42.0 };
 let cameraLookAt = { x: 0, y: 0.5, z: 0 };
 let cameraFov = 48;
 let cinematicAngle = 0.0;
+// Preset switches glide rather than cut: the target the camera is easing to.
+let camTarget = null;
+let camLookTarget = null;
+
+function easeVec(cur, target, k) {
+  return { x: cur.x + (target.x - cur.x) * k, y: cur.y + (target.y - cur.y) * k, z: cur.z + (target.z - cur.z) * k };
+}
 
 // Collections
 let rabbits = [];
@@ -41,6 +48,31 @@ let maxGeneration = 1;
 let sparkPreyBars = [32, 35, 40, 38, 42, 45, 41, 37, 34, 38, 42, 44, 40, 38, 36, 39, 41, 43];
 let sparkFoxBars = [20, 22, 25, 28, 30, 27, 24, 21, 18, 22, 26, 28, 25, 24, 22, 25, 27, 26];
 let sparkGrassBars = [65, 62, 58, 55, 52, 56, 60, 64, 67, 63, 59, 56, 58, 62, 65, 68, 70, 72];
+// The three series zipped per column, which is what the graph iterates.
+let sparkCols = [];
+function buildSparkCols() {
+  let cols = [];
+  for (let i = 0; i < sparkPreyBars.length; i = i + 1) {
+    cols.push({ g: sparkGrassBars[i], p: sparkPreyBars[i], f: sparkFoxBars[i] });
+  }
+  sparkCols = cols;
+}
+buildSparkCols();
+
+// Minimap markers: every animal as a percentage position on the 70x70 map.
+let mapDots = [];
+function buildMapDots() {
+  let dots = [];
+  for (let r = 0; r < rabbits.length; r = r + 1) {
+    let rab = rabbits[r];
+    dots.push({ id: rab.id, l: ((rab.x + BOUNDS) / (BOUNDS * 2)) * 100, t: ((rab.z + BOUNDS) / (BOUNDS * 2)) * 100, c: rab.id === selectedId ? "#fef08a" : "#f8fafc", s: rab.id === selectedId ? 7 : 4 });
+  }
+  for (let f = 0; f < foxes.length; f = f + 1) {
+    let fox = foxes[f];
+    dots.push({ id: fox.id, l: ((fox.x + BOUNDS) / (BOUNDS * 2)) * 100, t: ((fox.z + BOUNDS) / (BOUNDS * 2)) * 100, c: fox.id === selectedId ? "#fef08a" : "#fb923c", s: fox.id === selectedId ? 7 : 5 });
+  }
+  mapDots = dots;
+}
 
 // Dynamic Scene collections
 let objects = [];
@@ -94,12 +126,138 @@ function dist(x1, z1, x2, z2) {
   return Math.hypot(x1 - x2, z1 - z2);
 }
 
+// Deterministic scatter: the reserve should look the same every launch, and
+// Math.random() would reshuffle every flower and pebble each time.
+let scatterSeed = 7;
+function srand() {
+  scatterSeed = (scatterSeed * 1103515245 + 12345) % 2147483648;
+  return scatterSeed / 2147483648;
+}
+
+const DECK_TOP = 0.8;
+const SHORE_RADIUS = LAKE_RADIUS + 1.8;
+
+function onLand(x, z) {
+  return Math.abs(x) < BOUNDS - 0.6 && Math.abs(z) < BOUNDS - 0.6 && Math.hypot(x - LAKE_X, z - LAKE_Z) > SHORE_RADIUS + 0.3;
+}
+
+// One tree: a trunk plus a species-specific crown. Every part rests on the
+// part below it, so nothing hangs in the air.
+function pushTree(list, t, tr) {
+  let sc = tr.scale;
+  let trunkH = (tr.type === "birch" ? 2.6 : 2.2) * sc;
+  let trunkR = (tr.type === "birch" ? 0.2 : 0.28) * sc;
+  list.push({
+    id: "tree-trunk-" + t,
+    type: "cylinder",
+    radius: trunkR,
+    height: trunkH,
+    position: { x: tr.x, y: DECK_TOP + trunkH / 2, z: tr.z },
+    color: tr.type === "birch" ? "#f1f5f9" : "#5c3a21",
+    texture: tr.type === "birch" ? undefined : "wood",
+    castShadow: true
+  });
+  if (tr.type === "pine") {
+    // Three stacked cones, each planted inside the one below.
+    let tiers = [
+      { r: 1.7, h: 2.0, y: 1.2, c: "#14532d" },
+      { r: 1.3, h: 1.8, y: 2.5, c: "#166534" },
+      { r: 0.85, h: 1.5, y: 3.7, c: "#15803d" }
+    ];
+    for (let i = 0; i < tiers.length; i = i + 1) {
+      list.push({
+        id: "tree-cone-" + i + "-" + t,
+        type: "cone",
+        radius: tiers[i].r * sc,
+        height: tiers[i].h * sc,
+        position: { x: tr.x, y: DECK_TOP + (tiers[i].y + tiers[i].h / 2) * sc, z: tr.z },
+        color: tiers[i].c,
+        flatShading: true,
+        castShadow: true
+      });
+    }
+  } else if (tr.type === "willow") {
+    let crownY = DECK_TOP + trunkH + 1.2 * sc;
+    list.push({
+      id: "tree-willow-" + t,
+      type: "sphere",
+      radius: 1.9 * sc,
+      position: { x: tr.x, y: crownY, z: tr.z },
+      color: "#4d9a3a",
+      flatShading: true,
+      castShadow: true
+    });
+    // Drooping strands hang from the crown's rim down towards the ground.
+    for (let k = 0; k < 7; k = k + 1) {
+      let a = (k / 7) * Math.PI * 2;
+      let strandH = (1.6 + srand() * 0.9) * sc;
+      list.push({
+        id: "tree-strand-" + k + "-" + t,
+        type: "cylinder",
+        radius: 0.06 * sc,
+        height: strandH,
+        position: { x: tr.x + Math.cos(a) * 1.6 * sc, y: crownY - 0.6 * sc - strandH / 2, z: tr.z + Math.sin(a) * 1.6 * sc },
+        color: "#65b64c"
+      });
+    }
+  } else if (tr.type === "birch") {
+    for (let k = 0; k < 3; k = k + 1) {
+      list.push({
+        id: "tree-band-" + k + "-" + t,
+        type: "cylinder",
+        radius: trunkR + 0.01,
+        height: 0.1 * sc,
+        position: { x: tr.x, y: DECK_TOP + (0.5 + k * 0.75) * sc, z: tr.z },
+        color: "#1f2937"
+      });
+    }
+    let crownY = DECK_TOP + trunkH + 0.9 * sc;
+    list.push({
+      id: "tree-birch-" + t,
+      type: "sphere",
+      radius: 1.45 * sc,
+      position: { x: tr.x, y: crownY, z: tr.z },
+      color: "#eab308",
+      flatShading: true,
+      castShadow: true
+    });
+    list.push({
+      id: "tree-birch-top-" + t,
+      type: "sphere",
+      radius: 1.0 * sc,
+      position: { x: tr.x + 0.3 * sc, y: crownY + 1.1 * sc, z: tr.z - 0.2 * sc },
+      color: "#f59e0b",
+      flatShading: true,
+      castShadow: true
+    });
+  } else {
+    // Oak: a clump of three overlapping crowns.
+    let crownY = DECK_TOP + trunkH + 1.0 * sc;
+    let lobes = [
+      { dx: 0, dz: 0, dy: 0, r: 1.7, c: "#15803d" },
+      { dx: 1.0, dz: 0.5, dy: 0.5, r: 1.25, c: "#166534" },
+      { dx: -0.9, dz: -0.6, dy: 0.65, r: 1.15, c: "#16a34a" }
+    ];
+    for (let k = 0; k < lobes.length; k = k + 1) {
+      list.push({
+        id: "tree-lobe-" + k + "-" + t,
+        type: "sphere",
+        radius: lobes[k].r * sc,
+        position: { x: tr.x + lobes[k].dx * sc, y: crownY + lobes[k].dy * sc, z: tr.z + lobes[k].dz * sc },
+        color: lobes[k].c,
+        flatShading: true,
+        castShadow: true
+      });
+    }
+  }
+}
+
 // Build 3D Static Scenery (Expanded 70x70 Floating Island with Micro-Biomes)
 function buildStaticMeadow() {
   let list = [];
+  scatterSeed = 7;
 
   // 1. Floating Island Terrain Base (70 x 70 Units)
-  // Lush Meadow Turf Deck
   list.push({
     id: "meadow-turf",
     type: "box",
@@ -107,11 +265,13 @@ function buildStaticMeadow() {
     height: 0.8,
     depth: 70.0,
     position: { x: 0, y: 0.4, z: 0 },
-    color: "#15803d",
+    color: "#2f7d32",
+    texture: "grass",
+    textureRepeat: { x: 28, y: 28 },
+    bumpScale: 0.04,
     receiveShadow: true,
     roughness: 0.9
   });
-  // Rich Soil Strata
   list.push({
     id: "meadow-earth",
     type: "box",
@@ -119,10 +279,9 @@ function buildStaticMeadow() {
     height: 2.0,
     depth: 69.2,
     position: { x: 0, y: -1.0, z: 0 },
-    color: "#78350f",
+    color: "#6b3f1d",
     roughness: 0.95
   });
-  // Slate Bedrock Cliffs
   list.push({
     id: "meadow-bedrock",
     type: "box",
@@ -130,318 +289,511 @@ function buildStaticMeadow() {
     height: 4.5,
     depth: 68.0,
     position: { x: 0, y: -4.2, z: 0 },
-    color: "#334155",
+    color: "#3f4a5c",
+    texture: "stone",
+    textureRepeat: { x: 12, y: 3 },
     roughness: 0.8
   });
+  // Rock spurs hanging beneath the bedrock give the island a floating silhouette.
+  let spurs = [
+    { x: -14, z: -10, r: 7, h: 9 }, { x: 12, z: 8, r: 8, h: 11 }, { x: 4, z: -16, r: 5.5, h: 7 },
+    { x: -8, z: 16, r: 6, h: 8 }, { x: 22, z: -14, r: 4.5, h: 6 }, { x: -24, z: 4, r: 5, h: 6.5 }
+  ];
+  for (let i = 0; i < spurs.length; i = i + 1) {
+    list.push({
+      id: "island-spur-" + i,
+      type: "cone",
+      radius: spurs[i].r,
+      height: spurs[i].h,
+      position: { x: spurs[i].x, y: -6.4 - spurs[i].h / 2, z: spurs[i].z },
+      rotation: { x: Math.PI, y: 0, z: 0 },
+      color: "#334155",
+      flatShading: true,
+      roughness: 0.9
+    });
+  }
 
-  // 2. Central Oasis Lake / Watering Hole
-  // Shoreline Sand & Pebble Ring
+  // 2. Biome ground patches: soft discs of a different floor colour so each
+  //    quarter of the reserve reads as its own habitat from the air.
+  let patches = [
+    // North-West pine ridge: needle floor
+    { x: -20, z: -19, r: 9.5, c: "#3b5a2a" }, { x: -14, z: -13, r: 6, c: "#41622f" }, { x: -25, z: -12, r: 5.5, c: "#3b5a2a" },
+    // South-East woodland: leaf litter
+    { x: 19, z: 19, r: 9, c: "#7a6a35" }, { x: 14, z: 13, r: 5.5, c: "#8a7a3f" }, { x: 25, z: 13, r: 5, c: "#7a6a35" },
+    // South-West crags: gravel scree
+    { x: -21, z: 21, r: 8.5, c: "#707a86" }, { x: -15, z: 16, r: 4.5, c: "#7b8592" },
+    // North-East meadow: bright wildflower grass
+    { x: 19, z: -19, r: 9.5, c: "#5aa63a" }, { x: 12, z: -13, r: 5, c: "#63b043" }, { x: 26, z: -10, r: 4.5, c: "#5aa63a" }
+  ];
+  for (let i = 0; i < patches.length; i = i + 1) {
+    list.push({
+      id: "patch-" + i,
+      type: "cylinder",
+      radius: patches[i].r,
+      height: 0.02,
+      position: { x: patches[i].x, y: DECK_TOP + 0.005, z: patches[i].z },
+      color: patches[i].c,
+      texture: "noise",
+      textureRepeat: { x: 3, y: 3 },
+      roughness: 0.95,
+      receiveShadow: true
+    });
+  }
+
+  // 3. Central Oasis Lake: a sand shore, shallow water and a deeper centre.
   list.push({
     id: "lake-shore",
     type: "cylinder",
-    radius: LAKE_RADIUS + 1.4,
+    radius: SHORE_RADIUS,
     height: 0.05,
-    position: { x: LAKE_X, y: 0.805, z: LAKE_Z },
-    color: "#d97706",
-    roughness: 0.95
+    position: { x: LAKE_X, y: DECK_TOP + 0.005, z: LAKE_Z },
+    color: "#d9b06a",
+    texture: "sand",
+    textureRepeat: { x: 5, y: 5 },
+    roughness: 0.95,
+    receiveShadow: true
   });
-  // Azure Lake Water
   list.push({
     id: "lake-water",
     type: "cylinder",
     radius: LAKE_RADIUS,
-    height: 0.08,
-    position: { x: LAKE_X, y: 0.81, z: LAKE_Z },
-    color: "#0284c7",
-    opacity: 0.88,
+    height: 0.04,
+    position: { x: LAKE_X, y: DECK_TOP + 0.05, z: LAKE_Z },
+    color: "#38bdf8",
+    opacity: 0.82,
+    metalness: 0.3,
+    roughness: 0.12
+  });
+  list.push({
+    id: "lake-deep",
+    type: "cylinder",
+    radius: LAKE_RADIUS * 0.62,
+    height: 0.02,
+    position: { x: LAKE_X, y: DECK_TOP + 0.08, z: LAKE_Z },
+    color: "#0369a1",
+    opacity: 0.8,
     metalness: 0.35,
     roughness: 0.1
   });
-
-  // Floating Water Lilies & Lotus Blossoms
   let lilypads = [
-    { x: LAKE_X - 2.8, z: LAKE_Z - 2.0 },
-    { x: LAKE_X + 3.2, z: LAKE_Z + 1.8 },
-    { x: LAKE_X - 1.5, z: LAKE_Z + 3.2 },
-    { x: LAKE_X + 2.5, z: LAKE_Z - 3.0 },
-    { x: LAKE_X - 3.5, z: LAKE_Z + 1.2 },
-    { x: LAKE_X + 1.2, z: LAKE_Z + 3.8 }
+    { x: LAKE_X - 2.8, z: LAKE_Z - 2.0 }, { x: LAKE_X + 3.2, z: LAKE_Z + 1.8 }, { x: LAKE_X - 1.5, z: LAKE_Z + 3.2 },
+    { x: LAKE_X + 2.5, z: LAKE_Z - 3.0 }, { x: LAKE_X - 3.5, z: LAKE_Z + 1.2 }, { x: LAKE_X + 1.2, z: LAKE_Z + 3.8 },
+    { x: LAKE_X + 4.6, z: LAKE_Z - 0.8 }, { x: LAKE_X - 4.4, z: LAKE_Z - 3.4 }
   ];
   for (let l = 0; l < lilypads.length; l = l + 1) {
     list.push({
       id: "lilypad-" + l,
       type: "cylinder",
-      radius: 0.45,
-      height: 0.04,
-      position: { x: lilypads[l].x, y: 0.86, z: lilypads[l].z },
+      radius: 0.4 + (l % 3) * 0.1,
+      height: 0.03,
+      position: { x: lilypads[l].x, y: DECK_TOP + 0.085, z: lilypads[l].z },
       color: "#22c55e"
     });
-    list.push({
-      id: "lilypad-flower-" + l,
-      type: "sphere",
-      radius: 0.12,
-      position: { x: lilypads[l].x, y: 0.90, z: lilypads[l].z },
-      color: (l % 2 === 0) ? "#ffffff" : "#f472b6"
-    });
-  }
-
-  // 3. Sandy Winding Nature Trails across the 70x70 Reserve
-  let pathStrips = [
-    { x: -10.0, z: 2.0, w: 1.6, d: 24.0, rot: 0.35 },
-    { x: 12.0, z: 6.0, w: 1.6, d: 26.0, rot: -0.42 },
-    { x: -4.0, z: -14.0, w: 1.6, d: 20.0, rot: 0.75 },
-    { x: 14.0, z: -12.0, w: 1.6, d: 22.0, rot: -0.3 }
-  ];
-  for (let p = 0; p < pathStrips.length; p = p + 1) {
-    list.push({
-      id: "trail-" + p,
-      type: "box",
-      width: pathStrips[p].w,
-      height: 0.03,
-      depth: pathStrips[p].d,
-      position: { x: pathStrips[p].x, y: 0.805, z: pathStrips[p].z },
-      rotation: { x: 0, y: pathStrips[p].rot, z: 0 },
-      color: "#b45309",
-      roughness: 0.95
-    });
-  }
-
-  // 4. Diverse Natural Forests & Tree Groves (28 Natural Trees across the 70x70 biome)
-  let treeList = [
-    // North-West Alpine Pine Ridge
-    { x: -24.0, z: -22.0, type: "pine", scale: 1.4 },
-    { x: -18.5, z: -25.0, type: "pine", scale: 1.5 },
-    { x: -26.0, z: -16.0, type: "pine", scale: 1.3 },
-    { x: -17.0, z: -15.5, type: "pine", scale: 1.4 },
-    { x: -12.0, z: -22.0, type: "pine", scale: 1.2 },
-    { x: -21.0, z: -10.5, type: "pine", scale: 1.3 },
-    { x: -13.5, z: -11.0, type: "pine", scale: 1.1 },
-
-    // South-East Deciduous Woodland (Oak & Golden Birch)
-    { x: 20.0, z: 21.0, type: "oak", scale: 1.4 },
-    { x: 25.5, z: 17.5, type: "oak", scale: 1.3 },
-    { x: 18.0, z: 26.5, type: "birch", scale: 1.5 },
-    { x: 13.5, z: 21.0, type: "oak", scale: 1.2 },
-    { x: 23.0, z: 12.0, type: "birch", scale: 1.2 },
-    { x: 16.0, z: 15.0, type: "oak", scale: 1.3 },
-
-    // Lakeside Weeping Willows
-    { x: LAKE_X - 8.0, z: LAKE_Z - 1.5, type: "willow", scale: 1.35 },
-    { x: LAKE_X + 7.8, z: LAKE_Z + 2.0, type: "willow", scale: 1.3 },
-    { x: LAKE_X - 2.0, z: LAKE_Z - 8.2, type: "willow", scale: 1.25 },
-
-    // North-East Flower Meadow Trees
-    { x: 18.0, z: -20.0, type: "oak", scale: 1.2 },
-    { x: 24.0, z: -15.0, type: "birch", scale: 1.3 },
-    { x: 12.0, z: -24.0, type: "oak", scale: 1.1 },
-
-    // South-West Rocky Crag Pines
-    { x: -20.0, z: 18.0, type: "pine", scale: 1.2 },
-    { x: -25.0, z: 22.0, type: "pine", scale: 1.4 },
-    { x: -15.0, z: 24.0, type: "pine", scale: 1.1 },
-
-    // Perimeter Horizon Trees
-    { x: -29.0, z: 0, type: "pine", scale: 1.4 },
-    { x: 29.0, z: -8.0, type: "pine", scale: 1.4 },
-    { x: 0, z: 29.0, type: "oak", scale: 1.3 },
-    { x: 0, z: -29.0, type: "pine", scale: 1.4 },
-    { x: -27.0, z: 26.0, type: "pine", scale: 1.3 },
-    { x: 27.0, z: -26.0, type: "pine", scale: 1.3 }
-  ];
-
-  for (let t = 0; t < treeList.length; t = t + 1) {
-    let tr = treeList[t];
-    // Trunk
-    list.push({
-      id: "tree-trunk-" + t,
-      type: "cylinder",
-      radius: 0.28 * tr.scale,
-      height: 2.2 * tr.scale,
-      position: { x: tr.x, y: 0.8 + (2.2 * tr.scale) / 2, z: tr.z },
-      color: tr.type === "birch" ? "#f1f5f9" : "#5c3a21"
-    });
-    if (tr.type === "pine") {
+    if (l % 2 === 0) {
       list.push({
-        id: "tree-cone-1-" + t,
+        id: "lilypad-flower-" + l,
         type: "cone",
-        radius: 1.5 * tr.scale,
-        height: 2.2 * tr.scale,
-        position: { x: tr.x, y: 0.8 + 2.0 * tr.scale, z: tr.z },
-        color: "#14532d",
-        castShadow: true
-      });
-      list.push({
-        id: "tree-cone-2-" + t,
-        type: "cone",
-        radius: 1.1 * tr.scale,
-        height: 2.0 * tr.scale,
-        position: { x: tr.x, y: 0.8 + 3.4 * tr.scale, z: tr.z },
-        color: "#166534",
-        castShadow: true
-      });
-    } else if (tr.type === "willow") {
-      list.push({
-        id: "tree-willow-" + t,
-        type: "sphere",
-        radius: 1.8 * tr.scale,
-        position: { x: tr.x, y: 0.8 + 2.8 * tr.scale, z: tr.z },
-        color: "#16a34a",
-        castShadow: true
-      });
-    } else if (tr.type === "birch") {
-      list.push({
-        id: "tree-birch-" + t,
-        type: "sphere",
-        radius: 1.6 * tr.scale,
-        position: { x: tr.x, y: 0.8 + 3.0 * tr.scale, z: tr.z },
-        color: "#eab308",
-        castShadow: true
-      });
-    } else {
-      list.push({
-        id: "tree-foliage-" + t,
-        type: "sphere",
-        radius: 1.7 * tr.scale,
-        position: { x: tr.x, y: 0.8 + 3.0 * tr.scale, z: tr.z },
-        color: "#15803d",
-        castShadow: true
+        radius: 0.14,
+        height: 0.2,
+        position: { x: lilypads[l].x, y: DECK_TOP + 0.2, z: lilypads[l].z },
+        color: (l % 4 === 0) ? "#fbcfe8" : "#ffffff",
+        flatShading: true
       });
     }
   }
-
-  // 5. Granite Mossy Boulders & Rocky Formations
-  let boulders = [
-    { x: -22.5, z: 19.5, r: 1.6 },
-    { x: -19.0, z: 23.0, r: 1.1 },
-    { x: -25.0, z: 16.5, r: 1.3 },
-    { x: LAKE_X + 6.5, z: LAKE_Z - 4.5, r: 1.1 },
-    { x: LAKE_X - 6.0, z: LAKE_Z + 4.2, r: 0.95 },
-    { x: 12.0, z: -16.5, r: 1.4 },
-    { x: -6.0, z: 12.0, r: 1.0 },
-    { x: 22.0, z: -4.0, r: 1.2 }
-  ];
-  for (let b = 0; b < boulders.length; b = b + 1) {
+  // Reed beds and shore rocks around the waterline.
+  for (let k = 0; k < 9; k = k + 1) {
+    let a = (k / 9) * Math.PI * 2 + 0.3;
+    let cx = LAKE_X + Math.cos(a) * (LAKE_RADIUS + 0.5);
+    let cz = LAKE_Z + Math.sin(a) * (LAKE_RADIUS + 0.5);
+    for (let r = 0; r < 4; r = r + 1) {
+      let rx = cx + (srand() - 0.5) * 1.1;
+      let rz = cz + (srand() - 0.5) * 1.1;
+      let rh = 0.9 + srand() * 0.6;
+      list.push({
+        id: "reed-" + k + "-" + r,
+        type: "cylinder",
+        radius: 0.035,
+        height: rh,
+        position: { x: rx, y: DECK_TOP + rh / 2, z: rz },
+        color: "#4d7c0f"
+      });
+      if (r % 2 === 0) {
+        list.push({
+          id: "reed-head-" + k + "-" + r,
+          type: "capsule",
+          radius: 0.055,
+          height: 0.3,
+          position: { x: rx, y: DECK_TOP + rh + 0.1, z: rz },
+          color: "#78350f"
+        });
+      }
+    }
+  }
+  let shoreRocks = [0.4, 1.9, 3.1, 4.6, 5.6];
+  for (let k = 0; k < shoreRocks.length; k = k + 1) {
+    let a = shoreRocks[k];
+    let rr = 0.45 + srand() * 0.4;
     list.push({
-      id: "boulder-" + b,
-      type: "sphere",
-      radius: boulders[b].r,
-      position: { x: boulders[b].x, y: 0.8 + boulders[b].r * 0.45, z: boulders[b].z },
-      color: "#64748b",
-      roughness: 0.85,
+      id: "shore-rock-" + k,
+      type: "dodecahedron",
+      radius: rr,
+      position: { x: LAKE_X + Math.cos(a) * (LAKE_RADIUS + 1.1), y: DECK_TOP + rr * 0.55, z: LAKE_Z + Math.sin(a) * (LAKE_RADIUS + 1.1) },
+      rotation: { x: srand(), y: srand() * 3, z: srand() },
+      color: "#8b8f97",
+      flatShading: true,
+      roughness: 0.9,
       castShadow: true
     });
   }
 
-  // 6. Perimeter Wooden Fence Posts around Island Rim (70x70)
-  let fenceSpacing = 4.5;
-  let fCount = 0;
-  for (let x = -BOUNDS; x <= BOUNDS; x = x + fenceSpacing) {
-    list.push({
-      id: "fence-n-" + fCount,
-      type: "cylinder",
-      radius: 0.09,
-      height: 0.9,
-      position: { x: x, y: 1.25, z: -BOUNDS },
-      color: "#78350f"
-    });
-    list.push({
-      id: "fence-s-" + fCount,
-      type: "cylinder",
-      radius: 0.09,
-      height: 0.9,
-      position: { x: x, y: 1.25, z: BOUNDS },
-      color: "#78350f"
-    });
-    fCount = fCount + 1;
+  // 4. Winding trails: overlapping sand discs laid along polylines, so the
+  //    paths curve between habitats instead of cutting straight across.
+  let trails = [
+    [[-19, -14], [-11, -7], [-7, 3], [-10, 13], [-16, 20]],
+    [[16, 16], [10, 9], [11, 0], [14, -8], [17, -16]],
+    [[-4, -13], [0, -9.2]],
+    [[10.5, 2.5], [17, 4], [24, 5]]
+  ];
+  let trailInst = [];
+  for (let t = 0; t < trails.length; t = t + 1) {
+    let poly = trails[t];
+    for (let sgm = 0; sgm + 1 < poly.length; sgm = sgm + 1) {
+      let ax = poly[sgm][0], az = poly[sgm][1], bx = poly[sgm + 1][0], bz = poly[sgm + 1][1];
+      let len = Math.hypot(bx - ax, bz - az);
+      let steps = Math.max(1, Math.round(len / 0.9));
+      for (let i = 0; i <= steps; i = i + 1) {
+        let u = i / steps;
+        let wobble = Math.sin(u * 9 + t) * 0.35;
+        let nx = -(bz - az) / len, nz = (bx - ax) / len;
+        trailInst.push(ax + (bx - ax) * u + nx * wobble, DECK_TOP + 0.02, az + (bz - az) * u + nz * wobble, i % 3);
+      }
+    }
   }
+  list.push({
+    id: "trail-discs",
+    type: "instanced",
+    shape: "cylinder",
+    radius: 0.85,
+    height: 0.03,
+    instances: trailInst,
+    palette: ["#c9a86a", "#d4b478", "#bf9d60"],
+    roughness: 0.95
+  });
+
+  // 5. Trees: pine ridge, woodland, willows at the water, meadow trees, crag pines and a horizon ring.
+  let treeList = [
+    // North-West Alpine Pine Ridge
+    { x: -24.0, z: -22.0, type: "pine", scale: 1.4 }, { x: -18.5, z: -25.0, type: "pine", scale: 1.5 },
+    { x: -26.0, z: -16.0, type: "pine", scale: 1.3 }, { x: -17.0, z: -15.5, type: "pine", scale: 1.4 },
+    { x: -12.0, z: -22.0, type: "pine", scale: 1.2 }, { x: -21.0, z: -10.5, type: "pine", scale: 1.3 },
+    { x: -13.5, z: -11.0, type: "pine", scale: 1.1 }, { x: -22.0, z: -19.0, type: "pine", scale: 1.0 },
+    { x: -15.5, z: -20.5, type: "pine", scale: 1.25 }, { x: -27.5, z: -22.5, type: "pine", scale: 1.15 },
+    // South-East Deciduous Woodland (Oak & Golden Birch)
+    { x: 20.0, z: 21.0, type: "oak", scale: 1.4 }, { x: 25.5, z: 17.5, type: "oak", scale: 1.3 },
+    { x: 18.0, z: 26.5, type: "birch", scale: 1.5 }, { x: 13.5, z: 21.0, type: "oak", scale: 1.2 },
+    { x: 23.0, z: 12.0, type: "birch", scale: 1.2 }, { x: 16.0, z: 15.0, type: "oak", scale: 1.3 },
+    { x: 22.5, z: 25.0, type: "birch", scale: 1.1 }, { x: 27.0, z: 22.0, type: "oak", scale: 1.1 },
+    { x: 12.0, z: 26.0, type: "oak", scale: 1.0 },
+    // Lakeside Weeping Willows
+    { x: LAKE_X - 9.2, z: LAKE_Z - 1.5, type: "willow", scale: 1.35 }, { x: LAKE_X + 9.0, z: LAKE_Z + 2.4, type: "willow", scale: 1.3 },
+    { x: LAKE_X - 2.0, z: LAKE_Z - 9.4, type: "willow", scale: 1.25 },
+    // North-East Flower Meadow Trees
+    { x: 18.0, z: -20.0, type: "oak", scale: 1.2 }, { x: 24.0, z: -15.0, type: "birch", scale: 1.3 },
+    { x: 12.0, z: -24.0, type: "oak", scale: 1.1 }, { x: 27.0, z: -21.0, type: "birch", scale: 1.0 },
+    // South-West Rocky Crag Pines
+    { x: -20.0, z: 18.0, type: "pine", scale: 1.2 }, { x: -25.0, z: 22.0, type: "pine", scale: 1.4 },
+    { x: -15.0, z: 24.0, type: "pine", scale: 1.1 }, { x: -27.0, z: 15.5, type: "pine", scale: 1.0 },
+    // Perimeter Horizon Trees
+    { x: -29.5, z: 0, type: "pine", scale: 1.4 }, { x: 29.5, z: -8.0, type: "pine", scale: 1.4 },
+    { x: 0, z: 29.5, type: "oak", scale: 1.3 }, { x: 0, z: -29.5, type: "pine", scale: 1.4 },
+    { x: -27.0, z: 27.0, type: "pine", scale: 1.3 }, { x: 27.0, z: -27.0, type: "pine", scale: 1.3 },
+    { x: 29.0, z: 4.0, type: "oak", scale: 1.1 }, { x: -29.0, z: -8.0, type: "pine", scale: 1.2 },
+    { x: 9.0, z: 29.0, type: "birch", scale: 1.1 }, { x: -10.0, z: 29.0, type: "oak", scale: 1.1 },
+    { x: 8.0, z: -29.5, type: "oak", scale: 1.0 }, { x: -6.0, z: 12.5, type: "oak", scale: 0.95 }
+  ];
+  for (let t = 0; t < treeList.length; t = t + 1) {
+    pushTree(list, t, treeList[t]);
+  }
+
+  // 6. Granite formations: faceted boulders in the crags and scattered elsewhere, some with moss caps.
+  let boulders = [
+    { x: -22.5, z: 19.5, r: 1.7 }, { x: -19.0, z: 23.0, r: 1.2 }, { x: -25.0, z: 16.5, r: 1.4 },
+    { x: -21.5, z: 23.8, r: 0.9 }, { x: -17.5, z: 19.0, r: 1.0 }, { x: -24.0, z: 20.5, r: 1.1 },
+    { x: -13.5, z: 17.0, r: 0.8 }, { x: -20.0, z: 26.5, r: 1.3 },
+    { x: 12.0, z: -16.5, r: 1.4 }, { x: -6.0, z: 9.0, r: 0.9 }, { x: 22.0, z: -4.0, r: 1.2 },
+    { x: 26.0, z: 9.0, r: 0.9 }, { x: -9.0, z: -27.0, r: 1.1 }, { x: 4.0, z: 22.0, r: 0.8 }
+  ];
+  for (let b = 0; b < boulders.length; b = b + 1) {
+    let bd = boulders[b];
+    list.push({
+      id: "boulder-" + b,
+      type: (b % 2 === 0) ? "dodecahedron" : "icosahedron",
+      radius: bd.r,
+      position: { x: bd.x, y: DECK_TOP + bd.r * 0.55, z: bd.z },
+      rotation: { x: srand() * 0.6, y: srand() * 3, z: srand() * 0.6 },
+      color: (b % 3 === 0) ? "#6b7280" : "#7c8592",
+      flatShading: true,
+      roughness: 0.9,
+      castShadow: true
+    });
+    if (b % 3 !== 1) {
+      list.push({
+        id: "boulder-moss-" + b,
+        type: "sphere",
+        radius: bd.r * 0.55,
+        position: { x: bd.x - bd.r * 0.25, y: DECK_TOP + bd.r * 1.15, z: bd.z + bd.r * 0.15 },
+        color: "#4d7c0f",
+        flatShading: true
+      });
+    }
+  }
+
+  // 7. Woodland details: a fallen log, toadstools, and a fox den in the crags.
+  list.push({
+    id: "fallen-log",
+    type: "cylinder",
+    radius: 0.32,
+    height: 3.6,
+    position: { x: 18.5, y: DECK_TOP + 0.32, z: 16.5 },
+    rotation: { x: 0, y: 0.6, z: Math.PI / 2 },
+    color: "#5c3a21",
+    texture: "wood",
+    castShadow: true
+  });
+  for (let m = 0; m < 7; m = m + 1) {
+    let mx = 14 + srand() * 12, mz = 12 + srand() * 14;
+    let mh = 0.25 + srand() * 0.2;
+    list.push({
+      id: "toadstool-stem-" + m,
+      type: "cylinder",
+      radius: 0.08,
+      height: mh,
+      position: { x: mx, y: DECK_TOP + mh / 2, z: mz },
+      color: "#f5f5f4"
+    });
+    list.push({
+      id: "toadstool-cap-" + m,
+      type: "cone",
+      radius: 0.24,
+      height: 0.2,
+      position: { x: mx, y: DECK_TOP + mh + 0.1, z: mz },
+      color: (m % 2 === 0) ? "#dc2626" : "#d97706",
+      flatShading: true
+    });
+  }
+  list.push({
+    id: "fox-den-mound",
+    type: "sphere",
+    radius: 1.4,
+    position: { x: -17.0, y: DECK_TOP - 0.5, z: 21.5 },
+    color: "#6b4a2a",
+    flatShading: true,
+    roughness: 0.95
+  });
+  list.push({
+    id: "fox-den-hole",
+    type: "cylinder",
+    radius: 0.42,
+    height: 0.5,
+    position: { x: -16.0, y: DECK_TOP + 0.2, z: 22.6 },
+    rotation: { x: Math.PI / 2, y: 0, z: 0.7 },
+    color: "#1c1917"
+  });
+
+  // 8. Perimeter rail fence on all four sides (posts and two rails per bay).
+  let fenceSpacing = 4.5;
+  let postInst = [];
+  let railNS = [];
+  let railEW = [];
+  for (let x = -BOUNDS; x <= BOUNDS + 0.01; x = x + fenceSpacing) {
+    postInst.push(x, DECK_TOP + 0.5, -BOUNDS, 0, x, DECK_TOP + 0.5, BOUNDS, 0);
+    if (x + fenceSpacing <= BOUNDS + 0.01) {
+      let mx = x + fenceSpacing / 2;
+      railNS.push(mx, DECK_TOP + 0.45, -BOUNDS, 1, mx, DECK_TOP + 0.8, -BOUNDS, 1, mx, DECK_TOP + 0.45, BOUNDS, 1, mx, DECK_TOP + 0.8, BOUNDS, 1);
+    }
+  }
+  for (let z = -BOUNDS + fenceSpacing; z < BOUNDS - 0.01; z = z + fenceSpacing) {
+    postInst.push(-BOUNDS, DECK_TOP + 0.5, z, 0, BOUNDS, DECK_TOP + 0.5, z, 0);
+  }
+  for (let z = -BOUNDS; z + fenceSpacing <= BOUNDS + 0.01; z = z + fenceSpacing) {
+    let mz = z + fenceSpacing / 2;
+    railEW.push(-BOUNDS, DECK_TOP + 0.45, mz, 1, -BOUNDS, DECK_TOP + 0.8, mz, 1, BOUNDS, DECK_TOP + 0.45, mz, 1, BOUNDS, DECK_TOP + 0.8, mz, 1);
+  }
+  list.push({ id: "fence-posts", type: "instanced", shape: "cylinder", radius: 0.1, height: 1.0, instances: postInst, palette: ["#6b4423", "#7c4a24"], roughness: 0.9 });
+  list.push({ id: "fence-rails-ns", type: "instanced", shape: "box", width: fenceSpacing, height: 0.08, depth: 0.08, instances: railNS, palette: ["#6b4423", "#8a5a2b"], roughness: 0.9 });
+  list.push({ id: "fence-rails-ew", type: "instanced", shape: "box", width: 0.08, height: 0.08, depth: fenceSpacing, instances: railEW, palette: ["#6b4423", "#8a5a2b"], roughness: 0.9 });
+
+  // 9. Ground cover: instanced grass tufts everywhere on land, denser in the meadow.
+  let tuftInst = [];
+  for (let i = 0; i < 420; i = i + 1) {
+    let x = (srand() - 0.5) * 66, z = (srand() - 0.5) * 66;
+    if (!onLand(x, z)) continue;
+    tuftInst.push(x, DECK_TOP + 0.16, z, Math.floor(srand() * 3));
+  }
+  for (let i = 0; i < 160; i = i + 1) {
+    let x = 8 + srand() * 22, z = -30 + srand() * 22;
+    tuftInst.push(x, DECK_TOP + 0.16, z, Math.floor(srand() * 3));
+  }
+  list.push({ id: "ground-tufts", type: "instanced", shape: "cone", radius: 0.2, height: 0.34, instances: tuftInst, palette: ["#3f9a3a", "#4caf50", "#5fbf5a"], flatShading: true });
+
+  // 10. Wildflower field in the North-East meadow: stems with coloured heads on top.
+  let stemInst = [];
+  let headInst = [];
+  for (let i = 0; i < 260; i = i + 1) {
+    let x = 7 + srand() * 24, z = -31 + srand() * 24;
+    if (!onLand(x, z)) continue;
+    stemInst.push(x, DECK_TOP + 0.17, z, 0);
+    headInst.push(x, DECK_TOP + 0.38, z, Math.floor(srand() * 5));
+  }
+  // A few drifts of flowers elsewhere so the rest of the reserve is not bare.
+  let drifts = [{ x: -8, z: 6 }, { x: 6, z: 12 }, { x: -12, z: -2 }, { x: 20, z: 3 }, { x: -4, z: 24 }];
+  for (let d = 0; d < drifts.length; d = d + 1) {
+    for (let i = 0; i < 22; i = i + 1) {
+      let x = drifts[d].x + (srand() - 0.5) * 5, z = drifts[d].z + (srand() - 0.5) * 5;
+      if (!onLand(x, z)) continue;
+      stemInst.push(x, DECK_TOP + 0.17, z, 0);
+      headInst.push(x, DECK_TOP + 0.38, z, Math.floor(srand() * 5));
+    }
+  }
+  list.push({ id: "flower-stems", type: "instanced", shape: "cylinder", radius: 0.02, height: 0.34, instances: stemInst, palette: ["#3f6212"] });
+  list.push({ id: "flower-heads", type: "instanced", shape: "sphere", radius: 0.09, instances: headInst, palette: ["#fbbf24", "#f43f5e", "#a855f7", "#f8fafc", "#38bdf8"], flatShading: true });
+
+  // 11. Pebbles along the trails and through the crags.
+  let pebbleInst = [];
+  for (let i = 0; i < trailInst.length; i = i + 12) {
+    pebbleInst.push(trailInst[i] + (srand() - 0.5) * 1.6, DECK_TOP + 0.06, trailInst[i + 2] + (srand() - 0.5) * 1.6, Math.floor(srand() * 3));
+  }
+  for (let i = 0; i < 70; i = i + 1) {
+    let x = -29 + srand() * 17, z = 12 + srand() * 17;
+    pebbleInst.push(x, DECK_TOP + 0.06, z, Math.floor(srand() * 3));
+  }
+  list.push({ id: "pebbles", type: "instanced", shape: "dodecahedron", radius: 0.11, instances: pebbleInst, palette: ["#9ca3af", "#6b7280", "#a8a29e"], flatShading: true });
 
   return list;
 }
 
 const staticObjects = buildStaticMeadow();
 
-// Spawn Rabbit (Prey with Evolutionary Genetics & Dual Needs)
-function addRabbit(x, z, initialEnergy, generation, traits) {
+// ---------------------------------------------------------------------------
+// Ecosystem tuning. Ticks run at 30 per second at 1x, so 900 ticks is half a
+// minute. Every rate below is per tick.
+// ---------------------------------------------------------------------------
+const PREY_CAPACITY = 80;      // births taper off as the warren approaches this
+const PRED_CAPACITY = 24;      // same for foxes
+const PREY_MAX_SPEED = 0.145;  // fleeing sprint (units per tick)
+const PRED_MAX_SPEED = 0.2;    // chasing sprint: faster than prey, but only briefly
+const PRED_CHASE_TICKS = 110;  // stamina: a chase that lasts longer than this fails
+const PRED_HUNGRY_AT = 56;     // a fox only hunts once its energy drops below this
+const EDGE_MARGIN = 3.0;       // how far from the fence animals start turning away
+
+// Where the three refuges are, so a fleeing rabbit can head for the nearest.
+let coverCentres = [
+  { x: -19, z: -19 },
+  { x: 19, z: 19 },
+  { x: -21, z: 21 }
+];
+
+// Build a rabbit. Movement state (heading, wander drift, hop phase) is kept
+// beside the biology so the renderer and the AI read the same numbers.
+function makeRabbit(x, z, energy, gen, traits) {
   let posX = x !== undefined ? x : (Math.random() - 0.5) * BOUNDS * 1.85;
   let posZ = z !== undefined ? z : (Math.random() - 0.5) * BOUNDS * 1.85;
-  if (isInsideLake(posX, posZ)) {
-    posX = posX + (posX > LAKE_X ? LAKE_RADIUS + 1.5 : -(LAKE_RADIUS + 1.5));
+  if (Math.hypot(posX - LAKE_X, posZ - LAKE_Z) < SHORE_RADIUS + 1) {
+    posX = posX + (posX > LAKE_X ? SHORE_RADIUS + 2 : -(SHORE_RADIUS + 2));
   }
   let id = genId("prey");
-  let gen = generation || 1;
-  if (gen > maxGeneration) maxGeneration = gen;
-
-  let speedTrait = (traits && traits.speed) ? traits.speed : (0.92 + Math.random() * 0.16);
-  let sightTrait = (traits && traits.sight) ? traits.sight : (0.92 + Math.random() * 0.16);
-
-  rabbits.push({
+  let g = gen || 1;
+  if (g > maxGeneration) maxGeneration = g;
+  let rot = Math.random() * Math.PI * 2;
+  return {
     id: id,
     name: "Hare #" + id.split("-")[1],
-    generation: gen,
+    generation: g,
     traits: {
-      speed: speedTrait,
-      sight: sightTrait
+      speed: (traits && traits.speed) ? traits.speed : (0.92 + Math.random() * 0.16),
+      sight: (traits && traits.sight) ? traits.sight : (0.92 + Math.random() * 0.16)
     },
     x: posX,
     z: posZ,
     y: 0.82,
-    vx: (Math.random() - 0.5) * 0.05,
-    vz: (Math.random() - 0.5) * 0.05,
-    rot: Math.random() * Math.PI * 2,
-    energy: initialEnergy || 32,
+    vx: 0,
+    vz: 0,
+    speed: 0,
+    rot: rot,
+    wanderTheta: rot,
+    energy: energy || 34,
     maxEnergy: 60,
-    hydration: 45,
+    hydration: 40 + Math.random() * 15,
     maxHydration: 60,
     age: 0,
-    maxAge: 2000 + Math.floor(Math.random() * 500),
-    state: "Wandering", // Wandering, Grazing, Drinking, Fleeing, Resting
+    maxAge: 6500 + Math.floor(Math.random() * 2000),
+    state: "Wandering",
     hopPhase: Math.random() * Math.PI * 2,
-    offspringCount: 0
-  });
-  rabbitCount = rabbits.length;
+    offspringCount: 0,
+    breedCooldown: 200 + Math.floor(Math.random() * 200),
+    panic: 0,
+    restTicks: 0,
+    eatTicks: 0,
+    targetGrass: null,
+    zigTimer: 0,
+    zigSign: 1
+  };
 }
 
-// Spawn Fox (Predator with Evolutionary Genetics & Dual Needs)
-function addFox(x, z, initialEnergy, generation, traits) {
+function makeFox(x, z, energy, gen, traits) {
   let posX = x !== undefined ? x : (Math.random() - 0.5) * BOUNDS * 1.85;
   let posZ = z !== undefined ? z : (Math.random() - 0.5) * BOUNDS * 1.85;
-  if (isInsideLake(posX, posZ)) {
-    posX = posX - (posX > LAKE_X ? LAKE_RADIUS + 1.5 : -(LAKE_RADIUS + 1.5));
+  if (Math.hypot(posX - LAKE_X, posZ - LAKE_Z) < SHORE_RADIUS + 1) {
+    posX = posX - (posX > LAKE_X ? SHORE_RADIUS + 2 : -(SHORE_RADIUS + 2));
   }
   let id = genId("pred");
-  let gen = generation || 1;
-  if (gen > maxGeneration) maxGeneration = gen;
-
-  let speedTrait = (traits && traits.speed) ? traits.speed : (0.94 + Math.random() * 0.14);
-  let sightTrait = (traits && traits.sight) ? traits.sight : (0.94 + Math.random() * 0.14);
-
-  foxes.push({
+  let g = gen || 1;
+  if (g > maxGeneration) maxGeneration = g;
+  let rot = Math.random() * Math.PI * 2;
+  return {
     id: id,
     name: "Fox #" + id.split("-")[1],
-    generation: gen,
+    generation: g,
     traits: {
-      speed: speedTrait,
-      sight: sightTrait
+      speed: (traits && traits.speed) ? traits.speed : (0.94 + Math.random() * 0.14),
+      sight: (traits && traits.sight) ? traits.sight : (0.94 + Math.random() * 0.14)
     },
     x: posX,
     z: posZ,
     y: 0.85,
-    vx: (Math.random() - 0.5) * 0.06,
-    vz: (Math.random() - 0.5) * 0.06,
-    rot: Math.random() * Math.PI * 2,
-    energy: initialEnergy || 45,
+    vx: 0,
+    vz: 0,
+    speed: 0,
+    rot: rot,
+    wanderTheta: rot,
+    energy: energy || 48,
     maxEnergy: 85,
-    hydration: 50,
+    hydration: 50 + Math.random() * 20,
     maxHydration: 85,
     age: 0,
-    maxAge: 2800 + Math.floor(Math.random() * 600),
-    state: "Patrolling", // Patrolling, Stalking, Chasing, Satiated, Drinking
+    maxAge: 6000 + Math.floor(Math.random() * 2400),
+    state: "Patrolling",
     runPhase: Math.random() * Math.PI * 2,
     targetId: null,
     catchCount: 0,
-    satiatedTicks: 0,
-    offspringCount: 0
-  });
+    offspringCount: 0,
+    breedCooldown: 400 + Math.floor(Math.random() * 400),
+    chaseTicks: 0,
+    eatTicks: 0,
+    restTicks: 0,
+    recoverTicks: 0,
+    failedHunts: 0
+  };
+}
+
+function addRabbit(x, z, initialEnergy, generation, traits) {
+  rabbits.push(makeRabbit(x, z, initialEnergy, generation, traits));
+  rabbitCount = rabbits.length;
+}
+
+function addFox(x, z, initialEnergy, generation, traits) {
+  foxes.push(makeFox(x, z, initialEnergy, generation, traits));
   foxCount = foxes.length;
 }
 
@@ -452,8 +804,8 @@ function initGrassGrid() {
   for (let i = 0; i < numPatches; i = i + 1) {
     let gx = (Math.random() - 0.5) * BOUNDS * 1.92;
     let gz = (Math.random() - 0.5) * BOUNDS * 1.92;
-    if (isInsideLake(gx, gz)) {
-      gx = gx + (gx > LAKE_X ? LAKE_RADIUS + 1.8 : -(LAKE_RADIUS + 1.8));
+    if (Math.hypot(gx - LAKE_X, gz - LAKE_Z) < SHORE_RADIUS + 0.5) {
+      gx = gx + (gx > LAKE_X ? SHORE_RADIUS + 1.5 : -(SHORE_RADIUS + 1.5));
     }
     grassList.push({
       id: "grass-" + i,
@@ -515,24 +867,123 @@ function resetScenario(type) {
   initGrassGrid();
 
   if (type === "rabbit_boom") {
-    for (let i = 0; i < 65; i = i + 1) addRabbit();
-    for (let i = 0; i < 4; i = i + 1) addFox();
+    for (let i = 0; i < 60; i = i + 1) addRabbit();
+    for (let i = 0; i < 3; i = i + 1) addFox();
   } else if (type === "predator_pack") {
-    for (let i = 0; i < 35; i = i + 1) addRabbit();
-    for (let i = 0; i < 22; i = i + 1) addFox();
+    for (let i = 0; i < 34; i = i + 1) addRabbit();
+    for (let i = 0; i < 16; i = i + 1) addFox();
   } else if (type === "sparse") {
-    for (let i = 0; i < 24; i = i + 1) addRabbit();
-    for (let i = 0; i < 6; i = i + 1) addFox();
+    for (let i = 0; i < 22; i = i + 1) addRabbit();
+    for (let i = 0; i < 5; i = i + 1) addFox();
   } else {
-    // Perfectly Balanced Dynamic Equilibrium for 70x70 World
-    for (let i = 0; i < 48; i = i + 1) addRabbit();
-    for (let i = 0; i < 11; i = i + 1) addFox();
+    for (let i = 0; i < 42; i = i + 1) addRabbit();
+    for (let i = 0; i < 8; i = i + 1) addFox();
   }
 
   updateStats();
 }
 
-// Sustainable Ecosystem Physics & Agent AI Step
+// ---------------------------------------------------------------------------
+// Steering. Every animal has a desired velocity; each tick its real velocity
+// eases toward it under an acceleration limit, and its heading eases toward
+// the direction it is actually moving. Nothing snaps: a rabbit that spots a
+// fox has to turn and get up to speed, and a fox that loses interest coasts
+// to a walk. Edges and the lake push back softly before the hard clamp.
+// ---------------------------------------------------------------------------
+function steerTowards(a, tx, tz, speed, accel) {
+  let dx = tx - a.x;
+  let dz = tz - a.z;
+  let len = Math.hypot(dx, dz) || 1;
+  // Arrive: slow down inside the last couple of units so nobody overshoots.
+  let sp = len < 2.0 ? speed * Math.max(0.25, len / 2.0) : speed;
+  a.vx = a.vx + ((dx / len) * sp - a.vx) * accel;
+  a.vz = a.vz + ((dz / len) * sp - a.vz) * accel;
+}
+
+function steerHeading(a, theta, speed, accel) {
+  a.vx = a.vx + (Math.sin(theta) * speed - a.vx) * accel;
+  a.vz = a.vz + (Math.cos(theta) * speed - a.vz) * accel;
+}
+
+function steerStop(a, accel) {
+  a.vx = a.vx * (1 - accel);
+  a.vz = a.vz * (1 - accel);
+}
+
+// A slowly drifting heading, so wandering is a meander rather than a jitter.
+function wanderStep(a, drift) {
+  a.wanderTheta = a.wanderTheta + (Math.random() - 0.5) * drift;
+  return a.wanderTheta;
+}
+
+function applyAvoidance(a) {
+  // Fence
+  let push = 0.012;
+  if (a.x > BOUNDS - EDGE_MARGIN) a.vx = a.vx - push * (a.x - (BOUNDS - EDGE_MARGIN)) / EDGE_MARGIN;
+  if (a.x < -BOUNDS + EDGE_MARGIN) a.vx = a.vx + push * ((-BOUNDS + EDGE_MARGIN) - a.x) / EDGE_MARGIN;
+  if (a.z > BOUNDS - EDGE_MARGIN) a.vz = a.vz - push * (a.z - (BOUNDS - EDGE_MARGIN)) / EDGE_MARGIN;
+  if (a.z < -BOUNDS + EDGE_MARGIN) a.vz = a.vz + push * ((-BOUNDS + EDGE_MARGIN) - a.z) / EDGE_MARGIN;
+  // Lake: a radial push that grows as the water gets closer
+  let dx = a.x - LAKE_X;
+  let dz = a.z - LAKE_Z;
+  let d = Math.hypot(dx, dz) || 1;
+  let inner = LAKE_RADIUS + 0.4;
+  if (d < inner + 1.6 && a.state !== "Drinking") {
+    let k = 0.02 * (1 - (d - inner) / 1.6);
+    if (k > 0) {
+      a.vx = a.vx + (dx / d) * k;
+      a.vz = a.vz + (dz / d) * k;
+    }
+  }
+}
+
+function integrate(a, maxSpeed, turnRate) {
+  let sp = Math.hypot(a.vx, a.vz);
+  if (sp > maxSpeed) {
+    a.vx = a.vx * (maxSpeed / sp);
+    a.vz = a.vz * (maxSpeed / sp);
+    sp = maxSpeed;
+  }
+  a.speed = sp;
+  a.x = a.x + a.vx;
+  a.z = a.z + a.vz;
+  if (sp > 0.004) {
+    a.rot = lerpAngle(a.rot, Math.atan2(a.vx, a.vz), turnRate);
+  }
+  // Hard backstops: the fence and the waterline.
+  if (a.x > BOUNDS) { a.x = BOUNDS; a.vx = 0; }
+  if (a.x < -BOUNDS) { a.x = -BOUNDS; a.vx = 0; }
+  if (a.z > BOUNDS) { a.z = BOUNDS; a.vz = 0; }
+  if (a.z < -BOUNDS) { a.z = -BOUNDS; a.vz = 0; }
+  let dl = Math.hypot(a.x - LAKE_X, a.z - LAKE_Z);
+  if (dl < LAKE_RADIUS + 0.2) {
+    let ang = Math.atan2(a.z - LAKE_Z, a.x - LAKE_X);
+    a.x = LAKE_X + Math.cos(ang) * (LAKE_RADIUS + 0.2);
+    a.z = LAKE_Z + Math.sin(ang) * (LAKE_RADIUS + 0.2);
+    // Keep the tangential part of the velocity so the animal slides along the shore.
+    let nx = Math.cos(ang), nz = Math.sin(ang);
+    let dot = a.vx * nx + a.vz * nz;
+    if (dot < 0) { a.vx = a.vx - nx * dot; a.vz = a.vz - nz * dot; }
+  }
+}
+
+function nearestCover(x, z) {
+  let best = coverCentres[0];
+  let bd = 1e9;
+  for (let i = 0; i < coverCentres.length; i = i + 1) {
+    let d = dist(x, z, coverCentres[i].x, coverCentres[i].z);
+    if (d < bd) { bd = d; best = coverCentres[i]; }
+  }
+  return { x: best.x, z: best.z, d: bd };
+}
+
+function inheritTrait(v) {
+  return Math.min(1.35, Math.max(0.75, v + (Math.random() - 0.5) * 0.08));
+}
+
+// ---------------------------------------------------------------------------
+// The ecosystem step.
+// ---------------------------------------------------------------------------
 function updateEcosystem(delta) {
   simTick = simTick + 1;
   if (simTick % 220 === 0) {
@@ -541,14 +992,14 @@ function updateEcosystem(delta) {
     season = seasons[Math.floor(dayCount / 6) % 4];
   }
 
-  // 1. Dynamic Grass Growth, Carrying Capacity & Seed Dispersal
+  // 1. Grass regrowth, faster in spring and slow in winter.
   let matureGrassCount = 0;
+  let regrowSpeed = season === "Spring" ? 1.4 : (season === "Winter" ? 0.45 : 1.0);
   for (let g = 0; g < grassList.length; g = g + 1) {
     let grass = grassList[g];
     if (grass.nutrition < grass.maxNutrition) {
-      let regrowSpeed = season === "Spring" ? 1.45 : (season === "Winter" ? 0.35 : 1.0);
       grass.regrowTimer = grass.regrowTimer + delta * regrowSpeed;
-      if (grass.regrowTimer > 5.0) {
+      if (grass.regrowTimer > 11.0) {
         grass.nutrition = grass.nutrition + 1;
         grass.regrowTimer = 0;
       }
@@ -557,419 +1008,391 @@ function updateEcosystem(delta) {
   }
   grassCount = matureGrassCount;
 
-  // 2. Rabbits (Prey) AI, Foraging, Hydration & Natural Selection
+  // Which foxes are actually a threat this tick (a sleeping or feeding fox is not).
+  let huntingFoxes = [];
+  for (let f = 0; f < foxes.length; f = f + 1) {
+    let st = foxes[f].state;
+    if (st === "Stalking" || st === "Chasing" || st === "Patrolling" || st === "Recovering") huntingFoxes.push(foxes[f]);
+  }
+
+  // 2. Rabbits
   let survivingRabbits = [];
   let newRabbits = [];
+  let preyPressure = rabbits.length / PREY_CAPACITY;
 
   for (let r = 0; r < rabbits.length; r = r + 1) {
     let rab = rabbits[r];
     rab.age = rab.age + 1;
-    let isFleeing = rab.state === "Fleeing";
-    rab.hopPhase = rab.hopPhase + delta * (isFleeing ? 13.5 : 7.0);
-    rab.y = 0.82 + Math.abs(Math.sin(rab.hopPhase)) * (isFleeing ? 0.28 : 0.16);
-
+    if (rab.breedCooldown > 0) rab.breedCooldown = rab.breedCooldown - 1;
+    if (rab.panic > 0) rab.panic = rab.panic - 1;
+    rab.hydration = Math.max(0, rab.hydration - 0.015);
     let inCover = hasForestCover(rab.x, rab.z);
 
-    // Natural Thirst Metabolism
-    rab.hydration = Math.max(0, rab.hydration - 0.022 * delta * 30);
-
-    // Threat Detection with Genetic Sight Trait
-    let nearestFox = null;
-    let baseDetection = inCover ? 4.2 : 8.5;
+    // Threat detection: a grazing rabbit has its head down and notices later;
+    // cover hides the fox as much as the rabbit.
+    let baseDetection = inCover ? 5.0 : 9.0;
+    if (rab.state === "Grazing" || rab.state === "Resting") baseDetection = baseDetection * 0.75;
     let detectionRadius = baseDetection * rab.traits.sight;
+    let nearestFox = null;
     let minFoxDist = detectionRadius;
-
-    for (let f = 0; f < foxes.length; f = f + 1) {
-      let fox = foxes[f];
-      if (fox.satiatedTicks <= 0) {
-        let d = dist(rab.x, rab.z, fox.x, fox.z);
-        if (d < minFoxDist) {
-          minFoxDist = d;
-          nearestFox = fox;
-        }
+    for (let f = 0; f < huntingFoxes.length; f = f + 1) {
+      let fox = huntingFoxes[f];
+      let d = dist(rab.x, rab.z, fox.x, fox.z);
+      // A chasing fox is obvious from further away; a stalking one is low
+      // in the grass and gets much closer before it is noticed.
+      let reach = fox.state === "Chasing" ? minFoxDist * 1.4 : (fox.state === "Stalking" ? minFoxDist * 0.55 : minFoxDist);
+      if (d < reach) {
+        minFoxDist = d;
+        nearestFox = fox;
       }
     }
+    if (nearestFox) rab.panic = Math.max(rab.panic, 40);
 
-    if (nearestFox) {
-      // FLEE: Sprint away with Genetic Speed Trait
+    let metabolism = 0.026;
+
+    if (nearestFox || rab.panic > 0) {
+      // FLEE: away from the fox, bending towards the nearest refuge, with
+      // the occasional zig so a straight-line chase does not always win.
       rab.state = "Fleeing";
-      let dx = rab.x - nearestFox.x;
-      let dz = rab.z - nearestFox.z;
-      let len = Math.hypot(dx, dz) || 1;
-      let sprintSpeed = 0.138 * rab.traits.speed;
-      rab.vx = (dx / len) * sprintSpeed;
-      rab.vz = (dz / len) * sprintSpeed;
-      let targetRot = Math.atan2(rab.vx, rab.vz);
-      rab.rot = lerpAngle(rab.rot, targetRot, 0.24);
-      rab.energy = rab.energy - 0.065 * delta * 30;
-    } else if (rab.hydration < 25) {
-      // THIRSTY: Seek Oasis Lake to Drink
-      let dx = LAKE_X - rab.x;
-      let dz = LAKE_Z - rab.z;
-      let len = Math.hypot(dx, dz) || 1;
+      rab.restTicks = 0;
+      rab.eatTicks = 0;
+      let ax = 0, az = 0;
+      if (nearestFox) {
+        ax = rab.x - nearestFox.x;
+        az = rab.z - nearestFox.z;
+      } else {
+        ax = Math.sin(rab.rot);
+        az = Math.cos(rab.rot);
+      }
+      let al = Math.hypot(ax, az) || 1;
+      ax = ax / al; az = az / al;
+      let cov = nearestCover(rab.x, rab.z);
+      if (cov.d < 18 && !inCover) {
+        let cx = (cov.x - rab.x) / cov.d, cz = (cov.z - rab.z) / cov.d;
+        // Only bend towards cover if it is not straight through the fox.
+        if (cx * ax + cz * az > -0.2) { ax = ax * 0.6 + cx * 0.4; az = az * 0.6 + cz * 0.4; }
+      }
+      rab.zigTimer = rab.zigTimer - 1;
+      if (rab.zigTimer <= 0) { rab.zigTimer = 14 + Math.floor(Math.random() * 16); rab.zigSign = -rab.zigSign; }
+      let zig = 0.35 * rab.zigSign;
+      let theta = Math.atan2(ax, az) + zig;
+      let sprint = PREY_MAX_SPEED * rab.traits.speed * (nearestFox ? 1.0 : 0.7);
+      steerHeading(rab, theta, sprint, 0.22);
+      metabolism = 0.07;
+    } else if (rab.state === "Drinking" && rab.hydration < rab.maxHydration * 0.9) {
+      steerStop(rab, 0.3);
+      rab.hydration = Math.min(rab.maxHydration, rab.hydration + 0.9);
+      if (simTick % 12 === 0) spawnPuff(rab.x, rab.y, rab.z, "#38bdf8", 2);
+      metabolism = 0.015;
+    } else if (rab.hydration < 22) {
+      // THIRSTY: head for the shore.
+      rab.state = "Thirsty";
+      rab.restTicks = 0;
       if (isNearLakeShore(rab.x, rab.z)) {
         rab.state = "Drinking";
-        rab.hydration = Math.min(rab.maxHydration, rab.hydration + 18.0);
-        spawnPuff(rab.x, rab.y, rab.z, "#38bdf8", 3);
-        rab.vx = 0;
-        rab.vz = 0;
       } else {
-        let seekSpeed = 0.08 * rab.traits.speed;
-        rab.vx = (dx / len) * seekSpeed;
-        rab.vz = (dz / len) * seekSpeed;
-        let targetRot = Math.atan2(rab.vx, rab.vz);
-        rab.rot = lerpAngle(rab.rot, targetRot, 0.16);
+        steerTowards(rab, LAKE_X, LAKE_Z, 0.085 * rab.traits.speed, 0.12);
       }
-      rab.energy = rab.energy - 0.025 * delta * 30;
-    } else {
-      // SAFE: Seek Grass or Wander
-      let nearestGrass = null;
-      let minGrassDist = 11.0;
-      for (let g = 0; g < grassList.length; g = g + 1) {
-        if (grassList[g].nutrition > 0) {
-          let d = dist(rab.x, rab.z, grassList[g].x, grassList[g].z);
-          if (d < minGrassDist) {
-            minGrassDist = d;
-            nearestGrass = grassList[g];
+      metabolism = 0.032;
+    } else if (rab.restTicks > 0) {
+      // RESTING: sitting still, ideally under cover, burning very little.
+      rab.state = "Resting";
+      rab.restTicks = rab.restTicks - 1;
+      steerStop(rab, 0.25);
+      metabolism = 0.012;
+    } else if (rab.eatTicks > 0 && rab.targetGrass && rab.targetGrass.nutrition > 0) {
+      // GRAZING: nibbling in place for a while, then the patch loses a stage.
+      rab.state = "Grazing";
+      steerStop(rab, 0.3);
+      rab.eatTicks = rab.eatTicks - 1;
+      rab.energy = Math.min(rab.maxEnergy, rab.energy + 0.55);
+      if (simTick % 10 === 0) spawnPuff(rab.x, rab.y, rab.z, "#22c55e", 2);
+      if (rab.eatTicks === 0) {
+        rab.targetGrass.nutrition = rab.targetGrass.nutrition - 1;
+        rab.targetGrass = null;
+      }
+      metabolism = 0.012;
+    } else if (rab.energy < 46) {
+      // HUNGRY: find grass. Keep the current target unless it was eaten.
+      let target = rab.targetGrass;
+      if (!target || target.nutrition <= 0) {
+        target = null;
+        let minGrassDist = 14.0;
+        for (let g = 0; g < grassList.length; g = g + 1) {
+          if (grassList[g].nutrition > 0) {
+            let d = dist(rab.x, rab.z, grassList[g].x, grassList[g].z);
+            if (d < minGrassDist) { minGrassDist = d; target = grassList[g]; }
           }
         }
+        rab.targetGrass = target;
       }
-
-      if (nearestGrass && rab.energy < 48) {
-        rab.state = "Grazing";
-        let dx = nearestGrass.x - rab.x;
-        let dz = nearestGrass.z - rab.z;
-        let len = Math.hypot(dx, dz) || 1;
-        if (len < 0.65) {
-          // Nibble Grass
-          rab.energy = Math.min(rab.maxEnergy, rab.energy + 12.0);
-          nearestGrass.nutrition = nearestGrass.nutrition - 1;
-          spawnPuff(rab.x, rab.y, rab.z, "#22c55e", 4);
-          rab.vx = 0;
-          rab.vz = 0;
+      if (target) {
+        rab.state = "Foraging";
+        let d = dist(rab.x, rab.z, target.x, target.z);
+        if (d < 0.7) {
+          rab.eatTicks = 28;
         } else {
-          let wanderSpeed = 0.075 * rab.traits.speed;
-          rab.vx = (dx / len) * wanderSpeed;
-          rab.vz = (dz / len) * wanderSpeed;
-          let targetRot = Math.atan2(rab.vx, rab.vz);
-          rab.rot = lerpAngle(rab.rot, targetRot, 0.16);
+          steerTowards(rab, target.x, target.z, 0.08 * rab.traits.speed, 0.1);
         }
       } else {
         rab.state = "Wandering";
-        if (Math.random() < 0.038) {
-          let targetRot = rab.rot + (Math.random() - 0.5) * 1.4;
-          let speed = 0.042 * rab.traits.speed;
-          rab.vx = Math.sin(targetRot) * speed;
-          rab.vz = Math.cos(targetRot) * speed;
-          rab.rot = lerpAngle(rab.rot, targetRot, 0.15);
-        }
+        steerHeading(rab, wanderStep(rab, 0.25), 0.05 * rab.traits.speed, 0.06);
       }
-      rab.energy = rab.energy - 0.026 * delta * 30;
+      metabolism = 0.03;
+    } else {
+      // CONTENT: wander, and now and then settle down for a rest, for longer in cover.
+      rab.state = "Wandering";
+      if (Math.random() < (inCover ? 0.008 : 0.003)) {
+        rab.restTicks = (inCover ? 160 : 70) + Math.floor(Math.random() * 120);
+      }
+      steerHeading(rab, wanderStep(rab, 0.3), 0.045 * rab.traits.speed, 0.05);
+      metabolism = 0.026;
     }
 
-    // Soft Herd Separation (Avoid overlapping same species)
+    // Herd separation, gentle.
     for (let o = 0; o < rabbits.length; o = o + 1) {
       if (o !== r) {
         let od = dist(rab.x, rab.z, rabbits[o].x, rabbits[o].z);
         if (od < 0.7 && od > 0.01) {
-          let push = 0.016 * (0.7 - od);
+          let push = 0.012 * (0.7 - od);
           rab.vx = rab.vx + ((rab.x - rabbits[o].x) / od) * push;
           rab.vz = rab.vz + ((rab.z - rabbits[o].z) / od) * push;
         }
       }
     }
 
-    // Apply Velocity
-    rab.x = rab.x + rab.vx;
-    rab.z = rab.z + rab.vz;
+    applyAvoidance(rab);
+    integrate(rab, PREY_MAX_SPEED * rab.traits.speed, rab.state === "Fleeing" ? 0.2 : 0.12);
+    rab.energy = rab.energy - metabolism;
 
-    // Boundaries
-    if (rab.x > BOUNDS) { rab.x = BOUNDS; rab.vx = -Math.abs(rab.vx); }
-    if (rab.x < -BOUNDS) { rab.x = -BOUNDS; rab.vx = Math.abs(rab.vx); }
-    if (rab.z > BOUNDS) { rab.z = BOUNDS; rab.vz = -Math.abs(rab.vz); }
-    if (rab.z < -BOUNDS) { rab.z = -BOUNDS; rab.vz = Math.abs(rab.vz); }
+    // Hop animation follows real speed: a sitting rabbit does not bounce.
+    let hopRate = rab.speed * (rab.state === "Fleeing" ? 95 : 80);
+    rab.hopPhase = rab.hopPhase + hopRate * delta;
+    let hopAmp = Math.min(0.3, rab.speed * 2.2);
+    rab.y = 0.82 + Math.abs(Math.sin(rab.hopPhase)) * hopAmp;
 
-    // Lake Shore Boundary: Smooth circular avoidance
-    let distLake = Math.hypot(rab.x - LAKE_X, rab.z - LAKE_Z);
-    if (distLake < LAKE_RADIUS) {
-      let angleFromCenter = Math.atan2(rab.z - LAKE_Z, rab.x - LAKE_X);
-      rab.x = LAKE_X + Math.cos(angleFromCenter) * (LAKE_RADIUS + 0.2);
-      rab.z = LAKE_Z + Math.sin(angleFromCenter) * (LAKE_RADIUS + 0.2);
-      rab.vx = Math.cos(angleFromCenter) * 0.04;
-      rab.vz = Math.sin(angleFromCenter) * 0.04;
-      rab.rot = lerpAngle(rab.rot, angleFromCenter, 0.3);
+    // Reproduction: well fed, watered, mature, rested from the last litter,
+    // and less likely the fuller the reserve already is.
+    if (rab.energy > 40 && rab.hydration > 25 && rab.age > 260 && rab.breedCooldown === 0 && rab.state !== "Fleeing") {
+      let chance = 0.02 * Math.max(0, 1 - preyPressure);
+      if (Math.random() < chance) {
+        rab.energy = rab.energy - 15;
+        rab.breedCooldown = 420;
+        rab.offspringCount = rab.offspringCount + 1;
+        totalPreyBorn = totalPreyBorn + 1;
+        spawnPuff(rab.x, rab.y + 0.4, rab.z, "#f43f5e", 8);
+        let kit = makeRabbit(rab.x + (Math.random() - 0.5) * 1.0, rab.z + (Math.random() - 0.5) * 1.0, 24, rab.generation + 1, {
+          speed: inheritTrait(rab.traits.speed),
+          sight: inheritTrait(rab.traits.sight)
+        });
+        kit.name = "Hare #" + totalPreyBorn;
+        kit.breedCooldown = 500;
+        newRabbits.push(kit);
+      }
     }
 
-    // Reproduction with Genetic Mutation
-    if (rab.energy > 44 && rab.hydration > 25 && rab.age > 90 && rabbits.length < 65) {
-      rab.energy = rab.energy - 18;
-      rab.offspringCount = rab.offspringCount + 1;
-      totalPreyBorn = totalPreyBorn + 1;
-      spawnPuff(rab.x, rab.y + 0.4, rab.z, "#f43f5e", 8);
-
-      // Genetic inheritance with small random mutation
-      let childSpeed = Math.min(1.35, Math.max(0.75, rab.traits.speed + (Math.random() - 0.5) * 0.08));
-      let childSight = Math.min(1.35, Math.max(0.75, rab.traits.sight + (Math.random() - 0.5) * 0.08));
-      let childGen = rab.generation + 1;
-      if (childGen > maxGeneration) maxGeneration = childGen;
-
-      newRabbits.push({
-        id: genId("prey"),
-        name: "Hare #" + totalPreyBorn,
-        generation: childGen,
-        traits: {
-          speed: childSpeed,
-          sight: childSight
-        },
-        x: rab.x + (Math.random() - 0.5) * 1.0,
-        z: rab.z + (Math.random() - 0.5) * 1.0,
-        y: 0.82,
-        vx: (Math.random() - 0.5) * 0.05,
-        vz: (Math.random() - 0.5) * 0.05,
-        rot: Math.random() * Math.PI * 2,
-        energy: 24,
-        maxEnergy: 60,
-        hydration: 50,
-        maxHydration: 60,
-        age: 0,
-        maxAge: 2000 + Math.floor(Math.random() * 500),
-        state: "Wandering",
-        hopPhase: 0,
-        offspringCount: 0
-      });
-    }
-
-    // Natural Mortality / Starvation
     if (rab.energy <= 0 || rab.hydration <= 0 || rab.age > rab.maxAge) {
       spawnPuff(rab.x, rab.y, rab.z, "#cbd5e1", 6);
+      if (selectedId === rab.id) selectedId = "";
     } else {
       survivingRabbits.push(rab);
     }
   }
-
-  for (let n = 0; n < newRabbits.length; n = n + 1) {
-    survivingRabbits.push(newRabbits[n]);
-  }
+  for (let n = 0; n < newRabbits.length; n = n + 1) survivingRabbits.push(newRabbits[n]);
   rabbits = survivingRabbits;
 
-  // Ecological Resilience: Natural underground warren emergence prevents extinction
-  if (rabbits.length < 14 && simTick % 45 === 0) {
-    addRabbit();
-    spawnPuff(0, 1.2, 0, "#f8fafc", 6);
+  // Ecological resilience: a warren deep in cover always holds a few.
+  if (rabbits.length < 10 && simTick % 90 === 0) {
+    let c = coverCentres[Math.floor(Math.random() * coverCentres.length)];
+    addRabbit(c.x + (Math.random() - 0.5) * 4, c.z + (Math.random() - 0.5) * 4);
+    spawnPuff(c.x, 1.2, c.z, "#f8fafc", 6);
   }
 
-  // 3. Foxes (Predators) AI, Stalking, Chasing & Hydration
+  // 3. Foxes
   let survivingFoxes = [];
   let newFoxes = [];
   let eatenRabbitIds = {};
+  let predPressure = foxes.length / PRED_CAPACITY;
 
   for (let f = 0; f < foxes.length; f = f + 1) {
     let fox = foxes[f];
     fox.age = fox.age + 1;
-    fox.hydration = Math.max(0, fox.hydration - 0.020 * delta * 30);
+    if (fox.breedCooldown > 0) fox.breedCooldown = fox.breedCooldown - 1;
+    fox.hydration = Math.max(0, fox.hydration - 0.013);
+    let metabolism = 0.03;
+    let hungry = fox.energy < PRED_HUNGRY_AT;
+    let desperate = fox.energy < 22;
 
-    // Satiation timer (Resting and digesting)
-    if (fox.satiatedTicks > 0) {
-      fox.satiatedTicks = fox.satiatedTicks - 1;
-      fox.state = "Satiated";
-      fox.runPhase = fox.runPhase + delta * 2.8;
-      if (Math.random() < 0.03) {
-        let targetRot = fox.rot + (Math.random() - 0.5) * 0.8;
-        let speed = 0.035 * fox.traits.speed;
-        fox.vx = Math.sin(targetRot) * speed;
-        fox.vz = Math.cos(targetRot) * speed;
-        fox.rot = lerpAngle(fox.rot, targetRot, 0.12);
-      }
-      fox.energy = fox.energy - 0.024 * delta * 30;
-    } else if (fox.hydration < 25) {
-      // THIRSTY FOX: Seek Oasis Lake
-      let dx = LAKE_X - fox.x;
-      let dz = LAKE_Z - fox.z;
-      let len = Math.hypot(dx, dz) || 1;
+    if (fox.eatTicks > 0) {
+      // FEEDING on a catch: stationary for a while.
+      fox.state = "Feeding";
+      fox.eatTicks = fox.eatTicks - 1;
+      steerStop(fox, 0.3);
+      fox.energy = Math.min(fox.maxEnergy, fox.energy + 0.55);
+      if (fox.eatTicks === 0) fox.restTicks = 160 + Math.floor(Math.random() * 120);
+      metabolism = 0.01;
+    } else if (fox.state === "Drinking" && fox.hydration < fox.maxHydration * 0.9) {
+      steerStop(fox, 0.3);
+      fox.hydration = Math.min(fox.maxHydration, fox.hydration + 1.1);
+      if (simTick % 12 === 0) spawnPuff(fox.x, fox.y, fox.z, "#38bdf8", 2);
+      metabolism = 0.014;
+    } else if (fox.hydration < 22) {
+      fox.state = "Thirsty";
+      fox.restTicks = 0;
       if (isNearLakeShore(fox.x, fox.z)) {
         fox.state = "Drinking";
-        fox.hydration = Math.min(fox.maxHydration, fox.hydration + 24.0);
-        spawnPuff(fox.x, fox.y, fox.z, "#38bdf8", 4);
-        fox.vx = 0;
-        fox.vz = 0;
       } else {
-        let seekSpeed = 0.085 * fox.traits.speed;
-        fox.vx = (dx / len) * seekSpeed;
-        fox.vz = (dz / len) * seekSpeed;
-        let targetRot = Math.atan2(fox.vx, fox.vz);
-        fox.rot = lerpAngle(fox.rot, targetRot, 0.16);
+        steerTowards(fox, LAKE_X, LAKE_Z, 0.09 * fox.traits.speed, 0.1);
       }
-      fox.energy = fox.energy - 0.030 * delta * 30;
-    } else {
-      fox.runPhase = fox.runPhase + delta * (fox.state === "Chasing" ? 11.5 : 5.5);
-
-      // Search for prey with Genetic Sight Trait
-      let nearestRab = null;
-      let minRabDist = 18.5 * fox.traits.sight;
+      metabolism = 0.03;
+    } else if (fox.restTicks > 0 && !desperate) {
+      // RESTING: a fox spends most of its day lying up. Hunger cuts it short.
+      fox.state = "Resting";
+      fox.restTicks = fox.restTicks - 1;
+      if (hungry && Math.random() < 0.02) fox.restTicks = 0;
+      steerStop(fox, 0.2);
+      metabolism = 0.018;
+    } else if (fox.recoverTicks > 0) {
+      // RECOVERING after a failed chase: walking it off, not hunting.
+      fox.state = "Recovering";
+      fox.recoverTicks = fox.recoverTicks - 1;
+      steerHeading(fox, wanderStep(fox, 0.2), 0.035 * fox.traits.speed, 0.05);
+      metabolism = 0.02;
+    } else if (hungry) {
+      // HUNTING: look for prey. Cover shortens the fox's sight, and a small
+      // warren in cover is out of reach altogether so the population can recover.
+      let target = null;
+      let sightRange = 16.0 * fox.traits.sight;
+      let best = fox.state === "Chasing" ? sightRange * 1.3 : sightRange;
       for (let r = 0; r < rabbits.length; r = r + 1) {
         let rab = rabbits[r];
-        if (!eatenRabbitIds[rab.id]) {
-          let inCover = hasForestCover(rab.x, rab.z);
-          // Low-population refuge rule: guarantees breeding pool in forest is safe
-          let effectiveVision = inCover ? (rabbits.length < 18 ? 0 : 6.0 * fox.traits.sight) : minRabDist;
-          let d = dist(fox.x, fox.z, rab.x, rab.z);
-          if (d < effectiveVision) {
-            minRabDist = d;
-            nearestRab = rab;
-          }
-        }
+        if (eatenRabbitIds[rab.id]) continue;
+        let inCover = hasForestCover(rab.x, rab.z);
+        let reach = inCover ? (rabbits.length < 16 ? 0 : 5.5 * fox.traits.sight) : sightRange;
+        if (fox.state === "Chasing" && rab.id === fox.targetId) reach = reach * 1.3 + 2.0;
+        let d = dist(fox.x, fox.z, rab.x, rab.z);
+        if (d < reach && d < best) { best = d; target = rab; }
       }
 
-      if (nearestRab) {
-        let dx = nearestRab.x - fox.x;
-        let dz = nearestRab.z - fox.z;
-        let len = Math.hypot(dx, dz) || 1;
-
-        if (len < 0.90) {
-          // CATCH PREY: Pounce!
-          eatenRabbitIds[nearestRab.id] = true;
-          fox.energy = Math.min(fox.maxEnergy, fox.energy + 34.0);
-          fox.catchCount = fox.catchCount + 1;
-          totalHunts = totalHunts + 1;
-          fox.satiatedTicks = 85; // ~2.8 seconds resting cooldown
-          fox.state = "Satiated";
-          spawnPuff(nearestRab.x, nearestRab.y + 0.3, nearestRab.z, "#fb923c", 10);
-          fox.vx = 0;
-          fox.vz = 0;
-        } else if (len < 6.0) {
-          // CHASING: Full burst sprint (Faster than prey)
+      if (target) {
+        let d = best;
+        if (d < 0.75) {
+          // The pounce. Not every one lands.
+          if (Math.random() < 0.8) {
+            eatenRabbitIds[target.id] = true;
+            fox.catchCount = fox.catchCount + 1;
+            totalHunts = totalHunts + 1;
+            fox.eatTicks = 70;
+            fox.chaseTicks = 0;
+            fox.failedHunts = 0;
+            fox.state = "Feeding";
+            fox.targetId = null;
+            spawnPuff(target.x, target.y + 0.3, target.z, "#fb923c", 10);
+            if (selectedId === target.id) selectedId = "";
+          } else {
+            fox.chaseTicks = fox.chaseTicks + 4;
+          }
+          metabolism = 0.05;
+        } else if (fox.state === "Chasing" || d < 5.0) {
+          // CHASING: a sprint with a stamina limit.
           fox.state = "Chasing";
-          fox.targetId = nearestRab.id;
-          let sprintSpeed = 0.195 * fox.traits.speed;
-          fox.vx = (dx / len) * sprintSpeed;
-          fox.vz = (dz / len) * sprintSpeed;
-          let targetRot = Math.atan2(fox.vx, fox.vz);
-          fox.rot = lerpAngle(fox.rot, targetRot, 0.22);
-          fox.energy = fox.energy - 0.075 * delta * 30;
+          fox.targetId = target.id;
+          fox.chaseTicks = fox.chaseTicks + 1;
+          // Lead the target a little instead of running at where it was.
+          steerTowards(fox, target.x + target.vx * 6, target.z + target.vz * 6, PRED_MAX_SPEED * fox.traits.speed, 0.16);
+          metabolism = 0.08;
+          if (fox.chaseTicks > PRED_CHASE_TICKS || (hasForestCover(target.x, target.z) && d > 3.5)) {
+            fox.chaseTicks = 0;
+            fox.targetId = null;
+            fox.failedHunts = fox.failedHunts + 1;
+            fox.recoverTicks = 80 + Math.floor(Math.random() * 60);
+            fox.state = "Recovering";
+          }
         } else {
-          // STALKING: Stealth crawl
+          // STALKING: a slow, low approach.
           fox.state = "Stalking";
-          fox.targetId = nearestRab.id;
-          let stalkSpeed = 0.072 * fox.traits.speed;
-          fox.vx = (dx / len) * stalkSpeed;
-          fox.vz = (dz / len) * stalkSpeed;
-          let targetRot = Math.atan2(fox.vx, fox.vz);
-          fox.rot = lerpAngle(fox.rot, targetRot, 0.15);
-          fox.energy = fox.energy - 0.040 * delta * 30;
+          fox.targetId = target.id;
+          fox.chaseTicks = 0;
+          steerTowards(fox, target.x, target.z, 0.06 * fox.traits.speed, 0.08);
+          metabolism = 0.028;
         }
       } else {
-        // Patrolling
+        // Nothing in sight: patrol towards where the rabbits are likely to be.
         fox.state = "Patrolling";
-        if (Math.random() < 0.035) {
-          let targetRot = fox.rot + (Math.random() - 0.5) * 1.1;
-          let speed = 0.054 * fox.traits.speed;
-          fox.vx = Math.sin(targetRot) * speed;
-          fox.vz = Math.cos(targetRot) * speed;
-          fox.rot = lerpAngle(fox.rot, targetRot, 0.14);
-        }
-        fox.energy = fox.energy - 0.038 * delta * 30;
+        fox.targetId = null;
+        fox.chaseTicks = 0;
+        steerHeading(fox, wanderStep(fox, 0.22), 0.062 * fox.traits.speed, 0.06);
+        metabolism = 0.03;
       }
+    } else {
+      // CONTENT: patrol the territory, and lie up often.
+      fox.state = "Patrolling";
+      fox.targetId = null;
+      fox.chaseTicks = 0;
+      if (Math.random() < 0.006) fox.restTicks = 220 + Math.floor(Math.random() * 260);
+      steerHeading(fox, wanderStep(fox, 0.22), 0.05 * fox.traits.speed, 0.05);
+      metabolism = 0.03;
     }
 
-    // Soft Pack Separation
+    // Pack separation
     for (let o = 0; o < foxes.length; o = o + 1) {
       if (o !== f) {
         let od = dist(fox.x, fox.z, foxes[o].x, foxes[o].z);
-        if (od < 0.95 && od > 0.01) {
-          let push = 0.02 * (0.95 - od);
+        if (od < 1.0 && od > 0.01) {
+          let push = 0.015 * (1.0 - od);
           fox.vx = fox.vx + ((fox.x - foxes[o].x) / od) * push;
           fox.vz = fox.vz + ((fox.z - foxes[o].z) / od) * push;
         }
       }
     }
 
-    // Apply Velocity
-    fox.x = fox.x + fox.vx;
-    fox.z = fox.z + fox.vz;
+    applyAvoidance(fox);
+    integrate(fox, PRED_MAX_SPEED * fox.traits.speed, fox.state === "Chasing" ? 0.18 : 0.1);
+    fox.energy = fox.energy - metabolism;
 
-    // Boundaries
-    if (fox.x > BOUNDS) { fox.x = BOUNDS; fox.vx = -Math.abs(fox.vx); }
-    if (fox.x < -BOUNDS) { fox.x = -BOUNDS; fox.vx = Math.abs(fox.vx); }
-    if (fox.z > BOUNDS) { fox.z = BOUNDS; fox.vz = -Math.abs(fox.vz); }
-    if (fox.z < -BOUNDS) { fox.z = -BOUNDS; fox.vz = Math.abs(fox.vz); }
+    // Gait: tail and a slight gallop bob scale with real speed.
+    fox.runPhase = fox.runPhase + fox.speed * 70 * delta;
+    fox.y = 0.85 + Math.abs(Math.sin(fox.runPhase)) * Math.min(0.1, fox.speed * 0.6);
 
-    // Lake Shore Avoidance
-    let distLake = Math.hypot(fox.x - LAKE_X, fox.z - LAKE_Z);
-    if (distLake < LAKE_RADIUS) {
-      let angleFromCenter = Math.atan2(fox.z - LAKE_Z, fox.x - LAKE_X);
-      fox.x = LAKE_X + Math.cos(angleFromCenter) * (LAKE_RADIUS + 0.25);
-      fox.z = LAKE_Z + Math.sin(angleFromCenter) * (LAKE_RADIUS + 0.25);
-      fox.vx = Math.cos(angleFromCenter) * 0.05;
-      fox.vz = Math.sin(angleFromCenter) * 0.05;
-      fox.rot = lerpAngle(fox.rot, angleFromCenter, 0.3);
+    // Reproduction: needs a fed, mature, rested fox and enough prey about.
+    if (fox.energy > 58 && fox.hydration > 25 && fox.age > 700 && fox.breedCooldown === 0 && rabbits.length > 18 && fox.state !== "Chasing") {
+      let chance = 0.007 * Math.max(0, 1 - predPressure);
+      if (Math.random() < chance) {
+        fox.energy = fox.energy - 22;
+        fox.breedCooldown = 900;
+        fox.offspringCount = fox.offspringCount + 1;
+        totalPredBorn = totalPredBorn + 1;
+        spawnPuff(fox.x, fox.y + 0.4, fox.z, "#f97316", 8);
+        let cub = makeFox(fox.x + (Math.random() - 0.5) * 1.2, fox.z + (Math.random() - 0.5) * 1.2, 40, fox.generation + 1, {
+          speed: inheritTrait(fox.traits.speed),
+          sight: inheritTrait(fox.traits.sight)
+        });
+        cub.name = "Fox #" + totalPredBorn;
+        cub.breedCooldown = 1100;
+        newFoxes.push(cub);
+      }
     }
 
-    // Fox Reproduction with Genetic Mutation
-    if (fox.energy > 52 && fox.hydration > 25 && fox.age > 140 && foxes.length < 16 && rabbits.length > 25) {
-      fox.energy = fox.energy - 25;
-      fox.offspringCount = fox.offspringCount + 1;
-      totalPredBorn = totalPredBorn + 1;
-      spawnPuff(fox.x, fox.y + 0.4, fox.z, "#f97316", 8);
-
-      let childSpeed = Math.min(1.35, Math.max(0.75, fox.traits.speed + (Math.random() - 0.5) * 0.08));
-      let childSight = Math.min(1.35, Math.max(0.75, fox.traits.sight + (Math.random() - 0.5) * 0.08));
-      let childGen = fox.generation + 1;
-      if (childGen > maxGeneration) maxGeneration = childGen;
-
-      newFoxes.push({
-        id: genId("pred"),
-        name: "Fox #" + totalPredBorn,
-        generation: childGen,
-        traits: {
-          speed: childSpeed,
-          sight: childSight
-        },
-        x: fox.x + (Math.random() - 0.5) * 1.2,
-        z: fox.z + (Math.random() - 0.5) * 1.2,
-        y: 0.85,
-        vx: (Math.random() - 0.5) * 0.06,
-        vz: (Math.random() - 0.5) * 0.06,
-        rot: Math.random() * Math.PI * 2,
-        energy: 38,
-        maxEnergy: 85,
-        hydration: 55,
-        maxHydration: 85,
-        age: 0,
-        maxAge: 2800 + Math.floor(Math.random() * 600),
-        state: "Patrolling",
-        runPhase: 0,
-        targetId: null,
-        catchCount: 0,
-        satiatedTicks: 0,
-        offspringCount: 0
-      });
-    }
-
-    // Fox Mortality
     if (fox.energy <= 0 || fox.hydration <= 0 || fox.age > fox.maxAge) {
       spawnPuff(fox.x, fox.y, fox.z, "#94a3b8", 8);
+      if (selectedId === fox.id) selectedId = "";
     } else {
       survivingFoxes.push(fox);
     }
   }
 
-  // Filter caught rabbits
   rabbits = rabbits.filter(function(rab) {
     return !eatenRabbitIds[rab.id];
   });
-
-  for (let n = 0; n < newFoxes.length; n = n + 1) {
-    survivingFoxes.push(newFoxes[n]);
-  }
+  for (let n = 0; n < newFoxes.length; n = n + 1) survivingFoxes.push(newFoxes[n]);
   foxes = survivingFoxes;
 
-  // Natural apex predator territory balance
-  if (foxes.length < 4 && simTick % 120 === 0 && rabbits.length > 25) {
-    addFox();
-    spawnPuff(0, 1.2, 0, "#ea580c", 6);
+  // A wandering fox drifts in from beyond the fence when the reserve has none.
+  if (foxes.length < 2 && simTick % 400 === 0 && rabbits.length > 22) {
+    addFox(-BOUNDS + 2, (Math.random() - 0.5) * 40);
+    spawnPuff(-BOUNDS + 2, 1.2, 0, "#ea580c", 6);
   }
 
-  // Update Stats
   updateStats();
 }
 
@@ -987,10 +1410,13 @@ function updateStats() {
   } else if (rabbitCount === 0) {
     ecosystemStatus = "Predator Starvation (No Prey)";
     statusColor = "#dc2626";
-  } else if (foxCount >= 18) {
+  } else if (rabbitCount < 22 && foxCount > 8) {
+    ecosystemStatus = "Prey Scarcity (Predators Starving)";
+    statusColor = "#f97316";
+  } else if (foxCount >= 20) {
     ecosystemStatus = "Predator Surplus Phase";
     statusColor = "#fb923c";
-  } else if (rabbitCount >= 65) {
+  } else if (rabbitCount >= 70) {
     ecosystemStatus = "Abundant Prey Phase";
     statusColor = "#38bdf8";
   } else {
@@ -1008,6 +1434,7 @@ function updateStats() {
 
     sparkGrassBars.shift();
     sparkGrassBars.push(Math.min(100, Math.round((grassCount / 180) * 100)));
+    buildSparkCols();
   }
 
   // Sync selected entity
@@ -1033,38 +1460,56 @@ function updateStats() {
 function buildDynamicObjects() {
   let list = [];
 
-  // 1. Dynamic 3D Grass Tufts with Wildflowers
+  // 1. Grazing patches: one instanced tuft mesh per growth stage, so 180
+  //    patches cost three draws rather than a mesh each. Mature patches
+  //    carry a bloom on top of the tuft.
+  let stageInst = [[], [], []];
+  let bloomInst = [];
+  let stageH = [0.4, 0.58, 0.76];
   for (let g = 0; g < grassList.length; g = g + 1) {
     let gr = grassList[g];
     if (gr.nutrition > 0) {
-      let bladeH = 0.32 + gr.nutrition * 0.18;
-      list.push({
-        id: gr.id + "-tuft",
-        type: "cylinder",
-        radius: 0.20 + gr.nutrition * 0.08,
-        height: bladeH,
-        position: { x: gr.x, y: 0.8 + bladeH / 2, z: gr.z },
-        color: gr.nutrition === 3 ? "#16a34a" : "#22c55e",
-        castShadow: true
-      });
-      // Blooming Flowers on Mature Patches
+      let st = gr.nutrition - 1;
+      stageInst[st].push(gr.x, DECK_TOP + stageH[st] / 2, gr.z, g % 3);
       if (gr.nutrition === 3) {
-        let flowerColor = (g % 4 === 0) ? "#fbbf24" : ((g % 4 === 1) ? "#f43f5e" : ((g % 4 === 2) ? "#a855f7" : "#38bdf8"));
-        list.push({
-          id: gr.id + "-flower",
-          type: "sphere",
-          radius: 0.12,
-          position: { x: gr.x, y: 0.8 + bladeH + 0.09, z: gr.z },
-          color: flowerColor
-        });
+        bloomInst.push(gr.x, DECK_TOP + stageH[st] + 0.07, gr.z, g % 4);
       }
     }
   }
+  let stageR = [0.24, 0.32, 0.4];
+  for (let st = 0; st < 3; st = st + 1) {
+    if (stageInst[st].length > 0) {
+      list.push({
+        id: "grass-stage-" + st,
+        type: "instanced",
+        shape: "cone",
+        radius: stageR[st],
+        height: stageH[st],
+        instances: stageInst[st],
+        palette: st === 2 ? ["#15803d", "#16a34a", "#22c55e"] : ["#4ade80", "#22c55e", "#34d399"],
+        flatShading: true,
+        castShadow: true
+      });
+    }
+  }
+  if (bloomInst.length > 0) {
+    list.push({
+      id: "grass-blooms",
+      type: "instanced",
+      shape: "sphere",
+      radius: 0.12,
+      instances: bloomInst,
+      palette: ["#fbbf24", "#f43f5e", "#a855f7", "#38bdf8"],
+      flatShading: true
+    });
+  }
 
   // 2. 3D Animated White Rabbits (Prey)
+  let coats = ["#f8fafc", "#d6b48a", "#cbd5e1"];
   for (let r = 0; r < rabbits.length; r = r + 1) {
     let rab = rabbits[r];
     let isSel = rab.id === selectedId;
+    let coat = isSel ? "#fef08a" : coats[parseInt(rab.id.split("-")[1]) % 3];
 
     let rabChildren = [
       // Body
@@ -1074,7 +1519,7 @@ function buildDynamicObjects() {
         radius: 0.20,
         height: 0.28,
         position: { x: 0, y: 0.20, z: 0 },
-        color: isSel ? "#fef08a" : "#f8fafc",
+        color: coat,
         castShadow: true
       },
       // Head
@@ -1083,7 +1528,7 @@ function buildDynamicObjects() {
         type: "sphere",
         radius: 0.15,
         position: { x: 0, y: 0.35, z: 0.20 },
-        color: isSel ? "#fef08a" : "#f8fafc"
+        color: coat
       },
       // Left Ear
       {
@@ -1093,7 +1538,7 @@ function buildDynamicObjects() {
         height: 0.24,
         position: { x: -0.07, y: 0.52, z: 0.15 },
         rotation: { x: -0.18, y: 0, z: -0.15 },
-        color: "#f8fafc"
+        color: coat
       },
       {
         id: rab.id + "-ear-in-l",
@@ -1112,7 +1557,7 @@ function buildDynamicObjects() {
         height: 0.24,
         position: { x: 0.07, y: 0.52, z: 0.15 },
         rotation: { x: -0.18, y: 0, z: 0.15 },
-        color: "#f8fafc"
+        color: coat
       },
       {
         id: rab.id + "-ear-in-r",
@@ -1331,12 +1776,23 @@ function buildLights() {
   list.push({
     id: "sun-light",
     type: "directional",
-    color: "#fffbeb",
-    intensity: 1.55,
+    color: "#fff4d6",
+    intensity: 1.7,
     position: { x: 25, y: 45, z: 28 },
     castShadow: true,
-    shadowCameraSize: 48,
+    shadowCameraSize: 50,
+    shadowMapSize: 2048,
     shadowBias: -0.0003
+  });
+
+  // Sky above, grass below: gives the undersides of crowns and the island
+  // cliffs a tint instead of a flat ambient grey.
+  list.push({
+    id: "hemi-light",
+    type: "hemisphere",
+    color: "#cfe8ff",
+    groundColor: "#3d6b23",
+    intensity: 0.75
   });
 
   // Cool Sky Fill
@@ -1344,7 +1800,7 @@ function buildLights() {
     id: "sky-light",
     type: "directional",
     color: "#bae6fd",
-    intensity: 0.65,
+    intensity: 0.45,
     position: { x: -30, y: 32, z: -25 }
   });
 
@@ -1352,8 +1808,8 @@ function buildLights() {
   list.push({
     id: "ambient-light",
     type: "ambient",
-    color: "#dcfce7",
-    intensity: 0.65
+    color: "#e2f0dc",
+    intensity: 0.4
   });
 
   return list;
@@ -1373,16 +1829,34 @@ function gameStep(dt) {
 
   // Dynamic Camera Modes
   if (cameraMode === "follow" && selectedEntity) {
-    cameraPos = {
-      x: selectedEntity.x - Math.sin(selectedEntity.rot) * 4.8,
-      y: selectedEntity.y + 3.0,
-      z: selectedEntity.z - Math.cos(selectedEntity.rot) * 4.8
+    // A chase camera that trails the animal's heading and eases into place,
+    // so a rabbit's zig-zag reads as a swing rather than a snap. The look
+    // point is on the ground ahead of the animal, not its bobbing back.
+    let e = selectedEntity;
+    let want = {
+      x: e.x - Math.sin(e.rot) * 5.2,
+      y: 0.85 + 3.0,
+      z: e.z - Math.cos(e.rot) * 5.2
     };
-    cameraLookAt = {
-      x: selectedEntity.x + Math.sin(selectedEntity.rot) * 2.5,
-      y: selectedEntity.y + 0.6,
-      z: selectedEntity.z + Math.cos(selectedEntity.rot) * 2.5
+    let look = {
+      x: e.x + Math.sin(e.rot) * 2.0,
+      y: 1.2,
+      z: e.z + Math.cos(e.rot) * 2.0
     };
+    cameraPos = easeVec(cameraPos, want, 0.08);
+    cameraLookAt = easeVec(cameraLookAt, look, 0.14);
+  } else if (cameraMode === "follow") {
+    // The followed animal is gone: fall back to the overview.
+    setCameraView("overview");
+  } else if (camTarget) {
+    cameraPos = easeVec(cameraPos, camTarget, 0.1);
+    cameraLookAt = easeVec(cameraLookAt, camLookTarget, 0.12);
+    if (Math.hypot(cameraPos.x - camTarget.x, cameraPos.y - camTarget.y, cameraPos.z - camTarget.z) < 0.05) {
+      cameraPos = camTarget;
+      cameraLookAt = camLookTarget;
+      camTarget = null;
+      camLookTarget = null;
+    }
   } else if (cameraMode === "cinematic") {
     cinematicAngle = cinematicAngle + delta * 0.08;
     cameraPos = {
@@ -1395,6 +1869,7 @@ function gameStep(dt) {
 
   objects = buildDynamicObjects();
   lights = buildLights();
+  if (simTick % 3 === 0 || !isRunning) buildMapDots();
 }
 
 // User Actions
@@ -1413,28 +1888,38 @@ function setSimSpeed(sp) {
 
 function setCameraView(mode) {
   cameraMode = mode;
+  camTarget = null;
+  camLookTarget = null;
+  let want = null;
+  let look = null;
   if (mode === "overview") {
-    cameraPos = { x: 0, y: 38.0, z: 42.0 };
-    cameraLookAt = { x: 0, y: 0.5, z: 0 };
+    want = { x: 0, y: 38.0, z: 42.0 };
+    look = { x: 0, y: 0.5, z: 0 };
     cameraFov = 48;
   } else if (mode === "lake") {
-    cameraPos = { x: LAKE_X - 2.0, y: 12.0, z: LAKE_Z + 18.0 };
-    cameraLookAt = { x: LAKE_X, y: 0.8, z: LAKE_Z };
+    want = { x: LAKE_X - 2.0, y: 12.0, z: LAKE_Z + 18.0 };
+    look = { x: LAKE_X, y: 0.8, z: LAKE_Z };
     cameraFov = 42;
   } else if (mode === "forest") {
-    cameraPos = { x: -22.0, y: 15.0, z: -5.0 };
-    cameraLookAt = { x: -18.0, y: 0.8, z: -18.0 };
+    want = { x: -22.0, y: 15.0, z: -5.0 };
+    look = { x: -18.0, y: 0.8, z: -18.0 };
     cameraFov = 42;
   } else if (mode === "meadow") {
-    cameraPos = { x: 18.0, y: 14.0, z: -10.0 };
-    cameraLookAt = { x: 16.0, y: 0.8, z: -18.0 };
+    want = { x: 18.0, y: 14.0, z: -10.0 };
+    look = { x: 16.0, y: 0.8, z: -18.0 };
     cameraFov = 42;
   } else if (mode === "topdown") {
-    cameraPos = { x: 0, y: 56.0, z: 0.1 };
-    cameraLookAt = { x: 0, y: 0, z: 0 };
+    want = { x: 0, y: 56.0, z: 0.1 };
+    look = { x: 0, y: 0, z: 0 };
     cameraFov = 54;
   } else if (mode === "cinematic") {
     cameraFov = 42;
+  } else if (mode === "follow") {
+    cameraFov = 50;
+  }
+  if (want) {
+    camTarget = want;
+    camLookTarget = look;
   }
 }
 

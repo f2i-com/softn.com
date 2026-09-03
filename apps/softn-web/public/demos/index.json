@@ -37,7 +37,7 @@
     "name": "Maze Escape 3D",
     "description": "A first-person maze carved fresh every game: find the golden ring, with a minimap that fills in as you explore and a best time that sticks",
     "primary": "#4ade80",
-    "size": 88846
+    "size": 93707
   },
   {
     "id": "notes",
@@ -93,7 +93,7 @@
     "name": "3D Scene",
     "description": "Seven shapes drifting over a floor: drag to look around, click a shape to select it, add more and recolour them",
     "primary": "#f59e0b",
-    "size": 10632
+    "size": 12444
   },
   {
     "id": "warble-wire",
@@ -117,7 +117,7 @@
     "name": "Blockscape",
     "description": "A first-person voxel sandbox: an island of blocks to mine, build on and save, with gravity, swimming, flight and a day-night cycle",
     "primary": "#5cae4a",
-    "size": 78440
+    "size": 78520
   },
   {
     "id": "dead-hours",
@@ -125,7 +125,7 @@
     "name": "Dead Hours",
     "description": "A first-person zombie shooter: hold a fenced yard at night against waves of the dead with a pistol and a shotgun",
     "primary": "#ff5a3c",
-    "size": 258089
+    "size": 268999
   },
   {
     "id": "twenty48",
@@ -149,7 +149,7 @@
     "name": "Model Train Yard",
     "description": "An animated HO-scale model train yard diorama on a wooden table with running trains, turntable, busy harbor, town, day-night cycle, and tactile physical controls",
     "primary": "#3b82f6",
-    "size": 66340
+    "size": 157332
   },
   {
     "id": "predator-prey",
@@ -157,6 +157,6 @@
     "name": "Predator-Prey Simulator",
     "description": "An interactive 3D ecosystem diorama: watch foxes hunt rabbits, rabbits graze on grass, and population dynamics balance in real time",
     "primary": "#10b981",
-    "size": 62104
+    "size": 87274
   }
 ]
