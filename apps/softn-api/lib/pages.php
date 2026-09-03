@@ -29,7 +29,7 @@ final class Pages
         $title = "$name — SoftN";
         $desc = (string) $row['description'];
         if ($desc === '') $desc = "$name, a SoftN app. Run it in the browser, read its source, remix it.";
-        $image = "$origin/api/apps/$slug/thumbnail";
+        $image = "$origin/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
         $url = "$origin/app/$slug";
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $html = preg_replace('#<title>.*?</title>#s', '<title>' . $e($title) . '</title>', $html, 1) ?? $html;
