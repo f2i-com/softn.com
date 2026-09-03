@@ -36,10 +36,11 @@
     if (!window.__snakeKeyListenerAdded) {
       window.__snakeKeyListenerAdded = true
       window.addEventListener("keydown", function(e) {
-        if (e.key === "ArrowUp") { e.preventDefault(); window.__snakeNextDir = "up" }
-        if (e.key === "ArrowDown") { e.preventDefault(); window.__snakeNextDir = "down" }
-        if (e.key === "ArrowLeft") { e.preventDefault(); window.__snakeNextDir = "left" }
-        if (e.key === "ArrowRight") { e.preventDefault(); window.__snakeNextDir = "right" }
+        let key = e.key || ""
+        if (key === "ArrowUp" || key === "w" || key === "W") { e.preventDefault(); window.__snakeNextDir = "up" }
+        if (key === "ArrowDown" || key === "s" || key === "S") { e.preventDefault(); window.__snakeNextDir = "down" }
+        if (key === "ArrowLeft" || key === "a" || key === "A") { e.preventDefault(); window.__snakeNextDir = "left" }
+        if (key === "ArrowRight" || key === "d" || key === "D") { e.preventDefault(); window.__snakeNextDir = "right" }
       })
     }
   }

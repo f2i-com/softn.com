@@ -93,11 +93,15 @@
   </Card>
 
   // Response Card
+  <Card padding=lg if={apiError} style={{ background: "#fff5f5", borderRadius: "14px", border: "1px solid #fecaca" }}>
+    <Text style={{ color: "#b91c1c", fontSize: "0.875rem" }}>{apiError}</Text>
+  </Card>
+
   <Card padding=lg if={apiResult} style={{ background: "#ffffff", borderRadius: "14px", border: "1px solid #e2e8f0" }}>
     <Stack direction=vertical gap=md>
       <Stack direction=horizontal justify="space-between" align=center>
         <Text fontWeight=semibold size=sm style={{ color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.75rem" }}>Response</Text>
-        <Badge variant=success size=sm>200 OK</Badge>
+        <Badge variant={apiOk ? "success" : "error"} size=sm>{apiStatus + (apiOk ? " OK" : "")}</Badge>
       </Stack>
 
       // Response Body

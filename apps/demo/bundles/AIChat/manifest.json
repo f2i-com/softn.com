@@ -1,17 +1,23 @@
 {
   "name": "AI Chat",
   "version": "1.0.0",
-  "description": "AI Chat powered by Qwen3.5-0.8B — runs entirely in the browser",
+  "description": "A chat with a small language model that downloads once and runs entirely in your browser; nothing you type leaves the machine",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
   "files": {
-    "ui": ["ui/main.ui"],
-    "logic": ["logic/main.logic"],
+    "ui": [
+      "ui/main.ui"
+    ],
+    "logic": [
+      "logic/main.logic"
+    ],
     "xdb": [
       "xdb/conversations.xdb",
       "xdb/messages.xdb"
     ],
-    "assets": ["assets/icon.svg"]
+    "assets": [
+      "assets/icon.svg"
+    ]
   },
   "config": {
     "window": {

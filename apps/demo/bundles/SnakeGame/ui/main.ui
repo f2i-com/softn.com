@@ -23,13 +23,14 @@
   <Button @click={startGame} style={{ marginTop: "1rem", padding: "0.6rem 2rem", fontSize: "16px", fontFamily: "monospace", background: "#4ade80", color: "#0f0f23", border: "none", borderRadius: "6px", cursor: "pointer", fontWeight: "bold" }}>
     {gameOver ? "Play Again" : (running ? "Restart" : "Start Game")}
   </Button>
-  <Text style={{ color: "#525270", fontFamily: "monospace", fontSize: "12px", marginTop: "0.5rem" }}>Use arrow keys or D-pad to move</Text>
+  <Text style={{ color: "#525270", fontFamily: "monospace", fontSize: "12px", marginTop: "0.5rem" }}>Arrow keys, WASD or the pad to move</Text>
 
   // The top ten, shared by everyone who plays this app from softn.com. Scores
   // go to the app's own storage on the server the moment a game ends.
   <Stack direction=vertical gap=sm style={{ marginTop: "1.5rem", width: "300px", maxWidth: "100%", background: "#16213e", borderRadius: "10px", padding: "1rem" }}>
     <Text style={{ color: "#e4e4e7", fontFamily: "monospace", fontSize: "13px", letterSpacing: "2px" }}>TOP TEN</Text>
-    <Input value={playerName} @change={setPlayerName} placeholder="Your name for the board" style={{ fontFamily: "monospace", fontSize: "13px" }} />
+    <Text style={{ color: "#a1a1aa", fontFamily: "monospace", fontSize: "11px" }}>Your score posts here when a game ends, under this name:</Text>
+    <Input value={playerName} @change={setPlayerName} placeholder="Anonymous" style={{ fontFamily: "monospace", fontSize: "13px" }} />
     #if (boardStatus !== "")
       <Text style={{ color: "#525270", fontFamily: "monospace", fontSize: "12px" }}>{boardStatus}</Text>
     #end

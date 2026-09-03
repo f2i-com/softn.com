@@ -3,6 +3,7 @@
   let cameraPos = {x: 0, y: 3, z: 8}
   let showWireframe = false
   let selectedId = ""
+  let selectedType = ""
   let objectCount = 0
 
   let initialObjects = []
@@ -59,7 +60,7 @@
     objs.push(ground)
 
     objects = objs
-    objectCount = objs.length
+    objectCount = objs.length - 1
 
     let saved = []
     let si = 0
@@ -151,7 +152,7 @@
     }
     newObjs.push(newObj)
     objects = newObjs
-    objectCount = newObjs.length
+    objectCount = newObjs.length - 1
   }
 
   function resetScene() {
@@ -164,11 +165,49 @@
       i = i + 1
     }
     objects = objs
-    objectCount = objs.length
+    objectCount = objs.length - 1
+    selectedType = ""
   }
 
+  // The selected shape glows a little; everything else goes back to plain.
   function handleClick(info) {
-    if (info && info.objectId) {
-      selectedId = info.objectId
+    if (!info || !info.objectId || info.objectId === "ground") { return }
+    selectedId = info.objectId
+    let newObjs = []
+    let i = 0
+    while (i < objects.length) {
+      let obj = objects[i]
+      let copy = {}
+      let keys = Object.keys(obj)
+      let k = 0
+      while (k < keys.length) {
+        copy[keys[k]] = obj[keys[k]]
+        k = k + 1
+      }
+      if (obj.id === selectedId) {
+        copy.emissive = obj.color
+        copy.emissiveIntensity = 0.55
+        selectedType = obj.type
+      } else if (obj.id !== "ground") {
+        copy.emissive = "#000000"
+        copy.emissiveIntensity = 0
+      }
+      newObjs.push(copy)
+      i = i + 1
     }
+    objects = newObjs
+  }
+
+  function removeSelected() {
+    if (selectedId === "") { return }
+    let newObjs = []
+    let i = 0
+    while (i < objects.length) {
+      if (objects[i].id !== selectedId) { newObjs.push(objects[i]) }
+      i = i + 1
+    }
+    objects = newObjs
+    objectCount = newObjs.length - 1
+    selectedId = ""
+    selectedType = ""
   }

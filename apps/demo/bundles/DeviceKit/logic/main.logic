@@ -11,11 +11,23 @@ let fileContent = ""
 let fileIsImage = false
 let filePreviewUrl = ""
 
+let apiStatus = ""
+let apiOk = true
+let apiError = ""
+
 function fetchApi() {
   apiLoading = true
+  apiError = ""
   softn.net.fetch(apiUrl, { method: "GET" }, function(response) {
-    apiResult = response.body
     apiLoading = false
+    if (!response || response.error) {
+      apiResult = ""
+      apiError = response && response.error ? response.error : "The request failed."
+      return
+    }
+    apiOk = response.ok !== false
+    apiStatus = response.status ? String(response.status) : (apiOk ? "200" : "error")
+    apiResult = response.body
   })
 }
 

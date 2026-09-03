@@ -66,7 +66,12 @@ const RECIPES = {
   DeadHours: [{ click: 'Allow' }, { click: 'Start the night' }, { set: { __scene3dLocked: true } }, { wait: 11000 }, { set: { __dhFire: true } }, { wait: 250 }],
   Twenty48: [{ key: 'ArrowLeft' }, { key: 'ArrowUp' }, { key: 'ArrowRight' }, { key: 'ArrowDown' }, { key: 'ArrowLeft' }, { key: 'ArrowUp' }, { key: 'ArrowRight' }, { wait: 400 }],
   Blockfall: [{ click: 'Start' }, { wait: 500 }, { key: 'ArrowLeft' }, { key: ' ' }, { wait: 500 }, { key: 'ArrowRight' }, { key: 'ArrowRight' }, { key: ' ' }, { wait: 500 }, { key: 'ArrowUp' }, { key: ' ' }, { wait: 1200 }],
-  SnakeGame: [{ click: 'Start Game' }, { wait: 1800 }],
+  SnakeGame: [{ click: 'Allow' }, { click: 'Start Game' }, { wait: 1800 }],
+  // Opened by its directory address so the app's own storage answers.
+  Notes: [{ open: '/api/apps/notes/bundle.softn' }, { click: 'Allow' }, { wait: 1800 }],
+  ThreeDemo: [{ wait: 1800 }],
+  GPUDemo: [{ click: 'Allow' }, { click: 'Add A + B' }, { wait: 2500 }],
+  AIChat: [{ click: 'Allow' }, { wait: 800 }],
   MazeEscape3D: [{ click: 'Start' }, { set: { __scene3dLocked: true } }, { key: 'w', hold: 1500 }, { wait: 400 }],
   PromptlyUnemployed: [{ wait: 2500 }],
   Pocket: [{ wait: 2500 }],
@@ -270,10 +275,12 @@ async function main() {
     const page = await b.page();
     const t0 = Date.now();
     try {
-      await page.goto(`${base}/?open=/demos/${entry.file}&embed=1`);
+      const recipe = RECIPES[name] ?? [{ wait: 1500 }];
+      const open = recipe.find((s) => s.open)?.open ?? `/demos/${entry.file}`;
+      await page.goto(`${base}/?open=${encodeURIComponent(open)}&embed=1`);
       const ready = await waitForApp(page, 25000);
       await page.wait(ready ? 900 : 0);
-      await runRecipe(page, RECIPES[name] ?? [{ wait: 1500 }]);
+      await runRecipe(page, recipe.filter((s) => !s.open));
       // A frame that shows the runtime's own error card is not a picture of
       // the app. Apps that run in a worker cannot start on the Vite dev
       // server (its worker URL differs); photograph those against a built

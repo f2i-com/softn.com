@@ -24,13 +24,32 @@ function log(msg) {
   status = msg
 }
 
+let gpuMissing = false
+
 function _checkError(res) {
   if (res && res.error) {
-    log("Error: " + res.error)
+    let msg = String(res.error)
+    log("Error: " + msg)
     running = false
+    // No adapter or device means no WebGPU here at all: say so where the
+    // answer would have gone, not only in the status strip.
+    if (msg.toLowerCase().indexOf("adapter") >= 0 || msg.toLowerCase().indexOf("device") >= 0 || msg.toLowerCase().indexOf("webgpu") >= 0) {
+      gpuMissing = true
+      result = "WebGPU is not available in this browser. Chrome, Edge or Firefox on a machine with a graphics card can run this."
+    } else {
+      result = msg
+    }
     return true
   }
   return false
+}
+
+function formatVector(data) {
+  if (!data || !data.length) { return "(empty)" }
+  let parts = []
+  let i = 0
+  while (i < data.length && i < 64) { parts.push(String(data[i])); i = i + 1 }
+  return "[ " + parts.join(", ") + (data.length > 64 ? ", …" : "") + " ]"
 }
 
 function parseNumbers(str) {
@@ -149,8 +168,9 @@ function _addStep8() {
   log("Reading results...")
   softn.ai.gpu.readBuffer(_bufOutId, function(res) {
     if (_checkError(res)) return
-    result = JSON.stringify(res.data)
-    log("Done! GPU computed " + _len + " additions.")
+    gpuMissing = false
+    result = formatVector(res.data)
+    log("Done: the GPU added " + _len + " pairs.")
     running = false
     _cleanupResources()
   })
@@ -249,8 +269,9 @@ function _mulStep6() {
 function _mulStep7() {
   softn.ai.gpu.readBuffer(_bufOutId, function(res) {
     if (_checkError(res)) return
-    result = JSON.stringify(res.data)
-    log("Done! Multiplied " + _len + " values by 2.")
+    gpuMissing = false
+    result = formatVector(res.data)
+    log("Done: the GPU doubled " + _len + " values.")
     running = false
     _cleanupResources()
   })

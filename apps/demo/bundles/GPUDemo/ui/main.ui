@@ -3,6 +3,7 @@
 <logic src="../logic/main.logic" />
 
 <style>
+.gpu-wrap { max-width: 860px; margin: 0 auto; }
 .gpu-card {
   background: #0f1a14;
   border: 1px solid #1a3a2a;
@@ -42,12 +43,12 @@
 }
 </style>
 
-<Box direction="column" gap="0" padding="1.5rem" style={{ background: "#071210", minHeight: "100vh" }}>
+<Box direction="column" gap="0" padding="1.5rem" className="gpu-wrap" style={{ background: "#071210", minHeight: "100vh" }}>
 
   // Header
   <Box direction="column" gap="0.25rem" padding="0 0 1rem 0">
-    <Text variant="h5" style={{ color: "#10b981", fontWeight: "700" }}>GPU Compute Demo</Text>
-    <Text variant="caption" style={{ color: "#6b7280" }}>Raw WebGPU compute shaders via softn.ai.gpu.*</Text>
+    <Text variant="h5" style={{ display: "block", color: "#10b981", fontWeight: "700" }}>GPU Compute</Text>
+    <Text variant="caption" style={{ display: "block", color: "#6b7280" }}>Two small compute shaders run on your graphics card: one adds the vectors, one doubles the first.</Text>
   </Box>
 
   // Status
@@ -71,13 +72,10 @@
   // Actions
   <Box direction="row" gap="0.5rem" style={{ flexWrap: "wrap", marginBottom: "1rem" }}>
     <Button @click={runAddition} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#10b981", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>
-      Add Vectors (Bundle Shader)
+      Add A + B
     </Button>
-    <Button @click={runInlineShader} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#059669", color: "#fff", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>
-      Multiply x2 (Inline Shader)
-    </Button>
-    <Button @click={cleanup} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "#1f2937", color: "#9ca3af", border: "1px solid #374151", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>
-      Release All
+    <Button @click={runInlineShader} style={{ padding: "0.5rem 1.2rem", fontSize: "14px", background: "transparent", color: "#6ee7b7", border: "1px solid #1a3a2a", borderRadius: "8px", cursor: "pointer", fontWeight: "600" }}>
+      Double A
     </Button>
   </Box>
 
@@ -85,7 +83,7 @@
   <Box className="gpu-card" direction="column" gap="0.5rem">
     <Text variant="subtitle2" style={{ color: "#a7f3d0" }}>Result</Text>
     <Box className="gpu-result">
-      <Text style={{ color: "#ffffff" }}>{result || "Run a compute operation to see results"}</Text>
+      <Text style={{ color: gpuMissing ? "#fca5a5" : "#ffffff" }}>{result || "Press a button: the answer comes back from the GPU."}</Text>
     </Box>
   </Box>
 

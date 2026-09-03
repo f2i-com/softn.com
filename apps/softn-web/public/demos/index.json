@@ -3,33 +3,33 @@
     "id": "ai-chat",
     "file": "AIChat.softn",
     "name": "AI Chat",
-    "description": "AI Chat powered by Qwen3.5-0.8B — runs entirely in the browser",
+    "description": "A chat with a small language model that downloads once and runs entirely in your browser; nothing you type leaves the machine",
     "primary": "#10b981",
-    "size": 36203
+    "size": 36681
   },
   {
     "id": "device-kit",
     "file": "DeviceKit.softn",
-    "name": "DeviceKit",
-    "description": "Demo app showcasing SoftN capabilities: network, camera, QR, files",
+    "name": "Device Kit",
+    "description": "A tour of what a sandboxed app may ask for: fetch a URL, read and make QR codes, take a photo, open a file — each behind the permission that gates it",
     "primary": "#3b82f6",
-    "size": 29381
+    "size": 30263
   },
   {
     "id": "glamour-studio",
     "file": "GlamourStudio.softn",
     "name": "Glamour Studio",
-    "description": "Professional salon management with multi-file modular structure",
+    "description": "A salon's front desk: appointments, clients, staff and services in a local-first database that syncs between devices",
     "primary": "#d4a574",
-    "size": 88642
+    "size": 88684
   },
   {
     "id": "gpu-demo",
     "file": "GPUDemo.softn",
-    "name": "GPUDemo",
-    "description": "GPU Compute Demo — WebGPU compute shaders via softn.ai.gpu.*",
+    "name": "GPU Compute",
+    "description": "Vector maths on your graphics card: two compute shaders run through the runtime's WebGPU bridge, with the numbers shown as they come back",
     "primary": "#10b981",
-    "size": 12674
+    "size": 13500
   },
   {
     "id": "maze-escape-3d",
@@ -43,33 +43,33 @@
     "id": "notes",
     "file": "Notes.softn",
     "name": "Notes",
-    "description": "Notes CRUD app with real-time server sync via XDB",
+    "description": "A shared notes board kept in the app's own storage on this site: add, search and delete, and everyone who opens it here sees the same notes",
     "primary": "#6366f1",
-    "size": 13928
+    "size": 16581
   },
   {
     "id": "pocket",
     "file": "Pocket.softn",
     "name": "Pocket",
     "description": "An 8-bit handheld emulator — CPU, PPU, APU and mappers all in .logic, drawn by PixelCanvas and heard through AudioStream",
-    "primary": "#8ba82a",
+    "primary": "#9bbc0f",
     "size": 354546
   },
   {
     "id": "showcase",
     "file": "Showcase.softn",
-    "name": "SoftN Showcase",
-    "description": "Interactive showcase of SoftN charts, animations, and interactive components",
+    "name": "Component Showcase",
+    "description": "Every chart, animation and interactive component the runtime ships, on three pages, in light and dark",
     "primary": "#6366f1",
-    "size": 35571
+    "size": 35596
   },
   {
     "id": "snake-game",
     "file": "SnakeGame.softn",
-    "name": "SnakeGame",
-    "description": "Classic Snake game built with SoftN utility components",
+    "name": "Snake",
+    "description": "The classic: eat, grow, don't hit the walls — with a shared top ten kept on the site",
     "primary": "#4ade80",
-    "size": 10469
+    "size": 10779
   },
   {
     "id": "texas-holdem",
@@ -85,15 +85,15 @@
     "name": "TheOffice",
     "description": "Local AI sim game where 6 Office-inspired characters chat autonomously using Qwen3.5-0.8B",
     "primary": "#58a6ff",
-    "size": 622217
+    "size": 623342
   },
   {
     "id": "three-demo",
     "file": "ThreeDemo.softn",
-    "name": "ThreeDemo",
-    "description": "3D Scene demo with animated shapes powered by formlogic",
-    "primary": "#6366f1",
-    "size": 7682
+    "name": "3D Scene",
+    "description": "Seven shapes drifting over a floor: drag to look around, click a shape to select it, add more and recolour them",
+    "primary": "#f59e0b",
+    "size": 10632
   },
   {
     "id": "warble-wire",
@@ -101,7 +101,7 @@
     "name": "WarbleWire",
     "description": "Send a message as synthetic birdsong and decode it back — the QXW acoustic transport",
     "primary": "#c7ee53",
-    "size": 105428
+    "size": 105456
   },
   {
     "id": "promptly-unemployed",

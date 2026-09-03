@@ -52,6 +52,14 @@ ErrorDocument 404 default
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
   Header always set X-Frame-Options "SAMEORIGIN"
 
+  # Cross-origin isolation gives the page SharedArrayBuffer, which is what
+  # lets a language model on the CPU provider use every core instead of one:
+  # on a machine without a usable GPU that is the difference between slow and
+  # apparently hung. `credentialless` rather than `require-corp`, so images and
+  # model files fetched from other origins keep working without CORP headers.
+  Header always set Cross-Origin-Opener-Policy "same-origin"
+  Header always set Cross-Origin-Embedder-Policy "credentialless"
+
   # Brief caching for unhashed static files. Vite's fingerprinted assets are
   # immutable; HTML, service workers, catalogues and bundles must revalidate.
   #
@@ -203,6 +211,8 @@ server {
     server_tokens off;
 
     add_header X-Content-Type-Options "nosniff" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Embedder-Policy "credentialless" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header Cache-Control $softn_cache_control;

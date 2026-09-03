@@ -247,6 +247,12 @@ let placeDwell = []
 let deskSeats = [[2, 4], [9, 4], [4, 8], [10, 12], [15, 8], [9, 18]]
 
 function _init() {
+  // A permission grant re-runs the whole script, and this again: every
+  // per-character list starts empty so the cast is built once, not twice.
+  charNames = []; charIds = []; charPersonalities = []; charPositions = []; charPaths = []; charPathSteps = []
+  charDirs = []; charMoving = []; charBases = []; charHairs = []; charHairColors = []; charClothes = []; charClothesColors = []
+  charDelays = []; charBlocked = []; charHomes = []; charGoing = []; charDoing = []; charDwell = []; smallTalkNext = []
+  placeX = []; placeY = []; placeGoing = []; placeDoing = []; placeDwell = []
   buildMap()
   setupPlaces()
 
@@ -1030,9 +1036,15 @@ function loadModel() {
       decoder_model_merged: "q4"
     }
   }, function(result) {
+    modelLoading = false
+    if (!result || result.error || !result.modelHandle) {
+      modelLoaded = false
+      modelHandle = null
+      statusText = "The model could not load" + (result && result.error ? " (" + result.error + ")" : "") + " — the office carries on with scripted small talk."
+      return
+    }
     modelHandle = result.modelHandle
     modelLoaded = true
-    modelLoading = false
     statusText = "Qwen3.5-0.8B is listening in"
   })
 }
@@ -1164,6 +1176,12 @@ function beginConversation(speakerIdx, listenerIdx) {
     temperature: 0.9,
     top_p: 0.9
   }, function(result) {
+    if (!result || result.error || typeof result.text !== "string") {
+      thinkingCharId = null
+      generating = false
+      statusText = "The model could not answer" + (result && result.error ? ": " + result.error : "") + "."
+      return
+    }
     let text = cleanModelOutput(result.text, speakerName)
 
     thinkingCharId = null
