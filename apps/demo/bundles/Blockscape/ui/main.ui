@@ -62,12 +62,15 @@
       antialias={true}
       shadows={false}
       pointerLock={true}
+      crosshair={true}
       cameraSmoothing={0.4}
-      maxPixelRatio={1.25}
+      maxPixelRatio={1.5}
       pitchLimit={1.5}
       mouseLookSensitivity={0.0024}
       fog={sceneFog}
       background={skyColor}
+      toneMapping="aces"
+      toneMappingExposure={1.15}
       @click={onSceneClick}
     />
   </Box>

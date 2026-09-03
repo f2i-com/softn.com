@@ -1,5 +1,20 @@
 import { defineConfig } from 'tsup';
-import { cpSync } from 'fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, copyFileSync } from 'fs';
+import path from 'path';
+
+function copyDirRecursive(src: string, dest: string) {
+  if (!existsSync(dest)) mkdirSync(dest, { recursive: true });
+  for (const entry of readdirSync(src, { withFileTypes: true })) {
+    if (entry.name === 'core-runtime') continue;
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+    } else if (entry.isFile()) {
+      copyFileSync(srcPath, destPath);
+    }
+  }
+}
 
 export default defineConfig({
   entry: [
@@ -20,15 +35,10 @@ export default defineConfig({
     // Copy the engine's WASM to dist/ — tsup inlines the glue JS into a chunk,
     // and the glue uses `new URL('<name>_bg.wasm', import.meta.url)`, so the
     // .wasm file must sit next to the chunk.
-    //
-    // Only zipp's. formlogic_wasm_bg.wasm was copied here too, 2.2 MB of an
-    // engine nothing loads: vm-adapter.ts re-exports ZippWasmAdapter, and the
-    // FormLogic adapter is reachable only by editing the two lines its own
-    // comment describes. Rollup tree-shakes it out — no built chunk contains the
-    // string "formlogic" — so the binary travelled in every npm tarball and into
-    // every app that vendors core/dist, next to chunks that never ask for it.
-    // Restore this line in the same commit that flips vm-adapter.ts back.
     cpSync('wasm-zipp/zipp_wasm_bg.wasm', 'dist/zipp_wasm_bg.wasm');
     console.log('[tsup] Copied the zipp engine to dist/');
+    // Mirror dist/ into dist/core-runtime/ so static worker URL resolution (./core-runtime/runtime/script-worker.js) succeeds on disk
+    copyDirRecursive('dist', 'dist/core-runtime');
+    console.log('[tsup] Mirrored dist/ to dist/core-runtime/ for worker resolution');
   },
 });

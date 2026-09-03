@@ -31,7 +31,9 @@
           autoRotate={true}
           autoRotateSpeed={1}
           maxPixelRatio={1.5}
-          background="#0a0a1a"
+          sky={currentSky}
+          toneMapping="aces"
+          toneMappingExposure={1.2}
           @click={handleClick}
         />
       </Box>
@@ -40,6 +42,8 @@
 
     <Stack direction="horizontal" gap={8} style={{ flexWrap: "wrap", justifyContent: "center", marginTop: "14px" }}>
       <Button variant="ghost" @click={addShape} style={{ padding: "9px 18px", fontSize: "14px", background: "#f59e0b", color: "#1a1200", border: "1px solid #f59e0b", borderRadius: "8px", fontWeight: 700 }}>Add a shape</Button>
+      <Button variant="ghost" @click={cycleSky} style={{ padding: "9px 18px", fontSize: "14px", background: "rgba(255,255,255,0.06)", color: "#e4e4e7", border: "1px solid rgba(255,255,255,0.14)", borderRadius: "8px", fontWeight: 600 }}>{"Sky: " + currentSky}</Button>
+      <Button variant="ghost" @click={toggleTextures} style={{ padding: "9px 18px", fontSize: "14px", background: "rgba(255,255,255,0.06)", color: "#e4e4e7", border: "1px solid rgba(255,255,255,0.14)", borderRadius: "8px", fontWeight: 600 }}>{useTextures ? "Textures: On" : "Textures: Off"}</Button>
       <Button variant="ghost" @click={randomizeColors} style={{ padding: "9px 18px", fontSize: "14px", background: "rgba(255,255,255,0.06)", color: "#e4e4e7", border: "1px solid rgba(255,255,255,0.14)", borderRadius: "8px", fontWeight: 600 }}>Recolour</Button>
       <Button variant="ghost" @click={toggleWireframe} style={{ padding: "9px 18px", fontSize: "14px", background: "rgba(255,255,255,0.06)", color: "#e4e4e7", border: "1px solid rgba(255,255,255,0.14)", borderRadius: "8px", fontWeight: 600 }}>{showWireframe ? "Solid" : "Wireframe"}</Button>
       <Button variant="ghost" @click={removeSelected} style={{ padding: "9px 18px", fontSize: "14px", background: "rgba(255,255,255,0.06)", color: "#e4e4e7", border: "1px solid rgba(255,255,255,0.14)", borderRadius: "8px", fontWeight: 600 }}>Remove selected</Button>

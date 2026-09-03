@@ -20,26 +20,35 @@ function box(id, x, y, z, w, h, d, color, extra) {
     if (extra.opacity !== undefined) { o.opacity = extra.opacity }
     if (extra.metal !== undefined) { o.metalness = extra.metal }
     if (extra.rough !== undefined) { o.roughness = extra.rough }
+    if (extra.texture) { o.texture = extra.texture }
+    if (extra.textureRepeat) { o.textureRepeat = extra.textureRepeat }
+    if (extra.bumpScale) { o.bumpScale = extra.bumpScale }
   }
   return o
 }
 
-function cyl(id, x, y, z, r, h, color) {
-  return { id: id, type: "cylinder", position: { x: x, y: y, z: z }, radius: r, height: h, color: color, roughness: 0.8 }
+function cyl(id, x, y, z, r, h, color, extra) {
+  let o = { id: id, type: "cylinder", position: { x: x, y: y, z: z }, radius: r, height: h, color: color, roughness: 0.8 }
+  if (extra) {
+    if (extra.texture) { o.texture = extra.texture }
+    if (extra.metal !== undefined) { o.metalness = extra.metal }
+    if (extra.rough !== undefined) { o.roughness = extra.rough }
+  }
+  return o
 }
 
 // ---- Building the yard ---------------------------------------------------
 
 function crateAt(out, id, x, z, size, rot) {
   let s = size || 1.1
-  out.push(box(id, x, s / 2, z, s, s, s, "#7a5a36", { rot: rot || 0 }))
-  out.push(box(id + "b", x, s + 0.01, z, s * 0.82, 0.03, s * 0.82, "#5a3f22", { rot: rot || 0 }))
+  out.push(box(id, x, s / 2, z, s, s, s, "#7a5a36", { rot: rot || 0, texture: "wood" }))
+  out.push(box(id + "b", x, s + 0.01, z, s * 0.82, 0.03, s * 0.82, "#5a3f22", { rot: rot || 0, texture: "wood" }))
   addBlocker(x - s * 0.62, z - s * 0.62, x + s * 0.62, z + s * 0.62, s)
 }
 
 function barrelAt(out, id, x, z) {
-  out.push(cyl(id, x, 0.55, z, 0.42, 1.1, "#5b6570"))
-  out.push({ id: id + "r", type: "torus", position: { x: x, y: 0.75, z: z }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, radius: 0.43, tube: 0.03, color: "#2f353c" })
+  out.push(cyl(id, x, 0.55, z, 0.42, 1.1, "#5b6570", { texture: "metal" }))
+  out.push({ id: id + "r", type: "torus", position: { x: x, y: 0.75, z: z }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, radius: 0.43, tube: 0.03, color: "#2f353c", texture: "metal" })
   addBlocker(x - 0.45, z - 0.45, x + 0.45, z + 0.45, 1.1)
 }
 
@@ -83,16 +92,16 @@ function lampAt(out, id, x, z) {
 }
 
 function shedAt(out, id, x, z, w, d, h, color) {
-  out.push(box(id, x, h / 2, z, w, h, d, color))
-  out.push(box(id + "r", x, h + 0.25, z, w + 0.6, 0.5, d + 0.6, "#2b2f36"))
-  out.push(box(id + "d", x, 1.0, z + d / 2 + 0.02, 1.1, 2.0, 0.06, "#4a3a2a"))
+  out.push(box(id, x, h / 2, z, w, h, d, color, { texture: "wood", textureRepeat: { x: 3, y: 2 } }))
+  out.push(box(id + "r", x, h + 0.25, z, w + 0.6, 0.5, d + 0.6, "#2b2f36", { texture: "tile", textureRepeat: { x: 4, y: 4 } }))
+  out.push(box(id + "d", x, 1.0, z + d / 2 + 0.02, 1.1, 2.0, 0.06, "#4a3a2a", { texture: "wood" }))
   out.push(box(id + "w", x + w * 0.3, 1.6, z + d / 2 + 0.02, 0.9, 0.7, 0.04, "#1a2130", { emissive: "#243a5a", emissiveIntensity: 0.4 }))
   addBlocker(x - w / 2, z - d / 2, x + w / 2, z + d / 2, h)
 }
 
 function graveAt(out, id, x, z, rot) {
-  out.push(box(id, x, 0.45, z, 0.6, 0.9, 0.14, "#6b7078", { rot: rot }))
-  out.push({ id: id + "t", type: "cylinder", position: { x: x, y: 0.9, z: z }, rotation: { x: Math.PI / 2, y: 0, z: rot }, radius: 0.3, height: 0.14, color: "#6b7078" })
+  out.push(box(id, x, 0.45, z, 0.6, 0.9, 0.14, "#6b7078", { rot: rot, texture: "stone" }))
+  out.push({ id: id + "t", type: "cylinder", position: { x: x, y: 0.9, z: z }, rotation: { x: Math.PI / 2, y: 0, z: rot }, radius: 0.3, height: 0.14, color: "#6b7078", texture: "stone" })
   addBlocker(x - 0.32, z - 0.15, x + 0.32, z + 0.15, 0.9)
 }
 
@@ -120,10 +129,10 @@ function buildArena() {
   lampPosts = []
   let out = []
   let A = ARENA
-  out.push({ id: "ground", type: "plane", position: { x: 0, y: 0, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 400, height: 400, color: "#262b2a", roughness: 1 })
+  out.push({ id: "ground", type: "plane", position: { x: 0, y: 0, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 400, height: 400, color: "#222824", texture: "grass", textureRepeat: { x: 35, y: 35 }, roughness: 0.95, bumpScale: 0.04 })
   // Worn paths across the yard.
-  out.push({ id: "path1", type: "plane", position: { x: 0, y: 0.01, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 3.2, height: A * 2, color: "#33342f", roughness: 1 })
-  out.push({ id: "path2", type: "plane", position: { x: 0, y: 0.01, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: A * 2, height: 3.2, color: "#33342f", roughness: 1 })
+  out.push({ id: "path1", type: "plane", position: { x: 0, y: 0.01, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 3.2, height: A * 2, color: "#383731", texture: "sand", textureRepeat: { x: 2, y: 20 }, roughness: 0.85 })
+  out.push({ id: "path2", type: "plane", position: { x: 0, y: 0.01, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: A * 2, height: 3.2, color: "#383731", texture: "sand", textureRepeat: { x: 20, y: 2 }, roughness: 0.85 })
 
   // Fences with a gate in the middle of each side.
   let g = 3.2

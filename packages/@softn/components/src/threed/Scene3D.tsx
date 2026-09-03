@@ -153,6 +153,17 @@ export interface Scene3DObject {
   wireframe?: boolean;
   /** Low-poly faceted shading for stylized diorama / retro aesthetics. */
   flatShading?: boolean;
+  /**
+   * Procedural texture preset: 'stone' | 'brick' | 'tile' | 'wood' | 'grass' |
+   * 'checker' | 'stripes' | 'dots' | 'metal' | 'sand' | 'grid' | 'noise'.
+   */
+  texture?: string;
+  /** Texture tiling repeat across the surface, e.g. { x: 2, y: 2 }. */
+  textureRepeat?: { x: number; y: number };
+  /** Image texture URL (bundle asset or public image). */
+  textureUrl?: string;
+  /** Bump map depth multiplier (default 0.04). */
+  bumpScale?: number;
   castShadow?: boolean;
   receiveShadow?: boolean;
   width?: number;
@@ -254,6 +265,17 @@ export interface Scene3DProps {
     fov?: number;
   };
   background?: string;
+  /**
+   * Procedural atmospheric sky gradient: 'day' | 'sunset' | 'night' | 'dusk' |
+   * 'overcast' | 'dawn' | { top: string; bottom: string; middle?: string }.
+   */
+  sky?: 'day' | 'sunset' | 'night' | 'dusk' | 'overcast' | 'dawn' | { top: string; bottom: string; middle?: string };
+  /** Ground / level editor helper grid. */
+  grid?: boolean | { size?: number; divisions?: number; color?: string; centerColor?: string; position?: { x: number; y: number; z: number } };
+  /** Whether to show a first-person aiming crosshair (defaults to true when pointerLock is active). */
+  crosshair?: boolean;
+  /** Built-in keyboard game controls listener (WASD, Arrows, Space, Shift) synced to window.__softnKeys. */
+  gameControls?: boolean;
   alpha?: boolean;
   antialias?: boolean;
   shadows?: boolean;
@@ -355,18 +377,239 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
   }
 }
 
+const proceduralTextureCache = new Map<string, THREE.CanvasTexture>();
+
+function createProceduralTexture(type: string, baseColorStr?: string, repeat?: { x: number; y: number }): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const key = `${type}_${baseColorStr || ''}_${repeat?.x ?? 1}_${repeat?.y ?? 1}`;
+  const existing = proceduralTextureCache.get(key);
+  if (existing) return existing;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext ? canvas.getContext('2d') : null;
+  if (!ctx) return null;
+
+  const baseColor = baseColorStr || '#888888';
+  ctx.fillStyle = baseColor;
+  ctx.fillRect(0, 0, 256, 256);
+
+  if (type === 'checker') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.fillRect(0, 0, 128, 128);
+    ctx.fillRect(128, 128, 128, 128);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.16)';
+    ctx.fillRect(128, 0, 128, 128);
+    ctx.fillRect(0, 128, 128, 128);
+  } else if (type === 'tile') {
+    const tileSize = 64;
+    for (let x = 0; x < 256; x += tileSize) {
+      for (let y = 0; y < 256; y += tileSize) {
+        const shade = ((x + y) % 128 === 0) ? 0.08 : -0.05;
+        ctx.fillStyle = shade > 0 ? `rgba(255,255,255,${shade})` : `rgba(0,0,0,${-shade})`;
+        ctx.fillRect(x + 2, y + 2, tileSize - 4, tileSize - 4);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 3, y + 3, tileSize - 6, tileSize - 6);
+      }
+    }
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)';
+    ctx.lineWidth = 3;
+    for (let i = 0; i <= 256; i += tileSize) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 256); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(256, i); ctx.stroke();
+    }
+  } else if (type === 'brick') {
+    const bh = 32;
+    const bw = 64;
+    for (let y = 0; y < 256; y += bh) {
+      const row = Math.floor(y / bh);
+      const offset = (row % 2) * (bw / 2);
+      for (let x = -bw; x <= 256 + bw; x += bw) {
+        const bx = x + offset;
+        const shade = ((row * 7 + Math.floor(x / bw) * 13) % 20) / 100 - 0.1;
+        ctx.fillStyle = shade > 0 ? `rgba(255,255,255,${shade})` : `rgba(0,0,0,${-shade})`;
+        ctx.fillRect(bx + 2, y + 2, bw - 4, bh - 4);
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+        ctx.strokeRect(bx + 3, y + 3, bw - 6, bh - 6);
+      }
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(256, y); ctx.stroke();
+    }
+  } else if (type === 'stone') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
+    ctx.fillRect(0, 0, 256, 256);
+    const stones = [
+      { x: 4, y: 4, w: 120, h: 56 }, { x: 130, y: 4, w: 122, h: 56 },
+      { x: 4, y: 66, w: 76, h: 56 }, { x: 86, y: 66, w: 90, h: 56 }, { x: 182, y: 66, w: 70, h: 56 },
+      { x: 4, y: 128, w: 110, h: 58 }, { x: 120, y: 128, w: 132, h: 58 },
+      { x: 4, y: 192, w: 84, h: 60 }, { x: 94, y: 192, w: 96, h: 60 }, { x: 196, y: 192, w: 56, h: 60 },
+    ];
+    for (const s of stones) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.10)';
+      ctx.fillRect(s.x, s.y, s.w, s.h);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(s.x, s.y, s.w, s.h);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+      for (let f = 0; f < 10; f++) {
+        ctx.fillRect(s.x + (f * 17) % (s.w - 8) + 4, s.y + (f * 23) % (s.h - 8) + 4, 3, 3);
+      }
+    }
+  } else if (type === 'wood') {
+    const plankH = 64;
+    for (let y = 0; y < 256; y += plankH) {
+      const shade = ((y / plankH) % 2 === 0) ? 0.06 : -0.06;
+      ctx.fillStyle = shade > 0 ? `rgba(255,255,255,${shade})` : `rgba(0,0,0,${-shade})`;
+      ctx.fillRect(0, y + 2, 256, plankH - 4);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.12)';
+      ctx.lineWidth = 1;
+      for (let g = 8; g < plankH - 4; g += 10) {
+        ctx.beginPath();
+        ctx.moveTo(0, y + g);
+        ctx.bezierCurveTo(80, y + g + 2, 180, y + g - 2, 256, y + g);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(256, y); ctx.stroke();
+    }
+  } else if (type === 'grass') {
+    for (let i = 0; i < 350; i++) {
+      const gx = (i * 37) % 256;
+      const gy = (i * 71) % 256;
+      const gh = 6 + (i % 8);
+      ctx.strokeStyle = (i % 3 === 0) ? 'rgba(34, 197, 94, 0.35)' : ((i % 3 === 1) ? 'rgba(21, 128, 61, 0.45)' : 'rgba(250, 204, 21, 0.2)');
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(gx, gy);
+      ctx.lineTo(gx + (i % 5) - 2, gy - gh);
+      ctx.stroke();
+    }
+  } else if (type === 'metal') {
+    for (let y = 0; y < 256; y += 3) {
+      const a = 0.05 + ((y * 19) % 10) / 100;
+      ctx.fillStyle = `rgba(255, 255, 255, ${a})`;
+      ctx.fillRect(0, y, 256, 1.5);
+    }
+  } else if (type === 'sand') {
+    for (let y = 0; y < 256; y += 16) {
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.12)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.bezierCurveTo(70, y + 4, 190, y - 4, 256, y);
+      ctx.stroke();
+    }
+  } else if (type === 'grid') {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 256; i += 32) {
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 256); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(256, i); ctx.stroke();
+    }
+  } else {
+    for (let i = 0; i < 200; i++) {
+      ctx.fillStyle = (i % 2 === 0) ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
+      ctx.fillRect((i * 47) % 256, (i * 83) % 256, 4, 4);
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeat?.x ?? 1, repeat?.y ?? 1);
+  proceduralTextureCache.set(key, texture);
+  return texture;
+}
+
+function createSkyTexture(sky: Scene3DProps['sky']): THREE.CanvasTexture | null {
+  if (!sky || typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 16;
+  canvas.height = 256;
+  const ctx = canvas.getContext ? canvas.getContext('2d') : null;
+  if (!ctx) return null;
+
+  let top = '#1d4ed8';
+  let bottom = '#93c5fd';
+  let middle: string | undefined;
+
+  if (typeof sky === 'string') {
+    if (sky === 'sunset') {
+      top = '#1e1b4b';
+      middle = '#e11d48';
+      bottom = '#fbbf24';
+    } else if (sky === 'night') {
+      top = '#020617';
+      bottom = '#0f172a';
+    } else if (sky === 'dusk') {
+      top = '#09090b';
+      middle = '#581c87';
+      bottom = '#a855f7';
+    } else if (sky === 'overcast') {
+      top = '#334155';
+      bottom = '#94a3b8';
+    } else if (sky === 'dawn') {
+      top = '#1e293b';
+      middle = '#f43f5e';
+      bottom = '#fdba74';
+    } else {
+      top = '#1d4ed8';
+      bottom = '#93c5fd';
+    }
+  } else if (typeof sky === 'object') {
+    top = sky.top || top;
+    bottom = sky.bottom || bottom;
+    middle = sky.middle;
+  }
+
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, top);
+  if (middle) grad.addColorStop(0.5, middle);
+  grad.addColorStop(1, bottom);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 16, 256);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  if ('colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 function createMaterial(obj: Scene3DObject): THREE.MeshStandardMaterial {
   const opacity = obj.opacity ?? 1;
   // Instance colours multiply the material's, so a palette needs a white base.
   const usesPalette = obj.type === 'instanced' && Array.isArray(obj.palette) && obj.palette.length > 0;
+
+  let map: THREE.Texture | undefined;
+  if (obj.texture) {
+    const tex = createProceduralTexture(obj.texture, obj.color, obj.textureRepeat);
+    if (tex) map = tex;
+  } else if (obj.textureUrl && isSafeUrl(obj.textureUrl)) {
+    try {
+      const tex = new THREE.TextureLoader().load(obj.textureUrl);
+      if (obj.textureRepeat) {
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.repeat.set(obj.textureRepeat.x, obj.textureRepeat.y);
+      }
+      map = tex;
+    } catch {
+      // Ignore texture load failure
+    }
+  }
+
   return new THREE.MeshStandardMaterial({
-    color: usesPalette ? '#ffffff' : obj.color || '#6366f1',
-    metalness: obj.metalness ?? 0.1,
-    roughness: obj.roughness ?? 0.5,
+    color: usesPalette ? '#ffffff' : (obj.texture ? '#ffffff' : (obj.color || '#6366f1')),
+    metalness: obj.metalness ?? (obj.texture === 'metal' ? 0.6 : 0.1),
+    roughness: obj.roughness ?? (obj.texture === 'metal' ? 0.3 : (obj.texture === 'tile' ? 0.25 : 0.6)),
     wireframe: obj.wireframe ?? false,
     flatShading: obj.flatShading ?? false,
     opacity,
     transparent: opacity < 1,
+    ...(map ? { map, bumpMap: map, bumpScale: obj.bumpScale ?? 0.03 } : {}),
     ...(obj.emissive ? { emissive: new THREE.Color(obj.emissive) } : {}),
     ...(obj.emissiveIntensity != null ? { emissiveIntensity: obj.emissiveIntensity } : {}),
   });
@@ -856,6 +1099,10 @@ export function Scene3D({
   lights = [],
   camera: cameraProp,
   background = '#1a1a2e',
+  sky,
+  grid,
+  crosshair: crosshairProp,
+  gameControls = false,
   alpha = false,
   antialias = true,
   shadows = false,
@@ -907,6 +1154,7 @@ export function Scene3D({
   // orbit controls, which cannot coexist with a steered camera.
   const enableMouseLook = mouseLookProp || enablePointerLock;
   const enableOrbitControls = _enableOrbitControls && !enableMouseLook;
+  const crosshair = crosshairProp ?? (enablePointerLock && crosshairProp !== false);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1007,7 +1255,77 @@ export function Scene3D({
     (renderer.domElement as HTMLCanvasElement & { __softnScene?: THREE.Scene; __softnRenderer?: THREE.WebGLRenderer }).__softnScene = scene;
     (renderer.domElement as HTMLCanvasElement & { __softnRenderer?: THREE.WebGLRenderer }).__softnRenderer = renderer;
     if (!alpha) {
-      scene.background = new THREE.Color(background);
+      if (sky) {
+        const skyTex = createSkyTexture(sky);
+        if (skyTex) scene.background = skyTex;
+        else scene.background = new THREE.Color(background);
+      } else {
+        scene.background = new THREE.Color(background);
+      }
+    }
+
+    if (grid) {
+      const size = typeof grid === 'object' ? (grid.size ?? 50) : 50;
+      const divisions = typeof grid === 'object' ? (grid.divisions ?? 50) : 50;
+      const colorCenter = typeof grid === 'object' ? (grid.centerColor ?? '#6366f1') : '#6366f1';
+      const colorGrid = typeof grid === 'object' ? (grid.color ?? '#334155') : '#334155';
+      const gridHelper = new THREE.GridHelper(size, divisions, colorCenter, colorGrid);
+      if (typeof grid === 'object' && grid.position) {
+        gridHelper.position.set(grid.position.x, grid.position.y, grid.position.z);
+      }
+      scene.add(gridHelper);
+    }
+
+    let cleanupGameKeys: (() => void) | null = null;
+    if (gameControls && typeof window !== 'undefined') {
+      const keys = (window as unknown as { __softnKeys?: Record<string, boolean> }).__softnKeys || {
+        w: false, a: false, s: false, d: false,
+        up: false, down: false, left: false, right: false,
+        space: false, shift: false,
+      };
+      (window as unknown as { __softnKeys: Record<string, boolean> }).__softnKeys = keys;
+
+      const isUi = (t: EventTarget | null) => {
+        if (!t || !(t instanceof HTMLElement)) return false;
+        const tag = t.tagName.toLowerCase();
+        return tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button' || t.isContentEditable;
+      };
+
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (isUi(e.target)) return;
+        const k = e.key.toLowerCase();
+        if (k === 'w') keys.w = true;
+        if (k === 's') keys.s = true;
+        if (k === 'a') keys.a = true;
+        if (k === 'd') keys.d = true;
+        if (e.key === 'ArrowUp') keys.up = true;
+        if (e.key === 'ArrowDown') keys.down = true;
+        if (e.key === 'ArrowLeft') keys.left = true;
+        if (e.key === 'ArrowRight') keys.right = true;
+        if (e.key === ' ' || e.code === 'Space') keys.space = true;
+        if (e.key === 'Shift') keys.shift = true;
+      };
+
+      const onKeyUp = (e: KeyboardEvent) => {
+        const k = e.key.toLowerCase();
+        if (k === 'w') keys.w = false;
+        if (k === 's') keys.s = false;
+        if (k === 'a') keys.a = false;
+        if (k === 'd') keys.d = false;
+        if (e.key === 'ArrowUp') keys.up = false;
+        if (e.key === 'ArrowDown') keys.down = false;
+        if (e.key === 'ArrowLeft') keys.left = false;
+        if (e.key === 'ArrowRight') keys.right = false;
+        if (e.key === ' ' || e.code === 'Space') keys.space = false;
+        if (e.key === 'Shift') keys.shift = false;
+      };
+
+      window.addEventListener('keydown', onKeyDown);
+      window.addEventListener('keyup', onKeyUp);
+      cleanupGameKeys = () => {
+        window.removeEventListener('keydown', onKeyDown);
+        window.removeEventListener('keyup', onKeyUp);
+      };
     }
 
     const fov = cameraProp?.fov ?? 60;
@@ -1531,6 +1849,7 @@ export function Scene3D({
       if (debugEl) debugEl.remove();
       if (plLockChange) document.removeEventListener('pointerlockchange', plLockChange);
       if (plMouseDown) canvas.removeEventListener('mousedown', plMouseDown);
+      if (cleanupGameKeys) cleanupGameKeys();
       if (enablePointerLock) {
         if (document.pointerLockElement === canvas) {
           try {
@@ -1916,6 +2235,7 @@ export function Scene3D({
         const geometry = createGeometry(obj);
         const material = createMaterial(obj);
         const mesh = new THREE.Mesh(geometry, material);
+        mesh.userData.__softnId = obj.id;
         applyTransform(mesh, obj, false);
         scene.add(mesh);
         meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
@@ -1930,6 +2250,7 @@ export function Scene3D({
           const geometry = createGeometry(obj);
           const material = createMaterial(obj);
           const mesh = new THREE.Mesh(geometry, material);
+          mesh.userData.__softnId = obj.id;
           applyTransform(mesh, obj, false);
           scene.add(mesh);
           meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
@@ -2040,6 +2361,26 @@ export function Scene3D({
       }}
     >
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      {crosshair && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            width: 14,
+            height: 14,
+            transform: 'translate(-50%, -50%)',
+            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 5,
+          }}
+        >
+          <div style={{ position: 'absolute', width: 2, height: 10, background: 'rgba(255,255,255,0.7)', borderRadius: 1 }} />
+          <div style={{ position: 'absolute', width: 10, height: 2, background: 'rgba(255,255,255,0.7)', borderRadius: 1 }} />
+        </div>
+      )}
       {expandable && (
         <button
           onClick={toggleFullscreen}

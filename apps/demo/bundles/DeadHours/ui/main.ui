@@ -51,14 +51,17 @@
       lights={lights}
       camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 74 }}
       antialias={true}
-      shadows={false}
+      shadows={true}
       pointerLock={true}
+      crosshair={true}
       cameraSmoothing={0.4}
-      maxPixelRatio={1.25}
+      maxPixelRatio={1.5}
       pitchLimit={1.2}
       mouseLookSensitivity={0.0022}
       fog={sceneFog}
-      background={skyColor}
+      sky="night"
+      toneMapping="aces"
+      toneMappingExposure={1.2}
       @click={onSceneClick}
     />
   </Box>
