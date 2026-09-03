@@ -12,6 +12,15 @@ type Scene3DWindow = Window & {
   __scene3dPitch?: number;
   /** True while a `pointerLock` scene owns the mouse; a game reads it to pause. */
   __scene3dLocked?: boolean;
+  /**
+   * A game sets this true from a button that starts or resumes play; the
+   * scene takes the pointer on the next frame, inside the click's user
+   * activation, so the player is not left clicking the world to get the
+   * mouse back.
+   */
+  __scene3dWantLock?: boolean;
+  /** Set false to lock with the platform's adjusted movement instead of raw input. */
+  __scene3dRawInput?: boolean;
 };
 
 interface MouseLookOwner {
@@ -920,8 +929,41 @@ export function Scene3D({
     let plMouseMove: ((e: MouseEvent) => void) | null = null;
     let plLockChange: (() => void) | null = null;
     let plMouseDown: ((e: MouseEvent) => void) | null = null;
+    let plKeyDown: ((e: KeyboardEvent) => void) | null = null;
     // Whether the lock in force reports raw device movement.
     let rawInput = false;
+    // What the mouse has been delivering, for the F8 readout.
+    const look = { moves: 0, movesLastSecond: 0, lastDx: 0, lastDy: 0, since: performance.now(), dropped: 0 };
+    let debugEl: HTMLDivElement | null = null;
+    const requestLock = () => {
+      if (!enablePointerLock || isLocked()) return;
+      // Raw (unadjusted) movement, with the plain request as the fallback.
+      // Adjusted movement is unusable in Chromium under a HUD that re-lays
+      // out every tick: it fires synthetic mousemove events carrying invented
+      // deltas and the view spins on its own. Raw input only ever reports the
+      // device. A page may opt out with window.__scene3dRawInput = false.
+      const wantRaw = sceneWindow.__scene3dRawInput !== false;
+      const request = canvas.requestPointerLock as ((opts?: { unadjustedMovement?: boolean }) => Promise<void> | void) | undefined;
+      const plain = () => {
+        rawInput = false;
+        try {
+          canvas.requestPointerLock();
+        } catch {
+          // Capture is a request, and the browser may refuse it.
+        }
+      };
+      if (!wantRaw) {
+        plain();
+        return;
+      }
+      try {
+        rawInput = true;
+        const result = request?.call(canvas, { unadjustedMovement: true });
+        if (result && typeof (result as Promise<void>).catch === 'function') (result as Promise<void>).catch(plain);
+      } catch {
+        plain();
+      }
+    };
     const swallowContextMenu = (e: Event) => e.preventDefault();
     if (enableMouseLook) {
       const initYaw = Math.atan2(lookAt.x - pos.x, lookAt.z - pos.z);
@@ -946,30 +988,7 @@ export function Scene3D({
         // With the pointer captured there is nothing to drag: the mouse itself
         // steers. A click while unlocked (re)takes the lock instead.
         if (enablePointerLock) {
-          if (!isLocked() && e.pointerType === 'mouse') {
-            // Raw (unadjusted) movement, with the plain request as the
-            // fallback. Adjusted movement is unusable here: when the page
-            // re-lays out under a locked pointer (a HUD updating every tick),
-            // Chromium fires synthetic mousemove events carrying large,
-            // invented deltas, and the view spins on its own. Raw input only
-            // ever reports the device.
-            const request = canvas.requestPointerLock as ((opts?: { unadjustedMovement?: boolean }) => Promise<void> | void) | undefined;
-            const plain = () => {
-              rawInput = false;
-              try {
-                canvas.requestPointerLock();
-              } catch {
-                // Capture is a request, and the browser may refuse it.
-              }
-            };
-            try {
-              rawInput = true;
-              const result = request?.call(canvas, { unadjustedMovement: true });
-              if (result && typeof (result as Promise<void>).catch === 'function') (result as Promise<void>).catch(plain);
-            } catch {
-              plain();
-            }
-          }
+          if (!isLocked() && e.pointerType === 'mouse') requestLock();
           if (isLocked() || e.pointerType === 'mouse') return;
         }
         e.preventDefault();
@@ -1011,12 +1030,40 @@ export function Scene3D({
       canvas.style.cursor = 'crosshair';
       plMouseMove = (e: MouseEvent) => {
         if (!isLocked()) return;
+        look.moves++;
+        look.lastDx = e.movementX;
+        look.lastDy = e.movementY;
         // Only the adjusted-movement fallback invents deltas (see above),
         // and only it needs them screened; raw input's large values are a
         // real flick of the wrist, coalesced into one event, and are kept.
-        if (!rawInput && (Math.abs(e.movementX) > 400 || Math.abs(e.movementY) > 400)) return;
+        if (!rawInput && (Math.abs(e.movementX) > 400 || Math.abs(e.movementY) > 400)) {
+          look.dropped++;
+          return;
+        }
         turnBy(e.movementX, e.movementY);
       };
+      // F8 shows what the mouse is delivering; F9 switches raw and adjusted
+      // input for the next lock. Both are for finding out why a mouse
+      // misbehaves on a machine that is not in front of the author.
+      plKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'F8') {
+          e.preventDefault();
+          if (debugEl) {
+            debugEl.remove();
+            debugEl = null;
+          } else {
+            debugEl = document.createElement('div');
+            debugEl.style.cssText =
+              'position:absolute;left:8px;bottom:8px;z-index:20;font:11px/1.5 ui-monospace,monospace;color:#fff;background:rgba(0,0,0,.72);padding:6px 9px;border-radius:6px;pointer-events:none;white-space:pre';
+            wrapperRef.current?.appendChild(debugEl);
+          }
+        } else if (e.key === 'F9') {
+          e.preventDefault();
+          sceneWindow.__scene3dRawInput = sceneWindow.__scene3dRawInput === false;
+          if (isLocked()) document.exitPointerLock();
+        }
+      };
+      document.addEventListener('keydown', plKeyDown);
       plLockChange = () => {
         const locked = isLocked();
         canvas.style.cursor = locked ? 'none' : 'crosshair';
@@ -1127,6 +1174,26 @@ export function Scene3D({
       // Clip mixers take real delta seconds, not the 60fps-normalised dtScale
       animationMap.forEach((entry) => entry.mixer.update(dt));
 
+      if (enablePointerLock) {
+        if (sceneWindow.__scene3dWantLock && !isLocked()) {
+          sceneWindow.__scene3dWantLock = false;
+          requestLock();
+        } else if (sceneWindow.__scene3dWantLock && isLocked()) {
+          sceneWindow.__scene3dWantLock = false;
+        }
+        if (debugEl) {
+          const now = performance.now();
+          if (now - look.since >= 1000) {
+            look.movesLastSecond = look.moves;
+            look.moves = 0;
+            look.since = now;
+          }
+          const mode = isLocked() ? (rawInput ? 'raw' : 'adjusted') : 'none';
+          debugEl.textContent =
+            `lock: ${mode}\nmoves/s: ${look.movesLastSecond}\nlast: ${look.lastDx}, ${look.lastDy}\ndropped: ${look.dropped}\nyaw: ${yawRef.current.toFixed(2)}  pitch: ${pitchRef.current.toFixed(2)}\nF9: ${sceneWindow.__scene3dRawInput === false ? 'adjusted' : 'raw'} next`;
+        }
+      }
+
       // Ease toward the last position the host gave, frame-rate independent.
       const smoothing = cameraSmoothingRef.current;
       if (smoothing > 0) {
@@ -1206,6 +1273,8 @@ export function Scene3D({
       }
       canvas.removeEventListener('contextmenu', swallowContextMenu);
       if (plMouseMove) document.removeEventListener('mousemove', plMouseMove);
+      if (plKeyDown) document.removeEventListener('keydown', plKeyDown);
+      if (debugEl) debugEl.remove();
       if (plLockChange) document.removeEventListener('pointerlockchange', plLockChange);
       if (plMouseDown) canvas.removeEventListener('mousedown', plMouseDown);
       if (enablePointerLock) {

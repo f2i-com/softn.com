@@ -117,7 +117,7 @@
     "name": "Blockscape",
     "description": "A first-person voxel sandbox: an island of blocks to mine, build on and save, with gravity, swimming, flight and a day-night cycle",
     "primary": "#5cae4a",
-    "size": 73982
+    "size": 74097
   },
   {
     "id": "dead-hours",
@@ -125,7 +125,7 @@
     "name": "Dead Hours",
     "description": "A first-person zombie shooter: hold a fenced yard at night against waves of the dead with a pistol and a shotgun",
     "primary": "#ff5a3c",
-    "size": 255668
+    "size": 255773
   },
   {
     "id": "twenty48",

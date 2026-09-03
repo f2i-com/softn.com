@@ -87,6 +87,7 @@ function _init() {
   window.__vxToggleFly = false
   window.__vxTouch = false
   window.__scene3dLocked = false
+  window.__scene3dWantLock = false
 
   let i = 0
   let bar = []
@@ -188,7 +189,8 @@ function newWorld() {
   dirty = true
   started = true
   paused = false
-  showToast("Welcome to a new island. Click to look around.")
+  window.__scene3dWantLock = true
+  showToast("Welcome to a new island.")
 }
 
 function continueWorld() {
@@ -217,6 +219,7 @@ function continueWorld() {
   updateCamera()
   started = true
   paused = false
+  window.__scene3dWantLock = true
   showToast("World restored.")
 }
 
@@ -281,6 +284,7 @@ function toggleHelp() {
 
 function resumeGame() {
   paused = false
+  window.__scene3dWantLock = true
 }
 
 // ---- Camera and lighting ------------------------------------------------
