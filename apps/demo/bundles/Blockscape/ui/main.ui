@@ -62,6 +62,8 @@
       antialias={true}
       shadows={false}
       pointerLock={true}
+      cameraSmoothing={0.4}
+      maxPixelRatio={1.25}
       pitchLimit={1.5}
       mouseLookSensitivity={0.0024}
       fog={sceneFog}

@@ -1759,6 +1759,8 @@ export const componentRegistry: ComponentMeta[] = [
       { name: 'mouseLookSensitivity', type: 'number', default: 0.003 },
       { name: 'pointerLock', type: 'boolean', default: false },
       { name: 'pitchLimit', type: 'number', default: 0.8 },
+      { name: 'cameraSmoothing', type: 'number', default: 0 },
+      { name: 'maxPixelRatio', type: 'number', default: 2 },
       { name: 'expandable', type: 'boolean', default: false },
       { name: 'className', type: 'string' },
     ],

@@ -1644,6 +1644,7 @@ export class SoftNScriptRuntime {
     this.externalFunctionValues = [];
     this.externalValuesGlobalIndex = -1;
     this.syncKeys.clear();
+    this.windowSyncSeen.clear();
     this.windowSyncActive = false;
 
     // Silence. A looping track has no reason to stop on its own, so closing
@@ -1811,6 +1812,9 @@ export class SoftNScriptRuntime {
    * Only syncs __ prefixed keys registered via registerSyncKey().
    * Short-circuits when no sync keys have values on the real window.
    */
+  /** What each synced window global held when it was last handed to the VM. */
+  private windowSyncSeen = new Map<string, unknown>();
+
   private syncWindowToVM(): void {
     if (this.windowGlobalIndex < 0 || !this.vmEngine) return;
     if (typeof window === 'undefined' || this.syncKeys.size === 0) return;
@@ -1838,6 +1842,9 @@ export class SoftNScriptRuntime {
       const value = realWin[key];
       if (value !== undefined && typeof value !== 'function') {
         updated[key] = value;
+        // Remembered so the write-back can tell a value the script changed
+        // from one it merely received.
+        this.windowSyncSeen.set(key, value);
         changed = true;
       }
     }
@@ -1864,9 +1871,14 @@ export class SoftNScriptRuntime {
 
     for (const key of this.syncKeys) {
       const value = vmWinObj[key];
-      if (value !== undefined) {
-        realWin[key] = value;
-      }
+      if (value === undefined) continue;
+      // A value the script did not touch is not written back. The browser
+      // may have moved it since the call began — a pointer-locked camera
+      // writes __scene3dYaw on every mouse move — and echoing the copy the
+      // VM was handed would throw that movement away.
+      if (this.windowSyncSeen.has(key) && Object.is(this.windowSyncSeen.get(key), value)) continue;
+      realWin[key] = value;
+      this.windowSyncSeen.set(key, value);
     }
   }
 
