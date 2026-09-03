@@ -106,6 +106,38 @@
   z-index: 5;
 }
 
+.pp-minimap {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  width: 168px;
+  padding: 8px;
+  z-index: 5;
+}
+
+.pp-map {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  background: #3f8a34;
+  background-image: radial-gradient(circle at 50% 50%, rgba(255,255,255,0.08), rgba(0,0,0,0.12));
+}
+
+.pp-map-zone {
+  position: absolute;
+  border-radius: 40%;
+}
+
+.pp-map-dot {
+  position: absolute;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 2px rgba(0,0,0,0.7);
+}
+
 @media (max-width: 860px) {
   .pp-header {
     padding: 6px 10px;
@@ -118,6 +150,9 @@
     justify-content: center;
   }
   .pp-graph-panel {
+    display: none;
+  }
+  .pp-minimap {
     display: none;
   }
 }
@@ -196,7 +231,9 @@
       camera={{ position: cameraPos, lookAt: cameraLookAt, fov: cameraFov }}
       shadows={true}
       toneMapping="aces"
-      background="#011b14"
+      toneMappingExposure={1.15}
+      sky="day"
+      fog={{ color: "#c6dcf0", near: 75, far: 190 }}
       orbitControls={cameraMode !== "follow" && cameraMode !== "cinematic"}
       @click={handleSceneClick}
     />
@@ -204,7 +241,7 @@
     <!-- Helper Tip Overlay -->
     <Box className="pp-card pp-tip">
       <Text size="xs" style={{ color: "#f8fafc", fontSize: "12px", lineHeight: "1.4" }}>
-        💡 <span style={{ color: "#34d399", fontWeight: 700 }}>70×70 Open Reserve</span> <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#38bdf8", fontWeight: 700 }}>Dual Needs:</span> Food + Water <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#fbbf24", fontWeight: 700 }}>Day {dayCount} ({season})</span> <span style={{ color: "#6ee7b7" }}>•</span> Click animal to inspect genetics!
+        💡 <span style={{ color: "#34d399", fontWeight: 700 }}>Pine ridge · Meadow · Crags · Woodland</span> <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#38bdf8", fontWeight: 700 }}>Dual Needs:</span> Food + Water <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#fbbf24", fontWeight: 700 }}>Day {dayCount} ({season})</span> <span style={{ color: "#6ee7b7" }}>•</span> Click animal to inspect genetics!
       </Text>
     </Box>
 
@@ -222,14 +259,40 @@
         <Text size="xs" style={{ color: "#fb923c", fontSize: "10px", fontWeight: 600 }}>● Apex ({foxCount})</Text>
       </Stack>
 
-      <!-- Visual Multi-Bar Sparkline -->
-      <Box style={{ width: "100%", height: 58, background: "rgba(0,0,0,0.45)", borderRadius: 4, position: "relative", overflow: "hidden", display: "flex", alignItems: "flex-end", gap: 3, padding: "3px 5px" }}>
-        #each (bar in sparkPreyBars)
-          <Box style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 1 }}>
-            <Box style={{ height: bar + "%", background: "#38bdf8", borderRadius: 1, minHeight: 2 }} />
+      <!-- Visual Multi-Bar Sparkline: flora, prey and apex side by side per sample -->
+      <Box style={{ width: "100%", height: 64, background: "rgba(0,0,0,0.45)", borderRadius: 4, position: "relative", overflow: "hidden", display: "flex", alignItems: "flex-end", gap: 3, padding: "3px 5px" }}>
+        #each (col in sparkCols)
+          <Box style={{ flex: 1, height: "100%", display: "flex", alignItems: "flex-end", gap: 1 }}>
+            <Box style={{ flex: 1, height: col.g + "%", background: "#34d399", borderRadius: 1, minHeight: 2, opacity: 0.85 }} />
+            <Box style={{ flex: 1, height: col.p + "%", background: "#38bdf8", borderRadius: 1, minHeight: 2 }} />
+            <Box style={{ flex: 1, height: col.f + "%", background: "#fb923c", borderRadius: 1, minHeight: 2 }} />
           </Box>
         #end
       </Box>
+    </Box>
+
+    <!-- Live Reserve Minimap: habitats as zones, animals as dots -->
+    <Box className="pp-card pp-minimap">
+      <Stack direction="horizontal" justify="between" align="center" style={{ marginBottom: 6 }}>
+        <Text size="xs" style={{ fontWeight: 700, color: "#f8fafc" }}>🗺 Reserve Map</Text>
+        <Text size="xs" style={{ color: "#6ee7b7", fontSize: "10px" }}>{rabbitCount + foxCount} tracked</Text>
+      </Stack>
+      <Box className="pp-map">
+        <Box className="pp-map-zone" style={{ left: "2%", top: "2%", width: "34%", height: "36%", background: "#2f5a26" }} />
+        <Box className="pp-map-zone" style={{ left: "64%", top: "62%", width: "34%", height: "36%", background: "#7a6a35" }} />
+        <Box className="pp-map-zone" style={{ left: "2%", top: "65%", width: "31%", height: "33%", background: "#6f7986" }} />
+        <Box className="pp-map-zone" style={{ left: "60%", top: "2%", width: "38%", height: "36%", background: "#6cbf46" }} />
+        <Box className="pp-map-zone" style={{ left: "40.6%", top: "35.6%", width: "24.6%", height: "24.6%", borderRadius: "50%", background: "#d9b06a" }} />
+        <Box className="pp-map-zone" style={{ left: "43.2%", top: "38.2%", width: "19.4%", height: "19.4%", borderRadius: "50%", background: "#38bdf8" }} />
+        #each (dot in mapDots)
+          <Box className="pp-map-dot" style={{ left: dot.l + "%", top: dot.t + "%", width: dot.s, height: dot.s, background: dot.c }} />
+        #end
+      </Box>
+      <Stack direction="horizontal" gap="xs" style={{ marginTop: 5, justifyContent: "center" }}>
+        <Text size="xs" style={{ color: "#f8fafc", fontSize: "10px" }}>● Prey</Text>
+        <Text size="xs" style={{ color: "#fb923c", fontSize: "10px" }}>● Fox</Text>
+        <Text size="xs" style={{ color: "#38bdf8", fontSize: "10px" }}>● Lake</Text>
+      </Stack>
     </Box>
 
     <!-- Entity Inspector Drawer -->

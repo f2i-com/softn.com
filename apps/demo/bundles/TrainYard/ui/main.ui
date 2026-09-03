@@ -160,7 +160,8 @@
       camera={{ position: cameraPos, lookAt: cameraLookAt, fov: cameraFov }}
       shadows={true}
       toneMapping="aces"
-      background={skyColor}
+      toneMappingExposure={1.15}
+      sky="day"
       orbitControls={cameraMode !== "cab"}
       @click={handleSceneClick}
     />

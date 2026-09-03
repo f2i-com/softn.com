@@ -12,7 +12,8 @@
       "logic/main.logic"
     ],
     "assets": [
-      "assets/icon.svg"
+      "assets/icon.svg",
+      "assets/sfx/whistle.wav"
     ]
   },
   "config": {

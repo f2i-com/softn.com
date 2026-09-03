@@ -148,7 +148,7 @@ function getRoadPoint(t) {
     rot = -Math.PI / 2 - u * Math.PI;
   }
 
-  return { x: x, y: 0.58, z: z, rot: rot };
+  return { x: x, y: 0.59, z: z, rot: rot };
 }
 
 // Particle smoke storage
@@ -238,8 +238,8 @@ function buildStaticScenery() {
     type: "box",
     width: 8.2,
     height: 5.2,
-    depth: 0.14,
-    position: { x: 0, y: 8.5, z: -17.14 },
+    depth: 0.08,
+    position: { x: 0, y: 8.5, z: -17.16 },
     color: "#0284c7"
   });
 
@@ -252,6 +252,8 @@ function buildStaticScenery() {
     depth: 17.8,
     position: { x: 0, y: 0.3, z: 0 },
     color: "#5c3a21",
+    texture: "wood",
+    textureRepeat: { x: 6, y: 4 },
     receiveShadow: true
   });
 
@@ -264,6 +266,8 @@ function buildStaticScenery() {
     depth: 0.4,
     position: { x: 0, y: 0.3, z: 9.1 },
     color: "#381c0d",
+    texture: "wood",
+    textureRepeat: { x: 8, y: 1 },
     roughness: 0.35
   });
   list.push({
@@ -310,7 +314,7 @@ function buildStaticScenery() {
       type: "cylinder",
       radius: 0.38,
       height: 4.1,
-      position: { x: legs[i].x, y: -1.8, z: legs[i].z },
+      position: { x: legs[i].x, y: -1.85, z: legs[i].z },
       color: "#2b1509",
       roughness: 0.45
     });
@@ -325,6 +329,8 @@ function buildStaticScenery() {
     depth: 17.8,
     position: { x: 0, y: 0.52, z: 0 },
     color: "#3f6212",
+    texture: "grass",
+    textureRepeat: { x: 12, y: 8 },
     receiveShadow: true,
     roughness: 0.95
   });
@@ -348,6 +354,7 @@ function buildStaticScenery() {
       position: { x: pt.x, y: pt.y - 0.035, z: pt.z },
       rotation: { x: 0, y: head, z: 0 },
       color: "#6b7280",
+      texture: "stone",
       receiveShadow: true,
       flatShading: true
     });
@@ -362,6 +369,7 @@ function buildStaticScenery() {
       position: { x: pt.x, y: pt.y - 0.005, z: pt.z },
       rotation: { x: 0, y: head, z: 0 },
       color: "#3e2723",
+      texture: "wood",
       receiveShadow: true
     });
 
@@ -378,9 +386,10 @@ function buildStaticScenery() {
         z: pt.z + sinH * 0.22
       },
       rotation: { x: 0, y: head, z: 0 },
-      color: "#e2e8f0",
-      metalness: 0.9,
-      roughness: 0.18
+      color: "#cbd5e1",
+      texture: "metal",
+      metalness: 0.8,
+      roughness: 0.25
     });
 
     // Right Steel Rail
@@ -396,27 +405,31 @@ function buildStaticScenery() {
         z: pt.z - sinH * 0.22
       },
       rotation: { x: 0, y: head, z: 0 },
-      color: "#e2e8f0",
-      metalness: 0.9,
-      roughness: 0.18
+      color: "#cbd5e1",
+      texture: "metal",
+      metalness: 0.8,
+      roughness: 0.25
     });
   }
 
-  // Masonry Stone Arch Viaduct (Piers sit strictly under the track roadbed)
-  let viaductPiers = [
-    { x: 3.2, z: -5.76, height: 0.58 },
-    { x: 5.5, z: -5.62, height: 0.78 },
-    { x: 7.6, z: -5.35, height: 0.65 }
-  ];
-  for (let v = 0; v < viaductPiers.length; v = v + 1) {
-    let vp = viaductPiers[v];
+  // Masonry Viaduct: a stone pier under every other tie of the elevated
+  // section, each one rising from the turf (y = 0.56) to just beneath the
+  // ballast so the climb is visibly carried rather than floating.
+  let DECK_TOP = 0.56;
+  for (let i = 0; i < NUM_TIES; i = i + 1) {
+    let pt = getTrackPoint(i / NUM_TIES);
+    let ballastBottom = pt.y - 0.065;
+    if (ballastBottom - DECK_TOP < 0.12 || i % 2 === 0) continue;
+    let head = getTrackHeading(i / NUM_TIES);
+    let pierH = ballastBottom - DECK_TOP + 0.02;
     list.push({
-      id: "viaduct-pier-" + v,
+      id: "viaduct-pier-" + i,
       type: "box",
-      width: 0.72,
-      height: vp.height,
-      depth: 0.72,
-      position: { x: vp.x, y: 0.52 + vp.height / 2, z: vp.z },
+      width: 0.5,
+      height: pierH,
+      depth: 0.62,
+      position: { x: pt.x, y: DECK_TOP - 0.02 + pierH / 2, z: pt.z },
+      rotation: { x: 0, y: head, z: 0 },
       color: "#78716c",
       flatShading: true,
       castShadow: true,
@@ -424,13 +437,15 @@ function buildStaticScenery() {
     });
   }
 
-  // Alpine Mountain Backdrop along Rear Table Edge (Positioned at z = -8.2, well behind track at z = -5.8)
+  // Alpine Mountain Backdrop along Rear Table Edge (bases stay inside the back
+  // fascia at z = -8.9 and clear the mainline, which runs no further back than
+  // z = -5.8 at x = 0 and curves forward towards the corners)
   list.push({
     id: "mountain-ridge-right",
     type: "cone",
-    radius: 2.5,
+    radius: 2.0,
     height: 4.8,
-    position: { x: 10.5, y: 2.8, z: -8.2 },
+    position: { x: 10.5, y: 2.9, z: -7.2 },
     color: "#57534e",
     flatShading: true,
     castShadow: true
@@ -441,7 +456,7 @@ function buildStaticScenery() {
     width: 12.0,
     height: 3.5,
     depth: 1.8,
-    position: { x: 0.0, y: 2.2, z: -8.2 },
+    position: { x: 0.0, y: 2.2, z: -8.0 },
     color: "#44403c",
     flatShading: true,
     castShadow: true
@@ -449,9 +464,9 @@ function buildStaticScenery() {
   list.push({
     id: "mountain-ridge-left",
     type: "cone",
-    radius: 2.5,
+    radius: 2.0,
     height: 4.5,
-    position: { x: -9.5, y: 2.6, z: -8.2 },
+    position: { x: -9.5, y: 2.75, z: -7.2 },
     color: "#57534e",
     flatShading: true,
     castShadow: true
@@ -473,7 +488,7 @@ function buildStaticScenery() {
       width: len,
       height: 0.05,
       depth: 0.8,
-      position: { x: midX, y: 0.54, z: yt.z },
+      position: { x: midX, y: 0.585, z: yt.z },
       color: "#57534e",
       receiveShadow: true
     });
@@ -483,7 +498,7 @@ function buildStaticScenery() {
       width: len,
       height: 0.04,
       depth: 0.035,
-      position: { x: midX, y: 0.58, z: yt.z - 0.22 },
+      position: { x: midX, y: 0.63, z: yt.z - 0.22 },
       color: "#cbd5e1",
       metalness: 0.85
     });
@@ -493,7 +508,7 @@ function buildStaticScenery() {
       width: len,
       height: 0.04,
       depth: 0.035,
-      position: { x: midX, y: 0.58, z: yt.z + 0.22 },
+      position: { x: midX, y: 0.63, z: yt.z + 0.22 },
       color: "#cbd5e1",
       metalness: 0.85
     });
@@ -503,7 +518,7 @@ function buildStaticScenery() {
       width: 0.4,
       height: 0.45,
       depth: 0.65,
-      position: { x: yt.x1 - 0.2, y: 0.75, z: yt.z },
+      position: { x: yt.x1 - 0.2, y: 0.78, z: yt.z },
       color: "#b91c1c",
       castShadow: true
     });
@@ -521,11 +536,20 @@ function buildStaticScenery() {
     castShadow: true
   });
   list.push({
+    id: "staged-tanker-frame",
+    type: "box",
+    width: 2.2,
+    height: 0.12,
+    depth: 0.7,
+    position: { x: -2.0, y: 0.71, z: 0.6 },
+    color: "#1e293b"
+  });
+  list.push({
     id: "staged-tanker",
     type: "capsule",
     radius: 0.38,
     height: 2.0,
-    position: { x: -2.0, y: 1.1, z: 0.6 },
+    position: { x: -2.0, y: 1.15, z: 0.6 },
     rotation: { x: 0, y: 0, z: Math.PI / 2 },
     color: "#cbd5e1",
     metalness: 0.85,
@@ -609,11 +633,13 @@ function buildStaticScenery() {
     color: "#1c1917"
   });
 
-  // 3-Stall Brick Roundhouse (Safely positioned at z = -3.2, facing turntable with > 0.71 clearance)
+  // 3-Stall Brick Roundhouse. The pit rim is at z = -3.0 and the bridge end
+  // sweeps out to z = -2.9, so every stall's front face stays behind z = -3.05;
+  // the rear corners stop short of the mainline ballast at z = -5.25.
   let roundhouseStalls = [
-    { x: -5.8, z: -3.1, rot: 0.25 },
-    { x: -4.5, z: -3.3, rot: 0.0 },
-    { x: -3.2, z: -3.1, rot: -0.25 }
+    { x: -5.8, z: -3.95, rot: 0.25 },
+    { x: -4.5, z: -4.05, rot: 0.0 },
+    { x: -3.2, z: -3.95, rot: -0.25 }
   ];
   for (let r = 0; r < 3; r = r + 1) {
     let st = roundhouseStalls[r];
@@ -622,7 +648,7 @@ function buildStaticScenery() {
       type: "box",
       width: 1.6,
       height: 1.8,
-      depth: 2.2,
+      depth: 1.9,
       position: { x: st.x, y: 1.45, z: st.z },
       rotation: { x: 0, y: st.rot, z: 0 },
       color: "#831843",
@@ -635,16 +661,61 @@ function buildStaticScenery() {
       height: 1.4,
       depth: 0.18,
       position: {
-        x: st.x,
+        x: st.x + Math.sin(st.rot) * 0.9,
         y: 1.25,
-        z: st.z + 1.05
+        z: st.z + Math.cos(st.rot) * 0.9
       },
       rotation: { x: 0, y: st.rot, z: 0 },
       color: "#0f172a"
     });
   }
 
-  // Wooden Water Tank Tower on Timber Trestle
+  // Wooden Water Tank Tower on Timber Trestle: four posts from the turf up to
+  // a plank platform at y = 1.5, with a brace ring, and the tank on top.
+  let trestlePosts = [
+    { x: -0.42, z: -0.42 }, { x: 0.42, z: -0.42 },
+    { x: -0.42, z: 0.42 }, { x: 0.42, z: 0.42 }
+  ];
+  for (let tp = 0; tp < trestlePosts.length; tp = tp + 1) {
+    list.push({
+      id: "water-tank-post-" + tp,
+      type: "box",
+      width: 0.14,
+      height: 1.0,
+      depth: 0.14,
+      position: { x: -7.2 + trestlePosts[tp].x, y: 1.05, z: -1.2 + trestlePosts[tp].z },
+      color: "#3f2a14",
+      castShadow: true
+    });
+  }
+  let braceRing = [
+    { x: 0, z: -0.42, w: 0.98, d: 0.06 },
+    { x: 0, z: 0.42, w: 0.98, d: 0.06 },
+    { x: -0.42, z: 0, w: 0.06, d: 0.98 },
+    { x: 0.42, z: 0, w: 0.06, d: 0.98 }
+  ];
+  for (let br = 0; br < braceRing.length; br = br + 1) {
+    list.push({
+      id: "water-tank-brace-" + br,
+      type: "box",
+      width: braceRing[br].w,
+      height: 0.06,
+      depth: braceRing[br].d,
+      position: { x: -7.2 + braceRing[br].x, y: 0.95, z: -1.2 + braceRing[br].z },
+      color: "#3f2a14"
+    });
+  }
+  list.push({
+    id: "water-tank-platform",
+    type: "box",
+    width: 1.5,
+    height: 0.1,
+    depth: 1.5,
+    position: { x: -7.2, y: 1.5, z: -1.2 },
+    color: "#5c3a21",
+    texture: "wood",
+    castShadow: true
+  });
   list.push({
     id: "water-tank-body",
     type: "cylinder",
@@ -668,13 +739,23 @@ function buildStaticScenery() {
     id: "harbor-water",
     type: "box",
     width: 4.8,
-    height: 0.08,
+    height: 0.03,
     depth: 3.8,
-    position: { x: 6.2, y: 0.42, z: 1.8 },
+    position: { x: 6.2, y: 0.57, z: 1.8 },
     color: "#0284c7",
     opacity: 0.85,
     roughness: 0.08,
     metalness: 0.35
+  });
+  list.push({
+    id: "harbor-quay-pad",
+    type: "box",
+    width: 1.6,
+    height: 0.06,
+    depth: 1.2,
+    position: { x: 4.5, y: 0.585, z: 0.6 },
+    color: "#a8a29e",
+    receiveShadow: true
   });
   list.push({
     id: "harbor-ship-hull",
@@ -701,7 +782,7 @@ function buildStaticScenery() {
     type: "cylinder",
     radius: 0.14,
     height: 0.55,
-    position: { x: 5.6, y: 1.45, z: 1.8 },
+    position: { x: 5.6, y: 1.26, z: 1.8 },
     color: "#fbbf24"
   });
 
@@ -712,7 +793,7 @@ function buildStaticScenery() {
       type: "capsule",
       radius: 0.5,
       height: 2.2,
-      position: { x: 5.2 + s * 1.2, y: 1.7, z: -1.2 },
+      position: { x: 5.2 + s * 1.2, y: 1.66, z: -1.2 },
       color: "#e2e8f0",
       metalness: 0.75,
       roughness: 0.25,
@@ -739,7 +820,7 @@ function buildStaticScenery() {
     width: 3.4,
     height: 1.5,
     depth: 0.75,
-    position: { x: -0.2, y: 1.35, z: 7.15 },
+    position: { x: -0.2, y: 1.31, z: 7.15 },
     color: "#991b1b",
     castShadow: true
   });
@@ -791,9 +872,9 @@ function buildStaticScenery() {
     id: "street-asphalt",
     type: "box",
     width: 10.2,
-    height: 0.02,
+    height: 0.03,
     depth: 0.96,
-    position: { x: 0, y: 0.54, z: 8.05 },
+    position: { x: 0, y: 0.575, z: 8.05 },
     color: "#334155",
     receiveShadow: true
   });
@@ -802,8 +883,8 @@ function buildStaticScenery() {
     id: "street-turn-e",
     type: "cylinder",
     radius: 0.48,
-    height: 0.02,
-    position: { x: 4.5, y: 0.54, z: 8.05 },
+    height: 0.03,
+    position: { x: 4.5, y: 0.575, z: 8.05 },
     color: "#334155"
   });
   // West turnaround loop pavement
@@ -811,8 +892,8 @@ function buildStaticScenery() {
     id: "street-turn-w",
     type: "cylinder",
     radius: 0.48,
-    height: 0.02,
-    position: { x: -4.5, y: 0.54, z: 8.05 },
+    height: 0.03,
+    position: { x: -4.5, y: 0.575, z: 8.05 },
     color: "#334155"
   });
   // Yellow Center Lane Divider Stripe
@@ -820,9 +901,9 @@ function buildStaticScenery() {
     id: "street-line",
     type: "box",
     width: 9.0,
-    height: 0.022,
+    height: 0.01,
     depth: 0.035,
-    position: { x: 0, y: 0.542, z: 8.05 },
+    position: { x: 0, y: 0.592, z: 8.05 },
     color: "#fbbf24"
   });
   // Rear Sidewalk in front of shops
@@ -830,9 +911,9 @@ function buildStaticScenery() {
     id: "sidewalk-rear",
     type: "box",
     width: 13.8,
-    height: 0.035,
+    height: 0.05,
     depth: 0.25,
-    position: { x: 0, y: 0.545, z: 7.55 },
+    position: { x: 0, y: 0.585, z: 7.55 },
     color: "#94a3b8"
   });
   // Front Sidewalk curb along front table edge
@@ -840,9 +921,9 @@ function buildStaticScenery() {
     id: "sidewalk-front",
     type: "box",
     width: 13.8,
-    height: 0.035,
+    height: 0.05,
     depth: 0.30,
-    position: { x: 0, y: 0.545, z: 8.58 },
+    position: { x: 0, y: 0.585, z: 8.58 },
     color: "#94a3b8"
   });
 
@@ -1636,7 +1717,7 @@ function buildDynamicObjects() {
   list.push({
     id: "harbor-crane",
     type: "group",
-    position: { x: 4.5, y: 0.65, z: 0.6 },
+    position: { x: 4.5, y: 0.615, z: 0.6 },
     rotation: { x: 0, y: craneAngle, z: 0 },
     children: [
       {
@@ -2199,6 +2280,7 @@ function toggleDirection() {
 function blowWhistle() {
   whistleActive = true;
   whistleTimer = 0.0;
+  softn.audio.play("assets/sfx/whistle.wav", { volume: 0.7 });
 }
 
 function rotateTurntableNext() {
