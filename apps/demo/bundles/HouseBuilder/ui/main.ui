@@ -1,0 +1,345 @@
+<logic src="../logic/main.logic" />
+
+<style>
+/* In normal flow, not absolutely positioned: the web runtime puts its consent
+   bar above the app when a capability is requested, and an inset-0 root would
+   sit on top of it and hide the Allow button. */
+.hb-root { position: relative; width: 100%; height: 100%; min-height: 560px; display: flex; flex-direction: column; background: #0f172a; color: #e2e8f0; overflow: hidden; user-select: none; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* The panels are dark whatever the site theme, so the components inside
+     them (Text, Select, Input, Button) read their colours from these. */
+  --color-text: #e2e8f0; --color-text-muted: #94a3b8; --color-surface: #1e293b; --color-surface-hover: #273449; --color-border: rgba(148, 163, 184, 0.22); --color-border-hover: rgba(148, 163, 184, 0.4); --color-background: #0f172a; }
+.hb-tool .hb-t, .hb-cat-item .hb-t { color: inherit; }
+.hb-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 12px; background: rgba(15, 23, 42, 0.98); border-bottom: 1px solid rgba(148, 163, 184, 0.18); flex-shrink: 0; flex-wrap: wrap; z-index: 10; }
+.hb-badge { width: 32px; height: 32px; border-radius: 9px; background: linear-gradient(135deg, #f59e0b, #b45309); display: flex; align-items: center; justify-content: center; font-size: 17px; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.35); flex-shrink: 0; }
+.hb-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hb-body { flex: 1; display: flex; min-height: 0; }
+.hb-side { width: 236px; flex-shrink: 0; background: rgba(15, 23, 42, 0.96); border-right: 1px solid rgba(148, 163, 184, 0.14); overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.hb-inspector { width: 240px; flex-shrink: 0; background: rgba(15, 23, 42, 0.96); border-left: 1px solid rgba(148, 163, 184, 0.14); overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.hb-viewport { flex: 1; position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #cfe3f5; }
+.hb-label { font-size: 10px; letter-spacing: 0.12em; color: #94a3b8; font-weight: 700; margin-bottom: 4px; }
+.hb-tools { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.hb-tool { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.16); background: rgba(30, 41, 59, 0.8); color: #e2e8f0; font-size: 12px; cursor: pointer; text-align: left; }
+.hb-tool[data-on="true"] { background: #f59e0b; color: #1c1917; border-color: #f59e0b; font-weight: 700; }
+.hb-cat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.hb-cat-item { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 7px 3px; border-radius: 8px; border: 1px solid rgba(148, 163, 184, 0.14); background: rgba(30, 41, 59, 0.8); color: #cbd5e1; font-size: 10px; cursor: pointer; line-height: 1.1; text-align: center; }
+.hb-cat-item[data-on="true"] { background: rgba(245, 158, 11, 0.25); border-color: #f59e0b; color: #fde68a; }
+.hb-cat-icon { font-size: 18px; }
+.hb-card { background: rgba(30, 41, 59, 0.75); border: 1px solid rgba(148, 163, 184, 0.14); border-radius: 10px; padding: 9px 10px; }
+.hb-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 3px 0; color: #cbd5e1; }
+.hb-kv b { color: #f8fafc; font-weight: 600; text-align: right; }
+.hb-swatches { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.hb-swatch { width: 22px; height: 22px; border-radius: 6px; border: 2px solid rgba(255,255,255,0.15); cursor: pointer; }
+.hb-swatch[data-on="true"] { border-color: #ffffff; }
+.hb-status { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 12px; background: rgba(15, 23, 42, 0.98); border-top: 1px solid rgba(148, 163, 184, 0.16); font-size: 12px; color: #cbd5e1; flex-shrink: 0; }
+.hb-ovl { position: absolute; pointer-events: none; z-index: 5; }
+.hb-zoom { top: 12px; right: 12px; display: flex; flex-direction: column; gap: 5px; pointer-events: auto; }
+.hb-hint { left: 12px; top: 12px; max-width: 460px; padding: 7px 12px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(148, 163, 184, 0.2); border-radius: 8px; font-size: 12px; color: #f8fafc; backdrop-filter: blur(6px); }
+.hb-compass { left: 12px; bottom: 12px; padding: 6px 10px; background: rgba(15, 23, 42, 0.75); border-radius: 8px; font-size: 11px; color: #cbd5e1; }
+.hb-dialog-wrap { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: rgba(2, 6, 23, 0.55); }
+.hb-dialog { width: min(720px, calc(100% - 40px)); max-height: calc(100% - 40px); overflow: auto; background: #0f172a; border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 14px; padding: 18px 20px; box-shadow: 0 30px 80px rgba(0,0,0,0.6); }
+.hb-mono { width: 100%; min-height: 260px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; background: #020617; color: #e2e8f0; border: 1px solid rgba(148,163,184,0.25); border-radius: 8px; padding: 8px; }
+.hb-slot { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 6px 8px; border-radius: 8px; background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(148, 163, 184, 0.14); font-size: 11px; }
+@media (max-width: 980px) { .hb-inspector { display: none; } }
+@media (max-width: 760px) { .hb-side { display: none; } .hb-hint { display: none; } }
+</style>
+
+<Box className="hb-root">
+  <Loop interval={33} running={true} @tick={houseStep} />
+
+  <!-- Header -->
+  <Box className="hb-header">
+    <Box className="hb-row">
+      <Box className="hb-badge">🏠</Box>
+      <Stack direction="vertical" gap="none">
+        <Heading level={5} style={{ margin: 0, color: "#f8fafc", fontSize: "14px", fontWeight: 700 }}>House Builder</Heading>
+        <Text size="xs" style={{ color: "#94a3b8", fontSize: "11px" }}>Draw a plan from above, furnish it, then walk through it</Text>
+      </Stack>
+    </Box>
+    <Box className="hb-row">
+      <Button size="xs" variant={viewMode === "plan" ? "primary" : "secondary"} @click={() => setView("plan")}>📐 Plan</Button>
+      <Button size="xs" variant={viewMode === "3d" ? "primary" : "secondary"} @click={() => setView("3d")}>🏡 3D</Button>
+      <Button size="xs" variant={viewMode === "walk" ? "primary" : "secondary"} @click={() => setView("walk")}>🚶 Walk</Button>
+      <Text size="xs" style={{ color: "#475569" }}>|</Text>
+      <Button size="xs" variant="secondary" disabled={!canUndo} @click={undo}>↶ Undo</Button>
+      <Button size="xs" variant="secondary" disabled={!canRedo} @click={redo}>↷ Redo</Button>
+      <Text size="xs" style={{ color: "#475569" }}>|</Text>
+      <Button size="xs" variant="secondary" @click={newHouse}>New</Button>
+      <Select size="sm" value={sampleKey} placeholder="Load a sample house…" @change={loadSampleKey} options={samples} style={{ width: 236 }} />
+      <Button size="xs" variant="secondary" @click={openImport}>Import</Button>
+      <Button size="xs" variant="secondary" @click={openExport}>Export</Button>
+    </Box>
+  </Box>
+
+  <Box className="hb-body">
+    <!-- Left: tools and catalogue -->
+    <Box className="hb-side">
+      <Box>
+        <Text className="hb-label">TOOLS</Text>
+        <Box className="hb-tools">
+          <Box className="hb-tool" data-on={tool === "select"} @click={() => setTool("select")}><Text>🖱</Text><Text className="hb-t">Select</Text></Box>
+          <Box className="hb-tool" data-on={tool === "wall"} @click={() => setTool("wall")}><Text>🧱</Text><Text className="hb-t">Wall</Text></Box>
+          <Box className="hb-tool" data-on={tool === "room"} @click={() => setTool("room")}><Text>▦</Text><Text className="hb-t">Room</Text></Box>
+          <Box className="hb-tool" data-on={tool === "door"} @click={() => setTool("door")}><Text>🚪</Text><Text className="hb-t">Door</Text></Box>
+          <Box className="hb-tool" data-on={tool === "window"} @click={() => setTool("window")}><Text>🪟</Text><Text className="hb-t">Window</Text></Box>
+          <Box className="hb-tool" data-on={tool === "erase"} @click={() => setTool("erase")}><Text>🗑</Text><Text className="hb-t">Erase</Text></Box>
+        </Box>
+      </Box>
+
+      <Box>
+        <Text className="hb-label">ROOM FLOOR</Text>
+        <Select size="sm" fullWidth={true} value={roomFloor} @change={setRoomFloor} options={[{ value: "wood", label: "Timber" }, { value: "tile", label: "Tiles" }, { value: "carpet", label: "Carpet" }, { value: "stone", label: "Stone" }, { value: "concrete", label: "Concrete" }]} />
+      </Box>
+
+      <Box>
+        <Text className="hb-label">FURNITURE & GARDEN</Text>
+        <Box className="hb-cat">
+          #each (c in catalogue)
+            <Box className="hb-cat-item" data-on={tool === "item" && itemKind === c.kind} title={c.label} @click={pickItem(c.kind)}>
+              <Text className="hb-cat-icon">{c.icon}</Text>
+              <Text className="hb-t">{c.label}</Text>
+            </Box>
+          #end
+        </Box>
+        <Stack direction="horizontal" gap="xs" style={{ marginTop: 6 }}>
+          <Button size="xs" variant="secondary" @click={rotatePreview}>⟳ Rotate (R)</Button>
+        </Stack>
+      </Box>
+
+      <Box>
+        <Text className="hb-label">HOUSE</Text>
+        <Stack direction="vertical" gap="xs">
+          <Select size="sm" fullWidth={true} label="Wall finish" value={wallStyle} @change={setWallStyle} options={[{ value: "plaster", label: "Rendered" }, { value: "brick", label: "Brick" }, { value: "timber", label: "Weatherboard" }, { value: "stone", label: "Stone" }]} />
+          <Select size="sm" fullWidth={true} label="Roof" value={roofStyle} @change={setRoofStyle} options={[{ value: "gable_x", label: "Gable, ridge east-west" }, { value: "gable_z", label: "Gable, ridge north-south" }, { value: "flat", label: "Flat" }, { value: "none", label: "None" }]} />
+          <Box>
+            <Text size="xs" style={{ color: "#94a3b8" }}>Roof colour</Text>
+            <Box className="hb-swatches">
+              <Box className="hb-swatch" data-on={roofColor === "#7f1d1d"} style={{ background: "#7f1d1d" }} @click={() => setRoofColor("#7f1d1d")} />
+              <Box className="hb-swatch" data-on={roofColor === "#374151"} style={{ background: "#374151" }} @click={() => setRoofColor("#374151")} />
+              <Box className="hb-swatch" data-on={roofColor === "#78350f"} style={{ background: "#78350f" }} @click={() => setRoofColor("#78350f")} />
+              <Box className="hb-swatch" data-on={roofColor === "#1e3a5f"} style={{ background: "#1e3a5f" }} @click={() => setRoofColor("#1e3a5f")} />
+              <Box className="hb-swatch" data-on={roofColor === "#4d7c0f"} style={{ background: "#4d7c0f" }} @click={() => setRoofColor("#4d7c0f")} />
+              <Box className="hb-swatch" data-on={roofColor === "#9ca3af"} style={{ background: "#9ca3af" }} @click={() => setRoofColor("#9ca3af")} />
+            </Box>
+          </Box>
+          <Input size="sm" type="number" label="Wall height (m)" min={2.2} max={4} step={0.1} value={wallHeightText} @change={setWallHeight} />
+          <Stack direction="horizontal" gap="xs">
+            <Button size="xs" variant={showRoof ? "primary" : "secondary"} @click={toggleRoof}>Roof in 3D</Button>
+            <Button size="xs" variant={showGrid ? "primary" : "secondary"} @click={toggleGrid}>Grid (G)</Button>
+          </Stack>
+        </Stack>
+      </Box>
+
+      <Box>
+        <Text className="hb-label">SAVE SLOTS</Text>
+        <Stack direction="vertical" gap="xs">
+          #each (s in saveSlots)
+            <Box className="hb-slot">
+              <Text style={{ color: s.used ? "#e2e8f0" : "#64748b" }}>{"Slot " + s.n + ": " + s.label}</Text>
+              <Stack direction="horizontal" gap="xs">
+                <Button size="xs" variant="secondary" @click={saveSlot(s.n)}>Save</Button>
+                <Button size="xs" variant="secondary" disabled={!s.used} @click={loadSlot(s.n)}>Load</Button>
+              </Stack>
+            </Box>
+          #end
+        </Stack>
+      </Box>
+    </Box>
+
+    <!-- Centre: the scene -->
+    <Box className="hb-viewport">
+      <!-- One Scene3D per view: orbit controls and pointer lock are fixed at
+           mount, so each mode gets its own instance with the right ones. -->
+      <Scene3D if={viewMode === "plan"}
+        fill={true}
+        objects={objects}
+        staticObjects={staticObjects}
+        lights={lights}
+        camera={{ position: cameraPos, lookAt: cameraLookAt, fov: cameraFov }}
+        shadows={true}
+        antialias={true}
+        toneMapping="aces"
+        toneMappingExposure={1.1}
+        sky="day"
+        fog={sceneFog}
+        maxPixelRatio={1.5}
+        @click={onSceneClick}
+        grid={showGrid ? { size: 48, divisions: 96, color: "#1e293b", centerColor: "#f59e0b", position: { x: 0, y: 0.012, z: 0 } } : false}
+        orbitControls={false}
+        @hover={onHover}
+        @pointerdown={onPointerDown}
+        @pointermove={onPointerMove}
+        @pointerup={onPointerUp}
+      />
+      <Scene3D if={viewMode === "3d"}
+        fill={true}
+        objects={objects}
+        staticObjects={staticObjects}
+        lights={lights}
+        camera={{ position: cameraPos, lookAt: cameraLookAt, fov: cameraFov }}
+        shadows={true}
+        antialias={true}
+        toneMapping="aces"
+        toneMappingExposure={1.1}
+        sky="day"
+        fog={sceneFog}
+        maxPixelRatio={1.5}
+        @click={onSceneClick}
+        orbitControls={true}
+      />
+      <Scene3D if={viewMode === "walk"}
+        fill={true}
+        objects={objects}
+        staticObjects={staticObjects}
+        lights={lights}
+        camera={{ position: cameraPos, lookAt: cameraLookAt, fov: cameraFov }}
+        shadows={true}
+        antialias={true}
+        toneMapping="aces"
+        toneMappingExposure={1.1}
+        sky="day"
+        fog={sceneFog}
+        maxPixelRatio={1.5}
+        @click={onSceneClick}
+        pointerLock={true}
+        crosshair={false}
+        pitchLimit={0.9}
+        mouseLookSensitivity={0.0022}
+        cameraSmoothing={0.35}
+      />
+      <Box className="hb-ovl hb-hint"><Text style={{ fontSize: "12px" }}>{hint}</Text></Box>
+      <Box if={viewMode === "plan"} className="hb-ovl hb-zoom">
+        <Button size="xs" variant="secondary" @click={zoomIn}>＋</Button>
+        <Button size="xs" variant="secondary" @click={zoomOut}>－</Button>
+        <Button size="xs" variant="secondary" title="Centre on the house (F)" @click={centreOnHouse}>⌖</Button>
+      </Box>
+      <Box if={viewMode === "plan"} className="hb-ovl hb-compass"><Text>N ↑ · wheel zooms · drag the lawn or use arrows to pan · 1–7 pick tools</Text></Box>
+
+      <!-- Dialogs -->
+      <Box if={dialog === "export"} className="hb-dialog-wrap">
+        <Box className="hb-dialog">
+          <Stack direction="horizontal" justify="between" align="center" style={{ marginBottom: 8 }}>
+            <Heading level={5} style={{ margin: 0, color: "#f8fafc" }}>Export plan</Heading>
+            <Button size="xs" variant="secondary" @click={closeDialog}>✕</Button>
+          </Stack>
+          <Stack direction="horizontal" gap="xs" style={{ marginBottom: 8, flexWrap: "wrap" }}>
+            <Button size="xs" variant={exportTab === "json" ? "primary" : "secondary"} @click={() => setExportTab("json")}>Plan JSON</Button>
+            <Button size="xs" variant={exportTab === "obj" ? "primary" : "secondary"} @click={() => setExportTab("obj")}>3D model (OBJ)</Button>
+            <Button size="xs" variant={exportTab === "mtl" ? "primary" : "secondary"} @click={() => setExportTab("mtl")}>Materials (MTL)</Button>
+            <Button size="xs" variant="secondary" @click={copyExport}>📋 Copy</Button>
+            <Button if={exportTab === "json"} size="xs" variant="primary" @click={() => downloadExport("json")}>⬇ Download house-plan.json</Button>
+            <Button if={exportTab !== "json"} size="xs" variant="primary" @click={downloadModel}>⬇ Download house.obj + house.mtl</Button>
+          </Stack>
+          <Text if={exportTab === "json"} size="xs" style={{ color: "#94a3b8", display: "block", marginBottom: 8 }}>The plan itself. Import pastes it back in, or pick it from a saved .json file.</Text>
+          <Text if={exportTab === "obj"} size="xs" style={{ color: "#94a3b8", display: "block", marginBottom: 8 }}>The whole house as real geometry, metres, Y up. Download gives you house.obj and house.mtl together; keep them in the same folder and open the OBJ in Blender, the three.js editor, SketchUp or any 3D viewer.</Text>
+          <Text if={exportTab === "mtl"} size="xs" style={{ color: "#94a3b8", display: "block", marginBottom: 8 }}>The colours for the OBJ, referenced by name from house.obj. Download saves both files.</Text>
+          <TextArea className="hb-mono" value={exportText} rows={16} readOnly={true} />
+        </Box>
+      </Box>
+      <Box if={dialog === "import"} className="hb-dialog-wrap">
+        <Box className="hb-dialog">
+          <Stack direction="horizontal" justify="between" align="center" style={{ marginBottom: 8 }}>
+            <Heading level={5} style={{ margin: 0, color: "#f8fafc" }}>Import plan</Heading>
+            <Button size="xs" variant="secondary" @click={closeDialog}>✕</Button>
+          </Stack>
+          <Text size="xs" style={{ color: "#94a3b8", display: "block", marginBottom: 8 }}>Paste plan JSON from an export, or pick a .json file.</Text>
+          <TextArea className="hb-mono" value={importText} rows={14} placeholder="{ &quot;walls&quot;: [ ... ] }" @change={setImportText} />
+          <Stack direction="horizontal" gap="xs" style={{ marginTop: 10 }}>
+            <Button size="sm" variant="primary" @click={doImport}>Import</Button>
+            <Button size="sm" variant="secondary" @click={importFromFile}>Choose file…</Button>
+          </Stack>
+        </Box>
+      </Box>
+    </Box>
+
+    <!-- Right: inspector -->
+    <Box className="hb-inspector">
+      <Box>
+        <Text className="hb-label">SELECTION</Text>
+        <Box if={selKind === ""} className="hb-card">
+          <Text size="xs" style={{ color: "#94a3b8" }}>Nothing selected. Use the Select tool and click a wall, room, door, window or item.</Text>
+        </Box>
+
+        <Box if={selKind === "wall"} className="hb-card">
+          <Text style={{ fontWeight: 700, color: "#f8fafc", display: "block", marginBottom: 4 }}>🧱 Wall</Text>
+          <Box className="hb-kv"><Text>Length</Text><b>{selInfo.length + " m"}</b></Box>
+          <Box className="hb-kv"><Text>Openings</Text><b>{selInfo.openings}</b></Box>
+          <Box className="hb-kv"><Text>From</Text><b>{selInfo.from}</b></Box>
+          <Box className="hb-kv"><Text>To</Text><b>{selInfo.to}</b></Box>
+          <Button size="xs" variant="danger" style={{ marginTop: 6 }} @click={deleteSelected}>Delete wall</Button>
+        </Box>
+
+        <Box if={selKind === "room"} className="hb-card">
+          <Text style={{ fontWeight: 700, color: "#f8fafc", display: "block", marginBottom: 4 }}>▦ Room</Text>
+          <Input size="sm" label="Name" value={selInfo.name} @change={setRoomName} />
+          <Box className="hb-kv"><Text>Size</Text><b>{selInfo.size}</b></Box>
+          <Box className="hb-kv"><Text>Area</Text><b>{selInfo.area + " m²"}</b></Box>
+          <Select size="sm" fullWidth={true} label="Floor" value={selInfo.floor} @change={setRoomFloor} options={[{ value: "wood", label: "Timber" }, { value: "tile", label: "Tiles" }, { value: "carpet", label: "Carpet" }, { value: "stone", label: "Stone" }, { value: "concrete", label: "Concrete" }]} />
+          <Button size="xs" variant="danger" style={{ marginTop: 6 }} @click={deleteSelected}>Delete room</Button>
+        </Box>
+
+        <Box if={selKind === "opening"} className="hb-card">
+          <Text style={{ fontWeight: 700, color: "#f8fafc", display: "block", marginBottom: 4 }}>{selInfo.kind === "door" ? "🚪 Door" : "🪟 Window"}</Text>
+          <Input size="sm" type="number" label="Width (m)" min={0.6} max={2.4} step={0.1} value={selInfo.widthText} @change={setOpeningWidth} />
+          <Button size="xs" variant="danger" style={{ marginTop: 6 }} @click={deleteSelected}>Remove</Button>
+        </Box>
+
+        <Box if={selKind === "item"} className="hb-card">
+          <Text style={{ fontWeight: 700, color: "#f8fafc", display: "block", marginBottom: 4 }}>{selInfo.icon + " " + selInfo.title}</Text>
+          <Box className="hb-kv"><Text>Footprint</Text><b>{selInfo.footprint}</b></Box>
+          <Box className="hb-kv"><Text>Position</Text><b>{selInfo.pos}</b></Box>
+          <Box className="hb-kv"><Text>Rotation</Text><b>{selInfo.rot + "°"}</b></Box>
+          <Text size="xs" style={{ color: "#94a3b8", display: "block", marginTop: 4 }}>Colour</Text>
+          <Box className="hb-swatches">
+            <Box className="hb-swatch" data-on={selInfo.color === "#3b82f6"} style={{ background: "#3b82f6" }} @click={() => setItemColor("#3b82f6")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#22c55e"} style={{ background: "#22c55e" }} @click={() => setItemColor("#22c55e")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#ef4444"} style={{ background: "#ef4444" }} @click={() => setItemColor("#ef4444")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#f59e0b"} style={{ background: "#f59e0b" }} @click={() => setItemColor("#f59e0b")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#a855f7"} style={{ background: "#a855f7" }} @click={() => setItemColor("#a855f7")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#475569"} style={{ background: "#475569" }} @click={() => setItemColor("#475569")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#b45309"} style={{ background: "#b45309" }} @click={() => setItemColor("#b45309")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#f8fafc"} style={{ background: "#f8fafc" }} @click={() => setItemColor("#f8fafc")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#8b5a2b"} style={{ background: "#8b5a2b" }} @click={() => setItemColor("#8b5a2b")} />
+            <Box className="hb-swatch" data-on={selInfo.color === "#0f172a"} style={{ background: "#0f172a" }} @click={() => setItemColor("#0f172a")} />
+          </Box>
+          <Stack direction="horizontal" gap="xs" style={{ marginTop: 8, flexWrap: "wrap" }}>
+            <Button size="xs" variant="secondary" @click={rotatePreview}>⟳ Rotate</Button>
+            <Button size="xs" variant="secondary" @click={duplicateSelected}>Duplicate</Button>
+            <Button size="xs" variant="danger" @click={deleteSelected}>Delete</Button>
+          </Stack>
+        </Box>
+      </Box>
+
+      <Box>
+        <Text className="hb-label">PLAN</Text>
+        <Box className="hb-card">
+          <Box className="hb-kv"><Text>Walls</Text><b>{wallCount}</b></Box>
+          <Box className="hb-kv"><Text>Rooms</Text><b>{roomCount}</b></Box>
+          <Box className="hb-kv"><Text>Items</Text><b>{itemCount}</b></Box>
+          <Box className="hb-kv"><Text>Floor area</Text><b>{floorArea + " m²"}</b></Box>
+        </Box>
+      </Box>
+
+      <Box>
+        <Text className="hb-label">KEYS</Text>
+        <Box className="hb-card">
+          <Box className="hb-kv"><Text>Tools</Text><b>1 – 7</b></Box>
+          <Box className="hb-kv"><Text>Zoom</Text><b>Wheel, + / −</b></Box>
+          <Box className="hb-kv"><Text>Pan</Text><b>Drag ground, arrows</b></Box>
+          <Box className="hb-kv"><Text>Straight wall</Text><b>Hold Shift</b></Box>
+          <Box className="hb-kv"><Text>Rotate item</Text><b>R</b></Box>
+          <Box className="hb-kv"><Text>Nudge item</Text><b>Shift + arrows</b></Box>
+          <Box className="hb-kv"><Text>Delete</Text><b>Del</b></Box>
+          <Box className="hb-kv"><Text>Undo / Redo</Text><b>Ctrl Z / Y</b></Box>
+          <Box className="hb-kv"><Text>Centre</Text><b>F</b></Box>
+          <Box className="hb-kv"><Text>Cancel</Text><b>Esc</b></Box>
+        </Box>
+      </Box>
+    </Box>
+  </Box>
+
+  <!-- Status bar -->
+  <Box className="hb-status">
+    <Text>{statusText}</Text>
+    <Text style={{ color: "#94a3b8" }}>{coordText}</Text>
+  </Box>
+</Box>

@@ -158,5 +158,13 @@
     "description": "An interactive 3D ecosystem diorama: watch foxes hunt rabbits, rabbits graze on grass, and population dynamics balance in real time",
     "primary": "#10b981",
     "size": 87274
+  },
+  {
+    "id": "house-builder",
+    "file": "HouseBuilder.softn",
+    "name": "House Builder",
+    "description": "Draw a house from above and see it in 3D: walls, doors, windows, room floors, a roof, furniture and garden, then walk through it in first person",
+    "primary": "#f59e0b",
+    "size": 110487
   }
 ]
