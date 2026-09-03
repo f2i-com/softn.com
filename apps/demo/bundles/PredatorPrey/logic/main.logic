@@ -596,7 +596,7 @@ function updateEcosystem(delta) {
       let dx = rab.x - nearestFox.x;
       let dz = rab.z - nearestFox.z;
       let len = Math.hypot(dx, dz) || 1;
-      let sprintSpeed = 0.155 * rab.traits.speed;
+      let sprintSpeed = 0.138 * rab.traits.speed;
       rab.vx = (dx / len) * sprintSpeed;
       rab.vz = (dz / len) * sprintSpeed;
       let targetRot = Math.atan2(rab.vx, rab.vz);
@@ -701,8 +701,8 @@ function updateEcosystem(delta) {
     }
 
     // Reproduction with Genetic Mutation
-    if (rab.energy > 46 && rab.hydration > 25 && rab.age > 90 && rabbits.length < 95) {
-      rab.energy = rab.energy - 20;
+    if (rab.energy > 44 && rab.hydration > 25 && rab.age > 90 && rabbits.length < 65) {
+      rab.energy = rab.energy - 18;
       rab.offspringCount = rab.offspringCount + 1;
       totalPreyBorn = totalPreyBorn + 1;
       spawnPuff(rab.x, rab.y + 0.4, rab.z, "#f43f5e", 8);
@@ -752,6 +752,12 @@ function updateEcosystem(delta) {
   }
   rabbits = survivingRabbits;
 
+  // Ecological Resilience: Natural underground warren emergence prevents extinction
+  if (rabbits.length < 14 && simTick % 45 === 0) {
+    addRabbit();
+    spawnPuff(0, 1.2, 0, "#f8fafc", 6);
+  }
+
   // 3. Foxes (Predators) AI, Stalking, Chasing & Hydration
   let survivingFoxes = [];
   let newFoxes = [];
@@ -799,12 +805,13 @@ function updateEcosystem(delta) {
 
       // Search for prey with Genetic Sight Trait
       let nearestRab = null;
-      let minRabDist = 12.0 * fox.traits.sight;
+      let minRabDist = 18.5 * fox.traits.sight;
       for (let r = 0; r < rabbits.length; r = r + 1) {
         let rab = rabbits[r];
         if (!eatenRabbitIds[rab.id]) {
           let inCover = hasForestCover(rab.x, rab.z);
-          let effectiveVision = inCover ? 5.5 * fox.traits.sight : minRabDist;
+          // Low-population refuge rule: guarantees breeding pool in forest is safe
+          let effectiveVision = inCover ? (rabbits.length < 18 ? 0 : 6.0 * fox.traits.sight) : minRabDist;
           let d = dist(fox.x, fox.z, rab.x, rab.z);
           if (d < effectiveVision) {
             minRabDist = d;
@@ -818,7 +825,7 @@ function updateEcosystem(delta) {
         let dz = nearestRab.z - fox.z;
         let len = Math.hypot(dx, dz) || 1;
 
-        if (len < 0.78) {
+        if (len < 0.90) {
           // CATCH PREY: Pounce!
           eatenRabbitIds[nearestRab.id] = true;
           fox.energy = Math.min(fox.maxEnergy, fox.energy + 34.0);
@@ -829,11 +836,11 @@ function updateEcosystem(delta) {
           spawnPuff(nearestRab.x, nearestRab.y + 0.3, nearestRab.z, "#fb923c", 10);
           fox.vx = 0;
           fox.vz = 0;
-        } else if (len < 5.2) {
-          // CHASING: Full sprint
+        } else if (len < 6.0) {
+          // CHASING: Full burst sprint (Faster than prey)
           fox.state = "Chasing";
           fox.targetId = nearestRab.id;
-          let sprintSpeed = 0.145 * fox.traits.speed;
+          let sprintSpeed = 0.195 * fox.traits.speed;
           fox.vx = (dx / len) * sprintSpeed;
           fox.vz = (dz / len) * sprintSpeed;
           let targetRot = Math.atan2(fox.vx, fox.vz);
@@ -843,7 +850,7 @@ function updateEcosystem(delta) {
           // STALKING: Stealth crawl
           fox.state = "Stalking";
           fox.targetId = nearestRab.id;
-          let stalkSpeed = 0.068 * fox.traits.speed;
+          let stalkSpeed = 0.072 * fox.traits.speed;
           fox.vx = (dx / len) * stalkSpeed;
           fox.vz = (dz / len) * stalkSpeed;
           let targetRot = Math.atan2(fox.vx, fox.vz);
@@ -898,8 +905,8 @@ function updateEcosystem(delta) {
     }
 
     // Fox Reproduction with Genetic Mutation
-    if (fox.energy > 65 && fox.hydration > 25 && fox.age > 160 && foxes.length < 32) {
-      fox.energy = fox.energy - 32;
+    if (fox.energy > 52 && fox.hydration > 25 && fox.age > 140 && foxes.length < 16 && rabbits.length > 25) {
+      fox.energy = fox.energy - 25;
       fox.offspringCount = fox.offspringCount + 1;
       totalPredBorn = totalPredBorn + 1;
       spawnPuff(fox.x, fox.y + 0.4, fox.z, "#f97316", 8);
@@ -955,6 +962,12 @@ function updateEcosystem(delta) {
     survivingFoxes.push(newFoxes[n]);
   }
   foxes = survivingFoxes;
+
+  // Natural apex predator territory balance
+  if (foxes.length < 4 && simTick % 120 === 0 && rabbits.length > 25) {
+    addFox();
+    spawnPuff(0, 1.2, 0, "#ea580c", 6);
+  }
 
   // Update Stats
   updateStats();
