@@ -1,0 +1,528 @@
+// Blockscape — the world: a 64×64×40 voxel grid in one Uint8Array, generated
+// from value noise, meshed per 16×16 chunk into a handful of `instanced`
+// Scene3D batches (one draw call each), with a DDA raycast for aiming, an
+// AABB sweep for the player, and a run-length save.
+//
+// Typed arrays never cross the scripting boundary (the state sync skips them),
+// so the grid is free to be as large as it likes. What crosses is the flat
+// instance array of every exposed block, per chunk, and only when that chunk
+// changes.
+
+let WX = 64
+let WZ = 64
+let WY = 40
+let CH = 16
+let CNX = 4
+let CNZ = 4
+let SEA = 15
+
+// Block ids. Air is 0; water is the only non-solid non-air block.
+let B_AIR = 0
+let B_GRASS = 1
+let B_DIRT = 2
+let B_STONE = 3
+let B_SAND = 4
+let B_WATER = 5
+let B_WOOD = 6
+let B_LEAVES = 7
+let B_PLANKS = 8
+let B_BRICK = 9
+let B_GLASS = 10
+let B_GLOW = 11
+let B_SNOW = 12
+let B_COBBLE = 13
+let B_TYPES = 14
+
+let BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Sand", "Water", "Oak log", "Leaves", "Planks", "Brick", "Glass", "Glowstone", "Snow", "Cobblestone"]
+
+// Three shades a type, so a field of one block is not one flat colour.
+// Index = type * 3 + variant. The cube of a grass block is dirt; its top is a
+// separate green slab batch.
+let PALETTE = [
+  "#000000", "#000000", "#000000",
+  "#7b5433", "#74502f", "#805838",
+  "#7b5433", "#74502f", "#805838",
+  "#8b9096", "#848a91", "#93989e",
+  "#e0d4a6", "#d9cd9d", "#e6dbb0",
+  "#3b7fe0", "#3b7fe0", "#3b7fe0",
+  "#6e4b2a", "#664526", "#75512e",
+  "#3f8f3a", "#3a8535", "#469a40",
+  "#b58c58", "#ad8552", "#bd935e",
+  "#a8503b", "#a04a36", "#b05740",
+  "#c8e6ff", "#c8e6ff", "#c8e6ff",
+  "#ffe08a", "#ffe08a", "#ffe08a",
+  "#f1f5f8", "#eaeff3", "#f7fafc",
+  "#6f7479", "#686d72", "#767b80"
+]
+let GRASS_TOP = ["#5cae4a", "#55a344", "#63b850"]
+
+// Every column's blocks sit at [x][z][y] with y fastest, so a column is one
+// contiguous run: terrain fill and the save are both sequential.
+let cells = new Uint8Array(WX * WZ * WY)
+let SOLID = new Uint8Array(B_TYPES)
+let OPAQUE = new Uint8Array(B_TYPES)
+let worldSeed = 1234
+let chunkObjs = []
+let chunkDirty = []
+let staticObjects = []
+let worldReady = false
+
+function cellIndex(x, y, z) {
+  return (x * WZ + z) * WY + y
+}
+
+function inWorld(x, y, z) {
+  return x >= 0 && x < WX && z >= 0 && z < WZ && y >= 0 && y < WY
+}
+
+function blockAt(x, y, z) {
+  if (!inWorld(x, y, z)) { return B_AIR }
+  return cells[(x * WZ + z) * WY + y]
+}
+
+function isSolidAt(x, y, z) {
+  if (!inWorld(x, y, z)) { return y < 0 }
+  return SOLID[cells[(x * WZ + z) * WY + y]] === 1
+}
+
+function setBlock(x, y, z, t) {
+  if (!inWorld(x, y, z)) { return }
+  cells[(x * WZ + z) * WY + y] = t
+  markDirtyAround(x, z)
+}
+
+function markDirtyAround(x, z) {
+  let cx = Math.floor(x / CH)
+  let cz = Math.floor(z / CH)
+  chunkDirty[cx * CNZ + cz] = true
+  // A block on a chunk edge changes which faces its neighbour shows.
+  if (x % CH === 0 && cx > 0) { chunkDirty[(cx - 1) * CNZ + cz] = true }
+  if (x % CH === CH - 1 && cx < CNX - 1) { chunkDirty[(cx + 1) * CNZ + cz] = true }
+  if (z % CH === 0 && cz > 0) { chunkDirty[cx * CNZ + cz - 1] = true }
+  if (z % CH === CH - 1 && cz < CNZ - 1) { chunkDirty[cx * CNZ + cz + 1] = true }
+}
+
+// ---- Noise ---------------------------------------------------------------
+
+function hash2(x, z) {
+  let s = Math.sin(x * 127.1 + z * 311.7 + worldSeed * 0.001) * 43758.5453
+  return s - Math.floor(s)
+}
+
+function hash3(x, y, z) {
+  let s = Math.sin(x * 127.1 + y * 269.5 + z * 311.7 + worldSeed * 0.013) * 43758.5453
+  return s - Math.floor(s)
+}
+
+function smooth(t) {
+  return t * t * (3 - 2 * t)
+}
+
+function noise2(x, z) {
+  let x0 = Math.floor(x)
+  let z0 = Math.floor(z)
+  let fx = smooth(x - x0)
+  let fz = smooth(z - z0)
+  let a = hash2(x0, z0)
+  let b = hash2(x0 + 1, z0)
+  let c = hash2(x0, z0 + 1)
+  let d = hash2(x0 + 1, z0 + 1)
+  let ab = a + (b - a) * fx
+  let cd = c + (d - c) * fx
+  return ab + (cd - ab) * fz
+}
+
+// ---- Generation ----------------------------------------------------------
+
+function columnHeight(x, z) {
+  let n = noise2(x / 23, z / 23) * 0.62 + noise2(x / 9.5, z / 9.5) * 0.28 + noise2(x / 4, z / 4) * 0.10
+  // Push the middle of the island up and the rim down into the sea.
+  let dx = (x - WX / 2) / (WX / 2)
+  let dz = (z - WZ / 2) / (WZ / 2)
+  let rim = 1 - Math.sqrt(dx * dx + dz * dz) * 0.55
+  let h = 9 + n * 19 * rim + rim * 4
+  return Math.floor(h)
+}
+
+function generateWorld(seed) {
+  worldSeed = seed
+  let i = 0
+  while (i < cells.length) { cells[i] = 0; i = i + 1 }
+  let x = 0
+  while (x < WX) {
+    let z = 0
+    while (z < WZ) {
+      let h = columnHeight(x, z)
+      if (h < 1) { h = 1 }
+      if (h > WY - 8) { h = WY - 8 }
+      let base = (x * WZ + z) * WY
+      let y = 0
+      while (y <= h) {
+        let t = B_STONE
+        if (y === h) {
+          if (h <= SEA + 1) { t = B_SAND }
+          else if (h >= 27) { t = B_SNOW }
+          else { t = B_GRASS }
+        } else if (y >= h - 3) {
+          t = h <= SEA + 1 ? B_SAND : B_DIRT
+        }
+        cells[base + y] = t
+        y = y + 1
+      }
+      // Fill the sea up to its level over anything below it.
+      y = h + 1
+      while (y <= SEA) {
+        cells[base + y] = B_WATER
+        y = y + 1
+      }
+      z = z + 1
+    }
+    x = x + 1
+  }
+  plantTrees()
+  let c = 0
+  while (c < CNX * CNZ) { chunkDirty[c] = true; chunkObjs[c] = []; c = c + 1 }
+  rebuildDirtyChunks()
+  worldReady = true
+}
+
+function plantTrees() {
+  let x = 3
+  while (x < WX - 3) {
+    let z = 3
+    while (z < WZ - 3) {
+      let h = surfaceHeight(x, z)
+      if (h > SEA + 2 && h < 26 && blockAt(x, h, z) === B_GRASS && hash2(x * 3.7, z * 5.1) > 0.965) {
+        placeTree(x, h + 1, z, 4 + Math.floor(hash2(z, x) * 3))
+      }
+      z = z + 1
+    }
+    x = x + 1
+  }
+}
+
+// The ground under a column, looking through trees: where a player can stand.
+function groundHeight(x, z) {
+  let y = WY - 1
+  while (y > 0) {
+    let t = blockAt(x, y, z)
+    if (t !== B_AIR && t !== B_WATER && t !== B_LEAVES && t !== B_WOOD) { return y }
+    y = y - 1
+  }
+  return 0
+}
+
+function surfaceHeight(x, z) {
+  let y = WY - 1
+  while (y > 0) {
+    let t = blockAt(x, y, z)
+    if (t !== B_AIR && t !== B_WATER) { return y }
+    y = y - 1
+  }
+  return 0
+}
+
+function placeTree(x, y, z, trunk) {
+  let i = 0
+  while (i < trunk) {
+    cells[cellIndex(x, y + i, z)] = B_WOOD
+    i = i + 1
+  }
+  let top = y + trunk
+  let dy = -2
+  while (dy <= 1) {
+    let r = dy <= -1 ? 2 : 1
+    let dx = -r
+    while (dx <= r) {
+      let dz = -r
+      while (dz <= r) {
+        let corner = Math.abs(dx) === r && Math.abs(dz) === r
+        if (!(corner && (dy === 1 || hash3(x + dx, top + dy, z + dz) > 0.5))) {
+          let cx = x + dx
+          let cy = top + dy
+          let cz = z + dz
+          if (inWorld(cx, cy, cz) && cells[cellIndex(cx, cy, cz)] === B_AIR) {
+            cells[cellIndex(cx, cy, cz)] = B_LEAVES
+          }
+        }
+        dz = dz + 1
+      }
+      dx = dx + 1
+    }
+    dy = dy + 1
+  }
+  cells[cellIndex(x, top + 1, z)] = B_LEAVES
+  if (inWorld(x, top + 2, z)) { cells[cellIndex(x, top + 2, z)] = B_LEAVES }
+}
+
+// ---- Meshing -------------------------------------------------------------
+
+// Every exposed block of a chunk becomes an instance in the batch for its
+// material. A block is exposed when any of its six neighbours is see-through;
+// for a see-through block (water, glass, leaves) the neighbour must also not
+// be the same kind, so a lake is a shell and not a stack of sheets.
+function buildChunk(cx, cz) {
+  let opaque = []
+  let tops = []
+  let water = []
+  let glass = []
+  let glow = []
+  let leaves = []
+  let x0 = cx * CH
+  let z0 = cz * CH
+  let strideX = WZ * WY
+  let strideZ = WY
+  let x = x0
+  while (x < x0 + CH) {
+    let z = z0
+    while (z < z0 + CH) {
+      let base = (x * WZ + z) * WY
+      let y = 1
+      while (y < WY) {
+        let idx = base + y
+        let t = cells[idx]
+        if (t !== 0) {
+          let vis = false
+          let n = 0
+          if (y < WY - 1) { n = cells[idx + 1] } else { n = 0 }
+          if (OPAQUE[n] === 0 && n !== t) { vis = true }
+          if (!vis) { n = cells[idx - 1]; if (OPAQUE[n] === 0 && n !== t) { vis = true } }
+          if (!vis) { if (x < WX - 1) { n = cells[idx + strideX] } else { n = 0 }; if (OPAQUE[n] === 0 && n !== t) { vis = true } }
+          if (!vis) { if (x > 0) { n = cells[idx - strideX] } else { n = 0 }; if (OPAQUE[n] === 0 && n !== t) { vis = true } }
+          if (!vis) { if (z < WZ - 1) { n = cells[idx + strideZ] } else { n = 0 }; if (OPAQUE[n] === 0 && n !== t) { vis = true } }
+          if (!vis) { if (z > 0) { n = cells[idx - strideZ] } else { n = 0 }; if (OPAQUE[n] === 0 && n !== t) { vis = true } }
+          if (vis) {
+            let v = ((x * 7 + y * 13 + z * 3) % 3 + 3) % 3
+            // Batches without a palette take three numbers an instance.
+            if (t === B_WATER) {
+              water.push(x, y, z)
+            } else if (t === B_GLASS) {
+              glass.push(x, y, z)
+            } else if (t === B_GLOW) {
+              glow.push(x, y, z)
+            } else if (t === B_LEAVES) {
+              leaves.push(x, y, z, t * 3 + v)
+            } else {
+              opaque.push(x, y, z, t * 3 + v)
+              if (t === B_GRASS && (y === WY - 1 || OPAQUE[cells[idx + 1]] === 0)) {
+                tops.push(x, y + 0.412, z, v)
+              }
+            }
+          }
+        }
+        y = y + 1
+      }
+      z = z + 1
+    }
+    x = x + 1
+  }
+  let id = "c" + cx + "_" + cz
+  let out = []
+  if (opaque.length > 0) {
+    out.push({ id: id + "o", type: "instanced", shape: "box", width: 1, height: 1, depth: 1, instances: opaque, palette: PALETTE, roughness: 0.92, metalness: 0 })
+  }
+  if (tops.length > 0) {
+    out.push({ id: id + "t", type: "instanced", shape: "box", width: 1.002, height: 0.18, depth: 1.002, instances: tops, palette: GRASS_TOP, roughness: 0.95, metalness: 0 })
+  }
+  if (leaves.length > 0) {
+    out.push({ id: id + "l", type: "instanced", shape: "box", width: 1, height: 1, depth: 1, instances: leaves, palette: PALETTE, roughness: 1, metalness: 0 })
+  }
+  if (water.length > 0) {
+    out.push({ id: id + "w", type: "instanced", shape: "box", width: 1, height: 0.9, depth: 1, instances: water, color: "#3b86e6", opacity: 0.62, roughness: 0.25, metalness: 0.15 })
+  }
+  if (glass.length > 0) {
+    out.push({ id: id + "g", type: "instanced", shape: "box", width: 1, height: 1, depth: 1, instances: glass, color: "#d6efff", opacity: 0.38, roughness: 0.05, metalness: 0.1 })
+  }
+  if (glow.length > 0) {
+    out.push({ id: id + "e", type: "instanced", shape: "box", width: 1, height: 1, depth: 1, instances: glow, color: "#ffe08a", emissive: "#ffcc4d", emissiveIntensity: 1.4, roughness: 0.6 })
+  }
+  return out
+}
+
+function rebuildDirtyChunks() {
+  let changed = false
+  let c = 0
+  while (c < CNX * CNZ) {
+    if (chunkDirty[c]) {
+      chunkObjs[c] = buildChunk(Math.floor(c / CNZ), c % CNZ)
+      chunkDirty[c] = false
+      changed = true
+    }
+    c = c + 1
+  }
+  if (changed) { publishStatic() }
+}
+
+function publishStatic() {
+  let out = []
+  let c = 0
+  while (c < chunkObjs.length) {
+    let list = chunkObjs[c]
+    let i = 0
+    while (i < list.length) { out.push(list[i]); i = i + 1 }
+    c = c + 1
+  }
+  // Bedrock: a dark plane under the world so a hole never opens onto sky.
+  out.push({ id: "bedrock", type: "plane", position: { x: WX / 2 - 0.5, y: 0.5, z: WZ / 2 - 0.5 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: WX, height: WZ, color: "#1c1f24", roughness: 1 })
+  // The sea continues past the island's edge to the fog.
+  out.push({ id: "ocean", type: "plane", position: { x: WX / 2 - 0.5, y: SEA + 0.44, z: WZ / 2 - 0.5 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 900, height: 900, color: "#2f6fd6", opacity: 0.75, roughness: 0.3, metalness: 0.2 })
+  staticObjects = out
+}
+
+// ---- Raycast (Amanatides & Woo) ------------------------------------------
+
+let hitOk = false
+let hitX = 0
+let hitY = 0
+let hitZ = 0
+let hitNX = 0
+let hitNY = 0
+let hitNZ = 0
+
+function rayCast(ox, oy, oz, dx, dy, dz, maxDist) {
+  hitOk = false
+  let x = Math.floor(ox)
+  let y = Math.floor(oy)
+  let z = Math.floor(oz)
+  let stepX = dx > 0 ? 1 : (dx < 0 ? -1 : 0)
+  let stepY = dy > 0 ? 1 : (dy < 0 ? -1 : 0)
+  let stepZ = dz > 0 ? 1 : (dz < 0 ? -1 : 0)
+  let tdx = dx !== 0 ? Math.abs(1 / dx) : 1e30
+  let tdy = dy !== 0 ? Math.abs(1 / dy) : 1e30
+  let tdz = dz !== 0 ? Math.abs(1 / dz) : 1e30
+  let tmx = dx > 0 ? (x + 1 - ox) * tdx : (dx < 0 ? (ox - x) * tdx : 1e30)
+  let tmy = dy > 0 ? (y + 1 - oy) * tdy : (dy < 0 ? (oy - y) * tdy : 1e30)
+  let tmz = dz > 0 ? (z + 1 - oz) * tdz : (dz < 0 ? (oz - z) * tdz : 1e30)
+  let nx = 0
+  let ny = 0
+  let nz = 0
+  let t = 0
+  let steps = 0
+  while (t <= maxDist && steps < 200) {
+    if (inWorld(x, y, z)) {
+      let b = cells[(x * WZ + z) * WY + y]
+      if (b !== B_AIR && b !== B_WATER) {
+        hitOk = true
+        hitX = x
+        hitY = y
+        hitZ = z
+        hitNX = nx
+        hitNY = ny
+        hitNZ = nz
+        return true
+      }
+    }
+    if (tmx < tmy && tmx < tmz) {
+      x = x + stepX
+      t = tmx
+      tmx = tmx + tdx
+      nx = -stepX; ny = 0; nz = 0
+    } else if (tmy < tmz) {
+      y = y + stepY
+      t = tmy
+      tmy = tmy + tdy
+      nx = 0; ny = -stepY; nz = 0
+    } else {
+      z = z + stepZ
+      t = tmz
+      tmz = tmz + tdz
+      nx = 0; ny = 0; nz = -stepZ
+    }
+    steps = steps + 1
+  }
+  return false
+}
+
+// ---- Player collision ----------------------------------------------------
+
+let P_HALF = 0.3
+let P_HEIGHT = 1.8
+let P_EYE = 1.62
+
+// Whether the player's box at (px, py, pz) — py its feet — overlaps a solid block.
+function boxBlocked(px, py, pz) {
+  let x0 = Math.floor(px - P_HALF)
+  let x1 = Math.floor(px + P_HALF)
+  let z0 = Math.floor(pz - P_HALF)
+  let z1 = Math.floor(pz + P_HALF)
+  let y0 = Math.floor(py)
+  let y1 = Math.floor(py + P_HEIGHT - 0.01)
+  let x = x0
+  while (x <= x1) {
+    let z = z0
+    while (z <= z1) {
+      let y = y0
+      while (y <= y1) {
+        if (isSolidAt(x, y, z)) { return true }
+        y = y + 1
+      }
+      z = z + 1
+    }
+    x = x + 1
+  }
+  return false
+}
+
+function blockTouchesPlayer(bx, by, bz, px, py, pz) {
+  return bx + 1 > px - P_HALF && bx < px + P_HALF &&
+    bz + 1 > pz - P_HALF && bz < pz + P_HALF &&
+    by + 1 > py && by < py + P_HEIGHT
+}
+
+function inWater(px, py, pz) {
+  return blockAt(Math.floor(px), Math.floor(py + 0.4), Math.floor(pz)) === B_WATER
+}
+
+function eyesInWater(px, py, pz) {
+  return blockAt(Math.floor(px), Math.floor(py + P_EYE), Math.floor(pz)) === B_WATER
+}
+
+// ---- Save ----------------------------------------------------------------
+
+// Runs of one block along y, written as "type:count" pairs. A generated
+// island is around 25k runs, well inside a localStorage entry.
+function encodeWorld() {
+  let parts = []
+  let i = 0
+  let n = cells.length
+  while (i < n) {
+    let t = cells[i]
+    let j = i + 1
+    while (j < n && cells[j] === t) { j = j + 1 }
+    parts.push(t + ":" + (j - i))
+    i = j
+  }
+  return parts.join(",")
+}
+
+function decodeWorld(text) {
+  let parts = String(text).split(",")
+  let i = 0
+  let pos = 0
+  while (i < parts.length && pos < cells.length) {
+    let pair = parts[i].split(":")
+    let t = parseInt(pair[0]) || 0
+    let count = parseInt(pair[1]) || 0
+    let k = 0
+    while (k < count && pos < cells.length) {
+      cells[pos] = t
+      pos = pos + 1
+      k = k + 1
+    }
+    i = i + 1
+  }
+  let c = 0
+  while (c < CNX * CNZ) { chunkDirty[c] = true; chunkObjs[c] = []; c = c + 1 }
+  rebuildDirtyChunks()
+  worldReady = pos === cells.length
+  return worldReady
+}
+
+function initBlockTables() {
+  let t = 0
+  while (t < B_TYPES) {
+    SOLID[t] = (t === B_AIR || t === B_WATER) ? 0 : 1
+    OPAQUE[t] = (t === B_AIR || t === B_WATER || t === B_GLASS || t === B_LEAVES) ? 0 : 1
+    t = t + 1
+  }
+}

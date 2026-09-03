@@ -12,7 +12,7 @@ final class Seed
 {
     private const CATEGORY = [
         'snake-game' => 'games', 'pocket' => 'games', 'maze-escape-3d' => 'games', 'texas-holdem' => 'games',
-        'promptly-unemployed' => 'games', 'signal-lost' => 'games', 'the-office' => 'games',
+        'promptly-unemployed' => 'games', 'the-office' => 'games', 'blockscape' => 'games', 'dead-hours' => 'games', 'twenty48' => 'games', 'blockfall' => 'games',
         'notes' => 'productivity', 'glamour-studio' => 'productivity',
         'device-kit' => 'tools', 'warble-wire' => 'tools',
         'ai-chat' => 'ai', 'ai-demo' => 'ai',
@@ -22,7 +22,8 @@ final class Seed
 
     private const TAGS = [
         'snake-game' => 'arcade,classic', 'pocket' => 'emulator,handheld,retro', 'maze-escape-3d' => '3d,maze',
-        'texas-holdem' => 'cards,poker', 'promptly-unemployed' => 'story,comedy', 'signal-lost' => 'puzzle,radio',
+        'texas-holdem' => 'cards,poker', 'promptly-unemployed' => 'story,comedy',
+        'blockscape' => '3d,sandbox,voxel', 'dead-hours' => '3d,shooter,zombies', 'twenty48' => 'puzzle,classic', 'blockfall' => 'arcade,puzzle,classic',
         'the-office' => 'simulation', 'notes' => 'notes,local-first', 'glamour-studio' => 'business,scheduling',
         'device-kit' => 'camera,qr,network', 'warble-wire' => 'audio,modem,dsp', 'ai-chat' => 'llm,chat',
         'ai-demo' => 'llm', 'gpu-demo' => 'webgpu,compute', 'three-demo' => '3d,webgl', 'showcase' => 'components',
@@ -56,7 +57,7 @@ final class Seed
                 if (!is_file($file)) continue;
                 $id = is_string($entry['id'] ?? null) ? $entry['id'] : Apps::slugify((string) ($entry['name'] ?? $entry['file']));
                 try {
-                    Apps::create($file, [
+                    $created = Apps::create($file, [
                         'slug' => $id,
                         'name' => is_string($entry['name'] ?? null) ? $entry['name'] : null,
                         'description' => is_string($entry['description'] ?? null) ? $entry['description'] : null,
@@ -65,6 +66,18 @@ final class Seed
                         'tags' => self::TAGS[$id] ?? '',
                         'primary' => is_string($entry['primary'] ?? null) ? $entry['primary'] : null,
                     ], 'seed');
+                    // A screenshot beside the bundle, taken by the build, is the
+                    // demo's picture: a card with the app on it, not an icon.
+                    $base = preg_replace('/\.softn$/', '', basename($entry['file']));
+                    foreach (['webp', 'png', 'jpg'] as $ext) {
+                        $shot = "$demos/thumbs/$base.$ext";
+                        if (is_file($shot)) {
+                            $bytes = (string) file_get_contents($shot);
+                            $mime = Images::sniff($bytes);
+                            if ($mime !== null) Apps::setThumbnail($created['app']['slug'], [$bytes, $mime]);
+                            break;
+                        }
+                    }
                 } catch (Throwable $e) {
                     error_log("softn-api: could not seed $file: " . $e->getMessage());
                 }

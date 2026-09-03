@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7fc8ff"/>
+      <stop offset="1" stop-color="#cfe9ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#sky)"/>
+  <!-- an isometric grass block -->
+  <g transform="translate(64 70)">
+    <polygon points="0,-34 34,-17 0,0 -34,-17" fill="#6cc45a"/>
+    <polygon points="-34,-17 0,0 0,38 -34,21" fill="#7b5433"/>
+    <polygon points="34,-17 0,0 0,38 34,21" fill="#5b3d25"/>
+    <polygon points="-34,-17 0,0 0,8 -34,-9" fill="#5cae4a"/>
+    <polygon points="34,-17 0,0 0,8 34,-9" fill="#4a9a3b"/>
+  </g>
+  <circle cx="98" cy="30" r="9" fill="#fff1b0"/>
+</svg>

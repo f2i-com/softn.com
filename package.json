@@ -26,6 +26,7 @@
     "dev:studio": "npm run dev -w @softn/studio",
     "dev:desktop": "npm run tauri dev -w @softn/loader",
     "bundle:demo": "npm run bundle -w @softn/demo",
+    "screenshot:demos": "node scripts/screenshot-demos.mjs",
     "test": "npm run test --workspaces --if-present",
     "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",
     "lint:errors": "eslint . --ext .ts,.tsx --report-unused-disable-directives",

@@ -1,0 +1,829 @@
+// Dead Hours — the game: waves of the dead come through the gates of a yard
+// at night, and you hold it with a pistol and a shotgun until you cannot.
+//
+// Loop: `gameStep` (never tick/update/animate/render, which the runtime may
+// drop). Shooting is a ray against each zombie's head sphere and body box,
+// occluded by the arena's blockers; the scene's own pointer-locked click is
+// only the trigger.
+
+let TICK_MS = 33
+let DT = 0.033
+let P_EYE = 1.62
+let P_R = 0.42
+let WALK = 5.2
+let SPRINT = 7.6
+
+// Synced to the UI.
+let objects = []
+let lights = []
+let cameraPos = { x: 0, y: 1.62, z: 0 }
+let cameraLookAt = { x: 0, y: 1.62, z: 5 }
+let sceneFog = { color: "#0b0f1a", near: 14, far: 72 }
+let skyColor = "#070a12"
+let started = false
+let gameOver = false
+let paused = false
+let showHelp = false
+let touchMode = false
+let hud = { hp: 100, ammo: 0, reserve: 0, weapon: "Pistol", wave: 0, kills: 0, score: 0, reloading: false, best: 0 }
+let waveBanner = ""
+let bannerTicks = 0
+let toast = ""
+let toastTicks = 0
+let hurtFlash = 0
+let hitMark = 0
+let torchOn = true
+let finalName = ""
+let boardRows = []
+let boardStatus = ""
+let scorePosted = false
+
+// Player and world state in the VM.
+let px = 0
+let pz = 4
+let vx = 0
+let vz = 0
+let yaw = Math.PI
+let pitch = 0
+let hp = 100
+let score = 0
+let kills = 0
+let wave = 0
+let waveTimer = 0
+let waveState = "between"     // between | active
+let toSpawn = 0
+let spawnTimer = 0
+let zombies = []
+let nextZid = 1
+let pickups = []
+let nextPid = 1
+let particles = []
+let rngSeed = 7
+let lastLocked = false
+let bobPhase = 0
+let flashTicks = 0
+let recoil = 0
+let hurtTicks = 0
+let attackFlash = 0
+
+// Weapons: fire rate and reload in ticks, damage per shot, pellets per shot.
+let weapons = [
+  { name: "Pistol", mag: 12, reserve: -1, dmg: 34, pellets: 1, spread: 0.012, rate: 7, reload: 36, sfx: "assets/sfx/pistol.wav" },
+  { name: "Shotgun", mag: 6, reserve: 18, dmg: 16, pellets: 8, spread: 0.075, rate: 24, reload: 60, sfx: "assets/sfx/shotgun.wav" }
+]
+let weaponIdx = 0
+let ammo = [12, 6]
+let reserve = [-1, 18]
+let fireCooldown = 0
+let reloadTicks = 0
+let triggerHeld = false
+
+let ZTYPES = [
+  { name: "walker", hp: 100, speed: 1.9, scale: 1.0, dmg: 10, body: "#5f7a5b", head: "#93a58a", cloth: "#3a3f4a", score: 100 },
+  { name: "runner", hp: 65, speed: 4.1, scale: 0.9, dmg: 7, body: "#7a5e5e", head: "#b08c8c", cloth: "#4a2f2f", score: 140 },
+  { name: "brute", hp: 320, speed: 1.35, scale: 1.45, dmg: 22, body: "#4d5a4a", head: "#7a8a76", cloth: "#2a2e33", score: 300 }
+]
+
+function myRand() {
+  rngSeed = (rngSeed * 48271) % 2147483647
+  return rngSeed / 2147483647
+}
+
+// ---- Init and input ------------------------------------------------------
+
+function isUiControl(e) {
+  let tag = e.targetTag || ""
+  return tag === "input" || tag === "textarea" || tag === "select" || tag === "button" || !!e.targetEditable
+}
+
+function _init() {
+  if (window.__dhCleanup) { window.__dhCleanup() }
+  rngSeed = (Date.now() % 100000) + 3
+  window.__dhKeys = { w: false, a: false, s: false, d: false, sprint: false, fire: false }
+  window.__dhFire = false
+  window.__dhReload = false
+  window.__dhSwap = -1
+  window.__dhTouch = false
+  window.__scene3dLocked = false
+
+  function onKeyDown(e) {
+    if (isUiControl(e)) { return }
+    let k = window.__dhKeys
+    let key = e.key || ""
+    if (key === "w" || key === "W" || key === "ArrowUp") { k.w = true; e.preventDefault() }
+    else if (key === "s" || key === "S" || key === "ArrowDown") { k.s = true; e.preventDefault() }
+    else if (key === "a" || key === "A" || key === "ArrowLeft") { k.a = true; e.preventDefault() }
+    else if (key === "d" || key === "D" || key === "ArrowRight") { k.d = true; e.preventDefault() }
+    else if (key === "Shift") { k.sprint = true }
+    else if (key === "r" || key === "R") { window.__dhReload = true }
+    else if (key === "1") { window.__dhSwap = 0 }
+    else if (key === "2") { window.__dhSwap = 1 }
+    else if (key === "q" || key === "Q") { window.__dhSwap = 2 }
+    else if (key === " ") { window.__dhFire = true; e.preventDefault() }
+    else if (key === "h" || key === "H") { window.__dhSwap = 3 }
+    else if (key === "f" || key === "F") { if (!e.repeat) { window.__dhSwap = 4 } }
+  }
+  function onKeyUp(e) {
+    let k = window.__dhKeys
+    let key = e.key || ""
+    if (key === "w" || key === "W" || key === "ArrowUp") { k.w = false }
+    else if (key === "s" || key === "S" || key === "ArrowDown") { k.s = false }
+    else if (key === "a" || key === "A" || key === "ArrowLeft") { k.a = false }
+    else if (key === "d" || key === "D" || key === "ArrowRight") { k.d = false }
+    else if (key === "Shift") { k.sprint = false }
+  }
+  function onBlur() {
+    window.__dhKeys = { w: false, a: false, s: false, d: false, sprint: false, fire: false }
+  }
+  function onTouch(e) { window.__dhTouch = true }
+  window.addEventListener("keydown", onKeyDown, true)
+  window.addEventListener("keyup", onKeyUp, true)
+  window.addEventListener("blur", onBlur)
+  window.addEventListener("touchstart", onTouch)
+  window.__dhCleanup = function () {
+    window.removeEventListener("keydown", onKeyDown, true)
+    window.removeEventListener("keyup", onKeyUp, true)
+    window.removeEventListener("blur", onBlur)
+    window.removeEventListener("touchstart", onTouch)
+  }
+
+  let best = 0
+  try { best = parseInt(localStorage.getItem("deadhours:best") || "0") || 0 } catch (err) { best = 0 }
+  try { finalName = localStorage.getItem("deadhours:name") || "" } catch (err) { finalName = "" }
+  hud.best = best
+  buildArena()
+  loadBoard()
+  titleAngle = 0
+  titleOrbit()
+  buildLights()
+  composeObjects()
+}
+
+// Before the game starts the camera drifts around the yard.
+let titleAngle = 0
+function titleOrbit() {
+  titleAngle = titleAngle + 0.0016
+  px = Math.cos(titleAngle) * 15
+  pz = Math.sin(titleAngle) * 15
+  yaw = Math.atan2(-px, -pz)
+  pitch = -0.1
+  window.__scene3dYaw = yaw
+  window.__scene3dPitch = pitch
+  updateCamera(2.6)
+}
+
+// ---- Game flow ------------------------------------------------------------
+
+function startGame() {
+  px = 0; pz = 4; vx = 0; vz = 0
+  yaw = Math.PI; pitch = 0
+  hp = 100; score = 0; kills = 0; wave = 0
+  zombies = []; pickups = []; particles = []
+  weaponIdx = 0
+  ammo = [12, 6]
+  reserve = [-1, 18]
+  fireCooldown = 0; reloadTicks = 0
+  waveState = "between"
+  waveTimer = Math.ceil(4000 / TICK_MS)
+  scorePosted = false
+  gameOver = false
+  paused = false
+  started = true
+  window.__scene3dYaw = yaw
+  window.__scene3dPitch = pitch
+  showBanner("Night falls. They are coming.")
+  updateCamera(0)
+}
+
+function backToTitle() {
+  started = false
+  gameOver = false
+  paused = false
+  zombies = []
+  pickups = []
+  particles = []
+  loadBoard()
+}
+
+function resumeGame() { paused = false }
+function toggleHelp() { showHelp = !showHelp }
+
+function showBanner(text) {
+  waveBanner = text
+  bannerTicks = Math.ceil(2800 / TICK_MS)
+}
+
+function showToast(text) {
+  toast = text
+  toastTicks = Math.ceil(2200 / TICK_MS)
+}
+
+function startWave() {
+  wave = wave + 1
+  waveState = "active"
+  toSpawn = 2 + wave * 2 + Math.floor(wave * wave * 0.35)
+  spawnTimer = 0
+  showBanner("Wave " + wave)
+  softn.audio.play("assets/sfx/wave.wav", { volume: 0.5 })
+}
+
+function endWave() {
+  waveState = "between"
+  waveTimer = Math.ceil(7000 / TICK_MS)
+  score = score + wave * 150
+  showBanner("Wave " + wave + " cleared  ·  +" + (wave * 150))
+  // Something to hold the next wave with.
+  if (myRand() < 0.7) { dropPickup(px + (myRand() - 0.5) * 6, pz + (myRand() - 0.5) * 6, "shells") }
+  if (hp < 70) { dropPickup(px + (myRand() - 0.5) * 6, pz + (myRand() - 0.5) * 6, "medkit") }
+}
+
+function die() {
+  gameOver = true
+  hud.hp = 0
+  if (score > hud.best) {
+    hud.best = score
+    try { localStorage.setItem("deadhours:best", String(score)) } catch (err) {}
+  }
+  softn.audio.play("assets/sfx/hurt.wav", { volume: 0.7 })
+}
+
+// ---- The master step ------------------------------------------------------
+
+function gameStep() {
+  if (!started) {
+    titleOrbit()
+    buildLights()
+    composeObjects()
+    return
+  }
+  let locked = !!window.__scene3dLocked
+  if (lastLocked && !locked && !touchMode && !gameOver) { paused = true }
+  lastLocked = locked
+  if (window.__dhTouch) { touchMode = true }
+  if (bannerTicks > 0) { bannerTicks = bannerTicks - 1; if (bannerTicks === 0) { waveBanner = "" } }
+  if (toastTicks > 0) { toastTicks = toastTicks - 1; if (toastTicks === 0) { toast = "" } }
+  if (window.__dhSwap === 3) { window.__dhSwap = -1; showHelp = !showHelp }
+  if (window.__dhSwap === 4) { window.__dhSwap = -1; torchOn = !torchOn; showToast(torchOn ? "Torch on" : "Torch off"); softn.audio.play("assets/sfx/click.wav", { volume: 0.3 }) }
+
+  if (!paused && !gameOver) {
+    if (window.__scene3dYaw !== undefined) { yaw = window.__scene3dYaw }
+    if (window.__scene3dPitch !== undefined) { pitch = window.__scene3dPitch }
+    handleWeaponInput()
+    movePlayer()
+    stepWaves()
+    stepZombies()
+    stepPickups()
+    checkPlayer()
+  }
+  stepParticles()
+  if (fireCooldown > 0) { fireCooldown = fireCooldown - 1 }
+  if (flashTicks > 0) { flashTicks = flashTicks - 1 }
+  if (recoil > 0) { recoil = recoil * 0.72; if (recoil < 0.004) { recoil = 0 } }
+  if (hurtTicks > 0) { hurtTicks = hurtTicks - 1 }
+  if (hitMark > 0) { hitMark = hitMark - 1 }
+  hurtFlash = hurtTicks > 0 ? Math.min(0.55, hurtTicks / 12 * 0.55) : (hp < 30 ? 0.18 + 0.1 * Math.sin(bobPhase * 0.4) : 0)
+  updateCamera(0)
+  buildLights()
+  composeObjects()
+  let w = weapons[weaponIdx]
+  hud = { hp: Math.max(0, Math.round(hp)), ammo: ammo[weaponIdx], reserve: reserve[weaponIdx], weapon: w.name, wave: wave, kills: kills, score: score, reloading: reloadTicks > 0, best: hud.best,
+    countdown: waveState === "between" ? Math.ceil(waveTimer * TICK_MS / 1000) : 0, left: zombies.length + toSpawn }
+}
+
+function updateCamera(extraY) {
+  let bob = 0
+  if ((vx * vx + vz * vz) > 1) { bob = Math.sin(bobPhase) * 0.035 }
+  cameraPos = { x: px, y: P_EYE + bob + extraY, z: pz }
+  let cp = Math.cos(pitch)
+  cameraLookAt = { x: px + Math.sin(yaw) * cp * 5, y: P_EYE + extraY + Math.sin(pitch) * 5, z: pz + Math.cos(yaw) * cp * 5 }
+}
+
+function movePlayer() {
+  let k = window.__dhKeys
+  if (!k) { return }
+  let fwd = (k.w ? 1 : 0) - (k.s ? 1 : 0)
+  let str = (k.d ? 1 : 0) - (k.a ? 1 : 0)
+  let len = Math.sqrt(fwd * fwd + str * str)
+  if (len > 0) { fwd = fwd / len; str = str / len }
+  let speed = k.sprint ? SPRINT : WALK
+  let wx = Math.sin(yaw) * fwd - Math.cos(yaw) * str
+  let wz = Math.cos(yaw) * fwd + Math.sin(yaw) * str
+  vx = vx + (wx * speed - vx) * 0.32
+  vz = vz + (wz * speed - vz) * 0.32
+  slide(px, pz, vx * DT, vz * DT, P_R)
+  px = moveX
+  pz = moveZ
+  // The yard is the whole world: past a gate there is only fog.
+  let lim = ARENA + 1.2
+  if (px > lim) { px = lim } else if (px < -lim) { px = -lim }
+  if (pz > lim) { pz = lim } else if (pz < -lim) { pz = -lim }
+  if ((vx * vx + vz * vz) > 1) { bobPhase = bobPhase + 0.3 } else { bobPhase = bobPhase + 0.05 }
+}
+
+// ---- Weapons --------------------------------------------------------------
+
+function handleWeaponInput() {
+  if (window.__dhSwap === 0 || window.__dhSwap === 1) { swapWeapon(window.__dhSwap); window.__dhSwap = -1 }
+  else if (window.__dhSwap === 2) { swapWeapon(weaponIdx === 0 ? 1 : 0); window.__dhSwap = -1 }
+  if (window.__dhReload) { window.__dhReload = false; startReload() }
+  if (reloadTicks > 0) {
+    reloadTicks = reloadTicks - 1
+    if (reloadTicks === 0) { finishReload() }
+    window.__dhFire = false
+    return
+  }
+  if (window.__dhFire) {
+    window.__dhFire = false
+    fire()
+  }
+}
+
+function swapWeapon(i) {
+  if (i === weaponIdx || reloadTicks > 0) { return }
+  weaponIdx = i
+  fireCooldown = 8
+  showToast(weapons[i].name)
+}
+
+function startReload() {
+  let w = weapons[weaponIdx]
+  if (reloadTicks > 0 || ammo[weaponIdx] >= w.mag) { return }
+  if (reserve[weaponIdx] === 0) { showToast("No shells left. Find a box."); return }
+  reloadTicks = w.reload
+  softn.audio.play("assets/sfx/reload.wav", { volume: 0.5 })
+}
+
+function finishReload() {
+  let w = weapons[weaponIdx]
+  if (reserve[weaponIdx] < 0) { ammo[weaponIdx] = w.mag; return }
+  let need = w.mag - ammo[weaponIdx]
+  let take = Math.min(need, reserve[weaponIdx])
+  ammo[weaponIdx] = ammo[weaponIdx] + take
+  reserve[weaponIdx] = reserve[weaponIdx] - take
+}
+
+function fire() {
+  if (fireCooldown > 0) { return }
+  let w = weapons[weaponIdx]
+  if (ammo[weaponIdx] <= 0) {
+    fireCooldown = 6
+    softn.audio.play("assets/sfx/click.wav", { volume: 0.4 })
+    if (reserve[weaponIdx] !== 0) { startReload() } else { showToast("Empty.") }
+    return
+  }
+  ammo[weaponIdx] = ammo[weaponIdx] - 1
+  fireCooldown = w.rate
+  flashTicks = 2
+  recoil = weaponIdx === 1 ? 0.16 : 0.07
+  softn.audio.play(w.sfx, { volume: weaponIdx === 1 ? 0.75 : 0.6 })
+  let cp = Math.cos(pitch)
+  let fx = Math.sin(yaw) * cp
+  let fy = Math.sin(pitch)
+  let fz = Math.cos(yaw) * cp
+  // A right vector and an up vector to spread the pellets around the aim.
+  let rx = -Math.cos(yaw)
+  let rz = Math.sin(yaw)
+  let ux = -Math.sin(yaw) * Math.sin(pitch)
+  let uy = Math.cos(pitch)
+  let uz = -Math.cos(yaw) * Math.sin(pitch)
+  let p = 0
+  let hitAny = false
+  while (p < w.pellets) {
+    let sx = (myRand() - 0.5) * 2 * w.spread
+    let sy = (myRand() - 0.5) * 2 * w.spread
+    let dx = fx + rx * sx + ux * sy
+    let dy = fy + uy * sy
+    let dz = fz + rz * sx + uz * sy
+    let l = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    if (shootRay(px, P_EYE, pz, dx / l, dy / l, dz / l, w.dmg)) { hitAny = true }
+    p = p + 1
+  }
+  if (hitAny) { hitMark = 5 }
+  if (ammo[weaponIdx] === 0 && reserve[weaponIdx] !== 0) { startReload() }
+}
+
+// One pellet: the nearest zombie part along the ray, unless a blocker is
+// closer. Returns whether it hit flesh.
+function shootRay(ox, oy, oz, dx, dy, dz, dmg) {
+  let wall = rayBlockerDist(ox, oy, oz, dx, dy, dz)
+  let best = wall
+  let bestZ = null
+  let headshot = false
+  let i = 0
+  while (i < zombies.length) {
+    let z = zombies[i]
+    if (z.state !== "dead") {
+      let s = z.scale
+      let th = raySphere(ox, oy, oz, dx, dy, dz, z.x, 1.62 * s, z.z, 0.26 * s)
+      if (th >= 0 && th < best) { best = th; bestZ = z; headshot = true }
+      let tb = rayAabb(ox, oy, oz, dx, dy, dz, z.x - 0.36 * s, 0, z.z - 0.36 * s, z.x + 0.36 * s, 1.42 * s, z.z + 0.36 * s)
+      if (tb >= 0 && tb < best) { best = tb; bestZ = z; headshot = false }
+    }
+    i = i + 1
+  }
+  if (bestZ === null) {
+    if (wall < 60) { spawnPuff(ox + dx * wall, oy + dy * wall, oz + dz * wall, "#6b6f78", 3) }
+    return false
+  }
+  let dealt = headshot ? dmg * 2.2 : dmg
+  bestZ.hp = bestZ.hp - dealt
+  bestZ.flash = 4
+  // A hit shoves the walker back a touch and slows a runner's charge.
+  bestZ.x = bestZ.x + dx * 0.12
+  bestZ.z = bestZ.z + dz * 0.12
+  spawnPuff(ox + dx * best, oy + dy * best, oz + dz * best, "#7a1b1b", headshot ? 7 : 4)
+  if (bestZ.hp <= 0) { killZombie(bestZ, headshot) }
+  else { softn.audio.play("assets/sfx/hit.wav", { volume: 0.35 }) }
+  return true
+}
+
+function killZombie(z, headshot) {
+  z.state = "dead"
+  z.deadTicks = 0
+  kills = kills + 1
+  let t = ZTYPES[z.type]
+  let gained = t.score + (headshot ? 50 : 0)
+  score = score + gained
+  if (headshot) { showToast("Headshot  +" + gained) }
+  softn.audio.play("assets/sfx/groan.wav", { volume: 0.45, rate: 0.8 + myRand() * 0.4 })
+  let roll = myRand()
+  if (roll < 0.22) { dropPickup(z.x, z.z, "shells") }
+  else if (roll < 0.30) { dropPickup(z.x, z.z, "medkit") }
+}
+
+// ---- The dead -------------------------------------------------------------
+
+function stepWaves() {
+  if (waveState === "between") {
+    waveTimer = waveTimer - 1
+    if (waveTimer <= 0) { startWave() }
+    return
+  }
+  if (toSpawn > 0) {
+    spawnTimer = spawnTimer - 1
+    if (spawnTimer <= 0) {
+      spawnZombie()
+      toSpawn = toSpawn - 1
+      spawnTimer = Math.max(6, Math.ceil((1400 - wave * 90) / TICK_MS))
+    }
+  } else {
+    let alive = 0
+    let i = 0
+    while (i < zombies.length) { if (zombies[i].state !== "dead") { alive = alive + 1 }; i = i + 1 }
+    if (alive === 0) { endWave() }
+  }
+}
+
+function spawnZombie() {
+  let gi = Math.floor(myRand() * gates.length)
+  let g = gates[gi]
+  let type = 0
+  let r = myRand()
+  if (wave >= 5 && r < 0.12 + wave * 0.01) { type = 2 }
+  else if (wave >= 2 && r < 0.35 + wave * 0.03) { type = 1 }
+  let t = ZTYPES[type]
+  let mult = 1 + (wave - 1) * 0.06
+  zombies.push({
+    id: nextZid, type: type, x: g.x + (myRand() - 0.5) * 2, z: g.z + (myRand() - 0.5) * 2,
+    hp: t.hp * mult, speed: t.speed * (0.9 + myRand() * 0.25), scale: t.scale * (0.92 + myRand() * 0.16),
+    dir: 0, phase: myRand() * 6.28, state: "walk", flash: 0, attackTicks: 0, deadTicks: 0, groan: Math.floor(myRand() * 200), gate: gi
+  })
+  nextZid = nextZid + 1
+}
+
+function stepZombies() {
+  let keep = []
+  let i = 0
+  while (i < zombies.length) {
+    let z = zombies[i]
+    if (z.state === "dead") {
+      z.deadTicks = z.deadTicks + 1
+      if (z.deadTicks < 90) { keep.push(z) }
+      i = i + 1
+      continue
+    }
+    if (z.flash > 0) { z.flash = z.flash - 1 }
+    let dx = px - z.x
+    let dz = pz - z.z
+    let dist = Math.sqrt(dx * dx + dz * dz)
+    // Outside the fence the only way in is the gate it came from: walk to
+    // the inside of that gate first, then hunt.
+    let outside = Math.abs(z.x) > ARENA - 0.6 || Math.abs(z.z) > ARENA - 0.6
+    let tx = dx
+    let tz = dz
+    if (outside) {
+      let g = gates[z.gate]
+      let gx = g.x === 0 ? 0 : (g.x > 0 ? ARENA - 2 : -(ARENA - 2))
+      let gz = g.z === 0 ? 0 : (g.z > 0 ? ARENA - 2 : -(ARENA - 2))
+      tx = gx - z.x
+      tz = gz - z.z
+      dist = Math.sqrt(tx * tx + tz * tz) + 10
+    }
+    z.dir = Math.atan2(tx, tz)
+    let t = ZTYPES[z.type]
+    let reach = 1.15 + 0.3 * z.scale
+    if (dist > reach) {
+      z.state = "walk"
+      let sp = z.speed
+      let tl = Math.sqrt(tx * tx + tz * tz)
+      let mx = tx / tl * sp
+      let mz = tz / tl * sp
+      // Keep the pack from stacking: push away from close neighbours. Not
+      // while queueing through a gate, where a push means the fence.
+      let j = 0
+      while (j < zombies.length && !outside) {
+        let o = zombies[j]
+        if (o !== z && o.state !== "dead") {
+          let ox = z.x - o.x
+          let oz = z.z - o.z
+          let d2 = ox * ox + oz * oz
+          if (d2 < 1.2 && d2 > 0.0001) {
+            let d = Math.sqrt(d2)
+            mx = mx + ox / d * (1.2 - d) * 2.2
+            mz = mz + oz / d * (1.2 - d) * 2.2
+          }
+        }
+        j = j + 1
+      }
+      let before = z.x
+      slide(z.x, z.z, mx * DT, mz * DT, 0.36 * z.scale)
+      // Stuck against something: sidestep around it.
+      if (Math.abs(moveX - z.x) + Math.abs(moveZ - z.z) < 0.004) {
+        let side = (z.id % 2 === 0) ? 1 : -1
+        slide(z.x, z.z, -mz / sp * side * sp * DT, mx / sp * side * sp * DT, 0.36 * z.scale)
+      }
+      z.x = moveX
+      z.z = moveZ
+      z.phase = z.phase + sp * 0.5 * DT * 6
+      z.groan = z.groan - 1
+      if (z.groan <= 0) {
+        z.groan = 150 + Math.floor(myRand() * 300)
+        if (dist < 16) { softn.audio.play("assets/sfx/groan.wav", { volume: Math.max(0.08, 0.35 - dist * 0.015), rate: 0.7 + myRand() * 0.5 }) }
+      }
+    } else {
+      z.state = "attack"
+      z.attackTicks = z.attackTicks + 1
+      if (z.attackTicks >= 40) {
+        z.attackTicks = 0
+        hurtPlayer(t.dmg)
+      }
+    }
+    keep.push(z)
+    i = i + 1
+  }
+  zombies = keep
+}
+
+function hurtPlayer(dmg) {
+  if (gameOver || hurtTicks > 6) { return }
+  hp = hp - dmg
+  hurtTicks = 12
+  softn.audio.play("assets/sfx/hurt.wav", { volume: 0.5 })
+  if (hp <= 0) { hp = 0; die() }
+}
+
+function checkPlayer() {
+  // Standing in a gate leaves you outside the fence with them; nudge back.
+}
+
+// ---- Pickups ----------------------------------------------------------------
+
+function dropPickup(x, z, kind) {
+  let lim = ARENA - 1
+  if (x > lim) { x = lim } else if (x < -lim) { x = -lim }
+  if (z > lim) { z = lim } else if (z < -lim) { z = -lim }
+  pickups.push({ id: nextPid, x: x, z: z, kind: kind, age: 0 })
+  nextPid = nextPid + 1
+}
+
+function stepPickups() {
+  let keep = []
+  let i = 0
+  while (i < pickups.length) {
+    let p = pickups[i]
+    p.age = p.age + 1
+    let dx = px - p.x
+    let dz = pz - p.z
+    if (dx * dx + dz * dz < 1.1) {
+      if (p.kind === "shells") {
+        reserve[1] = reserve[1] + 8
+        showToast("+8 shells")
+      } else {
+        hp = Math.min(100, hp + 40)
+        showToast("Medkit  +40")
+      }
+      softn.audio.play("assets/sfx/pickup.wav", { volume: 0.5 })
+    } else if (p.age < 1500) {
+      keep.push(p)
+    }
+    i = i + 1
+  }
+  pickups = keep
+}
+
+// ---- Particles ---------------------------------------------------------------
+
+function spawnPuff(x, y, z, color, n) {
+  let i = 0
+  while (i < n) {
+    particles.push({ x: x, y: y, z: z, vx: (myRand() - 0.5) * 3, vy: 1 + myRand() * 2.5, vz: (myRand() - 0.5) * 3, life: 10 + Math.floor(myRand() * 8), color: color, size: 0.06 + myRand() * 0.08 })
+    i = i + 1
+  }
+}
+
+function stepParticles() {
+  if (particles.length === 0) { return }
+  let keep = []
+  let i = 0
+  while (i < particles.length) {
+    let p = particles[i]
+    p.vy = p.vy - 14 * DT
+    p.x = p.x + p.vx * DT
+    p.y = p.y + p.vy * DT
+    p.z = p.z + p.vz * DT
+    if (p.y < 0.03) { p.y = 0.03; p.vy = 0; p.vx = 0; p.vz = 0 }
+    p.life = p.life - 1
+    if (p.life > 0) { keep.push(p) }
+    i = i + 1
+  }
+  particles = keep
+}
+
+// ---- Lights and objects ------------------------------------------------------
+
+function buildLights() {
+  // The torch rides the camera and flickers a little, as a cheap one would.
+  let flicker = 0.9 + 0.1 * Math.sin(bobPhase * 2.3) * Math.sin(bobPhase * 0.7)
+  let ls = [
+    { id: "torch", type: "spot", attach: "camera", color: "#fff1d0", intensity: started && torchOn ? 420 * flicker : 0, angle: 0.36, penumbra: 0.55, distance: 42, decay: 1.6, position: { x: -0.28, y: -0.05, z: 0.05 } },
+    { id: "hemi", type: "hemisphere", color: "#4c5f8a", groundColor: "#141a22", intensity: 1.15 },
+    { id: "moon", type: "directional", color: "#9db2ea", intensity: 0.9, position: { x: -60, y: 55, z: -90 } },
+    { id: "flash", type: "point", color: "#ffd27a", intensity: flashTicks > 0 ? 160 : 0, position: { x: px + Math.sin(yaw) * 0.8, y: P_EYE - 0.1, z: pz + Math.cos(yaw) * 0.8 } }
+  ]
+  let i = 0
+  while (i < lampPosts.length) {
+    let lp = lampPosts[i]
+    ls.push({ id: "lp" + i, type: "point", color: "#ffd88a", intensity: 260, position: { x: lp.x, y: 4.2, z: lp.z } })
+    i = i + 1
+  }
+  lights = ls
+}
+
+// A zombie: six boxes and a head, swaying as it walks, arms out. Dead ones
+// tip over and sink into the ground.
+function zombieObjs(out, z) {
+  let t = ZTYPES[z.type]
+  let s = z.scale
+  let d = z.dir
+  let f = { x: Math.sin(d), z: Math.cos(d) }
+  let r = { x: Math.cos(d), z: -Math.sin(d) }
+  let swing = Math.sin(z.phase) * 0.55
+  let lean = 0.12
+  let attackPhase = z.state === "attack" ? z.attackTicks / 40 : 0
+  let y0 = 0
+  let tilt = 0
+  let hue = z.flash > 0 ? "#ffffff" : t.body
+  let head = z.flash > 0 ? "#ffffff" : t.head
+  let cloth = z.flash > 0 ? "#dddddd" : t.cloth
+  if (z.state === "dead") {
+    let k = Math.min(1, z.deadTicks / 14)
+    tilt = k * 1.45
+    y0 = -Math.max(0, (z.deadTicks - 50) / 40) * 2.2
+    swing = 0
+  } else if (z.state === "attack") {
+    lean = 0.3 + 0.25 * Math.sin(attackPhase * Math.PI * 2)
+  }
+  let id = "z" + z.id
+  let rotX = tilt
+  // Torso
+  out.push({ id: id + "t", type: "box", position: { x: z.x - f.x * (y0 === 0 ? 0 : 0), y: y0 + 1.0 * s, z: z.z }, rotation: { x: rotX * 0 + lean * 0, y: d, z: 0 }, width: 0.56 * s, height: 0.72 * s, depth: 0.32 * s, color: cloth, roughness: 0.95 })
+  out.push({ id: id + "h", type: "box", position: { x: z.x + f.x * 0.06 * s, y: y0 + 1.62 * s, z: z.z + f.z * 0.06 * s }, rotation: { x: lean, y: d, z: 0 }, width: 0.42 * s, height: 0.42 * s, depth: 0.42 * s, color: head, roughness: 0.9 })
+  // Eyes catch the light.
+  out.push({ id: id + "e", type: "box", position: { x: z.x + f.x * 0.22 * s, y: y0 + 1.66 * s, z: z.z + f.z * 0.22 * s }, rotation: { x: 0, y: d, z: 0 }, width: 0.3 * s, height: 0.06 * s, depth: 0.04 * s, color: "#ffe36e", emissive: "#ffcc33", emissiveIntensity: 1.6 })
+  // Arms, out in front, swinging opposite each other.
+  out.push({ id: id + "a1", type: "box", position: { x: z.x + r.x * 0.36 * s + f.x * 0.32 * s, y: y0 + 1.22 * s + swing * 0.05, z: z.z + r.z * 0.36 * s + f.z * 0.32 * s }, rotation: { x: -1.3 + swing * 0.3, y: d, z: 0 }, width: 0.16 * s, height: 0.62 * s, depth: 0.16 * s, color: hue, roughness: 0.95 })
+  out.push({ id: id + "a2", type: "box", position: { x: z.x - r.x * 0.36 * s + f.x * 0.32 * s, y: y0 + 1.22 * s - swing * 0.05, z: z.z - r.z * 0.36 * s + f.z * 0.32 * s }, rotation: { x: -1.3 - swing * 0.3, y: d, z: 0 }, width: 0.16 * s, height: 0.62 * s, depth: 0.16 * s, color: hue, roughness: 0.95 })
+  // Legs
+  out.push({ id: id + "l1", type: "box", position: { x: z.x + r.x * 0.14 * s + f.x * swing * 0.12 * s, y: y0 + 0.34 * s, z: z.z + r.z * 0.14 * s + f.z * swing * 0.12 * s }, rotation: { x: swing * 0.6, y: d, z: 0 }, width: 0.2 * s, height: 0.66 * s, depth: 0.22 * s, color: cloth, roughness: 0.95 })
+  out.push({ id: id + "l2", type: "box", position: { x: z.x - r.x * 0.14 * s - f.x * swing * 0.12 * s, y: y0 + 0.34 * s, z: z.z - r.z * 0.14 * s - f.z * swing * 0.12 * s }, rotation: { x: -swing * 0.6, y: d, z: 0 }, width: 0.2 * s, height: 0.66 * s, depth: 0.22 * s, color: cloth, roughness: 0.95 })
+  if (z.state === "dead") {
+    // Fallen: swap the upright parts for one prone slab so the pile reads.
+    out[out.length - 7].position = { x: z.x + f.x * 0.5 * s, y: y0 + 0.2 * s, z: z.z + f.z * 0.5 * s }
+    out[out.length - 7].rotation = { x: Math.PI / 2, y: d, z: 0 }
+    out[out.length - 6].position = { x: z.x + f.x * 1.1 * s, y: y0 + 0.21 * s, z: z.z + f.z * 1.1 * s }
+    out[out.length - 6].rotation = { x: Math.PI / 2, y: d, z: 0 }
+    out[out.length - 5].position = { x: z.x + f.x * 1.25 * s, y: y0 + 0.15 * s, z: z.z + f.z * 1.25 * s }
+    out[out.length - 5].rotation = { x: Math.PI / 2, y: d, z: 0 }
+    out[out.length - 4].position = { x: z.x + r.x * 0.36 * s + f.x * 1.2 * s, y: y0 + 0.1 * s, z: z.z + r.z * 0.36 * s + f.z * 1.2 * s }
+    out[out.length - 4].rotation = { x: Math.PI / 2, y: d, z: 0 }
+    out[out.length - 3].position = { x: z.x - r.x * 0.36 * s + f.x * 1.2 * s, y: y0 + 0.1 * s, z: z.z - r.z * 0.36 * s + f.z * 1.2 * s }
+    out[out.length - 3].rotation = { x: Math.PI / 2, y: d, z: 0 }
+    out[out.length - 2].position = { x: z.x + r.x * 0.14 * s - f.x * 0.3 * s, y: y0 + 0.11 * s, z: z.z + r.z * 0.14 * s - f.z * 0.3 * s }
+    out[out.length - 2].rotation = { x: Math.PI / 2, y: d, z: 0 }
+    out[out.length - 1].position = { x: z.x - r.x * 0.14 * s - f.x * 0.3 * s, y: y0 + 0.11 * s, z: z.z - r.z * 0.14 * s - f.z * 0.3 * s }
+    out[out.length - 1].rotation = { x: Math.PI / 2, y: d, z: 0 }
+  }
+}
+
+function weaponObjs(out) {
+  let kick = recoil
+  let sway = Math.sin(bobPhase) * 0.006
+  if (weaponIdx === 0) {
+    out.push({ id: "gunA", type: "box", attach: "camera", position: { x: 0.27 + sway, y: -0.22 + kick * 0.2, z: -0.55 + kick * 0.6 }, rotation: { x: -kick * 1.4, y: 0, z: 0 }, width: 0.035, height: 0.05, depth: 0.2, color: "#2b2e34", metalness: 0.6, roughness: 0.35 })
+    out.push({ id: "gunB", type: "box", attach: "camera", position: { x: 0.27 + sway, y: -0.285 + kick * 0.2, z: -0.48 + kick * 0.6 }, rotation: { x: 0.35 - kick * 1.4, y: 0, z: 0 }, width: 0.032, height: 0.1, depth: 0.05, color: "#4a3626", roughness: 0.8 })
+  } else {
+    out.push({ id: "gunA", type: "box", attach: "camera", position: { x: 0.26 + sway, y: -0.21 + kick * 0.15, z: -0.62 + kick * 0.6 }, rotation: { x: -kick * 1.1, y: 0, z: 0 }, width: 0.034, height: 0.04, depth: 0.42, color: "#23262b", metalness: 0.6, roughness: 0.3 })
+    out.push({ id: "gunB", type: "box", attach: "camera", position: { x: 0.26 + sway, y: -0.245 + kick * 0.15, z: -0.5 + kick * 0.6 }, rotation: { x: -kick * 1.1, y: 0, z: 0 }, width: 0.05, height: 0.06, depth: 0.16, color: "#5c3d24", roughness: 0.8 })
+    out.push({ id: "gunC", type: "box", attach: "camera", position: { x: 0.26 + sway, y: -0.3 + kick * 0.15, z: -0.36 + kick * 0.6 }, rotation: { x: 0.5, y: 0, z: 0 }, width: 0.04, height: 0.12, depth: 0.06, color: "#4a3320", roughness: 0.8 })
+  }
+  if (flashTicks > 0) {
+    out.push({ id: "flash", type: "sphere", attach: "camera", position: { x: 0.27, y: -0.2, z: -0.72 }, radius: weaponIdx === 1 ? 0.07 : 0.045, color: "#fff2b0", emissive: "#ffd27a", emissiveIntensity: 3, opacity: 0.9 })
+  }
+}
+
+function composeObjects() {
+  let out = []
+  if (started) { weaponObjs(out) }
+  let i = 0
+  while (i < zombies.length) { zombieObjs(out, zombies[i]); i = i + 1 }
+  i = 0
+  while (i < pickups.length) {
+    let p = pickups[i]
+    let bobY = 0.35 + Math.sin(p.age * 0.12) * 0.06
+    if (p.kind === "shells") {
+      out.push({ id: "pk" + p.id, type: "box", position: { x: p.x, y: bobY, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.42, height: 0.28, depth: 0.3, color: "#b23a2a", emissive: "#ff6b3d", emissiveIntensity: 0.35 })
+    } else {
+      out.push({ id: "pk" + p.id, type: "box", position: { x: p.x, y: bobY, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.4, height: 0.24, depth: 0.32, color: "#f2f5f8", emissive: "#4ade80", emissiveIntensity: 0.35 })
+      out.push({ id: "pk" + p.id + "x", type: "box", position: { x: p.x, y: bobY + 0.125, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.22, height: 0.02, depth: 0.06, color: "#dc2626" })
+      out.push({ id: "pk" + p.id + "y", type: "box", position: { x: p.x, y: bobY + 0.125, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.06, height: 0.02, depth: 0.22, color: "#dc2626" })
+    }
+    i = i + 1
+  }
+  i = 0
+  while (i < particles.length) {
+    let p = particles[i]
+    out.push({ id: "p" + i, type: "box", position: { x: p.x, y: p.y, z: p.z }, width: p.size, height: p.size, depth: p.size, color: p.color, roughness: 1 })
+    i = i + 1
+  }
+  objects = out
+}
+
+// ---- Leaderboard and input from the UI --------------------------------------
+
+function onSceneClick(hit) {
+  if (!started || paused || gameOver) { return }
+  if (hit && hit.locked) {
+    if (hit.button === 0) { window.__dhFire = true }
+    else if (hit.button === 2) { window.__dhReload = true }
+  } else if (touchMode) {
+    window.__dhFire = true
+  }
+}
+
+function padPress(dir) {
+  let k = window.__dhKeys
+  if (dir === "up") { k.w = true } else if (dir === "down") { k.s = true } else if (dir === "left") { k.a = true } else if (dir === "right") { k.d = true }
+}
+function padRelease(dir) {
+  let k = window.__dhKeys
+  if (dir === "up") { k.w = false } else if (dir === "down") { k.s = false } else if (dir === "left") { k.a = false } else if (dir === "right") { k.d = false }
+}
+function touchFire() { window.__dhFire = true }
+function touchReload() { window.__dhReload = true }
+function touchSwap() { window.__dhSwap = 2 }
+function touchTorch() { window.__dhSwap = 4 }
+
+function setFinalName(v) {
+  finalName = String(v).slice(0, 24)
+  try { localStorage.setItem("deadhours:name", finalName) } catch (err) {}
+}
+
+function postScore() {
+  if (scorePosted || score <= 0) { return }
+  scorePosted = true
+  let name = finalName.trim() === "" ? "Anonymous" : finalName.trim()
+  boardStatus = "Posting…"
+  softn.storage.insert("scores", { name: name, score: score, wave: wave, kills: kills }, function (r) {
+    if (r && r.error) { boardStatus = r.error; scorePosted = false; return }
+    loadBoard()
+  })
+}
+
+function loadBoard() {
+  softn.storage.query("scores", { orderBy: ["score", "desc"], limit: 10 }, function (r) {
+    if (!r || r.error) {
+      boardRows = []
+      boardStatus = r && r.error ? r.error : "The leaderboard is not available."
+      return
+    }
+    let rows = []
+    let i = 0
+    while (i < r.records.length) {
+      let rec = r.records[i]
+      rows.push({ rank: i + 1, name: rec.data.name, score: rec.data.score, wave: rec.data.wave })
+      i = i + 1
+    }
+    boardRows = rows
+    boardStatus = rows.length === 0 ? "No scores yet. Be the first to survive a night." : ""
+  })
+}
