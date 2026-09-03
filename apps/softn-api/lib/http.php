@@ -282,7 +282,15 @@ final class Response
     /** @param array<string, string> $headers */
     public static function html(string $html, int $status = 200, array $headers = []): self
     {
-        return new self($status, $headers + ['Content-Type' => 'text/html; charset=utf-8'], $html);
+        // Cross-origin isolation, as the deployed .htaccess also sets it, so a
+        // page served through the API (an app's share page) is isolated too:
+        // the runtime in its popup then gets SharedArrayBuffer, and a model
+        // on the CPU provider uses every core.
+        return new self($status, $headers + [
+            'Content-Type' => 'text/html; charset=utf-8',
+            'Cross-Origin-Opener-Policy' => 'same-origin',
+            'Cross-Origin-Embedder-Policy' => 'credentialless',
+        ], $html);
     }
 
     /** @param array<string, string> $headers */
