@@ -945,18 +945,25 @@ export function Scene3D({
         // steers. A click while unlocked (re)takes the lock instead.
         if (enablePointerLock) {
           if (!isLocked() && e.pointerType === 'mouse') {
-            // Plain (OS-adjusted) movement: raw input is not the same on
-            // every platform, and a first-person view wants the pointer to
-            // behave like the pointer does everywhere else.
-            try {
-              const result = canvas.requestPointerLock() as unknown;
-              if (result && typeof (result as Promise<void>).catch === 'function') {
-                (result as Promise<void>).catch(() => {
-                  // The page may not be allowed to capture the pointer.
-                });
+            // Raw (unadjusted) movement, with the plain request as the
+            // fallback. Adjusted movement is unusable here: when the page
+            // re-lays out under a locked pointer (a HUD updating every tick),
+            // Chromium fires synthetic mousemove events carrying large,
+            // invented deltas, and the view spins on its own. Raw input only
+            // ever reports the device.
+            const request = canvas.requestPointerLock as ((opts?: { unadjustedMovement?: boolean }) => Promise<void> | void) | undefined;
+            const plain = () => {
+              try {
+                canvas.requestPointerLock();
+              } catch {
+                // Capture is a request, and the browser may refuse it.
               }
+            };
+            try {
+              const result = request?.call(canvas, { unadjustedMovement: true });
+              if (result && typeof (result as Promise<void>).catch === 'function') (result as Promise<void>).catch(plain);
             } catch {
-              // Capture is a request, and the browser may refuse it.
+              plain();
             }
           }
           if (isLocked() || e.pointerType === 'mouse') return;
@@ -1000,6 +1007,9 @@ export function Scene3D({
       canvas.style.cursor = 'crosshair';
       plMouseMove = (e: MouseEvent) => {
         if (!isLocked()) return;
+        // No hand moves a mouse a quarter of a screen between two events;
+        // a delta that size is the browser's invention, not the player's.
+        if (Math.abs(e.movementX) > 400 || Math.abs(e.movementY) > 400) return;
         turnBy(e.movementX, e.movementY);
       };
       plLockChange = () => {
