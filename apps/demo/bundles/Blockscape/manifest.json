@@ -1,0 +1,17 @@
+{
+  "name": "Blockscape",
+  "version": "1.0.0",
+  "description": "A first-person voxel sandbox: an island of blocks to mine, build on and save. Pointer-locked camera, gravity, swimming, flight, a day-night cycle and nine kinds of block.",
+  "author": "SoftN",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/world.logic", "logic/main.logic"],
+    "assets": ["assets/icon.svg", "assets/sfx/break.wav", "assets/sfx/place.wav"]
+  },
+  "config": {
+    "window": { "title": "Blockscape", "width": 1100, "height": 720 },
+    "theme": { "primary": "#5cae4a", "mode": "dark" }
+  }
+}

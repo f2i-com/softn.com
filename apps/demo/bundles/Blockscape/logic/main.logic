@@ -1,0 +1,605 @@
+// Blockscape — the game: first-person movement with gravity and swimming, a
+// pointer-locked camera, break and place with the crosshair, a nine-slot
+// hotbar, a day that turns into night, and a world that saves itself.
+//
+// The loop is `gameStep`, not `tick`: the runtime marks functions named
+// tick/update/animate/render droppable and skips them when its queue is
+// busy, which would freeze the player mid-air.
+
+let TICK_MS = 33
+let DT = 0.033
+let GRAVITY = 24
+let JUMP_V = 8.4
+let WALK = 4.4
+let SPRINT = 6.8
+let FLY = 10
+let SWIM = 2.6
+let REACH = 7
+let DAY_SECONDS = 300
+
+// Synced to the UI.
+let objects = []
+let lights = []
+let cameraPos = { x: 32, y: 40, z: 32 }
+let cameraLookAt = { x: 32, y: 40, z: 40 }
+let sceneFog = { color: "#9fd0ff", near: 42, far: 125 }
+let skyColor = "#87ceeb"
+let started = false
+let hasSave = false
+let touchMode = false
+let isLocked = false
+let paused = false
+let showHelp = false
+let hotbar = []
+let slotIdx = 0
+let hudPos = ""
+let hudTime = ""
+let hudTarget = ""
+let hudBlocks = 0
+let toast = ""
+let toastTicks = 0
+let flying = false
+let underwater = false
+let dayPhase = 0.28
+
+// Player state lives in the VM.
+let px = 32
+let py = 30
+let pz = 32
+let vx = 0
+let vy = 0
+let vz = 0
+let yaw = 0
+let pitch = 0
+let onGround = false
+let bobPhase = 0
+let placedCount = 0
+let autosaveTicks = 0
+let dirty = false
+let particles = []
+let rngSeed = 1
+let lastLocked = false
+let breakCooldown = 0
+let placeCooldown = 0
+
+let HOTBAR_TYPES = [1, 2, 3, 4, 6, 8, 9, 10, 11]
+
+function myRand() {
+  rngSeed = (rngSeed * 48271) % 2147483647
+  return rngSeed / 2147483647
+}
+
+// ---- Init and input -----------------------------------------------------
+
+function isUiControl(e) {
+  let tag = e.targetTag || ""
+  return tag === "input" || tag === "textarea" || tag === "select" || tag === "button" || !!e.targetEditable
+}
+
+function _init() {
+  if (window.__vxCleanup) { window.__vxCleanup() }
+  initBlockTables()
+  rngSeed = (Date.now() % 100000) + 17
+  window.__vxKeys = { w: false, a: false, s: false, d: false, jump: false, sprint: false, down: false }
+  window.__vxAction = 0
+  window.__vxSlot = -1
+  window.__vxWheel = 0
+  window.__vxToggleFly = false
+  window.__vxTouch = false
+  window.__scene3dLocked = false
+
+  let i = 0
+  let bar = []
+  while (i < HOTBAR_TYPES.length) {
+    let t = HOTBAR_TYPES[i]
+    bar.push({ type: t, name: BLOCK_NAMES[t], color: swatchFor(t), key: String(i + 1) })
+    i = i + 1
+  }
+  hotbar = bar
+
+  function onKeyDown(e) {
+    if (isUiControl(e)) { return }
+    let k = window.__vxKeys
+    let key = e.key || ""
+    if (key === "w" || key === "W" || key === "ArrowUp") { k.w = true; e.preventDefault() }
+    else if (key === "s" || key === "S" || key === "ArrowDown") { k.s = true; e.preventDefault() }
+    else if (key === "a" || key === "A" || key === "ArrowLeft") { k.a = true; e.preventDefault() }
+    else if (key === "d" || key === "D" || key === "ArrowRight") { k.d = true; e.preventDefault() }
+    else if (key === " ") { k.jump = true; e.preventDefault() }
+    else if (key === "Shift") { k.sprint = true }
+    else if (key === "Control" || key === "c" || key === "C") { k.down = true }
+    else if (key === "f" || key === "F") { if (!e.repeat) { window.__vxToggleFly = true } }
+    else if (key === "h" || key === "H") { window.__vxAction = 3 }
+    else if (key >= "1" && key <= "9") { window.__vxSlot = key.charCodeAt(0) - 49 }
+  }
+  function onKeyUp(e) {
+    let k = window.__vxKeys
+    let key = e.key || ""
+    if (key === "w" || key === "W" || key === "ArrowUp") { k.w = false }
+    else if (key === "s" || key === "S" || key === "ArrowDown") { k.s = false }
+    else if (key === "a" || key === "A" || key === "ArrowLeft") { k.a = false }
+    else if (key === "d" || key === "D" || key === "ArrowRight") { k.d = false }
+    else if (key === " ") { k.jump = false }
+    else if (key === "Shift") { k.sprint = false }
+    else if (key === "Control" || key === "c" || key === "C") { k.down = false }
+  }
+  function onBlur() {
+    window.__vxKeys = { w: false, a: false, s: false, d: false, jump: false, sprint: false, down: false }
+  }
+  function onWheel(e) {
+    if (e.deltaY > 0) { window.__vxWheel = 1 }
+    else if (e.deltaY < 0) { window.__vxWheel = -1 }
+  }
+  function onTouch(e) {
+    window.__vxTouch = true
+  }
+  window.addEventListener("keydown", onKeyDown, true)
+  window.addEventListener("keyup", onKeyUp, true)
+  window.addEventListener("blur", onBlur)
+  window.addEventListener("wheel", onWheel)
+  window.addEventListener("touchstart", onTouch)
+  window.__vxCleanup = function () {
+    window.removeEventListener("keydown", onKeyDown, true)
+    window.removeEventListener("keyup", onKeyUp, true)
+    window.removeEventListener("blur", onBlur)
+    window.removeEventListener("wheel", onWheel)
+    window.removeEventListener("touchstart", onTouch)
+  }
+
+  try { hasSave = !!localStorage.getItem("blockscape:world") } catch (err) { hasSave = false }
+  // The title screen looks out over a real island, so one is generated now;
+  // "New island" grows another.
+  generateWorld(Math.floor(Date.now() % 100000))
+  titleOrbit()
+  buildLights()
+  composeObjects()
+}
+
+// Before the game starts the camera circles the island slowly.
+let titleAngle = 0
+function titleOrbit() {
+  titleAngle = titleAngle + 0.0022
+  let cx = WX / 2
+  let cz = WZ / 2
+  px = cx + Math.cos(titleAngle) * 34
+  pz = cz + Math.sin(titleAngle) * 34
+  py = 30 - P_EYE
+  yaw = Math.atan2(cx - px, cz - pz)
+  pitch = -0.32
+  window.__scene3dYaw = yaw
+  window.__scene3dPitch = pitch
+  hitOk = false
+  updateCamera()
+}
+
+function swatchFor(t) {
+  if (t === B_GRASS) { return "linear-gradient(180deg, #5cae4a 0 36%, #7b5433 36%)" }
+  if (t === B_GLASS) { return "linear-gradient(135deg, #d6efff, #9cc9ee)" }
+  if (t === B_GLOW) { return "radial-gradient(circle, #fff1b8, #f5b800)" }
+  return PALETTE[t * 3]
+}
+
+// ---- Starting a world ---------------------------------------------------
+
+function newWorld() {
+  if (started || placedCount > 0) { generateWorld(Math.floor(Date.now() % 100000) + 1) }
+  spawnPlayer()
+  placedCount = 0
+  dirty = true
+  started = true
+  paused = false
+  showToast("Welcome to a new island. Click to look around.")
+}
+
+function continueWorld() {
+  let raw = ""
+  let meta = null
+  try {
+    raw = localStorage.getItem("blockscape:world") || ""
+    meta = JSON.parse(localStorage.getItem("blockscape:player") || "null")
+  } catch (err) { raw = "" }
+  if (raw === "" || !decodeWorld(raw)) {
+    newWorld()
+    return
+  }
+  if (meta && typeof meta.x === "number") {
+    px = meta.x; py = meta.y; pz = meta.z
+    yaw = meta.yaw || 0; pitch = meta.pitch || 0
+    dayPhase = typeof meta.day === "number" ? meta.day : dayPhase
+    placedCount = meta.placed || 0
+    slotIdx = meta.slot || 0
+    flying = !!meta.flying
+  } else {
+    spawnPlayer()
+  }
+  window.__scene3dYaw = yaw
+  window.__scene3dPitch = pitch
+  updateCamera()
+  started = true
+  paused = false
+  showToast("World restored.")
+}
+
+function spawnPlayer() {
+  let sx = WX / 2
+  let sz = WZ / 2
+  let best = -1
+  let bx = sx
+  let bz = sz
+  // The highest ground near the middle, so the first view is the island.
+  let dx = -6
+  while (dx <= 6) {
+    let dz = -6
+    while (dz <= 6) {
+      let h = groundHeight(sx + dx, sz + dz)
+      if (h > best && h > SEA + 1 && blockAt(sx + dx, h + 1, sz + dz) === B_AIR && blockAt(sx + dx, h + 2, sz + dz) === B_AIR) { best = h; bx = sx + dx; bz = sz + dz }
+      dz = dz + 2
+    }
+    dx = dx + 2
+  }
+  px = bx + 0.5
+  pz = bz + 0.5
+  py = best + 1.02
+  vx = 0; vy = 0; vz = 0
+  yaw = Math.PI * 0.75
+  pitch = -0.12
+  window.__scene3dYaw = yaw
+  window.__scene3dPitch = pitch
+  updateCamera()
+}
+
+function saveWorld() {
+  try {
+    localStorage.setItem("blockscape:world", encodeWorld())
+    localStorage.setItem("blockscape:player", JSON.stringify({ x: px, y: py, z: pz, yaw: yaw, pitch: pitch, day: dayPhase, placed: placedCount, slot: slotIdx, flying: flying }))
+    hasSave = true
+    dirty = false
+    return true
+  } catch (err) {
+    showToast("Could not save: storage is full or blocked.")
+    return false
+  }
+}
+
+function saveNow() {
+  if (saveWorld()) { showToast("World saved.") }
+}
+
+function resetWorld() {
+  newWorld()
+  saveWorld()
+}
+
+function showToast(text) {
+  toast = text
+  toastTicks = Math.ceil(2600 / TICK_MS)
+}
+
+function toggleHelp() {
+  showHelp = !showHelp
+}
+
+function resumeGame() {
+  paused = false
+}
+
+// ---- Camera and lighting ------------------------------------------------
+
+function updateCamera() {
+  let bob = 0
+  if (onGround && !flying && (vx * vx + vz * vz) > 1) { bob = Math.sin(bobPhase) * 0.045 }
+  cameraPos = { x: px, y: py + P_EYE + bob, z: pz }
+  let cp = Math.cos(pitch)
+  cameraLookAt = { x: px + Math.sin(yaw) * cp * 5, y: py + P_EYE + Math.sin(pitch) * 5, z: pz + Math.cos(yaw) * cp * 5 }
+}
+
+function lerp(a, b, t) { return a + (b - a) * t }
+
+function hexLerp(h1, h2, t) {
+  let r1 = parseInt(h1.slice(1, 3), 16)
+  let g1 = parseInt(h1.slice(3, 5), 16)
+  let b1 = parseInt(h1.slice(5, 7), 16)
+  let r2 = parseInt(h2.slice(1, 3), 16)
+  let g2 = parseInt(h2.slice(3, 5), 16)
+  let b2 = parseInt(h2.slice(5, 7), 16)
+  return rgbHex(lerp(r1, r2, t), lerp(g1, g2, t), lerp(b1, b2, t))
+}
+
+function rgbHex(r, g, b) {
+  let s = "0123456789abcdef"
+  let out = "#"
+  let v = [r, g, b]
+  let i = 0
+  while (i < 3) {
+    let n = Math.max(0, Math.min(255, Math.round(v[i])))
+    out = out + s.charAt(n >> 4) + s.charAt(n & 15)
+    i = i + 1
+  }
+  return out
+}
+
+// The sky is four colours a day sweeps through; the sun is a directional
+// light that rides the same angle, and a hemisphere carries the bounce.
+function buildLights() {
+  let ang = dayPhase * Math.PI * 2
+  let el = Math.sin(ang)
+  let day = Math.max(0, Math.min(1, (el + 0.15) / 0.5))
+  let dusk = Math.max(0, 1 - Math.abs(el) / 0.22)
+  let sky = hexLerp("#0a1030", "#8fd0ff", day)
+  sky = hexLerp(sky, "#f2a065", dusk * 0.55)
+  let horizon = hexLerp("#141a33", "#dff1ff", day)
+  horizon = hexLerp(horizon, "#ffb072", dusk * 0.7)
+  skyColor = sky
+  sceneFog = { color: horizon, near: underwater ? 2 : 42, far: underwater ? 14 : 125 }
+  if (underwater) { skyColor = "#1a4c8f" }
+  let sunI = 0.25 + 1.6 * day
+  lights = [
+    { id: "hemi", type: "hemisphere", color: hexLerp("#3a4a7a", "#ffffff", day), groundColor: hexLerp("#1a1a26", "#6b7d5a", day), intensity: 0.45 + 1.1 * day },
+    { id: "sun", type: "directional", color: hexLerp("#9fb4ff", hexLerp("#ffd9a8", "#fff6e6", day), Math.max(day, 0.2)), intensity: sunI, position: { x: px + Math.cos(ang) * 60, y: py + Math.max(0.12, el) * 60, z: pz - 30 } },
+    { id: "moonlight", type: "directional", color: "#7d95d6", intensity: 0.5 * (1 - day), position: { x: px - Math.cos(ang) * 60, y: py + Math.max(0.2, -el) * 60, z: pz + 30 } }
+  ]
+}
+
+// ---- The master step -----------------------------------------------------
+
+function gameStep() {
+  if (!started) {
+    titleOrbit()
+    dayPhase = dayPhase + DT / DAY_SECONDS
+    if (dayPhase >= 1) { dayPhase = dayPhase - 1 }
+    buildLights()
+    composeObjects()
+    return
+  }
+  let locked = !!window.__scene3dLocked
+  isLocked = locked
+  // Escape gives the pointer back; the game pauses the moment it happens.
+  if (lastLocked && !locked && !touchMode) { paused = true }
+  lastLocked = locked
+  if (window.__vxTouch) { touchMode = true }
+
+  if (toastTicks > 0) { toastTicks = toastTicks - 1; if (toastTicks === 0) { toast = "" } }
+  dayPhase = dayPhase + DT / DAY_SECONDS
+  if (dayPhase >= 1) { dayPhase = dayPhase - 1 }
+
+  if (window.__vxSlot >= 0) { slotIdx = window.__vxSlot; window.__vxSlot = -1 }
+  if (window.__vxWheel !== 0) {
+    slotIdx = (slotIdx + window.__vxWheel + hotbar.length) % hotbar.length
+    window.__vxWheel = 0
+  }
+  if (window.__vxToggleFly) {
+    window.__vxToggleFly = false
+    flying = !flying
+    vy = 0
+    showToast(flying ? "Flying. Space to rise, C to sink." : "Walking.")
+  }
+  if (window.__vxAction === 3) { window.__vxAction = 0; showHelp = !showHelp }
+
+  if (!paused) {
+    if (window.__scene3dYaw !== undefined) { yaw = window.__scene3dYaw }
+    if (window.__scene3dPitch !== undefined) { pitch = window.__scene3dPitch }
+    movePlayer()
+    aim()
+    if (window.__vxAction === 1) { window.__vxAction = 0; doBreak() }
+    else if (window.__vxAction === 2) { window.__vxAction = 0; doPlace() }
+  }
+  if (breakCooldown > 0) { breakCooldown = breakCooldown - 1 }
+  if (placeCooldown > 0) { placeCooldown = placeCooldown - 1 }
+
+  rebuildDirtyChunks()
+  stepParticles()
+  updateCamera()
+  buildLights()
+  composeObjects()
+
+  hudPos = Math.floor(px) + ", " + Math.floor(py) + ", " + Math.floor(pz)
+  hudTime = clockText()
+  hudBlocks = placedCount
+
+  autosaveTicks = autosaveTicks + 1
+  if (dirty && autosaveTicks > 900) { autosaveTicks = 0; saveWorld() }
+}
+
+function clockText() {
+  let h = Math.floor(((dayPhase + 0.25) % 1) * 24)
+  let m = Math.floor((((dayPhase + 0.25) % 1) * 24 - h) * 60)
+  let mm = m < 10 ? "0" + m : "" + m
+  let label = h < 5 || h >= 21 ? "night" : (h < 8 ? "dawn" : (h < 18 ? "day" : "dusk"))
+  return h + ":" + mm + " · " + label
+}
+
+function movePlayer() {
+  let k = window.__vxKeys
+  if (!k) { return }
+  let fwd = (k.w ? 1 : 0) - (k.s ? 1 : 0)
+  // Screen-right is −x when facing +z, so strafe right is −cos(yaw), +sin(yaw).
+  let str = (k.d ? 1 : 0) - (k.a ? 1 : 0)
+  let len = Math.sqrt(fwd * fwd + str * str)
+  if (len > 0) { fwd = fwd / len; str = str / len }
+  let wet = inWater(px, py, pz)
+  underwater = eyesInWater(px, py, pz)
+  let speed = flying ? FLY : (wet ? SWIM : (k.sprint ? SPRINT : WALK))
+  let wx = Math.sin(yaw) * fwd - Math.cos(yaw) * str
+  let wz = Math.cos(yaw) * fwd + Math.sin(yaw) * str
+  let accel = onGround || flying || wet ? 0.35 : 0.08
+  vx = vx + (wx * speed - vx) * accel
+  vz = vz + (wz * speed - vz) * accel
+
+  if (flying) {
+    let up = (k.jump ? 1 : 0) - (k.down ? 1 : 0)
+    vy = vy + (up * FLY * 0.8 - vy) * 0.3
+  } else if (wet) {
+    vy = vy - GRAVITY * 0.18 * DT
+    if (k.jump) { vy = vy + 14 * DT }
+    if (vy < -2.2) { vy = -2.2 }
+    if (vy > 2.6) { vy = 2.6 }
+  } else {
+    vy = vy - GRAVITY * DT
+    if (k.jump && onGround) { vy = JUMP_V; onGround = false }
+    if (vy < -40) { vy = -40 }
+  }
+
+  // Sweep each axis separately, so a wall slides rather than stops.
+  let nx = px + vx * DT
+  if (boxBlocked(nx, py, pz)) { vx = 0 } else { px = nx }
+  let nz = pz + vz * DT
+  if (boxBlocked(px, py, nz)) { vz = 0 } else { pz = nz }
+  let ny = py + vy * DT
+  onGround = false
+  if (boxBlocked(px, ny, pz)) {
+    if (vy < 0) { onGround = true; py = Math.floor(py) + 0.001 }
+    vy = 0
+  } else {
+    py = ny
+  }
+  // Below the bedrock or off the map: put the player back on land.
+  if (py < -5 || px < -20 || px > WX + 20 || pz < -20 || pz > WZ + 20) { spawnPlayer() }
+
+  if (onGround && (vx * vx + vz * vz) > 1) { bobPhase = bobPhase + 0.32 } else { bobPhase = 0 }
+}
+
+function aim() {
+  let cp = Math.cos(pitch)
+  rayCast(px, py + P_EYE, pz, Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp, REACH)
+  if (hitOk) {
+    hudTarget = BLOCK_NAMES[blockAt(hitX, hitY, hitZ)]
+  } else {
+    hudTarget = ""
+  }
+}
+
+function doBreak() {
+  if (!hitOk || breakCooldown > 0) { return }
+  let t = blockAt(hitX, hitY, hitZ)
+  if (hitY <= 0) { showToast("Bedrock does not break."); return }
+  spawnDebris(hitX + 0.5, hitY + 0.5, hitZ + 0.5, PALETTE[t * 3])
+  setBlock(hitX, hitY, hitZ, B_AIR)
+  // Water flows into a hole opened beside it, one cell at a time.
+  if (hitY <= SEA && (blockAt(hitX + 1, hitY, hitZ) === B_WATER || blockAt(hitX - 1, hitY, hitZ) === B_WATER || blockAt(hitX, hitY, hitZ + 1) === B_WATER || blockAt(hitX, hitY, hitZ - 1) === B_WATER || blockAt(hitX, hitY + 1, hitZ) === B_WATER)) {
+    setBlock(hitX, hitY, hitZ, B_WATER)
+  }
+  dirty = true
+  breakCooldown = 4
+  softn.audio.play("assets/sfx/break.wav", { volume: 0.5 })
+}
+
+function doPlace() {
+  if (!hitOk || placeCooldown > 0) { return }
+  let bx = hitX + hitNX
+  let by = hitY + hitNY
+  let bz = hitZ + hitNZ
+  if (!inWorld(bx, by, bz)) { return }
+  let existing = blockAt(bx, by, bz)
+  if (existing !== B_AIR && existing !== B_WATER) { return }
+  if (blockTouchesPlayer(bx, by, bz, px, py, pz)) { return }
+  setBlock(bx, by, bz, hotbar[slotIdx].type)
+  placedCount = placedCount + 1
+  dirty = true
+  placeCooldown = 4
+  softn.audio.play("assets/sfx/place.wav", { volume: 0.45 })
+}
+
+function padPress(dir) {
+  let k = window.__vxKeys
+  if (dir === "up") { k.w = true }
+  else if (dir === "down") { k.s = true }
+  else if (dir === "left") { k.a = true }
+  else if (dir === "right") { k.d = true }
+}
+function padRelease(dir) {
+  let k = window.__vxKeys
+  if (dir === "up") { k.w = false }
+  else if (dir === "down") { k.s = false }
+  else if (dir === "left") { k.a = false }
+  else if (dir === "right") { k.d = false }
+}
+function touchJumpDown() { window.__vxKeys.jump = true }
+function touchJumpUp() { window.__vxKeys.jump = false }
+function touchBreak() { window.__vxAction = 1 }
+function touchPlace() { window.__vxAction = 2 }
+function touchFly() { window.__vxToggleFly = true }
+function pickSlot(i) { slotIdx = i }
+
+// A locked pointer reports every button through the scene's click; with a
+// touch screen or an unlocked pointer a plain tap on the world places.
+function onSceneClick(hit) {
+  if (!started || paused) { return }
+  if (hit && hit.locked) {
+    if (hit.button === 2) { window.__vxAction = 2 }
+    else if (hit.button === 0) { window.__vxAction = 1 }
+    else if (hit.button === 1) { pickTargetBlock() }
+  } else if (touchMode) {
+    window.__vxAction = 2
+  }
+}
+
+function pickTargetBlock() {
+  if (!hitOk) { return }
+  let t = blockAt(hitX, hitY, hitZ)
+  let i = 0
+  while (i < hotbar.length) {
+    if (hotbar[i].type === t) { slotIdx = i; return }
+    i = i + 1
+  }
+}
+
+// ---- Debris and the per-frame objects -----------------------------------
+
+function spawnDebris(x, y, z, color) {
+  let i = 0
+  while (i < 7) {
+    particles.push({
+      x: x + (myRand() - 0.5) * 0.6, y: y + (myRand() - 0.5) * 0.6, z: z + (myRand() - 0.5) * 0.6,
+      vx: (myRand() - 0.5) * 4, vy: 2 + myRand() * 3.5, vz: (myRand() - 0.5) * 4,
+      life: 18 + Math.floor(myRand() * 10), color: color, size: 0.1 + myRand() * 0.1
+    })
+    i = i + 1
+  }
+}
+
+function stepParticles() {
+  if (particles.length === 0) { return }
+  let keep = []
+  let i = 0
+  while (i < particles.length) {
+    let p = particles[i]
+    p.vy = p.vy - GRAVITY * DT
+    p.x = p.x + p.vx * DT
+    p.y = p.y + p.vy * DT
+    p.z = p.z + p.vz * DT
+    if (isSolidAt(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z))) { p.vy = 0; p.vx = p.vx * 0.5; p.vz = p.vz * 0.5; p.y = Math.floor(p.y) + 1.01 }
+    p.life = p.life - 1
+    if (p.life > 0) { keep.push(p) }
+    i = i + 1
+  }
+  particles = keep
+}
+
+function composeObjects() {
+  let out = []
+  if (hitOk) {
+    out.push({ id: "aim", type: "box", position: { x: hitX + 0.5, y: hitY + 0.5, z: hitZ + 0.5 }, width: 1.02, height: 1.02, depth: 1.02, color: "#ffffff", opacity: 0.18, roughness: 1 })
+  }
+  // The block in hand, pinned to the camera at the lower right: the block
+  // itself, its grass cap when it has one, and the arm that holds it.
+  let t = hotbar[slotIdx].type
+  let bobY = (onGround && (vx * vx + vz * vz) > 1 ? Math.sin(bobPhase) * 0.012 : 0)
+  let handCol = t === B_GLOW ? "#ffe08a" : (t === B_GLASS ? "#d6efff" : PALETTE[t * 3])
+  out.push({ id: "hand", type: "box", attach: "camera", position: { x: 0.34, y: -0.26 + bobY, z: -0.6 }, rotation: { x: 0.3, y: -0.6, z: 0.08 }, width: 0.13, height: 0.13, depth: 0.13,
+    color: handCol, opacity: t === B_GLASS ? 0.5 : 1, emissive: t === B_GLOW ? "#ffcc4d" : "#000000", emissiveIntensity: t === B_GLOW ? 1.2 : 0, roughness: 0.9 })
+  if (t === B_GRASS) {
+    out.push({ id: "handTop", type: "box", attach: "camera", position: { x: 0.34, y: -0.26 + bobY + 0.055, z: -0.6 }, rotation: { x: 0.3, y: -0.6, z: 0.08 }, width: 0.131, height: 0.024, depth: 0.131, color: "#5cae4a", roughness: 0.95 })
+  }
+  out.push({ id: "arm", type: "box", attach: "camera", position: { x: 0.36, y: -0.4 + bobY, z: -0.52 }, rotation: { x: 0.9, y: -0.2, z: 0.15 }, width: 0.075, height: 0.26, depth: 0.075, color: "#d9a679", roughness: 0.95 })
+  let i = 0
+  while (i < particles.length) {
+    let p = particles[i]
+    out.push({ id: "p" + i, type: "box", position: { x: p.x, y: p.y, z: p.z }, width: p.size, height: p.size, depth: p.size, color: p.color, roughness: 1 })
+    i = i + 1
+  }
+  // Sun and moon ride the sky opposite each other, far enough to sit in the fog.
+  let ang = dayPhase * Math.PI * 2
+  out.push({ id: "sun", type: "sphere", radius: 5, position: { x: px + Math.cos(ang) * 85, y: py + Math.sin(ang) * 85, z: pz - 40 }, color: "#fff2b0", emissive: "#ffd36a", emissiveIntensity: 2.2 })
+  out.push({ id: "moon", type: "sphere", radius: 3.4, position: { x: px - Math.cos(ang) * 85, y: py - Math.sin(ang) * 85, z: pz + 40 }, color: "#e6ecff", emissive: "#b9c6ff", emissiveIntensity: 1.1 })
+  objects = out
+}

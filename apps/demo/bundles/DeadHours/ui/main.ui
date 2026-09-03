@@ -1,0 +1,191 @@
+<logic src="../logic/main.logic" />
+
+<style>
+.dh-root { position: relative; width: 100%; height: 100%; min-height: 480px; overflow: hidden; background: #05070c; font-family: "Segoe UI", system-ui, sans-serif; color: #f1f3f7; user-select: none; }
+.dh-scene { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
+.dh-ovl { position: absolute; pointer-events: none; }
+.dh-cross { top: 50%; left: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; }
+.dh-cross::before, .dh-cross::after { content: ""; position: absolute; background: rgba(255,255,255,0.85); }
+.dh-cross::before { left: 12px; top: 0; width: 2px; height: 26px; }
+.dh-cross::after { top: 12px; left: 0; width: 26px; height: 2px; }
+.dh-cross-hit::before, .dh-cross-hit::after { background: #ff5a3c; }
+.dh-panel { background: rgba(6, 8, 14, 0.66); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; backdrop-filter: blur(8px); }
+.dh-hud { left: 16px; bottom: 16px; padding: 12px 16px; min-width: 240px; }
+.dh-bar { height: 10px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden; margin-top: 6px; }
+.dh-fill { height: 10px; border-radius: 999px; background: linear-gradient(90deg, #ff5a3c, #ffb03c); transition: width 160ms ease; }
+.dh-ammo { right: 16px; bottom: 16px; padding: 12px 18px; text-align: right; min-width: 170px; }
+.dh-top { top: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
+.dh-chip { padding: 6px 14px; border-radius: 999px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.dh-banner { top: 22%; left: 0; right: 0; text-align: center; animation: dh-banner 2.8s ease both; }
+@keyframes dh-banner { 0% { opacity: 0; transform: translateY(8px) scale(0.98); } 12% { opacity: 1; transform: none; } 85% { opacity: 1; } 100% { opacity: 0; } }
+.dh-toast { bottom: 120px; left: 50%; transform: translateX(-50%); padding: 7px 16px; border-radius: 999px; animation: dh-in 200ms ease both; }
+@keyframes dh-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+.dh-hurt { top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(90% 80% at 50% 50%, rgba(160,0,0,0) 40%, rgba(160,0,0,0.75) 100%); }
+.dh-vig { top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(110% 100% at 50% 50%, rgba(0,0,0,0) 50%, rgba(0,0,0,0.5) 100%); }
+.dh-title { top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; pointer-events: auto; background: linear-gradient(180deg, rgba(3,5,10,0.35) 0%, rgba(3,5,10,0.7) 100%); }
+.dh-card { width: min(600px, calc(100% - 32px)); padding: 34px 36px 30px; text-align: center; background: rgba(6,8,14,0.82); border: 1px solid rgba(255,255,255,0.1); border-radius: 18px; box-shadow: 0 30px 80px rgba(0,0,0,0.7); backdrop-filter: blur(10px); }
+.dh-keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 22px auto 0; text-align: left; max-width: 380px; }
+.dh-kbd { display: inline-block; min-width: 26px; padding: 2px 7px; border-radius: 6px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18); font-family: ui-monospace, monospace; text-align: center; }
+.dh-board { margin-top: 18px; text-align: left; background: rgba(0,0,0,0.3); border-radius: 10px; padding: 12px 14px; }
+.dh-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.dh-touch { position: absolute; left: 14px; bottom: 120px; pointer-events: auto; }
+.dh-touch-btns { position: absolute; right: 14px; bottom: 110px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
+.dh-corner { top: 14px; right: 14px; display: flex; gap: 6px; pointer-events: auto; }
+.dh-lowhp { animation: dh-pulse 1.1s ease-in-out infinite; }
+@keyframes dh-pulse { 50% { opacity: 0.55; } }
+@media (max-width: 640px) {
+  .dh-hud { min-width: 0; padding: 8px 10px; }
+  .dh-ammo { min-width: 0; padding: 8px 10px; }
+  .dh-card { padding: 22px 16px; }
+}
+</style>
+
+<Box className="dh-root">
+  <Loop interval={33} running={true} @tick={gameStep} />
+
+  <Box className="dh-scene">
+    <Scene3D
+      fill={true}
+      objects={objects}
+      staticObjects={sceneStatic}
+      lights={lights}
+      camera={{ position: cameraPos, lookAt: cameraLookAt, fov: 74 }}
+      antialias={true}
+      shadows={false}
+      pointerLock={true}
+      pitchLimit={1.2}
+      mouseLookSensitivity={0.0022}
+      fog={sceneFog}
+      background={skyColor}
+      @click={onSceneClick}
+    />
+  </Box>
+
+  <Box className="dh-ovl dh-vig" />
+  <Box if={hurtFlash > 0} className="dh-ovl dh-hurt" style={{ opacity: hurtFlash }} />
+
+  <!-- In play -->
+  <Box if={started && !gameOver} className={hitMark > 0 ? "dh-ovl dh-cross dh-cross-hit" : "dh-ovl dh-cross"} />
+
+  <Box if={started} className="dh-ovl dh-top">
+    <Box className="dh-panel dh-chip"><Text style={{ fontSize: "12px", color: "#dbe4f3" }}>{"Wave " + hud.wave}</Text></Box>
+    <Box className="dh-panel dh-chip"><Text style={{ fontSize: "12px", color: "#dbe4f3" }}>{hud.countdown > 0 ? "next in " + hud.countdown + "s" : hud.left + " left"}</Text></Box>
+    <Box className="dh-panel dh-chip"><Text style={{ fontSize: "12px", color: "#ffd27a" }}>{hud.score + " pts"}</Text></Box>
+  </Box>
+
+  <Box if={started} className="dh-ovl dh-panel dh-hud">
+    <Stack direction="horizontal" gap={8} style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+      <Text style={{ fontSize: "11px", letterSpacing: "0.1em", color: "#8fa0b8" }}>HEALTH</Text>
+      <Text className={hud.hp < 30 ? "dh-lowhp" : ""} style={{ fontSize: "20px", fontWeight: 800, color: hud.hp < 30 ? "#ff5a3c" : "#ffffff" }}>{hud.hp}</Text>
+    </Stack>
+    <Box className="dh-bar"><Box className="dh-fill" style={{ width: hud.hp + "%" }} /></Box>
+    <Text style={{ display: "block", marginTop: "8px", fontSize: "12px", color: "#8fa0b8" }}>{hud.kills + " down · best " + hud.best}</Text>
+  </Box>
+
+  <Box if={started} className="dh-ovl dh-panel dh-ammo">
+    <Text style={{ display: "block", fontSize: "11px", letterSpacing: "0.1em", color: "#8fa0b8" }}>{hud.weapon}</Text>
+    <Text style={{ display: "block", fontSize: "28px", fontWeight: 800, color: hud.ammo === 0 ? "#ff5a3c" : "#ffffff", lineHeight: 1.1 }}>{hud.ammo}<Text style={{ fontSize: "14px", color: "#8fa0b8", fontWeight: 500 }}> / {hud.reserve < 0 ? "∞" : hud.reserve}</Text></Text>
+    <Text style={{ display: "block", fontSize: "12px", color: hud.reloading ? "#ffd27a" : "#8fa0b8" }}>{hud.reloading ? "reloading…" : "R reload · Q swap · F torch"}</Text>
+  </Box>
+
+  <Box if={waveBanner !== ""} className="dh-ovl dh-banner">
+    <Text style={{ fontSize: "34px", fontWeight: 900, letterSpacing: "0.08em", color: "#ffffff", textShadow: "0 4px 24px rgba(0,0,0,0.9)" }}>{waveBanner}</Text>
+  </Box>
+  <Box if={toast !== ""} className="dh-ovl dh-panel dh-toast"><Text style={{ fontSize: "13px", color: "#ffffff" }}>{toast}</Text></Box>
+
+  <Box if={started && !gameOver} className="dh-ovl dh-corner">
+    <Button variant="ghost" style={{ padding: "6px 12px", fontSize: "12px", background: "rgba(6,8,14,0.6)", border: "1px solid rgba(255,255,255,0.14)", color: "#dbe4f3", borderRadius: "8px" }} @click={toggleHelp}>{showHelp ? "Close" : "Help (H)"}</Button>
+  </Box>
+
+  <!-- Touch controls -->
+  <Box if={started && touchMode && !gameOver} className="dh-touch">
+    <DPad @press={padPress} @release={padRelease} />
+  </Box>
+  <Box if={started && touchMode && !gameOver} className="dh-touch-btns">
+    <Button variant="ghost" style={{ width: "72px", height: "72px", borderRadius: "999px", background: "rgba(255,90,60,0.7)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "13px", fontWeight: 800 }} @click={touchFire}>Fire</Button>
+    <Button variant="ghost" style={{ width: "64px", height: "64px", borderRadius: "999px", background: "rgba(6,8,14,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "12px", fontWeight: 700 }} @click={touchReload}>Reload</Button>
+    <Button variant="ghost" style={{ width: "64px", height: "64px", borderRadius: "999px", background: "rgba(6,8,14,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "12px", fontWeight: 700 }} @click={touchSwap}>Swap</Button>
+    <Button variant="ghost" style={{ width: "64px", height: "64px", borderRadius: "999px", background: "rgba(6,8,14,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "12px", fontWeight: 700 }} @click={touchTorch}>Torch</Button>
+  </Box>
+
+  <!-- Title -->
+  <Box if={!started} className="dh-ovl dh-title">
+    <Box className="dh-card">
+      <Text style={{ display: "block", fontSize: "12px", letterSpacing: "0.4em", color: "#ff5a3c" }}>HOLD THE YARD UNTIL DAWN</Text>
+      <Text style={{ display: "block", marginTop: "8px", fontSize: "62px", fontWeight: 900, letterSpacing: "-0.03em", lineHeight: 1, color: "#f1f3f7", textShadow: "0 0 40px rgba(255,90,60,0.35), 0 10px 30px rgba(0,0,0,0.6)" }}>Dead Hours</Text>
+      <Text style={{ display: "block", marginTop: "12px", fontSize: "15px", color: "#b8c4d6" }}>The dead come through the gates in waves. A pistol that never runs dry, a shotgun that does, and a fence that will not hold them.</Text>
+      <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "24px", flexWrap: "wrap" }}>
+        <Button variant="ghost" style={{ padding: "13px 30px", borderRadius: "10px", fontWeight: 800, fontSize: "16px", background: "#ff5a3c", color: "#1a0805", border: "1px solid #ff5a3c", boxShadow: "0 10px 30px rgba(255,90,60,0.35)" }} @click={startGame}>Start the night</Button>
+      </Stack>
+      <Box className="dh-keys">
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>W A S D</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>move · <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Shift</Text> sprint</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Mouse</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>aim · click the yard to capture the cursor, <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Esc</Text> to release</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>LMB</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>R</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>fire · reload</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>1</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>2</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Q</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>pistol · shotgun · swap</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>F</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>torch on and off</Text>
+      </Box>
+      <Box className="dh-board">
+        <Text style={{ display: "block", fontSize: "11px", letterSpacing: "0.2em", color: "#8fa0b8", marginBottom: "6px" }}>LONGEST NIGHTS</Text>
+        #if (boardStatus !== "")
+          <Text style={{ fontSize: "12px", color: "#8fa0b8" }}>{boardStatus}</Text>
+        #end
+        #each (row in boardRows)
+          <Box className="dh-row">
+            <Text style={{ fontSize: "13px", color: "#dbe4f3" }}>{row.rank + ". " + row.name}</Text>
+            <Text style={{ fontSize: "13px", color: "#ffd27a" }}>{row.score + " · wave " + row.wave}</Text>
+          </Box>
+        #end
+      </Box>
+    </Box>
+  </Box>
+
+  <!-- Paused -->
+  <Box if={started && paused && !gameOver && !showHelp} className="dh-ovl dh-title">
+    <Box className="dh-card">
+      <Text style={{ display: "block", fontSize: "26px", fontWeight: 800, color: "#ffffff" }}>Paused</Text>
+      <Text style={{ display: "block", marginTop: "10px", fontSize: "14px", color: "#c7d2e2" }}>Click the yard to take the cursor back.</Text>
+      <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "20px", flexWrap: "wrap" }}>
+        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "#ff5a3c", color: "#1a0805", border: "1px solid #ff5a3c" }} @click={resumeGame}>Resume</Button>
+        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={toggleHelp}>Controls</Button>
+        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={backToTitle}>Give up</Button>
+      </Stack>
+    </Box>
+  </Box>
+
+  <Box if={started && showHelp} className="dh-ovl dh-title">
+    <Box className="dh-card">
+      <Text style={{ display: "block", fontSize: "22px", fontWeight: 800, color: "#ffffff" }}>Controls</Text>
+      <Box className="dh-keys">
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>W A S D</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>move · <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Shift</Text> sprint</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>LMB</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>fire · headshots count double</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>R</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>RMB</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>reload</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>1</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>2</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Q</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>pistol · shotgun · swap</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Esc</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>release the cursor and pause</Text>
+      </Box>
+      <Text style={{ display: "block", marginTop: "16px", fontSize: "13px", color: "#c7d2e2" }}>Red boxes are shells, white ones medkits. Walk over them.</Text>
+      <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "20px" }}>
+        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "#ff5a3c", color: "#1a0805", border: "1px solid #ff5a3c" }} @click={toggleHelp}>Back</Button>
+      </Stack>
+    </Box>
+  </Box>
+
+  <!-- Game over -->
+  <Box if={gameOver} className="dh-ovl dh-title">
+    <Box className="dh-card">
+      <Text style={{ display: "block", fontSize: "12px", letterSpacing: "0.4em", color: "#ff5a3c" }}>THE YARD FELL</Text>
+      <Text style={{ display: "block", marginTop: "8px", fontSize: "44px", fontWeight: 900, color: "#ffffff" }}>{hud.score + " points"}</Text>
+      <Text style={{ display: "block", marginTop: "6px", fontSize: "14px", color: "#c7d2e2" }}>{"Wave " + hud.wave + " · " + hud.kills + " put down · best " + hud.best}</Text>
+      <Stack direction="horizontal" gap={8} style={{ justifyContent: "center", marginTop: "18px", flexWrap: "wrap" }}>
+        <Input value={finalName} @change={setFinalName} placeholder="Your name for the board" style={{ fontSize: "14px", minWidth: "220px" }} />
+        <Button variant="ghost" style={{ padding: "10px 20px", borderRadius: "10px", fontWeight: 700, fontSize: "14px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={postScore}>{scorePosted ? "Posted" : "Post score"}</Button>
+      </Stack>
+      #if (boardStatus !== "")
+        <Text style={{ display: "block", marginTop: "8px", fontSize: "12px", color: "#8fa0b8" }}>{boardStatus}</Text>
+      #end
+      <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "18px", flexWrap: "wrap" }}>
+        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 800, fontSize: "15px", background: "#ff5a3c", color: "#1a0805", border: "1px solid #ff5a3c" }} @click={startGame}>Another night</Button>
+        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={backToTitle}>Title</Button>
+      </Stack>
+    </Box>
+  </Box>
+</Box>

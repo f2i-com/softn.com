@@ -523,7 +523,11 @@ This performs a fresh build and serves it at `http://localhost:1420`. Set
 |------|-------------|
 | **GlamourStudio** | Salon management app |
 | **TheOffice** | Office simulation with AI character interactions |
-| **SnakeGame** | Classic snake game using `PixelGrid` and `Loop` |
+| **SnakeGame** | Classic snake game using `PixelGrid` and `Loop`, with a shared top ten in the app's own server storage |
+| **Blockscape** | A first-person voxel sandbox: a 64×64×40 island meshed into `Scene3D` `instanced` batches, pointer-locked camera, gravity, swimming, flight, a day-night cycle, and a world that saves itself |
+| **DeadHours** | A first-person zombie shooter: waves through the gates of a fenced yard at night, a pistol, a shotgun, a camera-attached torch, headshots, pickups and a shared leaderboard |
+| **Twenty48** | The sliding-tile classic with undo, a best score and a game that resumes |
+| **Blockfall** | Falling blocks in a 10×20 `PixelGrid` well: seven pieces, wall kicks, a ghost piece, hold, preview and levels |
 | **MazeEscape3D** | 3D maze game using `Scene3D` |
 | **WarbleWire** | The QXW acoustic transport — text becomes synthetic birdsong and is decoded back, over the air through `Microphone` |
 | **Pocket** | An 8-bit handheld console emulator. The CPU, PPU, APU, timer and MBC1/2/3/5 mappers are all `.logic`; `PixelCanvas` is the screen and `AudioStream` is the speaker. Runs commercial cartridges at 60fps with sound, save states and battery-backed saves |

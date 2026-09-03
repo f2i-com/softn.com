@@ -1,0 +1,264 @@
+// Dead Hours — the arena: a fenced yard at night, its obstacles as a blocker
+// list the player and the dead both slide along, the static scenery those
+// blockers are drawn as, and the ray tests a shot needs.
+
+let ARENA = 24            // half-size: the yard runs from -ARENA to +ARENA
+let blockers = []         // { x0, z0, x1, z1, h } axis-aligned, in metres
+let gates = []            // { x, z } where the dead come in
+let lampPosts = []        // { x, z }
+let sceneStatic = []
+
+function addBlocker(x0, z0, x1, z1, h) {
+  blockers.push({ x0: x0, z0: z0, x1: x1, z1: z1, h: h })
+}
+
+function box(id, x, y, z, w, h, d, color, extra) {
+  let o = { id: id, type: "box", position: { x: x, y: y, z: z }, width: w, height: h, depth: d, color: color, roughness: 0.85, metalness: 0.05 }
+  if (extra) {
+    if (extra.rot !== undefined) { o.rotation = { x: 0, y: extra.rot, z: 0 } }
+    if (extra.emissive) { o.emissive = extra.emissive; o.emissiveIntensity = extra.emissiveIntensity || 1 }
+    if (extra.opacity !== undefined) { o.opacity = extra.opacity }
+    if (extra.metal !== undefined) { o.metalness = extra.metal }
+    if (extra.rough !== undefined) { o.roughness = extra.rough }
+  }
+  return o
+}
+
+function cyl(id, x, y, z, r, h, color) {
+  return { id: id, type: "cylinder", position: { x: x, y: y, z: z }, radius: r, height: h, color: color, roughness: 0.8 }
+}
+
+// ---- Building the yard ---------------------------------------------------
+
+function crateAt(out, id, x, z, size, rot) {
+  let s = size || 1.1
+  out.push(box(id, x, s / 2, z, s, s, s, "#7a5a36", { rot: rot || 0 }))
+  out.push(box(id + "b", x, s + 0.01, z, s * 0.82, 0.03, s * 0.82, "#5a3f22", { rot: rot || 0 }))
+  addBlocker(x - s * 0.62, z - s * 0.62, x + s * 0.62, z + s * 0.62, s)
+}
+
+function barrelAt(out, id, x, z) {
+  out.push(cyl(id, x, 0.55, z, 0.42, 1.1, "#5b6570"))
+  out.push({ id: id + "r", type: "torus", position: { x: x, y: 0.75, z: z }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, radius: 0.43, tube: 0.03, color: "#2f353c" })
+  addBlocker(x - 0.45, z - 0.45, x + 0.45, z + 0.45, 1.1)
+}
+
+function carAt(out, id, x, z, rot, color) {
+  let c = Math.cos(rot)
+  let s = Math.sin(rot)
+  out.push(box(id + "b", x, 0.62, z, 4.4, 0.75, 2.0, color, { rot: rot, metal: 0.4, rough: 0.5 }))
+  out.push(box(id + "c", x - s * 0.2, 1.28, z - c * 0.2, 2.2, 0.62, 1.8, "#1c2026", { rot: rot, metal: 0.2, rough: 0.35 }))
+  let wheels = [[1.5, 1.0], [1.5, -1.0], [-1.5, 1.0], [-1.5, -1.0]]
+  let i = 0
+  while (i < 4) {
+    let wx = x + wheels[i][0] * c - wheels[i][1] * s
+    let wz = z + wheels[i][0] * s + wheels[i][1] * c
+    out.push({ id: id + "w" + i, type: "cylinder", position: { x: wx, y: 0.36, z: wz }, rotation: { x: Math.PI / 2, y: 0, z: rot }, radius: 0.36, height: 0.3, color: "#15181c", roughness: 0.9 })
+    i = i + 1
+  }
+  // Headlights, dead but for a glow.
+  out.push(box(id + "h1", x + c * 2.21 - s * 0.7, 0.7, z + s * 2.21 + c * 0.7, 0.05, 0.2, 0.4, "#ffe9b0", { rot: rot, emissive: "#ffd27a", emissiveIntensity: 0.6 }))
+  out.push(box(id + "h2", x + c * 2.21 + s * 0.7, 0.7, z + s * 2.21 - c * 0.7, 0.05, 0.2, 0.4, "#ffe9b0", { rot: rot, emissive: "#ffd27a", emissiveIntensity: 0.6 }))
+  // A car at an angle gets a blocker box big enough to cover its corners.
+  let ex = Math.abs(c) * 2.3 + Math.abs(s) * 1.1
+  let ez = Math.abs(s) * 2.3 + Math.abs(c) * 1.1
+  addBlocker(x - ex, z - ez, x + ex, z + ez, 1.5)
+}
+
+function lampAt(out, id, x, z) {
+  out.push(cyl(id + "p", x, 2.3, z, 0.08, 4.6, "#3a4048"))
+  out.push(box(id + "a", x, 4.5, z, 0.7, 0.12, 0.3, "#3a4048"))
+  out.push(box(id + "l", x, 4.38, z, 0.5, 0.14, 0.24, "#fff3c4", { emissive: "#ffe08a", emissiveIntensity: 2.5 }))
+  addBlocker(x - 0.15, z - 0.15, x + 0.15, z + 0.15, 4.6)
+  lampPosts.push({ x: x, z: z })
+}
+
+function shedAt(out, id, x, z, w, d, h, color) {
+  out.push(box(id, x, h / 2, z, w, h, d, color))
+  out.push(box(id + "r", x, h + 0.25, z, w + 0.6, 0.5, d + 0.6, "#2b2f36"))
+  out.push(box(id + "d", x, 1.0, z + d / 2 + 0.02, 1.1, 2.0, 0.06, "#4a3a2a"))
+  out.push(box(id + "w", x + w * 0.3, 1.6, z + d / 2 + 0.02, 0.9, 0.7, 0.04, "#1a2130", { emissive: "#243a5a", emissiveIntensity: 0.4 }))
+  addBlocker(x - w / 2, z - d / 2, x + w / 2, z + d / 2, h)
+}
+
+function graveAt(out, id, x, z, rot) {
+  out.push(box(id, x, 0.45, z, 0.6, 0.9, 0.14, "#6b7078", { rot: rot }))
+  out.push({ id: id + "t", type: "cylinder", position: { x: x, y: 0.9, z: z }, rotation: { x: Math.PI / 2, y: 0, z: rot }, radius: 0.3, height: 0.14, color: "#6b7078" })
+  addBlocker(x - 0.32, z - 0.15, x + 0.32, z + 0.15, 0.9)
+}
+
+function fenceRun(out, id, x0, z0, x1, z1) {
+  let dx = x1 - x0
+  let dz = z1 - z0
+  let len = Math.sqrt(dx * dx + dz * dz)
+  let n = Math.max(1, Math.round(len / 2.4))
+  let rot = Math.atan2(dx, dz)
+  let i = 0
+  while (i <= n) {
+    let t = i / n
+    out.push(cyl(id + "p" + i, x0 + dx * t, 0.7, z0 + dz * t, 0.07, 1.4, "#3d3229"))
+    i = i + 1
+  }
+  out.push(box(id + "r1", (x0 + x1) / 2, 1.15, (z0 + z1) / 2, 0.08, 0.1, len, "#4a3d31", { rot: rot }))
+  out.push(box(id + "r2", (x0 + x1) / 2, 0.55, (z0 + z1) / 2, 0.08, 0.1, len, "#4a3d31", { rot: rot }))
+  // A chain-link mesh between the rails, drawn as a thin translucent sheet.
+  out.push(box(id + "m", (x0 + x1) / 2, 0.85, (z0 + z1) / 2, 0.02, 0.62, len, "#8d98a5", { rot: rot, opacity: 0.22 }))
+}
+
+function buildArena() {
+  blockers = []
+  gates = []
+  lampPosts = []
+  let out = []
+  let A = ARENA
+  out.push({ id: "ground", type: "plane", position: { x: 0, y: 0, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 400, height: 400, color: "#262b2a", roughness: 1 })
+  // Worn paths across the yard.
+  out.push({ id: "path1", type: "plane", position: { x: 0, y: 0.01, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: 3.2, height: A * 2, color: "#33342f", roughness: 1 })
+  out.push({ id: "path2", type: "plane", position: { x: 0, y: 0.01, z: 0 }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: A * 2, height: 3.2, color: "#33342f", roughness: 1 })
+
+  // Fences with a gate in the middle of each side.
+  let g = 3.2
+  fenceRun(out, "fN1", -A, -A, -g, -A)
+  fenceRun(out, "fN2", g, -A, A, -A)
+  fenceRun(out, "fS1", -A, A, -g, A)
+  fenceRun(out, "fS2", g, A, A, A)
+  fenceRun(out, "fW1", -A, -A, -A, -g)
+  fenceRun(out, "fW2", -A, g, -A, A)
+  fenceRun(out, "fE1", A, -A, A, -g)
+  fenceRun(out, "fE2", A, g, A, A)
+  gates.push({ x: 0, z: -A - 2 })
+  gates.push({ x: 0, z: A + 2 })
+  gates.push({ x: -A - 2, z: 0 })
+  gates.push({ x: A + 2, z: 0 })
+  // Fence blockers: the four sides minus the gates.
+  addBlocker(-A - 0.2, -A - 0.2, -g, -A + 0.2, 1.4)
+  addBlocker(g, -A - 0.2, A + 0.2, -A + 0.2, 1.4)
+  addBlocker(-A - 0.2, A - 0.2, -g, A + 0.2, 1.4)
+  addBlocker(g, A - 0.2, A + 0.2, A + 0.2, 1.4)
+  addBlocker(-A - 0.2, -A - 0.2, -A + 0.2, -g, 1.4)
+  addBlocker(-A - 0.2, g, -A + 0.2, A + 0.2, 1.4)
+  addBlocker(A - 0.2, -A - 0.2, A + 0.2, -g, 1.4)
+  addBlocker(A - 0.2, g, A + 0.2, A + 0.2, 1.4)
+
+  // Lamps at the corners of the crossroads and by the shed.
+  lampAt(out, "lampA", -6, -6)
+  lampAt(out, "lampB", 6, 6)
+  lampAt(out, "lampC", 14, -12)
+  lampAt(out, "lampD", -14, 12)
+
+  shedAt(out, "shed", -13, -14, 7, 5, 3.2, "#3d4a55")
+  carAt(out, "car1", 10, -4, 0.5, "#7a2e2e")
+  carAt(out, "car2", -9, 9, -1.2, "#2e4c7a")
+  carAt(out, "car3", 15, 14, 2.4, "#6a6f5a")
+
+  crateAt(out, "cr1", 4, -12, 1.2, 0.2)
+  crateAt(out, "cr2", 5.3, -12.2, 1.0, -0.3)
+  crateAt(out, "cr3", 4.6, -10.9, 1.1, 0.7)
+  crateAt(out, "cr4", -4, 14, 1.3, 0.1)
+  crateAt(out, "cr5", 16, 3, 1.1, 0.4)
+  crateAt(out, "cr6", -17, -3, 1.2, -0.6)
+  barrelAt(out, "br1", 7, 12)
+  barrelAt(out, "br2", 7.9, 12.4)
+  barrelAt(out, "br3", -12, -6)
+  barrelAt(out, "br4", 12, 9)
+
+  graveAt(out, "gv1", -16, 17, 0.1)
+  graveAt(out, "gv2", -17.5, 18, -0.2)
+  graveAt(out, "gv3", -19, 16.5, 0.3)
+  graveAt(out, "gv4", 18, -17, 0.15)
+  graveAt(out, "gv5", 19.5, -18.5, -0.1)
+
+  // A scattering of dead trees outside the fence, for the fog to catch.
+  let i = 0
+  while (i < 18) {
+    let ang = i / 18 * Math.PI * 2
+    let r = A + 6 + (i % 3) * 3
+    let tx = Math.cos(ang) * r
+    let tz = Math.sin(ang) * r
+    out.push(cyl("tree" + i, tx, 2.2, tz, 0.22, 4.4, "#2a2622"))
+    out.push(box("treeb" + i, tx + 0.5, 3.6, tz, 1.4, 0.16, 0.16, "#2a2622", { rot: ang }))
+    out.push(box("treec" + i, tx - 0.4, 3.0, tz, 1.1, 0.14, 0.14, "#2a2622", { rot: ang + 1.3 }))
+    i = i + 1
+  }
+  out.push({ id: "moon", type: "sphere", radius: 4, position: { x: -60, y: 55, z: -90 }, color: "#e8eeff", emissive: "#c9d4ff", emissiveIntensity: 1.6 })
+  sceneStatic = out
+}
+
+// ---- Movement against the blockers ---------------------------------------
+
+function circleBlocked(x, z, r) {
+  let i = 0
+  while (i < blockers.length) {
+    let b = blockers[i]
+    if (x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) { return true }
+    i = i + 1
+  }
+  return false
+}
+
+// Slide a circle by (dx, dz), one axis at a time. Returns the new position
+// through moveX / moveZ.
+let moveX = 0
+let moveZ = 0
+function slide(x, z, dx, dz, r) {
+  let nx = x + dx
+  if (!circleBlocked(nx, z, r)) { x = nx }
+  let nz = z + dz
+  if (!circleBlocked(x, nz, r)) { z = nz }
+  moveX = x
+  moveZ = z
+}
+
+// ---- Rays -----------------------------------------------------------------
+
+// Distance along a ray to the first blocker it enters, or a large number.
+function rayBlockerDist(ox, oy, oz, dx, dy, dz) {
+  let best = 1e9
+  let i = 0
+  while (i < blockers.length) {
+    let b = blockers[i]
+    let t = rayAabb(ox, oy, oz, dx, dy, dz, b.x0, 0, b.z0, b.x1, b.h, b.z1)
+    if (t >= 0 && t < best) { best = t }
+    i = i + 1
+  }
+  return best
+}
+
+function rayAabb(ox, oy, oz, dx, dy, dz, x0, y0, z0, x1, y1, z1) {
+  let tmin = -1e9
+  let tmax = 1e9
+  if (dx !== 0) {
+    let a = (x0 - ox) / dx
+    let b = (x1 - ox) / dx
+    if (a > b) { let s = a; a = b; b = s }
+    if (a > tmin) { tmin = a }
+    if (b < tmax) { tmax = b }
+  } else if (ox < x0 || ox > x1) { return -1 }
+  if (dy !== 0) {
+    let a = (y0 - oy) / dy
+    let b = (y1 - oy) / dy
+    if (a > b) { let s = a; a = b; b = s }
+    if (a > tmin) { tmin = a }
+    if (b < tmax) { tmax = b }
+  } else if (oy < y0 || oy > y1) { return -1 }
+  if (dz !== 0) {
+    let a = (z0 - oz) / dz
+    let b = (z1 - oz) / dz
+    if (a > b) { let s = a; a = b; b = s }
+    if (a > tmin) { tmin = a }
+    if (b < tmax) { tmax = b }
+  } else if (oz < z0 || oz > z1) { return -1 }
+  if (tmax < 0 || tmin > tmax) { return -1 }
+  return tmin < 0 ? 0 : tmin
+}
+
+function raySphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
+  let lx = cx - ox
+  let ly = cy - oy
+  let lz = cz - oz
+  let tca = lx * dx + ly * dy + lz * dz
+  if (tca < 0) { return -1 }
+  let d2 = lx * lx + ly * ly + lz * lz - tca * tca
+  if (d2 > r * r) { return -1 }
+  return tca - Math.sqrt(r * r - d2)
+}

@@ -18,6 +18,10 @@ export interface Demo {
  */
 const SHELF_ORDER = [
   'snake-game',
+  'blockscape',
+  'dead-hours',
+  'twenty48',
+  'blockfall',
   // Second because it is the one that makes the point fastest: a console,
   // running a real cartridge, written in the same .logic as everything else.
   'pocket',

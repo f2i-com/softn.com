@@ -1,0 +1,81 @@
+<logic src="../logic/main.logic" />
+
+<style>
+.t-root { min-height: 100%; background: radial-gradient(120% 90% at 50% 0%, #2b2622 0%, #1a1714 60%, #12100e 100%); font-family: "Segoe UI", system-ui, sans-serif; color: #f9f6f2; padding: 24px 16px 40px; user-select: none; }
+.t-wrap { max-width: 460px; margin: 0 auto; }
+.t-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.t-badge { background: #3c3a32; border-radius: 8px; padding: 6px 14px; min-width: 76px; text-align: center; }
+.t-board { position: relative; width: 100%; aspect-ratio: 1; background: #3c3a32; border-radius: 12px; padding: 5px; box-shadow: 0 20px 50px rgba(0,0,0,0.45); }
+.t-cell { position: absolute; width: 25%; height: 25%; padding: 5px; }
+.t-cellin { width: 100%; height: 100%; border-radius: 8px; background: rgba(238,228,218,0.16); }
+.t-tile { animation: t-pop 140ms ease both; }
+.t-tile-fresh { animation: t-in 160ms ease both; }
+@keyframes t-pop { 0% { transform: scale(1); } 50% { transform: scale(1.14); } 100% { transform: scale(1); } }
+@keyframes t-in { 0% { transform: scale(0.4); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+.t-over { position: absolute; top: 0; left: 0; right: 0; bottom: 0; border-radius: 12px; background: rgba(26,23,20,0.82); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 12px; z-index: 10; animation: t-fade 300ms ease both; }
+@keyframes t-fade { from { opacity: 0; } to { opacity: 1; } }
+.t-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.t-kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; background: #3c3a32; font-family: ui-monospace, monospace; font-size: 11px; }
+@media (max-width: 480px) { .t-root { padding: 14px 10px 24px; } }
+</style>
+
+<Box className="t-root">
+  <Loop interval={40} running={true} @tick={pump} />
+  <Box className="t-wrap">
+    <Box className="t-head">
+      <Box>
+        <Text style={{ display: "block", fontSize: "44px", fontWeight: 900, letterSpacing: "-0.03em", lineHeight: 1, color: "#f9f6f2" }}>2048</Text>
+        <Text style={{ display: "block", fontSize: "13px", color: "#a89f93", marginTop: "4px" }}>Slide, merge, reach the tile.</Text>
+      </Box>
+      <Stack direction="horizontal" gap={8}>
+        <Box className="t-badge">
+          <Text style={{ display: "block", fontSize: "10px", letterSpacing: "0.14em", color: "#a89f93" }}>SCORE</Text>
+          <Text style={{ display: "block", fontSize: "20px", fontWeight: 800, color: "#f9f6f2" }}>{score}</Text>
+        </Box>
+        <Box className="t-badge">
+          <Text style={{ display: "block", fontSize: "10px", letterSpacing: "0.14em", color: "#a89f93" }}>BEST</Text>
+          <Text style={{ display: "block", fontSize: "20px", fontWeight: 800, color: "#f9f6f2" }}>{best}</Text>
+        </Box>
+      </Stack>
+    </Box>
+
+    <Box className="t-board">
+      #each (n in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+        <Box className="t-cell" style={{ left: ((n % 4) * 25) + "%", top: (Math.floor(n / 4) * 25) + "%" }}>
+          <Box className="t-cellin" />
+        </Box>
+      #end
+      #each (t in board)
+        <Box className={t.fresh ? "t-tile-fresh" : (t.merged ? "t-tile" : "")} style={tileStyle(t)}>
+          <Box style={faceStyle(t)}>{t.value}</Box>
+        </Box>
+      #end
+      <Box if={won && !keepGoing} className="t-over">
+        <Text style={{ fontSize: "34px", fontWeight: 900, color: "#edc22e" }}>You made 2048</Text>
+        <Stack direction="horizontal" gap={8}>
+          <Button variant="ghost" style={{ padding: "10px 20px", borderRadius: "8px", background: "#edc22e", color: "#3c3a32", fontWeight: 800 }} @click={continueGame}>Keep going</Button>
+          <Button variant="ghost" style={{ padding: "10px 20px", borderRadius: "8px", background: "#8f7a66", color: "#f9f6f2", fontWeight: 700 }} @click={newGame}>New game</Button>
+        </Stack>
+      </Box>
+      <Box if={over} className="t-over">
+        <Text style={{ fontSize: "30px", fontWeight: 900, color: "#f9f6f2" }}>No moves left</Text>
+        <Text style={{ fontSize: "14px", color: "#a89f93" }}>{score + " points in " + moves + " moves"}</Text>
+        <Stack direction="horizontal" gap={8}>
+          <Button variant="ghost" style={{ padding: "10px 20px", borderRadius: "8px", background: "#8f7a66", color: "#f9f6f2", fontWeight: 700 }} @click={undo}>Undo</Button>
+          <Button variant="ghost" style={{ padding: "10px 20px", borderRadius: "8px", background: "#edc22e", color: "#3c3a32", fontWeight: 800 }} @click={newGame}>Try again</Button>
+        </Stack>
+      </Box>
+    </Box>
+
+    <Box className="t-foot">
+      <Text style={{ fontSize: "12px", color: "#a89f93" }}><Text className="t-kbd" style={{ fontSize: "11px", color: "#f9f6f2" }}>← ↑ → ↓</Text> or WASD · <Text className="t-kbd" style={{ fontSize: "11px", color: "#f9f6f2" }}>Z</Text> undo · <Text className="t-kbd" style={{ fontSize: "11px", color: "#f9f6f2" }}>R</Text> new</Text>
+      <Stack direction="horizontal" gap={6}>
+        <Button variant="ghost" style={{ padding: "7px 14px", borderRadius: "8px", background: "#3c3a32", color: "#f9f6f2", fontSize: "13px" }} @click={undo}>Undo</Button>
+        <Button variant="ghost" style={{ padding: "7px 14px", borderRadius: "8px", background: "#8f7a66", color: "#f9f6f2", fontSize: "13px", fontWeight: 700 }} @click={newGame}>New game</Button>
+      </Stack>
+    </Box>
+    <Box style={{ display: "flex", justifyContent: "center", marginTop: "18px" }}>
+      <DPad @press={padPress} @release={padRelease} />
+    </Box>
+  </Box>
+</Box>

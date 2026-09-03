@@ -64,14 +64,6 @@
     "size": 35571
   },
   {
-    "id": "signal-lost",
-    "file": "SignalLost.softn",
-    "name": "Signal Lost",
-    "description": "A three-act game: a form briefing, a PixelGrid deck and a Scene3D beacon array, with sound",
-    "primary": "#1f6feb",
-    "size": 203047
-  },
-  {
     "id": "snake-game",
     "file": "SnakeGame.softn",
     "name": "SnakeGame",
@@ -118,5 +110,37 @@
     "description": "First-person 3D narrative tragicomedy (vertical slice) — laid off by an avatar, home by dinner, a business by midnight. Fully voiced.",
     "primary": "#f59e0b",
     "size": 17898541
+  },
+  {
+    "id": "blockscape",
+    "file": "Blockscape.softn",
+    "name": "Blockscape",
+    "description": "A first-person voxel sandbox: an island of blocks to mine, build on and save, with gravity, swimming, flight and a day-night cycle",
+    "primary": "#5cae4a",
+    "size": 73927
+  },
+  {
+    "id": "dead-hours",
+    "file": "DeadHours.softn",
+    "name": "Dead Hours",
+    "description": "A first-person zombie shooter: hold a fenced yard at night against waves of the dead with a pistol and a shotgun",
+    "primary": "#ff5a3c",
+    "size": 255272
+  },
+  {
+    "id": "twenty48",
+    "file": "Twenty48.softn",
+    "name": "2048",
+    "description": "The sliding-tile classic: merge equal tiles to reach 2048 and beyond, with undo and a best score",
+    "primary": "#edc22e",
+    "size": 15958
+  },
+  {
+    "id": "blockfall",
+    "file": "Blockfall.softn",
+    "name": "Blockfall",
+    "description": "Falling blocks in a 10×20 well: seven pieces, wall kicks, a ghost piece, hold, a preview, and levels that speed up",
+    "primary": "#22d3ee",
+    "size": 20086
   }
 ]
