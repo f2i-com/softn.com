@@ -57,8 +57,16 @@ final class Seed
             $pdo->prepare('UPDATE apps SET category = ? WHERE slug = ? AND category != ?')->execute([$cat, $slug, $cat]);
         }
 
-        $existingSlugs = $pdo->query('SELECT slug FROM apps')->fetchAll(PDO::FETCH_COLUMN);
-        $existingSet = array_flip($existingSlugs);
+        $existing = $pdo->query(<<<'SQL'
+SELECT a.slug, a.name, v.size, v.sha256
+FROM apps a
+LEFT JOIN versions v ON a.slug = v.slug AND a.latest_version = v.version
+SQL)->fetchAll(PDO::FETCH_ASSOC);
+
+        $existingMap = [];
+        foreach ($existing as $r) {
+            $existingMap[$r['slug']] = $r;
+        }
 
         // A second request arriving while this one seeds must not seed too.
         $lock = fopen("$dir/seed.lock", 'c');
@@ -69,17 +77,33 @@ final class Seed
                 $file = "$demos/" . basename($entry['file']);
                 if (!is_file($file)) continue;
                 $id = is_string($entry['id'] ?? null) ? $entry['id'] : Apps::slugify((string) ($entry['name'] ?? $entry['file']));
-                if (isset($existingSet[$id])) continue;
+                $currentMeta = [
+                    'slug' => $id,
+                    'name' => is_string($entry['name'] ?? null) ? $entry['name'] : null,
+                    'description' => is_string($entry['description'] ?? null) ? $entry['description'] : null,
+                    'author' => 'SoftN',
+                    'category' => self::CATEGORY[$id] ?? 'demos',
+                    'tags' => self::TAGS[$id] ?? '',
+                    'primary' => is_string($entry['primary'] ?? null) ? $entry['primary'] : null,
+                ];
+
+                if (isset($existingMap[$id])) {
+                    // Check if bundle on disk was updated (size or sha256 changed)
+                    $diskSize = filesize($file);
+                    $dbSize = (int) ($existingMap[$id]['size'] ?? 0);
+                    $dbSha = (string) ($existingMap[$id]['sha256'] ?? '');
+                    if ($diskSize !== $dbSize || hash_file('sha256', $file) !== $dbSha) {
+                        try {
+                            Apps::updateSeedApp($id, $file, $currentMeta);
+                        } catch (Throwable $e) {
+                            error_log("softn-api: could not update seed app $file: " . $e->getMessage());
+                        }
+                    }
+                    continue;
+                }
+
                 try {
-                    $created = Apps::create($file, [
-                        'slug' => $id,
-                        'name' => is_string($entry['name'] ?? null) ? $entry['name'] : null,
-                        'description' => is_string($entry['description'] ?? null) ? $entry['description'] : null,
-                        'author' => 'SoftN',
-                        'category' => self::CATEGORY[$id] ?? 'demos',
-                        'tags' => self::TAGS[$id] ?? '',
-                        'primary' => is_string($entry['primary'] ?? null) ? $entry['primary'] : null,
-                    ], 'seed');
+                    $created = Apps::create($file, $currentMeta, 'seed');
                     // A screenshot beside the bundle, taken by the build, is the
                     // demo's picture: a card with the app on it, not an icon.
                     $base = preg_replace('/\.softn$/', '', basename($entry['file']));

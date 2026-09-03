@@ -259,6 +259,20 @@ function buildBundle(bundleName) {
         fs.copyFileSync(iconSource, path.join(iconDir, `${bundleName}.svg`));
         console.log(`Served icon:    demos/icons/${bundleName}.svg`);
       }
+
+      // Also update softn-api data directory if present
+      const slugCandidate = (listedEntry && listedEntry.id) || bundleName.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+      const possibleApiDirs = [
+        process.env.SOFTN_DATA_DIR ? path.join(process.env.SOFTN_DATA_DIR, 'apps', slugCandidate) : null,
+        path.join(__dirname, '..', '..', 'softn-api', 'data', 'apps', slugCandidate)
+      ].filter(Boolean);
+
+      for (const apiDir of possibleApiDirs) {
+        if (fs.existsSync(apiDir)) {
+          fs.writeFileSync(path.join(apiDir, 'v1.softn'), bundleData);
+          console.log(`API sync:       ${path.relative(path.join(__dirname, '..', '..'), path.join(apiDir, 'v1.softn'))}`);
+        }
+      }
     }
   }
 

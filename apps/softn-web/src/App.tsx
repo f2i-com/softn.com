@@ -989,35 +989,35 @@ function App(): React.ReactElement {
     }
 
     if (urlInit.appName) {
-      getCachedAppByName(urlInit.appName).then((cachedApp) => {
-        if (cachedApp) {
-          // The tab this component pre-created is under the same rule as the
-          // one ?open= makes: a cached bundle that no longer reads as a bundle
-          // throws before processBundleData can adopt it, so the placeholder is
-          // retired here rather than in there.
-          processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined, cachedApp.directorySlug)
-            .then((appName) => {
-              if (appName === null && urlTabId) discardPlaceholder(urlTabId);
-            });
+      // Always fetch the latest bundle from the directory API so updates/changes
+      // are loaded immediately, with graceful offline fallback to cached app.
+      if (urlTabId) discardPlaceholder(urlTabId);
+      openFromUrl(`/api/apps/${encodeURIComponent(urlInit.appName!)}/bundle.softn`).then((appName) => {
+        if (appName) {
+          window.history.replaceState({}, '', entryUrl(buildAppUrl(appName, urlInit.page)));
           urlReadyRef.current = true;
-          return;
+        } else {
+          // If server fetch failed (e.g. offline), fall back to cached version
+          getCachedAppByName(urlInit.appName!).then((cachedApp) => {
+            if (cachedApp) {
+              processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined, cachedApp.directorySlug)
+                .then((cachedOpened) => {
+                  if (cachedOpened) {
+                    window.history.replaceState({}, '', entryUrl(buildAppUrl(cachedOpened, urlInit.page)));
+                  } else {
+                    setOpenTabs([]);
+                    setActiveTabId(null);
+                    window.history.replaceState({}, '', entryUrl(buildAppUrl(null)));
+                  }
+                });
+            } else {
+              setOpenTabs([]);
+              setActiveTabId(null);
+              window.history.replaceState({}, '', entryUrl(buildAppUrl(null)));
+            }
+            urlReadyRef.current = true;
+          });
         }
-        // Not in this browser's cache. The name may be an app's slug in the
-        // site's directory — a link someone shared to an app this browser has
-        // never seen — and the directory serves it as a bundle, so a shared
-        // link opens the app rather than landing on Home. The placeholder this
-        // component made is retired first; openFromUrl makes its own.
-        if (urlTabId) discardPlaceholder(urlTabId);
-        openFromUrl(`/api/apps/${encodeURIComponent(urlInit.appName!)}/bundle.softn`).then((appName) => {
-          if (appName) {
-            window.history.replaceState({}, '', entryUrl(buildAppUrl(appName, urlInit.page)));
-          } else {
-            setOpenTabs([]);
-            setActiveTabId(null);
-            window.history.replaceState({}, '', entryUrl(buildAppUrl(null)));
-          }
-          urlReadyRef.current = true;
-        });
       });
     } else {
       urlReadyRef.current = true;

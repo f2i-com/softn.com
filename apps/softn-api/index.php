@@ -233,13 +233,14 @@ function handle(string $handler, array $args, Request $req): Response
         }
 
         case 'bundle': {
+            Seed::ifEmpty();
             $slug = Apps::resolveSlug($args[0]);
             $row = Apps::row($slug);
             $v = isset($req->query['v']) ? max(1, (int) $req->query['v']) : null;
             $ver = Apps::version($slug, $v);
             $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
             if (!is_file($path)) throw new ApiError(404, 'The bundle file is missing.');
-            $headers = ['Cache-Control' => 'public, max-age=300', 'ETag' => '"' . $ver['sha256'] . '"'];
+            $headers = ['Cache-Control' => 'no-cache, must-revalidate', 'ETag' => '"' . $ver['sha256'] . '"'];
             if (($req->query['download'] ?? '') === '1') {
                 $headers['Content-Disposition'] = 'attachment; filename="' . $slug . '.softn"';
             }
