@@ -178,7 +178,8 @@
       <Box className="pp-row">
         <Button size="xs" variant={cameraMode === "overview" ? "primary" : "secondary"} @click={() => setCameraView("overview")}>Reserve</Button>
         <Button size="xs" variant={cameraMode === "lake" ? "primary" : "secondary"} @click={() => setCameraView("lake")}>💧 Lake</Button>
-        <Button size="xs" variant={cameraMode === "forest" ? "primary" : "secondary"} @click={() => setCameraView("forest")}>🌲 Forest</Button>
+        <Button size="xs" variant={cameraMode === "forest" ? "primary" : "secondary"} @click={() => setCameraView("forest")}>🌲 Pine Ridge</Button>
+        <Button size="xs" variant={cameraMode === "meadow" ? "primary" : "secondary"} @click={() => setCameraView("meadow")}>🌸 Meadow</Button>
         <Button size="xs" variant={cameraMode === "topdown" ? "primary" : "secondary"} @click={() => setCameraView("topdown")}>Top Map</Button>
         <Button size="xs" variant={cameraMode === "cinematic" ? "primary" : "secondary"} @click={() => setCameraView("cinematic")}>Cinematic</Button>
       </Box>
@@ -203,22 +204,22 @@
     <!-- Helper Tip Overlay -->
     <Box className="pp-card pp-tip">
       <Text size="xs" style={{ color: "#f8fafc", fontSize: "12px", lineHeight: "1.4" }}>
-        💡 <span style={{ color: "#34d399", fontWeight: 700 }}>Orbit:</span> Drag <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#34d399", fontWeight: 700 }}>Zoom:</span> Scroll <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#fbbf24", fontWeight: 700 }}>Day {dayCount} ({season})</span> <span style={{ color: "#6ee7b7" }}>•</span> Click any rabbit or fox to inspect!
+        💡 <span style={{ color: "#34d399", fontWeight: 700 }}>70×70 Open Reserve</span> <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#38bdf8", fontWeight: 700 }}>Dual Needs:</span> Food + Water <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#fbbf24", fontWeight: 700 }}>Day {dayCount} ({season})</span> <span style={{ color: "#6ee7b7" }}>•</span> Click animal to inspect genetics!
       </Text>
     </Box>
 
     <!-- Real-time Population Dynamics Card -->
     <Box className="pp-card pp-graph-panel">
       <Stack direction="horizontal" justify="between" align="center" style={{ marginBottom: 4 }}>
-        <Text size="xs" style={{ fontWeight: 700, color: "#f8fafc" }}>📈 Population Dynamics</Text>
-        <Text size="xs" style={{ color: "#34d399", fontSize: "11px", fontWeight: 600 }}>{season}</Text>
+        <Text size="xs" style={{ fontWeight: 700, color: "#f8fafc" }}>📈 Population & Evolution</Text>
+        <Text size="xs" style={{ color: "#34d399", fontSize: "11px", fontWeight: 600 }}>Max Gen {maxGeneration}</Text>
       </Stack>
 
       <!-- Legend with Current Counts -->
       <Stack direction="horizontal" gap="xs" style={{ marginBottom: 6 }}>
-        <Text size="xs" style={{ color: "#34d399", fontSize: "10px", fontWeight: 600 }}>● Grass ({grassCount})</Text>
+        <Text size="xs" style={{ color: "#34d399", fontSize: "10px", fontWeight: 600 }}>● Flora ({grassCount})</Text>
         <Text size="xs" style={{ color: "#38bdf8", fontSize: "10px", fontWeight: 600 }}>● Prey ({rabbitCount})</Text>
-        <Text size="xs" style={{ color: "#fb923c", fontSize: "10px", fontWeight: 600 }}>● Fox ({foxCount})</Text>
+        <Text size="xs" style={{ color: "#fb923c", fontSize: "10px", fontWeight: 600 }}>● Apex ({foxCount})</Text>
       </Stack>
 
       <!-- Visual Multi-Bar Sparkline -->
@@ -243,30 +244,44 @@
         </Stack>
 
         <Stack direction="vertical" gap="xs">
-          <!-- State Badge -->
-          <Stack direction="horizontal" justify="between">
-            <Text size="xs" style={{ color: "#a7f3d0" }}>Status:</Text>
-            <Badge size="xs" variant="info">{selectedEntity.state}</Badge>
+          <!-- State & Generation -->
+          <Stack direction="horizontal" justify="between" align="center">
+            <Badge size="xs" variant="info">Gen {selectedEntity.generation}</Badge>
+            <Badge size="xs" variant="warning">{selectedEntity.state}</Badge>
           </Stack>
 
-          <!-- Energy Bar -->
+          <!-- Energy Bar (Food) -->
           <Stack direction="horizontal" justify="between">
-            <Text size="xs" style={{ color: "#a7f3d0" }}>Energy:</Text>
+            <Text size="xs" style={{ color: "#a7f3d0" }}>Hunger / Energy:</Text>
             <Text size="xs" style={{ fontWeight: 700, color: "#38bdf8" }}>{Math.round(selectedEntity.energy)} / {selectedEntity.maxEnergy}</Text>
           </Stack>
           <Box style={{ width: "100%", height: 6, background: "rgba(0,0,0,0.5)", borderRadius: 3, overflow: "hidden" }}>
             <Box style={{ width: Math.min(100, (selectedEntity.energy / selectedEntity.maxEnergy) * 100) + "%", height: "100%", background: "#34d399" }} />
           </Box>
 
-          <!-- Age & Offspring -->
+          <!-- Hydration Bar (Water) -->
           <Stack direction="horizontal" justify="between">
-            <Text size="xs" style={{ color: "#a7f3d0" }}>Age:</Text>
-            <Text size="xs" style={{ color: "#f8fafc" }}>{selectedEntity.age} ticks</Text>
+            <Text size="xs" style={{ color: "#a7f3d0" }}>Thirst / Water:</Text>
+            <Text size="xs" style={{ fontWeight: 700, color: "#60a5fa" }}>{Math.round(selectedEntity.hydration)} / {selectedEntity.maxHydration}</Text>
+          </Stack>
+          <Box style={{ width: "100%", height: 6, background: "rgba(0,0,0,0.5)", borderRadius: 3, overflow: "hidden" }}>
+            <Box style={{ width: Math.min(100, (selectedEntity.hydration / selectedEntity.maxHydration) * 100) + "%", height: "100%", background: "#38bdf8" }} />
+          </Box>
+
+          <!-- Genetic Traits -->
+          <Stack direction="horizontal" justify="between">
+            <Text size="xs" style={{ color: "#a7f3d0" }}>Speed Gene:</Text>
+            <Text size="xs" style={{ color: "#fef08a", fontWeight: 700 }}>{Math.round(selectedEntity.traits.speed * 100)}%</Text>
+          </Stack>
+          <Stack direction="horizontal" justify="between">
+            <Text size="xs" style={{ color: "#a7f3d0" }}>Sight Gene:</Text>
+            <Text size="xs" style={{ color: "#fef08a", fontWeight: 700 }}>{Math.round(selectedEntity.traits.sight * 100)}%</Text>
           </Stack>
 
+          <!-- Age & Offspring -->
           <Stack direction="horizontal" justify="between">
-            <Text size="xs" style={{ color: "#a7f3d0" }}>Offspring:</Text>
-            <Text size="xs" style={{ color: "#f8fafc" }}>{selectedEntity.offspringCount}</Text>
+            <Text size="xs" style={{ color: "#a7f3d0" }}>Age / Offspring:</Text>
+            <Text size="xs" style={{ color: "#f8fafc" }}>{selectedEntity.age}t · {selectedEntity.offspringCount} kits</Text>
           </Stack>
 
           <Button size="xs" variant="primary" style={{ marginTop: 4 }} @click={() => setCameraView("follow")}>
