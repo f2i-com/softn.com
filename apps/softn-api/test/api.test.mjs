@@ -478,7 +478,7 @@ test('the share page carries the app into its meta tags', skip, async () => {
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.match(html, /<title>SnakeGame — SoftN<\/title>/);
-  assert.match(html, /property="og:image" content="http:\/\/127\.0\.0\.1:\d+\/api\/apps\/snake-game\/thumbnail"/);
+  assert.match(html, /property="og:image" content="http:\/\/127\.0\.0\.1:\d+\/api\/apps\/snake-game\/thumbnail\?v=\d+"/);
   assert.match(html, /property="og:url" content="http:\/\/127\.0\.0\.1:\d+\/app\/snake-game"/);
   assert.match(html, /name="softn:app" content="snake-game"/);
   assert.doesNotMatch(html, /og:image:width/);
