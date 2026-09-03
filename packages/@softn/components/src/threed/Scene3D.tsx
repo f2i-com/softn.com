@@ -1554,8 +1554,10 @@ export function Scene3D({
       renderer.domElement.addEventListener('pointerup', mlPointerUp);
       renderer.domElement.addEventListener('pointercancel', mlPointerUp);
       renderer.domElement.addEventListener('lostpointercapture', mlPointerUp);
-      canvas.addEventListener('contextmenu', swallowContextMenu);
     }
+    // A right button that reaches the app as a drag must not also open the
+    // browser menu on release; OrbitControls swallows it the same way.
+    canvas.addEventListener('contextmenu', swallowContextMenu);
 
     if (enablePointerLock) {
       canvas.style.cursor = 'crosshair';
@@ -1629,8 +1631,11 @@ export function Scene3D({
       }
     };
 
+    // Left, middle and right buttons all flow through pointerdown/move/up
+    // with `button` set, so an editor can pan on a right drag; only the left
+    // button produces a click, which keeps the old click contract.
     const handlePointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 || clickPointerId !== null || isLocked()) return;
+      if (event.button > 2 || clickPointerId !== null || isLocked()) return;
       clickPointerId = event.pointerId;
       mouseDownX = event.clientX;
       mouseDownY = event.clientY;
@@ -1693,7 +1698,7 @@ export function Scene3D({
         onPointerUpRef.current({ ...hit, button: event.button, locked: false });
       }
 
-      if (isDragging || !onClickRef.current) return;
+      if (isDragging || !onClickRef.current || event.button !== 0) return;
       // A plain click keeps its old contract: it reports only what it landed on.
       if (hit.objectId !== '') onClickRef.current({ ...hit, button: event.button, locked: false });
     };

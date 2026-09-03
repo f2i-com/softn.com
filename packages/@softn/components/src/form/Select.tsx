@@ -417,14 +417,14 @@ export function Select({
     fontSize: config.fontSize,
     borderRadius: 'var(--radius-md, 0.375rem)',
     cursor: isDisabled ? 'not-allowed' : 'pointer',
-    // The tint, not the solid. `--color-primary-500` is a full-strength indigo
-    // in both themes, and it was carrying `--color-primary-400` text — a
-    // lighter shade of the same hue on top of it. The selected row was the one
-    // row you could not read. `--color-primary-100` is the tint meant for
-    // this, and the label keeps the ordinary text colour so it stays legible
-    // whichever way the theme goes.
+    // A translucent wash of the primary over the surface, not a fixed tint.
+    // `--color-primary-100` is the same pale swatch in both themes, so in a
+    // dark theme the selected row was pale amber under pale text — the one
+    // row you could not read. Mixing the full-strength primary into
+    // transparent keeps the surface underneath, and the label keeps the
+    // ordinary text colour, so it reads whichever way the theme goes.
     backgroundColor: isSelected
-      ? 'var(--color-primary-100, rgba(99, 102, 241, 0.14))'
+      ? 'color-mix(in srgb, var(--color-primary-500, #6366f1) 24%, transparent)'
       : isHighlighted
         ? 'var(--color-surface-hover, #1e1e23)'
         : 'transparent',
