@@ -67,7 +67,7 @@ const RECIPES = {
   Twenty48: [{ key: 'ArrowLeft' }, { key: 'ArrowUp' }, { key: 'ArrowRight' }, { key: 'ArrowDown' }, { key: 'ArrowLeft' }, { key: 'ArrowUp' }, { key: 'ArrowRight' }, { wait: 400 }],
   Blockfall: [{ click: 'Start' }, { wait: 500 }, { key: 'ArrowLeft' }, { key: ' ' }, { wait: 500 }, { key: 'ArrowRight' }, { key: 'ArrowRight' }, { key: ' ' }, { wait: 500 }, { key: 'ArrowUp' }, { key: ' ' }, { wait: 1200 }],
   SnakeGame: [{ click: 'Start Game' }, { wait: 1800 }],
-  MazeEscape3D: [{ click: 'Start Game' }, { wait: 800 }],
+  MazeEscape3D: [{ click: 'Start' }, { set: { __scene3dLocked: true } }, { key: 'w', hold: 1500 }, { wait: 400 }],
   PromptlyUnemployed: [{ wait: 2500 }],
   Pocket: [{ wait: 2500 }],
   TexasHoldem: [{ wait: 2500 }],

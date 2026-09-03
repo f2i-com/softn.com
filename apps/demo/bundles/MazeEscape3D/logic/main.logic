@@ -21,7 +21,7 @@ let sceneStatic = []
 let lights = []
 let cameraPos = { x: 3, y: 1.5, z: 3 }
 let cameraLookAt = { x: 8, y: 1.5, z: 3 }
-let sceneFog = { color: "#0b0e14", near: 6, far: 26 }
+let sceneFog = { color: "#0b0e14", near: 6, far: 40 }
 let started = false
 let paused = false
 let won = false
@@ -205,7 +205,9 @@ function buildScene() {
   }
   let mid = (COLS - 1) * CELL / 2
   out.push({ id: "floor", type: "plane", position: { x: mid, y: 0, z: mid }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: COLS * CELL + 4, height: ROWS * CELL + 4, color: "#2a3140", roughness: 1 })
-  out.push({ id: "ceiling", type: "plane", position: { x: mid, y: 2.6, z: mid }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, width: COLS * CELL + 4, height: ROWS * CELL + 4, color: "#1b2029", roughness: 1 })
+  if (started) {
+    out.push({ id: "ceiling", type: "plane", position: { x: mid, y: 2.6, z: mid }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, width: COLS * CELL + 4, height: ROWS * CELL + 4, color: "#1b2029", roughness: 1 })
+  }
   // Skirting along the corridors gives the eye a line to follow in the fog.
   out.push({ id: "exit", type: "torus", position: { x: exitX * CELL, y: 1.2, z: exitZ * CELL }, radius: 0.7, tube: 0.12, color: "#fbbf24", emissive: "#f59e0b", emissiveIntensity: 1.6, animate: { rotateY: 0.03, rotateX: 0.015 } })
   out.push({ id: "exitpad", type: "cylinder", position: { x: exitX * CELL, y: 0.03, z: exitZ * CELL }, radius: 0.8, height: 0.06, color: "#fbbf24", emissive: "#f59e0b", emissiveIntensity: 0.5 })
@@ -215,8 +217,8 @@ function buildScene() {
 
 function buildLights() {
   lights = [
-    { id: "ambient", type: "ambient", color: "#9fb0d0", intensity: 0.3 },
-    { id: "hemi", type: "hemisphere", color: "#b8c6e6", groundColor: "#3b4252", intensity: 0.7 },
+    { id: "ambient", type: "ambient", color: "#9fb0d0", intensity: started ? 0.3 : 1.6 },
+    { id: "hemi", type: "hemisphere", color: "#b8c6e6", groundColor: "#3b4252", intensity: started ? 0.7 : 1.4 },
     // A hand torch: bright enough to read the corridor, dim enough that a
     // wall at arm's length is a wall and not a white sheet.
     { id: "torch", type: "point", color: "#ffd9a0", intensity: 9, distance: 14, decay: 2, position: { x: px, y: 2.1, z: pz } },
@@ -230,11 +232,18 @@ function composeObjects() {
 
 // ---- Flow ----------------------------------------------------------------
 
+// Before a game the camera hangs above the maze and circles it slowly: the
+// whole puzzle as the backdrop to the card that starts it.
 let titleAngle = 0
+let camY = EYE
 function titleDrift() {
-  titleAngle = titleAngle + 0.004
-  yaw = Math.PI / 2 + Math.sin(titleAngle) * 0.5
-  pitch = -0.05
+  titleAngle = titleAngle + 0.003
+  let mid = (COLS - 1) * CELL / 2
+  px = mid + Math.cos(titleAngle) * 9
+  pz = mid + Math.sin(titleAngle) * 9
+  camY = 17
+  yaw = Math.atan2(mid - px, mid - pz)
+  pitch = -1.05
   window.__scene3dYaw = yaw
   window.__scene3dPitch = pitch
   updateCamera()
@@ -243,6 +252,7 @@ function titleDrift() {
 function spawn() {
   px = CELL
   pz = CELL
+  camY = EYE
   vx = 0
   vz = 0
   yaw = wallAt(2, 1) ? 0 : Math.PI / 2
@@ -254,6 +264,7 @@ function spawn() {
 
 function startGame() {
   carveMaze()
+  started = true
   buildScene()
   spawn()
   startTime = Date.now()
@@ -278,6 +289,7 @@ function backToTitle() {
   started = false
   won = false
   paused = false
+  buildScene()
 }
 
 function showToast(text) {
@@ -296,9 +308,9 @@ function clock(ms) {
 function updateCamera() {
   let bob = 0
   if ((vx * vx + vz * vz) > 1) { bob = Math.sin(bobPhase) * 0.03 }
-  cameraPos = { x: px, y: EYE + bob, z: pz }
+  cameraPos = { x: px, y: camY + bob, z: pz }
   let cp = Math.cos(pitch)
-  cameraLookAt = { x: px + Math.sin(yaw) * cp * 5, y: EYE + Math.sin(pitch) * 5, z: pz + Math.cos(yaw) * cp * 5 }
+  cameraLookAt = { x: px + Math.sin(yaw) * cp * 5, y: camY + Math.sin(pitch) * 5, z: pz + Math.cos(yaw) * cp * 5 }
 }
 
 function gameStep() {
