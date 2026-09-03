@@ -487,13 +487,15 @@
           />
         </Box>
 
-        // A and B, raised on the diagonal like the original
+        // A and B, raised on the diagonal like the original. Pressed for as
+        // long as the pointer is down, like the D-pad; a tap still lands as a
+        // four-frame press.
         <Box className="pk-face-cluster" style={{ display: "flex", gap: "0.6rem", alignItems: "center", transform: "rotate(-20deg)" }}>
           // data-held is what the keyboard shows through: pressing Z lights the
           // on-screen B, so the player can see the binding is live without
           // waiting for the game to react to it.
           <Stack direction=vertical gap=xs align=center>
-            <Button className="pk-face" data-held={btnB} @click={tapB} style={{
+            <Button className="pk-face" data-held={btnB} ariaLabel="B" @click={tapB} @pointerdown={holdB} @pointerup={releaseB} @pointercancel={releaseB} @pointerleave={releaseB} style={{
               width: "44px", height: "44px", borderRadius: "50%",
               background: btnB ? "#7d2450" : "#a03a6a",
               transform: btnB ? "translateY(2px)" : "none",
@@ -502,7 +504,7 @@
             <Text style={{ fontSize: "0.5rem", color: "#2f3a8c", fontWeight: 700 }}>B</Text>
           </Stack>
           <Stack direction=vertical gap=xs align=center style={{ marginTop: "-1.1rem" }}>
-            <Button className="pk-face" data-held={btnA} @click={tapA} style={{
+            <Button className="pk-face" data-held={btnA} ariaLabel="A" @click={tapA} @pointerdown={holdA} @pointerup={releaseA} @pointercancel={releaseA} @pointerleave={releaseA} style={{
               width: "44px", height: "44px", borderRadius: "50%",
               background: btnA ? "#7d2450" : "#a03a6a",
               transform: btnA ? "translateY(2px)" : "none",
@@ -516,14 +518,14 @@
       // Start and Select
       <Stack className="pk-startsel" direction=horizontal gap=md align=center style={{ justifyContent: "center", paddingTop: "0.6rem" }}>
         <Stack direction=vertical gap=xs align=center>
-          <Button className="pk-face pk-pill" @click={tapSelect} style={{
+          <Button className="pk-face pk-pill" ariaLabel="Select" title="Select" @click={tapSelect} @pointerdown={holdSelect} @pointerup={releaseSelect} @pointercancel={releaseSelect} @pointerleave={releaseSelect} style={{
             width: "52px", height: "15px", borderRadius: "999px",
             background: "#7a767e", padding: 0
           }} />
           <Text style={{ fontSize: "0.5rem", color: "#2f3a8c", fontWeight: 700, letterSpacing: "0.08em" }}>SELECT</Text>
         </Stack>
         <Stack direction=vertical gap=xs align=center>
-          <Button className="pk-face pk-pill" @click={tapStart} style={{
+          <Button className="pk-face pk-pill" ariaLabel="Start" title="Start" @click={tapStart} @pointerdown={holdStart} @pointerup={releaseStart} @pointercancel={releaseStart} @pointerleave={releaseStart} style={{
             width: "52px", height: "15px", borderRadius: "999px",
             background: "#7a767e", padding: 0
           }} />
@@ -589,10 +591,10 @@
 
       // Transport
       <Stack direction=horizontal gap=sm>
-        <Button @click={togglePause} disabled={!gbRomLoaded} style={{ flex: 1 }}>
-          {gbRunning ? "Pause" : "Resume"}
+        <Button @click={togglePause} disabled={!gbRomLoaded} variant=ghost style={{ flex: 1, background: gbRomLoaded ? "#9bbc0f" : "#3a3a42", color: gbRomLoaded ? "#0f380f" : "#7a7a84", fontWeight: 700, borderRadius: "8px", padding: "0.5rem 0.75rem" }}>
+          {gbRunning || !gbRomLoaded ? "Pause" : "Resume"}
         </Button>
-        <Button @click={resetMachine} disabled={!gbRomLoaded} variant=ghost style={{ flex: 1 }}>Reset</Button>
+        <Button @click={resetMachine} disabled={!gbRomLoaded} variant=ghost style={{ flex: 1, background: "#2e2e36", color: gbRomLoaded ? "#e8e8ec" : "#7a7a84", border: "1px solid #3a3a42", borderRadius: "8px", padding: "0.5rem 0.75rem" }}>Reset</Button>
       </Stack>
 
       // Sound. AudioStream pulls on its own schedule rather than on a frame
@@ -669,8 +671,11 @@
         </Stack>
 
         <Stack direction=horizontal gap=sm align=center style={{ justifyContent: "space-between", paddingTop: "0.6rem" }}>
-          <Text style={{ fontSize: "0.6rem", color: "#7a7a84" }}>Cartridge save is automatic</Text>
-          <Button @click={eraseBattery} variant=ghost style={{ fontSize: "0.6rem", padding: "0.15rem 0.45rem", color: "#d08a8a" }}>Erase</Button>
+          <Text style={{ fontSize: "0.6rem", color: eraseArmed ? "#e0a0a0" : "#7a7a84" }}>{eraseArmed ? "Erase the cartridge save for good?" : "Cartridge save is automatic"}</Text>
+          <Stack direction=horizontal gap=xs align=center>
+            <Button if={eraseArmed} @click={cancelErase} variant=ghost style={{ fontSize: "0.6rem", padding: "0.15rem 0.45rem", color: "#c8c8d0" }}>Keep</Button>
+            <Button @click={eraseBattery} variant=ghost style={{ fontSize: "0.6rem", padding: "0.15rem 0.45rem", color: eraseArmed ? "#ffffff" : "#d08a8a", background: eraseArmed ? "#a03a3a" : "transparent", borderRadius: "6px" }}>{eraseArmed ? "Erase" : "Erase…"}</Button>
+          </Stack>
         </Stack>
 
         <Text if={saveStatus} style={{ fontSize: "0.65rem", color: "#9bbc0f", paddingTop: "0.4rem" }}>{saveStatus}</Text>
@@ -690,11 +695,11 @@
       }}>
         <Stack direction=horizontal gap=sm style={{ justifyContent: "space-between" }}>
           <Text style={{ fontSize: "0.7rem", color: "#8a8a94" }}>Painted</Text>
-          <Text style={{ fontSize: "0.8rem", fontWeight: 600, color: "#9bbc0f" }}>{fpsText} fps</Text>
+          <Text style={{ fontSize: "0.8rem", fontWeight: 600, color: "#9bbc0f" }}>{fpsText + " fps"}</Text>
         </Stack>
         <Stack direction=horizontal gap=sm style={{ justifyContent: "space-between" }}>
           <Text style={{ fontSize: "0.7rem", color: "#8a8a94" }}>Emulated</Text>
-          <Text style={{ fontSize: "0.8rem", fontWeight: 600, color: "#9bbc0f" }}>{gbFps} fps</Text>
+          <Text style={{ fontSize: "0.8rem", fontWeight: 600, color: "#9bbc0f" }}>{gbFps + " fps"}</Text>
         </Stack>
         <Stack direction=horizontal gap=sm style={{ justifyContent: "space-between" }}>
           <Text style={{ fontSize: "0.7rem", color: "#8a8a94" }}>Frames</Text>
@@ -703,7 +708,7 @@
       </Box>
 
       <Text style={{ fontSize: "0.62rem", color: "#6a6a74", lineHeight: 1.5 }}>
-        Arrow keys or WASD to move · Z and X are A and B · Enter is Start · Shift is Select
+        Arrow keys or WASD to move · Z and X are A and B · Enter is Start · Shift is Select · on a touch screen, hold the buttons like the real thing
       </Text>
     </Box>
   </Box>

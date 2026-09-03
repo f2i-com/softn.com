@@ -79,6 +79,30 @@
     return "Raise"
   }
 
+  // The smallest legal "raise to" total: the current bet plus one full raise,
+  // capped at all-in when the stack cannot cover a full raise.
+  function getRaiseToMin() {
+    let minTarget = currentBet + getMinRaise()
+    let maxTotal = getMaxTotalBet()
+    if (minTarget > maxTotal) minTarget = maxTotal
+    return minTarget
+  }
+
+  // The slider hands over a "raise to" total; the engine keeps working in
+  // increments above the current bet, so translate before storing.
+  function setRaiseTarget(target) {
+    let n = parseInt(target)
+    if (isNaN(n)) return
+    let increment = n - currentBet
+    if (increment < getMinRaise()) increment = getMinRaise()
+    setRaiseAmount("" + increment)
+  }
+
+  function raiseButtonLabel() {
+    if (currentBet <= 0) return "Bet $" + getRaiseTargetBet()
+    return "Raise to $" + getRaiseTargetBet()
+  }
+
   function setRaiseMin() {
     setRaiseAmount("" + getMinRaise())
   }

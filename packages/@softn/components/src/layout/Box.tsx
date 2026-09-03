@@ -39,6 +39,20 @@ export interface BoxProps {
   onClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
   /** Keyboard handler */
   onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+  /**
+   * Pointer handlers, forwarded to the element. A template binds them as
+   * `@pointerdown` / `@pointerup` / `@pointermove` / `@pointercancel` /
+   * `@pointerleave`, which is how an app gets a press-and-release pair or a
+   * swipe out of a plain box. None of them make the box focusable or give it
+   * a button role; only `onClick` does that.
+   */
+  onPointerDown?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerUp?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerMove?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerCancel?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  onPointerLeave?: (event: React.PointerEvent<HTMLDivElement>) => void;
+  /** Context-menu handler; a hold-to-press control uses it to swallow the long-press menu. */
+  onContextMenu?: (event: React.MouseEvent<HTMLDivElement>) => void;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -89,6 +103,12 @@ export function Box({
   maxHeight,
   onClick,
   onKeyDown,
+  onPointerDown,
+  onPointerUp,
+  onPointerMove,
+  onPointerCancel,
+  onPointerLeave,
+  onContextMenu,
   className,
   style,
   children,
@@ -126,6 +146,12 @@ export function Box({
       style={computedStyle}
       onClick={onClick}
       onKeyDown={onClick || onKeyDown ? handleKeyDown : undefined}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+      onPointerMove={onPointerMove}
+      onPointerCancel={onPointerCancel}
+      onPointerLeave={onPointerLeave}
+      onContextMenu={onContextMenu}
       role={onClick ? 'button' : undefined}
       tabIndex={onClick ? 0 : undefined}
     >

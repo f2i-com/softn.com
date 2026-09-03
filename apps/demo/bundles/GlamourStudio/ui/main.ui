@@ -35,8 +35,6 @@
 </data>
 
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
-
 /* ─── Keyframe Animations ─── */
 @keyframes glamour-fade-up {
   from { opacity: 0; transform: translateY(12px); }
@@ -325,6 +323,16 @@ hr, [class*="divider"] {
       opacity: currentPage === "services" ? 1 : 0.5
     }}>
       <Text style={{ fontSize: "0.65rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}>Services</Text>
+    </Button>
+
+    <Button variant=ghost @click=openDataModal style={{
+      flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+      gap: "2px", padding: "0.5rem 0", borderRadius: 0, minWidth: 0,
+      color: showDataModal ? getAccentColor() : getMutedColor(),
+      borderTop: showDataModal ? "2px solid " + getAccentColor() : "2px solid transparent",
+      opacity: showDataModal ? 1 : 0.5
+    }}>
+      <Text style={{ fontSize: "0.65rem", fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase" }}>Settings</Text>
     </Button>
   </Box>
 

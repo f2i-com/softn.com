@@ -104,18 +104,33 @@
           </Text>
         </Box>
 
-        // Channel
+        // Channel — five levels of noise, each named under its bar
         <Stack direction=vertical gap=xs>
-          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8" }}>Test channel — {channelLabel}</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8" }}>{"Test channel — " + channelLabel}</Text>
           <Box style={{ display: "flex", gap: "0.25rem" }}>
             #each (level in noiseLevels)
               <Box @click={setNoise(level.id)} style={{
                 cursor: "pointer",
                 flex: 1,
-                height: "22px",
-                border: "1px solid #3f4f57",
-                background: noiseIndex === level.id ? "#c7ee53" : "transparent"
-              }} />
+                minWidth: 0,
+                display: "flex",
+                flexDirection: "column",
+                gap: "0.25rem"
+              }}>
+                <Box style={{
+                  height: "22px",
+                  border: "1px solid " + (noiseIndex === level.id ? "#c7ee53" : "#3f4f57"),
+                  background: noiseIndex === level.id ? "#c7ee53" : "transparent"
+                }} />
+                <Text style={{
+                  fontFamily: "ui-monospace, Menlo, Consolas, monospace",
+                  fontSize: "0.5rem",
+                  letterSpacing: "0.02em",
+                  textAlign: "center",
+                  whiteSpace: "nowrap",
+                  color: noiseIndex === level.id ? "#c7ee53" : "#8fa1a9"
+                }}>{level.name}</Text>
+              </Box>
             #end
           </Box>
           <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>{channelDetail}</Text>
@@ -152,17 +167,26 @@
         </Box>
 
         // The href has to be a data: URL — there is no createObjectURL in a
-        // .logic script — so it is built on demand rather than on every encode.
-        <Box if={hasSignal} @click={prepareDownload}>
+        // .logic script — so it is built when asked for rather than on every
+        // encode. The button builds it and turns into the link in place.
+        <Box if={hasSignal} style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+          <Button if={wavUrl === ""} @click={prepareDownload} variant=ghost style={{
+            width: "100%", borderRadius: "999px", border: "1px solid #a9dce8",
+            background: "transparent", color: "#a9dce8", fontWeight: 600,
+            fontSize: "0.8125rem", padding: "0.5rem"
+          }}>Download WAV</Button>
           <a
             if={wavUrl !== ""}
             href={wavUrl}
             download={wavName}
-            style={{ fontSize: "0.6875rem", color: "#a9dce8", textDecoration: "underline" }}
-          >Download this WAV</a>
-          <Text if={wavUrl === ""} className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88", cursor: "pointer" }}>
-            Prepare WAV download
-          </Text>
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxSizing: "border-box", width: "100%", borderRadius: "999px",
+              border: "1px solid #c7ee53", background: "#c7ee53", color: "#18262d",
+              fontWeight: 600, fontSize: "0.8125rem", padding: "0.5rem", textDecoration: "none"
+            }}
+          >Save WAV file</a>
+          <Text if={wavUrl !== ""} className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88", textAlign: "center" }}>{wavName}</Text>
         </Box>
       </Stack>
     </Card>
@@ -175,14 +199,19 @@
       <Stack direction=vertical gap=md>
         <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#6d7f88" }}>05 — Local decoder</Text>
 
+        // The status glyph: grey while waiting, amber while working, red on a
+        // rejection, green once verified.
         <Box style={{ display: "flex", alignItems: "center", gap: "0.625rem" }}>
           <Box style={{
-            width: "34px", height: "34px", borderRadius: "50%", flexShrink: 0,
+            width: "40px", height: "40px", borderRadius: "50%", flexShrink: 0,
             border: "1px solid #18262d",
-            background: verifyState === "verified" ? "#c7ee53" : verifyState === "rejected" ? "#f37561" : verifyState === "working" ? "#a9dce8" : "transparent",
+            background: verifyState === "verified" ? "#c7ee53" : verifyState === "rejected" ? "#f37561" : verifyState === "working" ? "#fbe3a0" : "transparent",
             display: "flex", alignItems: "center", justifyContent: "center"
           }}>
-            <Text style={{ fontSize: "1rem" }}>{verifyMark}</Text>
+            <Text style={{
+              fontSize: "1.375rem", fontWeight: 700, lineHeight: 1,
+              color: verifyState === "verified" ? "#1f4a2c" : verifyState === "rejected" ? "#7a1d12" : verifyState === "working" ? "#7a4b00" : "#6d7f88"
+            }}>{verifyMark}</Text>
           </Box>
           <Text style={{ fontSize: "0.9375rem", fontWeight: 700, letterSpacing: "-0.02em" }}>{verifyTitle}</Text>
         </Box>

@@ -31,11 +31,24 @@ $rootReal = realpath($root);
 if ($real !== false && $rootReal !== false && str_starts_with(str_replace('\\', '/', $real), str_replace('\\', '/', $rootReal))) {
     if (is_file($real)) {
         $ext = strtolower(pathinfo($real, PATHINFO_EXTENSION));
-        // The built-in server guesses text/plain for types it does not know.
-        $types = ['softn' => 'application/octet-stream', 'wasm' => 'application/wasm', 'webmanifest' => 'application/manifest+json', 'mjs' => 'text/javascript'];
+        // Every static type the site ships is served from here rather than by
+        // the built-in server's own handler, for two reasons: that handler
+        // guesses text/plain for types it does not know, and it sends none of
+        // the isolation headers. Those have to be on every response, not only
+        // documents — a page that is cross-origin isolated refuses to start a
+        // dedicated worker whose script arrives without the embedder policy,
+        // which is exactly how the worker-mode apps (Pocket, WarbleWire) load.
+        // The deployed .htaccess and nginx configs set the headers site-wide.
+        $types = [
+            'softn' => 'application/octet-stream', 'wasm' => 'application/wasm', 'webmanifest' => 'application/manifest+json',
+            'mjs' => 'text/javascript', 'js' => 'text/javascript', 'css' => 'text/css', 'json' => 'application/json',
+            'map' => 'application/json', 'html' => 'text/html; charset=utf-8', 'txt' => 'text/plain; charset=utf-8',
+            'svg' => 'image/svg+xml', 'png' => 'image/png', 'jpg' => 'image/jpeg', 'jpeg' => 'image/jpeg', 'webp' => 'image/webp',
+            'gif' => 'image/gif', 'ico' => 'image/x-icon', 'woff' => 'font/woff', 'woff2' => 'font/woff2', 'ttf' => 'font/ttf',
+            'wav' => 'audio/wav', 'mp3' => 'audio/mpeg', 'ogg' => 'audio/ogg', 'mp4' => 'video/mp4', 'webm' => 'video/webm',
+        ];
         if (isset($types[$ext])) {
             header('Content-Type: ' . $types[$ext]);
-            // What the deployed .htaccess sets: cross-origin isolation for the runtime's threads.
             header('Cross-Origin-Opener-Policy: same-origin');
             header('Cross-Origin-Embedder-Policy: credentialless');
             header('Content-Length: ' . (string) filesize($real));

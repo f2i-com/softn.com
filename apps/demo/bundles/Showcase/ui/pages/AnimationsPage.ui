@@ -3,14 +3,19 @@
 <Stack direction=vertical gap=lg if={currentPage === "animations"}>
   <Stack direction=vertical gap=xs>
     <Heading level={2} style={{ color: getTextColor(), fontSize: "1.5rem" }}>Animations</Heading>
-    <Text style={{ color: getMutedColor(), fontSize: "0.875rem" }}>Animation primitives: entrance effects, counters, marquee, and typewriter.</Text>
+    <Text style={{ color: getMutedColor(), fontSize: "0.875rem" }}>Entrance effects, counters, a ticker and a typewriter.</Text>
   </Stack>
 
   // AnimatedBox presets
   <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
     <Stack direction=vertical gap=md>
-      <Text fontWeight=medium style={{ color: getTextColor() }}>AnimatedBox — Entrance Presets</Text>
-      <Text size=xs style={{ color: getMutedColor() }}>Each box animates in when it enters the viewport (scroll to trigger)</Text>
+      <Stack direction=vertical gap=xs>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>Arriving on screen</Text>
+        <Box style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "0.5rem" }}>
+          <Text style={{ color: getMutedColor(), fontSize: "0.7rem", fontFamily: "ui-monospace, Menlo, Consolas, monospace" }}>AnimatedBox · trigger="visible"</Text>
+          <Text size=xs style={{ color: getMutedColor() }}>Each box animates in as it scrolls into view</Text>
+        </Box>
+      </Stack>
       <Grid columns={{ sm: 2, md: 3, lg: 4 }} gap=md>
         <AnimatedBox animation="fadeIn" trigger="visible" duration={600}>
           <Box padding=md style={{ background: darkMode ? "#27272a" : "#f4f4f5", borderRadius: "10px", textAlign: "center" }}>
@@ -56,48 +61,61 @@
     </Stack>
   </Card>
 
-  // AnimatedNumber
+  // AnimatedNumber — four counters, each with its own random target
   <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
     <Stack direction=vertical gap=md>
-      <Text fontWeight=medium style={{ color: getTextColor() }}>AnimatedNumber</Text>
-      <Text size=xs style={{ color: getMutedColor() }}>Numbers animate from previous value. Click the button to randomize.</Text>
+      <Stack direction=vertical gap=xs>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>Numbers that count up</Text>
+        <Box style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "0.5rem" }}>
+          <Text style={{ color: getMutedColor(), fontSize: "0.7rem", fontFamily: "ui-monospace, Menlo, Consolas, monospace" }}>AnimatedNumber</Text>
+          <Text size=xs style={{ color: getMutedColor() }}>Each figure animates from its previous value. Press the button for new ones.</Text>
+        </Box>
+      </Stack>
       <Grid columns={{ sm: 2, lg: 4 }} gap=lg>
         <Box style={{ textAlign: "center" }}>
-          <AnimatedNumber value={counterValue} prefix="$" separator={true} duration={1200} style={{ fontSize: "2rem", fontWeight: 700, color: "#6366f1" }} />
+          <AnimatedNumber value={revenueValue} prefix="$" separator={true} duration={1200} style={{ fontSize: "2rem", fontWeight: 700, color: "#6366f1" }} />
           <Text size=xs block style={{ color: getMutedColor(), marginTop: "4px" }}>Revenue</Text>
         </Box>
         <Box style={{ textAlign: "center" }}>
-          <AnimatedNumber value={counterValue * 3} duration={1500} style={{ fontSize: "2rem", fontWeight: 700, color: "#10b981" }} />
+          <AnimatedNumber value={usersValue} separator={true} duration={1500} style={{ fontSize: "2rem", fontWeight: 700, color: "#10b981" }} />
           <Text size=xs block style={{ color: getMutedColor(), marginTop: "4px" }}>Users</Text>
         </Box>
         <Box style={{ textAlign: "center" }}>
-          <AnimatedNumber value={counterValue / 100} decimals={1} suffix="%" duration={1000} style={{ fontSize: "2rem", fontWeight: 700, color: "#f59e0b" }} />
+          <AnimatedNumber value={conversionValue} decimals={1} suffix="%" duration={1000} style={{ fontSize: "2rem", fontWeight: 700, color: "#f59e0b" }} />
           <Text size=xs block style={{ color: getMutedColor(), marginTop: "4px" }}>Conversion</Text>
         </Box>
         <Box style={{ textAlign: "center" }}>
-          <AnimatedNumber value={Math.floor(counterValue / 10)} suffix=" ms" duration={800} style={{ fontSize: "2rem", fontWeight: 700, color: "#ef4444" }} />
+          <AnimatedNumber value={latencyValue} suffix=" ms" duration={800} style={{ fontSize: "2rem", fontWeight: 700, color: "#ef4444" }} />
           <Text size=xs block style={{ color: getMutedColor(), marginTop: "4px" }}>Latency</Text>
         </Box>
       </Grid>
-      <Button size=sm @click=randomizeCounter style={{ alignSelf: "center" }}>Randomize Values</Button>
+      <Button variant=ghost size=sm @click=randomizeCounter style={{
+        alignSelf: "center", border: "1px solid #6366f1", color: "#6366f1", background: "transparent",
+        borderRadius: "8px", padding: "0.4rem 0.9rem", fontSize: "0.8rem", fontWeight: 600
+      }}>Randomize values</Button>
     </Stack>
   </Card>
 
   // Marquee
   <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
     <Stack direction=vertical gap=md>
-      <Text fontWeight=medium style={{ color: getTextColor() }}>Marquee</Text>
-      <Text size=xs style={{ color: getMutedColor() }}>Scrolling content that pauses on hover</Text>
+      <Stack direction=vertical gap=xs>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>A ticker that never stops</Text>
+        <Box style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "0.5rem" }}>
+          <Text style={{ color: getMutedColor(), fontSize: "0.7rem", fontFamily: "ui-monospace, Menlo, Consolas, monospace" }}>Marquee</Text>
+          <Text size=xs style={{ color: getMutedColor() }}>Scrolls continuously and pauses under the pointer</Text>
+        </Box>
+      </Stack>
       <Marquee speed={40} pauseOnHover={true} gap={32}>
         <Stack direction=horizontal gap=lg style={{ padding: "0.5rem 0" }}>
-          <Badge color="purple">React</Badge>
-          <Badge color="green">TypeScript</Badge>
-          <Badge color="blue">SoftN</Badge>
-          <Badge color="orange">Charts</Badge>
-          <Badge color="red">Animation</Badge>
-          <Badge color="purple">Draggable</Badge>
-          <Badge color="green">Sortable</Badge>
-          <Badge color="blue">Interactive</Badge>
+          <Badge color="purple">Charts</Badge>
+          <Badge color="green">Animations</Badge>
+          <Badge color="blue">Gauges</Badge>
+          <Badge color="orange">Tooltips</Badge>
+          <Badge color="red">Draggable</Badge>
+          <Badge color="purple">Sortable</Badge>
+          <Badge color="green">Light mode</Badge>
+          <Badge color="blue">Dark mode</Badge>
         </Stack>
       </Marquee>
     </Stack>
@@ -106,11 +124,16 @@
   // Typewriter
   <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
     <Stack direction=vertical gap=md>
-      <Text fontWeight=medium style={{ color: getTextColor() }}>Typewriter</Text>
-      <Text size=xs style={{ color: getMutedColor() }}>Text typed character by character, cycling through messages</Text>
+      <Stack direction=vertical gap=xs>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>Typed, one letter at a time</Text>
+        <Box style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "0.5rem" }}>
+          <Text style={{ color: getMutedColor(), fontSize: "0.7rem", fontFamily: "ui-monospace, Menlo, Consolas, monospace" }}>Typewriter</Text>
+          <Text size=xs style={{ color: getMutedColor() }}>Cycles through a list of lines, deleting between them</Text>
+        </Box>
+      </Stack>
       <Box style={{ padding: "1.5rem", background: darkMode ? "#09090b" : "#f4f4f5", borderRadius: "10px" }}>
         <Typewriter
-          text={["Build beautiful UIs with SoftN", "Charts, animations, and more", "No external dependencies needed", "Pure React component library"]}
+          text={["One file. Runs in the browser, on the desktop, anywhere.", "Written in a language a model can read.", "Charts, animations and drag-and-drop, all in the box.", "Light or dark, whichever you prefer."]}
           speed={60}
           deleteSpeed={25}
           pauseDuration={2000}
@@ -125,8 +148,13 @@
   // Hover-triggered animation
   <Card padding=lg style={{ background: getCardBg(), border: "1px solid " + getBorderColor(), borderRadius: "14px" }}>
     <Stack direction=vertical gap=md>
-      <Text fontWeight=medium style={{ color: getTextColor() }}>Hover Animations</Text>
-      <Text size=xs style={{ color: getMutedColor() }}>Hover over each card to trigger the animation</Text>
+      <Stack direction=vertical gap=xs>
+        <Text fontWeight=medium style={{ color: getTextColor() }}>Hover to replay</Text>
+        <Box style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: "0.5rem" }}>
+          <Text style={{ color: getMutedColor(), fontSize: "0.7rem", fontFamily: "ui-monospace, Menlo, Consolas, monospace" }}>AnimatedBox · trigger="hover"</Text>
+          <Text size=xs style={{ color: getMutedColor() }}>Move the pointer over a card to run its animation again</Text>
+        </Box>
+      </Stack>
       <Grid columns={{ sm: 2, lg: 3 }} gap=md>
         <AnimatedBox animation="scaleIn" trigger="hover">
           <Box padding=lg style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)", borderRadius: "12px", textAlign: "center" }}>

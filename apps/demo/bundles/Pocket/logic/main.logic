@@ -39,7 +39,7 @@ import "./gb_machine.logic"
 let romName = ""
 let romSize = ""
 let loading = false
-let hintText = "Choose a .gb or .gbc cartridge to begin"
+let hintText = "Insert a .gb or .gbc cartridge to begin. Homebrew and public-domain games work well, and the file never leaves this device."
 let fpsText = "—"
 let audioReady = false
 let audioRate = ""
@@ -87,9 +87,15 @@ let btnB = false
 // marshal to an opaque slot and are skipped by the state sync entirely, so
 // this costs nothing on the sixty host calls a second that getFrame makes.
 let padTapFrames = null
+// Per-button: held down by a pointer right now, and frames left during which
+// the click that follows a pointer release is ignored (a hold is not a tap).
+let padHeldPtr = null
+let padClickGuard = null
 
 function _init() {
   padTapFrames = new Uint8Array(8)
+  padHeldPtr = new Uint8Array(8)
+  padClickGuard = new Uint8Array(8)
   batPending = new Uint8Array(1)
   // Builds the 512 opcode closures and zeroes the machine. Once, ever —
   // calling it twice would rebuild tables the dispatch already points at.
@@ -171,7 +177,7 @@ function acceptRom(base64) {
     // generic line when it did not.
     if (gbError === "") { gbError = "That file is not a supported cartridge." }
     gbStatus = "Load failed"
-    hintText = "Choose a .gb or .gbc cartridge to begin"
+    hintText = "Insert a .gb or .gbc cartridge to begin. Homebrew and public-domain games work well, and the file never leaves this device."
     return
   }
 
@@ -316,9 +322,41 @@ function dirBit(dir) {
 function padTap(bit) {
   let slot = bitSlot(bit)
   if (slot < 0) { return }
+  // The click after a pointer press-and-release is the same gesture, already
+  // delivered; and a button a pointer is still holding needs no latch.
+  if (padHeldPtr[slot] !== 0 || padClickGuard[slot] !== 0) { return }
   padTapFrames[slot] = 4
   padDown(bit)
 }
+
+// Pointer press and release, for the face buttons: down for as long as the
+// pointer is, exactly like the D-pad. The click that follows is swallowed by
+// the guard for a few frames so it does not land as a second press.
+function padHold(bit) {
+  let slot = bitSlot(bit)
+  if (slot < 0) { return }
+  padHeldPtr[slot] = 1
+  padTapFrames[slot] = 0
+  padClickGuard[slot] = 0
+  padDown(bit)
+}
+
+function padRelease(bit) {
+  let slot = bitSlot(bit)
+  if (slot < 0 || padHeldPtr[slot] === 0) { return }
+  padHeldPtr[slot] = 0
+  padClickGuard[slot] = 8
+  padUp(bit)
+}
+
+function holdA() { padHold(0x01) }
+function holdB() { padHold(0x02) }
+function holdSelect() { padHold(0x04) }
+function holdStart() { padHold(0x08) }
+function releaseA() { padRelease(0x01) }
+function releaseB() { padRelease(0x02) }
+function releaseSelect() { padRelease(0x04) }
+function releaseStart() { padRelease(0x08) }
 
 // One nullary handler per face button, because the template cannot pass the bit.
 //
@@ -352,6 +390,7 @@ function bitSlot(bit) {
 function releaseExpiredTaps() {
   if (padTapFrames === null) { return }
   for (let i = 0; i < 8; i = i + 1) {
+    if (padClickGuard[i] !== 0) { padClickGuard[i] = padClickGuard[i] - 1 }
     let left = padTapFrames[i]
     if (left === 0) { continue }
     left = left - 1
@@ -367,6 +406,8 @@ function padClear() {
   // on the frame focus was lost still has frames on its counter, and leaving it
   // there would fire a phantom release into the next thing the player does.
   if (padTapFrames) { padTapFrames.fill(0) }
+  if (padHeldPtr) { padHeldPtr.fill(0) }
+  if (padClickGuard) { padClickGuard.fill(0) }
   if (padMask === 0) { return }
   padMask = 0
   btnA = false
@@ -476,6 +517,7 @@ let slot1 = "Empty"
 let slot2 = "Empty"
 let slot3 = "Empty"
 let saveStatus = ""
+let eraseArmed = false
 
 // Frames until the battery is written out, or 0 when nothing is pending.
 //
@@ -652,6 +694,16 @@ function restoreBattery() {
 }
 
 function eraseBattery() {
+  if (!eraseArmed) {
+    eraseArmed = true
+    saveStatus = ""
+    return
+  }
+  eraseArmed = false
   clearStore(batteryKey())
   saveStatus = "Cartridge save erased. Reset to see it."
+}
+
+function cancelErase() {
+  eraseArmed = false
 }

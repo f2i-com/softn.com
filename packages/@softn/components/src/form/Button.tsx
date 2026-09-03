@@ -49,6 +49,17 @@ export interface ButtonProps {
   'aria-label'?: string;
   /** Native tooltip. */
   title?: string;
+  /**
+   * Pointer handlers, forwarded to the element. `onClick` fires on release;
+   * a control that has to know about the press itself (an emulator's A
+   * button, held through a jump) binds `@pointerdown` and `@pointerup` too.
+   */
+  onPointerDown?: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp?: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerCancel?: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onPointerLeave?: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  /** Context-menu handler; a hold-to-press control swallows the long-press menu with it. */
+  onContextMenu?: (event: React.MouseEvent<HTMLButtonElement>) => void;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -292,6 +303,11 @@ export function Button({
   ariaLabel,
   'aria-label': ariaLabelAttr,
   title,
+  onPointerDown,
+  onPointerUp,
+  onPointerCancel,
+  onPointerLeave,
+  onContextMenu,
   className,
   style,
   children,
@@ -392,6 +408,11 @@ export function Button({
         onMouseLeave={handleMouseLeave}
         onMouseDown={handleMouseDown}
         onMouseUp={handleMouseUp}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onPointerLeave={onPointerLeave}
+        onContextMenu={onContextMenu}
       >
         {loading ? (
           <LoadingSpinner size={sizeStyle.iconSize} />

@@ -12,6 +12,7 @@
   let showLeaveModal = false
   let toastMessage = ""
   let toastType = "info"
+  let devTools = false
   let showDebugOverlay = false
   let debugTraceEnabled = false
   let debugLastStateSig = ""
@@ -607,6 +608,10 @@
 
   function closeSyncModal() {
     showSyncModal = false
+  }
+
+  function toggleDevTools() {
+    devTools = !devTools
   }
 
   function toggleDebugOverlay() {

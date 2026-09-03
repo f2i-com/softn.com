@@ -122,6 +122,9 @@
           }}>
             Create Room
           </Button>
+          <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: "12px", textAlign: "center", lineHeight: 1.5 }}>
+            Playing alone? Create a room, then add bots at the table.
+          </Text>
 
           // Divider
           <Box style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -167,9 +170,4 @@
       </Box>
     </Stack>
   </Card>
-
-  // Footer
-  <Text style={{ color: "rgba(255,255,255,0.2)", fontSize: "11px", marginTop: "2rem" }}>
-    Built with SoftN — P2P sync via Yjs + WebRTC
-  </Text>
 </Box>

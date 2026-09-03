@@ -15,11 +15,11 @@
         Home
       </Button>
       <Text color=muted size=sm className="softn-mobile-hide" if={currentPage !== "dashboard"}>/</Text>
-      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "dashboard"}>Dashboard</Heading>
-      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "appointments"}>Appointments</Heading>
-      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "clients"}>Clients</Heading>
-      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "staff"}>Staff</Heading>
-      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'Cormorant Garamond', serif" }} if={currentPage === "services"}>Services</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "Georgia, 'Times New Roman', serif" }} if={currentPage === "dashboard"}>Dashboard</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "Georgia, 'Times New Roman', serif" }} if={currentPage === "appointments"}>Appointments</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "Georgia, 'Times New Roman', serif" }} if={currentPage === "clients"}>Clients</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "Georgia, 'Times New Roman', serif" }} if={currentPage === "staff"}>Staff</Heading>
+      <Heading level={4} style={{ fontSize: "1.125rem", fontWeight: 600, whiteSpace: "nowrap", fontFamily: "Georgia, 'Times New Roman', serif" }} if={currentPage === "services"}>Services</Heading>
     </Stack>
 
     // Action Buttons
@@ -36,25 +36,35 @@
       <Button variant=primary size=sm @click=openAddServiceModal if={currentPage === "services"} style={{ background: "linear-gradient(135deg, " + getAccentColor() + ", " + getAccentHover() + ")", color: darkMode ? "#1c1917" : "#ffffff", border: "none", boxShadow: "0 2px 8px " + getAccentMuted(), fontWeight: 600 }}>
         + Service
       </Button>
-      <Button variant=ghost size=sm @click=openSyncModal style={{ padding: "0.4rem 0.6rem", gap: "0.35rem" }} className="softn-mobile-hide">
+
+      // Sync is a status indicator as much as a button, so it stays on phones
+      <Button variant=ghost size=sm @click=openSyncModal ariaLabel={syncConnected ? "Sync: connected" : "Sync: not connected"} title={syncConnected ? "Sync: connected" : "Sync: not connected"} style={{ padding: "0.4rem 0.6rem", gap: "0.35rem" }}>
         <Box style={{ width: "7px", height: "7px", borderRadius: "50%", background: syncConnected ? "#22c55e" : "#78716c", boxShadow: syncConnected ? "0 0 6px rgba(34, 197, 94, 0.4)" : "none", flexShrink: 0 }} />
         <Text size=xs style={{ color: getMutedColor(), fontSize: "0.7rem" }}>Sync</Text>
       </Button>
+
+      // Theme toggle — names the action; the label folds away on phones
       <Button
         variant=ghost
         size=sm
         @click=toggleTheme
+        ariaLabel={darkMode ? "Switch to light" : "Switch to dark"}
+        title={darkMode ? "Switch to light" : "Switch to dark"}
         style={{
           padding: "0.4rem 0.6rem",
+          gap: "0.35rem",
           background: darkMode ? "rgba(214, 191, 167, 0.10)" : "rgba(28, 25, 23, 0.06)",
           border: "1px solid " + getBorderColor(),
           color: getTextColor()
         }}
       >
-        <Text size=xs style={{ color: getTextColor(), fontSize: "0.7rem", fontWeight: 600 }}>
-          {darkMode ? "Dark" : "Light"}
+        <Icon svg={darkMode ? iconSun : iconMoon} size={14} style={{ color: getTextColor() }} />
+        <Text size=xs className="softn-mobile-hide" style={{ color: getTextColor(), fontSize: "0.7rem", fontWeight: 600 }}>
+          {darkMode ? "Switch to light" : "Switch to dark"}
         </Text>
       </Button>
+
+      // Settings lives in the bottom bar on phones
       <Button variant=ghost size=sm @click=openDataModal style={{ padding: "0.4rem 0.6rem" }} className="softn-mobile-hide">
         <Text size=xs style={{ color: getMutedColor(), fontSize: "0.7rem" }}>Settings</Text>
       </Button>

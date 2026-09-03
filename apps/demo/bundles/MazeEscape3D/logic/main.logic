@@ -51,6 +51,18 @@ let lastLocked = false
 let bobPhase = 0
 let steps = 0
 
+let muted = false
+
+function play(name, volume) {
+  if (muted) { return }
+  softn.audio.play("assets/sfx/" + name + ".wav", { volume: volume })
+}
+
+function toggleMute() {
+  muted = !muted
+  try { localStorage.setItem("maze3d:muted", muted ? "1" : "0") } catch (err) {}
+}
+
 function myRand() {
   rngSeed = (rngSeed * 48271) % 2147483647
   return rngSeed / 2147483647
@@ -78,6 +90,7 @@ function _init() {
     else if (key === "a" || key === "A" || key === "ArrowLeft") { k.a = true; e.preventDefault() }
     else if (key === "d" || key === "D" || key === "ArrowRight") { k.d = true; e.preventDefault() }
     else if (key === "Shift") { k.run = true }
+    else if ((key === "m" || key === "M") && !e.repeat) { toggleMute() }
   }
   function onKeyUp(e) {
     let k = window.__mzKeys
@@ -102,6 +115,7 @@ function _init() {
   }
 
   try { bestMs = parseInt(localStorage.getItem("maze3d:best") || "0") || 0 } catch (err) { bestMs = 0 }
+  try { muted = localStorage.getItem("maze3d:muted") === "1" } catch (err) { muted = false }
   bestText = bestMs > 0 ? clock(bestMs) : "—"
   carveMaze()
   buildScene()
@@ -276,7 +290,13 @@ function startGame() {
   timeText = "0:00"
   window.__scene3dWantLock = true
   showToast("Find the golden ring.")
+  play("start", 0.4)
   buildMap()
+}
+
+function pauseGame() {
+  if (!started || won) { return }
+  paused = true
 }
 
 function resumeGame() {
@@ -349,6 +369,7 @@ function gameStep() {
   if (cr >= 0 && cr < ROWS && cc >= 0 && cc < COLS && visited[cr * COLS + cc] === 0) {
     visited[cr * COLS + cc] = 1
     steps = steps + 1
+    play("found", 0.18)
     buildMap()
   }
 
@@ -364,6 +385,7 @@ function gameStep() {
 
 function finish() {
   won = true
+  play("win", 0.5)
   if (bestMs === 0 || elapsedMs < bestMs) {
     bestMs = elapsedMs
     bestText = clock(bestMs)

@@ -7,16 +7,21 @@
 // in a page that is isolated is refused outright by the browser if it is not
 // isolated itself. So every navigation this worker answers is stamped here,
 // wherever the bytes came from.
+//
+// Dedicated worker scripts get the same treatment: an isolated page refuses
+// to start a worker whose script arrives without the embedder policy, and the
+// runtime's worker mode (the emulator, the modem) is nothing but such a worker.
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  if (req.mode !== 'navigate') return;
+  if (req.mode !== 'navigate' && req.destination !== 'worker' && req.destination !== 'sharedworker') return;
   event.respondWith(
     (async () => {
       let res;
       try {
         res = await fetch(req);
       } catch (err) {
-        res = (await caches.match(req, { ignoreSearch: true })) || (await caches.match(new URL('./index.html', self.registration.scope).href, { ignoreSearch: true }));
+        res = await caches.match(req, { ignoreSearch: true });
+        if (!res && req.mode === 'navigate') res = await caches.match(new URL('./index.html', self.registration.scope).href, { ignoreSearch: true });
         if (!res) throw err;
       }
       const headers = new Headers(res.headers);

@@ -66,7 +66,9 @@ const RECIPES = {
   DeadHours: [{ click: 'Allow' }, { click: 'Start the night' }, { set: { __scene3dLocked: true } }, { wait: 11000 }, { set: { __dhFire: true } }, { wait: 250 }],
   Twenty48: [{ key: 'ArrowLeft' }, { key: 'ArrowUp' }, { key: 'ArrowRight' }, { key: 'ArrowDown' }, { key: 'ArrowLeft' }, { key: 'ArrowUp' }, { key: 'ArrowRight' }, { wait: 400 }],
   Blockfall: [{ click: 'Start' }, { wait: 500 }, { key: 'ArrowLeft' }, { key: ' ' }, { wait: 500 }, { key: 'ArrowRight' }, { key: 'ArrowRight' }, { key: ' ' }, { wait: 500 }, { key: 'ArrowUp' }, { key: ' ' }, { wait: 1200 }],
-  SnakeGame: [{ click: 'Allow' }, { click: 'Start Game' }, { wait: 1800 }],
+  SnakeGame: [{ click: 'Allow' }, { click: 'Start' }, { wait: 500 }, { key: 'ArrowDown' }, { wait: 650 }, { key: 'ArrowLeft' }, { wait: 500 }],
+  GlamourStudio: [{ click: 'Allow' }, { wait: 800 }],
+  DeviceKit: [{ click: 'Allow' }, { wait: 800 }],
   // Opened by its directory address so the app's own storage answers.
   Notes: [{ open: '/api/apps/notes/bundle.softn' }, { click: 'Allow' }, { wait: 1800 }],
   ThreeDemo: [{ wait: 1800 }],
@@ -74,7 +76,8 @@ const RECIPES = {
   AIChat: [{ click: 'Allow' }, { wait: 800 }],
   MazeEscape3D: [{ click: 'Start' }, { set: { __scene3dLocked: true } }, { key: 'w', hold: 1500 }, { wait: 400 }],
   PromptlyUnemployed: [{ wait: 2500 }],
-  Pocket: [{ wait: 2500 }],
+  Pocket: [{ click: 'Allow' }, { wait: 2500 }],
+  WarbleWire: [{ click: 'Allow' }, { wait: 800 }],
   TexasHoldem: [{ wait: 2500 }],
   TheOffice: [{ wait: 3000 }],
 };
@@ -223,7 +226,7 @@ async function waitForApp(page, timeoutMs) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     const ready = await page.eval(
-      `(() => { const t = document.body.innerText || ''; const hasCanvas = !!document.querySelector('canvas'); const loading = /Loading|Starting|Unpacking/i.test(t.slice(0, 200)); return (hasCanvas || t.length > 40) && !loading; })()`
+      `(() => { const t = (document.body && document.body.innerText) || ''; const hasCanvas = !!document.querySelector('canvas'); const loading = /Loading|Starting|Unpacking/i.test(t.slice(0, 200)); return (hasCanvas || t.length > 40) && !loading; })()`
     );
     if (ready) return true;
     await page.wait(250);
@@ -285,7 +288,7 @@ async function main() {
       // the app. Apps that run in a worker cannot start on the Vite dev
       // server (its worker URL differs); photograph those against a built
       // site: --base http://127.0.0.1:5500/web
-      const failed = await page.eval(`/worker_error|Failed to load|could not be loaded/i.test(document.body.innerText.slice(0, 400))`);
+      const failed = await page.eval(`/worker_error|Failed to load|could not be loaded/i.test(((document.body && document.body.innerText) || '').slice(0, 400))`);
       if (failed) throw new Error('the runtime shows an error card instead of the app');
       const file = path.join(outDir, `${name}.webp`);
       await page.shot(file);

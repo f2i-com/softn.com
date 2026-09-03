@@ -16,6 +16,18 @@ let history = []        // last few states for undo
 let toast = ""
 let toastTicks = 0
 
+let muted = false
+
+function play(name, volume) {
+  if (muted) { return }
+  softn.audio.play("assets/sfx/" + name + ".wav", { volume: volume })
+}
+
+function toggleMute() {
+  muted = !muted
+  try { localStorage.setItem("twenty48:muted", muted ? "1" : "0") } catch (err) {}
+}
+
 function myRand() {
   rngSeed = (rngSeed * 48271) % 2147483647
   return rngSeed / 2147483647
@@ -30,9 +42,10 @@ function _init() {
   if (window.__t48Cleanup) { window.__t48Cleanup() }
   rngSeed = (Date.now() % 100000) + 11
   window.__t48Dir = ""
-  window.__t48SwipeX = 0
+  window.__t48SwipeX = -1
   window.__t48SwipeY = 0
   try { best = parseInt(localStorage.getItem("twenty48:best") || "0") || 0 } catch (err) { best = 0 }
+  try { muted = localStorage.getItem("twenty48:muted") === "1" } catch (err) { muted = false }
 
   function onKeyDown(e) {
     if (isUiControl(e)) { return }
@@ -43,10 +56,35 @@ function _init() {
     else if (key === "ArrowDown" || key === "s" || key === "S") { window.__t48Dir = "down"; e.preventDefault() }
     else if (key === "z" || key === "Z" || key === "Backspace") { window.__t48Dir = "undo" }
     else if (key === "r" || key === "R") { window.__t48Dir = "new" }
+    else if (key === "m" || key === "M") { window.__t48Dir = "mute" }
+  }
+  // Swipes, anywhere on the page that is not a control: a finger or a mouse
+  // drag of more than a few pixels mostly one way is a move that way. A
+  // template handler cannot see the pointer position (DOM events are nulled
+  // before they reach a script), so these are window listeners.
+  function onPointerDown(e) {
+    if (isUiControl(e) || e.targetTag === "button") { window.__t48SwipeX = -1; return }
+    window.__t48SwipeX = e.clientX || 0
+    window.__t48SwipeY = e.clientY || 0
+  }
+  function onPointerUp(e) {
+    if (window.__t48SwipeX < 0) { return }
+    let dx = (e.clientX || 0) - window.__t48SwipeX
+    let dy = (e.clientY || 0) - window.__t48SwipeY
+    window.__t48SwipeX = -1
+    let ax = Math.abs(dx)
+    let ay = Math.abs(dy)
+    if (ax < 24 && ay < 24) { return }
+    if (ax > ay) { window.__t48Dir = dx > 0 ? "right" : "left" }
+    else { window.__t48Dir = dy > 0 ? "down" : "up" }
   }
   window.addEventListener("keydown", onKeyDown, true)
+  window.addEventListener("pointerdown", onPointerDown)
+  window.addEventListener("pointerup", onPointerUp)
   window.__t48Cleanup = function () {
     window.removeEventListener("keydown", onKeyDown, true)
+    window.removeEventListener("pointerdown", onPointerDown)
+    window.removeEventListener("pointerup", onPointerUp)
   }
   let restored = false
   try {
@@ -179,11 +217,15 @@ function move(dir) {
   history.push(snapshot)
   if (history.length > 8) { history = history.slice(history.length - 8) }
   addTile()
+  let justWon = false
   if (!won && !keepGoing) {
     i = 0
-    while (i < board.length) { if (board[i].value >= 2048) { won = true }; i = i + 1 }
+    while (i < board.length) { if (board[i].value >= 2048) { won = true; justWon = true }; i = i + 1 }
   }
   over = !anyMoves()
+  if (justWon) { play("win", 0.5) }
+  else if (over) { play("over", 0.45) }
+  else if (gained > 0) { play("merge", gained >= 128 ? 0.5 : 0.35) }
   persist()
 }
 
@@ -228,6 +270,7 @@ function pump() {
   if (won && !keepGoing) { return }
   if (d === "undo") { undo() }
   else if (d === "new") { newGame() }
+  else if (d === "mute") { toggleMute() }
   else { move(d) }
 }
 
@@ -286,8 +329,8 @@ function faceStyle(t) {
   }
 }
 
-// Swipes: touchstart records, touchend compares.
 function padPress(dir) {
   window.__t48Dir = dir
 }
 function padRelease(dir) {}
+

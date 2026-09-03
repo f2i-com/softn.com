@@ -37,8 +37,16 @@
 
     // Theme Toggle
     <Divider style={{ borderColor: getBorderColor() }} />
-    <Button variant=ghost size=sm @click=toggleTheme style={{ justifyContent: "flex-start", gap: "0.5rem", padding: "0.5rem 0.75rem" }}>
-      <Text size=sm style={{ color: getMutedColor() }}>{darkMode ? "Light Mode" : "Dark Mode"}</Text>
+    <Button
+      variant=ghost
+      size=sm
+      @click=toggleTheme
+      ariaLabel={darkMode ? "Switch to light" : "Switch to dark"}
+      title={darkMode ? "Switch to light" : "Switch to dark"}
+      style={{ justifyContent: "flex-start", gap: "0.5rem", padding: "0.5rem 0.75rem" }}
+    >
+      <Icon svg={darkMode ? iconSun : iconMoon} size={16} style={{ color: getMutedColor() }} />
+      <Text size=sm style={{ color: getMutedColor() }}>{darkMode ? "Switch to light" : "Switch to dark"}</Text>
     </Button>
   </Stack>
 </Box>

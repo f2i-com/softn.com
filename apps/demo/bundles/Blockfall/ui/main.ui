@@ -15,6 +15,8 @@
 
 <Box className="bf-root">
   <Loop interval={33} running={running && !paused} @tick={gameStep} />
+  // Between games and while paused, the keys still need reading: Enter starts, P resumes.
+  <Loop interval={100} running={!running || paused} @tick={idleStep} />
   <Box className="bf-wrap">
     <Box className="bf-title">
       <Text style={{ display: "block", fontSize: "40px", fontWeight: 900, letterSpacing: "0.12em", lineHeight: 1, color: "#ffffff", textShadow: "0 0 30px rgba(34,211,238,0.35)" }}>BLOCKFALL</Text>
@@ -54,11 +56,12 @@
         </Box>
         <Button variant="ghost" style={{ padding: "10px 12px", borderRadius: "10px", background: "#22d3ee", color: "#08111a", fontWeight: 800, fontSize: "13px", width: "100%" }} @click={startGame}>{over ? "Again" : (running ? "Restart" : "Start")}</Button>
         <Button if={running && !over} variant="ghost" style={{ padding: "8px 12px", borderRadius: "10px", background: "rgba(255,255,255,0.08)", color: "#fff", fontSize: "13px", width: "100%" }} @click={togglePause}>{paused ? "Resume" : "Pause"}</Button>
+        <Button variant="ghost" ariaLabel={muted ? "Turn sound on" : "Turn sound off"} title={muted ? "Sound is off" : "Sound is on"} style={{ padding: "8px 12px", borderRadius: "10px", background: "rgba(255,255,255,0.08)", color: muted ? "#8b93b3" : "#fff", fontSize: "12px", width: "100%" }} @click={toggleMute}>{muted ? "Sound off" : "Sound on"}</Button>
       </Box>
     </Box>
 
     <Text style={{ display: "block", textAlign: "center", marginTop: "14px", fontSize: "12px", color: "#8b93b3" }}>
-      <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>← →</Text> move · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>↑</Text> rotate · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>Z</Text> rotate back · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>↓</Text> soft drop · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>Space</Text> hard drop · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>C</Text> hold · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>P</Text> pause
+      <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>← →</Text> move · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>↑</Text> rotate · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>Z</Text> rotate back · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>↓</Text> soft drop · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>Space</Text> hard drop · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>C</Text> hold · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>P</Text> pause · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>Enter</Text> start · <Text className="bf-kbd" style={{ fontSize: "11px", color: "#fff" }}>M</Text> sound
     </Text>
 
     <Box className="bf-touch">
