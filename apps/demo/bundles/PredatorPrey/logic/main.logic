@@ -1,23 +1,24 @@
-// Predator-Prey Ecosystem 3D Simulation Logic
+// Predator-Prey Sustainable Ecosystem 3D Simulation Logic
 
 // Simulation State
 let isRunning = true;
 let simSpeed = 1;
 let simTick = 0;
 let dayCount = 1;
-let season = "Spring"; // Spring, Summer, Autumn, Winter
-let ecosystemStatus = "Balanced Equilibrium";
+let season = "Spring";
+let ecosystemStatus = "Dynamic Equilibrium";
 let statusColor = "#22c55e";
 
 // Selected Entity for Inspector
 let selectedId = "";
 let selectedEntity = null;
+let inspectorOpen = false;
 
 // Camera State
 let cameraMode = "overview"; // "overview", "topdown", "follow", "cinematic"
-let cameraPos = { x: 0, y: 16.5, z: 18.0 };
+let cameraPos = { x: 0, y: 26.0, z: 28.0 };
 let cameraLookAt = { x: 0, y: 0.5, z: 0 };
-let cameraFov = 45;
+let cameraFov = 46;
 let cinematicAngle = 0.0;
 
 // Collections
@@ -25,9 +26,8 @@ let rabbits = [];
 let foxes = [];
 let grassList = [];
 let particlePuffs = [];
-let popHistory = []; // Array of { tick, grass, rabbits, foxes }
 
-// Statistics
+// Statistics & Trends
 let rabbitCount = 0;
 let foxCount = 0;
 let grassCount = 0;
@@ -35,21 +35,39 @@ let totalPreyBorn = 0;
 let totalPredBorn = 0;
 let totalHunts = 0;
 
+// Pre-computed visual sparkline bars (14 columns)
+let sparkPreyBars = [30, 35, 40, 38, 42, 45, 41, 37, 34, 38, 42, 44, 40, 38];
+let sparkFoxBars = [20, 22, 25, 28, 30, 27, 24, 21, 18, 22, 26, 28, 25, 24];
+let sparkGrassBars = [60, 58, 55, 52, 50, 54, 58, 62, 65, 61, 57, 54, 56, 58];
+
 // Dynamic Scene collections
 let objects = [];
 let lights = [];
 
-// World Bounds: Floating Island Meadow (-9.5 to +9.5)
-const BOUNDS = 9.2;
-const POND_X = -4.0;
-const POND_Z = -4.0;
-const POND_RADIUS = 2.8;
+// Expanded World Bounds: 42.0 x 42.0 Floating Biome Island (-19.0 to +19.0)
+const BOUNDS = 18.5;
 
-function isInPond(x, z) {
-  return Math.hypot(x - POND_X, z - POND_Z) < POND_RADIUS;
+// River geometry: curved river running diagonally across the island
+function isRiver(x, z) {
+  let riverCenterZ = x * 0.45 - 2.5;
+  let distToCenter = Math.abs(z - riverCenterZ);
+  // Footbridge allows crossing at x = 0
+  let isBridge = Math.abs(x) < 2.0 && Math.abs(z - (-2.5)) < 1.6;
+  if (isBridge) return false;
+  return distToCenter < 2.2;
 }
 
-// Random ID helper
+// Forest cover detection (Refuges where rabbits are harder to hunt)
+function hasForestCover(x, z) {
+  // Pine forest in North-West
+  let nwForest = x < -6.0 && z < -5.0;
+  // Oak grove in South-East
+  let seGrove = x > 6.0 && z > 5.0;
+  // Rocky crags in South-West
+  let swRocks = x < -7.0 && z > 6.0;
+  return nwForest || seGrove || swRocks;
+}
+
 let nextEntityId = 1;
 function genId(prefix) {
   let id = prefix + "-" + nextEntityId;
@@ -57,117 +75,171 @@ function genId(prefix) {
   return id;
 }
 
-// Initialize Meadow Scenery
+// Build 3D Static Scenery (Expanded 42x42 Floating Island Meadow Reserve)
 function buildStaticMeadow() {
   let list = [];
 
-  // Floating Island Meadow Base (Topsoil, Earth, Bedrock)
+  // 1. Layered Floating Island Deck
+  // Top Meadow Turf (Lush green deck with natural bevel)
   list.push({
     id: "meadow-turf",
     type: "box",
-    width: 21.0,
-    height: 0.5,
-    depth: 21.0,
-    position: { x: 0, y: 0.25, z: 0 },
+    width: 42.0,
+    height: 0.6,
+    depth: 42.0,
+    position: { x: 0, y: 0.3, z: 0 },
     color: "#15803d",
     receiveShadow: true,
     roughness: 0.9
   });
+  // Rich Earth Strata
   list.push({
     id: "meadow-earth",
     type: "box",
-    width: 20.6,
-    height: 0.9,
-    depth: 20.6,
-    position: { x: 0, y: -0.45, z: 0 },
+    width: 41.4,
+    height: 1.4,
+    depth: 41.4,
+    position: { x: 0, y: -0.7, z: 0 },
     color: "#78350f",
     roughness: 0.95
   });
+  // Dark Bedrock Cliffs
   list.push({
-    id: "meadow-rock",
+    id: "meadow-bedrock",
     type: "box",
-    width: 20.0,
-    height: 1.8,
-    depth: 20.0,
-    position: { x: 0, y: -1.8, z: 0 },
+    width: 40.5,
+    height: 3.2,
+    depth: 40.5,
+    position: { x: 0, y: -3.0, z: 0 },
     color: "#334155",
     roughness: 0.8
   });
 
-  // Sparkling Blue Pond Basin
+  // 2. Winding River Water Channel
   list.push({
-    id: "pond-water",
-    type: "cylinder",
-    radius: POND_RADIUS,
-    height: 0.08,
-    position: { x: POND_X, y: 0.49, z: POND_Z },
+    id: "river-water",
+    type: "box",
+    width: 44.0,
+    height: 0.12,
+    depth: 4.2,
+    position: { x: 0, y: 0.54, z: -2.5 },
+    rotation: { x: 0, y: -0.42, z: 0 },
     color: "#0284c7",
     opacity: 0.88,
     metalness: 0.35,
     roughness: 0.1
   });
-  // Lily pads on the pond
+
+  // Timber Footbridge across the river at the center
+  list.push({
+    id: "bridge-deck",
+    type: "box",
+    width: 3.2,
+    height: 0.15,
+    depth: 4.8,
+    position: { x: 0, y: 0.68, z: -2.5 },
+    color: "#92400e",
+    castShadow: true,
+    receiveShadow: true
+  });
+  // Bridge handrails
+  list.push({
+    id: "bridge-rail-l",
+    type: "box",
+    width: 0.1,
+    height: 0.5,
+    depth: 4.8,
+    position: { x: -1.5, y: 0.95, z: -2.5 },
+    color: "#78350f"
+  });
+  list.push({
+    id: "bridge-rail-r",
+    type: "box",
+    width: 0.1,
+    height: 0.5,
+    depth: 4.8,
+    position: { x: 1.5, y: 0.95, z: -2.5 },
+    color: "#78350f"
+  });
+
+  // Floating Lily Pads on river
   let lilypads = [
-    { x: -3.2, z: -3.8 },
-    { x: -4.8, z: -4.4 },
-    { x: -4.2, z: -2.8 }
+    { x: -7.5, z: -6.2 },
+    { x: -5.8, z: -5.0 },
+    { x: 5.5, z: -0.2 },
+    { x: 8.2, z: 1.2 }
   ];
   for (let l = 0; l < lilypads.length; l = l + 1) {
     list.push({
       id: "lilypad-" + l,
       type: "cylinder",
-      radius: 0.28,
+      radius: 0.35,
       height: 0.04,
-      position: { x: lilypads[l].x, y: 0.54, z: lilypads[l].z },
+      position: { x: lilypads[l].x, y: 0.62, z: lilypads[l].z },
       color: "#22c55e"
     });
     list.push({
       id: "lilypad-flower-" + l,
       type: "sphere",
-      radius: 0.08,
-      position: { x: lilypads[l].x, y: 0.58, z: lilypads[l].z },
+      radius: 0.09,
+      position: { x: lilypads[l].x, y: 0.66, z: lilypads[l].z },
       color: "#ffffff"
     });
   }
 
-  // Pine Trees & Oak Trees on Meadow Perimeters
-  let treeLocs = [
-    { x: -8.5, z: -8.5, type: "pine" },
-    { x: 8.5, z: -8.5, type: "pine" },
-    { x: 8.5, z: 8.5, type: "pine" },
-    { x: -8.5, z: 8.5, type: "pine" },
-    { x: 0, z: -9.0, type: "oak" },
-    { x: 9.0, z: 0, type: "oak" },
-    { x: -9.0, z: 0, type: "oak" },
-    { x: 0, z: 9.0, type: "pine" }
+  // 3. Dense Pine Forest (North-West) & Deciduous Groves (South-East)
+  let treeList = [
+    // NW Pine Forest (Prey refuge)
+    { x: -14.5, z: -13.5, type: "pine", scale: 1.2 },
+    { x: -11.0, z: -15.2, type: "pine", scale: 1.4 },
+    { x: -15.2, z: -10.0, type: "pine", scale: 1.1 },
+    { x: -10.5, z: -9.5, type: "pine", scale: 1.3 },
+    { x: -8.0, z: -13.0, type: "pine", scale: 1.0 },
+    { x: -13.0, z: -6.5, type: "pine", scale: 1.1 },
+
+    // SE Oak Grove (Prey refuge)
+    { x: 12.0, z: 12.5, type: "oak", scale: 1.3 },
+    { x: 15.5, z: 10.2, type: "oak", scale: 1.2 },
+    { x: 11.2, z: 15.8, type: "oak", scale: 1.4 },
+    { x: 8.5, z: 13.0, type: "oak", scale: 1.1 },
+    { x: 14.0, z: 7.5, type: "oak", scale: 1.0 },
+
+    // Perimeter Border Trees
+    { x: -17.5, z: 0, type: "pine", scale: 1.2 },
+    { x: 17.5, z: -5.0, type: "pine", scale: 1.3 },
+    { x: 0, z: 17.5, type: "oak", scale: 1.2 },
+    { x: 0, z: -17.5, type: "pine", scale: 1.3 },
+    { x: -16.0, z: 15.0, type: "pine", scale: 1.1 },
+    { x: 16.0, z: -15.0, type: "pine", scale: 1.2 }
   ];
-  for (let t = 0; t < treeLocs.length; t = t + 1) {
-    let loc = treeLocs[t];
+
+  for (let t = 0; t < treeList.length; t = t + 1) {
+    let tr = treeList[t];
     // Trunk
     list.push({
       id: "tree-trunk-" + t,
       type: "cylinder",
-      radius: 0.22,
-      height: 1.6,
-      position: { x: loc.x, y: 1.25, z: loc.z },
+      radius: 0.26 * tr.scale,
+      height: 2.0 * tr.scale,
+      position: { x: tr.x, y: 0.6 + (2.0 * tr.scale) / 2, z: tr.z },
       color: "#5c3a21"
     });
-    if (loc.type === "pine") {
+    if (tr.type === "pine") {
       list.push({
         id: "tree-cone-1-" + t,
         type: "cone",
-        radius: 1.2,
-        height: 1.6,
-        position: { x: loc.x, y: 2.3, z: loc.z },
+        radius: 1.4 * tr.scale,
+        height: 2.0 * tr.scale,
+        position: { x: tr.x, y: 0.6 + 1.8 * tr.scale, z: tr.z },
         color: "#14532d",
         castShadow: true
       });
       list.push({
         id: "tree-cone-2-" + t,
         type: "cone",
-        radius: 0.85,
-        height: 1.5,
-        position: { x: loc.x, y: 3.2, z: loc.z },
+        radius: 1.0 * tr.scale,
+        height: 1.8 * tr.scale,
+        position: { x: tr.x, y: 0.6 + 3.0 * tr.scale, z: tr.z },
         color: "#166534",
         castShadow: true
       });
@@ -175,31 +247,56 @@ function buildStaticMeadow() {
       list.push({
         id: "tree-foliage-" + t,
         type: "sphere",
-        radius: 1.25,
-        position: { x: loc.x, y: 2.6, z: loc.z },
+        radius: 1.5 * tr.scale,
+        position: { x: tr.x, y: 0.6 + 2.8 * tr.scale, z: tr.z },
         color: "#15803d",
         castShadow: true
       });
     }
   }
 
-  // Granite Mossy Boulders
-  let rocks = [
-    { x: 4.5, z: 4.5, r: 0.75 },
-    { x: 5.2, z: 3.8, r: 0.5 },
-    { x: -6.8, z: 2.5, r: 0.85 },
-    { x: 2.5, z: -6.5, r: 0.7 }
+  // 4. Mossy Granite Boulder Outcrops (South-West Rocky Refuge)
+  let boulders = [
+    { x: -12.5, z: 11.5, r: 1.2 },
+    { x: -11.0, z: 13.2, r: 0.85 },
+    { x: -14.0, z: 9.8, r: 0.95 },
+    { x: 7.5, z: -10.5, r: 1.1 },
+    { x: 9.0, z: -9.0, r: 0.75 },
+    { x: -3.5, z: 7.5, r: 0.8 }
   ];
-  for (let k = 0; k < rocks.length; k = k + 1) {
+  for (let b = 0; b < boulders.length; b = b + 1) {
     list.push({
-      id: "boulder-" + k,
+      id: "boulder-" + b,
       type: "sphere",
-      radius: rocks[k].r,
-      position: { x: rocks[k].x, y: 0.5 + rocks[k].r * 0.4, z: rocks[k].z },
+      radius: boulders[b].r,
+      position: { x: boulders[b].x, y: 0.6 + boulders[b].r * 0.45, z: boulders[b].z },
       color: "#64748b",
-      roughness: 0.9,
+      roughness: 0.85,
       castShadow: true
     });
+  }
+
+  // 5. Wooden Perimeter Fence Posts around Island Edge
+  let fenceSpacing = 3.5;
+  let fCount = 0;
+  for (let x = -BOUNDS; x <= BOUNDS; x = x + fenceSpacing) {
+    list.push({
+      id: "fence-n-" + fCount,
+      type: "cylinder",
+      radius: 0.08,
+      height: 0.8,
+      position: { x: x, y: 0.9, z: -BOUNDS },
+      color: "#78350f"
+    });
+    list.push({
+      id: "fence-s-" + fCount,
+      type: "cylinder",
+      radius: 0.08,
+      height: 0.8,
+      position: { x: x, y: 0.9, z: BOUNDS },
+      color: "#78350f"
+    });
+    fCount = fCount + 1;
   }
 
   return list;
@@ -209,11 +306,10 @@ const staticObjects = buildStaticMeadow();
 
 // Spawn Rabbit
 function addRabbit(x, z, initialEnergy) {
-  let posX = x !== undefined ? x : (Math.random() - 0.5) * BOUNDS * 1.6;
-  let posZ = z !== undefined ? z : (Math.random() - 0.5) * BOUNDS * 1.6;
-  if (isInPond(posX, posZ)) {
+  let posX = x !== undefined ? x : (Math.random() - 0.5) * BOUNDS * 1.8;
+  let posZ = z !== undefined ? z : (Math.random() - 0.5) * BOUNDS * 1.8;
+  if (isRiver(posX, posZ)) {
     posX = posX + 3.0;
-    posZ = posZ + 3.0;
   }
   let id = genId("prey");
   rabbits.push({
@@ -221,15 +317,15 @@ function addRabbit(x, z, initialEnergy) {
     name: "Hare #" + id.split("-")[1],
     x: posX,
     z: posZ,
-    y: 0.52,
+    y: 0.62,
     vx: (Math.random() - 0.5) * 0.05,
     vz: (Math.random() - 0.5) * 0.05,
     rot: Math.random() * Math.PI * 2,
-    energy: initialEnergy || 25,
-    maxEnergy: 50,
+    energy: initialEnergy || 28,
+    maxEnergy: 55,
     age: 0,
-    maxAge: 1200 + Math.floor(Math.random() * 400),
-    state: "wandering", // "wandering", "grazing", "fleeing", "mating"
+    maxAge: 1600 + Math.floor(Math.random() * 400),
+    state: "Wandering",
     hopPhase: Math.random() * Math.PI * 2,
     offspringCount: 0
   });
@@ -238,11 +334,10 @@ function addRabbit(x, z, initialEnergy) {
 
 // Spawn Fox
 function addFox(x, z, initialEnergy) {
-  let posX = x !== undefined ? x : (Math.random() - 0.5) * BOUNDS * 1.6;
-  let posZ = z !== undefined ? z : (Math.random() - 0.5) * BOUNDS * 1.6;
-  if (isInPond(posX, posZ)) {
+  let posX = x !== undefined ? x : (Math.random() - 0.5) * BOUNDS * 1.8;
+  let posZ = z !== undefined ? z : (Math.random() - 0.5) * BOUNDS * 1.8;
+  if (isRiver(posX, posZ)) {
     posX = posX - 3.0;
-    posZ = posZ - 3.0;
   }
   let id = genId("pred");
   foxes.push({
@@ -250,31 +345,32 @@ function addFox(x, z, initialEnergy) {
     name: "Fox #" + id.split("-")[1],
     x: posX,
     z: posZ,
-    y: 0.55,
+    y: 0.65,
     vx: (Math.random() - 0.5) * 0.06,
     vz: (Math.random() - 0.5) * 0.06,
     rot: Math.random() * Math.PI * 2,
-    energy: initialEnergy || 35,
-    maxEnergy: 75,
+    energy: initialEnergy || 42,
+    maxEnergy: 80,
     age: 0,
-    maxAge: 1500 + Math.floor(Math.random() * 500),
-    state: "stalking", // "stalking", "hunting", "satisfied", "mating"
+    maxAge: 2200 + Math.floor(Math.random() * 600),
+    state: "Stalking",
     runPhase: Math.random() * Math.PI * 2,
     targetId: null,
     catchCount: 0,
+    satiatedTicks: 0,
     offspringCount: 0
   });
   foxCount = foxes.length;
 }
 
-// Initialize Grass Patches
+// Initialize 110 Grass Patches across the vast 42x42 Meadow
 function initGrassGrid() {
   grassList = [];
-  let numPatches = 52;
+  let numPatches = 110;
   for (let i = 0; i < numPatches; i = i + 1) {
-    let gx = (Math.random() - 0.5) * BOUNDS * 1.8;
-    let gz = (Math.random() - 0.5) * BOUNDS * 1.8;
-    if (isInPond(gx, gz)) {
+    let gx = (Math.random() - 0.5) * BOUNDS * 1.9;
+    let gz = (Math.random() - 0.5) * BOUNDS * 1.9;
+    if (isRiver(gx, gz)) {
       gx = gx + 3.2;
     }
     grassList.push({
@@ -283,13 +379,13 @@ function initGrassGrid() {
       z: gz,
       nutrition: Math.floor(Math.random() * 3) + 1, // 1 to 3
       maxNutrition: 3,
-      regrowTimer: 0
+      regrowTimer: Math.random() * 4.0
     });
   }
   grassCount = grassList.length;
 }
 
-// Particles Management
+// Particle System
 function spawnPuff(x, y, z, color, count) {
   let c = count || 6;
   for (let i = 0; i < c; i = i + 1) {
@@ -323,57 +419,61 @@ function updateParticles() {
   particlePuffs = kept;
 }
 
-// Reset Scenarios
+// Reset Ecosystem Scenarios
 function resetScenario(type) {
   rabbits = [];
   foxes = [];
   particlePuffs = [];
-  popHistory = [];
   simTick = 0;
   dayCount = 1;
   selectedId = "";
   selectedEntity = null;
+  inspectorOpen = false;
   initGrassGrid();
 
   if (type === "rabbit_boom") {
-    for (let i = 0; i < 48; i = i + 1) addRabbit();
+    // Prey explosion scenario
+    for (let i = 0; i < 50; i = i + 1) addRabbit();
     for (let i = 0; i < 3; i = i + 1) addFox();
   } else if (type === "predator_pack") {
-    for (let i = 0; i < 18; i = i + 1) addRabbit();
+    // Apex pack scenario
+    for (let i = 0; i < 28; i = i + 1) addRabbit();
     for (let i = 0; i < 16; i = i + 1) addFox();
   } else if (type === "sparse") {
-    for (let i = 0; i < 14; i = i + 1) addRabbit();
+    // Sparse survival scenario
+    for (let i = 0; i < 18; i = i + 1) addRabbit();
     for (let i = 0; i < 4; i = i + 1) addFox();
   } else {
-    // Balanced
-    for (let i = 0; i < 30; i = i + 1) addRabbit();
+    // Perfectly Balanced Dynamic Equilibrium Scenario
+    for (let i = 0; i < 36; i = i + 1) addRabbit();
     for (let i = 0; i < 8; i = i + 1) addFox();
   }
 
   updateStats();
 }
 
-// Helper: Distance
 function dist(x1, z1, x2, z2) {
   return Math.hypot(x1 - x2, z1 - z2);
 }
 
-// Ecological Step Physics
+// Sustainable Ecosystem Physics & Agent AI Step
 function updateEcosystem(delta) {
   simTick = simTick + 1;
-  if (simTick % 180 === 0) {
+  if (simTick % 200 === 0) {
     dayCount = dayCount + 1;
     let seasons = ["Spring", "Summer", "Autumn", "Winter"];
-    season = seasons[Math.floor(dayCount / 5) % 4];
+    season = seasons[Math.floor(dayCount / 6) % 4];
   }
 
-  // 1. Grass Growth & Regeneration
+  // 1. Dynamic Grass Growth & Carrying Capacity
   let matureGrassCount = 0;
   for (let g = 0; g < grassList.length; g = g + 1) {
     let grass = grassList[g];
     if (grass.nutrition < grass.maxNutrition) {
-      grass.regrowTimer = grass.regrowTimer + delta * (season === "Winter" ? 0.3 : 1.0);
-      if (grass.regrowTimer > 6.0) {
+      // Regrowth speed modulated by season
+      let regrowSpeed = season === "Spring" ? 1.4 : (season === "Winter" ? 0.35 : 1.0);
+      grass.regrowTimer = grass.regrowTimer + delta * regrowSpeed;
+      if (grass.regrowTimer > 5.5) {
         grass.nutrition = grass.nutrition + 1;
         grass.regrowTimer = 0;
       }
@@ -382,42 +482,52 @@ function updateEcosystem(delta) {
   }
   grassCount = matureGrassCount;
 
-  // 2. Rabbits (Prey) AI & Movement
+  // 2. Rabbits (Prey) AI, Foraging & Natural Selection
   let survivingRabbits = [];
   let newRabbits = [];
 
   for (let r = 0; r < rabbits.length; r = r + 1) {
     let rab = rabbits[r];
     rab.age = rab.age + 1;
-    rab.hopPhase = rab.hopPhase + delta * (rab.state === "fleeing" ? 14.0 : 8.0);
-    rab.y = 0.52 + Math.abs(Math.sin(rab.hopPhase)) * (rab.state === "fleeing" ? 0.28 : 0.16);
+    let isFleeing = rab.state === "Fleeing";
+    rab.hopPhase = rab.hopPhase + delta * (isFleeing ? 13.0 : 7.0);
+    rab.y = 0.62 + Math.abs(Math.sin(rab.hopPhase)) * (isFleeing ? 0.28 : 0.16);
+
+    // Forest cover reduces threat exposure
+    let inCover = hasForestCover(rab.x, rab.z);
 
     // Find nearest predator (Threat Detection)
     let nearestFox = null;
-    let minFoxDist = 5.2; // Vision radius for threat
+    let detectionRadius = inCover ? 3.5 : 6.8; // Cover protects prey!
+    let minFoxDist = detectionRadius;
+
     for (let f = 0; f < foxes.length; f = f + 1) {
-      let d = dist(rab.x, rab.z, foxes[f].x, foxes[f].z);
-      if (d < minFoxDist) {
-        minFoxDist = d;
-        nearestFox = foxes[f];
+      let fox = foxes[f];
+      // Satiated foxes resting don't trigger extreme panic
+      if (fox.satiatedTicks <= 0) {
+        let d = dist(rab.x, rab.z, fox.x, fox.z);
+        if (d < minFoxDist) {
+          minFoxDist = d;
+          nearestFox = fox;
+        }
       }
     }
 
     if (nearestFox) {
-      // FLEE! Compute vector directly away from predator
-      rab.state = "fleeing";
+      // FLEE! Sprint directly away from predator
+      rab.state = "Fleeing";
       let dx = rab.x - nearestFox.x;
       let dz = rab.z - nearestFox.z;
       let len = Math.hypot(dx, dz) || 1;
-      let speed = 0.16; // Sprint speed
-      rab.vx = (dx / len) * speed;
-      rab.vz = (dz / len) * speed;
+      let sprintSpeed = 0.155;
+      rab.vx = (dx / len) * sprintSpeed;
+      rab.vz = (dz / len) * sprintSpeed;
       rab.rot = Math.atan2(rab.vx, rab.vz);
-      rab.energy = rab.energy - 0.08 * delta * 30;
+      rab.energy = rab.energy - 0.065 * delta * 30;
     } else {
-      // SAFE: Look for Grass or Wander
+      // SAFE: Seek Grass or Wander
       let nearestGrass = null;
-      let minGrassDist = 7.0;
+      let minGrassDist = 8.5;
       for (let g = 0; g < grassList.length; g = g + 1) {
         if (grassList[g].nutrition > 0) {
           let d = dist(rab.x, rab.z, grassList[g].x, grassList[g].z);
@@ -428,82 +538,80 @@ function updateEcosystem(delta) {
         }
       }
 
-      if (nearestGrass && rab.energy < 38) {
-        rab.state = "grazing";
+      if (nearestGrass && rab.energy < 44) {
+        rab.state = "Grazing";
         let dx = nearestGrass.x - rab.x;
         let dz = nearestGrass.z - rab.z;
         let len = Math.hypot(dx, dz) || 1;
-        if (len < 0.5) {
-          // Eat grass
-          rab.energy = Math.min(rab.maxEnergy, rab.energy + 10.0);
+        if (len < 0.6) {
+          // Nibble grass
+          rab.energy = Math.min(rab.maxEnergy, rab.energy + 12.0);
           nearestGrass.nutrition = nearestGrass.nutrition - 1;
           spawnPuff(rab.x, rab.y, rab.z, "#22c55e", 4);
           rab.vx = 0;
           rab.vz = 0;
         } else {
-          let speed = 0.075;
-          rab.vx = (dx / len) * speed;
-          rab.vz = (dz / len) * speed;
+          let wanderSpeed = 0.075;
+          rab.vx = (dx / len) * wanderSpeed;
+          rab.vz = (dz / len) * wanderSpeed;
           rab.rot = Math.atan2(rab.vx, rab.vz);
         }
       } else {
-        rab.state = "wandering";
-        // Gentle random wandering
-        if (Math.random() < 0.05) {
-          rab.rot = rab.rot + (Math.random() - 0.5) * 1.5;
-          let speed = 0.045;
+        rab.state = "Wandering";
+        if (Math.random() < 0.04) {
+          rab.rot = rab.rot + (Math.random() - 0.5) * 1.4;
+          let speed = 0.042;
           rab.vx = Math.sin(rab.rot) * speed;
           rab.vz = Math.cos(rab.rot) * speed;
         }
       }
-      rab.energy = rab.energy - 0.035 * delta * 30;
+      rab.energy = rab.energy - 0.028 * delta * 30;
     }
 
     // Apply Velocity
     rab.x = rab.x + rab.vx;
     rab.z = rab.z + rab.vz;
 
-    // Meadow & Pond Boundaries
+    // Meadow Bounds
     if (rab.x > BOUNDS) { rab.x = BOUNDS; rab.vx = -Math.abs(rab.vx); }
     if (rab.x < -BOUNDS) { rab.x = -BOUNDS; rab.vx = Math.abs(rab.vx); }
     if (rab.z > BOUNDS) { rab.z = BOUNDS; rab.vz = -Math.abs(rab.vz); }
     if (rab.z < -BOUNDS) { rab.z = -BOUNDS; rab.vz = Math.abs(rab.vz); }
-    if (isInPond(rab.x, rab.z)) {
-      let dx = rab.x - POND_X;
-      let dz = rab.z - POND_Z;
-      let len = Math.hypot(dx, dz) || 1;
-      rab.x = POND_X + (dx / len) * (POND_RADIUS + 0.2);
-      rab.z = POND_Z + (dz / len) * (POND_RADIUS + 0.2);
+
+    // River avoidance (except bridge at x = 0)
+    if (isRiver(rab.x, rab.z)) {
+      rab.z = rab.z + (rab.z > -2.5 ? 0.3 : -0.3);
+      rab.vz = -rab.vz;
     }
 
-    // Reproduction
-    if (rab.energy > 38 && rab.age > 80 && rabbits.length < 90) {
+    // Self-Balancing Reproduction (Logistic carrying capacity)
+    if (rab.energy > 44 && rab.age > 90 && rabbits.length < 75) {
       rab.energy = rab.energy - 18;
       rab.offspringCount = rab.offspringCount + 1;
       totalPreyBorn = totalPreyBorn + 1;
-      spawnPuff(rab.x, rab.y + 0.4, rab.z, "#f43f5e", 8); // Heart/pink puff
+      spawnPuff(rab.x, rab.y + 0.4, rab.z, "#f43f5e", 7);
       newRabbits.push({
         id: genId("prey"),
-        name: "Bunny #" + totalPreyBorn,
-        x: rab.x + (Math.random() - 0.5) * 0.8,
-        z: rab.z + (Math.random() - 0.5) * 0.8,
-        y: 0.52,
+        name: "Hare #" + totalPreyBorn,
+        x: rab.x + (Math.random() - 0.5) * 0.9,
+        z: rab.z + (Math.random() - 0.5) * 0.9,
+        y: 0.62,
         vx: (Math.random() - 0.5) * 0.05,
         vz: (Math.random() - 0.5) * 0.05,
         rot: Math.random() * Math.PI * 2,
-        energy: 20,
-        maxEnergy: 50,
+        energy: 22,
+        maxEnergy: 55,
         age: 0,
-        maxAge: 1200 + Math.floor(Math.random() * 400),
-        state: "wandering",
+        maxAge: 1600 + Math.floor(Math.random() * 400),
+        state: "Wandering",
         hopPhase: 0,
         offspringCount: 0
       });
     }
 
-    // Death by starvation or old age
+    // Natural mortality
     if (rab.energy <= 0 || rab.age > rab.maxAge) {
-      spawnPuff(rab.x, rab.y, rab.z, "#cbd5e1", 6); // Dust puff
+      spawnPuff(rab.x, rab.y, rab.z, "#cbd5e1", 5);
     } else {
       survivingRabbits.push(rab);
     }
@@ -514,7 +622,7 @@ function updateEcosystem(delta) {
   }
   rabbits = survivingRabbits;
 
-  // 3. Foxes (Predator) AI & Hunting
+  // 3. Foxes (Predators) AI, Hunting & Satiation
   let survivingFoxes = [];
   let newFoxes = [];
   let eatenRabbitIds = {};
@@ -522,104 +630,124 @@ function updateEcosystem(delta) {
   for (let f = 0; f < foxes.length; f = f + 1) {
     let fox = foxes[f];
     fox.age = fox.age + 1;
-    fox.runPhase = fox.runPhase + delta * (fox.state === "hunting" ? 12.0 : 6.0);
 
-    // Find nearest rabbit within vision
-    let nearestRab = null;
-    let minRabDist = 8.5; // Hunting vision range
-    for (let r = 0; r < rabbits.length; r = r + 1) {
-      let rab = rabbits[r];
-      if (!eatenRabbitIds[rab.id]) {
-        let d = dist(fox.x, fox.z, rab.x, rab.z);
-        if (d < minRabDist) {
-          minRabDist = d;
-          nearestRab = rab;
-        }
-      }
-    }
-
-    if (nearestRab) {
-      // HUNT! Chase closest rabbit
-      fox.state = "hunting";
-      fox.targetId = nearestRab.id;
-      let dx = nearestRab.x - fox.x;
-      let dz = nearestRab.z - fox.z;
-      let len = Math.hypot(dx, dz) || 1;
-
-      if (len < 0.65) {
-        // CATCH PREY! Pounce and consume
-        eatenRabbitIds[nearestRab.id] = true;
-        fox.energy = Math.min(fox.maxEnergy, fox.energy + 28.0);
-        fox.catchCount = fox.catchCount + 1;
-        totalHunts = totalHunts + 1;
-        fox.state = "satisfied";
-        spawnPuff(nearestRab.x, nearestRab.y + 0.3, nearestRab.z, "#fb923c", 8);
-        fox.vx = 0;
-        fox.vz = 0;
-      } else {
-        let speed = 0.135; // Sprint chase speed
-        fox.vx = (dx / len) * speed;
-        fox.vz = (dz / len) * speed;
-        fox.rot = Math.atan2(fox.vx, fox.vz);
-      }
-      fox.energy = fox.energy - 0.08 * delta * 30;
-    } else {
-      // Wander or stalk
-      fox.state = "stalking";
-      if (Math.random() < 0.04) {
-        fox.rot = fox.rot + (Math.random() - 0.5) * 1.2;
-        let speed = 0.055;
+    // Satiation timer (After eating, fox rests and digests before hunting again)
+    if (fox.satiatedTicks > 0) {
+      fox.satiatedTicks = fox.satiatedTicks - 1;
+      fox.state = "Satiated";
+      fox.runPhase = fox.runPhase + delta * 3.0;
+      // Gentle strolling
+      if (Math.random() < 0.03) {
+        fox.rot = fox.rot + (Math.random() - 0.5) * 0.8;
+        let speed = 0.035;
         fox.vx = Math.sin(fox.rot) * speed;
         fox.vz = Math.cos(fox.rot) * speed;
       }
-      fox.energy = fox.energy - 0.045 * delta * 30;
+      fox.energy = fox.energy - 0.025 * delta * 30;
+    } else {
+      fox.runPhase = fox.runPhase + delta * (fox.state === "Hunting" ? 11.0 : 5.5);
+
+      // Search for prey in sight
+      let nearestRab = null;
+      let minRabDist = 9.5;
+      for (let r = 0; r < rabbits.length; r = r + 1) {
+        let rab = rabbits[r];
+        if (!eatenRabbitIds[rab.id]) {
+          let inCover = hasForestCover(rab.x, rab.z);
+          // Forest cover reduces predator detection distance
+          let effectiveVision = inCover ? 4.8 : minRabDist;
+          let d = dist(fox.x, fox.z, rab.x, rab.z);
+          if (d < effectiveVision) {
+            minRabDist = d;
+            nearestRab = rab;
+          }
+        }
+      }
+
+      if (nearestRab) {
+        // HUNT!
+        fox.state = "Hunting";
+        fox.targetId = nearestRab.id;
+        let dx = nearestRab.x - fox.x;
+        let dz = nearestRab.z - fox.z;
+        let len = Math.hypot(dx, dz) || 1;
+
+        if (len < 0.72) {
+          // CATCH PREY!
+          eatenRabbitIds[nearestRab.id] = true;
+          fox.energy = Math.min(fox.maxEnergy, fox.energy + 32.0);
+          fox.catchCount = fox.catchCount + 1;
+          totalHunts = totalHunts + 1;
+          fox.satiatedTicks = 75; // 2.5 seconds resting cooldown
+          fox.state = "Satiated";
+          spawnPuff(nearestRab.x, nearestRab.y + 0.3, nearestRab.z, "#fb923c", 9);
+          fox.vx = 0;
+          fox.vz = 0;
+        } else {
+          let chaseSpeed = 0.138;
+          fox.vx = (dx / len) * chaseSpeed;
+          fox.vz = (dz / len) * chaseSpeed;
+          fox.rot = Math.atan2(fox.vx, fox.vz);
+        }
+        fox.energy = fox.energy - 0.075 * delta * 30;
+      } else {
+        // Stalking / Wandering
+        fox.state = "Stalking";
+        if (Math.random() < 0.035) {
+          fox.rot = fox.rot + (Math.random() - 0.5) * 1.1;
+          let speed = 0.052;
+          fox.vx = Math.sin(fox.rot) * speed;
+          fox.vz = Math.cos(fox.rot) * speed;
+        }
+        fox.energy = fox.energy - 0.040 * delta * 30;
+      }
     }
 
-    // Apply velocity
+    // Apply Velocity
     fox.x = fox.x + fox.vx;
     fox.z = fox.z + fox.vz;
 
-    // Boundaries
+    // Meadow Bounds
     if (fox.x > BOUNDS) { fox.x = BOUNDS; fox.vx = -Math.abs(fox.vx); }
     if (fox.x < -BOUNDS) { fox.x = -BOUNDS; fox.vx = Math.abs(fox.vx); }
     if (fox.z > BOUNDS) { fox.z = BOUNDS; fox.vz = -Math.abs(fox.vz); }
     if (fox.z < -BOUNDS) { fox.z = -BOUNDS; fox.vz = Math.abs(fox.vz); }
-    if (isInPond(fox.x, fox.z)) {
-      let dx = fox.x - POND_X;
-      let dz = fox.z - POND_Z;
-      let len = Math.hypot(dx, dz) || 1;
-      fox.x = POND_X + (dx / len) * (POND_RADIUS + 0.2);
-      fox.z = POND_Z + (dz / len) * (POND_RADIUS + 0.2);
+
+    // River avoidance
+    if (isRiver(fox.x, fox.z)) {
+      fox.z = fox.z + (fox.z > -2.5 ? 0.3 : -0.3);
+      fox.vz = -fox.vz;
     }
 
-    // Fox Reproduction
-    if (fox.energy > 56 && fox.age > 120 && foxes.length < 35) {
-      fox.energy = fox.energy - 26;
+    // Fox Reproduction (Calibrated threshold for ecological stability)
+    if (fox.energy > 64 && fox.age > 160 && foxes.length < 24) {
+      fox.energy = fox.energy - 30;
       fox.offspringCount = fox.offspringCount + 1;
       totalPredBorn = totalPredBorn + 1;
       spawnPuff(fox.x, fox.y + 0.4, fox.z, "#f97316", 8);
       newFoxes.push({
         id: genId("pred"),
-        name: "Kit #" + totalPredBorn,
-        x: fox.x + (Math.random() - 0.5) * 0.9,
-        z: fox.z + (Math.random() - 0.5) * 0.9,
-        y: 0.55,
+        name: "Fox #" + totalPredBorn,
+        x: fox.x + (Math.random() - 0.5) * 1.0,
+        z: fox.z + (Math.random() - 0.5) * 1.0,
+        y: 0.65,
         vx: (Math.random() - 0.5) * 0.06,
         vz: (Math.random() - 0.5) * 0.06,
         rot: Math.random() * Math.PI * 2,
-        energy: 30,
-        maxEnergy: 75,
+        energy: 36,
+        maxEnergy: 80,
         age: 0,
-        maxAge: 1500 + Math.floor(Math.random() * 500),
-        state: "stalking",
+        maxAge: 2200 + Math.floor(Math.random() * 600),
+        state: "Stalking",
         runPhase: 0,
         targetId: null,
         catchCount: 0,
+        satiatedTicks: 0,
         offspringCount: 0
       });
     }
 
-    // Starvation or age death
+    // Fox Starvation / Natural Death
     if (fox.energy <= 0 || fox.age > fox.maxAge) {
       spawnPuff(fox.x, fox.y, fox.z, "#94a3b8", 8);
     } else {
@@ -645,38 +773,40 @@ function updateStats() {
   rabbitCount = rabbits.length;
   foxCount = foxes.length;
 
-  // Ecosystem Balance Status
+  // Sustainable Ecological Health Status
   if (rabbitCount === 0 && foxCount === 0) {
     ecosystemStatus = "Ecological Collapse";
     statusColor = "#ef4444";
   } else if (foxCount === 0) {
-    ecosystemStatus = "Prey Boom (No Predators)";
+    ecosystemStatus = "Prey Boom (No Apex Predators)";
     statusColor = "#f59e0b";
   } else if (rabbitCount === 0) {
     ecosystemStatus = "Predator Starvation (No Prey)";
     statusColor = "#dc2626";
-  } else if (foxCount > rabbitCount * 0.6) {
-    ecosystemStatus = "Apex Overpredation";
-    statusColor = "#f97316";
+  } else if (foxCount >= 14) {
+    ecosystemStatus = "Predator Surplus Phase";
+    statusColor = "#fb923c";
+  } else if (rabbitCount >= 50) {
+    ecosystemStatus = "Abundant Prey Phase";
+    statusColor = "#38bdf8";
   } else {
-    ecosystemStatus = "Balanced Equilibrium";
+    ecosystemStatus = "Dynamic Equilibrium";
     statusColor = "#22c55e";
   }
 
-  // Population history tracking for graph
-  if (simTick % 12 === 0) {
-    popHistory.push({
-      tick: simTick,
-      grass: grassCount,
-      rabbits: rabbitCount,
-      foxes: foxCount
-    });
-    if (popHistory.length > 40) {
-      popHistory.shift();
-    }
+  // Update pre-computed sparkline trend bars
+  if (simTick % 16 === 0) {
+    sparkPreyBars.shift();
+    sparkPreyBars.push(Math.min(100, Math.round((rabbitCount / 65) * 100)));
+
+    sparkFoxBars.shift();
+    sparkFoxBars.push(Math.min(100, Math.round((foxCount / 20) * 100)));
+
+    sparkGrassBars.shift();
+    sparkGrassBars.push(Math.min(100, Math.round((grassCount / 110) * 100)));
   }
 
-  // Update selected entity reference
+  // Sync selected entity details
   if (selectedId) {
     let found = null;
     for (let r = 0; r < rabbits.length; r = r + 1) {
@@ -688,41 +818,46 @@ function updateStats() {
       }
     }
     selectedEntity = found;
+    inspectorOpen = found !== null;
+  } else {
+    selectedEntity = null;
+    inspectorOpen = false;
   }
 }
 
-// Build 3D Dynamic Objects (Rabbits, Foxes, Grass, Particles)
+// Build 3D Dynamic Entities
 function buildDynamicObjects() {
   let list = [];
 
-  // 1. Dynamic Grass Tufts
+  // 1. Dynamic 3D Grass Tufts with Flowers
   for (let g = 0; g < grassList.length; g = g + 1) {
     let gr = grassList[g];
     if (gr.nutrition > 0) {
-      let bladeH = 0.25 + gr.nutrition * 0.15;
+      let bladeH = 0.28 + gr.nutrition * 0.16;
       list.push({
         id: gr.id + "-tuft",
         type: "cylinder",
-        radius: 0.15 + gr.nutrition * 0.08,
+        radius: 0.18 + gr.nutrition * 0.08,
         height: bladeH,
-        position: { x: gr.x, y: 0.5 + bladeH / 2, z: gr.z },
+        position: { x: gr.x, y: 0.6 + bladeH / 2, z: gr.z },
         color: gr.nutrition === 3 ? "#16a34a" : "#22c55e",
         castShadow: true
       });
-      // Flower on high nutrition patch
+      // Blooming Wildflowers on Lush Patches
       if (gr.nutrition === 3) {
+        let flowerColor = (g % 3 === 0) ? "#fbbf24" : ((g % 3 === 1) ? "#f43f5e" : "#38bdf8");
         list.push({
           id: gr.id + "-flower",
           type: "sphere",
-          radius: 0.10,
-          position: { x: gr.x, y: 0.5 + bladeH + 0.08, z: gr.z },
-          color: (g % 2 === 0) ? "#fbbf24" : "#f43f5e"
+          radius: 0.11,
+          position: { x: gr.x, y: 0.6 + bladeH + 0.08, z: gr.z },
+          color: flowerColor
         });
       }
     }
   }
 
-  // 2. 3D Animated Rabbits (Cute white bunnies with twitching ears & fluffy tail)
+  // 2. 3D Animated White Rabbits (Prey)
   for (let r = 0; r < rabbits.length; r = r + 1) {
     let rab = rabbits[r];
     let isSel = rab.id === selectedId;
@@ -732,9 +867,9 @@ function buildDynamicObjects() {
       {
         id: rab.id + "-body",
         type: "capsule",
-        radius: 0.18,
-        height: 0.26,
-        position: { x: 0, y: 0.18, z: 0 },
+        radius: 0.20,
+        height: 0.28,
+        position: { x: 0, y: 0.20, z: 0 },
         color: isSel ? "#fef08a" : "#f8fafc",
         castShadow: true
       },
@@ -742,26 +877,26 @@ function buildDynamicObjects() {
       {
         id: rab.id + "-head",
         type: "sphere",
-        radius: 0.14,
-        position: { x: 0, y: 0.32, z: 0.18 },
+        radius: 0.15,
+        position: { x: 0, y: 0.35, z: 0.20 },
         color: isSel ? "#fef08a" : "#f8fafc"
       },
-      // Left Ear (With pink inner ear)
+      // Left Ear
       {
         id: rab.id + "-ear-l",
         type: "capsule",
-        radius: 0.035,
-        height: 0.22,
-        position: { x: -0.06, y: 0.48, z: 0.14 },
+        radius: 0.038,
+        height: 0.24,
+        position: { x: -0.07, y: 0.52, z: 0.15 },
         rotation: { x: -0.18, y: 0, z: -0.15 },
         color: "#f8fafc"
       },
       {
         id: rab.id + "-ear-in-l",
         type: "capsule",
-        radius: 0.02,
-        height: 0.16,
-        position: { x: -0.06, y: 0.47, z: 0.16 },
+        radius: 0.022,
+        height: 0.18,
+        position: { x: -0.07, y: 0.51, z: 0.17 },
         rotation: { x: -0.18, y: 0, z: -0.15 },
         color: "#fda4af"
       },
@@ -769,50 +904,50 @@ function buildDynamicObjects() {
       {
         id: rab.id + "-ear-r",
         type: "capsule",
-        radius: 0.035,
-        height: 0.22,
-        position: { x: 0.06, y: 0.48, z: 0.14 },
+        radius: 0.038,
+        height: 0.24,
+        position: { x: 0.07, y: 0.52, z: 0.15 },
         rotation: { x: -0.18, y: 0, z: 0.15 },
         color: "#f8fafc"
       },
       {
         id: rab.id + "-ear-in-r",
         type: "capsule",
-        radius: 0.02,
-        height: 0.16,
-        position: { x: 0.06, y: 0.47, z: 0.16 },
+        radius: 0.022,
+        height: 0.18,
+        position: { x: 0.07, y: 0.51, z: 0.17 },
         rotation: { x: -0.18, y: 0, z: 0.15 },
         color: "#fda4af"
       },
-      // Dark Eyes
+      // Eyes
       {
         id: rab.id + "-eye-l",
         type: "sphere",
-        radius: 0.025,
-        position: { x: -0.09, y: 0.33, z: 0.26 },
+        radius: 0.028,
+        position: { x: -0.10, y: 0.36, z: 0.29 },
         color: "#09090b"
       },
       {
         id: rab.id + "-eye-r",
         type: "sphere",
-        radius: 0.025,
-        position: { x: 0.09, y: 0.33, z: 0.26 },
+        radius: 0.028,
+        position: { x: 0.10, y: 0.36, z: 0.29 },
         color: "#09090b"
       },
-      // Cute Pink Nose
+      // Nose
       {
         id: rab.id + "-nose",
         type: "sphere",
-        radius: 0.02,
-        position: { x: 0, y: 0.29, z: 0.30 },
+        radius: 0.022,
+        position: { x: 0, y: 0.32, z: 0.33 },
         color: "#fb7185"
       },
-      // Fluffy Tail
+      // Cotton Tail
       {
         id: rab.id + "-tail",
         type: "sphere",
-        radius: 0.07,
-        position: { x: 0, y: 0.18, z: -0.22 },
+        radius: 0.08,
+        position: { x: 0, y: 0.20, z: -0.24 },
         color: "#ffffff"
       }
     ];
@@ -827,104 +962,104 @@ function buildDynamicObjects() {
       children: rabChildren
     });
 
-    // Selection Halo Ring
+    // Glowing Selection Halo
     if (isSel) {
       list.push({
         id: rab.id + "-halo",
         type: "torus",
-        radius: 0.45,
-        tube: 0.04,
-        position: { x: rab.x, y: 0.54, z: rab.z },
+        radius: 0.48,
+        tube: 0.045,
+        position: { x: rab.x, y: 0.65, z: rab.z },
         rotation: { x: Math.PI / 2, y: 0, z: 0 },
         color: "#fbbf24",
         emissive: "#fbbf24",
-        emissiveIntensity: 2.0
+        emissiveIntensity: 2.2
       });
     }
   }
 
-  // 3. 3D Animated Foxes (Vibrant russet predators with bushy white-tipped tails)
+  // 3. 3D Animated Russet Foxes (Predators)
   for (let f = 0; f < foxes.length; f = f + 1) {
     let fox = foxes[f];
     let isSel = fox.id === selectedId;
 
     let foxChildren = [
-      // Body (Sleek predatory capsule)
+      // Body
       {
         id: fox.id + "-body",
         type: "capsule",
-        radius: 0.20,
-        height: 0.50,
-        position: { x: 0, y: 0.26, z: 0 },
+        radius: 0.22,
+        height: 0.54,
+        position: { x: 0, y: 0.28, z: 0 },
         rotation: { x: Math.PI / 2, y: 0, z: 0 },
         color: isSel ? "#fef08a" : "#ea580c",
         castShadow: true
       },
-      // White Chest & Underbelly
+      // White Chest/Bib
       {
         id: fox.id + "-chest",
         type: "sphere",
-        radius: 0.16,
-        position: { x: 0, y: 0.22, z: 0.18 },
+        radius: 0.17,
+        position: { x: 0, y: 0.24, z: 0.20 },
         color: "#f8fafc"
       },
-      // Head / Muzzle (Pointed wedge)
+      // Pointed Muzzle
       {
         id: fox.id + "-head",
         type: "cone",
-        radius: 0.16,
-        height: 0.32,
-        position: { x: 0, y: 0.32, z: 0.35 },
+        radius: 0.17,
+        height: 0.35,
+        position: { x: 0, y: 0.35, z: 0.38 },
         rotation: { x: Math.PI / 2, y: 0, z: 0 },
         color: "#ea580c"
       },
-      // Black Nose
+      // Nose
       {
         id: fox.id + "-nose",
         type: "sphere",
-        radius: 0.03,
-        position: { x: 0, y: 0.32, z: 0.52 },
+        radius: 0.035,
+        position: { x: 0, y: 0.35, z: 0.56 },
         color: "#09090b"
       },
-      // Dark Eyes
+      // Eyes
       {
         id: fox.id + "-eye-l",
         type: "sphere",
-        radius: 0.03,
-        position: { x: -0.09, y: 0.36, z: 0.35 },
+        radius: 0.032,
+        position: { x: -0.10, y: 0.39, z: 0.38 },
         color: "#09090b"
       },
       {
         id: fox.id + "-eye-r",
         type: "sphere",
-        radius: 0.03,
-        position: { x: 0.09, y: 0.36, z: 0.35 },
+        radius: 0.032,
+        position: { x: 0.10, y: 0.39, z: 0.38 },
         color: "#09090b"
       },
-      // Pointed Fox Ears
+      // Pointed Ears
       {
         id: fox.id + "-ear-l",
         type: "cone",
-        radius: 0.06,
-        height: 0.16,
-        position: { x: -0.10, y: 0.48, z: 0.26 },
+        radius: 0.065,
+        height: 0.18,
+        position: { x: -0.11, y: 0.52, z: 0.28 },
         color: "#9a3412"
       },
       {
         id: fox.id + "-ear-r",
         type: "cone",
-        radius: 0.06,
-        height: 0.16,
-        position: { x: 0.10, y: 0.48, z: 0.26 },
+        radius: 0.065,
+        height: 0.18,
+        position: { x: 0.11, y: 0.52, z: 0.28 },
         color: "#9a3412"
       },
       // Bushy Tail
       {
         id: fox.id + "-tail",
         type: "capsule",
-        radius: 0.11,
-        height: 0.40,
-        position: { x: 0, y: 0.30, z: -0.40 },
+        radius: 0.12,
+        height: 0.44,
+        position: { x: 0, y: 0.32, z: -0.44 },
         rotation: { x: -0.55, y: 0, z: 0 },
         color: "#ea580c"
       },
@@ -932,8 +1067,8 @@ function buildDynamicObjects() {
       {
         id: fox.id + "-tail-tip",
         type: "sphere",
-        radius: 0.09,
-        position: { x: 0, y: 0.42, z: -0.55 },
+        radius: 0.10,
+        position: { x: 0, y: 0.45, z: -0.60 },
         color: "#ffffff"
       }
     ];
@@ -948,23 +1083,23 @@ function buildDynamicObjects() {
       children: foxChildren
     });
 
-    // Selection Halo Ring
+    // Selection Halo
     if (isSel) {
       list.push({
         id: fox.id + "-halo",
         type: "torus",
-        radius: 0.55,
-        tube: 0.04,
-        position: { x: fox.x, y: 0.54, z: fox.z },
+        radius: 0.58,
+        tube: 0.045,
+        position: { x: fox.x, y: 0.65, z: fox.z },
         rotation: { x: Math.PI / 2, y: 0, z: 0 },
         color: "#f97316",
         emissive: "#f97316",
-        emissiveIntensity: 2.0
+        emissiveIntensity: 2.2
       });
     }
   }
 
-  // 4. Particle Puffs
+  // 4. Particle Effects
   let particlePos = [];
   for (let p = 0; p < particlePuffs.length; p = p + 1) {
     let pt = particlePuffs[p];
@@ -975,41 +1110,41 @@ function buildDynamicObjects() {
       id: "sim-particles",
       type: "particles",
       particlePositions: particlePos,
-      particleSize: 0.22,
+      particleSize: 0.24,
       color: "#fef08a",
-      opacity: 0.8
+      opacity: 0.85
     });
   }
 
   return list;
 }
 
-// Build Dynamic Lighting
+// Build Nature Lighting
 function buildLights() {
   let list = [];
 
-  // Primary High Sunlight
+  // High Warm Sun
   list.push({
     id: "sun-light",
     type: "directional",
     color: "#fffbeb",
-    intensity: 1.5,
-    position: { x: 12, y: 22, z: 14 },
+    intensity: 1.55,
+    position: { x: 18, y: 32, z: 20 },
     castShadow: true,
-    shadowCameraSize: 24,
+    shadowCameraSize: 32,
     shadowBias: -0.0003
   });
 
-  // Sky Fill
+  // Cool Sky Fill
   list.push({
     id: "sky-light",
     type: "directional",
     color: "#bae6fd",
-    intensity: 0.6,
-    position: { x: -14, y: 16, z: -12 }
+    intensity: 0.65,
+    position: { x: -20, y: 22, z: -18 }
   });
 
-  // Ambient Nature Light
+  // Soft Ambient Meadow Tone
   list.push({
     id: "ambient-light",
     type: "ambient",
@@ -1032,24 +1167,24 @@ function gameStep(dt) {
 
   updateParticles();
 
-  // Camera Management
+  // Dynamic Camera Modes
   if (cameraMode === "follow" && selectedEntity) {
     cameraPos = {
-      x: selectedEntity.x - Math.sin(selectedEntity.rot) * 3.8,
-      y: selectedEntity.y + 2.4,
-      z: selectedEntity.z - Math.cos(selectedEntity.rot) * 3.8
+      x: selectedEntity.x - Math.sin(selectedEntity.rot) * 4.5,
+      y: selectedEntity.y + 2.8,
+      z: selectedEntity.z - Math.cos(selectedEntity.rot) * 4.5
     };
     cameraLookAt = {
-      x: selectedEntity.x + Math.sin(selectedEntity.rot) * 2.0,
-      y: selectedEntity.y + 0.5,
-      z: selectedEntity.z + Math.cos(selectedEntity.rot) * 2.0
+      x: selectedEntity.x + Math.sin(selectedEntity.rot) * 2.5,
+      y: selectedEntity.y + 0.6,
+      z: selectedEntity.z + Math.cos(selectedEntity.rot) * 2.5
     };
   } else if (cameraMode === "cinematic") {
-    cinematicAngle = cinematicAngle + delta * 0.15;
+    cinematicAngle = cinematicAngle + delta * 0.10;
     cameraPos = {
-      x: Math.sin(cinematicAngle) * 19.0,
-      y: 13.0,
-      z: Math.cos(cinematicAngle) * 19.0
+      x: Math.sin(cinematicAngle) * 29.0,
+      y: 19.0,
+      z: Math.cos(cinematicAngle) * 29.0
     };
     cameraLookAt = { x: 0, y: 0.5, z: 0 };
   }
@@ -1058,7 +1193,7 @@ function gameStep(dt) {
   lights = buildLights();
 }
 
-// User Interactions
+// User Actions
 function togglePlay() {
   isRunning = !isRunning;
 }
@@ -1075,13 +1210,13 @@ function setSimSpeed(sp) {
 function setCameraView(mode) {
   cameraMode = mode;
   if (mode === "overview") {
-    cameraPos = { x: 0, y: 16.5, z: 18.0 };
+    cameraPos = { x: 0, y: 26.0, z: 28.0 };
     cameraLookAt = { x: 0, y: 0.5, z: 0 };
-    cameraFov = 45;
+    cameraFov = 46;
   } else if (mode === "topdown") {
-    cameraPos = { x: 0, y: 24.0, z: 0.1 };
+    cameraPos = { x: 0, y: 36.0, z: 0.1 };
     cameraLookAt = { x: 0, y: 0, z: 0 };
-    cameraFov = 48;
+    cameraFov = 50;
   } else if (mode === "cinematic") {
     cameraFov = 42;
   }
@@ -1092,35 +1227,35 @@ function triggerSpringBloom() {
     grassList[g].nutrition = 3;
     grassList[g].regrowTimer = 0;
   }
-  spawnPuff(0, 2.0, 0, "#22c55e", 24);
+  spawnPuff(0, 3.0, 0, "#22c55e", 32);
   updateStats();
 }
 
 function triggerColdSnap() {
   for (let g = 0; g < grassList.length; g = g + 1) {
-    if (Math.random() < 0.6) {
+    if (Math.random() < 0.65) {
       grassList[g].nutrition = 0;
     }
   }
-  spawnPuff(0, 2.0, 0, "#93c5fd", 24);
+  spawnPuff(0, 3.0, 0, "#93c5fd", 32);
   updateStats();
 }
 
 function spawnPreyAction() {
   addRabbit();
-  spawnPuff(0, 1.0, 0, "#f8fafc", 8);
+  spawnPuff(0, 1.5, 0, "#f8fafc", 10);
   updateStats();
 }
 
 function spawnPredatorAction() {
   addFox();
-  spawnPuff(0, 1.0, 0, "#ea580c", 8);
+  spawnPuff(0, 1.5, 0, "#ea580c", 10);
   updateStats();
 }
 
 function plantGrassAction() {
-  let gx = (Math.random() - 0.5) * BOUNDS * 1.6;
-  let gz = (Math.random() - 0.5) * BOUNDS * 1.6;
+  let gx = (Math.random() - 0.5) * BOUNDS * 1.8;
+  let gz = (Math.random() - 0.5) * BOUNDS * 1.8;
   grassList.push({
     id: genId("grass"),
     x: gx,
@@ -1129,25 +1264,30 @@ function plantGrassAction() {
     maxNutrition: 3,
     regrowTimer: 0
   });
-  spawnPuff(gx, 0.8, gz, "#22c55e", 10);
+  spawnPuff(gx, 1.0, gz, "#22c55e", 12);
   updateStats();
 }
 
-// In-World 3D Click Handling
+function closeInspector() {
+  selectedId = "";
+  selectedEntity = null;
+  inspectorOpen = false;
+}
+
+// In-World 3D Raycast Click
 function handleSceneClick(hit) {
   if (!hit || !hit.objectId) {
-    selectedId = "";
-    selectedEntity = null;
+    closeInspector();
     return;
   }
   let id = hit.objectId;
-  // Match prefix for compound groups
   let targetId = id.split("-tuft")[0].split("-body")[0].split("-head")[0].split("-ear")[0].split("-tail")[0];
 
   for (let r = 0; r < rabbits.length; r = r + 1) {
     if (rabbits[r].id === targetId || id.indexOf(rabbits[r].id) !== -1) {
       selectedId = rabbits[r].id;
       selectedEntity = rabbits[r];
+      inspectorOpen = true;
       return;
     }
   }
@@ -1156,15 +1296,14 @@ function handleSceneClick(hit) {
     if (foxes[f].id === targetId || id.indexOf(foxes[f].id) !== -1) {
       selectedId = foxes[f].id;
       selectedEntity = foxes[f];
+      inspectorOpen = true;
       return;
     }
   }
 
-  // Click on terrain: deselect
-  selectedId = "";
-  selectedEntity = null;
+  closeInspector();
 }
 
-// Initial setup
+// Initialize on load
 resetScenario("balanced");
 gameStep(0.033);

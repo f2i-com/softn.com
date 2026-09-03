@@ -11,7 +11,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: #064e3b;
+  background: #022c22;
   overflow: hidden;
   user-select: none;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -22,8 +22,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 16px;
-  background: rgba(6, 78, 59, 0.95);
-  border-bottom: 1px solid rgba(52, 211, 153, 0.25);
+  background: rgba(2, 44, 34, 0.95);
+  border-bottom: 1px solid rgba(52, 211, 153, 0.22);
   z-index: 10;
   flex-shrink: 0;
   gap: 8px;
@@ -57,7 +57,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 16px;
-  background: rgba(6, 78, 59, 0.95);
+  background: rgba(2, 44, 34, 0.95);
   border-top: 1px solid rgba(52, 211, 153, 0.2);
   z-index: 10;
   flex-shrink: 0;
@@ -73,19 +73,19 @@
 }
 
 .pp-card {
-  background: rgba(6, 78, 59, 0.85);
+  background: rgba(2, 44, 34, 0.88);
   padding: 8px 12px;
   border-radius: 8px;
   border: 1px solid rgba(52, 211, 153, 0.25);
   backdrop-filter: blur(8px);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
 }
 
 .pp-tip {
   position: absolute;
   top: 12px;
   left: 14px;
-  max-width: 440px;
+  max-width: 480px;
   pointer-events: none;
   z-index: 5;
 }
@@ -94,7 +94,7 @@
   position: absolute;
   bottom: 14px;
   left: 14px;
-  width: 280px;
+  width: 290px;
   z-index: 5;
 }
 
@@ -102,7 +102,7 @@
   position: absolute;
   top: 12px;
   right: 14px;
-  width: 240px;
+  width: 250px;
   z-index: 5;
 }
 
@@ -141,8 +141,8 @@
     <Box className="pp-row">
       <Box className="pp-badge">🦊</Box>
       <Stack direction="vertical" gap="none">
-        <Heading level={5} style={{ margin: 0, color: "#f8fafc", fontSize: "14px", fontWeight: 700 }}>Predator-Prey Simulator</Heading>
-        <Text size="xs" style={{ color: "#6ee7b7", fontSize: "11px" }} className="pp-sub">Lotka-Volterra 3D Ecosystem</Text>
+        <Heading level={5} style={{ margin: 0, color: "#f8fafc", fontSize: "14px", fontWeight: 700 }}>Predator-Prey Ecosystem</Heading>
+        <Text size="xs" style={{ color: "#6ee7b7", fontSize: "11px" }} className="pp-sub">Sustainable Lotka-Volterra 3D Reserve</Text>
       </Stack>
     </Box>
 
@@ -170,18 +170,15 @@
       </Box>
 
       <!-- Status Badge -->
-      <Badge style={{ background: "rgba(0,0,0,0.4)", color: statusColor, borderColor: statusColor, fontWeight: 700 }}>
+      <Badge style={{ background: "rgba(0,0,0,0.45)", color: statusColor, borderColor: statusColor, fontWeight: 700 }}>
         {ecosystemStatus}
       </Badge>
 
       <!-- Camera Mode Selector -->
       <Box className="pp-row">
-        <Button size="xs" variant={cameraMode === "overview" ? "primary" : "secondary"} @click={() => setCameraView("overview")}>Overview</Button>
+        <Button size="xs" variant={cameraMode === "overview" ? "primary" : "secondary"} @click={() => setCameraView("overview")}>Reserve</Button>
         <Button size="xs" variant={cameraMode === "topdown" ? "primary" : "secondary"} @click={() => setCameraView("topdown")}>Top Map</Button>
         <Button size="xs" variant={cameraMode === "cinematic" ? "primary" : "secondary"} @click={() => setCameraView("cinematic")}>Cinematic</Button>
-        {selectedEntity && (
-          <Button size="xs" variant={cameraMode === "follow" ? "primary" : "secondary"} @click={() => setCameraView("follow")}>Follow</Button>
-        )}
       </Box>
     </Box>
   </Box>
@@ -196,7 +193,7 @@
       camera={{ position: cameraPos, lookAt: cameraLookAt, fov: cameraFov }}
       shadows={true}
       toneMapping="aces"
-      background="#022c22"
+      background="#011b14"
       orbitControls={cameraMode !== "follow" && cameraMode !== "cinematic"}
       @click={handleSceneClick}
     />
@@ -204,63 +201,65 @@
     <!-- Helper Tip Overlay -->
     <Box className="pp-card pp-tip">
       <Text size="xs" style={{ color: "#f8fafc", fontSize: "12px", lineHeight: "1.4" }}>
-        💡 <span style={{ color: "#34d399", fontWeight: 700 }}>Orbit:</span> Drag <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#34d399", fontWeight: 700 }}>Inspect:</span> Click any Rabbit or Fox <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#fbbf24", fontWeight: 700 }}>Day {dayCount} ({season})</span>
+        💡 <span style={{ color: "#34d399", fontWeight: 700 }}>Orbit:</span> Drag <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#34d399", fontWeight: 700 }}>Zoom:</span> Scroll <span style={{ color: "#6ee7b7" }}>•</span> <span style={{ color: "#fbbf24", fontWeight: 700 }}>Day {dayCount} ({season})</span> <span style={{ color: "#6ee7b7" }}>•</span> Click any rabbit or fox to inspect!
       </Text>
     </Box>
 
-    <!-- Real-time Population Graph Card -->
+    <!-- Real-time Population Dynamics Card -->
     <Box className="pp-card pp-graph-panel">
       <Stack direction="horizontal" justify="between" align="center" style={{ marginBottom: 4 }}>
         <Text size="xs" style={{ fontWeight: 700, color: "#f8fafc" }}>📈 Population Dynamics</Text>
-        <Text size="xs" style={{ color: "#6ee7b7", fontSize: "10px" }}>Lotka-Volterra</Text>
+        <Text size="xs" style={{ color: "#34d399", fontSize: "11px", fontWeight: 600 }}>{season}</Text>
       </Stack>
 
-      <!-- Mini Chart Legend -->
+      <!-- Legend with Current Counts -->
       <Stack direction="horizontal" gap="xs" style={{ marginBottom: 6 }}>
-        <Text size="xs" style={{ color: "#34d399", fontSize: "10px" }}>● Grass ({grassCount})</Text>
-        <Text size="xs" style={{ color: "#38bdf8", fontSize: "10px" }}>● Prey ({rabbitCount})</Text>
-        <Text size="xs" style={{ color: "#fb923c", fontSize: "10px" }}>● Fox ({foxCount})</Text>
+        <Text size="xs" style={{ color: "#34d399", fontSize: "10px", fontWeight: 600 }}>● Grass ({grassCount})</Text>
+        <Text size="xs" style={{ color: "#38bdf8", fontSize: "10px", fontWeight: 600 }}>● Prey ({rabbitCount})</Text>
+        <Text size="xs" style={{ color: "#fb923c", fontSize: "10px", fontWeight: 600 }}>● Fox ({foxCount})</Text>
       </Stack>
 
-      <!-- Mini Sparkline Area View -->
-      <Box style={{ width: "100%", height: 60, background: "rgba(0,0,0,0.35)", borderRadius: 4, position: "relative", overflow: "hidden", display: "flex", alignItems: "flex-end", gap: 2, padding: "2px 4px" }}>
-        {popHistory.map((item, idx) => (
-          <Box key={idx} style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 1 }}>
-            <Box style={{ height: Math.min(100, (item.foxes / 25) * 100) + "%", background: "#f97316", borderRadius: 1, minHeight: 2 }} />
-            <Box style={{ height: Math.min(100, (item.rabbits / 60) * 100) + "%", background: "#38bdf8", borderRadius: 1, minHeight: 2 }} />
-            <Box style={{ height: Math.min(100, (item.grass / 60) * 100) + "%", background: "#22c55e", borderRadius: 1, minHeight: 2 }} />
+      <!-- Visual Multi-Bar Sparkline -->
+      <Box style={{ width: "100%", height: 58, background: "rgba(0,0,0,0.45)", borderRadius: 4, position: "relative", overflow: "hidden", display: "flex", alignItems: "flex-end", gap: 3, padding: "3px 5px" }}>
+        #each (bar in sparkPreyBars)
+          <Box style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 1 }}>
+            <Box style={{ height: bar + "%", background: "#38bdf8", borderRadius: 1, minHeight: 2 }} />
           </Box>
-        ))}
+        #end
       </Box>
     </Box>
 
     <!-- Entity Inspector Drawer -->
-    {selectedEntity && (
+    #if (inspectorOpen)
       <Box className="pp-card pp-inspector">
         <Stack direction="horizontal" justify="between" align="center" style={{ marginBottom: 6 }}>
           <Stack direction="horizontal" gap="xs" align="center">
-            <Text size="md">{selectedEntity.id.indexOf("prey") !== -1 ? "🐰" : "🦊"}</Text>
+            <Text size="md">🔍</Text>
             <Text size="xs" style={{ fontWeight: 700, color: "#f8fafc" }}>{selectedEntity.name}</Text>
           </Stack>
-          <Badge size="xs" variant={selectedEntity.id.indexOf("prey") !== -1 ? "info" : "warning"}>
-            {selectedEntity.state}
-          </Badge>
+          <Button size="xs" variant="secondary" @click={closeInspector}>✕</Button>
         </Stack>
 
         <Stack direction="vertical" gap="xs">
+          <!-- State Badge -->
+          <Stack direction="horizontal" justify="between">
+            <Text size="xs" style={{ color: "#a7f3d0" }}>Status:</Text>
+            <Badge size="xs" variant="info">{selectedEntity.state}</Badge>
+          </Stack>
+
           <!-- Energy Bar -->
           <Stack direction="horizontal" justify="between">
             <Text size="xs" style={{ color: "#a7f3d0" }}>Energy:</Text>
             <Text size="xs" style={{ fontWeight: 700, color: "#38bdf8" }}>{Math.round(selectedEntity.energy)} / {selectedEntity.maxEnergy}</Text>
           </Stack>
           <Box style={{ width: "100%", height: 6, background: "rgba(0,0,0,0.5)", borderRadius: 3, overflow: "hidden" }}>
-            <Box style={{ width: Math.min(100, (selectedEntity.energy / selectedEntity.maxEnergy) * 100) + "%", height: "100%", background: selectedEntity.energy > 20 ? "#34d399" : "#ef4444" }} />
+            <Box style={{ width: Math.min(100, (selectedEntity.energy / selectedEntity.maxEnergy) * 100) + "%", height: "100%", background: "#34d399" }} />
           </Box>
 
           <!-- Age & Offspring -->
           <Stack direction="horizontal" justify="between">
-            <Text size="xs" style={{ color: "#a7f3d0" }}>Age (Ticks):</Text>
-            <Text size="xs" style={{ color: "#f8fafc" }}>{selectedEntity.age} / {selectedEntity.maxAge}</Text>
+            <Text size="xs" style={{ color: "#a7f3d0" }}>Age:</Text>
+            <Text size="xs" style={{ color: "#f8fafc" }}>{selectedEntity.age} ticks</Text>
           </Stack>
 
           <Stack direction="horizontal" justify="between">
@@ -268,19 +267,12 @@
             <Text size="xs" style={{ color: "#f8fafc" }}>{selectedEntity.offspringCount}</Text>
           </Stack>
 
-          {selectedEntity.catchCount !== undefined && (
-            <Stack direction="horizontal" justify="between">
-              <Text size="xs" style={{ color: "#a7f3d0" }}>Hunts Won:</Text>
-              <Text size="xs" style={{ color: "#fb923c", fontWeight: 700 }}>{selectedEntity.catchCount}</Text>
-            </Stack>
-          )}
-
           <Button size="xs" variant="primary" style={{ marginTop: 4 }} @click={() => setCameraView("follow")}>
             🎥 Follow Creature
           </Button>
         </Stack>
       </Box>
-    )}
+    #end
   </Box>
 
   <!-- Bottom Console Bar (Simulation & Environment Controls) -->
