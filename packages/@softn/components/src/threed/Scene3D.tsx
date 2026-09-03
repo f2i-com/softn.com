@@ -1330,7 +1330,7 @@ export function Scene3D({
         lastCamPosRef.current = posKey;
         camTargetRef.current.set(cameraProp.position.x, cameraProp.position.y, cameraProp.position.z);
         // A jump larger than a few metres is a teleport, not a step: no easing.
-        if (!(cameraSmoothing > 0) || camTargetRef.current.distanceTo(cam.position) > 4) {
+        if (!(cameraSmoothingRef.current > 0) || camTargetRef.current.distanceTo(cam.position) > 4) {
           cam.position.copy(camTargetRef.current);
         }
         // Reset orbit controls target when camera moves programmatically
