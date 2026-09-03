@@ -1,0 +1,1466 @@
+// Sim Lives — the life half. builder.logic (composed before this file)
+// owns the house: plan, catalogue, static scene, cameras, tools. This file
+// owns the people: avatars, needs, a day clock, pathfinding over the plan,
+// interactions with the furniture, chatting, and the free will that keeps a
+// household busy while you watch.
+//
+// Time: at 1x, one real second is one game minute, so a day is 24 minutes.
+// Needs are 0..100 and drift down per game minute; interactions push them up.
+
+// ---------------------------------------------------------------------------
+// State synced to the UI
+// ---------------------------------------------------------------------------
+let liveCam = "orbit";          // orbit | follow | top | creator
+let liveRoof = false;
+let gameSpeed = 1;
+let livePaused = false;
+let clockText = "Day 1 · 08:00";
+let skyName = "day";
+let simCards = [];
+let activeCard = null;
+let menu = null;                // { title, options: [{ id, label }] } while a click menu is open
+let creatorOpen = false;
+let draft = null;               // the avatar being designed
+let liveHint = "";
+let householdSize = 0;
+let liveStatus = "";
+
+// ---------------------------------------------------------------------------
+// VM-owned state
+// ---------------------------------------------------------------------------
+let sims = [];
+let activeSimId = 0;
+let nextSimId = 1;
+let clockMinutes = 8 * 60;
+let dayNumber = 1;
+let navCells = null;            // 1 = blocked
+let navDirty = true;
+let menuTarget = null;          // { kind: "item"|"sim"|"ground", id, x, z }
+let liveTick = 0;
+let previewSpin = 0;
+let doorAngles = {};            // opening id -> current swing angle
+let liveHiddenItems = {};       // item id -> 1 while drawn by the live layer instead of the static scene
+let orbitSet = false;
+
+const NAV_CELL = 0.25;
+const NAV_N = Math.round((WORLD * 2) / NAV_CELL) + 1;
+const NEED_KEYS = ["hunger", "energy", "bladder", "hygiene", "fun", "social"];
+const NEED_LABELS = { hunger: "Hunger", energy: "Energy", bladder: "Bladder", hygiene: "Hygiene", fun: "Fun", social: "Social" };
+const NEED_ICONS = { hunger: "🍽", energy: "😴", bladder: "🚽", hygiene: "🚿", fun: "🎉", social: "💬" };
+// Drift per game minute while awake and idle.
+const DECAY = { hunger: 0.13, energy: 0.075, bladder: 0.16, hygiene: 0.06, fun: 0.1, social: 0.07 };
+const WALK_SPEED = 1.5;          // metres per real second at 1x
+
+const SKINS = ["#f6d5b8", "#e8b894", "#c68642", "#8d5524", "#5b3a1e"];
+const HAIR_STYLES = ["short", "long", "bun", "curly", "bald"];
+const HAIR_COLORS = ["#1c1917", "#5c3a21", "#b45309", "#facc15", "#9ca3af", "#dc2626", "#7c3aed"];
+const SHIRTS = ["#2563eb", "#dc2626", "#16a34a", "#f59e0b", "#7c3aed", "#0f172a", "#f8fafc", "#ec4899", "#0891b2"];
+const PANTS = ["#1e3a5f", "#0f172a", "#57534e", "#8b5a2b", "#166534", "#7f1d1d", "#a8a29e"];
+const FIRST_NAMES = ["Alex", "Bea", "Cass", "Dev", "Eli", "Fern", "Gus", "Hana", "Ivy", "Jun", "Kai", "Lou", "Mia", "Noor", "Oli", "Pip", "Quinn", "Rae", "Sol", "Tao", "Uma", "Val", "Wren", "Zed"];
+
+// ---------------------------------------------------------------------------
+// Interactions. Each entry: what it restores per completed use (`gain`),
+// how long it takes in game minutes, the pose while doing it, and where the
+// sim stands: `on` puts the sim on the object (bed, sofa, bath), otherwise it
+// stands at the object's front. `needs` optionally names a second need it
+// helps with a little.
+// ---------------------------------------------------------------------------
+const INTERACTIONS = {
+  fridge: [
+    { id: "snack", label: "Grab a snack", icon: "🥪", need: "hunger", gain: 30, mins: 8, pose: "stand", anim: "eat" },
+    { id: "meal", label: "Make a meal", icon: "🍲", need: "hunger", gain: 25, mins: 14, pose: "stand", anim: "cook", also: { fun: 5 }, then: "eat" }
+  ],
+  stove: [{ id: "cook", label: "Cook something", icon: "🍳", need: "hunger", gain: 20, mins: 16, pose: "stand", anim: "cook", also: { fun: 6 }, then: "eat" }],
+  kitchen_counter: [{ id: "sandwich", label: "Make a sandwich", icon: "🥪", need: "hunger", gain: 35, mins: 10, pose: "stand", anim: "cook" }],
+  dining_table: [{ id: "eat", label: "Eat at the table", icon: "🍽", need: "hunger", gain: 45, mins: 18, pose: "stand", anim: "eat", also: { social: 4 }, seat: true, shared: true }],
+  sink_unit: [{ id: "washup", label: "Wash up", icon: "🧼", need: "hygiene", gain: 12, mins: 5, pose: "stand", anim: "wash" }],
+  bed_double: [
+    { id: "sleep", label: "Sleep", icon: "🛏", need: "energy", gain: 100, mins: 430, pose: "lie", on: true, sleep: true, anim: "sleep" },
+    { id: "nap", label: "Take a nap", icon: "💤", need: "energy", gain: 35, mins: 80, pose: "lie", on: true, sleep: true, anim: "sleep" }
+  ],
+  bed_single: [
+    { id: "sleep", label: "Sleep", icon: "🛏", need: "energy", gain: 100, mins: 430, pose: "lie", on: true, sleep: true, anim: "sleep" },
+    { id: "nap", label: "Take a nap", icon: "💤", need: "energy", gain: 35, mins: 80, pose: "lie", on: true, sleep: true, anim: "sleep" }
+  ],
+  sofa: [
+    { id: "tv", label: "Watch TV", icon: "📺", need: "fun", gain: 40, mins: 50, pose: "sit", anim: "watch", on: true, wants: "tv_stand" },
+    { id: "sit", label: "Sit and relax", icon: "🛋", need: "fun", gain: 15, mins: 15, pose: "sit", anim: "relax", on: true, also: { energy: 5 } },
+    { id: "sofanap", label: "Nap on the sofa", icon: "💤", need: "energy", gain: 30, mins: 70, pose: "lie", anim: "sleep", on: true, sleep: true }
+  ],
+  armchair: [
+    { id: "read", label: "Read a book", icon: "📖", need: "fun", gain: 30, mins: 35, pose: "sit", anim: "read", on: true },
+    { id: "sit", label: "Sit down", icon: "💺", need: "fun", gain: 10, mins: 12, pose: "sit", anim: "relax", on: true, also: { energy: 4 } }
+  ],
+  chair: [
+    { id: "sit", label: "Sit down", icon: "🪑", need: "fun", gain: 8, mins: 10, pose: "sit", anim: "relax", on: true, also: { energy: 3 } },
+    { id: "read", label: "Read in the chair", icon: "📖", need: "fun", gain: 26, mins: 30, pose: "sit", anim: "read", on: true }
+  ],
+  tv_stand: [{ id: "tv", label: "Watch TV standing", icon: "📺", need: "fun", gain: 25, mins: 30, pose: "stand", anim: "watch", shared: true }],
+  bookshelf: [{ id: "read", label: "Read a book", icon: "📚", need: "fun", gain: 30, mins: 35, pose: "stand", anim: "read", shared: true }],
+  desk: [{ id: "computer", label: "Use the computer", icon: "🖥", need: "fun", gain: 40, mins: 55, pose: "stand", anim: "type", also: { social: 8 }, seat: true }],
+  shower: [{ id: "shower", label: "Take a shower", icon: "🚿", need: "hygiene", gain: 75, mins: 12, pose: "stand", anim: "scrub", on: true }],
+  bathtub: [{ id: "bath", label: "Take a bath", icon: "🛁", need: "hygiene", gain: 85, mins: 25, pose: "lie", anim: "bathe", on: true, also: { fun: 10 } }],
+  basin: [{ id: "hands", label: "Wash hands", icon: "🫧", need: "hygiene", gain: 15, mins: 3, pose: "stand", anim: "wash" }],
+  toilet: [{ id: "toilet", label: "Use the toilet", icon: "🚽", need: "bladder", gain: 95, mins: 4, pose: "sit", anim: "relax", on: true }],
+  plant: [{ id: "talkplant", label: "Talk to the plant", icon: "🪴", need: "social", gain: 15, mins: 8, pose: "stand", anim: "talk", shared: true }],
+  tree: [{ id: "relax", label: "Relax under the tree", icon: "🌳", need: "fun", gain: 22, mins: 30, pose: "stand", anim: "daydream", also: { energy: 6 }, shared: true }],
+  car: [{ id: "drive", label: "Go for a drive", icon: "🚗", need: "fun", gain: 38, mins: 50, pose: "stand", anim: "wave", solo: true }],
+  wardrobe: [{ id: "outfit", label: "Change outfit", icon: "👕", need: "fun", gain: 6, mins: 5, pose: "stand", anim: "wash", outfit: true }],
+  floor_lamp: [],
+  rug: [], path: [], bush: [], bedside: [], coffee_table: []
+};
+
+// What a sim does about a need when the house has nothing for it.
+const FALLBACKS = {
+  hunger: { id: "forage", label: "Find a snack somewhere", icon: "🍪", need: "hunger", gain: 20, mins: 10, pose: "stand", anim: "eat" },
+  energy: { id: "floor", label: "Sleep on the floor", icon: "💤", need: "energy", gain: 60, mins: 300, pose: "lie", sleep: true, anim: "sleep" },
+  bladder: { id: "bush", label: "Find a bush", icon: "🌿", need: "bladder", gain: 60, mins: 3, pose: "stand" },
+  hygiene: { id: "wipe", label: "Freshen up", icon: "🧻", need: "hygiene", gain: 20, mins: 5, pose: "stand", anim: "wash" },
+  fun: { id: "daydream", label: "Daydream", icon: "☁️", need: "fun", gain: 15, mins: 15, pose: "stand", anim: "daydream" },
+  social: { id: "hum", label: "Hum a tune", icon: "🎵", need: "social", gain: 10, mins: 8, pose: "stand", anim: "talk" }
+};
+
+const SOCIALS = [
+  { id: "chat", label: "Chat", icon: "💬", mins: 14, gain: { social: 35, fun: 6 }, anim: "talk" },
+  { id: "joke", label: "Tell a joke", icon: "😂", mins: 6, gain: { social: 18, fun: 18 }, anim: "talk" },
+  { id: "hug", label: "Hug", icon: "🤗", mins: 3, gain: { social: 28, fun: 4 }, anim: "hug" }
+];
+
+// Footprints used for walking around furniture: smaller than the visual
+// footprint for the things a sim can brush past, none for flat things.
+const NAV_FOOT = { tree: { w: 0.5, d: 0.5 }, plant: { w: 0.4, d: 0.4 }, floor_lamp: { w: 0.3, d: 0.3 }, bush: { w: 0.8, d: 0.8 }, rug: null, path: null };
+
+// ---------------------------------------------------------------------------
+// Avatars
+// ---------------------------------------------------------------------------
+function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+function easeVec(cur, target, k) {
+  return { x: cur.x + (target.x - cur.x) * k, y: cur.y + (target.y - cur.y) * k, z: cur.z + (target.z - cur.z) * k };
+}
+
+function lerpAngle(cur, target, t) {
+  let diff = target - cur;
+  while (diff < -Math.PI) diff = diff + Math.PI * 2;
+  while (diff > Math.PI) diff = diff - Math.PI * 2;
+  return cur + diff * t;
+}
+
+function randomDraft() {
+  return {
+    name: pick(FIRST_NAMES),
+    skin: pick(SKINS),
+    hair: pick(HAIR_STYLES),
+    hairColor: pick(HAIR_COLORS),
+    shirt: pick(SHIRTS),
+    pants: pick(PANTS)
+  };
+}
+
+function makeSim(d, x, z) {
+  let id = nextSimId;
+  nextSimId = nextSimId + 1;
+  return {
+    id: id,
+    name: d.name || ("Sim " + id),
+    skin: d.skin, hair: d.hair, hairColor: d.hairColor, shirt: d.shirt, pants: d.pants,
+    x: x, z: z, rot: Math.PI, vx: 0, vz: 0, speed: 0, curSpeed: 0,
+    rx: x, rz: z, ry: 0.06, rrot: Math.PI, targetRot: Math.PI,
+    path: [], pathIdx: 0,
+    task: null,
+    needs: { hunger: 70 + Math.random() * 25, energy: 75 + Math.random() * 20, bladder: 60 + Math.random() * 35, hygiene: 65 + Math.random() * 30, fun: 55 + Math.random() * 35, social: 50 + Math.random() * 40 },
+    auto: true,
+    walkPhase: Math.random() * 6,
+    idleTicks: Math.floor(Math.random() * 60),
+    lastFail: "",
+    bubble: ""
+  };
+}
+
+// The sim as primitives, in a pose, with an animation driving the limbs,
+// head and a small prop. Facing +z. Limbs are two segments with a joint
+// sphere at each end, so a bent elbow or knee reads as a bend, not a gap.
+//
+// Angles: a limb hangs down at 0 and swings forward and up with a positive
+// angle about x; `s` spreads it sideways; `e` bends the lower segment
+// forward at the elbow or backward at the knee.
+function armPose(anim, t, side) {
+  let sgn = side === "l" ? -1 : 1;
+  if (anim === "cook") return { a: 0.75 + 0.15 * Math.sin(t * 6 + (side === "l" ? Math.PI : 0)), s: 0.15, e: 1.0 + 0.25 * Math.sin(t * 6 + (side === "l" ? 0 : Math.PI)) };
+  if (anim === "wash") return { a: 0.7 + 0.08 * Math.sin(t * 9 + (side === "l" ? 1.6 : 0)), s: 0.05, e: 1.15 + 0.15 * Math.sin(t * 9 + (side === "l" ? 0 : 1.6)) };
+  if (anim === "eat") return side === "r" ? { a: 0.6 + 0.15 * Math.max(0, Math.sin(t * 3)), s: 0.1, e: 1.2 + 0.8 * Math.max(0, Math.sin(t * 3)) } : { a: 0.55, s: 0.15, e: 1.1 };
+  if (anim === "read") return { a: 0.6 + 0.02 * Math.sin(t * 2), s: 0.1, e: 1.35 };
+  if (anim === "type") return { a: 0.55, s: 0.25, e: 1.3 + 0.12 * Math.sin(t * 14 + (side === "l" ? 1.5 : 0)) };
+  if (anim === "scrub") return { a: 1.7 + 0.1 * Math.sin(t * 5 + (side === "l" ? 2 : 0)), s: 0.45, e: 1.5 + 0.2 * Math.sin(t * 5 + (side === "l" ? 0 : 2)) };
+  if (anim === "bathe") return { a: 1.1 + 0.1 * Math.sin(t * 1.5), s: 0.4, e: 0.6 };
+  if (anim === "talk") return side === "r" ? { a: 0.3 + 0.25 * Math.sin(t * 4), s: 0.3, e: 0.7 + 0.5 * Math.sin(t * 4 + 1) } : { a: 0.15 + 0.15 * Math.sin(t * 3 + 1), s: 0.15, e: 0.4 + 0.3 * Math.sin(t * 3) };
+  if (anim === "hug") return { a: 1.2, s: 0.55, e: 0.8 };
+  if (anim === "wave") return side === "r" ? { a: 2.6, s: 0.5, e: 0.5 + 0.5 * Math.sin(t * 8) } : { a: 0.05, s: 0.05, e: 0.1 };
+  if (anim === "watch") return { a: 0.25, s: 0.1, e: 0.9 };
+  if (anim === "relax") return { a: 0.35, s: 0.12, e: 0.9 };
+  if (anim === "sleep") return { a: 0.1, s: 0.05, e: 0.3 };
+  if (anim === "carry") return { a: 0.55, s: 0.1, e: 1.15 };
+  if (anim === "daydream") return { a: 0.15 + 0.08 * Math.sin(t * 1.2 + sgn), s: 0.2, e: 0.35 };
+  return { a: 0.05 * Math.sin(t * 1.5 + sgn * 0.7), s: 0.03, e: 0.12 }; // idle
+}
+
+function headPose(anim, t) {
+  if (anim === "cook" || anim === "wash" || anim === "read" || anim === "type" || anim === "eat") return { yaw: 0.06 * Math.sin(t * 2), pitch: 0.32 };
+  if (anim === "talk") return { yaw: 0.18 * Math.sin(t * 2.2), pitch: 0.12 * Math.sin(t * 5) };
+  if (anim === "watch") return { yaw: 0.05 * Math.sin(t * 0.7), pitch: 0.02 };
+  if (anim === "daydream") return { yaw: 0.25 * Math.sin(t * 0.6), pitch: -0.25 };
+  if (anim === "scrub") return { yaw: 0, pitch: 0.2 };
+  return { yaw: 0.08 * Math.sin(t * 0.9), pitch: 0 };
+}
+
+// Something in the hands for the actions that use one.
+function propFor(anim) {
+  if (anim === "cook") return { type: "cylinder", radius: 0.14, height: 0.05, color: "#1f2937", hand: "r", metalness: 0.7 };
+  if (anim === "eat" || anim === "carry") return { type: "cylinder", radius: 0.12, height: 0.02, color: "#f5f5f4", hand: "l" };
+  if (anim === "read") return { type: "box", width: 0.24, height: 0.18, depth: 0.03, color: "#b91c1c", hand: "both" };
+  if (anim === "wash") return { type: "sphere", radius: 0.05, color: "#e0f2fe", hand: "r", opacity: 0.8 };
+  return null;
+}
+
+// A two-segment limb from a joint at (x, y, z): upper segment at angle `a`
+// (forward about x) spread `sp` sideways, lower segment bent by `bend`
+// (positive = forward, as an elbow; pass negative for a knee). Pushes a
+// joint sphere, two capsules, a middle joint and returns the end point.
+function limb(out, id, x, y, z, len1, len2, a, sp, bend, r, color, jointColor) {
+  let dx1 = Math.sin(sp) * Math.cos(a), dy1 = -Math.cos(a) * Math.cos(sp), dz1 = Math.sin(a);
+  let a2 = a + bend;
+  let dx2 = Math.sin(sp) * Math.cos(a2), dy2 = -Math.cos(a2) * Math.cos(sp), dz2 = Math.sin(a2);
+  let kx = x + dx1 * len1, ky = y + dy1 * len1, kz = z + dz1 * len1;
+  let ex = kx + dx2 * len2, ey = ky + dy2 * len2, ez = kz + dz2 * len2;
+  // The capsule caps already round both ends of each segment, so no joint
+  // sphere is needed where two segments meet at the same radius: the bend
+  // is covered by the caps overlapping. Only the root joint gets a sphere,
+  // and only if it would otherwise show a seam against the body.
+  out.push({ id: id + "s1", type: "capsule", position: { x: (x + kx) / 2, y: (y + ky) / 2, z: (z + kz) / 2 }, radius: r, height: len1 + r * 2, rotation: { x: a, y: 0, z: -sp }, color: color, castShadow: true });
+  out.push({ id: id + "s2", type: "capsule", position: { x: (kx + ex) / 2, y: (ky + ey) / 2, z: (kz + ez) / 2 }, radius: r, height: len2 + r * 2, rotation: { x: a2, y: 0, z: -sp }, color: color, castShadow: true });
+  return { x: ex, y: ey, z: ez };
+}
+function sp3(id, x, y, z, r, color) { return { id: id, type: "sphere", position: { x: x, y: y, z: z }, radius: r, color: color, castShadow: true }; }
+
+function buildSimChildren(s, pose, phase, moving, anim, t) {
+  let p = "sim-" + s.id + "-";
+  let out = [];
+  let skin = s.skin, shirt = s.shirt, pants = s.pants;
+  anim = anim || (moving ? "walk" : "idle");
+  if (moving && pose !== "sit" && pose !== "lie") anim = s.carry ? "carry" : "walk";
+  let hp = headPose(anim, t);
+  let breathe = anim === "sleep" ? 0.012 * Math.sin(t * 1.6) : 0.006 * Math.sin(t * 2.2);
+
+  if (pose === "lie") {
+    let lift = anim === "bathe" ? 0.25 + 0.05 * Math.sin(t * 1.5) : 0;
+    out.push(bx(p + "torso", 0, 0.16 + breathe, 0.05, 0.38, 0.22, 0.55, shirt));
+    out.push(bx(p + "pelvis", 0, 0.14, 0.4, 0.34, 0.18, 0.22, pants));
+    out.push(sp3(p + "hipL", -0.1, 0.13, 0.45, 0.08, pants));
+    out.push(sp3(p + "hipR", 0.1, 0.13, 0.45, 0.08, pants));
+    out.push(cy(p + "l1", -0.1, 0.11, 0.8, 0.07, 0.7, pants, { rotation: { x: Math.PI / 2, y: 0, z: 0 } }));
+    out.push(cy(p + "l2", 0.1, 0.11, 0.8, 0.07, 0.7, pants, { rotation: { x: Math.PI / 2, y: 0, z: 0 } }));
+    out.push(sp3(p + "shL", -0.24, 0.2, -0.15, 0.07, shirt));
+    out.push(sp3(p + "shR", 0.24, 0.2, -0.15, 0.07, shirt));
+    out.push({ id: p + "a1", type: "capsule", position: { x: -0.26, y: 0.14 + lift, z: 0.1 }, radius: 0.055, height: 0.6, rotation: { x: Math.PI / 2 - lift * 2, y: 0, z: 0 }, color: shirt });
+    out.push({ id: p + "a2", type: "capsule", position: { x: 0.26, y: 0.14 + lift, z: 0.1 }, radius: 0.055, height: 0.6, rotation: { x: Math.PI / 2 - lift * 2, y: 0, z: 0 }, color: shirt });
+    out.push(sp3(p + "neck", 0, 0.18, -0.28, 0.06, skin));
+    out.push(sp3(p + "head", 0, 0.18, -0.42, 0.16, skin));
+    if (anim !== "sleep") {
+      out.push(sp(p + "e1", -0.06, 0.29, -0.44, 0.022, DARK, { castShadow: false }));
+      out.push(sp(p + "e2", 0.06, 0.29, -0.44, 0.022, DARK, { castShadow: false }));
+    }
+    if (s.hair !== "bald") out.push(sp3(p + "hair", 0, 0.16, -0.5, 0.165, s.hairColor));
+    return out;
+  }
+
+  let shoulderY, hipY = 0.8;
+  let bob = 0;
+  if (pose === "sit") {
+    // Thighs forward, shins down, with the pelvis on the seat.
+    hipY = 0.05;
+    out.push(bx(p + "pelvis", 0, hipY + 0.08, 0.02, 0.36, 0.18, 0.26, pants));
+    limb(out, p + "L", -0.1, hipY, 0.05, 0.38, 0.4, Math.PI / 2, 0.02, -Math.PI / 2 + 0.05, 0.07, pants);
+    limb(out, p + "R", 0.1, hipY, 0.05, 0.38, 0.4, Math.PI / 2, -0.02, -Math.PI / 2 + 0.05, 0.07, pants);
+    out.push(bx(p + "sh1", -0.1, hipY - 0.36, 0.5, 0.14, 0.08, 0.26, DARK));
+    out.push(bx(p + "sh2", 0.1, hipY - 0.36, 0.5, 0.14, 0.08, 0.26, DARK));
+    out.push(bx(p + "torso", 0, hipY + 0.42 + breathe, 0.0, 0.38, 0.52, 0.22, shirt));
+    shoulderY = hipY + 0.64;
+  } else {
+    let swing = moving ? Math.sin(phase) * 0.55 : 0;
+    bob = moving ? Math.abs(Math.sin(phase)) * 0.035 : 0;
+    hipY = 0.8 + bob;
+    let a1 = swing, a2 = -swing;
+    // A knee flexes while its leg swings forward through the middle of the
+    // stride and is straight at heel-strike and toe-off; the trailing leg
+    // stays nearly straight.
+    let k1 = moving ? -Math.max(0, Math.cos(phase)) * 0.8 : 0;
+    let k2 = moving ? -Math.max(0, -Math.cos(phase)) * 0.8 : 0;
+    out.push(bx(p + "pelvis", 0, hipY + 0.02, 0, 0.34, 0.2, 0.22, pants));
+    let f1 = limb(out, p + "L", -0.1, hipY, 0, 0.38, 0.36, a1, 0.02, k1, 0.07, pants);
+    let f2 = limb(out, p + "R", 0.1, hipY, 0, 0.38, 0.36, a2, -0.02, k2, 0.07, pants);
+    out.push(bx(p + "sh1", f1.x, f1.y - 0.02, f1.z + 0.06, 0.14, 0.08, 0.26, DARK));
+    out.push(bx(p + "sh2", f2.x, f2.y - 0.02, f2.z + 0.06, 0.14, 0.08, 0.26, DARK));
+    out.push(bx(p + "torso", 0, hipY + 0.36 + breathe, 0, 0.38, 0.54, 0.22, shirt));
+    shoulderY = hipY + 0.58;
+  }
+
+  // Arms from the shoulders.
+  let sides = ["l", "r"];
+  let hands = {};
+  for (let i = 0; i < 2; i = i + 1) {
+    let side = sides[i];
+    let sx = side === "l" ? -0.2 : 0.2;
+    let ap;
+    if (anim === "walk") {
+      let swing = Math.sin(phase) * 0.5;
+      ap = { a: side === "l" ? -swing : swing, s: 0.03, e: 0.35 };
+    } else {
+      ap = armPose(anim, t, side);
+    }
+    let spread = ap.s * (side === "l" ? -1 : 1);
+    out.push(sp3(p + "sh" + side, sx, shoulderY, 0, 0.065, shirt));
+    hands[side] = limb(out, p + "A" + side, sx, shoulderY, 0, 0.28, 0.27, ap.a, spread, ap.e, 0.055, shirt);
+    out.push(sp3(p + "hand" + side, hands[side].x, hands[side].y, hands[side].z, 0.062, skin));
+  }
+  let prop = propFor(anim);
+  if (prop) {
+    let at = prop.hand === "both" ? { x: (hands.l.x + hands.r.x) / 2, y: (hands.l.y + hands.r.y) / 2, z: (hands.l.z + hands.r.z) / 2 + 0.02 } : hands[prop.hand];
+    let o = { id: p + "prop", type: prop.type, position: { x: at.x, y: at.y, z: at.z + 0.04 }, color: prop.color };
+    if (prop.radius !== undefined) o.radius = prop.radius;
+    if (prop.height !== undefined) o.height = prop.height;
+    if (prop.width !== undefined) { o.width = prop.width; o.depth = prop.depth; o.rotation = { x: 0.6, y: 0, z: 0 }; }
+    if (prop.metalness !== undefined) o.metalness = prop.metalness;
+    if (prop.opacity !== undefined) o.opacity = prop.opacity;
+    out.push(o);
+  }
+
+  // Neck and head, turned by the animation.
+  let headY = shoulderY + 0.24;
+  out.push(sp3(p + "neck", 0, shoulderY + 0.06, 0, 0.06, skin));
+  out.push({ id: p + "head", type: "sphere", position: { x: 0, y: headY, z: 0 }, radius: 0.16, color: skin, rotation: { x: hp.pitch, y: hp.yaw, z: 0 }, castShadow: true });
+  let ex = 0.13 * Math.sin(hp.yaw), ez = 0.13 * Math.cos(hp.yaw);
+  out.push(sp(p + "e1", -0.06 * Math.cos(hp.yaw) + ex, headY + 0.02 - 0.13 * Math.sin(hp.pitch), ez * Math.cos(hp.pitch), 0.022, DARK, { castShadow: false }));
+  out.push(sp(p + "e2", 0.06 * Math.cos(hp.yaw) + ex, headY + 0.02 - 0.13 * Math.sin(hp.pitch), ez * Math.cos(hp.pitch), 0.022, DARK, { castShadow: false }));
+  addHair(out, p, s, headY);
+  return out;
+}
+
+function addHair(out, p, s, headY) {
+  if (s.hair === "bald") return;
+  let c = s.hairColor;
+  out.push(sp(p + "hair", 0, headY + 0.06, -0.02, 0.165, c));
+  if (s.hair === "long") out.push(bx(p + "hair2", 0, headY - 0.12, -0.13, 0.3, 0.4, 0.1, c));
+  else if (s.hair === "bun") out.push(sp(p + "hair2", 0, headY + 0.17, -0.1, 0.08, c));
+  else if (s.hair === "curly") { out.push(sp(p + "hair2", -0.13, headY + 0.08, 0, 0.09, c)); out.push(sp(p + "hair3", 0.13, headY + 0.08, 0, 0.09, c)); out.push(sp(p + "hair4", 0, headY + 0.2, -0.02, 0.09, c)); }
+}
+
+// ---------------------------------------------------------------------------
+// Navigation: a 0.5 m grid over the lot, blocked by walls (except through
+// doors) and by furniture footprints, searched with A*.
+// ---------------------------------------------------------------------------
+function navBlockedAt(x, z) {
+  let R = 0.2;
+  for (let i = 0; i < plan.walls.length; i = i + 1) {
+    let w = plan.walls[i];
+    let pr = wallProject(w, x, z);
+    if (pr.d < WALL_T / 2 + R) {
+      let ops = openingsOn(w.id);
+      let clear = false;
+      for (let k = 0; k < ops.length; k = k + 1) {
+        if (ops[k].kind === "door" && Math.abs(ops[k].pos - pr.pos) < ops[k].w / 2 - 0.1) clear = true;
+      }
+      if (!clear) return true;
+    }
+  }
+  for (let i = 0; i < plan.items.length; i = i + 1) {
+    let it = plan.items[i];
+    let def = CATALOGUE[it.kind];
+    if (!def) continue;
+    let foot = NAV_FOOT[it.kind] === undefined ? { w: def.w, d: def.d } : NAV_FOOT[it.kind];
+    if (!foot) continue;
+    let c = Math.cos(-it.rot), s = Math.sin(-it.rot);
+    let dx = x - it.x, dz = z - it.z;
+    let lx = dx * c - dz * s, lz = dx * s + dz * c;
+    if (Math.abs(lx) < foot.w / 2 + 0.06 && Math.abs(lz) < foot.d / 2 + 0.06) return true;
+  }
+  return Math.abs(x) > WORLD - 0.5 || Math.abs(z) > WORLD - 0.5;
+}
+
+function navIndex(x, z) {
+  let ix = Math.round((x + WORLD) / NAV_CELL), iz = Math.round((z + WORLD) / NAV_CELL);
+  if (ix < 0 || iz < 0 || ix >= NAV_N || iz >= NAV_N) return -1;
+  return iz * NAV_N + ix;
+}
+function navX(i) { return (i % NAV_N) * NAV_CELL - WORLD; }
+function navZ(i) { return Math.floor(i / NAV_N) * NAV_CELL - WORLD; }
+
+function rebuildNav() {
+  navCells = new Array(NAV_N * NAV_N);
+  for (let iz = 0; iz < NAV_N; iz = iz + 1) {
+    for (let ix = 0; ix < NAV_N; ix = ix + 1) {
+      navCells[iz * NAV_N + ix] = navBlockedAt(ix * NAV_CELL - WORLD, iz * NAV_CELL - WORLD) ? 1 : 0;
+    }
+  }
+  navDirty = false;
+}
+
+function nearestFreeCell(x, z, maxR) {
+  let best = -1, bd = 1e9;
+  let r = Math.ceil((maxR || 2) / NAV_CELL);
+  let ci = Math.round((x + WORLD) / NAV_CELL), cz = Math.round((z + WORLD) / NAV_CELL);
+  for (let dz = -r; dz <= r; dz = dz + 1) {
+    for (let dx = -r; dx <= r; dx = dx + 1) {
+      let ix = ci + dx, iz = cz + dz;
+      if (ix < 0 || iz < 0 || ix >= NAV_N || iz >= NAV_N) continue;
+      let i = iz * NAV_N + ix;
+      if (navCells[i]) continue;
+      let d = Math.hypot(navX(i) - x, navZ(i) - z);
+      if (d < bd) { bd = d; best = i; }
+    }
+  }
+  return best;
+}
+
+// A* with a binary heap. Returns cell indices from start to goal, or null.
+function findPath(sx, sz, gx, gz) {
+  if (navDirty) rebuildNav();
+  let s = nearestFreeCell(sx, sz, 1.5), g = nearestFreeCell(gx, gz, 1.5);
+  if (s < 0 || g < 0) return null;
+  if (s === g) return [g];
+  let N = NAV_N * NAV_N;
+  let gScore = new Array(N);
+  let from = new Array(N);
+  let closed = new Array(N);
+  let heap = [];
+  function push(i, f) {
+    heap.push({ i: i, f: f });
+    let k = heap.length - 1;
+    while (k > 0) { let pk = (k - 1) >> 1; if (heap[pk].f <= heap[k].f) break; let t = heap[pk]; heap[pk] = heap[k]; heap[k] = t; k = pk; }
+  }
+  function pop() {
+    let top = heap[0];
+    let last = heap.pop();
+    if (heap.length > 0) {
+      heap[0] = last;
+      let k = 0;
+      while (true) {
+        let l = k * 2 + 1, r = l + 1, m = k;
+        if (l < heap.length && heap[l].f < heap[m].f) m = l;
+        if (r < heap.length && heap[r].f < heap[m].f) m = r;
+        if (m === k) break;
+        let t = heap[m]; heap[m] = heap[k]; heap[k] = t; k = m;
+      }
+    }
+    return top;
+  }
+  let gxi = g % NAV_N, gzi = Math.floor(g / NAV_N);
+  function h(i) { let dx = Math.abs((i % NAV_N) - gxi), dz = Math.abs(Math.floor(i / NAV_N) - gzi); return Math.max(dx, dz) + 0.414 * Math.min(dx, dz); }
+  gScore[s] = 0;
+  push(s, h(s));
+  let steps = 0;
+  while (heap.length > 0 && steps < 160000) {
+    steps = steps + 1;
+    let cur = pop().i;
+    if (cur === g) {
+      let out = [];
+      let c = g;
+      while (c !== undefined && c !== s) { out.push(c); c = from[c]; }
+      out.push(s);
+      out.reverse();
+      return out;
+    }
+    if (closed[cur]) continue;
+    closed[cur] = 1;
+    let cx = cur % NAV_N, cz = Math.floor(cur / NAV_N);
+    for (let dz = -1; dz <= 1; dz = dz + 1) {
+      for (let dx = -1; dx <= 1; dx = dx + 1) {
+        if (dx === 0 && dz === 0) continue;
+        let nx = cx + dx, nz = cz + dz;
+        if (nx < 0 || nz < 0 || nx >= NAV_N || nz >= NAV_N) continue;
+        let ni = nz * NAV_N + nx;
+        if (navCells[ni] || closed[ni]) continue;
+        // No cutting corners through a blocked cell.
+        if (dx !== 0 && dz !== 0 && (navCells[cz * NAV_N + nx] || navCells[nz * NAV_N + cx])) continue;
+        let ng = gScore[cur] + ((dx !== 0 && dz !== 0) ? 1.414 : 1);
+        if (gScore[ni] === undefined || ng < gScore[ni]) {
+          gScore[ni] = ng;
+          from[ni] = cur;
+          push(ni, ng + h(ni));
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function lineClear(x1, z1, x2, z2) {
+  let d = Math.hypot(x2 - x1, z2 - z1);
+  let n = Math.max(1, Math.ceil(d / 0.2));
+  for (let i = 1; i < n; i = i + 1) {
+    let t = i / n;
+    let i2 = navIndex(x1 + (x2 - x1) * t, z1 + (z2 - z1) * t);
+    if (i2 < 0 || navCells[i2]) return false;
+  }
+  return true;
+}
+
+// Where a sim stands to use an item: in front, else a side, else the
+// nearest free cell. Returns { x, z, rot } with rot facing the item.
+function approachSpot(it) {
+  let def = CATALOGUE[it.kind];
+  if (!def) return null;
+  if (navDirty) rebuildNav();
+  let tries = [
+    { lx: 0, lz: def.d / 2 + 0.45 }, { lx: 0, lz: -(def.d / 2 + 0.45) },
+    { lx: def.w / 2 + 0.45, lz: 0 }, { lx: -(def.w / 2 + 0.45), lz: 0 }
+  ];
+  for (let k = 0; k < tries.length; k = k + 1) {
+    let t = tries[k];
+    let wx = it.x + t.lx * Math.cos(it.rot) + t.lz * Math.sin(it.rot);
+    let wz = it.z - t.lx * Math.sin(it.rot) + t.lz * Math.cos(it.rot);
+    let i = navIndex(wx, wz);
+    if (i >= 0 && !navCells[i] && !navBlockedAt(wx, wz)) return { x: wx, z: wz, rot: Math.atan2(it.x - wx, it.z - wz) };
+  }
+  let i = nearestFreeCell(it.x, it.z, 2.5);
+  if (i < 0) return null;
+  return { x: navX(i), z: navZ(i), rot: Math.atan2(it.x - navX(i), it.z - navZ(i)) };
+}
+
+// Where a sim sits or lies on an item, in world space.
+function onSpot(it, opt) {
+  let def = CATALOGUE[it.kind];
+  let lx = 0, lz = 0, y = 0.06, rot = it.rot;
+  if (it.kind === "bed_double" || it.kind === "bed_single") { y = 0.06 + 0.56; lz = 0.15; }
+  else if (it.kind === "sofa") { y = 0.06 + 0.44; lz = 0.12; if (opt.pose === "lie") { y = 0.06 + 0.5; rot = it.rot + Math.PI / 2; lz = 0.1; } }
+  else if (it.kind === "armchair") { y = 0.06 + 0.44; lz = 0.12; }
+  else if (it.kind === "chair") { y = 0.06 + 0.475; lz = 0.05; }
+  else if (it.kind === "toilet") { y = 0.06 + 0.45; lz = 0.1; }
+  else if (it.kind === "bathtub") { y = 0.06 + 0.4; rot = it.rot + Math.PI / 2; }
+  else if (it.kind === "shower") { y = 0.06 + 0.06; }
+  let wx = it.x + lx * Math.cos(it.rot) + lz * Math.sin(it.rot);
+  let wz = it.z - lx * Math.sin(it.rot) + lz * Math.cos(it.rot);
+  return { x: wx, z: wz, y: y, rot: rot };
+}
+
+// ---------------------------------------------------------------------------
+// Tasks
+// ---------------------------------------------------------------------------
+function simById(id) { for (let i = 0; i < sims.length; i = i + 1) { if (sims[i].id === id) return sims[i]; } return null; }
+function activeSim() { return simById(activeSimId); }
+
+function setPath(s, tx, tz) {
+  let cells = findPath(s.x, s.z, tx, tz);
+  if (!cells) return false;
+  let pts = [];
+  for (let i = 1; i < cells.length; i = i + 1) pts.push({ x: navX(cells[i]), z: navZ(cells[i]) });
+  pts.push({ x: tx, z: tz });
+  s.path = pts;
+  s.pathIdx = 0;
+  return true;
+}
+
+function clearTask(s) {
+  if (s.task && s.task.kind === "chatting" && s.task.simId) {
+    let o = simById(s.task.simId);
+    if (o && o.task && (o.task.kind === "chatting" || o.task.kind === "social") && o.task.simId === s.id) { o.task = null; o.path = []; }
+  }
+  if (s.task && s.task.kind === "use" && s.task.itemId && liveHiddenItems[s.task.itemId]) { delete liveHiddenItems[s.task.itemId]; rebuildStatic(); }
+  s.hidden = false;
+  s.carry = false;
+  s.task = null;
+  s.path = [];
+  s.pose = "stand";
+  s.onY = 0.06;
+}
+
+function seatFor(it, s) {
+  let chair = null, bd = 1e9;
+  for (let i = 0; i < plan.items.length; i = i + 1) {
+    let c = plan.items[i];
+    if (c.kind !== "chair") continue;
+    let d = Math.hypot(c.x - it.x, c.z - it.z);
+    if (d < 1.4 && d < bd && !itemBusy(c, s)) { bd = d; chair = c; }
+  }
+  return chair;
+}
+
+function startUse(s, it, opt) {
+  clearTask(s);
+  let spot = opt.on ? null : approachSpot(it);
+  if (opt.seat) {
+    // A chair at the desk or table: head for the chair, not the item's front,
+    // which the chair itself usually blocks.
+    let chair = seatFor(it, s);
+    if (chair) { let ap = approachSpot(chair); if (ap) spot = ap; }
+  }
+  if (opt.on) {
+    // Walk to the item's edge first, then step onto it.
+    let ap = approachSpot(it);
+    if (!ap) { s.lastFail = "Can't reach the " + CATALOGUE[it.kind].label.toLowerCase(); return false; }
+    spot = ap;
+  }
+  if (!spot || !setPath(s, spot.x, spot.z)) { s.lastFail = "Can't get to the " + CATALOGUE[it.kind].label.toLowerCase(); return false; }
+  let mins = opt.mins;
+  // A night's sleep lasts until morning, however rested the sim gets.
+  if (opt.sleep && opt.mins > 200) {
+    let h = clockMinutes / 60;
+    if (h >= 20 || h < 5) {
+      let untilMorning = h >= 20 ? (24 - h + 6.75) * 60 : (6.75 - h) * 60;
+      mins = Math.max(mins, untilMorning + Math.random() * 40);
+    }
+  }
+  s.task = { kind: "use", label: opt.label, icon: opt.icon, itemId: it.id, opt: opt, phase: "go", minsLeft: mins, faceRot: spot.rot, untilMorning: mins > opt.mins };
+  s.lastFail = "";
+  return true;
+}
+
+function startFallback(s, opt) {
+  clearTask(s);
+  s.task = { kind: "use", label: opt.label, icon: opt.icon, itemId: 0, opt: opt, phase: "do", minsLeft: opt.mins, faceRot: s.rot };
+  s.pose = opt.pose;
+  s.onY = opt.pose === "lie" ? 0.06 : 0.06;
+  return true;
+}
+
+function startWalk(s, x, z) {
+  clearTask(s);
+  if (!setPath(s, x, z)) { s.lastFail = "Can't walk there"; return false; }
+  s.task = { kind: "walk", label: "Walking", icon: "🚶", phase: "go" };
+  s.lastFail = "";
+  return true;
+}
+
+function startSocial(s, other, opt) {
+  clearTask(s);
+  if (!setPath(s, other.x, other.z)) { s.lastFail = "Can't reach " + other.name; return false; }
+  s.task = { kind: "social", label: opt.label + " with " + other.name, icon: opt.icon, simId: other.id, opt: opt, phase: "go", minsLeft: opt.mins, waited: 0 };
+  s.lastFail = "";
+  return true;
+}
+
+function interruptible(s) {
+  if (!s.task) return true;
+  if (s.task.kind === "walk") return true;
+  if (s.task.kind === "use" && s.task.opt && (s.task.opt.need === "fun" || s.task.opt.need === "social")) return true;
+  return false;
+}
+
+// Free will: the most pressing need, and the best thing in the house for it.
+function decide(s) {
+  let h = clockMinutes / 60;
+  let night = h < 6.5 || h >= 22;
+  let best = null, bestScore = 0;
+  for (let i = 0; i < NEED_KEYS.length; i = i + 1) {
+    let k = NEED_KEYS[i];
+    let w = k === "bladder" ? 1.4 : (k === "hunger" ? 1.3 : (k === "energy" ? (night ? 1.9 : 1.05) : (k === "hygiene" ? 0.9 : (k === "fun" ? 0.8 : 0.7))));
+    let score = (100 - s.needs[k]) * w;
+    if (score > bestScore) { bestScore = score; best = k; }
+  }
+  if (bestScore < 32) {
+    // Nothing pressing: wander, sit somewhere, or chat.
+    if (Math.random() < 0.35) {
+      let others = sims.filter(function (o) { return o.id !== s.id && interruptible(o); });
+      if (others.length > 0) { startSocial(s, pick(others), pick(SOCIALS)); return; }
+    }
+    if (Math.random() < 0.5) { tryNeed(s, "fun"); return; }
+    let i = nearestFreeCell(s.x + (Math.random() - 0.5) * 8, s.z + (Math.random() - 0.5) * 8, 3);
+    if (i >= 0) startWalk(s, navX(i), navZ(i));
+    return;
+  }
+  if (best === "social") {
+    let others = sims.filter(function (o) { return o.id !== s.id && interruptible(o); });
+    if (others.length > 0) { startSocial(s, pick(others), pick(SOCIALS)); return; }
+  }
+  tryNeed(s, best);
+}
+
+function tryNeed(s, need) {
+  // Candidates: every item whose interactions serve the need, nearest first,
+  // preferring the biggest gain.
+  let cands = [];
+  for (let i = 0; i < plan.items.length; i = i + 1) {
+    let it = plan.items[i];
+    let opts = INTERACTIONS[it.kind] || [];
+    for (let k = 0; k < opts.length; k = k + 1) {
+      let o = opts[k];
+      if (o.need !== need) continue;
+      if (o.wants && !plan.items.some(function (x) { return x.kind === o.wants; })) continue;
+      if (itemBusy(it, s)) continue;
+      let d = Math.hypot(it.x - s.x, it.z - s.z);
+      // Sleeping only when it is actually needed; otherwise a nap.
+      if (o.sleep && o.mins > 200 && s.needs.energy > 45 && !(clockMinutes / 60 >= 22 || clockMinutes / 60 < 6)) continue;
+      cands.push({ it: it, o: o, score: o.gain * 2 - d * 1.5 });
+    }
+  }
+  cands.sort(function (a, b) { return b.score - a.score; });
+  for (let i = 0; i < cands.length && i < 4; i = i + 1) {
+    if (startUse(s, cands[i].it, cands[i].o)) return true;
+  }
+  startFallback(s, FALLBACKS[need]);
+  return true;
+}
+
+function itemBusy(it, s) {
+  for (let i = 0; i < sims.length; i = i + 1) {
+    let o = sims[i];
+    if (o.id === s.id || !o.task || o.task.kind !== "use") continue;
+    if (o.task.itemId === it.id && !o.task.opt.shared) return true;
+    if (o.task.seatId === it.id) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// The step
+// ---------------------------------------------------------------------------
+function liveStep() {
+  liveTick = liveTick + 1;
+  if (creatorOpen) {
+    previewSpin = previewSpin + 0.02;
+    rebuildDynamic();
+    return;
+  }
+  if (!livePaused) {
+    let dtMin = 0.033 * gameSpeed;
+    clockMinutes = clockMinutes + dtMin;
+    if (clockMinutes >= 1440) { clockMinutes = clockMinutes - 1440; dayNumber = dayNumber + 1; }
+    for (let i = 0; i < sims.length; i = i + 1) updateSim(sims[i], dtMin);
+  }
+  updateDoors();
+  if (liveTick % 10 === 0) { refreshCards(); buildLiveLights(); }
+  updateLiveCamera();
+  rebuildDynamic();
+}
+
+// Doors swing open for a sim about to walk through and shut behind them.
+const DOOR_SHUT = 0.06;
+const DOOR_OPEN = 1.5;
+function doorGeometry(o) {
+  let w = wallById(o.wallId);
+  if (!w) return null;
+  let L = wallLen(w);
+  let head = wallHeading(w);
+  let ux = Math.sin(head), uz = Math.cos(head);
+  let a = Math.max(-WALL_T / 2, o.pos - o.w / 2), b = Math.min(L + WALL_T / 2, o.pos + o.w / 2);
+  return { w: w, head: head, ux: ux, uz: uz, a: a, b: b, cx: w.x1 + ux * o.pos, cz: w.z1 + uz * o.pos };
+}
+function updateDoors() {
+  for (let i = 0; i < plan.openings.length; i = i + 1) {
+    let o = plan.openings[i];
+    if (o.kind !== "door") continue;
+    let g = doorGeometry(o);
+    if (!g) continue;
+    let want = DOOR_SHUT;
+    for (let k = 0; k < sims.length; k = k + 1) {
+      let sm = sims[k];
+      if (sm.hidden) continue;
+      let d = Math.hypot(sm.x - g.cx, sm.z - g.cz);
+      if (d < 1.25 && sm.task && sm.task.phase === "go") { want = DOOR_OPEN; break; }
+      if (d < 0.6) { want = DOOR_OPEN; break; }
+    }
+    let cur = doorAngles[o.id] === undefined ? DOOR_SHUT : doorAngles[o.id];
+    doorAngles[o.id] = cur + (want - cur) * (want > cur ? 0.16 : 0.08);
+  }
+}
+
+function buildLiveDoors(list) {
+  for (let i = 0; i < plan.openings.length; i = i + 1) {
+    let o = plan.openings[i];
+    if (o.kind !== "door") continue;
+    let g = doorGeometry(o);
+    if (!g) continue;
+    let jambW = 0.06;
+    let leafW = (g.b - g.a) - jambW * 2;
+    let open = doorAngles[o.id] === undefined ? DOOR_SHUT : doorAngles[o.id];
+    let hingeX = g.w.x1 + g.ux * (g.a + jambW), hingeZ = g.w.z1 + g.uz * (g.a + jambW);
+    let lh = g.head + open;
+    let lx = Math.sin(lh), lz = Math.cos(lh);
+    let pfx = "opening-" + o.id + "-";
+    list.push({ id: pfx + "leaf", type: "box", position: { x: hingeX + lx * leafW / 2, y: (DOOR_H - 0.06) / 2, z: hingeZ + lz * leafW / 2 }, rotation: { x: 0, y: lh, z: 0 }, width: 0.045, height: DOOR_H - 0.06, depth: leafW, color: o.color || "#7c4a24", texture: "wood", castShadow: true });
+    list.push({ id: pfx + "knob", type: "sphere", position: { x: hingeX + lx * (leafW - 0.1) + Math.sin(lh + Math.PI / 2) * 0.04, y: 1.0, z: hingeZ + lz * (leafW - 0.1) + Math.cos(lh + Math.PI / 2) * 0.04 }, radius: 0.03, color: "#d4a017", metalness: 0.9, roughness: 0.2 });
+  }
+}
+
+// Furniture that reacts while it is being used, and lamps after dark.
+function buildLiveOverlays(list, tnow) {
+  let h = clockMinutes / 60;
+  let dark = h < 6.5 || h >= 19;
+  let using = {};
+  for (let i = 0; i < sims.length; i = i + 1) {
+    let sm = sims[i];
+    if (sm.task && sm.task.kind === "use" && sm.task.phase === "do" && sm.task.itemId) using[sm.task.itemId] = sm;
+  }
+  for (let i = 0; i < plan.items.length; i = i + 1) {
+    let it = plan.items[i];
+    let c = Math.cos(it.rot), sn = Math.sin(it.rot);
+    let W = function (lx, ly, lz) { return { x: it.x + lx * c + lz * sn, y: 0.06 + ly, z: it.z - lx * sn + lz * c }; };
+    let user = using[it.id];
+    if (it.kind === "floor_lamp" && dark) {
+      let pos = W(0, 1.72, 0);
+      list.push({ id: "ov-lamp-" + it.id, type: "sphere", position: pos, radius: 0.12, color: "#fff3c4", emissive: "#fde68a", emissiveIntensity: 2.2, castShadow: false });
+    }
+    if (it.kind === "stove" && user) {
+      let glow = 1.2 + 0.6 * Math.sin(tnow * 7);
+      let burners = [[-0.15, -0.15], [0.15, -0.15], [-0.15, 0.15], [0.15, 0.15]];
+      for (let k = 0; k < 4; k = k + 1) {
+        let pos = W(burners[k][0], 0.905, burners[k][1]);
+        list.push({ id: "ov-burner-" + it.id + "-" + k, type: "cylinder", position: pos, radius: 0.085, height: 0.01, color: "#ef4444", emissive: "#f97316", emissiveIntensity: glow, castShadow: false });
+      }
+      let steam = W(0, 1.25 + (tnow * 0.4) % 0.5, 0);
+      list.push({ id: "ov-steam-" + it.id, type: "sphere", position: steam, radius: 0.09 + ((tnow * 0.4) % 0.5) * 0.12, color: "#f8fafc", opacity: 0.35 - ((tnow * 0.4) % 0.5) * 0.5, castShadow: false });
+    }
+    if (it.kind === "fridge" && user) {
+      // The door swings open while someone rummages.
+      let ang = 1.1;
+      let hx = 0.35, hz = 0.35;
+      let doorW = 0.7;
+      let pos = W(hx - Math.cos(ang) * doorW / 2, 0.9, hz + Math.sin(ang) * doorW / 2);
+      list.push({ id: "ov-fridge-" + it.id, type: "box", position: pos, rotation: { x: 0, y: it.rot + ang, z: 0 }, width: doorW, height: 1.76, depth: 0.05, color: "#f1f5f9", metalness: 0.3, roughness: 0.4, castShadow: true });
+      list.push({ id: "ov-fridge-light-" + it.id, type: "box", position: W(0, 0.9, 0.3), width: 0.6, height: 1.6, depth: 0.02, color: "#fef9c3", emissive: "#fde68a", emissiveIntensity: 1.5, castShadow: false });
+    }
+    if (it.kind === "tv_stand") {
+      // Someone watching from a sofa or standing at it lights the screen.
+      let watched = !!user;
+      if (!watched) {
+        for (let k = 0; k < sims.length; k = k + 1) {
+          let sm = sims[k];
+          if (sm.task && sm.task.kind === "use" && sm.task.phase === "do" && sm.task.opt.id === "tv" && Math.hypot(sm.x - it.x, sm.z - it.z) < 5) watched = true;
+        }
+      }
+      if (watched) {
+        let flick = 0.9 + 0.5 * Math.abs(Math.sin(tnow * 9)) + 0.3 * Math.abs(Math.sin(tnow * 23));
+        let hue = ["#93c5fd", "#fca5a5", "#bbf7d0", "#fde68a"][Math.floor(tnow * 1.3) % 4];
+        // The set's screen faces local -z; the glow sits just in front of it.
+        list.push({ id: "ov-tv-" + it.id, type: "box", position: W(0, 0.82, -0.135), width: 1.1, height: 0.58, depth: 0.012, color: hue, emissive: hue, emissiveIntensity: flick, castShadow: false });
+      }
+    }
+    if (it.kind === "desk" && user) {
+      let flick = 1.0 + 0.2 * Math.sin(tnow * 11);
+      list.push({ id: "ov-monitor-" + it.id, type: "box", position: W(0.1, 0.98, -0.165), width: 0.48, height: 0.27, depth: 0.005, color: "#bfdbfe", emissive: "#60a5fa", emissiveIntensity: flick, castShadow: false });
+    }
+    if ((it.kind === "shower" || it.kind === "sink_unit" || it.kind === "basin") && user) {
+      let pts = [];
+      let n = it.kind === "shower" ? 26 : 8;
+      let top = it.kind === "shower" ? 2.0 : 1.0;
+      for (let k = 0; k < n; k = k + 1) {
+        let f = ((tnow * 1.8) + k * 0.37) % 1;
+        let lx = (Math.sin(k * 12.9) * 0.5) * (it.kind === "shower" ? 0.45 : 0.12) - (it.kind === "shower" ? 0.2 : 0);
+        let lz = (Math.cos(k * 7.3) * 0.5) * (it.kind === "shower" ? 0.45 : 0.12) - (it.kind === "shower" ? 0.2 : 0.1);
+        let pos = W(lx, top - f * (top - 0.1), lz);
+        pts.push(pos.x, pos.y, pos.z);
+      }
+      list.push({ id: "ov-water-" + it.id, type: "particles", particlePositions: pts, particleSize: 0.07, color: "#bae6fd", opacity: 0.85 });
+    }
+    if (it.kind === "car" && liveHiddenItems[it.id] && user) {
+      // Out along the drive and back over the length of the trip.
+      let t = user.task;
+      let prog = 1 - t.minsLeft / t.opt.mins;
+      let dist = Math.sin(prog * Math.PI) * 9;
+      let def = CATALOGUE.car;
+      let kids = def.build("ov-car-" + it.id + "-", it.color || def.accent);
+      let spin = tnow * 6 * Math.abs(Math.cos(prog * Math.PI));
+      for (let k = 0; k < kids.length; k = k + 1) { if (kids[k].id.indexOf("-w") !== -1 && kids[k].rotation) kids[k].rotation = { x: spin, y: 0, z: Math.PI / 2 }; }
+      list.push({ id: "ov-car-" + it.id, type: "group", position: { x: it.x + Math.sin(it.rot) * dist, y: 0.06 + 0.01 * Math.sin(tnow * 20) * (dist > 0.2 ? 1 : 0), z: it.z + Math.cos(it.rot) * dist }, rotation: { x: 0, y: it.rot, z: 0 }, children: kids });
+    }
+  }
+}
+
+// The rendered sim eases toward where the logic says it is, so stepping
+// onto a bed or turning to face a stove is a short glide rather than a cut.
+function easeRender(s) {
+  if (s.rx === undefined) { s.rx = s.x; s.rz = s.z; s.ry = s.onY || 0.06; s.rrot = s.rot; s.targetRot = s.rot; }
+  let k = s.speed > 0.05 ? 0.55 : 0.22;
+  s.rx = s.rx + (s.x - s.rx) * k;
+  s.rz = s.rz + (s.z - s.rz) * k;
+  s.ry = s.ry + ((s.onY || 0.06) - s.ry) * 0.2;
+  if (s.targetRot === undefined) s.targetRot = s.rot;
+  if (s.speed <= 0.05) s.rot = lerpAngle(s.rot, s.targetRot, 0.18);
+  s.rrot = lerpAngle(s.rrot, s.rot, 0.35);
+  if (Math.abs(s.rx - s.x) < 0.002) s.rx = s.x;
+  if (Math.abs(s.rz - s.z) < 0.002) s.rz = s.z;
+}
+
+function updateSim(s, dtMin) {
+  easeRender(s);
+  let sleeping = s.task && s.task.kind === "use" && s.task.phase === "do" && s.task.opt.sleep;
+  // Needs drift.
+  for (let i = 0; i < NEED_KEYS.length; i = i + 1) {
+    let k = NEED_KEYS[i];
+    let rate = DECAY[k];
+    if (sleeping) rate = k === "energy" ? 0 : rate * 0.35;
+    s.needs[k] = Math.max(0, s.needs[k] - rate * dtMin);
+  }
+  let controlled = s.id === activeSimId && !s.auto;
+  let dt = 0.033;
+
+  if (!s.task) {
+    s.speed = 0;
+    s.curSpeed = 0;
+    s.idleTicks = s.idleTicks + 1;
+    if (!controlled && s.idleTicks > 25) { s.idleTicks = 0; decide(s); }
+    return;
+  }
+  let t = s.task;
+  if (t.phase === "go") {
+    // Follow the path.
+    if (s.pathIdx < s.path.length) {
+      // String-pull: skip waypoints we can see past.
+      while (s.pathIdx + 1 < s.path.length && lineClear(s.x, s.z, s.path[s.pathIdx + 1].x, s.path[s.pathIdx + 1].z)) s.pathIdx = s.pathIdx + 1;
+      let wp = s.path[s.pathIdx];
+      let dx = wp.x - s.x, dz = wp.z - s.z;
+      let d = Math.hypot(dx, dz);
+      // Ease up to speed, and slow into the last waypoint.
+      let last = s.pathIdx === s.path.length - 1;
+      let remaining = last ? d : 99;
+      let target = WALK_SPEED * (remaining < 0.8 ? Math.max(0.35, remaining / 0.8) : 1);
+      // Other sims: steer around anyone close ahead, and slow if they are right in the way.
+      let ux = dx / d, uz = dz / d;
+      let ax = 0, az = 0;
+      // The zone grows with game speed, since sims cover more ground per tick.
+      let avoidR = 0.9 + 0.45 * (gameSpeed - 1);
+      for (let k = 0; k < sims.length; k = k + 1) {
+        let o = sims[k];
+        if (o.id === s.id || o.hidden) continue;
+        let ox = s.x - o.x, oz = s.z - o.z;
+        let od = Math.hypot(ox, oz);
+        if (od > avoidR || od < 0.001) continue;
+        let ahead = -(ox * ux + oz * uz) / od;   // 1 when the other is straight ahead
+        if (ahead < -0.2) continue;
+        let w = (1 - od / avoidR) * (0.5 + ahead);
+        // Push sideways, away from the other, and a little backwards.
+        let px = -uz, pz = ux;
+        let side = (px * ox + pz * oz) >= 0 ? 1 : -1;
+        ax = ax + px * side * w * 1.4 + (ox / od) * w * 0.5;
+        az = az + pz * side * w * 1.4 + (oz / od) * w * 0.5;
+        if (od < 0.5 && ahead > 0.6) target = target * 0.3;
+      }
+      let mx = ux + ax, mz = uz + az;
+      let ml = Math.hypot(mx, mz) || 1;
+      mx = mx / ml; mz = mz / ml;
+      s.curSpeed = s.curSpeed + (target - s.curSpeed) * 0.12;
+      let step = s.curSpeed * dt * gameSpeed;
+      if (d <= step && (ax === 0 && az === 0)) { s.x = wp.x; s.z = wp.z; s.pathIdx = s.pathIdx + 1; }
+      else {
+        let nx = s.x + mx * step, nz = s.z + mz * step;
+        // Never let avoidance push anyone into a wall or furniture.
+        if ((ax !== 0 || az !== 0) && navBlockedAt(nx, nz)) { nx = s.x + ux * step; nz = s.z + uz * step; }
+        s.x = nx; s.z = nz;
+        s.rot = lerpAngle(s.rot, Math.atan2(mx, mz), 0.22); s.targetRot = s.rot;
+        if (Math.hypot(wp.x - s.x, wp.z - s.z) < 0.12) s.pathIdx = s.pathIdx + 1;
+      }
+      s.speed = s.curSpeed;
+      s.walkPhase = s.walkPhase + step * 9;
+      // Chasing a sim: retarget as they move.
+      if (t.kind === "social" && liveTick % 20 === 0) {
+        let o = simById(t.simId);
+        if (o && Math.hypot(o.x - s.x, o.z - s.z) > 1.6) setPath(s, o.x, o.z);
+      }
+      return;
+    }
+    // Arrived.
+    s.speed = 0;
+    if (t.kind === "walk") { s.task = null; return; }
+    if (t.kind === "use") {
+      let it = itemById(t.itemId);
+      if (!it) { s.task = null; return; }
+      if (itemBusy(it, s)) { s.lastFail = "Someone is using the " + CATALOGUE[it.kind].label.toLowerCase(); s.task = null; s.idleTicks = 20; return; }
+      s.curSpeed = 0;
+      s.carry = false;
+      if (t.opt.on) {
+        let sp = onSpot(it, t.opt);
+        s.x = sp.x; s.z = sp.z; s.targetRot = sp.rot; s.onY = sp.y;
+        s.pose = t.opt.pose;
+      } else if (t.opt.seat) {
+        // A chair pulled up to the table or desk? Sit on it, facing the item.
+        let chair = seatFor(it, s);
+        if (chair) {
+          let sp = onSpot(chair, { pose: "sit" });
+          s.x = sp.x; s.z = sp.z; s.targetRot = Math.atan2(it.x - sp.x, it.z - sp.z); s.onY = sp.y;
+          s.pose = "sit";
+          t.seatId = chair.id;
+        } else { s.targetRot = t.faceRot; s.onY = 0.06; s.pose = "stand"; }
+      } else {
+        s.targetRot = t.faceRot;
+        s.onY = 0.06;
+        s.pose = t.opt.pose;
+      }
+      if (t.opt.id === "drive") {
+        // Into the car and off down the lane; the car is drawn by the live layer while it is out.
+        liveHiddenItems[it.id] = 1;
+        s.hidden = true;
+        rebuildStatic();
+      }
+      t.phase = "do";
+      return;
+    }
+    if (t.kind === "social") {
+      let o = simById(t.simId);
+      if (!o) { s.task = null; return; }
+      let d = Math.hypot(o.x - s.x, o.z - s.z);
+      if (d > 1.7) { if (!setPath(s, o.x, o.z)) s.task = null; return; }
+      if (!interruptible(o) || (o.task && o.task.kind === "social")) {
+        t.waited = t.waited + dtMin;
+        if (t.waited > 3) { s.lastFail = o.name + " is busy"; s.task = null; }
+        return;
+      }
+      // Both turn to face each other and talk.
+      clearTask(o);
+      o.task = { kind: "chatting", label: t.opt.label + " with " + s.name, icon: t.opt.icon, simId: s.id, opt: t.opt, phase: "do", minsLeft: t.opt.mins };
+      o.pose = "stand"; o.onY = 0.06; o.curSpeed = 0;
+      o.targetRot = Math.atan2(s.x - o.x, s.z - o.z);
+      s.targetRot = Math.atan2(o.x - s.x, o.z - s.z);
+      s.pose = "stand"; s.onY = 0.06; s.curSpeed = 0;
+      t.phase = "do";
+      return;
+    }
+  }
+  if (t.phase === "do") {
+    s.speed = 0;
+    t.minsLeft = t.minsLeft - dtMin;
+    if (t.kind === "use") {
+      let o = t.opt;
+      s.needs[o.need] = Math.min(100, s.needs[o.need] + (o.gain / o.mins) * dtMin);
+      if (o.also) { for (let k in o.also) { s.needs[k] = Math.min(100, s.needs[k] + (o.also[k] / o.mins) * dtMin); } }
+      // Sleep ends early once rested, unless it is a night's sleep, which
+      // runs to morning; a bath or a nap does not end early.
+      if (o.sleep && o.mins > 200 && s.needs.energy >= 99 && !t.untilMorning) t.minsLeft = 0;
+      if (t.minsLeft <= 0) {
+        if (o.outfit) { s.shirt = pick(SHIRTS); s.pants = pick(PANTS); }
+        finishUse(s);
+      }
+      return;
+    }
+    if (t.kind === "social" || t.kind === "chatting") {
+      let o = t.opt;
+      for (let k in o.gain) { s.needs[k] = Math.min(100, s.needs[k] + (o.gain[k] / o.mins) * dtMin); }
+      if (t.minsLeft <= 0) { s.task = null; }
+      return;
+    }
+  }
+}
+
+function finishUse(s) {
+  let it = itemById(s.task.itemId);
+  let opt = s.task.opt;
+  s.task = null;
+  s.pose = "stand";
+  s.onY = 0.06;
+  s.hidden = false;
+  if (it && liveHiddenItems[it.id]) { delete liveHiddenItems[it.id]; rebuildStatic(); }
+  if (it) {
+    // Step off the item onto the floor beside it; the render eases across.
+    let ap = approachSpot(it);
+    if (ap) { s.x = ap.x; s.z = ap.z; s.targetRot = ap.rot + Math.PI; }
+  }
+  s.carry = false;
+  // Cooked something? Carry the plate to a table and eat it there.
+  if (opt && opt.then === "eat") {
+    let table = null, bd = 1e9;
+    for (let i = 0; i < plan.items.length; i = i + 1) {
+      let c = plan.items[i];
+      if (c.kind !== "dining_table") continue;
+      let d = Math.hypot(c.x - s.x, c.z - s.z);
+      if (d < bd) { bd = d; table = c; }
+    }
+    let eatOpt = INTERACTIONS.dining_table[0];
+    if (table && startUse(s, table, eatOpt)) { s.carry = true; return; }
+    // No table: eat standing where you are.
+    s.task = { kind: "use", label: "Eat standing up", icon: "🍽", itemId: 0, opt: { id: "eatstand", label: "Eat standing up", icon: "🍽", need: "hunger", gain: 40, mins: 12, pose: "stand", anim: "eat" }, phase: "do", minsLeft: 12, faceRot: s.rot };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+function buildLiveObjects() {
+  let list = [];
+  if (creatorOpen && draft) {
+    let spot = creatorSpot();
+    let s = { id: 0, skin: draft.skin, hair: draft.hair, hairColor: draft.hairColor, shirt: draft.shirt, pants: draft.pants };
+    list.push({ id: "sim-preview", type: "group", position: { x: spot.x, y: 0.12, z: spot.z }, rotation: { x: 0, y: previewSpin, z: 0 }, children: buildSimChildren(s, "stand", previewSpin * 4, true, "walk", previewSpin) });
+    list.push({ id: "sim-preview-stand", type: "cylinder", position: { x: spot.x, y: 0.06, z: spot.z }, radius: 0.7, height: 0.12, color: "#f59e0b", emissive: "#f59e0b", emissiveIntensity: 0.4 });
+    return list;
+  }
+  let tnow = liveTick * 0.033;
+  buildLiveDoors(list);
+  buildLiveOverlays(list, tnow);
+  for (let i = 0; i < sims.length; i = i + 1) {
+    let s = sims[i];
+    if (s.hidden) continue;
+    if (s.rx === undefined) easeRender(s);
+    let pose = s.pose || "stand";
+    let moving = s.speed > 0.05;
+    let anim = null;
+    if (s.task && s.task.phase === "do") anim = s.task.opt && s.task.opt.anim ? s.task.opt.anim : null;
+    let rx = s.rx, rz = s.rz, ry = s.ry;
+    list.push({
+      id: "sim-" + s.id,
+      type: "group",
+      position: { x: rx, y: ry, z: rz },
+      rotation: { x: 0, y: s.rrot, z: 0 },
+      cursor: "pointer",
+      interactive: true,
+      children: buildSimChildren(s, pose, s.walkPhase, moving, anim, tnow + s.id * 1.7)
+    });
+    if (s.id === activeSimId) {
+      list.push({ id: "sim-" + s.id + "-ring", type: "torus", position: { x: rx, y: 0.1, z: rz }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, radius: 0.42, tube: 0.035, color: "#4ade80", emissive: "#22c55e", emissiveIntensity: 1.4 });
+    }
+    // A bubble above a sleeping or talking sim, and a steam wisp in the shower.
+    if (s.task && s.task.phase === "do") {
+      let col = s.task.kind === "use" && s.task.opt.sleep ? "#93c5fd" : (s.task.kind === "social" || s.task.kind === "chatting" ? "#fde68a" : (anim === "scrub" || anim === "bathe" ? "#e0f2fe" : null));
+      if (col) {
+        let bob = Math.sin(tnow * 3 + s.id) * 0.05;
+        list.push({ id: "sim-" + s.id + "-bubble", type: "sphere", position: { x: rx, y: ry + (pose === "lie" ? 0.7 : 2.0) + bob, z: rz }, radius: anim === "scrub" ? 0.14 : 0.09, color: col, emissive: col, emissiveIntensity: 0.8, opacity: anim === "scrub" || anim === "bathe" ? 0.45 : 1, castShadow: false });
+        if (s.task.kind === "social" || s.task.kind === "chatting") list.push({ id: "sim-" + s.id + "-bubble2", type: "sphere", position: { x: rx, y: ry + 2.2 + bob, z: rz }, radius: 0.05, color: col, emissive: col, emissiveIntensity: 0.8, castShadow: false });
+      }
+    }
+  }
+  // Menu target marker
+  if (menuTarget && menuTarget.kind === "ground") {
+    list.push({ id: "walk-marker", type: "cylinder", position: { x: menuTarget.x, y: 0.05, z: menuTarget.z }, radius: 0.25, height: 0.06, color: "#38bdf8", emissive: "#38bdf8", emissiveIntensity: 1 });
+  }
+  return list;
+}
+
+function buildLiveLights() {
+  let h = clockMinutes / 60;
+  let sun = Math.max(0, Math.sin(((h - 6) / 12) * Math.PI));
+  skyName = (h < 5.5 || h >= 20.5) ? "night" : (h < 7 ? "dawn" : (h >= 18.5 ? "sunset" : "day"));
+  let ang = ((h - 6) / 12) * Math.PI;
+  lights = [
+    { id: "sun", type: "directional", color: sun > 0.3 ? "#fff4d6" : "#ffb37a", intensity: 0.12 + 1.5 * sun, position: { x: Math.cos(ang) * 30, y: 8 + Math.sin(Math.max(0.05, ang)) * 30, z: 14 }, castShadow: true, shadowCameraSize: 34, shadowMapSize: 2048, shadowBias: -0.0003 },
+    { id: "hemi", type: "hemisphere", color: sun > 0.2 ? "#dbeafe" : "#1e293b", groundColor: "#3f6b2a", intensity: 0.25 + 0.55 * sun },
+    { id: "ambient", type: "ambient", color: "#e5e7eb", intensity: 0.12 + 0.3 * sun }
+  ];
+  let lamps = sun < 0.45 ? 1 : 0.35;
+  let n = Math.min(plan.rooms.length, 10);
+  for (let i = 0; i < n; i = i + 1) {
+    let r = plan.rooms[i];
+    lights.push({ id: "room-light-" + r.id, type: "point", color: "#fff1d6", intensity: (4.5 + Math.min(6, r.w * r.d * 0.15)) * lamps, distance: Math.max(r.w, r.d) * 1.6 + 2, decay: 2, position: { x: r.x + r.w / 2, y: plan.wallHeight - 0.35, z: r.z + r.d / 2 } });
+  }
+}
+
+function creatorSpot() {
+  let b = planBounds();
+  if (!b) return { x: 0, z: 6 };
+  return { x: (b.minX + b.maxX) / 2, z: b.minZ - 4.5 };
+}
+
+function updateLiveCamera() {
+  if (liveCam === "follow") {
+    let s = activeSim();
+    if (!s) return;
+    // Above the walls (the roof is off in live mode) so it never clips
+    // through a doorway, looking down at the sim from behind.
+    // Steep enough that no wall can stand between the camera and the sim.
+    let want = { x: s.x - Math.sin(s.rot) * 2.6, y: plan.wallHeight + 2.6, z: s.z - Math.cos(s.rot) * 2.6 };
+    let look = { x: s.x + Math.sin(s.rot) * 0.4, y: (s.onY || 0.06) + 0.9, z: s.z + Math.cos(s.rot) * 0.4 };
+    cameraPos = easeVec(cameraPos, want, 0.08);
+    cameraLookAt = easeVec(cameraLookAt, look, 0.12);
+    cameraFov = 50;
+  } else if (liveCam === "top") {
+    let s = activeSim();
+    let b = planBounds();
+    let cx = s ? s.x : (b ? (b.minX + b.maxX) / 2 : 0), cz = s ? s.z : (b ? (b.minZ + b.maxZ) / 2 : 0);
+    cameraPos = easeVec(cameraPos, { x: cx, y: 20, z: cz + 6 }, 0.08);
+    cameraLookAt = easeVec(cameraLookAt, { x: cx, y: 0, z: cz }, 0.1);
+    cameraFov = 45;
+  } else if (liveCam === "creator") {
+    let sp = creatorSpot();
+    cameraPos = { x: sp.x + 2.6, y: 1.9, z: sp.z + 3.4 };
+    cameraLookAt = { x: sp.x, y: 1.0, z: sp.z };
+    cameraFov = 40;
+  }
+}
+
+function setLiveCam(mode) {
+  liveCam = mode;
+  if (mode === "orbit") {
+    let b = planBounds();
+    let cx = b ? (b.minX + b.maxX) / 2 : 0, cz = b ? (b.minZ + b.maxZ) / 2 : 0;
+    let span = b ? Math.max(b.maxX - b.minX, b.maxZ - b.minZ, 6) : 10;
+    cameraPos = { x: cx + span * 0.9, y: span * 0.85 + 3, z: cz + span * 1.1 };
+    cameraLookAt = { x: cx, y: 0.8, z: cz };
+    cameraFov = 42;
+  }
+  updateLiveCamera();
+}
+
+function toggleLiveRoof() { liveRoof = !liveRoof; rebuildStatic(); }
+
+// ---------------------------------------------------------------------------
+// UI mirrors
+// ---------------------------------------------------------------------------
+function needBar(v) { return Math.round(Math.max(0, Math.min(100, v))); }
+
+function moodOf(s) {
+  let low = null, lv = 100;
+  for (let i = 0; i < NEED_KEYS.length; i = i + 1) { if (s.needs[NEED_KEYS[i]] < lv) { lv = s.needs[NEED_KEYS[i]]; low = NEED_KEYS[i]; } }
+  if (lv > 55) return "😊 Feeling good";
+  if (lv > 30) return "😐 A bit " + ({ hunger: "peckish", energy: "tired", bladder: "uncomfortable", hygiene: "grubby", fun: "bored", social: "lonely" })[low];
+  return "😫 Very " + ({ hunger: "hungry", energy: "exhausted", bladder: "desperate", hygiene: "smelly", fun: "bored", social: "lonely" })[low];
+}
+
+function actionText(s) {
+  if (!s.task) return s.lastFail ? s.lastFail : (s.auto || s.id !== activeSimId ? "Deciding what to do" : "Waiting for you");
+  let t = s.task;
+  if (t.phase === "go") return (t.icon || "🚶") + " Going to " + (t.kind === "walk" ? "a spot" : t.label.charAt(0).toLowerCase() + t.label.slice(1));
+  return (t.icon || "") + " " + t.label + (t.minsLeft > 0 ? " · " + Math.ceil(t.minsLeft) + " min" : "");
+}
+
+function refreshCards() {
+  let cards = [];
+  for (let i = 0; i < sims.length; i = i + 1) {
+    let s = sims[i];
+    let needs = [];
+    for (let k = 0; k < NEED_KEYS.length; k = k + 1) { let key = NEED_KEYS[k]; needs.push({ key: key, label: NEED_LABELS[key], icon: NEED_ICONS[key], v: needBar(s.needs[key]), color: s.needs[key] > 50 ? "#4ade80" : (s.needs[key] > 25 ? "#fbbf24" : "#ef4444") }); }
+    cards.push({ id: s.id, name: s.name, shirt: s.shirt, skin: s.skin, hair: s.hairColor, active: s.id === activeSimId, auto: s.auto, action: actionText(s), mood: moodOf(s), needs: needs });
+  }
+  simCards = cards;
+  activeCard = null;
+  for (let i = 0; i < cards.length; i = i + 1) if (cards[i].active) activeCard = cards[i];
+  householdSize = sims.length;
+  let hh = Math.floor(clockMinutes / 60), mm = Math.floor(clockMinutes % 60);
+  clockText = "Day " + dayNumber + " · " + (hh < 10 ? "0" + hh : hh) + ":" + (mm < 10 ? "0" + mm : mm);
+  saveHousehold();
+}
+
+// ---------------------------------------------------------------------------
+// Input in live mode
+// ---------------------------------------------------------------------------
+function liveClick(hit) {
+  if (creatorOpen) return;
+  let p = idParts(hit);
+  let s = activeSim();
+  if (p && p.kind === "sim" && p.id !== activeSimId) {
+    let o = simById(p.id);
+    if (!o) return;
+    if (!s) { activeSimId = o.id; refreshCards(); return; }
+    menuTarget = { kind: "sim", id: o.id };
+    menu = { title: o.name, subtitle: moodOf(o), options: SOCIALS.map(function (x) { return { id: x.id, label: x.icon + " " + x.label }; }).concat([{ id: "control", label: "🎮 Control " + o.name }]) };
+    return;
+  }
+  if (p && p.kind === "sim") { selectSim(p.id); return; }
+  if (p && p.kind === "item") {
+    let it = itemById(p.id);
+    if (!it) return;
+    let def = CATALOGUE[it.kind];
+    let opts = INTERACTIONS[it.kind] || [];
+    menuTarget = { kind: "item", id: it.id };
+    let options = opts.map(function (o) { return { id: o.id, label: o.icon + " " + o.label + " · " + o.mins + " min" }; });
+    options.push({ id: "goto", label: "🚶 Walk over" });
+    menu = { title: def ? def.icon + " " + def.label : it.kind, subtitle: opts.length ? "What should " + (s ? s.name : "they") + " do?" : "Nothing to do with this.", options: options };
+    return;
+  }
+  // Floor or lawn: walk there.
+  if (hit && hit.point && s) {
+    let g = { x: hit.point.x, z: hit.point.z };
+    if (hit.point.y > 0.5) return;
+    menuTarget = { kind: "ground", x: g.x, z: g.z };
+    menu = null;
+    if (startWalk(s, g.x, g.z)) liveStatus = s.name + " is walking over."; else liveStatus = s.lastFail;
+    refreshCards();
+  }
+}
+
+function chooseOption(id) {
+  let s = activeSim();
+  if (!s || !menuTarget) { menu = null; return; }
+  if (menuTarget.kind === "item") {
+    let it = itemById(menuTarget.id);
+    if (it) {
+      if (id === "goto") { let ap = approachSpot(it); if (ap) startWalk(s, ap.x, ap.z); }
+      else {
+        let opts = INTERACTIONS[it.kind] || [];
+        for (let i = 0; i < opts.length; i = i + 1) if (opts[i].id === id) { if (!startUse(s, it, opts[i])) liveStatus = s.lastFail; else liveStatus = s.name + ": " + opts[i].label.toLowerCase() + "."; }
+      }
+    }
+  } else if (menuTarget.kind === "sim") {
+    let o = simById(menuTarget.id);
+    if (o) {
+      if (id === "control") selectSim(o.id);
+      else { for (let i = 0; i < SOCIALS.length; i = i + 1) if (SOCIALS[i].id === id) { if (!startSocial(s, o, SOCIALS[i])) liveStatus = s.lastFail; else liveStatus = s.name + " goes to " + SOCIALS[i].label.toLowerCase() + " with " + o.name + "."; } }
+    }
+  }
+  menu = null;
+  menuTarget = null;
+  refreshCards();
+}
+
+function closeMenu() { menu = null; menuTarget = null; }
+
+function selectSim(id) {
+  activeSimId = id;
+  menu = null;
+  menuTarget = null;
+  refreshCards();
+  if (liveCam === "follow") updateLiveCamera();
+}
+
+function toggleAuto() {
+  let s = activeSim();
+  if (!s) return;
+  s.auto = !s.auto;
+  if (s.auto && !s.task) s.idleTicks = 100;
+  refreshCards();
+}
+
+function cancelTask() {
+  let s = activeSim();
+  if (!s) return;
+  if (s.task && s.task.kind === "use" && s.task.phase === "do" && s.task.opt.on) finishUse(s); else clearTask(s);
+  refreshCards();
+}
+
+function nextSim() {
+  if (sims.length === 0) return;
+  let idx = 0;
+  for (let i = 0; i < sims.length; i = i + 1) if (sims[i].id === activeSimId) idx = i;
+  selectSim(sims[(idx + 1) % sims.length].id);
+}
+
+function setGameSpeed(v) { gameSpeed = v; livePaused = false; }
+function togglePause() { livePaused = !livePaused; }
+
+function liveKey(e, k) {
+  if (creatorOpen) { if (k === "Escape") closeCreator(); return; }
+  if (k === "Escape") { if (menu) closeMenu(); return; }
+  if (e.repeat) return;
+  if (k === " ") { togglePause(); e.preventDefault(); }
+  else if (k === "1") setGameSpeed(1);
+  else if (k === "2") setGameSpeed(2);
+  else if (k === "3") setGameSpeed(4);
+  else if (k === "Tab") { nextSim(); e.preventDefault(); }
+  else if (k === "a" || k === "A") toggleAuto();
+  else if (k === "b" || k === "B") setAppMode("build");
+  else if (k === "f" || k === "F") setLiveCam(liveCam === "follow" ? "orbit" : "follow");
+  else if (k === "r" || k === "R") toggleLiveRoof();
+}
+
+// ---------------------------------------------------------------------------
+// Creator
+// ---------------------------------------------------------------------------
+function openCreator() {
+  if (appMode !== "live") setAppMode("live");
+  draft = randomDraft();
+  creatorOpen = true;
+  menu = null;
+  setLiveCam("creator");
+  rebuildDynamic();
+}
+function closeCreator() { creatorOpen = false; setLiveCam("orbit"); rebuildDynamic(); }
+function randomiseDraft() { draft = randomDraft(); }
+function setDraftName(v) { draft.name = v; }
+function setDraftSkin(c) { draft.skin = c; }
+function setDraftHair(h) { draft.hair = h; }
+function setDraftHairColor(c) { draft.hairColor = c; }
+function setDraftShirt(c) { draft.shirt = c; }
+function setDraftPants(c) { draft.pants = c; }
+function confirmDraft() {
+  if (!draft) return;
+  let sp = creatorSpot();
+  let i = nearestFreeCell(sp.x, sp.z, 4);
+  let s = makeSim(draft, i >= 0 ? navX(i) : sp.x, i >= 0 ? navZ(i) : sp.z);
+  sims.push(s);
+  activeSimId = s.id;
+  creatorOpen = false;
+  liveStatus = s.name + " moved in.";
+  setLiveCam("orbit");
+  refreshCards();
+  rebuildDynamic();
+}
+function removeActiveSim() {
+  let s = activeSim();
+  if (!s) return;
+  clearTask(s);
+  sims = sims.filter(function (o) { return o.id !== s.id; });
+  activeSimId = sims.length ? sims[0].id : 0;
+  liveStatus = s.name + " moved out.";
+  refreshCards();
+  rebuildDynamic();
+}
+
+// ---------------------------------------------------------------------------
+// Modes and persistence
+// ---------------------------------------------------------------------------
+function setAppMode(mode) {
+  if (mode === appMode) return;
+  if (mode === "live") {
+    if (viewMode === "walk") setView("3d");
+    appMode = "live";
+    navDirty = true;
+    if (navDirty) rebuildNav();
+    // Anyone standing inside a wall after a rebuild is moved to the nearest free cell.
+    for (let i = 0; i < sims.length; i = i + 1) {
+      let s = sims[i];
+      let idx = navIndex(s.x, s.z);
+      if (idx < 0 || navCells[idx]) { let f = nearestFreeCell(s.x, s.z, 6); if (f >= 0) { s.x = navX(f); s.z = navZ(f); } }
+    }
+    setLiveCam("orbit");
+    buildLiveLights();
+    rebuildStatic();
+    refreshCards();
+    rebuildDynamic();
+    liveHint = sims.length ? "Click furniture to choose what " + (activeSim() ? activeSim().name : "your sim") + " does, the floor to walk, another sim to chat. Auto lets them live on their own." : "Add a sim to move in.";
+    if (sims.length === 0) openCreator();
+  } else {
+    for (let i = 0; i < sims.length; i = i + 1) { if (sims[i].hidden) clearTask(sims[i]); }
+    liveHiddenItems = {};
+    appMode = "build";
+    creatorOpen = false;
+    menu = null;
+    menuTarget = null;
+    setView("plan");
+    // setView is a no-op when the view was already "plan", so put the
+    // top-down camera back explicitly; the live cameras had moved it.
+    applyCamera();
+    buildLights();
+    rebuildStatic();
+    rebuildDynamic();
+  }
+}
+
+function onPlanChangedLive() {
+  navDirty = true;
+  for (let i = 0; i < sims.length; i = i + 1) {
+    let s = sims[i];
+    if (s.task && s.task.kind === "use" && s.task.itemId && !itemById(s.task.itemId)) clearTask(s);
+  }
+  if (appMode === "live") { rebuildNav(); buildLiveLights(); }
+}
+
+function saveHousehold() {
+  try { localStorage.setItem("simlives:household", JSON.stringify({ sims: sims, clock: clockMinutes, day: dayNumber, nextSimId: nextSimId, activeSimId: activeSimId })); } catch (err) {}
+}
+
+function loadHousehold() {
+  let raw = null;
+  try { raw = localStorage.getItem("simlives:household"); } catch (err) {}
+  if (!raw) return false;
+  try {
+    let h = JSON.parse(raw);
+    sims = h.sims || [];
+    for (let i = 0; i < sims.length; i = i + 1) { sims[i].task = null; sims[i].path = []; sims[i].pose = "stand"; sims[i].onY = 0.06; sims[i].speed = 0; }
+    clockMinutes = h.clock || 480;
+    dayNumber = h.day || 1;
+    nextSimId = h.nextSimId || (sims.length + 1);
+    activeSimId = h.activeSimId || (sims.length ? sims[0].id : 0);
+    return sims.length > 0;
+  } catch (err) { return false; }
+}
+
+function _init() {
+  builderInit();
+  let had = loadHousehold();
+  if (!had) {
+    // A starter household so the first launch has life in it.
+    let b = planBounds();
+    let sp = b ? { x: (b.minX + b.maxX) / 2, z: b.minZ - 3 } : { x: 0, z: 5 };
+    let a = makeSim({ name: "Mia", skin: SKINS[1], hair: "long", hairColor: "#5c3a21", shirt: "#dc2626", pants: "#1e3a5f" }, sp.x - 1, sp.z);
+    let c = makeSim({ name: "Kai", skin: SKINS[3], hair: "short", hairColor: "#1c1917", shirt: "#2563eb", pants: "#57534e" }, sp.x + 1, sp.z);
+    sims = [a, c];
+    activeSimId = a.id;
+  }
+  refreshCards();
+  setAppMode("live");
+}
