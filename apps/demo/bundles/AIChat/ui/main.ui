@@ -1,5 +1,5 @@
 // main.ui - AI Chat
-// Qwen3.5-0.8B local chat · responsive layout
+// Local chat with a small on-device model · responsive layout
 
 <logic src="../logic/main.logic" />
 
@@ -65,8 +65,30 @@
   margin-bottom: 1px;
 }
 .sidebar-item:hover { background: rgba(255,255,255,0.04); }
-.sidebar-item .del-btn { opacity: 0; transition: opacity 120ms; }
-.sidebar-item:hover .del-btn { opacity: 0.6; }
+/* Always findable at low opacity; full opacity while armed ("Delete?"). */
+.sidebar-item .del-btn { opacity: 0.35; transition: opacity 120ms; }
+.sidebar-item:hover .del-btn { opacity: 0.85; }
+.sidebar-item .del-btn.del-btn-confirm { opacity: 1; }
+
+/* ── Download progress (indeterminate: the loader reports no progress) ── */
+@keyframes dl-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.dl-bar {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+  overflow: hidden;
+}
+.dl-bar-fill {
+  width: 33%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(16,185,129,0.15), #10b981, rgba(16,185,129,0.15));
+  animation: dl-slide 1.6s ease-in-out infinite;
+}
 
 /* ── Chat bubbles ── */
 .bubble-user {
@@ -249,6 +271,9 @@
 }
 </style>
 
+// Counts down an armed delete; only runs while a row is armed.
+<Loop interval={1000} running={confirmDeleteId !== ""} @tick={tickDeleteConfirm} />
+
 <App theme="dark">
   <Box style={{
     display: "flex",
@@ -287,12 +312,13 @@
         </Box>
         <Text style={{ fontSize: "0.875rem", fontWeight: 600, color: "#e4e4ed", flex: 1 }}>AI Chat</Text>
         // Close sidebar on mobile
-        <Button if={isMobile} variant=ghost @click={closeSidebar} style={{
-          padding: "4px 8px",
+        <Button if={isMobile} variant=ghost @click={closeSidebar} ariaLabel="Close sidebar" title="Close" style={{
+          padding: "4px 6px",
           color: "#666",
           minWidth: "auto",
-          fontSize: "1rem"
-        }}>x</Button>
+          display: "flex",
+          alignItems: "center"
+        }}><Icon name="close" size={16} color="#777" /></Button>
       </Box>
 
       // New chat button
@@ -348,13 +374,21 @@
               flexShrink: 0,
               whiteSpace: "nowrap"
             }}>{getConvTime(conv)}</Text>
-            <Button className="del-btn" variant=ghost @click={deleteConversation(conv.id)} style={{
-              padding: "2px 4px",
+            <Button className={isConfirmingDelete(conv) ? "del-btn del-btn-confirm" : "del-btn"} variant=ghost @click={requestDelete(conv.id)} ariaLabel={isConfirmingDelete(conv) ? "Click again to delete this conversation" : "Delete conversation"} title={isConfirmingDelete(conv) ? "Click again to delete" : "Delete conversation"} style={{
+              padding: "2px 5px",
               fontSize: "0.625rem",
-              color: "#555",
+              fontWeight: 600,
+              color: isConfirmingDelete(conv) ? "#fca5a5" : "#777",
+              background: isConfirmingDelete(conv) ? "rgba(239,68,68,0.15)" : "transparent",
+              borderRadius: "5px",
               flexShrink: 0,
-              minWidth: "auto"
-            }}>x</Button>
+              minWidth: "auto",
+              display: "flex",
+              alignItems: "center"
+            }}>
+              <Icon if={!isConfirmingDelete(conv)} name="close" size={11} color="#888" />
+              <Text if={isConfirmingDelete(conv)} style={{ fontSize: "0.625rem", color: "#fca5a5", fontWeight: 600, whiteSpace: "nowrap" }}>Delete?</Text>
+            </Button>
           </Box>
         #empty
           <Box style={{ padding: "2.5rem 1rem", textAlign: "center" }}>
@@ -382,26 +416,30 @@
         <Box if={showSettings} style={{ padding: "0 0.75rem 0.625rem" }}>
           <Stack direction=vertical gap=xs>
             <Stack direction=horizontal gap=xs align=center justify="space-between">
-              <Text style={{ fontSize: "0.6875rem", color: "#555" }}>Temperature</Text>
-              <Input value={temperature} @change={setTemperature} style={{
-                width: "50px", background: "#0e0e1a", border: "1px solid rgba(255,255,255,0.06)",
+              <Text style={{ fontSize: "0.6875rem", color: "#555" }}>Temperature 0–2</Text>
+              <Input type="number" min={0} max={2} step={0.1} value={temperatureText} @change={setTemperature} error={settingsErrorField === "temperature"} style={{
+                width: "64px", height: "auto", background: "#0e0e1a",
+                border: settingsErrorField === "temperature" ? "1px solid rgba(248,113,113,0.6)" : "1px solid rgba(255,255,255,0.06)",
                 color: "#999", borderRadius: "5px", padding: "3px 6px", fontSize: "0.6875rem", textAlign: "center"
               }} />
             </Stack>
             <Stack direction=horizontal gap=xs align=center justify="space-between">
-              <Text style={{ fontSize: "0.6875rem", color: "#555" }}>Max Tokens</Text>
-              <Input value={maxTokens} @change={setMaxTokens} style={{
-                width: "60px", background: "#0e0e1a", border: "1px solid rgba(255,255,255,0.06)",
+              <Text style={{ fontSize: "0.6875rem", color: "#555" }}>Max tokens 1–8192</Text>
+              <Input type="number" min={1} max={8192} step={1} value={maxTokensText} @change={setMaxTokens} error={settingsErrorField === "maxTokens"} style={{
+                width: "64px", height: "auto", background: "#0e0e1a",
+                border: settingsErrorField === "maxTokens" ? "1px solid rgba(248,113,113,0.6)" : "1px solid rgba(255,255,255,0.06)",
                 color: "#999", borderRadius: "5px", padding: "3px 6px", fontSize: "0.6875rem", textAlign: "center"
               }} />
             </Stack>
             <Stack direction=horizontal gap=xs align=center justify="space-between">
-              <Text style={{ fontSize: "0.6875rem", color: "#555" }}>Top-P</Text>
-              <Input value={topP} @change={setTopP} style={{
-                width: "50px", background: "#0e0e1a", border: "1px solid rgba(255,255,255,0.06)",
+              <Text style={{ fontSize: "0.6875rem", color: "#555" }}>Top-P 0–1</Text>
+              <Input type="number" min={0} max={1} step={0.05} value={topPText} @change={setTopP} error={settingsErrorField === "topP"} style={{
+                width: "64px", height: "auto", background: "#0e0e1a",
+                border: settingsErrorField === "topP" ? "1px solid rgba(248,113,113,0.6)" : "1px solid rgba(255,255,255,0.06)",
                 color: "#999", borderRadius: "5px", padding: "3px 6px", fontSize: "0.6875rem", textAlign: "center"
               }} />
             </Stack>
+            <Text if={settingsError} style={{ fontSize: "0.625rem", color: "#f87171", lineHeight: 1.4 }}>{settingsError}</Text>
           </Stack>
         </Box>
       </Box>
@@ -472,12 +510,12 @@
             background: "linear-gradient(135deg, #10b981, #059669)",
             color: "#fff", border: "none", borderRadius: "8px",
             padding: "0.3rem 0.75rem", fontSize: "0.6875rem", fontWeight: 500
-          }}>Load Model</Button>
+          }}>Download and start</Button>
           <Button if={modelLoading} style={{
             background: "#141425", color: "#f59e0b",
             border: "1px solid rgba(245,158,11,0.15)", borderRadius: "8px",
             padding: "0.3rem 0.75rem", fontSize: "0.6875rem", cursor: "wait"
-          }}>Loading...</Button>
+          }}>Downloading...</Button>
           <Button if={modelLoaded} variant=ghost @click={unloadModel} style={{
             fontSize: "0.625rem", color: "#555", padding: "0.3rem 0.5rem"
           }}>Unload</Button>
@@ -501,21 +539,21 @@
             display: "flex", alignItems: "center", justifyContent: "center",
             boxShadow: "0 12px 40px rgba(16,185,129,0.2), 0 0 0 1px rgba(16,185,129,0.1)"
           }}>
-            <Text style={{ color: "#fff", fontSize: "1.875rem", fontWeight: 700, letterSpacing: "-0.02em" }}>Q</Text>
+            <Icon name="chat" size={34} color="#fff" />
           </Box>
 
           <Stack className="fade-up-delay" direction=vertical gap=xs align=center>
-            <Text style={{ fontSize: "1.5rem", fontWeight: 600, color: "#e4e4ed", letterSpacing: "-0.02em" }}>Qwen3.5-0.8B</Text>
+            <Text style={{ fontSize: "1.5rem", fontWeight: 600, color: "#e4e4ed", letterSpacing: "-0.02em" }}>Chat, privately</Text>
             <Text style={{
               fontSize: "0.8125rem", color: "#4a4a60", textAlign: "center",
-              maxWidth: "360px", lineHeight: 1.7
+              maxWidth: "380px", lineHeight: 1.7
             }}>
-              A compact language model running entirely in your browser. Private, fast, and offline-capable.
+              A small language model downloads once (about 600 MB) and then runs on this device. Nothing you type leaves it.
             </Text>
           </Stack>
 
-          // Suggestion cards (only show when model loaded + no conversation)
-          <Box if={modelLoaded && !activeConversationId} className="fade-up-delay2" style={{
+          // Suggestion cards: shown whenever the open chat has no messages yet
+          <Box if={modelLoaded} className="fade-up-delay2" style={{
             display: "flex", flexWrap: "wrap", gap: "0.625rem", justifyContent: "center",
             maxWidth: "480px", marginTop: "0.25rem"
           }}>
@@ -524,34 +562,40 @@
               <Text style={{ fontSize: "0.75rem", color: "#6a6a80", lineHeight: 1.5, display: "block" }}>Quantum computing in simple terms</Text>
             </Box>
             <Box className="suggestion-card" @click={startWithPrompt("Write a haiku about programming")}>
-              <Text style={{ fontSize: "0.75rem", color: "#8b5cf6", fontWeight: 500, marginBottom: "0.375rem", display: "block" }}>Create</Text>
+              <Text style={{ fontSize: "0.75rem", color: "#10b981", fontWeight: 500, marginBottom: "0.375rem", display: "block" }}>Create</Text>
               <Text style={{ fontSize: "0.75rem", color: "#6a6a80", lineHeight: 1.5, display: "block" }}>Write a haiku about programming</Text>
             </Box>
             <Box className="suggestion-card" @click={startWithPrompt("What are the benefits of learning Rust?")}>
-              <Text style={{ fontSize: "0.75rem", color: "#f59e0b", fontWeight: 500, marginBottom: "0.375rem", display: "block" }}>Discuss</Text>
+              <Text style={{ fontSize: "0.75rem", color: "#10b981", fontWeight: 500, marginBottom: "0.375rem", display: "block" }}>Discuss</Text>
               <Text style={{ fontSize: "0.75rem", color: "#6a6a80", lineHeight: 1.5, display: "block" }}>Benefits of learning Rust</Text>
             </Box>
             <Box className="suggestion-card" @click={startWithPrompt("Give me 5 fun facts about the ocean")}>
-              <Text style={{ fontSize: "0.75rem", color: "#ec4899", fontWeight: 500, marginBottom: "0.375rem", display: "block" }}>Discover</Text>
+              <Text style={{ fontSize: "0.75rem", color: "#10b981", fontWeight: 500, marginBottom: "0.375rem", display: "block" }}>Discover</Text>
               <Text style={{ fontSize: "0.75rem", color: "#6a6a80", lineHeight: 1.5, display: "block" }}>5 fun facts about the ocean</Text>
             </Box>
           </Box>
 
-          // Load model CTA
+          // Download CTA
           <Box if={!modelLoaded && !modelLoading} className="fade-up-delay2" style={{ marginTop: "0.25rem" }}>
             <Button @click={loadModel} style={{
               background: "linear-gradient(135deg, #10b981, #059669)",
               color: "#fff", border: "none", borderRadius: "12px",
               padding: "0.625rem 1.75rem", fontSize: "0.875rem", fontWeight: 500,
               boxShadow: "0 4px 20px rgba(16,185,129,0.25)"
-            }}>Load Qwen3.5-0.8B (Q4)</Button>
+            }}>Download and start</Button>
           </Box>
 
-          <Box if={modelLoading} className="fade-up-delay2" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <Box className="pulse" style={{
-              width: "8px", height: "8px", borderRadius: "50%", background: "#f59e0b"
-            }} />
-            <Text style={{ fontSize: "0.8125rem", color: "#f59e0b" }}>Downloading model...</Text>
+          // Waiting state. The loader gives no progress events, so the bar is
+          // indeterminate; the copy says how long to expect instead.
+          <Box if={modelLoading} className="fade-up-delay2" style={{
+            display: "flex", flexDirection: "column", alignItems: "center", gap: "0.625rem",
+            width: "min(320px, 100%)", marginTop: "0.25rem"
+          }}>
+            <Box className="dl-bar">
+              <Box className="dl-bar-fill" />
+            </Box>
+            <Text style={{ fontSize: "0.8125rem", color: "#a7f3d0", textAlign: "center" }}>Downloading… this takes a few minutes the first time</Text>
+            <Text style={{ fontSize: "0.6875rem", color: "#4a4a60", textAlign: "center", lineHeight: 1.6 }}>About 600 MB. Your browser keeps it, so the next start is quick.</Text>
           </Box>
         </Box>
 
@@ -632,7 +676,7 @@
         }}>
           <Box className="attach-preview">
             <Image src={attachedImage} alt="attachment" width="56" height="56" objectFit="cover" />
-            <Button className="attach-remove" @click={removeImage}>x</Button>
+            <Button className="attach-remove" @click={removeImage} ariaLabel="Remove attached image" title="Remove image"><Icon name="close" size={10} color="#fff" /></Button>
           </Box>
           <Text style={{ fontSize: "0.6875rem", color: "#666" }}>{attachedImageName}</Text>
         </Box>
@@ -649,7 +693,7 @@
             <TextArea
               value={inputText}
               @change={updateInput}
-              placeholder={modelLoaded ? "Message Qwen3.5..." : "Load model to chat..."}
+              placeholder={modelLoaded ? "Type a message..." : "Download the model to start chatting..."}
               rows=1
               autoResize={true}
               fullWidth={true}

@@ -50,7 +50,7 @@
     },
     "theme": {
       "primary": "#d4a574",
-      "mode": "system"
+      "mode": "dark"
     }
   }
 }

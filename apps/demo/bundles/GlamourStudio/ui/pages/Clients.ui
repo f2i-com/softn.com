@@ -13,7 +13,7 @@
         <Avatar name={selectedItem.data.name} size=xl />
         <Stack direction=vertical gap=xs style={{ flex: 1, minWidth: 0 }}>
           <Stack direction=horizontal gap=md align=center style={{ flexWrap: "wrap" }}>
-            <Heading level={3} style={{ fontSize: "1.25rem", fontFamily: "'Cormorant Garamond', serif" }}>{selectedItem.data.name}</Heading>
+            <Heading level={3} style={{ fontSize: "1.25rem", fontFamily: "Georgia, 'Times New Roman', serif" }}>{selectedItem.data.name}</Heading>
             <Badge variant=warning if={selectedItem.data.vip}>VIP</Badge>
           </Stack>
           <Text color=muted size=sm>{selectedItem.data.email}</Text>
@@ -21,7 +21,7 @@
         </Stack>
         <Stack direction=vertical align=end gap=xs style={{ flexShrink: 0 }}>
           <Text color=muted size=xs>Total Spent</Text>
-          <Text size=lg fontWeight=bold style={{ color: getAccentColor(), fontFamily: "'Cormorant Garamond', serif" }}>{"$" + Number(selectedItem.data.totalSpent).toFixed(2)}</Text>
+          <Text size=lg fontWeight=bold style={{ color: getAccentColor(), fontFamily: "Georgia, 'Times New Roman', serif" }}>{"$" + Number(selectedItem.data.totalSpent).toFixed(2)}</Text>
         </Stack>
       </Stack>
     </Card>

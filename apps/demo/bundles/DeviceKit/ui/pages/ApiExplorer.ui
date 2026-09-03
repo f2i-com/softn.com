@@ -125,10 +125,9 @@
     </Stack>
   </Card>
 
-  // Permission Info
-  <Card padding=md style={{ background: "#fefce8", borderRadius: "14px", border: "1px solid #fde68a" }}>
-    <Stack direction=horizontal gap=sm align=center>
-      <Text style={{ fontSize: "0.8125rem", color: "#92400e" }}>Permission: net.allowed_hosts includes "jsonplaceholder.typicode.com". Requests to other hosts will be blocked.</Text>
-    </Stack>
-  </Card>
+  // Permission note
+  <Box style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0 0.25rem" }}>
+    <Icon svg={iconSvg("shield", "#94a3b8")} size={14} />
+    <Text style={{ fontSize: "0.75rem", color: "#94a3b8" }}>This page uses the network permission for jsonplaceholder.typicode.com only. Requests to any other host are blocked.</Text>
+  </Box>
 </Stack>

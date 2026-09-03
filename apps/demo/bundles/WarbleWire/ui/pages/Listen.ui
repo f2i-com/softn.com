@@ -13,6 +13,23 @@
           Play a song on one device and record it on another. Hold the record button
           down for the whole burst — a Wren frame runs 8.5 seconds.
         </Text>
+        <Text style={{ fontSize: "0.8125rem", color: "#c4d2d8", lineHeight: 1.55 }}>
+          Only one device? Generate a song in Compose, come back here, press
+          Test with this device, then hold Record while it plays — the microphone
+          hears the speaker.
+        </Text>
+
+        // The single-device path: the Compose song, played after a two-second
+        // pause so there is time to press and hold Record before it starts.
+        <Box style={{ display: "flex", alignItems: "center", gap: "0.625rem", flexWrap: "wrap" }}>
+          <Button @click={playForListener} disabled={!hasSignal} variant=ghost style={{
+            borderRadius: "999px", border: "1px solid #c7ee53", background: "transparent",
+            color: "#c7ee53", fontWeight: 600, fontSize: "0.8125rem", padding: "0.5rem 0.875rem"
+          }}>Test with this device</Button>
+          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>
+            {hasSignal ? "Plays the Compose song after a two-second pause" : "Generate a song in Compose first"}
+          </Text>
+        </Box>
 
         // processing={false} is the entire reason this works. Echo cancellation,
         // noise suppression and automatic gain control are trained on speech and
@@ -30,7 +47,7 @@
         />
 
         <Text if={micRate !== ""} className="ww-mono" style={{ fontSize: "0.5625rem", color: "#6d7f88" }}>
-          Captured at {micRate}
+          {"Captured at " + micRate}
         </Text>
 
         <Box if={heardWaveformSvg !== ""} style={{ background: "#18262d", border: "1px solid #3f4f57" }}>
@@ -70,16 +87,11 @@
             <Text className="ww-mono" style={{ fontSize: "0.5625rem" }}>{heardOffset}</Text>
           </Box>
         </Stack>
-
-        <Box className="ww-hard" style={{ background: "#f4eddc", padding: "0.75rem", marginTop: "0.25rem" }}>
-          <Text style={{ fontSize: "0.75rem", color: "#3d4f58", lineHeight: 1.55 }}>
-            Over-the-air decoding is the newest and least settled part of this build. It
-            finds the burst by its onset and refines the alignment against the eight
-            pilot symbols; it does not yet track clock drift between two devices, so a
-            long frame on cheap hardware can still slip out from under the decoder.
-          </Text>
-        </Box>
       </Stack>
     </Card>
   </Grid>
+
+  <Text style={{ fontSize: "0.6875rem", color: "#6d7f88", lineHeight: 1.5 }}>
+    Two devices in the same room work best; clock drift between devices is not corrected yet.
+  </Text>
 </Stack>

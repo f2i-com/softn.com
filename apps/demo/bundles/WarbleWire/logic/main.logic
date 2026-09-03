@@ -71,7 +71,7 @@ let verifyMark = "○"
 let listening = false
 let heardState = "idle"
 let heardTitle = "Nothing heard yet"
-let heardDetail = "Play a song on another device, then record it here."
+let heardDetail = "Play a song on another device — or from this page — then record it here."
 let heardText = ""
 let heardConfidence = ""
 let heardOffset = ""
@@ -307,6 +307,21 @@ function startListening() {
 
 function stopListening() {
   listening = false
+}
+
+// The single-device attempt: the song from Compose with two seconds of
+// silence in front, so a person can press this, then press and hold Record
+// before the burst begins and let the microphone hear the speaker.
+function playForListener() {
+  if (!hasSignal) { return }
+  let lead = 48000 * 2
+  let padded = new Float32Array(lead + signalPcm.length)
+  padded.set(signalPcm, lead)
+  softn.audio.play(wavDataUrl(padded, 48000), {}, function (r) {
+    if (r && r.blocked) {
+      heardDetail = "The browser is holding sound back until the page is tapped."
+    }
+  })
 }
 
 // The Microphone component hands back a WAV data URL when a clip ends. It has

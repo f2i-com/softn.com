@@ -89,6 +89,15 @@
         color: currentPage === "interactive" ? "#6366f1" : getMutedColor(),
         borderBottom: currentPage === "interactive" ? "2px solid #6366f1" : "2px solid transparent"
       }}>Interactive</Button>
+      <Button
+        variant=ghost
+        @click=toggleTheme
+        ariaLabel={darkMode ? "Switch to light" : "Switch to dark"}
+        title={darkMode ? "Switch to light" : "Switch to dark"}
+        style={{ padding: "0.5rem 0.75rem", borderRadius: 0, flexShrink: 0, color: getMutedColor() }}
+      >
+        <Icon svg={darkMode ? iconSun : iconMoon} size={16} style={{ color: getMutedColor() }} />
+      </Button>
     </Box>
 
     <Box style={{ display: "flex", flex: 1, overflow: "hidden" }}>

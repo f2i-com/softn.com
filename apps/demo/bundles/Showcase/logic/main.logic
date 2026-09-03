@@ -10,8 +10,21 @@
     { id: "5", name: "Performance Audit", category: "Engineering" }
   ]
 
-  // Counter value for animated number demo
+  // Counter value for the interactive page's animated number demo
   let counterValue = 0
+
+  // The four stat counters on the animations page, each with a target of its
+  // own so they do not move in lockstep.
+  let revenueValue = 0
+  let usersValue = 0
+  let conversionValue = 0
+  let latencyValue = 0
+
+  // Sun and moon for the theme toggles — the built-in Icon set has neither.
+  // Drawn with currentColor so the wrapper's colour decides the stroke.
+  let iconOpen = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+  let iconSun = iconOpen + '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>'
+  let iconMoon = iconOpen + '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
 
   // Theme helpers
   function getBgColor() {
@@ -53,8 +66,16 @@
 
   function randomizeCounter() {
     counterValue = Math.floor(Math.random() * 10000)
+    revenueValue = 1000 + Math.floor(Math.random() * 90000)
+    usersValue = 100 + Math.floor(Math.random() * 25000)
+    conversionValue = Math.round((0.5 + Math.random() * 12) * 10) / 10
+    latencyValue = 40 + Math.floor(Math.random() * 400)
   }
 
   function _init() {
     counterValue = 8742
+    revenueValue = 48210
+    usersValue = 12604
+    conversionValue = 4.6
+    latencyValue = 128
   }

@@ -49,6 +49,29 @@ let SHAPES = [
 // Wall kicks tried in order when a rotation collides.
 let KICKS = [[0, 0], [-1, 0], [1, 0], [0, -1], [-2, 0], [2, 0], [0, -2]]
 
+let muted = false
+let hardDropped = false
+
+function play(name, volume) {
+  if (muted) { return }
+  softn.audio.play("assets/sfx/" + name + ".wav", { volume: volume })
+}
+
+function toggleMute() {
+  muted = !muted
+  try { localStorage.setItem("blockfall:muted", muted ? "1" : "0") } catch (err) {}
+}
+
+// Runs between games and while paused, when the game loop is stopped.
+function idleStep() {
+  let act = window.__bfAct
+  if (act === "") { return }
+  window.__bfAct = ""
+  if (act === "mute") { toggleMute() }
+  else if (act === "start" || (act === "hard" && !running)) { startGame() }
+  else if (act === "pause" && running && paused) { togglePause() }
+}
+
 function myRand() {
   rngSeed = (rngSeed * 48271) % 2147483647
   return rngSeed / 2147483647
@@ -65,6 +88,7 @@ function _init() {
   window.__bfKeys = { left: false, right: false, down: false }
   window.__bfAct = ""
   try { best = parseInt(localStorage.getItem("blockfall:best") || "0") || 0 } catch (err) { best = 0 }
+  try { muted = localStorage.getItem("blockfall:muted") === "1" } catch (err) { muted = false }
   function onKeyDown(e) {
     if (isUiControl(e)) { return }
     let key = e.key || ""
@@ -78,6 +102,7 @@ function _init() {
     else if (key === "c" || key === "C" || key === "Shift") { if (!e.repeat) { window.__bfAct = "hold" } }
     else if (key === "p" || key === "P" || key === "Escape") { if (!e.repeat) { window.__bfAct = "pause" } }
     else if (key === "Enter") { window.__bfAct = "start" }
+    else if (key === "m" || key === "M") { if (!e.repeat) { window.__bfAct = "mute" } }
   }
   function onKeyUp(e) {
     let key = e.key || ""
@@ -158,6 +183,7 @@ function spawn() {
     over = true
     running = false
     overlayText = "Game over"
+    play("over", 0.5)
     if (score > best) {
       best = score
       try { localStorage.setItem("blockfall:best", String(best)) } catch (err) {}
@@ -215,6 +241,8 @@ function hardDrop() {
   let gy = ghostY()
   score = score + (gy - cur.y) * 2
   cur.y = gy
+  hardDropped = true
+  play("drop", 0.4)
   lockPiece()
 }
 
@@ -256,9 +284,12 @@ function lockPiece() {
   if (full.length > 0) {
     clearing = full
     clearTicks = 8
+    play("clear", full.length === 4 ? 0.6 : 0.45)
   } else {
+    if (!hardDropped) { play("lock", 0.4) }
     spawn()
   }
+  hardDropped = false
 }
 
 function finishClear() {
@@ -280,7 +311,9 @@ function finishClear() {
   let table = [0, 100, 300, 500, 800]
   score = score + table[n] * level
   lines = lines + n
+  let before = level
   level = 1 + Math.floor(lines / 10)
+  if (level > before) { play("level", 0.5) }
   spawn()
 }
 
@@ -308,6 +341,7 @@ function gameStep() {
   else if (act === "hard") { hardDrop(); render(); return }
   else if (act === "hold") { hold() }
   else if (act === "pause") { togglePause(); render(); return }
+  else if (act === "mute") { toggleMute() }
   // Held keys auto-repeat after a short delay.
   if (k.left || k.right) {
     lastMove = lastMove + 1

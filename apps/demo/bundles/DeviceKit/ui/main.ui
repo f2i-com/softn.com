@@ -65,7 +65,7 @@ button:active, [role="button"]:active {
       </Box>
       <Stack direction=vertical gap=xs>
         <Text style={{ fontSize: "1.125rem", fontWeight: 600, color: "#0f172a", letterSpacing: "-0.01em" }}>DeviceKit</Text>
-        <Text size=xs style={{ color: "#94a3b8", fontSize: "0.6875rem" }}>SoftN Capabilities Demo</Text>
+        <Text size=xs style={{ color: "#94a3b8", fontSize: "0.6875rem" }}>What an app may ask for, and what it gets</Text>
       </Stack>
     </Box>
 

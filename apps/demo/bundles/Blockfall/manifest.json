@@ -6,12 +6,30 @@
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
   "files": {
-    "ui": ["ui/main.ui"],
-    "logic": ["logic/main.logic"],
-    "assets": ["assets/icon.svg"]
+    "ui": [
+      "ui/main.ui"
+    ],
+    "logic": [
+      "logic/main.logic"
+    ],
+    "assets": [
+      "assets/icon.svg",
+      "assets/sfx/lock.wav",
+      "assets/sfx/drop.wav",
+      "assets/sfx/clear.wav",
+      "assets/sfx/level.wav",
+      "assets/sfx/over.wav"
+    ]
   },
   "config": {
-    "window": { "title": "Blockfall", "width": 720, "height": 860 },
-    "theme": { "primary": "#22d3ee", "mode": "dark" }
+    "window": {
+      "title": "Blockfall",
+      "width": 720,
+      "height": 860
+    },
+    "theme": {
+      "primary": "#22d3ee",
+      "mode": "dark"
+    }
   }
 }

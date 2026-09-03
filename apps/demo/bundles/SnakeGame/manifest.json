@@ -12,7 +12,10 @@
       "logic/main.logic"
     ],
     "assets": [
-      "assets/icon.svg"
+      "assets/icon.svg",
+      "assets/sfx/eat.wav",
+      "assets/sfx/die.wav",
+      "assets/sfx/best.wav"
     ]
   },
   "config": {

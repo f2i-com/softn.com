@@ -2,7 +2,7 @@
 
 <Modal open={showEditAppointmentModal} onClose={closeEditAppointmentModal} title="Edit Appointment" size=md>
   <SmartForm
-    fields="client:text, stylist:text, service:text, time:text, status:text, price:number"
+    fields={appointmentEditFields}
     data={editingAppointment ? editingAppointment.data : null}
     onSubmit={saveEditAppointment}
     submitText="Save Changes"

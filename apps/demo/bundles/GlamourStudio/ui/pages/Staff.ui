@@ -12,13 +12,13 @@
       <Stack className="softn-mobile-stack" direction=horizontal gap=lg align=center style={{ flexWrap: "wrap" }}>
         <Avatar name={selectedItem.data.name} size=xl status={selectedItem.data.status} />
         <Stack direction=vertical gap=xs style={{ flex: 1, minWidth: 0 }}>
-          <Heading level={3} style={{ fontSize: "1.25rem", fontFamily: "'Cormorant Garamond', serif" }}>{selectedItem.data.name}</Heading>
+          <Heading level={3} style={{ fontSize: "1.25rem", fontFamily: "Georgia, 'Times New Roman', serif" }}>{selectedItem.data.name}</Heading>
           <Text color=muted size=sm>{selectedItem.data.role}</Text>
           <Text color=muted size=xs>{selectedItem.data.email}</Text>
         </Stack>
         <Stack direction=vertical align=end gap=sm style={{ flexShrink: 0 }}>
           <Stack direction=horizontal gap=xs align=center>
-            <Text size=lg fontWeight=bold style={{ color: getAccentColor(), fontFamily: "'Cormorant Garamond', serif" }}>{selectedItem.data.rating}</Text>
+            <Text size=lg fontWeight=bold style={{ color: getAccentColor(), fontFamily: "Georgia, 'Times New Roman', serif" }}>{selectedItem.data.rating}</Text>
             <Text size=xs style={{ color: getMutedColor() }}>rating</Text>
           </Stack>
           <Text color=muted size=xs>{selectedItem.data.appointments + " appts today"}</Text>

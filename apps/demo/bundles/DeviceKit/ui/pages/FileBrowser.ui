@@ -38,12 +38,13 @@
           <Badge variant=secondary size=sm>{selectedFiles.length + " files"}</Badge>
         </Stack>
 
-        // File list display
+        // File list display (capped; long selections scroll inside the card)
         <Box if={selectedFiles.length > 0} style={{
           background: "#f8fafc",
           borderRadius: "10px",
           border: "1px solid #e2e8f0",
-          overflow: "hidden"
+          maxHeight: "280px",
+          overflow: "auto"
         }}>
           #each (item in selectedFiles)
             <Box style={{
@@ -63,11 +64,11 @@
                 justifyContent: "center",
                 flexShrink: 0
               }}>
-                <Text size=xs style={{ color: "#3b82f6", fontWeight: 700 }}>F</Text>
+                <Icon svg={iconSvg("file", "#3b82f6")} size={16} />
               </Box>
               <Stack direction=vertical gap=xs style={{ flex: 1, minWidth: 0 }}>
                 <Text size=sm fontWeight=medium style={{ color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</Text>
-                <Text size=xs style={{ color: "#94a3b8" }}>{item.type + " - " + item.size + " bytes"}</Text>
+                <Text size=xs style={{ color: "#94a3b8" }}>{(item.type || "unknown type") + " - " + formatBytes(item.size)}</Text>
               </Stack>
             </Box>
           #end
@@ -148,7 +149,7 @@
               alignItems: "center",
               justifyContent: "center"
             }}>
-              <Text style={{ fontSize: "1.25rem", color: "#94a3b8" }}>T</Text>
+              <Icon svg={iconSvg("file-text", "#94a3b8")} size={22} />
             </Box>
             <Text size=sm style={{ color: "#94a3b8" }}>No file content to preview</Text>
             <Text size=xs style={{ color: "#cbd5e1" }}>Select a text file to see its contents</Text>
@@ -158,10 +159,9 @@
     </Card>
   </Grid>
 
-  // Permission Info
-  <Card padding=md style={{ background: "#fefce8", borderRadius: "14px", border: "1px solid #fde68a" }}>
-    <Stack direction=horizontal gap=sm align=center>
-      <Text style={{ fontSize: "0.8125rem", color: "#92400e" }}>Permission: files.enabled with scopes ["user_selected"]. Only files explicitly chosen by the user can be accessed.</Text>
-    </Stack>
-  </Card>
+  // Permission note
+  <Box style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0 0.25rem" }}>
+    <Icon svg={iconSvg("shield", "#94a3b8")} size={14} />
+    <Text style={{ fontSize: "0.75rem", color: "#94a3b8" }}>This page uses the files permission for files you choose only. It cannot see anything else on the device.</Text>
+  </Box>
 </Stack>

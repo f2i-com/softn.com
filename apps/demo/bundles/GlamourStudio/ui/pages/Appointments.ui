@@ -14,7 +14,7 @@
           <Text size=lg fontWeight=bold style={{ color: darkMode ? "#1c1917" : "#ffffff" }}>{selectedItem.data.time}</Text>
         </Box>
         <Stack direction=vertical gap=xs style={{ flex: 1, minWidth: 0 }}>
-          <Heading level={3} style={{ fontSize: "1.25rem", fontFamily: "'Cormorant Garamond', serif" }}>{selectedItem.data.client}</Heading>
+          <Heading level={3} style={{ fontSize: "1.25rem", fontFamily: "Georgia, 'Times New Roman', serif" }}>{selectedItem.data.client}</Heading>
           <Text color=muted size=sm>{selectedItem.data.service + " with " + selectedItem.data.stylist}</Text>
         </Stack>
         <Badge variant={selectedItem.data.status === "completed" ? "success" : selectedItem.data.status === "in-progress" ? "info" : "warning"} size=md>

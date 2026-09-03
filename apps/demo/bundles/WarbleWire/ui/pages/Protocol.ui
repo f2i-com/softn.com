@@ -38,41 +38,88 @@
     </Card>
 
     <Card className="ww-hard" padding=lg style={{ background: "#f4eddc", borderRadius: "0" }}>
-      <Stack direction=vertical gap=sm>
+      <Stack direction=vertical gap=md>
         <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#6d7f88" }}>Pip-16</Text>
-        <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.6 }}>
-          Every symbol carries four bits as one short call. The low two bits pick the
-          register — 875, 1312.5, 1750 or 2187.5 Hz — and the high two pick the shape
-          the pitch traces across it: rising, falling, a peak, or a double warble.
-        </Text>
-        <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.6 }}>
-          Each one gets a spoken name from a four-by-four table, so a frame can be read
-          aloud: <Text className="ww-mono" style={{ fontSize: "0.75rem" }}>pi te ka wo</Text> and so on. The
-          decoder never uses the names; they are there so a person can see the wire.
-        </Text>
-        <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.6 }}>
-          A frame is always 267 symbols, so its length on air depends on the tempo and
-          never on the message. Eight of those symbols are pilots at known positions
-          with known values — which is what makes it possible to find the start of a
-          burst in a recording that begins with a room full of nothing.
-        </Text>
+
+        <Stack direction=vertical gap=xs>
+          <Text style={{ fontSize: "0.875rem", fontWeight: 700, letterSpacing: "-0.02em" }}>One call, four bits</Text>
+          <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.55 }}>
+            Every symbol is one short bird call carrying four bits.
+          </Text>
+        </Stack>
+
+        <Stack direction=vertical gap=xs>
+          <Text style={{ fontSize: "0.875rem", fontWeight: 700, letterSpacing: "-0.02em" }}>Register and shape</Text>
+          <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.55 }}>
+            The low two bits pick the register and the high two pick how the pitch
+            moves across it: rising, falling, a peak, or a double warble.
+          </Text>
+        </Stack>
+
+        <Stack direction=vertical gap=xs>
+          <Text style={{ fontSize: "0.875rem", fontWeight: 700, letterSpacing: "-0.02em" }}>Spoken names</Text>
+          <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.55 }}>
+            Each symbol has a name from a four-by-four table, so a frame can be read
+            aloud; the decoder never uses them.
+          </Text>
+          <Text className="ww-mono" style={{ fontSize: "0.75rem", color: "#18262d" }}>pi te ka wo …</Text>
+        </Stack>
+
+        <Stack direction=vertical gap=xs>
+          <Text style={{ fontSize: "0.875rem", fontWeight: 700, letterSpacing: "-0.02em" }}>Pilots</Text>
+          <Text style={{ fontSize: "0.8125rem", color: "#3d4f58", lineHeight: 1.55 }}>
+            Eight of the 267 symbols sit at known positions with known values, which is
+            how the decoder finds a burst in a recording that starts with silence.
+          </Text>
+        </Stack>
       </Stack>
     </Card>
   </Grid>
 
+  // ── The numbers ───────────────────────────────────────────────────────────
   <Card className="ww-hard" padding=lg style={{ background: "#20343d", borderRadius: "0", color: "#f4eddc" }}>
     <Stack direction=vertical gap=sm>
-      <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#a9dce8" }}>Status</Text>
-      <Text style={{ fontSize: "0.875rem", color: "#c4d2d8", lineHeight: 1.6 }}>
-        These constants are provisional and this is not a frozen wire standard. The
-        three tempos are lab tempos: Finch and Swift shorten the existing Pip symbols
-        and are deliberately not the Robin or Lark physical profiles from the design
-        notes. Acknowledgements, resume, private messaging and photo transfer are all
-        still ahead.
-      </Text>
-      <Text style={{ fontSize: "0.875rem", color: "#c4d2d8", lineHeight: 1.6 }}>
-        QXW is an experimental project, not a life-safety communications system.
-      </Text>
+      <Text className="ww-mono" style={{ fontSize: "0.625rem", color: "#a9dce8" }}>By the numbers</Text>
+
+      <Stack direction=vertical gap=none>
+        <Box style={{ display: "flex", justifyContent: "space-between", gap: "1rem", padding: "0.5rem 0", borderBottom: "1px solid #3f4f57" }}>
+          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8", flexShrink: 0 }}>Payload</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.625rem", textAlign: "right" }}>up to 52 bytes in a 64-byte frame · CRC-32</Text>
+        </Box>
+        <Box style={{ display: "flex", justifyContent: "space-between", gap: "1rem", padding: "0.5rem 0", borderBottom: "1px solid #3f4f57" }}>
+          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8", flexShrink: 0 }}>Code</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.625rem", textAlign: "right" }}>rate-½ convolutional + tail</Text>
+        </Box>
+        <Box style={{ display: "flex", justifyContent: "space-between", gap: "1rem", padding: "0.5rem 0", borderBottom: "1px solid #3f4f57" }}>
+          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8", flexShrink: 0 }}>Interleave</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.625rem", textAlign: "right" }}>28 × 37 block</Text>
+        </Box>
+        <Box style={{ display: "flex", justifyContent: "space-between", gap: "1rem", padding: "0.5rem 0", borderBottom: "1px solid #3f4f57" }}>
+          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8", flexShrink: 0 }}>Frame</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.625rem", textAlign: "right" }}>267 symbols · 259 data + 8 pilots</Text>
+        </Box>
+        <Box style={{ display: "flex", justifyContent: "space-between", gap: "1rem", padding: "0.5rem 0", borderBottom: "1px solid #3f4f57" }}>
+          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8", flexShrink: 0 }}>Registers</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.625rem", textAlign: "right" }}>875 · 1312.5 · 1750 · 2187.5 Hz</Text>
+        </Box>
+        #each (choice in speeds)
+          <Box style={{ display: "flex", justifyContent: "space-between", gap: "1rem", padding: "0.5rem 0", borderBottom: "1px solid #3f4f57" }}>
+            <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8", flexShrink: 0 }}>{choice.name}</Text>
+            <Text className="ww-mono" style={{ fontSize: "0.625rem", textAlign: "right" }}>
+              {choice.symbolMs + " ms symbols · " + choice.rawBitRate + " raw bit/s · " + choice.seconds + " s per frame"}
+            </Text>
+          </Box>
+        #end
+        <Box style={{ display: "flex", justifyContent: "space-between", gap: "1rem", padding: "0.5rem 0" }}>
+          <Text className="ww-mono" style={{ fontSize: "0.5625rem", color: "#a9dce8", flexShrink: 0 }}>Sample rate</Text>
+          <Text className="ww-mono" style={{ fontSize: "0.625rem", textAlign: "right" }}>48 kHz PCM</Text>
+        </Box>
+      </Stack>
     </Stack>
   </Card>
+
+  <Text style={{ fontSize: "0.6875rem", color: "#6d7f88", lineHeight: 1.5 }}>
+    These constants are provisional lab tempos, not a frozen wire standard, and QXW is an
+    experiment rather than a life-safety communications system.
+  </Text>
 </Stack>

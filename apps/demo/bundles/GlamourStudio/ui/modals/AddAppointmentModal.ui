@@ -3,7 +3,7 @@
 <Modal open={showAddModal} onClose={closeAddModal} title="New Appointment" size=md>
   <SmartForm
     collection="appointments"
-    fields="client:text:required, stylist:text:required, service:text:required, time:text:required, status:text, price:number"
+    fields={appointmentFormFields}
     defaults={{ status: "scheduled", price: 0 }}
     onSaved={onAppointmentSaved}
     submitText="Create Appointment"

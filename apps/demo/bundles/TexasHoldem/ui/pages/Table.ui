@@ -7,42 +7,54 @@
 }}>
   <audio if={soundEnabled && soundPlaySrc} key={soundPlayNonce} src={asset(soundPlaySrc)} autoPlay={true} style={{ display: "none" }} />
   // Top bar
+  // Pinned to the top of the table view. Every sibling below is absolutely
+  // positioned against the same container, so the bar never pushes the felt.
   <Box className="poker-topbar" style={{
     position: "absolute", top: 0, left: 0, right: 0,
     display: "flex", alignItems: "center", justifyContent: "space-between",
-    flexWrap: topBarWrapStyle(), rowGap: "6px",
+    flexWrap: topBarWrapStyle(), rowGap: "6px", columnGap: "10px",
     padding: "clamp(8px, 1.4vw, 10px) clamp(10px, 2.6vw, 20px)", zIndex: 50,
-    position: "relative", pointerEvents: "auto",
+    pointerEvents: "auto",
     background: "rgba(0,0,0,0.3)", backdropFilter: "blur(8px)"
   }}>
-    <Stack direction=horizontal gap=sm align=center>
+    // Left: leave, room code (opens room info), copy
+    <Box style={{ display: "flex", alignItems: "center", gap: "8px", flex: "1 1 0", minWidth: 0 }}>
       <Button @click={leaveTable} style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.6)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", padding: "6px 14px", fontSize: "12px", cursor: "pointer" }}>Leave</Button>
-      <Button @click={openSyncModal} style={{ background: "rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.6)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", padding: "6px 10px", fontSize: "clamp(10px, 1.5vw, 11px)", cursor: "pointer" }}>Room</Button>
-      <Text className="poker-topbar-hide-mobile" style={{ color: "rgba(255,255,255,0.4)", fontSize: "12px", fontFamily: "monospace" }}>{syncRoom}</Text>
-      <Button className="poker-topbar-hide-mobile" @click={copySyncRoom} style={{ background: "none", color: "rgba(255,255,255,0.4)", border: "none", padding: "4px 8px", fontSize: "clamp(10px, 1.5vw, 11px)", cursor: "pointer" }}>Copy</Button>
-    </Stack>
-    <Stack direction=horizontal gap=sm align=center>
-      <Box style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-end",
-        background: "rgba(0,0,0,0.35)",
-        border: "1px solid rgba(255,255,255,0.12)",
-        borderRadius: "8px",
-        padding: "4px 10px"
-      }}>
-        <Text style={{ color: isMyTurn() ? "#c8aa6e" : "rgba(255,255,255,0.75)", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "700" }}>{topStatusMain()}</Text>
-        <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: "10px" }}>{topStatusSub()}</Text>
-      </Box>
+      <Button variant="ghost" @click={openSyncModal} title="Room info" ariaLabel="Room info" style={{ background: "rgba(0,0,0,0.3)", color: "#c8aa6e", border: "1px solid rgba(200,170,110,0.25)", borderRadius: "8px", padding: "5px 10px", fontSize: "12px", fontFamily: "monospace", letterSpacing: "0.5px", cursor: "pointer" }}>{syncRoom}</Button>
+      <Button className="poker-topbar-hide-mobile" variant="ghost" @click={copySyncRoom} style={{ background: "none", color: "rgba(255,255,255,0.4)", border: "none", padding: "4px 8px", fontSize: "clamp(10px, 1.5vw, 11px)", cursor: "pointer" }}>Copy</Button>
+    </Box>
+
+    // Centre: what is happening right now
+    <Box style={{
+      display: "flex",
+      flexDirection: "column",
+      alignItems: "center",
+      flex: "0 0 auto",
+      background: "rgba(0,0,0,0.35)",
+      border: "1px solid rgba(255,255,255,0.12)",
+      borderRadius: "8px",
+      padding: "4px 12px"
+    }}>
+      <Text style={{ color: isMyTurn() ? "#c8aa6e" : "rgba(255,255,255,0.75)", fontSize: "clamp(10px, 1.5vw, 11px)", fontWeight: "700", textAlign: "center" }}>{topStatusMain()}</Text>
+      <Text style={{ color: "rgba(255,255,255,0.5)", fontSize: "10px", textAlign: "center" }}>{topStatusSub()}</Text>
+    </Box>
+
+    // Right: sound, peers, hand number, reset, developer tools
+    <Box style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "8px", flex: "1 1 0", minWidth: 0, flexWrap: "wrap" }}>
       <Button @click={toggleSound} style={{ background: soundEnabled ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.08)", color: soundEnabled ? "#86efac" : "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>{soundEnabled ? "Sound On" : "Sound Off"}</Button>
-      <Button className="poker-topbar-hide-mobile" if={soundEnabled} @click={testSoundNow} style={{ background: "rgba(250,204,21,0.18)", color: "#fde68a", border: "1px solid rgba(250,204,21,0.35)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Test Sound</Button>
-      <Button className="poker-topbar-hide-mobile" if={isHost} @click={toggleDebugOverlay} style={{ background: showDebugOverlay ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.08)", color: showDebugOverlay ? "#22c55e" : "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Debug</Button>
-      <Button className="poker-topbar-hide-mobile" if={isHost} @click={toggleDebugTrace} style={{ background: debugTraceEnabled ? "rgba(59,130,246,0.22)" : "rgba(255,255,255,0.08)", color: debugTraceEnabled ? "#93c5fd" : "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Trace</Button>
-      <Button className="poker-topbar-hide-mobile" if={isHost && gamePhase !== "waiting"} @click={forceReset} style={{ background: "rgba(239,68,68,0.15)", color: "#ef4444", border: "1px solid rgba(239,68,68,0.3)", borderRadius: "6px", padding: "4px 10px", fontSize: "10px", fontWeight: "600", cursor: "pointer" }}>Reset</Button>
-      <Box style={{ width: "8px", height: "8px", borderRadius: "50%", background: syncConnected ? "#22c55e" : (syncConnecting ? "#eab308" : "#ef4444"), boxShadow: syncConnected ? "0 0 6px rgba(34,197,94,0.5)" : "none" }} />
-      <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{syncConnected ? syncPeers + " peers" : (syncConnecting ? "connecting..." : "offline")}</Text>
-      <Text className="poker-topbar-hide-mobile" if={handNumber > 0} style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)", marginLeft: "8px" }}>{"Hand #" + handNumber}</Text>
-    </Stack>
+      <Box style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+        <Box style={{ width: "8px", height: "8px", borderRadius: "50%", background: syncConnected ? "#22c55e" : (syncConnecting ? "#eab308" : "#ef4444"), boxShadow: syncConnected ? "0 0 6px rgba(34,197,94,0.5)" : "none" }} />
+        <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{syncConnected ? syncPeers + " peers" : (syncConnecting ? "connecting..." : "offline")}</Text>
+      </Box>
+      <Text className="poker-topbar-hide-mobile" if={handNumber > 0} style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"Hand #" + handNumber}</Text>
+      <Button className="poker-topbar-hide-mobile" variant="ghost" if={isHost && gamePhase !== "waiting"} @click={forceReset} title="Reset the table" style={{ background: "transparent", color: "rgba(239,68,68,0.75)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: "6px", padding: "4px 10px", fontSize: "10px", fontWeight: "600", cursor: "pointer" }}>Reset</Button>
+
+      // Developer tools: hidden unless the "dev" toggle at the far right is on
+      <Button className="poker-topbar-hide-mobile" variant="ghost" if={devTools && soundEnabled} @click={testSoundNow} style={{ background: "rgba(250,204,21,0.18)", color: "#fde68a", border: "1px solid rgba(250,204,21,0.35)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Test Sound</Button>
+      <Button className="poker-topbar-hide-mobile" variant="ghost" if={devTools && isHost} @click={toggleDebugOverlay} style={{ background: showDebugOverlay ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.08)", color: showDebugOverlay ? "#22c55e" : "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Debug</Button>
+      <Button className="poker-topbar-hide-mobile" variant="ghost" if={devTools && isHost} @click={toggleDebugTrace} style={{ background: debugTraceEnabled ? "rgba(59,130,246,0.22)" : "rgba(255,255,255,0.08)", color: debugTraceEnabled ? "#93c5fd" : "rgba(255,255,255,0.65)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Trace</Button>
+      <Button className="poker-topbar-hide-mobile" variant="ghost" @click={toggleDevTools} title="Developer tools" ariaLabel="Toggle developer tools" style={{ background: devTools ? "rgba(255,255,255,0.12)" : "transparent", color: devTools ? "rgba(255,255,255,0.7)" : "rgba(255,255,255,0.28)", border: "none", borderRadius: "6px", padding: "4px 6px", fontSize: "10px", fontFamily: "monospace", cursor: "pointer" }}>dev</Button>
+    </Box>
   </Box>
 
   // Felt table
@@ -103,12 +115,12 @@
         <Box if={isDealerSeat(0)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
           <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
         </Box>
-        <Box if={seatIsBot(0)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
-          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        <Box if={seatIsBot(0)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#8b7550", padding: "1px 5px", border: "1px solid rgba(200,170,110,0.45)" }}>
+          <Text style={{ color: "#fdf6e3", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(0) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(0)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
-          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
-        </Box>
+        <Button variant="ghost" if={seatIsBot(0) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(0)} ariaLabel="Remove bot" title="Remove bot" style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", minWidth: "18px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Icon name="close" size={10} color="#fff" />
+        </Button>
       </Box>
     </Box>
 
@@ -148,12 +160,12 @@
         <Box if={isDealerSeat(1)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
           <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
         </Box>
-        <Box if={seatIsBot(1)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
-          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        <Box if={seatIsBot(1)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#8b7550", padding: "1px 5px", border: "1px solid rgba(200,170,110,0.45)" }}>
+          <Text style={{ color: "#fdf6e3", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(1) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(1)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
-          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
-        </Box>
+        <Button variant="ghost" if={seatIsBot(1) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(1)} ariaLabel="Remove bot" title="Remove bot" style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", minWidth: "18px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Icon name="close" size={10} color="#fff" />
+        </Button>
       </Box>
     </Box>
 
@@ -193,12 +205,12 @@
         <Box if={isDealerSeat(2)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
           <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
         </Box>
-        <Box if={seatIsBot(2)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
-          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        <Box if={seatIsBot(2)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#8b7550", padding: "1px 5px", border: "1px solid rgba(200,170,110,0.45)" }}>
+          <Text style={{ color: "#fdf6e3", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(2) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(2)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
-          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
-        </Box>
+        <Button variant="ghost" if={seatIsBot(2) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(2)} ariaLabel="Remove bot" title="Remove bot" style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", minWidth: "18px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Icon name="close" size={10} color="#fff" />
+        </Button>
       </Box>
     </Box>
 
@@ -238,12 +250,12 @@
         <Box if={isDealerSeat(3)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
           <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
         </Box>
-        <Box if={seatIsBot(3)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
-          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        <Box if={seatIsBot(3)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#8b7550", padding: "1px 5px", border: "1px solid rgba(200,170,110,0.45)" }}>
+          <Text style={{ color: "#fdf6e3", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(3) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(3)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
-          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
-        </Box>
+        <Button variant="ghost" if={seatIsBot(3) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(3)} ariaLabel="Remove bot" title="Remove bot" style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", minWidth: "18px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Icon name="close" size={10} color="#fff" />
+        </Button>
       </Box>
     </Box>
 
@@ -283,12 +295,12 @@
         <Box if={isDealerSeat(4)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
           <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
         </Box>
-        <Box if={seatIsBot(4)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
-          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        <Box if={seatIsBot(4)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#8b7550", padding: "1px 5px", border: "1px solid rgba(200,170,110,0.45)" }}>
+          <Text style={{ color: "#fdf6e3", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(4) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(4)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
-          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
-        </Box>
+        <Button variant="ghost" if={seatIsBot(4) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(4)} ariaLabel="Remove bot" title="Remove bot" style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", minWidth: "18px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Icon name="close" size={10} color="#fff" />
+        </Button>
       </Box>
     </Box>
 
@@ -328,12 +340,12 @@
         <Box if={isDealerSeat(5)} style={{ position: "absolute", top: "30px", right: "-2px", width: "22px", height: "22px", borderRadius: "50%", background: "#fbbf24", display: "flex", alignItems: "center", justifyContent: "center", border: "2px solid #fff" }}>
           <Text style={{ color: "#1c1917", fontSize: "9px", fontWeight: "900" }}>D</Text>
         </Box>
-        <Box if={seatIsBot(5)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#6366f1", padding: "1px 5px", border: "1px solid rgba(255,255,255,0.3)" }}>
-          <Text style={{ color: "#fff", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
+        <Box if={seatIsBot(5)} style={{ position: "absolute", top: "30px", left: "-2px", borderRadius: "6px", background: "#8b7550", padding: "1px 5px", border: "1px solid rgba(200,170,110,0.45)" }}>
+          <Text style={{ color: "#fdf6e3", fontSize: "8px", fontWeight: "800" }}>BOT</Text>
         </Box>
-        <Box if={seatIsBot(5) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(5)} style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
-          <Text style={{ color: "#fff", fontSize: "10px", fontWeight: "900" }}>x</Text>
-        </Box>
+        <Button variant="ghost" if={seatIsBot(5) && (gamePhase === "waiting" || gamePhase === "showdown")} @click={removeBot(5)} ariaLabel="Remove bot" title="Remove bot" style={{ position: "absolute", top: "-6px", right: "6px", width: "18px", height: "18px", minWidth: "18px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#ef4444", border: "1px solid rgba(255,255,255,0.35)", borderRadius: "50%", cursor: "pointer" }}>
+          <Icon name="close" size={10} color="#fff" />
+        </Button>
       </Box>
     </Box>
   </Box>
@@ -376,8 +388,8 @@
   // Action panel
   <ActionPanel />
 
-  // Host debug overlay
-  <Box if={isHost && showDebugOverlay} style={{
+  // Host debug overlay (developer tools only)
+  <Box if={devTools && isHost && showDebugOverlay} style={{
     position: "absolute", top: "58px", right: "12px", zIndex: 200,
     width: "min(88vw, 350px)", maxHeight: "50vh", overflowY: "auto",
     background: "rgba(0,0,0,0.78)", backdropFilter: "blur(10px)",

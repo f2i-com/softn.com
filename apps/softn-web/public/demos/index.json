@@ -5,7 +5,7 @@
     "name": "AI Chat",
     "description": "A chat with a small language model that downloads once and runs entirely in your browser; nothing you type leaves the machine",
     "primary": "#10b981",
-    "size": 36681
+    "size": 41867
   },
   {
     "id": "device-kit",
@@ -13,7 +13,7 @@
     "name": "Device Kit",
     "description": "A tour of what a sandboxed app may ask for: fetch a URL, read and make QR codes, take a photo, open a file — each behind the permission that gates it",
     "primary": "#3b82f6",
-    "size": 30263
+    "size": 34562
   },
   {
     "id": "glamour-studio",
@@ -21,7 +21,7 @@
     "name": "Glamour Studio",
     "description": "A salon's front desk: appointments, clients, staff and services in a local-first database that syncs between devices",
     "primary": "#d4a574",
-    "size": 88684
+    "size": 94192
   },
   {
     "id": "gpu-demo",
@@ -37,7 +37,7 @@
     "name": "Maze Escape 3D",
     "description": "A first-person maze carved fresh every game: find the golden ring, with a minimap that fills in as you explore and a best time that sticks",
     "primary": "#4ade80",
-    "size": 22583
+    "size": 88552
   },
   {
     "id": "notes",
@@ -53,7 +53,7 @@
     "name": "Pocket",
     "description": "An 8-bit handheld emulator — CPU, PPU, APU and mappers all in .logic, drawn by PixelCanvas and heard through AudioStream",
     "primary": "#9bbc0f",
-    "size": 354546
+    "size": 357909
   },
   {
     "id": "showcase",
@@ -61,7 +61,7 @@
     "name": "Component Showcase",
     "description": "Every chart, animation and interactive component the runtime ships, on three pages, in light and dark",
     "primary": "#6366f1",
-    "size": 35596
+    "size": 45755
   },
   {
     "id": "snake-game",
@@ -69,7 +69,7 @@
     "name": "Snake",
     "description": "The classic: eat, grow, don't hit the walls — with a shared top ten kept on the site",
     "primary": "#4ade80",
-    "size": 10779
+    "size": 62004
   },
   {
     "id": "texas-holdem",
@@ -77,7 +77,7 @@
     "name": "Texas Hold'em",
     "description": "Multiplayer Texas Hold'em Poker with P2P sync",
     "primary": "#c8aa6e",
-    "size": 247196
+    "size": 250160
   },
   {
     "id": "the-office",
@@ -101,7 +101,7 @@
     "name": "WarbleWire",
     "description": "Send a message as synthetic birdsong and decode it back — the QXW acoustic transport",
     "primary": "#c7ee53",
-    "size": 105456
+    "size": 111885
   },
   {
     "id": "promptly-unemployed",
@@ -133,7 +133,7 @@
     "name": "2048",
     "description": "The sliding-tile classic: merge equal tiles to reach 2048 and beyond, with undo and a best score",
     "primary": "#edc22e",
-    "size": 15958
+    "size": 77445
   },
   {
     "id": "blockfall",
@@ -141,6 +141,6 @@
     "name": "Blockfall",
     "description": "Falling blocks in a 10×20 well: seven pieces, wall kicks, a ghost piece, hold, a preview, and levels that speed up",
     "primary": "#22d3ee",
-    "size": 20086
+    "size": 101791
   }
 ]

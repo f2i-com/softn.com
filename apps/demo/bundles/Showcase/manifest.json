@@ -28,7 +28,7 @@
     },
     "theme": {
       "primary": "#6366f1",
-      "mode": "system"
+      "mode": "dark"
     }
   }
 }

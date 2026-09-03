@@ -88,7 +88,8 @@
       <Stack direction=vertical gap=md>
         <Text fontWeight=semibold size=sm style={{ color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.04em", fontSize: "0.75rem" }}>Scan QR Code</Text>
 
-        // Scanner Area
+        // Scanner Area. The reader opens the camera when it mounts, so it is
+        // only mounted between Start and Stop; opening the tab asks nothing.
         <Box style={{
           borderRadius: "12px",
           overflow: "hidden",
@@ -99,8 +100,42 @@
           justifyContent: "center",
           background: "#f8fafc"
         }}>
-          <QRReader onScan={handleScan} />
+          <QRReader if={scanning} onScan={handleScan} />
+          <Stack if={!scanning} direction=vertical gap=sm align=center style={{ padding: "1.5rem" }}>
+            <Box style={{
+              width: "48px",
+              height: "48px",
+              borderRadius: "12px",
+              background: "#e2e8f0",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center"
+            }}>
+              <Icon svg={iconSvg("scan", "#94a3b8")} size={22} />
+            </Box>
+            <Text size=xs style={{ color: "#94a3b8", textAlign: "center" }}>The camera stays off until you start scanning.</Text>
+            <Button variant=primary @click={startScanning} style={{
+              padding: "0.5rem 1.125rem",
+              borderRadius: "8px",
+              background: "linear-gradient(135deg, #3b82f6, #6366f1)",
+              color: "#ffffff",
+              fontWeight: 600,
+              fontSize: "0.8125rem"
+            }}>{scannedCode ? "Scan another" : "Start scanning"}</Button>
+          </Stack>
         </Box>
+
+        <Stack if={scanning} direction=horizontal gap=sm align=center justify="space-between">
+          <Text size=xs style={{ color: "#64748b" }}>Point the camera at a QR code. Scanning stops after the first read.</Text>
+          <Button variant=ghost size=sm @click={stopScanning} style={{
+            fontSize: "0.75rem",
+            padding: "0.25rem 0.75rem",
+            borderRadius: "6px",
+            background: "#f1f5f9",
+            color: "#475569",
+            flexShrink: 0
+          }}>Stop</Button>
+        </Stack>
 
         // Scanned Result
         <Box if={scannedCode} style={{
@@ -114,23 +149,22 @@
         </Box>
 
         // No scan yet placeholder
-        <Box if={!scannedCode} style={{
+        <Box if={!scannedCode && !scanning} style={{
           background: "#f8fafc",
           borderRadius: "10px",
           padding: "1rem",
           border: "1px solid #e2e8f0",
           textAlign: "center"
         }}>
-          <Text size=sm style={{ color: "#94a3b8" }}>Point your camera at a QR code to scan it.</Text>
+          <Text size=sm style={{ color: "#94a3b8" }}>Nothing scanned yet.</Text>
         </Box>
       </Stack>
     </Card>
   </Grid>
 
-  // Permission Info
-  <Card padding=md style={{ background: "#fefce8", borderRadius: "14px", border: "1px solid #fde68a" }}>
-    <Stack direction=horizontal gap=sm align=center>
-      <Text style={{ fontSize: "0.8125rem", color: "#92400e" }}>Permission: qr.enabled allows QR code generation and scanning. Camera access required for scanning.</Text>
-    </Stack>
-  </Card>
+  // Permission note
+  <Box style={{ display: "flex", alignItems: "center", gap: "0.5rem", padding: "0 0.25rem" }}>
+    <Icon svg={iconSvg("shield", "#94a3b8")} size={14} />
+    <Text style={{ fontSize: "0.75rem", color: "#94a3b8" }}>This page uses the qr permission, and the camera permission only while scanning. Codes are made and read on this device.</Text>
+  </Box>
 </Stack>
