@@ -16,6 +16,8 @@ interface TabBarProps {
   onAddTab: () => void;
   /** Hands the running app's bundle back as a file. */
   onDownloadTab?: (id: string) => void;
+  /** Folds the bar away so the app has the whole viewport. */
+  onHide?: () => void;
 }
 
 const tabBarStyles = `
@@ -27,6 +29,20 @@ const tabBarStyles = `
     from { transform: scaleX(0); }
     to { transform: scaleX(1); }
   }
+  .softn-tab-hide {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 100%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #8b8b96;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    transition: color 160ms ease;
+  }
+  .softn-tab-hide:hover { color: #fff; }
   .softn-tab-bar {
     height: 38px;
     background: #0c0c0e;
@@ -359,6 +375,7 @@ export function TabBar({
   onCloseTab,
   onAddTab,
   onDownloadTab,
+  onHide,
 }: TabBarProps): React.ReactElement {
   const handleMiddleClick = useCallback(
     (e: React.MouseEvent, tabId: string) => {
@@ -448,6 +465,13 @@ export function TabBar({
         <button className="softn-tab-add" onClick={onAddTab} title="Open .softn file">
           +
         </button>
+        {onHide && (
+          <button className="softn-tab-hide" onClick={onHide} title="Hide the tab bar (the corner tab brings it back)" aria-label="Hide the tab bar">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m18 15-6-6-6 6" />
+            </svg>
+          </button>
+        )}
       </div>
     </>
   );
