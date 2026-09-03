@@ -118,7 +118,7 @@ function handle(string $handler, array $args, Request $req): Response
                 'name' => Config::get('siteName', 'SoftN') . ' directory API',
                 'docs' => '/api/README.md',
                 'routes' => [
-                    'GET /api/apps?q=&category=&tag=&sort=trending|newest|top|remixed|runs|name&page=&perPage=',
+                    'GET /api/apps?q=&category=&tag=&author=&cap=nonet|none|storage|worker&sort=trending|newest|top|remixed|runs|name&page=&perPage=',
                     'GET /api/apps/{slug}',
                     'GET /api/apps/{slug}/bundle.softn?v=&download=1',
                     'GET /api/apps/{slug}/thumbnail',

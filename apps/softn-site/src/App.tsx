@@ -48,7 +48,7 @@ export default function App(): React.ReactElement {
     } catch {
       /* a stray percent sign stays as it is */
     }
-    page = <AppPage slug={slug} categories={categories} />;
+    page = <AppPage slug={slug} categories={categories} route={route} />;
   } else if (route.path === '/publish') {
     page = <PublishPage route={route} categories={categories} onCategories={setCategories} apiDown={apiDown} />;
   } else {

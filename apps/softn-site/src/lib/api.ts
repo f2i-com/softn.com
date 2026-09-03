@@ -74,10 +74,15 @@ export interface Page<T> {
   pages: number;
 }
 
+/** The capability filters the directory offers; the server knows the same names. */
+export type CapabilityFilter = 'nonet' | 'storage' | 'worker' | 'none';
+
 export interface ListParams {
   q?: string;
   category?: string;
   tag?: string;
+  author?: string;
+  cap?: CapabilityFilter | '';
   sort?: string;
   page?: number;
   perPage?: number;
@@ -101,6 +106,7 @@ export class ApiError extends Error {
 
 async function call<T>(route: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${route}`, { credentials: 'same-origin', ...init });
+  if (res.status === 204) return {} as T;
   const text = await res.text();
   let json: (Record<string, unknown> & { ok?: boolean; error?: string; retryAfter?: number }) | null = null;
   try {
@@ -115,8 +121,8 @@ async function call<T>(route: string, init: RequestInit = {}): Promise<T> {
   return json as T;
 }
 
-function jsonBody(body: unknown): RequestInit {
-  return { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+function jsonBody(body: unknown, method = 'POST', headers: Record<string, string> = {}): RequestInit {
+  return { method, headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) };
 }
 
 export async function listApps(params: ListParams, signal?: AbortSignal): Promise<Page<AppCard> & { sort: string }> {
@@ -124,6 +130,8 @@ export async function listApps(params: ListParams, signal?: AbortSignal): Promis
   if (params.q) qs.set('q', params.q);
   if (params.category && params.category !== 'all') qs.set('category', params.category);
   if (params.tag) qs.set('tag', params.tag);
+  if (params.author) qs.set('author', params.author);
+  if (params.cap) qs.set('cap', params.cap);
   if (params.sort) qs.set('sort', params.sort);
   if (params.page && params.page > 1) qs.set('page', String(params.page));
   if (params.perPage) qs.set('perPage', String(params.perPage));
@@ -199,6 +207,75 @@ export async function publish(fields: PublishFields): Promise<Published> {
   }
   if (fields.thumbnail) fd.append('thumbnail', fields.thumbnail, 'thumbnail.png');
   return call<Published>('/apps', { method: 'POST', body: fd });
+}
+
+// ── Updating an app you published ─────────────────────────────────────────
+// Everything below needs the edit key that publishing handed out. The site
+// keeps the keys it has seen in this browser so the owner does not have to
+// paste them back; anyone else pastes.
+
+const KEYS = 'softn.site.editKeys';
+
+export function savedKeys(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(KEYS);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : {};
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function savedKey(slug: string): string | null {
+  return savedKeys()[slug] ?? null;
+}
+
+export function rememberKey(slug: string, key: string): void {
+  try {
+    localStorage.setItem(KEYS, JSON.stringify({ ...savedKeys(), [slug]: key }));
+  } catch {
+    // Storage blocked: the key was shown once, as before.
+  }
+}
+
+export function forgetKey(slug: string): void {
+  try {
+    const keys = savedKeys();
+    delete keys[slug];
+    localStorage.setItem(KEYS, JSON.stringify(keys));
+  } catch {
+    // Nothing to forget.
+  }
+}
+
+export interface ListingFields {
+  name?: string;
+  description?: string;
+  author?: string;
+  category?: string;
+  tags?: string;
+  primary?: string;
+}
+
+export async function updateListing(slug: string, editKey: string, fields: ListingFields): Promise<AppDetail> {
+  return (await call<{ app: AppDetail }>(`/apps/${encodeURIComponent(slug)}`, jsonBody(fields, 'PATCH', { 'X-Edit-Key': editKey }))).app;
+}
+
+export async function addVersion(slug: string, editKey: string, bundle: File, notes: string): Promise<AppDetail> {
+  const fd = new FormData();
+  fd.append('bundle', bundle, bundle.name || 'app.softn');
+  if (notes) fd.append('notes', notes);
+  return (await call<{ app: AppDetail }>(`/apps/${encodeURIComponent(slug)}/versions`, { method: 'POST', body: fd, headers: { 'X-Edit-Key': editKey } })).app;
+}
+
+export async function setThumbnail(slug: string, editKey: string, image: Blob): Promise<AppCard> {
+  const fd = new FormData();
+  fd.append('thumbnail', image, 'thumbnail.png');
+  return (await call<{ app: AppCard }>(`/apps/${encodeURIComponent(slug)}/thumbnail`, { method: 'POST', body: fd, headers: { 'X-Edit-Key': editKey } })).app;
+}
+
+export async function unpublish(slug: string, editKey: string): Promise<void> {
+  await call<Record<string, never>>(`/apps/${encodeURIComponent(slug)}`, { method: 'DELETE', headers: { 'X-Edit-Key': editKey } });
 }
 
 export async function recordRun(slug: string): Promise<void> {

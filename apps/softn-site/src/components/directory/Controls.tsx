@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { Category } from '../../lib/api';
+import type { CapabilityFilter, Category } from '../../lib/api';
 import { navigate } from '../../lib/router';
 
 export const SORTS: Array<{ id: string; name: string }> = [
@@ -9,6 +9,13 @@ export const SORTS: Array<{ id: string; name: string }> = [
   { id: 'remixed', name: 'Most remixed' },
   { id: 'runs', name: 'Most played' },
   { id: 'name', name: 'A to Z' },
+];
+
+export const CAP_FILTERS: Array<{ id: CapabilityFilter; name: string; hint: string }> = [
+  { id: 'nonet', name: 'Offline', hint: 'Declares no network access' },
+  { id: 'none', name: 'No capabilities', hint: 'Asks for nothing beyond the sandbox' },
+  { id: 'storage', name: 'Server storage', hint: 'Keeps records on this site — scoreboards, shared notes' },
+  { id: 'worker', name: 'Off-main-thread', hint: 'Runs its script in a worker' },
 ];
 
 /** The search box. Submitting goes to the directory with the words. */
@@ -98,11 +105,32 @@ export function CategoryChips({
   );
 }
 
-export function SortSelect({ value, onChange }: { value: string; onChange: (id: string) => void }): React.ReactElement {
+/** What an app may reach, as a second row of pills. One at a time; the same pill again clears it. */
+export function CapabilityChips({ selected, onSelect }: { selected: CapabilityFilter | ''; onSelect: (id: CapabilityFilter | '') => void }): React.ReactElement {
+  return (
+    <div className="pills pills-caps" role="group" aria-label="Filter by what the app can reach">
+      {CAP_FILTERS.map((f) => (
+        <button
+          key={f.id}
+          type="button"
+          className={`pill pill-cap ${selected === f.id ? 'on' : ''}`}
+          title={f.hint}
+          aria-pressed={selected === f.id}
+          onClick={() => onSelect(selected === f.id ? '' : f.id)}
+        >
+          {f.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function SortSelect({ value, onChange, searching = false }: { value: string; onChange: (id: string) => void; searching?: boolean }): React.ReactElement {
   return (
     <label className="sort">
       <span className="sort-label">Sort</span>
       <select value={value} onChange={(e) => onChange(e.target.value)} aria-label="Sort apps">
+        {searching && <option value="relevance">Best match</option>}
         {SORTS.map((s) => (
           <option key={s.id} value={s.id}>
             {s.name}
