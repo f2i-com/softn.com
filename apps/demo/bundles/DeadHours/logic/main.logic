@@ -105,6 +105,7 @@ function _init() {
   window.__dhSwap = -1
   window.__dhTouch = false
   window.__scene3dLocked = false
+  window.__scene3dWantLock = false
 
   function onKeyDown(e) {
     if (isUiControl(e)) { return }
@@ -191,6 +192,7 @@ function startGame() {
   started = true
   window.__scene3dYaw = yaw
   window.__scene3dPitch = pitch
+  window.__scene3dWantLock = true
   showBanner("Night falls. They are coming.")
   updateCamera(0)
 }
@@ -205,7 +207,10 @@ function backToTitle() {
   loadBoard()
 }
 
-function resumeGame() { paused = false }
+function resumeGame() {
+  paused = false
+  window.__scene3dWantLock = true
+}
 function toggleHelp() { showHelp = !showHelp }
 
 function showBanner(text) {
