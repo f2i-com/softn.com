@@ -12,8 +12,8 @@ export interface LoopProps {
   interval?: number;
   /** Whether the timer is running (default false) */
   running?: boolean;
-  /** Callback fired each interval */
-  onTick?: () => void | Promise<void>;
+  /** Callback fired each interval, optionally receiving delta-time in seconds */
+  onTick?: (dt?: number) => void | Promise<void>;
 }
 
 export function Loop({ interval = 1000, running = false, onTick }: LoopProps) {
@@ -26,6 +26,7 @@ export function Loop({ interval = 1000, running = false, onTick }: LoopProps) {
     let cancelled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let inFlight = false;
+    let lastTickTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
     const scheduleNext = (delayMs: number) => {
       if (cancelled) return;
@@ -41,8 +42,10 @@ export function Loop({ interval = 1000, running = false, onTick }: LoopProps) {
       }
       inFlight = true;
       const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const dt = Math.min(0.2, Math.max(0.001, (startedAt - lastTickTime) / 1000));
+      lastTickTime = startedAt;
       Promise.resolve()
-        .then(() => onTickRef.current?.())
+        .then(() => onTickRef.current?.(dt))
         .catch(() => {
           // Swallow tick errors so one failure does not permanently stop the loop.
         })

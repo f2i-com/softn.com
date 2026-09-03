@@ -22,6 +22,7 @@ export default defineConfig(({ mode }) => {
     ['/web', env.VITE_WEB_PROXY_TARGET],
     ['/builder', env.VITE_BUILDER_PROXY_TARGET],
     ['/studio', env.VITE_STUDIO_PROXY_TARGET],
+    ['/api', env.VITE_API_PROXY_TARGET],
   ].filter((entry): entry is [string, string] => Boolean(entry[1]));
   const demoProxy = {
     target: webRuntimeTarget,
