@@ -34,10 +34,10 @@
   {
     "id": "maze-escape-3d",
     "file": "MazeEscape3D.softn",
-    "name": "MazeEscape3D",
-    "description": "3D maze escape game — navigate corridors to reach the golden portal",
+    "name": "Maze Escape 3D",
+    "description": "A first-person maze carved fresh every game: find the golden ring, with a minimap that fills in as you explore and a best time that sticks",
     "primary": "#4ade80",
-    "size": 12627
+    "size": 22218
   },
   {
     "id": "notes",

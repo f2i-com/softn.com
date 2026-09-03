@@ -612,17 +612,25 @@ final class Categories
         ['productivity', 'Productivity', 'Notes, planners, trackers', '📝', 40],
         ['education', 'Learning', 'Teach, quiz, explain', '📚', 50],
         ['ai', 'AI', 'Apps that run a model', '🤖', 60],
-        ['experiments', 'Experiments', 'Demos of what the runtime can do', '🧪', 70],
-        ['demos', 'Showcase', 'Reference apps from the SoftN team', '✨', 80],
+        ['experiments', 'Experiments', 'Trying something out', '🧪', 70],
+        ['demos', 'Examples', 'Sample apps that show what SoftN can do, not things to rely on', '🧩', 80],
         ['other', 'Other', 'Everything else', '📦', 90],
     ];
 
     public static function ensure(): void
     {
+        // Once a request: the core rows are written in, and a core row whose
+        // wording changed in a release is brought up to date, so a rename here
+        // reaches a database that was seeded by an older version.
+        static $done = false;
+        if ($done) return;
+        $done = true;
         $pdo = Db::catalog();
-        $count = (int) $pdo->query('SELECT COUNT(*) FROM categories')->fetchColumn();
-        if ($count > 0) return;
-        $ins = $pdo->prepare("INSERT OR IGNORE INTO categories (id, name, description, emoji, status, sort, created_at) VALUES (?, ?, ?, ?, 'core', ?, ?)");
+        $ins = $pdo->prepare(<<<'SQL'
+INSERT INTO categories (id, name, description, emoji, status, sort, created_at) VALUES (?, ?, ?, ?, 'core', ?, ?)
+ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, emoji = excluded.emoji, sort = excluded.sort
+WHERE categories.status = 'core'
+SQL);
         foreach (self::CORE as [$id, $name, $desc, $emoji, $sort]) $ins->execute([$id, $name, $desc, $emoji, $sort, time()]);
     }
 

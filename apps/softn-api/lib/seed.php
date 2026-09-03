@@ -13,11 +13,11 @@ final class Seed
     private const CATEGORY = [
         'snake-game' => 'games', 'pocket' => 'games', 'maze-escape-3d' => 'games', 'texas-holdem' => 'games',
         'promptly-unemployed' => 'games', 'the-office' => 'games', 'blockscape' => 'games', 'dead-hours' => 'games', 'twenty48' => 'games', 'blockfall' => 'games',
-        'notes' => 'productivity', 'glamour-studio' => 'productivity',
-        'device-kit' => 'tools', 'warble-wire' => 'tools',
-        'ai-chat' => 'ai', 'ai-demo' => 'ai',
-        'gpu-demo' => 'experiments', 'three-demo' => 'experiments',
-        'showcase' => 'demos', 'foundation-fixture' => 'demos',
+        'warble-wire' => 'tools', 'ai-chat' => 'ai',
+        // Sample apps: they show what the runtime can do rather than being
+        // things to rely on, and the directory files them as such.
+        'notes' => 'demos', 'glamour-studio' => 'demos', 'device-kit' => 'demos', 'showcase' => 'demos',
+        'gpu-demo' => 'demos', 'three-demo' => 'demos', 'ai-demo' => 'demos', 'foundation-fixture' => 'demos',
     ];
 
     private const TAGS = [

@@ -1,325 +1,389 @@
-  let maze = [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,0,0,0,0,0,1,0,0,0,1,1,0,1,0,1,0,1,1,1,0,1,0,1,0,1,1,0,1,0,0,0,0,0,1,0,0,0,1,0,1,1,0,1,1,1,1,0,1,1,1,1,0,1,0,1,1,0,0,0,0,1,0,0,0,0,1,0,0,0,1,1,1,1,1,0,1,1,1,0,1,1,1,1,0,1,1,0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,0,1,1,1,1,1,0,1,1,1,0,1,0,1,1,0,1,0,0,0,0,0,1,0,0,0,0,0,1,1,0,1,0,1,1,1,1,1,0,1,1,1,1,1,1,0,0,0,1,0,0,0,0,0,0,0,0,0,1,1,1,1,0,1,0,1,1,1,1,1,1,1,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
-  let mRows = 15
-  let mCols = 15
-  let objects = []
-  let lights = []
-  let cameraPos = {x: 2, y: 1.5, z: 2}
-  let cameraLookAt = {x: 7, y: 1.5, z: 2}
-  let playerX = 2
-  let playerZ = 2
-  let playerAngle = Math.PI / 2
-  let running = false
-  let gameState = "idle"
-  let statusText = "Press Start to begin"
-  let startTime = 0
-  let timerDisplay = "0:00"
-  let staticObjs = []
+// Maze Escape 3D — a fresh maze every game, carved by a depth-first walk over
+// a 15×15 grid, walked in first person with the pointer locked, with a
+// minimap that fills in as you go and a best time kept in the browser.
+//
+// The loop is `gameStep` (never tick/update/animate/render, which the runtime
+// may drop when its queue is busy).
 
-  function _init() {
-    // Clean up any previous listeners before registering new ones
-    if (window.__mazeCleanup) {
-      window.__mazeCleanup()
-    }
+let TICK_MS = 33
+let DT = 0.033
+let ROWS = 15
+let COLS = 15
+let CELL = 2
+let MOVE = 3.6
+let RUN = 5.4
+let P_R = 0.32
+let EYE = 1.5
 
-    window.__mazeKeys = {w: false, a: false, s: false, d: false}
-    window.__mazeGameActive = true
+// Synced to the UI.
+let objects = []
+let sceneStatic = []
+let lights = []
+let cameraPos = { x: 3, y: 1.5, z: 3 }
+let cameraLookAt = { x: 8, y: 1.5, z: 3 }
+let sceneFog = { color: "#0b0e14", near: 6, far: 26 }
+let started = false
+let paused = false
+let won = false
+let touchMode = false
+let timeText = "0:00"
+let bestText = "—"
+let mapItems = []
+let toast = ""
+let toastTicks = 0
 
-    function isLeftTurnKey(e) {
-      let k = e.key || ""
-      let c = e.code || ""
-      return k === "a" || k === "A" || k === "ArrowLeft" || c === "KeyA" || c === "ArrowLeft"
-    }
+// VM-owned.
+let maze = []
+let visited = []
+let px = 3
+let pz = 3
+let yaw = Math.PI / 2
+let pitch = 0
+let vx = 0
+let vz = 0
+let startTime = 0
+let elapsedMs = 0
+let bestMs = 0
+let exitX = 13
+let exitZ = 13
+let rngSeed = 1
+let lastLocked = false
+let bobPhase = 0
+let steps = 0
 
-    function isRightTurnKey(e) {
-      let k = e.key || ""
-      let c = e.code || ""
-      return k === "d" || k === "D" || k === "ArrowRight" || c === "KeyD" || c === "ArrowRight"
-    }
+function myRand() {
+  rngSeed = (rngSeed * 48271) % 2147483647
+  return rngSeed / 2147483647
+}
 
-    function isForwardKey(e) {
-      let k = e.key || ""
-      let c = e.code || ""
-      return k === "w" || k === "W" || k === "ArrowUp" || c === "KeyW" || c === "ArrowUp"
-    }
+function isUiControl(e) {
+  let tag = e.targetTag || ""
+  return tag === "input" || tag === "textarea" || tag === "select" || tag === "button" || !!e.targetEditable
+}
 
-    function isBackKey(e) {
-      let k = e.key || ""
-      let c = e.code || ""
-      return k === "s" || k === "S" || k === "ArrowDown" || c === "KeyS" || c === "ArrowDown"
-    }
+function _init() {
+  if (window.__mzCleanup) { window.__mzCleanup() }
+  rngSeed = (Date.now() % 100000) + 29
+  window.__mzKeys = { w: false, a: false, s: false, d: false, run: false }
+  window.__mzTouch = false
+  window.__scene3dLocked = false
+  window.__scene3dWantLock = false
 
-    function onKeyDown(e) {
-      if (!window.__mazeGameActive) return
-      if (isForwardKey(e)) { e.preventDefault(); window.__mazeKeys.w = true }
-      if (isLeftTurnKey(e)) { e.preventDefault(); window.__mazeKeys.a = true }
-      if (isBackKey(e)) { e.preventDefault(); window.__mazeKeys.s = true }
-      if (isRightTurnKey(e)) { e.preventDefault(); window.__mazeKeys.d = true }
-    }
-    function onKeyUp(e) {
-      if (isForwardKey(e)) { window.__mazeKeys.w = false }
-      if (isLeftTurnKey(e)) { window.__mazeKeys.a = false }
-      if (isBackKey(e)) { window.__mazeKeys.s = false }
-      if (isRightTurnKey(e)) { window.__mazeKeys.d = false }
-    }
-    function onBlur() {
-      window.__mazeKeys = {w: false, a: false, s: false, d: false}
-    }
-
-    // Bind on window only (FormLogic runtime exposes window, not document).
-    window.addEventListener("keydown", onKeyDown, true)
-    window.addEventListener("keyup", onKeyUp, true)
-    window.addEventListener("blur", onBlur)
-
-    window.__mazeCleanup = function() {
-      window.removeEventListener("keydown", onKeyDown, true)
-      window.removeEventListener("keyup", onKeyUp, true)
-      window.removeEventListener("blur", onBlur)
-      window.__mazeGameActive = false
-      window.__mazeCleanup = null
-    }
-
-    buildMaze()
-    buildScene()
+  function onKeyDown(e) {
+    if (isUiControl(e)) { return }
+    let k = window.__mzKeys
+    let key = e.key || ""
+    if (key === "w" || key === "W" || key === "ArrowUp") { k.w = true; e.preventDefault() }
+    else if (key === "s" || key === "S" || key === "ArrowDown") { k.s = true; e.preventDefault() }
+    else if (key === "a" || key === "A" || key === "ArrowLeft") { k.a = true; e.preventDefault() }
+    else if (key === "d" || key === "D" || key === "ArrowRight") { k.d = true; e.preventDefault() }
+    else if (key === "Shift") { k.run = true }
+  }
+  function onKeyUp(e) {
+    let k = window.__mzKeys
+    let key = e.key || ""
+    if (key === "w" || key === "W" || key === "ArrowUp") { k.w = false }
+    else if (key === "s" || key === "S" || key === "ArrowDown") { k.s = false }
+    else if (key === "a" || key === "A" || key === "ArrowLeft") { k.a = false }
+    else if (key === "d" || key === "D" || key === "ArrowRight") { k.d = false }
+    else if (key === "Shift") { k.run = false }
+  }
+  function onBlur() { window.__mzKeys = { w: false, a: false, s: false, d: false, run: false } }
+  function onTouch(e) { window.__mzTouch = true }
+  window.addEventListener("keydown", onKeyDown, true)
+  window.addEventListener("keyup", onKeyUp, true)
+  window.addEventListener("blur", onBlur)
+  window.addEventListener("touchstart", onTouch)
+  window.__mzCleanup = function () {
+    window.removeEventListener("keydown", onKeyDown, true)
+    window.removeEventListener("keyup", onKeyUp, true)
+    window.removeEventListener("blur", onBlur)
+    window.removeEventListener("touchstart", onTouch)
   }
 
-  function buildMaze() {
-    let walls = []
-    let row = 0
-    while (row < mRows) {
-      let col = 0
-      while (col < mCols) {
-        if (maze[row * mCols + col] === 1) {
-          let shade = ((row + col) % 3 === 0) ? "#7c8594" : ((row + col) % 3 === 1 ? "#6b7280" : "#8b95a5")
-          walls.push({
-            id: "w" + row + "_" + col,
-            type: "box",
-            position: {x: col * 2, y: 1.25, z: row * 2},
-            width: 2,
-            height: 2.5,
-            depth: 2,
-            color: shade,
-            metalness: 0.1,
-            roughness: 0.85,
-            receiveShadow: true
-          })
+  try { bestMs = parseInt(localStorage.getItem("maze3d:best") || "0") || 0 } catch (err) { bestMs = 0 }
+  bestText = bestMs > 0 ? clock(bestMs) : "—"
+  carveMaze()
+  buildScene()
+  spawn()
+  titleAngle = 0
+  buildLights()
+  composeObjects()
+  buildMap()
+}
+
+// ---- The maze ------------------------------------------------------------
+
+// Depth-first carving on the odd cells of an all-wall grid: every cell is
+// reachable, there is exactly one route between any two, and the dead ends
+// are where the minimap earns its place.
+function carveMaze() {
+  maze = []
+  let i = 0
+  while (i < ROWS * COLS) { maze.push(1); i = i + 1 }
+  let stack = [[1, 1]]
+  maze[1 * COLS + 1] = 0
+  while (stack.length > 0) {
+    let top = stack[stack.length - 1]
+    let r = top[0]
+    let c = top[1]
+    let options = []
+    if (r - 2 >= 1 && maze[(r - 2) * COLS + c] === 1) { options.push([r - 2, c, r - 1, c]) }
+    if (r + 2 < ROWS - 1 && maze[(r + 2) * COLS + c] === 1) { options.push([r + 2, c, r + 1, c]) }
+    if (c - 2 >= 1 && maze[r * COLS + c - 2] === 1) { options.push([r, c - 2, r, c - 1]) }
+    if (c + 2 < COLS - 1 && maze[r * COLS + c + 2] === 1) { options.push([r, c + 2, r, c + 1]) }
+    if (options.length === 0) {
+      stack = stack.slice(0, stack.length - 1)
+    } else {
+      let pick = options[Math.floor(myRand() * options.length)]
+      maze[pick[2] * COLS + pick[3]] = 0
+      maze[pick[0] * COLS + pick[1]] = 0
+      stack.push([pick[0], pick[1]])
+    }
+  }
+  // A few extra openings so there is more than one way round.
+  let n = 0
+  while (n < 6) {
+    let r = 1 + Math.floor(myRand() * (ROWS - 2))
+    let c = 1 + Math.floor(myRand() * (COLS - 2))
+    if (maze[r * COLS + c] === 1 && ((r % 2 === 1) !== (c % 2 === 1))) { maze[r * COLS + c] = 0; n = n + 1 }
+  }
+  exitX = COLS - 2
+  exitZ = ROWS - 2
+  visited = []
+  i = 0
+  while (i < ROWS * COLS) { visited.push(0); i = i + 1 }
+}
+
+function wallAt(col, row) {
+  if (row < 0 || row >= ROWS || col < 0 || col >= COLS) { return true }
+  return maze[row * COLS + col] === 1
+}
+
+function blocked(x, z) {
+  let c0 = Math.floor((x - P_R) / CELL + 0.5)
+  let c1 = Math.floor((x + P_R) / CELL + 0.5)
+  let r0 = Math.floor((z - P_R) / CELL + 0.5)
+  let r1 = Math.floor((z + P_R) / CELL + 0.5)
+  let r = r0
+  while (r <= r1) {
+    let c = c0
+    while (c <= c1) {
+      if (wallAt(c, r)) {
+        let wx0 = c * CELL - CELL / 2
+        let wx1 = c * CELL + CELL / 2
+        let wz0 = r * CELL - CELL / 2
+        let wz1 = r * CELL + CELL / 2
+        if (x + P_R > wx0 && x - P_R < wx1 && z + P_R > wz0 && z - P_R < wz1) { return true }
+      }
+      c = c + 1
+    }
+    r = r + 1
+  }
+  return false
+}
+
+// ---- Scene ---------------------------------------------------------------
+
+function buildScene() {
+  let out = []
+  let shades = ["#525b6b", "#5d6778", "#485163"]
+  let r = 0
+  while (r < ROWS) {
+    let c = 0
+    while (c < COLS) {
+      if (maze[r * COLS + c] === 1) {
+        // Interior walls that no corridor touches are never seen: skip them.
+        let exposed = !wallAt(c - 1, r) || !wallAt(c + 1, r) || !wallAt(c, r - 1) || !wallAt(c, r + 1)
+        if (exposed) {
+          out.push({ id: "w" + r + "_" + c, type: "box", position: { x: c * CELL, y: 1.3, z: r * CELL }, width: CELL, height: 2.6, depth: CELL, color: shades[(r * 3 + c * 5) % 3], roughness: 0.9, metalness: 0.05 })
         }
-        col = col + 1
       }
-      row = row + 1
+      c = c + 1
     }
+    r = r + 1
+  }
+  let mid = (COLS - 1) * CELL / 2
+  out.push({ id: "floor", type: "plane", position: { x: mid, y: 0, z: mid }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, width: COLS * CELL + 4, height: ROWS * CELL + 4, color: "#2a3140", roughness: 1 })
+  out.push({ id: "ceiling", type: "plane", position: { x: mid, y: 2.6, z: mid }, rotation: { x: Math.PI / 2, y: 0, z: 0 }, width: COLS * CELL + 4, height: ROWS * CELL + 4, color: "#1b2029", roughness: 1 })
+  // Skirting along the corridors gives the eye a line to follow in the fog.
+  out.push({ id: "exit", type: "torus", position: { x: exitX * CELL, y: 1.2, z: exitZ * CELL }, radius: 0.7, tube: 0.12, color: "#fbbf24", emissive: "#f59e0b", emissiveIntensity: 1.6, animate: { rotateY: 0.03, rotateX: 0.015 } })
+  out.push({ id: "exitpad", type: "cylinder", position: { x: exitX * CELL, y: 0.03, z: exitZ * CELL }, radius: 0.8, height: 0.06, color: "#fbbf24", emissive: "#f59e0b", emissiveIntensity: 0.5 })
+  out.push({ id: "startpad", type: "cylinder", position: { x: CELL, y: 0.03, z: CELL }, radius: 0.8, height: 0.06, color: "#4ade80", emissive: "#22c55e", emissiveIntensity: 0.35 })
+  sceneStatic = out
+}
 
-    walls.push({
-      id: "floor",
-      type: "plane",
-      position: {x: 14, y: 0, z: 14},
-      rotation: {x: -Math.PI / 2, y: 0, z: 0},
-      width: 32,
-      height: 32,
-      color: "#2d3748",
-      roughness: 0.9,
-      receiveShadow: true
-    })
+function buildLights() {
+  lights = [
+    { id: "ambient", type: "ambient", color: "#9fb0d0", intensity: 0.3 },
+    { id: "hemi", type: "hemisphere", color: "#b8c6e6", groundColor: "#3b4252", intensity: 0.7 },
+    // A hand torch: bright enough to read the corridor, dim enough that a
+    // wall at arm's length is a wall and not a white sheet.
+    { id: "torch", type: "point", color: "#ffd9a0", intensity: 9, distance: 14, decay: 2, position: { x: px, y: 2.1, z: pz } },
+    { id: "exitglow", type: "point", color: "#fbbf24", intensity: 18, distance: 16, decay: 2, position: { x: exitX * CELL, y: 2, z: exitZ * CELL } }
+  ]
+}
 
-    walls.push({
-      id: "ceiling",
-      type: "plane",
-      position: {x: 14, y: 2.5, z: 14},
-      rotation: {x: Math.PI / 2, y: 0, z: 0},
-      width: 32,
-      height: 32,
-      color: "#374151",
-      roughness: 0.9
-    })
+function composeObjects() {
+  objects = []
+}
 
-    walls.push({
-      id: "exit",
-      type: "torus",
-      position: {x: 26, y: 1.2, z: 26},
-      radius: 0.7,
-      color: "#fbbf24",
-      emissive: "#f59e0b",
-      emissiveIntensity: 1.5,
-      animate: {rotateY: 0.03, rotateX: 0.015}
-    })
+// ---- Flow ----------------------------------------------------------------
 
-    walls.push({
-      id: "exitlight",
-      type: "sphere",
-      position: {x: 26, y: 0.1, z: 26},
-      radius: 0.6,
-      color: "#fbbf24",
-      emissive: "#f59e0b",
-      emissiveIntensity: 0.6,
-      opacity: 0.25
-    })
+let titleAngle = 0
+function titleDrift() {
+  titleAngle = titleAngle + 0.004
+  yaw = Math.PI / 2 + Math.sin(titleAngle) * 0.5
+  pitch = -0.05
+  window.__scene3dYaw = yaw
+  window.__scene3dPitch = pitch
+  updateCamera()
+}
 
-    staticObjs = walls
+function spawn() {
+  px = CELL
+  pz = CELL
+  vx = 0
+  vz = 0
+  yaw = wallAt(2, 1) ? 0 : Math.PI / 2
+  pitch = 0
+  window.__scene3dYaw = yaw
+  window.__scene3dPitch = pitch
+  updateCamera()
+}
+
+function startGame() {
+  carveMaze()
+  buildScene()
+  spawn()
+  startTime = Date.now()
+  elapsedMs = 0
+  steps = 0
+  won = false
+  paused = false
+  started = true
+  timeText = "0:00"
+  window.__scene3dWantLock = true
+  showToast("Find the golden ring.")
+  buildMap()
+}
+
+function resumeGame() {
+  paused = false
+  startTime = Date.now() - elapsedMs
+  window.__scene3dWantLock = true
+}
+
+function backToTitle() {
+  started = false
+  won = false
+  paused = false
+}
+
+function showToast(text) {
+  toast = text
+  toastTicks = Math.ceil(2400 / TICK_MS)
+}
+
+function clock(ms) {
+  let s = Math.floor(ms / 1000)
+  let m = Math.floor(s / 60)
+  let r = s - m * 60
+  let t = Math.floor((ms % 1000) / 100)
+  return m + ":" + (r < 10 ? "0" + r : "" + r) + "." + t
+}
+
+function updateCamera() {
+  let bob = 0
+  if ((vx * vx + vz * vz) > 1) { bob = Math.sin(bobPhase) * 0.03 }
+  cameraPos = { x: px, y: EYE + bob, z: pz }
+  let cp = Math.cos(pitch)
+  cameraLookAt = { x: px + Math.sin(yaw) * cp * 5, y: EYE + Math.sin(pitch) * 5, z: pz + Math.cos(yaw) * cp * 5 }
+}
+
+function gameStep() {
+  if (toastTicks > 0) { toastTicks = toastTicks - 1; if (toastTicks === 0) { toast = "" } }
+  if (!started) {
+    titleDrift()
+    buildLights()
+    return
+  }
+  let locked = !!window.__scene3dLocked
+  if (lastLocked && !locked && !touchMode && !won) { paused = true }
+  lastLocked = locked
+  if (window.__mzTouch) { touchMode = true }
+  if (paused || won) { return }
+
+  if (window.__scene3dYaw !== undefined) { yaw = window.__scene3dYaw }
+  if (window.__scene3dPitch !== undefined) { pitch = window.__scene3dPitch }
+  let k = window.__mzKeys
+  let fwd = (k.w ? 1 : 0) - (k.s ? 1 : 0)
+  let str = (k.d ? 1 : 0) - (k.a ? 1 : 0)
+  let len = Math.sqrt(fwd * fwd + str * str)
+  if (len > 0) { fwd = fwd / len; str = str / len }
+  let speed = k.run ? RUN : MOVE
+  let wx = Math.sin(yaw) * fwd - Math.cos(yaw) * str
+  let wz = Math.cos(yaw) * fwd + Math.sin(yaw) * str
+  vx = vx + (wx * speed - vx) * 0.35
+  vz = vz + (wz * speed - vz) * 0.35
+  let nx = px + vx * DT
+  if (blocked(nx, pz)) { vx = 0 } else { px = nx }
+  let nz = pz + vz * DT
+  if (blocked(px, nz)) { vz = 0 } else { pz = nz }
+  if ((vx * vx + vz * vz) > 1) { bobPhase = bobPhase + 0.28 }
+
+  let cc = Math.floor(px / CELL + 0.5)
+  let cr = Math.floor(pz / CELL + 0.5)
+  if (cr >= 0 && cr < ROWS && cc >= 0 && cc < COLS && visited[cr * COLS + cc] === 0) {
+    visited[cr * COLS + cc] = 1
+    steps = steps + 1
+    buildMap()
   }
 
-  function buildScene() {
-    let objs = []
-    let i = 0
-    while (i < staticObjs.length) {
-      objs.push(staticObjs[i])
-      i = i + 1
-    }
+  elapsedMs = Date.now() - startTime
+  timeText = clock(elapsedMs)
+  let dx = px - exitX * CELL
+  let dz = pz - exitZ * CELL
+  if (dx * dx + dz * dz < 1.1) { finish() }
 
-    objects = objs
+  updateCamera()
+  buildLights()
+}
 
-    lights = [
-      {id: "ambient", type: "ambient", color: "#99aacc", intensity: 1.2},
-      {id: "hemi", type: "hemisphere", color: "#aabbdd", groundColor: "#556677", intensity: 0.6},
-      {id: "torch", type: "point", color: "#ffcc88", intensity: 3.5, position: {x: playerX, y: 2.0, z: playerZ}},
-      {id: "exitglow", type: "point", color: "#fbbf24", intensity: 2.5, position: {x: 26, y: 2, z: 26}}
-    ]
-
-    updateCamera()
+function finish() {
+  won = true
+  if (bestMs === 0 || elapsedMs < bestMs) {
+    bestMs = elapsedMs
+    bestText = clock(bestMs)
+    try { localStorage.setItem("maze3d:best", String(bestMs)) } catch (err) {}
+    showToast("A new best time.")
   }
+}
 
-  function updateCamera() {
-    cameraPos = {x: playerX, y: 1.5, z: playerZ}
-    // Keep look direction derived from current yaw so keyboard turning works
-    // even when Scene3D mouse-look extensions are unavailable.
-    let lookDist = 5
-    cameraLookAt = {
-      x: playerX + Math.sin(playerAngle) * lookDist,
-      y: 1.5,
-      z: playerZ + Math.cos(playerAngle) * lookDist
+// The minimap: walls, the cells you have stood in, the exit and you.
+function buildMap() {
+  let items = []
+  let r = 0
+  while (r < ROWS) {
+    let c = 0
+    while (c < COLS) {
+      if (maze[r * COLS + c] === 1) { items.push({ x: c, y: r, color: "#3b4252" }) }
+      else if (visited[r * COLS + c] === 1) { items.push({ x: c, y: r, color: "#1f5a3a" }) }
+      c = c + 1
     }
+    r = r + 1
   }
+  items.push({ x: exitX, y: exitZ, color: "#fbbf24", borderRadius: "50%" })
+  items.push({ x: Math.floor(px / CELL + 0.5), y: Math.floor(pz / CELL + 0.5), color: "#4ade80", borderRadius: "50%" })
+  mapItems = items
+}
 
-  function checkCollision(px, pz) {
-    let pr = 0.35
-    let minCol = Math.floor((px - pr) / 2) - 1
-    let maxCol = Math.floor((px + pr) / 2) + 1
-    let minRow = Math.floor((pz - pr) / 2) - 1
-    let maxRow = Math.floor((pz + pr) / 2) + 1
-
-    let row = minRow
-    while (row <= maxRow) {
-      let col = minCol
-      while (col <= maxCol) {
-        if (row >= 0 && row < mRows && col >= 0 && col < mCols) {
-          if (maze[row * mCols + col] === 1) {
-            let wMinX = col * 2 - 1
-            let wMaxX = col * 2 + 1
-            let wMinZ = row * 2 - 1
-            let wMaxZ = row * 2 + 1
-            if (px + pr > wMinX && px - pr < wMaxX && pz + pr > wMinZ && pz - pr < wMaxZ) {
-              return true
-            }
-          }
-        }
-        col = col + 1
-      }
-      row = row + 1
-    }
-    return false
-  }
-
-  function tick() {
-    if (gameState !== "playing") return
-
-    let secs = Math.floor((Date.now() - startTime) / 1000)
-    let mins = Math.floor(secs / 60)
-    let remainSecs = secs - mins * 60
-    let pad = ""
-    if (remainSecs < 10) { pad = "0" }
-    timerDisplay = mins + ":" + pad + remainSecs
-    statusText = "Time: " + timerDisplay
-
-    let keys = window.__mazeKeys
-    if (!keys) return
-
-    let moveSpeed = 0.12
-    let turnSpeed = 0.055
-
-    // Sync angle with Scene3D mouse look yaw (updated at 60fps)
-    if (window.__scene3dYaw !== undefined) {
-      playerAngle = window.__scene3dYaw
-    }
-
-    // Keyboard turning writes directly to the shared yaw
-    let turned = false
-    if (keys.a) {
-      playerAngle = playerAngle + turnSpeed
-      window.__scene3dYaw = playerAngle
-      turned = true
-    }
-    if (keys.d) {
-      playerAngle = playerAngle - turnSpeed
-      window.__scene3dYaw = playerAngle
-      turned = true
-    }
-
-    let dx = 0
-    let dz = 0
-    if (keys.w) {
-      dx = Math.sin(playerAngle) * moveSpeed
-      dz = Math.cos(playerAngle) * moveSpeed
-    }
-    if (keys.s) {
-      dx = dx - Math.sin(playerAngle) * moveSpeed
-      dz = dz - Math.cos(playerAngle) * moveSpeed
-    }
-
-    if (dx === 0 && dz === 0) {
-      if (turned) {
-        updateCamera()
-      }
-      return
-    }
-
-    let newX = playerX + dx
-    if (!checkCollision(newX, playerZ)) {
-      playerX = newX
-    }
-
-    let newZ = playerZ + dz
-    if (!checkCollision(playerX, newZ)) {
-      playerZ = newZ
-    }
-
-    let distSq = (playerX - 26) * (playerX - 26) + (playerZ - 26) * (playerZ - 26)
-    if (distSq < 2.25) {
-      gameState = "won"
-      running = false
-      statusText = "You Escaped! Time: " + timerDisplay
-    }
-
-    updateCamera()
-    lights = [
-      {id: "ambient", type: "ambient", color: "#99aacc", intensity: 1.2},
-      {id: "hemi", type: "hemisphere", color: "#aabbdd", groundColor: "#556677", intensity: 0.6},
-      {id: "torch", type: "point", color: "#ffcc88", intensity: 3.5, position: {x: playerX, y: 2.0, z: playerZ}},
-      {id: "exitglow", type: "point", color: "#fbbf24", intensity: 2.5, position: {x: 26, y: 2, z: 26}}
-    ]
-  }
-
-  function handleDPad(direction) {
-    if (direction === "up") { window.__mazeKeys.w = true }
-    if (direction === "down") { window.__mazeKeys.s = true }
-    if (direction === "left") { window.__mazeKeys.a = true }
-    if (direction === "right") { window.__mazeKeys.d = true }
-  }
-
-  function handleDPadRelease(direction) {
-    if (direction === "up") { window.__mazeKeys.w = false }
-    if (direction === "down") { window.__mazeKeys.s = false }
-    if (direction === "left") { window.__mazeKeys.a = false }
-    if (direction === "right") { window.__mazeKeys.d = false }
-  }
-
-  function startGame() {
-    playerX = 2
-    playerZ = 2
-    playerAngle = Math.PI / 2
-    startTime = Date.now()
-    timerDisplay = "0:00"
-    gameState = "playing"
-    statusText = "Time: 0:00"
-    running = true
-    window.__scene3dYaw = playerAngle
-    window.__scene3dPitch = 0
-    buildScene()
-  }
+function padPress(dir) {
+  let k = window.__mzKeys
+  if (dir === "up") { k.w = true } else if (dir === "down") { k.s = true } else if (dir === "left") { k.a = true } else if (dir === "right") { k.d = true }
+}
+function padRelease(dir) {
+  let k = window.__mzKeys
+  if (dir === "up") { k.w = false } else if (dir === "down") { k.s = false } else if (dir === "left") { k.a = false } else if (dir === "right") { k.d = false }
+}
+function onSceneClick(hit) {}
