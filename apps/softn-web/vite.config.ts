@@ -39,13 +39,17 @@ function copyDirRecursive(srcDir: string, destDir: string) {
 }
 
 function coreWorkerAssetPlugin() {
-  const workerBaseRoute = '/assets/core-runtime/';
   return {
     name: 'core-worker-asset',
-    configureServer(server: { middlewares: { use: (route: string, fn: (req: { url?: string }, res: { statusCode: number; setHeader: (name: string, value: string) => void; end: (body: string | Buffer) => void }, next: () => void) => void) => void } }) {
-      server.middlewares.use(workerBaseRoute, (req: { url?: string }, res, next) => {
-        const urlPath = String(req.url || '');
-        const relPath = urlPath.replace(workerBaseRoute, '');
+    configureServer(server: { middlewares: { use: (fn: (req: { url?: string }, res: { statusCode: number; setHeader: (name: string, value: string) => void; end: (body: string | Buffer) => void }, next: () => void) => void) => void } }) {
+      server.middlewares.use((req: { url?: string }, res, next) => {
+        const rawUrl = String(req.url || '');
+        const match = rawUrl.match(/(?:^|\/)assets\/core-runtime\/([^?#]+)/);
+        if (!match) {
+          next();
+          return;
+        }
+        const relPath = match[1];
         if (!relPath || relPath.includes('..')) {
           next();
           return;

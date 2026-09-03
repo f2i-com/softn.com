@@ -1,4 +1,4 @@
-﻿import { act } from 'react';
+import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { createRoot, type Root } from 'react-dom/client';
@@ -150,5 +150,46 @@ describe('Scene3D enhanced features', () => {
       }
     });
     expect(foundDirLight).toBe(true);
+  });
+
+  it('applies procedural textures to materials', () => {
+    const objects: Scene3DObject[] = [
+      { id: 'stonewall', type: 'box', width: 2, height: 2, depth: 0.5, color: '#555555', texture: 'stone', textureRepeat: { x: 2, y: 2 } },
+      { id: 'woodfloor', type: 'plane', width: 10, height: 10, color: '#885522', texture: 'wood' },
+    ];
+    act(() => root.render(<Scene3D objects={objects} />));
+    const canvas = container.querySelector('canvas') as (HTMLCanvasElement & { __softnScene?: THREE.Scene }) | null;
+    const scene = canvas?.__softnScene;
+
+    let stoneMesh: THREE.Mesh | undefined;
+    scene?.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh && child.userData.__softnId === 'stonewall') {
+        stoneMesh = child as THREE.Mesh;
+      }
+    });
+    expect(stoneMesh).toBeDefined();
+    const mat = stoneMesh?.material as THREE.MeshStandardMaterial;
+    expect(mat).toBeDefined();
+    expect(mat.roughness).toBeGreaterThan(0.3);
+  });
+
+  it('supports atmospheric sky and helper grid', () => {
+    act(() => root.render(<Scene3D sky="sunset" grid={{ size: 40, divisions: 20 }} />));
+    const canvas = container.querySelector('canvas') as (HTMLCanvasElement & { __softnScene?: THREE.Scene }) | null;
+    const scene = canvas?.__softnScene;
+    expect(scene).toBeDefined();
+
+    let foundGrid = false;
+    scene?.traverse((child) => {
+      if (child instanceof THREE.GridHelper) foundGrid = true;
+    });
+    expect(foundGrid).toBe(true);
+  });
+
+  it('initializes gameControls window.__softnKeys', () => {
+    act(() => root.render(<Scene3D gameControls={true} />));
+    const win = window as unknown as { __softnKeys?: Record<string, boolean> };
+    expect(win.__softnKeys).toBeDefined();
+    expect(typeof win.__softnKeys?.w).toBe('boolean');
   });
 });

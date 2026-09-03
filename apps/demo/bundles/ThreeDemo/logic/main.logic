@@ -5,12 +5,17 @@
   let selectedId = ""
   let selectedType = ""
   let objectCount = 0
+  let currentSky = "sunset"
+  let skies = ["sunset", "day", "night", "dusk", "overcast"]
+  let skyIdx = 0
+  let useTextures = true
 
   let initialObjects = []
 
   function _init() {
     let colors = ["#6366f1", "#ec4899", "#14b8a6", "#f59e0b", "#ef4444", "#8b5cf6", "#22d3ee"]
     let types = ["box", "sphere", "torus", "cone", "dodecahedron", "icosahedron", "octahedron"]
+    let textures = ["brick", "checker", "metal", "wood", "stone", "dots", "stripes"]
     let objs = []
     let i = 0
     let count = 7
@@ -23,9 +28,12 @@
         type: types[i],
         position: {x: x, y: 0, z: z},
         color: colors[i],
-        metalness: 0.3,
-        roughness: 0.4,
+        metalness: types[i] === "metal" || types[i] === "torus" ? 0.75 : 0.3,
+        roughness: 0.35,
         wireframe: false,
+        texture: textures[i],
+        textureRepeat: { x: 2, y: 2 },
+        bumpScale: 0.05,
         castShadow: true,
         animate: {
           rotateY: 0.005 + (i * 0.003),
@@ -49,13 +57,15 @@
       type: "plane",
       position: {x: 0, y: -1.5, z: 0},
       rotation: {x: -Math.PI / 2, y: 0, z: 0},
-      width: 20,
-      height: 20,
+      width: 24,
+      height: 24,
       color: "#1e1b4b",
-      metalness: 0.1,
-      roughness: 0.9,
+      texture: "grid",
+      textureRepeat: { x: 16, y: 16 },
+      metalness: 0.2,
+      roughness: 0.8,
       receiveShadow: true,
-      opacity: 0.5
+      opacity: 0.85
     }
     objs.push(ground)
 
@@ -112,6 +122,36 @@
       }
       if (obj.id !== "ground") {
         copy.color = palette[Math.floor(Math.random() * palette.length)]
+      }
+      newObjs.push(copy)
+      i = i + 1
+    }
+    objects = newObjs
+  }
+
+  function cycleSky() {
+    skyIdx = (skyIdx + 1) % skies.length
+    currentSky = skies[skyIdx]
+  }
+
+  function toggleTextures() {
+    useTextures = !useTextures
+    let texList = ["brick", "checker", "metal", "wood", "stone", "dots", "stripes"]
+    let newObjs = []
+    let i = 0
+    while (i < objects.length) {
+      let obj = objects[i]
+      let copy = {}
+      let keys = Object.keys(obj)
+      let k = 0
+      while (k < keys.length) {
+        copy[keys[k]] = obj[keys[k]]
+        k = k + 1
+      }
+      if (obj.id === "ground") {
+        copy.texture = useTextures ? "grid" : ""
+      } else {
+        copy.texture = useTextures ? texList[i % texList.length] : ""
       }
       newObjs.push(copy)
       i = i + 1
