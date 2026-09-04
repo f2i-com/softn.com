@@ -212,7 +212,14 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     );
     this.safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
     // Use a static URL reference so bundlers can emit and rewrite the worker asset path.
-    this.workerUrl = new URL('./core-runtime/runtime/script-worker.js', import.meta.url);
+    // The worker lives in the copy of core's dist that the web app ships as
+    // assets/core-runtime/ (see coreWorkerAssetPlugin), next to the chunk it
+    // imports and the engine .wasm it loads relative to itself. The path is
+    // built from a variable on purpose: a literal here is rewritten by Vite
+    // into a lone hashed copy under assets/, whose `../chunk-*.js` import
+    // then 404s and the worker dies with a bare `worker_error`.
+    const workerPath = './core-runtime/runtime/script-worker.js';
+    this.workerUrl = new URL(workerPath, import.meta.url);
     this.worker = new Worker(this.workerUrl, { type: 'module' });
     this.worker.onmessage = (evt: MessageEvent) => this.onWorkerMessage(evt);
     this.worker.onerror = (evt: ErrorEvent) => {
