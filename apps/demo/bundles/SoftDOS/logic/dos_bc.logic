@@ -95,7 +95,7 @@ function dosDec_mkMemGet(af, size) {
 // Every write goes past the barrier, including the ones decoded blocks make.
 function dosBc_touch(addr) {
   if (DOS_BC_CODEPAGE !== null && DOS_BC_CODEPAGE[(addr >>> 12) & 4095]) dosBc_flush();
-  if (DOS_JIT_CODEPAGE !== null && DOS_JIT_CODEPAGE[(addr >>> 12) & 4095]) dosJit_flush();
+  dosJit_touch(addr);
 }
 function dosDec_mkMemSet(af, size) {
   if (size === 1) return function (v) { let a = af() & 0xFFFFFF; dosBc_touch(a); DOS_RAM[a] = v & 0xFF; };

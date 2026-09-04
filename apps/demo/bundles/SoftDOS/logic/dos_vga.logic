@@ -402,6 +402,9 @@ let DOS_VGA_ROW_BYTES = 80;         // CRTC 13h (in words) x 2: plane bytes per 
 let DOS_VGA_SEQ_INDEX = 0;
 let DOS_VGA_GC_INDEX = 0;
 let DOS_VGA_CRTC_INDEX = 0;
+// Set by anything that changes what the screen should show; cleared once the
+// planes have been flattened into the frame buffer.
+let DOS_VGA_DIRTY = 1;
 
 function dosVga_planarInit() {
   if (DOS_VGA_VRAM === null) DOS_VGA_VRAM = new Uint8Array(4 * 65536);
@@ -418,6 +421,7 @@ function dosVga_planarReset() {
   DOS_VGA_SEQ_INDEX = 0;
   DOS_VGA_GC_INDEX = 0;
   DOS_VGA_CRTC_INDEX = 0;
+  DOS_VGA_DIRTY = 1;
 }
 
 // A byte written into the 0xA0000 window while unchained reaches every plane
@@ -425,6 +429,7 @@ function dosVga_planarReset() {
 function dosVga_writePlanar(off, v) {
   let o = off & 0xFFFF;
   let b = v & 0xFF;
+  DOS_VGA_DIRTY = 1;
   if (DOS_VGA_MAP_MASK & 1) DOS_VGA_VRAM[o] = b;
   if (DOS_VGA_MAP_MASK & 2) DOS_VGA_VRAM[65536 + o] = b;
   if (DOS_VGA_MAP_MASK & 4) DOS_VGA_VRAM[131072 + o] = b;
@@ -459,8 +464,13 @@ function dosVga_regWrite(port, v) {
   }
   if (port === 0x3D4) { DOS_VGA_CRTC_INDEX = b; return; }
   if (port === 0x3D5) {
-    if (DOS_VGA_CRTC_INDEX === 0x0C) DOS_VGA_START = (DOS_VGA_START & 0x00FF) | (b << 8);
-    else if (DOS_VGA_CRTC_INDEX === 0x0D) DOS_VGA_START = (DOS_VGA_START & 0xFF00) | b;
+    if (DOS_VGA_CRTC_INDEX === 0x0C) {
+      DOS_VGA_START = (DOS_VGA_START & 0x00FF) | (b << 8);
+      DOS_VGA_DIRTY = 1;
+    } else if (DOS_VGA_CRTC_INDEX === 0x0D) {
+      DOS_VGA_START = (DOS_VGA_START & 0xFF00) | b;
+      DOS_VGA_DIRTY = 1;
+    }
     else if (DOS_VGA_CRTC_INDEX === 0x13) {
       let rb = b * 2;
       if (rb > 0) DOS_VGA_ROW_BYTES = rb;
@@ -492,7 +502,9 @@ function dosVga_getFrame() {
   if (DOS_VIDEO_MODE === 0x13) {
     // Mode 13h: 320x200. Chained is a straight copy of the 0xA0000 window;
     // unchained has to be reassembled from the four planes.
-    if (DOS_VGA_UNCHAINED === 1) dosVga_composeUnchained();
+    if (DOS_VGA_UNCHAINED === 1) {
+      if (DOS_VGA_DIRTY === 1) { dosVga_composeUnchained(); DOS_VGA_DIRTY = 0; }
+    }
     else DOS_FB.set(DOS_RAM.subarray(0xA0000, 0xA0000 + 64000));
     return {
       format: "p8",
