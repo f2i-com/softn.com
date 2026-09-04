@@ -164,6 +164,7 @@ function dosState_reset() {
   // Loading a program writes new code at the addresses the last one used, so
   // the decoded blocks cached against those addresses must go.
   dosBc_flush();
+  dosJit_flush();
   dosInt_reset();
   dosVga_planarReset();
 

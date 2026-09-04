@@ -95,6 +95,7 @@ function dosDec_mkMemGet(af, size) {
 // Every write goes past the barrier, including the ones decoded blocks make.
 function dosBc_touch(addr) {
   if (DOS_BC_CODEPAGE !== null && DOS_BC_CODEPAGE[(addr >>> 12) & 4095]) dosBc_flush();
+  if (DOS_JIT_CODEPAGE !== null && DOS_JIT_CODEPAGE[(addr >>> 12) & 4095]) dosJit_flush();
 }
 function dosDec_mkMemSet(af, size) {
   if (size === 1) return function (v) { let a = af() & 0xFFFFFF; dosBc_touch(a); DOS_RAM[a] = v & 0xFF; };
@@ -596,6 +597,11 @@ function dosBc_build(slot, phys) {
   let pLast = ((DOS_DC - 1) >>> 12) & 4095;
   DOS_BC_CODEPAGE[pFirst] = 1;
   if (pLast !== pFirst) DOS_BC_CODEPAGE[pLast] = 1;
+  // Compiled code checks one page map inline, so mark it here as well.
+  if (DOS_JIT_CODEPAGE !== null) {
+    DOS_JIT_CODEPAGE[pFirst] = 1;
+    if (pLast !== pFirst) DOS_JIT_CODEPAGE[pLast] = 1;
+  }
   return 1;
 }
 
@@ -607,14 +613,10 @@ function dosCpu_runCycles(budget) {
   let remaining = budget;
   if (DOS_BC_TAG === null) dosBc_init();
   while (remaining > 0 && !DOS_HALTED) {
-    if (DOS_IS_32 === 1) {
-      remaining -= dosCpu_step();
-      DOS_BC_STEPS++;
-      DOS_BC_INSTR++;
-      DOS_INT_CHECK--;
-      if (DOS_INT_CHECK <= 0) { DOS_INT_CHECK = DOS_INT_CHECK_EVERY; dosInt_poll(); }
-      continue;
-    }
+    // 32-bit code is compiled rather than decoded: dos_jit.logic emits real
+    // JavaScript for a run of instructions, which is worth far more here than
+    // the closure-per-instruction cache this file builds for 16-bit code.
+    if (DOS_IS_32 === 1) { dosJit_run(remaining); return; }
     let eip = DOS_EIP;
     let phys = (((DOS_SEGS[1] << 4) + (eip & 0xFFFF)) >>> 0) & 0xFFFFFF;
     let slot = phys & 8191;
