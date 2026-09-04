@@ -33,6 +33,7 @@ let DOS_JIT_CODEPAGE = null;     // one bit per byte of compiled code
 let DOS_JIT_SPANS = null;
 let DOS_JIT_SPANS_N = 0;
 let DOS_JIT_THRESHOLD = 32;    // executions before a trace is worth its budget
+let DOS_JIT_HOPS = 32;         // traces a chain may run before the dispatcher polls
 
 // Scalars shared with generated code. Compiled functions cannot see module
 // level `let` bindings, so anything they read or write lives here.
@@ -47,6 +48,7 @@ let DOS_JIT_CALLS = 0;
 let DOS_JIT_INSNS = 0;
 let DOS_JIT_STEPS = 0;
 let DOS_JIT_FAILED = 0;
+let DOS_JIT_DEAD = 0;            // flag records and flag-word writes dropped as dead
 let DOS_JIT_TOTAL_INSNS = 0;
 
 // Decode cursor while compiling.
@@ -322,6 +324,31 @@ function dosJit_aluSupported(aop) {
 }
 
 // Record the lazy flag state for an ALU result.
+// Compiled code that writes the flag word directly keeps OF (and AF) from the
+// last operation that defined them, as the interpreter does, so a pending
+// result has to be folded first. A record of this trace's own folds as one
+// expression; at a trace head the guard has already run. Returns the
+// expression for the OF bit to keep.
+function dosJit_keptOF(body) {
+  if (DOS_JIT_PENDING !== 0) {
+    let e = dosJit_flagExpr(4);
+    if (e !== "") return "(" + e + "?2048:0)";
+    body.push(dosJit_spill() + "FC();" + dosJit_reload());
+    DOS_JIT_PENDING = 0;
+    DOS_JIT_FOLDED = 1;
+  }
+  return "(ST[1]&2048)";
+}
+
+// The flag-word write shared by shifts and double shifts: CF from cfExpr, OF
+// from ofExpr (2048 or 0), and ZF, SF and PF from the result in t2. Marked
+// so the dead-flag pass can drop it when nothing reads it before the next
+// write.
+function dosJit_flagWord(cfExpr, ofExpr, sign) {
+  return "@@F@@t3=" + cfExpr + ";t1=t2&255;t1^=t1>>4;t1^=t1>>2;t1^=t1>>1;" +
+         "ST[1]=(ST[1]&~2245)|" + ofExpr + "|(t3?1:0)|((t1&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);";
+}
+
 // The size last written into `fz` by this trace, or 0 when unknown; the
 // prologue loads it from the state array, so it starts unknown.
 let DOS_JIT_FZ = 0;
@@ -343,7 +370,7 @@ function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
   let lazy = dosJit_aluLazy(aop);
   DOS_JIT_PENDING = lazy;
   DOS_JIT_PSIZE = size;
-  let out = "fo=" + lazy + ";";
+  let out = "@@F@@fo=" + lazy + ";";
   // A logic result has no carry and no overflow; only the result is read.
   if (lazy !== 3) {
     out += "fd=" + dosJit_narrow(dExpr, size) + ";fs=" + dosJit_narrow(sExpr, size) + ";";
@@ -424,14 +451,15 @@ function dosJit_one(body, tmp) {
       if (n === 0) return 1;
       let dstE = dosJit_regGet(DOS_JM_RM, 4);
       let srcE = dosJit_regGet(DOS_JM_REG, 4);
+      body.push(dosJit_guard());
+      let kept = dosJit_keptOF(body);
       body.push("t0=" + dstE + ";t1=" + srcE + ";");
       if (op2 === 0xAC) body.push("t2=((t0>>>" + n + ")|(t1<<" + (32 - n) + "))>>>0;");
       else body.push("t2=((t0<<" + n + ")|(t1>>>" + (32 - n) + "))>>>0;");
-      // The shifted-out bit becomes CF; the rest come from the result.
-      if (op2 === 0xAC) body.push("t3=(t0>>>" + (n - 1) + ")&1;");
-      else body.push("t3=(t0>>>" + (32 - n) + ")&1;");
-      body.push("t1=t2&255;t1^=t1>>4;t1^=t1>>2;t1^=t1>>1;");
-      body.push("ST[1]=(ST[1]&~197)|(t3?1:0)|((t1&1)?0:4)|((t2===0)?64:0)|((t2&2147483648)?128:0);");
+      // The shifted-out bit becomes CF; ZF, SF and PF come from the result;
+      // OF stays what the last operation that defined it left.
+      let cfE = (op2 === 0xAC) ? ("(t0>>>" + (n - 1) + ")&1") : ("(t0>>>" + (32 - n) + ")&1");
+      body.push(dosJit_flagWord(cfE, kept, "2147483648"));
       body.push("fo=0;");
       DOS_JIT_PENDING = 0;
       DOS_JIT_FOLDED = 1;
@@ -446,7 +474,7 @@ function dosJit_one(body, tmp) {
       else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
       body.push("t0=" + dosJit_regGet(DOS_JM_REG, 4) + "|0;t1=(" + srcE + ")|0;t2=Math.imul(t0,t1)>>>0;");
       body.push(dosJit_regSet(DOS_JM_REG, 4, "t2"));
-    body.push("t3=t0*t1;tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
+    body.push("@@F@@t3=t0*t1;tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
               "ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|" +
               "((t3>=-2147483648&&t3<=2147483647)?0:2049);");
       body.push("fo=0;");
@@ -518,14 +546,14 @@ function dosJit_one(body, tmp) {
     if (DOS_JIT_PENDING !== 0) {
       let cfe = dosJit_flagExpr(0);
       if (cfe === "") body.push(dosJit_spill() + "FC();" + dosJit_reload());
-      else body.push("ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);");
+      else if (DOS_JIT_PENDING !== 6 && DOS_JIT_PENDING !== 7) body.push("@@C@@ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);");
       DOS_JIT_PENDING = 0;
     } else {
       body.push(dosJit_guard());
     }
     body.push("t0=" + e + ";t2=" + (dec ? "(t0-1)" : "(t0+1)") + ";");
     let mask = (size === 2) ? "65535" : "4294967295";
-    body.push("fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_narrow("t0", size) +
+    body.push("@@F@@fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_narrow("t0", size) +
               ";fs=1;fr=" + dosJit_narrow("t2", size) + ";");
     if (DOS_JIT_FZ !== size) { body.push("fz=" + size + ";"); DOS_JIT_FZ = size; }
     DOS_JIT_PENDING = dec ? 7 : 6;
@@ -670,17 +698,22 @@ function dosJit_one(body, tmp) {
     let bits = sz * 8;
     // A shift sets CF from the last bit shifted out, and ZF/SF/PF from the
     // result. Recording it as a lazy logic result would clear that carry, so
-    // the flags are written here and the lazy slots emptied.
+    // the flags are written here and the lazy slots emptied. A shift by one
+    // defines OF; a longer one keeps it.
+    body.push(dosJit_guard());
+    let kept = dosJit_keptOF(body);
     body.push("t0=" + src + ";t2=" + dosJit_narrow(expr, sz) + ";");
-    if (sub === 4) {
-      if (n <= bits) body.push("t3=(t0>>>" + (bits - n) + ")&1;");
-      else body.push("t3=0;");
-    } else {
-      if (n <= bits) body.push("t3=(t0>>>" + (n - 1) + ")&1;");
-      else body.push("t3=0;");
+    let cfE = "0";
+    if (sub === 4) { if (n <= bits) cfE = "(t0>>>" + (bits - n) + ")&1"; }
+    else if (sub === 5) { if (n <= bits) cfE = "(t0>>>" + (n - 1) + ")&1"; }
+    else cfE = "(t0>>>" + ((n <= bits) ? (n - 1) : (bits - 1)) + ")&1";
+    let ofE = kept;
+    if (n === 1) {
+      if (sub === 4) ofE = "(((((t2&" + sign + ")?1:0)^t3)!==0)?2048:0)";
+      else if (sub === 5) ofE = "((t0&" + sign + ")?2048:0)";
+      else ofE = "0";
     }
-    body.push("t1=t2&255;t1^=t1>>4;t1^=t1>>2;t1^=t1>>1;");
-    body.push("ST[1]=(ST[1]&~197)|(t3?1:0)|((t1&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);");
+    body.push(dosJit_flagWord(cfE, ofE, sign));
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
     DOS_JIT_FOLDED = 1;
@@ -752,6 +785,8 @@ function dosJit_one(body, tmp) {
     let srcR = dosJit_regGet(DOS_JM_RM, sz);
     let sign = dosJit_signLit(sz);
     let bits = sz * 8;
+    body.push(dosJit_guard());
+    let kept = dosJit_keptOF(body);
     body.push("t3=" + dosJit_regGet(1, 1) + "&31;");
     // A count of zero leaves every flag alone, so the whole thing is skipped.
     body.push("if(t3!==0){t0=" + srcR + ";");
@@ -761,8 +796,11 @@ function dosJit_one(body, tmp) {
       let sx = (sz === 4) ? "(t0|0)" : ((sz === 2) ? "((t0<<16)>>16)" : "((t0<<24)>>24)");
       body.push("t2=" + dosJit_narrow(sx + ">>t3", sz) + ";t1=(" + sx + ">>(t3-1))&1;");
     }
+    let of1 = "0";
+    if (sub === 4) of1 = "(((((t2&" + sign + ")?1:0)^t1)!==0)?2048:0)";
+    else if (sub === 5) of1 = "((t0&" + sign + ")?2048:0)";
     body.push("tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;");
-    body.push("ST[1]=(ST[1]&~197)|(t1?1:0)|((tv&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);");
+    body.push("ST[1]=(ST[1]&~2245)|((t3===1)?" + of1 + ":" + kept + ")|(t1?1:0)|((tv&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);");
     body.push(dosJit_regSet(DOS_JM_RM, sz, "t2"));
     // A zero count leaves every flag as it was, which means whatever result
     // was pending still is. Fold it into the flag word rather than drop it,
@@ -827,7 +865,7 @@ function dosJit_one(body, tmp) {
     // A divide error stops the CPU, which the interpreter reports; leave the
     // trace so it can do that with EIP pointing at this instruction.
     body.push("if(ST[15]!==0){" + dosJit_spill() + "@@R@@ST[0]=" + (start >>> 0) +
-              ";t3=g+" + DOS_JIT_N + ";ST[7]=t3*3;return t3;}");
+              ";t3=g+" + DOS_JIT_N + ";return t3;}");
     body.push("t2=ST[12];t3=ST[13];");
     body.push(dosJit_regSet(0, 4, "t2"));
     body.push(dosJit_regSet(2, 4, "t3"));
@@ -836,10 +874,10 @@ function dosJit_one(body, tmp) {
     // that the high half is the sign extension of the low. DIV and IDIV leave
     // every flag alone.
     if (sub === 4 || sub === 5) {
-      body.push("tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;");
       let fits = (sub === 4) ? "(t3===0)"
                              : "((t3===0&&(t2|0)>=0)||(t3===4294967295&&(t2|0)<0))";
-      body.push("ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|(" +
+      body.push("@@F@@tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
+                "ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|(" +
                 fits + "?0:2049);");
       // The multiply wrote every arithmetic flag; nothing is pending now.
       body.push("fo=0;");
@@ -879,7 +917,7 @@ function dosJit_one(body, tmp) {
     let imm = (op === 0x6B) ? dosJc_s8() : dosJc_s32();
     body.push("t1=" + imm + ";t2=Math.imul(t0,t1)>>>0;");
     body.push(dosJit_regSet(DOS_JM_REG, 4, "t2"));
-    body.push("t3=t0*t1;tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
+    body.push("@@F@@t3=t0*t1;tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
               "ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|" +
               "((t3>=-2147483648&&t3<=2147483647)?0:2049);");
     body.push("fo=0;");
@@ -954,14 +992,14 @@ function dosJit_one(body, tmp) {
       if (DOS_JIT_PENDING !== 0) {
         let cfe = dosJit_flagExpr(0);
         if (cfe === "") body.push(dosJit_spill() + "FC();" + dosJit_reload());
-        else body.push("ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);");
+        else if (DOS_JIT_PENDING !== 6 && DOS_JIT_PENDING !== 7) body.push("@@C@@ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);");
         DOS_JIT_PENDING = 0;
       } else {
         body.push(dosJit_guard());
       }
       let dec = (sub === 1) ? 1 : 0;
       body.push("t0=" + getE + ";t2=" + (dec ? "(t0-1)" : "(t0+1)") + ";");
-      body.push("fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_narrow("t0", sz) +
+      body.push("@@F@@fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_narrow("t0", sz) +
                 ";fs=1;fr=" + dosJit_narrow("t2", sz) + ";");
       if (DOS_JIT_FZ !== sz) { body.push("fz=" + sz + ";"); DOS_JIT_FZ = sz; }
       DOS_JIT_PENDING = dec ? 7 : 6;
@@ -1192,6 +1230,115 @@ function dosJit_noteSpan(from, to) {
 
 // Leaving a trace publishes the flag locals to the shared array, which is
 // where the interpreter and the helpers look for them.
+// Does this line of a trace body read a lazy slot? Mentioning one other than
+// to assign it: `fr===0`, `fr<fd`, `ST[2]=fo`, `FL(fo,...`, `fo!==0`.
+function dosJit_isIdent(c) {
+  return ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95) ? 1 : 0;
+}
+function dosJit_readsRecord(line) {
+  let i = 0;
+  let len = line.length;
+  while (i < len) {
+    if (line.charCodeAt(i) === 102) {                       // f
+      let d = line.charCodeAt(i + 1);
+      if (d === 111 || d === 100 || d === 115 || d === 114 || d === 122) {   // o d s r z
+        let before = (i === 0) ? 0 : line.charCodeAt(i - 1);
+        let after = line.charCodeAt(i + 2);
+        if (dosJit_isIdent(before) === 0 && dosJit_isIdent(after) === 0) {
+          // A single '=' is an assignment; '==' and '===' are reads.
+          if (after === 61 && line.charCodeAt(i + 3) !== 61) { i += 3; continue; }
+          return 1;
+        }
+      }
+    }
+    i++;
+  }
+  return 0;
+}
+
+// Drop flag records and flag-word writes that nothing reads before the next
+// one. Three things are read separately -- the lazy record, the flag word's
+// CF/PF/ZF/SF, and its OF, which a shift by more than one passes through
+// unchanged -- so the pass walks the body backwards with a liveness bit for
+// each. An exit reads all three (the next trace may use any). A marked
+// record is dropped when the record is dead, keeping only its size, which a
+// later partial record may rely on. A marked flag-word write is dropped when
+// nothing it writes is read; when only its OF is, it shrinks to that one
+// bit. The INC/DEC carry line belongs to the record that follows it and goes
+// with it. A reload or a plain `fo=0` empties the slot, which kills the
+// record but not the word.
+function dosJit_dropDeadFlags(body) {
+  let liveRec = 1;
+  let liveWord = 1;
+  let liveOF = 1;
+  let recKept = 1;
+  let cfViaWord = 0;      // the record that killed the last dropped one folds CF from the word
+  let lastIncDec = 0;
+  for (let i = body.length - 1; i >= 0; i--) {
+    let line = body[i];
+    let m = line.indexOf("@@F@@");
+    if (m === 0) {
+      line = line.substring(5);
+      if (line.indexOf("ST[1]") >= 0) {
+        let keepsOF = (line.indexOf("(ST[1]&2048)") >= 0) ? 1 : 0;
+        let needed = liveWord;
+        if (keepsOF === 0 && liveOF === 1) needed = 1;
+        if (needed === 0) { body[i] = ""; DOS_JIT_DEAD++; continue; }
+        body[i] = (liveWord === 0) ? dosJit_ofOnly(line) : line;
+        liveWord = 0;
+        if (keepsOF === 0) liveOF = 0;
+        if (dosJit_readsRecord(line) === 1) liveRec = 1;
+        continue;
+      }
+      let incDec = (line.indexOf("fo=6;") === 0 || line.indexOf("fo=7;") === 0) ? 1 : 0;
+      if (liveRec === 0) {
+        let k = line.indexOf("fz=");
+        body[i] = (k >= 0) ? line.substring(k) : "";
+        DOS_JIT_DEAD++;
+        recKept = 0;
+        // Dropped, but if an INC or DEC killed it, that one still folds the
+        // CF this record's carry line put in the word.
+        cfViaWord = lastIncDec;
+        lastIncDec = incDec;
+        continue;
+      }
+      body[i] = line;
+      liveRec = 0;
+      recKept = 1;
+      lastIncDec = incDec;
+      continue;
+    }
+    if (line.indexOf("@@C@@") === 0) {
+      line = line.substring(5);
+      if (recKept === 0 && cfViaWord === 0) { body[i] = ""; DOS_JIT_DEAD++; continue; }
+      // Writes CF for the record's fold, which then overwrites every other
+      // arithmetic bit.
+      body[i] = line;
+      liveRec = 1;
+      liveWord = 0;
+      liveOF = 0;
+      continue;
+    }
+    if (m > 0) { body[i] = dosJit_replaceAll(line, "@@F@@", ""); liveRec = 1; liveWord = 1; liveOF = 1; continue; }
+    if (line.indexOf("ST[2]=fo") >= 0) { liveRec = 1; liveWord = 1; liveOF = 1; continue; }   // an exit, or a spill
+    if (dosJit_readsRecord(line) === 1) liveRec = 1;
+    if (line.indexOf("ST[1]") >= 0) { liveWord = 1; liveOF = 1; }
+    if (line.indexOf("fo=") === 0) liveRec = 0;                                             // a reload, or fo=0
+  }
+}
+
+// A shift's flag-word write reduced to its OF bit: the CF it computed into t3
+// stays when the OF expression uses it.
+function dosJit_ofOnly(line) {
+  let a = line.indexOf("ST[1]=(ST[1]&~2245)|");
+  let b = line.indexOf("|(t3?1:0)|");
+  if (a < 0 || b < 0) return line;
+  let ofE = line.substring(a + 20, b);
+  let out = "ST[1]=(ST[1]&~2048)|" + ofE + ";";
+  if (ofE.indexOf("t3") >= 0 && line.indexOf("t3=") === 0) out = line.substring(0, line.indexOf(";") + 1) + out;
+  return out;
+}
+
 function dosJit_spill() {
   return "ST[2]=fo;ST[3]=fd;ST[4]=fs;ST[5]=fr;ST[6]=fz;";
 }
@@ -1203,9 +1350,26 @@ function dosJit_reload() {
 
 // `n` is the number of instructions emitted so far, including the one that
 // is exiting; @@L@@ becomes the loop body length once the trace is complete.
-function dosJit_exit(targetLit) {
+function dosJit_exitPlain(targetLit) {
   return "@@R@@" + dosJit_spill() + "ST[0]=" + targetLit +
-         ";t3=g+" + DOS_JIT_N + ";ST[7]=t3*3;return t3;";
+         ";t3=g+" + DOS_JIT_N + ";return t3;";
+}
+
+// An exit that calls the next trace itself when it is compiled. A literal
+// target's table slot is computed here; a return address is hashed at run
+// time.
+function dosJit_exit(targetLit) {
+  let link = "";
+  if (targetLit === "t0") {
+    link = "tv=t0&16777215;ta=(tv^(tv>>>13))&" + (DOS_JIT_SLOTS - 1) +
+           ";if(h>0&&TAG[ta]===tv)return t3+FN[ta](ST,h-1);";
+  } else {
+    let t = parseInt(targetLit, 10) & 0xFFFFFF;
+    let slot = (t ^ (t >>> 13)) & (DOS_JIT_SLOTS - 1);
+    link = "if(h>0&&TAG[" + slot + "]===" + t + ")return t3+FN[" + slot + "](ST,h-1);";
+  }
+  return "@@R@@" + dosJit_spill() + "ST[0]=" + targetLit +
+         ";t3=g+" + DOS_JIT_N + ";" + link + "return t3;";
 }
 
 function dosJit_compile(phys) {
@@ -1242,7 +1406,7 @@ function dosJit_compile(phys) {
       n++;
       if (target === phys) {
         loops = 1;
-        body.push("if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue;}" + dosJit_exit(String(phys)));
+        body.push("if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue;}" + dosJit_exitPlain(String(phys)));
       } else if (dosJit_seen(target) === 1 || follows >= 24) {
         body.push(dosJit_exit(String(target)));
       } else {
@@ -1271,7 +1435,7 @@ function dosJit_compile(phys) {
         DOS_JIT_PENDING = 0;
         DOS_JIT_FOLDED = 1;
         cond = dosJit_condExpr(ccode);
-        if (cond === "") { body.push(dosJit_exit(String(here))); ended = 1; break; }
+        if (cond === "") { body.push(dosJit_exitPlain(String(here))); ended = 1; break; }
       }
       DOS_JC = here + (isNear ? 2 : 1);
       let d = isNear ? dosJc_s32() : dosJc_s8();
@@ -1283,7 +1447,7 @@ function dosJit_compile(phys) {
       if (target === phys) {
         loops = 1;
         body.push("if(" + cond + "){if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue;}" +
-                  dosJit_exit(String(phys)) + "}");
+                  dosJit_exitPlain(String(phys)) + "}");
       } else {
         body.push("if(" + cond + "){" + dosJit_exit(String(target)) + "}");
       }
@@ -1331,7 +1495,7 @@ function dosJit_compile(phys) {
                 ";e4=(e4+12)>>>0;SEGS[1]=t1&65535;ST[1]=(t2|2)>>>0;fo=0;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       DOS_JIT_PENDING = 0;
-      body.push(dosJit_exit("t0"));
+      body.push(dosJit_exitPlain("t0"));
       dosJit_noteSpan(here, here + 1);
       n++;
       ended = 1;
@@ -1344,7 +1508,7 @@ function dosJit_compile(phys) {
       if (sub === 2 || sub === 4) {
         DOS_JC = here + 1;
         dosJit_modrm();
-        if (DOS_JC_OK === 0) { DOS_JC = here; body.push(dosJit_exit(String(here))); ended = 1; break; }
+        if (DOS_JC_OK === 0) { DOS_JC = here; body.push(dosJit_exitPlain(String(here))); ended = 1; break; }
         DOS_JIT_N++;
         if (DOS_JM_ADDR === "") body.push("t0=" + dosJit_regGet(DOS_JM_RM, 4) + ";");
         else body.push("ta=" + DOS_JM_ADDR + ";t0=" + dosJit_memRead("ta", 4) + ";");
@@ -1378,7 +1542,7 @@ function dosJit_compile(phys) {
     // ---- everything else --------------------------------------------------
     if (dosJit_one(body, 0) === 0) {
       DOS_JC = here;
-      body.push(dosJit_exit(String(here)));
+      body.push(dosJit_exitPlain(String(here)));
       ended = 1;
       break;
     }
@@ -1394,6 +1558,7 @@ function dosJit_compile(phys) {
 
   if (n === 0) return null;
   if (ended === 0) body.push(dosJit_exit(String(DOS_JC >>> 0)));
+  dosJit_dropDeadFlags(body);
 
   // The pool has to run over the finished body: a literal is only worth a name
   // once, however many lines mention it.
@@ -1430,13 +1595,14 @@ function dosJit_compile(phys) {
   try {
     let make = new Function("R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "MASK", "SIGN",
                             "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
-                            "RD16", "RD32", "RDU16", "RDU32", "FL",
-                            "return function(ST){" + src + "};");
+                            "RD16", "RD32", "RDU16", "RDU32", "FL", "TAG", "FN",
+                            "return function(ST,h){" + src + "};");
     fn = make(DOS_REGS32, DOS_REGS16, DOS_REGS8, DOS_RAM, DOS_RAM16, DOS_RAM32,
               DOS_SEGS, DOS_JIT_MASK, DOS_JIT_SIGN,
               dosJit_w8, dosJit_w16, dosJit_w32, dosJit_rd8, dosJit_fc,
               DOS_JIT_CODEPAGE, dosJit_muldiv, dosJit_out8, dosJit_in8,
-              dosJit_rd16, dosJit_rd32, dosJit_rdu16, dosJit_rdu32, dosJit_fold);
+              dosJit_rd16, dosJit_rd32, dosJit_rdu16, dosJit_rdu32, dosJit_fold,
+              DOS_JIT_TAG, DOS_JIT_FN);
   } catch (e) {
     DOS_JIT_FAILED++;
     return null;
@@ -1687,9 +1853,8 @@ function dosJit_run(budget) {
       dosJit_syncIn();
       synced = 0;
     }
-    let insns = fn(DOS_JIT_ST);
-    let cyc = DOS_JIT_ST[7];
-    if (cyc < 1) cyc = 1;
+    let insns = fn(DOS_JIT_ST, DOS_JIT_HOPS);
+    let cyc = insns * 3;
     DOS_TOTAL_CYCLES += cyc;
     remaining -= cyc;
     DOS_JIT_CALLS++;

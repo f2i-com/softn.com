@@ -431,7 +431,10 @@ function dosCpu_flushFlags() {
 // Set ZF/SF/PF from a result and clear CF/OF/AF: what the shift and multiply
 // helpers want before they set CF and OF themselves.
 function dosCpu_setResultFlags(res, size) {
-  DOS_LAZY_OP = 0;
+  // Fold what is pending first, so the bits this write keeps -- OF, AF --
+  // are those of the last operation that defined them. Compiled code does
+  // the same, which is what makes the two agree.
+  dosCpu_flushFlags();
   let mask = dosCpu_maskFor(size);
   let v = res & mask;
   let f = DOS_EFLAGS & ~(DOS_FL_ZF | DOS_FL_SF | DOS_FL_PF);
