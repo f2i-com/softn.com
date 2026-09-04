@@ -800,7 +800,7 @@ function dosJit_one(body, tmp) {
     // A divide error stops the CPU, which the interpreter reports; leave the
     // trace so it can do that with EIP pointing at this instruction.
     body.push("if(ST[15]!==0){" + dosJit_spill() + "@@R@@ST[0]=" + (start >>> 0) +
-              ";ST[7]=k*3;return k;}");
+              ";t3=g+" + DOS_JIT_N + ";ST[7]=t3*3;return t3;}");
     body.push("t2=ST[12];t3=ST[13];");
     body.push(dosJit_regSet(0, 4, "t2"));
     body.push(dosJit_regSet(2, 4, "t3"));
@@ -1142,10 +1142,15 @@ function dosJit_condExpr(code) {
 // hot path becomes one call covering tens of instructions.
 
 let DOS_JIT_PSIZE = 4;
+// Instructions emitted so far in the trace being compiled, including the
+// current one; read by dosJit_exit.
+let DOS_JIT_N = 0;
 let DOS_JIT_SEEN = null;
 let DOS_JIT_SEEN_N = 0;
 let DOS_JIT_MAXI = 220;
-let DOS_JIT_LOOPCAP = 2048;
+// Instructions a single call may run round a loop before coming back, so the
+// timer and the frame loop get a turn.
+let DOS_JIT_LOOPCAP = 16384;
 
 function dosJit_seen(addr) {
   for (let i = 0; i < DOS_JIT_SEEN_N; i++) if (DOS_JIT_SEEN[i] === addr) return 1;
@@ -1171,8 +1176,11 @@ function dosJit_reload() {
   return "fo=ST[2];fd=ST[3];fs=ST[4];fr=ST[5];fz=ST[6];";
 }
 
+// `n` is the number of instructions emitted so far, including the one that
+// is exiting; @@L@@ becomes the loop body length once the trace is complete.
 function dosJit_exit(targetLit) {
-  return "@@R@@" + dosJit_spill() + "ST[0]=" + targetLit + ";ST[7]=k*3;return k;";
+  return "@@R@@" + dosJit_spill() + "ST[0]=" + targetLit +
+         ";t3=g+" + DOS_JIT_N + ";ST[7]=t3*3;return t3;";
 }
 
 function dosJit_compile(phys) {
@@ -1190,6 +1198,7 @@ function dosJit_compile(phys) {
   let follows = 0;
   let loops = 0;
   let ended = 0;
+  DOS_JIT_N = 0;
 
   while (n < DOS_JIT_MAXI) {
     let here = DOS_JC >>> 0;
@@ -1202,11 +1211,11 @@ function dosJit_compile(phys) {
       let d = (peek === 0xEB) ? dosJc_s8() : dosJc_s32();
       let target = (DOS_JC + d) >>> 0;
       dosJit_noteSpan(here, DOS_JC);
-      body.push("k++;");
+      DOS_JIT_N++;
       n++;
       if (target === phys) {
         loops = 1;
-        body.push("if(g<" + DOS_JIT_LOOPCAP + "){g++;continue;}" + dosJit_exit(String(phys)));
+        body.push("if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue;}" + dosJit_exit(String(phys)));
       } else if (dosJit_seen(target) === 1 || follows >= 24) {
         body.push(dosJit_exit(String(target)));
       } else {
@@ -1240,11 +1249,11 @@ function dosJit_compile(phys) {
       let fall = DOS_JC >>> 0;
       let target = (DOS_JC + d) >>> 0;
       dosJit_noteSpan(here, DOS_JC);
-      body.push("k++;");
+      DOS_JIT_N++;
       n++;
       if (target === phys) {
         loops = 1;
-        body.push("if(" + cond + "){if(g<" + DOS_JIT_LOOPCAP + "){g++;continue;}" +
+        body.push("if(" + cond + "){if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue;}" +
                   dosJit_exit(String(phys)) + "}");
       } else {
         body.push("if(" + cond + "){" + dosJit_exit(String(target)) + "}");
@@ -1258,7 +1267,8 @@ function dosJit_compile(phys) {
       let d = dosJc_s32();
       let target = (DOS_JC + d) >>> 0;
       let ret = DOS_JC >>> 0;
-      body.push("k++;" + dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
+      DOS_JIT_N++;
+      body.push("" + dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       body.push(dosJit_memWrite("ta", 4, String(ret)));
       body.push(dosJit_exit(String(target)));
@@ -1272,7 +1282,8 @@ function dosJit_compile(phys) {
     if (peek === 0xC2) {
       DOS_JC = here + 1;
       let adj = dosJc_u16();
-      body.push("k++;ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
+      DOS_JIT_N++;
+      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
                 ";e4=(e4+4+" + adj + ")>>>0;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       body.push(dosJit_exit("t0"));
@@ -1284,7 +1295,8 @@ function dosJit_compile(phys) {
 
     // ---- IRET ---------------------------------------------------------------
     if (peek === 0xCF) {
-      body.push("k++;ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
+      DOS_JIT_N++;
+      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
                 ";tv=(ta+4)&16777215;t1=" + dosJit_memRead("tv", 4) +
                 ";tv=(ta+8)&16777215;t2=" + dosJit_memRead("tv", 4) +
                 ";e4=(e4+12)>>>0;SEGS[1]=t1&65535;ST[1]=(t2|2)>>>0;fo=0;");
@@ -1304,8 +1316,9 @@ function dosJit_compile(phys) {
         DOS_JC = here + 1;
         dosJit_modrm();
         if (DOS_JC_OK === 0) { DOS_JC = here; body.push(dosJit_exit(String(here))); ended = 1; break; }
-        if (DOS_JM_ADDR === "") body.push("k++;t0=" + dosJit_regGet(DOS_JM_RM, 4) + ";");
-        else body.push("k++;ta=" + DOS_JM_ADDR + ";t0=" + dosJit_memRead("ta", 4) + ";");
+        DOS_JIT_N++;
+        if (DOS_JM_ADDR === "") body.push("t0=" + dosJit_regGet(DOS_JM_RM, 4) + ";");
+        else body.push("ta=" + DOS_JM_ADDR + ";t0=" + dosJit_memRead("ta", 4) + ";");
         if (sub === 2) {
           let ret = DOS_JC >>> 0;
           body.push(dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
@@ -1322,7 +1335,8 @@ function dosJit_compile(phys) {
 
     // ---- RET --------------------------------------------------------------
     if (peek === 0xC3) {
-      body.push("k++;ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
+      DOS_JIT_N++;
+      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
                 ";e4=(e4+4)>>>0;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       body.push(dosJit_exit("t0"));
@@ -1345,7 +1359,7 @@ function dosJit_compile(phys) {
     } else {
       dosJit_noteSpan(here, DOS_JC);
     }
-    body.push("k++;");
+    DOS_JIT_N++;
     n++;
   }
 
@@ -1375,7 +1389,7 @@ function dosJit_compile(phys) {
   let pooled = [];
   for (let i = 0; i < body.length; i++) pooled.push(dosJit_poolLine(body[i]));
 
-  let src = "let t0=0,t1=0,t2=0,t3=0,ta=0,tv=0,k=0,g=0;" +
+  let src = "let t0=0,t1=0,t2=0,t3=0,ta=0,tv=0,g=0;" +
             "let fo=ST[2],fd=ST[3],fs=ST[4],fr=ST[5],fz=ST[6],vg=ST[8];" +
             regLoad + dosJit_poolDecl() +
             "for(;;){" + pooled.join("") + "}";
