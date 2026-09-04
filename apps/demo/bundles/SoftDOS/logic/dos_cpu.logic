@@ -1,0 +1,421 @@
+// dos_cpu.logic — SoftDOS 16/32-bit x86 Execution Core
+//
+// Features:
+// - 16-bit Real Mode and 32-bit Flat Protected Mode
+// - SIB (Scale-Index-Base) addressing support
+// - Prefix processing (0x66 operand toggle, 0x67 address toggle, REP, segment overrides)
+// - Lazy flag evaluation for the arithmetic and logic instructions, which are
+//   the ones a tight loop runs; everything else writes EFLAGS directly.
+
+// Current instruction prefix state
+let DOS_PREFIX_OPSIZE = 0;  // 1 if 0x66 active
+let DOS_PREFIX_ADDRSIZE = 0; // 1 if 0x67 active
+let DOS_PREFIX_SEG = -1;    // >= 0 if segment override
+let DOS_PREFIX_REP = 0;     // 1=REPZ/REPE, 2=REPNZ/REPNE
+
+// ModR/M decode results. Kept as scalars rather than a returned object: the
+// decoder runs on nearly every instruction, and an allocation per instruction
+// is the difference between a playable frame rate and a slideshow.
+let DOS_MRM_ISREG = 0;
+let DOS_MRM_REG = 0;
+let DOS_MRM_RM = 0;
+let DOS_MRM_ADDR = 0;
+let DOS_MRM_OFFSET = 0;   // the effective offset before segmentation, for LEA
+let DOS_INSN_EIP = 0;     // EIP of the current instruction's first byte, prefixes included
+
+// EFLAGS bit masks
+let DOS_FL_CF = 0x001;
+let DOS_FL_PF = 0x004;
+let DOS_FL_AF = 0x010;
+let DOS_FL_ZF = 0x040;
+let DOS_FL_SF = 0x080;
+let DOS_FL_TF = 0x100;
+let DOS_FL_IF = 0x200;
+let DOS_FL_DF = 0x400;
+let DOS_FL_OF = 0x800;
+
+// ---------------------------------------------------------------------------
+// Instruction Fetch Routines
+// ---------------------------------------------------------------------------
+function dosCpu_fetchU8() {
+  let seg = (DOS_IS_32 === 0) ? DOS_SEGS[1] : 0; // CS
+  let phys = dosMmu_linear(seg, DOS_EIP);
+  DOS_EIP = (DOS_EIP + 1) >>> 0;
+  return DOS_RAM[phys];
+}
+
+function dosCpu_fetchU16() {
+  let lo = dosCpu_fetchU8();
+  let hi = dosCpu_fetchU8();
+  return lo | (hi << 8);
+}
+
+function dosCpu_fetchU32() {
+  let b0 = dosCpu_fetchU8();
+  let b1 = dosCpu_fetchU8();
+  let b2 = dosCpu_fetchU8();
+  let b3 = dosCpu_fetchU8();
+  return (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0;
+}
+
+// Fetch an immediate of the current operand size.
+function dosCpu_fetchImm(is32Op) {
+  return is32Op ? dosCpu_fetchU32() : dosCpu_fetchU16();
+}
+
+function dosCpu_sext8(v) { return (v << 24) >> 24; }
+function dosCpu_sext16(v) { return (v << 16) >> 16; }
+
+// ---------------------------------------------------------------------------
+// Stack Operations (PUSH / POP)
+// ---------------------------------------------------------------------------
+// The stack pointer is 16-bit in real mode and 32-bit in flat protected mode;
+// the operand size decides how many bytes move, the mode decides the pointer.
+function dosCpu_push16(val) {
+  if (DOS_IS_32 === 1) {
+    let esp = (DOS_REGS32[4] - 2) >>> 0;
+    DOS_REGS32[4] = esp;
+    dosMmu_write16(esp & 0xFFFFFF, val);
+    return;
+  }
+  let sp = (DOS_REGS32[4] - 2) & 0xFFFF;
+  DOS_REGS32[4] = (DOS_REGS32[4] & 0xFFFF0000) | sp;
+  dosMmu_write16(dosMmu_linear(DOS_SEGS[2], sp), val);
+}
+
+function dosCpu_pop16() {
+  if (DOS_IS_32 === 1) {
+    let esp = DOS_REGS32[4] >>> 0;
+    let val = dosMmu_read16(esp & 0xFFFFFF);
+    DOS_REGS32[4] = (esp + 2) >>> 0;
+    return val;
+  }
+  let sp = DOS_REGS32[4] & 0xFFFF;
+  let val = dosMmu_read16(dosMmu_linear(DOS_SEGS[2], sp));
+  DOS_REGS32[4] = (DOS_REGS32[4] & 0xFFFF0000) | ((sp + 2) & 0xFFFF);
+  return val;
+}
+
+function dosCpu_push32(val) {
+  if (DOS_IS_32 === 1) {
+    let esp = (DOS_REGS32[4] - 4) >>> 0;
+    DOS_REGS32[4] = esp;
+    dosMmu_write32(esp & 0xFFFFFF, val);
+    return;
+  }
+  let sp = (DOS_REGS32[4] - 4) & 0xFFFF;
+  DOS_REGS32[4] = (DOS_REGS32[4] & 0xFFFF0000) | sp;
+  dosMmu_write32(dosMmu_linear(DOS_SEGS[2], sp), val);
+}
+
+function dosCpu_pop32() {
+  if (DOS_IS_32 === 1) {
+    let esp = DOS_REGS32[4] >>> 0;
+    let val = dosMmu_read32(esp & 0xFFFFFF);
+    DOS_REGS32[4] = (esp + 4) >>> 0;
+    return val;
+  }
+  let sp = DOS_REGS32[4] & 0xFFFF;
+  let val = dosMmu_read32(dosMmu_linear(DOS_SEGS[2], sp));
+  DOS_REGS32[4] = (DOS_REGS32[4] & 0xFFFF0000) | ((sp + 4) & 0xFFFF);
+  return val;
+}
+
+function dosCpu_pushSize(val, is32Op) {
+  if (is32Op) dosCpu_push32(val); else dosCpu_push16(val);
+}
+function dosCpu_popSize(is32Op) {
+  return is32Op ? dosCpu_pop32() : dosCpu_pop16();
+}
+
+// ---------------------------------------------------------------------------
+// ModR/M & SIB Effective Address Resolution
+// ---------------------------------------------------------------------------
+// Sets DOS_MRM_*; consumes the ModR/M byte, any SIB byte and any displacement.
+function dosCpu_modrm(is32Addr) {
+  let modrm = dosCpu_fetchU8();
+  let mod = (modrm >> 6) & 3;
+  DOS_MRM_REG = (modrm >> 3) & 7;
+  let rm = modrm & 7;
+  DOS_MRM_RM = rm;
+
+  // Direct register operand (no memory access)
+  if (mod === 3) {
+    DOS_MRM_ISREG = 1;
+    DOS_MRM_ADDR = 0;
+    return;
+  }
+  DOS_MRM_ISREG = 0;
+
+  // 32-bit Effective Address (with SIB support)
+  if (is32Addr) {
+    let baseAddr = 0;
+    let segIndex = (DOS_PREFIX_SEG >= 0) ? DOS_PREFIX_SEG : 3; // default DS
+
+    if (rm === 4) {
+      // SIB Byte follows ModR/M
+      let sib = dosCpu_fetchU8();
+      let scale = 1 << ((sib >> 6) & 3);
+      let index = (sib >> 3) & 7;
+      let base = sib & 7;
+
+      let indexVal = (index === 4) ? 0 : DOS_REGS32[index];
+      let baseVal = 0;
+
+      if (base === 5 && mod === 0) {
+        baseVal = dosCpu_fetchU32();
+      } else {
+        baseVal = DOS_REGS32[base];
+        if (base === 4 || base === 5) {
+          if (DOS_PREFIX_SEG < 0) segIndex = 2; // default SS for ESP/EBP
+        }
+      }
+
+      baseAddr = (baseVal + (indexVal * scale)) >>> 0;
+    } else if (mod === 0 && rm === 5) {
+      // [disp32]
+      baseAddr = dosCpu_fetchU32();
+    } else {
+      baseAddr = DOS_REGS32[rm];
+      if (rm === 5 && DOS_PREFIX_SEG < 0) {
+        segIndex = 2; // [EBP] defaults to SS
+      }
+    }
+
+    if (mod === 1) {
+      baseAddr = (baseAddr + dosCpu_sext8(dosCpu_fetchU8())) >>> 0;
+    } else if (mod === 2) {
+      baseAddr = (baseAddr + dosCpu_fetchU32()) >>> 0;
+    }
+
+    DOS_MRM_OFFSET = baseAddr >>> 0;
+    DOS_MRM_ADDR = (DOS_IS_32 === 0) ? dosMmu_linear(DOS_SEGS[segIndex], baseAddr) : (baseAddr & 0xFFFFFF);
+    return;
+  }
+
+  // 16-bit Effective Address (8086 style: BX/BP + SI/DI + disp)
+  let off = 0;
+  let seg = (DOS_PREFIX_SEG >= 0) ? DOS_SEGS[DOS_PREFIX_SEG] : DOS_SEGS[3]; // default DS
+
+  if (rm === 0) off = (DOS_REGS16[6] + DOS_REGS16[12]) & 0xFFFF;      // BX + SI
+  else if (rm === 1) off = (DOS_REGS16[6] + DOS_REGS16[14]) & 0xFFFF; // BX + DI
+  else if (rm === 2) { off = (DOS_REGS16[10] + DOS_REGS16[12]) & 0xFFFF; if (DOS_PREFIX_SEG < 0) seg = DOS_SEGS[2]; } // BP + SI (SS)
+  else if (rm === 3) { off = (DOS_REGS16[10] + DOS_REGS16[14]) & 0xFFFF; if (DOS_PREFIX_SEG < 0) seg = DOS_SEGS[2]; } // BP + DI (SS)
+  else if (rm === 4) off = DOS_REGS16[12]; // SI
+  else if (rm === 5) off = DOS_REGS16[14]; // DI
+  else if (rm === 6) {
+    if (mod === 0) off = dosCpu_fetchU16(); // direct disp16
+    else { off = DOS_REGS16[10]; if (DOS_PREFIX_SEG < 0) seg = DOS_SEGS[2]; } // BP (SS)
+  }
+  else if (rm === 7) off = DOS_REGS16[6]; // BX
+
+  if (mod === 1) {
+    off = (off + dosCpu_sext8(dosCpu_fetchU8())) & 0xFFFF;
+  } else if (mod === 2) {
+    off = (off + dosCpu_fetchU16()) & 0xFFFF;
+  }
+
+  DOS_MRM_OFFSET = off & 0xFFFF;
+  DOS_MRM_ADDR = dosMmu_linear(seg, off);
+}
+
+// ---------------------------------------------------------------------------
+// Flags
+// ---------------------------------------------------------------------------
+// DOS_LAZY_OP: 0=none (EFLAGS is authoritative), 1=ADD, 2=SUB, 3=LOGIC,
+// 6=INC, 7=DEC, 8=ADC, 9=SBB. DST/SRC/RES are the unsigned operands and the
+// masked result; SIZE is 1, 2 or 4.
+function dosCpu_maskFor(size) {
+  return (size === 1) ? 0xFF : ((size === 2) ? 0xFFFF : 0xFFFFFFFF);
+}
+function dosCpu_signFor(size) {
+  return (size === 1) ? 0x80 : ((size === 2) ? 0x8000 : 0x80000000);
+}
+
+function dosCpu_setLazy(op, dst, src, res, size) {
+  DOS_LAZY_OP = op;
+  DOS_LAZY_DST = dst >>> 0;
+  DOS_LAZY_SRC = src >>> 0;
+  DOS_LAZY_RES = res >>> 0;
+  DOS_LAZY_SIZE = size;
+}
+
+function dosCpu_parity(v) {
+  let x = v & 0xFF;
+  x = x ^ (x >> 4);
+  x = x ^ (x >> 2);
+  x = x ^ (x >> 1);
+  return (x & 1) ? 0 : 1; // even number of set bits -> PF set
+}
+
+function dosCpu_getZF() {
+  if (DOS_LAZY_OP !== 0) return ((DOS_LAZY_RES & dosCpu_maskFor(DOS_LAZY_SIZE)) === 0) ? 1 : 0;
+  return (DOS_EFLAGS & DOS_FL_ZF) ? 1 : 0;
+}
+
+function dosCpu_getSF() {
+  if (DOS_LAZY_OP !== 0) return (DOS_LAZY_RES & dosCpu_signFor(DOS_LAZY_SIZE)) ? 1 : 0;
+  return (DOS_EFLAGS & DOS_FL_SF) ? 1 : 0;
+}
+
+function dosCpu_getPF() {
+  if (DOS_LAZY_OP !== 0) return dosCpu_parity(DOS_LAZY_RES);
+  return (DOS_EFLAGS & DOS_FL_PF) ? 1 : 0;
+}
+
+function dosCpu_getAF() {
+  let op = DOS_LAZY_OP;
+  if (op === 1 || op === 2 || op === 8 || op === 9) {
+    return ((DOS_LAZY_DST ^ DOS_LAZY_SRC ^ DOS_LAZY_RES) & 0x10) ? 1 : 0;
+  }
+  if (op === 6 || op === 7) {
+    return ((DOS_LAZY_DST ^ 1 ^ DOS_LAZY_RES) & 0x10) ? 1 : 0;
+  }
+  if (op === 3) return 0;
+  return (DOS_EFLAGS & DOS_FL_AF) ? 1 : 0;
+}
+
+function dosCpu_getCF() {
+  let op = DOS_LAZY_OP;
+  if (op === 1) { // ADD: wrapped past the top
+    return (DOS_LAZY_RES < DOS_LAZY_DST) ? 1 : 0;
+  }
+  if (op === 2) { // SUB / CMP: borrow
+    return (DOS_LAZY_DST < DOS_LAZY_SRC) ? 1 : 0;
+  }
+  if (op === 8) { // ADC
+    let cin = (DOS_EFLAGS & DOS_FL_CF) ? 1 : 0;
+    if (cin) return (DOS_LAZY_RES <= DOS_LAZY_DST) ? 1 : 0;
+    return (DOS_LAZY_RES < DOS_LAZY_DST) ? 1 : 0;
+  }
+  if (op === 9) { // SBB
+    let cin = (DOS_EFLAGS & DOS_FL_CF) ? 1 : 0;
+    if (cin) return (DOS_LAZY_DST <= DOS_LAZY_SRC) ? 1 : 0;
+    return (DOS_LAZY_DST < DOS_LAZY_SRC) ? 1 : 0;
+  }
+  if (op === 3) return 0;         // logic clears CF
+  if (op === 6 || op === 7) {     // INC / DEC leave CF alone
+    return (DOS_EFLAGS & DOS_FL_CF) ? 1 : 0;
+  }
+  return (DOS_EFLAGS & DOS_FL_CF) ? 1 : 0;
+}
+
+function dosCpu_getOF() {
+  let op = DOS_LAZY_OP;
+  let sign = dosCpu_signFor(DOS_LAZY_SIZE);
+  if (op === 1 || op === 8) { // ADD / ADC: operands agreed in sign, result differs
+    return ((~(DOS_LAZY_DST ^ DOS_LAZY_SRC) & (DOS_LAZY_DST ^ DOS_LAZY_RES) & sign) !== 0) ? 1 : 0;
+  }
+  if (op === 2 || op === 9) { // SUB / SBB / CMP
+    return (((DOS_LAZY_DST ^ DOS_LAZY_SRC) & (DOS_LAZY_DST ^ DOS_LAZY_RES) & sign) !== 0) ? 1 : 0;
+  }
+  if (op === 6) { // INC overflows only at SIGN_MAX
+    return ((DOS_LAZY_RES & dosCpu_maskFor(DOS_LAZY_SIZE)) === sign) ? 1 : 0;
+  }
+  if (op === 7) { // DEC overflows only at SIGN_MIN
+    return ((DOS_LAZY_RES & dosCpu_maskFor(DOS_LAZY_SIZE)) === (sign - 1)) ? 1 : 0;
+  }
+  if (op === 3) return 0;
+  return (DOS_EFLAGS & DOS_FL_OF) ? 1 : 0;
+}
+
+// Fold the lazy state into EFLAGS so the bits can be read or written directly.
+function dosCpu_flushFlags() {
+  if (DOS_LAZY_OP === 0) return;
+  let f = DOS_EFLAGS;
+  if (dosCpu_getCF()) f |= DOS_FL_CF; else f &= ~DOS_FL_CF;
+  if (dosCpu_getPF()) f |= DOS_FL_PF; else f &= ~DOS_FL_PF;
+  if (dosCpu_getAF()) f |= DOS_FL_AF; else f &= ~DOS_FL_AF;
+  if (dosCpu_getZF()) f |= DOS_FL_ZF; else f &= ~DOS_FL_ZF;
+  if (dosCpu_getSF()) f |= DOS_FL_SF; else f &= ~DOS_FL_SF;
+  if (dosCpu_getOF()) f |= DOS_FL_OF; else f &= ~DOS_FL_OF;
+  DOS_EFLAGS = f >>> 0;
+  DOS_LAZY_OP = 0;
+}
+
+// Set ZF/SF/PF from a result and clear CF/OF/AF: what the shift and multiply
+// helpers want before they set CF and OF themselves.
+function dosCpu_setResultFlags(res, size) {
+  DOS_LAZY_OP = 0;
+  let mask = dosCpu_maskFor(size);
+  let v = res & mask;
+  let f = DOS_EFLAGS & ~(DOS_FL_ZF | DOS_FL_SF | DOS_FL_PF);
+  if (v === 0) f |= DOS_FL_ZF;
+  if (v & dosCpu_signFor(size)) f |= DOS_FL_SF;
+  if (dosCpu_parity(v)) f |= DOS_FL_PF;
+  DOS_EFLAGS = f >>> 0;
+}
+
+function dosCpu_setCF(on) {
+  dosCpu_flushFlags();
+  if (on) DOS_EFLAGS |= DOS_FL_CF; else DOS_EFLAGS &= ~DOS_FL_CF;
+}
+function dosCpu_setOF(on) {
+  dosCpu_flushFlags();
+  if (on) DOS_EFLAGS |= DOS_FL_OF; else DOS_EFLAGS &= ~DOS_FL_OF;
+}
+
+// ---------------------------------------------------------------------------
+// Instruction Step & Run Loop
+// ---------------------------------------------------------------------------
+function dosCpu_step() {
+  if (DOS_HALTED) return 1;
+
+  // Reset per-instruction prefix states
+  DOS_PREFIX_OPSIZE = 0;
+  DOS_PREFIX_ADDRSIZE = 0;
+  DOS_PREFIX_SEG = -1;
+  DOS_PREFIX_REP = 0;
+
+  let opcode = 0;
+  let guard = 0;
+  DOS_INSN_EIP = DOS_EIP >>> 0;
+
+  // Prefix loop
+  while (guard < 16) {
+    guard++;
+    opcode = dosCpu_fetchU8();
+
+    if (opcode === 0x66) { DOS_PREFIX_OPSIZE = 1; continue; }
+    if (opcode === 0x67) { DOS_PREFIX_ADDRSIZE = 1; continue; }
+    if (opcode === 0x26) { DOS_PREFIX_SEG = 0; continue; } // ES
+    if (opcode === 0x2E) { DOS_PREFIX_SEG = 1; continue; } // CS
+    if (opcode === 0x36) { DOS_PREFIX_SEG = 2; continue; } // SS
+    if (opcode === 0x3E) { DOS_PREFIX_SEG = 3; continue; } // DS
+    if (opcode === 0x64) { DOS_PREFIX_SEG = 4; continue; } // FS
+    if (opcode === 0x65) { DOS_PREFIX_SEG = 5; continue; } // GS
+    if (opcode === 0xF3) { DOS_PREFIX_REP = 1; continue; } // REP / REPE
+    if (opcode === 0xF2) { DOS_PREFIX_REP = 2; continue; } // REPNE
+    if (opcode === 0xF0) { continue; }                     // LOCK: no effect here
+    break;
+  }
+
+  // Determine effective operand size: 32-bit default in protected mode, 16-bit in real mode
+  let is32Op = (DOS_IS_32 === 1) ? (DOS_PREFIX_OPSIZE === 0) : (DOS_PREFIX_OPSIZE === 1);
+  let is32Addr = (DOS_IS_32 === 1) ? (DOS_PREFIX_ADDRSIZE === 0) : (DOS_PREFIX_ADDRSIZE === 1);
+
+  // Dispatch opcode
+  let cycles = 4;
+  if (opcode === 0x0F) {
+    let op2 = dosCpu_fetchU8();
+    cycles = DOS_OPS_0F[op2](is32Op, is32Addr);
+  } else {
+    cycles = DOS_OPS[opcode](is32Op, is32Addr);
+  }
+
+  DOS_TOTAL_CYCLES += cycles;
+  return cycles;
+}
+
+// The plain interpreter loop. dos_bc.logic defines dosCpu_runCycles, which
+// replays decoded blocks and falls back to dosCpu_step for anything it cannot
+// decode; this is kept as the reference path and for testing.
+function dosCpu_runInterpreted(budget) {
+  let remaining = budget;
+  while (remaining > 0 && !DOS_HALTED) {
+    let spent = dosCpu_step();
+    remaining -= spent;
+    DOS_INT_CHECK--;
+    if (DOS_INT_CHECK <= 0) { DOS_INT_CHECK = DOS_INT_CHECK_EVERY; dosInt_poll(); }
+  }
+}

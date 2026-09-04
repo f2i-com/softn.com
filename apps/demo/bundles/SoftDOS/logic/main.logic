@@ -1,0 +1,430 @@
+// main.logic — SoftDOS Shell Application
+//
+// Bridges the SoftN UI runtime (<PixelCanvas>, <AudioStream>, <FileChooser>)
+// with the x86 16/32-bit DOS emulation machine.
+
+import "./dos_state.logic"
+import "./dos_mmu.logic"
+import "./dos_vga.logic"
+import "./dos_kernel.logic"
+import "./dos_progs.logic"
+import "./dos_cpu.logic"
+import "./dos_ops.logic"
+import "./dos_bc.logic"
+import "./dos_int.logic"
+import "./dos_loader.logic"
+import "./dos_shell.logic"
+
+// ---------------------------------------------------------------------------
+// Reactive UI State (scalars synchronized with React UI)
+// ---------------------------------------------------------------------------
+let activeMode = "prompt";          // "prompt", "plasma", "raycast", "custom"
+let cpuModeText = "16-Bit Real Mode";
+let fpsText = "60 FPS";
+let statusText = "MS-DOS 6.22 Ready";
+let loadedFileName = "";
+let isRunning = true;
+let isMuted = false;
+let isExpanded = false;
+let crtTheme = "color";
+let keyMask = 0; // bit 0: Left, 1: Right, 2: Up, 3: Down, 4: Fire/Space
+
+let pcmBuffer = null; // Preallocated audio buffer
+
+function _init() {
+  dosState_init();
+  dosOps_init();
+  dosVga_init();
+  dosLoader_bootShell();
+  cyclesText = "";
+
+  pcmBuffer = new Int16Array(1024);
+
+  // Install keyboard listeners on the window
+  if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("keydown", function(e) {
+      handleKeyEvent(e.key, true);
+    });
+    window.addEventListener("keyup", function(e) {
+      handleKeyEvent(e.key, false);
+    });
+  }
+}
+
+// Set 1 scan codes for the keys a DOS program asks about by scan code
+// rather than by character.
+let SCAN_MAP = {
+  "Escape": 0x01, "Backspace": 0x0E, "Tab": 0x0F, "Enter": 0x1C,
+  "Control": 0x1D, "Shift": 0x2A, "Alt": 0x38, " ": 0x39,
+  "F1": 0x3B, "F2": 0x3C, "F3": 0x3D, "F4": 0x3E, "F5": 0x3F,
+  "F6": 0x40, "F7": 0x41, "F8": 0x42, "F9": 0x43, "F10": 0x44,
+  "Home": 0x47, "ArrowUp": 0x48, "PageUp": 0x49,
+  "ArrowLeft": 0x4B, "ArrowRight": 0x4D,
+  "End": 0x4F, "ArrowDown": 0x50, "PageDown": 0x51,
+  "Insert": 0x52, "Delete": 0x53
+};
+// Scan codes for the letter and digit rows, so a game reading the raw
+// keyboard port sees what a real keyboard would send.
+let SCAN_ROWS = ["1234567890-=", "qwertyuiop[]", "asdfghjkl;'", "zxcvbnm,./"];
+let SCAN_ROW_BASE = [0x02, 0x10, 0x1E, 0x2C];
+
+function scanForKey(key) {
+  if (SCAN_MAP[key] !== undefined) return SCAN_MAP[key];
+  if (key.length !== 1) return 0;
+  let lower = key.toLowerCase();
+  for (let r = 0; r < SCAN_ROWS.length; r++) {
+    let idx = SCAN_ROWS[r].indexOf(lower);
+    if (idx >= 0) return SCAN_ROW_BASE[r] + idx;
+  }
+  return 0;
+}
+
+function handleKeyEvent(key, isDown) {
+  // The arrow keys and fire buttons also drive the built-in 3D demo, which
+  // reads a bitmask rather than the BIOS buffer.
+  let mask = 0;
+  if (key === "ArrowLeft" || key === "a" || key === "A") mask = 0x01;
+  else if (key === "ArrowRight" || key === "d" || key === "D") mask = 0x02;
+  else if (key === "ArrowUp" || key === "w" || key === "W") mask = 0x04;
+  else if (key === "ArrowDown" || key === "s" || key === "S") mask = 0x08;
+  else if (key === " " || key === "Control") mask = 0x10;
+
+  if (!isDown) {
+    keyMask = keyMask & ~mask;
+    return;
+  }
+  keyMask = keyMask | mask;
+
+  // Esc while a program runs hands the machine back to the prompt.
+  if (key === "Escape" && activeMode === "custom") {
+    dosShell_returnToPrompt("^C");
+    return;
+  }
+
+  let scan = scanForKey(key);
+  let ascii = 0;
+  if (key.length === 1) {
+    let c = key.charCodeAt(0);
+    if (c >= 32 && c < 127) ascii = c;
+  } else if (key === "Enter") ascii = 13;
+  else if (key === "Backspace") ascii = 8;
+  else if (key === "Tab") ascii = 9;
+  else if (key === "Escape") ascii = 27;
+
+  if (scan === 0 && ascii === 0) return;
+
+  // Push the BIOS key word, dropping it if the ring is full.
+  let next = (DOS_KEY_HEAD + 1) & 31;
+  if (next !== DOS_KEY_TAIL) {
+    DOS_KEY_BUFFER[DOS_KEY_HEAD] = ((scan & 0xFF) << 8) | (ascii & 0xFF);
+    dosInt_keyArrived();
+    DOS_KEY_HEAD = next;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Video Frame Producer (called on requestAnimationFrame by <PixelCanvas>)
+// ---------------------------------------------------------------------------
+// Cycles handed to the CPU per frame. This is a TIME budget in disguise: the
+// emulator only draws once frameSource returns, so a budget that takes 375 ms
+// to spend means the screen updates under three times a second however fast
+// the CPU is underneath. The budget is retuned each frame toward a slice that
+// leaves room to draw at 60 Hz, which costs no emulated throughput at all —
+// the same cycles are simply handed over in more, smaller pieces.
+let CPU_SLICE_MS = 20;    // wall-clock time a single slice should take
+let CPU_BUDGET = 40000;   // cycles per frame; adapts from the first measurement
+let runFrames = 0;        // frames the current program has had
+let cyclesRun = 0;
+let cyclesText = "";
+let cyclesStamp = 0;
+
+function updateCycleReadout() {
+  let now = Date.now();
+  if (cyclesStamp === 0) { cyclesStamp = now; cyclesRun = 0; return; }
+  if (now - cyclesStamp >= 1000) {
+    let mhz = cyclesRun / (now - cyclesStamp) / 1000;
+    cyclesText = (mhz >= 1) ? ((Math.round(mhz * 10) / 10) + " MHz") : (Math.round(mhz * 1000) + " kHz");
+    cyclesRun = 0;
+    cyclesStamp = now;
+  }
+}
+
+function frameSource() {
+  if (!isRunning) return null;
+
+  if (activeMode === "prompt") {
+    dosShell_tick();
+    cpuModeText = "16-Bit Real Mode";
+  } else if (activeMode === "raycast") {
+    dosLoader_tickRaycaster(keyMask);
+    cpuModeText = "Built-in 3D demo";
+  } else if (activeMode === "custom") {
+    let before = DOS_TOTAL_CYCLES;
+    let started = Date.now();
+    dosCpu_runCycles(CPU_BUDGET);
+    let spentMs = Date.now() - started;
+    cyclesRun += DOS_TOTAL_CYCLES - before;
+    // Retune toward CPU_SLICE_MS. Date.now has millisecond granularity, so a
+    // slice that reads as 0 ms is simply too small to measure: grow it.
+    if (spentMs <= 0) {
+      CPU_BUDGET = Math.min(2000000, Math.floor(CPU_BUDGET * 1.5) + 1000);
+    } else {
+      let want = Math.floor(CPU_BUDGET * (CPU_SLICE_MS / spentMs));
+      // Move part of the way so one slow frame cannot swing the budget wildly.
+      CPU_BUDGET = Math.floor(CPU_BUDGET + (want - CPU_BUDGET) * 0.35);
+      if (CPU_BUDGET < 4000) CPU_BUDGET = 4000;
+      if (CPU_BUDGET > 2000000) CPU_BUDGET = 2000000;
+    }
+    cpuModeText = DOS_IS_32 ? "32-Bit Protected Mode (DPMI)" : "16-Bit Real Mode";
+
+    // A 32-bit extender image that runs for seconds without asking the
+    // machine for anything and without drawing is not going to start: say so
+    // rather than spin behind a blank screen.
+    runFrames++;
+    if (DOS_IS_32 === 1 && runFrames > 240 && DOS_INT_COUNT === 0 && DOS_VIDEO_MODE === 0x03) {
+      dosShell_returnToPrompt("");
+      dosKernel_printStr("This 32-bit image never asked the machine for anything,\r\n");
+      dosKernel_printStr("so it did not load: its objects are mapped, but something\r\n");
+      dosKernel_printStr("in the image is wrong. 16-bit .COM and .EXE programs run.\r\n");
+      dosShell_prompt();
+      return dosVga_getFrame();
+    }
+
+    // A 32-bit image that started properly, asked for services and then went
+    // quiet in text mode is waiting on something that is not implemented.
+    // Name it rather than spin: the last refusal is almost always the reason.
+    if (DOS_IS_32 === 1 && runFrames > 900 && DOS_VIDEO_MODE === 0x03 &&
+        DOS_INT_COUNT > 0 && DOS_UNHANDLED_INT >= 0) {
+      dosShell_returnToPrompt("");
+      dosKernel_printStr("\r\nThe program started, but stopped waiting on a service\r\n");
+      dosKernel_printStr("SoftDOS does not implement: INT " +
+                         DOS_UNHANDLED_INT.toString(16).toUpperCase() + "h function " +
+                         DOS_UNHANDLED_FN.toString(16).toUpperCase() + "h, " +
+                         DOS_UNHANDLED_COUNT + " calls refused.\r\n");
+      dosKernel_printStr("Hardware interrupts are the usual missing piece: a game\r\n");
+      dosKernel_printStr("that installs its own timer or keyboard handler needs\r\n");
+      dosKernel_printStr("interrupt delivery, which SoftDOS does not have yet.\r\n");
+      dosShell_prompt();
+      return dosVga_getFrame();
+    }
+
+    // A program that stopped, by INT 20h, INT 21h/4Ch, HLT or an instruction
+    // the CPU does not know, gives the machine back to the shell.
+    if (DOS_HALTED) {
+      let note = "";
+      if (DOS_LAST_ILLEGAL >= 0) {
+        note = "Unsupported instruction at " + DOS_LAST_ILLEGAL.toString(16).toUpperCase() + "h. Program stopped.";
+        DOS_LAST_ILLEGAL = -1;
+      }
+      dosShell_returnToPrompt(note);
+    }
+  }
+
+  return dosVga_getFrame();
+}
+
+function fpsReport(fps) {
+  if (fps && fps.fps) {
+    fpsText = Math.round(fps.fps) + " FPS";
+  }
+  updateCycleReadout();
+}
+
+// ---------------------------------------------------------------------------
+// Audio Sample Producer (called by <AudioStream>)
+// ---------------------------------------------------------------------------
+function sampleSource() {
+  if (isMuted || !isRunning || !pcmBuffer) return null;
+
+  let frames = 512;
+  let freq = DOS_SPEAKER_ON ? DOS_SPEAKER_FREQ : 0;
+
+  if (freq === 0) {
+    pcmBuffer.fill(0);
+  } else {
+    // Generate square wave for PC speaker
+    let step = (freq * 2 * Math.PI) / 48000;
+    for (let i = 0; i < frames; i++) {
+      DOS_AUDIO_PHASE += step;
+      let val = Math.sin(DOS_AUDIO_PHASE) >= 0 ? 4000 : -4000;
+      pcmBuffer[i * 2] = val;     // Left
+      pcmBuffer[i * 2 + 1] = val; // Right
+    }
+  }
+
+  let u8View = new Uint8Array(pcmBuffer.buffer, 0, frames * 4);
+  return {
+    pcm: u8View.toBase64(),
+    frames: frames,
+    rate: 48000
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Mode Selectors & Quick Launch
+// ---------------------------------------------------------------------------
+function launchShell() {
+  activeMode = "prompt";
+  dosLoader_bootShell();
+  statusText = "MS-DOS 6.22 Ready";
+  cpuModeText = "16-Bit Real Mode";
+  loadedFileName = "";
+}
+
+// Run one of the programs on the virtual drive, as if it had been typed.
+function launchProgram(name) {
+  if (activeMode !== "prompt") launchShell();
+  let idx = dosKernel_vfsFind(name);
+  if (idx < 0) { statusText = name + " is not on the drive"; return; }
+  dosKernel_printStr(name + "\r\n");
+  dosShell_run(name, idx);
+}
+function launchPlasma() { launchProgram("PLASMA.COM"); }
+function launchMandel() { launchProgram("MANDEL.COM"); }
+function launchBoxes() { launchProgram("BOXES.COM"); }
+function launchHello() { launchProgram("HELLO.COM"); }
+
+function launchRaycast() {
+  activeMode = "raycast";
+  dosState_reset();
+  dosProgs_install();
+  dosVga_init();
+  DOS_VIDEO_MODE = 0x13;
+  statusText = "Built-in 3D demo (drawn by the host, not emulated x86)";
+  cpuModeText = "Built-in 3D demo";
+}
+
+function togglePause() {
+  isRunning = !isRunning;
+  statusText = isRunning ? "Running" : "Paused";
+}
+
+function toggleMute() {
+  isMuted = !isMuted;
+}
+
+// ---------------------------------------------------------------------------
+// File Upload & Intake (DOOM.EXE, DOOM1.WAD, or .COM)
+// ---------------------------------------------------------------------------
+function chooseFiles(files) {
+  if (!files || files.length === 0) return;
+
+  statusText = "Reading files...";
+  let pending = files.length;
+
+  for (let i = 0; i < files.length; i++) {
+    let f = files[i];
+    (function(file) {
+      softn.files.readBase64(file.ref, function(res) {
+        let b64 = romPayload(res);
+        if (b64) {
+          let bytes = Uint8Array.fromBase64(b64);
+          dosKernel_vfsAdd(file.name, bytes);
+          loadedFileName = file.name;
+        }
+
+        pending--;
+        if (pending === 0) {
+          onFilesReady();
+        }
+      });
+    })(f);
+  }
+}
+
+function onFilesReady() {
+  // Back to the prompt so the new files can be seen and run.
+  if (activeMode !== "prompt") {
+    activeMode = "prompt";
+    DOS_VIDEO_MODE = 0x03;
+    DOS_HALTED = 0;
+    DOS_SHELL_ACTIVE = 1;
+    DOS_CURSOR_VISIBLE = 1;
+  }
+  let added = [];
+  for (let i = 0; i < DOS_VFS_COUNT; i++) {
+    let n = DOS_VFS_NAMES[i];
+    if (n !== "" && (n.endsWith(".EXE") || n.endsWith(".COM"))) added.push(n);
+  }
+  dosKernel_printStr("\r\n" + DOS_VFS_COUNT + " file(s) on drive C.\r\n");
+  if (added.length > 0) {
+    dosKernel_printStr("Type " + added[added.length - 1] + " to run it.\r\n");
+  }
+  dosShell_prompt();
+  statusText = "Files stored on drive C:";
+}
+
+function romPayload(result) {
+  let s = result;
+  if (s && typeof s === "object") {
+    if (typeof s.data === "string") s = s.data;
+    else if (typeof s.dataUrl === "string") s = s.dataUrl;
+    else return "";
+  }
+  if (typeof s !== "string" || s === "") return "";
+  let comma = s.indexOf(",");
+  if (comma >= 0 && s.slice(0, 5) === "data:") return s.slice(comma + 1);
+  return s;
+}
+
+function toggleExpanded() {
+  isExpanded = !isExpanded;
+}
+
+function setCrtColor() {
+  crtTheme = "color";
+  dosVga_init();
+}
+
+function setCrtGreen() {
+  crtTheme = "green";
+  for (let i = 0; i < 256; i++) {
+    let r = DOS_VGA_PAL[i * 3];
+    let g = DOS_VGA_PAL[i * 3 + 1];
+    let b = DOS_VGA_PAL[i * 3 + 2];
+    let lum = Math.floor((r * 0.299 + g * 0.587 + b * 0.114));
+    DOS_VGA_PAL[i * 3]     = 0;
+    DOS_VGA_PAL[i * 3 + 1] = Math.min(255, Math.floor(lum * 1.2));
+    DOS_VGA_PAL[i * 3 + 2] = 0;
+  }
+  DOS_VGA_PAL_REV++;
+}
+
+function setCrtAmber() {
+  crtTheme = "amber";
+  for (let i = 0; i < 256; i++) {
+    let r = DOS_VGA_PAL[i * 3];
+    let g = DOS_VGA_PAL[i * 3 + 1];
+    let b = DOS_VGA_PAL[i * 3 + 2];
+    let lum = Math.floor((r * 0.299 + g * 0.587 + b * 0.114));
+    DOS_VGA_PAL[i * 3]     = Math.min(255, Math.floor(lum * 1.1));
+    DOS_VGA_PAL[i * 3 + 1] = Math.min(255, Math.floor(lum * 0.7));
+    DOS_VGA_PAL[i * 3 + 2] = 0;
+  }
+  DOS_VGA_PAL_REV++;
+}
+
+// On-screen Virtual D-Pad buttons for touch / clicks
+function pressUp() { handleKeyEvent("ArrowUp", true); }
+function releaseUp() { handleKeyEvent("ArrowUp", false); }
+function pressDown() { handleKeyEvent("ArrowDown", true); }
+function releaseDown() { handleKeyEvent("ArrowDown", false); }
+function pressLeft() { handleKeyEvent("ArrowLeft", true); }
+function releaseLeft() { handleKeyEvent("ArrowLeft", false); }
+function pressRight() { handleKeyEvent("ArrowRight", true); }
+function releaseRight() { handleKeyEvent("ArrowRight", false); }
+
+// Dedicated action buttons (essential for Doom and DOS games on touch)
+function pressFire() { handleKeyEvent("Control", true); }
+function releaseFire() { handleKeyEvent("Control", false); }
+function pressUse() { handleKeyEvent(" ", true); }
+function releaseUse() { handleKeyEvent(" ", false); }
+function pressEsc() { handleKeyEvent("Escape", true); }
+function releaseEsc() { handleKeyEvent("Escape", false); }
+function pressEnter() { handleKeyEvent("Enter", true); }
+function releaseEnter() { handleKeyEvent("Enter", false); }
+function pressKeyY() { handleKeyEvent("y", true); }
+function releaseKeyY() { handleKeyEvent("y", false); }
+function pressKeyN() { handleKeyEvent("n", true); }
+function releaseKeyN() { handleKeyEvent("n", false); }
+

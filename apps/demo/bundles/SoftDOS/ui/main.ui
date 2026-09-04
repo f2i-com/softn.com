@@ -1,0 +1,351 @@
+// main.ui — SoftDOS 32-Bit x86 PC & DOS Machine Emulator
+//
+// A responsive, mobile-friendly retro CRT monitor running an x86 DOS environment on top of zipp.
+
+<logic src="../logic/main.logic" />
+
+<style>
+.dos-shell {
+  --pc-beige: #d8d2c4;
+  --pc-beige-dark: #b8b2a4;
+  --pc-bezel: #242428;
+  --pc-screen: #000000;
+  --pc-green: #33ff33;
+}
+
+/* Base Monitor sizing */
+.dos-crt-monitor {
+  max-width: min(96vw, 76vh, 58rem);
+  width: 100%;
+  transition: max-width 200ms ease;
+}
+
+.dos-crt-expanded {
+  max-width: min(98vw, 88vh, 76rem) !important;
+}
+
+.dos-crt-screen canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: block;
+}
+
+.dos-inset {
+  box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.7), inset 0 -1px 1px rgba(255, 255, 255, 0.1);
+}
+
+.dos-raised {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.dos-btn {
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  cursor: pointer;
+  transition: transform 60ms, background 100ms;
+}
+
+.dos-btn:active {
+  transform: translateY(2px);
+}
+
+/* ---------------------------------------------------------------------------
+   Narrow screens & Phones (Portrait)
+   --------------------------------------------------------------------------- */
+@media (max-width: 52rem) {
+  .dos-shell {
+    padding: 0.5rem 0.5rem 1.75rem !important;
+  }
+  .dos-header {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 0.5rem !important;
+  }
+  .dos-crt-monitor {
+    padding: 0.75rem 0.75rem 1rem !important;
+  }
+  .dos-screen-bezel {
+    padding: 0.6rem 0.6rem 0.8rem !important;
+  }
+  .dos-controls-stack {
+    flex-direction: column !important;
+  }
+  .dos-keypad-grid {
+    grid-template-columns: repeat(3, 44px) !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Landscape on a Phone (Handheld Controller Layout)
+   --------------------------------------------------------------------------- */
+@media (max-height: 32rem) and (orientation: landscape) {
+  .dos-shell {
+    padding: 0.25rem 0.5rem !important;
+  }
+  .dos-header {
+    display: none !important;
+  }
+  .dos-crt-monitor {
+    max-width: none !important;
+    width: 100% !important;
+    height: calc(100vh - 1rem) !important;
+    display: grid !important;
+    grid-template-columns: auto minmax(0, 1fr) auto !important;
+    align-items: center !important;
+    padding: 0.4rem 0.6rem !important;
+    gap: 0.5rem !important;
+  }
+  .dos-screen-bezel {
+    height: 100% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0.4rem !important;
+  }
+  .dos-crt-screen {
+    height: 100% !important;
+    width: auto !important;
+    max-width: 100% !important;
+  }
+  .dos-landscape-controls-left {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.4rem !important;
+  }
+  .dos-landscape-controls-right {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.4rem !important;
+  }
+  .dos-controls-stack {
+    display: none !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Touch Screens (Coarse Pointer)
+   --------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  .dos-btn {
+    min-height: 44px;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+}
+</style>
+
+<App theme="dark">
+  <Box className="dos-shell" style={{
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    minHeight: "100%",
+    padding: "1.25rem 1rem 2.5rem",
+    background: "radial-gradient(circle at 50% 0%, #2a2a32 0%, #101014 80%)"
+  }}>
+
+    // ---- Top Status Bar --------------------------------------------------
+    <Stack direction="horizontal" gap="md" align="center" className="dos-header" style={{
+      width: "100%",
+      maxWidth: isExpanded ? "76rem" : "58rem",
+      marginBottom: "0.75rem",
+      justifyContent: "space-between"
+    }}>
+      <Stack direction="horizontal" gap="sm" align="center">
+        <Heading level={3} style={{ color: "#e0dcd0", margin: 0, letterSpacing: "0.05em", fontSize: "1.25rem" }}>
+          SoftDOS 386/486
+        </Heading>
+        <Badge variant="success">{cpuModeText}</Badge>
+      </Stack>
+
+      <Stack direction="horizontal" gap="xs" align="center" style={{ flexWrap: "wrap" }}>
+        <Badge variant="outline" style={{ fontFamily: "monospace", fontSize: "0.75rem" }}>{fpsText}</Badge>
+        #if (cyclesText !== "")
+          <Badge variant="outline" style={{ fontFamily: "monospace", fontSize: "0.75rem" }}>{cyclesText}</Badge>
+        #end
+        
+        // CRT Color Themes
+        <Button @click={setCrtColor} size="xs" variant={crtTheme === "color" ? "primary" : "ghost"} style={{ fontSize: "0.65rem" }}>RGB</Button>
+        <Button @click={setCrtGreen} size="xs" variant={crtTheme === "green" ? "primary" : "ghost"} style={{ fontSize: "0.65rem", color: "#33ff33" }}>Green</Button>
+        <Button @click={setCrtAmber} size="xs" variant={crtTheme === "amber" ? "primary" : "ghost"} style={{ fontSize: "0.65rem", color: "#ffaa22" }}>Amber</Button>
+
+        <Button @click={toggleExpanded} size="xs" variant="ghost" style={{ fontSize: "0.65rem", marginLeft: "0.25rem" }}>
+          {isExpanded ? "Standard View" : "Theater Mode"}
+        </Button>
+        <Button @click={togglePause} variant="ghost" size="xs" style={{ fontSize: "0.65rem" }}>
+          {isRunning ? "Pause" : "Resume"}
+        </Button>
+        <Button @click={toggleMute} variant="ghost" size="xs" style={{ fontSize: "0.65rem" }}>
+          {isMuted ? "Unmute" : "Mute"}
+        </Button>
+      </Stack>
+    </Stack>
+
+    // ---- The CRT Monitor -------------------------------------------------
+    <Box className={isExpanded ? "dos-raised dos-crt-monitor dos-crt-expanded" : "dos-raised dos-crt-monitor"} style={{
+      background: "#d8d2c4",
+      borderRadius: "16px 16px 24px 24px",
+      padding: "1.25rem 1.5rem 1.5rem",
+      display: "flex",
+      flexDirection: "column",
+      gap: "0.75rem",
+      border: "2px solid #b8b2a4"
+    }}>
+
+      // Screen Bezel
+      <Box className="dos-inset dos-screen-bezel" style={{
+        background: "#242428",
+        borderRadius: "12px",
+        padding: "1.25rem 1.75rem 1.5rem",
+        position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center"
+      }}>
+
+        // Monitor Brand & Model
+        <Stack direction="horizontal" style={{ width: "100%", justifyContent: "space-between", marginBottom: "0.4rem" }}>
+          <Text style={{ fontSize: "0.65rem", color: "#888890", letterSpacing: "0.15em", fontWeight: 700 }}>VGA MULTISYNC COLOR</Text>
+          <Text style={{ fontSize: "0.65rem", color: "#888890", letterSpacing: "0.1em" }}>32-BIT PROTECTED MODE</Text>
+        </Stack>
+
+        // CRT Glass Tube Container
+        <Box className="dos-crt-screen" style={{
+          background: "#000",
+          borderRadius: "6px",
+          overflow: "hidden",
+          width: "100%",
+          aspectRatio: "320 / 200",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          border: "2px solid #141416",
+          boxShadow: crtTheme === "green" ? "0 0 24px rgba(51,255,51,0.18)" : crtTheme === "amber" ? "0 0 24px rgba(255,170,34,0.18)" : "0 0 24px rgba(51,255,51,0.08)"
+        }}>
+          <PixelCanvas
+            width={320}
+            height={200}
+            fit="contain"
+            getFrame={frameSource}
+            running={isRunning}
+            smooth={false}
+            @fps={fpsReport}
+            style={{ width: "100%", height: "100%" }}
+          />
+        </Box>
+
+        // Monitor Bezel Bottom Badge & Status
+        <Stack direction="horizontal" align="center" style={{ width: "100%", justifyContent: "space-between", marginTop: "0.5rem" }}>
+          <Text style={{ fontSize: "0.62rem", color: "#888894", letterSpacing: "0.08em" }}>{statusText}</Text>
+          <Stack direction="horizontal" gap="xs" align="center">
+            <Box style={{ width: "8px", height: "8px", borderRadius: "50%", background: isRunning ? "#33ff33" : "#ff3333", boxShadow: isRunning ? "0 0 6px #33ff33" : "none" }} />
+            <Text style={{ fontSize: "0.55rem", color: "#888890", fontWeight: 700 }}>PWR</Text>
+          </Stack>
+        </Stack>
+      </Box>
+
+      // Monitor Bottom Controls & Quick Launch Demos
+      <Stack direction="horizontal" align="center" style={{ justifyContent: "space-between", padding: "0 0.25rem", flexWrap: "wrap", gap: "0.5rem" }}>
+        <Text style={{ fontSize: "0.75rem", fontWeight: 700, color: "#686458", letterSpacing: "0.1em" }}>SoftDOS / 486</Text>
+        <Stack direction="horizontal" gap="xs">
+          <Button @click={launchShell} size="sm" variant="outline" style={{ fontSize: "0.7rem", background: "#eae6dc" }}>C:\ Prompt</Button>
+          <Button @click={launchPlasma} size="sm" variant="outline" style={{ fontSize: "0.7rem", background: "#eae6dc" }}>PLASMA</Button>
+          <Button @click={launchMandel} size="sm" variant="outline" style={{ fontSize: "0.7rem", background: "#eae6dc" }}>MANDEL</Button>
+          <Button @click={launchBoxes} size="sm" variant="outline" style={{ fontSize: "0.7rem", background: "#eae6dc" }}>BOXES</Button>
+          <Button @click={launchRaycast} size="sm" variant="outline" style={{ fontSize: "0.7rem", background: "#eae6dc" }}>3D demo</Button>
+        </Stack>
+      </Stack>
+    </Box>
+
+    // ---- Control Panel & File Upload -------------------------------------
+    <Stack direction="horizontal" gap="md" className="dos-controls-stack" style={{
+      width: "100%",
+      maxWidth: isExpanded ? "76rem" : "58rem",
+      marginTop: "1rem"
+    }}>
+
+      // File Chooser Card
+      <Card style={{ flex: 1, background: "#1c1c22", borderColor: "#33333c", padding: "1rem" }}>
+        <Text style={{ fontSize: "0.75rem", fontWeight: 700, color: "#a8a8b4", marginBottom: "0.5rem", letterSpacing: "0.08em" }}>LOAD DOS GAME / BINARY</Text>
+        <FileChooser
+          accept=".exe,.com,.wad,.zip"
+          label="Load a .COM or .EXE"
+          multiple={true}
+          @select={chooseFiles}
+        />
+        <Text if={loadedFileName} style={{ display: "block", fontSize: "0.7rem", color: "#48d080", marginTop: "0.5rem" }}>
+          Loaded: {loadedFileName}
+        </Text>
+        <Text style={{ display: "block", fontSize: "0.65rem", color: "#787884", marginTop: "0.5rem", lineHeight: 1.4 }}>
+          16-bit .COM and .EXE programs run on the emulated CPU, and so do 32-bit DOS extender
+          images (DOS/4GW and the like): the objects are mapped, fixups applied, and DPMI, the
+          timer and keyboard interrupts and unchained VGA are emulated. DOOM runs — load
+          DOOM.EXE and DOOM1.WAD together, then type DOOM.EXE. It is slow: the CPU manages a
+          little over a megahertz, so expect a frame every few seconds.
+        </Text>
+      </Card>
+
+      // Mobile Touch / Virtual Gamepad Card
+      <Card style={{ flex: 1.2, background: "#1c1c22", borderColor: "#33333c", padding: "1rem" }}>
+        <Text style={{ fontSize: "0.75rem", fontWeight: 700, color: "#a8a8b4", marginBottom: "0.5rem", letterSpacing: "0.08em" }}>TOUCH & KEYBOARD CONTROLS</Text>
+        
+        <Stack direction="horizontal" gap="lg" align="center" style={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+          // Direction D-Pad
+          <Box className="dos-keypad-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 40px)", gap: "5px" }}>
+            <Box />
+            <Button className="dos-btn" @pointerdown={pressUp} @pointerup={releaseUp} style={{ padding: "0.5rem 0", fontSize: "0.85rem", background: "#2e2e38", border: "1px solid #444450" }}>▲</Button>
+            <Box />
+            <Button className="dos-btn" @pointerdown={pressLeft} @pointerup={releaseLeft} style={{ padding: "0.5rem 0", fontSize: "0.85rem", background: "#2e2e38", border: "1px solid #444450" }}>◀</Button>
+            <Button className="dos-btn" @pointerdown={pressDown} @pointerup={releaseDown} style={{ padding: "0.5rem 0", fontSize: "0.85rem", background: "#2e2e38", border: "1px solid #444450" }}>▼</Button>
+            <Button className="dos-btn" @pointerdown={pressRight} @pointerup={releaseRight} style={{ padding: "0.5rem 0", fontSize: "0.85rem", background: "#2e2e38", border: "1px solid #444450" }}>▶</Button>
+          </Box>
+
+          // Action Buttons (Fire, Use, Menu)
+          <Stack direction="vertical" gap="xs" style={{ flex: 1, minWidth: "140px" }}>
+            <Stack direction="horizontal" gap="xs">
+              <Button className="dos-btn" @pointerdown={pressFire} @pointerup={releaseFire} variant="primary" style={{
+                flex: 1,
+                padding: "0.6rem 0.5rem",
+                borderRadius: "6px",
+                fontWeight: 700,
+                fontSize: "0.75rem"
+              }}>
+                FIRE (Ctrl)
+              </Button>
+              <Button className="dos-btn" @pointerdown={pressUse} @pointerup={releaseUse} variant="outline" style={{
+                flex: 1,
+                padding: "0.6rem 0.5rem",
+                borderRadius: "6px",
+                fontWeight: 700,
+                fontSize: "0.75rem",
+                background: "#2e2e38"
+              }}>
+                USE (Space)
+              </Button>
+            </Stack>
+
+            <Stack direction="horizontal" gap="xs">
+              <Button className="dos-btn" @pointerdown={pressEsc} @pointerup={releaseEsc} size="xs" variant="ghost" style={{ flex: 1, fontSize: "0.65rem", background: "#25252e" }}>ESC</Button>
+              <Button className="dos-btn" @pointerdown={pressEnter} @pointerup={releaseEnter} size="xs" variant="ghost" style={{ flex: 1, fontSize: "0.65rem", background: "#25252e" }}>ENTER</Button>
+              <Button className="dos-btn" @pointerdown={pressKeyY} @pointerup={releaseKeyY} size="xs" variant="ghost" style={{ flex: 0.8, fontSize: "0.65rem", background: "#25252e" }}>Y</Button>
+              <Button className="dos-btn" @pointerdown={pressKeyN} @pointerup={releaseKeyN} size="xs" variant="ghost" style={{ flex: 0.8, fontSize: "0.65rem", background: "#25252e" }}>N</Button>
+            </Stack>
+          </Stack>
+        </Stack>
+      </Card>
+    </Stack>
+
+    // Audio Output Sink
+    <AudioStream
+      getSamples={sampleSource}
+      sampleRate={48000}
+      channels={2}
+      format="i16"
+      running={isRunning}
+      muted={isMuted}
+    />
+  </Box>
+</App>

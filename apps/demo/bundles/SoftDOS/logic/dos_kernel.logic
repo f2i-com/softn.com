@@ -1,0 +1,699 @@
+// dos_kernel.logic — SoftDOS HLE (High-Level Emulation) DOS & DPMI Kernel
+//
+// Intercepts and implements BIOS (INT 10h, 16h), DOS (INT 21h), and DPMI (INT 31h)
+// system calls directly in JavaScript without needing MS-DOS 6.22 floppy disks.
+
+// Cursor position in text mode: column (0-79), row (0-24)
+let DOS_CURSOR_COL = 0;
+let DOS_CURSOR_ROW = 0;
+let DOS_CURSOR_VISIBLE = 1;
+let DOS_KEY_WAITING = 0;   // set while INT 16h is parked waiting for a key
+
+// Virtual Filesystem Helper
+function dosKernel_vfsFind(filename) {
+  let clean = filename.toUpperCase().trim();
+  // Strip drive letter or path (e.g., "C:\DOOM\DOOM1.WAD" -> "DOOM1.WAD")
+  let slashIdx = clean.lastIndexOf("\\");
+  if (slashIdx >= 0) clean = clean.slice(slashIdx + 1);
+  slashIdx = clean.lastIndexOf("/");
+  if (slashIdx >= 0) clean = clean.slice(slashIdx + 1);
+
+  for (let i = 0; i < DOS_VFS_COUNT; i++) {
+    if (DOS_VFS_NAMES[i] === clean) return i;
+  }
+  return -1;
+}
+
+function dosKernel_vfsAdd(name, bytes) {
+  let idx = dosKernel_vfsFind(name);
+  if (idx < 0) {
+    if (DOS_VFS_COUNT >= 16) return -1;
+    idx = DOS_VFS_COUNT++;
+  }
+  let clean = name.toUpperCase().trim();
+  let slash = clean.lastIndexOf("\\");
+  if (slash >= 0) clean = clean.slice(slash + 1);
+  slash = clean.lastIndexOf("/");
+  if (slash >= 0) clean = clean.slice(slash + 1);
+
+  DOS_VFS_NAMES[idx] = clean;
+  DOS_VFS_DATA[idx] = bytes;
+  return idx;
+}
+
+// ---------------------------------------------------------------------------
+// Text Mode Teletype Output
+// ---------------------------------------------------------------------------
+function dosKernel_putChar(ch) {
+  if (ch === 13) { // CR
+    DOS_CURSOR_COL = 0;
+    return;
+  }
+  if (ch === 10) { // LF
+    DOS_CURSOR_ROW++;
+    if (DOS_CURSOR_ROW >= 25) {
+      // Scroll up one row
+      let textBase = 0xB8000;
+      DOS_RAM.copyWithin(textBase, textBase + 160, textBase + (25 * 160));
+      // Clear bottom line
+      let lastLine = textBase + (24 * 160);
+      for (let c = 0; c < 80; c++) {
+        DOS_RAM[lastLine + (c * 2)] = 32;
+        DOS_RAM[lastLine + (c * 2) + 1] = 0x07; // Light gray on black
+      }
+      DOS_CURSOR_ROW = 24;
+    }
+    return;
+  }
+  if (ch === 8) { // Backspace
+    if (DOS_CURSOR_COL > 0) {
+      DOS_CURSOR_COL--;
+      let cell = 0xB8000 + ((DOS_CURSOR_ROW * 80 + DOS_CURSOR_COL) * 2);
+      DOS_RAM[cell] = 32;
+    }
+    return;
+  }
+
+  let cell = 0xB8000 + ((DOS_CURSOR_ROW * 80 + DOS_CURSOR_COL) * 2);
+  DOS_RAM[cell] = ch & 0xFF;
+  DOS_RAM[cell + 1] = 0x07; // Default attribute
+
+  DOS_CURSOR_COL++;
+  if (DOS_CURSOR_COL >= 80) {
+    DOS_CURSOR_COL = 0;
+    dosKernel_putChar(10);
+  }
+}
+
+function dosKernel_printStr(str) {
+  for (let i = 0; i < str.length; i++) {
+    dosKernel_putChar(str.charCodeAt(i));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Software Interrupt Dispatch
+// ---------------------------------------------------------------------------
+let DOS_INT_COUNT = 0;   // services requested since the last program started
+
+// Unimplemented services are recorded rather than ignored, so the gaps show up
+// the way an unknown opcode does instead of hiding behind a cleared carry flag.
+let DOS_UNHANDLED_INT = -1;
+let DOS_UNHANDLED_FN = -1;
+let DOS_UNHANDLED_COUNT = 0;
+function dosKernel_unhandled(intNum, fn) {
+  DOS_UNHANDLED_INT = intNum;
+  DOS_UNHANDLED_FN = fn;
+  DOS_UNHANDLED_COUNT++;
+  dosCpu_flushFlags();
+  DOS_EFLAGS |= 0x01;                                    // CF = 1, the call failed
+  DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0001; // AX = 1, invalid function
+}
+
+function dosKernel_handleInt(intNum) {
+  DOS_INT_COUNT++;
+  // Handlers report success and failure by writing CF directly. Carry is
+  // computed lazily from the last ALU result, so without folding that in
+  // first every one of those writes would be read straight back over.
+  dosCpu_flushFlags();
+
+  // A vector the program installed itself wins over anything below, except
+  // the DOS and BIOS entry points the kernel actually implements. This is what
+  // lets a game's own timer or keyboard handler be reached by a software INT.
+  if (DOS_VEC_SET !== null && DOS_VEC_SET[intNum & 0xFF] === 1 &&
+      intNum !== 0x21 && intNum !== 0x31 && intNum !== 0x10 && intNum !== 0x16) {
+    dosInt_enter(intNum);
+    return;
+  }
+
+  // INT 20h: terminate. Every .COM built before DOS 2.0 ends this way, and
+  // without it the CPU runs off the end of the program into cleared RAM.
+  if (intNum === 0x20) {
+    dosKernel_printStr("\r\n");
+    DOS_HALTED = 1;
+    return;
+  }
+  // -------------------------------------------------------------------------
+  // INT 10h: Video BIOS
+  // -------------------------------------------------------------------------
+  if (intNum === 0x10) {
+    let ah = (DOS_REGS32[0] >> 8) & 0xFF;
+    let al = DOS_REGS32[0] & 0xFF;
+
+    if (ah === 0x00) {
+      // Set Video Mode
+      DOS_VIDEO_MODE = al;
+      if (al === 0x13) {
+        // Clear VGA graphics buffer
+        DOS_RAM.fill(0, 0xA0000, 0xA0000 + 64000);
+      } else if (al === 0x03) {
+        // Clear text mode buffer
+        let textBase = 0xB8000;
+        for (let i = 0; i < 2000; i++) {
+          DOS_RAM[textBase + (i * 2)] = 32;
+          DOS_RAM[textBase + (i * 2) + 1] = 0x07;
+        }
+        DOS_CURSOR_COL = 0;
+        DOS_CURSOR_ROW = 0;
+      }
+      return;
+    }
+
+    // AH=02h: set cursor position (DH = row, DL = column)
+    if (ah === 0x02) {
+      DOS_CURSOR_ROW = (DOS_REGS32[2] >>> 8) & 0xFF;
+      DOS_CURSOR_COL = DOS_REGS32[2] & 0xFF;
+      if (DOS_CURSOR_ROW > 24) DOS_CURSOR_ROW = 24;
+      if (DOS_CURSOR_COL > 79) DOS_CURSOR_COL = 79;
+      return;
+    }
+
+    // AH=03h: read cursor position
+    if (ah === 0x03) {
+      DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) |
+                      ((DOS_CURSOR_ROW & 0xFF) << 8) | (DOS_CURSOR_COL & 0xFF);
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | 0x0607; // cursor scan lines
+      return;
+    }
+
+    // AH=09h: write AL, attribute BL, CX times, without moving the cursor.
+    if (ah === 0x09) {
+      let ch = DOS_REGS32[0] & 0xFF;
+      let attr = DOS_REGS32[3] & 0xFF;
+      let count = DOS_REGS32[1] & 0xFFFF;
+      if (count < 1) count = 1;
+      let cell = 0xB8000 + ((DOS_CURSOR_ROW * 80 + DOS_CURSOR_COL) * 2);
+      for (let i = 0; i < count; i++) {
+        if (cell + 1 > 0xB8000 + 4000) break;
+        DOS_RAM[cell] = ch;
+        DOS_RAM[cell + 1] = attr;
+        cell = cell + 2;
+      }
+      return;
+    }
+
+    if (ah === 0x0E) {
+      // Teletype character output
+      dosKernel_putChar(al);
+      return;
+    }
+
+    if (ah === 0x0F) {
+      // Get Current Video Mode
+      // AH = columns (80), AL = mode, BH = active page (0)
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (80 << 8) | DOS_VIDEO_MODE;
+      return;
+    }
+
+    if (ah === 0x12) {
+      // EGA/VGA Alternate Function Select
+      DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | 0x03; // 256KB video RAM
+      return;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // INT 16h: Keyboard BIOS
+  // -------------------------------------------------------------------------
+  if (intNum === 0x16) {
+    let ah = (DOS_REGS32[0] >> 8) & 0xFF;
+
+    if (ah === 0x00 || ah === 0x10) {
+      // Read Keystroke: AH = scan code, AL = ASCII. Waits for one by leaving
+      // EIP on the INT so the next frame retries, rather than spinning here.
+      if (DOS_KEY_HEAD !== DOS_KEY_TAIL) {
+        let code = DOS_KEY_BUFFER[DOS_KEY_TAIL];
+        DOS_KEY_TAIL = (DOS_KEY_TAIL + 1) & 31;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (code & 0xFFFF);
+      } else {
+        DOS_EIP = (DOS_EIP - 2) >>> 0; // re-run this INT next time round
+        DOS_KEY_WAITING = 1;
+      }
+      return;
+    }
+
+    if (ah === 0x01 || ah === 0x11) {
+      // Check Keystroke Status (ZF=1 if no keystroke, ZF=0 if key available)
+      dosCpu_flushFlags();
+      if (DOS_KEY_HEAD !== DOS_KEY_TAIL) {
+        DOS_EFLAGS &= ~0x40; // Clear ZF
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (DOS_KEY_BUFFER[DOS_KEY_TAIL] & 0xFFFF);
+      } else {
+        DOS_EFLAGS |= 0x40;  // Set ZF (buffer empty)
+      }
+      return;
+    }
+
+    if (ah === 0x02 || ah === 0x12) {
+      // Shift status: nothing held, which is true enough here.
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00);
+      return;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // INT 21h: DOS System Calls (DOS Kernel HLE)
+  // -------------------------------------------------------------------------
+  if (intNum === 0x21) {
+    let ah = (DOS_REGS32[0] >> 8) & 0xFF;
+    let al = DOS_REGS32[0] & 0xFF;
+
+    // AH=4Ch: Terminate with return code
+    if (ah === 0x4C) {
+      dosKernel_printStr("\r\nProgram terminated with exit code " + al + ".\r\n");
+      DOS_HALTED = 1;
+      return;
+    }
+
+    // AH=09h: Print '$'-terminated string at DS:EDX
+    if (ah === 0x09) {
+      let addr = dosMmu_linear(DOS_SEGS[3], DOS_REGS32[2]);
+      let str = "";
+      while (DOS_RAM[addr] !== 0x24) { // '$'
+        str += String.fromCharCode(DOS_RAM[addr++]);
+        if (str.length > 4000) break;
+      }
+      dosKernel_printStr(str);
+      return;
+    }
+
+    // AH=02h: Write character in DL to stdout
+    if (ah === 0x02) {
+      let dl = DOS_REGS32[2] & 0xFF;
+      dosKernel_putChar(dl);
+      return;
+    }
+
+    // AH=30h: Get DOS Version (Return 6.22)
+    if (ah === 0x30) {
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (22 << 8) | 6; // AL=6, AH=22
+      return;
+    }
+
+    // AH=3Dh: Open File (DS:EDX points to ASCIIZ filename)
+    if (ah === 0x3D) {
+      let namePtr = dosMmu_linear(DOS_SEGS[3], DOS_REGS32[2]);
+      let filename = "";
+      while (DOS_RAM[namePtr] !== 0) {
+        filename += String.fromCharCode(DOS_RAM[namePtr++]);
+        if (filename.length > 256) break;
+      }
+
+      let vfsIdx = dosKernel_vfsFind(filename);
+      if (vfsIdx < 0) {
+        // File not found -> CF=1, AX=2
+        DOS_EFLAGS |= 0x01; // Carry Flag set
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x02;
+        return;
+      }
+
+      // Find free handle slot (5 to 31; 0-4 are stdio)
+      let freeHandle = -1;
+      for (let h = 5; h < 32; h++) {
+        if (DOS_HANDLE_VFS[h] === -1) {
+          freeHandle = h;
+          break;
+        }
+      }
+
+      if (freeHandle < 0) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x04; // Too many open files
+        return;
+      }
+
+      DOS_HANDLE_VFS[freeHandle] = vfsIdx;
+      DOS_HANDLE_POS[freeHandle] = 0;
+      DOS_EFLAGS &= ~0x01; // Success: CF=0
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | freeHandle;
+      return;
+    }
+
+    // AH=3Eh: Close File (BX = handle)
+    if (ah === 0x3E) {
+      let handle = DOS_REGS32[3] & 0xFFFF;
+      if (handle >= 0 && handle < 32) {
+        DOS_HANDLE_VFS[handle] = -1;
+        DOS_HANDLE_POS[handle] = 0;
+        DOS_EFLAGS &= ~0x01;
+      } else {
+        DOS_EFLAGS |= 0x01;
+      }
+      return;
+    }
+
+    // AH=3Fh: Read File (BX=handle, CX=bytes to read, DS:EDX=buffer)
+    if (ah === 0x3F) {
+      let handle = DOS_REGS32[3] & 0xFFFF;
+      let count  = DOS_IS_32 ? DOS_REGS32[1] : (DOS_REGS32[1] & 0xFFFF);
+      let dstPtr = dosMmu_linear(DOS_SEGS[3], DOS_REGS32[2]);
+
+      if (handle < 0 || handle >= 32 || DOS_HANDLE_VFS[handle] === -1) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x06; // Invalid handle
+        return;
+      }
+
+      let vfsIdx = DOS_HANDLE_VFS[handle];
+      let fileBytes = DOS_VFS_DATA[vfsIdx];
+      let curPos = DOS_HANDLE_POS[handle];
+
+      let available = Math.max(0, fileBytes.length - curPos);
+      let toRead = Math.min(count, available);
+
+      // Reading a file into memory is how a program loads an overlay, and an
+      // overlay is code: any block decoded from this range is now stale.
+      for (let t = 0; t < toRead; t = t + 4096) dosBc_touch((dstPtr + t) & 0xFFFFFF);
+      if (toRead > 0) dosBc_touch((dstPtr + toRead - 1) & 0xFFFFFF);
+      for (let i = 0; i < toRead; i++) {
+        DOS_RAM[(dstPtr + i) & 0xFFFFFF] = fileBytes[curPos + i];
+      }
+
+      DOS_HANDLE_POS[handle] = curPos + toRead;
+      DOS_EFLAGS &= ~0x01;
+      if (DOS_IS_32) {
+        DOS_REGS32[0] = toRead; // EAX = bytes read
+      } else {
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | toRead; // AX = bytes read
+      }
+      return;
+    }
+
+    // AH=42h: Lseek (BX=handle, CX:DX=offset, AL=origin: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END)
+    if (ah === 0x42) {
+      let handle = DOS_REGS32[3] & 0xFFFF;
+      let origin = al;
+      let offset = 0;
+      if (DOS_IS_32) {
+        offset = DOS_REGS32[2]; // In 32-bit Watcom: EDX = 32-bit signed offset
+      } else {
+        offset = ((DOS_REGS32[1] & 0xFFFF) << 16) | (DOS_REGS32[2] & 0xFFFF);
+      }
+
+      if (handle < 0 || handle >= 32 || DOS_HANDLE_VFS[handle] === -1) {
+        DOS_EFLAGS |= 0x01;
+        return;
+      }
+
+      let vfsIdx = DOS_HANDLE_VFS[handle];
+      let fileLen = DOS_VFS_DATA[vfsIdx].length;
+      let newPos = 0;
+
+      if (origin === 0) newPos = offset;
+      else if (origin === 1) newPos = DOS_HANDLE_POS[handle] + offset;
+      else if (origin === 2) newPos = fileLen + offset;
+
+      newPos = Math.max(0, Math.min(fileLen, newPos));
+      DOS_HANDLE_POS[handle] = newPos;
+
+      DOS_EFLAGS &= ~0x01;
+      if (DOS_IS_32) {
+        DOS_REGS32[0] = newPos; // EAX = new position
+      } else {
+        DOS_REGS32[2] = newPos & 0xFFFF;        // DX = low 16
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | ((newPos >> 16) & 0xFFFF); // AX = high 16
+      }
+      return;
+    }
+
+    // AH=48h: Allocate Memory (BX = paragraphs in 16-bit, EBX = bytes in 32-bit)
+    // AH=25h: set an interrupt vector. From 32-bit code the handler is the
+    // flat address in EDX; from real mode it is DS:DX.
+    if (ah === 0x25) {
+      let vec = DOS_REGS32[0] & 0xFF;
+      if (DOS_IS_32 === 1) {
+        dosInt_setVector(vec, DOS_REGS32[2] >>> 0, 1);
+      } else {
+        dosInt_setVector(vec, ((DOS_SEGS[3] & 0xFFFF) << 16) | (DOS_REGS32[2] & 0xFFFF), 0);
+      }
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=35h: read an interrupt vector back, into ES:BX (or EBX when flat).
+    if (ah === 0x35) {
+      let vec = DOS_REGS32[0] & 0xFF;
+      let addr = dosInt_getVector(vec);
+      if (DOS_IS_32 === 1) {
+        DOS_REGS32[3] = addr >>> 0;
+        DOS_SEGS[0] = 0;
+      } else {
+        DOS_SEGS[0] = (addr >>> 16) & 0xFFFF;
+        DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | (addr & 0xFFFF);
+      }
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=40h: write CX bytes from DS:DX to a handle. Handles 1 (stdout) and
+    // 2 (stderr) go to the screen; this is how DOOM prints its startup log.
+    if (ah === 0x40) {
+      let handle = DOS_REGS32[3] & 0xFFFF;
+      let count = DOS_REGS32[1] & 0xFFFF;
+      let addr = 0;
+      if (DOS_IS_32 === 1) addr = DOS_REGS32[2] >>> 0;
+      else addr = ((DOS_SEGS[3] << 4) + (DOS_REGS32[2] & 0xFFFF)) & 0xFFFFFF;
+      if (handle === 1 || handle === 2) {
+        let out = "";
+        for (let i = 0; i < count; i++) out = out + String.fromCharCode(DOS_RAM[(addr + i) & 0xFFFFFF]);
+        dosKernel_printStr(out);
+        DOS_EFLAGS &= ~0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (count & 0xFFFF);
+        return;
+      }
+      // Writing to a real file is not supported; say so rather than pretend.
+      dosKernel_unhandled(0x21, 0x40);
+      return;
+    }
+
+    // AH=43h: get/set file attributes. Only "does it exist" is meaningful here.
+    if (ah === 0x43) {
+      let al = DOS_REGS32[0] & 0xFF;
+      let addr = 0;
+      if (DOS_IS_32 === 1) addr = DOS_REGS32[2] >>> 0;
+      else addr = ((DOS_SEGS[3] << 4) + (DOS_REGS32[2] & 0xFFFF)) & 0xFFFFFF;
+      let name = "";
+      for (let i = 0; i < 128; i++) {
+        let ch = DOS_RAM[(addr + i) & 0xFFFFFF];
+        if (ch === 0) break;
+        name = name + String.fromCharCode(ch);
+      }
+      if (dosKernel_vfsFind(name) >= 0) {
+        DOS_EFLAGS &= ~0x01;
+        if (al === 0) DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | 0x0020; // archive
+        return;
+      }
+      DOS_EFLAGS |= 0x01;
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0002; // file not found
+      return;
+    }
+
+    // AH=44h AL=00h: get device information. The three standard handles are
+    // character devices; anything else is a file on our virtual disk.
+    if (ah === 0x44) {
+      let al = DOS_REGS32[0] & 0xFF;
+      let handle = DOS_REGS32[3] & 0xFFFF;
+      if (al === 0) {
+        let info = (handle <= 2) ? 0x0080 : 0x0000;
+        if (handle === 0) info = info | 0x0001;   // stdin
+        if (handle === 1 || handle === 2) info = info | 0x0002; // stdout/stderr
+        DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | info;
+        DOS_EFLAGS &= ~0x01;
+        return;
+      }
+      if (al === 1) { DOS_EFLAGS &= ~0x01; return; } // set device info: accept
+      dosKernel_unhandled(0x21, 0x44);
+      return;
+    }
+
+    // AH=4Ah: resize memory block. Memory here is a bump allocator over a flat
+    // 16 MB, so a shrink always succeeds and a grow is granted.
+    if (ah === 0x4A) {
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    if (ah === 0x48) {
+      let bytesReq = DOS_IS_32 ? DOS_REGS32[3] : ((DOS_REGS32[3] & 0xFFFF) * 16);
+      let allocBase = DOS_DPMI_MEM_TOP;
+      DOS_DPMI_MEM_TOP = (DOS_DPMI_MEM_TOP + bytesReq + 0xFFF) & ~0xFFF; // 4KB aligned
+
+      DOS_EFLAGS &= ~0x01;
+      if (DOS_IS_32) {
+        DOS_REGS32[0] = allocBase; // EAX = linear address
+      } else {
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (allocBase >> 4); // AX = segment
+      }
+      return;
+    }
+
+    // Anything else: report failure rather than a phantom success.
+    dosKernel_unhandled(0x21, ah);
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // INT 31h: DPMI 0.9 (DOS Protected Mode Interface)
+  // -------------------------------------------------------------------------
+  if (intNum === 0x31) {
+    let ax = DOS_REGS32[0] & 0xFFFF;
+
+    // AX=0000h: Allocate LDT Descriptors (CX = count)
+    if (ax === 0x0000) {
+      let count = DOS_REGS32[1] & 0xFFFF;
+      DOS_EFLAGS &= ~0x01;
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0017; // Return dummy selector
+      return;
+    }
+
+    // AX=0007h: Set Segment Base Address (BX = selector, CX:DX = base address)
+    if (ax === 0x0007) {
+      DOS_EFLAGS &= ~0x01; // Success
+      return;
+    }
+
+    // AX=0008h: Set Segment Limit (BX = selector, CX:DX = limit)
+    if (ax === 0x0008) {
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AX=0501h: Allocate Linear Memory Block (BX:CX = size in bytes)
+    // AX=0500h: get free memory information. DOOM asks this before it sizes
+    // its zone heap, and refuses to start on anything under 3.7 MB. The reply
+    // is a 0x30-byte block at ES:EDI; leaving it unwritten made DOOM read
+    // whatever was already there ("DPMI memory: 0x0, 0xfffe0000") and abort.
+    if (ax === 0x0500) {
+      let dst = 0;
+      if (DOS_IS_32 === 1) dst = DOS_REGS32[7] >>> 0;
+      else dst = ((DOS_SEGS[0] << 4) + (DOS_REGS32[7] & 0xFFFF)) & 0xFFFFFF;
+      let freeBytes = 16777216 - DOS_DPMI_MEM_TOP;
+      if (freeBytes < 0) freeBytes = 0;
+      let freePages = Math.floor(freeBytes / 4096);
+      // Unwritten fields must read as "unknown", which DPMI spells 0xFFFFFFFF.
+      for (let i = 0; i < 0x30; i++) DOS_RAM[(dst + i) & 0xFFFFFF] = 0xFF;
+      dosMmu_write32(dst + 0x00, freeBytes);   // largest free block, bytes
+      dosMmu_write32(dst + 0x04, freePages);   // max unlocked page allocation
+      dosMmu_write32(dst + 0x08, freePages);   // max locked page allocation
+      dosMmu_write32(dst + 0x0C, 4096);        // linear address space, pages
+      dosMmu_write32(dst + 0x10, freePages);   // total unlocked pages
+      dosMmu_write32(dst + 0x14, freePages);   // free pages
+      dosMmu_write32(dst + 0x18, 4096);        // total physical pages
+      dosMmu_write32(dst + 0x1C, freePages);   // free linear address space
+      dosMmu_write32(dst + 0x20, 0);           // no paging file
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    if (ax === 0x0501) {
+      let size = ((DOS_REGS32[3] & 0xFFFF) << 16) | (DOS_REGS32[1] & 0xFFFF);
+      let linearAddr = DOS_DPMI_MEM_TOP;
+      if ((linearAddr + size) > 16777216) {
+        dosCpu_flushFlags();
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x8013; // out of memory
+        return;
+      }
+      DOS_DPMI_MEM_TOP = (DOS_DPMI_MEM_TOP + size + 0xFFF) & ~0xFFF;
+
+      DOS_EFLAGS &= ~0x01;
+      DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | ((linearAddr >> 16) & 0xFFFF); // BX = high 16
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | (linearAddr & 0xFFFF);         // CX = low 16
+      DOS_REGS32[6] = (DOS_REGS32[6] & 0xFFFF0000) | 0x0001;                       // SI:DI = handle
+      DOS_REGS32[7] = (DOS_REGS32[7] & 0xFFFF0000) | 0x0001;
+      return;
+    }
+
+    // AX=0800h: Physical Address Mapping (BX:CX = physical address, SI:DI = size)
+    // Used by Doom to map VGA linear framebuffer at 0xA0000!
+    if (ax === 0x0800) {
+      let phys = ((DOS_REGS32[3] & 0xFFFF) << 16) | (DOS_REGS32[1] & 0xFFFF);
+      DOS_EFLAGS &= ~0x01;
+      // In our flat 16MB RAM model, physical address 0xA0000 is 1:1 linear 0xA0000!
+      DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | ((phys >> 16) & 0xFFFF);
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | (phys & 0xFFFF);
+      return;
+    }
+
+    // AX=0100h: allocate a DOS memory block. BX = paragraphs wanted; returns
+    // the real-mode segment in AX and a selector for it in DX. Addresses here
+    // are flat, so the "selector" is just the segment again.
+    if (ax === 0x0100) {
+      let paras = DOS_REGS32[3] & 0xFFFF;
+      let want = paras * 16;
+      let bases = (DOS_DOSMEM_TOP + 15) & ~15;
+      if ((bases + want) > DOS_DOSMEM_LIMIT) {
+        dosCpu_flushFlags();
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0008; // insufficient memory
+        DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) |
+                        (((DOS_DOSMEM_LIMIT - bases) >> 4) & 0xFFFF); // largest block
+        return;
+      }
+      DOS_DOSMEM_TOP = bases + want;
+      DOS_EFLAGS &= ~0x01;
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | ((bases >> 4) & 0xFFFF); // segment
+      DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | ((bases >> 4) & 0xFFFF); // selector
+      return;
+    }
+
+    // AX=0101h free, AX=0102h resize. The allocator only ever moves forward, so
+    // a free is a no-op and a resize keeps the block where it is.
+    if (ax === 0x0101 || ax === 0x0102) {
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AX=0204h / 0205h: get and set a protected-mode interrupt vector.
+    // BL = vector, CX:EDX = handler (the selector is ignored; memory is flat).
+    if (ax === 0x0204) {
+      let vec = DOS_REGS32[3] & 0xFF;
+      DOS_REGS32[2] = dosInt_getVector(vec) >>> 0;
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | 0x0000;
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+    if (ax === 0x0205) {
+      let vec = DOS_REGS32[3] & 0xFF;
+      dosInt_setVector(vec, DOS_REGS32[2] >>> 0, 1);
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AX=0600h/0601h: lock and unlock a linear region. Nothing is ever paged
+    // out here, so locking is a promise that costs nothing to keep.
+    if (ax === 0x0600 || ax === 0x0601) {
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AX=0900h/0901h: get and set the virtual interrupt state. Returning the
+    // real IF keeps a caller that saves and restores it consistent.
+    if (ax === 0x0900 || ax === 0x0901) {
+      dosCpu_flushFlags();
+      let prev = ((DOS_EFLAGS & DOS_FL_IF) !== 0) ? 1 : 0;
+      if (ax === 0x0900) DOS_EFLAGS &= ~DOS_FL_IF; else DOS_EFLAGS |= DOS_FL_IF;
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0200 | prev;
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+    if (ax === 0x0902) {
+      dosCpu_flushFlags();
+      let cur = ((DOS_EFLAGS & DOS_FL_IF) !== 0) ? 1 : 0;
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0200 | cur;
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AX=0300h: Simulate Real Mode Interrupt
+    if (ax === 0x0300) {
+      let bl = DOS_REGS32[3] & 0xFF; // Interrupt number
+      dosKernel_handleInt(bl);
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    dosKernel_unhandled(0x31, ax >>> 8);
+    return;
+  }
+}
