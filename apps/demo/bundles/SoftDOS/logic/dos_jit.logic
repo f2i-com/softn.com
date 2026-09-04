@@ -60,7 +60,7 @@ let DOS_JC_OK = 1;
 // engine's ceilings (256 compiles, 1 MB of retained source) to leave room for
 // anything else in the app that compiles code.
 let DOS_JIT_MAX_COMPILES = 6000;
-let DOS_JIT_MAX_SOURCE = 12000000;
+let DOS_JIT_MAX_SOURCE = 15000000;
 let DOS_JIT_SOURCE_BYTES = 0;
 let DOS_JIT_BUDGET_SPENT = 0;
 // The lazy operation the code emitted so far will leave behind, or 0 for none.
@@ -252,20 +252,19 @@ function dosJit_modrm() {
 
 // A memory read at address temp `t`. VGA memory in unchained mode lives in
 // the plane array, so the window is guarded; outside it this is one index.
-function dosJit_memRead(t, size) {
-  let plain = "";
-  if (size === 1) plain = "RAM[" + t + "]";
-  else if (size === 2) {
-    plain = "((" + t + "&1)===0?RAM16[" + t + ">>>1]:(RAM[" + t + "]|(RAM[" + t + "+1]<<8)))";
-  } else {
-    plain = "((" + t + "&3)===0?RAM32[" + t + ">>>2]:((RAM[" + t + "]|(RAM[" + t +
-            "+1]<<8)|(RAM[" + t + "+2]<<16)|(RAM[" + t + "+3]<<24))>>>0))";
+function dosJit_memRead(tExpr, size) {
+  // The operand is parenthesised because `&` and `<` bind more loosely than
+  // the operators it is spliced between; without this a compound address
+  // like `(ta+4)&16777215` read from the wrong place entirely.
+  let t = "(" + tExpr + ")";
+  // The VGA window is tested first because, for the program's own data, the
+  // first comparison fails and nothing else is evaluated.
+  let guard = t + "<720896&&" + t + ">=655360&&vg===1";
+  if (size === 1) return "(" + guard + "?RD8(" + t + "):RAM[" + t + "])";
+  if (size === 2) {
+    return "(" + guard + "?RD16(" + t + "):((" + t + "&1)===0?RAM16[" + t + ">>>1]:RDU16(" + t + ")))";
   }
-  let vga = "";
-  if (size === 1) vga = "RD8(" + t + ")";
-  else if (size === 2) vga = "(RD8(" + t + ")|(RD8(" + t + "+1)<<8))";
-  else vga = "((RD8(" + t + ")|(RD8(" + t + "+1)<<8)|(RD8(" + t + "+2)<<16)|(RD8(" + t + "+3)<<24))>>>0)";
-  return "(vg===1&&" + t + ">=655360&&" + t + "<720896?" + vga + ":" + plain + ")";
+  return "(" + guard + "?RD32(" + t + "):((" + t + "&3)===0?RAM32[" + t + ">>>2]:RDU32(" + t + ")))";
 }
 
 // Writes go through a helper: it carries the code-page barrier for both
@@ -274,28 +273,27 @@ function dosJit_memRead(t, size) {
 // The guard covers the only two reasons a store cannot be a plain array
 // write: the page holds code some cache has already compiled or decoded, or
 // the address is VGA memory while the card is unchained.
-function dosJit_wGuard(t) {
+function dosJit_wGuard(tExpr) {
+  let t = "(" + tExpr + ")";
   return "(((CP[" + t + ">>>3]>>(" + t + "&7))&1)!==0||(vg===1&&" + t +
          ">=655360&&" + t + "<720896))";
 }
 
-function dosJit_memWrite(t, size, valExpr) {
-  let out = "tv=" + valExpr + ";if(" + dosJit_wGuard(t) + "){";
-  if (size === 1) out += "W8(" + t + ",tv);";
-  else if (size === 2) out += "W16(" + t + ",tv);";
-  else out += "W32(" + t + ",tv);";
-  out += "}else{";
+function dosJit_memWrite(tExpr, size, valExpr) {
+  let t = "(" + tExpr + ")";
+  // Inline only the store that actually runs; everything else -- a page that
+  // holds compiled code, unchained VGA, an unaligned wider store -- is one
+  // helper call, which is also where the write barrier lives.
+  let out = "tv=" + valExpr + ";";
   if (size === 1) {
-    out += "RAM[" + t + "]=tv&255;";
+    out += "if(" + dosJit_wGuard(t) + "){W8(" + t + ",tv);}else{RAM[" + t + "]=tv&255;}";
   } else if (size === 2) {
-    out += "if((" + t + "&1)===0){RAM16[" + t + ">>>1]=tv&65535;}else{RAM[" + t +
-           "]=tv&255;RAM[" + t + "+1]=(tv>>8)&255;}";
+    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&1)!==0){W16(" + t + ",tv);}else{RAM16[" +
+           t + ">>>1]=tv&65535;}";
   } else {
-    out += "if((" + t + "&3)===0){RAM32[" + t + ">>>2]=tv>>>0;}else{RAM[" + t +
-           "]=tv&255;RAM[" + t + "+1]=(tv>>8)&255;RAM[" + t + "+2]=(tv>>16)&255;RAM[" + t +
-           "+3]=(tv>>>24)&255;}";
+    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&3)!==0){W32(" + t + ",tv);}else{RAM32[" +
+           t + ">>>2]=tv>>>0;}";
   }
-  out += "}";
   return out;
 }
 
@@ -345,8 +343,18 @@ function dosJit_one(body, tmp) {
   let op = dosJc_u8();
   let size = 4;
 
-  // Only the operand-size prefix is handled; anything else ends the block.
-  if (op === 0x66) { size = 2; op = dosJc_u8(); }
+  // Prefixes, in whatever order they appear. Recursing on one of these used to
+  // lose an operand-size prefix that came before it, which quietly turned
+  // 16-bit instructions into 32-bit ones.
+  let pguard = 0;
+  while (pguard < 4) {
+    pguard++;
+    if (op === 0x66) { size = 2; op = dosJc_u8(); continue; }
+    // Addresses are flat in 32-bit mode, so a segment override changes nothing.
+    if (op === 0x2E || op === 0x3E || op === 0x26 || op === 0x36 ||
+        op === 0x64 || op === 0x65) { op = dosJc_u8(); continue; }
+    break;
+  }
 
   // ---- two-byte opcodes ----------------------------------------------------
   // Checked before the ALU block: 0x0F is numerically inside its range.
@@ -373,6 +381,20 @@ function dosJit_one(body, tmp) {
       body.push("t0=(" + cond + ")?1:0;");
       if (DOS_JM_ADDR === "") body.push(dosJit_regSet(DOS_JM_RM, 1, "t0"));
       else { body.push("ta=" + DOS_JM_ADDR + ";"); body.push(dosJit_memWrite("ta", 1, "t0")); }
+      return 1;
+    }
+    if ((op2 === 0xA0 || op2 === 0xA8) && size === 4) {   // PUSH FS / PUSH GS
+      let sr = (op2 === 0xA0) ? 4 : 5;
+      body.push("t0=SEGS[" + sr + "];" + dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
+      DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
+      body.push(dosJit_memWrite("ta", 4, "t0"));
+      return 1;
+    }
+    if ((op2 === 0xA1 || op2 === 0xA9) && size === 4) {   // POP FS / POP GS
+      let sr2 = (op2 === 0xA1) ? 4 : 5;
+      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
+                ";e4=(e4+4)>>>0;SEGS[" + sr2 + "]=t0&65535;");
+      DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       return 1;
     }
     if (op2 === 0xA4 || op2 === 0xAC) {         // SHLD / SHRD r/m, r, imm8
@@ -640,6 +662,81 @@ function dosJit_one(body, tmp) {
     return 1;
   }
 
+  // ---- PUSHAD / POPAD ------------------------------------------------------
+  if (op === 0x60 && size === 4) {
+    body.push("t3=" + dosJit_rRef(4) + ";");
+    for (let r = 0; r < 8; r++) {
+      let v = (r === 4) ? "t3" : dosJit_regGet(r, 4);
+      body.push("t0=" + v + ";e4=(e4-4)>>>0;ta=e4&16777215;");
+      body.push(dosJit_memWrite("ta", 4, "t0"));
+    }
+    DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
+    return 1;
+  }
+  if (op === 0x61 && size === 4) {
+    for (let r = 7; r >= 0; r--) {
+      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) + ";e4=(e4+4)>>>0;");
+      if (r !== 4) body.push(dosJit_regSet(r, 4, "t0"));   // ESP is discarded
+    }
+    DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
+    return 1;
+  }
+
+  // ---- TEST accumulator, immediate ----------------------------------------
+  if (op === 0xA8 || op === 0xA9) {
+    let sz = (op === 0xA8) ? 1 : size;
+    let imm = (sz === 1) ? dosJc_u8() : ((sz === 2) ? dosJc_u16() : dosJc_u32());
+    body.push("t0=" + dosJit_regGet(0, sz) + ";t1=" + imm + ";t2=(t0&t1);");
+    body.push(dosJit_setFlags(4, sz, "t0", "t1", "t2"));
+    return 1;
+  }
+
+  // ---- port output ---------------------------------------------------------
+  if (op === 0xEE || op === 0xEF || op === 0xE6 || op === 0xE7) {
+    let portE = (op === 0xEE || op === 0xEF) ? dosJit_regGet(2, 2) : String(dosJc_u8());
+    if (op === 0xEE || op === 0xE6) {
+      body.push("OUT8(" + portE + "," + dosJit_regGet(0, 1) + ");");
+    } else {
+      body.push("t3=" + portE + ";t0=" + dosJit_regGet(0, size) + ";");
+      body.push("OUT8(t3,t0&255);OUT8(t3+1,(t0>>8)&255);");
+      if (size === 4) body.push("OUT8(t3+2,(t0>>16)&255);OUT8(t3+3,(t0>>>24)&255);");
+    }
+    return 1;
+  }
+  if (op === 0xEC || op === 0xE4) {
+    let portE2 = (op === 0xEC) ? dosJit_regGet(2, 2) : String(dosJc_u8());
+    body.push(dosJit_regSet(0, 1, "IN8(" + portE2 + ")"));
+    return 1;
+  }
+
+  // ---- shift by CL ---------------------------------------------------------
+  if (op === 0xD2 || op === 0xD3) {
+    let sz = (op === 0xD2) ? 1 : size;
+    dosJit_modrm();
+    if (DOS_JC_OK === 0 || DOS_JM_ADDR !== "") { DOS_JC = start; return 0; }
+    let sub = DOS_JM_REG;
+    if (sub !== 4 && sub !== 5 && sub !== 7) { DOS_JC = start; return 0; }
+    let srcR = dosJit_regGet(DOS_JM_RM, sz);
+    let sign = dosJit_signLit(sz);
+    let bits = sz * 8;
+    body.push("t3=" + dosJit_regGet(1, 1) + "&31;");
+    // A count of zero leaves every flag alone, so the whole thing is skipped.
+    body.push("if(t3!==0){t0=" + srcR + ";");
+    if (sub === 4) body.push("t2=" + dosJit_narrow("t0<<t3", sz) + ";t1=(t3<=" + bits + ")?((t0>>>(" + bits + "-t3))&1):0;");
+    else if (sub === 5) body.push("t2=" + dosJit_narrow("t0>>>t3", sz) + ";t1=(t0>>>(t3-1))&1;");
+    else {
+      let sx = (sz === 4) ? "(t0|0)" : ((sz === 2) ? "((t0<<16)>>16)" : "((t0<<24)>>24)");
+      body.push("t2=" + dosJit_narrow(sx + ">>t3", sz) + ";t1=(" + sx + ">>(t3-1))&1;");
+    }
+    body.push("tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;");
+    body.push("ST[1]=(ST[1]&~197)|(t1?1:0)|((tv&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);");
+    body.push(dosJit_regSet(DOS_JM_RM, sz, "t2"));
+    body.push("}");
+    body.push("fo=0;");
+    DOS_JIT_PENDING = 0;
+    return 1;
+  }
+
   // ---- segment registers ---------------------------------------------------
   // Flat 32-bit mode keeps these at zero, but programs still move them about,
   // and each one that ended a trace cost more than it was worth.
@@ -674,6 +771,34 @@ function dosJit_one(body, tmp) {
     body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
               ";e4=(e4+4)>>>0;SEGS[" + sreg2 + "]=t0&65535;");
     DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
+    return 1;
+  }
+
+  // ---- multiply and divide -------------------------------------------------
+  // The reg field of the ModR/M byte says which group-3 operation this is.
+  // Only MUL/IMUL/DIV/IDIV belong here; TEST, NOT and NEG fall through to the
+  // group-3 handler below, which is why this peeks rather than decodes.
+  if (op === 0xF7 && size === 4 && (((DOS_RAM[DOS_JC & 0xFFFFFF] >> 3) & 7) >= 4)) {
+    dosJit_modrm();
+    if (DOS_JC_OK === 0) { DOS_JC = start; return 0; }
+    let sub = DOS_JM_REG;
+    let srcE = "";
+    if (DOS_JM_ADDR === "") srcE = dosJit_regGet(DOS_JM_RM, 4);
+    else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
+    body.push("ST[12]=" + dosJit_regGet(0, 4) + ";ST[13]=" + dosJit_regGet(2, 4) +
+              ";ST[14]=" + srcE + ";MD(" + sub + ",4);");
+    // A divide error stops the CPU, which the interpreter reports; leave the
+    // trace so it can do that with EIP pointing at this instruction.
+    body.push("if(ST[15]!==0){" + dosJit_spill() + "@@R@@ST[0]=" + (start >>> 0) +
+              ";ST[7]=k*3;return k;}");
+    body.push(dosJit_regSet(0, 4, "ST[12]"));
+    body.push(dosJit_regSet(2, 4, "ST[13]"));
+    // MUL and IMUL set CF and OF from the high half; DIV leaves them undefined.
+    if (sub === 4 || sub === 5) {
+      body.push("ST[1]=(ST[1]&~2049)|((ST[13]!==0)?2049:0);");
+    }
+    body.push("fo=0;");
+    DOS_JIT_PENDING = 0;
     return 1;
   }
 
@@ -1119,6 +1244,58 @@ function dosJit_compile(phys) {
       break;
     }
 
+    // ---- RET imm16 ---------------------------------------------------------
+    if (peek === 0xC2) {
+      DOS_JC = here + 1;
+      let adj = dosJc_u16();
+      body.push("k++;ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
+                ";e4=(e4+4+" + adj + ")>>>0;");
+      DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
+      body.push(dosJit_exit("t0"));
+      dosJit_noteSpan(here, DOS_JC);
+      n++;
+      ended = 1;
+      break;
+    }
+
+    // ---- IRET ---------------------------------------------------------------
+    if (peek === 0xCF) {
+      body.push("k++;ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
+                ";tv=(ta+4)&16777215;t1=" + dosJit_memRead("tv", 4) +
+                ";tv=(ta+8)&16777215;t2=" + dosJit_memRead("tv", 4) +
+                ";e4=(e4+12)>>>0;SEGS[1]=t1&65535;ST[1]=(t2|2)>>>0;fo=0;");
+      DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
+      DOS_JIT_PENDING = 0;
+      body.push(dosJit_exit("t0"));
+      dosJit_noteSpan(here, here + 1);
+      n++;
+      ended = 1;
+      break;
+    }
+
+    // ---- indirect call and jump ------------------------------------------
+    if (peek === 0xFF) {
+      let sub = (DOS_RAM[(here + 1) & 0xFFFFFF] >> 3) & 7;
+      if (sub === 2 || sub === 4) {
+        DOS_JC = here + 1;
+        dosJit_modrm();
+        if (DOS_JC_OK === 0) { DOS_JC = here; body.push(dosJit_exit(String(here))); ended = 1; break; }
+        if (DOS_JM_ADDR === "") body.push("k++;t0=" + dosJit_regGet(DOS_JM_RM, 4) + ";");
+        else body.push("k++;ta=" + DOS_JM_ADDR + ";t0=" + dosJit_memRead("ta", 4) + ";");
+        if (sub === 2) {
+          let ret = DOS_JC >>> 0;
+          body.push(dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
+          DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
+          body.push(dosJit_memWrite("ta", 4, String(ret)));
+        }
+        body.push(dosJit_exit("t0"));
+        dosJit_noteSpan(here, DOS_JC);
+        n++;
+        ended = 1;
+        break;
+      }
+    }
+
     // ---- RET --------------------------------------------------------------
     if (peek === 0xC3) {
       body.push("k++;ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
@@ -1188,7 +1365,8 @@ function dosJit_compile(phys) {
   let fn = null;
   try {
     fn = new Function("R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "ST", "MASK", "SIGN",
-                      "W8", "W16", "W32", "RD8", "FC", "CP", src);
+                      "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
+                      "RD16", "RD32", "RDU16", "RDU32", src);
   } catch (e) {
     DOS_JIT_FAILED++;
     return null;
@@ -1224,6 +1402,78 @@ function dosJit_fc() {
   dosJit_syncOut();
   dosCpu_flushFlags();
   dosJit_syncIn();
+}
+
+// Multiply and divide write two registers and can fault, so they go through
+// here: operands in ST[12..14], results back in ST[12..13], ST[15] set if the
+// operation raised a divide error.
+function dosJit_muldiv(sub, size) {
+  let lo = DOS_JIT_ST[12] >>> 0;
+  let hi = DOS_JIT_ST[13] >>> 0;
+  let d = DOS_JIT_ST[14] >>> 0;
+  DOS_JIT_ST[15] = 0;
+  if (sub === 4) {                       // MUL
+    dosOps_umul64(lo, d);
+    DOS_JIT_ST[12] = DOS_MUL_LO >>> 0;
+    DOS_JIT_ST[13] = DOS_MUL_HI >>> 0;
+    return;
+  }
+  if (sub === 5) {                       // IMUL
+    let a = lo | 0;
+    let b = d | 0;
+    let l = Math.imul(a, b) >>> 0;
+    dosOps_umul64(a >>> 0, b >>> 0);
+    let h = DOS_MUL_HI;
+    if (a < 0) h = (h - (b >>> 0)) >>> 0;
+    if (b < 0) h = (h - (a >>> 0)) >>> 0;
+    DOS_JIT_ST[12] = l;
+    DOS_JIT_ST[13] = h >>> 0;
+    return;
+  }
+  if (d === 0) { DOS_JIT_ST[15] = 1; return; }
+  if (sub === 6) {                       // DIV
+    if (dosOps_udiv64(hi, lo, d) === 0) { DOS_JIT_ST[15] = 1; return; }
+    DOS_JIT_ST[12] = DOS_DIV_Q >>> 0;
+    DOS_JIT_ST[13] = DOS_DIV_R >>> 0;
+    return;
+  }
+  // IDIV: divide the magnitudes, then put the signs back.
+  let nHi = hi | 0;
+  let nLo = lo >>> 0;
+  let nNeg = (nHi < 0) ? 1 : 0;
+  if (nNeg === 1) { dosOps_neg64(nHi >>> 0, nLo); nHi = DOS_MUL_HI; nLo = DOS_MUL_LO; }
+  let dv = d | 0;
+  let dNeg = (dv < 0) ? 1 : 0;
+  let dAbs = (dNeg === 1) ? ((-dv) >>> 0) : (dv >>> 0);
+  if (dosOps_udiv64(nHi >>> 0, nLo >>> 0, dAbs) === 0) { DOS_JIT_ST[15] = 1; return; }
+  let q = DOS_DIV_Q >>> 0;
+  let r = DOS_DIV_R >>> 0;
+  if ((nNeg !== dNeg)) {
+    if (q > 2147483648) { DOS_JIT_ST[15] = 1; return; }
+    q = (-q) >>> 0;
+  } else if (q > 2147483647) { DOS_JIT_ST[15] = 1; return; }
+  if (nNeg === 1) r = (-r) >>> 0;
+  DOS_JIT_ST[12] = q;
+  DOS_JIT_ST[13] = r;
+}
+
+function dosJit_out8(port, v) { dosMmu_out8(port, v); }
+// A port read inside a compiled loop has to see time passing, or a program
+// waiting on the retrace bit spins the whole loop cap out before the trace
+// exits and the cycle count catches up. Charging a few cycles here keeps the
+// bit moving; the trace still adds its own count on exit, so this slightly
+// overcounts a rare instruction rather than stalling a common loop.
+function dosJit_in8(port) { DOS_TOTAL_CYCLES += 8; return dosMmu_in8(port); }
+
+function dosJit_rd16(a) { return dosJit_rd8(a) | (dosJit_rd8((a + 1) & 0xFFFFFF) << 8); }
+function dosJit_rd32(a) {
+  return (dosJit_rd8(a) | (dosJit_rd8((a + 1) & 0xFFFFFF) << 8) |
+          (dosJit_rd8((a + 2) & 0xFFFFFF) << 16) | (dosJit_rd8((a + 3) & 0xFFFFFF) << 24)) >>> 0;
+}
+function dosJit_rdu16(a) { return DOS_RAM[a] | (DOS_RAM[(a + 1) & 0xFFFFFF] << 8); }
+function dosJit_rdu32(a) {
+  return (DOS_RAM[a] | (DOS_RAM[(a + 1) & 0xFFFFFF] << 8) |
+          (DOS_RAM[(a + 2) & 0xFFFFFF] << 16) | (DOS_RAM[(a + 3) & 0xFFFFFF] << 24)) >>> 0;
 }
 
 function dosJit_rd8(a) {
@@ -1301,7 +1551,8 @@ function dosJit_run(budget) {
     let insns = fn(DOS_REGS32, DOS_REGS16, DOS_REGS8, DOS_RAM, DOS_RAM16, DOS_RAM32,
                    DOS_SEGS, DOS_JIT_ST, DOS_JIT_MASK, DOS_JIT_SIGN,
                    dosJit_w8, dosJit_w16, dosJit_w32, dosJit_rd8, dosJit_fc,
-                   DOS_JIT_CODEPAGE);
+                   DOS_JIT_CODEPAGE, dosJit_muldiv, dosJit_out8, dosJit_in8,
+                   dosJit_rd16, dosJit_rd32, dosJit_rdu16, dosJit_rdu32);
     dosJit_syncOut();
     let cyc = DOS_JIT_ST[7];
     if (cyc < 1) cyc = 1;

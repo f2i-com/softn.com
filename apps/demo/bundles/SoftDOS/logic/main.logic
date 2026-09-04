@@ -137,6 +137,7 @@ let CPU_BUDGET = 40000;   // cycles per frame; adapts from the first measurement
 let runFrames = 0;        // frames the current program has had
 let cyclesRun = 0;
 let cyclesText = "";
+let flipsAtStamp = 0;     // page flips seen at the last readout
 let cyclesStamp = 0;
 
 function updateCycleReadout() {
@@ -145,6 +146,14 @@ function updateCycleReadout() {
   if (now - cyclesStamp >= 1000) {
     let mhz = cyclesRun / (now - cyclesStamp) / 1000;
     cyclesText = (mhz >= 1) ? ((Math.round(mhz * 10) / 10) + " MHz") : (Math.round(mhz * 1000) + " kHz");
+    // Frames the guest itself finished, when it page-flips. This is the number
+    // that matters for a game; the repaint rate next to it is not.
+    let flips = DOS_VGA_FLIPS - flipsAtStamp;
+    flipsAtStamp = DOS_VGA_FLIPS;
+    if (flips > 0) {
+      let gfps = flips * 1000 / (now - cyclesStamp);
+      cyclesText = cyclesText + " \u00b7 " + (Math.round(gfps * 10) / 10) + " game fps";
+    }
     cyclesRun = 0;
     cyclesStamp = now;
   }
