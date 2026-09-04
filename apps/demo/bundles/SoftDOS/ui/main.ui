@@ -283,8 +283,9 @@
           16-bit .COM and .EXE programs run on the emulated CPU, and so do 32-bit DOS extender
           images (DOS/4GW and the like): the objects are mapped, fixups applied, and DPMI, the
           timer and keyboard interrupts and unchained VGA are emulated. DOOM runs — load
-          DOOM.EXE and DOOM1.WAD together, then type DOOM.EXE. It is slow: the CPU manages a
-          little over a megahertz, so expect a frame every few seconds.
+          DOOM.EXE and DOOM1.WAD together, then type DOOM.EXE. Hot code is compiled to
+          JavaScript at run time, which gets the emulated CPU to a few megahertz: enough for
+          DOOM to boot, render and play its demo, at around a frame a second.
         </Text>
       </Card>
 

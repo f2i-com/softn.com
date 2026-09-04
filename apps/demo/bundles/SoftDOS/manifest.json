@@ -21,7 +21,8 @@
       "logic/dos_cpu.logic",
       "logic/dos_ops.logic",
       "logic/dos_bc.logic",
-      "logic/dos_int.logic"
+      "logic/dos_int.logic",
+      "logic/dos_jit.logic"
     ],
     "assets": [
       "assets/icon.svg"

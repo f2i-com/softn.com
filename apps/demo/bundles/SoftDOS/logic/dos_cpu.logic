@@ -38,24 +38,47 @@ let DOS_FL_OF = 0x800;
 // Instruction Fetch Routines
 // ---------------------------------------------------------------------------
 function dosCpu_fetchU8() {
-  let seg = (DOS_IS_32 === 0) ? DOS_SEGS[1] : 0; // CS
-  let phys = dosMmu_linear(seg, DOS_EIP);
+  let phys = (DOS_IS_32 === 1)
+    ? (DOS_EIP & 0xFFFFFF)
+    : ((((DOS_SEGS[1] << 4) + (DOS_EIP & 0xFFFF)) >>> 0) & 0xFFFFFF);
   DOS_EIP = (DOS_EIP + 1) >>> 0;
   return DOS_RAM[phys];
 }
 
+// The base of the next `n` instruction bytes, or -1 when they are not
+// contiguous in physical memory. In real mode an operand may straddle the
+// 64 KB segment wrap, which the byte-at-a-time path handles correctly and a
+// straight read would not.
+function dosCpu_fetchBase(n) {
+  if (DOS_IS_32 === 1) return DOS_EIP & 0xFFFFFF;
+  let off = DOS_EIP & 0xFFFF;
+  if (off + n > 0x10000) return -1;
+  return (((DOS_SEGS[1] << 4) + off) >>> 0) & 0xFFFFFF;
+}
+
 function dosCpu_fetchU16() {
-  let lo = dosCpu_fetchU8();
-  let hi = dosCpu_fetchU8();
-  return lo | (hi << 8);
+  let b = dosCpu_fetchBase(2);
+  if (b < 0) {
+    let lo = dosCpu_fetchU8();
+    let hi = dosCpu_fetchU8();
+    return lo | (hi << 8);
+  }
+  DOS_EIP = (DOS_EIP + 2) >>> 0;
+  return DOS_RAM[b] | (DOS_RAM[b + 1] << 8);
 }
 
 function dosCpu_fetchU32() {
-  let b0 = dosCpu_fetchU8();
-  let b1 = dosCpu_fetchU8();
-  let b2 = dosCpu_fetchU8();
-  let b3 = dosCpu_fetchU8();
-  return (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0;
+  let b = dosCpu_fetchBase(4);
+  if (b < 0) {
+    let b0 = dosCpu_fetchU8();
+    let b1 = dosCpu_fetchU8();
+    let b2 = dosCpu_fetchU8();
+    let b3 = dosCpu_fetchU8();
+    return (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) >>> 0;
+  }
+  DOS_EIP = (DOS_EIP + 4) >>> 0;
+  return (DOS_RAM[b] | (DOS_RAM[b + 1] << 8) |
+          (DOS_RAM[b + 2] << 16) | (DOS_RAM[b + 3] << 24)) >>> 0;
 }
 
 // Fetch an immediate of the current operand size.
@@ -225,11 +248,31 @@ function dosCpu_modrm(is32Addr) {
 // DOS_LAZY_OP: 0=none (EFLAGS is authoritative), 1=ADD, 2=SUB, 3=LOGIC,
 // 6=INC, 7=DEC, 8=ADC, 9=SBB. DST/SRC/RES are the unsigned operands and the
 // masked result; SIZE is 1, 2 or 4.
+// Prefix byte -> kind: 0 not a prefix, 1 operand size, 2 address size,
+// 3 segment override, 4 REP/REPE, 5 REPNE, 6 LOCK.
+let DOS_PREFIX_KIND = new Uint8Array(256);
+let DOS_PREFIX_SEGNUM = new Uint8Array(256);
+DOS_PREFIX_KIND[0x66] = 1;
+DOS_PREFIX_KIND[0x67] = 2;
+DOS_PREFIX_KIND[0x26] = 3; DOS_PREFIX_SEGNUM[0x26] = 0; // ES
+DOS_PREFIX_KIND[0x2E] = 3; DOS_PREFIX_SEGNUM[0x2E] = 1; // CS
+DOS_PREFIX_KIND[0x36] = 3; DOS_PREFIX_SEGNUM[0x36] = 2; // SS
+DOS_PREFIX_KIND[0x3E] = 3; DOS_PREFIX_SEGNUM[0x3E] = 3; // DS
+DOS_PREFIX_KIND[0x64] = 3; DOS_PREFIX_SEGNUM[0x64] = 4; // FS
+DOS_PREFIX_KIND[0x65] = 3; DOS_PREFIX_SEGNUM[0x65] = 5; // GS
+DOS_PREFIX_KIND[0xF3] = 4;
+DOS_PREFIX_KIND[0xF2] = 5;
+DOS_PREFIX_KIND[0xF0] = 6;
+
+// Indexed by operand size in bytes; slot 3 is unused.
+let DOS_MASK_BY_SIZE = [0xFFFFFFFF, 0xFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF];
+let DOS_SIGN_BY_SIZE = [0x80000000, 0x80, 0x8000, 0x80000000, 0x80000000];
+
 function dosCpu_maskFor(size) {
-  return (size === 1) ? 0xFF : ((size === 2) ? 0xFFFF : 0xFFFFFFFF);
+  return DOS_MASK_BY_SIZE[size & 7];
 }
 function dosCpu_signFor(size) {
-  return (size === 1) ? 0x80 : ((size === 2) ? 0x8000 : 0x80000000);
+  return DOS_SIGN_BY_SIZE[size & 7];
 }
 
 function dosCpu_setLazy(op, dst, src, res, size) {
@@ -321,14 +364,66 @@ function dosCpu_getOF() {
 
 // Fold the lazy state into EFLAGS so the bits can be read or written directly.
 function dosCpu_flushFlags() {
-  if (DOS_LAZY_OP === 0) return;
+  let op = DOS_LAZY_OP;
+  if (op === 0) return;
   let f = DOS_EFLAGS;
-  if (dosCpu_getCF()) f |= DOS_FL_CF; else f &= ~DOS_FL_CF;
-  if (dosCpu_getPF()) f |= DOS_FL_PF; else f &= ~DOS_FL_PF;
-  if (dosCpu_getAF()) f |= DOS_FL_AF; else f &= ~DOS_FL_AF;
-  if (dosCpu_getZF()) f |= DOS_FL_ZF; else f &= ~DOS_FL_ZF;
-  if (dosCpu_getSF()) f |= DOS_FL_SF; else f &= ~DOS_FL_SF;
-  if (dosCpu_getOF()) f |= DOS_FL_OF; else f &= ~DOS_FL_OF;
+  let d = DOS_LAZY_DST;
+  let sr = DOS_LAZY_SRC;
+  let r = DOS_LAZY_RES;
+  let mask = DOS_MASK_BY_SIZE[DOS_LAZY_SIZE & 7];
+  let sign = DOS_SIGN_BY_SIZE[DOS_LAZY_SIZE & 7];
+
+  // CF and OF depend on which operation produced the result; the rest are
+  // read straight off it.
+  let cf = 0;
+  let of = 0;
+  if (op === 1) {                                    // ADD
+    cf = (r < d) ? 1 : 0;
+    of = ((~(d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+  } else if (op === 2) {                             // SUB / CMP
+    cf = (d < sr) ? 1 : 0;
+    of = (((d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+  } else if (op === 3) {                             // logic clears both
+    cf = 0;
+    of = 0;
+  } else if (op === 6) {                             // INC leaves CF alone
+    cf = (f & DOS_FL_CF) ? 1 : 0;
+    of = ((r & mask) === sign) ? 1 : 0;
+  } else if (op === 7) {                             // DEC leaves CF alone
+    cf = (f & DOS_FL_CF) ? 1 : 0;
+    of = ((r & mask) === (sign - 1)) ? 1 : 0;
+  } else if (op === 8) {                             // ADC
+    let cin = (f & DOS_FL_CF) ? 1 : 0;
+    cf = cin ? ((r <= d) ? 1 : 0) : ((r < d) ? 1 : 0);
+    of = ((~(d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+  } else if (op === 9) {                             // SBB
+    let cin = (f & DOS_FL_CF) ? 1 : 0;
+    cf = cin ? ((d <= sr) ? 1 : 0) : ((d < sr) ? 1 : 0);
+    of = (((d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+  } else {
+    cf = (f & DOS_FL_CF) ? 1 : 0;
+    of = (f & DOS_FL_OF) ? 1 : 0;
+  }
+
+  // AF: the carry out of bit 3.
+  let af = 0;
+  if (op === 1 || op === 2 || op === 8 || op === 9) af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
+  else if (op === 6 || op === 7) af = ((d ^ 1 ^ r) & 0x10) ? 1 : 0;
+  else if (op === 3) af = 0;
+  else af = (f & DOS_FL_AF) ? 1 : 0;
+
+  let x = r & 0xFF;
+  x = x ^ (x >> 4);
+  x = x ^ (x >> 2);
+  x = x ^ (x >> 1);
+  let pf = (x & 1) ? 0 : 1;
+
+  if (cf) f |= DOS_FL_CF; else f &= ~DOS_FL_CF;
+  if (pf) f |= DOS_FL_PF; else f &= ~DOS_FL_PF;
+  if (af) f |= DOS_FL_AF; else f &= ~DOS_FL_AF;
+  if ((r & mask) === 0) f |= DOS_FL_ZF; else f &= ~DOS_FL_ZF;
+  if (r & sign) f |= DOS_FL_SF; else f &= ~DOS_FL_SF;
+  if (of) f |= DOS_FL_OF; else f &= ~DOS_FL_OF;
   DOS_EFLAGS = f >>> 0;
   DOS_LAZY_OP = 0;
 }
@@ -371,23 +466,20 @@ function dosCpu_step() {
   let guard = 0;
   DOS_INSN_EIP = DOS_EIP >>> 0;
 
-  // Prefix loop
+  // Prefix loop. Nearly every instruction has no prefix at all, so the
+  // question "is this byte a prefix" is answered by one table read rather
+  // than eleven comparisons.
   while (guard < 16) {
     guard++;
     opcode = dosCpu_fetchU8();
-
-    if (opcode === 0x66) { DOS_PREFIX_OPSIZE = 1; continue; }
-    if (opcode === 0x67) { DOS_PREFIX_ADDRSIZE = 1; continue; }
-    if (opcode === 0x26) { DOS_PREFIX_SEG = 0; continue; } // ES
-    if (opcode === 0x2E) { DOS_PREFIX_SEG = 1; continue; } // CS
-    if (opcode === 0x36) { DOS_PREFIX_SEG = 2; continue; } // SS
-    if (opcode === 0x3E) { DOS_PREFIX_SEG = 3; continue; } // DS
-    if (opcode === 0x64) { DOS_PREFIX_SEG = 4; continue; } // FS
-    if (opcode === 0x65) { DOS_PREFIX_SEG = 5; continue; } // GS
-    if (opcode === 0xF3) { DOS_PREFIX_REP = 1; continue; } // REP / REPE
-    if (opcode === 0xF2) { DOS_PREFIX_REP = 2; continue; } // REPNE
-    if (opcode === 0xF0) { continue; }                     // LOCK: no effect here
-    break;
+    let pk = DOS_PREFIX_KIND[opcode];
+    if (pk === 0) break;
+    if (pk === 1) { DOS_PREFIX_OPSIZE = 1; continue; }
+    if (pk === 2) { DOS_PREFIX_ADDRSIZE = 1; continue; }
+    if (pk === 3) { DOS_PREFIX_SEG = DOS_PREFIX_SEGNUM[opcode]; continue; }
+    if (pk === 4) { DOS_PREFIX_REP = 1; continue; }
+    if (pk === 5) { DOS_PREFIX_REP = 2; continue; }
+    // pk === 6: LOCK, no effect here
   }
 
   // Determine effective operand size: 32-bit default in protected mode, 16-bit in real mode

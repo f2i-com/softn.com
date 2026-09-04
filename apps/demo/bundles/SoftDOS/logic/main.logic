@@ -12,6 +12,7 @@ import "./dos_cpu.logic"
 import "./dos_ops.logic"
 import "./dos_bc.logic"
 import "./dos_int.logic"
+import "./dos_jit.logic"
 import "./dos_loader.logic"
 import "./dos_shell.logic"
 
