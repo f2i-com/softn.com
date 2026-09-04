@@ -1257,7 +1257,7 @@ const SAMPLES = {
     O(east, 2.0, "window", 1.4); O(east, 6.0, "window", 1.0); O(west, 4.0, "window", 1.4);
     O(spine, 2.0, "door"); O(spine, 6.0, "door"); O(cross, 3.5, "door");
     R(0, 0, 6, 8, "wood", "Living & Kitchen"); R(6, 0, 5, 4, "carpet", "Bedroom 1"); R(6, 4, 2, 4, "carpet", "Bedroom 2"); R(8, 4, 3, 4, "tile", "Bathroom");
-    I("sofa", 2.0, 5.0, Math.PI, "#475569"); I("coffee_table", 2.0, 3.75, 0); I("rug", 2.0, 4.0, 0, "#b91c1c"); I("tv_stand", 2.0, 2.25, Math.PI);
+    I("sofa", 2.0, 5.0, Math.PI, "#475569"); I("coffee_table", 2.0, 3.75, 0); I("rug", 2.0, 4.0, 0, "#b91c1c"); I("tv_stand", 2.0, 2.25, 0);
     I("armchair", 4.5, 5.0, -Math.PI / 2, "#b45309"); I("bookshelf", 0.25, 5.5, Math.PI / 2); I("plant", 0.4, 7.5, 0); I("floor_lamp", 0.4, 3.5, 0);
     I("kitchen_counter", 1.0, 7.6, Math.PI); I("sink_unit", 2.0, 7.6, Math.PI); I("stove", 2.7, 7.6, Math.PI); I("kitchen_counter", 3.6, 7.6, Math.PI); I("fridge", 4.6, 7.55, Math.PI);
     I("dining_table", 4.5, 2.0, Math.PI / 2); I("chair", 3.9, 1.5, Math.PI / 2); I("chair", 3.9, 2.5, Math.PI / 2); I("chair", 5.1, 1.5, -Math.PI / 2); I("chair", 5.1, 2.5, -Math.PI / 2);
@@ -1276,7 +1276,7 @@ const SAMPLES = {
     O(spine, 2.5, "door"); O(spine, 7.0, "door");
     R(0, 0, 8, 9, "concrete", "Open-plan living"); R(8, 0, 4, 5, "wood", "Bedroom"); R(8, 5, 4, 4, "tile", "Bathroom");
     I("sofa", 3.0, 6.0, Math.PI, "#0f172a"); I("armchair", 5.6, 6.0, -Math.PI / 2, "#f8fafc"); I("coffee_table", 3.0, 4.6, 0, "#0f172a"); I("rug", 3.0, 5.2, 0, "#475569");
-    I("tv_stand", 3.0, 2.6, Math.PI, "#0f172a"); I("plant", 0.5, 8.5, 0); I("plant", 7.5, 0.5, 0); I("floor_lamp", 0.5, 5.0, 0, "#f8fafc"); I("bookshelf", 7.7, 6.0, -Math.PI / 2, "#f8fafc");
+    I("tv_stand", 3.0, 2.6, 0, "#0f172a"); I("plant", 0.5, 8.5, 0); I("plant", 7.5, 0.5, 0); I("floor_lamp", 0.5, 5.0, 0, "#f8fafc"); I("bookshelf", 7.7, 6.0, -Math.PI / 2, "#f8fafc");
     I("kitchen_counter", 1.5, 0.4, 0, "#0f172a"); I("sink_unit", 2.5, 0.4, 0, "#0f172a"); I("stove", 3.2, 0.4, 0, "#0f172a"); I("kitchen_counter", 4.1, 0.4, 0, "#0f172a"); I("fridge", 5.2, 0.45, 0, "#94a3b8");
     I("dining_table", 6.0, 2.6, 0, "#0f172a"); I("chair", 5.4, 2.0, 0, "#f8fafc"); I("chair", 6.6, 2.0, 0, "#f8fafc"); I("chair", 5.4, 3.2, Math.PI, "#f8fafc"); I("chair", 6.6, 3.2, Math.PI, "#f8fafc");
     I("bed_double", 10.0, 1.1, 0, "#94a3b8"); I("bedside", 8.9, 0.35, 0, "#0f172a"); I("bedside", 11.1, 0.35, 0, "#0f172a"); I("wardrobe", 11.6, 3.6, -Math.PI / 2, "#f8fafc"); I("desk", 8.6, 4.4, Math.PI, "#f8fafc");
@@ -1295,10 +1295,10 @@ const SAMPLES = {
     O(hallWall, 2.5, "door"); O(hallWall, 6.0, "door"); O(hallWall, 8.7, "door", 0.8);
     R(0, 0, 7, 6, "carpet", "Living"); R(0, 6, 7, 4, "tile", "Kitchen & Dining"); R(7, 0, 1.5, 10, "wood", "Hall");
     R(8.5, 0, 5.5, 4.5, "carpet", "Master bedroom"); R(8.5, 4.5, 5.5, 3, "carpet", "Bedroom 2"); R(8.5, 7.5, 5.5, 2.5, "tile", "Bathroom");
-    I("tv_stand", 3.5, 0.45, Math.PI); I("sofa", 3.5, 3.2, Math.PI, "#1e3a5f"); I("armchair", 1.0, 2.0, Math.PI / 2, "#b45309"); I("coffee_table", 3.5, 1.9, 0); I("rug", 3.5, 2.2, 0, "#b91c1c");
+    I("tv_stand", 3.5, 0.45, 0); I("sofa", 3.5, 3.2, Math.PI, "#1e3a5f"); I("armchair", 1.0, 2.0, Math.PI / 2, "#b45309"); I("coffee_table", 3.5, 1.9, 0); I("rug", 3.5, 2.2, 0, "#b91c1c");
     I("bookshelf", 6.6, 3.0, -Math.PI / 2); I("floor_lamp", 0.5, 0.5, 0); I("plant", 6.5, 5.5, 0);
     I("kitchen_counter", 0.8, 9.6, Math.PI); I("sink_unit", 2.0, 9.6, Math.PI); I("stove", 3.0, 9.6, Math.PI); I("kitchen_counter", 4.0, 9.6, Math.PI); I("fridge", 5.2, 9.55, Math.PI);
-    I("dining_table", 3.5, 7.2, 0); I("chair", 2.9, 6.5, 0); I("chair", 4.1, 6.5, 0); I("chair", 2.9, 7.9, Math.PI); I("chair", 4.1, 7.9, Math.PI);
+    I("dining_table", 3.5, 7.6, 0); I("chair", 2.9, 6.9, 0); I("chair", 4.1, 6.9, 0); I("chair", 2.9, 8.3, Math.PI); I("chair", 4.1, 8.3, Math.PI);
     I("plant", 7.75, 9.4, 0); I("bedside", 10.2, 0.35, 0); I("bed_double", 11.25, 1.1, 0, "#3b82f6"); I("bedside", 12.3, 0.35, 0); I("wardrobe", 13.6, 3.0, -Math.PI / 2); I("rug", 11.25, 3.2, 0, "#0f172a");
     I("bed_single", 12.8, 6.0, -Math.PI / 2, "#22c55e"); I("desk", 9.6, 4.9, 0); I("chair", 9.6, 5.7, Math.PI); I("bookshelf", 9.2, 7.3, Math.PI);
     I("bathtub", 9.5, 9.5, 0); I("shower", 11.6, 9.4, 0); I("toilet", 13.4, 9.6, Math.PI); I("basin", 13.5, 8.0, -Math.PI / 2);
