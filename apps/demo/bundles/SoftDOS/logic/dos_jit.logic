@@ -325,6 +325,19 @@ function dosJit_aluSupported(aop) {
 // The size last written into `fz` by this trace, or 0 when unknown; the
 // prologue loads it from the state array, so it starts unknown.
 let DOS_JIT_FZ = 0;
+// 1 when the runtime lazy slot is known to be empty at this point of the
+// trace: after a guard, after a fold through the interpreter, or after an
+// instruction that wrote the flag word and emptied the slot. At a trace head
+// it is unknown, because the previous trace may have left a result pending.
+let DOS_JIT_FOLDED = 0;
+
+// Emitted before the first read of the flag word that no record of this
+// trace's own precedes: folds whatever the previous trace left, once.
+function dosJit_guard() {
+  if (DOS_JIT_PENDING !== 0 || DOS_JIT_FOLDED === 1) return "";
+  DOS_JIT_FOLDED = 1;
+  return "if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);fo=0;}";
+}
 
 function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
   let lazy = dosJit_aluLazy(aop);
@@ -380,6 +393,7 @@ function dosJit_one(body, tmp) {
       return 1;
     }
     if (op2 >= 0x90 && op2 <= 0x9F) {          // SETcc r/m8
+      body.push(dosJit_guard());
       let cond = dosJit_condExpr(op2 & 0x0F);
       if (cond === "") { DOS_JC = start; return 0; }
       dosJit_modrm();
@@ -420,6 +434,7 @@ function dosJit_one(body, tmp) {
       body.push("ST[1]=(ST[1]&~197)|(t3?1:0)|((t1&1)?0:4)|((t2===0)?64:0)|((t2&2147483648)?128:0);");
       body.push("fo=0;");
       DOS_JIT_PENDING = 0;
+      DOS_JIT_FOLDED = 1;
       body.push(dosJit_regSet(DOS_JM_RM, 4, "t2"));
       return 1;
     }
@@ -436,6 +451,7 @@ function dosJit_one(body, tmp) {
               "((t3>=-2147483648&&t3<=2147483647)?0:2049);");
       body.push("fo=0;");
       DOS_JIT_PENDING = 0;
+      DOS_JIT_FOLDED = 1;
       return 1;
     }
     DOS_JC = start;
@@ -504,6 +520,8 @@ function dosJit_one(body, tmp) {
       if (cfe === "") body.push(dosJit_spill() + "FC();" + dosJit_reload());
       else body.push("ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);");
       DOS_JIT_PENDING = 0;
+    } else {
+      body.push(dosJit_guard());
     }
     body.push("t0=" + e + ";t2=" + (dec ? "(t0-1)" : "(t0+1)") + ";");
     let mask = (size === 2) ? "65535" : "4294967295";
@@ -665,6 +683,7 @@ function dosJit_one(body, tmp) {
     body.push("ST[1]=(ST[1]&~197)|(t3?1:0)|((t1&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);");
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
+    DOS_JIT_FOLDED = 1;
     if (isMemSh) body.push(dosJit_memWrite("ta", sz, "t2"));
     else body.push(dosJit_regSet(DOS_JM_RM, sz, "t2"));
     return 1;
@@ -751,6 +770,7 @@ function dosJit_one(body, tmp) {
     body.push("}else if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);}");
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
+    DOS_JIT_FOLDED = 1;
     return 1;
   }
 
@@ -824,6 +844,7 @@ function dosJit_one(body, tmp) {
       // The multiply wrote every arithmetic flag; nothing is pending now.
       body.push("fo=0;");
       DOS_JIT_PENDING = 0;
+      DOS_JIT_FOLDED = 1;
     }
     // A divide changes no flag, so whatever was pending before it still is.
     return 1;
@@ -863,6 +884,7 @@ function dosJit_one(body, tmp) {
               "((t3>=-2147483648&&t3<=2147483647)?0:2049);");
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
+    DOS_JIT_FOLDED = 1;
     return 1;
   }
 
@@ -934,6 +956,8 @@ function dosJit_one(body, tmp) {
         if (cfe === "") body.push(dosJit_spill() + "FC();" + dosJit_reload());
         else body.push("ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);");
         DOS_JIT_PENDING = 0;
+      } else {
+        body.push(dosJit_guard());
       }
       let dec = (sub === 1) ? 1 : 0;
       body.push("t0=" + getE + ";t2=" + (dec ? "(t0-1)" : "(t0+1)") + ";");
@@ -967,13 +991,6 @@ function dosJit_one(body, tmp) {
 
 // Does this body contain an instruction that relied on the flags being folded?
 // Only then does the loop back-edge need a fold at the top.
-function dosJit_bodyFolds(body) {
-  for (let i = 0; i < body.length; i++) {
-    if (body[i].indexOf("fo=6;") >= 0 || body[i].indexOf("fo=7;") >= 0) return 1;
-  }
-  return 0;
-}
-
 // ---------------------------------------------------------------------------
 // Constant pooling
 // ---------------------------------------------------------------------------
@@ -1176,8 +1193,7 @@ function dosJit_noteSpan(from, to) {
 // Leaving a trace publishes the flag locals to the shared array, which is
 // where the interpreter and the helpers look for them.
 function dosJit_spill() {
-  return "if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);fo=0;}" +
-         "ST[2]=fo;ST[3]=fd;ST[4]=fs;ST[5]=fr;ST[6]=fz;";
+  return "ST[2]=fo;ST[3]=fd;ST[4]=fs;ST[5]=fr;ST[6]=fz;";
 }
 
 function dosJit_reload() {
@@ -1200,6 +1216,7 @@ function dosJit_compile(phys) {
   DOS_JIT_PENDING = 0;
   DOS_JIT_PSIZE = 4;
   DOS_JIT_FZ = 0;
+  DOS_JIT_FOLDED = 0;
   DOS_JIT_RUSE = 0;
   DOS_JIT_RMOD = 0;
   DOS_JIT_SEEN_N = 0;
@@ -1246,11 +1263,13 @@ function dosJit_compile(phys) {
       if (p2 >= 0x80 && p2 <= 0x8F) { ccode = p2 & 0x0F; isNear = 1; }
     }
     if (ccode >= 0) {
+      body.push(dosJit_guard());
       let cond = dosJit_condExpr(ccode);
       if (cond === "") {
         // The condition needs the flag word; fold once, then it is readable.
         body.push(dosJit_spill() + "FC();" + dosJit_reload());
         DOS_JIT_PENDING = 0;
+        DOS_JIT_FOLDED = 1;
         cond = dosJit_condExpr(ccode);
         if (cond === "") { body.push(dosJit_exit(String(here))); ended = 1; break; }
       }
@@ -1375,12 +1394,6 @@ function dosJit_compile(phys) {
 
   if (n === 0) return null;
   if (ended === 0) body.push(dosJit_exit(String(DOS_JC >>> 0)));
-
-  // Round a loop the lazy slots hold whatever the body left, not the empty
-  // state the entry guarantees. Folding once at the top restores it.
-  if (loops === 1 && DOS_JIT_PENDING !== 0 && dosJit_bodyFolds(body) === 1) {
-    body.unshift(dosJit_spill() + "FC();" + dosJit_reload());
-  }
 
   // The pool has to run over the finished body: a literal is only worth a name
   // once, however many lines mention it.
