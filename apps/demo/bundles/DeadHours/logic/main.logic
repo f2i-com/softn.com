@@ -65,6 +65,11 @@ let flashTicks = 0
 let recoil = 0
 let hurtTicks = 0
 let attackFlash = 0
+let holes = []            // bullet holes: { x, y, z, nx, ny, nz, rot, size, age, ground }
+let bloods = []           // blood on the ground: { x, z, rot, size, age }
+let swapTicks = 0         // the new weapon rising into view
+let pumpTicks = 0         // a shotgun's fore-end travelling after a shot
+let shake = 0             // camera kick
 
 // Weapons: fire rate and reload in ticks, damage per shot, pellets per shot.
 let weapons = [
@@ -161,8 +166,32 @@ function _init() {
   composeObjects()
 }
 
-// Before the game starts the camera drifts around the yard.
+// Before the game starts the camera drifts around the yard, and a few of
+// the dead wander the middle of it so the player can see what is coming.
 let titleAngle = 0
+let showcase = []
+function makeShowcase() {
+  showcase = []
+  let i = 0
+  while (i < 3) {
+    let t = ZTYPES[i]
+    showcase.push({ id: 900 + i, type: i, x: Math.cos(i * 2.1) * 3.5, z: Math.sin(i * 2.1) * 3.5, hp: 1, speed: t.speed * 0.35, scale: t.scale, dir: i * 2.1 + Math.PI / 2, phase: i * 2, state: "walk", flash: 0, attackTicks: 0, deadTicks: 0, stagger: 0, headless: false, fallDir: 1, turn: 0.004 + i * 0.002 })
+    i = i + 1
+  }
+}
+function stepShowcase() {
+  let i = 0
+  while (i < showcase.length) {
+    let z = showcase[i]
+    z.dir = z.dir + z.turn
+    let d2 = z.x * z.x + z.z * z.z
+    if (d2 > 30) { z.dir = Math.atan2(-z.x, -z.z) }
+    z.x = z.x + Math.sin(z.dir) * z.speed * DT
+    z.z = z.z + Math.cos(z.dir) * z.speed * DT
+    z.phase = z.phase + z.speed * 0.5 * DT * 6
+    i = i + 1
+  }
+}
 function titleOrbit() {
   titleAngle = titleAngle + 0.0016
   px = Math.cos(titleAngle) * 15
@@ -187,6 +216,7 @@ function startGame() {
   fireCooldown = 0; reloadTicks = 0
   toSpawn = 0; spawnTimer = 0
   hurtTicks = 0; hurtFlash = 0; hitMark = 0; recoil = 0; flashTicks = 0; bobPhase = 0
+  holes = []; bloods = []; swapTicks = 0; pumpTicks = 0; shake = 0
   toast = ""; toastTicks = 0
   waveState = "between"
   waveTimer = Math.ceil(4000 / TICK_MS)
@@ -216,6 +246,8 @@ function backToTitle() {
   zombies = []
   pickups = []
   particles = []
+  holes = []
+  bloods = []
   loadBoard()
 }
 
@@ -271,6 +303,8 @@ function die() {
 function gameStep() {
   if (!started) {
     titleOrbit()
+    if (showcase.length === 0) { makeShowcase() }
+    stepShowcase()
     buildLights()
     composeObjects()
     return
@@ -295,6 +329,10 @@ function gameStep() {
     checkPlayer()
   }
   stepParticles()
+  stepDecals()
+  if (swapTicks > 0) { swapTicks = swapTicks - 1 }
+  if (pumpTicks > 0) { pumpTicks = pumpTicks - 1 }
+  if (shake > 0) { shake = shake * 0.8; if (shake < 0.002) { shake = 0 } }
   if (fireCooldown > 0) { fireCooldown = fireCooldown - 1 }
   if (flashTicks > 0) { flashTicks = flashTicks - 1 }
   if (recoil > 0) { recoil = recoil * 0.72; if (recoil < 0.004) { recoil = 0 } }
@@ -305,8 +343,15 @@ function gameStep() {
   buildLights()
   composeObjects()
   let w = weapons[weaponIdx]
+  // Shell pips for the ammo panel, and a crosshair that opens with movement and recoil.
+  let pips = []
+  let pi = 0
+  while (pi < w.mag) { pips.push({ on: pi < ammo[weaponIdx] }); pi = pi + 1 }
+  let moving = (vx * vx + vz * vz) > 1
   hud = { hp: Math.max(0, Math.round(hp)), ammo: ammo[weaponIdx], reserve: reserve[weaponIdx], weapon: w.name, wave: wave, kills: kills, score: score, reloading: reloadTicks > 0, best: hud.best,
-    countdown: waveState === "between" ? Math.ceil(waveTimer * TICK_MS / 1000) : 0, left: countAlive() + toSpawn }
+    countdown: waveState === "between" ? Math.ceil(waveTimer * TICK_MS / 1000) : 0, left: countAlive() + toSpawn,
+    pips: pips, reloadPct: reloadTicks > 0 ? Math.round((1 - reloadTicks / w.reload) * 100) : 0,
+    spread: Math.round(6 + (moving ? 6 : 0) + recoil * 90 + (weaponIdx === 1 ? 6 : 0)), lowAmmo: ammo[weaponIdx] <= Math.ceil(w.mag / 4) }
 }
 
 function countAlive() {
@@ -319,7 +364,9 @@ function countAlive() {
 function updateCamera(extraY) {
   let bob = 0
   if ((vx * vx + vz * vz) > 1) { bob = Math.sin(bobPhase) * 0.035 }
-  cameraPos = { x: px, y: P_EYE + bob + extraY, z: pz }
+  let kx = shake > 0 ? Math.sin(bobPhase * 9.1) * shake : 0
+  let ky = shake > 0 ? Math.cos(bobPhase * 7.3) * shake * 0.6 : 0
+  cameraPos = { x: px + kx, y: P_EYE + bob + extraY + ky, z: pz }
   let cp = Math.cos(pitch)
   cameraLookAt = { x: px + Math.sin(yaw) * cp * 5, y: P_EYE + extraY + Math.sin(pitch) * 5, z: pz + Math.cos(yaw) * cp * 5 }
 }
@@ -365,7 +412,9 @@ function swapWeapon(i) {
   // A swap mid-reload abandons the reload; the rounds stay in the box.
   reloadTicks = 0
   weaponIdx = i
-  fireCooldown = 8
+  fireCooldown = 10
+  swapTicks = 10
+  pumpTicks = 0
   showToast(weapons[i].name)
 }
 
@@ -399,7 +448,10 @@ function fire() {
   fireCooldown = w.rate
   flashTicks = 2
   recoil = weaponIdx === 1 ? 0.16 : 0.07
+  shake = weaponIdx === 1 ? 0.035 : 0.012
+  if (weaponIdx === 1) { pumpTicks = 18 }
   softn.audio.play(w.sfx, { volume: weaponIdx === 1 ? 0.75 : 0.6 })
+  ejectCasing()
   let cp = Math.cos(pitch)
   let fx = Math.sin(yaw) * cp
   let fy = Math.sin(pitch)
@@ -446,7 +498,13 @@ function shootRay(ox, oy, oz, dx, dy, dz, dmg) {
     i = i + 1
   }
   if (bestZ === null) {
-    if (wall < 60) { spawnPuff(ox + dx * wall, oy + dy * wall, oz + dz * wall, "#6b6f78", 3) }
+    if (rayBlockerHit(ox, oy, oz, dx, dy, dz) && hitT < 60) {
+      let hx = ox + dx * hitT
+      let hy = oy + dy * hitT
+      let hz = oz + dz * hitT
+      spawnPuff(hx, hy, hz, hitGround ? "#5a5548" : "#6b6f78", 3)
+      addHole(hx, hy, hz, hitNx, hitNy, hitNz, hitGround)
+    }
     return false
   }
   let dealt = headshot ? dmg * 2.2 : dmg
@@ -457,6 +515,12 @@ function shootRay(ox, oy, oz, dx, dy, dz, dmg) {
   bestZ.x = moveX
   bestZ.z = moveZ
   spawnPuff(ox + dx * best, oy + dy * best, oz + dz * best, "#7a1b1b", headshot ? 7 : 4)
+  bestZ.stagger = headshot ? 10 : 6
+  addBlood(bestZ.x + dx * 0.5 + (myRand() - 0.5) * 0.4, bestZ.z + dz * 0.5 + (myRand() - 0.5) * 0.4, 0.35 + myRand() * 0.35)
+  // A shot that goes on through the body marks whatever is behind.
+  if (myRand() < 0.5 && rayBlockerHit(ox, oy, oz, dx, dy, dz) && hitT < 30 && hitT > best) {
+    addHole(ox + dx * hitT, oy + dy * hitT, oz + dz * hitT, hitNx, hitNy, hitNz, hitGround)
+  }
   if (bestZ.hp <= 0) { killZombie(bestZ, headshot) }
   else { softn.audio.play("assets/sfx/hit.wav", { volume: 0.35 }) }
   return true
@@ -465,6 +529,14 @@ function shootRay(ox, oy, oz, dx, dy, dz, dmg) {
 function killZombie(z, headshot) {
   z.state = "dead"
   z.deadTicks = 0
+  z.headless = headshot
+  z.fallDir = myRand() < 0.5 ? 1 : -1
+  addBlood(z.x, z.z, 0.9 + myRand() * 0.5)
+  if (headshot) {
+    // The head comes away: a chunk of it flies, and a lot of the rest.
+    spawnPuff(z.x, 1.62 * z.scale, z.z, "#7a1b1b", 14)
+    particles.push({ x: z.x, y: 1.66 * z.scale, z: z.z, vx: -Math.sin(z.dir) * 2.5 + (myRand() - 0.5) * 2, vy: 3.5, vz: -Math.cos(z.dir) * 2.5 + (myRand() - 0.5) * 2, life: 70, color: ZTYPES[z.type].head, size: 0.34 * z.scale, spin: 0.3, chunk: true })
+  }
   kills = kills + 1
   let t = ZTYPES[z.type]
   let gained = t.score + (headshot ? 50 : 0)
@@ -512,7 +584,7 @@ function spawnZombie() {
     id: nextZid, type: type, x: g.x + (myRand() - 0.5) * 2, z: g.z + (myRand() - 0.5) * 2,
     hp: t.hp * mult, speed: t.speed * (0.9 + myRand() * 0.25), scale: t.scale * (0.92 + myRand() * 0.16),
     dir: 0, phase: myRand() * 6.28, state: "walk", flash: 0, attackTicks: 0, deadTicks: 0, groan: Math.floor(myRand() * 200), gate: gi,
-    side: (nextZid % 2 === 0) ? 1 : -1, stuck: 0, evade: 0
+    side: (nextZid % 2 === 0) ? 1 : -1, stuck: 0, evade: 0, stagger: 0, headless: false, fallDir: 1
   })
   nextZid = nextZid + 1
 }
@@ -529,6 +601,7 @@ function stepZombies() {
       continue
     }
     if (z.flash > 0) { z.flash = z.flash - 1 }
+    if (z.stagger > 0) { z.stagger = z.stagger - 1 }
     let dx = px - z.x
     let dz = pz - z.z
     let dist = Math.sqrt(dx * dx + dz * dz)
@@ -703,6 +776,20 @@ function spawnPuff(x, y, z, color, n) {
   }
 }
 
+// A spent case out of the ejection port: brass for the pistol, a red hull
+// for the shotgun, tumbling off to the right and down.
+function ejectCasing() {
+  let cp = Math.cos(pitch)
+  let fx = Math.sin(yaw) * cp
+  let fz = Math.cos(yaw) * cp
+  let rx = -Math.cos(yaw)
+  let rz = Math.sin(yaw)
+  let ox = px + fx * 0.45 + rx * 0.3
+  let oz = pz + fz * 0.45 + rz * 0.3
+  let shotgun = weaponIdx === 1
+  particles.push({ x: ox, y: P_EYE - 0.18, z: oz, vx: rx * (1.6 + myRand()) + fx * 0.3, vy: 2.2 + myRand() * 0.8, vz: rz * (1.6 + myRand()) + fz * 0.3, life: 50, color: shotgun ? "#b91c1c" : "#d4a72c", size: shotgun ? 0.055 : 0.03, spin: 0.5 + myRand() * 0.4, casing: true, tall: shotgun ? 2.2 : 1.8 })
+}
+
 function stepParticles() {
   if (particles.length === 0) { return }
   let keep = []
@@ -713,12 +800,60 @@ function stepParticles() {
     p.x = p.x + p.vx * DT
     p.y = p.y + p.vy * DT
     p.z = p.z + p.vz * DT
-    if (p.y < 0.03) { p.y = 0.03; p.vy = 0; p.vx = 0; p.vz = 0 }
+    if (p.spin) { p.rot = (p.rot || 0) + p.spin }
+    let floor = p.chunk ? p.size / 2 : (p.casing ? 0.02 : 0.03)
+    if (p.y < floor) {
+      p.y = floor
+      if (p.casing && p.vy < -0.8) { p.vy = -p.vy * 0.35; p.vx = p.vx * 0.5; p.vz = p.vz * 0.5 }
+      else { p.vy = 0; p.vx = 0; p.vz = 0; p.spin = 0 }
+    }
     p.life = p.life - 1
     if (p.life > 0) { keep.push(p) }
     i = i + 1
   }
   particles = keep
+}
+
+// ---- Decals ------------------------------------------------------------------
+
+function addHole(x, y, z, nx, ny, nz, ground) {
+  holes.push({ x: x + nx * 0.012, y: y + ny * (ground ? 0.025 : 0.012), z: z + nz * 0.012, nx: nx, ny: ny, nz: nz, rot: myRand() * 6.28, size: (ground ? 0.2 : 0.16) + myRand() * 0.08, age: 0, ground: ground })
+  if (holes.length > 48) { holes.shift() }
+}
+
+function addBlood(x, z, size) {
+  bloods.push({ x: x, z: z, rot: myRand() * 6.28, size: size, age: 0 })
+  if (bloods.length > 40) { bloods.shift() }
+}
+
+function stepDecals() {
+  let i = 0
+  while (i < holes.length) { holes[i].age = holes[i].age + 1; i = i + 1 }
+  i = 0
+  while (i < bloods.length) { bloods[i].age = bloods[i].age + 1; i = i + 1 }
+  while (holes.length > 0 && holes[0].age > 2400) { holes.shift() }
+  while (bloods.length > 0 && bloods[0].age > 3600) { bloods.shift() }
+}
+
+function decalObjs(out) {
+  let i = 0
+  while (i < holes.length) {
+    let h = holes[i]
+    let fade = h.age > 2200 ? 1 - (h.age - 2200) / 200 : 1
+    let rot
+    if (h.ny > 0.5) { rot = { x: -Math.PI / 2, y: 0, z: h.rot } }
+    else { rot = { x: 0, y: Math.atan2(h.nx, h.nz), z: h.rot } }
+    out.push({ id: "hole" + i, type: "plane", position: { x: h.x, y: h.y, z: h.z }, rotation: rot, width: h.size, height: h.size, texture: "bullethole", opacity: fade, castShadow: false, receiveShadow: false })
+    i = i + 1
+  }
+  i = 0
+  while (i < bloods.length) {
+    let b = bloods[i]
+    let grow = Math.min(1, 0.4 + b.age / 20)
+    let fade = b.age > 3300 ? 1 - (b.age - 3300) / 300 : 1
+    out.push({ id: "blood" + i, type: "plane", position: { x: b.x, y: 0.028 + (i % 5) * 0.002, z: b.z }, rotation: { x: -Math.PI / 2, y: 0, z: b.rot }, width: b.size * grow, height: b.size * grow, texture: "blood", opacity: fade, castShadow: false, receiveShadow: false })
+    i = i + 1
+  }
 }
 
 // ---- Lights and objects ------------------------------------------------------
@@ -727,548 +862,514 @@ function buildLights() {
   // The torch rides the camera and flickers a little, as a cheap one would.
   let flicker = 0.9 + 0.1 * Math.sin(bobPhase * 2.3) * Math.sin(bobPhase * 0.7)
   let ls = [
-    { id: "torch", type: "spot", attach: "camera", color: flashTicks > 0 ? "#ffd9a0" : "#fff1d0", intensity: (started && torchOn ? 420 * flicker : 0) + (flashTicks > 0 ? 900 : 0), angle: flashTicks > 0 ? 0.55 : 0.36, penumbra: 0.55, distance: 42, decay: 1.6, position: { x: -0.28, y: -0.05, z: 0.05 } },
-    { id: "hemi", type: "hemisphere", color: "#4c5f8a", groundColor: "#141a22", intensity: 1.15 },
-    { id: "moon", type: "directional", color: "#9db2ea", intensity: 0.9, position: { x: -60, y: 55, z: -90 } }
+    { id: "torch", type: "spot", attach: "camera", color: flashTicks > 0 ? "#ffd9a0" : "#fff1d0", intensity: (started && torchOn ? 70 * flicker : 0) + (flashTicks > 0 ? 160 : 0), angle: flashTicks > 0 ? 0.62 : 0.4, penumbra: 0.7, distance: 46, decay: 2, position: { x: -0.28, y: -0.05, z: 0.05 } },
+    { id: "hemi", type: "hemisphere", color: "#52679a", groundColor: "#161c26", intensity: 1.25 },
+    { id: "moon", type: "directional", color: "#9db2ea", intensity: 0.85, position: { x: -60, y: 55, z: -90 } }
   ]
   let i = 0
   while (i < lampPosts.length) {
     let lp = lampPosts[i]
-    ls.push({ id: "lp" + i, type: "point", color: "#ffd88a", intensity: 260, position: { x: lp.x, y: 4.2, z: lp.z } })
+    ls.push({ id: "lp" + i, type: "point", color: "#ffd88a", intensity: 150, decay: 2, position: { x: lp.x, y: 4.2, z: lp.z } })
     i = i + 1
   }
   lights = ls
 }
 
-// A zombie: stylized menacing creature with type-specific silhouettes, glowing predatory eyes,
-// claws, armor plates, and blood pool on death.
+// ---- Bodies ----------------------------------------------------------------------
+// Everything below builds in world space from a facing `d`: `f` is forward,
+// `r` is right. A part tilted forward by `a` about the creature's own right
+// axis needs the XYZ Euler of Ry(d)·Rx(a); `tiltRot` works it out. A limb
+// capsule just takes the direction it points along.
+
+function tiltRot(d, a) {
+  let sd = Math.sin(d), cd = Math.cos(d), sa = Math.sin(a), ca = Math.cos(a)
+  return { x: Math.atan2(sa, cd * ca), y: Math.asin(Math.max(-1, Math.min(1, sd * ca))), z: Math.atan2(-sd * sa, cd) }
+}
+
+function dirRot(dx, dy, dz) {
+  let l = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1
+  let sx = Math.max(-1, Math.min(1, dx / l))
+  return { x: Math.atan2(-dz / l, -dy / l), y: 0, z: Math.asin(sx) }
+}
+
+// A two-part limb hanging from (x, y, z): the upper part swings forward by
+// `a`, the lower part bends on by `e`. Pushes two capsules; returns the end.
+function limbObjs(out, id, x, y, z, f, r, side, a, e, len1, len2, rad, color, spread) {
+  let sp = spread || 0
+  let d1x = f.x * Math.sin(a) + r.x * sp * side
+  let d1y = -Math.cos(a)
+  let d1z = f.z * Math.sin(a) + r.z * sp * side
+  let l1 = Math.sqrt(d1x * d1x + d1y * d1y + d1z * d1z)
+  d1x = d1x / l1; d1y = d1y / l1; d1z = d1z / l1
+  let a2 = a + e
+  let d2x = f.x * Math.sin(a2) + r.x * sp * side
+  let d2y = -Math.cos(a2)
+  let d2z = f.z * Math.sin(a2) + r.z * sp * side
+  let l2 = Math.sqrt(d2x * d2x + d2y * d2y + d2z * d2z)
+  d2x = d2x / l2; d2y = d2y / l2; d2z = d2z / l2
+  let kx = x + d1x * len1, ky = y + d1y * len1, kz = z + d1z * len1
+  let ex = kx + d2x * len2, ey = ky + d2y * len2, ez = kz + d2z * len2
+  out.push({ id: id + "u", type: "capsule", position: { x: (x + kx) / 2, y: (y + ky) / 2, z: (z + kz) / 2 }, rotation: dirRot(d1x, d1y, d1z), radius: rad, height: len1 + rad * 2, color: color, roughness: 0.9, castShadow: true })
+  out.push({ id: id + "l", type: "capsule", position: { x: (kx + ex) / 2, y: (ky + ey) / 2, z: (kz + ez) / 2 }, rotation: dirRot(d2x, d2y, d2z), radius: rad * 0.85, height: len2 + rad * 1.7, color: color, roughness: 0.9, castShadow: true })
+  return { x: ex, y: ey, z: ez, dx: d2x, dy: d2y, dz: d2z }
+}
+
+// A zombie. Three builds share one skeleton: a hunched torso, a head that
+// lolls, two-part arms that reach, legs that shuffle or drive, and the
+// tatters and wounds of a thing that has been dead for a while. Death is a
+// fall, not a cut: the body tips forward over a second, then sinks away.
 function zombieObjs(out, z) {
   let t = ZTYPES[z.type]
   let s = z.scale
   let d = z.dir
   let f = { x: Math.sin(d), z: Math.cos(d) }
   let r = { x: Math.cos(d), z: -Math.sin(d) }
-  let swing = Math.sin(z.phase) * 0.55
-  let lean = (z.type === 1 ? 0.38 : (z.type === 2 ? 0.18 : 0.14))
-  let attackPhase = z.state === "attack" ? z.attackTicks / 40 : 0
-  let hue = z.flash > 0 ? "#ffffff" : t.body
+  let id = "z" + z.id
+  let skin = z.flash > 0 ? "#ffffff" : t.body
   let head = z.flash > 0 ? "#ffffff" : t.head
   let cloth = z.flash > 0 ? "#ffffff" : t.cloth
-  let id = "z" + z.id
+  let runner = z.type === 1
+  let brute = z.type === 2
+  let swing = Math.sin(z.phase) * (runner ? 0.9 : (brute ? 0.5 : 0.6))
+  let bob = Math.abs(Math.sin(z.phase)) * (runner ? 0.06 : 0.025)
+  let lean = runner ? 0.55 : (brute ? 0.22 : 0.2)
+  let attackPhase = z.state === "attack" ? z.attackTicks / 40 : 0
+  if (z.state === "attack") { lean = lean + 0.15 + 0.3 * Math.sin(attackPhase * Math.PI * 2) }
+  if (z.stagger > 0) { lean = lean - 0.35 * (z.stagger / 10) }
 
+  // Proportions.
+  let hipY = (brute ? 0.95 : 0.85) * s
+  let torsoH = (brute ? 0.95 : 0.7) * s
+  let torsoW = (brute ? 0.86 : (runner ? 0.44 : 0.52)) * s
+  let torsoD = (brute ? 0.5 : 0.3) * s
+  let legLen = hipY
+  let armRad = (brute ? 0.12 : 0.075) * s
+  let legRad = (brute ? 0.14 : 0.095) * s
+
+  // Falling: the whole upper body pivots about the hips toward the ground.
+  let fall = 0
+  let sink = 0
   if (z.state === "dead") {
-    let sinkY = -Math.max(0, (z.deadTicks - 40) / 45) * 1.8
-    let poolScale = Math.min(1.0, z.deadTicks / 16) * s
-    // Glistening dark blood pool beneath fallen body
-    out.push({
-      id: id + "pool",
-      type: "cylinder",
-      position: { x: z.x + f.x * 0.3 * s, y: 0.015, z: z.z + f.z * 0.3 * s },
-      radius: 0.75 * poolScale,
-      height: 0.01,
-      color: "#450a0a",
-      opacity: 0.88,
-      metalness: 0.3,
-      roughness: 0.2
-    })
-    // Fallen prone torso
-    out.push({
-      id: id + "t",
-      type: "box",
-      position: { x: z.x + f.x * 0.4 * s, y: sinkY + 0.18 * s, z: z.z + f.z * 0.4 * s },
-      rotation: { x: Math.PI / 2, y: d, z: 0 },
-      width: 0.58 * s,
-      height: 0.72 * s,
-      depth: 0.32 * s,
-      color: cloth,
-      roughness: 0.95
-    })
-    // Fallen head
-    out.push({
-      id: id + "h",
-      type: "box",
-      position: { x: z.x + f.x * 0.95 * s, y: sinkY + 0.2 * s, z: z.z + f.z * 0.95 * s },
-      rotation: { x: Math.PI / 2, y: d, z: 0 },
-      width: 0.42 * s,
-      height: 0.42 * s,
-      depth: 0.42 * s,
-      color: head,
-      roughness: 0.9
-    })
-    // Dead outstretched arms
-    out.push({
-      id: id + "a1",
-      type: "box",
-      position: { x: z.x + r.x * 0.4 * s + f.x * 0.6 * s, y: sinkY + 0.12 * s, z: z.z + r.z * 0.4 * s + f.z * 0.6 * s },
-      rotation: { x: Math.PI / 2, y: d - 0.25, z: 0 },
-      width: 0.18 * s,
-      height: 0.6 * s,
-      depth: 0.18 * s,
-      color: hue
-    })
-    out.push({
-      id: id + "a2",
-      type: "box",
-      position: { x: z.x - r.x * 0.4 * s + f.x * 0.6 * s, y: sinkY + 0.12 * s, z: z.z - r.z * 0.4 * s + f.z * 0.6 * s },
-      rotation: { x: Math.PI / 2, y: d + 0.25, z: 0 },
-      width: 0.18 * s,
-      height: 0.6 * s,
-      depth: 0.18 * s,
-      color: hue
-    })
-    // Dead legs
-    out.push({
-      id: id + "l1",
-      type: "box",
-      position: { x: z.x + r.x * 0.16 * s - f.x * 0.35 * s, y: sinkY + 0.12 * s, z: z.z + r.z * 0.16 * s - f.z * 0.35 * s },
-      rotation: { x: Math.PI / 2, y: d, z: 0 },
-      width: 0.22 * s,
-      height: 0.65 * s,
-      depth: 0.22 * s,
-      color: cloth
-    })
-    out.push({
-      id: id + "l2",
-      type: "box",
-      position: { x: z.x - r.x * 0.16 * s - f.x * 0.35 * s, y: sinkY + 0.12 * s, z: z.z - r.z * 0.16 * s - f.z * 0.35 * s },
-      rotation: { x: Math.PI / 2, y: d, z: 0 },
-      width: 0.22 * s,
-      height: 0.65 * s,
-      depth: 0.22 * s,
-      color: cloth
-    })
-    return
+    fall = Math.min(1, z.deadTicks / 22)
+    sink = Math.max(0, (z.deadTicks - 45) / 45) * 1.6
+    lean = lean + (Math.PI / 2 - lean) * (1 - Math.pow(1 - fall, 2.2))
+    hipY = hipY * (1 - fall * 0.72)
+    bob = 0
+    swing = swing * (1 - fall)
+  }
+  let sy = -sink
+
+  // Torso: hips at (z.x, hipY), chest up and forward by the lean.
+  let cx = z.x + f.x * Math.sin(lean) * torsoH * 0.5
+  let cy = hipY + Math.cos(lean) * torsoH * 0.5 + bob + sy
+  let cz = z.z + f.z * Math.sin(lean) * torsoH * 0.5
+  out.push({ id: id + "t", type: "box", position: { x: cx, y: cy, z: cz }, rotation: tiltRot(d, lean), width: torsoW, height: torsoH, depth: torsoD, color: cloth, roughness: 0.95, castShadow: true })
+  // Torn shirt hem and a rotten patch through it.
+  out.push({ id: id + "w", type: "box", position: { x: cx + f.x * torsoD * 0.52 + r.x * 0.08 * s, y: cy + 0.05 * s, z: cz + f.z * torsoD * 0.52 + r.z * 0.08 * s }, rotation: tiltRot(d, lean), width: torsoW * 0.42, height: torsoH * 0.4, depth: 0.03 * s, color: z.flash > 0 ? "#ffffff" : "#3b0d0d", roughness: 1 })
+  if (!runner) {
+    out.push({ id: id + "rib", type: "box", position: { x: cx + f.x * torsoD * 0.53 - r.x * 0.12 * s, y: cy + 0.12 * s, z: cz + f.z * torsoD * 0.53 - r.z * 0.12 * s }, rotation: tiltRot(d, lean), width: torsoW * 0.22, height: torsoH * 0.28, depth: 0.025 * s, color: z.flash > 0 ? "#ffffff" : "#c9b8a0", roughness: 1 })
+  }
+  // Shoulders sit on top of the chest.
+  let shY = hipY + Math.cos(lean) * torsoH + bob + sy
+  let shX = z.x + f.x * Math.sin(lean) * torsoH
+  let shZ = z.z + f.z * Math.sin(lean) * torsoH
+  if (brute) {
+    // A hump of muscle behind the shoulders, a gut, a rusted breastplate
+    // with a chain across it, and spiked pauldrons.
+    out.push({ id: id + "hump", type: "sphere", position: { x: shX - f.x * torsoD * 0.35, y: shY - 0.12 * s, z: shZ - f.z * torsoD * 0.35 }, radius: torsoW * 0.42, color: skin, roughness: 0.95, castShadow: true })
+    out.push({ id: id + "gut", type: "sphere", position: { x: cx + f.x * torsoD * 0.35, y: cy - torsoH * 0.22, z: cz + f.z * torsoD * 0.35 }, radius: torsoW * 0.36, color: skin, roughness: 0.95, castShadow: true })
+    out.push({ id: id + "plate", type: "box", position: { x: cx + f.x * torsoD * 0.6, y: cy + torsoH * 0.12, z: cz + f.z * torsoD * 0.6 }, rotation: tiltRot(d, lean), width: torsoW * 0.8, height: torsoH * 0.5, depth: 0.05 * s, color: "#3f444c", texture: "rust", metalness: 0.7, roughness: 0.45, castShadow: true })
+    out.push({ id: id + "strap", type: "box", position: { x: cx - r.x * torsoW * 0.2, y: cy + torsoH * 0.05, z: cz - r.z * torsoW * 0.2 }, rotation: { x: tiltRot(d, lean).x, y: tiltRot(d, lean).y, z: tiltRot(d, lean).z + 0.6 }, width: 0.08 * s, height: torsoH * 1.05, depth: torsoD * 1.06, color: "#1f1a17", roughness: 1 })
+    out.push({ id: id + "chain", type: "torus", position: { x: cx + f.x * torsoD * 0.62, y: cy + 0.05 * s, z: cz + f.z * torsoD * 0.62 }, rotation: { x: 0, y: d, z: 0.3 }, radius: 0.22 * s, tube: 0.028 * s, color: "#8b939e", metalness: 0.85, roughness: 0.35 })
+    let side = -1
+    while (side <= 1) {
+      let pxs = shX + r.x * torsoW * 0.62 * side, pzs = shZ + r.z * torsoW * 0.62 * side
+      out.push({ id: id + "pl" + side, type: "box", position: { x: pxs, y: shY - 0.02 * s, z: pzs }, rotation: tiltRot(d, lean), width: 0.4 * s, height: 0.24 * s, depth: 0.52 * s, color: "#4b5563", texture: "rust", metalness: 0.65, roughness: 0.5, castShadow: true })
+      out.push({ id: id + "sp" + side + "a", type: "cone", position: { x: pxs + r.x * 0.06 * s * side, y: shY + 0.2 * s, z: pzs + r.z * 0.06 * s * side }, rotation: { x: 0, y: 0, z: -0.35 * side }, radius: 0.05 * s, height: 0.24 * s, color: "#2b2f36", metalness: 0.8, roughness: 0.35 })
+      out.push({ id: id + "sp" + side + "b", type: "cone", position: { x: pxs + f.x * 0.16 * s, y: shY + 0.16 * s, z: pzs + f.z * 0.16 * s }, rotation: { x: 0, y: 0, z: -0.2 * side }, radius: 0.04 * s, height: 0.18 * s, color: "#2b2f36", metalness: 0.8, roughness: 0.35 })
+      side = side + 2
+    }
   }
 
-  if (z.state === "attack") {
-    lean = lean + 0.2 + 0.25 * Math.sin(attackPhase * Math.PI * 2)
+  // Head: forward of the shoulders, hanging a little; a sphere for the
+  // walker, a long muzzle for the runner, a heavy jaw for the brute.
+  let hn = 0.22 * s
+  let hx = shX + f.x * (Math.sin(lean) * hn + (runner ? 0.16 : 0.05) * s)
+  let hy = shY + Math.cos(lean) * hn + (runner ? -0.05 : 0.08) * s
+  let hz = shZ + f.z * (Math.sin(lean) * hn + (runner ? 0.16 : 0.05) * s)
+  let hr = (brute ? 0.26 : (runner ? 0.2 : 0.23)) * s
+  if (brute) { hy = hy - 0.1 * s }
+  let headTilt = lean * 1.2 + (z.state === "attack" ? -0.2 : 0.15)
+  if (!z.headless) {
+    out.push({ id: id + "n", type: "cylinder", position: { x: (shX + hx) / 2, y: (shY + hy) / 2, z: (shZ + hz) / 2 }, rotation: tiltRot(d, lean), radius: 0.07 * s, height: hn * 1.2, color: skin, roughness: 0.9 })
+    out.push({ id: id + "h", type: "sphere", position: { x: hx, y: hy, z: hz }, rotation: tiltRot(d, headTilt), radius: hr, color: head, roughness: 0.85, castShadow: true })
+    if (runner) {
+      out.push({ id: id + "mz", type: "box", position: { x: hx + f.x * hr * 0.9, y: hy - hr * 0.25, z: hz + f.z * hr * 0.9 }, rotation: tiltRot(d, headTilt), width: hr * 1.1, height: hr * 0.7, depth: hr * 1.2, color: head, roughness: 0.85 })
+      out.push({ id: id + "jaw", type: "box", position: { x: hx + f.x * hr * 0.9, y: hy - hr * 0.62 - 0.02 * Math.sin(z.phase * 2) * s, z: hz + f.z * hr * 0.9 }, rotation: tiltRot(d, headTilt + 0.35), width: hr * 0.9, height: hr * 0.3, depth: hr * 1.1, color: "#3b0d0d", roughness: 1 })
+    } else {
+      out.push({ id: id + "jaw", type: "box", position: { x: hx + f.x * hr * 0.55, y: hy - hr * 0.72, z: hz + f.z * hr * 0.55 }, rotation: tiltRot(d, headTilt + 0.3 + 0.1 * Math.sin(z.phase * 1.7)), width: hr * 1.2, height: hr * 0.45, depth: hr * 0.9, color: "#2a1515", roughness: 1 })
+      out.push({ id: id + "teeth", type: "box", position: { x: hx + f.x * hr * 0.95, y: hy - hr * 0.42, z: hz + f.z * hr * 0.95 }, rotation: tiltRot(d, headTilt), width: hr * 0.8, height: hr * 0.12, depth: 0.03 * s, color: "#e7dcc8" })
+    }
+    if (brute) {
+      // A heavy brow over the eyes, an iron skullcap, and tusks from the jaw.
+      out.push({ id: id + "brow", type: "box", position: { x: hx + f.x * hr * 0.55, y: hy + hr * 0.42, z: hz + f.z * hr * 0.55 }, rotation: tiltRot(d, headTilt + 0.2), width: hr * 1.9, height: hr * 0.45, depth: hr * 0.7, color: head, roughness: 0.9, castShadow: true })
+      out.push({ id: id + "helm", type: "box", position: { x: hx - f.x * hr * 0.1, y: hy + hr * 0.7, z: hz - f.z * hr * 0.1 }, rotation: tiltRot(d, headTilt), width: hr * 2.1, height: hr * 0.6, depth: hr * 1.9, color: "#1f2937", texture: "rust", metalness: 0.8, roughness: 0.4, castShadow: true })
+      out.push({ id: id + "tk1", type: "cone", position: { x: hx + f.x * hr * 0.95 + r.x * hr * 0.4, y: hy - hr * 0.25, z: hz + f.z * hr * 0.95 + r.z * hr * 0.4 }, rotation: { x: 0, y: 0, z: 0 }, radius: hr * 0.12, height: hr * 0.55, color: "#e7dcc8" })
+      out.push({ id: id + "tk2", type: "cone", position: { x: hx + f.x * hr * 0.95 - r.x * hr * 0.4, y: hy - hr * 0.25, z: hz + f.z * hr * 0.95 - r.z * hr * 0.4 }, rotation: { x: 0, y: 0, z: 0 }, radius: hr * 0.12, height: hr * 0.55, color: "#e7dcc8" })
+    } else if (z.id % 3 === 0) {
+      // Hair, what is left of it.
+      out.push({ id: id + "hair", type: "sphere", position: { x: hx - f.x * hr * 0.2, y: hy + hr * 0.35, z: hz - f.z * hr * 0.2 }, radius: hr * 0.8, color: z.flash > 0 ? "#ffffff" : "#1c1917", roughness: 1 })
+    }
+    // Eyes: two coals that catch the torch.
+    let ec = runner ? "#ff3b3b" : (brute ? "#ff2a2a" : "#f5e663")
+    let ee = runner ? "#ef4444" : (brute ? "#dc2626" : "#eab308")
+    let eo = brute ? 0.3 : 0.4
+    out.push({ id: id + "e1", type: "sphere", position: { x: hx + f.x * hr * 0.82 + r.x * hr * eo, y: hy + hr * 0.15, z: hz + f.z * hr * 0.82 + r.z * hr * eo }, radius: hr * 0.16, color: ec, emissive: ee, emissiveIntensity: 3.2, castShadow: false })
+    out.push({ id: id + "e2", type: "sphere", position: { x: hx + f.x * hr * 0.82 - r.x * hr * eo, y: hy + hr * 0.15, z: hz + f.z * hr * 0.82 - r.z * hr * eo }, radius: hr * 0.16, color: ec, emissive: ee, emissiveIntensity: 3.2, castShadow: false })
+  } else {
+    // A ragged stump.
+    out.push({ id: id + "n", type: "cylinder", position: { x: shX, y: shY + 0.06 * s, z: shZ }, radius: 0.08 * s, height: 0.12 * s, color: "#5a0f12", roughness: 1 })
   }
 
-  // --- TYPE 1: RUNNER (Feral Crimson Stalker) ---
-  if (z.type === 1) {
-    let hunchedY = 0.82 * s
-    // Spiny hunched torso
-    out.push({
-      id: id + "t",
-      type: "box",
-      position: { x: z.x - f.x * 0.1 * s, y: hunchedY, z: z.z - f.z * 0.1 * s },
-      rotation: { x: lean, y: d, z: 0 },
-      width: 0.48 * s,
-      height: 0.65 * s,
-      depth: 0.32 * s,
-      color: hue,
-      roughness: 0.8,
-      castShadow: true
-    })
-    // Dorsal spine ridge
-    out.push({
-      id: id + "spine",
-      type: "prism",
-      position: { x: z.x - f.x * 0.28 * s, y: hunchedY + 0.15 * s, z: z.z - f.z * 0.28 * s },
-      rotation: { x: lean, y: d, z: 0 },
-      width: 0.14 * s,
-      height: 0.45 * s,
-      depth: 0.2 * s,
-      color: "#450a0a"
-    })
-    // Feral snout skull
-    let headX = z.x + f.x * 0.32 * s
-    let headY = 1.35 * s
-    let headZ = z.z + f.z * 0.32 * s
-    out.push({
-      id: id + "h",
-      type: "box",
-      position: { x: headX, y: headY, z: headZ },
-      rotation: { x: lean * 1.3, y: d, z: 0 },
-      width: 0.38 * s,
-      height: 0.36 * s,
-      depth: 0.46 * s,
-      color: head,
-      roughness: 0.75,
-      castShadow: true
-    })
-    // Twin blazing demonic crimson eyes
-    out.push({
-      id: id + "e1",
-      type: "box",
-      position: { x: headX + r.x * 0.11 * s + f.x * 0.21 * s, y: headY + 0.05 * s, z: headZ + r.z * 0.11 * s + f.z * 0.21 * s },
-      rotation: { x: lean * 1.3, y: d, z: 0 },
-      width: 0.08 * s,
-      height: 0.06 * s,
-      depth: 0.05 * s,
-      color: "#ff3333",
-      emissive: "#ef4444",
-      emissiveIntensity: 3.5
-    })
-    out.push({
-      id: id + "e2",
-      type: "box",
-      position: { x: headX - r.x * 0.11 * s + f.x * 0.21 * s, y: headY + 0.05 * s, z: headZ - r.z * 0.11 * s + f.z * 0.21 * s },
-      rotation: { x: lean * 1.3, y: d, z: 0 },
-      width: 0.08 * s,
-      height: 0.06 * s,
-      depth: 0.05 * s,
-      color: "#ff3333",
-      emissive: "#ef4444",
-      emissiveIntensity: 3.5
-    })
-    // Fanged maw
-    out.push({
-      id: id + "jaw",
-      type: "box",
-      position: { x: headX + f.x * 0.2 * s, y: headY - 0.12 * s, z: headZ + f.z * 0.2 * s },
-      rotation: { x: lean * 1.3 + 0.2, y: d, z: 0 },
-      width: 0.24 * s,
-      height: 0.1 * s,
-      depth: 0.24 * s,
-      color: "#450a0a"
-    })
-    // Long reaching feral claw arms
-    out.push({
-      id: id + "a1",
-      type: "box",
-      position: { x: z.x + r.x * 0.32 * s + f.x * 0.38 * s, y: 0.95 * s + swing * 0.08, z: z.z + r.z * 0.32 * s + f.z * 0.38 * s },
-      rotation: { x: -0.9 + swing * 0.4, y: d, z: 0 },
-      width: 0.14 * s,
-      height: 0.72 * s,
-      depth: 0.14 * s,
-      color: hue,
-      castShadow: true
-    })
-    out.push({
-      id: id + "a2",
-      type: "box",
-      position: { x: z.x - r.x * 0.32 * s + f.x * 0.38 * s, y: 0.95 * s - swing * 0.08, z: z.z - r.z * 0.32 * s + f.z * 0.38 * s },
-      rotation: { x: -0.9 - swing * 0.4, y: d, z: 0 },
-      width: 0.14 * s,
-      height: 0.72 * s,
-      depth: 0.14 * s,
-      color: hue,
-      castShadow: true
-    })
-    // Low leaping crouch legs
-    out.push({
-      id: id + "l1",
-      type: "box",
-      position: { x: z.x + r.x * 0.16 * s + f.x * swing * 0.15 * s, y: 0.32 * s, z: z.z + r.z * 0.16 * s + f.z * swing * 0.15 * s },
-      rotation: { x: swing * 0.7, y: d, z: 0 },
-      width: 0.18 * s,
-      height: 0.65 * s,
-      depth: 0.2 * s,
-      color: cloth,
-      castShadow: true
-    })
-    out.push({
-      id: id + "l2",
-      type: "box",
-      position: { x: z.x - r.x * 0.16 * s - f.x * swing * 0.15 * s, y: 0.32 * s, z: z.z - r.z * 0.16 * s - f.z * swing * 0.15 * s },
-      rotation: { x: -swing * 0.7, y: d, z: 0 },
-      width: 0.18 * s,
-      height: 0.65 * s,
-      depth: 0.2 * s,
-      color: cloth,
-      castShadow: true
-    })
-    return
+  // Arms reach for you: raised and forward, the elbows a little bent, the
+  // hands opening and closing. The brute's hang heavy and swing.
+  let reach = z.state === "attack" ? 1.35 + 0.5 * Math.sin(attackPhase * Math.PI * 2) : (runner ? 1.05 : (brute ? 0.9 : 1.3))
+  let bend = runner ? 0.35 : (brute ? 0.55 : 0.25)
+  let armL = (brute ? 0.52 : 0.36) * s
+  if (brute) { armRad = 0.15 * s }
+  let handL = limbObjs(out, id + "aL", shX + r.x * torsoW * 0.5, shY - 0.04 * s, shZ + r.z * torsoW * 0.5, f, r, 1, reach + swing * 0.15 - fall * 0.4, bend + (z.state === "attack" ? 0.2 * Math.sin(attackPhase * 6.28) : 0), armL, armL * 0.95, armRad, skin, 0.12)
+  let handR = limbObjs(out, id + "aR", shX - r.x * torsoW * 0.5, shY - 0.04 * s, shZ - r.z * torsoW * 0.5, f, r, -1, reach - swing * 0.15 - fall * 0.4, bend, armL, armL * 0.95, armRad, skin, 0.12)
+  if (brute) {
+    // Fists like hams, bandaged, and a length of rebar in the right one.
+    out.push({ id: id + "fistL", type: "sphere", position: { x: handL.x, y: handL.y, z: handL.z }, radius: 0.13 * s, color: skin, roughness: 0.95, castShadow: true })
+    out.push({ id: id + "fistR", type: "sphere", position: { x: handR.x, y: handR.y, z: handR.z }, radius: 0.13 * s, color: skin, roughness: 0.95, castShadow: true })
+    out.push({ id: id + "wrapL", type: "cylinder", position: { x: handL.x - handL.dx * 0.16 * s, y: handL.y - handL.dy * 0.16 * s, z: handL.z - handL.dz * 0.16 * s }, rotation: dirRot(handL.dx, handL.dy, handL.dz), radius: 0.135 * s, height: 0.12 * s, color: "#a8a29e", roughness: 1 })
+    let cdx = f.x * 0.55 + r.x * 0.2, cdy = 0.8, cdz = f.z * 0.55 + r.z * 0.2
+    let cl = Math.sqrt(cdx * cdx + cdy * cdy + cdz * cdz)
+    cdx = cdx / cl; cdy = cdy / cl; cdz = cdz / cl
+    out.push({ id: id + "club", type: "cylinder", position: { x: handR.x + cdx * 0.3 * s, y: handR.y + cdy * 0.3 * s, z: handR.z + cdz * 0.3 * s }, rotation: dirRot(cdx, cdy, cdz), radius: 0.035 * s, height: 1.1 * s, color: "#5b4a3a", texture: "rust", metalness: 0.7, roughness: 0.6, castShadow: true })
+    out.push({ id: id + "clubk", type: "box", position: { x: handR.x + cdx * 0.8 * s, y: handR.y + cdy * 0.8 * s, z: handR.z + cdz * 0.8 * s }, rotation: dirRot(cdx, cdy, cdz), width: 0.16 * s, height: 0.22 * s, depth: 0.16 * s, color: "#3f444c", texture: "rust", metalness: 0.7, roughness: 0.5, castShadow: true })
+  }
+  // Claws: three small cones off each hand.
+  let ci = 0
+  while (ci < 3 && !brute) {
+    let off = (ci - 1) * 0.045 * s
+    out.push({ id: id + "cL" + ci, type: "cone", position: { x: handL.x + handL.dx * 0.06 * s + r.x * off, y: handL.y + handL.dy * 0.06 * s, z: handL.z + handL.dz * 0.06 * s + r.z * off }, rotation: dirRot(-handL.dx, -handL.dy, -handL.dz), radius: 0.012 * s, height: 0.07 * s, color: "#1f1a17" })
+    out.push({ id: id + "cR" + ci, type: "cone", position: { x: handR.x + handR.dx * 0.06 * s - r.x * off, y: handR.y + handR.dy * 0.06 * s, z: handR.z + handR.dz * 0.06 * s - r.z * off }, rotation: dirRot(-handR.dx, -handR.dy, -handR.dz), radius: 0.012 * s, height: 0.07 * s, color: "#1f1a17" })
+    ci = ci + 1
   }
 
-  // --- TYPE 2: BRUTE (Armored Behemoth) ---
-  if (z.type === 2) {
-    let chestY = 1.05 * s
-    // Massive armored chest & back
-    out.push({
-      id: id + "t",
-      type: "box",
-      position: { x: z.x, y: chestY, z: z.z },
-      rotation: { x: lean, y: d, z: 0 },
-      width: 0.9 * s,
-      height: 0.85 * s,
-      depth: 0.52 * s,
-      color: cloth,
-      roughness: 0.9,
-      castShadow: true
-    })
-    // Heavy steel shoulder armor pauldrons
-    out.push({
-      id: id + "shL",
-      type: "box",
-      position: { x: z.x + r.x * 0.54 * s, y: chestY + 0.35 * s, z: z.z + r.z * 0.54 * s },
-      rotation: { x: lean, y: d, z: -0.2 },
-      width: 0.34 * s,
-      height: 0.28 * s,
-      depth: 0.44 * s,
-      color: "#475569",
-      texture: "metal",
-      metalness: 0.7,
-      roughness: 0.4
-    })
-    out.push({
-      id: id + "shR",
-      type: "box",
-      position: { x: z.x - r.x * 0.54 * s, y: chestY + 0.35 * s, z: z.z - r.z * 0.54 * s },
-      rotation: { x: lean, y: d, z: 0.2 },
-      width: 0.34 * s,
-      height: 0.28 * s,
-      depth: 0.44 * s,
-      color: "#475569",
-      texture: "metal",
-      metalness: 0.7,
-      roughness: 0.4
-    })
-    // Armored skull with metal visor
-    let headX = z.x + f.x * 0.1 * s
-    let headY = 1.72 * s
-    let headZ = z.z + f.z * 0.1 * s
-    out.push({
-      id: id + "h",
-      type: "box",
-      position: { x: headX, y: headY, z: headZ },
-      rotation: { x: lean, y: d, z: 0 },
-      width: 0.5 * s,
-      height: 0.46 * s,
-      depth: 0.48 * s,
-      color: head,
-      roughness: 0.85,
-      castShadow: true
-    })
-    // Heavy iron forehead plate
-    out.push({
-      id: id + "helm",
-      type: "box",
-      position: { x: headX + f.x * 0.21 * s, y: headY + 0.12 * s, z: headZ + f.z * 0.21 * s },
-      rotation: { x: lean, y: d, z: 0 },
-      width: 0.46 * s,
-      height: 0.14 * s,
-      depth: 0.12 * s,
-      color: "#1e293b",
-      texture: "metal",
-      metalness: 0.8
-    })
-    // Piercing blood red eye slit
-    out.push({
-      id: id + "e",
-      type: "box",
-      position: { x: headX + f.x * 0.25 * s, y: headY + 0.02 * s, z: headZ + f.z * 0.25 * s },
-      rotation: { x: lean, y: d, z: 0 },
-      width: 0.36 * s,
-      height: 0.08 * s,
-      depth: 0.06 * s,
-      color: "#ff2222",
-      emissive: "#dc2626",
-      emissiveIntensity: 4.0
-    })
-    // Heavy reinforced club arms with iron knuckle bands
-    out.push({
-      id: id + "a1",
-      type: "box",
-      position: { x: z.x + r.x * 0.52 * s + f.x * 0.35 * s, y: 1.15 * s + swing * 0.05, z: z.z + r.z * 0.52 * s + f.z * 0.35 * s },
-      rotation: { x: -1.2 + swing * 0.25, y: d, z: 0 },
-      width: 0.28 * s,
-      height: 0.78 * s,
-      depth: 0.28 * s,
-      color: hue,
-      castShadow: true
-    })
-    out.push({
-      id: id + "a2",
-      type: "box",
-      position: { x: z.x - r.x * 0.52 * s + f.x * 0.35 * s, y: 1.15 * s - swing * 0.05, z: z.z - r.z * 0.52 * s + f.z * 0.35 * s },
-      rotation: { x: -1.2 - swing * 0.25, y: d, z: 0 },
-      width: 0.28 * s,
-      height: 0.78 * s,
-      depth: 0.28 * s,
-      color: hue,
-      castShadow: true
-    })
-    // Pillar legs
-    out.push({
-      id: id + "l1",
-      type: "box",
-      position: { x: z.x + r.x * 0.24 * s + f.x * swing * 0.1 * s, y: 0.36 * s, z: z.z + r.z * 0.24 * s + f.z * swing * 0.1 * s },
-      rotation: { x: swing * 0.45, y: d, z: 0 },
-      width: 0.3 * s,
-      height: 0.72 * s,
-      depth: 0.32 * s,
-      color: cloth,
-      castShadow: true
-    })
-    out.push({
-      id: id + "l2",
-      type: "box",
-      position: { x: z.x - r.x * 0.24 * s - f.x * swing * 0.1 * s, y: 0.36 * s, z: z.z - r.z * 0.24 * s - f.z * swing * 0.1 * s },
-      rotation: { x: -swing * 0.45, y: d, z: 0 },
-      width: 0.3 * s,
-      height: 0.72 * s,
-      depth: 0.32 * s,
-      color: cloth,
-      castShadow: true
-    })
-    return
+  // Legs: the walker drags one, the runner drives, the brute stomps.
+  let drag = (!runner && !brute) ? 0.25 : 0
+  let stride = runner ? 0.85 : (brute ? 0.4 : 0.45)
+  let kneeL = Math.max(0, -Math.cos(z.phase)) * (runner ? 1.1 : 0.6)
+  let kneeR = Math.max(0, Math.cos(z.phase)) * (runner ? 1.1 : 0.6) + drag
+  let legY = hipY + sy
+  let legLenU = legLen * 0.52, legLenL = legLen * 0.48
+  let footL = limbObjs(out, id + "lL", z.x + r.x * torsoW * 0.28, legY, z.z + r.z * torsoW * 0.28, f, r, 1, swing * stride * (1 - fall) + fall * 0.2, -kneeL * (1 - fall), legLenU, legLenL, legRad, cloth, 0.02)
+  let footR = limbObjs(out, id + "lR", z.x - r.x * torsoW * 0.28, legY, z.z - r.z * torsoW * 0.28, f, r, -1, -swing * stride * (1 - fall) + fall * 0.2 - drag * 0.5, -kneeR * (1 - fall), legLenU, legLenL, legRad, cloth, 0.02)
+  out.push({ id: id + "fL", type: "box", position: { x: footL.x + f.x * 0.06 * s, y: Math.max(0.04 * s + sy, footL.y - 0.02 * s), z: footL.z + f.z * 0.06 * s }, rotation: { x: 0, y: d, z: 0 }, width: 0.16 * s, height: 0.08 * s, depth: 0.3 * s, color: "#1c1917", roughness: 1 })
+  out.push({ id: id + "fR", type: "box", position: { x: footR.x + f.x * 0.06 * s, y: Math.max(0.04 * s + sy, footR.y - 0.02 * s), z: footR.z + f.z * 0.06 * s }, rotation: { x: 0, y: d, z: 0 }, width: 0.16 * s, height: 0.08 * s, depth: 0.3 * s, color: "#1c1917", roughness: 1 })
+  if (brute) {
+    out.push({ id: id + "shinL", type: "cylinder", position: { x: (footL.x + (z.x + r.x * torsoW * 0.28)) / 2, y: legY * 0.28 + sy, z: (footL.z + (z.z + r.z * torsoW * 0.28)) / 2 }, radius: legRad * 1.15, height: legLen * 0.3, color: "#a8a29e", roughness: 1 })
+    out.push({ id: id + "shinR", type: "cylinder", position: { x: (footR.x + (z.x - r.x * torsoW * 0.28)) / 2, y: legY * 0.28 + sy, z: (footR.z + (z.z - r.z * torsoW * 0.28)) / 2 }, radius: legRad * 1.15, height: legLen * 0.3, color: "#a8a29e", roughness: 1 })
   }
+  // Rags: a strip of cloth off the hip that swings.
+  if (!brute) {
+    out.push({ id: id + "rag", type: "box", position: { x: z.x - r.x * torsoW * 0.4 - f.x * 0.05 * s, y: legY - 0.25 * s, z: z.z - r.z * torsoW * 0.4 - f.z * 0.05 * s }, rotation: tiltRot(d, -0.3 + swing * 0.3), width: 0.12 * s, height: 0.5 * s, depth: 0.02 * s, color: cloth, roughness: 1, doubleSided: true })
+  }
+}
 
-  // --- TYPE 0: WALKER (Classic Rotting Infected Zombie) ---
-  // Torso with torn cloth
-  out.push({
-    id: id + "t",
-    type: "box",
-    position: { x: z.x, y: 1.0 * s, z: z.z },
-    rotation: { x: lean, y: d, z: 0 },
-    width: 0.58 * s,
-    height: 0.74 * s,
-    depth: 0.34 * s,
-    color: cloth,
-    roughness: 0.95,
-    castShadow: true
-  })
-  // Exposed chest rot
-  out.push({
-    id: id + "wound",
-    type: "box",
-    position: { x: z.x + f.x * 0.18 * s, y: 1.05 * s, z: z.z + f.z * 0.18 * s },
-    rotation: { x: lean, y: d, z: 0 },
-    width: 0.26 * s,
-    height: 0.28 * s,
-    depth: 0.04 * s,
-    color: "#450a0a"
-  })
-  // Head
-  let headX = z.x + f.x * 0.08 * s
-  let headY = 1.64 * s
-  let headZ = z.z + f.z * 0.08 * s
-  out.push({
-    id: id + "h",
-    type: "box",
-    position: { x: headX, y: headY, z: headZ },
-    rotation: { x: lean, y: d, z: 0 },
-    width: 0.44 * s,
-    height: 0.44 * s,
-    depth: 0.44 * s,
-    color: head,
-    roughness: 0.9,
-    castShadow: true
-  })
-  // Twin glowing zombie eyes
-  out.push({
-    id: id + "e1",
-    type: "box",
-    position: { x: headX + r.x * 0.12 * s + f.x * 0.23 * s, y: headY + 0.06 * s, z: headZ + r.z * 0.12 * s + f.z * 0.23 * s },
-    rotation: { x: lean, y: d, z: 0 },
-    width: 0.08 * s,
-    height: 0.06 * s,
-    depth: 0.04 * s,
-    color: "#fef08a",
-    emissive: "#eab308",
-    emissiveIntensity: 2.8
-  })
-  out.push({
-    id: id + "e2",
-    type: "box",
-    position: { x: headX - r.x * 0.12 * s + f.x * 0.23 * s, y: headY + 0.06 * s, z: headZ - r.z * 0.12 * s + f.z * 0.23 * s },
-    rotation: { x: lean, y: d, z: 0 },
-    width: 0.08 * s,
-    height: 0.06 * s,
-    depth: 0.04 * s,
-    color: "#fef08a",
-    emissive: "#eab308",
-    emissiveIntensity: 2.8
-  })
-  // Rotting teeth / jaw
-  out.push({
-    id: id + "jaw",
-    type: "box",
-    position: { x: headX + f.x * 0.2 * s, y: headY - 0.13 * s, z: headZ + f.z * 0.2 * s },
-    rotation: { x: lean + 0.15, y: d, z: 0 },
-    width: 0.28 * s,
-    height: 0.12 * s,
-    depth: 0.16 * s,
-    color: "#2a1515"
-  })
-  // Reaching arms
-  out.push({
-    id: id + "a1",
-    type: "box",
-    position: { x: z.x + r.x * 0.38 * s + f.x * 0.34 * s, y: 1.24 * s + swing * 0.05, z: z.z + r.z * 0.38 * s + f.z * 0.34 * s },
-    rotation: { x: -1.35 + swing * 0.3, y: d, z: 0 },
-    width: 0.16 * s,
-    height: 0.65 * s,
-    depth: 0.16 * s,
-    color: hue,
-    castShadow: true
-  })
-  out.push({
-    id: id + "a2",
-    type: "box",
-    position: { x: z.x - r.x * 0.38 * s + f.x * 0.34 * s, y: 1.24 * s - swing * 0.05, z: z.z - r.z * 0.38 * s + f.z * 0.34 * s },
-    rotation: { x: -1.35 - swing * 0.3, y: d, z: 0 },
-    width: 0.16 * s,
-    height: 0.65 * s,
-    depth: 0.16 * s,
-    color: hue,
-    castShadow: true
-  })
-  // Shuffling legs
-  out.push({
-    id: id + "l1",
-    type: "box",
-    position: { x: z.x + r.x * 0.15 * s + f.x * swing * 0.12 * s, y: 0.34 * s, z: z.z + r.z * 0.15 * s + f.z * swing * 0.12 * s },
-    rotation: { x: swing * 0.6, y: d, z: 0 },
-    width: 0.22 * s,
-    height: 0.68 * s,
-    depth: 0.24 * s,
-    color: cloth,
-    castShadow: true
-  })
-  out.push({
-    id: id + "l2",
-    type: "box",
-    position: { x: z.x - r.x * 0.15 * s - f.x * swing * 0.12 * s, y: 0.34 * s, z: z.z - r.z * 0.15 * s - f.z * swing * 0.12 * s },
-    rotation: { x: -swing * 0.6, y: d, z: 0 },
-    width: 0.22 * s,
-    height: 0.68 * s,
-    depth: 0.24 * s,
-    color: cloth,
-    castShadow: true
-  })
+// ---- Weapons in hand ------------------------------------------------------------
+// Camera space: x right, y up, z toward the eye (negative is ahead). Both
+// guns are held in a right hand with a left hand for support; the parts
+// that move (a slide, a magazine, a fore-end, shells) move for real.
+
+function gpart(out, id, x, y, z, w, h, dp, color, extra) {
+  let o = { id: id, type: "box", attach: "camera", position: { x: x, y: y, z: z }, width: w, height: h, depth: dp, color: color, roughness: 0.4, metalness: 0.6 }
+  if (extra) {
+    if (extra.rot) { o.rotation = extra.rot }
+    if (extra.type) { o.type = extra.type }
+    if (extra.radius !== undefined) { o.radius = extra.radius }
+    if (extra.height !== undefined) { o.height = extra.height }
+    if (extra.tube !== undefined) { o.tube = extra.tube }
+    if (extra.rough !== undefined) { o.roughness = extra.rough }
+    if (extra.metal !== undefined) { o.metalness = extra.metal }
+    if (extra.texture) { o.texture = extra.texture }
+    if (extra.emissive) { o.emissive = extra.emissive; o.emissiveIntensity = extra.emissiveIntensity || 1 }
+    if (extra.opacity !== undefined) { o.opacity = extra.opacity }
+  }
+  out.push(o)
+}
+
+// XYZ Euler <-> quaternion, the same conventions as the renderer.
+function eulerQuat(x, y, z) {
+  let c1 = Math.cos(x / 2), c2 = Math.cos(y / 2), c3 = Math.cos(z / 2)
+  let s1 = Math.sin(x / 2), s2 = Math.sin(y / 2), s3 = Math.sin(z / 2)
+  return { x: s1 * c2 * c3 + c1 * s2 * s3, y: c1 * s2 * c3 - s1 * c2 * s3, z: c1 * c2 * s3 + s1 * s2 * c3, w: c1 * c2 * c3 - s1 * s2 * s3 }
+}
+function quatMul(a, b) {
+  return { x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w, w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z }
+}
+function quatEuler(q) {
+  let x = q.x, y = q.y, z = q.z, w = q.w
+  let m11 = 1 - 2 * (y * y + z * z), m12 = 2 * (x * y - w * z), m13 = 2 * (x * z + w * y)
+  let m22 = 1 - 2 * (x * x + z * z), m23 = 2 * (y * z - w * x)
+  let m32 = 2 * (y * z + w * x), m33 = 1 - 2 * (x * x + y * y)
+  let ey = Math.asin(Math.max(-1, Math.min(1, m13)))
+  if (Math.abs(m13) < 0.9999999) { return { x: Math.atan2(-m23, m33), y: ey, z: Math.atan2(-m12, m11) } }
+  return { x: Math.atan2(m32, m22), y: ey, z: 0 }
+}
+
+let SKIN = "#c99a76"
+let SLEEVE = "#2f3a33"
+let GUNMETAL = "#2c3037"
+let GUNDARK = "#16181c"
+let WOOD = "#4a2f1a"
+
+// A hand: a rounded palm, a knuckle ridge, three capsule fingers curled
+// round whatever is held, a thumb, a wrist and a forearm in a sleeve.
+// `curl` 0..1 closes the fingers; `dir` mirrors the thumb for the left hand.
+function handObjs(part, id, x, y, z, rot, curl, dir) {
+  let sgn = dir || 1
+  part(id + "p", x, y, z, 0.048, 0.058, 0.05, SKIN, { rot: rot, rough: 0.85, metal: 0 })
+  part(id + "k", x - 0.01 * sgn, y + 0.022, z - 0.02, 0.02, 0.02, 0.02, SKIN, { type: "sphere", radius: 0.017, rot: rot, rough: 0.85, metal: 0 })
+  let k = 0
+  while (k < 3) {
+    part(id + "f" + k, x - 0.026 * sgn, y + 0.02 - k * 0.018, z - 0.022 + curl * 0.008, 0.012, 0.012, 0.012, SKIN, { type: "capsule", radius: 0.0075, height: 0.05, rot: { x: rot.x + 0.2 + 0.5 * curl, y: rot.y, z: rot.z + (1.35 * sgn) }, rough: 0.85, metal: 0 })
+    k = k + 1
+  }
+  part(id + "t", x + 0.022 * sgn, y + 0.03, z - 0.004, 0.012, 0.012, 0.012, SKIN, { type: "capsule", radius: 0.0075, height: 0.04, rot: { x: rot.x + 0.4, y: rot.y, z: rot.z - 0.6 * sgn }, rough: 0.85, metal: 0 })
+  part(id + "w", x, y - 0.03, z + 0.03, 0.02, 0.02, 0.02, SKIN, { type: "sphere", radius: 0.019, rot: rot, rough: 0.85, metal: 0 })
+}
+function armObjs(part, id, x, y, z, rot) {
+  part(id, x, y, z, 0.06, 0.06, 0.06, SLEEVE, { type: "capsule", radius: 0.036, height: 0.26, rot: rot, rough: 0.95, metal: 0 })
+  part(id + "c", x, y, z, 0.06, 0.06, 0.06, "#1f2724", { type: "cylinder", radius: 0.04, height: 0.03, rot: rot, rough: 1, metal: 0 })
 }
 
 function weaponObjs(out) {
   let kick = recoil
-  let sway = Math.sin(bobPhase) * 0.006
+  let w = weapons[weaponIdx]
+  let rp = reloadTicks > 0 ? 1 - reloadTicks / w.reload : -1
+  let moving = (vx * vx + vz * vz) > 1
+  let sprinting = moving && !!(window.__dhKeys && window.__dhKeys.sprint)
+  // Breathing: a slow figure of eight; walking: a bob in time with the feet.
+  let swayX = Math.sin(bobPhase * 0.35) * 0.004 + (moving ? Math.sin(bobPhase) * 0.012 : 0)
+  let swayY = Math.sin(bobPhase * 0.7) * 0.003 + (moving ? -Math.abs(Math.cos(bobPhase)) * 0.012 : 0)
+  // Swapping: the old one drops out, the new one comes up.
+  let rise = 0
+  if (swapTicks > 0) { rise = -0.45 * Math.sin((swapTicks / 10) * Math.PI * 0.5) }
+  // Whole-gun pose: held low and to the right, turned a touch inward, with
+  // recoil (back, up, a twist), a sprint carry, and a tilt while reloading.
+  let big = weaponIdx === 1
+  let bx = (big ? 0.2 : 0.23) + swayX
+  let by = (big ? -0.23 : -0.21) + swayY + kick * 0.14 + rise
+  let bz = (big ? -0.5 : -0.46) + kick * 0.45
+  let rx = -kick * 1.6
+  let ry = (big ? -0.16 : -0.1) + kick * 0.35
+  let rz = -0.04 - kick * 0.5
+  if (sprinting) { rx = rx + 0.35; ry = ry - 0.3; by = by - 0.06; bx = bx + 0.02 }
+  if (rp >= 0) {
+    let tilt = Math.sin(Math.min(1, rp * 1.25) * Math.PI)
+    rx = rx + (big ? 0.12 : 0.28) * tilt
+    ry = ry - (big ? 0.25 : 0.3) * tilt
+    rz = rz - (big ? 0.85 : 0.5) * tilt
+    by = by + (big ? 0.02 : -0.06) * tilt
+    bx = bx - (big ? 0.05 : 0.03) * tilt
+  }
+  let rot = { x: rx, y: ry, z: rz }
+  // Parts are placed in the gun's own frame and rotated by the gun pose, so
+  // a tilted gun keeps its slide on top.
+  function P(lx, ly, lz) {
+    let x1 = lx * Math.cos(rz) - ly * Math.sin(rz), y1 = lx * Math.sin(rz) + ly * Math.cos(rz), z1 = lz
+    let x2 = x1 * Math.cos(ry) + z1 * Math.sin(ry), z2 = -x1 * Math.sin(ry) + z1 * Math.cos(ry), y2 = y1
+    let y3 = y2 * Math.cos(rx) - z2 * Math.sin(rx), z3 = y2 * Math.sin(rx) + z2 * Math.cos(rx)
+    return { x: bx + x2, y: by + y3, z: bz + z3 }
+  }
+  function part(id, lx, ly, lz, pw, ph, pd, color, extra) {
+    let p = P(lx, ly, lz)
+    let ex = extra || {}
+    if (!ex.rot) { ex.rot = rot }
+    gpart(out, id, p.x, p.y, p.z, pw, ph, pd, color, ex)
+  }
+  // A part turned within the gun's frame: the gun pose times the local turn,
+  // composed as quaternions and handed back as the XYZ Euler the engine
+  // reads. Adding the angles only works while the gun is level.
+  let gq = eulerQuat(rx, ry, rz)
+  function R(ax, ay, az) { return quatEuler(quatMul(gq, eulerQuat(ax, ay, az))) }
+  // Along the barrel: a cylinder's axis is y, so it lies along z when turned
+  // by a quarter turn about x; a ring (torus) around the barrel the same way.
+  let ALONG = R(Math.PI / 2, 0, 0)
+
   if (weaponIdx === 0) {
-    out.push({ id: "gunA", type: "box", attach: "camera", position: { x: 0.27 + sway, y: -0.22 + kick * 0.2, z: -0.55 + kick * 0.6 }, rotation: { x: -kick * 1.4, y: 0, z: 0 }, width: 0.035, height: 0.05, depth: 0.2, color: "#2b2e34", metalness: 0.6, roughness: 0.35 })
-    out.push({ id: "gunB", type: "box", attach: "camera", position: { x: 0.27 + sway, y: -0.285 + kick * 0.2, z: -0.48 + kick * 0.6 }, rotation: { x: 0.35 - kick * 1.4, y: 0, z: 0 }, width: 0.032, height: 0.1, depth: 0.05, color: "#4a3626", roughness: 0.8 })
+    // ---- Pistol. Slide with a rounded top rib, rear cocking grooves and an
+    // ejection port; frame with a rail and a rounded trigger guard; a grip
+    // raked back with chequered panels; a magazine with a baseplate.
+    let slideBack = kick * 0.34
+    if (rp >= 0 && rp > 0.74) { slideBack = 0.036 * Math.sin((rp - 0.74) / 0.26 * Math.PI) }
+    let magY = 0
+    let magTilt = 0
+    let handDown = 0
+    if (rp >= 0) {
+      if (rp < 0.32) { let u = rp / 0.32; magY = -0.32 * u * u; magTilt = 0.6 * u; handDown = u }
+      else if (rp < 0.68) { let u = (rp - 0.32) / 0.36; magY = -0.32 * (1 - u) * (1 - u); handDown = 1 - u }
+      else if (rp < 0.74) { magY = 0.006 * Math.sin((rp - 0.68) / 0.06 * Math.PI) }
+    }
+    let sb = slideBack
+    part("gSlide", 0, 0.03, -0.045 + sb, 0.036, 0.03, 0.21, GUNMETAL, { rough: 0.35, metal: 0.8, texture: "metal" })
+    part("gSlideRib", 0, 0.047, -0.045 + sb, 0.02, 0.02, 0.2, GUNMETAL, { type: "cylinder", height: 0.2, radius: 0.011, rot: ALONG, rough: 0.3, metal: 0.85 })
+    part("gSlideNose", 0, 0.03, -0.152 + sb, 0.03, 0.03, 0.012, GUNDARK, { type: "cylinder", radius: 0.0125, height: 0.012, rot: ALONG, rough: 0.4, metal: 0.8 })
+    part("gPort", 0.0185, 0.036, -0.005 + sb, 0.002, 0.014, 0.04, "#090a0c")
+    let k = 0
+    while (k < 6) {
+      part("gSer" + k, 0.0182, 0.028, 0.02 + k * 0.007 + sb, 0.001, 0.022, 0.0025, "#0c0e11")
+      part("gSel" + k, -0.0182, 0.028, 0.02 + k * 0.007 + sb, 0.001, 0.022, 0.0025, "#0c0e11")
+      k = k + 1
+    }
+    part("gBarrel", 0, 0.03, -0.165 + sb * 0.25, 0.014, 0.014, 0.03, "#3b3f47", { type: "cylinder", height: 0.03, radius: 0.0075, rot: ALONG, metal: 0.9, rough: 0.25 })
+    part("gMuzzle", 0, 0.03, -0.172, 0.01, 0.01, 0.006, "#050607", { type: "cylinder", height: 0.006, radius: 0.005, rot: ALONG })
+    part("gSightF", 0, 0.058, -0.14 + sb, 0.004, 0.008, 0.006, "#4ade80", { emissive: "#22c55e", emissiveIntensity: 1.2, metal: 0 })
+    part("gSightR", 0, 0.056, 0.05 + sb, 0.02, 0.006, 0.008, GUNDARK, { metal: 0.8 })
+    part("gSightR1", -0.007, 0.06, 0.05 + sb, 0.004, 0.004, 0.004, "#4ade80", { emissive: "#22c55e", emissiveIntensity: 0.8, metal: 0 })
+    part("gSightR2", 0.007, 0.06, 0.05 + sb, 0.004, 0.004, 0.004, "#4ade80", { emissive: "#22c55e", emissiveIntensity: 0.8, metal: 0 })
+    part("gHammer", 0, 0.03, 0.064 + sb * 0.6, 0.01, 0.01, 0.01, GUNDARK, { type: "capsule", radius: 0.005, height: 0.024, rot: R(-0.4 - sb * 8, 0, 0), metal: 0.8 })
+    part("gFrame", 0, 0.004, -0.04, 0.032, 0.024, 0.19, GUNDARK, { rough: 0.55, metal: 0.4 })
+    part("gRail", 0, -0.012, -0.1, 0.028, 0.01, 0.06, GUNDARK, { metal: 0.6 })
+    part("gRailA", 0, -0.019, -0.115, 0.028, 0.004, 0.006, "#3b3f47", { metal: 0.7 })
+    part("gRailB", 0, -0.019, -0.1, 0.028, 0.004, 0.006, "#3b3f47", { metal: 0.7 })
+    part("gRailC", 0, -0.019, -0.085, 0.028, 0.004, 0.006, "#3b3f47", { metal: 0.7 })
+    part("gGuard", 0, -0.028, 0.0, 0.02, 0.02, 0.02, GUNDARK, { type: "torus", radius: 0.02, tube: 0.004, rot: R(0, Math.PI / 2, 0), metal: 0.5, rough: 0.5 })
+    part("gTrig", 0, -0.026, 0.008, 0.005, 0.005, 0.005, "#b8bec8", { type: "capsule", radius: 0.003, height: 0.02, rot: R(0.25 + kick * 3, 0, 0), metal: 0.9, rough: 0.3 })
+    part("gGrip", 0, -0.058, 0.048, 0.03, 0.1, 0.044, GUNDARK, { rot: R(0.3, 0, 0), rough: 0.6, metal: 0.3 })
+    part("gGripL", -0.0165, -0.056, 0.052, 0.003, 0.078, 0.034, "#3f3a33", { rot: R(0.3, 0, 0), rough: 1, metal: 0, texture: "dots" })
+    part("gGripR", 0.0165, -0.056, 0.052, 0.003, 0.078, 0.034, "#3f3a33", { rot: R(0.3, 0, 0), rough: 1, metal: 0, texture: "dots" })
+    part("gBeaver", 0, -0.014, 0.08, 0.03, 0.012, 0.028, GUNDARK, { rot: R(0.3, 0, 0), metal: 0.5 })
+    // The magazine: seated, falling out, or on its way back in.
+    let mz = 0.066 + Math.max(0, -magY) * 0.4
+    part("gMag", 0, -0.11 + magY, mz, 0.024, 0.05, 0.036, "#1c1f24", { rot: R(0.3 + magTilt, 0, 0), metal: 0.7, rough: 0.35, texture: "metal" })
+    part("gMagB", 0, -0.137 + magY, mz + 0.01, 0.03, 0.008, 0.044, GUNDARK, { rot: R(0.3 + magTilt, 0, 0), metal: 0.6 })
+    // Right hand round the grip, forearm off to the lower right.
+    handObjs(part, "hR", 0.0, -0.072, 0.062, R(0.3, 0, 0), 1, 1)
+    armObjs(part, "aR", 0.045, -0.2, 0.2, R(1.0, -0.2, 0.15))
+    // Left hand: cupping the grip, fetching the magazine, or racking the slide.
+    if (rp >= 0 && rp < 0.68) {
+      let lx = -0.03 - 0.03 * handDown, ly = -0.118 + magY - 0.05 * handDown, lz = 0.07 + 0.05 * handDown
+      handObjs(part, "hL", lx, ly, lz, R(0.3 + magTilt * 0.5, 0.3 * handDown, 0.4), 0.6, -1)
+      armObjs(part, "aL", lx - 0.07, ly - 0.16, lz + 0.14, R(1.0, 0.3, 0.55))
+    } else if (rp >= 0.74) {
+      handObjs(part, "hL", -0.012, 0.062, 0.03 + sb, R(0.1, 0, 1.3), 0.9, -1)
+      armObjs(part, "aL", -0.09, -0.09, 0.15 + sb, R(0.9, 0.2, 0.7))
+    } else {
+      handObjs(part, "hL", -0.034, -0.086, 0.066, R(0.3, 0.1, 0.4), 0.8, -1)
+      armObjs(part, "aL", -0.11, -0.22, 0.2, R(1.0, 0.1, 0.55))
+    }
   } else {
-    out.push({ id: "gunA", type: "box", attach: "camera", position: { x: 0.26 + sway, y: -0.21 + kick * 0.15, z: -0.62 + kick * 0.6 }, rotation: { x: -kick * 1.1, y: 0, z: 0 }, width: 0.034, height: 0.04, depth: 0.42, color: "#23262b", metalness: 0.6, roughness: 0.3 })
-    out.push({ id: "gunB", type: "box", attach: "camera", position: { x: 0.26 + sway, y: -0.245 + kick * 0.15, z: -0.5 + kick * 0.6 }, rotation: { x: -kick * 1.1, y: 0, z: 0 }, width: 0.05, height: 0.06, depth: 0.16, color: "#5c3d24", roughness: 0.8 })
-    out.push({ id: "gunC", type: "box", attach: "camera", position: { x: 0.26 + sway, y: -0.3 + kick * 0.15, z: -0.36 + kick * 0.6 }, rotation: { x: 0.5, y: 0, z: 0 }, width: 0.04, height: 0.12, depth: 0.06, color: "#4a3320", roughness: 0.8 })
+    // ---- Pump shotgun. A rounded receiver with a loading port and ejection
+    // port, a barrel under a ringed heat shield, a magazine tube, a ribbed
+    // pump, a raked grip and a stock with a side-saddle of hulls.
+    let pump = 0
+    if (pumpTicks > 0) { pump = 0.085 * Math.sin((1 - pumpTicks / 18) * Math.PI) }
+    let need = w.mag - ammo[weaponIdx]
+    let total = Math.max(1, Math.min(need, reserve[weaponIdx] > 0 ? reserve[weaponIdx] : 1))
+    let shellProg = -1
+    if (rp >= 0) {
+      let loadSpan = 0.78
+      if (rp < loadSpan) { shellProg = (rp / loadSpan * total) % 1 }
+      else { pump = 0.085 * Math.sin((rp - loadSpan) / 0.22 * Math.PI) }
+    }
+    part("sRecv", 0, 0.0, 0.03, 0.046, 0.056, 0.22, GUNMETAL, { rough: 0.35, metal: 0.8, texture: "metal" })
+    part("sRecvTop", 0, 0.02, 0.05, 0.02, 0.02, 0.16, GUNMETAL, { type: "cylinder", height: 0.16, radius: 0.017, rot: ALONG, rough: 0.3, metal: 0.85 })
+    part("sEject", 0.0235, 0.008, -0.02, 0.002, 0.026, 0.06, "#090a0c")
+    part("sLoad", 0, -0.029, 0.0, 0.026, 0.002, 0.06, "#090a0c")
+    part("sBarrel", 0, 0.026, -0.33, 0.02, 0.02, 0.5, "#23262b", { type: "cylinder", height: 0.5, radius: 0.011, rot: ALONG, metal: 0.85, rough: 0.3 })
+    part("sMuzzle", 0, 0.026, -0.582, 0.02, 0.02, 0.012, GUNDARK, { type: "cylinder", height: 0.012, radius: 0.0125, rot: ALONG, metal: 0.8 })
+    part("sBore", 0, 0.026, -0.589, 0.01, 0.01, 0.004, "#050607", { type: "cylinder", height: 0.004, radius: 0.0085, rot: ALONG })
+    let k = 0
+    part("sShield", 0, 0.026, -0.27, 0.02, 0.02, 0.22, "#33373e", { type: "cylinder", height: 0.22, radius: 0.0145, rot: ALONG, metal: 0.8, rough: 0.35 })
+    while (k < 6) { part("sSlot" + k, 0, 0.042, -0.19 - k * 0.03, 0.007, 0.004, 0.016, "#0a0b0d"); part("sSlotR" + k, 0.0125, 0.03, -0.19 - k * 0.03, 0.004, 0.006, 0.016, "#0a0b0d"); k = k + 1 }
+    part("sTube", 0, -0.008, -0.3, 0.02, 0.02, 0.44, "#2a2d33", { type: "cylinder", height: 0.44, radius: 0.0115, rot: ALONG, metal: 0.8, rough: 0.35 })
+    part("sTubeCap", 0, -0.008, -0.522, 0.02, 0.02, 0.014, "#3b3f47", { type: "cylinder", height: 0.014, radius: 0.014, rot: ALONG, metal: 0.85 })
+    part("sFore", 0, -0.008, -0.24 + pump, 0.05, 0.05, 0.16, WOOD, { type: "cylinder", radius: 0.024, height: 0.15, rot: ALONG, rough: 0.8, metal: 0.05, texture: "wood" })
+    k = 0
+    while (k < 5) { part("sRib" + k, 0, -0.008, -0.29 + k * 0.025 + pump, 0.02, 0.02, 0.02, "#2a1a0e", { type: "torus", radius: 0.024, tube: 0.0025, rot: R(0, 0, 0), rough: 0.9, metal: 0 }); k = k + 1 }
+    part("sBead", 0, 0.04, -0.575, 0.006, 0.006, 0.006, "#fbbf24", { type: "sphere", radius: 0.004, emissive: "#fbbf24", emissiveIntensity: 1.2, metal: 0 })
+    part("sGuard", 0, -0.036, 0.055, 0.02, 0.02, 0.02, GUNDARK, { type: "torus", radius: 0.022, tube: 0.004, rot: R(0, Math.PI / 2, 0), metal: 0.5, rough: 0.5 })
+    part("sTrig", 0, -0.03, 0.06, 0.005, 0.005, 0.005, "#b8bec8", { type: "capsule", radius: 0.003, height: 0.022, rot: R(0.25 + kick * 3, 0, 0), metal: 0.9, rough: 0.3 })
+    part("sGripW", 0, -0.046, 0.125, 0.038, 0.075, 0.06, WOOD, { rot: R(0.55, 0, 0), rough: 0.8, metal: 0.05, texture: "wood" })
+    part("sStock", 0, -0.03, 0.245, 0.04, 0.078, 0.2, WOOD, { rot: R(0.16, 0, 0), rough: 0.8, metal: 0.05, texture: "wood" })
+    part("sStockTop", 0, 0.008, 0.2, 0.038, 0.02, 0.12, WOOD, { rot: R(0.05, 0, 0), rough: 0.8, metal: 0.05, texture: "wood" })
+    part("sPad", 0, -0.04, 0.35, 0.042, 0.09, 0.018, "#1c1917", { rot: R(0.16, 0, 0), rough: 1, metal: 0 })
+    part("sSaddle", 0.024, -0.02, 0.24, 0.006, 0.03, 0.14, GUNDARK, { rot: R(0.16, 0, 0), metal: 0.6 })
+    let held = Math.min(4, Math.max(0, reserve[weaponIdx]))
+    k = 0
+    while (k < 4) {
+      let col = k < held ? "#b91c1c" : "#2a2d33"
+      part("sSad" + k, 0.03, -0.02, 0.195 + k * 0.03, 0.02, 0.02, 0.02, col, { type: "cylinder", radius: 0.0095, height: 0.058, rot: R(Math.PI / 2 + 0.16, 0, 0), rough: 0.6, metal: 0.2 })
+      if (k < held) { part("sSadB" + k, 0.03, -0.02, 0.222 + k * 0.03, 0.02, 0.02, 0.02, "#d4a72c", { type: "cylinder", radius: 0.0098, height: 0.012, rot: R(Math.PI / 2 + 0.16, 0, 0), rough: 0.3, metal: 0.8 }) }
+      k = k + 1
+    }
+    // Right hand on the grip, forearm off to the lower right; left hand on
+    // the pump, or bringing a hull up in an arc and pushing it into the port.
+    handObjs(part, "hR", 0.0, -0.064, 0.118, R(0.55, 0, 0), 1, 1)
+    armObjs(part, "aR", 0.05, -0.19, 0.27, R(0.95, -0.2, 0.15))
+    if (shellProg >= 0) {
+      let lift = Math.min(1, shellProg / 0.55)
+      let push = Math.max(0, (shellProg - 0.55) / 0.45)
+      let sy0 = -0.2 + 0.15 * Math.sin(lift * Math.PI * 0.5) + push * 0.02
+      let sx0 = 0.075 - push * 0.075
+      let sz0 = 0.02
+      if (push < 0.95) {
+        part("sShell", sx0, sy0, sz0, 0.02, 0.02, 0.02, "#b91c1c", { type: "cylinder", radius: 0.0095, height: 0.058, rot: ALONG, rough: 0.6, metal: 0.2 })
+        part("sShellB", sx0, sy0, sz0 + 0.028, 0.02, 0.02, 0.02, "#d4a72c", { type: "cylinder", radius: 0.0098, height: 0.012, rot: ALONG, rough: 0.3, metal: 0.8 })
+      }
+      handObjs(part, "hL", sx0 + 0.006, sy0 - 0.036, sz0 - 0.03, R(0.2, 0, 0.5), 0.7, -1)
+      armObjs(part, "aL", sx0 - 0.06, sy0 - 0.19, sz0 + 0.1, R(1.0, 0.2, 0.5))
+    } else {
+      handObjs(part, "hL", -0.004, -0.046, -0.235 + pump, R(0.15, 0, 0.15), 0.9, -1)
+      armObjs(part, "aL", -0.07, -0.17, -0.09 + pump, R(0.8, 0, 0.4))
+    }
   }
   if (flashTicks > 0) {
-    out.push({ id: "flash", type: "sphere", attach: "camera", position: { x: 0.27, y: -0.2, z: -0.72 }, radius: weaponIdx === 1 ? 0.07 : 0.045, color: "#fff2b0", emissive: "#ffd27a", emissiveIntensity: 3, opacity: 0.9 })
+    let m = P(0, big ? 0.026 : 0.03, big ? -0.6 : -0.19)
+    out.push({ id: "flash", type: "sphere", attach: "camera", position: { x: m.x, y: m.y, z: m.z }, radius: big ? 0.09 : 0.05, color: "#fff2b0", emissive: "#ffd27a", emissiveIntensity: 4, opacity: 0.9 })
+    out.push({ id: "flash2", type: "cone", attach: "camera", position: { x: m.x, y: m.y, z: m.z - (big ? 0.12 : 0.08) }, rotation: { x: -Math.PI / 2 + rx, y: ry, z: rz }, radius: big ? 0.06 : 0.035, height: big ? 0.26 : 0.16, color: "#ffe28a", emissive: "#ffb347", emissiveIntensity: 3, opacity: 0.7 })
+    out.push({ id: "flash3", type: "sphere", attach: "camera", position: { x: m.x, y: m.y, z: m.z - 0.02 }, radius: big ? 0.16 : 0.1, color: "#ffb347", emissive: "#ff8c2a", emissiveIntensity: 1.5, opacity: 0.25 })
   }
 }
 
 function composeObjects() {
   let out = []
   if (started) { weaponObjs(out) }
+  decalObjs(out)
   let i = 0
   while (i < zombies.length) { zombieObjs(out, zombies[i]); i = i + 1 }
+  if (!started) { i = 0; while (i < showcase.length) { zombieObjs(out, showcase[i]); i = i + 1 } }
   i = 0
   while (i < pickups.length) {
     let p = pickups[i]
     let bobY = 0.35 + Math.sin(p.age * 0.12) * 0.06
     if (p.kind === "shells") {
-      out.push({ id: "pk" + p.id, type: "box", position: { x: p.x, y: bobY, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.42, height: 0.28, depth: 0.3, color: "#b23a2a", emissive: "#ff6b3d", emissiveIntensity: 0.35 })
+      out.push({ id: "pk" + p.id, type: "box", position: { x: p.x, y: bobY, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.42, height: 0.28, depth: 0.3, color: "#b23a2a", emissive: "#ff6b3d", emissiveIntensity: 0.5, texture: "wood" })
+      out.push({ id: "pk" + p.id + "l", type: "box", position: { x: p.x, y: bobY + 0.02, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.44, height: 0.06, depth: 0.32, color: "#fde68a", emissive: "#fbbf24", emissiveIntensity: 0.8 })
     } else {
-      out.push({ id: "pk" + p.id, type: "box", position: { x: p.x, y: bobY, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.4, height: 0.24, depth: 0.32, color: "#f2f5f8", emissive: "#4ade80", emissiveIntensity: 0.35 })
-      out.push({ id: "pk" + p.id + "x", type: "box", position: { x: p.x, y: bobY + 0.125, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.22, height: 0.02, depth: 0.06, color: "#dc2626" })
-      out.push({ id: "pk" + p.id + "y", type: "box", position: { x: p.x, y: bobY + 0.125, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.06, height: 0.02, depth: 0.22, color: "#dc2626" })
+      out.push({ id: "pk" + p.id, type: "box", position: { x: p.x, y: bobY, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.4, height: 0.24, depth: 0.32, color: "#f2f5f8", emissive: "#4ade80", emissiveIntensity: 0.45 })
+      out.push({ id: "pk" + p.id + "x", type: "box", position: { x: p.x, y: bobY + 0.125, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.22, height: 0.02, depth: 0.06, color: "#dc2626", emissive: "#dc2626", emissiveIntensity: 0.8 })
+      out.push({ id: "pk" + p.id + "y", type: "box", position: { x: p.x, y: bobY + 0.125, z: p.z }, rotation: { x: 0, y: p.age * 0.03, z: 0 }, width: 0.06, height: 0.02, depth: 0.22, color: "#dc2626", emissive: "#dc2626", emissiveIntensity: 0.8 })
     }
+    // A soft ring of light on the ground under it.
+    out.push({ id: "pk" + p.id + "r", type: "ring", position: { x: p.x, y: 0.03, z: p.z }, rotation: { x: -Math.PI / 2, y: 0, z: 0 }, radius: 0.5 + 0.05 * Math.sin(p.age * 0.12), color: p.kind === "shells" ? "#ff6b3d" : "#4ade80", emissive: p.kind === "shells" ? "#ff6b3d" : "#4ade80", emissiveIntensity: 0.9, opacity: 0.35, castShadow: false })
     i = i + 1
   }
   i = 0
   while (i < particles.length) {
     let p = particles[i]
-    out.push({ id: "p" + i, type: "box", position: { x: p.x, y: p.y, z: p.z }, width: p.size, height: p.size, depth: p.size, color: p.color, roughness: 1 })
+    if (p.casing) {
+      out.push({ id: "p" + i, type: "cylinder", position: { x: p.x, y: p.y, z: p.z }, rotation: { x: Math.PI / 2 + (p.rot || 0), y: (p.rot || 0) * 0.7, z: 0 }, radius: p.size * 0.5, height: p.size * p.tall, color: p.color, metalness: 0.8, roughness: 0.3 })
+    } else if (p.chunk) {
+      out.push({ id: "p" + i, type: "sphere", position: { x: p.x, y: p.y, z: p.z }, rotation: { x: (p.rot || 0), y: (p.rot || 0) * 1.3, z: 0 }, radius: p.size * 0.5, color: p.color, roughness: 0.9, castShadow: true })
+    } else {
+      out.push({ id: "p" + i, type: "box", position: { x: p.x, y: p.y, z: p.z }, width: p.size, height: p.size, depth: p.size, color: p.color, roughness: 1 })
+    }
     i = i + 1
   }
   objects = out

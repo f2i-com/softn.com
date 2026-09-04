@@ -5,6 +5,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { isSafeUrl } from '@softn/core';
 
 type Scene3DWindow = Window & {
@@ -155,7 +160,10 @@ export interface Scene3DObject {
   flatShading?: boolean;
   /**
    * Procedural texture preset: 'stone' | 'brick' | 'tile' | 'wood' | 'grass' |
-   * 'checker' | 'stripes' | 'dots' | 'metal' | 'sand' | 'grid' | 'noise'.
+   * 'checker' | 'stripes' | 'dots' | 'metal' | 'sand' | 'grid' | 'noise' |
+   * 'concrete' | 'rust', and the cut-out decals 'bullethole' | 'blood' |
+   * 'scorch' (transparent outside the mark; put them on a plane a few
+   * millimetres in front of a surface).
    */
   texture?: string;
   /** Texture tiling repeat across the surface, e.g. { x: 2, y: 2 }. */
@@ -164,6 +172,12 @@ export interface Scene3DObject {
   textureUrl?: string;
   /** Bump map depth multiplier (default 0.04). */
   bumpScale?: number;
+  /** Cut-out threshold for a texture with transparent pixels (a decal). */
+  alphaTest?: number;
+  /** Draw both faces: a flat leaf or a decal seen from behind. */
+  doubleSided?: boolean;
+  /** Set false to keep the object out of the fog: a star field, a moon. */
+  fog?: boolean;
   castShadow?: boolean;
   receiveShadow?: boolean;
   width?: number;
@@ -236,6 +250,12 @@ export interface Scene3DLight {
    * in the player's hand, a miner's lamp on a helmet.
    */
   attach?: 'camera';
+}
+
+export interface Scene3DEffects {
+  bloom?: boolean | { strength?: number; radius?: number; threshold?: number };
+  vignette?: number;
+  grain?: number;
 }
 
 export interface Scene3DProps {
@@ -312,6 +332,12 @@ export interface Scene3DProps {
   toneMapping?: 'aces' | 'linear' | 'reinhard' | 'cineon' | 'none';
   /** Exposure multiplier for tone mapping (default 1.0). */
   toneMappingExposure?: number;
+  /**
+   * Post-processing. Bloom makes emissive things glow; vignette darkens the
+   * corners (0..1); grain adds film noise (0..1). Any effect switches the
+   * frame to a composer with tone mapping applied at the end.
+   */
+  effects?: Scene3DEffects;
   onReady?: () => void;
   onClick?: (info: Scene3DHit) => void;
   onPointerDown?: (info: Scene3DHit) => void;
@@ -392,10 +418,81 @@ function createProceduralTexture(type: string, baseColorStr?: string, repeat?: {
   if (!ctx) return null;
 
   const baseColor = baseColorStr || '#888888';
-  ctx.fillStyle = baseColor;
-  ctx.fillRect(0, 0, 256, 256);
+  const cutout = type === 'bullethole' || type === 'blood' || type === 'scorch';
+  if (!cutout) {
+    ctx.fillStyle = baseColor;
+    ctx.fillRect(0, 0, 256, 256);
+  }
+  // A tiny deterministic generator so a texture is the same every time.
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
 
-  if (type === 'checker') {
+  if (type === 'bullethole') {
+    // A dark crater with a lighter chipped rim and a few flecks around it.
+    const g = ctx.createRadialGradient(128, 128, 6, 128, 128, 88);
+    g.addColorStop(0, 'rgba(8, 8, 10, 1)');
+    g.addColorStop(0.35, 'rgba(20, 18, 16, 0.98)');
+    g.addColorStop(0.6, 'rgba(70, 64, 58, 0.55)');
+    g.addColorStop(1, 'rgba(90, 84, 78, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(128, 128, 88, 0, Math.PI * 2); ctx.fill();
+    for (let i = 0; i < 26; i++) {
+      const a = rnd() * Math.PI * 2, r = 40 + rnd() * 70;
+      ctx.fillStyle = `rgba(${60 + Math.floor(rnd() * 60)}, ${52 + Math.floor(rnd() * 50)}, ${44 + Math.floor(rnd() * 40)}, ${0.35 + rnd() * 0.5})`;
+      ctx.beginPath(); ctx.arc(128 + Math.cos(a) * r, 128 + Math.sin(a) * r, 2 + rnd() * 5, 0, Math.PI * 2); ctx.fill();
+    }
+  } else if (type === 'blood') {
+    // A splatter: a heavy centre, drips and flecks, all dark red.
+    for (let i = 0; i < 9; i++) {
+      const a = rnd() * Math.PI * 2, r = i === 0 ? 0 : 20 + rnd() * 60;
+      const rad = i === 0 ? 62 : 14 + rnd() * 30;
+      const g = ctx.createRadialGradient(128 + Math.cos(a) * r, 128 + Math.sin(a) * r, rad * 0.2, 128 + Math.cos(a) * r, 128 + Math.sin(a) * r, rad);
+      g.addColorStop(0, 'rgba(96, 8, 12, 0.98)');
+      g.addColorStop(0.7, 'rgba(110, 12, 16, 0.85)');
+      g.addColorStop(1, 'rgba(120, 16, 20, 0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(128 + Math.cos(a) * r, 128 + Math.sin(a) * r, rad, 0, Math.PI * 2); ctx.fill();
+    }
+    for (let i = 0; i < 60; i++) {
+      const a = rnd() * Math.PI * 2, r = 30 + rnd() * 90;
+      ctx.fillStyle = `rgba(${80 + Math.floor(rnd() * 40)}, 6, 10, ${0.5 + rnd() * 0.5})`;
+      ctx.beginPath(); ctx.arc(128 + Math.cos(a) * r, 128 + Math.sin(a) * r, 1 + rnd() * 4, 0, Math.PI * 2); ctx.fill();
+    }
+  } else if (type === 'scorch') {
+    const g = ctx.createRadialGradient(128, 128, 10, 128, 128, 120);
+    g.addColorStop(0, 'rgba(10, 8, 6, 0.9)');
+    g.addColorStop(0.5, 'rgba(30, 24, 18, 0.55)');
+    g.addColorStop(1, 'rgba(40, 32, 24, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(128, 128, 120, 0, Math.PI * 2); ctx.fill();
+  } else if (type === 'concrete') {
+    // Mottled grey with hairline cracks and pits.
+    for (let i = 0; i < 900; i++) {
+      const v = Math.floor(rnd() * 40);
+      ctx.fillStyle = rnd() < 0.5 ? `rgba(255,255,255,${v / 400})` : `rgba(0,0,0,${v / 300})`;
+      ctx.fillRect(Math.floor(rnd() * 256), Math.floor(rnd() * 256), 2 + Math.floor(rnd() * 5), 2 + Math.floor(rnd() * 5));
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,0.28)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 6; i++) {
+      let x = rnd() * 256, y = rnd() * 256;
+      ctx.beginPath(); ctx.moveTo(x, y);
+      for (let k = 0; k < 8; k++) { x += (rnd() - 0.5) * 40; y += (rnd() - 0.5) * 40; ctx.lineTo(x, y); }
+      ctx.stroke();
+    }
+  } else if (type === 'rust') {
+    // Streaks of orange-brown over the base, heavier toward the bottom.
+    for (let i = 0; i < 260; i++) {
+      const y = Math.floor(rnd() * 256);
+      const w = 6 + Math.floor(rnd() * 40), h = 2 + Math.floor(rnd() * 14);
+      ctx.fillStyle = `rgba(${120 + Math.floor(rnd() * 60)}, ${50 + Math.floor(rnd() * 30)}, ${10 + Math.floor(rnd() * 20)}, ${0.12 + (y / 256) * 0.3 * rnd()})`;
+      ctx.fillRect(Math.floor(rnd() * 256), y, w, h);
+    }
+    for (let i = 0; i < 400; i++) {
+      ctx.fillStyle = `rgba(0,0,0,${0.05 + rnd() * 0.2})`;
+      ctx.fillRect(Math.floor(rnd() * 256), Math.floor(rnd() * 256), 1 + Math.floor(rnd() * 3), 1 + Math.floor(rnd() * 3));
+    }
+  } else if (type === 'checker') {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
     ctx.fillRect(0, 0, 128, 128);
     ctx.fillRect(128, 128, 128, 128);
@@ -601,18 +698,88 @@ function createMaterial(obj: Scene3DObject): THREE.MeshStandardMaterial {
     }
   }
 
-  return new THREE.MeshStandardMaterial({
+  // A decal texture has transparent pixels: cut them out, and draw the
+  // decal a hair in front of whatever it sits on rather than z-fighting.
+  const cutout = obj.texture === 'bullethole' || obj.texture === 'blood' || obj.texture === 'scorch';
+  const mat = new THREE.MeshStandardMaterial({
     color: usesPalette ? '#ffffff' : (obj.texture ? '#ffffff' : (obj.color || '#6366f1')),
-    metalness: obj.metalness ?? (obj.texture === 'metal' ? 0.6 : 0.1),
-    roughness: obj.roughness ?? (obj.texture === 'metal' ? 0.3 : (obj.texture === 'tile' ? 0.25 : 0.6)),
+    metalness: obj.metalness ?? (obj.texture === 'metal' ? 0.6 : (obj.texture === 'rust' ? 0.35 : 0.1)),
+    roughness: obj.roughness ?? (obj.texture === 'metal' ? 0.3 : (obj.texture === 'tile' ? 0.25 : (obj.texture === 'rust' ? 0.8 : 0.6))),
     wireframe: obj.wireframe ?? false,
     flatShading: obj.flatShading ?? false,
     opacity,
-    transparent: opacity < 1,
-    ...(map ? { map, bumpMap: map, bumpScale: obj.bumpScale ?? 0.03 } : {}),
+    transparent: opacity < 1 || cutout,
+    side: obj.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+    fog: obj.fog ?? true,
+    ...(map ? (cutout ? { map } : { map, bumpMap: map, bumpScale: obj.bumpScale ?? 0.03 }) : {}),
     ...(obj.emissive ? { emissive: new THREE.Color(obj.emissive) } : {}),
     ...(obj.emissiveIntensity != null ? { emissiveIntensity: obj.emissiveIntensity } : {}),
   });
+  if (cutout || obj.alphaTest != null) {
+    mat.alphaTest = obj.alphaTest ?? 0.08;
+    mat.depthWrite = false;
+    mat.polygonOffset = true;
+    mat.polygonOffsetFactor = -2;
+    mat.polygonOffsetUnits = -2;
+  }
+  return mat;
+}
+
+// Vignette and film grain, applied after tone mapping so they act on the
+// final picture.
+const GrainVignetteShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    vignette: { value: 0 },
+    grain: { value: 0 },
+    time: { value: 0 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float vignette;
+    uniform float grain;
+    uniform float time;
+    varying vec2 vUv;
+    float rnd(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec2 d = vUv - 0.5;
+      float v = 1.0 - smoothstep(0.3, 0.95, length(d) * 1.4) * vignette;
+      float g = (rnd(vUv * 1024.0 + fract(time) * 7.0) - 0.5) * grain * 0.35;
+      gl_FragColor = vec4(c.rgb * v + g, c.a);
+    }`,
+};
+
+/**
+ * A post-processing chain for the requested effects, or null when none are
+ * on, in which case the scene renders straight to the canvas as before.
+ */
+function buildComposer(renderer: THREE.WebGLRenderer, scene: THREE.Scene, cam: THREE.Camera, effects: Scene3DEffects | undefined, width: number, height: number): { composer: EffectComposer; grain: ShaderPass | null } | null {
+  if (!effects) return null;
+  const bloomOn = !!effects.bloom;
+  const vignette = Math.max(0, Math.min(1, effects.vignette ?? 0));
+  const grain = Math.max(0, Math.min(1, effects.grain ?? 0));
+  if (!bloomOn && vignette === 0 && grain === 0) return null;
+  const composer = new EffectComposer(renderer);
+  composer.setSize(width, height);
+  composer.addPass(new RenderPass(scene, cam));
+  if (bloomOn) {
+    const b = typeof effects.bloom === 'object' ? effects.bloom : {};
+    composer.addPass(new UnrealBloomPass(new THREE.Vector2(width, height), b.strength ?? 0.45, b.radius ?? 0.4, b.threshold ?? 0.85));
+  }
+  // Tone mapping and the sRGB conversion the renderer would have done.
+  composer.addPass(new OutputPass());
+  if (vignette > 0 || grain > 0) {
+    const pass = new ShaderPass(GrainVignetteShader);
+    pass.uniforms.vignette.value = vignette;
+    pass.uniforms.grain.value = grain;
+    composer.addPass(pass);
+    return { composer, grain: pass };
+  }
+  return { composer, grain: null };
 }
 
 /** How many numbers describe one instance: a palette index rides along when there is a palette. */
@@ -797,6 +964,7 @@ function createParticles(obj: Scene3DObject): THREE.Points {
     color: obj.color || '#ffffff',
     transparent: (obj.opacity ?? 1) < 1,
     opacity: obj.opacity ?? 0.8,
+    fog: obj.fog ?? true,
     vertexColors: !!(obj.particleColors && obj.particleColors.length > 0),
     depthWrite: false,
   });
@@ -1118,6 +1286,7 @@ export function Scene3D({
   cameraSmoothing = 0,
   maxPixelRatio = 2,
   toneMapping = 'aces',
+  effects,
   toneMappingExposure = 1,
   onReady,
   onClick,
@@ -1180,6 +1349,13 @@ export function Scene3D({
   const height = fill ? (measured?.h ?? heightProp) : heightProp;
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
+  const composerRef = useRef<EffectComposer | null>(null);
+  const grainPassRef = useRef<ShaderPass | null>(null);
+  // Rebuilt only when the effect settings actually change, not on every
+  // render of an object prop the host recreates each tick.
+  const effectsKey = JSON.stringify(effects ?? null);
+  const effectsRef = useRef(effects);
+  effectsRef.current = effects;
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
   const meshMapRef = useRef<Map<string, MeshEntry>>(new Map());
@@ -1345,6 +1521,9 @@ export function Scene3D({
     rendererRef.current = renderer;
     sceneRef.current = scene;
     cameraRef.current = cam;
+    const built = buildComposer(renderer, scene, cam, effectsRef.current, width, height);
+    composerRef.current = built ? built.composer : null;
+    grainPassRef.current = built ? built.grain : null;
 
     let controls: OrbitControls | null = null;
     if (enableOrbitControls) {
@@ -1820,7 +1999,14 @@ export function Scene3D({
         attachedRotation.set(rot?.x ?? 0, rot?.y ?? 0, rot?.z ?? 0);
         entry.mesh.quaternion.copy(cam.quaternion).multiply(attachedQuat.setFromEuler(attachedRotation));
       });
-      renderer.render(scene, cam);
+      const composer = composerRef.current;
+      if (composer) {
+        const gp = grainPassRef.current;
+        if (gp) gp.uniforms.time.value = (performance.now() % 100000) / 1000;
+        composer.render();
+      } else {
+        renderer.render(scene, cam);
+      }
     };
     animate();
 
@@ -1891,6 +2077,7 @@ export function Scene3D({
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
+      if (composerRef.current) { composerRef.current.dispose(); composerRef.current = null; grainPassRef.current = null; }
       if (rendererRef.current === renderer) rendererRef.current = null;
       if (sceneRef.current === scene) sceneRef.current = null;
       if (cameraRef.current === cam) cameraRef.current = null;
@@ -1922,9 +2109,11 @@ export function Scene3D({
         const w = window.innerWidth;
         const h = window.innerHeight;
         renderer.setSize(w, h);
+        composerRef.current?.setSize(w, h);
         cam.aspect = w / h;
       } else {
         renderer.setSize(width, height);
+        composerRef.current?.setSize(width, height);
         cam.aspect = width / height;
       }
       cam.updateProjectionMatrix();
@@ -1940,9 +2129,25 @@ export function Scene3D({
     const cam = cameraRef.current;
     if (!renderer || !cam) return;
     renderer.setSize(width, height);
+    composerRef.current?.setSize(width, height);
     cam.aspect = width / height;
     cam.updateProjectionMatrix();
   }, [width, height, isFullscreen]);
+
+  // Effects switched on, off or retuned after mount: rebuild the composer.
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    const cam = cameraRef.current;
+    if (!renderer || !scene || !cam) return;
+    if (composerRef.current) composerRef.current.dispose();
+    const size = new THREE.Vector2();
+    renderer.getSize(size);
+    const built = buildComposer(renderer, scene, cam, effectsRef.current, size.x, size.y);
+    composerRef.current = built ? built.composer : null;
+    grainPassRef.current = built ? built.grain : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectsKey]);
 
   // Update background
   useEffect(() => {
