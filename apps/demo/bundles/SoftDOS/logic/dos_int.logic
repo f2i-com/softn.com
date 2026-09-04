@@ -173,6 +173,17 @@ function dosInt_poll() {
   return 0;
 }
 
+// Would dosInt_poll do anything right now? Cheap enough to ask after every
+// compiled trace, which is what lets the run loop skip the state copy the
+// poll itself would need.
+function dosInt_due() {
+  if (DOS_VEC_ADDR === null) return 0;
+  if (DOS_VEC_SET[0x08] === 1 &&
+      (DOS_TIMER_NEXT === 0 || DOS_TOTAL_CYCLES >= DOS_TIMER_NEXT)) return 1;
+  if (DOS_KEY_IRQ_PENDING === 1 && DOS_VEC_SET[0x09] === 1) return 1;
+  return 0;
+}
+
 function dosInt_cyclesPerTick() {
   let div = DOS_PIT_DIVISOR;
   if (div <= 0) div = 65536;

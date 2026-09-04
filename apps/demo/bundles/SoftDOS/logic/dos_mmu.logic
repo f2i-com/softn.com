@@ -24,11 +24,19 @@ function dosMmu_read8(addr) {
 
 function dosMmu_read16(addr) {
   let a = addr & 0xFFFFFF;
+  if (DOS_VGA_UNCHAINED === 1 && a >= 0xA0000 && a < 0xB0000) {
+    return dosVga_readPlanar(a - 0xA0000) | (dosVga_readPlanar(a - 0xA0000 + 1) << 8);
+  }
   return DOS_RAM[a] | (DOS_RAM[(a + 1) & 0xFFFFFF] << 8);
 }
 
 function dosMmu_read32(addr) {
   let a = addr & 0xFFFFFF;
+  if (DOS_VGA_UNCHAINED === 1 && a >= 0xA0000 && a < 0xB0000) {
+    let o = a - 0xA0000;
+    return ((dosVga_readPlanar(o) | (dosVga_readPlanar(o + 1) << 8) |
+             (dosVga_readPlanar(o + 2) << 16) | (dosVga_readPlanar(o + 3) << 24)) >>> 0);
+  }
   return (
     (DOS_RAM[a] |
       (DOS_RAM[(a + 1) & 0xFFFFFF] << 8) |

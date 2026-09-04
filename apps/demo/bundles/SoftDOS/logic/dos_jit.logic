@@ -423,10 +423,11 @@ function dosJit_one(body, tmp) {
       let srcE = "";
       if (DOS_JM_ADDR === "") srcE = dosJit_regGet(DOS_JM_RM, 4);
       else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
-      body.push("t0=" + dosJit_regGet(DOS_JM_REG, 4) + "|0;t1=(" + srcE + ")|0;");
-      body.push(dosJit_regSet(DOS_JM_REG, 4, "Math.imul(t0,t1)"));
-      // CF and OF depend on the full 64-bit product; leave the flag word alone
-      // rather than record something wrong, and mark nothing pending.
+      body.push("t0=" + dosJit_regGet(DOS_JM_REG, 4) + "|0;t1=(" + srcE + ")|0;t2=Math.imul(t0,t1)>>>0;");
+      body.push(dosJit_regSet(DOS_JM_REG, 4, "t2"));
+    body.push("t3=t0*t1;tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
+              "ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|" +
+              "((t3>=-2147483648&&t3<=2147483647)?0:2049);");
       body.push("fo=0;");
       DOS_JIT_PENDING = 0;
       return 1;
@@ -701,6 +702,12 @@ function dosJit_one(body, tmp) {
       body.push("OUT8(t3,t0&255);OUT8(t3+1,(t0>>8)&255);");
       if (size === 4) body.push("OUT8(t3+2,(t0>>16)&255);OUT8(t3+3,(t0>>>24)&255);");
     }
+    // A port write can switch the card between chained and unchained, and
+    // the trace holds that flag in a local from its entry. DOOM's sequencer
+    // code flips it and then reads video memory in the same trace, so the
+    // local has to be refreshed here or every read after it takes the wrong
+    // path.
+    body.push("vg=ST[8];");
     return 1;
   }
   if (op === 0xEC || op === 0xE4) {
@@ -731,7 +738,10 @@ function dosJit_one(body, tmp) {
     body.push("tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;");
     body.push("ST[1]=(ST[1]&~197)|(t1?1:0)|((tv&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);");
     body.push(dosJit_regSet(DOS_JM_RM, sz, "t2"));
-    body.push("}");
+    // A zero count leaves every flag as it was, which means whatever result
+    // was pending still is. Fold it into the flag word rather than drop it,
+    // so that afterwards nothing is pending on either path.
+    body.push("}else if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);}");
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
     return 1;
@@ -791,14 +801,24 @@ function dosJit_one(body, tmp) {
     // trace so it can do that with EIP pointing at this instruction.
     body.push("if(ST[15]!==0){" + dosJit_spill() + "@@R@@ST[0]=" + (start >>> 0) +
               ";ST[7]=k*3;return k;}");
-    body.push(dosJit_regSet(0, 4, "ST[12]"));
-    body.push(dosJit_regSet(2, 4, "ST[13]"));
-    // MUL and IMUL set CF and OF from the high half; DIV leaves them undefined.
+    body.push("t2=ST[12];t3=ST[13];");
+    body.push(dosJit_regSet(0, 4, "t2"));
+    body.push(dosJit_regSet(2, 4, "t3"));
+    // MUL and IMUL set ZF, SF and PF from the low half, and CF and OF from
+    // whether the product fits: for MUL that is a zero high half, for IMUL
+    // that the high half is the sign extension of the low. DIV and IDIV leave
+    // every flag alone.
     if (sub === 4 || sub === 5) {
-      body.push("ST[1]=(ST[1]&~2049)|((ST[13]!==0)?2049:0);");
+      body.push("tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;");
+      let fits = (sub === 4) ? "(t3===0)"
+                             : "((t3===0&&(t2|0)>=0)||(t3===4294967295&&(t2|0)<0))";
+      body.push("ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|(" +
+                fits + "?0:2049);");
+      // The multiply wrote every arithmetic flag; nothing is pending now.
+      body.push("fo=0;");
+      DOS_JIT_PENDING = 0;
     }
-    body.push("fo=0;");
-    DOS_JIT_PENDING = 0;
+    // A divide changes no flag, so whatever was pending before it still is.
     return 1;
   }
 
@@ -829,8 +849,11 @@ function dosJit_one(body, tmp) {
     else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
     body.push("t0=(" + srcE + ")|0;");
     let imm = (op === 0x6B) ? dosJc_s8() : dosJc_s32();
-    body.push("t1=" + imm + ";");
-    body.push(dosJit_regSet(DOS_JM_REG, 4, "Math.imul(t0,t1)"));
+    body.push("t1=" + imm + ";t2=Math.imul(t0,t1)>>>0;");
+    body.push(dosJit_regSet(DOS_JM_REG, 4, "t2"));
+    body.push("t3=t0*t1;tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
+              "ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|" +
+              "((t3>=-2147483648&&t3<=2147483647)?0:2049);");
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
     return 1;
@@ -1140,7 +1163,8 @@ function dosJit_noteSpan(from, to) {
 // Leaving a trace publishes the flag locals to the shared array, which is
 // where the interpreter and the helpers look for them.
 function dosJit_spill() {
-  return "ST[2]=fo;ST[3]=fd;ST[4]=fs;ST[5]=fr;ST[6]=fz;";
+  return "if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);fo=0;}" +
+         "ST[2]=fo;ST[3]=fd;ST[4]=fs;ST[5]=fr;ST[6]=fz;";
 }
 
 function dosJit_reload() {
@@ -1362,11 +1386,20 @@ function dosJit_compile(phys) {
     DOS_JIT_BUDGET_SPENT = 1;
     return null;
   }
+  // The outer function is what the engine compiles; calling it once binds the
+  // arrays and helpers as closure variables and returns the trace itself,
+  // which then takes only the state array.
   let fn = null;
   try {
-    fn = new Function("R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "ST", "MASK", "SIGN",
-                      "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
-                      "RD16", "RD32", "RDU16", "RDU32", src);
+    let make = new Function("R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "MASK", "SIGN",
+                            "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
+                            "RD16", "RD32", "RDU16", "RDU32", "FL",
+                            "return function(ST){" + src + "};");
+    fn = make(DOS_REGS32, DOS_REGS16, DOS_REGS8, DOS_RAM, DOS_RAM16, DOS_RAM32,
+              DOS_SEGS, DOS_JIT_MASK, DOS_JIT_SIGN,
+              dosJit_w8, dosJit_w16, dosJit_w32, dosJit_rd8, dosJit_fc,
+              DOS_JIT_CODEPAGE, dosJit_muldiv, dosJit_out8, dosJit_in8,
+              dosJit_rd16, dosJit_rd32, dosJit_rdu16, dosJit_rdu32, dosJit_fold);
   } catch (e) {
     DOS_JIT_FAILED++;
     return null;
@@ -1457,13 +1490,71 @@ function dosJit_muldiv(sub, size) {
   DOS_JIT_ST[13] = r;
 }
 
-function dosJit_out8(port, v) { dosMmu_out8(port, v); }
+function dosJit_out8(port, v) {
+  dosMmu_out8(port, v);
+  DOS_JIT_ST[8] = DOS_VGA_UNCHAINED;
+}
 // A port read inside a compiled loop has to see time passing, or a program
 // waiting on the retrace bit spins the whole loop cap out before the trace
 // exits and the cycle count catches up. Charging a few cycles here keeps the
 // bit moving; the trace still adds its own count on exit, so this slightly
 // overcounts a rare instruction rather than stalling a common loop.
 function dosJit_in8(port) { DOS_TOTAL_CYCLES += 8; return dosMmu_in8(port); }
+
+// Fold a pending lazy result into the flag word. The same arithmetic as
+// dosCpu_flushFlags, over the trace's own locals; d, s and r arrive already
+// narrowed to the operand size and unsigned.
+function dosJit_fold(op, d, sr, r, size, f) {
+  let sign = DOS_JIT_SIGN[size & 7];
+  let cf = 0;
+  let of = 0;
+  let af = 0;
+  if (op === 1) {
+    cf = (r < d) ? 1 : 0;
+    of = ((~(d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+    af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
+  } else if (op === 2) {
+    cf = (d < sr) ? 1 : 0;
+    of = (((d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+    af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
+  } else if (op === 3) {
+    cf = 0; of = 0; af = 0;
+  } else if (op === 6) {
+    cf = f & 1;
+    of = (r === sign) ? 1 : 0;
+    af = ((d ^ 1 ^ r) & 0x10) ? 1 : 0;
+  } else if (op === 7) {
+    cf = f & 1;
+    of = (r === (sign - 1)) ? 1 : 0;
+    af = ((d ^ 1 ^ r) & 0x10) ? 1 : 0;
+  } else if (op === 8) {
+    let cin = f & 1;
+    cf = cin ? ((r <= d) ? 1 : 0) : ((r < d) ? 1 : 0);
+    of = ((~(d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+    af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
+  } else if (op === 9) {
+    let cin2 = f & 1;
+    cf = cin2 ? ((d <= sr) ? 1 : 0) : ((d < sr) ? 1 : 0);
+    of = (((d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+    af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
+  } else {
+    cf = f & 1;
+    of = (f & 0x800) ? 1 : 0;
+    af = (f & 0x10) ? 1 : 0;
+  }
+  let x = r & 0xFF;
+  x = x ^ (x >> 4);
+  x = x ^ (x >> 2);
+  x = x ^ (x >> 1);
+  let out = f & ~0x8D5;
+  if (cf) out = out | 1;
+  if ((x & 1) === 0) out = out | 4;
+  if (af) out = out | 0x10;
+  if (r === 0) out = out | 0x40;
+  if (r & sign) out = out | 0x80;
+  if (of) out = out | 0x800;
+  return out >>> 0;
+}
 
 function dosJit_rd16(a) { return dosJit_rd8(a) | (dosJit_rd8((a + 1) & 0xFFFFFF) << 8); }
 function dosJit_rd32(a) {
@@ -1507,14 +1598,19 @@ function dosJit_syncOut() {
   DOS_LAZY_SIZE = DOS_JIT_ST[6];
 }
 
-// The 32-bit run loop. Compiled blocks run in one call; everything else falls
-// back to the interpreter one instruction at a time.
+// The 32-bit run loop. Compiled traces run in one call each; everything else
+// falls back to the interpreter one instruction at a time.
+//
+// `synced` says which copy of the machine state is authoritative: 1 for the
+// interpreter's globals, 0 for the shared state array the traces work on.
+// Trace-to-trace transitions leave it at 0 and copy nothing.
 function dosJit_run(budget) {
   if (DOS_JIT_TAG === null) dosJit_init();
   let remaining = budget;
+  let synced = 1;
   while (remaining > 0 && !DOS_HALTED) {
-    if (DOS_IS_32 !== 1) return;
-    let eip = DOS_EIP >>> 0;
+    if (DOS_IS_32 !== 1) { if (synced === 0) dosJit_syncOut(); return; }
+    let eip = (synced === 1) ? (DOS_EIP >>> 0) : (DOS_JIT_ST[0] >>> 0);
     let phys = eip & 0xFFFFFF;
     let slot = (phys ^ (phys >>> 13)) & (DOS_JIT_SLOTS - 1);
     let fn = null;
@@ -1537,6 +1633,9 @@ function dosJit_run(budget) {
       }
     }
     if (fn === null) {
+      // The interpreter works on the globals; bring the state back if a trace
+      // left it in the array.
+      if (synced === 0) { dosJit_syncOut(); synced = 1; }
       remaining -= dosCpu_step();
       DOS_JIT_STEPS++;
       DOS_BC_INSTR++;
@@ -1544,16 +1643,14 @@ function dosJit_run(budget) {
       if (DOS_INT_CHECK <= 0) { DOS_INT_CHECK = DOS_INT_CHECK_EVERY; dosInt_poll(); }
       continue;
     }
-    // Folding on entry means compiled code never has to reason about a lazy
-    // result left behind by the interpreter.
-    dosCpu_flushFlags();
-    dosJit_syncIn();
-    let insns = fn(DOS_REGS32, DOS_REGS16, DOS_REGS8, DOS_RAM, DOS_RAM16, DOS_RAM32,
-                   DOS_SEGS, DOS_JIT_ST, DOS_JIT_MASK, DOS_JIT_SIGN,
-                   dosJit_w8, dosJit_w16, dosJit_w32, dosJit_rd8, dosJit_fc,
-                   DOS_JIT_CODEPAGE, dosJit_muldiv, dosJit_out8, dosJit_in8,
-                   dosJit_rd16, dosJit_rd32, dosJit_rdu16, dosJit_rdu32);
-    dosJit_syncOut();
+    if (synced === 1) {
+      // Folding on entry means compiled code never has to reason about a lazy
+      // result left behind by the interpreter.
+      dosCpu_flushFlags();
+      dosJit_syncIn();
+      synced = 0;
+    }
+    let insns = fn(DOS_JIT_ST);
     let cyc = DOS_JIT_ST[7];
     if (cyc < 1) cyc = 1;
     DOS_TOTAL_CYCLES += cyc;
@@ -1561,6 +1658,13 @@ function dosJit_run(budget) {
     DOS_JIT_CALLS++;
     DOS_JIT_INSNS += insns;
     DOS_BC_INSTR += insns;
-    dosInt_poll();
+    // Interrupt delivery needs the globals; only pay for the copy when one is
+    // actually due, which is a cheap test.
+    if (dosInt_due() === 1) {
+      dosJit_syncOut();
+      synced = 1;
+      dosInt_poll();
+    }
   }
+  if (synced === 0) dosJit_syncOut();
 }
