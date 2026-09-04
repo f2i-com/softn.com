@@ -1,0 +1,42 @@
+{
+  "name": "SoftDOS",
+  "version": "0.1.0",
+  "description": "An x86 PC emulator written in .logic: a 16/32-bit CPU with the full 386 integer instruction set, VGA text and mode 13h including unchained Mode X, a BIOS, DOS kernel and DPMI host with real interrupt delivery, and a command line. Runs real 8086 programs and boots DOOM.",
+  "author": "SoftN",
+  "main": "ui/main.ui",
+  "icon": "assets/icon.svg",
+  "files": {
+    "ui": [
+      "ui/main.ui"
+    ],
+    "logic": [
+      "logic/main.logic",
+      "logic/dos_state.logic",
+      "logic/dos_mmu.logic",
+      "logic/dos_vga.logic",
+      "logic/dos_kernel.logic",
+      "logic/dos_progs.logic",
+      "logic/dos_loader.logic",
+      "logic/dos_shell.logic",
+      "logic/dos_cpu.logic",
+      "logic/dos_ops.logic",
+      "logic/dos_bc.logic",
+      "logic/dos_int.logic"
+    ],
+    "assets": [
+      "assets/icon.svg"
+    ]
+  },
+  "config": {
+    "execution": "worker",
+    "window": {
+      "title": "SoftDOS \u00e2\u20ac\u201d x86 PC Emulator",
+      "width": 960,
+      "height": 840
+    },
+    "theme": {
+      "primary": "#48d080",
+      "mode": "dark"
+    }
+  }
+}

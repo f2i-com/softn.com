@@ -1,0 +1,205 @@
+// dos_mmu.logic — SoftDOS Memory Management & I/O Bus
+//
+// Translates 16-bit Segment:Offset and 32-bit Flat Linear addresses to physical RAM,
+// and routes PC I/O port instructions (IN / OUT).
+
+function dosMmu_linear(seg, off) {
+  if (DOS_IS_32 === 1) {
+    return (off >>> 0) & 0xFFFFFF; // 16 MB boundary
+  }
+  return (((seg << 4) + (off & 0xFFFF)) >>> 0) & 0xFFFFFF;
+}
+
+// ---------------------------------------------------------------------------
+// Memory Accessors (with wrap-around masking)
+// ---------------------------------------------------------------------------
+
+function dosMmu_read8(addr) {
+  let a = addr & 0xFFFFFF;
+  if (DOS_VGA_UNCHAINED === 1 && a >= 0xA0000 && a < 0xB0000) {
+    return dosVga_readPlanar(a - 0xA0000);
+  }
+  return DOS_RAM[a];
+}
+
+function dosMmu_read16(addr) {
+  let a = addr & 0xFFFFFF;
+  return DOS_RAM[a] | (DOS_RAM[(a + 1) & 0xFFFFFF] << 8);
+}
+
+function dosMmu_read32(addr) {
+  let a = addr & 0xFFFFFF;
+  return (
+    (DOS_RAM[a] |
+      (DOS_RAM[(a + 1) & 0xFFFFFF] << 8) |
+      (DOS_RAM[(a + 2) & 0xFFFFFF] << 16) |
+      (DOS_RAM[(a + 3) & 0xFFFFFF] << 24)) >>>
+    0
+  );
+}
+
+function dosMmu_write8(addr, val) {
+  let a = addr & 0xFFFFFF;
+  dosBc_touch(a);
+  if (DOS_VGA_UNCHAINED === 1 && a >= 0xA0000 && a < 0xB0000) {
+    dosVga_writePlanar(a - 0xA0000, val);
+    return;
+  }
+  DOS_RAM[a] = val & 0xFF;
+}
+
+function dosMmu_write16(addr, val) {
+  let a = addr & 0xFFFFFF;
+  dosBc_touch(a);
+  if (DOS_VGA_UNCHAINED === 1 && a >= 0xA0000 && a < 0xB0000) {
+    dosVga_writePlanar(a - 0xA0000, val);
+    dosVga_writePlanar(a - 0xA0000 + 1, val >> 8);
+    return;
+  }
+  DOS_RAM[a] = val & 0xFF;
+  DOS_RAM[(a + 1) & 0xFFFFFF] = (val >> 8) & 0xFF;
+}
+
+function dosMmu_write32(addr, val) {
+  let a = addr & 0xFFFFFF;
+  dosBc_touch(a);
+  if (DOS_VGA_UNCHAINED === 1 && a >= 0xA0000 && a < 0xB0000) {
+    let o = a - 0xA0000;
+    dosVga_writePlanar(o, val);
+    dosVga_writePlanar(o + 1, val >> 8);
+    dosVga_writePlanar(o + 2, val >> 16);
+    dosVga_writePlanar(o + 3, val >>> 24);
+    return;
+  }
+  DOS_RAM[a] = val & 0xFF;
+  DOS_RAM[(a + 1) & 0xFFFFFF] = (val >> 8) & 0xFF;
+  DOS_RAM[(a + 2) & 0xFFFFFF] = (val >> 16) & 0xFF;
+  DOS_RAM[(a + 3) & 0xFFFFFF] = (val >>> 24) & 0xFF;
+}
+
+// ---------------------------------------------------------------------------
+// I/O Port Dispatch (IN / OUT)
+// ---------------------------------------------------------------------------
+
+function dosMmu_in8(port) {
+  let p = port & 0xFFFF;
+
+  // Keyboard Controller data port
+  if (p === 0x60) {
+    if (DOS_KEY_HEAD !== DOS_KEY_TAIL) {
+      let code = DOS_KEY_BUFFER[DOS_KEY_TAIL];
+      DOS_KEY_TAIL = (DOS_KEY_TAIL + 1) & 31;
+      DOS_KEY_LAST_SCAN = (code >> 8) & 0xFF;
+      return DOS_KEY_LAST_SCAN;
+    }
+    return DOS_KEY_LAST_SCAN;
+  }
+
+  // Keyboard Controller status port
+  if (p === 0x64) {
+    let status = 0;
+    if (DOS_KEY_HEAD !== DOS_KEY_TAIL) status |= 0x01; // Output buffer full
+    return status;
+  }
+
+  // 8253 channel 0, read back as a down-counter so timing loops see movement.
+  if (p === 0x40) {
+    let span = dosInt_cyclesPerTick();
+    let left = DOS_TIMER_NEXT - DOS_TOTAL_CYCLES;
+    if (left < 0) left = 0;
+    let count = Math.floor((left * DOS_PIT_DIVISOR) / Math.max(1, span));
+    if (DOS_PIT_WRITE_STATE === 0) { DOS_PIT_WRITE_STATE = 1; return count & 0xFF; }
+    DOS_PIT_WRITE_STATE = 0;
+    return (count >> 8) & 0xFF;
+  }
+
+  // 8259 mask register.
+  if (p === 0x21) return DOS_PIC_MASK & 0xFF;
+
+  // VGA Input Status #1 (CRTC / Vertical Retrace)
+  // Doom and DOS games poll port 0x3DA bit 3 for VSYNC timing
+  if (p === 0x3DA) {
+    // Alternate VSYNC bit every few thousand cycles so games don't hang
+    let vblank = (DOS_TOTAL_CYCLES & 0x800) ? 0x08 : 0x00;
+    return vblank | 0x01; // Display enable + VRetrace
+  }
+
+  // VGA DAC Palette Data Read
+  if (p === 0x3C9) {
+    let idx = (DOS_VGA_DAC_READ_INDEX * 3) + DOS_VGA_DAC_READ_STATE;
+    let colorVal = DOS_VGA_PAL[idx] >> 2; // VGA DAC is 6-bit (0-63)
+    DOS_VGA_DAC_READ_STATE++;
+    if (DOS_VGA_DAC_READ_STATE >= 3) {
+      DOS_VGA_DAC_READ_STATE = 0;
+      DOS_VGA_DAC_READ_INDEX = (DOS_VGA_DAC_READ_INDEX + 1) & 0xFF;
+    }
+    return colorVal;
+  }
+
+  // Sound Blaster DSP Read Status
+  if (p === 0x22E) {
+    return 0x80; // Data ready
+  }
+
+  return 0xFF;
+}
+
+function dosMmu_out8(port, val) {
+  let p = port & 0xFFFF;
+  let v = val & 0xFF;
+
+  // 8253 timer: channel 0 sets the tick rate the game wants.
+  if (p === 0x40 || p === 0x43) { dosInt_pitWrite(p, v); return; }
+
+  // VGA sequencer, graphics controller and CRTC index/data pairs.
+  if (p === 0x3C4 || p === 0x3C5 || p === 0x3CE || p === 0x3CF ||
+      p === 0x3D4 || p === 0x3D5) { dosVga_regWrite(p, v); return; }
+
+  // 8259 interrupt controller. 0x20 takes the end-of-interrupt a handler
+  // sends before its IRET; 0x21 is the mask.
+  if (p === 0x20) return;
+  if (p === 0x21) { DOS_PIC_MASK = v; return; }
+
+  // PC Speaker Control (Port 0x61)
+  if (p === 0x61) {
+    DOS_SPEAKER_ON = (v & 0x03) === 0x03 ? 1 : 0;
+    return;
+  }
+
+  // PIT Timer Channel 2 (Port 0x42)
+  if (p === 0x42) {
+    // Set frequency divisor for speaker
+    if (v > 0) {
+      DOS_SPEAKER_FREQ = Math.floor(1193180 / Math.max(100, v << 4));
+    }
+    return;
+  }
+
+  // VGA DAC Write Address (Port 0x3C8)
+  if (p === 0x3C8) {
+    DOS_VGA_DAC_INDEX = v;
+    DOS_VGA_DAC_STATE = 0;
+    return;
+  }
+
+  // VGA DAC Read Address (Port 0x3C7)
+  if (p === 0x3C7) {
+    DOS_VGA_DAC_READ_INDEX = v;
+    DOS_VGA_DAC_READ_STATE = 0;
+    return;
+  }
+
+  // VGA DAC Data Port (Port 0x3C9)
+  if (p === 0x3C9) {
+    let idx = (DOS_VGA_DAC_INDEX * 3) + DOS_VGA_DAC_STATE;
+    // Scale 6-bit VGA DAC (0-63) to 8-bit RGB (0-255)
+    DOS_VGA_PAL[idx] = (v & 0x3F) * 4;
+    DOS_VGA_DAC_STATE++;
+    if (DOS_VGA_DAC_STATE >= 3) {
+      DOS_VGA_DAC_STATE = 0;
+      DOS_VGA_DAC_INDEX = (DOS_VGA_DAC_INDEX + 1) & 0xFF;
+      DOS_VGA_PAL_REV++;
+    }
+    return;
+  }
+}

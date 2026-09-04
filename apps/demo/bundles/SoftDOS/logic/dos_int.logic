@@ -1,0 +1,210 @@
+// dos_int.logic — interrupt vectors and hardware interrupt delivery.
+//
+// Up to this point the emulator only ever *serviced* interrupts: a program
+// executed INT n and the kernel emulated the effect in place. That is enough
+// for a program that asks DOS to do things, and not enough for a game, which
+// installs its own handlers and expects the machine to call them. DOOM stops
+// at I_StartupTimer() for exactly this reason: it sets vectors 08h and 09h and
+// then waits for a tick that never arrives.
+//
+// What this adds:
+//   * a vector table a program can read and write (INT 21h AH=25h/35h, and the
+//     DPMI equivalents),
+//   * real delivery: push FLAGS/CS/EIP, clear IF, jump to the handler, and let
+//     the handler's own IRET return,
+//   * a PIT-driven timer on IRQ0 and a keyboard on IRQ1.
+
+// A vector is stored as a flat linear address when it was installed from
+// 32-bit code, and as a packed (segment << 16) | offset when installed from
+// real mode. DOS_VEC_SET marks the ones a program has actually claimed.
+let DOS_VEC_ADDR = null;
+let DOS_VEC_IS32 = null;
+let DOS_VEC_SET = null;
+
+// Every vector starts pointing at a one-byte IRET stub, so a handler that
+// chains to "the previous handler" returns cleanly instead of running whatever
+// happened to be in memory.
+let DOS_IRET_STUB = 0x00500;
+
+// The 8253 runs at 1.193182 MHz and divides down to the tick rate. 0 means
+// 65536, which is the 18.2 Hz the BIOS programs at boot; DOOM reprograms it.
+let DOS_PIT_DIVISOR = 65536;
+let DOS_PIT_LATCH = 0;
+let DOS_PIT_WRITE_STATE = 0;
+
+// Emulated time is measured in cycles, so the tick has to be expressed in
+// cycles too. main.logic keeps DOS_CPU_HZ near the rate actually being
+// achieved, which is what makes game time track real time.
+let DOS_CPU_HZ = 4000000;
+let DOS_TIMER_NEXT = 0;
+let DOS_TICKS = 0;
+
+// Set when a key arrives and IRQ1 has a handler installed.
+let DOS_KEY_IRQ_PENDING = 0;
+
+// The PIC's interrupt mask (port 0x21). Bit n masks IRQ n.
+let DOS_PIC_MASK = 0x00;
+
+let DOS_INT_DELIVERED = 0;
+
+// Instructions left before the next interrupt check. 64 is far finer than any
+// tick rate a program can ask for and keeps the check off the hot path.
+let DOS_INT_CHECK = 64;
+let DOS_INT_CHECK_EVERY = 64;
+
+function dosInt_init() {
+  DOS_VEC_ADDR = new Uint32Array(256);
+  DOS_VEC_IS32 = new Uint8Array(256);
+  DOS_VEC_SET = new Uint8Array(256);
+  dosInt_reset();
+}
+
+function dosInt_reset() {
+  if (DOS_VEC_ADDR === null) { dosInt_init(); return; }
+  for (let i = 0; i < 256; i++) {
+    DOS_VEC_ADDR[i] = DOS_IRET_STUB;
+    DOS_VEC_IS32[i] = 0;
+    DOS_VEC_SET[i] = 0;
+  }
+  // The stub itself, and a real-mode IVT that points every entry at it.
+  if (DOS_RAM !== null) {
+    DOS_RAM[DOS_IRET_STUB] = 0xCF;               // IRET
+    for (let i = 0; i < 256; i++) {
+      DOS_RAM[i * 4] = DOS_IRET_STUB & 0xFF;
+      DOS_RAM[i * 4 + 1] = (DOS_IRET_STUB >> 8) & 0xFF;
+      DOS_RAM[i * 4 + 2] = 0;
+      DOS_RAM[i * 4 + 3] = 0;
+    }
+  }
+  DOS_PIT_DIVISOR = 65536;
+  DOS_PIT_LATCH = 0;
+  DOS_PIT_WRITE_STATE = 0;
+  DOS_TIMER_NEXT = 0;
+  DOS_TICKS = 0;
+  DOS_KEY_IRQ_PENDING = 0;
+  DOS_PIC_MASK = 0x00;
+  DOS_INT_DELIVERED = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Vector table
+// ---------------------------------------------------------------------------
+
+function dosInt_setVector(vec, addr, is32) {
+  let v = vec & 0xFF;
+  DOS_VEC_ADDR[v] = addr >>> 0;
+  DOS_VEC_IS32[v] = is32 ? 1 : 0;
+  DOS_VEC_SET[v] = 1;
+  if (!is32) {
+    // Keep the real-mode IVT in step, since a program may read it directly.
+    DOS_RAM[v * 4] = addr & 0xFF;
+    DOS_RAM[v * 4 + 1] = (addr >> 8) & 0xFF;
+    DOS_RAM[v * 4 + 2] = (addr >> 16) & 0xFF;
+    DOS_RAM[v * 4 + 3] = (addr >> 24) & 0xFF;
+  }
+}
+
+function dosInt_getVector(vec) {
+  return DOS_VEC_ADDR[vec & 0xFF] >>> 0;
+}
+
+// ---------------------------------------------------------------------------
+// Delivery
+// ---------------------------------------------------------------------------
+
+// Enter a handler the way the CPU does: the return address and flags go on the
+// stack, IF is cleared so the handler is not re-entered, and execution
+// continues at the handler. Its IRET pops all three back.
+function dosInt_enter(vec) {
+  let v = vec & 0xFF;
+  dosCpu_flushFlags();
+  let is32 = (DOS_IS_32 === 1);
+  dosCpu_pushSize(DOS_EFLAGS >>> 0, is32);
+  dosCpu_pushSize(DOS_SEGS[1] & 0xFFFF, is32);
+  dosCpu_pushSize(DOS_EIP >>> 0, is32);
+  DOS_EFLAGS = DOS_EFLAGS & ~DOS_FL_IF;
+  DOS_EFLAGS = DOS_EFLAGS & ~0x0100;              // TF
+  let addr = DOS_VEC_ADDR[v] >>> 0;
+  if (DOS_VEC_IS32[v] === 1 || DOS_IS_32 === 1) {
+    DOS_EIP = addr >>> 0;
+  } else {
+    DOS_SEGS[1] = (addr >>> 16) & 0xFFFF;
+    DOS_EIP = addr & 0xFFFF;
+  }
+  DOS_INT_DELIVERED++;
+}
+
+// True when the CPU is willing to take a hardware interrupt right now.
+function dosInt_ready(irq) {
+  if (DOS_HALTED === 1) return 0;
+  if (DOS_VEC_ADDR === null) return 0;
+  dosCpu_flushFlags();
+  if ((DOS_EFLAGS & DOS_FL_IF) === 0) return 0;
+  if ((DOS_PIC_MASK >> irq) & 1) return 0;
+  return 1;
+}
+
+// Called between instructions (and between decoded blocks) to see whether the
+// timer or the keyboard is due. One interrupt per check: the second one waits,
+// exactly as it would behind a real PIC.
+function dosInt_poll() {
+  if (DOS_VEC_ADDR === null) return 0;
+
+  // IRQ0, the timer. Cycles per tick comes from the divisor the program wrote.
+  if (DOS_VEC_SET[0x08] === 1) {
+    if (DOS_TIMER_NEXT === 0) {
+      DOS_TIMER_NEXT = DOS_TOTAL_CYCLES + dosInt_cyclesPerTick();
+    } else if (DOS_TOTAL_CYCLES >= DOS_TIMER_NEXT) {
+      DOS_TICKS++;
+      // The BIOS tick count at 0040:006C, which some code reads directly.
+      let t = (dosMmu_read32(0x0046C) + 1) >>> 0;
+      dosMmu_write32(0x0046C, t);
+      DOS_TIMER_NEXT = DOS_TOTAL_CYCLES + dosInt_cyclesPerTick();
+      if (dosInt_ready(0) === 1) { dosInt_enter(0x08); return 1; }
+    }
+  }
+
+  // IRQ1, the keyboard.
+  if (DOS_KEY_IRQ_PENDING === 1 && DOS_VEC_SET[0x09] === 1 && dosInt_ready(1) === 1) {
+    DOS_KEY_IRQ_PENDING = 0;
+    dosInt_enter(0x09);
+    return 1;
+  }
+  return 0;
+}
+
+function dosInt_cyclesPerTick() {
+  let div = DOS_PIT_DIVISOR;
+  if (div <= 0) div = 65536;
+  // ticks per second = 1193182 / div, so cycles per tick = CPU_HZ * div / 1193182.
+  let c = Math.floor((DOS_CPU_HZ * div) / 1193182);
+  if (c < 200) c = 200;              // never let the handler starve the program
+  return c;
+}
+
+// The PIT command and data ports, so a program can choose its own tick rate.
+function dosInt_pitWrite(port, v) {
+  if (port === 0x43) {
+    // Only channel 0 in lobyte/hibyte mode matters here.
+    if (((v >> 6) & 3) === 0) DOS_PIT_WRITE_STATE = 0;
+    return;
+  }
+  if (port === 0x40) {
+    if (DOS_PIT_WRITE_STATE === 0) {
+      DOS_PIT_LATCH = v & 0xFF;
+      DOS_PIT_WRITE_STATE = 1;
+    } else {
+      DOS_PIT_DIVISOR = ((v & 0xFF) << 8) | DOS_PIT_LATCH;
+      if (DOS_PIT_DIVISOR === 0) DOS_PIT_DIVISOR = 65536;
+      DOS_PIT_WRITE_STATE = 0;
+      // Re-base the schedule so a rate change takes effect immediately.
+      DOS_TIMER_NEXT = DOS_TOTAL_CYCLES + dosInt_cyclesPerTick();
+    }
+  }
+}
+
+// A key arriving raises IRQ1 if anything is listening for it.
+function dosInt_keyArrived() {
+  if (DOS_VEC_ADDR === null) return;
+  if (DOS_VEC_SET[0x09] === 1) DOS_KEY_IRQ_PENDING = 1;
+}

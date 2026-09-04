@@ -37,3 +37,6 @@ coverage/
 apps/softn-api/data/*
 !apps/softn-api/data/.htaccess
 !apps/softn-api/data/README.txt
+
+# Local DOS game data (DOOM.EXE / DOOM1.WAD and the like) — not project source.
+games/
