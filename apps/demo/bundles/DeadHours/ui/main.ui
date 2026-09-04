@@ -1,42 +1,68 @@
 <logic src="../logic/main.logic" />
 
 <style>
-.dh-root { position: relative; width: 100%; height: 100%; min-height: 480px; overflow: hidden; background: #05070c; font-family: "Segoe UI", system-ui, sans-serif; color: #f1f3f7; user-select: none; }
+.dh-root { position: relative; width: 100%; height: 100%; min-height: 480px; overflow: hidden; background: #04060a; font-family: "Segoe UI", system-ui, sans-serif; color: #f1f3f7; user-select: none; --dh-red: #d6261e; --dh-ember: #ff7a3d; --dh-bone: #e8e0cf; --dh-ash: #8a93a3; }
 .dh-scene { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
 .dh-ovl { position: absolute; pointer-events: none; }
-.dh-cross { top: 50%; left: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; }
-.dh-cross::before, .dh-cross::after { content: ""; position: absolute; background: rgba(255,255,255,0.85); }
-.dh-cross::before { left: 12px; top: 0; width: 2px; height: 26px; }
-.dh-cross::after { top: 12px; left: 0; width: 26px; height: 2px; }
-.dh-cross-hit::before, .dh-cross-hit::after { background: #ff5a3c; }
-.dh-panel { background: rgba(6, 8, 14, 0.66); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; backdrop-filter: blur(8px); }
-.dh-hud { left: 16px; bottom: 16px; padding: 12px 16px; min-width: 240px; }
-.dh-bar { height: 10px; border-radius: 999px; background: rgba(255,255,255,0.08); overflow: hidden; margin-top: 6px; }
-.dh-fill { height: 10px; border-radius: 999px; background: linear-gradient(90deg, #ff5a3c, #ffb03c); transition: width 160ms ease; }
-.dh-ammo { right: 16px; bottom: 16px; padding: 12px 18px; text-align: right; min-width: 170px; }
-.dh-top { top: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
-.dh-chip { padding: 6px 14px; border-radius: 999px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.dh-display { font-family: "Impact", "Haettenschweiler", "Arial Narrow Bold", "Franklin Gothic Demi Cond", sans-serif; letter-spacing: 0.06em; text-transform: uppercase; }
+/* Crosshair: four ticks that open with movement and recoil, and a hit cross. */
+.dh-cross { top: 50%; left: 50%; width: 0; height: 0; }
+.dh-tick { position: absolute; background: rgba(255,255,255,0.9); box-shadow: 0 0 4px rgba(0,0,0,0.9); transition: transform 60ms linear; }
+.dh-tick-l, .dh-tick-r { width: 9px; height: 2px; top: -1px; }
+.dh-tick-u, .dh-tick-d { width: 2px; height: 9px; left: -1px; }
+.dh-tick-l { right: 0; } .dh-tick-r { left: 0; } .dh-tick-u { bottom: 0; } .dh-tick-d { top: 0; }
+.dh-dot { position: absolute; left: -1.5px; top: -1.5px; width: 3px; height: 3px; border-radius: 50%; background: rgba(255,255,255,0.9); }
+.dh-hit .dh-tick { background: #ff3b2f; box-shadow: 0 0 8px rgba(255,59,47,0.9); }
+.dh-hitx { position: absolute; left: -14px; top: -14px; width: 28px; height: 28px; transform: rotate(45deg); animation: dh-hitx 220ms ease-out both; }
+.dh-hitx::before, .dh-hitx::after { content: ""; position: absolute; background: #ff3b2f; box-shadow: 0 0 8px rgba(255,59,47,0.9); }
+.dh-hitx::before { left: 13px; top: 0; width: 2px; height: 28px; } .dh-hitx::after { top: 13px; left: 0; width: 28px; height: 2px; }
+@keyframes dh-hitx { from { transform: rotate(45deg) scale(1.5); opacity: 1; } to { transform: rotate(45deg) scale(0.9); opacity: 0.4; } }
+/* Panels: dark steel with a red bevel, a scratched edge, and a slight lean. */
+.dh-panel { background: linear-gradient(180deg, rgba(14,16,22,0.78), rgba(6,7,10,0.86)); border: 1px solid rgba(255,255,255,0.09); border-top-color: rgba(255,255,255,0.16); box-shadow: 0 10px 30px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(0,0,0,0.6); backdrop-filter: blur(6px); }
+.dh-panel::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: linear-gradient(180deg, var(--dh-red), #5a0d0a); }
+.dh-hud { left: 18px; bottom: 18px; padding: 12px 16px 12px 18px; min-width: 250px; clip-path: polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%); }
+.dh-bar { position: relative; height: 12px; background: rgba(255,255,255,0.06); margin-top: 6px; overflow: hidden; border: 1px solid rgba(0,0,0,0.6); }
+.dh-fill { height: 100%; background: linear-gradient(90deg, #7f1d1d, var(--dh-red) 60%, #ff6a4a); box-shadow: 0 0 10px rgba(214,38,30,0.6); transition: width 160ms ease; }
+.dh-bar::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 9px, rgba(0,0,0,0.45) 9px 10px); }
+.dh-ammo { right: 18px; bottom: 18px; padding: 12px 18px 12px 20px; text-align: right; min-width: 190px; clip-path: polygon(0 12px, 12px 0, 100% 0, 100% 100%, 0 100%); }
+.dh-ammo::before { left: auto; right: 0; }
+.dh-pips { display: flex; justify-content: flex-end; gap: 3px; margin-top: 6px; flex-wrap: wrap; }
+.dh-pip { width: 7px; height: 16px; border-radius: 2px; background: rgba(255,255,255,0.1); border: 1px solid rgba(0,0,0,0.6); }
+.dh-pip-on { background: linear-gradient(180deg, #ffd27a, #c8861c); box-shadow: 0 0 6px rgba(255,190,90,0.5); }
+.dh-pip-shell { width: 9px; height: 18px; }
+.dh-pip-shell.dh-pip-on { background: linear-gradient(180deg, #ef4444 60%, #d4a72c 60%); }
+.dh-reload { height: 4px; background: rgba(255,255,255,0.08); margin-top: 6px; overflow: hidden; }
+.dh-reload-fill { height: 100%; background: var(--dh-ember); transition: width 80ms linear; }
+.dh-top { top: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; align-items: stretch; }
+.dh-chip { position: relative; padding: 6px 16px; font-size: 13px; }
+.dh-chip-main { padding: 6px 22px; }
 .dh-banner { top: 22%; left: 0; right: 0; text-align: center; animation: dh-banner 2.8s ease both; }
-@keyframes dh-banner { 0% { opacity: 0; transform: translateY(8px) scale(0.98); } 12% { opacity: 1; transform: none; } 85% { opacity: 1; } 100% { opacity: 0; } }
-.dh-toast { bottom: 120px; left: 50%; transform: translateX(-50%); padding: 7px 16px; border-radius: 999px; animation: dh-in 200ms ease both; }
+@keyframes dh-banner { 0% { opacity: 0; transform: translateY(10px) scale(0.96); letter-spacing: 0.3em; } 12% { opacity: 1; transform: none; } 85% { opacity: 1; } 100% { opacity: 0; } }
+.dh-toast { bottom: 132px; left: 50%; transform: translateX(-50%); padding: 7px 18px; animation: dh-in 200ms ease both; }
 @keyframes dh-in { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
-.dh-hurt { top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(90% 80% at 50% 50%, rgba(160,0,0,0) 40%, rgba(160,0,0,0.75) 100%); }
-.dh-vig { top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(110% 100% at 50% 50%, rgba(0,0,0,0) 50%, rgba(0,0,0,0.5) 100%); }
-.dh-title { top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; pointer-events: auto; background: linear-gradient(180deg, rgba(3,5,10,0.35) 0%, rgba(3,5,10,0.7) 100%); }
-.dh-card { width: min(600px, calc(100% - 32px)); padding: 34px 36px 30px; text-align: center; background: rgba(6,8,14,0.82); border: 1px solid rgba(255,255,255,0.1); border-radius: 18px; box-shadow: 0 30px 80px rgba(0,0,0,0.7); backdrop-filter: blur(10px); }
-.dh-keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 22px auto 0; text-align: left; max-width: 380px; }
-.dh-kbd { display: inline-block; min-width: 26px; padding: 2px 7px; border-radius: 6px; background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.18); font-family: ui-monospace, monospace; text-align: center; }
-.dh-board { margin-top: 18px; text-align: left; background: rgba(0,0,0,0.3); border-radius: 10px; padding: 12px 14px; }
+.dh-hurt { top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(90% 80% at 50% 50%, rgba(170,0,0,0) 38%, rgba(170,0,0,0.8) 100%); }
+.dh-low { top: 0; left: 0; right: 0; bottom: 0; box-shadow: inset 0 0 120px rgba(214,38,30,0.45); animation: dh-pulse 1.1s ease-in-out infinite; }
+.dh-title { top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; pointer-events: auto; background: radial-gradient(120% 90% at 50% 20%, rgba(90,10,8,0.25) 0%, rgba(3,5,10,0.55) 45%, rgba(3,5,10,0.85) 100%); }
+.dh-card { position: relative; width: min(620px, calc(100% - 32px)); padding: 36px 38px 30px; text-align: center; background: linear-gradient(180deg, rgba(12,14,20,0.9), rgba(5,6,10,0.94)); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 40px 100px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.08); backdrop-filter: blur(10px); clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px)); }
+.dh-card::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: linear-gradient(90deg, transparent, var(--dh-red), transparent); }
+.dh-logo { font-size: 78px !important; line-height: 0.95 !important; color: var(--dh-bone); text-shadow: 0 0 40px rgba(214,38,30,0.55), 0 12px 30px rgba(0,0,0,0.8); background: linear-gradient(180deg, #fff6e6 20%, #d6c9b3 55%, #7f1d1d 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.dh-btn { display: inline-block; padding: 13px 30px; font-size: 16px; cursor: pointer; border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.08); color: #fff; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px)); }
+.dh-btn-main { background: linear-gradient(180deg, #ef3b2c, #a3140e); border-color: #ff6a5a; color: #fff5f0; box-shadow: 0 10px 30px rgba(214,38,30,0.4); }
+.dh-keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; margin: 22px auto 0; text-align: left; max-width: 400px; }
+.dh-keys > * { color: #cfd8e6 !important; }
+.dh-kbd { display: inline-block; min-width: 26px; padding: 2px 7px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.28); border-bottom-width: 3px; font-family: ui-monospace, monospace; text-align: center; font-size: 11px !important; color: #ffffff !important; }
+.dh-board { margin-top: 18px; text-align: left; background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.06); padding: 12px 14px; }
 .dh-row { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
-.dh-touch { position: absolute; left: 14px; bottom: 120px; pointer-events: auto; }
-.dh-touch-btns { position: absolute; right: 14px; bottom: 110px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
-.dh-corner { top: 14px; right: 14px; display: flex; gap: 6px; pointer-events: auto; }
+.dh-touch { position: absolute; left: 14px; bottom: 130px; pointer-events: auto; }
+.dh-touch-btns { position: absolute; right: 14px; bottom: 120px; display: flex; flex-direction: column; gap: 10px; pointer-events: auto; }
+.dh-corner { top: 16px; right: 16px; display: flex; gap: 6px; pointer-events: auto; }
 .dh-lowhp { animation: dh-pulse 1.1s ease-in-out infinite; }
-@keyframes dh-pulse { 50% { opacity: 0.55; } }
+@keyframes dh-pulse { 50% { opacity: 0.5; } }
 @media (max-width: 640px) {
-  .dh-hud { min-width: 0; padding: 8px 10px; }
-  .dh-ammo { min-width: 0; padding: 8px 10px; }
+  .dh-hud { min-width: 0; padding: 8px 10px 8px 12px; }
+  .dh-ammo { min-width: 0; padding: 8px 12px 8px 10px; }
   .dh-card { padding: 22px 16px; }
+  .dh-logo { font-size: 52px !important; }
 }
 </style>
 
@@ -53,7 +79,7 @@
       antialias={true}
       shadows={true}
       pointerLock={true}
-      crosshair={true}
+      crosshair={false}
       cameraSmoothing={0.4}
       maxPixelRatio={1.5}
       pitchLimit={1.2}
@@ -61,45 +87,62 @@
       fog={sceneFog}
       sky="night"
       toneMapping="aces"
-      toneMappingExposure={1.2}
+      toneMappingExposure={1.15}
+      effects={{ bloom: { strength: 0.35, radius: 0.25, threshold: 1.2 }, vignette: 0.55, grain: 0.1 }}
       @click={onSceneClick}
     />
   </Box>
 
-  <Box className="dh-ovl dh-vig" />
   <Box if={hurtFlash > 0} className="dh-ovl dh-hurt" style={{ opacity: hurtFlash }} />
+  <Box if={started && !gameOver && hud.hp < 30} className="dh-ovl dh-low" />
 
-  <!-- In play -->
-  <Box if={started && !gameOver} className={hitMark > 0 ? "dh-ovl dh-cross dh-cross-hit" : "dh-ovl dh-cross"} />
+  <!-- In play: crosshair -->
+  <Box if={started && !gameOver && !paused} className={hitMark > 0 ? "dh-ovl dh-cross dh-hit" : "dh-ovl dh-cross"}>
+    <Box className="dh-tick dh-tick-l" style={{ transform: "translateX(" + (-hud.spread) + "px)" }} />
+    <Box className="dh-tick dh-tick-r" style={{ transform: "translateX(" + hud.spread + "px)" }} />
+    <Box className="dh-tick dh-tick-u" style={{ transform: "translateY(" + (-hud.spread) + "px)" }} />
+    <Box className="dh-tick dh-tick-d" style={{ transform: "translateY(" + hud.spread + "px)" }} />
+    <Box className="dh-dot" />
+    <Box if={hitMark > 0} className="dh-hitx" />
+  </Box>
 
   <Box if={started} className="dh-ovl dh-top">
-    <Box className="dh-panel dh-chip"><Text style={{ fontSize: "12px", color: "#dbe4f3" }}>{"Wave " + hud.wave}</Text></Box>
-    <Box className="dh-panel dh-chip"><Text style={{ fontSize: "12px", color: "#dbe4f3" }}>{hud.countdown > 0 ? "next in " + hud.countdown + "s" : hud.left + " left"}</Text></Box>
-    <Box className="dh-panel dh-chip"><Text style={{ fontSize: "12px", color: "#ffd27a" }}>{hud.score + " pts"}</Text></Box>
+    <Box className="dh-panel dh-chip dh-chip-main"><Text className="dh-display" style={{ fontSize: "20px", color: "#f5ede0", lineHeight: 1.1 }}>{"Wave " + hud.wave}</Text></Box>
+    <Box className="dh-panel dh-chip"><Text style={{ fontSize: "12px", color: "#c8d0dc", letterSpacing: "0.08em", textTransform: "uppercase", lineHeight: "24px" }}>{hud.countdown > 0 ? "next in " + hud.countdown + "s" : hud.left + " out there"}</Text></Box>
+    <Box className="dh-panel dh-chip"><Text className="dh-display" style={{ fontSize: "16px", color: "#ffd27a", lineHeight: "24px" }}>{hud.score + " pts"}</Text></Box>
   </Box>
 
   <Box if={started} className="dh-ovl dh-panel dh-hud">
     <Stack direction="horizontal" gap={8} style={{ justifyContent: "space-between", alignItems: "baseline" }}>
-      <Text style={{ fontSize: "11px", letterSpacing: "0.1em", color: "#8fa0b8" }}>HEALTH</Text>
-      <Text className={hud.hp < 30 ? "dh-lowhp" : ""} style={{ fontSize: "20px", fontWeight: 800, color: hud.hp < 30 ? "#ff5a3c" : "#ffffff" }}>{hud.hp}</Text>
+      <Text className="dh-display" style={{ fontSize: "12px", color: "#8a93a3" }}>Vitals</Text>
+      <Text className={hud.hp < 30 ? "dh-display dh-lowhp" : "dh-display"} style={{ fontSize: "26px", color: hud.hp < 30 ? "#ff4a3d" : "#f5ede0", lineHeight: 1 }}>{hud.hp}</Text>
     </Stack>
     <Box className="dh-bar"><Box className="dh-fill" style={{ width: hud.hp + "%" }} /></Box>
-    <Text style={{ display: "block", marginTop: "8px", fontSize: "12px", color: "#8fa0b8" }}>{hud.kills + " down · best " + hud.best}</Text>
+    <Stack direction="horizontal" gap={12} style={{ marginTop: "8px", justifyContent: "space-between" }}>
+      <Text style={{ fontSize: "12px", color: "#8a93a3" }}>{hud.kills + " put down"}</Text>
+      <Text style={{ fontSize: "12px", color: "#8a93a3" }}>{"best " + hud.best}</Text>
+    </Stack>
   </Box>
 
   <Box if={started} className="dh-ovl dh-panel dh-ammo">
-    <Text style={{ display: "block", fontSize: "11px", letterSpacing: "0.1em", color: "#8fa0b8" }}>{hud.weapon}</Text>
-    <Text style={{ display: "block", fontSize: "28px", fontWeight: 800, color: hud.ammo === 0 ? "#ff5a3c" : "#ffffff", lineHeight: 1.1 }}>{hud.ammo}<Text style={{ fontSize: "14px", color: "#8fa0b8", fontWeight: 500 }}>{" / " + (hud.reserve < 0 ? "∞" : hud.reserve)}</Text></Text>
-    <Text style={{ display: "block", fontSize: "12px", color: hud.reloading ? "#ffd27a" : "#8fa0b8" }}>{hud.reloading ? "reloading…" : "R reload · Q swap · F torch"}</Text>
+    <Text className="dh-display" style={{ display: "block", fontSize: "12px", color: "#8a93a3" }}>{hud.weapon}</Text>
+    <Text className="dh-display" style={{ display: "block", fontSize: "38px", color: hud.ammo === 0 ? "#ff4a3d" : (hud.lowAmmo ? "#ffb03c" : "#f5ede0"), lineHeight: 1 }}>{hud.ammo}<Text style={{ fontSize: "14px", color: "#8a93a3", fontWeight: 500, letterSpacing: 0 }}>{" / " + (hud.reserve < 0 ? "∞" : hud.reserve)}</Text></Text>
+    <Box className="dh-pips">
+      #each (p in hud.pips)
+        <Box className={(p.on ? "dh-pip dh-pip-on" : "dh-pip") + (hud.weapon === "Shotgun" ? " dh-pip-shell" : "")} />
+      #end
+    </Box>
+    <Box if={hud.reloading} className="dh-reload"><Box className="dh-reload-fill" style={{ width: hud.reloadPct + "%" }} /></Box>
+    <Text style={{ display: "block", marginTop: "4px", fontSize: "11px", color: hud.reloading ? "#ff7a3d" : "#8a93a3", letterSpacing: "0.06em", textTransform: "uppercase" }}>{hud.reloading ? "reloading" : (hud.ammo === 0 ? "empty · R" : "R reload · Q swap · F torch")}</Text>
   </Box>
 
   <Box if={waveBanner !== ""} className="dh-ovl dh-banner">
-    <Text style={{ fontSize: "34px", fontWeight: 900, letterSpacing: "0.08em", color: "#ffffff", textShadow: "0 4px 24px rgba(0,0,0,0.9)" }}>{waveBanner}</Text>
+    <Text className="dh-display" style={{ fontSize: "44px", color: "#f5ede0", textShadow: "0 0 30px rgba(214,38,30,0.7), 0 6px 24px rgba(0,0,0,0.9)" }}>{waveBanner}</Text>
   </Box>
   <Box if={toast !== ""} className="dh-ovl dh-panel dh-toast"><Text style={{ fontSize: "13px", color: "#ffffff" }}>{toast}</Text></Box>
 
   <Box if={started && !gameOver} className="dh-ovl dh-corner">
-    <Button variant="ghost" style={{ padding: "6px 12px", fontSize: "12px", background: "rgba(6,8,14,0.6)", border: "1px solid rgba(255,255,255,0.14)", color: "#dbe4f3", borderRadius: "8px" }} @click={toggleHelp}>{showHelp ? "Close" : "Help (H)"}</Button>
+    <Button variant="ghost" style={{ padding: "6px 12px", fontSize: "12px", background: "rgba(6,8,14,0.7)", border: "1px solid rgba(255,255,255,0.14)", color: "#dbe4f3", borderRadius: "0" }} @click={toggleHelp}>{showHelp ? "Close" : "Help (H)"}</Button>
   </Box>
 
   <!-- Touch controls -->
@@ -107,7 +150,7 @@
     <DPad @press={padPress} @release={padRelease} />
   </Box>
   <Box if={started && touchMode && !gameOver} className="dh-touch-btns">
-    <Button variant="ghost" style={{ width: "72px", height: "72px", borderRadius: "999px", background: "rgba(255,90,60,0.7)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "13px", fontWeight: 800 }} @click={touchFire}>Fire</Button>
+    <Button variant="ghost" style={{ width: "72px", height: "72px", borderRadius: "999px", background: "rgba(214,38,30,0.75)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "13px", fontWeight: 800 }} @click={touchFire}>Fire</Button>
     <Button variant="ghost" style={{ width: "64px", height: "64px", borderRadius: "999px", background: "rgba(6,8,14,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "12px", fontWeight: 700 }} @click={touchReload}>Reload</Button>
     <Button variant="ghost" style={{ width: "64px", height: "64px", borderRadius: "999px", background: "rgba(6,8,14,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "12px", fontWeight: 700 }} @click={touchSwap}>Swap</Button>
     <Button variant="ghost" style={{ width: "64px", height: "64px", borderRadius: "999px", background: "rgba(6,8,14,0.6)", border: "1px solid rgba(255,255,255,0.2)", color: "#fff", fontSize: "12px", fontWeight: 700 }} @click={touchTorch}>Torch</Button>
@@ -116,23 +159,23 @@
   <!-- Title -->
   <Box if={!started} className="dh-ovl dh-title">
     <Box className="dh-card">
-      <Text style={{ display: "block", fontSize: "12px", letterSpacing: "0.4em", color: "#ff5a3c" }}>HOLD THE YARD UNTIL DAWN</Text>
-      <Text style={{ display: "block", marginTop: "8px", fontSize: "62px", fontWeight: 900, letterSpacing: "-0.03em", lineHeight: 1, color: "#f1f3f7", textShadow: "0 0 40px rgba(255,90,60,0.35), 0 10px 30px rgba(0,0,0,0.6)" }}>Dead Hours</Text>
-      <Text style={{ display: "block", marginTop: "12px", fontSize: "15px", color: "#b8c4d6" }}>The dead come through the gates in waves. A pistol that never runs dry, a shotgun that does, and a fence that will not hold them.</Text>
-      <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "24px", flexWrap: "wrap" }}>
-        <Button variant="ghost" style={{ padding: "13px 30px", borderRadius: "10px", fontWeight: 800, fontSize: "16px", background: "#ff5a3c", color: "#1a0805", border: "1px solid #ff5a3c", boxShadow: "0 10px 30px rgba(255,90,60,0.35)" }} @click={startGame}>Start the night</Button>
+      <Text className="dh-display" style={{ display: "block", fontSize: "13px", letterSpacing: "0.45em", color: "#ff4a3d" }}>Hold the yard until dawn</Text>
+      <Text className="dh-display dh-logo" style={{ display: "block", marginTop: "10px" }}>Dead Hours</Text>
+      <Text style={{ display: "block", marginTop: "14px", fontSize: "15px", color: "#b8c4d6", lineHeight: 1.5 }}>The dead come through the gates in waves. A pistol that never runs dry, a shotgun that does, and a fence that will not hold them.</Text>
+      <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "26px", flexWrap: "wrap" }}>
+        <Button variant="ghost" className="dh-btn dh-btn-main dh-display" style={{ padding: "13px 34px", fontSize: "18px", background: "linear-gradient(180deg, #ef3b2c, #a3140e)", color: "#fff5f0", border: "1px solid #ff6a5a", borderRadius: "0", boxShadow: "0 10px 30px rgba(214,38,30,0.4)" }} @click={startGame}>Start the night</Button>
       </Stack>
       <Box className="dh-keys">
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>W A S D</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>move · <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Shift</Text> sprint</Text>
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Mouse</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>aim · click the yard to capture the cursor, <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Esc</Text> to release</Text>
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>LMB</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>R</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>fire · reload</Text>
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>1</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>2</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Q</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>pistol · shotgun · swap</Text>
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>F</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>torch on and off</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">W A S D</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>move · <Text className="dh-kbd">Shift</Text> sprint</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">Mouse</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>aim · click the yard to capture the cursor, <Text className="dh-kbd">Esc</Text> to release</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">LMB</Text> <Text className="dh-kbd">R</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>fire · reload</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">1</Text> <Text className="dh-kbd">2</Text> <Text className="dh-kbd">Q</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>pistol · shotgun · swap</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">F</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>torch on and off</Text>
       </Box>
       <Box className="dh-board">
-        <Text style={{ display: "block", fontSize: "11px", letterSpacing: "0.2em", color: "#8fa0b8", marginBottom: "6px" }}>LONGEST NIGHTS</Text>
+        <Text className="dh-display" style={{ display: "block", fontSize: "12px", letterSpacing: "0.25em", color: "#8a93a3", marginBottom: "6px" }}>Longest nights</Text>
         #if (boardStatus !== "")
-          <Text style={{ fontSize: "12px", color: "#8fa0b8" }}>{boardStatus}</Text>
+          <Text style={{ fontSize: "12px", color: "#8a93a3" }}>{boardStatus}</Text>
         #end
         #each (row in boardRows)
           <Box className="dh-row">
@@ -147,29 +190,29 @@
   <!-- Paused -->
   <Box if={started && paused && !gameOver && !showHelp} className="dh-ovl dh-title">
     <Box className="dh-card">
-      <Text style={{ display: "block", fontSize: "26px", fontWeight: 800, color: "#ffffff" }}>Paused</Text>
+      <Text className="dh-display" style={{ display: "block", fontSize: "34px", color: "#f5ede0" }}>Paused</Text>
       <Text style={{ display: "block", marginTop: "10px", fontSize: "14px", color: "#c7d2e2" }}>Click the yard to take the cursor back.</Text>
       <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "20px", flexWrap: "wrap" }}>
-        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "#ff5a3c", color: "#1a0805", border: "1px solid #ff5a3c" }} @click={resumeGame}>Resume</Button>
-        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={toggleHelp}>Controls</Button>
-        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={backToTitle}>Give up</Button>
+        <Button variant="ghost" className="dh-display" style={{ padding: "12px 26px", fontSize: "16px", background: "linear-gradient(180deg, #ef3b2c, #a3140e)", color: "#fff5f0", border: "1px solid #ff6a5a", borderRadius: "0" }} @click={resumeGame}>Resume</Button>
+        <Button variant="ghost" className="dh-display" style={{ padding: "12px 26px", fontSize: "16px", background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "0" }} @click={toggleHelp}>Controls</Button>
+        <Button variant="ghost" className="dh-display" style={{ padding: "12px 26px", fontSize: "16px", background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "0" }} @click={backToTitle}>Give up</Button>
       </Stack>
     </Box>
   </Box>
 
   <Box if={started && showHelp} className="dh-ovl dh-title">
     <Box className="dh-card">
-      <Text style={{ display: "block", fontSize: "22px", fontWeight: 800, color: "#ffffff" }}>Controls</Text>
+      <Text className="dh-display" style={{ display: "block", fontSize: "28px", color: "#f5ede0" }}>Controls</Text>
       <Box className="dh-keys">
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>W A S D</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>move · <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Shift</Text> sprint</Text>
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>LMB</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>fire · headshots count double</Text>
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>R</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>RMB</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>reload</Text>
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>1</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>2</Text> <Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Q</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>pistol · shotgun · swap (cancels a reload)</Text>
-        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd" style={{ fontSize: "11px", color: "#fff" }}>Esc</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>release the cursor and pause</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">W A S D</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>move · <Text className="dh-kbd">Shift</Text> sprint</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">LMB</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>fire · headshots count double</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">R</Text> <Text className="dh-kbd">RMB</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>reload</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">1</Text> <Text className="dh-kbd">2</Text> <Text className="dh-kbd">Q</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>pistol · shotgun · swap (cancels a reload)</Text>
+        <Text style={{ color: "#cfd8e6", fontSize: "13px" }}><Text className="dh-kbd">Esc</Text></Text><Text style={{ color: "#cfd8e6", fontSize: "13px" }}>release the cursor and pause</Text>
       </Box>
-      <Text style={{ display: "block", marginTop: "16px", fontSize: "13px", color: "#c7d2e2" }}>Red boxes are shells, white ones medkits. Walk over them.</Text>
+      <Text style={{ display: "block", marginTop: "16px", fontSize: "13px", color: "#c7d2e2" }}>Red crates are shells, white ones medkits. Walk over them.</Text>
       <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "20px" }}>
-        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "#ff5a3c", color: "#1a0805", border: "1px solid #ff5a3c" }} @click={toggleHelp}>Back</Button>
+        <Button variant="ghost" className="dh-display" style={{ padding: "12px 26px", fontSize: "16px", background: "linear-gradient(180deg, #ef3b2c, #a3140e)", color: "#fff5f0", border: "1px solid #ff6a5a", borderRadius: "0" }} @click={toggleHelp}>Back</Button>
       </Stack>
     </Box>
   </Box>
@@ -177,19 +220,19 @@
   <!-- Game over -->
   <Box if={gameOver} className="dh-ovl dh-title">
     <Box className="dh-card">
-      <Text style={{ display: "block", fontSize: "12px", letterSpacing: "0.4em", color: "#ff5a3c" }}>THE YARD FELL</Text>
-      <Text style={{ display: "block", marginTop: "8px", fontSize: "44px", fontWeight: 900, color: "#ffffff" }}>{hud.score + " points"}</Text>
-      <Text style={{ display: "block", marginTop: "6px", fontSize: "14px", color: "#c7d2e2" }}>{"Wave " + hud.wave + " · " + hud.kills + " put down · best " + hud.best}</Text>
+      <Text className="dh-display" style={{ display: "block", fontSize: "13px", letterSpacing: "0.45em", color: "#ff4a3d" }}>The yard fell</Text>
+      <Text className="dh-display" style={{ display: "block", marginTop: "8px", fontSize: "56px", color: "#f5ede0", lineHeight: 1 }}>{hud.score + " points"}</Text>
+      <Text style={{ display: "block", marginTop: "8px", fontSize: "14px", color: "#c7d2e2" }}>{"Wave " + hud.wave + " · " + hud.kills + " put down · best " + hud.best}</Text>
       <Stack direction="horizontal" gap={8} style={{ justifyContent: "center", marginTop: "18px", flexWrap: "wrap" }}>
         <Input value={finalName} @change={setFinalName} placeholder="Your name for the board" style={{ fontSize: "14px", minWidth: "220px" }} />
-        <Button variant="ghost" style={{ padding: "10px 20px", borderRadius: "10px", fontWeight: 700, fontSize: "14px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={postScore}>{scorePosted ? "Posted" : "Post score"}</Button>
+        <Button variant="ghost" style={{ padding: "10px 20px", borderRadius: "0", fontWeight: 700, fontSize: "14px", background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={postScore}>{scorePosted ? "Posted" : "Post score"}</Button>
       </Stack>
       #if (boardStatus !== "")
-        <Text style={{ display: "block", marginTop: "8px", fontSize: "12px", color: "#8fa0b8" }}>{boardStatus}</Text>
+        <Text style={{ display: "block", marginTop: "8px", fontSize: "12px", color: "#8a93a3" }}>{boardStatus}</Text>
       #end
       <Stack direction="horizontal" gap={10} style={{ justifyContent: "center", marginTop: "18px", flexWrap: "wrap" }}>
-        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 800, fontSize: "15px", background: "#ff5a3c", color: "#1a0805", border: "1px solid #ff5a3c" }} @click={startGame}>Another night</Button>
-        <Button variant="ghost" style={{ padding: "12px 26px", borderRadius: "10px", fontWeight: 700, fontSize: "15px", background: "rgba(255,255,255,0.1)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)" }} @click={backToTitle}>Title</Button>
+        <Button variant="ghost" className="dh-display" style={{ padding: "12px 26px", fontSize: "16px", background: "linear-gradient(180deg, #ef3b2c, #a3140e)", color: "#fff5f0", border: "1px solid #ff6a5a", borderRadius: "0" }} @click={startGame}>Another night</Button>
+        <Button variant="ghost" className="dh-display" style={{ padding: "12px 26px", fontSize: "16px", background: "rgba(255,255,255,0.08)", color: "#fff", border: "1px solid rgba(255,255,255,0.2)", borderRadius: "0" }} @click={backToTitle}>Title</Button>
       </Stack>
     </Box>
   </Box>
