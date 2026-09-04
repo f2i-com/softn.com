@@ -82,6 +82,16 @@ run(
   ],
   WASM,
 );
+// Binaryen's optimiser over the linked module. rustc emits per-crate; wasm-opt
+// sees the whole engine at once and, measured on SoftDOS running DOOM in the
+// browser's interpreter-only tier, it is worth 10-15% with identical
+// behaviour. Required rather than best-effort: a build without it would be a
+// silently slower engine with the same version stamp.
+run('wasm-opt', ['-O3', '--all-features',
+  join(PKG, 'zipp_wasm_bg.wasm'), '-o', join(PKG, 'zipp_wasm_bg.opt.wasm')], WASM);
+copyFileSync(join(PKG, 'zipp_wasm_bg.opt.wasm'), join(PKG, 'zipp_wasm_bg.wasm'));
+rmSync(join(PKG, 'zipp_wasm_bg.opt.wasm'));
+// After wasm-opt, which may write a target-features section of its own.
 run('node', ['tests/node/strip-target-features.cjs',
   join(PKG, 'zipp_wasm_bg.wasm'), join(PKG, 'zipp_wasm_bg.stripped.wasm')], WASM);
 copyFileSync(join(PKG, 'zipp_wasm_bg.stripped.wasm'), join(PKG, 'zipp_wasm_bg.wasm'));
