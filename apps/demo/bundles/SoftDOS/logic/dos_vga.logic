@@ -405,6 +405,8 @@ let DOS_VGA_CRTC_INDEX = 0;
 // Set by anything that changes what the screen should show; cleared once the
 // planes have been flattened into the frame buffer.
 let DOS_VGA_DIRTY = 1;
+// Page flips: one per frame the guest finishes in unchained mode.
+let DOS_VGA_FLIPS = 0;
 
 function dosVga_planarInit() {
   if (DOS_VGA_VRAM === null) DOS_VGA_VRAM = new Uint8Array(4 * 65536);
@@ -422,6 +424,7 @@ function dosVga_planarReset() {
   DOS_VGA_GC_INDEX = 0;
   DOS_VGA_CRTC_INDEX = 0;
   DOS_VGA_DIRTY = 1;
+  DOS_VGA_FLIPS = 0;
 }
 
 // A byte written into the 0xA0000 window while unchained reaches every plane
@@ -467,6 +470,7 @@ function dosVga_regWrite(port, v) {
     if (DOS_VGA_CRTC_INDEX === 0x0C) {
       DOS_VGA_START = (DOS_VGA_START & 0x00FF) | (b << 8);
       DOS_VGA_DIRTY = 1;
+      DOS_VGA_FLIPS++;
     } else if (DOS_VGA_CRTC_INDEX === 0x0D) {
       DOS_VGA_START = (DOS_VGA_START & 0xFF00) | b;
       DOS_VGA_DIRTY = 1;
