@@ -49,7 +49,11 @@ function dosOps_setReg(r, size, v) {
 
 function dosOps_getRM(size) {
   if (DOS_MRM_ISREG) return dosOps_getReg(DOS_MRM_RM, size);
-  if (size === 1) return DOS_RAM[DOS_MRM_ADDR & 0xFFFFFF];
+  if (size === 1) {
+    let ra = DOS_MRM_ADDR & 0xFFFFFF;
+    if (DOS_VGA_UNCHAINED === 1 && ra >= 0xA0000 && ra < 0xB0000) return dosVga_readPlanar(ra - 0xA0000);
+    return DOS_RAM[ra];
+  }
   if (size === 2) return dosMmu_read16(DOS_MRM_ADDR);
   return dosMmu_read32(DOS_MRM_ADDR);
 }
