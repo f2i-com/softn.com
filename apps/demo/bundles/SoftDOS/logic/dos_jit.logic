@@ -322,15 +322,21 @@ function dosJit_aluSupported(aop) {
 }
 
 // Record the lazy flag state for an ALU result.
+// The size last written into `fz` by this trace, or 0 when unknown; the
+// prologue loads it from the state array, so it starts unknown.
+let DOS_JIT_FZ = 0;
+
 function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
-  DOS_JIT_PENDING = dosJit_aluLazy(aop);
+  let lazy = dosJit_aluLazy(aop);
+  DOS_JIT_PENDING = lazy;
   DOS_JIT_PSIZE = size;
-  let mask = (size === 1) ? "255" : ((size === 2) ? "65535" : "4294967295");
-  let out = "fo=" + dosJit_aluLazy(aop) +
-            ";fd=" + dosJit_narrow(dExpr, size) +
-            ";fs=" + dosJit_narrow(sExpr, size) +
-            ";fr=" + dosJit_narrow(rTmp, size) +
-            ";fz=" + size + ";";
+  let out = "fo=" + lazy + ";";
+  // A logic result has no carry and no overflow; only the result is read.
+  if (lazy !== 3) {
+    out += "fd=" + dosJit_narrow(dExpr, size) + ";fs=" + dosJit_narrow(sExpr, size) + ";";
+  }
+  out += "fr=" + dosJit_narrow(rTmp, size) + ";";
+  if (DOS_JIT_FZ !== size) { out += "fz=" + size + ";"; DOS_JIT_FZ = size; }
   return out;
 }
 
@@ -502,7 +508,8 @@ function dosJit_one(body, tmp) {
     body.push("t0=" + e + ";t2=" + (dec ? "(t0-1)" : "(t0+1)") + ";");
     let mask = (size === 2) ? "65535" : "4294967295";
     body.push("fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_narrow("t0", size) +
-              ";fs=1;fr=" + dosJit_narrow("t2", size) + ";fz=" + size + ";");
+              ";fs=1;fr=" + dosJit_narrow("t2", size) + ";");
+    if (DOS_JIT_FZ !== size) { body.push("fz=" + size + ";"); DOS_JIT_FZ = size; }
     DOS_JIT_PENDING = dec ? 7 : 6;
     DOS_JIT_PSIZE = size;
     body.push(dosJit_regSet(r, size, "t2"));
@@ -931,7 +938,8 @@ function dosJit_one(body, tmp) {
       let dec = (sub === 1) ? 1 : 0;
       body.push("t0=" + getE + ";t2=" + (dec ? "(t0-1)" : "(t0+1)") + ";");
       body.push("fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_narrow("t0", sz) +
-                ";fs=1;fr=" + dosJit_narrow("t2", sz) + ";fz=" + sz + ";");
+                ";fs=1;fr=" + dosJit_narrow("t2", sz) + ";");
+      if (DOS_JIT_FZ !== sz) { body.push("fz=" + sz + ";"); DOS_JIT_FZ = sz; }
       DOS_JIT_PENDING = dec ? 7 : 6;
       DOS_JIT_PSIZE = sz;
       if (isMem) body.push(dosJit_memWrite("ta", sz, "t2"));
@@ -1173,6 +1181,7 @@ function dosJit_spill() {
 }
 
 function dosJit_reload() {
+  DOS_JIT_FZ = 0;
   return "fo=ST[2];fd=ST[3];fs=ST[4];fr=ST[5];fz=ST[6];";
 }
 
@@ -1190,6 +1199,7 @@ function dosJit_compile(phys) {
   DOS_JC_OK = 1;
   DOS_JIT_PENDING = 0;
   DOS_JIT_PSIZE = 4;
+  DOS_JIT_FZ = 0;
   DOS_JIT_RUSE = 0;
   DOS_JIT_RMOD = 0;
   DOS_JIT_SEEN_N = 0;
