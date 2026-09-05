@@ -6,6 +6,28 @@
  *
  * The sync layer is opt-in per app instance — you join a "room" to start sharing.
  * The existing XDB API (db.create, db.query, db.update, db.delete) remains unchanged.
+ *
+ * Two identities are kept apart throughout:
+ *
+ * - The **room** is a label peers agree on. It is what the network sees.
+ * - The **app** is who is replicating. Two bundles in one document that both
+ *   pick the room "lobby" are two rooms, not one: they must not be handed each
+ *   other's adapter, share an offline cache, or be torn down together. Every
+ *   registry lookup below is by app *and* room, and the persisted CRDT cache
+ *   is named by both.
+ *
+ * Three ways to stop, kept apart too, because a comment used to say "don't
+ * destroy persistence — keep offline cache" as though closing the IndexedDB
+ * connection and deleting the data were one act. They are not: y-indexeddb's
+ * `destroy()` closes the connection and `clearData()` deletes the store.
+ *
+ * - `disconnect()`: leave the room; keep the document and its cache open so a
+ *   `connect()` resumes. For an adapter the caller intends to keep.
+ * - `close()`: leave, close the cache connection, free the document. Nothing
+ *   stored is lost; the next `startSync` for the same app and room reloads
+ *   it. This is what `stopSync` does.
+ * - `destroy()`: close, and delete the stored cache. This is what
+ *   `destroySync` does.
  */
 
 import * as Y from 'yjs';
@@ -13,6 +35,7 @@ import { WebrtcProvider } from 'y-webrtc';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { XDBService, getDefaultSignaling, _setSyncModuleRef, type XDBEvent } from './xdb';
 import type { XDBRecord } from '../types';
+import { deepEqual } from './vm-state';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -44,6 +67,28 @@ export interface XDBSyncStatus {
   peerId: string;
 }
 
+/**
+ * Where the offline CRDT cache for an app's room lives.
+ *
+ * Named by app and room. The default instance keeps the name it always had,
+ * so a document that only ever ran one app finds its cache where it left it;
+ * an app-scoped adapter never reads a cache it cannot prove is its own — a
+ * legacy `xdb-sync-<room>` store may belong to any app that used that label.
+ */
+export function persistenceNameFor(appId: string | undefined, room: string): string {
+  return appId ? `xdb-sync:${appId}:${room}` : `xdb-sync-${room}`;
+}
+
+/**
+ * Last-writer-wins by `updated_at`. XDB stamps every write with an ISO time,
+ * and ISO times order as strings. A record with no stamp loses to one with.
+ */
+function isNewer(candidate: { updated_at?: string }, incumbent: { updated_at?: string }): boolean {
+  const a = candidate.updated_at ?? '';
+  const b = incumbent.updated_at ?? '';
+  return a > b;
+}
+
 // ── Adapter Class ─────────────────────────────────────────
 
 export class XDBSyncAdapter {
@@ -58,6 +103,7 @@ export class XDBSyncAdapter {
   private collectionObservers = new Map<string, (event: Y.YMapEvent<unknown>) => void>();
   private persistenceListener: (() => void) | null = null;
   private updateHandler: (() => void) | null = null;
+  private closed = false;
 
   constructor(xdb: XDBService, options: XDBSyncOptions) {
     this.xdb = xdb;
@@ -67,14 +113,20 @@ export class XDBSyncAdapter {
     // Optional: IndexedDB persistence for offline CRDT cache
     if (options.persist !== false) {
       this.persistence = new IndexeddbPersistence(
-        `xdb-sync-${options.room}`,
+        persistenceNameFor(options.appId, options.room),
         this.ydoc
       );
     }
   }
 
+  /** The document, for a host that wants to exchange updates itself (tests, relays). */
+  get doc(): Y.Doc {
+    return this.ydoc;
+  }
+
   /** Start syncing — connect to peers */
   connect(): void {
+    if (this.closed) throw new Error('[XDB Sync] This adapter has been closed');
     // Guard against double-connect (y-webrtc throws if room already exists)
     if (this.provider) return;
 
@@ -125,7 +177,20 @@ export class XDBSyncAdapter {
     }
   }
 
-  /** Stop syncing — disconnect from peers */
+  /**
+   * Bring the document and the local database into agreement without a
+   * provider — what a host does when it exchanges updates itself. The
+   * persistence load is not waited for here; a caller that persists should
+   * `connect()` instead.
+   */
+  attachLocal(): void {
+    if (this.closed) throw new Error('[XDB Sync] This adapter has been closed');
+    this.setupYjsObservers();
+    this.performInitialSync();
+    this.setupXDBListener();
+  }
+
+  /** Stop syncing — disconnect from peers. The document and its cache stay open. */
   disconnect(): void {
     try {
       if (this.unsubscribeXDB) {
@@ -158,7 +223,31 @@ export class XDBSyncAdapter {
       }
       this.collectionObservers.clear();
       this.observedCollections.clear();
-      // Note: don't destroy persistence here — keep offline cache
+    }
+  }
+
+  /**
+   * Release everything this adapter holds, keeping what it stored.
+   *
+   * The persistence provider's `destroy()` closes its IndexedDB connection and
+   * detaches from the document; the data in the store is untouched and is
+   * reloaded by the next adapter for this app and room. Safe to call twice.
+   */
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.disconnect();
+    } finally {
+      if (this.persistence) {
+        try {
+          this.persistence.destroy();
+        } catch (err) {
+          console.warn('[XDB Sync] Persistence did not close cleanly:', err);
+        }
+        this.persistence = null;
+      }
+      this.ydoc.destroy();
     }
   }
 
@@ -183,29 +272,48 @@ export class XDBSyncAdapter {
     return this.provider.awareness.getStates() as Map<number, Record<string, unknown>>;
   }
 
-  /** Destroy and cleanup all resources */
-  destroy(): void {
-    this.disconnect();
-    if (this.persistence) {
-      this.persistence.destroy();
-      this.persistence = null;
+  /**
+   * Forget: close, and delete the stored CRDT cache for this app and room.
+   *
+   * The deletion is asynchronous inside y-indexeddb; the returned promise
+   * settles when it is done, and a caller that does not care may ignore it.
+   * The local XDB records are not touched — they are the app's data, and the
+   * cache is only a copy of what the room agreed on.
+   */
+  destroy(): Promise<void> {
+    const persistence = this.persistence;
+    let cleared: Promise<void> = Promise.resolve();
+    if (persistence && typeof (persistence as { clearData?: unknown }).clearData === 'function') {
+      cleared = Promise.resolve(persistence.clearData()).catch((err: unknown) => {
+        console.warn('[XDB Sync] Could not clear persisted sync data:', err);
+      });
     }
-    this.ydoc.destroy();
-    this.observedCollections.clear();
+    this.close();
+    return cleared;
   }
 
   // ── Internal: Initial Sync ──────────────────────────────
 
   /**
-   * Push local XDB records into Y.Doc and pull remote records to XDB.
+   * Reconcile the local XDB with the document, in both directions.
    *
    * Called AFTER y-indexeddb finishes loading (if persistence is enabled),
    * so the Y.Doc already has any previously persisted CRDT state.
+   *
+   * This used to push every local record into the document unconditionally,
+   * on the theory that Yjs would notice an identical value. It does not: a
+   * `Y.Map.set` is always a new write, so the push generated a full
+   * collection's worth of CRDT updates for peers to apply, and — worse — a
+   * local copy that had been offline for a week overwrote whatever the room
+   * had agreed on since. Now a record goes in only if the document does not
+   * have it or has an older one, and comes out only if the document's copy is
+   * newer. Equal stamps with equal contents are left alone.
    */
   private performInitialSync(): void {
-    // Push all local collections into Y.Doc
+    const collections = this.xdb.getCollections();
+
+    // Push: local records the document lacks, or has an older copy of.
     this.ydoc.transact(() => {
-      const collections = this.xdb.getCollections();
       for (const collName of collections) {
         if (collName.startsWith('_')) continue;
 
@@ -213,44 +321,58 @@ export class XDBSyncAdapter {
         const records = this.xdb.getAllRaw(collName);
 
         for (const record of records) {
-          // Always push — Yjs handles dedup internally.
-          // If the value is identical, no CRDT update is generated.
-          ymap.set(record.id, recordToJSON(record));
+          const existing = ymap.get(record.id) as Record<string, unknown> | undefined;
+          if (existing === undefined || isNewer(record, existing as { updated_at?: string })) {
+            const json = recordToJSON(record);
+            if (existing === undefined || !deepEqual(existing, json)) ymap.set(record.id, json);
+          }
         }
 
-        // Start observing this collection if not already
+        // Observe, but do not project here: the pull below is about to read
+        // every map, and this one is inside a transaction of our own.
         if (!this.observedCollections.has(collName)) {
-          this.observeCollection(collName);
+          this.observeCollection(collName, false);
         }
       }
     });
 
-    // Pull any records from Y.Doc that we don't have locally
-    // (from persisted CRDT state or fast-connecting peers)
+    // Pull: records the document has that we lack, or has a newer copy of
+    // (from persisted CRDT state or fast-connecting peers).
     for (const [key] of this.ydoc.share) {
       if (key.startsWith('_')) continue;
 
       const ymap = this.ydoc.getMap(key);
       if (ymap.size === 0) continue;
 
-      this.isSyncing = true;
-      try {
-        // Build a set of local IDs once (avoids O(n*m) re-reads from storage)
-        const localIds = new Set(this.xdb.getAllRaw(key).map(r => r.id));
-        ymap.forEach((val, recordId) => {
-          if (!localIds.has(recordId)) {
-            const record = jsonToRecord(val as Record<string, unknown>);
-            this.xdb.writeRecord(key, record);
-          }
-        });
-      } finally {
-        this.isSyncing = false;
-      }
+      this.projectCollection(key, ymap);
 
       // Start observing this collection if not already
       if (!this.observedCollections.has(key)) {
-        this.observeCollection(key);
+        this.observeCollection(key, false);
       }
+    }
+  }
+
+  /**
+   * Write into XDB whatever the document holds for a collection that the
+   * local database lacks or holds an older copy of. Runs with the echo guard
+   * up, so the writes do not come straight back as outbound changes.
+   */
+  private projectCollection(collName: string, ymap: Y.Map<unknown>): void {
+    if (ymap.size === 0) return;
+    this.isSyncing = true;
+    try {
+      // Build a map of local records once (avoids O(n*m) re-reads from storage)
+      const local = new Map(this.xdb.getAllRaw(collName).map((r) => [r.id, r]));
+      ymap.forEach((val, recordId) => {
+        const record = jsonToRecord(val as Record<string, unknown>);
+        const mine = local.get(recordId);
+        if (!mine || isNewer(record, mine)) {
+          this.xdb.writeRecord(collName, record);
+        }
+      });
+    } finally {
+      this.isSyncing = false;
     }
   }
 
@@ -268,7 +390,7 @@ export class XDBSyncAdapter {
 
       // Ensure we're observing this collection
       if (!this.observedCollections.has(event.collection)) {
-        this.observeCollection(event.collection);
+        this.observeCollection(event.collection, false);
       }
 
       this.ydoc.transact(() => {
@@ -294,13 +416,26 @@ export class XDBSyncAdapter {
 
           case 'refresh':
             // Refresh represents authoritative local state for this collection.
-            // Replace the Y.Map contents to keep CRDT in sync with SQLite/local cache.
+            //
+            // It used to be applied by emptying the map and refilling it, so
+            // one changed record in a batched notification became a delete
+            // and a re-insert of every record in the collection — that many
+            // CRDT updates to send, and that many for each peer to apply.
+            // Now only what differs is written: changed or new records are
+            // set, records the refresh no longer lists are deleted, and the
+            // rest are not touched.
             if (event.records) {
-              for (const k of Array.from(ymap.keys())) {
-                ymap.delete(k);
-              }
+              const listed = new Set<string>();
               for (const record of event.records) {
-                ymap.set(record.id, recordToJSON(record));
+                listed.add(record.id);
+                const json = recordToJSON(record);
+                const existing = ymap.get(record.id);
+                if (existing === undefined || !deepEqual(existing, json)) {
+                  ymap.set(record.id, json);
+                }
+              }
+              for (const k of Array.from(ymap.keys())) {
+                if (!listed.has(k)) ymap.delete(k);
               }
             }
             break;
@@ -315,8 +450,15 @@ export class XDBSyncAdapter {
 
   /**
    * Start observing a single collection Y.Map for remote changes.
+   *
+   * `project` says whether to write the map's current contents into XDB
+   * first. A map discovered from the document's `update` event was filled by
+   * the very transaction that announced it, and an observer attached after
+   * that transaction will never be told about it — so the first record of a
+   * new collection arriving from a peer was missed unless another followed.
+   * Discovery projects; the bootstrap does its own pull and passes false.
    */
-  private observeCollection(collName: string): void {
+  private observeCollection(collName: string, project: boolean): void {
     if (this.observedCollections.has(collName)) return;
     this.observedCollections.add(collName);
 
@@ -341,14 +483,7 @@ export class XDBSyncAdapter {
           if (change.action === 'add' || change.action === 'update') {
             const val = ymap.get(recordId) as Record<string, unknown>;
             if (!val) continue;
-            const record = jsonToRecord(val);
-
-            if (record.deleted) {
-              // Remote soft-delete
-              this.xdb.writeRecord(collName, record);
-            } else {
-              this.xdb.writeRecord(collName, record);
-            }
+            this.xdb.writeRecord(collName, jsonToRecord(val));
           } else if (change.action === 'delete') {
             // Remote hard-delete
             this.xdb.removeRecord(collName, recordId);
@@ -361,6 +496,8 @@ export class XDBSyncAdapter {
 
     ymap.observe(handler);
     this.collectionObservers.set(collName, handler);
+
+    if (project) this.projectCollection(collName, ymap);
   }
 
   /**
@@ -374,7 +511,7 @@ export class XDBSyncAdapter {
     // Observe existing collections from Y.Doc
     for (const [key] of this.ydoc.share) {
       if (key.startsWith('_')) continue;
-      this.observeCollection(key);
+      this.observeCollection(key, false);
     }
 
     // Discover new collections after each Y.Doc update.
@@ -382,7 +519,7 @@ export class XDBSyncAdapter {
       for (const [key] of this.ydoc.share) {
         if (key.startsWith('_')) continue;
         if (!this.observedCollections.has(key)) {
-          this.observeCollection(key);
+          this.observeCollection(key, true);
         }
       }
     };
@@ -421,8 +558,22 @@ function jsonToRecord(json: Record<string, unknown>): XDBRecord {
 
 import { getXDB } from './xdb';
 
+/** Adapters, keyed by app scope and room together. */
 const syncAdapters = new Map<string, XDBSyncAdapter>();
 const SYNC_ROOM_KEY_PREFIX = 'xdb-sync-active-room';
+
+/**
+ * The registry key for an app's room: a JSON tuple, so no app identifier or
+ * room label can be spelled to collide with another pair.
+ */
+function registryKey(appId: string | undefined, room: string): string {
+  return JSON.stringify([appId ?? null, room]);
+}
+
+function inScope(key: string, appId: string | undefined): boolean {
+  const [owner] = JSON.parse(key) as [string | null, string];
+  return owner === (appId ?? null);
+}
 
 /** Get the localStorage key for persisting the active sync room, namespaced by appId. */
 function getSyncRoomKey(appId?: string): string {
@@ -432,19 +583,21 @@ function getSyncRoomKey(appId?: string): string {
 /**
  * Start syncing an XDB instance to a room.
  * When `options.appId` is set, syncs the per-app XDB instance (not the default).
- * If a sync for this room already exists, returns the existing adapter.
+ * If this app already syncs this room, returns the existing adapter.
  * Persists the room to localStorage so sync can auto-resume after reload.
  */
 export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
   // Register this module so getSyncStatuses() works without dynamic import
   _setSyncModuleRef({ getAllSyncStatus });
-  if (syncAdapters.has(options.room)) {
+  const key = registryKey(options.appId, options.room);
+  const existing = syncAdapters.get(key);
+  if (existing) {
     console.warn(`[XDB Sync] Room "${options.room}" already has an active sync adapter. Returning existing adapter — new options are ignored.`);
-    return syncAdapters.get(options.room)!;
+    return existing;
   }
   const adapter = new XDBSyncAdapter(getXDB(options.appId), options);
   adapter.connect();
-  syncAdapters.set(options.room, adapter);
+  syncAdapters.set(key, adapter);
   try {
     localStorage.setItem(getSyncRoomKey(options.appId), options.room);
   } catch {
@@ -454,33 +607,37 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
 }
 
 /**
- * Stop syncing — disconnects from peers but preserves IndexedDB cache.
- * If room is provided, stops that room only. If no room, stops all.
- * The adapter is removed from the map so next startSync() creates a fresh one.
+ * Stop syncing — leaves the room and releases the adapter; the offline cache
+ * in IndexedDB is kept.
+ *
+ * With a room, stops that room for this app. Without one, stops every room
+ * this app is in — and only this app's: a document that mounts several apps
+ * at once must not have one app's `stopSync()` cut the others off. A host
+ * that wants everything gone calls {@link stopAllSync}.
  */
 export function stopSync(room?: string, appId?: string): void {
   if (room) {
-    const adapter = syncAdapters.get(room);
+    const key = registryKey(appId, room);
+    const adapter = syncAdapters.get(key);
     if (adapter) {
-      adapter.disconnect();
-      syncAdapters.delete(room);
+      syncAdapters.delete(key);
+      adapter.close();
     }
     try {
-      const key = getSyncRoomKey(appId);
-      const saved = localStorage.getItem(key);
-      if (saved === room) localStorage.removeItem(key);
+      const storageKey = getSyncRoomKey(appId);
+      const saved = localStorage.getItem(storageKey);
+      if (saved === room) localStorage.removeItem(storageKey);
     } catch {
       // localStorage may be unavailable in restricted contexts
     }
   } else {
-    for (const adapter of syncAdapters.values()) {
-      adapter.disconnect();
+    for (const [key, adapter] of Array.from(syncAdapters.entries())) {
+      if (!inScope(key, appId)) continue;
+      syncAdapters.delete(key);
+      adapter.close();
     }
-    syncAdapters.clear();
     try {
-      // Clear all possible sync room keys
       localStorage.removeItem(getSyncRoomKey(appId));
-      if (!appId) localStorage.removeItem(SYNC_ROOM_KEY_PREFIX);
     } catch {
       // localStorage may be unavailable in restricted contexts
     }
@@ -488,41 +645,64 @@ export function stopSync(room?: string, appId?: string): void {
 }
 
 /**
- * Destroy sync completely — disconnects AND removes IndexedDB persistence.
- * Use this for full cleanup when you want to wipe CRDT state.
+ * Stop every adapter in every app scope. For a host tearing the page down —
+ * not for an app, which may only stop its own.
  */
-export function destroySync(room?: string): void {
+export function stopAllSync(): void {
+  for (const [key, adapter] of Array.from(syncAdapters.entries())) {
+    syncAdapters.delete(key);
+    adapter.close();
+  }
+}
+
+/**
+ * Destroy sync completely — disconnects AND deletes the IndexedDB cache.
+ * Use this for full cleanup when you want to wipe CRDT state. Scoped to one
+ * app exactly as `stopSync` is.
+ */
+export function destroySync(room?: string, appId?: string): Promise<void> {
+  const pending: Promise<void>[] = [];
   if (room) {
-    const adapter = syncAdapters.get(room);
+    const key = registryKey(appId, room);
+    const adapter = syncAdapters.get(key);
     if (adapter) {
-      adapter.destroy();
-      syncAdapters.delete(room);
+      syncAdapters.delete(key);
+      pending.push(adapter.destroy());
     }
   } else {
-    for (const adapter of syncAdapters.values()) {
-      adapter.destroy();
+    for (const [key, adapter] of Array.from(syncAdapters.entries())) {
+      if (!inScope(key, appId)) continue;
+      syncAdapters.delete(key);
+      pending.push(adapter.destroy());
     }
-    syncAdapters.clear();
   }
+  return Promise.all(pending).then(() => undefined);
 }
 
 /**
- * Get a sync adapter by room name (or first active adapter if no room).
+ * Get an app's sync adapter by room name, or its first active adapter when
+ * no room is given. Never another app's.
  */
-export function getSyncAdapter(room?: string): XDBSyncAdapter | null {
+export function getSyncAdapter(room?: string, appId?: string): XDBSyncAdapter | null {
   if (room) {
-    return syncAdapters.get(room) || null;
+    return syncAdapters.get(registryKey(appId, room)) || null;
   }
-  // Return first active adapter
-  const first = syncAdapters.values().next();
-  return first.done ? null : first.value;
+  for (const [key, adapter] of syncAdapters) {
+    if (inScope(key, appId)) return adapter;
+  }
+  return null;
 }
 
 /**
- * Get status of all active sync rooms.
+ * Get status of all active sync rooms — every app's, or one app's.
  */
-export function getAllSyncStatus(): XDBSyncStatus[] {
-  return Array.from(syncAdapters.values()).map(a => a.getStatus());
+export function getAllSyncStatus(appId?: string): XDBSyncStatus[] {
+  const out: XDBSyncStatus[] = [];
+  for (const [key, adapter] of syncAdapters) {
+    if (appId !== undefined && !inScope(key, appId)) continue;
+    out.push(adapter.getStatus());
+  }
+  return out;
 }
 
 /**

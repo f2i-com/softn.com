@@ -6,7 +6,7 @@
  */
 
 import React, { useCallback, useRef } from 'react';
-import { useConsentPending } from '@softn/core';
+import { isCapabilityAllowed, useCapability } from '@softn/core';
 import { Scanner, type IDetectedBarcode } from '@yudiel/react-qr-scanner';
 
 export interface QRReaderProps {
@@ -33,9 +33,19 @@ export function QRReader({
   style,
 }: QRReaderProps): React.ReactElement {
   // Same exposure as <Camera>: the scanner opens the camera itself, from its
-  // own mount, and permission.json says nothing about it. It mounts and opens
-  // the device on the render that follows the grant, with no reload.
-  const consentPending = useConsentPending();
+  // own mount, and permission.json says nothing about it. Held on the host's
+  // published decision: either the `qr` capability — reading codes is what it
+  // declares — or `camera` lets the scanner open the device. It mounts on the
+  // render that follows the grant, with no reload.
+  const qrGrant = useCapability('qr');
+  const cameraGrant = useCapability('camera');
+  const consentPending = qrGrant === 'pending';
+  const scannerAllowed = isCapabilityAllowed(qrGrant) || isCapabilityAllowed(cameraGrant);
+  const refusal = consentPending
+    ? 'Scanning stays off until you choose Allow in the permission bar at the top of this app.'
+    : !scannerAllowed
+      ? 'This app has not declared camera or QR access. Its permission.json needs { "qr": { "enabled": true } }.'
+      : null;
 
   const lastScanRef = useRef<string>('');
   const lastScanTimeRef = useRef<number>(0);
@@ -65,7 +75,7 @@ export function QRReader({
 
   // Not rendered at all, rather than rendered `paused`: pausing stops the
   // decode, not the stream, so the scanner would still have opened the camera.
-  if (consentPending) {
+  if (refusal !== null) {
     return (
       <div style={frameStyle}>
         <div
@@ -82,7 +92,7 @@ export function QRReader({
             lineHeight: 1.5,
           }}
         >
-          Scanning stays off until you choose Allow in the permission bar at the top of this app.
+          {refusal}
         </div>
       </div>
     );

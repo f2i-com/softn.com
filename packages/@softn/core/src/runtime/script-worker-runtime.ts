@@ -7,6 +7,7 @@ type ImportResolver = (path: string) => Promise<string | null>;
 import type {
   BundleFileProvider,
   CodeBlock,
+  DBNamespace,
   HostCallExecutor,
   PendingHostCall,
   PermissionConfig,
@@ -16,9 +17,11 @@ import type {
 } from './script-runtime';
 import {
   buildExternalValuesPreamble,
+  createDBNamespace,
   createHostCallExecutor,
   getSyncModuleCache,
 } from './script-runtime';
+import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 
 type WorkerPayloadMap = {
   init: Record<string, unknown>;
@@ -53,14 +56,15 @@ export interface WorkerRuntimeOptions {
   externalFunctions?: Record<string, (...args: unknown[]) => unknown>;
   /** Where `softn.storage.*` sends its operations; see ScriptRuntimeOptions. */
   storageEndpoint?: string;
+  /**
+   * Called once if the worker is terminated for missing its hard deadline —
+   * see `HARD_DEADLINE_MS`. The runtime is dead after this; every function
+   * rejects, and the host should show the app as failed rather than frozen.
+   */
+  onFatal?: (error: Error) => void;
+  /** Override the hard deadline, for tests and for hosts that know their workload. */
+  hardDeadlineMs?: number;
 }
-
-/**
- * Events the browser fires faster than a script can use them. Delivered at
- * most once a frame, as the main-thread runtime does.
- */
-const THROTTLED_EVENTS = new Set(['mousemove', 'pointermove', 'scroll', 'resize', 'touchmove', 'wheel']);
-const THROTTLE_MS = 16;
 
 /** Host calls resolved per chain before it is judged a runaway. */
 const MAX_HOST_CALL_ROUNDS = 256;
@@ -119,7 +123,38 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private logicBasePath?: string;
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: unknown) => void }>();
+  /**
+   * The soft deadline: a caller waiting this long is told to stop waiting.
+   * The script may still be running — legitimately, for a heavy function —
+   * and the worker is left alone.
+   */
   private static readonly RPC_TIMEOUT_MS = 15000;
+  /**
+   * The hard deadline: a request unanswered this long is a worker that is not
+   * coming back, and the worker is terminated. The soft timeout used to be
+   * the only one, and it only rejected the caller: the worker kept running,
+   * every later call queued behind the stuck one and timed out in turn, and
+   * the app sat frozen with no error and no way to stop it short of closing
+   * the tab. An instruction budget inside the engine bounds a script's own
+   * loops; it does not bound a wall clock, and this does.
+   */
+  private static readonly HARD_DEADLINE_MS = 60000;
+  private readonly hardDeadlineMs: number;
+  /** One timer per request still unanswered, cleared by the answer. */
+  private hardTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /**
+   * Bumped when the worker is replaced or terminated. Every message carries
+   * the generation of the worker it came from; one from a previous
+   * generation is a late reply from a worker that no longer exists and is
+   * dropped rather than revived into state.
+   */
+  private generation = 0;
+  private terminated = false;
+  private readonly onFatal: ((error: Error) => void) | null;
+  /** The script's `db` namespace on this thread: the same gates the main-thread runtime applies. */
+  private readonly dbNamespace: DBNamespace;
+  /** Per-frame delivery for the high-frequency events; disposed with the listeners. */
+  private coalescers: EventCoalescer[] = [];
   private safeAppId: string;
   /** Tracks the worker's last known state to avoid redundant update_context calls. */
   private lastKnownWorkerState: Record<string, unknown> = {};
@@ -189,6 +224,15 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.accelGranted =
       options?.permissionConfig?.permissions?.accel?.enabled === true &&
       options.permissionConfig.consentPending !== true;
+    this.hardDeadlineMs = options?.hardDeadlineMs ?? WorkerScriptRuntime.HARD_DEADLINE_MS;
+    this.onFatal = options?.onFatal ?? null;
+    // The worker's `db.startSync` used to reach the sync layer directly, with
+    // whatever options the script wrote and no app identity: no `sync`
+    // permission check, no shared-room key derivation, and an adapter on the
+    // default database rather than this app's. Routing it through the same
+    // namespace the main-thread runtime uses gives it the same three things.
+    const permissionConfig = options?.permissionConfig ?? null;
+    this.dbNamespace = createDBNamespace(() => permissionConfig, appId);
     this.hostExecutor = createHostCallExecutor(
       context,
       permissions,
@@ -210,7 +254,11 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     const workerPath = './core-runtime/runtime/script-worker.js';
     this.workerUrl = new URL(workerPath, import.meta.url);
     this.worker = new Worker(this.workerUrl, { type: 'module' });
-    this.worker.onmessage = (evt: MessageEvent) => this.onWorkerMessage(evt);
+    const generation = this.generation;
+    this.worker.onmessage = (evt: MessageEvent) => {
+      if (generation !== this.generation) return;
+      this.onWorkerMessage(evt);
+    };
     this.worker.onerror = (evt: ErrorEvent) => {
       const details = [
         evt.message || 'worker_error',
@@ -271,7 +319,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     try {
       const mod = getSyncModuleCache();
       if (mod) {
-        const adapter = mod.getSyncAdapter();
+        // This app's adapter, not whichever app happens to be syncing.
+        const adapter = mod.getSyncAdapter(undefined, this.appId);
         return adapter ? adapter.getStatus() : { connected: false, peers: 0, room: '', peerId: '' };
       }
     } catch { /* ignore */ }
@@ -279,10 +328,11 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   }
 
   /**
-   * Get saved sync room name.
+   * Get saved sync room name — this app's, under the same key the main-thread
+   * runtime and the sync layer use, not the un-namespaced default.
    */
   private getSavedSyncRoom(): string | null {
-    try { return localStorage.getItem('xdb-sync-active-room'); } catch { return null; }
+    return this.dbNamespace.getSavedSyncRoom();
   }
 
   // ==========================================================================
@@ -306,7 +356,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.dbDirty = true;
     try {
       const { getXDB } = await import('./xdb');
-      const xdb = getXDB();
+      const xdb = getXDB(this.appId);
       for (const m of mutations) {
         switch (m.type) {
           case 'create': {
@@ -337,14 +387,12 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
             break;
           }
           case 'startSync':
-            import('./xdb-sync').then((mod) => {
-              mod.startSync({ room: m.room, ...(m.options || {}) });
-            }).catch((err) => console.error('[Worker Bridge] startSync error:', err));
+            // Same gate, same key derivation and same host-bound identity as
+            // a script running on the main thread — see the constructor.
+            this.dbNamespace.startSync(m.room, m.options);
             break;
           case 'stopSync':
-            import('./xdb-sync').then(({ stopSync }) => {
-              stopSync(m.room);
-            }).catch((err) => console.error('[Worker Bridge] stopSync error:', err));
+            this.dbNamespace.stopSync(m.room);
             break;
         }
       }
@@ -418,11 +466,44 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       return;
     }
     if (!isWorkerResponse(msg)) return;
+    // Answered, however late: the hard deadline for this request is off,
+    // even if the soft timeout already gave up on the caller.
+    const hard = this.hardTimers.get(msg.id);
+    if (hard !== undefined) {
+      clearTimeout(hard);
+      this.hardTimers.delete(msg.id);
+    }
     const pending = this.pending.get(msg.id);
     if (!pending) return;
     this.pending.delete(msg.id);
     if (msg.ok) pending.resolve(msg.result);
     else pending.reject(new Error(msg.error || 'worker_rpc_failed'));
+  }
+
+  /**
+   * Stop the worker for good. Everything outstanding is rejected, every
+   * timer is cleared, and the generation moves on so that nothing the dead
+   * worker might still say is heard. No replacement is started: a runtime
+   * that spins up a fresh worker for a script that just hung would run the
+   * same script into the same hang, forever.
+   */
+  private terminate(reason: string): void {
+    if (this.terminated) return;
+    this.terminated = true;
+    this.generation++;
+    for (const timer of this.hardTimers.values()) clearTimeout(timer);
+    this.hardTimers.clear();
+    const error = new Error(reason);
+    for (const [, p] of this.pending) p.reject(error);
+    this.pending.clear();
+    this.worker.terminate();
+    if (!this.disposed && this.onFatal) {
+      try {
+        this.onFatal(error);
+      } catch (err) {
+        console.error('[SoftN Worker] onFatal handler failed:', err);
+      }
+    }
   }
 
   private call<T = unknown>(type: 'init', payload: WorkerPayloadMap['init']): Promise<T>;
@@ -431,6 +512,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private call<T = unknown>(type: 'dispatch_event', payload: WorkerPayloadMap['dispatch_event']): Promise<T>;
   private call<T = unknown>(type: 'update_context', payload: WorkerPayloadMap['update_context']): Promise<T>;
   private call<T = unknown>(type: string, payload: unknown): Promise<T> {
+    if (this.terminated) {
+      return Promise.reject(new Error(`worker_terminated:${type}`));
+    }
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -438,6 +522,17 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         this.pending.delete(id);
         reject(new Error(`worker_rpc_timeout:${type}`));
       }, WorkerScriptRuntime.RPC_TIMEOUT_MS);
+
+      this.hardTimers.set(
+        id,
+        setTimeout(() => {
+          this.hardTimers.delete(id);
+          console.error(
+            `[SoftN Worker] ${type} unanswered for ${this.hardDeadlineMs}ms — terminating the script worker`
+          );
+          this.terminate(`worker_hard_deadline:${type}`);
+        }, this.hardDeadlineMs)
+      );
 
       this.pending.set(id, {
         resolve: (v: unknown) => {
@@ -685,14 +780,11 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     for (const eventType of types) {
       if (this.bridgedEventTypes.has(eventType)) continue;
       this.bridgedEventTypes.add(eventType);
-      const dispatch = (event: Event) => {
+      const dispatch = (props: Record<string, unknown>) => {
         if (this.disposed) return;
-        // A key the script asked to keep whole: cancelled here, on the
-        // thread that can, before the event is sent across.
-        if (shouldCaptureKey(event)) event.preventDefault();
         this.call<EntryResult>('dispatch_event', {
           eventType,
-          event: extractEventProps(event),
+          event: props,
           lsSnapshot: this.takeLocalStorageSnapshotIfDirty(),
           syncStatus: this.getSyncStatus(),
           savedSyncRoom: this.getSavedSyncRoom(),
@@ -700,22 +792,25 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
           .then((out) => this.applyEntry(out))
           .catch((err) => console.warn(`[SoftN Worker] ${eventType} handler failed: ${String(err)}`));
       };
-      let listener: (event: Event) => void = dispatch;
-      if (THROTTLED_EVENTS.has(eventType)) {
-        let lastCall = 0;
-        let pendingFrame: number | null = null;
+      // The high-frequency events cross once a frame, combined by the policy
+      // the type chooses and delivered in the order they happened — the same
+      // coalescer the main-thread runtime uses; see event-coalescer.ts.
+      const policy = coalescePolicyFor(eventType);
+      let listener: (event: Event) => void;
+      if (policy !== null) {
+        const coalescer = new EventCoalescer(policy, dispatch);
+        this.coalescers.push(coalescer);
         listener = (event: Event) => {
-          const now = performance.now();
-          if (now - lastCall >= THROTTLE_MS) {
-            lastCall = now;
-            dispatch(event);
-          } else if (pendingFrame === null) {
-            pendingFrame = requestAnimationFrame(() => {
-              pendingFrame = null;
-              lastCall = performance.now();
-              dispatch(event);
-            });
-          }
+          if (this.disposed) return;
+          coalescer.push(extractEventProps(event));
+        };
+      } else {
+        listener = (event: Event) => {
+          if (this.disposed) return;
+          // A key the script asked to keep whole: cancelled here, on the
+          // thread that can, before the event is sent across.
+          if (shouldCaptureKey(event)) event.preventDefault();
+          dispatch(extractEventProps(event));
         };
       }
       window.addEventListener(eventType, listener);
@@ -730,11 +825,11 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     }
     this.nativeListeners = [];
     this.bridgedEventTypes.clear();
+    for (const coalescer of this.coalescers) coalescer.dispose();
+    this.coalescers = [];
     clearCapturedKeys();
     this.hostExecutor.cleanup();
-    for (const [, p] of this.pending) p.reject(new Error('worker_terminated'));
-    this.pending.clear();
-    this.worker.terminate();
+    this.terminate('worker_terminated');
   }
 }
 

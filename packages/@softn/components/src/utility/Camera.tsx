@@ -7,7 +7,7 @@
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { useConsentPending } from '@softn/core';
+import { isCapabilityAllowed, useCapability } from '@softn/core';
 
 /** One per run of the start effect — see the effect at the bottom for why. */
 interface StartAttempt {
@@ -63,6 +63,13 @@ export interface CameraProps {
   quality?: number;
   /** Whether the camera is active (default true) */
   active?: boolean;
+  /**
+   * Whether to capture sound as well as pictures (default: true in `video`
+   * mode, false otherwise). Sound is the microphone, which is its own
+   * capability: a bundle that declares `camera` alone gets silent video, and
+   * one that wants a soundtrack declares `mic` too.
+   */
+  audio?: boolean;
   /** Whether to show built-in controls (default true) */
   showControls?: boolean;
   /** Called when a photo is captured */
@@ -87,6 +94,7 @@ export function Camera({
   frameRate = 10,
   quality = 0.7,
   active = true,
+  audio,
   showControls = true,
   onCapture,
   onFrame,
@@ -96,15 +104,29 @@ export function Camera({
   children,
 }: CameraProps): React.ReactElement {
   // permission.json gates the softn.* API; getUserMedia below is not part of
-  // it, so while the app's consent bar is unanswered the only thing in front of
-  // the hardware is the browser's own prompt — raised by an entry page, on
-  // arrival, over the top of a bar the user has not read yet. Worse, every
-  // bundle is served from one browser origin, so once any app has been granted
-  // the camera there the next bundle gets the device with no prompt at all.
-  // Nothing opens until the bar has been answered; the flag turns false on the
-  // grant and the effect below starts the stream then, with no reload.
-  const consentPending = useConsentPending();
-  const permitted = active && !consentPending;
+  // it, so the host publishes its decision and this reads it. Every bundle is
+  // served from one browser origin, so once any app has been granted the
+  // camera there the next bundle gets the device with no prompt at all — the
+  // browser's grant says nothing about which bundle the user approved, and
+  // only the host's does. Nothing opens while the bar is unanswered, nothing
+  // opens for a bundle that did not declare the camera, and video with sound
+  // needs the microphone declared as well. A grant arrives as a re-render and
+  // the effect below starts the stream then, with no reload; a revocation
+  // arrives the same way and stops it.
+  const cameraGrant = useCapability('camera');
+  const micGrant = useCapability('mic');
+  const consentPending = cameraGrant === 'pending';
+  const wantsAudio = audio ?? mode === 'video';
+  const cameraAllowed = isCapabilityAllowed(cameraGrant);
+  const audioAllowed = !wantsAudio || isCapabilityAllowed(micGrant);
+  const permitted = active && cameraAllowed && audioAllowed;
+  const refusal = consentPending
+    ? 'The camera stays off until you choose Allow in the permission bar at the top of this app.'
+    : !cameraAllowed
+      ? 'This app has not declared camera access. Its permission.json needs { "camera": { "enabled": true } }.'
+      : !audioAllowed
+        ? 'Recording with sound needs the microphone as well. This app’s permission.json does not declare { "mic": { "enabled": true } }.'
+        : null;
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -155,7 +177,7 @@ export function Camera({
           width: { ideal: width },
           height: { ideal: height },
         },
-        audio: mode === 'video',
+        audio: wantsAudio,
       });
 
       // The await above can outlive this attempt: the permission prompt sits
@@ -194,7 +216,7 @@ export function Camera({
       setError(message);
       onError?.(message);
     }
-  }, [permitted, facing, width, height, mode, onError, cleanup]);
+  }, [permitted, facing, width, height, wantsAudio, onError, cleanup]);
 
   // Capture a single frame to canvas -> data URL
   const captureFrame = useCallback((): { dataUrl: string; width: number; height: number } | null => {
@@ -331,7 +353,7 @@ export function Camera({
     // passes a fresh onError, and restarting the hardware for that would
     // retake the camera on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [permitted, facing, mode]);
+  }, [permitted, facing, wantsAudio]);
 
   // Styles
   const containerStyle: React.CSSProperties = {
@@ -418,8 +440,10 @@ export function Camera({
 
   // A black rectangle with a dead shutter button under it is the one thing
   // this state must not look like: the user has to be able to tell that the
-  // app is fine and the answer is one button away, not that the camera broke.
-  if (consentPending) {
+  // app is fine and the answer is one button away — or, for a bundle that
+  // never declared the device, that the author has a line to add — not that
+  // the camera broke.
+  if (refusal !== null) {
     return (
       <div style={containerStyle}>
         <div
@@ -436,7 +460,7 @@ export function Camera({
             lineHeight: 1.5,
           }}
         >
-          The camera stays off until you choose Allow in the permission bar at the top of this app.
+          {refusal}
         </div>
       </div>
     );

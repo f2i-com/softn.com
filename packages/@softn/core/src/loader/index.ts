@@ -13,8 +13,18 @@ export {
 } from './SoftNRenderer';
 export type { SoftNRendererProps, SoftNWithXDBProps } from './SoftNRenderer';
 
-// How @softn/components learns that the consent bar is still unanswered.
-export { useConsentPending, ConsentPendingProvider } from './consent-gate';
+// How @softn/components learns what the host has allowed: which capabilities
+// the bundle declared and the user granted, and whether the bar is unanswered.
+export {
+  useConsentPending,
+  ConsentPendingProvider,
+  CapabilityProvider,
+  useCapability,
+  useCapabilityState,
+  capabilityStatus,
+  isCapabilityAllowed,
+} from './consent-gate';
+export type { CapabilityName, CapabilityStatus, CapabilityState } from './consent-gate';
 
 // Dynamic loading for Tauri apps
 export { useDynamicSoftN, useSoftNFiles } from './useDynamicSoftN';

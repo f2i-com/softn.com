@@ -232,6 +232,38 @@ const PUMP_BUDGET_MS = 8;
 /** Smallest request worth making, as a fraction of a second. */
 const MIN_WANT_SECONDS = 0.005;
 
+/*
+ * Admission control: what a block may cost before anything is allocated for it.
+ *
+ * `scheduleBlock` used to size its scratch buffer from the encoded string it
+ * was handed and then build an AudioBuffer from whatever decoded, checking the
+ * channel count and the sample rate on the way but never the amount. A
+ * producer — a script the user chose to run, but one nobody has read — could
+ * hand back a block of any size, and the host allocated it: the scratch grew
+ * to hold it, the AudioBuffer was created from it, and the VM's own memory
+ * budget never saw either, because both live on the host side of the bridge.
+ * A "block" is a few tens of milliseconds of audio. These are the bounds on
+ * what one may be, applied before the first byte is decoded, and the shared
+ * ceiling on scratch memory across every stream in the page, so that ten
+ * components cannot each claim what one is allowed.
+ */
+/** Longest block a producer may hand back, in seconds of audio. */
+const MAX_BLOCK_SECONDS = 2;
+/** Furthest ahead of the playhead a block may be scheduled, in seconds. */
+const MAX_QUEUED_SECONDS = 4;
+/** Largest scratch buffer one stream may hold. 8ch × 48kHz × f32 × 2s is 3 MB. */
+const MAX_SCRATCH_BYTES = 4 * 1024 * 1024;
+/** Scratch memory across every AudioStream in the page. */
+const MAX_TOTAL_SCRATCH_BYTES = 16 * 1024 * 1024;
+
+/** Scratch bytes held by every mounted stream, so the total can be bounded. */
+let totalScratchBytes = 0;
+
+/** Bytes an encoded block will need. Four base64 characters carry three bytes; the +3 covers the tail. */
+function base64DecodedLength(base64: string): number {
+  return ((base64.length * 3) >>> 2) + 3;
+}
+
 /** Underrun callbacks are counted always but reported at most this often. */
 const UNDERRUN_REPORT_INTERVAL = 0.25;
 
@@ -519,6 +551,13 @@ export function AudioStream({
       });
     }
 
+    // Give the page-wide scratch budget back; a stream that has gone must not
+    // keep counting against the ones still playing.
+    if (scratchRef.current) {
+      totalScratchBytes -= scratchRef.current.bytes.length;
+      scratchRef.current = null;
+    }
+
     cursorRef.current = 0;
     startedRef.current = false;
     pumpingRef.current = false;
@@ -621,23 +660,61 @@ export function AudioStream({
       let scratch: Scratch | null = null;
       let byteLength = 0;
 
+      // Admission, before any allocation: how much is this block, at most?
+      // The encoded length bounds the frames without decoding a byte, and the
+      // frame count bounds the AudioBuffer. A block over the limit is refused
+      // as a whole — trimming it would play a truncated waveform and hide the
+      // producer's fault — and reported once, like a shape the audio system
+      // would not take.
+      const refuse = (why: string): number => {
+        if (!bufferFailedRef.current) {
+          bufferFailedRef.current = true;
+          fail(why);
+        }
+        return 0;
+      };
+      if (when - context.currentTime > MAX_QUEUED_SECONDS) {
+        return refuse(`Audio queue exceeds ${MAX_QUEUED_SECONDS}s ahead of the playhead`);
+      }
+      const maxFrames = Math.floor(MAX_BLOCK_SECONDS * blockRate);
+      let upperFrames: number;
+      let needed = 0;
       if (base64 !== null) {
         if (base64.length === 0) return 0;
-        // Four base64 characters carry three bytes; the +3 covers the tail.
-        const needed = ((base64.length * 3) >>> 2) + 3;
+        needed = base64DecodedLength(base64);
+        if (needed > MAX_SCRATCH_BYTES) {
+          return refuse(`Audio block of ${needed} bytes exceeds the ${MAX_SCRATCH_BYTES}-byte limit`);
+        }
+        upperFrames = Math.floor(needed / (bytesPerSample * blockChannels));
+      } else {
+        upperFrames = Math.floor((numbers as number[]).length / blockChannels);
+      }
+      if (declaredFrames >= 0) upperFrames = Math.min(declaredFrames, upperFrames);
+      if (upperFrames > maxFrames) {
+        return refuse(
+          `Audio block of ${upperFrames} frames at ${blockRate}Hz exceeds ${MAX_BLOCK_SECONDS}s`
+        );
+      }
+
+      if (base64 !== null) {
         if (!scratchRef.current || scratchRef.current.bytes.length < needed) {
           // Grow geometrically so a producer with a slowly rising block size
-          // does not reallocate on every call.
+          // does not reallocate on every call — up to this stream's ceiling,
+          // and only while the page as a whole is under its own.
           const previous = scratchRef.current ? scratchRef.current.bytes.length : 0;
-          scratchRef.current = makeScratch(Math.max(needed, previous * 2));
+          const wanted = Math.min(MAX_SCRATCH_BYTES, Math.max(needed, previous * 2));
+          if (totalScratchBytes - previous + wanted > MAX_TOTAL_SCRATCH_BYTES) {
+            return refuse('Audio scratch memory for this page is exhausted');
+          }
+          scratchRef.current = makeScratch(wanted);
+          totalScratchBytes += scratchRef.current.bytes.length - previous;
         }
         scratch = scratchRef.current;
         byteLength = decodeBase64Into(base64, scratch.bytes);
         const available = Math.floor(byteLength / (bytesPerSample * blockChannels));
         frames = declaredFrames >= 0 ? Math.min(declaredFrames, available) : available;
       } else {
-        const available = Math.floor((numbers as number[]).length / blockChannels);
-        frames = declaredFrames >= 0 ? Math.min(declaredFrames, available) : available;
+        frames = upperFrames;
       }
 
       if (frames <= 0) return 0;
