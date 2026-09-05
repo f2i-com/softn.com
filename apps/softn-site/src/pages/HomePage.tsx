@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type Category } from '../lib/api';
 import { AppGrid } from '../components/directory/AppCard';
 import { CategoryChips, SearchBox } from '../components/directory/Controls';
+import { AppShowcase } from '../components/AppShowcase';
 import { Player } from '../components/Player';
 import { Doors } from '../components/Doors';
 import { Language } from '../components/Language';
@@ -24,48 +25,71 @@ function Arrow(): React.ReactElement {
   );
 }
 
+/**
+ * Hero → the apps themselves → the directory → the loop → the runtime, live.
+ *
+ * The apps come first because they are the evidence for everything the page
+ * goes on to say. The showcase and the source explorer each hold a runtime
+ * iframe, so they are made mutually exclusive here: launching an app closes
+ * the explorer, and opening the explorer closes the app. The page never
+ * carries two engines, and idle it carries none.
+ */
 export function HomePage({ categories, apiDown }: { categories: Category[]; apiDown: string | null }): React.ReactElement {
   const [sort, setSort] = useState('trending');
   const [apps, setApps] = useState<AppCardData[]>([]);
   const [total, setTotal] = useState<number | null>(null);
+  const [featuredLoading, setFeaturedLoading] = useState(true);
+  const [featuredError, setFeaturedError] = useState<string | null>(null);
+  const [featuredAttempt, setFeaturedAttempt] = useState(0);
+  const [explorerOpen, setExplorerOpen] = useState(false);
 
+  // The featured list has its own loading and failure state. It used to
+  // swallow a failed request on the theory that the outage banner already
+  // covered it — but the banner reflects the categories request, and the two
+  // can fail independently: categories cached, list down, and the page showed
+  // eight skeleton cards forever with nothing to press.
   useEffect(() => {
     if (apiDown) return undefined;
     const ac = new AbortController();
+    setFeaturedError(null);
+    setFeaturedLoading(true);
+    setApps([]);
     listApps({ sort, perPage: 8 }, ac.signal)
       .then((r) => {
+        if (ac.signal.aborted) return;
         setApps(r.items);
         setTotal(r.total);
+        setFeaturedLoading(false);
       })
       .catch(() => {
-        /* the banner already says the directory is away */
+        if (ac.signal.aborted) return;
+        setFeaturedError('This list could not be loaded. Try again, or launch a demo above.');
+        setFeaturedLoading(false);
       });
     return () => ac.abort();
-  }, [sort, apiDown]);
+  }, [sort, apiDown, featuredAttempt]);
 
   return (
     <>
       <header className="hero hero-dir" id="top">
         <div className="wrap hero-inner">
           <p className="eyebrow rise" style={{ animationDelay: '40ms' }}>
-            A directory of apps, and the sandbox they run in
+            Create. Run. Share. Remix.
           </p>
           <h1 className="hero-title rise" style={{ animationDelay: '100ms' }}>
-            Apps that run anywhere. <em>Safely.</em>
+            Real apps. <em>One portable format.</em>
           </h1>
           <p className="hero-lede rise" style={{ animationDelay: '180ms' }}>
-            Every app here is one <code>.softn</code> file: its interface, its logic and its assets, running inside a
-            sandboxed engine in your browser. Play it, read every line of it, remix it, publish your own —{' '}
-            <strong>no account needed</strong>. Made by people, and increasingly by models.
+            Edit images, walk a 3D world, run DOS, play cards, or keep a business&rsquo;s books. Each one is a single{' '}
+            <code>.softn</code> file — interface, logic and assets — running in a sandboxed engine in your browser. Open
+            it, read every line of it, make it your own. <strong>No account needed.</strong>
           </p>
-          <div className="hero-search rise" style={{ animationDelay: '240ms' }}>
-            <SearchBox autoFocus={false} />
-          </div>
-          <div className="hero-pills rise" style={{ animationDelay: '300ms' }}>
-            <CategoryChips categories={categories} selected="" hrefFor={(id) => (id === 'all' ? '/apps' : `/apps?category=${encodeURIComponent(id)}`)} limit={9} />
-          </div>
-          <div className="hero-cta rise" style={{ animationDelay: '360ms' }}>
-            <a className="cta cta-primary" href="/apps">
+          <div className="hero-cta rise" style={{ animationDelay: '260ms' }}>
+            <a className="cta cta-primary" href="#showcase">
+              Try an app
+              <Arrow />
+            </a>
+            <a className="cta" href="/apps">
               Browse {total !== null ? `${total} ` : ''}apps
               <Arrow />
             </a>
@@ -77,6 +101,8 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
         </div>
       </header>
 
+      <AppShowcase suspended={explorerOpen} onLaunch={() => setExplorerOpen(false)} />
+
       <section className="band band-featured" id="featured">
         <div className="wrap">
           <div className="band-head band-head-row">
@@ -84,20 +110,38 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
               <p className="eyebrow">The directory</p>
               <h2 className="band-title">What people are running</h2>
             </div>
-            <div className="tabs" role="tablist" aria-label="Featured apps">
+            {/* Plain pressed buttons: these filter a list, and the tab pattern
+                they used to claim comes with keyboard and panel semantics they
+                never had. */}
+            <div className="tabs" role="group" aria-label="Sort featured apps">
               {FEATURED.map((f) => (
-                <button key={f.id} type="button" role="tab" aria-selected={sort === f.id} className={`tab ${sort === f.id ? 'on' : ''}`} onClick={() => setSort(f.id)}>
+                <button key={f.id} type="button" aria-pressed={sort === f.id} className={`tab ${sort === f.id ? 'on' : ''}`} onClick={() => setSort(f.id)}>
                   {f.name}
                 </button>
               ))}
             </div>
           </div>
+          <div className="hero-search">
+            <SearchBox autoFocus={false} />
+          </div>
+          <div className="hero-pills">
+            <CategoryChips categories={categories} selected="" hrefFor={(id) => (id === 'all' ? '/apps' : `/apps?category=${encodeURIComponent(id)}`)} limit={9} />
+          </div>
           {apiDown ? (
             <div className="notice">
-              <strong>The directory is not answering.</strong> {apiDown} The demos below still run.
+              <strong>The directory is not answering.</strong> {apiDown} The demos above still run.
             </div>
+          ) : featuredError ? (
+            <div className="notice" role="status">
+              <strong>{featuredError}</strong>{' '}
+              <button type="button" className="cta" onClick={() => setFeaturedAttempt((n) => n + 1)}>
+                Retry
+              </button>
+            </div>
+          ) : !featuredLoading && apps.length === 0 ? (
+            <div className="notice">Nothing in this list yet. The demos above are a place to start.</div>
           ) : (
-            <AppGrid apps={apps} categories={categories} skeleton={8} />
+            <AppGrid apps={apps} categories={categories} skeleton={featuredLoading ? 8 : 0} loading={featuredLoading} />
           )}
           <div className="band-foot">
             <a className="cta" href={`/apps?sort=${sort}`}>
@@ -114,17 +158,18 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
             <p className="eyebrow">How it works</p>
             <h2 className="band-title">Discover → run → read → remix → publish</h2>
             <p className="band-sub">
-              The loop is the product. Nothing here asks you to trust the author, because the sandbox does not have to.
+              Start from something useful. Read its source, change it, and share your version.
             </p>
           </div>
           <div className="how-grid">
             <div className="how">
               <span className="how-n">01</span>
-              <h3 className="how-name">Run it, safely</h3>
+              <h3 className="how-name">Run it, in a sandbox</h3>
               <p className="how-copy">
-                Apps run on <a href="https://github.com/f2i-com/zipp.org">zipp</a>, a JavaScript engine compiled to WebAssembly with
-                nothing of the browser inside it. An app can only reach the network, your camera or its own server storage if its
-                manifest declares it — and the page tells you before you allow it.
+                App logic runs on <a href="https://github.com/f2i-com/zipp.org">zipp</a>, a JavaScript engine compiled to
+                WebAssembly with nothing of the browser inside it. The network, your camera, its own server storage — an app
+                gets those from the host, only if its manifest asks, and only after the page has told you and you have
+                allowed it. That is a boundary, not a promise that an app is harmless.
               </p>
             </div>
             <div className="how">
@@ -158,7 +203,19 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
               The file on the left is read out of the same bundle the runtime on the right is executing. Neither side is a picture.
             </p>
           </div>
-          <Player />
+          {/* Mounted only when opened: the explorer boots a runtime of its own,
+              and a visitor who came for the directory should not pay for it. */}
+          <button
+            type="button"
+            className="cta"
+            aria-expanded={explorerOpen}
+            aria-controls="runtime-source-explorer"
+            onClick={() => setExplorerOpen((open) => !open)}
+          >
+            {explorerOpen ? 'Close the source explorer' : 'Open the source explorer'}
+            <Arrow />
+          </button>
+          <div id="runtime-source-explorer">{explorerOpen && <Player />}</div>
         </div>
       </Reveal>
 
