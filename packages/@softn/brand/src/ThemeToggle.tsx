@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { apply, readChoice, resolve, store, watchSystem, type Theme, type ThemeChoice } from '../lib/theme';
+import { currentTheme, setTheme, subscribeTheme, type Theme } from './theme';
 
 /**
  * One button, and it says what it will do rather than what is currently true —
@@ -10,39 +10,23 @@ import { apply, readChoice, resolve, store, watchSystem, type Theme, type ThemeC
  * opinion the page keeps it; before that, the choice is `system` and the page
  * follows the OS live, including while it is open.
  */
-export function ThemeToggle(): React.ReactElement {
-  // Read on the FIRST render, not in an effect. Seeding these with 'system' and
-  // 'dark' and correcting afterwards meant a light-mode reader got one frame of
-  // the dark-mode button — a sun and "Switch to light mode" on an already-light
-  // page — which is precisely the disagreement the comment below promises never
-  // happens. `data-theme` is what the pre-paint script in index.html decided, so
-  // taking it as the seed makes the button agree with the page by construction.
-  const [choice, setChoice] = useState<ThemeChoice>(readChoice);
-  const [theme, setTheme] = useState<Theme>(() => {
-    const painted = document.documentElement.getAttribute('data-theme');
-    return painted === 'light' || painted === 'dark' ? painted : resolve(readChoice());
-  });
+export function ThemeToggle({ className = 'softn-theme-toggle' }: { className?: string }): React.ReactElement {
+  // Seeded from what the pre-paint script decided, so the button agrees with
+  // the page on its very first frame.
+  const [theme, setThemeState] = useState<Theme>(currentTheme);
 
-  useEffect(() => {
-    if (choice !== 'system') return;
-    return watchSystem((next) => {
-      setTheme(next);
-      apply(next);
-    });
-  }, [choice]);
+  useEffect(() => subscribeTheme(setThemeState), []);
 
   const flip = useCallback(() => {
     const next: Theme = theme === 'dark' ? 'light' : 'dark';
-    setChoice(next);
+    setThemeState(next);
     setTheme(next);
-    store(next);
-    apply(next);
   }, [theme]);
 
   const goingTo = theme === 'dark' ? 'light' : 'dark';
 
   return (
-    <button type="button" className="theme-toggle" onClick={flip} aria-label={`Switch to ${goingTo} mode`}>
+    <button type="button" className={className} onClick={flip} aria-label={`Switch to ${goingTo} mode`} title={`Switch to ${goingTo} mode`}>
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         {theme === 'dark' ? (
           <>

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type Category } from '../lib/api';
 import { AppGrid } from '../components/directory/AppCard';
 import { CategoryChips, SearchBox } from '../components/directory/Controls';
-import { AppShowcase } from '../components/AppShowcase';
+import { HeroStage } from '../components/HeroStage';
 import { Player } from '../components/Player';
 import { Doors } from '../components/Doors';
 import { Language } from '../components/Language';
@@ -26,13 +26,14 @@ function Arrow(): React.ReactElement {
 }
 
 /**
- * Hero → the apps themselves → the directory → the loop → the runtime, live.
+ * The hero is the apps: a headline beside a stage that runs one of six of
+ * them on request. Then the directory, then how the loop works, then the
+ * runtime with its source open, then the tools and the language.
  *
- * The apps come first because they are the evidence for everything the page
- * goes on to say. The showcase and the source explorer each hold a runtime
- * iframe, so they are made mutually exclusive here: launching an app closes
- * the explorer, and opening the explorer closes the app. The page never
- * carries two engines, and idle it carries none.
+ * The stage and the source explorer each hold a runtime iframe, so they are
+ * made mutually exclusive here: launching an app closes the explorer, and
+ * opening the explorer closes the app. The page never carries two engines,
+ * and idle it carries none.
  */
 export function HomePage({ categories, apiDown }: { categories: Category[]; apiDown: string | null }): React.ReactElement {
   const [sort, setSort] = useState('trending');
@@ -72,36 +73,39 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
   return (
     <>
       <header className="hero hero-dir" id="top">
-        <div className="wrap hero-inner">
-          <p className="eyebrow rise" style={{ animationDelay: '40ms' }}>
-            Create. Run. Share. Remix.
-          </p>
-          <h1 className="hero-title rise" style={{ animationDelay: '100ms' }}>
-            Real apps. <em>One portable format.</em>
-          </h1>
-          <p className="hero-lede rise" style={{ animationDelay: '180ms' }}>
-            Edit images, walk a 3D world, run DOS, play cards, or keep a business&rsquo;s books. Each one is a single{' '}
-            <code>.softn</code> file — interface, logic and assets — running in a sandboxed engine in your browser. Open
-            it, read every line of it, make it your own. <strong>No account needed.</strong>
-          </p>
-          <div className="hero-cta rise" style={{ animationDelay: '260ms' }}>
-            <a className="cta cta-primary" href="#showcase">
-              Try an app
-              <Arrow />
-            </a>
-            <a className="cta" href="/apps">
-              Browse {total !== null ? `${total} ` : ''}apps
-              <Arrow />
-            </a>
-            <a className="cta" href="/publish">
-              Publish an app
-              <Arrow />
-            </a>
+        <div className="wrap hero-inner hero-grid">
+          <div className="hero-copy">
+            <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
+              Open an app.
+              <br />
+              Read it.
+              <br />
+              Make it yours.
+            </h1>
+            <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
+              Every app here is one <code>.softn</code> file — its interface, its logic and its assets — running in a
+              sandboxed engine in your browser. Games, tools, an x86 emulator, an image editor. Nothing to install and no
+              account to make.
+            </p>
+            <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
+              <a className="cta cta-primary" href="/apps">
+                Browse {total !== null ? `${total} ` : ''}apps
+                <Arrow />
+              </a>
+              <a className="cta" href="/publish">
+                Publish yours
+                <Arrow />
+              </a>
+            </div>
+            <p className="hero-aside rise" style={{ animationDelay: '300ms' }}>
+              Or pick one of the six on the right. It only starts when you say so.
+            </p>
+          </div>
+          <div className="hero-stage rise" style={{ animationDelay: '180ms' }}>
+            <HeroStage suspended={explorerOpen} onLaunch={() => setExplorerOpen(false)} />
           </div>
         </div>
       </header>
-
-      <AppShowcase suspended={explorerOpen} onLaunch={() => setExplorerOpen(false)} />
 
       <section className="band band-featured" id="featured">
         <div className="wrap">
@@ -156,7 +160,7 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
         <div className="wrap">
           <div className="band-head">
             <p className="eyebrow">How it works</p>
-            <h2 className="band-title">Discover → run → read → remix → publish</h2>
+            <h2 className="band-title">Run it. Read it. Publish yours.</h2>
             <p className="band-sub">
               Start from something useful. Read its source, change it, and share your version.
             </p>
@@ -198,7 +202,7 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
         <div className="wrap">
           <div className="band-head">
             <p className="eyebrow">Under the hood</p>
-            <h2 className="band-title">The runtime, live</h2>
+            <h2 className="band-title">The runtime, with its source open</h2>
             <p className="band-sub">
               The file on the left is read out of the same bundle the runtime on the right is executing. Neither side is a picture.
             </p>

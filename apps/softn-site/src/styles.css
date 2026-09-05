@@ -1,100 +1,10 @@
 /*
- * Two accents, and each one means something.
- *
- *   --coral  marks the language — the syntax you type: tags, directives,
- *            `@click`, `:bind`, `#each`, the braces around an expression.
- *   --mint   marks the machine — and only the machine. It appears where
- *            something is genuinely executing: the live badge on the player,
- *            the runtime end of the pipeline diagram.
- *
- * Nothing else on the page is allowed to be coloured. If a new element wants an
- * accent, it has to be one of those two things.
+ * The tokens — colours, type, gutters, the theme pair — live in @softn/brand
+ * (packages/@softn/brand/src/tokens.css) and are imported ahead of this file.
+ * They are shared with the runtime, Studio and Builder, so the switch in any
+ * of the four moves all of them. Coral marks the language, mint marks the
+ * machine; nothing else on the page is allowed to be coloured.
  */
-:root {
-  color-scheme: dark;
-
-  --ink: #101317;
-  --ink-2: #161a20;
-  --ink-3: #1d222a;
-  --line: #262c36;
-  --line-soft: #1c212a;
-  --paper: #f2f0ec;
-  --dim: #8b94a2;
-  /* Light enough to clear 4.5:1 against --ink-3, not just against --ink. It is
-     used at 11px on raised panels, which is the least forgiving pairing on the
-     page, so it is set from that rather than from the page ground. */
-  --dimmer: #838c9a;
-  --coral: #ff8a4c;
-  --mint: #35e0c0;
-  --sand: #d8c39a;
-
-  /* Derived from the three above, and listed rather than inlined so the light
-     theme can restate them — a tint of an accent has to be mixed against the
-     ground it sits on, and the two grounds are at opposite ends. */
-  --tok-tag: rgba(242, 240, 236, 0.92);
-  --nav-bg: rgba(16, 19, 23, 0.82);
-  --rule: rgba(139, 148, 162, 0.07);
-  --inset: rgba(255, 255, 255, 0.05);
-  --invert-hover: #ffffff;
-  --on-invert-dim: rgba(16, 19, 23, 0.45);
-  --mint-glow: rgba(53, 224, 192, 0.14);
-  --mint-glow-soft: rgba(53, 224, 192, 0.05);
-  --mint-edge: rgba(53, 224, 192, 0.35);
-  --select: rgba(255, 138, 76, 0.28);
-
-  --display: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif;
-  --body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
-  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
-
-  --gutter: clamp(1.25rem, 4vw, 3.5rem);
-  --measure: 1220px;
-  --ease: cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-/*
- * Daylight, not an inversion.
- *
- * The dark theme is a cool ground under warm-white type. Flipping that literally
- * would land on a cream page with a burnt-orange accent, which is the look every
- * generated landing page has this year. So the light theme keeps the same cool
- * graphite family and simply turns it over: the ground becomes cool paper and
- * the ink becomes the graphite the dark theme used as its ground.
- *
- * Both accents are re-mixed rather than reused. #ff8a4c and #35e0c0 are tuned to
- * carry on near-black and neither reaches 4.5:1 on white, so the light theme has
- * its own pair at the same job — the rule that coral marks the language and mint
- * marks the machine is what carries across, not the hex.
- *
- * `data-theme` is always present: an inline script in index.html sets it before
- * first paint. The dark values above stay on :root so a page with no JavaScript
- * still renders as designed rather than unstyled.
- */
-:root[data-theme='light'] {
-  color-scheme: light;
-
-  --ink: #f4f6f9;
-  --ink-2: #ffffff;
-  --ink-3: #eef1f6;
-  --line: #d5dce5;
-  --line-soft: #e4e9f0;
-  --paper: #14181d;
-  --dim: #5a6472;
-  --dimmer: #656e7c;
-  --coral: #c2410c;
-  --mint: #0f766e;
-  --sand: #8a5a17;
-
-  --tok-tag: rgba(20, 24, 29, 0.92);
-  --nav-bg: rgba(244, 246, 249, 0.85);
-  --rule: rgba(20, 24, 29, 0.06);
-  --inset: rgba(20, 24, 29, 0.05);
-  --invert-hover: #000000;
-  --on-invert-dim: rgba(244, 246, 249, 0.5);
-  --mint-glow: rgba(15, 118, 110, 0.16);
-  --mint-glow-soft: rgba(15, 118, 110, 0.06);
-  --mint-edge: rgba(15, 118, 110, 0.4);
-  --select: rgba(194, 65, 12, 0.2);
-}
 
 *,
 *::before,
@@ -107,7 +17,7 @@
 html {
   scroll-behavior: smooth;
   /* The nav is sticky; anchored sections must not slide under it. */
-  scroll-padding-top: 5.5rem;
+  scroll-padding-top: 4.5rem;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -214,23 +124,8 @@ button {
   color: var(--paper);
 }
 
-/* ── Nav ───────────────────────────────────────────────────────── */
-
-.nav {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  background: var(--nav-bg);
-  backdrop-filter: blur(14px) saturate(140%);
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.nav-inner {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  height: 3.5rem;
-}
+/* The product bar (.softn-bar) is @softn/brand/bar.css, shared by all four apps.
+   Only the footer still draws the wordmark itself. */
 
 .nav-mark {
   display: flex;
@@ -250,127 +145,11 @@ button {
   background: var(--coral);
 }
 
-.nav-links {
-  display: flex;
-  gap: 1.5rem;
-  font-size: 0.875rem;
-  color: var(--dim);
-}
 
-.nav-links a {
-  transition: color 160ms var(--ease);
-}
-
-.nav-links a:hover {
-  color: var(--paper);
-}
-
-.nav-repo {
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  color: var(--dim);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.375rem 0.75rem;
-  transition:
-    color 160ms var(--ease),
-    border-color 160ms var(--ease);
-}
-
-.nav-repo:hover {
-  color: var(--paper);
-  border-color: var(--dimmer);
-}
-
-/* Deliberately uncoloured: coral means the language and mint means the machine,
-   and a theme switch is neither. */
-.theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.875rem;
-  height: 1.875rem;
-  margin-right: -0.25rem;
-  border-radius: 6px;
-  color: var(--dim);
-  transition:
-    color 160ms var(--ease),
-    background 160ms var(--ease);
-}
-
-.theme-toggle:hover {
-  color: var(--paper);
-  background: var(--ink-3);
-}
-
-/*
- * The five section links used to be deleted here with nothing put in their
- * place, on a page that is 9,250px tall at 320px: the wordmark and a link off to
- * GitHub were the whole of it. The footer carries the same anchors, but it is
- * thirteen screens down — you scroll past every section it links to before you
- * can use it.
- *
- * They do not fit in the bar. At 320px there are 87px between the wordmark and
- * the theme toggle and the five labels want 365px, so the bar wraps and they
- * take a second line of their own. row-gap: 0 because the 1.5rem that separates
- * the controls sideways would open a 24px seam between the two rows.
- */
+/* The bar is two rows on a phone; an anchor jump must land clear of it. */
 @media (max-width: 720px) {
-  .nav-inner {
-    flex-wrap: wrap;
-    height: auto;
-    row-gap: 0;
-    /* Without the fixed 3.5rem the first row is only as tall as the tallest
-       control in it, which under a coarse pointer is 45px of wordmark against
-       44px of everything else — no room above the toggle and the GitHub pill for
-       a focus ring, which is drawn 5px out and would be cut off by the top of
-       the page. */
-    padding-top: 0.375rem;
-  }
-
-  /* Bled out to the viewport edges so the last label is cut off by the screen
-     rather than stopping short inside the gutter: a word cut in half reads as
-     "there is more this way", a word ending 20px early reads as a mistake.
-     100% is the padded content width, hence the calc. */
-  .nav-links {
-    display: flex;
-    order: 1;
-    width: calc(100% + var(--gutter) * 2);
-    margin-inline: calc(var(--gutter) * -1);
-    padding-inline: var(--gutter);
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    scrollbar-width: none;
-    border-top: 1px solid var(--line-soft);
-  }
-
-  /* No bar under the row. It is a navigation strip, not a body of content, and
-     the clipped last label is the affordance. */
-  .nav-links::-webkit-scrollbar {
-    display: none;
-  }
-
-  /* Sized here rather than left to (pointer: coarse): the second row's height is
-     what the scroll-padding below is measured against, and that number cannot
-     depend on the pointer. */
-  .nav-links a {
-    flex: none;
-    white-space: nowrap;
-    padding-block: 0.6875rem;
-  }
-
-  /* The strip is a scroller, so it clips to its padding box, and the links fill
-     it top to bottom — a ring 3px outside has nowhere to land on either edge.
-     This one goes inside. */
-  .nav-links a:focus-visible {
-    outline-offset: -3px;
-  }
-
-  /* The 5.5rem above is calibrated to the one-row 57px bar. Two rows is 97px,
-     and left alone the nav would land on top of whatever section you jumped to.
-     This restores the 31px of clearance the desktop bar gives. */
   html {
-    scroll-padding-top: 8rem;
+    scroll-padding-top: 7.5rem;
   }
 }
 
