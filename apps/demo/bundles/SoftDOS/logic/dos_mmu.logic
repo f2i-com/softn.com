@@ -93,18 +93,12 @@ function dosMmu_in8(port) {
   let p = port & 0xFFFF;
 
   // Keyboard Controller data port
-  if (p === 0x60) {
-    // Presses and releases, in order; a read with nothing waiting repeats
-    // the last code, as the controller's output buffer does.
-    let scan = dosInt_popScan();
-    if (scan >= 0) DOS_KEY_LAST_SCAN = scan;
-    return DOS_KEY_LAST_SCAN;
-  }
+  if (p === 0x60) return dosInt_readScan();
 
   // Keyboard Controller status port
   if (p === 0x64) {
     let status = 0;
-    if (DOS_SCAN_HEAD !== DOS_SCAN_TAIL) status |= 0x01; // Output buffer full
+    if (DOS_KEY_OBF === 1) status |= 0x01;               // Output buffer full
     return status;
   }
 
@@ -123,12 +117,20 @@ function dosMmu_in8(port) {
   if (p === 0x21) return DOS_PIC_MASK & 0xFF;
 
   // VGA Input Status #1 (CRTC / Vertical Retrace)
-  // Doom and DOS games poll port 0x3DA bit 3 for VSYNC timing
+  // Input status 1. Bit 3 is vertical retrace, which Doom polls for its
+  // frame timing; bit 0 is "display not active", set through every retrace
+  // and toggling at the horizontal rate between them. Text-mode programs
+  // wait for bit 0 to clear and then set again before touching the screen,
+  // the CGA snow dance, so a bit that never clears hangs them.
   if (p === 0x3DA) {
-    // Alternate VSYNC bit every few thousand cycles so games don't hang
     let vblank = (DOS_TOTAL_CYCLES & 0x800) ? 0x08 : 0x00;
-    return vblank | 0x01; // Display enable + VRetrace
+    let blank = vblank ? 0x01 : ((DOS_TOTAL_CYCLES & 0x40) ? 0x01 : 0x00);
+    return vblank | blank;
   }
+
+  // The VGA's index and data ports, and the DAC's state, read back.
+  if (p === 0x3C4 || p === 0x3C5 || p === 0x3CE || p === 0x3CF || p === 0x3D4 || p === 0x3D5 ||
+      p === 0x3CC || p === 0x3C6 || p === 0x3C7 || p === 0x3C8) return dosVga_regRead(p);
 
   // VGA DAC Palette Data Read
   if (p === 0x3C9) {

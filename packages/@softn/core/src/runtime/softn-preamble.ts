@@ -68,6 +68,16 @@ let softn = {
       host.call("audio.whenEnded", [handle == null ? "" : String(handle)], callback || function(){});
     }
   },
+  input: {
+    // The keys a script wants whole. The browser's default for them --
+    // scrolling on the arrows and Space, focus on Tab, a search on "/" --
+    // is cancelled before the event reaches the script's listener. Pass an
+    // array of KeyboardEvent key or code values; an empty array releases
+    // them. Text fields and the browser's own chords are never affected.
+    captureKeys: function(keys, callback) {
+      host.call("input.captureKeys", [JSON.stringify(Array.isArray(keys) ? keys : (keys == null ? [] : [String(keys)]))], callback || function(){});
+    }
+  },
   files: {
     pickFile: function(options, callback) {
       host.call("files.pickFile", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback);

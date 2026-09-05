@@ -386,15 +386,37 @@ export class ZippWasmAdapter {
   registerAccelBridge(): void {
     for (const op of ACCEL_SYNC_OPS) this.pendingSyncCapabilities.add(op);
     if (typeof this.wasm.setAccelBridge !== 'function') return;
-    this.wasm.setAccelBridge(
-      createAccelHost({
-        memory: () => {
-          if (!wasmExports) throw new Error('accel: the engine is not instantiated');
-          return wasmExports.memory;
-        },
-        guestCall: (name, args) => accelGuestCall(name, args),
-      })
-    );
+    const host = createAccelHost({
+      memory: () => {
+        if (!wasmExports) throw new Error('accel: the engine is not instantiated');
+        return wasmExports.memory;
+      },
+      guestCall: (name, args) => accelGuestCall(name, args),
+    });
+    // The engine reports a failed bridge call to the guest as a bare "host
+    // bridge call failed", so the reason is said here, once per method: a
+    // script that falls back to its own interpreter is ten times slower and
+    // nobody would otherwise know why.
+    const reported = new Set<string>();
+    const guarded = <A extends unknown[], R>(name: string, fn: (...args: A) => R) =>
+      (...args: A): R => {
+        try {
+          return fn(...args);
+        } catch (err) {
+          if (!reported.has(name)) {
+            reported.add(name);
+            console.warn(`[SoftN accel] ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          throw err;
+        }
+      };
+    this.wasm.setAccelBridge({
+      compile: guarded('compile', host.compile),
+      make: guarded('make', host.make),
+      state: guarded('state', host.state),
+      run: guarded('run', host.run),
+      install: guarded('install', host.install),
+    });
   }
 
   /**

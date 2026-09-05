@@ -79,10 +79,13 @@ let DOS_KEY_TAIL = 0;
 // ---------------------------------------------------------------------------
 // 6. Virtual Filesystem (VFS) Allocation
 // ---------------------------------------------------------------------------
-// Stores up to 16 virtual files (names, offsets, sizes, buffers)
-let DOS_VFS_NAMES = ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""];
-let DOS_VFS_DATA = [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null];
+// The files on drive C: names and bytes, in the order they arrived. A
+// deleted file keeps its slot with an empty name. The drive grows as files
+// are added, up to DOS_VFS_MAX.
+let DOS_VFS_NAMES = [];
+let DOS_VFS_DATA = [];
 let DOS_VFS_COUNT = 0;
+let DOS_VFS_MAX = 512;
 
 // File Handles: index -> { vfsIdx, pos }
 let DOS_HANDLE_VFS = null;  // Int32Array(32)

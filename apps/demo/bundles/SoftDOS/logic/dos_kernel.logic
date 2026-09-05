@@ -10,32 +10,161 @@ let DOS_CURSOR_VISIBLE = 1;
 let DOS_KEY_WAITING = 0;   // set while INT 16h is parked waiting for a key
 
 // Virtual Filesystem Helper
-function dosKernel_vfsFind(filename) {
+// A name as the drive stores it: upper case, without drive or path.
+function dosKernel_vfsClean(filename) {
   let clean = filename.toUpperCase().trim();
-  // Strip drive letter or path (e.g., "C:\DOOM\DOOM1.WAD" -> "DOOM1.WAD")
   let slashIdx = clean.lastIndexOf("\\");
   if (slashIdx >= 0) clean = clean.slice(slashIdx + 1);
   slashIdx = clean.lastIndexOf("/");
   if (slashIdx >= 0) clean = clean.slice(slashIdx + 1);
+  let colon = clean.lastIndexOf(":");
+  if (colon >= 0) clean = clean.slice(colon + 1);
+  return clean;
+}
 
+function dosKernel_vfsFind(filename) {
+  let clean = dosKernel_vfsClean(filename);
+  if (clean === "") return -1;
   for (let i = 0; i < DOS_VFS_COUNT; i++) {
     if (DOS_VFS_NAMES[i] === clean) return i;
   }
   return -1;
 }
 
-function dosKernel_vfsAdd(name, bytes) {
-  let idx = dosKernel_vfsFind(name);
-  if (idx < 0) {
-    if (DOS_VFS_COUNT >= 16) return -1;
-    idx = DOS_VFS_COUNT++;
-  }
-  let clean = name.toUpperCase().trim();
-  let slash = clean.lastIndexOf("\\");
-  if (slash >= 0) clean = clean.slice(slash + 1);
-  slash = clean.lastIndexOf("/");
-  if (slash >= 0) clean = clean.slice(slash + 1);
+// A name in 8.3 form padded to eleven characters, for wildcard matching.
+function dosKernel_vfs83(name) {
+  let dot = name.lastIndexOf(".");
+  let base = (dot < 0) ? name : name.slice(0, dot);
+  let ext = (dot < 0) ? "" : name.slice(dot + 1);
+  let out = "";
+  for (let i = 0; i < 8; i++) out += (i < base.length) ? base[i] : " ";
+  for (let i = 0; i < 3; i++) out += (i < ext.length) ? ext[i] : " ";
+  return out;
+}
 
+// A wildcard pattern in the same form: "*" fills the rest of its part
+// with "?", which matches anything, a space included.
+function dosKernel_vfsPattern(pat) {
+  let dot = pat.lastIndexOf(".");
+  let base = (dot < 0) ? pat : pat.slice(0, dot);
+  let ext = (dot < 0) ? "" : pat.slice(dot + 1);
+  let part = (s, n) => {
+    let out = "";
+    let star = 0;
+    for (let i = 0; i < n; i++) {
+      if (star === 1) { out += "?"; continue; }
+      if (i < s.length) {
+        if (s[i] === "*") { star = 1; out += "?"; } else out += s[i];
+      } else out += " ";
+    }
+    return out;
+  };
+  return part(base, 8) + part(ext, 3);
+}
+
+function dosKernel_vfsMatch(pattern11, name11) {
+  for (let i = 0; i < 11; i++) {
+    let p = pattern11[i];
+    if (p !== "?" && p !== name11[i]) return 0;
+  }
+  return 1;
+}
+
+// The ASCIZ name at DS:DX (flat EDX for 32-bit code).
+function dosKernel_nameAt(seg, off) {
+  let addr = 0;
+  if (DOS_IS_32 === 1) addr = off >>> 0;
+  else addr = ((seg << 4) + (off & 0xFFFF)) & 0xFFFFFF;
+  let name = "";
+  for (let i = 0; i < 128; i++) {
+    let ch = DOS_RAM[(addr + i) & 0xFFFFFF];
+    if (ch === 0) break;
+    name = name + String.fromCharCode(ch);
+  }
+  return name;
+}
+
+// The buffer address a call names in DS:DX (flat EDX for 32-bit code).
+function dosKernel_bufAt(seg, off) {
+  if (DOS_IS_32 === 1) return off >>> 0;
+  return ((seg << 4) + (off & 0xFFFF)) & 0xFFFFFF;
+}
+
+// A free handle for a file on the drive, or -1 when the table is full.
+function dosKernel_openHandle(vfsIdx) {
+  for (let h = 5; h < 32; h++) {
+    if (DOS_HANDLE_VFS[h] === -1) {
+      DOS_HANDLE_VFS[h] = vfsIdx;
+      DOS_HANDLE_POS[h] = 0;
+      return h;
+    }
+  }
+  return -1;
+}
+
+// The disk transfer area, where find-first/next report their matches.
+// The loader points it at the PSP's command tail, as DOS does.
+let DOS_DTA = 0x00580;
+
+// A civil date from days since 1970, for the date service.
+function dosKernel_civil(days) {
+  let z = days + 719468;
+  let era = Math.floor(z / 146097);
+  let doe = z - era * 146097;
+  let yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+  let y = yoe + era * 400;
+  let doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  let mp = Math.floor((5 * doy + 2) / 153);
+  let d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  let m = (mp < 10) ? mp + 3 : mp - 9;
+  if (m <= 2) y++;
+  return [y, m, d];
+}
+
+// Walk the drive from the entry the DTA names, writing the next match into
+// it. 1 when one was found.
+function dosKernel_findNext() {
+  let dta = DOS_DTA & 0xFFFFFF;
+  let pattern = "";
+  for (let i = 0; i < 11; i++) pattern += String.fromCharCode(DOS_RAM[dta + i]);
+  let attr = DOS_RAM[dta + 0x0C];
+  let idx = DOS_RAM[dta + 0x0D] | (DOS_RAM[dta + 0x0E] << 8);
+  if ((attr & 0x08) === 0x08 && (attr & 0x37) === 0) return 0;     // a volume label only
+  while (idx < DOS_VFS_COUNT) {
+    let name = DOS_VFS_NAMES[idx];
+    idx++;
+    if (name === "") continue;
+    if (dosKernel_vfsMatch(pattern, dosKernel_vfs83(name)) === 0) continue;
+    let size = DOS_VFS_DATA[idx - 1] ? DOS_VFS_DATA[idx - 1].length : 0;
+    DOS_RAM[dta + 0x0D] = idx & 0xFF;
+    DOS_RAM[dta + 0x0E] = (idx >> 8) & 0xFF;
+    DOS_RAM[dta + 0x15] = 0x20;                                    // archive
+    DOS_RAM[dta + 0x16] = 0x00; DOS_RAM[dta + 0x17] = 0x60;        // 12:00
+    DOS_RAM[dta + 0x18] = 0x21; DOS_RAM[dta + 0x19] = 0x1C;        // 1994-01-01
+    DOS_RAM[dta + 0x1A] = size & 0xFF;
+    DOS_RAM[dta + 0x1B] = (size >> 8) & 0xFF;
+    DOS_RAM[dta + 0x1C] = (size >> 16) & 0xFF;
+    DOS_RAM[dta + 0x1D] = (size >>> 24) & 0xFF;
+    for (let i = 0; i < 13; i++) DOS_RAM[dta + 0x1E + i] = (i < name.length) ? name.charCodeAt(i) & 0xFF : 0;
+    return 1;
+  }
+  DOS_RAM[dta + 0x0D] = idx & 0xFF;
+  DOS_RAM[dta + 0x0E] = (idx >> 8) & 0xFF;
+  return 0;
+}
+
+function dosKernel_vfsAdd(name, bytes) {
+  let clean = dosKernel_vfsClean(name);
+  if (clean === "") return -1;
+  let idx = dosKernel_vfsFind(clean);
+  if (idx < 0) {
+    // A deleted file's slot first, then a new one.
+    for (let i = 0; i < DOS_VFS_COUNT; i++) if (DOS_VFS_NAMES[i] === "") { idx = i; break; }
+    if (idx < 0) {
+      if (DOS_VFS_COUNT >= DOS_VFS_MAX) return -1;
+      idx = DOS_VFS_COUNT++;
+    }
+  }
   DOS_VFS_NAMES[idx] = clean;
   DOS_VFS_DATA[idx] = bytes;
   return idx;
@@ -126,6 +255,79 @@ function dosKernel_handleInt(intNum) {
     return;
   }
 
+  // INT 33h: the mouse driver.
+  if (intNum === 0x33) {
+    dosMouse_int();
+    return;
+  }
+
+  // INT F1h: the BIOS keyboard handler, reached through the stub vector 9
+  // points at, by the IRQ or by a program chaining to the old vector.
+  if (intNum === 0xF1) {
+    dosInt_biosKey();
+    return;
+  }
+
+  // INT 11h: equipment list. One floppy, 80x25 colour, no mouse port.
+  if (intNum === 0x11) {
+    DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0021;
+    return;
+  }
+
+  // INT 15h: system services. AH=86h waits in microseconds; the wait is the
+  // caller's, so it is answered at once. AH=C0h (configuration) and AH=88h
+  // (extended memory) are declined as an XT would.
+  if (intNum === 0x15) {
+    let ah = (DOS_REGS32[0] >> 8) & 0xFF;
+    if (ah === 0x86 || ah === 0x4F) { DOS_EFLAGS &= ~0x01; return; }
+    if (ah === 0x88) { DOS_REGS32[0] = DOS_REGS32[0] & 0xFFFF0000; DOS_EFLAGS &= ~0x01; return; }
+    DOS_EFLAGS |= 0x01;
+    DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF00FF) | 0x8600;
+    return;
+  }
+
+  // INT 1Ah: the clock. AH=0 reads the tick count at 0040:006C into CX:DX
+  // with the midnight flag in AL; AH=1 sets it; AH=2/4 answer the real-time
+  // clock in BCD from the same count, since there is no battery here.
+  if (intNum === 0x1A) {
+    let ah = (DOS_REGS32[0] >> 8) & 0xFF;
+    if (ah === 0x00) {
+      let t = dosMmu_read32(0x0046C) >>> 0;
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | ((t >>> 16) & 0xFFFF);
+      DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | (t & 0xFFFF);
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00) | (DOS_RAM[0x00470] & 1);
+      DOS_RAM[0x00470] = 0;
+      return;
+    }
+    if (ah === 0x01) {
+      dosMmu_write32(0x0046C, (((DOS_REGS32[1] & 0xFFFF) << 16) | (DOS_REGS32[2] & 0xFFFF)) >>> 0);
+      return;
+    }
+    if (ah === 0x02) {
+      let secs = Math.floor((dosMmu_read32(0x0046C) >>> 0) / 18.2065);
+      let hh = Math.floor(secs / 3600) % 24, mm = Math.floor(secs / 60) % 60, ss = secs % 60;
+      let bcd = (n) => ((Math.floor(n / 10) << 4) | (n % 10)) & 0xFF;
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | (bcd(hh) << 8) | bcd(mm);
+      DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | (bcd(ss) << 8);
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+    if (ah === 0x04) {
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | 0x1994;      // century, year
+      DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | 0x0101;      // month, day
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+    DOS_EFLAGS |= 0x01;
+    return;
+  }
+
+  // INT 12h: conventional memory size in KB.
+  if (intNum === 0x12) {
+    DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | ((DOS_DOSMEM_LIMIT >> 10) & 0xFFFF);
+    return;
+  }
+
   // INT 20h: terminate. Every .COM built before DOS 2.0 ends this way, and
   // without it the CPU runs off the end of the program into cleared RAM.
   if (intNum === 0x20) {
@@ -143,6 +345,7 @@ function dosKernel_handleInt(intNum) {
     if (ah === 0x00) {
       // Set Video Mode
       DOS_VIDEO_MODE = al;
+      dosVga_modeRegs(al);
       if (al === 0x13) {
         // Clear VGA graphics buffer
         DOS_RAM.fill(0, 0xA0000, 0xA0000 + 64000);
@@ -217,6 +420,9 @@ function dosKernel_handleInt(intNum) {
   // -------------------------------------------------------------------------
   if (intNum === 0x16) {
     let ah = (DOS_REGS32[0] >> 8) & 0xFF;
+    // The BIOS enables interrupts on entry, which is what lets a program
+    // that called with them off still receive the key it is waiting for.
+    DOS_EFLAGS |= DOS_FL_IF;
 
     if (ah === 0x00 || ah === 0x10) {
       // Read Keystroke: AH = scan code, AL = ASCII. Waits for one by leaving
@@ -245,8 +451,9 @@ function dosKernel_handleInt(intNum) {
     }
 
     if (ah === 0x02 || ah === 0x12) {
-      // Shift status: nothing held, which is true enough here.
-      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00);
+      // Shift status, as the BIOS handler keeps it; AH=12h adds the
+      // extended byte, which is empty here.
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (DOS_KEY_SHIFT & 0xFF);
       return;
     }
   }
@@ -307,25 +514,261 @@ function dosKernel_handleInt(intNum) {
         return;
       }
 
-      // Find free handle slot (5 to 31; 0-4 are stdio)
-      let freeHandle = -1;
-      for (let h = 5; h < 32; h++) {
-        if (DOS_HANDLE_VFS[h] === -1) {
-          freeHandle = h;
-          break;
-        }
-      }
-
+      let freeHandle = dosKernel_openHandle(vfsIdx);
       if (freeHandle < 0) {
         DOS_EFLAGS |= 0x01;
         DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x04; // Too many open files
         return;
       }
-
-      DOS_HANDLE_VFS[freeHandle] = vfsIdx;
-      DOS_HANDLE_POS[freeHandle] = 0;
       DOS_EFLAGS &= ~0x01; // Success: CF=0
       DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | freeHandle;
+      return;
+    }
+
+    // AH=3Ch: create or truncate a file; AH=5Bh: create one that must not
+    // exist yet. Both answer a handle open for writing.
+    if (ah === 0x3C || ah === 0x5B) {
+      let name = dosKernel_nameAt(DOS_SEGS[3], DOS_REGS32[2]);
+      if (ah === 0x5B && dosKernel_vfsFind(name) >= 0) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x50;   // file exists
+        return;
+      }
+      let vfsIdx = dosKernel_vfsAdd(name, new Uint8Array(0));
+      let handle = (vfsIdx < 0) ? -1 : dosKernel_openHandle(vfsIdx);
+      if (handle < 0) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | ((vfsIdx < 0) ? 0x03 : 0x04);
+        return;
+      }
+      DOS_EFLAGS &= ~0x01;
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | handle;
+      return;
+    }
+
+    // AH=41h: delete a file.
+    if (ah === 0x41) {
+      let vfsIdx = dosKernel_vfsFind(dosKernel_nameAt(DOS_SEGS[3], DOS_REGS32[2]));
+      if (vfsIdx < 0) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x02;
+        return;
+      }
+      DOS_VFS_NAMES[vfsIdx] = "";
+      DOS_VFS_DATA[vfsIdx] = null;
+      for (let h = 5; h < 32; h++) if (DOS_HANDLE_VFS[h] === vfsIdx) DOS_HANDLE_VFS[h] = -1;
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=56h: rename, DS:DX to ES:DI.
+    if (ah === 0x56) {
+      let vfsIdx = dosKernel_vfsFind(dosKernel_nameAt(DOS_SEGS[3], DOS_REGS32[2]));
+      let to = dosKernel_vfsClean(dosKernel_nameAt(DOS_SEGS[0], DOS_REGS32[7]));
+      if (vfsIdx < 0 || to === "") {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x02;
+        return;
+      }
+      if (dosKernel_vfsFind(to) >= 0) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x05;   // access denied
+        return;
+      }
+      DOS_VFS_NAMES[vfsIdx] = to;
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=45h: duplicate a handle; AH=46h: force one onto another.
+    if (ah === 0x45 || ah === 0x46) {
+      let from = DOS_REGS32[3] & 0xFFFF;
+      if (from >= 32 || (from >= 5 && DOS_HANDLE_VFS[from] === -1)) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x06;
+        return;
+      }
+      let to = (ah === 0x46) ? (DOS_REGS32[1] & 0xFFFF) : -1;
+      if (ah === 0x45) {
+        to = dosKernel_openHandle(DOS_HANDLE_VFS[from]);
+        if (to < 0) {
+          DOS_EFLAGS |= 0x01;
+          DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x04;
+          return;
+        }
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | to;
+      } else if (to >= 5 && to < 32) {
+        DOS_HANDLE_VFS[to] = DOS_HANDLE_VFS[from];
+      }
+      if (from >= 5 && to >= 5 && to < 32) DOS_HANDLE_POS[to] = DOS_HANDLE_POS[from];
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=1Ah: set the DTA; AH=2Fh: read it back into ES:BX.
+    if (ah === 0x1A) {
+      DOS_DTA = dosKernel_bufAt(DOS_SEGS[3], DOS_REGS32[2]);
+      return;
+    }
+    if (ah === 0x2F) {
+      if (DOS_IS_32 === 1) {
+        DOS_REGS32[3] = DOS_DTA >>> 0;
+        DOS_SEGS[0] = 0;
+      } else {
+        DOS_SEGS[0] = (DOS_DTA >> 4) & 0xFFFF;
+        DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | (DOS_DTA & 0x0F);
+      }
+      return;
+    }
+
+    // AH=4Eh: find the first file matching DS:DX; AH=4Fh: the next. The
+    // search state lives in the DTA, where DOS keeps it too.
+    if (ah === 0x4E || ah === 0x4F) {
+      if (ah === 0x4E) {
+        let pat = dosKernel_vfsPattern(dosKernel_vfsClean(dosKernel_nameAt(DOS_SEGS[3], DOS_REGS32[2])));
+        let dta = DOS_DTA & 0xFFFFFF;
+        for (let i = 0; i < 11; i++) DOS_RAM[dta + i] = pat.charCodeAt(i);
+        DOS_RAM[dta + 0x0C] = DOS_REGS32[1] & 0xFF;
+        DOS_RAM[dta + 0x0D] = 0;
+        DOS_RAM[dta + 0x0E] = 0;
+      }
+      if (dosKernel_findNext() === 1) {
+        DOS_EFLAGS &= ~0x01;
+        DOS_REGS32[0] = DOS_REGS32[0] & 0xFFFF0000;
+        return;
+      }
+      DOS_EFLAGS |= 0x01;
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | ((ah === 0x4E) ? 0x02 : 0x12);
+      return;
+    }
+
+    // AH=19h: current drive, C. AH=0Eh: select one; AL answers how many.
+    if (ah === 0x19) { DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00) | 0x02; return; }
+    if (ah === 0x0E) { DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00) | 0x1A; return; }
+
+    // AH=47h: the current directory, which is the root: an empty string at
+    // DS:SI. AH=39h/3Ah/3Bh: make, remove and change directory, all granted
+    // since the drive is flat.
+    if (ah === 0x47) {
+      DOS_RAM[dosKernel_bufAt(DOS_SEGS[3], DOS_REGS32[6])] = 0;
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+    if (ah === 0x39 || ah === 0x3A || ah === 0x3B) { DOS_EFLAGS &= ~0x01; return; }
+
+    // AH=36h: free space. 512-byte sectors, 8 to a cluster, plenty free.
+    if (ah === 0x36) {
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0008;
+      DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | 0x4000;
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | 0x0200;
+      DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | 0x7FF0;
+      return;
+    }
+
+    // AH=2Ah: the date, CX=year DH=month DL=day AL=weekday; AH=2Ch: the
+    // time, CH:CL hours:minutes DH:DL seconds:hundredths. Both from the
+    // host clock, in UTC. AH=2Bh/2Dh set them: accepted.
+    if (ah === 0x2A) {
+      let days = Math.floor(Date.now() / 86400000);
+      let ymd = dosKernel_civil(days);
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | (ymd[0] & 0xFFFF);
+      DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | ((ymd[1] & 0xFF) << 8) | (ymd[2] & 0xFF);
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00) | ((days + 4) % 7);
+      return;
+    }
+    if (ah === 0x2C) {
+      let ms = Date.now() % 86400000;
+      let s = Math.floor(ms / 1000);
+      DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | ((Math.floor(s / 3600) & 0xFF) << 8) | (Math.floor(s / 60) % 60);
+      DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | ((s % 60) << 8) | (Math.floor((ms % 1000) / 10) & 0xFF);
+      return;
+    }
+    if (ah === 0x2B || ah === 0x2D) { DOS_REGS32[0] = DOS_REGS32[0] & 0xFFFFFF00; return; }
+
+    // AH=57h: a file's date and time. Read answers the date every file
+    // carries; set is accepted.
+    if (ah === 0x57) {
+      if ((DOS_REGS32[0] & 0xFF) === 0) {
+        DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | 0x6000;
+        DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | 0x1C21;
+      }
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=33h: the break flag, off. AL=06h is the true version query.
+    if (ah === 0x33) {
+      if (al === 0x00) DOS_REGS32[2] = DOS_REGS32[2] & 0xFFFFFF00;
+      else if (al === 0x06) { DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | 0x1606; DOS_REGS32[2] = DOS_REGS32[2] & 0xFFFF0000; }
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=38h: country information, the US defaults, at DS:DX.
+    if (ah === 0x38) {
+      let addr = dosKernel_bufAt(DOS_SEGS[3], DOS_REGS32[2]);
+      for (let i = 0; i < 34; i++) DOS_RAM[(addr + i) & 0xFFFFFF] = 0;
+      DOS_RAM[(addr + 2) & 0xFFFFFF] = 0x24;    // "$"
+      DOS_RAM[(addr + 7) & 0xFFFFFF] = 0x2C;    // ","
+      DOS_RAM[(addr + 9) & 0xFFFFFF] = 0x2E;    // "."
+      DOS_RAM[(addr + 11) & 0xFFFFFF] = 0x2D;   // "-"
+      DOS_RAM[(addr + 13) & 0xFFFFFF] = 0x3A;   // ":"
+      DOS_RAM[(addr + 16) & 0xFFFFFF] = 2;      // currency digits
+      DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | 0x0001;
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=4Dh: the last child's return code, none. AH=2Eh/54h: verify off.
+    // AH=0Dh: disk reset. AH=37h: the switch character, "/".
+    if (ah === 0x4D) { DOS_REGS32[0] = DOS_REGS32[0] & 0xFFFF0000; return; }
+    if (ah === 0x2E || ah === 0x0D) return;
+    if (ah === 0x54) { DOS_REGS32[0] = DOS_REGS32[0] & 0xFFFFFF00; return; }
+    if (ah === 0x37) { DOS_REGS32[0] = DOS_REGS32[0] & 0xFFFFFF00; DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFFFF00) | 0x2F; return; }
+
+    // Console input through DOS: AH=01h reads and echoes, 07h/08h read
+    // without echo, 0Bh asks whether a key waits, 06h with DL=FFh reads
+    // without waiting, 0Ch flushes then does one of those. Each of these
+    // takes the BIOS buffer's ASCII; a wait parks on the INT as INT 16h does.
+    if (ah === 0x0C) {
+      DOS_KEY_HEAD = DOS_KEY_TAIL;
+      let fn = al;
+      if (fn !== 0x01 && fn !== 0x06 && fn !== 0x07 && fn !== 0x08 && fn !== 0x0A) { DOS_REGS32[0] = DOS_REGS32[0] & 0xFFFFFF00; return; }
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF00FF) | (fn << 8);
+      ah = fn;
+      if (ah === 0x0A) { dosKernel_unhandled(0x21, 0x0A); return; }
+    }
+    if (ah === 0x01 || ah === 0x07 || ah === 0x08) {
+      dosInt_pumpKeys();
+      if (DOS_KEY_HEAD === DOS_KEY_TAIL) {
+        DOS_EIP = (DOS_EIP - 2) >>> 0;
+        DOS_EFLAGS |= DOS_FL_IF;
+        return;
+      }
+      let ch = DOS_KEY_BUFFER[DOS_KEY_TAIL] & 0xFF;
+      DOS_KEY_TAIL = (DOS_KEY_TAIL + 1) & 31;
+      if (ah === 0x01) dosKernel_putChar(ch);
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00) | ch;
+      return;
+    }
+    if (ah === 0x0B) {
+      dosInt_pumpKeys();
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00) | ((DOS_KEY_HEAD !== DOS_KEY_TAIL) ? 0xFF : 0x00);
+      return;
+    }
+    if (ah === 0x06) {
+      let dl = DOS_REGS32[2] & 0xFF;
+      if (dl !== 0xFF) { dosKernel_putChar(dl); return; }
+      dosInt_pumpKeys();
+      dosCpu_flushFlags();
+      if (DOS_KEY_HEAD === DOS_KEY_TAIL) {
+        DOS_EFLAGS |= 0x40;
+        DOS_REGS32[0] = DOS_REGS32[0] & 0xFFFFFF00;
+        return;
+      }
+      DOS_EFLAGS &= ~0x40;
+      DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFFFF00) | (DOS_KEY_BUFFER[DOS_KEY_TAIL] & 0xFF);
+      DOS_KEY_TAIL = (DOS_KEY_TAIL + 1) & 31;
       return;
     }
 
@@ -461,8 +904,30 @@ function dosKernel_handleInt(intNum) {
         DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (count & 0xFFFF);
         return;
       }
-      // Writing to a real file is not supported; say so rather than pretend.
-      dosKernel_unhandled(0x21, 0x40);
+      if (handle < 5 || handle >= 32 || DOS_HANDLE_VFS[handle] === -1) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x06;    // invalid handle
+        return;
+      }
+      // A write to a file on the drive, growing it as needed. A count of
+      // zero truncates at the current position, as DOS does.
+      let vfsIdx = DOS_HANDLE_VFS[handle];
+      let data = DOS_VFS_DATA[vfsIdx];
+      if (data === null) data = new Uint8Array(0);
+      let pos = DOS_HANDLE_POS[handle];
+      if (DOS_IS_32 === 1) count = DOS_REGS32[1] >>> 0;
+      let end = (count === 0) ? pos : pos + count;
+      if (end !== data.length) {
+        let grown = new Uint8Array(end);
+        grown.set(data.subarray(0, Math.min(end, data.length)));
+        data = grown;
+        DOS_VFS_DATA[vfsIdx] = data;
+      }
+      for (let i = 0; i < count; i++) data[pos + i] = DOS_RAM[(addr + i) & 0xFFFFFF];
+      DOS_HANDLE_POS[handle] = pos + count;
+      DOS_EFLAGS &= ~0x01;
+      if (DOS_IS_32 === 1) DOS_REGS32[0] = count >>> 0;
+      else DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (count & 0xFFFF);
       return;
     }
 
@@ -506,14 +971,55 @@ function dosKernel_handleInt(intNum) {
       return;
     }
 
-    // AH=4Ah: resize memory block. Memory here is a bump allocator over a flat
-    // 16 MB, so a shrink always succeeds and a grow is granted.
+    // AH=4Ah: resize a memory block. A real-mode program's block is the PSP's
+    // and runs to the top of conventional memory until this call shrinks it;
+    // what follows is what AH=48h hands out. In 32-bit mode memory is a bump
+    // allocator over a flat 16 MB, so a resize is granted as it is.
     if (ah === 0x4A) {
+      if (DOS_IS_32) { DOS_EFLAGS &= ~0x01; return; }
+      let base = (DOS_SEGS[0] & 0xFFFF) << 4;
+      let want = (DOS_REGS32[3] & 0xFFFF) << 4;
+      if (base + want > DOS_DOSMEM_LIMIT) {
+        DOS_EFLAGS |= 0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0008;                     // insufficient memory
+        DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | (((DOS_DOSMEM_LIMIT - base) >> 4) & 0xFFFF);
+        return;
+      }
+      if (base === (DOS_PSP_SEG << 4) || base + want > DOS_DOSMEM_TOP) DOS_DOSMEM_TOP = base + want;
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=49h: free a block. The allocator only moves forward.
+    if (ah === 0x49) {
+      DOS_EFLAGS &= ~0x01;
+      return;
+    }
+
+    // AH=51h / AH=62h: the current PSP's segment.
+    if (ah === 0x51 || ah === 0x62) {
+      DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | (DOS_PSP_SEG & 0xFFFF);
       DOS_EFLAGS &= ~0x01;
       return;
     }
 
     if (ah === 0x48) {
+      if (DOS_IS_32 === 0) {
+        // Real mode: the paragraphs that follow the program's block, below
+        // 640 KB, or error 8 with the largest block that would fit in BX.
+        let want = (DOS_REGS32[3] & 0xFFFF) << 4;
+        let bases = (DOS_DOSMEM_TOP + 15) & ~15;
+        if (bases + want > DOS_DOSMEM_LIMIT) {
+          DOS_EFLAGS |= 0x01;
+          DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | 0x0008;
+          DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | (((DOS_DOSMEM_LIMIT - bases) >> 4) & 0xFFFF);
+          return;
+        }
+        DOS_DOSMEM_TOP = bases + want;
+        DOS_EFLAGS &= ~0x01;
+        DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | ((bases >> 4) & 0xFFFF);
+        return;
+      }
       let bytesReq = DOS_IS_32 ? DOS_REGS32[3] : ((DOS_REGS32[3] & 0xFFFF) * 16);
       let allocBase = DOS_DPMI_MEM_TOP;
       DOS_DPMI_MEM_TOP = (DOS_DPMI_MEM_TOP + bytesReq + 0xFFF) & ~0xFFF; // 4KB aligned

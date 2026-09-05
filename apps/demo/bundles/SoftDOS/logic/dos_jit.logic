@@ -416,7 +416,7 @@ function dosJit_memRead(tExpr, size) {
   let t = "(" + tExpr + ")";
   // The VGA window is tested first because, for the program's own data, the
   // first comparison fails and nothing else is evaluated.
-  let guard = t + "<k39&&" + t + ">=k32&&vg===k1";
+  let guard = t + "<k39&&" + t + ">=k32&&vg!==k0";
   if (size === 1) return "(" + guard + "?RD8(" + t + "):RAM[" + t + "])";
   if (size === 2) {
     return "(" + guard + "?RD16(" + t + "):((" + t + "&k1)===k0?RAM16[" + t + ">>>k1]:RDU16(" + t + ")))";
@@ -1507,6 +1507,7 @@ let DOS_JIT_MAXI = 220;
 let DOS_JIT_ACCEL = 0;           // 1 while the host compiles and runs traces
 let DOS_JIT_ACCEL_SPEC = "";     // how a trace's parameters bind on the host
 let DOS_JIT_ACCEL_COMPOSE = -1;  // the host's copy of the unchained frame composer
+let DOS_JIT_ACCEL_ERROR = "";     // why the host declined, when it did
 let DOS_JIT_ACCEL_PARAMS = ["R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "MASK", "SIGN",
                             "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
                             "RD16", "RD32", "RDU16", "RDU32", "FL", "TAG", "FN", "PG", "VP"];
@@ -1592,6 +1593,7 @@ function dosJit_accelInit() {
     DOS_JIT_ACCEL = 0;
     DOS_JIT_ACCEL_COMPOSE = -1;
     DOS_JIT_HOPS = 32;
+    DOS_JIT_ACCEL_ERROR = String(e && e.message ? e.message : e);
   }
 }
 
@@ -2199,7 +2201,7 @@ function dosJit_muldiv(sub, size) {
 
 function dosJit_out8(port, v) {
   dosMmu_out8(port, v);
-  DOS_JIT_ST[8] = DOS_VGA_UNCHAINED;
+  DOS_JIT_ST[8] = dosVga_jitFlag();
   DOS_JIT_ST[7] = DOS_VGA_MAP_MASK;
 }
 // A port read inside a compiled loop has to see time passing, or a program
@@ -2215,39 +2217,39 @@ function dosJit_in8(port) { DOS_TOTAL_CYCLES += 8; return dosMmu_in8(port); }
 function dosJit_fold(op, d, sr, r, size, f) {
   let sign = DOS_JIT_SIGN[size & 7];
   let cf = 0;
-  let of = 0;
+  let ov = 0;                       // overflow; not `of`, which the host's validator refuses
   let af = 0;
   if (op === 1) {
     cf = (r < d) ? 1 : 0;
-    of = ((~(d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+    ov = ((~(d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
     af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
   } else if (op === 2) {
     cf = (d < sr) ? 1 : 0;
-    of = (((d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+    ov = (((d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
     af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
   } else if (op === 3) {
-    cf = 0; of = 0; af = 0;
+    cf = 0; ov = 0; af = 0;
   } else if (op === 6) {
     cf = f & 1;
-    of = (r === sign) ? 1 : 0;
+    ov = (r === sign) ? 1 : 0;
     af = ((d ^ 1 ^ r) & 0x10) ? 1 : 0;
   } else if (op === 7) {
     cf = f & 1;
-    of = (r === (sign - 1)) ? 1 : 0;
+    ov = (r === (sign - 1)) ? 1 : 0;
     af = ((d ^ 1 ^ r) & 0x10) ? 1 : 0;
   } else if (op === 8) {
     let cin = f & 1;
     cf = cin ? ((r <= d) ? 1 : 0) : ((r < d) ? 1 : 0);
-    of = ((~(d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+    ov = ((~(d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
     af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
   } else if (op === 9) {
     let cin2 = f & 1;
     cf = cin2 ? ((d <= sr) ? 1 : 0) : ((d < sr) ? 1 : 0);
-    of = (((d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
+    ov = (((d ^ sr) & (d ^ r) & sign) !== 0) ? 1 : 0;
     af = ((d ^ sr ^ r) & 0x10) ? 1 : 0;
   } else {
     cf = f & 1;
-    of = (f & 0x800) ? 1 : 0;
+    ov = (f & 0x800) ? 1 : 0;
     af = (f & 0x10) ? 1 : 0;
   }
   let x = r & 0xFF;
@@ -2260,7 +2262,7 @@ function dosJit_fold(op, d, sr, r, size, f) {
   if (af) out = out | 0x10;
   if (r === 0) out = out | 0x40;
   if (r & sign) out = out | 0x80;
-  if (of) out = out | 0x800;
+  if (ov) out = out | 0x800;
   return out >>> 0;
 }
 
@@ -2295,7 +2297,7 @@ function dosJit_syncIn() {
   DOS_JIT_ST[4] = DOS_LAZY_SRC >>> 0;
   DOS_JIT_ST[5] = DOS_LAZY_RES >>> 0;
   DOS_JIT_ST[6] = DOS_LAZY_SIZE;
-  DOS_JIT_ST[8] = DOS_VGA_UNCHAINED;
+  DOS_JIT_ST[8] = dosVga_jitFlag();
   DOS_JIT_ST[7] = DOS_VGA_MAP_MASK;
   DOS_JIT_ST[16] = 0;
 }

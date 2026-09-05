@@ -268,8 +268,8 @@ MyApp.softn (ZIP archive)
 ```
 
 `permission.json` is not optional in practice. The runtime denies every gated
-capability — network, camera, microphone, filesystem, AI, GPU and peer-to-peer sync — to a
-bundle that does not declare it, and the consent prompt is built from what it
+capability — network, camera, microphone, filesystem, AI, GPU, peer-to-peer sync,
+server storage and host acceleration — to a bundle that does not declare it, and the consent prompt is built from what it
 declares, so an app that ships without one can run but cannot reach the host:
 
 ```json
@@ -295,6 +295,13 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 - Rust + WASM register VM with per-call-site inline caches, via `wasm-bindgen`
 - True sandboxing: the script reaches nothing the engine preamble does not hand it
 - Host modules: `db`, `localStorage`, `window`, `navigator`, `host`, plus the `softn.*` async APIs
+- Browser events reach a handler as plain data, the same shape everywhere: a key event carries
+  `key`, `code`, the modifiers and `repeat`; a pointer event carries `clientX/Y`, `button`,
+  `buttons` and the target's rectangle (`targetLeft/Top/Width/Height`), so a script can place
+  the pointer within a canvas scaled to fit its box; both say `targetTag` and `targetEditable`
+- `softn.input.captureKeys(["ArrowUp", " ", "F1"])` names the keys a script wants whole: the
+  browser's default for them (scrolling, a page search) is cancelled before the handler runs,
+  never in a text field and never for a Ctrl chord or the system modifier
 
 The compiled engine is committed at `packages/@softn/core/wasm-zipp/`, so building SoftN needs no
 Rust toolchain. To pick up a new engine revision from a `zipp.org` checkout beside this repo:
@@ -630,6 +637,7 @@ a worked example of some part of the runtime.
 | **AIChat** | A private chat with a model that downloads once and then never leaves the browser |
 | **WarbleWire** | The QXW acoustic transport: text becomes synthetic birdsong and is decoded back, over the air through `Microphone` |
 | **Pocket** | An 8-bit handheld console emulator. The CPU, PPU, APU, timer and MBC1/2/3/5 mappers are all `.logic`; `PixelCanvas` is the screen and `AudioStream` is the speaker. Runs commercial cartridges at 60fps with sound, save states and battery-backed saves |
+| **SoftDOS** | An x86 PC: a 386 integer CPU with a trace compiler, VGA text and Mode X with the graphics controller, an 8042 keyboard, PIT, mouse driver, DOS kernel with a writable drive and DPMI host, all `.logic`. Drop a game's files or its zip on drive C and run it; DOOM plays at its 35 Hz cap through the `accel` capability, Jill of the Jungle and other real-mode games as they were |
 
 **Examples** (the directory's Examples category)
 
@@ -656,11 +664,50 @@ the built site.
 
 ---
 
+## Host acceleration (`accel`)
+
+A script that generates numeric code at run time — an emulator's compiled
+traces, a signal kernel — is limited by the sandbox's interpreter, which runs
+a bytecode operation in a few nanoseconds. With the `accel` capability the
+script hands such a function to the host, which compiles it with the browser's
+own engine and runs it over views of the script's typed arrays, so the compiled
+code reads and writes the same bytes the script does:
+
+```js
+// Inside a .logic script that declared "accel": { "enabled": true }.
+let outer = accel.compile(["RAM", "ST"], "return function(ST,h){ST[0]=RAM[h]*2;return 1;};");
+let fn = accel.make(outer, "RAM=g:MY_RAM,ST=g:MY_STATE");   // views of two typed-array globals
+accel.state("MY_STATE");                                     // the array run() passes first
+accel.run(fn, 5);                                            // MY_STATE[0] = MY_RAM[5] * 2
+```
+
+`compile(params, body)` validates and compiles, answering an id or throwing;
+`make(id, spec)` calls that function with the arguments `spec` describes
+(`NAME=g:GLOBAL` a view of a typed-array global, `NAME=c:GLOBAL` a callback into
+a global function with numbers, `NAME=a:ID` another compiled function,
+`NAME=n:NUMBER` a number, `NAME=t` the host's trace table) and answers the id of
+the function it returned; `state(GLOBAL)` names the array `run(id, h)` passes as
+the first argument; `install(slot, id)` fills the trace table a compiled
+function may call through. Every call is synchronous and answers a number; all
+of them throw unless the capability was granted.
+
+What keeps it safe: the source must fit a closed arithmetic language
+(parameters, `let` locals, labels, keywords and pure `Math` functions; no other
+identifier, no member access, no string literals, no `new` or `this`), so a
+function that passes can name nothing outside its parameters and locals; the
+views cover exactly the arrays the engine resolved and pinned, and index past
+them as any typed array does; callbacks carry numbers only and only while a
+run is in progress. SoftDOS is the worked example: DOOM went from 5-9 fps to
+its own 35 fps cap. The host side is `packages/@softn/core/src/runtime/accel-host.ts`.
+
+---
+
 ## Security Model
 
 | Layer | Protection |
 |-------|-----------|
 | VM Sandboxing | zipp WASM VM -- no `eval()`, no `new Function()`, no host access |
+| Host acceleration | Only with the `accel` capability, only for source that fits a closed arithmetic language, only over views of the script's own pinned typed arrays |
 | Instruction Limits | **Server only.** `softn-server` builds zipp with `instrument`, giving it a step budget and an abort flag. The browser adapter has no budget: a runaway loop wedges the tab it runs in |
 | Bridge Isolation | `window` and `navigator` are controlled bridge objects |
 | localStorage | App-scoped prefix `softn:{appId}:` prevents cross-app leakage |

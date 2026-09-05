@@ -6,6 +6,47 @@
 // 3. 32-bit Watcom LE (Linear Executable) binaries (e.g., DOOM.EXE)
 // 4. Built-in test programs (DOS Shell, Mode 13h Plasma, 3D Raycaster)
 
+// The name the shell is loading, for the environment block's program path.
+let DOS_LOAD_NAME = "PROGRAM.EXE";
+let DOS_PSP_SEG = 0x1000;
+let DOS_ENV_SEG = 0x0FE0;
+
+// A Program Segment Prefix as DOS 5 lays it out: what a program's runtime
+// reads to size its heap (the top of memory at +2), find its environment
+// (+2Ch), its command tail (+80h) and its file handles. The program owns
+// conventional memory up to the limit until it shrinks its block.
+function dosLoader_buildPsp(seg, name) {
+  let p = seg << 4;
+  for (let i = 0; i < 256; i++) DOS_RAM[p + i] = 0;
+  DOS_RAM[p] = 0xCD; DOS_RAM[p + 1] = 0x20;                              // INT 20h
+  let top = DOS_DOSMEM_LIMIT >> 4;                                        // first segment past the block
+  DOS_RAM[p + 2] = top & 0xFF; DOS_RAM[p + 3] = (top >> 8) & 0xFF;
+  DOS_RAM[p + 5] = 0x9A; DOS_RAM[p + 6] = 0xF0; DOS_RAM[p + 7] = 0xFE;     // CP/M-style DOS entry
+  DOS_RAM[p + 8] = 0x00; DOS_RAM[p + 9] = 0xF0;
+  DOS_RAM[p + 0x16] = seg & 0xFF; DOS_RAM[p + 0x17] = (seg >> 8) & 0xFF;   // parent: itself
+  DOS_RAM[p + 0x18] = 1; DOS_RAM[p + 0x19] = 1; DOS_RAM[p + 0x1A] = 1;    // stdin, stdout, stderr
+  DOS_RAM[p + 0x1B] = 0; DOS_RAM[p + 0x1C] = 2;                            // aux, prn
+  for (let i = 0x1D; i < 0x2C; i++) DOS_RAM[p + i] = 0xFF;
+  DOS_RAM[p + 0x2C] = DOS_ENV_SEG & 0xFF; DOS_RAM[p + 0x2D] = (DOS_ENV_SEG >> 8) & 0xFF;
+  DOS_RAM[p + 0x32] = 20;                                                   // handles in the table
+  DOS_RAM[p + 0x34] = 0x18; DOS_RAM[p + 0x35] = 0;                          // the table, at +18h
+  DOS_RAM[p + 0x36] = seg & 0xFF; DOS_RAM[p + 0x37] = (seg >> 8) & 0xFF;
+  DOS_RAM[p + 0x50] = 0xCD; DOS_RAM[p + 0x51] = 0x21; DOS_RAM[p + 0x52] = 0xCB;   // INT 21h; RETF
+  DOS_RAM[p + 0x80] = 0; DOS_RAM[p + 0x81] = 0x0D;                         // empty command tail
+  dosLoader_buildEnv(DOS_ENV_SEG, name);
+  DOS_PSP_SEG = seg;
+  DOS_DTA = p + 0x80;
+  DOS_DOSMEM_TOP = DOS_DOSMEM_LIMIT;
+}
+
+// The environment block: a few variables, a count of one, and the program's
+// own path, which a runtime reads for argv[0].
+function dosLoader_buildEnv(seg, name) {
+  let e = seg << 4;
+  let s = "PATH=C:\\\u0000COMSPEC=C:\\COMMAND.COM\u0000\u0000\u0001\u0000C:\\" + name + "\u0000";
+  for (let i = 0; i < s.length; i++) DOS_RAM[e + i] = s.charCodeAt(i) & 0xFF;
+}
+
 function dosLoader_loadCom(bytes) {
   dosState_reset();
   dosVga_init();
@@ -13,9 +54,7 @@ function dosLoader_loadCom(bytes) {
   let seg = 0x1000;
   let phys = seg << 4;
 
-  // Setup PSP (Program Segment Prefix) at 0x0000 - 0x00FF
-  DOS_RAM[phys]     = 0xCD; // INT 20h exit instruction
-  DOS_RAM[phys + 1] = 0x20;
+  dosLoader_buildPsp(seg, DOS_LOAD_NAME);
 
   // Copy .COM binary starting at offset 0x0100
   for (let i = 0; i < bytes.length; i++) {
@@ -79,6 +118,7 @@ function dosLoader_loadExe(bytes) {
     DOS_RAM[target + 1] = (val >> 8) & 0xFF;
   }
 
+  dosLoader_buildPsp(loadSeg, DOS_LOAD_NAME);
   DOS_SEGS[0] = loadSeg;              // ES
   DOS_SEGS[1] = codeBaseSeg + initCS; // CS
   DOS_SEGS[2] = codeBaseSeg + initSS; // SS

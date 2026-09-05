@@ -39,29 +39,78 @@ let DOS_CPU_HZ = 4000000;
 let DOS_TIMER_NEXT = 0;
 let DOS_TICKS = 0;
 
-// Set when a key arrives and IRQ1 has a handler installed.
-let DOS_KEY_IRQ_PENDING = 0;
-// Raw scan codes for port 0x60: a press is the code, a release the code with
-// bit 7 set. A program that hooks INT 9 reads them one per interrupt.
+// The keyboard: scan codes waiting in the keyboard itself, and the 8042's
+// one-byte output buffer in front of them. A press is the code, a release
+// the code with bit 7 set. A byte moves into the buffer when the buffer is
+// empty and raises IRQ1; port 0x60 reads it and empties the buffer, and
+// reading again gives the same byte, as the controller does. The ASCII the
+// key carries rides alongside so the BIOS handler need not translate.
 let DOS_SCAN_QUEUE = new Uint8Array(64);
+let DOS_SCAN_ASCII = new Uint8Array(64);
 let DOS_SCAN_HEAD = 0;
 let DOS_SCAN_TAIL = 0;
+let DOS_KEY_OBF = 0;          // the output buffer holds a byte
+let DOS_KEY_ASCII = 0;        // the ASCII for the byte in the buffer
+let DOS_KEY_SHIFT = 0;        // BIOS shift flags, mirrored at 0040:0017
 
-// A scan code from the keyboard: queued for port 0x60 and announced on IRQ1.
-function dosInt_pushScan(code) {
+// The BIOS INT 9 handler: INT F1h, which the kernel answers, then IRET. A
+// program that hooks INT 9 and chains to the old vector lands here.
+let DOS_BIOS_KEY_STUB = 0x00504;
+
+// A scan code from the keyboard, with the ASCII a make code stands for.
+function dosInt_pushScan(code, ascii) {
   let next = (DOS_SCAN_HEAD + 1) & 63;
   if (next === DOS_SCAN_TAIL) return;              // full: the key is lost
   DOS_SCAN_QUEUE[DOS_SCAN_HEAD] = code & 0xFF;
+  DOS_SCAN_ASCII[DOS_SCAN_HEAD] = ascii & 0xFF;
   DOS_SCAN_HEAD = next;
-  dosInt_keyArrived();
 }
 
-// The next scan code for port 0x60, or -1 when none is waiting.
-function dosInt_popScan() {
-  if (DOS_SCAN_HEAD === DOS_SCAN_TAIL) return -1;
-  let code = DOS_SCAN_QUEUE[DOS_SCAN_TAIL];
+// Move the next scan code into the output buffer. 1 when a byte moved.
+function dosInt_loadScan() {
+  if (DOS_KEY_OBF === 1 || DOS_SCAN_HEAD === DOS_SCAN_TAIL) return 0;
+  DOS_KEY_LAST_SCAN = DOS_SCAN_QUEUE[DOS_SCAN_TAIL];
+  DOS_KEY_ASCII = DOS_SCAN_ASCII[DOS_SCAN_TAIL];
   DOS_SCAN_TAIL = (DOS_SCAN_TAIL + 1) & 63;
-  return code;
+  DOS_KEY_OBF = 1;
+  return 1;
+}
+
+// Port 0x60: the byte in the output buffer, which the read empties.
+function dosInt_readScan() {
+  DOS_KEY_OBF = 0;
+  return DOS_KEY_LAST_SCAN;
+}
+
+// The BIOS keyboard handler. Shift keys keep the flags; a make code becomes
+// a word in the BIOS buffer for INT 16h; a break code is noted and dropped.
+function dosInt_biosKey() {
+  let scan = DOS_KEY_LAST_SCAN;
+  DOS_KEY_OBF = 0;
+  let make = (scan & 0x80) === 0;
+  let s = scan & 0x7F;
+  let bit = 0;
+  if (s === 0x36) bit = 0x01;            // right shift
+  else if (s === 0x2A) bit = 0x02;       // left shift
+  else if (s === 0x1D) bit = 0x04;       // ctrl
+  else if (s === 0x38) bit = 0x08;       // alt
+  if (bit !== 0) {
+    if (make) DOS_KEY_SHIFT |= bit; else DOS_KEY_SHIFT &= ~bit;
+    if (DOS_RAM !== null) DOS_RAM[0x00417] = DOS_KEY_SHIFT & 0xFF;
+    return;
+  }
+  if (!make || DOS_KEY_BUFFER === null) return;
+  let next = (DOS_KEY_HEAD + 1) & 31;
+  if (next === DOS_KEY_TAIL) return;               // full: the key is lost
+  DOS_KEY_BUFFER[DOS_KEY_HEAD] = ((s & 0xFF) << 8) | (DOS_KEY_ASCII & 0xFF);
+  DOS_KEY_HEAD = next;
+}
+
+// Hand every waiting scan code to the BIOS handler: for the shell, which
+// runs without the CPU and so without the interrupt poll.
+function dosInt_pumpKeys() {
+  DOS_KEY_OBF = 0;
+  while (dosInt_loadScan() === 1) dosInt_biosKey();
 }
 
 // The PIC's interrupt mask (port 0x21). Bit n masks IRQ n.
@@ -97,15 +146,26 @@ function dosInt_reset() {
       DOS_RAM[i * 4 + 2] = 0;
       DOS_RAM[i * 4 + 3] = 0;
     }
+    // The BIOS keyboard handler, and vector 9 pointing at it.
+    DOS_RAM[DOS_BIOS_KEY_STUB] = 0xCD;           // INT F1h
+    DOS_RAM[DOS_BIOS_KEY_STUB + 1] = 0xF1;
+    DOS_RAM[DOS_BIOS_KEY_STUB + 2] = 0xCF;       // IRET
+    DOS_VEC_ADDR[0x09] = DOS_BIOS_KEY_STUB;
+    DOS_RAM[0x09 * 4] = DOS_BIOS_KEY_STUB & 0xFF;
+    DOS_RAM[0x09 * 4 + 1] = (DOS_BIOS_KEY_STUB >> 8) & 0xFF;
+    DOS_RAM[0x00417] = 0;
   }
   DOS_PIT_DIVISOR = 65536;
   DOS_PIT_LATCH = 0;
   DOS_PIT_WRITE_STATE = 0;
   DOS_SCAN_HEAD = 0;
   DOS_SCAN_TAIL = 0;
+  DOS_KEY_OBF = 0;
+  DOS_KEY_SHIFT = 0;
+  dosMouse_reset();
+  DOS_MOUSE_USED = 0;
   DOS_TIMER_NEXT = 0;
   DOS_TICKS = 0;
-  DOS_KEY_IRQ_PENDING = 0;
   DOS_PIC_MASK = 0x00;
   DOS_INT_DELIVERED = 0;
 }
@@ -175,23 +235,38 @@ function dosInt_poll() {
   if (DOS_VEC_ADDR === null) return 0;
 
   // IRQ0, the timer. Cycles per tick comes from the divisor the program wrote.
-  if (DOS_VEC_SET[0x08] === 1) {
-    if (DOS_TIMER_NEXT === 0) {
-      DOS_TIMER_NEXT = DOS_TOTAL_CYCLES + dosInt_cyclesPerTick();
-    } else if (DOS_TOTAL_CYCLES >= DOS_TIMER_NEXT) {
-      DOS_TICKS++;
-      // The BIOS tick count at 0040:006C, which some code reads directly.
-      let t = (dosMmu_read32(0x0046C) + 1) >>> 0;
-      dosMmu_write32(0x0046C, t);
-      DOS_TIMER_NEXT = DOS_TOTAL_CYCLES + dosInt_cyclesPerTick();
-      if (dosInt_ready(0) === 1) { dosInt_enter(0x08); return 1; }
+  // The clock runs whether or not anyone hooked it: the BIOS tick count at
+  // 0040:006C is what a program's delay loops read.
+  if (DOS_TIMER_NEXT === 0) {
+    DOS_TIMER_NEXT = DOS_TOTAL_CYCLES + dosInt_cyclesPerTick();
+  } else if (DOS_TOTAL_CYCLES >= DOS_TIMER_NEXT) {
+    DOS_TICKS++;
+    let t = (dosMmu_read32(0x0046C) + 1) >>> 0;
+    if (t >= 0x1800B0) { t = 0; DOS_RAM[0x00470] = 1; }     // midnight
+    dosMmu_write32(0x0046C, t);
+    DOS_TIMER_NEXT = DOS_TOTAL_CYCLES + dosInt_cyclesPerTick();
+    if (DOS_VEC_SET[0x08] === 1 && dosInt_ready(0) === 1) { dosInt_enter(0x08); return 1; }
+  }
+
+  // IRQ1, the keyboard: the next scan code moves into the output buffer
+  // once the last was read. A program's own handler is entered for it; the
+  // BIOS handler runs here directly; with IRQ1 masked the byte waits in the
+  // buffer for whoever polls port 0x64.
+  if (DOS_KEY_OBF === 0 && DOS_SCAN_HEAD !== DOS_SCAN_TAIL) {
+    if ((DOS_PIC_MASK >> 1) & 1) {
+      dosInt_loadScan();
+    } else if (DOS_VEC_SET[0x09] === 1) {
+      if (dosInt_ready(1) === 1) { dosInt_loadScan(); dosInt_enter(0x09); return 1; }
+    } else {
+      dosInt_loadScan();
+      dosInt_biosKey();
     }
   }
 
-  // IRQ1, the keyboard.
-  if (DOS_KEY_IRQ_PENDING === 1 && DOS_VEC_SET[0x09] === 1 && dosInt_ready(1) === 1) {
-    DOS_KEY_IRQ_PENDING = 0;
-    dosInt_enter(0x09);
+  // The mouse: a program that asked the driver to call it gets called,
+  // from an interrupt, once something has happened.
+  if (dosMouse_pending() === 1 && dosInt_ready(12) === 1) {
+    dosMouse_enterHandler();
     return 1;
   }
   return 0;
@@ -202,9 +277,9 @@ function dosInt_poll() {
 // poll itself would need.
 function dosInt_due() {
   if (DOS_VEC_ADDR === null) return 0;
-  if (DOS_VEC_SET[0x08] === 1 &&
-      (DOS_TIMER_NEXT === 0 || DOS_TOTAL_CYCLES >= DOS_TIMER_NEXT)) return 1;
-  if (DOS_KEY_IRQ_PENDING === 1 && DOS_VEC_SET[0x09] === 1) return 1;
+  if (DOS_TIMER_NEXT === 0 || DOS_TOTAL_CYCLES >= DOS_TIMER_NEXT) return 1;
+  if (DOS_KEY_OBF === 0 && DOS_SCAN_HEAD !== DOS_SCAN_TAIL) return 1;
+  if (dosMouse_pending() === 1) return 1;
   return 0;
 }
 
@@ -238,8 +313,4 @@ function dosInt_pitWrite(port, v) {
   }
 }
 
-// A key arriving raises IRQ1 if anything is listening for it.
-function dosInt_keyArrived() {
-  if (DOS_VEC_ADDR === null) return;
-  if (DOS_VEC_SET[0x09] === 1) DOS_KEY_IRQ_PENDING = 1;
-}
+

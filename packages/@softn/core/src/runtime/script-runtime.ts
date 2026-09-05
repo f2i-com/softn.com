@@ -10,6 +10,8 @@
 
 import { VmAdapter, VM_BRIDGE_PREAMBLE, type SymbolScope } from './vm-adapter';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
+import { extractEventProps } from './event-props';
+import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
 import { deepEqual } from './vm-state';
 
 import type { ScriptBlock, LogicBlock, SoftNDocument } from '../parser/ast';
@@ -347,49 +349,6 @@ function normalizeExternalPrimitive(value: unknown): ExternalValueRead {
  * Extract safe, serializable properties from a browser Event for passing to the VM.
  * Only extracts primitive-valued properties — no DOM nodes, functions, or circular refs.
  */
-function extractEventProps(event: Event): Record<string, unknown> {
-  const props: Record<string, unknown> = { type: event.type };
-
-  // Enough about the target for a handler to leave native controls alone: a
-  // game's WASD listener must not swallow typing in the app's own inputs.
-  const target = event.target as (Element & { isContentEditable?: boolean }) | null;
-  if (target && typeof target.tagName === 'string') {
-    props.targetTag = target.tagName.toLowerCase();
-    props.targetEditable = target.isContentEditable === true;
-  }
-
-  if (event instanceof KeyboardEvent) {
-    props.key = event.key;
-    props.code = event.code;
-    props.altKey = event.altKey;
-    props.ctrlKey = event.ctrlKey;
-    props.shiftKey = event.shiftKey;
-    props.metaKey = event.metaKey;
-    props.repeat = event.repeat;
-  } else if (event instanceof MouseEvent) {
-    props.clientX = event.clientX;
-    props.clientY = event.clientY;
-    props.offsetX = event.offsetX;
-    props.offsetY = event.offsetY;
-    props.button = event.button;
-    props.buttons = event.buttons;
-    props.altKey = event.altKey;
-    props.ctrlKey = event.ctrlKey;
-    props.shiftKey = event.shiftKey;
-    props.metaKey = event.metaKey;
-    if (typeof WheelEvent !== 'undefined' && event instanceof WheelEvent) {
-      props.deltaX = event.deltaX;
-      props.deltaY = event.deltaY;
-      props.deltaMode = event.deltaMode;
-    }
-  } else if (event instanceof TouchEvent) {
-    props.touches = event.touches.length;
-    props.changedTouches = event.changedTouches.length;
-  }
-
-  return props;
-}
-
 /**
  * Extract `$: name = expression;` reactive declarations from source code.
  * Uses a comment/string-aware scanner to avoid matching inside comments or strings,
@@ -1590,6 +1549,10 @@ export class SoftNScriptRuntime {
       const handler = (event: Event) => {
         if (!this.vmEngine) return;
 
+        // A key the script asked to keep whole: the browser's default is
+        // cancelled here, since the handler runs too late to do it.
+        if (shouldCaptureKey(event)) event.preventDefault();
+
         // Extract safe, serializable properties from the browser event
         const eventObj = extractEventProps(event);
 
@@ -1682,6 +1645,7 @@ export class SoftNScriptRuntime {
     }
     this.nativeListeners.clear();
     this.bridgedEventTypes.clear();
+    clearCapturedKeys();
     this.syncCallCache.clear();
     this.externalFunctionNames = [];
     this.externalFunctionValues = [];
@@ -2076,6 +2040,8 @@ export class SoftNScriptRuntime {
         return this.handleFilesReadBase64(call);
       case 'files.saveFile':
         return this.handleFilesSaveFile(call);
+      case 'input.captureKeys':
+        return this.handleInputCaptureKeys(call);
       case 'ai.getCapabilities':
         return this.handleAIGetCapabilities();
       case 'ai.onnx.loadModel':
@@ -2918,6 +2884,18 @@ export class SoftNScriptRuntime {
    * app hands over an image or a zip. Gated with the other file calls: an
    * app that may open the user's files may also give them one.
    */
+  /**
+   * `softn.input.captureKeys(keys)`: the keys whose browser default the
+   * window bridge cancels before the script's handler sees them. Not a
+   * gated capability: it changes nothing but the page the app already
+   * owns, and never touches a text field or a browser chord.
+   */
+  private async handleInputCaptureKeys(call: PendingHostCall): Promise<unknown> {
+    const keys = parseCapturedKeys(call.args[0]);
+    setCapturedKeys(keys);
+    return { captured: keys.length };
+  }
+
   private async handleFilesSaveFile(call: PendingHostCall): Promise<unknown> {
     this.checkPermission('files');
     const [rawName, content, optionsJson] = call.args;
