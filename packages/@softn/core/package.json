@@ -45,6 +45,7 @@
   "scripts": {
     "build": "tsup",
     "build:zipp-wasm": "node scripts/build-zipp-wasm.mjs",
+    "vendor:zipp-release": "node scripts/vendor-zipp-release.mjs",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest"
