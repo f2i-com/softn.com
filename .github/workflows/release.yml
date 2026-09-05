@@ -1,12 +1,17 @@
 name: Release
 
 # A release is built from an existing version tag. The zipp WASM engine used
-# by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so releases build
-# the shared packages directly from the checked-in engine.
+# by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so the release
+# builds the shared packages directly from the checked-in engine.
 #
-# Two kinds of artifact go on the release: the desktop apps, one job per app
-# and platform, and the website — the complete static softn.com as one archive
-# whose contents drop into a web host's document root (`website` below).
+# One artifact goes on the release: the website — the complete static
+# softn.com as one archive whose contents drop into a web host's document
+# root. The desktop apps used to be built here too, one job per app and
+# platform; that took tens of minutes on three operating systems for every
+# tag, and the site is what a tag is for. They still build from the same
+# manifests when wanted (`npm run tauri build` in the app), and the version
+# check below keeps those manifests in step with the tag so that build says
+# what the tag says.
 #
 # Pushing the tag is the trigger. The dispatch entry stays for retrying an
 # infrastructure failure without moving a tag that has already been published,
@@ -24,31 +29,17 @@ on:
         type: string
 
 env:
-  CARGO_TERM_COLOR: always
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  release:
-    name: Release ${{ matrix.app }} (${{ matrix.platform }})
+  # `build:site` writes dist/; that directory is packaged in full as one
+  # archive by scripts/package-site.mjs, which reads the archive back and
+  # compares every entry with dist/ before the file is allowed to exist.
+  website:
+    name: Package the website
     permissions:
       contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - app: softn-loader
-            platform: ubuntu-22.04
-          - app: softn-loader
-            platform: windows-latest
-          - app: softn-loader
-            platform: macos-latest
-          - app: softn-builder
-            platform: ubuntu-22.04
-          - app: softn-builder
-            platform: windows-latest
-          - app: softn-builder
-            platform: macos-latest
-    runs-on: ${{ matrix.platform }}
+    runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
@@ -76,13 +67,12 @@ jobs:
             exit 1
           fi
 
-      # tauri-action takes the version it stamps on every artifact from
-      # tauri.conf.json, NOT from the tag. A tag that disagrees with the
-      # manifests therefore does not fail — it quietly publishes artifacts named
-      # after the manifest. v1.1.0 shipped that way: every asset was called
-      # SoftN-0.1.0-* and collided with the identically named ones already
-      # attached to v1.0.0. Nothing reported a problem, because from the
-      # workflow's point of view nothing had gone wrong.
+      # BUILD-INFO.json inside the archive records the commit; the archive's
+      # name records the tag. The two must agree with package.json, or the
+      # site would announce one version and be another. The desktop manifests
+      # are held to the same version so a desktop build made from this tag is
+      # stamped with it: tauri takes its version from tauri.conf.json, not the
+      # tag, and v1.1.0 once shipped artifacts named 0.1.0 for want of this.
       - name: Verify the tag matches every manifest
         run: |
           set -euo pipefail
@@ -107,137 +97,6 @@ jobs:
             exit 1
           fi
           echo "tag $RELEASE_TAG matches every manifest"
-
-      - name: Checkout pinned xdb.org dependency
-        if: matrix.app == 'softn-loader'
-        run: bash .github/scripts/checkout-xdb.sh
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            apps/${{ matrix.app }}/src-tauri/target/
-          key: tauri-${{ matrix.app }}-${{ matrix.platform }}-${{ hashFiles('apps/**/Cargo.lock') }}
-          restore-keys: tauri-${{ matrix.app }}-${{ matrix.platform }}-
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Audit dependency lockfile
-        run: npm audit --audit-level=high
-
-      - name: Build shared packages
-        run: npm run build:packages
-
-      - name: Build Tauri app and attach to release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: apps/${{ matrix.app }}
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: 'SoftN ${{ env.RELEASE_TAG }}'
-          releaseBody: |
-            ## SoftN ${{ env.RELEASE_TAG }}
-
-            ### Downloads
-
-            | App | Description |
-            |-----|-------------|
-            | **SoftN Loader** | Desktop runtime for running `.softn` bundles |
-            | **SoftN Builder** | Visual IDE for creating SoftN applications |
-            | **Website** | The complete static softn.com (`softn-com-*.zip`): upload its contents to a web host's document root; `DEPLOY.md` inside explains the rest |
-
-            **Platforms:** Windows (.exe, .msi), macOS (.dmg), Linux (.AppImage, .deb)
-          releaseDraft: false
-          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
-          # Skip Tauri's built-in DMG bundling on macOS — bundle_dmg.sh fails
-          # on headless CI runners. We create and upload the DMG manually below.
-          args: ${{ startsWith(matrix.platform, 'macos') && '--bundles app' || '' }}
-
-      - name: Create and upload DMG (macOS)
-        if: startsWith(matrix.platform, 'macos')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          APP_DIR="apps/${{ matrix.app }}/src-tauri/target/release/bundle/macos"
-          DMG_DIR="apps/${{ matrix.app }}/src-tauri/target/release/bundle/dmg"
-          mkdir -p "$DMG_DIR"
-          APP_PATH=$(find "$APP_DIR" -maxdepth 1 -name "*.app" | head -1)
-          APP_NAME=$(basename "$APP_PATH" .app)
-          DMG_PATH="$DMG_DIR/$APP_NAME.dmg"
-          hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_PATH"
-          gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
-
-  # The website: everything softn.com serves — the landing page, the web
-  # runtime, the builder, the studio, the demo bundles, the precompressed twins,
-  # `.htaccess` and DEPLOY.md — built from the tagged commit and packaged as
-  # one archive by scripts/package-site.mjs, which reads the archive back and
-  # compares every entry with dist/ before the file is allowed to exist.
-  #
-  # Independent of the desktop matrix on purpose: a failed macOS build must not
-  # hold back the website, and the website takes minutes where the apps take
-  # tens. The release itself is created by whichever job gets there first;
-  # tauri-action attaches to an existing release, and this job creates one if
-  # none exists yet.
-  website:
-    name: Package the website
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Validate release tag
-        run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must look like v1.2.3 or v1.2.3-beta.1" >&2
-            exit 1
-          fi
-
-      - uses: actions/checkout@v4
-        with:
-          ref: refs/tags/${{ env.RELEASE_TAG }}
-          fetch-depth: 0
-
-      - name: Verify checked-out release provenance
-        run: |
-          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
-          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" ]]; then
-            echo "Checked-out commit does not match $RELEASE_TAG" >&2
-            exit 1
-          fi
-
-      # BUILD-INFO.json inside the archive records the commit; the archive's
-      # name records the tag. The two must agree with package.json, or the
-      # site would announce one version and be another.
-      - name: Verify the tag matches package.json
-        run: |
-          expected="${RELEASE_TAG#v}"
-          actual="$(node -p "require('./package.json').version")"
-          if [[ "$actual" != "$expected" ]]; then
-            echo "package.json is $actual, but the tag says $expected" >&2
-            exit 1
-          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -304,9 +163,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Whichever job reaches the release first creates it. If a desktop
-          # job creates it between the check and the create below, the create
-          # fails harmlessly and the upload goes to the release that exists.
+          # Create the release if this is the first run for the tag; a retry
+          # attaches to the one that exists. `--clobber` lets a retry replace
+          # an archive from a run that failed after uploading.
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             prerelease=""
             if [[ "$RELEASE_TAG" == *-* ]]; then prerelease="--prerelease"; fi
