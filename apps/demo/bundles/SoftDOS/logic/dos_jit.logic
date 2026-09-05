@@ -231,7 +231,9 @@ function dosJit_carryIn(body) {
   if (DOS_JIT_PENDING !== 0) {
     let cfe = dosJit_flagExpr(0);
     if (cfe === "") body.push(dosJit_spill() + "FC();" + dosJit_reload());
-    else if (DOS_JIT_PENDING < 6) body.push(dosJit_carryLine(cfe));
+    // Not marked as the record's carry line: the carry feeds the value, not
+    // only the record, so the dead-flag pass must never drop it.
+    else if (DOS_JIT_PENDING !== 6 && DOS_JIT_PENDING !== 7) body.push(dosJit_carryLine(cfe).substring(5));
     DOS_JIT_PENDING = 0;
   } else {
     body.push(dosJit_guard());
@@ -437,12 +439,13 @@ function dosJit_abort() {
 }
 
 // One byte into the planes the map mask selects, at window offset t-0xA0000
-// plus `plus`. The value expression is masked to a byte; t3 holds the offset.
+// plus `plus`. The byte goes in t0 -- not tv, which still holds the whole
+// value a 16-bit store's second byte is taken from; t3 holds the offset.
 function dosJit_planar(t, valExpr, plus) {
   let off = (plus === 0) ? "t3" : ("(t3+" + plus + ")");
-  return "t3=" + t + "-655360;tv=(" + valExpr + ")&255;" +
-         "if(pm&1)VP[" + off + "]=tv;if(pm&2)VP[" + off + "+65536]=tv;" +
-         "if(pm&4)VP[" + off + "+131072]=tv;if(pm&8)VP[" + off + "+196608]=tv;ST[16]=1;";
+  return "t3=" + t + "-655360;t0=(" + valExpr + ")&255;" +
+         "if(pm&1)VP[" + off + "]=t0;if(pm&2)VP[" + off + "+65536]=t0;" +
+         "if(pm&4)VP[" + off + "+131072]=t0;if(pm&8)VP[" + off + "+196608]=t0;ST[16]=1;";
 }
 
 function dosJit_memWrite(tExpr, size, valExpr) {
