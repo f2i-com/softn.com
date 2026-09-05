@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ApiError, getApp, getRating, listApps, rate, recordRun, savedKey, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
-import { WEB_URL } from '../lib/appUrls';
+import { runtimeAppUrl } from '../lib/appUrls';
 import type { Route } from '../lib/router';
 import { AppGrid, Thumb } from '../components/directory/AppCard';
 import { StarInput, Stars } from '../components/directory/Stars';
@@ -61,122 +61,6 @@ function Badges({ capabilities, execution, official }: { capabilities: string[];
   );
 }
 
-/**
- * The app, running, over the whole viewport: a game in a box the size of a
- * paragraph is not a game. A slim bar names the app and offers fullscreen,
- * the runtime and Close; the bar folds away to a corner tab so the app can
- * have every pixel. The runtime posts `softn:app-ready` once the bundle has
- * parsed and painted; until then the frame shows a starting state rather
- * than a black box.
- */
-function Player({ app, onClose }: { app: AppDetail; onClose: () => void }): React.ReactElement {
-  const [live, setLive] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
-  const [barHidden, setBarHidden] = useState(false);
-  const frameRef = useRef<HTMLIFrameElement>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
-  const embedUrl = `${WEB_URL}/?${new URLSearchParams({ open: app.urls.bundle, embed: '1' })}`;
-
-  useEffect(() => {
-    let origin: string | null = null;
-    try {
-      origin = new URL(embedUrl, window.location.href).origin;
-    } catch {
-      origin = null;
-    }
-    const onMessage = (event: MessageEvent) => {
-      if (!origin || event.origin !== origin) return;
-      if (event.source !== frameRef.current?.contentWindow) return;
-      const data = event.data as { type?: string } | null;
-      if (data && typeof data === 'object' && data.type === 'softn:app-ready') setLive(true);
-    };
-    const onFs = () => setFullscreen(document.fullscreenElement === boxRef.current);
-    // Escape closes the popup, but only once the app has let the pointer go:
-    // a pointer-locked game takes the first Escape for itself.
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !document.pointerLockElement) onClose();
-    };
-    window.addEventListener('message', onMessage);
-    document.addEventListener('fullscreenchange', onFs);
-    document.addEventListener('keydown', onKey);
-    // The page behind must not scroll under the popup.
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      window.removeEventListener('message', onMessage);
-      document.removeEventListener('fullscreenchange', onFs);
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [embedUrl, onClose]);
-
-  useEffect(() => {
-    void recordRun(app.slug);
-  }, [app.slug]);
-
-  return (
-    <div className={`app-popup ${barHidden ? 'app-popup-bare' : ''}`} id="play" ref={boxRef} role="dialog" aria-label={`${app.name}, running`}>
-      {barHidden ? (
-        <button type="button" className="app-popup-peek" onClick={() => setBarHidden(false)} title="Show the bar">
-          <span className="live" data-on={live}>
-            <span className="live-dot" aria-hidden="true" />
-          </span>
-          {app.name}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </button>
-      ) : (
-        <div className="app-frame-bar">
-          <span className="app-frame-live">
-            <span className="live" data-on={live}>
-              <span className="live-dot" aria-hidden="true" />
-              {live ? 'live' : 'starting'}
-            </span>
-            <span className="app-frame-name">{app.name}</span>
-          </span>
-          <span className="app-frame-actions">
-            <button type="button" className="app-frame-btn" onClick={() => setBarHidden(true)} title="Hide this bar and give the app the whole screen">
-              Hide bar
-            </button>
-            <button
-              type="button"
-              className="app-frame-btn"
-              onClick={() => {
-                const el = boxRef.current;
-                if (!el) return;
-                if (document.fullscreenElement !== el) void el.requestFullscreen?.();
-                else void document.exitFullscreen?.();
-              }}
-            >
-              {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-            </button>
-            <a className="app-frame-btn" href={app.urls.run}>
-              Open in the runtime
-            </a>
-            <button type="button" className="app-frame-btn app-frame-close" onClick={onClose} aria-label="Stop the app and close">
-              Close
-            </button>
-          </span>
-        </div>
-      )}
-      {!live && (
-        <div className="app-frame-starting" aria-hidden="true">
-          <Thumb app={app} className="app-frame-poster" />
-          <span className="app-frame-starting-text">Starting the runtime…</span>
-        </div>
-      )}
-      <iframe
-        ref={frameRef}
-        src={embedUrl}
-        title={`${app.name}, running`}
-        allow="camera; microphone; clipboard-write; autoplay; fullscreen; pointer-lock; gamepad"
-        loading="eager"
-      />
-    </div>
-  );
-}
-
 /** More to try: the same category, and the same author, without repeating the app itself. */
 function Related({ app, categories }: { app: AppDetail; categories: Category[] }): React.ReactElement | null {
   const [same, setSame] = useState<AppCardData[]>([]);
@@ -227,7 +111,11 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
   const [rating, setRating] = useState<Rating | null>(null);
   const [rateBusy, setRateBusy] = useState(false);
   const [rateError, setRateError] = useState<string | null>(null);
-  const [playing, setPlaying] = useState(route.query.get('play') === '1');
+  // Where an app plays: in the runtime, one page over, under the same slim
+  // bar the runtime draws over every app. A `?play=1` link from before the
+  // page had its own popup goes straight there. The app page stays the place
+  // to read about an app; the runtime is the one place it runs.
+  const runUrl = runtimeAppUrl;
   const [showSource, setShowSource] = useState(false);
   const [sourceVersion, setSourceVersion] = useState<number | undefined>(undefined);
   const editable = Boolean(savedKey(slug));
@@ -236,7 +124,10 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
     const ac = new AbortController();
     setApp(null);
     setError(null);
-    setPlaying(route.query.get('play') === '1');
+    if (route.query.get('play') === '1') {
+      window.location.replace(runUrl(slug));
+      return undefined;
+    }
     setShowSource(false);
     setSourceVersion(undefined);
     getApp(slug, ac.signal)
@@ -274,7 +165,15 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
     }
   };
 
-  const play = () => setPlaying(true);
+  // Count the run, then go. The count is best effort: a directory that is
+  // not answering must not stand between someone and the app.
+  const play = () => {
+    if (!app) return;
+    const to = runUrl(app.slug);
+    recordRun(app.slug)
+      .catch(() => {})
+      .finally(() => window.location.assign(to));
+  };
 
   if (error) {
     return (
@@ -338,24 +237,15 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
           <span>{app.name}</span>
         </nav>
 
-        {playing && <Player app={app} onClose={() => setPlaying(false)} />}
-
         <div className="app-head">
           <div className="app-head-media">
-            {playing ? (
-              <button type="button" className="app-hero-thumb app-hero-thumb-playing" onClick={play}>
-                <Thumb app={app} />
-                <span className="app-hero-play">Running</span>
-              </button>
-            ) : (
-              <button type="button" className="app-hero-thumb" onClick={play} aria-label={`Play ${app.name} here`}>
-                <Thumb app={app} />
-                <span className="app-hero-play">
-                  <PlayGlyph size={22} />
-                  Play here
-                </span>
-              </button>
-            )}
+            <button type="button" className="app-hero-thumb" onClick={play} aria-label={`Play ${app.name}`}>
+              <Thumb app={app} />
+              <span className="app-hero-play">
+                <PlayGlyph size={22} />
+                Play
+              </span>
+            </button>
           </div>
           <div className="app-head-body">
             <h1 className="page-title app-title">{app.name}</h1>
@@ -400,9 +290,6 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                 <PlayGlyph />
                 Play
               </button>
-              <a className="cta" href={app.urls.run}>
-                Open in the runtime
-              </a>
               <a className="cta" href={app.urls.remix}>
                 Remix
               </a>

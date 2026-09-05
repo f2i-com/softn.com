@@ -280,7 +280,8 @@ export async function unpublish(slug: string, editKey: string): Promise<void> {
 
 export async function recordRun(slug: string): Promise<void> {
   try {
-    await fetch(`/api/apps/${encodeURIComponent(slug)}/runs`, { method: 'POST', credentials: 'same-origin' });
+    // keepalive: the caller is usually about to leave for the runtime.
+    await fetch(`/api/apps/${encodeURIComponent(slug)}/runs`, { method: 'POST', credentials: 'same-origin', keepalive: true });
   } catch {
     // A count nobody is waiting on.
   }

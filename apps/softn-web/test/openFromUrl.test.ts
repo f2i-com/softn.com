@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  *
- * What the tab bar is left holding when `?open=` does not point at a bundle.
+ * What the runtime is left holding when `?open=` does not point at a bundle.
  *
  * The download gets a placeholder tab so the window is not blank while it runs,
  * and the failure worth pinning is the one where the bytes arrive and turn out
@@ -126,8 +126,11 @@ async function settle(): Promise<void> {
   }
 }
 
+// Apps run fullscreen now, so the strip of tabs is gone; the home screen's
+// "Running now" list is what holds every open app, placeholder included, and
+// it stays in the tree (hidden) while an app is in front.
 const tabNames = (): string[] =>
-  Array.from(container.querySelectorAll('.softn-tab-app .softn-tab-label')).map(
+  Array.from(container.querySelectorAll('.softn-launcher-run-name')).map(
     (el) => el.textContent ?? ''
   );
 

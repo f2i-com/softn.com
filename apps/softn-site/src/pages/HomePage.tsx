@@ -1,16 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type Category } from '../lib/api';
-import { AppGrid } from '../components/directory/AppCard';
+import { AppGrid, Featured, FeaturedSkeleton, pickFeatured } from '../components/directory/AppCard';
 import { CategoryChips, SearchBox } from '../components/directory/Controls';
-import { HeroStage } from '../components/HeroStage';
-import { Player } from '../components/Player';
 import { Doors } from '../components/Doors';
 import { Language } from '../components/Language';
 import { Pipeline } from '../components/Pipeline';
 import { ComponentIndex } from '../components/ComponentIndex';
 import { Reveal } from '../components/Reveal';
 
-const FEATURED: Array<{ id: string; name: string }> = [
+const LISTS: Array<{ id: string; name: string }> = [
   { id: 'trending', name: 'Trending' },
   { id: 'newest', name: 'New' },
   { id: 'top', name: 'Top rated' },
@@ -26,54 +24,72 @@ function Arrow(): React.ReactElement {
 }
 
 /**
- * The hero is the apps: a headline beside a stage that runs one of six of
- * them on request. Then the directory, then how the loop works, then the
- * runtime with its source open, then the tools and the language.
+ * The hero is the apps: a headline over the directory's featured shelf, as
+ * pictures. Then the directory itself, then how the loop works, then the
+ * tools and the language.
  *
- * The stage and the source explorer each hold a runtime iframe, so they are
- * made mutually exclusive here: launching an app closes the explorer, and
- * opening the explorer closes the app. The page never carries two engines,
- * and idle it carries none.
+ * Nothing on this page runs an app. The pictures are the screenshots the
+ * directory keeps, and an app's bundle is only fetched when someone presses
+ * Play, which opens it in the runtime — so a visit here downloads the site,
+ * not the apps.
  */
 export function HomePage({ categories, apiDown }: { categories: Category[]; apiDown: string | null }): React.ReactElement {
   const [sort, setSort] = useState('trending');
   const [apps, setApps] = useState<AppCardData[]>([]);
   const [total, setTotal] = useState<number | null>(null);
-  const [featuredLoading, setFeaturedLoading] = useState(true);
-  const [featuredError, setFeaturedError] = useState<string | null>(null);
-  const [featuredAttempt, setFeaturedAttempt] = useState(0);
-  const [explorerOpen, setExplorerOpen] = useState(false);
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
+  const [listAttempt, setListAttempt] = useState(0);
+  const [featured, setFeatured] = useState<AppCardData[] | null>(null);
 
-  // The featured list has its own loading and failure state. It used to
-  // swallow a failed request on the theory that the outage banner already
-  // covered it — but the banner reflects the categories request, and the two
-  // can fail independently: categories cached, list down, and the page showed
-  // eight skeleton cards forever with nothing to press.
+  // The featured shelf: the most-played dozen, ranked the way the Apps page
+  // ranks them. When the directory cannot answer, the hero is the headline.
+  useEffect(() => {
+    if (apiDown) {
+      setFeatured([]);
+      return undefined;
+    }
+    const ac = new AbortController();
+    listApps({ sort: 'runs', perPage: 12 }, ac.signal)
+      .then((r) => {
+        if (!ac.signal.aborted) setFeatured(pickFeatured(r.items));
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) setFeatured([]);
+      });
+    return () => ac.abort();
+  }, [apiDown]);
+
+  // The list has its own loading and failure state. It used to swallow a
+  // failed request on the theory that the outage banner already covered it —
+  // but the banner reflects the categories request, and the two can fail
+  // independently: categories cached, list down, and the page showed eight
+  // skeleton cards forever with nothing to press.
   useEffect(() => {
     if (apiDown) return undefined;
     const ac = new AbortController();
-    setFeaturedError(null);
-    setFeaturedLoading(true);
+    setListError(null);
+    setListLoading(true);
     setApps([]);
     listApps({ sort, perPage: 8 }, ac.signal)
       .then((r) => {
         if (ac.signal.aborted) return;
         setApps(r.items);
         setTotal(r.total);
-        setFeaturedLoading(false);
+        setListLoading(false);
       })
       .catch(() => {
         if (ac.signal.aborted) return;
-        setFeaturedError('This list could not be loaded. Try again, or launch a demo above.');
-        setFeaturedLoading(false);
+        setListError('This list could not be loaded.');
+        setListLoading(false);
       });
     return () => ac.abort();
-  }, [sort, apiDown, featuredAttempt]);
+  }, [sort, apiDown, listAttempt]);
 
   return (
     <>
       <header className="hero hero-dir" id="top">
-        <div className="wrap hero-inner hero-grid">
+        <div className="wrap hero-inner">
           <div className="hero-copy">
             <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
               Open an app.
@@ -97,17 +113,16 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
                 <Arrow />
               </a>
             </div>
-            <p className="hero-aside rise" style={{ animationDelay: '300ms' }}>
-              Or pick one of the six on the right. It only starts when you say so.
-            </p>
           </div>
-          <div className="hero-stage rise" style={{ animationDelay: '180ms' }}>
-            <HeroStage suspended={explorerOpen} onLaunch={() => setExplorerOpen(false)} />
-          </div>
+          {(featured === null || featured.length >= 3) && (
+            <div className="hero-shelf rise" style={{ animationDelay: '260ms' }}>
+              {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
+            </div>
+          )}
         </div>
       </header>
 
-      <section className="band band-featured" id="featured">
+      <section className="band band-featured" id="directory">
         <div className="wrap">
           <div className="band-head band-head-row">
             <div>
@@ -117,8 +132,8 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
             {/* Plain pressed buttons: these filter a list, and the tab pattern
                 they used to claim comes with keyboard and panel semantics they
                 never had. */}
-            <div className="tabs" role="group" aria-label="Sort featured apps">
-              {FEATURED.map((f) => (
+            <div className="tabs" role="group" aria-label="Sort the list">
+              {LISTS.map((f) => (
                 <button key={f.id} type="button" aria-pressed={sort === f.id} className={`tab ${sort === f.id ? 'on' : ''}`} onClick={() => setSort(f.id)}>
                   {f.name}
                 </button>
@@ -133,19 +148,19 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
           </div>
           {apiDown ? (
             <div className="notice">
-              <strong>The directory is not answering.</strong> {apiDown} The demos above still run.
+              <strong>The directory is not answering.</strong> {apiDown}
             </div>
-          ) : featuredError ? (
+          ) : listError ? (
             <div className="notice" role="status">
-              <strong>{featuredError}</strong>{' '}
-              <button type="button" className="cta" onClick={() => setFeaturedAttempt((n) => n + 1)}>
+              <strong>{listError}</strong>{' '}
+              <button type="button" className="cta" onClick={() => setListAttempt((n) => n + 1)}>
                 Retry
               </button>
             </div>
-          ) : !featuredLoading && apps.length === 0 ? (
-            <div className="notice">Nothing in this list yet. The demos above are a place to start.</div>
+          ) : !listLoading && apps.length === 0 ? (
+            <div className="notice">Nothing in this list yet.</div>
           ) : (
-            <AppGrid apps={apps} categories={categories} skeleton={featuredLoading ? 8 : 0} loading={featuredLoading} />
+            <AppGrid apps={apps} categories={categories} skeleton={listLoading ? 8 : 0} loading={listLoading} />
           )}
           <div className="band-foot">
             <a className="cta" href={`/apps?sort=${sort}`}>
@@ -195,31 +210,6 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
               </p>
             </div>
           </div>
-        </div>
-      </Reveal>
-
-      <Reveal as="section" className="band" id="demos">
-        <div className="wrap">
-          <div className="band-head">
-            <p className="eyebrow">Under the hood</p>
-            <h2 className="band-title">The runtime, with its source open</h2>
-            <p className="band-sub">
-              The file on the left is read out of the same bundle the runtime on the right is executing. Neither side is a picture.
-            </p>
-          </div>
-          {/* Mounted only when opened: the explorer boots a runtime of its own,
-              and a visitor who came for the directory should not pay for it. */}
-          <button
-            type="button"
-            className="cta"
-            aria-expanded={explorerOpen}
-            aria-controls="runtime-source-explorer"
-            onClick={() => setExplorerOpen((open) => !open)}
-          >
-            {explorerOpen ? 'Close the source explorer' : 'Open the source explorer'}
-            <Arrow />
-          </button>
-          <div id="runtime-source-explorer">{explorerOpen && <Player />}</div>
         </div>
       </Reveal>
 
