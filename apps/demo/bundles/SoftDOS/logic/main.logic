@@ -185,7 +185,7 @@ function quitToDos() {
 // the CPU is underneath. The budget is retuned each frame toward a slice that
 // leaves room to draw at 60 Hz, which costs no emulated throughput at all —
 // the same cycles are simply handed over in more, smaller pieces.
-let CPU_SLICE_MS = 20;    // wall-clock time a single slice should take
+let CPU_SLICE_MS = 16;    // wall-clock time a single slice should take
 let CPU_BUDGET = 40000;   // cycles per frame; adapts from the first measurement
 let runFrames = 0;        // frames the current program has had
 let cyclesRun = 0;
@@ -348,6 +348,8 @@ function sampleSource(wantFrames) {
 
   for (let i = 0; i < n2; i++) {
     let v = mix[i];
+    if (v > 22000) v = 22000 + (v - 22000) * 0.35;
+    else if (v < -22000) v = -22000 + (v + 22000) * 0.35;
     if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
     pcmBuffer[i] = v;
   }
@@ -522,35 +524,17 @@ function toggleExpanded() {
 
 function setCrtColor() {
   crtTheme = "color";
-  dosVga_init();
+  DOS_VGA_TINT = 0;
 }
 
 function setCrtGreen() {
   crtTheme = "green";
-  for (let i = 0; i < 256; i++) {
-    let r = DOS_VGA_PAL[i * 3];
-    let g = DOS_VGA_PAL[i * 3 + 1];
-    let b = DOS_VGA_PAL[i * 3 + 2];
-    let lum = Math.floor((r * 0.299 + g * 0.587 + b * 0.114));
-    DOS_VGA_PAL[i * 3]     = 0;
-    DOS_VGA_PAL[i * 3 + 1] = Math.min(255, Math.floor(lum * 1.2));
-    DOS_VGA_PAL[i * 3 + 2] = 0;
-  }
-  DOS_VGA_PAL_REV++;
+  DOS_VGA_TINT = 1;
 }
 
 function setCrtAmber() {
   crtTheme = "amber";
-  for (let i = 0; i < 256; i++) {
-    let r = DOS_VGA_PAL[i * 3];
-    let g = DOS_VGA_PAL[i * 3 + 1];
-    let b = DOS_VGA_PAL[i * 3 + 2];
-    let lum = Math.floor((r * 0.299 + g * 0.587 + b * 0.114));
-    DOS_VGA_PAL[i * 3]     = Math.min(255, Math.floor(lum * 1.1));
-    DOS_VGA_PAL[i * 3 + 1] = Math.min(255, Math.floor(lum * 0.7));
-    DOS_VGA_PAL[i * 3 + 2] = 0;
-  }
-  DOS_VGA_PAL_REV++;
+  DOS_VGA_TINT = 2;
 }
 
 // On-screen Virtual D-Pad buttons for touch / clicks

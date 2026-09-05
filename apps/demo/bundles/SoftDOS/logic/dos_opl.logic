@@ -309,7 +309,7 @@ function dosOpl_render(ST, h) {
                 let amp = DOS_OPL_EXPT[Math.floor(att * 10)];
                 let mod = 0;
                 if (k === 0) mod = (DOS_OPL_OP[a + 13] + DOS_OPL_OP[a + 14]) * DOS_OPL_CH[b];
-                else if (DOS_OPL_CH[b + 1] === 0) mod = out1 * 2;
+                else if (DOS_OPL_CH[b + 1] === 0) mod = out1 * 4;
                 let ph = DOS_OPL_OP[a] + mod;
                 ph = ph - Math.floor(ph);
                 out = DOS_OPL_WAVE_T[DOS_OPL_OP[a + 12] + (Math.floor(ph * 1024) & 1023)] * amp;
@@ -374,7 +374,7 @@ function dosOpl_mix(pcm, n) {
     if (DOS_OPL_ACCEL >= 0) {
       accel.run(DOS_OPL_ACCEL, chunk);
       for (let i = 0; i < chunk; i++) {
-        let v = DOS_OPL_OUT[i] * 7000;
+        let v = DOS_OPL_OUT[i] * 5000;
         let j = (done + i) * 2;
         pcm[j] = pcm[j] + v;
         pcm[j + 1] = pcm[j + 1] + v;
@@ -386,7 +386,7 @@ function dosOpl_mix(pcm, n) {
       let step = (DOS_OPL_RATE === 24000) ? 1 : 0;
       dosOpl_render(null, step === 1 ? ((chunk + 1) >> 1) : chunk);
       for (let i = 0; i < chunk; i++) {
-        let v = DOS_OPL_OUT[i >> step] * 7000;
+        let v = DOS_OPL_OUT[i >> step] * 5000;
         let j = (done + i) * 2;
         pcm[j] = pcm[j] + v;
         pcm[j + 1] = pcm[j + 1] + v;
