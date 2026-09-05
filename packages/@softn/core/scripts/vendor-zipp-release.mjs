@@ -88,7 +88,9 @@ writeFileSync(
       repository: REPO,
       revision: buildInfo.commit,
       version,
-      release: `${REPO}/releases/tag/${tag}`,
+      // The tag, not a URL: package-site.mjs puts this in the archive's name.
+      release: tag,
+      releaseUrl: `${REPO}/releases/tag/${tag}`,
       bundle: `${bundleName}.zip`,
       bundleSha256: zipHash,
       rustc: buildInfo.rustc,

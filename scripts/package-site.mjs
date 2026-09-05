@@ -81,7 +81,18 @@ if (info.softn?.dirty && !allowDirty) {
 if (!fs.existsSync(path.join(distDir, '.htaccess'))) {
   fail('dist/.htaccess is missing; the archive would deploy without its server rules.');
 }
-const engine = typeof info.zipp?.release === 'string' && info.zipp.release ? info.zipp.release : 'unknown';
+// The engine's release tag, when SOURCE.json has one that reads as a version;
+// failing that its version, or the short commit. Never anything else: this
+// goes into a file name, and one release run tried to open
+// `…-zipp-https:/github.com/…/v0.0.14.zip` when the field held the release URL.
+const looksLikeVersion = (s) => typeof s === 'string' && /^v?\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]+)?$/.test(s);
+const engine = looksLikeVersion(info.zipp?.release)
+  ? info.zipp.release
+  : looksLikeVersion(info.zipp?.version)
+    ? `v${info.zipp.version.replace(/^v/, '')}`
+    : /^[0-9a-f]{7,40}$/i.test(info.zipp?.revision ?? '')
+      ? info.zipp.revision.slice(0, 8)
+      : 'unknown';
 const archiveName = `softn-com-${tag}-zipp-${engine}.zip`;
 
 // Sorted, forward-slash, relative — the same order and names on every OS.
