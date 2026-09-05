@@ -1,6 +1,6 @@
 {
   "name": "@softn/vite-plugin",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Vite plugin for SoftN UI language",
   "license": "Apache-2.0",
   "repository": {
@@ -32,8 +32,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@softn/core": "^0.0.1",
-    "@softn/components": "^0.0.1"
+    "@softn/core": "^0.0.2",
+    "@softn/components": "^0.0.2"
   },
   "peerDependencies": {
     "vite": "^5.0.0 || ^6.0.0 || ^8.0.0",

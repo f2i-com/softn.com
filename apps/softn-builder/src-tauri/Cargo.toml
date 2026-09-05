@@ -1,6 +1,6 @@
 [package]
 name = "softn-builder"
-version = "0.0.1"
+version = "0.0.2"
 description = "SoftN Application Builder IDE"
 authors = ["SoftN Team"]
 license = "Apache-2.0"
