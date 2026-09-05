@@ -223,6 +223,21 @@ function dosJit_isReg(expr) {
           expr.charCodeAt(1) >= 48 && expr.charCodeAt(1) <= 55) ? 1 : 0;
 }
 
+// Before an instruction whose fold reads CF from the flag word (INC, DEC,
+// ADC, SBB): put the pending result's carry there. A record of this trace's
+// own is one expression; at a trace head the guard folds whatever is
+// pending. Nothing to do when the pending result itself left CF in the word.
+function dosJit_carryIn(body) {
+  if (DOS_JIT_PENDING !== 0) {
+    let cfe = dosJit_flagExpr(0);
+    if (cfe === "") body.push(dosJit_spill() + "FC();" + dosJit_reload());
+    else if (DOS_JIT_PENDING < 6) body.push(dosJit_carryLine(cfe));
+    DOS_JIT_PENDING = 0;
+  } else {
+    body.push(dosJit_guard());
+  }
+}
+
 // The line that carries the pending result's CF into the flag word for an
 // INC or DEC, whose fold reads it from there.
 function dosJit_carryLine(cfe) {
@@ -483,8 +498,9 @@ function dosJit_isSimple(expr) {
 let DOS_JIT_OPA = "";
 let DOS_JIT_OPB = "";
 let DOS_JIT_RES = "t2";
-function dosJit_aluValue(aop, a, b) {
+function dosJit_aluValue(body, aop, a, b) {
   DOS_JIT_RES = "t2";
+  if (aop === 2 || aop === 3) dosJit_carryIn(body);
   if (aop === 6 && a === b && dosJit_isReg(a) === 1) {
     // xor reg,reg: zero, and the record is of zero.
     DOS_JIT_OPA = a;
@@ -504,6 +520,8 @@ function dosJit_aluValue(aop, a, b) {
 
 function dosJit_aluExpr(aop, a, b) {
   if (aop === 0) return "(" + a + "+" + b + ")";
+  if (aop === 2) return "(" + a + "+" + b + "+(ST[1]&1))";
+  if (aop === 3) return "(" + a + "-" + b + "-(ST[1]&1))";
   if (aop === 1) return "(" + a + "|" + b + ")";
   if (aop === 4) return "(" + a + "&" + b + ")";
   if (aop === 5) return "(" + a + "-" + b + ")";
@@ -514,10 +532,12 @@ function dosJit_aluExpr(aop, a, b) {
 function dosJit_aluLazy(aop) {
   if (aop === 0) return 1;                 // ADD
   if (aop === 5 || aop === 7) return 2;    // SUB / CMP
+  if (aop === 2) return 8;                 // ADC
+  if (aop === 3) return 9;                 // SBB
   return 3;                                // logic
 }
 function dosJit_aluSupported(aop) {
-  return (aop === 0 || aop === 1 || aop === 4 || aop === 5 || aop === 6 || aop === 7) ? 1 : 0;
+  return (aop <= 7) ? 1 : 0;
 }
 
 // Record the lazy flag state for an ALU result.
@@ -709,7 +729,7 @@ function dosJit_one(body, tmp) {
         let rmE = dosJit_regGet(DOS_JM_RM, sz);
         let a = toReg ? regE : rmE;
         let b = toReg ? rmE : regE;
-        body.push(dosJit_aluValue(aop, a, b));
+        body.push(dosJit_aluValue(body, aop, a, b));
         body.push(dosJit_setFlags(aop, sz, DOS_JIT_OPA, DOS_JIT_OPB, DOS_JIT_RES));
         if (store) body.push(toReg ? dosJit_regSet(DOS_JM_REG, sz, DOS_JIT_RES) : dosJit_regSet(DOS_JM_RM, sz, DOS_JIT_RES));
       } else {
@@ -717,7 +737,7 @@ function dosJit_one(body, tmp) {
         let memE = dosJit_memRead("ta", sz);
         let a = toReg ? regE : memE;
         let b = toReg ? memE : regE;
-        body.push(dosJit_aluValue(aop, a, b));
+        body.push(dosJit_aluValue(body, aop, a, b));
         body.push(dosJit_setFlags(aop, sz, DOS_JIT_OPA, DOS_JIT_OPB, "t2"));
         if (store) {
           if (toReg) body.push(dosJit_regSet(DOS_JM_REG, sz, "t2"));
@@ -730,7 +750,7 @@ function dosJit_one(body, tmp) {
       let sz = (lo === 4) ? 1 : size;
       let imm = (sz === 1) ? dosJc_u8() : ((sz === 2) ? dosJc_u16() : dosJc_u32());
       let accE = dosJit_regGet(0, sz);
-      body.push(dosJit_aluValue(aop, accE, String(imm)));
+      body.push(dosJit_aluValue(body, aop, accE, String(imm)));
       body.push(dosJit_setFlags(aop, sz, DOS_JIT_OPA, DOS_JIT_OPB, "t2"));
       if (store) body.push(dosJit_regSet(0, sz, "t2"));
       return 1;
@@ -806,12 +826,12 @@ function dosJit_one(body, tmp) {
     else { let v32 = dosJc_u32(); immE = dosJit_immExpr(immAt, 4, 0, v32 >>> 0); }
     let imm = immE;
     if (DOS_JM_ADDR === "") {
-      body.push(dosJit_aluValue(aop, dosJit_regGet(DOS_JM_RM, sz), imm));
+      body.push(dosJit_aluValue(body, aop, dosJit_regGet(DOS_JM_RM, sz), imm));
       body.push(dosJit_setFlags(aop, sz, DOS_JIT_OPA, DOS_JIT_OPB, "t2"));
       if (store) body.push(dosJit_regSet(DOS_JM_RM, sz, "t2"));
     } else {
       body.push("ta=" + DOS_JM_ADDR + ";");
-      body.push(dosJit_aluValue(aop, dosJit_memRead("ta", sz), imm));
+      body.push(dosJit_aluValue(body, aop, dosJit_memRead("ta", sz), imm));
       body.push(dosJit_setFlags(aop, sz, DOS_JIT_OPA, DOS_JIT_OPB, "t2"));
       if (store) body.push(dosJit_memWrite("ta", sz, "t2"));
     }
@@ -824,8 +844,8 @@ function dosJit_one(body, tmp) {
     dosJit_modrm();
     if (DOS_JC_OK === 0) { DOS_JC = start; return 0; }
     let regE = dosJit_regGet(DOS_JM_REG, sz);
-    if (DOS_JM_ADDR === "") body.push(dosJit_aluValue(4, dosJit_regGet(DOS_JM_RM, sz), regE));
-    else { body.push("ta=" + DOS_JM_ADDR + ";"); body.push(dosJit_aluValue(4, dosJit_memRead("ta", sz), regE)); }
+    if (DOS_JM_ADDR === "") body.push(dosJit_aluValue(body, 4, dosJit_regGet(DOS_JM_RM, sz), regE));
+    else { body.push("ta=" + DOS_JM_ADDR + ";"); body.push(dosJit_aluValue(body, 4, dosJit_memRead("ta", sz), regE)); }
     body.push(dosJit_setFlags(4, sz, DOS_JIT_OPA, DOS_JIT_OPB, "t2"));
     return 1;
   }
@@ -1371,6 +1391,8 @@ function dosJit_flagExpr(which) {
     if (p === 2) return "(fd<fs)";                  // SUB / CMP
     if (p === 3) return "false";                    // logic clears CF
     if (p === 6 || p === 7) return "((ST[1]&1)!==0)"; // INC / DEC leave it
+    if (p === 8) return "(((ST[1]&1)!==0)?(fr<=fd):(fr<fd))";   // ADC, carry-in still in the word
+    if (p === 9) return "(((ST[1]&1)!==0)?(fd<=fs):(fd<fs))";   // SBB
     return "";
   }
   // OF
@@ -1379,6 +1401,8 @@ function dosJit_flagExpr(which) {
   if (p === 3) return "false";
   if (p === 6) return "(fr===" + sign + ")";
   if (p === 7) return "(fr===" + (parseInt(sign, 10) - 1) + ")";
+  if (p === 8) return "((~(fd^fs)&(fd^fr)&" + sign + ")!==0)";
+  if (p === 9) return "(((fd^fs)&(fd^fr)&" + sign + ")!==0)";
   return "";
 }
 
