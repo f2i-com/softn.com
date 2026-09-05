@@ -216,10 +216,27 @@ function dosShell_type(name) {
   if (data.length > n) dosKernel_printStr("[... " + (data.length - n) + " more bytes]\r\n");
 }
 
+// DOOM's configuration with sound on: a Sound Blaster at 220h, IRQ 7, DMA 1
+// for effects and the AdLib for music, which is what this machine has. The
+// shareware release ships without the file and DOOM starts silent without
+// it, so a launch of DOOM.EXE on a drive that lacks one gets this.
+let DOS_DOOM_CFG = "mouse_sensitivity\t\t5\nsfx_volume\t\t8\nmusic_volume\t\t8\nshow_messages\t\t1\nkey_right\t\t77\nkey_left\t\t75\nkey_up\t\t72\nkey_down\t\t80\nkey_strafeleft\t\t51\nkey_straferight\t\t52\nkey_fire\t\t29\nkey_use\t\t57\nkey_strafe\t\t56\nkey_speed\t\t54\nuse_mouse\t\t0\nmouseb_fire\t\t0\nmouseb_strafe\t\t1\nmouseb_forward\t\t2\nuse_joystick\t\t0\njoyb_fire\t\t0\njoyb_strafe\t\t1\njoyb_use\t\t3\njoyb_speed\t\t2\nscreenblocks\t\t9\ndetaillevel\t\t0\nsnd_channels\t\t3\nsnd_musicdevice\t\t3\nsnd_sfxdevice\t\t3\nsnd_sbport\t\t544\nsnd_sbirq\t\t7\nsnd_sbdma\t\t1\nsnd_mport\t\t-1\nusegamma\t\t0\nchatmacro0\t\t\"no macro\"\nchatmacro1\t\t\"no macro\"\nchatmacro2\t\t\"no macro\"\nchatmacro3\t\t\"no macro\"\nchatmacro4\t\t\"no macro\"\nchatmacro5\t\t\"no macro\"\nchatmacro6\t\t\"no macro\"\nchatmacro7\t\t\"no macro\"\nchatmacro8\t\t\"no macro\"\nchatmacro9\t\t\"no macro\"\n";
+
+function dosShell_seedConfig(name) {
+  if (!(name.startsWith("DOOM") && name.endsWith(".EXE"))) return;
+  if (dosKernel_vfsFind("DEFAULT.CFG") >= 0) return;
+  let bytes = new Uint8Array(DOS_DOOM_CFG.length);
+  for (let i = 0; i < DOS_DOOM_CFG.length; i++) bytes[i] = DOS_DOOM_CFG.charCodeAt(i) & 0xFF;
+  if (dosKernel_vfsAdd("DEFAULT.CFG", bytes) >= 0) {
+    dosKernel_printStr("No DEFAULT.CFG on drive C: one with sound on was added.\r\n");
+  }
+}
+
 // Hand a program on the virtual drive to the loader and let the CPU have it.
 function dosShell_run(name, idx) {
   let bytes = DOS_VFS_DATA[idx];
   if (!bytes || bytes.length === 0) { dosKernel_printStr("Invalid executable\r\n"); return; }
+  dosShell_seedConfig(name);
   DOS_SHELL_ACTIVE = 0;
   DOS_CURSOR_VISIBLE = 0;
   // The loader resets the machine, so the drive contents are re-seeded after.
