@@ -126,8 +126,18 @@ describe('a camera in a bundle that declared the camera', () => {
     view.unmount();
   });
 
-  it('does not record with sound unless the microphone is declared too', async () => {
+  it('records silent video when the microphone is not declared', async () => {
+    // `camera.modes: ["video"]` is a complete declaration; the sound is the
+    // microphone's to give, and it was not asked for.
     const view = mount(under(answered({ camera: { enabled: true } }), <Camera mode="video" />));
+    await settle();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(getUserMedia.mock.calls[0][0]).toMatchObject({ audio: false });
+    view.unmount();
+  });
+
+  it('refuses sound that was asked for explicitly but not declared', async () => {
+    const view = mount(under(answered({ camera: { enabled: true } }), <Camera mode="video" audio />));
     await settle();
     expect(getUserMedia).not.toHaveBeenCalled();
     expect(view.container.textContent).toMatch(/mic/);

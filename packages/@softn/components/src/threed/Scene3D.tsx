@@ -10,7 +10,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { isSafeUrl } from '@softn/core';
+import { describeMarkupEgress, isSafeUrl, useCapabilityState } from '@softn/core';
 
 type Scene3DWindow = Window & {
   __scene3dYaw?: number;
@@ -1298,19 +1298,47 @@ export function Scene3D({
   style,
   className,
 }: Scene3DProps) {
+  // A texture or a model named by URL is a fetch the scene performs on first
+  // paint, from a host the bundle chose. The renderer's own URL scrub does not
+  // know these keys — `textureUrl` and `modelUrl` mean nothing to an <img> —
+  // so the same question is asked here, of the same policy: not egress at
+  // all (a bundle asset), or `net` granted to a permitted host. What the
+  // policy refuses is dropped from the object before anything is built.
+  const capability = useCapabilityState();
+  const allowUrl = useMemo(() => {
+    const egress =
+      capability.permissions === null
+        ? null
+        : { consentPending: capability.consentPending, permissions: capability.permissions };
+    return (url: string | undefined): url is string =>
+      typeof url === 'string' && url.length > 0 && describeMarkupEgress(url, egress).allowed;
+  }, [capability]);
+
   const safeObjects = useMemo<Scene3DObject[]>(() => {
+    const withheld = (obj: Scene3DObject): Scene3DObject => {
+      let out = obj;
+      if (obj.textureUrl && !allowUrl(obj.textureUrl)) out = { ...out, textureUrl: undefined };
+      if (obj.modelUrl && !allowUrl(obj.modelUrl)) out = { ...out, modelUrl: undefined };
+      if (Array.isArray(obj.children)) {
+        const children = obj.children.map(withheld);
+        if (children.some((c, i) => c !== obj.children![i])) out = { ...out, children };
+      }
+      return out;
+    };
     const usable = (arr: Scene3DObject[] | undefined) =>
       Array.isArray(arr)
-        ? arr.filter(
-            (obj): obj is Scene3DObject => !!obj && typeof obj.id === 'string' && obj.id.length > 0
-          )
+        ? arr
+            .filter(
+              (obj): obj is Scene3DObject => !!obj && typeof obj.id === 'string' && obj.id.length > 0
+            )
+            .map(withheld)
         : [];
     const dynamic = usable(objects);
     const fixed = usable(staticObjects);
     // Statics first, so ids stay in the order the scene declared them and a
     // dynamic object with a clashing id still wins the later reconcile pass.
     return fixed.length === 0 ? dynamic : fixed.concat(dynamic);
-  }, [objects, staticObjects]);
+  }, [objects, staticObjects, allowUrl]);
   const safeLights = useMemo<Scene3DLight[]>(
     () =>
       Array.isArray(lights)

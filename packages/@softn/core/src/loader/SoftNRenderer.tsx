@@ -38,7 +38,7 @@ import {
 import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
 import { CapabilityProvider, type CapabilityState } from './consent-gate';
 import { bindSyncOptions } from '../runtime/host-bound-sync-options';
-import { describeHostAllowlist } from '../runtime/egress-policy';
+import { describeHostAllowlist, filterSignalingUrls } from '../runtime/egress-policy';
 import { getXDB, setActiveXDBApp } from '../runtime/xdb';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
@@ -1403,8 +1403,10 @@ export function SoftNRenderer({
   const capabilityState = useMemo<CapabilityState>(
     () => ({
       consentPending: runtimePermissionConfig?.consentPending === true,
+      // A config with no `permissions` key declared nothing; only the absence
+      // of a config altogether means the host is not enforcing.
       permissions: runtimePermissionConfig
-        ? (runtimePermissionConfig.permissions as CapabilityState['permissions'])
+        ? ((runtimePermissionConfig.permissions ?? {}) as CapabilityState['permissions'])
         : null,
     }),
     [runtimePermissionConfig]
@@ -1936,6 +1938,17 @@ export function createXDBHelpers(
       // The host's identity and the room the script named go on last: options
       // may request behaviour, never say which app they are.
       const syncOpts = bindSyncOptions(room, options, appId);
+      // A signalling server the script chose is a host it reaches: the same
+      // `net` rules as a fetch. Refused ones fall back to the host's defaults.
+      if (syncOpts.signaling !== undefined) {
+        const { allowed, refused } = filterSignalingUrls(syncOpts.signaling, permissionConfig);
+        for (const { url, reason } of refused) console.error(`[XDB Sync] Signalling server refused: ${url} — ${reason}`);
+        if (allowed.length > 0) syncOpts.signaling = allowed;
+        else delete syncOpts.signaling;
+      }
+      // Two apps that both chose "lobby" are in two rooms on the wire — see
+      // createDBNamespace.startSync, which makes the same decision.
+      syncOpts.roomScope = permissionConfig.app?.id || appId || undefined;
       const isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;
       if (isShared) {
         syncOpts.password = 'softn-shared:' + room;
@@ -2113,7 +2126,7 @@ export function SoftNWithXDB({
       stale = true;
       sync?.disconnect();
     };
-  }, [xdb, serverUrl, serverToken, stableServerCollections, consentPending]);
+  }, [xdb, serverUrl, serverToken, stableServerCollections, consentPending, stablePermissionConfig]);
 
   // Auto-resume sync from localStorage on mount
   const syncResumedAppRef = useRef<string | null>(null);

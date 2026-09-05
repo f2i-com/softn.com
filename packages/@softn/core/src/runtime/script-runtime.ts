@@ -21,7 +21,7 @@ import { pcmToWavDataUrl } from './wav';
 import { isRemoteUrl } from '../renderer/sanitize-html';
 import { buildSyncCacheKey } from './sync-cache-key';
 import { bindSyncOptions } from './host-bound-sync-options';
-import { describeNetDestination } from './egress-policy';
+import { describeNetDestination, filterSignalingUrls } from './egress-policy';
 import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 import type {
   BundleFileProvider,
@@ -3507,6 +3507,19 @@ export function createDBNamespace(
       // The host's identity and the room the script named go on last: options
       // may request behaviour, never say which app they are.
       const syncOpts = bindSyncOptions(room, options, appId);
+      // A signalling server the script chose is a host it reaches: the same
+      // `net` rules as a fetch. Refused ones fall back to the host's defaults.
+      if (syncOpts.signaling !== undefined) {
+        const { allowed, refused } = filterSignalingUrls(syncOpts.signaling, permissionConfig);
+        for (const { url, reason } of refused) console.error(`[XDB Sync] Signalling server refused: ${url} — ${reason}`);
+        if (allowed.length > 0) syncOpts.signaling = allowed;
+        else delete syncOpts.signaling;
+      }
+      // The room label is what peers agree on; the app is who is agreeing. On
+      // the wire the two are joined, so two apps that both chose "lobby" are
+      // in two rooms — by the stable identity the bundle declares, so that
+      // compatible builds still meet, else by the host's identity for it.
+      syncOpts.roomScope = permissionConfig.app?.id || appId || undefined;
       const sharedKey = appId ? `xdb-sync-shared:${appId}` : null;
       // Shared room: sharedRoom flag, legacy noEncrypt, or persisted from prior session
       let isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;

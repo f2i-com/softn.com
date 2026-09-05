@@ -140,8 +140,16 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    */
   private static readonly HARD_DEADLINE_MS = 60000;
   private readonly hardDeadlineMs: number;
-  /** One timer per request still unanswered, cleared by the answer. */
-  private hardTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /**
+   * Requests posted and not yet answered, by when and what they were. The
+   * deadline is measured from the later of the oldest of these and the last
+   * time the worker said anything at all — so a worker that is slow but
+   * answering, with a queue behind it, is never mistaken for one that has
+   * stopped. Silence is what is being timed.
+   */
+  private unanswered = new Map<number, { postedAt: number; type: string }>();
+  private lastHeardAt = 0;
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
   /**
    * Bumped when the worker is replaced or terminated. Every message carries
    * the generation of the worker it came from; one from a previous
@@ -269,15 +277,56 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       ].filter(Boolean).join(' | ');
       const err = evt.error || new Error(details);
       console.error('[SoftN Worker] onerror', details, evt.error);
+      this.heard();
       for (const [, p] of this.pending) p.reject(err);
       this.pending.clear();
     };
     this.worker.onmessageerror = (evt: MessageEvent) => {
       const err = new Error(`worker_message_error | url=${this.workerUrl.toString()}`);
       console.error('[SoftN Worker] onmessageerror', evt);
+      this.heard();
       for (const [, p] of this.pending) p.reject(err);
       this.pending.clear();
     };
+  }
+
+  /** The worker spoke: whatever was outstanding is no longer evidence of a hang. */
+  private heard(): void {
+    this.lastHeardAt = performance.now();
+    this.unanswered.clear();
+  }
+
+  private armWatchdog(): void {
+    if (this.watchdog !== null || this.terminated || this.unanswered.size === 0) return;
+    let oldest = Infinity;
+    for (const { postedAt } of this.unanswered.values()) if (postedAt < oldest) oldest = postedAt;
+    const silentSince = Math.max(this.lastHeardAt, oldest);
+    const due = silentSince + this.hardDeadlineMs - performance.now();
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null;
+      this.checkWatchdog();
+    }, Math.max(0, due));
+  }
+
+  private checkWatchdog(): void {
+    if (this.terminated || this.unanswered.size === 0) return;
+    let oldest = Infinity;
+    let oldestType = 'call';
+    for (const { postedAt, type } of this.unanswered.values()) {
+      if (postedAt < oldest) {
+        oldest = postedAt;
+        oldestType = type;
+      }
+    }
+    const silentSince = Math.max(this.lastHeardAt, oldest);
+    if (performance.now() - silentSince < this.hardDeadlineMs) {
+      this.armWatchdog();
+      return;
+    }
+    console.error(
+      `[SoftN Worker] nothing heard for ${this.hardDeadlineMs}ms with ${oldestType} outstanding — terminating the script worker`
+    );
+    this.teardown(`worker_hard_deadline:${oldestType}`, true);
   }
 
   // ==========================================================================
@@ -454,6 +503,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
 
   private onWorkerMessage(evt: MessageEvent) {
     const msg = evt.data as unknown;
+    // Any message at all — an answer, an import request — is a live worker.
+    this.lastHeardAt = performance.now();
     if (isImportRequest(msg)) {
       const path = msg.path;
       Promise.resolve(this.importResolver ? this.importResolver(path) : null)
@@ -466,13 +517,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       return;
     }
     if (!isWorkerResponse(msg)) return;
-    // Answered, however late: the hard deadline for this request is off,
-    // even if the soft timeout already gave up on the caller.
-    const hard = this.hardTimers.get(msg.id);
-    if (hard !== undefined) {
-      clearTimeout(hard);
-      this.hardTimers.delete(msg.id);
-    }
+    // Answered, however late: even if the soft timeout already gave up on
+    // the caller, the request is no longer outstanding.
+    this.unanswered.delete(msg.id);
     const pending = this.pending.get(msg.id);
     if (!pending) return;
     this.pending.delete(msg.id);
@@ -481,23 +528,39 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   }
 
   /**
-   * Stop the worker for good. Everything outstanding is rejected, every
-   * timer is cleared, and the generation moves on so that nothing the dead
-   * worker might still say is heard. No replacement is started: a runtime
-   * that spins up a fresh worker for a script that just hung would run the
-   * same script into the same hang, forever.
+   * Stop the worker for good, and stop being a runtime: the DOM listeners
+   * come off, the host resources go, everything outstanding is rejected,
+   * and the generation moves on so that nothing the dead worker might still
+   * say is heard. No replacement is started: a runtime that spins up a fresh
+   * worker for a script that just hung would run the same script into the
+   * same hang, forever. `notify` is true when this is the deadline's doing
+   * rather than the host's own cleanup, and tells the host to show the app
+   * as failed.
    */
-  private terminate(reason: string): void {
+  private teardown(reason: string, notify: boolean): void {
     if (this.terminated) return;
     this.terminated = true;
+    this.disposed = true;
     this.generation++;
-    for (const timer of this.hardTimers.values()) clearTimeout(timer);
-    this.hardTimers.clear();
+    if (this.watchdog !== null) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
+    }
+    this.unanswered.clear();
+    if (typeof window !== 'undefined') {
+      for (const [type, listener] of this.nativeListeners) window.removeEventListener(type, listener);
+    }
+    this.nativeListeners = [];
+    this.bridgedEventTypes.clear();
+    for (const coalescer of this.coalescers) coalescer.dispose();
+    this.coalescers = [];
+    clearCapturedKeys();
+    this.hostExecutor.cleanup();
     const error = new Error(reason);
     for (const [, p] of this.pending) p.reject(error);
     this.pending.clear();
     this.worker.terminate();
-    if (!this.disposed && this.onFatal) {
+    if (notify && this.onFatal) {
       try {
         this.onFatal(error);
       } catch (err) {
@@ -523,17 +586,6 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         reject(new Error(`worker_rpc_timeout:${type}`));
       }, WorkerScriptRuntime.RPC_TIMEOUT_MS);
 
-      this.hardTimers.set(
-        id,
-        setTimeout(() => {
-          this.hardTimers.delete(id);
-          console.error(
-            `[SoftN Worker] ${type} unanswered for ${this.hardDeadlineMs}ms — terminating the script worker`
-          );
-          this.terminate(`worker_hard_deadline:${type}`);
-        }, this.hardDeadlineMs)
-      );
-
       this.pending.set(id, {
         resolve: (v: unknown) => {
           clearTimeout(timeout);
@@ -545,6 +597,8 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
         }
       });
       this.worker.postMessage({ id, type, payload });
+      this.unanswered.set(id, { postedAt: performance.now(), type });
+      this.armWatchdog();
     });
   }
 
@@ -820,16 +874,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
 
   cleanup(): void {
     this.disposed = true;
-    if (typeof window !== 'undefined') {
-      for (const [type, listener] of this.nativeListeners) window.removeEventListener(type, listener);
-    }
-    this.nativeListeners = [];
-    this.bridgedEventTypes.clear();
-    for (const coalescer of this.coalescers) coalescer.dispose();
-    this.coalescers = [];
-    clearCapturedKeys();
-    this.hostExecutor.cleanup();
-    this.terminate('worker_terminated');
+    this.teardown('worker_terminated', false);
   }
 }
 
