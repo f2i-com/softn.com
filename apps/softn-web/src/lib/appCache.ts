@@ -83,13 +83,58 @@ const DB_NAME = 'softn-web';
 const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<SoftNAppDB>> | null = null;
-let dbUnavailable = false;
+/** Set once an open has failed in a way that no retry can mend. */
+let dbPermanentlyUnavailable: Error | null = null;
+/** After a transient failure, no new open is attempted before this time. */
+let dbRetryAfter = 0;
+
+/** How long a transient open failure keeps the cache off before it is tried again. */
+const DB_RETRY_BACKOFF_MS = 5_000;
+
+/**
+ * Whether an open failure is worth retrying.
+ *
+ * One failed open used to switch the cache off for the rest of the session:
+ * every later call rejected without asking the browser again. That is the
+ * right answer for a browser that refuses storage outright — a sandboxed
+ * frame, a policy, no IndexedDB at all — and the wrong one for everything
+ * else. Firefox reports a private window as a transient failure; a version
+ * upgrade blocked by another tab clears when that tab goes; a quota error
+ * clears when space does. A Home that showed no apps until reload, after a
+ * hiccup that had already passed, was the visible result.
+ */
+export function classifyIndexedDBFailure(err: unknown): 'permanent' | 'transient' {
+  if (typeof indexedDB === 'undefined') return 'permanent';
+  const name = typeof err === 'object' && err !== null ? (err as { name?: unknown }).name : undefined;
+  switch (name) {
+    case 'SecurityError':
+    case 'InvalidStateError':
+    case 'NotSupportedError':
+      return 'permanent';
+    default:
+      return 'transient';
+  }
+}
+
+/**
+ * Forget an earlier failure so the next call opens the database again — for a
+ * "Try again" the user presses, and for tests. Not called on a timer: the
+ * transient case retries by itself once its backoff has passed.
+ */
+export function resetAppCacheAvailability(): void {
+  dbPermanentlyUnavailable = null;
+  dbRetryAfter = 0;
+  dbPromise = null;
+}
 
 function getDB(): Promise<IDBPDatabase<SoftNAppDB>> {
-  if (dbUnavailable) {
-    return Promise.reject(new Error('IndexedDB is not available'));
+  if (dbPermanentlyUnavailable) {
+    return Promise.reject(dbPermanentlyUnavailable);
   }
   if (!dbPromise) {
+    if (Date.now() < dbRetryAfter) {
+      return Promise.reject(new Error('IndexedDB is not available right now; retrying shortly'));
+    }
     dbPromise = openDB<SoftNAppDB>(DB_NAME, DB_VERSION, {
       upgrade(db, oldVersion, _newVersion, tx) {
         if (oldVersion < 1) {
@@ -104,10 +149,38 @@ function getDB(): Promise<IDBPDatabase<SoftNAppDB>> {
           tx.objectStore('softn-apps').createIndex('by-origin', 'origin');
         }
       },
+      blocked(currentVersion, blockedVersion) {
+        // Another tab still holds an older schema open. The open completes
+        // when that tab closes its connection — see `blocking` below, which is
+        // the other side of the same handshake.
+        console.warn(
+          `[SoftN Web] IndexedDB upgrade to v${blockedVersion} is waiting on a tab still using v${currentVersion}`
+        );
+      },
+      blocking(_currentVersion, _blockedVersion, event) {
+        // A newer build in another tab wants to upgrade. Holding the
+        // connection open would block it forever; closing lets it through,
+        // and the next call here reopens at whatever version it left.
+        (event.target as IDBDatabase | null)?.close();
+        dbPromise = null;
+      },
+      terminated() {
+        // The browser closed the connection underneath us (storage cleared,
+        // a crash in the storage process). Reopen on the next call.
+        dbPromise = null;
+      },
     }).catch((err) => {
-      console.warn('[SoftN Web] IndexedDB unavailable, caching disabled:', err);
-      dbUnavailable = true;
       dbPromise = null;
+      if (classifyIndexedDBFailure(err) === 'permanent') {
+        console.warn('[SoftN Web] IndexedDB unavailable, caching disabled:', err);
+        dbPermanentlyUnavailable = err instanceof Error ? err : new Error(String(err));
+      } else {
+        console.warn(
+          `[SoftN Web] IndexedDB open failed; retrying in ${DB_RETRY_BACKOFF_MS / 1000}s:`,
+          err
+        );
+        dbRetryAfter = Date.now() + DB_RETRY_BACKOFF_MS;
+      }
       throw err;
     });
   }
