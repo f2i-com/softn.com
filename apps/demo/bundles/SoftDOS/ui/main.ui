@@ -468,8 +468,8 @@
             prompt, or press it below. 16-bit .COM and .EXE programs run on the emulated CPU,
             and so do 32-bit DOS-extender images (DOS/4GW and the like). A program keeps its
             configuration and saved games on the drive for as long as the page is open. Sound
-            comes through an AdLib, a Sound Blaster at 220/7/1 and the speaker: include a game's
-            configuration file (DOOM's DEFAULT.CFG) or run its setup so it knows to use them.
+            comes through an AdLib, a Sound Blaster at 220/7/1 and the speaker; a game's setup
+            program will find them. DOOM gets a DEFAULT.CFG with sound on if it has none.
           </Text>
 
           #if (programList.length > 0)
