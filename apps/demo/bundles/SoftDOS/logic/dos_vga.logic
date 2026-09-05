@@ -640,6 +640,39 @@ function dosVga_composeUnchained() {
   }
 }
 
+// A tint over the palette, for the green and amber screens: computed from
+// the palette as the program set it, whenever either changes.
+let DOS_VGA_TINT = 0;                          // 0 colour, 1 green, 2 amber
+let DOS_VGA_PAL_VIEW = new Uint8Array(768);
+let DOS_VGA_PAL_VIEW_REV = -1;                 // the palette revision the view was built from
+let DOS_VGA_PAL_VIEW_TINT = -1;
+
+function dosVga_palette() {
+  if (DOS_VGA_TINT === 0) return DOS_VGA_PAL;
+  if (DOS_VGA_PAL_VIEW_REV !== DOS_VGA_PAL_REV || DOS_VGA_PAL_VIEW_TINT !== DOS_VGA_TINT) {
+    for (let i = 0; i < 256; i++) {
+      let r = DOS_VGA_PAL[i * 3], g = DOS_VGA_PAL[i * 3 + 1], b = DOS_VGA_PAL[i * 3 + 2];
+      let lum = r * 0.299 + g * 0.587 + b * 0.114;
+      if (DOS_VGA_TINT === 1) {
+        DOS_VGA_PAL_VIEW[i * 3] = Math.floor(lum * 0.12);
+        DOS_VGA_PAL_VIEW[i * 3 + 1] = Math.min(255, Math.floor(lum * 1.15));
+        DOS_VGA_PAL_VIEW[i * 3 + 2] = Math.floor(lum * 0.2);
+      } else {
+        DOS_VGA_PAL_VIEW[i * 3] = Math.min(255, Math.floor(lum * 1.1));
+        DOS_VGA_PAL_VIEW[i * 3 + 1] = Math.floor(lum * 0.68);
+        DOS_VGA_PAL_VIEW[i * 3 + 2] = Math.floor(lum * 0.08);
+      }
+    }
+    DOS_VGA_PAL_VIEW_REV = DOS_VGA_PAL_REV;
+    DOS_VGA_PAL_VIEW_TINT = DOS_VGA_TINT;
+  }
+  return DOS_VGA_PAL_VIEW;
+}
+
+function dosVga_paletteRev() {
+  return DOS_VGA_PAL_REV * 4 + DOS_VGA_TINT;
+}
+
 function dosVga_getFrame() {
   DOS_VGA_FRAME++;
   if (DOS_VIDEO_MODE === 0x13) {
@@ -663,8 +696,8 @@ function dosVga_getFrame() {
       w: 320,
       h: 200,
       pixels: DOS_FB.toBase64(),
-      palette: DOS_VGA_PAL.toBase64(),
-      paletteRev: DOS_VGA_PAL_REV
+      palette: dosVga_palette().toBase64(),
+      paletteRev: dosVga_paletteRev()
     };
   }
   // Text mode: decode 80x25 characters into the 640x400 buffer.
@@ -674,7 +707,7 @@ function dosVga_getFrame() {
     w: 640,
     h: 400,
     pixels: DOS_FB_TEXT.toBase64(),
-    palette: DOS_VGA_PAL.toBase64(),
-    paletteRev: DOS_VGA_PAL_REV
+    palette: dosVga_palette().toBase64(),
+    paletteRev: dosVga_paletteRev()
   };
 }

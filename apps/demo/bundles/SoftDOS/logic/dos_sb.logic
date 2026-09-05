@@ -41,6 +41,14 @@ let DOS_SB_MIXER_IDX = 0;
 let DOS_SB_MIXER = new Uint8Array(256);
 let DOS_SB_IRQS = 0;              // interrupts raised, for the tests
 let DOS_SB_SAMPLES = 0;           // samples fetched through DMA, for the tests
+// The DAC's output, at the DSP's rate, between the emulated clock that
+// produces it and the audio callback that drains it.
+let DOS_SB_RING = new Int16Array(16384);
+let DOS_SB_RING_HEAD = 0;
+let DOS_SB_RING_TAIL = 0;
+let DOS_SB_NEXT_CYCLE = 0;        // when the next sample is due
+let DOS_SB_UNDERRUNS = 0;
+let DOS_SB_OVERRUNS = 0;
 
 // The 8237: four channels of base and current address and count, a page
 // register each, a mode each, the mask bits and the byte flip-flop.
@@ -67,6 +75,7 @@ function dosSb_reset() {
   DOS_SB_IRQ_PENDING = 0;
   DOS_SB_DIRECT = 0;
   DOS_SB_S0 = 0; DOS_SB_S1 = 0; DOS_SB_PHASE = 0;
+  DOS_SB_RING_HEAD = 0; DOS_SB_RING_TAIL = 0; DOS_SB_NEXT_CYCLE = 0;
   DOS_SB_MIXER.fill(0);
   DOS_SB_MIXER[0x04] = 0xEE; DOS_SB_MIXER[0x22] = 0xEE; DOS_SB_MIXER[0x26] = 0xEE;
   DOS_SB_MIXER[0x28] = 0xEE; DOS_SB_MIXER[0x2E] = 0x00;
@@ -111,12 +120,43 @@ function dosSb_start(autoInit, block) {
   DOS_SB_AUTOINIT = autoInit;
   DOS_SB_ACTIVE = 1;
   DOS_SB_PAUSED = 0;
-  // A tiny single block is a probe: a driver times the interrupt from it,
-  // and on the card it comes within a millisecond. Play it out now rather
-  // than on the next audio callback, which may be tens of milliseconds off.
-  if (autoInit === 0 && DOS_SB_BLOCK_LEFT <= 64) {
-    let n = DOS_SB_BLOCK_LEFT;
-    for (let i = 0; i < n && DOS_SB_ACTIVE === 1; i++) DOS_SB_S1 = dosSb_next();
+  DOS_SB_NEXT_CYCLE = DOS_TOTAL_CYCLES + dosSb_cyclesPerSample();
+}
+
+// Cycles between samples at the emulated clock.
+function dosSb_cyclesPerSample() {
+  let c = Math.floor(DOS_CPU_HZ / Math.max(4000, DOS_SB_RATE));
+  return (c < 8) ? 8 : c;
+}
+
+function dosSb_push(v) {
+  let next = (DOS_SB_RING_HEAD + 1) & 16383;
+  if (next === DOS_SB_RING_TAIL) { DOS_SB_RING_TAIL = (DOS_SB_RING_TAIL + 1) & 16383; DOS_SB_OVERRUNS++; }
+  DOS_SB_RING[DOS_SB_RING_HEAD] = v;
+  DOS_SB_RING_HEAD = next;
+}
+
+function dosSb_ringFill() {
+  return (DOS_SB_RING_HEAD - DOS_SB_RING_TAIL) & 16383;
+}
+
+// Whether the DSP has a sample due, for the fast check after a trace.
+function dosSb_due() {
+  return ((DOS_SB_ACTIVE === 1 || DOS_SB_SILENCE > 0) && DOS_TOTAL_CYCLES >= DOS_SB_NEXT_CYCLE) ? 1 : 0;
+}
+
+// Advance the DSP to the emulated clock: every sample that has come due
+// goes into the ring. A long gap, as after a pause, is not made up.
+function dosSb_tick() {
+  if (DOS_SB_ACTIVE === 0 && DOS_SB_SILENCE === 0) return;
+  let per = dosSb_cyclesPerSample();
+  let n = 0;
+  while (DOS_TOTAL_CYCLES >= DOS_SB_NEXT_CYCLE) {
+    dosSb_push(dosSb_next());
+    DOS_SB_NEXT_CYCLE += per;
+    n++;
+    if (n >= 2048) { DOS_SB_NEXT_CYCLE = DOS_TOTAL_CYCLES + per; break; }
+    if (DOS_SB_ACTIVE === 0 && DOS_SB_SILENCE === 0) break;
   }
 }
 
@@ -274,17 +314,29 @@ function dosSb_next() {
   return v;
 }
 
-// Add n frames of the DAC into an interleaved stereo Int16 buffer.
+// Add n frames of the DAC into an interleaved stereo buffer, drawing on the
+// ring and resampling to 48 kHz. An empty ring holds the last sample; a
+// ring that has run far ahead of the callback is caught up.
 function dosSb_mix(pcm, n) {
-  if (DOS_SB_SPEAKER === 0 && DOS_SB_ACTIVE === 0 && DOS_SB_SILENCE === 0) return 0;
+  if (DOS_SB_SPEAKER === 0 && DOS_SB_ACTIVE === 0 && DOS_SB_SILENCE === 0 && dosSb_ringFill() === 0) return 0;
   let step = DOS_SB_RATE / 48000;
-  let vol = ((DOS_SB_MIXER[0x22] & 0xF0) / 0xF0) * 0.9;
+  let vol = ((DOS_SB_MIXER[0x22] & 0xF0) / 0xF0) * 0.6;
+  let fill = dosSb_ringFill();
+  let limit = Math.floor(DOS_SB_RATE / 4);                   // a quarter second ahead is drift
+  if (fill > limit) { DOS_SB_RING_TAIL = (DOS_SB_RING_HEAD - (limit >> 1)) & 16383; DOS_SB_OVERRUNS++; }
   for (let i = 0; i < n; i++) {
     DOS_SB_PHASE += step;
     while (DOS_SB_PHASE >= 1) {
       DOS_SB_PHASE -= 1;
       DOS_SB_S0 = DOS_SB_S1;
-      DOS_SB_S1 = dosSb_next();
+      if (DOS_SB_RING_HEAD !== DOS_SB_RING_TAIL) {
+        DOS_SB_S1 = DOS_SB_RING[DOS_SB_RING_TAIL];
+        DOS_SB_RING_TAIL = (DOS_SB_RING_TAIL + 1) & 16383;
+      } else if (DOS_SB_ACTIVE === 1) {
+        DOS_SB_UNDERRUNS++;
+      } else {
+        DOS_SB_S1 = DOS_SB_DIRECT;
+      }
     }
     if (DOS_SB_SPEAKER === 1) {
       let v = (DOS_SB_S0 + (DOS_SB_S1 - DOS_SB_S0) * DOS_SB_PHASE) * vol;

@@ -321,8 +321,10 @@ function dosInt_poll() {
     return 1;
   }
 
-  // The Sound Blaster's interrupt: a block of samples has played. With no
-  // handler installed it is dropped, as a masked line would be.
+  // The Sound Blaster's DAC runs on this clock; its interrupt, once a block
+  // has played, is delivered here. With no handler installed it is dropped,
+  // as a masked line would be.
+  dosSb_tick();
   if (DOS_SB_IRQ_PENDING === 1) {
     let vec = (DOS_SB_IRQ < 8) ? (0x08 + DOS_SB_IRQ) : (0x70 + DOS_SB_IRQ - 8);
     if (DOS_VEC_SET[vec] !== 1) DOS_SB_IRQ_PENDING = 0;
@@ -345,6 +347,7 @@ function dosInt_due() {
   if (DOS_KEY_OBF === 0 && DOS_SCAN_HEAD !== DOS_SCAN_TAIL) return 1;
   if (dosMouse_pending() === 1) return 1;
   if (DOS_SB_IRQ_PENDING === 1) return 1;
+  if (dosSb_due() === 1) return 1;
   return 0;
 }
 
