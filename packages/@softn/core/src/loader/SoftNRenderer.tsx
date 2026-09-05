@@ -36,7 +36,9 @@ import {
 // other path routes calls through the main-thread VM. See the note where
 // `forceWorker` is decided.
 import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
-import { ConsentPendingProvider } from './consent-gate';
+import { CapabilityProvider, type CapabilityState } from './consent-gate';
+import { bindSyncOptions } from '../runtime/host-bound-sync-options';
+import { describeHostAllowlist } from '../runtime/egress-policy';
 import { getXDB, setActiveXDBApp } from '../runtime/xdb';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
@@ -901,6 +903,12 @@ export function SoftNRenderer({
                 storageEndpoint,
                 bundleFileProvider,
                 externalFunctions: runtimeFunctions,
+                // A worker that missed its hard deadline has been terminated;
+                // the app is shown as failed rather than left frozen.
+                onFatal: (err) => {
+                  if (stale || !mountedRef.current) return;
+                  setState((prev) => ({ ...prev, error: err }));
+                },
               }
             );
           } else if (effectiveMode === 'worker') {
@@ -1370,6 +1378,9 @@ export function SoftNRenderer({
       asyncFunctions: stableAsyncFunctions,
       scriptLoaded,
       consentPending: runtimePermissionConfig?.consentPending === true,
+      // What the markup may fetch, judged by the bundle's own declaration. A
+      // host that supplied no config is not enforcing; see egress-policy.ts.
+      egress: runtimePermissionConfig ?? null,
     };
   }, [
     state.componentState,
@@ -1382,8 +1393,22 @@ export function SoftNRenderer({
     stableAsyncFunctions,
     scriptLoaded,
     state.scriptComputed,
-    runtimePermissionConfig?.consentPending,
+    runtimePermissionConfig,
   ]);
+
+  // What the device components are allowed: which capabilities the bundle
+  // declared and the user granted, and whether the bar is still unanswered.
+  // Published once per config, so a re-render does not re-publish an equal
+  // state and restart every device below.
+  const capabilityState = useMemo<CapabilityState>(
+    () => ({
+      consentPending: runtimePermissionConfig?.consentPending === true,
+      permissions: runtimePermissionConfig
+        ? (runtimePermissionConfig.permissions as CapabilityState['permissions'])
+        : null,
+    }),
+    [runtimePermissionConfig]
+  );
 
   // Get the default registry
   const registry = useMemo(() => getDefaultRegistry(), []);
@@ -1444,9 +1469,10 @@ export function SoftNRenderer({
       // Outside the keyed container, so a page change does not tear the
       // provider down with the page. Components below read this instead of a
       // prop: <Camera>, <QRReader> and <Microphone> open the hardware from
-      // their own effects and permission.json does not cover them, so consent
-      // state is the only thing standing between an entry page and the device.
-      <ConsentPendingProvider value={runtimePermissionConfig?.consentPending === true}>
+      // their own effects and permission.json does not cover them, so what is
+      // published here — consent state and the granted capability list — is
+      // the only thing standing between an entry page and the device.
+      <CapabilityProvider value={capabilityState}>
       <div
         ref={containerRef}
         key={`softn-container-${stateKey}`}
@@ -1475,7 +1501,7 @@ export function SoftNRenderer({
           {renderDocument(state.document, context, registry)}
         </SoftNErrorBoundary>
       </div>
-      </ConsentPendingProvider>
+      </CapabilityProvider>
     );
   }
 
@@ -1907,7 +1933,9 @@ export function createXDBHelpers(
       }
       const room = args[0] as string;
       const options = args[1] as Record<string, unknown> | undefined;
-      const syncOpts: Record<string, unknown> = { room, ...(options || {}) };
+      // The host's identity and the room the script named go on last: options
+      // may request behaviour, never say which app they are.
+      const syncOpts = bindSyncOptions(room, options, appId);
       const isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;
       if (isShared) {
         syncOpts.password = 'softn-shared:' + room;
@@ -1917,9 +1945,6 @@ export function createXDBHelpers(
       }
       delete syncOpts.noEncrypt;
       delete syncOpts.sharedRoom;
-      if (appId && !syncOpts.appId) {
-        syncOpts.appId = appId;
-      }
       import('../runtime/xdb-sync')
         .then((mod) => {
           setSyncModuleCache(mod);
@@ -1945,7 +1970,8 @@ export function createXDBHelpers(
       const room = args[0] as string | undefined;
       const cached = getSyncModuleCache();
       if (cached) {
-        const adapter = cached.getSyncAdapter(room);
+        // This app's adapter, not whichever app happens to be in that room.
+        const adapter = cached.getSyncAdapter(room, appId);
         return adapter ? adapter.getStatus() : { connected: false, peers: 0, room: '', peerId: '' };
       }
       return { connected: false, peers: 0, room: '', peerId: '' };
@@ -2046,6 +2072,14 @@ export function SoftNWithXDB({
     // directly. The flag is a dependency, so the grant re-runs this effect and
     // the socket opens then, with no reload.
     if (consentPending) return;
+    // The bundle chose this host. If it also scoped itself to a host list, the
+    // same list `softn.net.fetch` is held to applies here: a manifest must not
+    // be a way past permission.json.
+    const destination = describeHostAllowlist(serverUrl, stablePermissionConfig?.permissions?.net);
+    if (!destination.allowed) {
+      console.error(`[SoftN] Server sync refused: ${destination.reason}`);
+      return;
+    }
     let sync: import('../runtime/xdb-server-sync').XDBServerSync | null = null;
     let stale = false;
     import('../runtime/xdb-server-sync')

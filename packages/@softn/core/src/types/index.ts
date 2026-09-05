@@ -106,6 +106,16 @@ export interface SoftNRenderContext {
    */
   consentPending?: boolean;
 
+  /**
+   * The bundle's permission config, for deciding what the markup may fetch
+   * once consent has been answered: a remote `src`, `poster` or inline
+   * `url(...)` is egress and needs `net`, to a host `allowed_hosts` permits —
+   * the same rule `softn.net.fetch` applies. See runtime/egress-policy.ts.
+   * `null` or absent means the host is not enforcing (a preview outside any
+   * bundle), which withholds only while `consentPending` is true.
+   */
+  egress?: import('../runtime/egress-policy').EgressConfig | null;
+
   // Current iteration context (for #each)
   each?: {
     item: unknown;

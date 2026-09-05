@@ -19,6 +19,10 @@ import type { AppPermissions } from '../bundle/types';
 import { getFileByRef, registerFileRef } from './file-registry';
 import { pcmToWavDataUrl } from './wav';
 import { isRemoteUrl } from '../renderer/sanitize-html';
+import { buildSyncCacheKey } from './sync-cache-key';
+import { bindSyncOptions } from './host-bound-sync-options';
+import { describeNetDestination } from './egress-policy';
+import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 import type {
   BundleFileProvider,
   AIPermissionConfig,
@@ -527,6 +531,8 @@ export class SoftNScriptRuntime {
    * Managed at the JS level since the WASM VM stores handler Values internally.
    */
   private nativeListeners: Map<string, EventListener[]> = new Map();
+  /** Per-frame delivery for the high-frequency events; disposed with the listeners. */
+  private eventCoalescers: EventCoalescer[] = [];
 
   /** Index of the `window` global in the VM */
   private windowGlobalIndex: number = -1;
@@ -1074,27 +1080,28 @@ export class SoftNScriptRuntime {
         let pendingCalls: unknown[] | null = null;
         try {
           // Disposed during the call: there is no engine left to read back from.
-          if (this.disposed) throw null;
-          const tSyncReact = performance.now();
-          this.syncVMStateToReact();
-          this.syncWindowFromVM();
-          this._perfSyncToReactMs += performance.now() - tSyncReact;
+          if (!this.disposed) {
+            const tSyncReact = performance.now();
+            this.syncVMStateToReact();
+            this.syncWindowFromVM();
+            this._perfSyncToReactMs += performance.now() - tSyncReact;
 
-          // Drain pending host calls while holding the lock
-          if (this.vmEngine) {
-            const pending = this.vmEngine.drainPendingHostCalls();
-            if (pending.length > 0) {
-              pendingCalls = pending;
+            // Drain pending host calls while holding the lock
+            if (this.vmEngine) {
+              const pending = this.vmEngine.drainPendingHostCalls();
+              if (pending.length > 0) {
+                pendingCalls = pending;
+              }
             }
-          }
 
-          // After each async call, discover any new VM event listeners and
-          // window.__ properties — this bridges keyboard/mouse handlers
-          // registered in _init() or other functions to real browser events.
-          this.bridgeEventListeners();
-          this.discoverWindowSyncKeys();
+            // After each async call, discover any new VM event listeners and
+            // window.__ properties — this bridges keyboard/mouse handlers
+            // registered in _init() or other functions to real browser events.
+            this.bridgeEventListeners();
+            this.discoverWindowSyncKeys();
+          }
         } catch (syncError) {
-          if (syncError !== null) console.error(`[SoftN] Error syncing state after ${name}:`, syncError);
+          console.error(`[SoftN] Error syncing state after ${name}:`, syncError);
         }
         this.asyncCallInProgress = false;
         this.vmCallQueueDepth--;
@@ -1190,35 +1197,16 @@ export class SoftNScriptRuntime {
    * Key for the per-render sync-call cache, or null when the arguments cannot
    * be described by one.
    *
-   * Returning null means "call through and do not cache" — the alternative was
-   * letting `JSON.stringify` throw on a cyclic argument, which the catch below
-   * turned into a rendered `undefined`.
+   * Returning null means "call through and do not cache". Reference arguments
+   * always answer null: there is no cheap, lossless description of an object
+   * graph, and the `JSON.stringify` this replaced folded distinct values onto
+   * one key and visited the whole of every object handed to it — see
+   * sync-cache-key.ts. A helper called twice with the same array in one render
+   * now runs twice; a helper called with an argument the key cannot tell from
+   * another no longer returns the other one's answer.
    */
   private syncCacheKey(name: string, args: unknown[]): string | null {
-    if (args.length === 0) return name;
-
-    // Primitives are keyed by type *and* value, so `1` and `"1"` stay distinct.
-    if (args.length === 1) {
-      const a = args[0];
-      const t = typeof a;
-      if (a === null) return `${name}|null`;
-      if (
-        t === 'string' ||
-        t === 'number' ||
-        t === 'boolean' ||
-        t === 'undefined' ||
-        t === 'bigint'
-      ) {
-        return `${name}|${t}:${String(a)}`;
-      }
-    }
-
-    try {
-      return `${name}|json:${JSON.stringify(args)}`;
-    } catch {
-      // Cyclic, or something JSON cannot describe.
-      return null;
-    }
+    return buildSyncCacheKey(name, args);
   }
 
   private createVMSyncFunction(name: string): (...args: unknown[]) => unknown {
@@ -1526,35 +1514,20 @@ export class SoftNScriptRuntime {
   private bridgeEventListeners(): void {
     if (!this.vmEngine || typeof window === 'undefined') return;
 
-    // High-frequency events that should be throttled to ~60fps before
-    // crossing the WASM bridge. Prevents GC pressure and frame drops from
-    // serializing event objects 100+ times/sec.
-    const THROTTLED_EVENTS = new Set([
-      'mousemove',
-      'pointermove',
-      'scroll',
-      'resize',
-      'touchmove',
-      'wheel',
-    ]);
-    const THROTTLE_MS = 16; // ~60fps
-
     const types = this.vmEngine.getEventListenerTypes();
     for (const eventType of types) {
       if (this.bridgedEventTypes.has(eventType)) continue;
       this.bridgedEventTypes.add(eventType);
 
-      const isThrottled = THROTTLED_EVENTS.has(eventType);
+      // Pointer movement, scrolling, resizing and the wheel arrive several
+      // times a frame; they cross the bridge at most once a frame, combined
+      // by a policy the event type chooses — see event-coalescer.ts. Ordering
+      // is preserved: nothing is delivered ahead of a sample already waiting.
+      const policy = coalescePolicyFor(eventType);
+      const isThrottled = policy !== null;
 
-      const handler = (event: Event) => {
+      const dispatch = (eventObj: Record<string, unknown>) => {
         if (!this.vmEngine) return;
-
-        // A key the script asked to keep whole: the browser's default is
-        // cancelled here, since the handler runs too late to do it.
-        if (shouldCaptureKey(event)) event.preventDefault();
-
-        // Extract safe, serializable properties from the browser event
-        const eventObj = extractEventProps(event);
 
         // Sync React state → VM before dispatch
         this.syncReactStateToVM();
@@ -1577,26 +1550,22 @@ export class SoftNScriptRuntime {
         }
       };
 
-      // Wrap high-frequency events with a throttle to limit WASM bridge crossings
       let listener: (event: Event) => void;
-      if (THROTTLED_EVENTS.has(eventType)) {
-        let lastCall = 0;
-        let pending: ReturnType<typeof requestAnimationFrame> | null = null;
+      if (policy !== null) {
+        const coalescer = new EventCoalescer(policy, dispatch);
+        this.eventCoalescers.push(coalescer);
         listener = (event: Event) => {
-          const now = performance.now();
-          if (now - lastCall >= THROTTLE_MS) {
-            lastCall = now;
-            handler(event);
-          } else if (!pending) {
-            pending = requestAnimationFrame(() => {
-              pending = null;
-              lastCall = performance.now();
-              handler(event);
-            });
-          }
+          if (!this.vmEngine) return;
+          coalescer.push(extractEventProps(event));
         };
       } else {
-        listener = handler;
+        listener = (event: Event) => {
+          if (!this.vmEngine) return;
+          // A key the script asked to keep whole: the browser's default is
+          // cancelled here, since the handler runs too late to do it.
+          if (shouldCaptureKey(event)) event.preventDefault();
+          dispatch(extractEventProps(event));
+        };
       }
 
       window.addEventListener(eventType, listener);
@@ -1645,6 +1614,9 @@ export class SoftNScriptRuntime {
     }
     this.nativeListeners.clear();
     this.bridgedEventTypes.clear();
+    // A frame already requested must not fire into a disposed engine.
+    for (const coalescer of this.eventCoalescers) coalescer.dispose();
+    this.eventCoalescers = [];
     clearCapturedKeys();
     this.syncCallCache.clear();
     this.externalFunctionNames = [];
@@ -2168,32 +2140,15 @@ export class SoftNScriptRuntime {
     }
   }
 
+  /**
+   * Scheme, `allow_http` and `allowed_hosts`, judged by the one evaluator the
+   * renderer's markup sinks and the server-sync effect also use, so a host the
+   * bundle scoped itself away from is out of reach by every route rather than
+   * only by `softn.net.fetch`.
+   */
   private checkNetHost(url: string): void {
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new Error(`Invalid URL: ${url}`);
-    }
-
-    // Always enforce scheme allowlist — even without permission config, reject
-    // non-HTTP(S) schemes (e.g. file://, javascript:, data:) to prevent abuse.
-    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-      throw new Error(`Scheme not allowed: ${parsed.protocol}`);
-    }
-
-    const netPerms = this.permissionConfig?.permissions.net;
-    // Default: HTTPS only unless allow_http is explicitly true
-    if (!netPerms?.allow_http && parsed.protocol === 'http:') {
-      throw new Error(
-        `HTTP not allowed (only HTTPS). Set net.allow_http in permission.json to allow: ${url}`
-      );
-    }
-    if (netPerms?.allowed_hosts && netPerms.allowed_hosts.length > 0) {
-      if (!netPerms.allowed_hosts.includes(parsed.hostname)) {
-        throw new Error(`Host not allowed: ${parsed.hostname}`);
-      }
-    }
+    const verdict = describeNetDestination(url, this.permissionConfig?.permissions.net);
+    if (!verdict.allowed) throw new Error(verdict.reason);
   }
 
   // ── Host call handlers ──
@@ -2910,6 +2865,8 @@ export class SoftNScriptRuntime {
     // A file name is a leaf, never a path: strip separators and control
     // characters so an app cannot suggest "../.bashrc" to the download dialog.
     const name = String(rawName || 'download')
+      // The control characters are the point of the pattern, not a slip.
+      // eslint-disable-next-line no-control-regex
       .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
       .replace(/^\.+/, '')
       .slice(0, 200) || 'download';
@@ -3547,7 +3504,9 @@ export function createDBNamespace(
         );
         return;
       }
-      const syncOpts: Record<string, unknown> = { room, ...(options || {}) };
+      // The host's identity and the room the script named go on last: options
+      // may request behaviour, never say which app they are.
+      const syncOpts = bindSyncOptions(room, options, appId);
       const sharedKey = appId ? `xdb-sync-shared:${appId}` : null;
       // Shared room: sharedRoom flag, legacy noEncrypt, or persisted from prior session
       let isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;
@@ -3576,9 +3535,6 @@ export function createDBNamespace(
       }
       delete syncOpts.noEncrypt;
       delete syncOpts.sharedRoom;
-      if (appId && !syncOpts.appId) {
-        syncOpts.appId = appId;
-      }
       import('./xdb-sync')
         .then((mod) => {
           _syncModuleCache = mod;
@@ -3601,7 +3557,8 @@ export function createDBNamespace(
 
     getSyncStatus: (room?: string) => {
       if (_syncModuleCache) {
-        const adapter = _syncModuleCache.getSyncAdapter(room);
+        // This app's adapter, not whichever app happens to be in that room.
+        const adapter = _syncModuleCache.getSyncAdapter(room, appId);
         return adapter ? adapter.getStatus() : { connected: false, peers: 0, room: '', peerId: '' };
       }
       return { connected: false, peers: 0, room: '', peerId: '' };

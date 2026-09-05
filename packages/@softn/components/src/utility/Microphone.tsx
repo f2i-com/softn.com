@@ -15,7 +15,7 @@
  */
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { pcmToWavDataUrl, useConsentPending } from '@softn/core';
+import { isCapabilityAllowed, pcmToWavDataUrl, useCapability } from '@softn/core';
 
 /** One per run of the start effect — see the effect at the bottom for why. */
 interface StartAttempt {
@@ -219,11 +219,14 @@ export function Microphone({
 
   // Same exposure as <Camera>: openMicrophone calls getUserMedia from a mount
   // effect, and permission.json's `mic` entry gates the softn.* API rather than
-  // this. Held on consent state so an entry page cannot raise the browser's
-  // microphone prompt over an unanswered bar; the device opens on the render
-  // that follows the grant, with no reload.
-  const consentPending = useConsentPending();
-  const permitted = active && !consentPending;
+  // this. Held on the host's published decision, so an entry page cannot raise
+  // the browser's microphone prompt over an unanswered bar, and a bundle that
+  // never declared `mic` cannot open the device on an origin some other bundle
+  // was granted it for. The device opens on the render that follows the grant,
+  // with no reload, and closes on the render that withdraws it.
+  const micGrant = useCapability('mic');
+  const consentPending = micGrant === 'pending';
+  const permitted = active && isCapabilityAllowed(micGrant);
 
   const [isOpen, setIsOpen] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -582,8 +585,14 @@ export function Microphone({
   };
 
   // "Opening microphone..." forever is what this used to look like. Say which
-  // button turns it on instead.
-  if (consentPending) {
+  // button turns it on instead — or, for a bundle that never declared the
+  // device, which line its author has to add.
+  const refusal = consentPending
+    ? 'The microphone stays off until you choose Allow in the permission bar at the top of this app.'
+    : !isCapabilityAllowed(micGrant)
+      ? 'This app has not declared microphone access. Its permission.json needs { "mic": { "enabled": true } }.'
+      : null;
+  if (refusal !== null) {
     return (
       <div style={containerStyle}>
         <div
@@ -599,7 +608,7 @@ export function Microphone({
             lineHeight: 1.5,
           }}
         >
-          The microphone stays off until you choose Allow in the permission bar at the top of this app.
+          {refusal}
         </div>
       </div>
     );

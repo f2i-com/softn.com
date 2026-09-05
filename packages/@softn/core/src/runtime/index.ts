@@ -13,3 +13,8 @@ export * from './helpers';
 export * from './form-binding';
 export * from './file-registry';
 export * from './wav';
+export * from './egress-policy';
+export * from './event-coalescer';
+export { buildSyncCacheKey } from './sync-cache-key';
+export { bindSyncOptions } from './host-bound-sync-options';
+export { retryableSingleFlight } from './retryable-single-flight';
