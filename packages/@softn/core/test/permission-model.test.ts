@@ -49,7 +49,7 @@ function makeRuntime(config?: PermissionConfig) {
   return runtime;
 }
 
-const GATED = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage'];
+const GATED = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'];
 
 describe('a bundle that ships no permission.json', () => {
   it('is refused every gated capability', () => {
@@ -103,6 +103,7 @@ describe('a bundle whose declared capabilities are withheld pending consent', ()
       gpu: { enabled: true },
       sync: { enabled: true },
       storage: { enabled: true },
+      accel: { enabled: true },
     },
   } as PermissionConfig;
 

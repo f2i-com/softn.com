@@ -104,6 +104,17 @@ export class Engine {
      */
     resolveHostCallback(call_id: number, result: any): void;
     /**
+     * Install the object backing `accel.*`: a host that compiles guest-
+     * generated functions with its own engine. Its methods receive what
+     * the guest passed, except that `make` sees every `g:NAME` entry of the
+     * spec resolved to `r:address:length:kind` -- the region of engine
+     * memory holding that global's typed array, pinned for the VM's
+     * lifetime -- and `state` receives the region of the named array as
+     * three numbers. During `run` the host may call [`accelGuestCall`] to
+     * run a guest function by name with numbers.
+     */
+    setAccelBridge(bridge: any): void;
+    /**
      * Install the object backing `navigator.clipboard.*`. Clipboard authority
      * is intentionally separate from local storage authority.
      */
@@ -177,6 +188,14 @@ export class Engine {
 }
 
 /**
+ * Run a guest function by global name with numbers, from inside a host
+ * `accel.run` bridge call and only from there: the engine is re-entered
+ * through the context of the call in progress. The guest cannot make a
+ * nested host call while it runs.
+ */
+export function accelGuestCall(name: string, args: Float64Array): number;
+
+/**
  * Route Rust panics to `console.error` with a message instead of a bare
  * `unreachable` trap — without this a panic in wasm is undiagnosable.
  */
@@ -194,6 +213,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_engine_free: (a: number, b: number) => void;
+    readonly accelGuestCall: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly engine_callFunction: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly engine_dispatchEvent: (a: number, b: number, c: number, d: any) => [number, number, number];
     readonly engine_dispose: (a: number) => void;
@@ -209,6 +229,7 @@ export interface InitOutput {
     readonly engine_pump: (a: number) => [number, number];
     readonly engine_renewInstructionBudget: (a: number) => number;
     readonly engine_resolveHostCallback: (a: number, b: number, c: any) => [number, number];
+    readonly engine_setAccelBridge: (a: number, b: any) => [number, number];
     readonly engine_setClipboardBridge: (a: number, b: any) => [number, number];
     readonly engine_setDbBridge: (a: number, b: any) => [number, number];
     readonly engine_setFingerprintSeed: (a: number, b: number, c: number) => void;

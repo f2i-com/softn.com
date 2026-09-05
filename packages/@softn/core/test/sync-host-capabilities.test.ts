@@ -41,6 +41,7 @@ const BRIDGE_STUBS: Record<string, unknown[]> = {
     { getItem: () => null, setItem: () => {}, removeItem: () => {}, clear: () => {} },
   ],
   registerClipboardBridge: [],
+  registerAccelBridge: [],
 };
 
 function registrarNames(): string[] {

@@ -205,6 +205,15 @@ export interface PermissionConfig {
      * `permissions.storage` flag, which is about localStorage.
      */
     storage?: { enabled?: boolean };
+    /**
+     * Generated numeric code runs on the host's own engine: the script hands
+     * over functions it builds at run time (an emulator's compiled traces, a
+     * signal kernel), validated against a closed arithmetic language and bound
+     * to views of the script's typed arrays. Many times faster than the
+     * sandbox's interpreter for that code; nothing else of the host is
+     * reachable from it.
+     */
+    accel?: { enabled?: boolean };
   };
   /**
    * The bundle declared capabilities and the user has not answered yet.
@@ -2183,6 +2192,10 @@ export class SoftNScriptRuntime {
       case 'storage':
         if (!perms.storage?.enabled)
           throw new Error('Server storage not permitted. Add storage.enabled to permission.json');
+        break;
+      case 'accel':
+        if (!perms.accel?.enabled)
+          throw new Error('Host acceleration not permitted. Add accel.enabled to permission.json');
         break;
       default:
         throw new Error(`Unknown capability: ${capability}. Add it to permission.json`);
