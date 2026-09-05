@@ -18,6 +18,7 @@ packages/@softn/core/demo-bundle/**/*.svg  text eol=lf
 
 # Packed binaries: never touched, and never diffed as text.
 *.wav      binary
+*.mp3      binary
 *.png      binary
 *.glb      binary
 *.softn    binary
