@@ -2,195 +2,272 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { groupByApp, hasStoredData, type CachedApp } from '../lib/appCache';
 import { publicPath } from '../lib/appUrl';
 
+/*
+ * The runtime's home: open a file, come back to an app you had open, or try
+ * one of the demos this deployment ships. Drawn from the shared tokens so it
+ * is the same surface as the site and the tools — the product bar above it
+ * already says which product this is, so there is no second logo here.
+ */
 const launcherStyles = `
   @keyframes softn-launcher-fade-up {
-    from { opacity: 0; transform: translateY(16px); }
+    from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
-  }
-  @keyframes softn-launcher-scale-in {
-    from { opacity: 0; transform: scale(0.95); }
-    to { opacity: 1; transform: scale(1); }
-  }
-  @keyframes softn-launcher-float {
-    0%, 100% { transform: translate(0, 0); }
-    33% { transform: translate(8px, -6px); }
-    66% { transform: translate(-4px, 4px); }
-  }
-  @keyframes softn-launcher-glow {
-    0%, 100% { opacity: 0.5; }
-    50% { opacity: 0.8; }
   }
   .softn-launcher {
     min-height: 100%;
-    background: #0c0c0e;
-    padding: 3rem 2.5rem;
-    position: relative;
-    overflow: hidden;
-  }
-  .softn-launcher::before {
-    content: '';
-    position: absolute;
-    top: -30%;
-    left: -5%;
-    width: 50%;
-    height: 70%;
-    background: radial-gradient(ellipse, rgba(59, 130, 246, 0.07) 0%, transparent 65%);
-    pointer-events: none;
-    animation: softn-launcher-float 20s ease-in-out infinite;
-  }
-  .softn-launcher::after {
-    content: '';
-    position: absolute;
-    bottom: -20%;
-    right: -10%;
-    width: 45%;
-    height: 55%;
-    background: radial-gradient(ellipse, rgba(59, 130, 246, 0.05) 0%, transparent 65%);
-    pointer-events: none;
-    animation: softn-launcher-float 25s ease-in-out infinite reverse;
+    background: var(--ink);
+    color: var(--paper);
+    font-family: var(--body);
+    padding: clamp(1.5rem, 4vw, 3rem) var(--gutter) 4rem;
   }
   .softn-launcher-inner {
-    max-width: 860px;
+    max-width: 1040px;
     margin: 0 auto;
-    position: relative;
-    z-index: 1;
   }
-  .softn-launcher-header {
-    animation: softn-launcher-fade-up 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  .softn-launcher-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 2rem;
+    animation: softn-launcher-fade-up 400ms var(--ease) both;
   }
-  .softn-launcher-section-label {
-    animation: softn-launcher-fade-up 400ms cubic-bezier(0.16, 1, 0.3, 1) 150ms both;
+  .softn-launcher-title {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(1.625rem, 3vw, 2.25rem);
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+  }
+  .softn-launcher-sub {
+    margin-top: 0.5rem;
+    color: var(--dim);
+    font-size: 0.9375rem;
+    max-width: 40rem;
+  }
+  .softn-launcher-sub code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    color: var(--coral);
+  }
+  .softn-launcher-open {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2.75rem;
+    padding: 0 1.125rem;
+    border-radius: 8px;
+    border: 1px solid var(--paper);
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.875rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 160ms var(--ease), border-color 160ms var(--ease);
+  }
+  .softn-launcher-open:hover { background: var(--invert-hover); border-color: var(--invert-hover); }
+  .softn-launcher-open:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
+  .softn-launcher-hint {
+    color: var(--dimmer);
+    font-size: 0.8125rem;
+  }
+  .softn-launcher-section {
+    margin-top: 2.5rem;
+    animation: softn-launcher-fade-up 400ms var(--ease) 80ms both;
+  }
+  .softn-launcher-section-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.875rem;
+  }
+  .softn-launcher-section-title {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1.125rem;
+    letter-spacing: -0.02em;
+  }
+  .softn-launcher-section-count {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--dimmer);
   }
   .softn-launcher-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 0.875rem;
-  }
-
-  /* 11px section labels read as fine print on a phone, and the cards want a
-     thumb-sized target rather than a cursor-sized one. */
-  @media (max-width: 640px) {
-    .softn-launcher { padding: 2rem 1.25rem; }
-    .softn-launcher-grid { grid-template-columns: 1fr; }
-    .softn-launcher-section-label { font-size: 0.75rem !important; }
-    .softn-launcher-card [style*="0.6875rem"] { font-size: 0.75rem !important; }
-  }
-  @media (pointer: coarse) {
-    .softn-launcher-card { min-height: 44px; }
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 0.75rem;
   }
   .softn-launcher-card {
-    background: rgba(255, 255, 255, 0.025);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 14px;
-    padding: 1.25rem;
-    cursor: pointer;
-    transition: all 250ms cubic-bezier(0.16, 1, 0.3, 1);
     position: relative;
-    animation: softn-launcher-scale-in 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+    display: flex;
+    flex-direction: column;
+    background: var(--ink-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    padding: 1rem;
+    cursor: pointer;
+    transition: border-color 160ms var(--ease), background 160ms var(--ease);
   }
-  .softn-launcher-card:nth-child(1) { animation-delay: 100ms; }
-  .softn-launcher-card:nth-child(2) { animation-delay: 160ms; }
-  .softn-launcher-card:nth-child(3) { animation-delay: 220ms; }
-  .softn-launcher-card:nth-child(4) { animation-delay: 280ms; }
-  .softn-launcher-card:nth-child(5) { animation-delay: 340ms; }
-  .softn-launcher-card:nth-child(6) { animation-delay: 400ms; }
   .softn-launcher-card:hover {
-    background: rgba(255, 255, 255, 0.05);
-    border-color: rgba(59, 130, 246, 0.2);
-    transform: translateY(-3px);
-    box-shadow:
-      0 12px 40px rgba(0, 0, 0, 0.25),
-      0 0 0 1px rgba(59, 130, 246, 0.08),
-      0 0 30px -10px rgba(59, 130, 246, 0.12);
+    border-color: var(--line-strong);
+    background: var(--ink-3);
   }
-  /* A focusable div has no focus ring of its own, so a keyboard user would be
-     moving through the cards with nothing on screen saying where they are. */
   .softn-launcher-card:focus-visible {
-    outline: 2px solid #60a5fa;
+    outline: 2px solid var(--mint);
     outline-offset: 3px;
   }
-  .softn-launcher-card:active {
-    transform: translateY(-1px) scale(0.99);
+  .softn-launcher-card-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-width: 0;
   }
-  .softn-launcher-btn {
-    padding: 0.625rem 1.375rem;
-    background: linear-gradient(135deg, #3b82f6, #2563eb);
-    color: white;
-    border: none;
-    border-radius: 10px;
-    font-size: 0.8125rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 220ms cubic-bezier(0.16, 1, 0.3, 1);
-    box-shadow: 0 2px 12px rgba(59, 130, 246, 0.25), inset 0 1px 0 rgba(255,255,255,0.12);
-    letter-spacing: -0.01em;
+  .softn-launcher-icon {
     position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    flex-shrink: 0;
     overflow: hidden;
+    background: var(--ink-3);
+    border: 1px solid var(--line-soft);
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
-  .softn-launcher-btn:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 24px rgba(59, 130, 246, 0.35), inset 0 1px 0 rgba(255,255,255,0.12);
+  .softn-launcher-icon img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
   }
-  .softn-launcher-btn:active {
-    transform: translateY(0) scale(0.98);
+  .softn-launcher-icon span {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 1rem;
+    color: var(--paper);
+  }
+  .softn-launcher-card-name {
+    font-weight: 600;
+    font-size: 0.9375rem;
+    letter-spacing: -0.01em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .softn-launcher-card-meta {
+    margin-top: 2px;
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    color: var(--dimmer);
+  }
+  .softn-launcher-card-desc {
+    margin-top: 0.75rem;
+    font-size: 0.8125rem;
+    color: var(--dim);
+    line-height: 1.5;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .softn-launcher-card-foot {
+    margin-top: auto;
+    padding-top: 0.75rem;
+    font-size: 0.75rem;
+    color: var(--dimmer);
   }
   .softn-launcher-remove {
     position: absolute;
-    top: 10px;
-    right: 10px;
-    width: 24px;
-    height: 24px;
+    top: 8px;
+    right: 8px;
+    width: 26px;
+    height: 26px;
     background: transparent;
     border: none;
     color: transparent;
-    font-size: 0.875rem;
+    font: inherit;
+    font-size: 1rem;
     cursor: pointer;
     border-radius: 6px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition: color 160ms var(--ease), background 160ms var(--ease);
   }
-  .softn-launcher-card:hover .softn-launcher-remove {
-    color: #6b6b78;
+  .softn-launcher-card:hover .softn-launcher-remove,
+  .softn-launcher-remove:focus-visible { color: var(--dimmer); }
+  .softn-launcher-remove:hover { color: var(--paper); background: var(--ink); }
+  .softn-launcher-versions {
+    margin-top: 0.75rem;
+    padding-top: 0.625rem;
+    border-top: 1px solid var(--line-soft);
   }
-  .softn-launcher-remove:hover {
-    color: #ef4444 !important;
-    background: rgba(239, 68, 68, 0.1) !important;
+  .softn-launcher-versions-label {
+    font-size: 0.6875rem;
+    color: var(--dimmer);
+    margin-bottom: 0.4375rem;
   }
+  .softn-launcher-chips { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+  .softn-launcher-chip {
+    display: inline-flex;
+    align-items: stretch;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: var(--ink);
+    overflow: hidden;
+  }
+  .softn-launcher-chip button {
+    min-height: 28px;
+    padding: 0.25rem 0.5rem;
+    border: none;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 0.6875rem;
+    cursor: pointer;
+  }
+  .softn-launcher-chip button:hover { color: var(--paper); background: var(--ink-3); }
+  .softn-launcher-chip button + button { border-left: 1px solid var(--line); min-width: 24px; padding: 0 0.375rem; }
+  .softn-launcher-adopt {
+    margin-top: 0.5rem;
+    min-height: 30px;
+    width: 100%;
+    padding: 0.3125rem 0.5rem;
+    border-radius: 6px;
+    border: 1px solid var(--mint-edge);
+    background: var(--mint-glow-soft);
+    color: var(--paper);
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .softn-launcher-adopt:hover { background: var(--mint-glow); }
   .softn-launcher-empty {
-    animation: softn-launcher-fade-up 500ms cubic-bezier(0.16, 1, 0.3, 1) 100ms both;
+    padding: 2.5rem 1.5rem;
+    border: 1px dashed var(--line);
+    border-radius: 12px;
+    color: var(--dim);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    max-width: 40rem;
+    animation: softn-launcher-fade-up 400ms var(--ease) 60ms both;
   }
-  .softn-launcher-section {
-    margin-top: 2.75rem;
-  }
-  .softn-launcher-demo-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 11px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-  }
-  .softn-launcher-demo-icon span {
-    color: white;
-    font-weight: 700;
-    font-size: 1rem;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  }
-  .softn-launcher-dnd-hint {}
+  .softn-launcher-empty strong { color: var(--paper); font-weight: 500; }
   @media (max-width: 640px) {
-    .softn-launcher { padding: 1.25rem; }
     .softn-launcher-grid { grid-template-columns: 1fr; }
-    .softn-launcher-dnd-hint { display: none; }
+    .softn-launcher-hint { display: none; }
   }
-  @media (min-width: 641px) and (max-width: 768px) {
-    .softn-launcher { padding: 1.5rem; }
-    .softn-launcher-grid {
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    }
+  @media (pointer: coarse) {
+    .softn-launcher-card { min-height: 44px; }
+    .softn-launcher-remove { color: var(--dimmer); }
   }
 `;
 
@@ -310,508 +387,220 @@ export function Launcher({
     [onOpenFile]
   );
 
+  const groups = groupByApp(apps);
+
   return (
     <>
-    <style dangerouslySetInnerHTML={{ __html: launcherStyles }} />
-    <div className="softn-launcher">
-      <div className="softn-launcher-inner">
-        {/* Brand header */}
-        <div className="softn-launcher-header" style={{ marginBottom: '2.75rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-            <svg width="38" height="38" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ filter: 'drop-shadow(0 4px 12px rgba(59, 130, 246, 0.3))' }}>
-              <defs>
-                <linearGradient id="launcher-logo" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                  <stop offset="0%" stopColor="#60a5fa"/>
-                  <stop offset="100%" stopColor="#2563eb"/>
-                </linearGradient>
-              </defs>
-              <rect width="32" height="32" rx="8" fill="url(#launcher-logo)"/>
-              <path d="M10.5 9C20 9 21 16 16 16S12 23 21.5 23" fill="none" stroke="#fff" strokeWidth="2.8" strokeLinecap="round"/>
-              <circle cx="10.5" cy="9" r="2.5" fill="#fff"/>
-              <circle cx="21.5" cy="23" r="2.5" fill="#fff"/>
-            </svg>
+      <style dangerouslySetInnerHTML={{ __html: launcherStyles }} />
+      <div className="softn-launcher">
+        <div className="softn-launcher-inner">
+          <div className="softn-launcher-head">
             <div>
-              <div style={{
-                fontSize: '1.1875rem',
-                fontWeight: 700,
-                color: '#ececf0',
-                letterSpacing: '-0.025em',
-              }}>SoftN</div>
+              <h1 className="softn-launcher-title">Run an app</h1>
+              <p className="softn-launcher-sub">
+                Open a <code>.softn</code> file from your machine, pick up one you had open, or try a demo. Apps run here
+                in a sandbox and keep their data in this browser.
+              </p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', flexWrap: 'wrap' }}>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".softn"
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+              />
+              <button className="softn-launcher-open" type="button" onClick={() => fileInputRef.current?.click()}>
+                Open a .softn file
+              </button>
+              <span className="softn-launcher-hint">or drop one anywhere on this page</span>
             </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".softn"
-              onChange={handleFileSelect}
-              style={{ display: 'none' }}
-            />
-            <button
-              className="softn-launcher-btn"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              Open .softn File
-            </button>
-            <span className="softn-launcher-dnd-hint" style={{
-              color: '#4a4a56',
-              fontSize: '0.8125rem',
-              letterSpacing: '-0.01em',
-            }}>
-              or drag &amp; drop anywhere
-            </span>
-          </div>
-        </div>
-
-        {/* App Grid */}
-        {apps.length > 0 ? (
-          <>
-            <div
-              className="softn-launcher-section-label"
-              style={{
-                fontSize: '0.6875rem',
-                fontWeight: 600,
-                color: '#4a4a56',
-                textTransform: 'uppercase',
-                letterSpacing: '0.1em',
-                marginBottom: '1rem',
-              }}
-            >
-              Recent Apps
-            </div>
-            <div className="softn-launcher-grid">
-              {groupByApp(apps).map((group) => {
-                // One card per app. Every build the browser still holds sits
-                // behind it, because identity is the bundle's digest and a
-                // rebuild is genuinely a different app — correct for what it may
-                // read, and no reason to show the user four cards called Notes.
-                const app = group.current;
-                const olderVersions = group.versions.slice(1);
-                // The most recently used older build that actually has records.
-                const dataSource = olderVersions.find((v) => hasStoredData(v.origin));
-                return (
-                <div
-                  key={app.id}
-                  className="softn-launcher-card"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Open ${app.name}`}
-                  onClick={() => onOpenCached(app)}
-                  onKeyDown={activateOnKey(() => onOpenCached(app))}
-                >
-                  {/* Remove button */}
-                  <button
-                    className="softn-launcher-remove"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRemove(app.id);
-                    }}
-                    title="Remove"
-                  >
-                    &times;
-                  </button>
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
-                    {/* App icon */}
-                    {app.icon ? (
-                      <img
-                        src={app.icon}
-                        alt=""
-                        style={{
-                          width: '40px',
-                          height: '40px',
-                          borderRadius: '11px',
-                          objectFit: 'cover',
-                          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
-                        }}
-                      />
-                    ) : (
-                      <div
-                        style={{
-                          width: '40px',
-                          height: '40px',
-                          background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
-                          borderRadius: '11px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                          boxShadow: '0 2px 8px rgba(59, 130, 246, 0.2)',
-                        }}
-                      >
-                        <span style={{ color: 'white', fontWeight: 700, fontSize: '1rem' }}>
-                          {app.name.charAt(0).toUpperCase()}
-                        </span>
-                      </div>
-                    )}
-                    <div style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontWeight: 600,
-                          color: '#ececf0',
-                          fontSize: '0.875rem',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          letterSpacing: '-0.01em',
-                        }}
-                      >
-                        {app.name}
-                      </div>
-                      <div style={{
-                        fontSize: '0.6875rem',
-                        color: '#4a4a56',
-                        marginTop: '2px',
-                      }}>
-                        v{app.version}
-                      </div>
-                    </div>
-                  </div>
-                  {app.description && (
+          {groups.length > 0 ? (
+            <section className="softn-launcher-section" style={{ marginTop: 0 }}>
+              <div className="softn-launcher-section-head">
+                <h2 className="softn-launcher-section-title">Your apps</h2>
+                <span className="softn-launcher-section-count">{groups.length}</span>
+              </div>
+              <div className="softn-launcher-grid">
+                {groups.map((group) => {
+                  // One card per app. Every build the browser still holds sits
+                  // behind it, because identity is the bundle's digest and a
+                  // rebuild is genuinely a different app — correct for what it
+                  // may read, and no reason to show the user four cards called
+                  // Notes.
+                  const app = group.current;
+                  const olderVersions = group.versions.slice(1);
+                  // The most recently used older build that actually has records.
+                  const dataSource = olderVersions.find((v) => hasStoredData(v.origin));
+                  return (
                     <div
-                      style={{
-                        marginTop: '0.875rem',
-                        fontSize: '0.75rem',
-                        color: '#7a7a86',
-                        lineHeight: 1.55,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                        letterSpacing: '-0.005em',
-                      }}
+                      key={app.id}
+                      className="softn-launcher-card"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open ${app.name}`}
+                      onClick={() => onOpenCached(app)}
+                      onKeyDown={activateOnKey(() => onOpenCached(app))}
                     >
-                      {app.description}
-                    </div>
-                  )}
-                  <div
-                    style={{
-                      marginTop: '0.875rem',
-                      fontSize: '0.6875rem',
-                      color: '#3a3a44',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.375rem',
-                    }}
-                  >
-                    <span style={{
-                      width: '4px',
-                      height: '4px',
-                      borderRadius: '50%',
-                      background: '#3a3a44',
-                      flexShrink: 0,
-                    }} />
-                    {formatDate(app.lastOpened)}
-                  </div>
+                      <button
+                        className="softn-launcher-remove"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemove(app.id);
+                        }}
+                        title={`Remove ${app.name} from this browser`}
+                        aria-label={`Remove ${app.name}`}
+                      >
+                        &times;
+                      </button>
 
-                  {olderVersions.length > 0 && (
-                    // Earlier builds, in the same place rather than as cards of
-                    // their own. Each keeps its own records — that is what makes
-                    // going back to one meaningful rather than just older code.
-                    <div
-                      style={{
-                        marginTop: '0.75rem',
-                        paddingTop: '0.625rem',
-                        borderTop: '1px solid rgba(255,255,255,0.06)',
-                      }}
-                      onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => e.stopPropagation()}
-                    >
-                      <div style={{ fontSize: '0.625rem', letterSpacing: '0.08em', textTransform: 'uppercase', color: '#4a4a56', marginBottom: '0.4375rem' }}>
-                        Earlier versions
+                      <div className="softn-launcher-card-row">
+                        <div className="softn-launcher-icon">
+                          {app.icon ? <img src={app.icon} alt="" /> : <span>{app.name.charAt(0).toUpperCase()}</span>}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="softn-launcher-card-name">{app.name}</div>
+                          <div className="softn-launcher-card-meta">v{app.version}</div>
+                        </div>
                       </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
-                        {olderVersions.map((older) => (
-                          // Open on the left, remove on the right, so an old
-                          // build can be cleared out rather than accumulating
-                          // for ever — these are whole bundles, and six
-                          // releases of one app is six full copies.
-                          <span
-                            key={older.id}
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'stretch',
-                              borderRadius: 6,
-                              border: '1px solid rgba(255,255,255,0.1)',
-                              background: 'rgba(255,255,255,0.03)',
-                              overflow: 'hidden',
-                            }}
-                          >
-                            <button
-                              onClick={() => onOpenCached(older)}
-                              title={`Open v${older.version} — its own saved data comes with it`}
-                              style={{
-                                minHeight: 28,
-                                padding: '0.25rem 0.5rem',
-                                border: 'none',
-                                background: 'transparent',
-                                color: '#9a9aa6',
-                                fontSize: '0.6875rem',
-                                cursor: 'pointer',
-                                fontFamily: 'inherit',
-                              }}
-                            >
-                              {/* Two builds can carry the same version string —
-                                  a rebuild without a version bump is the common
-                                  case — and "v1.0.0" twice tells the user nothing
-                                  about which is which. When the version does not
-                                  distinguish them, when it was last opened does. */}
-                              v{older.version}
-                              {older.version === app.version ? ` · ${formatDate(older.lastOpened)}` : ''}
-                              {hasStoredData(older.origin) ? ' · has data' : ''}
-                            </button>
-                            <button
-                              onClick={() => onRemove(older.id)}
-                              aria-label={
-                                hasStoredData(older.origin)
-                                  ? `Remove version ${older.version} and the data saved in it`
-                                  : `Remove version ${older.version}`
-                              }
-                              title={
-                                hasStoredData(older.origin)
-                                  ? 'Remove this version. Anything saved in it goes too.'
-                                  : 'Remove this version'
-                              }
-                              style={{
-                                minHeight: 28,
-                                minWidth: 24,
-                                padding: '0 0.375rem',
-                                border: 'none',
-                                borderLeft: '1px solid rgba(255,255,255,0.08)',
-                                background: 'transparent',
-                                color: '#6b6b78',
-                                fontSize: '0.75rem',
-                                lineHeight: 1,
-                                cursor: 'pointer',
-                                fontFamily: 'inherit',
-                              }}
-                            >
-                              &times;
-                            </button>
-                          </span>
-                        ))}
-                      </div>
+                      {app.description && <div className="softn-launcher-card-desc">{app.description}</div>}
+                      <div className="softn-launcher-card-foot">Opened {formatDate(app.lastOpened).toLowerCase()}</div>
 
-                      {/* Carrying records forward is the one thing rollback
-                          cannot do for you, and the runtime will not do it
-                          unasked: nothing proves two bundles share an author.
-                          Offered only when this build has no records of its own,
-                          so it can never write over data already here. */}
-                      {!hasStoredData(app.origin) && dataSource && (
-                        <button
-                          onClick={() => onAdoptData(dataSource, app)}
-                          title={`Copy the records saved under v${dataSource.version} into this version. The older one keeps its own copy.`}
-                          style={{
-                            marginTop: '0.5rem',
-                            minHeight: 30,
-                            width: '100%',
-                            padding: '0.3125rem 0.5rem',
-                            borderRadius: 6,
-                            border: '1px solid rgba(96,165,250,0.3)',
-                            background: 'rgba(96,165,250,0.08)',
-                            color: '#93b8f0',
-                            fontSize: '0.6875rem',
-                            fontWeight: 600,
-                            cursor: 'pointer',
-                            fontFamily: 'inherit',
-                          }}
+                      {olderVersions.length > 0 && (
+                        // Earlier builds, in the same place rather than as cards
+                        // of their own. Each keeps its own records — that is what
+                        // makes going back to one meaningful rather than just
+                        // older code.
+                        <div
+                          className="softn-launcher-versions"
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => e.stopPropagation()}
                         >
-                          Bring my data forward from v{dataSource.version}
-                        </button>
+                          <div className="softn-launcher-versions-label">Earlier versions</div>
+                          <div className="softn-launcher-chips">
+                            {olderVersions.map((older) => (
+                              // Open on the left, remove on the right, so an old
+                              // build can be cleared out rather than accumulating
+                              // for ever — these are whole bundles, and six
+                              // releases of one app is six full copies.
+                              <span key={older.id} className="softn-launcher-chip">
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenCached(older)}
+                                  title={`Open v${older.version} — its own saved data comes with it`}
+                                >
+                                  {/* Two builds can carry the same version string —
+                                      a rebuild without a version bump is the common
+                                      case — and "v1.0.0" twice tells the user
+                                      nothing about which is which. When the version
+                                      does not distinguish them, when it was last
+                                      opened does. */}
+                                  v{older.version}
+                                  {older.version === app.version ? ` · ${formatDate(older.lastOpened)}` : ''}
+                                  {hasStoredData(older.origin) ? ' · has data' : ''}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => onRemove(older.id)}
+                                  aria-label={
+                                    hasStoredData(older.origin)
+                                      ? `Remove version ${older.version} and the data saved in it`
+                                      : `Remove version ${older.version}`
+                                  }
+                                  title={
+                                    hasStoredData(older.origin)
+                                      ? 'Remove this version. Anything saved in it goes too.'
+                                      : 'Remove this version'
+                                  }
+                                >
+                                  &times;
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+
+                          {/* Carrying records forward is the one thing rollback
+                              cannot do for you, and the runtime will not do it
+                              unasked: nothing proves two bundles share an author.
+                              Offered only when this build has no records of its
+                              own, so it can never write over data already here. */}
+                          {!hasStoredData(app.origin) && dataSource && (
+                            <button
+                              type="button"
+                              className="softn-launcher-adopt"
+                              onClick={() => onAdoptData(dataSource, app)}
+                              title={`Copy the records saved under v${dataSource.version} into this version. The older one keeps its own copy.`}
+                            >
+                              Bring my data forward from v{dataSource.version}
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
-                </div>
-                );
-              })}
-            </div>
-          </>
-        ) : (
-          /* Empty state */
-          <div
-            className="softn-launcher-empty"
-            style={{
-              textAlign: 'center',
-              padding: '4.5rem 2rem',
-              background: 'rgba(255, 255, 255, 0.015)',
-              borderRadius: '18px',
-              border: '1px dashed rgba(255, 255, 255, 0.06)',
-              position: 'relative',
-            }}
-          >
-            <div style={{
-              width: '60px',
-              height: '60px',
-              borderRadius: '16px',
-              background: 'rgba(59, 130, 246, 0.08)',
-              border: '1px solid rgba(59, 130, 246, 0.12)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 1.5rem',
-            }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
-                <polyline points="13 2 13 9 20 9" />
-              </svg>
-            </div>
-            <div style={{
-              color: '#7a7a86',
-              lineHeight: 1.6,
-              fontSize: '0.9375rem',
-              letterSpacing: '-0.01em',
-            }}>
-              No apps loaded yet.
-              <br />
-              Open a <strong style={{ color: '#b0b0bc', fontWeight: 500 }}>.softn</strong> file or drag and drop one onto this page.
-            </div>
-            <div
-              style={{
-                marginTop: '1.75rem',
-                padding: '0.875rem 1.25rem',
-                background: 'rgba(255, 255, 255, 0.025)',
-                borderRadius: '10px',
-                display: 'inline-block',
-                border: '1px solid rgba(255, 255, 255, 0.04)',
-              }}
-            >
-              <div style={{ color: '#4a4a56', fontSize: '0.75rem', letterSpacing: '-0.005em' }}>
-                SoftN apps are self-contained bundles with UI, logic, and data.
+                  );
+                })}
               </div>
+            </section>
+          ) : (
+            <div className="softn-launcher-empty">
+              <strong>Nothing open yet.</strong> Open a <strong>.softn</strong> file, or drop one anywhere on this page.
+              An app is one file — its interface, its logic and its assets — and it runs here without installing
+              anything.
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Demo shelf — the bundles this site serves out of public/demos */}
-        {demos.length > 0 && (
-          <div className="softn-launcher-section">
-            <div
-              className="softn-launcher-section-label"
-              style={{
-                fontSize: '0.6875rem',
-                fontWeight: 600,
-                color: '#4a4a56',
-                textTransform: 'uppercase',
-                letterSpacing: '0.1em',
-                marginBottom: '1rem',
-              }}
-            >
-              Demos
-            </div>
-            <div className="softn-launcher-grid">
-              {demos.map((demo) => (
-                <div
-                  key={demo.id}
-                  className="softn-launcher-card"
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`Open the ${demo.name} demo`}
-                  onClick={() => onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL))}
-                  onKeyDown={activateOnKey(() =>
-                    onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL)),
-                  )}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
-                    <div
-                      className="softn-launcher-demo-icon"
-                      style={{
-                        // The bundle's own accent colour, lit from the top left
-                        // the same way the cached-app tiles are. This is now the
-                        // backing for the real icon rather than the whole of it,
-                        // and what shows for a bundle that ships no icon.
-                        position: 'relative',
-                        background: `linear-gradient(135deg, rgba(255, 255, 255, 0.22), rgba(0, 0, 0, 0.18)), ${demo.primary || '#3b82f6'}`,
-                      }}
-                    >
-                      <span>{demo.name.charAt(0).toUpperCase()}</span>
-                      {/* The app's own icon, extracted beside the bundle at build
-                          time — the launcher only has index.json and is not going
-                          to download every bundle to draw a shelf. A demo without
-                          one 404s here and removes itself, leaving the letter. */}
-                      <img
-                        src={publicPath(`demos/icons/${demo.file.replace(/\.softn$/i, '')}.svg`, import.meta.env.BASE_URL)}
-                        alt=""
-                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-                        style={{
-                          position: 'absolute',
-                          inset: 0,
-                          width: '100%',
-                          height: '100%',
-                          borderRadius: '11px',
-                          objectFit: 'cover',
-                        }}
-                      />
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontWeight: 600,
-                          color: '#ececf0',
-                          fontSize: '0.875rem',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          letterSpacing: '-0.01em',
-                        }}
-                      >
-                        {demo.name}
-                      </div>
-                      <div style={{
-                        fontSize: '0.6875rem',
-                        color: '#4a4a56',
-                        marginTop: '2px',
-                      }}>
-                        {formatSize(demo.size)}
-                      </div>
-                    </div>
-                  </div>
-                  {demo.description && (
-                    <div
-                      style={{
-                        marginTop: '0.875rem',
-                        fontSize: '0.75rem',
-                        color: '#7a7a86',
-                        lineHeight: 1.55,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                        letterSpacing: '-0.005em',
-                      }}
-                    >
-                      {demo.description}
-                    </div>
-                  )}
+          {/* Demo shelf — the bundles this site serves out of public/demos */}
+          {demos.length > 0 && (
+            <section className="softn-launcher-section">
+              <div className="softn-launcher-section-head">
+                <h2 className="softn-launcher-section-title">Demos</h2>
+                <span className="softn-launcher-section-count">{demos.length}</span>
+              </div>
+              <div className="softn-launcher-grid">
+                {demos.map((demo) => (
                   <div
-                    style={{
-                      marginTop: '0.875rem',
-                      fontSize: '0.6875rem',
-                      color: '#3a3a44',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.375rem',
-                    }}
+                    key={demo.id}
+                    className="softn-launcher-card"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open the ${demo.name} demo`}
+                    onClick={() => onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL))}
+                    onKeyDown={activateOnKey(() =>
+                      onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL))
+                    )}
                   >
-                    <span style={{
-                      width: '4px',
-                      height: '4px',
-                      borderRadius: '50%',
-                      background: demo.primary || '#3b82f6',
-                      opacity: 0.7,
-                      flexShrink: 0,
-                    }} />
-                    Open demo
+                    <div className="softn-launcher-card-row">
+                      <div className="softn-launcher-icon">
+                        <span>{demo.name.charAt(0).toUpperCase()}</span>
+                        {/* The app's own icon, extracted beside the bundle at build
+                            time — the launcher only has index.json and is not going
+                            to download every bundle to draw a shelf. A demo without
+                            one 404s here and removes itself, leaving the letter. */}
+                        <img
+                          src={publicPath(`demos/icons/${demo.file.replace(/\.softn$/i, '')}.svg`, import.meta.env.BASE_URL)}
+                          alt=""
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="softn-launcher-card-name">{demo.name}</div>
+                        <div className="softn-launcher-card-meta">{formatSize(demo.size)}</div>
+                      </div>
+                    </div>
+                    {demo.description && <div className="softn-launcher-card-desc">{demo.description}</div>}
+                    <div className="softn-launcher-card-foot">Open demo</div>
                   </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
       </div>
-    </div>
     </>
   );
 }

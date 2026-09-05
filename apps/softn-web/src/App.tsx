@@ -5,6 +5,7 @@ import { DropZone } from './components/DropZone';
 import { Launcher } from './components/Launcher';
 import { AppRunner } from './components/AppRunner';
 import { TabBar } from './components/TabBar';
+import { ProductBar } from '@softn/brand';
 import type { ConsentRequest } from './components/PermissionBar';
 import type { PermissionConfig } from '@softn/core';
 
@@ -23,12 +24,16 @@ const appShellStyles = `
        custom property is invalid at computed-value time. --softn-tab-bar-height
        is the name @softn/components sizes an app root against, so it stays;
        the base is what the breakpoints below move. */
-    --softn-chrome-base: 38px;
+    /* The product bar and the tab strip together; --bar-height is the
+       product bar's, set by @softn/brand and taller on a phone. */
+    --softn-chrome-base: calc(var(--bar-height, 3rem) + 38px);
     --softn-tab-bar-height: var(--softn-chrome-base);
     display: flex;
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
+    background: var(--ink);
+    color: var(--paper);
   }
   .softn-shell-loading {
     animation: softn-shell-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -46,7 +51,7 @@ const appShellStyles = `
     transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   .softn-shell-error-btn:hover {
-    background: #3a3a44 !important;
+    background: var(--ink-3) !important;
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   }
@@ -55,7 +60,7 @@ const appShellStyles = `
   }
   @media (max-width: 640px) {
     .softn-shell {
-      --softn-chrome-base: 34px;
+      --softn-chrome-base: calc(var(--bar-height, 3rem) + 34px);
     }
   }
   /* Embedded, there is no tab bar, so there is no chrome to subtract: without
@@ -77,23 +82,24 @@ const appShellStyles = `
     align-items: center;
     gap: 6px;
     padding: 4px 10px;
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    border: 1px solid var(--line);
     border-top: 0;
     border-radius: 0 0 8px 8px;
-    background: rgba(20, 20, 26, 0.72);
-    color: #c9c9d4;
+    background: var(--nav-bg);
+    color: var(--dim);
+    font: inherit;
     font-size: 0.72rem;
     cursor: pointer;
-    opacity: 0.5;
+    opacity: 0.6;
     backdrop-filter: blur(6px);
     transition: opacity 160ms ease;
   }
-  .softn-chrome-peek:hover, .softn-chrome-peek:focus-visible { opacity: 1; color: #fff; }
+  .softn-chrome-peek:hover, .softn-chrome-peek:focus-visible { opacity: 1; color: var(--paper); }
   /* Touch overrides the narrow-window shrink: the bar has to match the 44px
      targets TabBar gives its controls, or the app area is laid out short. */
   @media (pointer: coarse) {
     .softn-shell {
-      --softn-chrome-base: 44px;
+      --softn-chrome-base: calc(var(--bar-height, 3rem) + 44px);
     }
   }
 `;
@@ -460,8 +466,15 @@ function App(): React.ReactElement {
           setActiveTabId(null); // Show loading on Home
         }
 
-        // Extract permission config from permission.json or manifest.permissions
-        const permissionConfig = extractPermissions(textFiles, manifest);
+        // Extract permission config from permission.json or manifest.permissions.
+        //
+        // A bundle that ships neither declared nothing, and is run as exactly
+        // that: an empty declaration. It used to be run with no config at all,
+        // which the script runtime denies but the renderer and the device
+        // components read as "no host is enforcing" — the reading a preview
+        // outside any bundle needs — so the least-trusted bundles got the
+        // camera and remote images unasked while an honest one was refused.
+        const permissionConfig = extractPermissions(textFiles, manifest) ?? { permissions: {} };
 
         // Extract icon early (the consent bar's detail dialog shows it)
         const icon = extractIconDataUrl(binaryFiles, manifest);
@@ -1100,13 +1113,17 @@ function App(): React.ReactElement {
             belong to the host document rather than to us. Folded away, the
             bar leaves a corner tab to come back by. */}
         {!embedded && chromeHidden && (
-          <button type="button" className="softn-chrome-peek" onClick={() => setChromeHidden(false)} title="Show the tab bar">
+          <button type="button" className="softn-chrome-peek" onClick={() => setChromeHidden(false)} title="Show the bars">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="m6 9 6 6 6-6" />
             </svg>
-            tabs
+            menu
           </button>
         )}
+        {/* The same bar as the site, Studio and Builder, so wherever an app
+            was opened from is one click away — and folded with the tabs when
+            an app wants the whole window. */}
+        {!embedded && !chromeHidden && <ProductBar current="runtime" layout="app" />}
         {!embedded && !chromeHidden && (
           <TabBar
             tabs={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon, directorySlug: t.directorySlug }))}
@@ -1134,12 +1151,12 @@ function App(): React.ReactElement {
                   alignItems: 'center',
                   flexDirection: 'column',
                   gap: '1rem',
-                  background: '#0c0c0e',
+                  background: 'var(--ink)',
                   zIndex: 10,
                 }}
               >
                 <Spinner size="lg" />
-                <Text style={{ color: '#5a5a66', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {loadingFileName}...</Text>
+                <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {loadingFileName}...</Text>
               </Box>
             </ThemeProvider>
           )}
@@ -1153,7 +1170,7 @@ function App(): React.ReactElement {
                   position: 'absolute',
                   inset: 0,
                   padding: '2rem',
-                  background: '#0c0c0e',
+                  background: 'var(--ink)',
                   zIndex: 10,
                   overflow: 'auto',
                   display: 'flex',
@@ -1165,7 +1182,7 @@ function App(): React.ReactElement {
                   className="softn-shell-error-card"
                   style={{
                     padding: '2rem',
-                    background: '#16161a',
+                    background: 'var(--ink-2)',
                     border: '1px solid rgba(239, 68, 68, 0.3)',
                     borderRadius: '14px',
                     maxWidth: '480px',
@@ -1185,14 +1202,14 @@ function App(): React.ReactElement {
                       justifyContent: 'center',
                       flexShrink: 0,
                     }}>
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <circle cx="12" cy="12" r="10" />
                         <line x1="15" y1="9" x2="9" y2="15" />
                         <line x1="9" y1="9" x2="15" y2="15" />
                       </svg>
                     </div>
                     <div style={{
-                      color: '#ececf0',
+                      color: 'var(--paper)',
                       fontWeight: 600,
                       fontSize: '1.0625rem',
                       letterSpacing: '-0.02em',
@@ -1201,13 +1218,13 @@ function App(): React.ReactElement {
                     </div>
                   </div>
                   <div style={{
-                    color: '#7a7a86',
+                    color: 'var(--dim)',
                     fontSize: '0.8125rem',
                     lineHeight: 1.6,
                     padding: '0.75rem 1rem',
-                    background: 'rgba(255, 255, 255, 0.02)',
+                    background: 'var(--inset)',
                     borderRadius: '8px',
-                    border: '1px solid rgba(255, 255, 255, 0.04)',
+                    border: '1px solid var(--inset)',
                     fontFamily: 'monospace',
                     wordBreak: 'break-word',
                   }}>
@@ -1222,9 +1239,9 @@ function App(): React.ReactElement {
                     style={{
                       marginTop: '1.25rem',
                       padding: '0.5rem 1.25rem',
-                      background: '#1e1e23',
-                      color: '#ececf0',
-                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      background: 'var(--ink-3)',
+                      color: 'var(--paper)',
+                      border: '1px solid var(--line)',
                       borderRadius: '8px',
                       cursor: 'pointer',
                       fontSize: '0.8125rem',

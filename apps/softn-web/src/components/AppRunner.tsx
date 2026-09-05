@@ -62,7 +62,7 @@ const appRunnerStyles = `
     transition: all 180ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   .softn-runner-retry-btn:hover {
-    background: #3a3a44 !important;
+    background: var(--ink-3) !important;
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   }
@@ -156,7 +156,7 @@ class RunnerErrorBoundary extends Component<
           <style dangerouslySetInnerHTML={{ __html: appRunnerStyles }} />
           <div className="softn-runner-error-wrap" style={{
             padding: '2rem',
-            background: '#0c0c0e',
+            background: 'var(--ink)',
             minHeight: '100%',
             display: 'flex',
             alignItems: 'center',
@@ -166,7 +166,7 @@ class RunnerErrorBoundary extends Component<
               className="softn-runner-error-card"
               style={{
                 padding: '2rem',
-                background: '#16161a',
+                background: 'var(--ink-2)',
                 border: '1px solid rgba(239, 68, 68, 0.3)',
                 borderRadius: '14px',
                 maxWidth: '480px',
@@ -186,14 +186,14 @@ class RunnerErrorBoundary extends Component<
                   justifyContent: 'center',
                   flexShrink: 0,
                 }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="10" />
                     <line x1="15" y1="9" x2="9" y2="15" />
                     <line x1="9" y1="9" x2="15" y2="15" />
                   </svg>
                 </div>
                 <div style={{
-                  color: '#ececf0',
+                  color: 'var(--paper)',
                   fontWeight: 600,
                   fontSize: '1.0625rem',
                   letterSpacing: '-0.02em',
@@ -202,13 +202,13 @@ class RunnerErrorBoundary extends Component<
                 </div>
               </div>
               <div style={{
-                color: '#7a7a86',
+                color: 'var(--dim)',
                 fontSize: '0.8125rem',
                 lineHeight: 1.6,
                 padding: '0.75rem 1rem',
-                background: 'rgba(255, 255, 255, 0.02)',
+                background: 'var(--inset)',
                 borderRadius: '8px',
-                border: '1px solid rgba(255, 255, 255, 0.04)',
+                border: '1px solid var(--inset)',
                 fontFamily: 'monospace',
                 wordBreak: 'break-word',
               }}>
@@ -220,10 +220,10 @@ class RunnerErrorBoundary extends Component<
                 style={{
                   marginTop: '1.25rem',
                   padding: '0.5rem 1.25rem',
-                  background: '#1e1e23',
-                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  background: 'var(--ink-3)',
+                  border: '1px solid var(--line)',
                   borderRadius: '8px',
-                  color: '#ececf0',
+                  color: 'var(--paper)',
                   cursor: 'pointer',
                   fontSize: '0.8125rem',
                   fontWeight: 500,
@@ -349,11 +349,11 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
               height: '100%',
               flexDirection: 'column',
               gap: '1rem',
-              background: '#0c0c0e',
+              background: 'var(--ink)',
             }}
           >
             <Spinner size="lg" />
-            <Text style={{ color: '#5a5a66', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {appName}...</Text>
+            <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {appName}...</Text>
           </Box>
         </ThemeProvider>
       </div>
@@ -427,11 +427,11 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
                   minHeight: '300px',
                   flexDirection: 'column',
                   gap: '1rem',
-                  background: '#0c0c0e',
+                  background: 'var(--ink)',
                 }}
               >
                 <Spinner size="lg" />
-                <Text style={{ color: '#5a5a66', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {appName}...</Text>
+                <Text style={{ color: 'var(--dim)', fontSize: '0.875rem', letterSpacing: '-0.01em' }}>Loading {appName}...</Text>
               </Box>
             }
             error={(err) => (
@@ -444,7 +444,7 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
                   className="softn-runner-error-card"
                   style={{
                     padding: '1.5rem',
-                    background: '#16161a',
+                    background: 'var(--ink-2)',
                     border: '1px solid rgba(239, 68, 68, 0.3)',
                     maxWidth: '480px',
                     width: '100%',
@@ -464,14 +464,14 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
                       justifyContent: 'center',
                       flexShrink: 0,
                     }}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <circle cx="12" cy="12" r="10" />
                         <line x1="15" y1="9" x2="9" y2="15" />
                         <line x1="9" y1="9" x2="15" y2="15" />
                       </svg>
                     </div>
                     <Text style={{
-                      color: '#7a7a86',
+                      color: 'var(--dim)',
                       fontSize: '0.8125rem',
                       fontFamily: 'monospace',
                       wordBreak: 'break-word',
