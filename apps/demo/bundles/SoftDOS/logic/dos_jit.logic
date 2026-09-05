@@ -216,6 +216,12 @@ let DOS_JIT_RMOD = 0;
 
 function dosJit_rName(r) { return "e" + r; }
 
+// Is this expression a bare register local, e0..e7?
+function dosJit_isReg(expr) {
+  return (expr.length === 2 && expr.charCodeAt(0) === 101 &&
+          expr.charCodeAt(1) >= 48 && expr.charCodeAt(1) <= 55) ? 1 : 0;
+}
+
 function dosJit_regGet(r, size) {
   if (size === 1) {
     if (r < 4) { DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r); return "(" + dosJit_rName(r) + "&255)"; }
@@ -246,6 +252,7 @@ function dosJit_regSet(r, size, expr) {
   DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << r);
   let n3 = dosJit_rName(r);
   if (size === 2) return n3 + "=((" + n3 + "&4294901760)|((" + expr + ")&65535))>>>0;";
+  if (dosJit_isReg(expr) === 1) return n3 + "=" + expr + ";";
   return n3 + "=(" + expr + ")>>>0;";
 }
 
@@ -449,7 +456,8 @@ function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
   let out = "@@F@@fo=" + lazy + ";";
   // A logic result has no carry and no overflow; only the result is read.
   if (lazy !== 3) {
-    out += "fd=" + dosJit_narrow(dExpr, size) + ";fs=" + dosJit_narrow(sExpr, size) + ";";
+    out += "fd=" + ((dExpr === "t0") ? "t0" : dosJit_narrow(dExpr, size)) +
+           ";fs=" + dosJit_narrow(sExpr, size) + ";";
   }
   out += "fr=" + dosJit_narrow(rTmp, size) + ";";
   if (DOS_JIT_FZ !== size) { out += "fz=" + size + ";"; DOS_JIT_FZ = size; }
@@ -1451,8 +1459,8 @@ function dosJit_exit(targetLit) {
 
 // What every exit breaks to: write the registers and the lazy slots back,
 // then either call the next trace or return the count.
-function dosJit_epilogue(regSpill) {
-  return regSpill + dosJit_spill() + "ST[0]=t0;" +
+function dosJit_epilogue(regSpill, slotSpill) {
+  return regSpill + slotSpill + "ST[0]=t0;" +
          "if(h>0&&tv>=0){ta=t0&16777215;" +
          "if(TAG[tv]===ta)return t3+FN[tv](ST,h-1);if(TAG[tv+1]===ta)return t3+FN[tv+1](ST,h-1);" +
          "if(TAG[tv+2]===ta)return t3+FN[tv+2](ST,h-1);if(TAG[tv+3]===ta)return t3+FN[tv+3](ST,h-1);}" +
@@ -1669,10 +1677,22 @@ function dosJit_compile(phys) {
   let pooled = [];
   for (let i = 0; i < body.length; i++) pooled.push(dosJit_poolLine(body[i]));
 
-  let src = "let t0=0,t1=0,t2=0,t3=0,ta=0,tv=0,g=0;" +
-            "let fo=ST[2],fd=ST[3],fs=ST[4],fr=ST[5],fz=ST[6],vg=ST[8];" +
+  let bodyText = pooled.join("");
+  // Load, and later write back, only the slots the body names.
+  let slotLoad = "let fo=ST[2]";
+  let slotSpill = "ST[2]=fo;";
+  if (bodyText.indexOf("fd") >= 0) { slotLoad += ",fd=ST[3]"; slotSpill += "ST[3]=fd;"; }
+  if (bodyText.indexOf("fs") >= 0) { slotLoad += ",fs=ST[4]"; slotSpill += "ST[4]=fs;"; }
+  if (bodyText.indexOf("fr") >= 0) { slotLoad += ",fr=ST[5]"; slotSpill += "ST[5]=fr;"; }
+  if (bodyText.indexOf("fz") >= 0) { slotLoad += ",fz=ST[6]"; slotSpill += "ST[6]=fz;"; }
+  if (bodyText.indexOf("vg") >= 0) slotLoad += ",vg=ST[8]";
+  slotLoad += ";";
+  // The pool stays inside the trace: a closure variable costs more to read
+  // than a local on this engine, and a literal is read far more often than
+  // the trace is entered.
+  let src = "let t0=0,t1=0,t2=0,t3=0,ta=0,tv=0,g=0;" + slotLoad +
             regLoad + hoistDecl + dosJit_poolDecl() +
-            "for(;;){" + pooled.join("") + "}" + dosJit_epilogue(regSpill);
+            "for(;;){" + bodyText + "}" + dosJit_epilogue(regSpill, slotSpill);
 
   // Refuse rather than overrun: an exhausted allowance stops the whole VM.
   if (DOS_JIT_COMPILED >= DOS_JIT_MAX_COMPILES ||
