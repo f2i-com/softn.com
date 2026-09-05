@@ -353,10 +353,10 @@ function dosCpu_getOF() {
     return (((DOS_LAZY_DST ^ DOS_LAZY_SRC) & (DOS_LAZY_DST ^ DOS_LAZY_RES) & sign) !== 0) ? 1 : 0;
   }
   if (op === 6) { // INC overflows only at SIGN_MAX
-    return ((DOS_LAZY_RES & dosCpu_maskFor(DOS_LAZY_SIZE)) === sign) ? 1 : 0;
+    return (((DOS_LAZY_RES & dosCpu_maskFor(DOS_LAZY_SIZE)) >>> 0) === sign) ? 1 : 0;
   }
   if (op === 7) { // DEC overflows only at SIGN_MIN
-    return ((DOS_LAZY_RES & dosCpu_maskFor(DOS_LAZY_SIZE)) === (sign - 1)) ? 1 : 0;
+    return (((DOS_LAZY_RES & dosCpu_maskFor(DOS_LAZY_SIZE)) >>> 0) === (sign - 1)) ? 1 : 0;
   }
   if (op === 3) return 0;
   return (DOS_EFLAGS & DOS_FL_OF) ? 1 : 0;
@@ -388,10 +388,11 @@ function dosCpu_flushFlags() {
     of = 0;
   } else if (op === 6) {                             // INC leaves CF alone
     cf = (f & DOS_FL_CF) ? 1 : 0;
-    of = ((r & mask) === sign) ? 1 : 0;
+    // `r & mask` is a signed int32 in JS; the sign constant is not.
+    of = (((r & mask) >>> 0) === sign) ? 1 : 0;
   } else if (op === 7) {                             // DEC leaves CF alone
     cf = (f & DOS_FL_CF) ? 1 : 0;
-    of = ((r & mask) === (sign - 1)) ? 1 : 0;
+    of = (((r & mask) >>> 0) === (sign - 1)) ? 1 : 0;
   } else if (op === 8) {                             // ADC
     let cin = (f & DOS_FL_CF) ? 1 : 0;
     cf = cin ? ((r <= d) ? 1 : 0) : ((r < d) ? 1 : 0);
