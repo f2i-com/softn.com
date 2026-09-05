@@ -1,0 +1,122 @@
+// ps_font.logic - bitmap text rasteriser over the DejaVu atlases in ps_fontdata.logic.
+//
+// The sandbox has no canvas text, so type is drawn from 4-bit alpha glyph
+// atlases (32-56 px masters) scaled bilinearly to the requested size. Text
+// layers keep their text metadata, so they can be re-rendered when edited.
+
+let PS_FONTS = null;
+let PS_FONT_FACES = [["sans", "Sans"], ["serif", "Serif"], ["mono", "Mono"], ["display", "Display (condensed bold)"]];
+
+function psFontInit() {
+  if (PS_FONTS) return;
+  PS_FONTS = {};
+  let keys = Object.keys(PS_FONT_DATA);
+  for (let i = 0; i < keys.length; i++) {
+    let k = keys[i], d = PS_FONT_DATA[k];
+    let mbytes = Uint8Array.fromBase64(d.metrics);
+    let metrics = new Int32Array(mbytes.buffer, mbytes.byteOffset, mbytes.byteLength >> 2);
+    PS_FONTS[k] = { size: d.size, ascent: d.ascent, descent: d.descent, metrics: metrics, pixels: Uint8Array.fromBase64(d.pixels) };
+  }
+}
+// Face selection: family key + bold -> atlas key, horizontal squeeze, synthetic bold flag.
+function psFontPick(family, bold) {
+  psFontInit();
+  let f = String(family || "sans");
+  if (f === "Arial" || f === "Verdana" || f === "sans") return bold ? { font: PS_FONTS.sansBold, squeeze: 1, embolden: false } : { font: PS_FONTS.sans, squeeze: 1, embolden: false };
+  if (f === "Georgia" || f === "serif") return bold ? { font: PS_FONTS.serifBold, squeeze: 1, embolden: false } : { font: PS_FONTS.serif, squeeze: 1, embolden: false };
+  if (f === "monospace" || f === "mono") return { font: PS_FONTS.mono, squeeze: 1, embolden: !!bold };
+  if (f === "Impact" || f === "display") return { font: PS_FONTS.sansBold, squeeze: 0.82, embolden: false };
+  return bold ? { font: PS_FONTS.sansBold, squeeze: 1, embolden: false } : { font: PS_FONTS.sans, squeeze: 1, embolden: false };
+}
+function psGlyph(font, code) {
+  if (code < 32 || code > 126) code = 63;
+  let m = font.metrics, o = (code - 32) * 6;
+  return { left: m[o], top: m[o + 1], w: m[o + 2], h: m[o + 3], adv: m[o + 4] / 16, off: m[o + 5] };
+}
+// 4-bit alpha sample (0..15) inside a glyph bitmap; outside -> 0.
+function psGlyphAlpha(pixels, g, gx, gy) {
+  if (gx < 0 || gy < 0 || gx >= g.w || gy >= g.h) return 0;
+  let idx = g.off + gy * g.w + gx;
+  let byte = pixels[idx >> 1];
+  return (idx & 1) ? (byte & 15) : (byte >> 4);
+}
+
+// Layout: returns { lines: [{ text, width }], width, height, lineHeight, scale } in document pixels.
+function psTextLayout(text, family, bold, sizePx) {
+  let pick = psFontPick(family, bold), font = pick.font;
+  let scale = sizePx / font.size;
+  let lines = String(text).split("\n");
+  let out = [], maxW = 0;
+  for (let i = 0; i < lines.length; i++) {
+    let s = lines[i], w = 0;
+    for (let k = 0; k < s.length; k++) w += psGlyph(font, s.charCodeAt(k)).adv * scale * pick.squeeze;
+    if (w > maxW) maxW = w;
+    out.push({ text: s, width: w });
+  }
+  let lineHeight = sizePx * 1.18;
+  return { lines: out, width: maxW, height: lineHeight * lines.length, lineHeight: lineHeight, scale: scale, pick: pick };
+}
+
+// Resumable text rasteriser onto an RGBA layer (source-over). settings: { text, x, y, size, color, font, bold, align }.
+// Returns a step function (job contract).
+function psTextRasterStep(data, w, h, settings) {
+  let layout = psTextLayout(settings.text, settings.font, settings.bold, settings.size);
+  let pick = layout.pick, font = pick.font, pixels = font.pixels, scale = layout.scale, squeeze = pick.squeeze, embolden = pick.embolden;
+  let rgb = psHexToRgb(settings.color);
+  let cr = rgb[0], cg = rgb[1], cb = rgb[2];
+  let align = settings.align || "left";
+  let line = 0, glyph = 0, band = 0;
+  let penX = 0;
+  let inv = 1 / scale;
+  function lineStartX(li) {
+    let lw = layout.lines[li].width;
+    if (align === "center") return settings.x - lw / 2;
+    if (align === "right") return settings.x - lw;
+    return settings.x;
+  }
+  return function () {
+    let budget = 100000;   // destination pixels per step (bilinear sampling is ~60 ops per pixel)
+    let used = 0;
+    while (line < layout.lines.length) {
+      let L = layout.lines[line];
+      if (glyph === 0 && band === 0) penX = lineStartX(line);
+      if (glyph >= L.text.length) { line++; glyph = 0; band = 0; continue; }
+      let g = psGlyph(font, L.text.charCodeAt(glyph));
+      let lineTop = settings.y + line * layout.lineHeight;
+      let gx0 = penX + g.left * scale * squeeze, gy0 = lineTop + g.top * scale;
+      let gw = g.w * scale * squeeze, gh = g.h * scale;
+      let X0 = Math.max(0, Math.floor(gx0)), X1 = Math.min(w - 1, Math.ceil(gx0 + gw)), Y0 = Math.max(0, Math.floor(gy0)), Y1 = Math.min(h - 1, Math.ceil(gy0 + gh));
+      if (g.w > 0 && g.h > 0 && X1 >= X0 && Y1 >= Y0) {
+        let rowsTotal = Y1 - Y0 + 1, cols = X1 - X0 + 1;
+        let rowsPerBand = Math.max(1, Math.floor(budget / Math.max(1, cols)));
+        let by0 = Y0 + band * rowsPerBand, by1 = Math.min(Y1 + 1, by0 + rowsPerBand);
+        let sxInv = inv / squeeze;
+        for (let Y = by0; Y < by1; Y++) {
+          let fy = (Y + 0.5 - gy0) * inv - 0.5;
+          let iy = Math.floor(fy), wy = fy - iy;
+          for (let X = X0; X <= X1; X++) {
+            let fx = (X + 0.5 - gx0) * sxInv - 0.5;
+            let ix = Math.floor(fx), wx = fx - ix;
+            let a00 = psGlyphAlpha(pixels, g, ix, iy), a01 = psGlyphAlpha(pixels, g, ix + 1, iy), a10 = psGlyphAlpha(pixels, g, ix, iy + 1), a11 = psGlyphAlpha(pixels, g, ix + 1, iy + 1);
+            let al = (a00 * (1 - wx) + a01 * wx) * (1 - wy) + (a10 * (1 - wx) + a11 * wx) * wy;
+            if (embolden) { let b00 = psGlyphAlpha(pixels, g, ix - 1, iy), b10 = psGlyphAlpha(pixels, g, ix - 1, iy + 1); let al2 = (b00 * (1 - wx) + a00 * wx) * (1 - wy) + (b10 * (1 - wx) + a10 * wx) * wy; if (al2 > al) al = al2; }
+            if (al <= 0.01) continue;
+            let a = al / 15; if (a > 1) a = 1;
+            let i = (Y * w + X) * 4;
+            let da = data[i + 3] / 255;
+            let oa = a + da * (1 - a);
+            let wS = a / oa, wD = 1 - wS;
+            data[i] = (cr * wS + data[i] * wD + 0.5) | 0; data[i + 1] = (cg * wS + data[i + 1] * wD + 0.5) | 0; data[i + 2] = (cb * wS + data[i + 2] * wD + 0.5) | 0;
+            data[i + 3] = (oa * 255 + 0.5) | 0;
+          }
+        }
+        used += (by1 - by0) * cols;
+        if (by1 <= Y1) { band++; if (used >= budget) return (line + glyph / Math.max(1, L.text.length)) / layout.lines.length; continue; }
+      }
+      penX += g.adv * scale * squeeze;
+      glyph++; band = 0;
+      if (used >= budget) return (line + glyph / Math.max(1, L.text.length)) / layout.lines.length;
+    }
+    return true;
+  };
+}
