@@ -222,6 +222,38 @@ function dosJit_isReg(expr) {
           expr.charCodeAt(1) >= 48 && expr.charCodeAt(1) <= 55) ? 1 : 0;
 }
 
+// The line that carries the pending result's CF into the flag word for an
+// INC or DEC, whose fold reads it from there.
+function dosJit_carryLine(cfe) {
+  if (cfe === "false") return "@@C@@ST[1]=ST[1]&~1;";
+  if (cfe === "true") return "@@C@@ST[1]=ST[1]|1;";
+  return "@@C@@ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);";
+}
+
+// A register write whose value is already narrow for its size -- a memory
+// read, or another register's part -- needs no masking of its own.
+function dosJit_regSetNarrow(r, size, expr) {
+  if (size === 1) {
+    if (r < 4) {
+      DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r);
+      DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << r);
+      let n = dosJit_rName(r);
+      return n + "=((" + n + "&4294967040)|" + expr + ")>>>0;";
+    }
+    let b = r - 4;
+    DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << b);
+    DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << b);
+    let n2 = dosJit_rName(b);
+    return n2 + "=((" + n2 + "&4294902015)|(" + expr + "<<8))>>>0;";
+  }
+  DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r);
+  DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << r);
+  let n3 = dosJit_rName(r);
+  if (size === 2) return n3 + "=((" + n3 + "&4294901760)|" + expr + ")>>>0;";
+  if (dosJit_isReg(expr) === 1) return n3 + "=" + expr + ";";
+  return n3 + "=" + expr + ";";
+}
+
 function dosJit_regGet(r, size) {
   if (size === 1) {
     if (r < 4) { DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r); return "(" + dosJit_rName(r) + "&255)"; }
@@ -287,6 +319,11 @@ let DOS_JM_ADDR = "";      // JS expression for the effective address, "" if reg
 // The same address before it is narrowed to the 16 MB of physical memory. LEA
 // hands the program the full 32-bit value and must not see the mask.
 let DOS_JM_OFF = "";
+// Set when the operand's address is a constant: its value, already masked
+// to physical memory. Reset at every instruction, since the stack emitters
+// set `ta` themselves.
+let DOS_JM_CONST = 0;
+let DOS_JM_CADDR = 0;
 
 // Decode a 32-bit ModR/M (and SIB) into an address expression. Sets
 // DOS_JC_OK to 0 for anything not handled, which ends the block.
@@ -314,7 +351,10 @@ function dosJit_modrm() {
     }
     base = parts.join("+");
   } else if (DOS_JM_MOD === 0 && DOS_JM_RM === 5) {
-    base = String(dosJc_u32());
+    let cst = dosJc_u32();
+    base = String(cst);
+    DOS_JM_CONST = 1;
+    DOS_JM_CADDR = cst & 0xFFFFFF;
   } else {
     base = dosJit_rRef(DOS_JM_RM);
   }
@@ -327,7 +367,15 @@ function dosJit_modrm() {
     if (d !== 0) base = base + ((d < 0) ? ("-" + (-d)) : ("+" + d));
   }
   DOS_JM_OFF = "((" + base + ")>>>0)";
-  DOS_JM_ADDR = "((" + base + ")&16777215)";
+  DOS_JM_ADDR = (DOS_JM_CONST === 1) ? String(DOS_JM_CADDR) : ("((" + base + ")&16777215)");
+}
+
+// Is the address in `ta` a compile-time constant outside the VGA window?
+function dosJit_taConst(tExpr, size) {
+  if (tExpr !== "ta" || DOS_JM_CONST !== 1) return 0;
+  let a = DOS_JM_CADDR;
+  if (a + size > 0xA0000 && a < 0xC0000) return 0;
+  return 1;
 }
 
 // A memory read at address temp `t`. VGA memory in unchained mode lives in
@@ -336,6 +384,12 @@ function dosJit_memRead(tExpr, size) {
   // The operand is parenthesised because `&` and `<` bind more loosely than
   // the operators it is spliced between; without this a compound address
   // like `(ta+4)&16777215` read from the wrong place entirely.
+  if (dosJit_taConst(tExpr, size) === 1) {
+    let a = DOS_JM_CADDR;
+    if (size === 1) return "RAM[" + a + "]";
+    if (size === 2) return ((a & 1) === 0) ? ("RAM16[" + (a >>> 1) + "]") : ("RDU16(" + a + ")");
+    return ((a & 3) === 0) ? ("RAM32[" + (a >>> 2) + "]") : ("RDU32(" + a + ")");
+  }
   let t = "(" + tExpr + ")";
   // The VGA window is tested first because, for the program's own data, the
   // first comparison fails and nothing else is evaluated.
@@ -370,6 +424,17 @@ function dosJit_memWrite(tExpr, size, valExpr) {
   // holds compiled code, unchained VGA, an unaligned wider store -- is one
   // helper call, which is also where the write barrier lives.
   let out = "tv=" + valExpr + ";";
+  if (dosJit_taConst(tExpr, size) === 1) {
+    let a = DOS_JM_CADDR;
+    let slow = "if(PG[" + (a >>> 12) + "]!==0){";
+    if (size === 1) return out + slow + "W8(" + a + ",tv);@@I@@" + dosJit_abort() + "}else{RAM[" + a + "]=tv&255;}";
+    if (size === 2) {
+      if ((a & 1) !== 0) return out + "W16(" + a + ",tv);@@I@@" + dosJit_abort();
+      return out + slow + "W16(" + a + ",tv);@@I@@" + dosJit_abort() + "}else{RAM16[" + (a >>> 1) + "]=tv&65535;}";
+    }
+    if ((a & 3) !== 0) return out + "W32(" + a + ",tv);@@I@@" + dosJit_abort();
+    return out + slow + "W32(" + a + ",tv);@@I@@" + dosJit_abort() + "}else{RAM32[" + (a >>> 2) + "]=tv>>>0;}";
+  }
   if (size === 1) {
     out += "if(" + dosJit_wGuard(t) + "){W8(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM[" + t + "]=tv&255;}";
   } else if (size === 2) {
@@ -446,7 +511,7 @@ let DOS_JIT_FOLDED = 0;
 function dosJit_guard() {
   if (DOS_JIT_PENDING !== 0 || DOS_JIT_FOLDED === 1) return "";
   DOS_JIT_FOLDED = 1;
-  return "if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);fo=0;}";
+  return "@@G@@if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);fo=0;}";
 }
 
 function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
@@ -628,7 +693,7 @@ function dosJit_one(body, tmp) {
     if (DOS_JIT_PENDING !== 0) {
       let cfe = dosJit_flagExpr(0);
       if (cfe === "") body.push(dosJit_spill() + "FC();" + dosJit_reload());
-      else if (DOS_JIT_PENDING !== 6 && DOS_JIT_PENDING !== 7) body.push("@@C@@ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);");
+      else if (DOS_JIT_PENDING !== 6 && DOS_JIT_PENDING !== 7) body.push(dosJit_carryLine(cfe));
       DOS_JIT_PENDING = 0;
     } else {
       body.push(dosJit_guard());
@@ -712,11 +777,11 @@ function dosJit_one(body, tmp) {
     dosJit_modrm();
     if (DOS_JC_OK === 0) { DOS_JC = start; return 0; }
     if (DOS_JM_ADDR === "") {
-      if (toReg) body.push(dosJit_regSet(DOS_JM_REG, sz, dosJit_regGet(DOS_JM_RM, sz)));
-      else body.push(dosJit_regSet(DOS_JM_RM, sz, dosJit_regGet(DOS_JM_REG, sz)));
+      if (toReg) body.push(dosJit_regSetNarrow(DOS_JM_REG, sz, dosJit_regGet(DOS_JM_RM, sz)));
+      else body.push(dosJit_regSetNarrow(DOS_JM_RM, sz, dosJit_regGet(DOS_JM_REG, sz)));
     } else if (toReg) {
       body.push("ta=" + DOS_JM_ADDR + ";");
-      body.push(dosJit_regSet(DOS_JM_REG, sz, dosJit_memRead("ta", sz)));
+      body.push(dosJit_regSetNarrow(DOS_JM_REG, sz, dosJit_memRead("ta", sz)));
     } else {
       body.push("ta=" + DOS_JM_ADDR + ";");
       body.push(dosJit_memWrite("ta", sz, dosJit_regGet(DOS_JM_REG, sz)));
@@ -1009,7 +1074,9 @@ function dosJit_one(body, tmp) {
   if (op >= 0xA0 && op <= 0xA3) {
     let sz = (op === 0xA0 || op === 0xA2) ? 1 : size;
     let off = dosJc_u32();
-    body.push("ta=" + off + "&16777215;");
+    DOS_JM_CONST = 1;
+    DOS_JM_CADDR = off & 0xFFFFFF;
+    body.push("ta=" + DOS_JM_CADDR + ";");
     if (op === 0xA0 || op === 0xA1) body.push(dosJit_regSet(0, sz, dosJit_memRead("ta", sz)));
     else body.push(dosJit_memWrite("ta", sz, dosJit_regGet(0, sz)));
     return 1;
@@ -1071,7 +1138,7 @@ function dosJit_one(body, tmp) {
       if (DOS_JIT_PENDING !== 0) {
         let cfe = dosJit_flagExpr(0);
         if (cfe === "") body.push(dosJit_spill() + "FC();" + dosJit_reload());
-        else if (DOS_JIT_PENDING !== 6 && DOS_JIT_PENDING !== 7) body.push("@@C@@ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);");
+        else if (DOS_JIT_PENDING !== 6 && DOS_JIT_PENDING !== 7) body.push(dosJit_carryLine(cfe));
         DOS_JIT_PENDING = 0;
       } else {
         body.push(dosJit_guard());
@@ -1090,6 +1157,7 @@ function dosJit_one(body, tmp) {
     if (sub === 6 && op === 0xFF && sz === 4) {   // PUSH r/m32
       if (isMem) { body.push("ta=" + DOS_JM_ADDR + ";t0=" + dosJit_memRead("ta", 4) + ";"); }
       else body.push("t0=" + dosJit_regGet(DOS_JM_RM, 4) + ";");
+      DOS_JM_CONST = 0;                          // ta is the stack from here on
       body.push(dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       body.push(dosJit_memWrite("ta", 4, "t0"));
@@ -1369,7 +1437,8 @@ function dosJit_dropDeadFlags(body) {
         if (dosJit_readsRecord(line) === 1) liveRec = 1;
         continue;
       }
-      let incDec = (line.indexOf("fo=6;") === 0 || line.indexOf("fo=7;") === 0) ? 1 : 0;
+      let incDec = (line.indexOf("fo=6;") === 0 || line.indexOf("fo=7;") === 0 ||
+                    line.indexOf("fo=8;") === 0 || line.indexOf("fo=9;") === 0) ? 1 : 0;
       if (liveRec === 0) {
         let k = line.indexOf("fz=");
         body[i] = (k >= 0) ? line.substring(k) : "";
@@ -1385,6 +1454,15 @@ function dosJit_dropDeadFlags(body) {
       liveRec = 0;
       recKept = 1;
       lastIncDec = incDec;
+      if (incDec === 1) liveWord = 1;          // its fold reads CF from the word
+      continue;
+    }
+    if (line.indexOf("@@G@@") === 0) {
+      // A guard folds a pending result into the word: dead when nothing
+      // reads the word before the next write to it.
+      if (liveWord === 0 && liveOF === 0) { body[i] = ""; DOS_JIT_DEAD++; continue; }
+      body[i] = line.substring(5);
+      liveRec = 1;
       continue;
     }
     if (line.indexOf("@@C@@") === 0) {
@@ -1489,6 +1567,7 @@ function dosJit_compile(phys) {
 
   while (n < DOS_JIT_MAXI) {
     let here = DOS_JC >>> 0;
+    DOS_JM_CONST = 0;
     if (DOS_JIT_SEEN_N < 64) { DOS_JIT_SEEN[DOS_JIT_SEEN_N] = here; DOS_JIT_SEEN_N++; }
     let peek = DOS_RAM[here & 0xFFFFFF];
 
@@ -1610,6 +1689,7 @@ function dosJit_compile(phys) {
         else body.push("ta=" + DOS_JM_ADDR + ";t0=" + dosJit_memRead("ta", 4) + ";");
         if (sub === 2) {
           let ret = DOS_JC >>> 0;
+          DOS_JM_CONST = 0;                      // ta is the stack from here on
           body.push(dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
           DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
           body.push(dosJit_memWrite("ta", 4, String(ret)));
