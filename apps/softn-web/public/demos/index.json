@@ -32,6 +32,14 @@
     "size": 13500
   },
   {
+    "id": "last-sound-3d",
+    "file": "LastSound3D.softn",
+    "name": "Last Sound 3D",
+    "description": "A fully voiced first-person survey of a blood ocean from inside a sealed pressure hull: walk three compartments, photograph six anomalies, keep life support alive, and decide which record leaves the trench. An unofficial Iron Lung fan story",
+    "primary": "#c9a865",
+    "size": 11504028
+  },
+  {
     "id": "maze-escape-3d",
     "file": "MazeEscape3D.softn",
     "name": "Maze Escape 3D",
