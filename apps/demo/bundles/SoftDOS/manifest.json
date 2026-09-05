@@ -1,7 +1,7 @@
 {
   "name": "SoftDOS",
   "version": "0.1.0",
-  "description": "An x86 PC emulator written in .logic: a 16/32-bit CPU with the full 386 integer instruction set, VGA text and mode 13h including unchained Mode X, a BIOS, DOS kernel and DPMI host with real interrupt delivery, and a command line. Runs real 8086 programs and boots DOOM.",
+  "description": "An x86 PC emulator written in .logic: a 16/32-bit CPU with the full 386 integer instruction set, VGA text and mode 13h including unchained Mode X and the graphics controller, a BIOS, DOS kernel with a writable drive, DPMI host, mouse driver and real interrupt delivery, and a command line. Drop a game's files or its zip on drive C and run it: DOOM, Jill of the Jungle, and MS-DOS programs of their era.",
   "author": "SoftN",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
@@ -22,7 +22,9 @@
       "logic/dos_ops.logic",
       "logic/dos_bc.logic",
       "logic/dos_int.logic",
-      "logic/dos_jit.logic"
+      "logic/dos_jit.logic",
+      "logic/dos_mouse.logic",
+      "logic/dos_zip.logic"
     ],
     "assets": [
       "assets/icon.svg"
@@ -31,7 +33,7 @@
   "config": {
     "execution": "worker",
     "window": {
-      "title": "SoftDOS \u00e2\u20ac\u201d x86 PC Emulator",
+      "title": "SoftDOS — x86 PC Emulator",
       "width": 960,
       "height": 840
     },

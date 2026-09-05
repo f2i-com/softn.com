@@ -55,6 +55,46 @@ const KEYWORDS = new Set([
   'null',
 ]);
 
+/**
+ * Words that may appear nowhere: neither as an identifier (the whitelist
+ * already refuses them there) nor as a name a `let` or a parameter list
+ * would otherwise admit.
+ */
+const RESERVED = new Set([
+  'this',
+  'new',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'delete',
+  'void',
+  'class',
+  'extends',
+  'super',
+  'import',
+  'export',
+  'with',
+  'yield',
+  'await',
+  'async',
+  'try',
+  'catch',
+  'finally',
+  'throw',
+  'switch',
+  'case',
+  'default',
+  'debugger',
+  'enum',
+  'arguments',
+  'eval',
+  'Math',
+  'globalThis',
+  'self',
+  'window',
+]);
+
 /** The `Math` functions a body may call: pure, and numbers in and out. */
 const MATH_PURE = new Set(['imul', 'floor', 'ceil', 'trunc', 'round', 'abs', 'min', 'max', 'clz32', 'sqrt', 'fround']);
 
@@ -111,7 +151,7 @@ export function validateAccelSource(params: string[], body: string): void {
   const allowed = new Set<string>(KEYWORDS);
   for (const p of params) {
     if (!ident.test(p)) throw new AccelValidationError(`parameter ${JSON.stringify(p)} is not an identifier`);
-    if (KEYWORDS.has(p) || p === 'Math') throw new AccelValidationError(`parameter ${p} shadows a keyword`);
+    if (KEYWORDS.has(p) || RESERVED.has(p)) throw new AccelValidationError(`parameter ${p} shadows a keyword`);
     allowed.add(p);
   }
   if (body.length > 4 * 1024 * 1024) throw new AccelValidationError('body too long');
@@ -209,8 +249,8 @@ export function validateAccelSource(params: string[], body: string): void {
       let m = k + 1;
       for (;;) {
         const name = toks[m];
-        if (!name || name.t !== 'id' || KEYWORDS.has(name.v) || name.v === 'Math') {
-          throw new AccelValidationError(`bad declaration at ${tok.i}`);
+        if (!name || name.t !== 'id' || KEYWORDS.has(name.v) || RESERVED.has(name.v)) {
+          throw new AccelValidationError(`bad declaration at ${tok.i}${name ? ` (${name.v})` : ''}`);
         }
         allowed.add(name.v);
         m++;
@@ -240,7 +280,7 @@ export function validateAccelSource(params: string[], body: string): void {
       if (!toks[m] || toks[m].v !== '(') throw new AccelValidationError(`named function at ${tok.i}`);
       m++;
       while (toks[m] && toks[m].v !== ')') {
-        if (toks[m].t === 'id' && !KEYWORDS.has(toks[m].v) && toks[m].v !== 'Math') allowed.add(toks[m].v);
+        if (toks[m].t === 'id' && !KEYWORDS.has(toks[m].v) && !RESERVED.has(toks[m].v)) allowed.add(toks[m].v);
         else if (toks[m].v !== ',') throw new AccelValidationError(`bad function parameter at ${toks[m].i}`);
         m++;
       }

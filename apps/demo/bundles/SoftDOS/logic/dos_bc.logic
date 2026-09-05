@@ -88,8 +88,17 @@ function dosDec_mkRegSet(r, size) {
   let s2 = r * 2;
   return function (v) { DOS_REGS16[s2] = v & 0xFFFF; };
 }
+// A byte access through a decoded block takes the VGA window's planar path
+// when the card is unchained; the tiles in Jill of the Jungle reached the
+// planes through string instructions the decoder refuses, and its sprites,
+// written a byte at a time through decoded blocks, landed in plain RAM
+// behind the window instead, invisibly.
 function dosDec_mkMemGet(af, size) {
-  if (size === 1) return function () { return DOS_RAM[af() & 0xFFFFFF]; };
+  if (size === 1) return function () {
+    let a = af() & 0xFFFFFF;
+    if (DOS_VGA_UNCHAINED === 1 && a >= 0xA0000 && a < 0xB0000) return dosVga_readPlanar(a - 0xA0000);
+    return DOS_RAM[a];
+  };
   return function () { return dosMmu_read16(af()); };
 }
 // Every write goes past the barrier, including the ones decoded blocks make.
@@ -98,7 +107,12 @@ function dosBc_touch(addr) {
   dosJit_touch(addr);
 }
 function dosDec_mkMemSet(af, size) {
-  if (size === 1) return function (v) { let a = af() & 0xFFFFFF; dosBc_touch(a); DOS_RAM[a] = v & 0xFF; };
+  if (size === 1) return function (v) {
+    let a = af() & 0xFFFFFF;
+    dosBc_touch(a);
+    if (DOS_VGA_UNCHAINED === 1 && a >= 0xA0000 && a < 0xB0000) { dosVga_writePlanar(a - 0xA0000, v); return; }
+    DOS_RAM[a] = v & 0xFF;
+  };
   return function (v) { dosMmu_write16(af(), v); };
 }
 
@@ -621,10 +635,12 @@ function dosCpu_runCycles(budget) {
     let phys = (((DOS_SEGS[1] << 4) + (eip & 0xFFFF)) >>> 0) & 0xFFFFFF;
     let slot = phys & 8191;
     if (DOS_BC_TAG[slot] !== phys) {
-      if (dosBc_build(slot, phys) === 0) { remaining -= dosCpu_step(); DOS_BC_STEPS++; DOS_BC_INSTR++; continue; }
+      if (dosBc_build(slot, phys) === 0) { remaining -= dosCpu_step(); DOS_BC_STEPS++; DOS_BC_INSTR++; DOS_INT_CHECK--; if (DOS_INT_CHECK <= 0) { DOS_INT_CHECK = DOS_INT_CHECK_EVERY; dosInt_poll(); } continue; }
     }
     let num = DOS_BC_NUM[slot];
-    if (num === 0) { remaining -= dosCpu_step(); DOS_BC_STEPS++; DOS_BC_INSTR++; continue; }
+    // A stepped instruction counts toward the interrupt check too: a program
+    // parked on an INT the decoder refuses would otherwise never be polled.
+    if (num === 0) { remaining -= dosCpu_step(); DOS_BC_STEPS++; DOS_BC_INSTR++; DOS_INT_CHECK--; if (DOS_INT_CHECK <= 0) { DOS_INT_CHECK = DOS_INT_CHECK_EVERY; dosInt_poll(); } continue; }
     DOS_BC_EIP0 = eip;
     DOS_PREFIX_SEG = -1;
     DOS_PREFIX_REP = 0;

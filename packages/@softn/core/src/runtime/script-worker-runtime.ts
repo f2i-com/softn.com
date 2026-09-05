@@ -1,4 +1,6 @@
 import type { AppPermissions } from '../bundle/types';
+import { extractEventProps } from './event-props';
+import { clearCapturedKeys, shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
 
 type ImportResolver = (path: string) => Promise<string | null>;
@@ -78,28 +80,6 @@ function isWorkerResponse(msg: unknown): msg is WorkerResponse {
 
 function isImportRequest(msg: unknown): msg is WorkerImportRequest {
   return !!msg && typeof msg === 'object' && (msg as Record<string, unknown>).type === 'import_request';
-}
-
-/**
- * Extract serializable event properties from a native DOM Event.
- */
-function extractEventProps(e: Event): Record<string, unknown> {
-  const ev: Record<string, unknown> = { type: e.type };
-  if (e instanceof MouseEvent) {
-    ev.clientX = e.clientX;
-    ev.clientY = e.clientY;
-    ev.button = e.button;
-  }
-  if (e instanceof KeyboardEvent) {
-    ev.key = e.key;
-    ev.code = e.code;
-    ev.altKey = e.altKey;
-    ev.ctrlKey = e.ctrlKey;
-    ev.shiftKey = e.shiftKey;
-    ev.metaKey = e.metaKey;
-    ev.repeat = e.repeat;
-  }
-  return ev;
 }
 
 /**
@@ -707,6 +687,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       this.bridgedEventTypes.add(eventType);
       const dispatch = (event: Event) => {
         if (this.disposed) return;
+        // A key the script asked to keep whole: cancelled here, on the
+        // thread that can, before the event is sent across.
+        if (shouldCaptureKey(event)) event.preventDefault();
         this.call<EntryResult>('dispatch_event', {
           eventType,
           event: extractEventProps(event),
@@ -747,6 +730,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     }
     this.nativeListeners = [];
     this.bridgedEventTypes.clear();
+    clearCapturedKeys();
     this.hostExecutor.cleanup();
     for (const [, p] of this.pending) p.reject(new Error('worker_terminated'));
     this.pending.clear();

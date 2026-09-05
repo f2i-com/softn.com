@@ -402,6 +402,74 @@ let DOS_VGA_ROW_BYTES = 80;         // CRTC 13h (in words) x 2: plane bytes per 
 let DOS_VGA_SEQ_INDEX = 0;
 let DOS_VGA_GC_INDEX = 0;
 let DOS_VGA_CRTC_INDEX = 0;
+// The registers as written, for the reads a program makes before a write.
+let DOS_VGA_SEQ_REGS = new Uint8Array(8);
+let DOS_VGA_GC_REGS = new Uint8Array(16);
+let DOS_VGA_CRTC_REGS = new Uint8Array(32);
+let DOS_VGA_MODE13_CRTC = [0x5F, 0x4F, 0x50, 0x82, 0x54, 0x80, 0xBF, 0x1F, 0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                           0x9C, 0x8E, 0x8F, 0x28, 0x40, 0x96, 0xB9, 0xA3, 0xFF];
+let DOS_VGA_MODE3_CRTC = [0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F, 0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00,
+                          0x9C, 0x8E, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3, 0xFF];
+
+// What the BIOS leaves in the registers when it sets a mode: 13h chained
+// 256-colour, or the 80x25 text mode for anything else.
+function dosVga_modeRegs(mode) {
+  let gfx = (mode === 0x13);
+  let seq = gfx ? [0x03, 0x01, 0x0F, 0x00, 0x0E] : [0x03, 0x00, 0x03, 0x00, 0x02];
+  let gc = gfx ? [0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x05, 0x0F, 0xFF] : [0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF];
+  let crtc = gfx ? DOS_VGA_MODE13_CRTC : DOS_VGA_MODE3_CRTC;
+  DOS_VGA_SEQ_REGS.fill(0);
+  DOS_VGA_GC_REGS.fill(0);
+  DOS_VGA_CRTC_REGS.fill(0);
+  for (let i = 0; i < seq.length; i++) DOS_VGA_SEQ_REGS[i] = seq[i];
+  for (let i = 0; i < gc.length; i++) DOS_VGA_GC_REGS[i] = gc[i];
+  for (let i = 0; i < crtc.length; i++) DOS_VGA_CRTC_REGS[i] = crtc[i];
+}
+
+// A read of an index or data port.
+function dosVga_regRead(port) {
+  if (port === 0x3C4) return DOS_VGA_SEQ_INDEX;
+  if (port === 0x3C5) return DOS_VGA_SEQ_REGS[DOS_VGA_SEQ_INDEX & 7];
+  if (port === 0x3CE) return DOS_VGA_GC_INDEX;
+  if (port === 0x3CF) return DOS_VGA_GC_REGS[DOS_VGA_GC_INDEX & 15];
+  if (port === 0x3D4) return DOS_VGA_CRTC_INDEX;
+  if (port === 0x3D5) return DOS_VGA_CRTC_REGS[DOS_VGA_CRTC_INDEX & 31];
+  if (port === 0x3CC) return 0x67;                        // misc output: colour, 25 MHz
+  if (port === 0x3C6) return 0xFF;                        // DAC mask
+  if (port === 0x3C7) return 0x00;                        // DAC state: idle
+  if (port === 0x3C8) return DOS_VGA_DAC_INDEX & 0xFF;
+  return 0xFF;
+}
+// The graphics controller. The latches hold the four planes' bytes at the
+// last address read; a write combines its data with them as the registers
+// say. DOS_VGA_PLAIN is 1 while a write is a plain store of its byte, which
+// is the state the compiled path may bypass all of this in.
+let DOS_VGA_L0 = 0;
+let DOS_VGA_L1 = 0;
+let DOS_VGA_L2 = 0;
+let DOS_VGA_L3 = 0;
+let DOS_VGA_GC_SR = 0;          // GC 0: set/reset value per plane
+let DOS_VGA_GC_SR_EN = 0;       // GC 1: planes that take set/reset instead of data
+let DOS_VGA_GC_CMP = 0;         // GC 2: colour compare
+let DOS_VGA_GC_ROT = 0;         // GC 3 bits 0-2: rotate count
+let DOS_VGA_GC_FN = 0;          // GC 3 bits 3-4: 0 replace, 1 AND, 2 OR, 3 XOR with the latch
+let DOS_VGA_GC_MODE = 0;        // GC 5: write mode bits 0-1, read mode bit 3
+let DOS_VGA_GC_DC = 0x0F;       // GC 7: colour don't care
+let DOS_VGA_GC_MASK = 0xFF;     // GC 8: bit mask
+let DOS_VGA_PLAIN = 1;
+
+function dosVga_gcUpdate() {
+  DOS_VGA_PLAIN = ((DOS_VGA_GC_MODE & 3) === 0 && DOS_VGA_GC_MASK === 0xFF &&
+                   DOS_VGA_GC_SR_EN === 0 && DOS_VGA_GC_FN === 0 && DOS_VGA_GC_ROT === 0) ? 1 : 0;
+}
+
+// What the compiled path needs to know in one number: 0 chained, 1 unchained
+// with a plain controller, 2 unchained with the controller in play.
+function dosVga_jitFlag() {
+  if (DOS_VGA_UNCHAINED === 0) return 0;
+  return (DOS_VGA_PLAIN === 1) ? 1 : 2;
+}
+
 // Set by anything that changes what the screen should show; cleared once the
 // planes have been flattened into the frame buffer.
 let DOS_VGA_DIRTY = 1;
@@ -425,22 +493,81 @@ function dosVga_planarReset() {
   DOS_VGA_CRTC_INDEX = 0;
   DOS_VGA_DIRTY = 1;
   DOS_VGA_FLIPS = 0;
+  DOS_VGA_L0 = 0; DOS_VGA_L1 = 0; DOS_VGA_L2 = 0; DOS_VGA_L3 = 0;
+  DOS_VGA_GC_SR = 0;
+  DOS_VGA_GC_SR_EN = 0;
+  DOS_VGA_GC_CMP = 0;
+  DOS_VGA_GC_ROT = 0;
+  DOS_VGA_GC_FN = 0;
+  DOS_VGA_GC_MODE = 0;
+  DOS_VGA_GC_DC = 0x0F;
+  DOS_VGA_GC_MASK = 0xFF;
+  DOS_VGA_PLAIN = 1;
+  dosVga_modeRegs(DOS_VIDEO_MODE);
 }
 
 // A byte written into the 0xA0000 window while unchained reaches every plane
-// the map mask selects, all at the same offset.
+// the map mask selects, all at the same offset, through the graphics
+// controller.
 function dosVga_writePlanar(off, v) {
   let o = off & 0xFFFF;
   let b = v & 0xFF;
+  let m = DOS_VGA_MAP_MASK;
   DOS_VGA_DIRTY = 1;
-  if (DOS_VGA_MAP_MASK & 1) DOS_VGA_VRAM[o] = b;
-  if (DOS_VGA_MAP_MASK & 2) DOS_VGA_VRAM[65536 + o] = b;
-  if (DOS_VGA_MAP_MASK & 4) DOS_VGA_VRAM[131072 + o] = b;
-  if (DOS_VGA_MAP_MASK & 8) DOS_VGA_VRAM[196608 + o] = b;
+  if (DOS_VGA_PLAIN === 1) {
+    if (m & 1) DOS_VGA_VRAM[o] = b;
+    if (m & 2) DOS_VGA_VRAM[65536 + o] = b;
+    if (m & 4) DOS_VGA_VRAM[131072 + o] = b;
+    if (m & 8) DOS_VGA_VRAM[196608 + o] = b;
+    return;
+  }
+  let mode = DOS_VGA_GC_MODE & 3;
+  if (mode === 1) {
+    // The latches, as they are: a four-plane copy.
+    if (m & 1) DOS_VGA_VRAM[o] = DOS_VGA_L0;
+    if (m & 2) DOS_VGA_VRAM[65536 + o] = DOS_VGA_L1;
+    if (m & 4) DOS_VGA_VRAM[131072 + o] = DOS_VGA_L2;
+    if (m & 8) DOS_VGA_VRAM[196608 + o] = DOS_VGA_L3;
+    return;
+  }
+  let mask = DOS_VGA_GC_MASK;
+  if (mode === 3) mask = mask & b;
+  let rot = DOS_VGA_GC_ROT;
+  let rotated = (rot === 0) ? b : (((b >> rot) | (b << (8 - rot))) & 0xFF);
+  let fn = DOS_VGA_GC_FN;
+  for (let p = 0; p < 4; p++) {
+    let bit = 1 << p;
+    if ((m & bit) === 0) continue;
+    let d = 0;
+    if (mode === 2) d = (b & bit) ? 0xFF : 0x00;
+    else if (mode === 3) d = (DOS_VGA_GC_SR & bit) ? 0xFF : 0x00;
+    else if (DOS_VGA_GC_SR_EN & bit) d = (DOS_VGA_GC_SR & bit) ? 0xFF : 0x00;
+    else d = rotated;
+    let l = (p === 0) ? DOS_VGA_L0 : ((p === 1) ? DOS_VGA_L1 : ((p === 2) ? DOS_VGA_L2 : DOS_VGA_L3));
+    if (fn === 1) d = d & l;
+    else if (fn === 2) d = d | l;
+    else if (fn === 3) d = d ^ l;
+    DOS_VGA_VRAM[(p << 16) + o] = ((d & mask) | (l & ~mask)) & 0xFF;
+  }
 }
 
+// A read fills the latches from all four planes and answers the plane the
+// read map selects, or in read mode 1 the colour comparison.
 function dosVga_readPlanar(off) {
-  return DOS_VGA_VRAM[((DOS_VGA_READ_PLANE & 3) << 16) + (off & 0xFFFF)];
+  let o = off & 0xFFFF;
+  DOS_VGA_L0 = DOS_VGA_VRAM[o];
+  DOS_VGA_L1 = DOS_VGA_VRAM[65536 + o];
+  DOS_VGA_L2 = DOS_VGA_VRAM[131072 + o];
+  DOS_VGA_L3 = DOS_VGA_VRAM[196608 + o];
+  if ((DOS_VGA_GC_MODE & 8) === 0) return DOS_VGA_VRAM[((DOS_VGA_READ_PLANE & 3) << 16) + o];
+  let r = 0xFF;
+  let dc = DOS_VGA_GC_DC;
+  let cc = DOS_VGA_GC_CMP;
+  if (dc & 1) r = r & ~(DOS_VGA_L0 ^ ((cc & 1) ? 0xFF : 0));
+  if (dc & 2) r = r & ~(DOS_VGA_L1 ^ ((cc & 2) ? 0xFF : 0));
+  if (dc & 4) r = r & ~(DOS_VGA_L2 ^ ((cc & 4) ? 0xFF : 0));
+  if (dc & 8) r = r & ~(DOS_VGA_L3 ^ ((cc & 8) ? 0xFF : 0));
+  return r & 0xFF;
 }
 
 // The indexed register ports. Only the handful that change what is displayed
@@ -449,6 +576,7 @@ function dosVga_regWrite(port, v) {
   let b = v & 0xFF;
   if (port === 0x3C4) { DOS_VGA_SEQ_INDEX = b; return; }
   if (port === 0x3C5) {
+    DOS_VGA_SEQ_REGS[DOS_VGA_SEQ_INDEX & 7] = b;
     if (DOS_VGA_SEQ_INDEX === 0x02) DOS_VGA_MAP_MASK = b & 0x0F;
     else if (DOS_VGA_SEQ_INDEX === 0x04) {
       // Bit 3 is Chain-4. Clearing it is what puts the card into Mode X.
@@ -462,11 +590,22 @@ function dosVga_regWrite(port, v) {
   }
   if (port === 0x3CE) { DOS_VGA_GC_INDEX = b; return; }
   if (port === 0x3CF) {
-    if (DOS_VGA_GC_INDEX === 0x04) DOS_VGA_READ_PLANE = b & 3;
+    let gi = DOS_VGA_GC_INDEX;
+    DOS_VGA_GC_REGS[gi & 15] = b;
+    if (gi === 0x00) DOS_VGA_GC_SR = b & 0x0F;
+    else if (gi === 0x01) DOS_VGA_GC_SR_EN = b & 0x0F;
+    else if (gi === 0x02) DOS_VGA_GC_CMP = b & 0x0F;
+    else if (gi === 0x03) { DOS_VGA_GC_ROT = b & 0x07; DOS_VGA_GC_FN = (b >> 3) & 0x03; }
+    else if (gi === 0x04) DOS_VGA_READ_PLANE = b & 3;
+    else if (gi === 0x05) DOS_VGA_GC_MODE = b & 0x0B;
+    else if (gi === 0x07) DOS_VGA_GC_DC = b & 0x0F;
+    else if (gi === 0x08) DOS_VGA_GC_MASK = b & 0xFF;
+    dosVga_gcUpdate();
     return;
   }
   if (port === 0x3D4) { DOS_VGA_CRTC_INDEX = b; return; }
   if (port === 0x3D5) {
+    DOS_VGA_CRTC_REGS[DOS_VGA_CRTC_INDEX & 31] = b;
     if (DOS_VGA_CRTC_INDEX === 0x0C) {
       DOS_VGA_START = (DOS_VGA_START & 0x00FF) | (b << 8);
       DOS_VGA_DIRTY = 1;

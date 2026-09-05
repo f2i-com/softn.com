@@ -1,0 +1,284 @@
+// dos_mouse.logic — a mouse driver: INT 33h over the pointer the host reports.
+//
+// A program of the period asks the driver, not the hardware: INT 33h answers
+// whether a mouse is present, where it is, which buttons are down, and can
+// call a routine of the program's own when something changes. Positions live
+// in the driver's virtual space, which is what every program expects: 640
+// wide in every mode, so an x in a 320-wide mode moves in steps of two, and
+// 200 high in the 200-line modes, 350 or 480 in the taller ones. The host
+// hands over the pointer as a fraction of the screen each way, which is all
+// it can know about a canvas scaled to fit its box.
+
+let DOS_MOUSE_X = 320;
+let DOS_MOUSE_Y = 100;
+let DOS_MOUSE_BUTTONS = 0;          // bit 0 left, 1 right, 2 middle
+let DOS_MOUSE_CURSOR = -1;          // show/hide depth: 0 or more is shown
+let DOS_MOUSE_USED = 0;             // a program has spoken to the driver
+let DOS_MOUSE_MIN_X = 0;
+let DOS_MOUSE_MAX_X = 639;
+let DOS_MOUSE_MIN_Y = 0;
+let DOS_MOUSE_MAX_Y = 199;
+let DOS_MOUSE_MICKEY_X = 0;         // motion since the program last asked
+let DOS_MOUSE_MICKEY_Y = 0;
+let DOS_MOUSE_PRESSES = new Int32Array(3);
+let DOS_MOUSE_RELEASES = new Int32Array(3);
+let DOS_MOUSE_PRESS_X = new Int32Array(3);
+let DOS_MOUSE_PRESS_Y = new Int32Array(3);
+let DOS_MOUSE_RELEASE_X = new Int32Array(3);
+let DOS_MOUSE_RELEASE_Y = new Int32Array(3);
+let DOS_MOUSE_HANDLER = 0;          // the program's event routine, seg:off, 0 for none
+let DOS_MOUSE_HANDLER_MASK = 0;     // which events it wants
+let DOS_MOUSE_EVENTS = 0;           // events since it was last called
+let DOS_MOUSE_SENS_X = 50;
+let DOS_MOUSE_SENS_Y = 50;
+let DOS_MOUSE_THRESHOLD = 64;
+let DOS_MOUSE_RATIO_X = 8;          // mickeys per 8 pixels
+let DOS_MOUSE_RATIO_Y = 16;
+
+function dosMouse_reset() {
+  DOS_MOUSE_BUTTONS = 0;
+  DOS_MOUSE_CURSOR = -1;
+  DOS_MOUSE_MIN_X = 0;
+  DOS_MOUSE_MAX_X = 639;
+  DOS_MOUSE_MIN_Y = 0;
+  DOS_MOUSE_MAX_Y = dosMouse_height() - 1;
+  DOS_MOUSE_X = 320;
+  DOS_MOUSE_Y = DOS_MOUSE_MAX_Y >> 1;
+  DOS_MOUSE_MICKEY_X = 0;
+  DOS_MOUSE_MICKEY_Y = 0;
+  for (let i = 0; i < 3; i++) { DOS_MOUSE_PRESSES[i] = 0; DOS_MOUSE_RELEASES[i] = 0; }
+  DOS_MOUSE_HANDLER = 0;
+  DOS_MOUSE_HANDLER_MASK = 0;
+  DOS_MOUSE_EVENTS = 0;
+  DOS_MOUSE_SENS_X = 50;
+  DOS_MOUSE_SENS_Y = 50;
+  DOS_MOUSE_THRESHOLD = 64;
+  DOS_MOUSE_RATIO_X = 8;
+  DOS_MOUSE_RATIO_Y = 16;
+}
+
+// The virtual height for the current video mode.
+function dosMouse_height() {
+  let m = DOS_VIDEO_MODE;
+  if (m === 0x10) return 350;
+  if (m === 0x11 || m === 0x12) return 480;
+  return 200;
+}
+
+// Whether the current mode is 320 wide, so x moves in steps of two.
+function dosMouse_narrow() {
+  let m = DOS_VIDEO_MODE;
+  return (m === 0x04 || m === 0x05 || m === 0x0D || m === 0x13) ? 1 : 0;
+}
+
+function dosMouse_clamp() {
+  if (DOS_MOUSE_X < DOS_MOUSE_MIN_X) DOS_MOUSE_X = DOS_MOUSE_MIN_X;
+  if (DOS_MOUSE_X > DOS_MOUSE_MAX_X) DOS_MOUSE_X = DOS_MOUSE_MAX_X;
+  if (DOS_MOUSE_Y < DOS_MOUSE_MIN_Y) DOS_MOUSE_Y = DOS_MOUSE_MIN_Y;
+  if (DOS_MOUSE_Y > DOS_MOUSE_MAX_Y) DOS_MOUSE_Y = DOS_MOUSE_MAX_Y;
+}
+
+// The host's pointer at (nx, ny), each a fraction of the screen.
+function dosMouse_move(nx, ny) {
+  let x = Math.floor(nx * 640);
+  let y = Math.floor(ny * dosMouse_height());
+  if (dosMouse_narrow() === 1) x = x & ~1;
+  if (x < DOS_MOUSE_MIN_X) x = DOS_MOUSE_MIN_X;
+  if (x > DOS_MOUSE_MAX_X) x = DOS_MOUSE_MAX_X;
+  if (y < DOS_MOUSE_MIN_Y) y = DOS_MOUSE_MIN_Y;
+  if (y > DOS_MOUSE_MAX_Y) y = DOS_MOUSE_MAX_Y;
+  let dx = x - DOS_MOUSE_X;
+  let dy = y - DOS_MOUSE_Y;
+  if (dx === 0 && dy === 0) return;
+  // Mickeys at the driver's default ratio: one a pixel across, two down.
+  DOS_MOUSE_MICKEY_X += dx;
+  DOS_MOUSE_MICKEY_Y += dy * 2;
+  DOS_MOUSE_X = x;
+  DOS_MOUSE_Y = y;
+  DOS_MOUSE_EVENTS |= 0x01;
+}
+
+// A button going down or up: 0 left, 1 right, 2 middle.
+function dosMouse_button(b, down) {
+  if (b < 0 || b > 2) return;
+  let bit = 1 << b;
+  if (down) {
+    if (DOS_MOUSE_BUTTONS & bit) return;
+    DOS_MOUSE_BUTTONS |= bit;
+    DOS_MOUSE_PRESSES[b]++;
+    DOS_MOUSE_PRESS_X[b] = DOS_MOUSE_X;
+    DOS_MOUSE_PRESS_Y[b] = DOS_MOUSE_Y;
+    DOS_MOUSE_EVENTS |= 1 << (1 + b * 2);
+  } else {
+    if ((DOS_MOUSE_BUTTONS & bit) === 0) return;
+    DOS_MOUSE_BUTTONS &= ~bit;
+    DOS_MOUSE_RELEASES[b]++;
+    DOS_MOUSE_RELEASE_X[b] = DOS_MOUSE_X;
+    DOS_MOUSE_RELEASE_Y[b] = DOS_MOUSE_Y;
+    DOS_MOUSE_EVENTS |= 1 << (2 + b * 2);
+  }
+}
+
+// Every button up, for when the pointer leaves the screen.
+function dosMouse_releaseAll() {
+  for (let b = 0; b < 3; b++) dosMouse_button(b, 0);
+}
+
+// Whether the program's event routine is owed a call.
+function dosMouse_pending() {
+  if (DOS_MOUSE_HANDLER === 0 || DOS_IS_32 === 1) return 0;
+  return ((DOS_MOUSE_EVENTS & DOS_MOUSE_HANDLER_MASK) !== 0) ? 1 : 0;
+}
+
+// Call the program's event routine the way the driver does: from an
+// interrupt, with a far call frame, AX the events, BX the buttons, CX and DX
+// the position, SI and DI the motion. Its RETF lands on the IRET stub,
+// which restores the interrupted program.
+function dosMouse_enterHandler() {
+  let events = DOS_MOUSE_EVENTS & DOS_MOUSE_HANDLER_MASK;
+  DOS_MOUSE_EVENTS = 0;
+  dosCpu_flushFlags();
+  dosCpu_push16(DOS_EFLAGS & 0xFFFF);
+  dosCpu_push16(DOS_SEGS[1] & 0xFFFF);
+  dosCpu_push16(DOS_EIP & 0xFFFF);
+  DOS_EFLAGS = DOS_EFLAGS & ~DOS_FL_IF;
+  dosCpu_push16((DOS_IRET_STUB >> 4) & 0xFFFF);
+  dosCpu_push16(DOS_IRET_STUB & 0x0F);
+  DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (events & 0xFFFF);
+  DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | (DOS_MOUSE_BUTTONS & 0xFFFF);
+  DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | (DOS_MOUSE_X & 0xFFFF);
+  DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | (DOS_MOUSE_Y & 0xFFFF);
+  DOS_REGS32[6] = (DOS_REGS32[6] & 0xFFFF0000) | (DOS_MOUSE_MICKEY_X & 0xFFFF);
+  DOS_REGS32[7] = (DOS_REGS32[7] & 0xFFFF0000) | (DOS_MOUSE_MICKEY_Y & 0xFFFF);
+  DOS_SEGS[3] = (DOS_MOUSE_HANDLER >>> 16) & 0xFFFF;
+  DOS_SEGS[1] = (DOS_MOUSE_HANDLER >>> 16) & 0xFFFF;
+  DOS_EIP = DOS_MOUSE_HANDLER & 0xFFFF;
+  DOS_INT_DELIVERED++;
+}
+
+function dosMouse_setAX(v) { DOS_REGS32[0] = (DOS_REGS32[0] & 0xFFFF0000) | (v & 0xFFFF); }
+function dosMouse_setBX(v) { DOS_REGS32[3] = (DOS_REGS32[3] & 0xFFFF0000) | (v & 0xFFFF); }
+function dosMouse_setCX(v) { DOS_REGS32[1] = (DOS_REGS32[1] & 0xFFFF0000) | (v & 0xFFFF); }
+function dosMouse_setDX(v) { DOS_REGS32[2] = (DOS_REGS32[2] & 0xFFFF0000) | (v & 0xFFFF); }
+
+// INT 33h.
+function dosMouse_int() {
+  let ax = DOS_REGS32[0] & 0xFFFF;
+  let bx = DOS_REGS32[3] & 0xFFFF;
+  let cx = DOS_REGS32[1] & 0xFFFF;
+  let dx = DOS_REGS32[2] & 0xFFFF;
+  DOS_MOUSE_USED = 1;
+
+  // 00h reset and status, 21h software reset: a mouse with two buttons.
+  if (ax === 0x0000 || ax === 0x0021) {
+    dosMouse_reset();
+    dosMouse_setAX(0xFFFF);
+    dosMouse_setBX(2);
+    return;
+  }
+  if (ax === 0x0001) { if (DOS_MOUSE_CURSOR < 0) DOS_MOUSE_CURSOR++; return; }
+  if (ax === 0x0002) { DOS_MOUSE_CURSOR--; return; }
+
+  // 03h position and buttons.
+  if (ax === 0x0003) {
+    dosMouse_setBX(DOS_MOUSE_BUTTONS);
+    dosMouse_setCX(DOS_MOUSE_X);
+    dosMouse_setDX(DOS_MOUSE_Y);
+    return;
+  }
+  // 04h set position.
+  if (ax === 0x0004) {
+    DOS_MOUSE_X = cx;
+    DOS_MOUSE_Y = dx;
+    dosMouse_clamp();
+    return;
+  }
+  // 05h press counts, 06h release counts, for button BX.
+  if (ax === 0x0005 || ax === 0x0006) {
+    let b = (bx < 3) ? bx : 0;
+    dosMouse_setAX(DOS_MOUSE_BUTTONS);
+    if (ax === 0x0005) {
+      dosMouse_setBX(DOS_MOUSE_PRESSES[b]);
+      dosMouse_setCX(DOS_MOUSE_PRESS_X[b]);
+      dosMouse_setDX(DOS_MOUSE_PRESS_Y[b]);
+      DOS_MOUSE_PRESSES[b] = 0;
+    } else {
+      dosMouse_setBX(DOS_MOUSE_RELEASES[b]);
+      dosMouse_setCX(DOS_MOUSE_RELEASE_X[b]);
+      dosMouse_setDX(DOS_MOUSE_RELEASE_Y[b]);
+      DOS_MOUSE_RELEASES[b] = 0;
+    }
+    return;
+  }
+  // 07h/08h the range the pointer may cover.
+  if (ax === 0x0007) {
+    DOS_MOUSE_MIN_X = (cx < dx) ? cx : dx;
+    DOS_MOUSE_MAX_X = (cx < dx) ? dx : cx;
+    dosMouse_clamp();
+    return;
+  }
+  if (ax === 0x0008) {
+    DOS_MOUSE_MIN_Y = (cx < dx) ? cx : dx;
+    DOS_MOUSE_MAX_Y = (cx < dx) ? dx : cx;
+    dosMouse_clamp();
+    return;
+  }
+  // 09h/0Ah cursor shapes: the host draws the pointer, so accepted.
+  if (ax === 0x0009 || ax === 0x000A) return;
+  // 0Bh motion since last asked.
+  if (ax === 0x000B) {
+    dosMouse_setCX(DOS_MOUSE_MICKEY_X);
+    dosMouse_setDX(DOS_MOUSE_MICKEY_Y);
+    DOS_MOUSE_MICKEY_X = 0;
+    DOS_MOUSE_MICKEY_Y = 0;
+    return;
+  }
+  // 0Ch the program's event routine at ES:DX for the events in CX.
+  if (ax === 0x000C) {
+    DOS_MOUSE_HANDLER_MASK = cx;
+    DOS_MOUSE_HANDLER = (cx === 0) ? 0 : ((((DOS_SEGS[0] & 0xFFFF) << 16) | dx) >>> 0);
+    return;
+  }
+  // 14h swap event routines: the old one comes back in CX and ES:DX.
+  if (ax === 0x0014) {
+    let oldMask = DOS_MOUSE_HANDLER_MASK;
+    let old = DOS_MOUSE_HANDLER;
+    DOS_MOUSE_HANDLER_MASK = cx;
+    DOS_MOUSE_HANDLER = (cx === 0) ? 0 : ((((DOS_SEGS[0] & 0xFFFF) << 16) | dx) >>> 0);
+    dosMouse_setCX(oldMask);
+    DOS_SEGS[0] = (old >>> 16) & 0xFFFF;
+    dosMouse_setDX(old & 0xFFFF);
+    return;
+  }
+  // 0Fh mickeys per 8 pixels; 13h the double-speed threshold; 1Ah/1Bh
+  // sensitivity; 1Ch the report rate: kept so they read back.
+  if (ax === 0x000F) { DOS_MOUSE_RATIO_X = cx; DOS_MOUSE_RATIO_Y = dx; return; }
+  if (ax === 0x0013) { DOS_MOUSE_THRESHOLD = dx; return; }
+  if (ax === 0x001A) { DOS_MOUSE_SENS_X = bx; DOS_MOUSE_SENS_Y = cx; DOS_MOUSE_THRESHOLD = dx; return; }
+  if (ax === 0x001B) { dosMouse_setBX(DOS_MOUSE_SENS_X); dosMouse_setCX(DOS_MOUSE_SENS_Y); dosMouse_setDX(DOS_MOUSE_THRESHOLD); return; }
+  // 0Dh/0Eh light pen, 10h conditional off, 1Ch rate, 1Dh/1Eh display page,
+  // 24h+ oddments: accepted.
+  if (ax === 0x000D || ax === 0x000E || ax === 0x0010 || ax === 0x001C || ax === 0x001D) return;
+  if (ax === 0x001E) { dosMouse_setBX(0); return; }
+  // 15h/16h/17h driver state save and restore: nothing to keep.
+  if (ax === 0x0015) { dosMouse_setBX(0); return; }
+  if (ax === 0x0016 || ax === 0x0017) return;
+  // 1Fh/20h disable and enable the driver.
+  if (ax === 0x001F) { dosMouse_setAX(0x001F); DOS_SEGS[0] = 0; dosMouse_setBX(0); return; }
+  if (ax === 0x0020) return;
+  // 24h version and type: 8.00, a PS/2 mouse.
+  if (ax === 0x0024) {
+    dosMouse_setBX(0x0800);
+    dosMouse_setCX(0x0400);
+    return;
+  }
+  // 26h the largest virtual coordinates.
+  if (ax === 0x0026) {
+    dosMouse_setBX(0);
+    dosMouse_setCX(639);
+    dosMouse_setDX(dosMouse_height() - 1);
+    return;
+  }
+  // Anything else: no such function, which the driver answers as AX=0.
+  dosMouse_setAX(0);
+}

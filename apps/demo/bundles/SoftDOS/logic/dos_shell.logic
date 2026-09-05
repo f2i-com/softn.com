@@ -24,6 +24,7 @@ function dosShell_start() {
 // frame while the shell owns the screen.
 function dosShell_tick() {
   if (!DOS_SHELL_ACTIVE) return;
+  dosInt_pumpKeys();
   let guard = 0;
   while (DOS_KEY_HEAD !== DOS_KEY_TAIL && guard < 32) {
     guard++;
@@ -195,8 +196,8 @@ function dosShell_help() {
   dosKernel_printStr("  TIME             Emulated uptime\r\n\r\n");
   dosKernel_printStr("Type the name of a program to run it. The ones on drive C\r\n");
   dosKernel_printStr("are real 8086 machine code and run on the emulated CPU.\r\n");
-  dosKernel_printStr("Drop a .COM or .EXE on the panel below to add your own.\r\n");
-  dosKernel_printStr("Press Esc while a program runs to return here.\r\n");
+  dosKernel_printStr("Add a game's files, or its zip, in the panel below: they\r\n");
+  dosKernel_printStr("land on drive C. Quit to DOS stops a program and returns here.\r\n");
 }
 
 function dosShell_type(name) {
@@ -225,6 +226,7 @@ function dosShell_run(name, idx) {
   let keepNames = DOS_VFS_NAMES;
   let keepData = DOS_VFS_DATA;
   let keepCount = DOS_VFS_COUNT;
+  DOS_LOAD_NAME = name;
   if (name.endsWith(".COM")) dosLoader_loadCom(bytes);
   else dosLoader_loadExe(bytes);
   DOS_VFS_NAMES = keepNames;

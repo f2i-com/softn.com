@@ -15,6 +15,8 @@ import "./dos_int.logic"
 import "./dos_jit.logic"
 import "./dos_loader.logic"
 import "./dos_shell.logic"
+import "./dos_mouse.logic"
+import "./dos_zip.logic"
 
 // ---------------------------------------------------------------------------
 // Reactive UI State (scalars synchronized with React UI)
@@ -29,6 +31,17 @@ let isMuted = false;
 let isExpanded = false;
 let crtTheme = "color";
 let keyMask = 0; // bit 0: Left, 1: Right, 2: Up, 3: Down, 4: Fire/Space
+let mouseCursorStyle = "default";   // "none" while a program draws its own pointer
+let programList = [];               // the .EXE and .COM files on drive C
+let driveFileCount = 0;
+let loadNote = "";                  // what the last load did
+
+// The keys a DOS program expects to get whole; the browser would otherwise
+// scroll on the arrows and Space, search on "/", and so on. F11 and F12 stay
+// the browser's, and so does any Ctrl+letter chord.
+let CAPTURED_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Tab", "Escape",
+  "Backspace", "Home", "End", "PageUp", "PageDown", "Insert", "Delete", "Alt", "/", "'",
+  "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"];
 
 let pcmBuffer = null; // Preallocated audio buffer
 
@@ -41,16 +54,49 @@ function _init() {
 
   pcmBuffer = new Int16Array(1024);
 
-  // Install keyboard listeners on the window
+  // Install keyboard listeners on the window. A key headed for one of the
+  // page's own text fields is left alone.
   if (typeof window !== "undefined" && window.addEventListener) {
     window.addEventListener("keydown", function(e) {
+      if (e && e.targetEditable === true) return;
       handleKeyEvent(e.key, true);
     });
     window.addEventListener("keyup", function(e) {
+      if (e && e.targetEditable === true) return;
       handleKeyEvent(e.key, false);
     });
   }
+  if (typeof softn !== "undefined" && softn.input && softn.input.captureKeys) {
+    softn.input.captureKeys(CAPTURED_KEYS);
+  }
+  refreshProgramList();
 }
+
+// ---------------------------------------------------------------------------
+// The mouse: the pointer over the screen, as a fraction of it each way. The
+// canvas is scaled to fit its box, so the event's target rectangle is what
+// places the pointer within the picture.
+// ---------------------------------------------------------------------------
+function mousePoint(e) {
+  if (!e || e.targetTag !== "canvas") return 0;
+  if (typeof e.targetWidth !== "number" || e.targetWidth <= 0 || e.targetHeight <= 0) return 0;
+  let nx = (e.clientX - e.targetLeft) / e.targetWidth;
+  let ny = (e.clientY - e.targetTop) / e.targetHeight;
+  if (nx < 0) nx = 0; else if (nx > 0.9999) nx = 0.9999;
+  if (ny < 0) ny = 0; else if (ny > 0.9999) ny = 0.9999;
+  dosMouse_move(nx, ny);
+  return 1;
+}
+function mouseButtonOf(e) {
+  if (!e) return 0;
+  if (e.button === 2) return 1;
+  if (e.button === 1) return 2;
+  return 0;
+}
+function mouseMove(e) { mousePoint(e); }
+function mouseDown(e) { if (mousePoint(e) === 1) dosMouse_button(mouseButtonOf(e), 1); }
+function mouseUp(e) { mousePoint(e); dosMouse_button(mouseButtonOf(e), 0); }
+function mouseLeave() { dosMouse_releaseAll(); }
 
 // Set 1 scan codes for the keys a DOS program asks about by scan code
 // rather than by character.
@@ -62,7 +108,9 @@ let SCAN_MAP = {
   "Home": 0x47, "ArrowUp": 0x48, "PageUp": 0x49,
   "ArrowLeft": 0x4B, "ArrowRight": 0x4D,
   "End": 0x4F, "ArrowDown": 0x50, "PageDown": 0x51,
-  "Insert": 0x52, "Delete": 0x53
+  "Insert": 0x52, "Delete": 0x53,
+  "`": 0x29, "\\": 0x2B, "CapsLock": 0x3A, "NumLock": 0x45, "ScrollLock": 0x46,
+  "F11": 0x57, "F12": 0x58
 };
 // Scan codes for the letter and digit rows, so a game reading the raw
 // keyboard port sees what a real keyboard would send.
@@ -93,16 +141,10 @@ function handleKeyEvent(key, isDown) {
   if (!isDown) {
     keyMask = keyMask & ~mask;
     let up = scanForKey(key);
-    if (up !== 0) dosInt_pushScan(up | 0x80);      // the break code
+    if (up !== 0) dosInt_pushScan(up | 0x80, 0);   // the break code
     return;
   }
   keyMask = keyMask | mask;
-
-  // Esc while a program runs hands the machine back to the prompt.
-  if (key === "Escape" && activeMode === "custom") {
-    dosShell_returnToPrompt("^C");
-    return;
-  }
 
   let scan = scanForKey(key);
   let ascii = 0;
@@ -115,18 +157,14 @@ function handleKeyEvent(key, isDown) {
   else if (key === "Escape") ascii = 27;
 
   if (scan === 0 && ascii === 0) return;
+  // The make code, with its ASCII. A program that took over INT 9 reads the
+  // port itself; the BIOS handler turns it into a word for INT 16h.
+  dosInt_pushScan(scan, ascii);
+}
 
-  if (scan !== 0) dosInt_pushScan(scan);          // the make code
-  // A program that took over INT 9 reads the port itself; the BIOS key word
-  // is for the ones that read the keyboard through INT 16h.
-  if (DOS_VEC_SET !== null && DOS_VEC_SET[0x09] === 1) return;
-  // Push the BIOS key word, dropping it if the ring is full.
-  let next = (DOS_KEY_HEAD + 1) & 31;
-  if (next !== DOS_KEY_TAIL) {
-    DOS_KEY_BUFFER[DOS_KEY_HEAD] = ((scan & 0xFF) << 8) | (ascii & 0xFF);
-    dosInt_keyArrived();
-    DOS_KEY_HEAD = next;
-  }
+// Hand the machine back to the prompt, whatever is running.
+function quitToDos() {
+  if (activeMode === "custom") dosShell_returnToPrompt("^C");
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +191,8 @@ function updateCycleReadout() {
   if (now - cyclesStamp >= 1000) {
     let mhz = cyclesRun / (now - cyclesStamp) / 1000;
     cyclesText = (mhz >= 1) ? ((Math.round(mhz * 10) / 10) + " MHz") : (Math.round(mhz * 1000) + " kHz");
+    // Say when the host declined to accelerate, since that is a 10x difference.
+    if (DOS_IS_32 === 1 && DOS_JIT_ACCEL === 0 && DOS_JIT_ACCEL_ERROR !== "") cyclesText += " · accel off: " + DOS_JIT_ACCEL_ERROR.slice(0, 80);
     // Frames the guest itself finished, when it page-flips. This is the number
     // that matters for a game; the repaint rate next to it is not.
     let flips = DOS_VGA_FLIPS - flipsAtStamp;
@@ -232,6 +272,11 @@ function frameSource() {
       dosShell_prompt();
       return dosVga_getFrame();
     }
+
+    // The host's pointer stands in for the driver's: hidden while a program
+    // that uses the mouse has asked for it hidden, since it draws its own.
+    let cursor = (DOS_MOUSE_USED === 1 && DOS_MOUSE_CURSOR < 0) ? "none" : "default";
+    if (cursor !== mouseCursorStyle) mouseCursorStyle = cursor;
 
     // A program that stopped, by INT 20h, INT 21h/4Ch, HLT or an instruction
     // the CPU does not know, gives the machine back to the shell.
@@ -329,13 +374,16 @@ function toggleMute() {
 }
 
 // ---------------------------------------------------------------------------
-// File Upload & Intake (DOOM.EXE, DOOM1.WAD, or .COM)
+// Files onto drive C: a game's files as they are, or the zip they came in.
 // ---------------------------------------------------------------------------
+let filesAdded = [];       // names from the load in progress
+
 function chooseFiles(files) {
   if (!files || files.length === 0) return;
 
   statusText = "Reading files...";
   let pending = files.length;
+  filesAdded = [];
 
   for (let i = 0; i < files.length; i++) {
     let f = files[i];
@@ -344,7 +392,20 @@ function chooseFiles(files) {
         let b64 = romPayload(res);
         if (b64) {
           let bytes = Uint8Array.fromBase64(b64);
-          dosKernel_vfsAdd(file.name, bytes);
+          if (dosZip_isZip(bytes)) {
+            try {
+              dosZip_extract(bytes, function(name, data) {
+                let idx = dosKernel_vfsAdd(name, data);
+                if (idx >= 0) filesAdded.push(DOS_VFS_NAMES[idx]);
+                return idx;
+              });
+            } catch (err) {
+              loadNote = file.name + ": " + String(err && err.message ? err.message : err);
+            }
+          } else {
+            let idx = dosKernel_vfsAdd(file.name, bytes);
+            if (idx >= 0) filesAdded.push(DOS_VFS_NAMES[idx]);
+          }
           loadedFileName = file.name;
         }
 
@@ -357,6 +418,36 @@ function chooseFiles(files) {
   }
 }
 
+// The program a load most likely wants run: the largest .EXE or .COM among
+// the files just added that is not an installer or a viewer.
+function likelyProgram(names) {
+  let best = "";
+  let bestSize = -1;
+  for (let i = 0; i < names.length; i++) {
+    let n = names[i];
+    if (!(n.endsWith(".EXE") || n.endsWith(".COM"))) continue;
+    if (n.startsWith("SETUP") || n.startsWith("INSTALL") || n.startsWith("UNINST") ||
+        n.startsWith("README") || n.startsWith("HELPME") || n.startsWith("CATALOG") ||
+        n.startsWith("ORDER")) continue;
+    let idx = dosKernel_vfsFind(n);
+    let size = (idx >= 0 && DOS_VFS_DATA[idx]) ? DOS_VFS_DATA[idx].length : 0;
+    if (size > bestSize) { bestSize = size; best = n; }
+  }
+  return best;
+}
+
+function refreshProgramList() {
+  let list = [];
+  for (let i = 0; i < DOS_VFS_COUNT; i++) {
+    let n = DOS_VFS_NAMES[i];
+    if (n !== "" && (n.endsWith(".EXE") || n.endsWith(".COM"))) list.push(n);
+  }
+  programList = list;
+  let count = 0;
+  for (let i = 0; i < DOS_VFS_COUNT; i++) if (DOS_VFS_NAMES[i] !== "") count++;
+  driveFileCount = count;
+}
+
 function onFilesReady() {
   // Back to the prompt so the new files can be seen and run.
   if (activeMode !== "prompt") {
@@ -366,17 +457,21 @@ function onFilesReady() {
     DOS_SHELL_ACTIVE = 1;
     DOS_CURSOR_VISIBLE = 1;
   }
-  let added = [];
-  for (let i = 0; i < DOS_VFS_COUNT; i++) {
-    let n = DOS_VFS_NAMES[i];
-    if (n !== "" && (n.endsWith(".EXE") || n.endsWith(".COM"))) added.push(n);
-  }
-  dosKernel_printStr("\r\n" + DOS_VFS_COUNT + " file(s) on drive C.\r\n");
-  if (added.length > 0) {
-    dosKernel_printStr("Type " + added[added.length - 1] + " to run it.\r\n");
-  }
+  refreshProgramList();
+  let run = likelyProgram(filesAdded);
+  dosKernel_printStr("\r\n" + filesAdded.length + " file(s) added; " + driveFileCount + " on drive C.\r\n");
+  if (run !== "") dosKernel_printStr("Type " + run + " to run it, or press Run.\r\n");
   dosShell_prompt();
-  statusText = "Files stored on drive C:";
+  if (loadNote !== "") { statusText = loadNote; loadNote = ""; }
+  else statusText = (run !== "") ? ("Ready: " + run) : (filesAdded.length + " file(s) on drive C:");
+  loadedFileName = (run !== "") ? run : loadedFileName;
+}
+
+// A program picked from the list.
+function runListed(name) {
+  if (typeof name !== "string" || name === "") return;
+  launchProgram(name);
+  refreshProgramList();
 }
 
 function romPayload(result) {
@@ -452,4 +547,10 @@ function pressKeyY() { handleKeyEvent("y", true); }
 function releaseKeyY() { handleKeyEvent("y", false); }
 function pressKeyN() { handleKeyEvent("n", true); }
 function releaseKeyN() { handleKeyEvent("n", false); }
+function pressAlt() { handleKeyEvent("Alt", true); }
+function releaseAlt() { handleKeyEvent("Alt", false); }
+function pressTab() { handleKeyEvent("Tab", true); }
+function releaseTab() { handleKeyEvent("Tab", false); }
+function pressF1() { handleKeyEvent("F1", true); }
+function releaseF1() { handleKeyEvent("F1", false); }
 
