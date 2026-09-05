@@ -1,0 +1,852 @@
+// main.logic - Photo Studio for Softn (sandbox edition): the app around the editor.
+//
+// Import order matters only for reading: `import` is textual and every file
+// shares one namespace. Everything the template names is declared in this
+// file; everything else is VM-owned and never copied to React.
+
+import "./ps_core.logic"
+import "./ps_inflate.logic"
+import "./ps_png.logic"
+import "./ps_gifbmp.logic"
+import "./ps_jpeg.logic"
+import "./ps_psd.logic"
+import "./ps_pixels.logic"
+import "./ps_fontdata.logic"
+import "./ps_font.logic"
+import "./ps_editor.logic"
+
+// ---------------------------------------------------------------------------
+// Template state (synced)
+// ---------------------------------------------------------------------------
+let tool = "brush";
+let toolName = "Brush";
+let toolRows = [];
+let statusText = "Ready";
+let coordText = "";
+let zoomText = "100%";
+let docName = "Untitled";
+let docW = 1280;
+let docH = 800;
+let layerCount = 1;
+let docDirty = false;
+let docTitle = "Untitled - 1280 x 800 px - 1 layer";
+let layersText = "1 layer";
+let busyText = "";
+let canUndo = false;
+let canRedo = false;
+let layerRows = [];
+let historyRows = [];
+let navFrame = null;
+let activeBlend = "normal";
+let activeOpacity = "100";
+let maskMode = false;
+let sidebarTab = "layers";
+let sidebarOpen = true;
+let openMenu = "";
+let menuItems = [];
+let menuNames = ["File", "Edit", "Image", "Layer", "Select", "Filter", "View", "Help"];
+let dialog = "";
+let dialogTitle = "";
+let dialogMessage = "";
+let dialogWarnings = [];
+let dlgName = "Untitled";
+let dlgWidth = "1280";
+let dlgHeight = "800";
+let dlgBackground = "transparent";
+let dlgLock = true;
+let dlgNearest = false;
+let dlgAnchor = "center";
+let dlgDx = "0";
+let dlgDy = "0";
+let dlgAngle = "0";
+let dlgScaleX = "100";
+let dlgScaleY = "100";
+let dlgAmount = 0;
+let dlgMin = -100;
+let dlgMax = 100;
+let dlgStep = 1;
+let dlgRadius = "4";
+let dlgText = "Something new.";
+let dlgFont = "sans";
+let dlgSize = "64";
+let dlgBold = true;
+let dlgColor = "#a990ef";
+let dlgFormat = "png";
+let dlgQuality = 92;
+let dlgJpegBg = "#ffffff";
+let dlgLayerName = "";
+let psdHasComposite = false;
+let noticeText = "";
+let noticeError = false;
+let fgColor = "#a990ef";
+let bgColor = "#ffffff";
+let brushSize = 32;
+let brushHardness = 75;
+let toolOpacity = "100";
+let wandTolerance = "24";
+let wandContiguous = true;
+let shapeFilled = true;
+let shapeLineWidth = "3";
+let gradientRadial = false;
+let showBrushOpts = true;
+let showFloodOpts = false;
+let showShapeOpts = false;
+let showGradientOpts = false;
+let cropPending = false;
+let polygonPending = false;
+let viewMode = "fit";
+let artWidth = "100%";
+let artHeight = "100%";
+let artTransform = "none";
+let smoothZoom = true;
+let cursorVisible = false;
+let cursorLeft = "0px";
+let cursorTop = "0px";
+let cursorDiameter = "10px";
+let rulersOn = true;
+let rulerX = [];
+let rulerY = [];
+let helpRows = [];
+let compatText = "";
+let warningsText = "";
+let blendOptions = [];
+let fontOptions = [];
+let formatOptions = [{ value: "png", label: "PNG - lossless, keeps transparency" }, { value: "jpeg", label: "JPEG - small photo file" }];
+let anchorOptions = [];
+let backgroundOptions = [{ value: "transparent", label: "Transparent" }, { value: "#ffffff", label: "White" }, { value: "#000000", label: "Black" }];
+let sizeLabel = "32";
+
+// ---------------------------------------------------------------------------
+// Internal (VM-owned) UI state
+// ---------------------------------------------------------------------------
+let psTools = [
+  ["move", "Move", "V"], ["marquee", "Rectangular selection", "M"], ["ellipse-select", "Elliptical selection", "Shift+M"],
+  ["lasso", "Freehand lasso", "L"], ["polygon", "Polygonal lasso", "Shift+L"], ["wand", "Magic wand", "W"],
+  ["crop", "Crop", "C"], ["eyedropper", "Eyedropper", "I"], ["brush", "Brush", "B"], ["pencil", "Pencil", "P"], ["eraser", "Eraser", "E"],
+  ["clone", "Clone stamp", "S"], ["blur", "Blur brush", "R"], ["sharpen", "Sharpen brush", "Shift+R"], ["smudge", "Smudge", "J"],
+  ["dodge", "Dodge", "O"], ["burn", "Burn", "Shift+O"], ["sponge", "Desaturate sponge", "Shift+J"], ["gradient", "Gradient", "G"],
+  ["fill", "Paint bucket", "K"], ["text", "Text", "T"], ["rectangle", "Rectangle", "U"], ["ellipse", "Ellipse", "Shift+U"],
+  ["line", "Line", "N"], ["hand", "Hand", "H"], ["zoom", "Zoom", "Z"]];
+let psIconPaths = {
+  move: '<path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/>',
+  marquee: '<rect x="4" y="5" width="16" height="14" stroke-dasharray="3 2"/>',
+  "ellipse-select": '<ellipse cx="12" cy="12" rx="9" ry="7" stroke-dasharray="3 2"/>',
+  lasso: '<path d="M6 17C-3 5 22-2 22 10c0 6-17 10-17 6 0-3 8-1 4 4l-3 2"/>',
+  polygon: '<path d="m4 4 17 5-7 12L3 15Z" stroke-dasharray="3 2"/>',
+  wand: '<path d="m4 21 13-13 3 3L7 24M17 2v3M22 5l-2 2M10 4l2 2M21 15l2 2M6 8H3"/>',
+  crop: '<path d="M7 2v15h15M2 7h15v15M19 4 4 19"/>',
+  eyedropper: '<path d="m16 3 5 5-3 3-5-5ZM14 7 4 17l-1 4 4-1L17 10"/>',
+  brush: '<path d="m10 13 9-10c3-2 4 1 2 3l-9 10ZM10 15C2 12 8 21 2 21c5 2 12-2 8-6Z"/>',
+  pencil: '<path d="m3 17 12-13 5 5L8 21l-6 1ZM13 6l5 5M3 17l5 4"/>',
+  eraser: '<path d="m3 14 11-11 8 8-10 10H8Zm5-5 8 8M12 21h10"/>',
+  clone: '<path d="M5 18h14v4H5ZM8 17v-5h8v5M10 12V7c-5-8 9-8 4 0v5"/>',
+  blur: '<path d="M12 2c2 6 8 9 8 14a8 8 0 1 1-16 0c0-5 6-8 8-14Z"/>',
+  sharpen: '<path d="m12 3 10 18H2Z"/>',
+  smudge: '<path d="M4 20c3-3 1-7 2-10 1-2 3-2 3 0V4c0-3 3-3 3 0v7-6c0-3 3-3 3 0v7-4c0-3 3-3 3 0v5c5-4 6 0 2 6l-3 4"/>',
+  dodge: '<circle cx="14" cy="9" r="6"/><path d="m10 14-7 8"/>',
+  burn: '<path d="M5 19c-3-9 0-9 2-4V5c0-3 3-3 3 0v7-8c0-3 3-3 3 0v8-6c0-3 3-3 3 0v7-4c0-2 3-2 3 0v7l-3 6H8Z"/>',
+  sponge: '<path d="m4 6 13-3 5 12-15 6-5-8Z"/><path d="M7 10h1M15 8h1M10 16h1M17 14h1" stroke-width="3"/>',
+  gradient: '<rect x="3" y="5" width="18" height="14"/><path d="M6 6v12M9 6v12M12 6v12M15 6v12" stroke-opacity=".6"/>',
+  fill: '<path d="m11 3 9 10-8 8L2 12 11 3Zm-8 10h16M6 2l7 8M21 16c4 5 0 7-1 4Z"/>',
+  text: '<path d="M3 4h18M12 4v17M8 21h8M3 4v4M21 4v4"/>',
+  rectangle: '<rect x="3" y="5" width="18" height="14" rx="1"/>',
+  ellipse: '<ellipse cx="12" cy="12" rx="9" ry="7"/>',
+  line: '<path d="m3 21 18-18"/>',
+  hand: '<path d="M5 19c-3-9 0-9 2-4V5c0-3 3-3 3 0v7-8c0-3 3-3 3 0v8-6c0-3 3-3 3 0v7-4c0-2 3-2 3 0v7l-3 6H8Z"/>',
+  zoom: '<circle cx="10" cy="10" r="7"/><path d="m15 15 7 7M7 10h6M10 7v6"/>',
+};
+let psMenus = {
+  File: [["New document...", "new", ""], ["Open image / PSD / project...", "open", ""], ["Place image as layer...", "place", ""], ["-"], ["Save layered PSD...", "psd", ""], ["Save editable .sphoto project", "project", ""], ["Export image...", "export", ""], ["-"], ["Welcome canvas", "demo", ""]],
+  Edit: [["Undo", "undo", "Ctrl+Z"], ["Redo", "redo", "Ctrl+Y"], ["-"], ["Clear selected pixels", "clear", "Delete"], ["Duplicate active layer", "Duplicate layer", ""], ["Transform layer...", "transform", ""], ["Flip layer horizontally", "flip-x", ""], ["Flip layer vertically", "flip-y", ""]],
+  Image: [["Image size / resample...", "resize", ""], ["Canvas size...", "canvas-size", ""], ["Crop to selection", "crop-selection", ""], ["-"], ["Brightness...", "filter:brightness", ""], ["Contrast...", "filter:contrast", ""], ["Exposure...", "filter:exposure", ""], ["Hue...", "filter:hue", ""], ["Saturation...", "filter:saturation", ""], ["Gamma...", "filter:gamma", ""], ["Grayscale", "filter:grayscale", ""], ["Invert", "filter:invert", ""]],
+  Layer: [["New layer", "New layer", ""], ["Duplicate layer", "Duplicate layer", ""], ["Rename layer...", "rename", ""], ["Delete layer", "Delete layer", ""], ["-"], ["Raise layer", "Raise layer", ""], ["Lower layer", "Lower layer", ""], ["Merge down", "Merge down", ""], ["Flatten visible image", "Flatten", ""], ["-"], ["Add / replace mask from selection", "Add mask", ""], ["Edit mask / image", "edit-mask", ""], ["Enable / disable mask", "Toggle mask", ""], ["Apply mask permanently", "Apply mask", ""], ["Delete mask", "Delete mask", ""], ["Edit text layer...", "edit-text", ""]],
+  Select: [["Select all", "select-all", "Ctrl+A"], ["Deselect", "deselect", "Esc"], ["Invert selection", "invert-selection", "Ctrl+Shift+I"], ["Feather selection...", "feather", ""]],
+  Filter: [["Gaussian blur...", "filter:blur", ""], ["Sharpen...", "filter:sharpen", ""], ["Posterize...", "filter:posterize", ""], ["Threshold...", "filter:threshold", ""], ["Sepia", "filter:sepia", ""]],
+  View: [["Fit to workspace", "fit", "Ctrl+0"], ["Actual pixels / 100%", "actual", "Ctrl+1"], ["Zoom in", "zoom-in", "+"], ["Zoom out", "zoom-out", "-"], ["Show / hide rulers", "rulers", ""], ["Show / hide side panel", "toggle-sidebar", ""]],
+  Help: [["Tools & shortcuts", "help", ""], ["Compatibility & limits", "compatibility", ""], ["About Photo Studio", "about", ""]],
+};
+let psFilterDefaults = { brightness: [0, -100, 100, 1], contrast: [0, -100, 100, 1], exposure: [0, -4, 4, 0.1], hue: [0, -180, 180, 1], saturation: [0, -100, 100, 1], gamma: [1, 0.1, 5, 0.1], blur: [3, 0.1, 40, 0.1], sharpen: [1, 0.1, 5, 0.1], posterize: [6, 2, 32, 1], threshold: [128, 0, 255, 1] };
+let psFilterKind = "";
+let psGesture = null;
+let psPolygon = [];
+let psSpaceHeld = false;
+let psViewRect = null;          // { left, top, width, height } of the viewport, from pointer events
+let psZoom = 1;                 // effective zoom in "zoom" mode
+let psPanX = 0, psPanY = 0;
+let psPendingAction = null;
+let psPendingPsd = null;
+let psTextPoint = null;
+let psEditingText = false;
+let psNoticeToken = 0;
+let psLastPointer = null;
+let psPlacePending = false;
+// Older runtimes hand element handlers null instead of the event; window listeners
+// then supply the pointer, recognised by the hit overlay's <article> tag.
+let psElementEvents = false;
+let psWinDown = false;
+
+// ---------------------------------------------------------------------------
+// Startup
+// ---------------------------------------------------------------------------
+function _init() {
+  PS_HOOK_ERROR = uiError;
+  PS_HOOK_AFTER_STEP = uiAfterStep;
+  PS_LISTENER = uiOnDocument;
+  toolRows = [];
+  for (let i = 0; i < psTools.length; i++) {
+    let t = psTools[i];
+    let caption = i === 0 ? "SELECT" : i === 8 ? "RETOUCH" : i === 18 ? "CREATE" : i === 24 ? "VIEW" : "";
+    toolRows.push({ id: t[0], label: t[1], key: t[2], title: t[1] + " (" + t[2] + ")", caption: caption, svg: psIconSvg(t[0]), active: t[0] === tool });
+  }
+  helpRows = [];
+  for (let i = 0; i < psTools.length; i++) helpRows.push({ key: psTools[i][2], label: psTools[i][1] });
+  blendOptions = [];
+  for (let i = 0; i < PS_BLEND_MODES.length; i++) { let m = PS_BLEND_MODES[i]; blendOptions.push({ value: m, label: psTitleCase(m) }); }
+  fontOptions = [];
+  for (let i = 0; i < PS_FONT_FACES.length; i++) fontOptions.push({ value: PS_FONT_FACES[i][0], label: PS_FONT_FACES[i][1] });
+  anchorOptions = [];
+  let anchors = ["center", "top-left", "top", "top-right", "left", "right", "bottom-left", "bottom", "bottom-right"];
+  for (let i = 0; i < anchors.length; i++) anchorOptions.push({ value: anchors[i], label: anchors[i] });
+  // Optional host features: an older runtime may lack some of these, and a
+  // missing one must never stop the editor from starting.
+  try {
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onWindowBlur);
+    window.addEventListener("wheel", onWheel);
+    window.addEventListener("resize", onWindowResize);
+    window.addEventListener("pointerdown", winPointerDown);
+    window.addEventListener("pointermove", winPointerMove);
+    window.addEventListener("pointerup", winPointerUp);
+    window.addEventListener("pointercancel", winPointerCancel);
+  } catch (e) { console.log("PhotoStudio: window listeners unavailable: " + e.message); }
+  try {
+    if (typeof softn !== "undefined" && softn.input && typeof softn.input.captureKeys === "function") softn.input.captureKeys(["[", "]", "Delete", "Backspace", " ", "+", "-", "=", "Escape", "Enter"], function () {});
+  } catch (e) { console.log("PhotoStudio: key capture unavailable: " + e.message); }
+  uiSetTool("brush");
+  buildDemoDocument();
+}
+function psCanPickFiles() { return typeof softn !== "undefined" && softn.files && typeof softn.files.pickFile === "function"; }
+function psIconSvg(id) {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (psIconPaths[id] || psIconPaths.brush) + '</svg>';
+}
+function psTitleCase(s) { let parts = String(s).split("-"); for (let i = 0; i < parts.length; i++) parts[i] = parts[i].charAt(0).toUpperCase() + parts[i].slice(1); return parts.join(" "); }
+
+// ---------------------------------------------------------------------------
+// Notices, errors, guards
+// ---------------------------------------------------------------------------
+function uiNotify(text, isError) { noticeText = String(text); noticeError = !!isError; psNoticeToken++; }
+function dismissNotice() { noticeText = ""; }
+function uiError(error) { uiNotify(error && error.message ? error.message : String(error), true); uiOnDocument("change"); }
+function uiGuard(fn) { try { fn(); } catch (error) { uiError(error); } }
+function uiAfterStep() { busyText = jobActive ? jobLabel + "... " + jobPercent + "%" : ""; if (!jobActive) { psRefreshPanels(); } }
+function uiBusy() { return jobActive; }
+
+// ---------------------------------------------------------------------------
+// Document listener and panels
+// ---------------------------------------------------------------------------
+function uiOnDocument(kind) {
+  let s = psSummary();
+  docName = s.name; docW = s.width; docH = s.height; layerCount = s.layerCount; docDirty = s.dirty; canUndo = s.canUndo; canRedo = s.canRedo;
+  layersText = layerCount + (layerCount === 1 ? " layer" : " layers");
+  docTitle = docName + (docDirty ? " *" : "") + " - " + docW + " x " + docH + " px - " + layersText;
+  maskMode = PS_MASKMODE;
+  if (kind === "document") { psGesture = null; psPolygon = []; cropPending = false; polygonPending = false; setFit(); }
+  if (kind !== "status" && kind !== "selection") psRefreshPanels();
+  psUpdateStatus();
+}
+function psRefreshPanels() {
+  let rows = [];
+  let active = psActive();
+  for (let i = PS_LAYERS.length - 1; i >= 0; i--) {
+    let l = PS_LAYERS[i];
+    let isActive = active && l.id === active.id;
+    rows.push({ id: l.id, name: l.name, visible: l.visible, locked: l.locked, active: isActive, kind: l.kind, hasMask: !!l.mask, maskEnabled: l.maskEnabled,
+      maskActive: isActive && PS_MASKMODE, imageActive: isActive && !PS_MASKMODE,
+      typeLabel: l.kind === "text" ? "Editable type" : l.blend === "normal" ? "Pixel layer" : psTitleCase(l.blend),
+      maskLabel: l.mask ? (l.maskEnabled ? "mask" : "mask off") : "",
+      thumb: psThumbnail(l.data, PS_W, PS_H, 60, 44, 4), maskThumb: l.mask ? psThumbnail(l.mask, PS_W, PS_H, 30, 30, 1) : null,
+      eye: l.visible ? "Hide" : "Show", lockGlyph: l.locked ? "◆" : "◇" });
+  }
+  layerRows = rows;
+  let hist = [];
+  for (let i = 0; i < PS_HISTORY.length; i++) hist.push({ index: i, number: (i + 1 < 10 ? "0" : "") + (i + 1), label: PS_HISTORY[i].label, current: i === PS_HIST_INDEX, future: i > PS_HIST_INDEX });
+  historyRows = hist;
+  if (active) { activeBlend = active.blend; activeOpacity = String(Math.round(active.opacity * 100)); }
+  navFrame = PS_COMP ? psThumbnail(PS_COMP, PS_W, PS_H, 180, 100, 4) : null;
+  warningsText = PS_WARNINGS.join("\n\n");
+}
+function psUpdateStatus() {
+  let entry = null;
+  for (let i = 0; i < psTools.length; i++) if (psTools[i][0] === tool) entry = psTools[i];
+  if (PS_MASKMODE) statusText = "Editing mask: white reveals, black hides. Click the image thumbnail to return.";
+  else if (cropPending) statusText = "Crop ready: press Enter or Apply crop; Escape cancels.";
+  else statusText = (entry ? entry[1] : "Ready") + (tool === "clone" ? ": Alt-click to choose a source." : tool === "crop" ? ": drag a rectangle; Enter applies, Esc cancels." : tool === "polygon" ? ": click vertices; double-click or Enter closes the selection." : ". Changes stay on this device.");
+}
+
+// ---------------------------------------------------------------------------
+// Tools and options
+// ---------------------------------------------------------------------------
+function setTool(id) { uiSetTool(id); }
+function uiSetTool(id) {
+  let found = null;
+  for (let i = 0; i < psTools.length; i++) if (psTools[i][0] === id) found = psTools[i];
+  if (!found) return;
+  psEndGesture(true);
+  psPolygon = []; polygonPending = false;
+  psOverlaySet("gesture", null);
+  tool = id; toolName = found[1];
+  let rows = toolRows.slice();
+  for (let i = 0; i < rows.length; i++) rows[i] = Object.assign({}, rows[i], { active: rows[i].id === id });
+  toolRows = rows;
+  showBrushOpts = !!PS_BRUSH_TOOLS[id];
+  showFloodOpts = id === "wand" || id === "fill";
+  showShapeOpts = id === "rectangle" || id === "ellipse" || id === "line";
+  showGradientOpts = id === "gradient";
+  cursorVisible = false;
+  psUpdateStatus();
+}
+function swapColors() { let t = fgColor; fgColor = bgColor; bgColor = t; }
+function defaultColors() { fgColor = "#000000"; bgColor = "#ffffff"; }
+function setBrushSize(v) { brushSize = psClamp(Math.round(Number(v) || 1), 1, 512); sizeLabel = String(brushSize); }
+function setBrushHardness(v) { brushHardness = psClamp(Math.round(Number(v) || 0), 0, 100); }
+function psOptions() {
+  return { color: fgColor, background: bgColor, size: brushSize, hardness: brushHardness / 100, opacity: psClamp(Number(toolOpacity) || 100, 1, 100) / 100,
+    tolerance: psClamp(Number(wandTolerance) || 0, 0, 255), contiguous: !!wandContiguous, filled: !!shapeFilled, lineWidth: psClamp(Number(shapeLineWidth) || 1, 1, 200), radial: !!gradientRadial, pressure: false };
+}
+
+// ---------------------------------------------------------------------------
+// View: fit / zoom / pan. Geometry comes from the viewport rectangle the
+// pointer events report; PixelCanvas centres the bitmap the same way.
+// ---------------------------------------------------------------------------
+function psViewSize() { return psViewRect ? { w: psViewRect.width, h: psViewRect.height } : { w: 1000, h: 700 }; }
+function psGeometry() {
+  let v = psViewSize();
+  if (viewMode === "fit") {
+    let f = Math.min(v.w / Math.max(1, docW), v.h / Math.max(1, docH));
+    let cw = Math.round(docW * f), ch = Math.round(docH * f);
+    return { f: f, x: (v.w - cw) / 2, y: (v.h - ch) / 2 };
+  }
+  return { f: psZoom, x: (v.w - docW * psZoom) / 2 + psPanX, y: (v.h - docH * psZoom) / 2 + psPanY };
+}
+function psApplyView() {
+  if (viewMode === "fit") { artWidth = "100%"; artHeight = "100%"; artTransform = "none"; }
+  else { artWidth = Math.max(1, Math.round(docW * psZoom)) + "px"; artHeight = Math.max(1, Math.round(docH * psZoom)) + "px"; artTransform = "translate(" + Math.round(psPanX) + "px," + Math.round(psPanY) + "px)"; }
+  let g = psGeometry();
+  zoomText = Math.round(g.f * 100) + "%";
+  smoothZoom = g.f < 3;
+  psUpdateRulers(g);
+}
+function setFit() { viewMode = "fit"; psPanX = 0; psPanY = 0; psApplyView(); }
+function psZoomTo(z, sx, sy) {
+  z = psClamp(z, 0.02, 32);
+  let g = psGeometry(), v = psViewSize();
+  if (sx === undefined) { sx = v.w / 2; sy = v.h / 2; }
+  let dx = (sx - g.x) / g.f, dy = (sy - g.y) / g.f;
+  viewMode = "zoom"; psZoom = z;
+  psPanX = sx - dx * z - (v.w - docW * z) / 2;
+  psPanY = sy - dy * z - (v.h - docH * z) / 2;
+  psApplyView();
+}
+function zoomIn() { psZoomTo(psGeometry().f * 1.25); }
+function zoomOut() { psZoomTo(psGeometry().f * 0.8); }
+function zoomActual() { psZoomTo(1); }
+function zoomFit() { setFit(); }
+function toggleRulers() { rulersOn = !rulersOn; psApplyView(); }
+function toggleSidebar() { sidebarOpen = !sidebarOpen; }
+function psUpdateRulers(g) {
+  if (!rulersOn) { rulerX = []; rulerY = []; return; }
+  let v = psViewSize();
+  let step = 5000;
+  let candidates = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+  for (let i = 0; i < candidates.length; i++) { if (candidates[i] * g.f >= 60) { step = candidates[i]; break; } }
+  let xs = [], ys = [];
+  let first = Math.floor(-g.x / g.f / step) * step;
+  for (let n = first; n * g.f + g.x < v.w && xs.length < 60; n += step) { let px = n * g.f + g.x; if (px >= 0) xs.push({ label: String(n), left: Math.round(px) + "px" }); }
+  first = Math.floor(-g.y / g.f / step) * step;
+  for (let n = first; n * g.f + g.y < v.h && ys.length < 60; n += step) { let py = n * g.f + g.y; if (py >= 0) ys.push({ label: String(n), top: Math.round(py) + "px" }); }
+  rulerX = xs; rulerY = ys;
+}
+
+// ---------------------------------------------------------------------------
+// Pointer input on the viewport overlay
+// ---------------------------------------------------------------------------
+function psPoint(e) {
+  if (e && typeof e.targetWidth === "number" && e.targetWidth > 0) psViewRect = { left: e.targetLeft, top: e.targetTop, width: e.targetWidth, height: e.targetHeight };
+  let r = psViewRect || { left: 0, top: 0, width: 1000, height: 700 };
+  let g = psGeometry();
+  let sx = e.clientX - r.left, sy = e.clientY - r.top;
+  return { x: (sx - g.x) / g.f, y: (sy - g.y) / g.f, sx: sx, sy: sy };
+}
+function psModeFromEvent(e) { return e.shiftKey ? "add" : e.altKey ? "subtract" : "replace"; }
+function onPointerDown(e) { if (e) psElementEvents = true; psPointerDown(e); }
+function onPointerMove(e) { if (e) psElementEvents = true; psPointerMove(e); }
+function onPointerUp(e) { psPointerUp(e); }
+function psPointerDown(e) {
+  if (!e || dialog || uiBusy()) return;
+  if (typeof e.button === "number" && e.button > 1) return;
+  openMenu = "";
+  if (psGesture && psGesture.kind === "crop" && cropPending) return;
+  let p = psPoint(e);
+  psLastPointer = p;
+  uiGuard(function () {
+    let o = psOptions();
+    if (psSpaceHeld || e.button === 1 || tool === "hand") { if (viewMode === "fit") { let g = psGeometry(); viewMode = "zoom"; psZoom = g.f; psPanX = 0; psPanY = 0; psApplyView(); } psGesture = { kind: "pan", start: p, panX: psPanX, panY: psPanY }; return; }
+    if (tool === "zoom") { psZoomTo(psGeometry().f * (e.altKey ? 0.8 : 1.25), p.sx, p.sy); return; }
+    if (tool === "eyedropper" || (e.altKey && tool === "brush")) { fgColor = psSampleColor(p.x, p.y); return; }
+    if (tool === "clone" && e.altKey) { PS_CLONE = { x: p.x, y: p.y }; psSetCloneOverlay(); uiNotify("Clone source set. Drag to paint a copy.", false); return; }
+    if (PS_BRUSH_TOOLS[tool]) { psBeginStroke(tool, p.x, p.y, 1, o); psGesture = { kind: "paint", start: p }; return; }
+    if (tool === "fill") { psFill(p.x, p.y, o); return; }
+    if (tool === "wand") { psWand(p.x, p.y, o.tolerance, o.contiguous, psModeFromEvent(e)); return; }
+    if (tool === "polygon") { psPolygon.push(p.x, p.y); polygonPending = psPolygon.length >= 6; psDrawPolygonOverlay(p); return; }
+    if (tool === "text") { psTextPoint = { x: Math.round(p.x), y: Math.round(p.y) }; psEditingText = false; openTextDialog(null); return; }
+    if (tool === "move") { if (psActive().locked) psFail("Unlock the active layer before moving it."); psBegin("Move layer"); psGesture = { kind: "move", start: p }; return; }
+    if (tool === "lasso") { psGesture = { kind: "lasso", start: p, points: [p.x, p.y], mode: psModeFromEvent(e) }; return; }
+    psGesture = { kind: tool === "crop" ? "crop" : (tool === "marquee" || tool === "ellipse-select") ? "select" : "shape", start: p, end: p, mode: psModeFromEvent(e), shift: !!e.shiftKey };
+  });
+}
+function psPointerMove(e) {
+  if (!e) return;
+  let p = psPoint(e);
+  psLastPointer = p;
+  coordText = "X " + Math.round(p.x) + "  Y " + Math.round(p.y);
+  if (PS_BRUSH_TOOLS[tool] && !psSpaceHeld && !dialog) {
+    let g = psGeometry();
+    let d = Math.max(2, brushSize * g.f);
+    cursorVisible = true; cursorLeft = (p.sx - d / 2) + "px"; cursorTop = (p.sy - d / 2) + "px"; cursorDiameter = d + "px";
+  } else cursorVisible = false;
+  if (!psGesture) { if (psPolygon.length) psDrawPolygonOverlay(p); return; }
+  if (psGesture.kind === "crop" && cropPending) return;
+  uiGuard(function () {
+    let gst = psGesture;
+    if (gst.kind === "pan") { psPanX = gst.panX + p.sx - gst.start.sx; psPanY = gst.panY + p.sy - gst.start.sy; psApplyView(); return; }
+    if (gst.kind === "paint") { psExtendStroke(p.x, p.y, 1); return; }
+    if (gst.kind === "move") { psShiftLayer(p.x - gst.start.x, p.y - gst.start.y); return; }
+    if (gst.kind === "lasso") { if (gst.points.length < 40000) { gst.points.push(p.x, p.y); psDrawLassoOverlay(gst.points, false); } return; }
+    let ex = p.x, ey = p.y;
+    if (e.shiftKey && tool !== "line" && tool !== "gradient") { let size = Math.max(Math.abs(p.x - gst.start.x), Math.abs(p.y - gst.start.y)); ex = gst.start.x + (p.x >= gst.start.x ? 1 : -1) * size; ey = gst.start.y + (p.y >= gst.start.y ? 1 : -1) * size; }
+    if (e.shiftKey && tool === "line") { let angle = Math.round(Math.atan2(p.y - gst.start.y, p.x - gst.start.x) / (Math.PI / 4)) * Math.PI / 4, dist = Math.hypot(p.x - gst.start.x, p.y - gst.start.y); ex = gst.start.x + Math.cos(angle) * dist; ey = gst.start.y + Math.sin(angle) * dist; }
+    gst.end = { x: ex, y: ey, sx: p.sx, sy: p.sy };
+    psDrawGestureOverlay();
+  });
+}
+function psPointerUp(e) {
+  if (!psGesture) return;
+  if (psGesture.kind === "crop" && cropPending) return;
+  let gst = psGesture;
+  uiGuard(function () {
+    if (gst.kind === "select") { psGesture = null; psOverlaySet("gesture", null); psSelectShape(tool === "marquee" ? "rect" : "ellipse", [gst.start.x, gst.start.y, gst.end.x, gst.end.y], gst.mode); return; }
+    if (gst.kind === "lasso") { psGesture = null; psOverlaySet("gesture", null); psSelectShape("polygon", gst.points, gst.mode); return; }
+    if (gst.kind === "shape") { psGesture = null; psOverlaySet("gesture", null); if (PS_MASKMODE) psFail("Use the brush or eraser to edit masks."); psDrawShape(tool, gst.start.x, gst.start.y, gst.end.x, gst.end.y, psOptions()); return; }
+    if (gst.kind === "crop") { cropPending = true; psUpdateStatus(); uiNotify("Press Enter or Apply crop to crop, Escape to cancel.", false); return; }
+    if (gst.kind === "move") { psGesture = null; psFinishShift(null); return; }
+    if (gst.kind === "paint") { psGesture = null; psEndStroke(); return; }
+    psGesture = null;
+  });
+}
+function onPointerLeave() { cursorVisible = false; }
+function psWinEventIsOurs(e) { return !psElementEvents && e && e.targetTag === "article"; }
+function winPointerDown(e) { if (!psWinEventIsOurs(e)) return; psWinDown = true; psPointerDown(e); }
+function winPointerMove(e) { if (psElementEvents || !e) return; if (e.targetTag !== "article" && !psWinDown) return; psPointerMove(e); }
+function winPointerUp(e) { if (psElementEvents || !e || !psWinDown) return; psWinDown = false; psPointerUp(e); }
+function winPointerCancel(e) { if (psElementEvents || !psWinDown) return; psWinDown = false; onPointerCancel(); }
+function onPointerCancel() { psEndGesture(true); }
+function onDoubleClick() { if (tool === "polygon" && psPolygon.length >= 6) closePolygon(); }
+function psEndGesture(cancel) {
+  let gst = psGesture;
+  if (!gst) return;
+  psGesture = null;
+  if (gst.kind === "paint") { if (cancel) psCancelStroke(); else psEndStroke(); }
+  else if (gst.kind === "move") { if (cancel) psRollback(); else psFinishShift(null); }
+  psOverlaySet("gesture", null);
+  cropPending = false;
+  psUpdateStatus();
+}
+function closePolygon() {
+  if (psPolygon.length < 6) return;
+  let pts = psPolygon; psPolygon = []; polygonPending = false;
+  psOverlaySet("gesture", null);
+  uiGuard(function () { psSelectShape("polygon", pts, "replace"); });
+}
+function applyCrop() {
+  let gst = psGesture;
+  if (!gst || gst.kind !== "crop") return;
+  psGesture = null; cropPending = false; psOverlaySet("gesture", null); psUpdateStatus();
+  uiGuard(function () { psCrop({ x: Math.min(gst.start.x, gst.end.x), y: Math.min(gst.start.y, gst.end.y), width: Math.abs(gst.start.x - gst.end.x), height: Math.abs(gst.start.y - gst.end.y) }, null); });
+}
+function cancelCrop() { psEndGesture(true); }
+function psDrawGestureOverlay() {
+  let gst = psGesture;
+  if (!gst || !gst.end) return;
+  let b = psPathBuilder(60000);
+  let a = gst.start, z = gst.end;
+  if (gst.kind === "crop") {
+    let x0 = Math.min(a.x, z.x), y0 = Math.min(a.y, z.y), x1 = Math.max(a.x, z.x), y1 = Math.max(a.y, z.y);
+    psPathRect(b, x0, y0, x1, y1, true);
+    for (let i = 1; i < 3; i++) { psPathLine(b, x0 + (x1 - x0) * i / 3, y0, x0 + (x1 - x0) * i / 3, y1, false); psPathLine(b, x0, y0 + (y1 - y0) * i / 3, x1, y0 + (y1 - y0) * i / 3, false); }
+  } else if (tool === "ellipse" || tool === "ellipse-select") psPathEllipse(b, a.x, a.y, z.x, z.y);
+  else if (tool === "line" || tool === "gradient") psPathLine(b, a.x, a.y, z.x, z.y, false);
+  else psPathRect(b, a.x, a.y, z.x, z.y, false);
+  psOverlaySet("gesture", psPathResult(b));
+}
+function psDrawLassoOverlay(points, closeIt) {
+  let b = psPathBuilder(120000);
+  for (let i = 2; i < points.length; i += 2) psPathLine(b, points[i - 2], points[i - 1], points[i], points[i + 1], false);
+  if (closeIt && points.length >= 4) psPathLine(b, points[points.length - 2], points[points.length - 1], points[0], points[1], false);
+  psOverlaySet("gesture", psPathResult(b));
+}
+function psDrawPolygonOverlay(p) {
+  let pts = psPolygon.slice();
+  if (p) pts.push(p.x, p.y);
+  psDrawLassoOverlay(pts, false);
+}
+function psSetCloneOverlay() {
+  if (!PS_CLONE) { psOverlaySet("clone", null); return; }
+  let b = psPathBuilder(64);
+  psPathLine(b, PS_CLONE.x - 6, PS_CLONE.y, PS_CLONE.x + 6, PS_CLONE.y, true); psPathLine(b, PS_CLONE.x, PS_CLONE.y - 6, PS_CLONE.x, PS_CLONE.y + 6, true);
+  psOverlaySet("clone", psPathResult(b));
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard, wheel, window
+// ---------------------------------------------------------------------------
+function onKeyDown(e) {
+  if (!e) return;
+  let tag = e.targetTag || "";
+  if (e.targetEditable || tag === "input" || tag === "textarea" || tag === "select") return;
+  let key = String(e.key || "");
+  let k = key.toLowerCase();
+  if (dialog) { return; }
+  if (k === " ") { psSpaceHeld = true; return; }
+  if (k === "escape") { if (openMenu) { openMenu = ""; return; } if (cropPending || psGesture) { psEndGesture(true); return; } if (psPolygon.length) { psPolygon = []; polygonPending = false; psOverlaySet("gesture", null); return; } if (PS_SEL) { uiGuard(function () { psDeselect(); }); } return; }
+  if (k === "enter") { if (cropPending) { applyCrop(); return; } if (tool === "polygon" && psPolygon.length >= 6) { closePolygon(); return; } return; }
+  if (uiBusy()) return;
+  let mod = e.ctrlKey || e.metaKey;
+  if (mod) {
+    if (k === "z") { uiGuard(function () { if (e.shiftKey) psRedo(); else psUndo(); }); return; }
+    if (k === "y") { uiGuard(function () { psRedo(); }); return; }
+    if (k === "a") { uiGuard(function () { psSelectAll(); }); return; }
+    if (k === "i" && e.shiftKey) { uiGuard(function () { psInvertSelection(); }); return; }
+    if (k === "0") { setFit(); return; }
+    if (k === "1") { zoomActual(); return; }
+    return;
+  }
+  if (k === "+" || k === "=") { zoomIn(); return; }
+  if (k === "-") { zoomOut(); return; }
+  if (k === "delete" || k === "backspace") { uiGuard(function () { psClearSelected(); }); return; }
+  if (k === "x") { swapColors(); return; }
+  if (k === "d") { defaultColors(); return; }
+  if (k === "[") { setBrushSize(brushSize - 5); return; }
+  if (k === "]") { setBrushSize(brushSize + 5); return; }
+  let combo = (e.shiftKey ? "Shift+" : "") + key.toUpperCase();
+  for (let i = 0; i < psTools.length; i++) if (psTools[i][2] === combo) { uiSetTool(psTools[i][0]); return; }
+}
+function onKeyUp(e) { if (e && e.key === " ") psSpaceHeld = false; }
+function onWindowBlur() { psSpaceHeld = false; psEndGesture(true); }
+function onWindowResize() { psViewRect = null; psApplyView(); }
+function onWheel(e) {
+  if (!e || dialog || !psViewRect) return;
+  let r = psViewRect;
+  if (e.clientX < r.left || e.clientY < r.top || e.clientX > r.left + r.width || e.clientY > r.top + r.height) return;
+  if (e.altKey || e.ctrlKey || e.metaKey) { psZoomTo(psGeometry().f * Math.exp(-(e.deltaY || 0) * 0.0015), e.clientX - r.left, e.clientY - r.top); return; }
+  if (viewMode === "zoom") { psPanX -= e.deltaX || 0; psPanY -= e.deltaY || 0; psApplyView(); }
+}
+
+// ---------------------------------------------------------------------------
+// Menus and actions
+// ---------------------------------------------------------------------------
+function toggleMenu(name) {
+  if (openMenu === name) { openMenu = ""; return; }
+  openMenu = name;
+  let items = psMenus[name] || [], out = [];
+  for (let i = 0; i < items.length; i++) { let it = items[i]; if (it[0] === "-") out.push({ id: "sep" + i, label: "", key: "", sep: true }); else out.push({ id: it[1], label: it[0], key: it[2], sep: false }); }
+  menuItems = out;
+}
+function hoverMenu(name) { if (openMenu && openMenu !== name) toggleMenu(name); }
+function closeMenus() { openMenu = ""; }
+function runMenu(id) { openMenu = ""; runAction(id); }
+function runAction(id) {
+  if (uiBusy() && id !== "help" && id !== "compatibility" && id !== "about") { uiNotify("Please wait for the current operation to finish.", false); return; }
+  if (psGesture) psEndGesture(true);
+  uiGuard(function () { psAction(id); });
+}
+function psAction(id) {
+  if (id.indexOf("filter:") === 0) {
+    let kind = id.slice(7), d = psFilterDefaults[kind];
+    if (!d) { psFilter(kind, 0, null); return; }
+    psFilterKind = kind; dlgAmount = d[0]; dlgMin = d[1]; dlgMax = d[2]; dlgStep = d[3];
+    dialogTitle = psTitleCase(kind); dialogMessage = "Applies to the active raster layer, inside the current selection. Undo restores the previous pixels.";
+    dialog = "filter";
+    return;
+  }
+  switch (id) {
+    case "new": psConfirmDiscard(function () { dlgName = "Untitled"; dlgWidth = "1280"; dlgHeight = "800"; dlgBackground = "transparent"; dialog = "new"; }); break;
+    case "open": case "place":
+      psPlacePending = id === "place";
+      if (!psCanPickFiles()) { uiNotify("Use the Open button in the top bar to choose a file.", false); break; }
+      softn.files.pickFile({ accept: ".png,.jpg,.jpeg,.gif,.bmp,.psd,.sphoto,image/png,image/jpeg,image/gif,image/bmp", multiple: false }, function (files) { filesChosen(files); });
+      break;
+    case "demo": psConfirmDiscard(function () { buildDemoDocument(); }); break;
+    case "undo": psUndo(); break;
+    case "redo": psRedo(); break;
+    case "select-all": psSelectAll(); break;
+    case "deselect": psDeselect(); break;
+    case "invert-selection": psInvertSelection(); break;
+    case "feather": dlgRadius = "4"; dialog = "feather"; break;
+    case "clear": psClearSelected(); break;
+    case "rename": dlgLayerName = psActive().name; dialog = "rename"; break;
+    case "edit-mask": { let l = psActive(); if (!l.mask) psFail("Add a layer mask first."); PS_MASKMODE = !PS_MASKMODE; if (PS_MASKMODE) { fgColor = "#ffffff"; bgColor = "#000000"; } uiOnDocument("change"); break; }
+    case "edit-text": { let l = psActive(); if (!l.text) psFail("Select a text layer created in Photo Studio. Imported text is rasterised."); psEditingText = true; openTextDialog(l.text); break; }
+    case "flip-x": psTransform({ scaleX: -1 }, null); break;
+    case "flip-y": psTransform({ scaleY: -1 }, null); break;
+    case "transform": dlgDx = "0"; dlgDy = "0"; dlgAngle = "0"; dlgScaleX = "100"; dlgScaleY = "100"; dialog = "transform"; break;
+    case "resize": dlgWidth = String(PS_W); dlgHeight = String(PS_H); dlgLock = true; dlgNearest = false; dialog = "resize"; break;
+    case "canvas-size": dlgWidth = String(PS_W); dlgHeight = String(PS_H); dlgAnchor = "center"; dialog = "canvas"; break;
+    case "crop-selection": psSelectionBoundsJob(function (rect) { uiGuard(function () { psCrop(rect, null); }); }); break;
+    case "fit": setFit(); break;
+    case "actual": zoomActual(); break;
+    case "zoom-in": zoomIn(); break;
+    case "zoom-out": zoomOut(); break;
+    case "rulers": toggleRulers(); break;
+    case "toggle-sidebar": toggleSidebar(); break;
+    case "swap-colors": swapColors(); break;
+    case "psd": dialogTitle = "Save layered PSD"; dialog = "psd"; break;
+    case "project": saveProject(); break;
+    case "export": dlgFormat = "png"; dlgQuality = 92; dlgJpegBg = "#ffffff"; dialog = "export"; break;
+    case "help": dialog = "help"; break;
+    case "compatibility": compatText = PS_WARNINGS.length ? PS_WARNINGS.join("\n\n") : "No import compatibility notices for this document."; dialog = "compat"; break;
+    case "about": dialog = "about"; break;
+    default: {
+      let known = false;
+      let names = Object.keys(psMenus);
+      for (let i = 0; i < names.length; i++) { let items = psMenus[names[i]]; for (let j = 0; j < items.length; j++) if (items[j][1] === id) known = true; }
+      if (!known) psFail("Unknown editor command: " + id);
+      psLayerAction(id, null, null);
+    }
+  }
+}
+function psConfirmDiscard(next) {
+  if (!psDirty()) { next(); return; }
+  psPendingAction = next;
+  dialog = "discard";
+}
+function confirmDiscard() { let next = psPendingAction; psPendingAction = null; dialog = ""; if (next) uiGuard(next); }
+
+// ---------------------------------------------------------------------------
+// Dialogs
+// ---------------------------------------------------------------------------
+function closeDialog() { dialog = ""; psPendingAction = null; psPendingPsd = null; }
+function selectHistory(index) { /* history is display-only; undo/redo navigate it */ }
+function psNum(s, fallback) { let v = Number(s); return Number.isFinite(v) ? v : fallback; }
+function applyDialog() {
+  let kind = dialog;
+  uiGuard(function () {
+    if (kind === "new") { dialog = ""; psNewDocument(Math.round(psNum(dlgWidth, 1280)), Math.round(psNum(dlgHeight, 800)), dlgName, dlgBackground); }
+    else if (kind === "resize") { dialog = ""; let w = Math.round(psNum(dlgWidth, PS_W)); let h = dlgLock ? Math.max(1, Math.round(PS_H * w / PS_W)) : Math.round(psNum(dlgHeight, PS_H)); psResize(w, h, true, "center", !!dlgNearest, null); }
+    else if (kind === "canvas") { dialog = ""; psResize(Math.round(psNum(dlgWidth, PS_W)), Math.round(psNum(dlgHeight, PS_H)), false, dlgAnchor, false, null); }
+    else if (kind === "transform") { dialog = ""; psTransform({ dx: psNum(dlgDx, 0), dy: psNum(dlgDy, 0), angle: psNum(dlgAngle, 0), scaleX: psNum(dlgScaleX, 100) / 100, scaleY: psNum(dlgScaleY, 100) / 100 }, null); }
+    else if (kind === "filter") { dialog = ""; psFilter(psFilterKind, psNum(dlgAmount, 0), null); }
+    else if (kind === "feather") { dialog = ""; psFeatherSelection(psNum(dlgRadius, 4)); }
+    else if (kind === "rename") { dialog = ""; psLayerAction("Rename layer", dlgLayerName, null); }
+    else if (kind === "text") { dialog = ""; applyTextDialog(); }
+    else if (kind === "export") { dialog = ""; exportImage(); }
+    else if (kind === "psd") { dialog = ""; savePsd(); }
+    else if (kind === "discard") { confirmDiscard(); }
+    else dialog = "";
+  });
+}
+function setDialogAmount(v) { dlgAmount = psNum(v, dlgAmount); }
+function openTextDialog(t) {
+  dlgText = t ? t.text : "Something new."; dlgFont = t ? psFontFamilyKey(t.font) : "sans"; dlgSize = String(t ? t.size : 64); dlgBold = t ? !!t.bold : true; dlgColor = t ? t.color : fgColor;
+  dialogTitle = t ? "Edit type layer" : "Add type layer";
+  dialog = "text";
+}
+function psFontFamilyKey(f) { if (f === "Georgia" || f === "serif") return "serif"; if (f === "monospace" || f === "mono") return "mono"; if (f === "Impact" || f === "display") return "display"; return "sans"; }
+function applyTextDialog() {
+  let l = psActive();
+  let prev = psEditingText && l.text ? l.text : null;
+  let size = psClamp(Math.round(psNum(dlgSize, 64)), 1, 1000);
+  let x = prev ? prev.x : (psTextPoint ? psTextPoint.x : 80), y = prev ? prev.y : (psTextPoint ? psTextPoint.y : 80);
+  let color = psIsHex(dlgColor) ? dlgColor : fgColor;
+  psAddText(String(dlgText || ""), { x: x, y: y, font: dlgFont, size: size, bold: !!dlgBold, color: color, align: prev ? (prev.align || "left") : "left" }, !!prev, null);
+}
+
+// ---------------------------------------------------------------------------
+// Layer panel
+// ---------------------------------------------------------------------------
+function selectLayer(id) { if (uiBusy()) return; psSetActive(id); psRefreshPanels(); psUpdateStatus(); }
+function editLayerMask(id) { if (uiBusy()) return; psSetActive(id); let l = psActive(); if (l.mask) { PS_MASKMODE = true; fgColor = "#ffffff"; bgColor = "#000000"; } uiOnDocument("change"); }
+function toggleLayerVisible(id) { if (uiBusy()) return; uiGuard(function () { psSetActive(id); psLayerAction("Layer visibility", null, null); }); }
+function toggleLayerLock(id) { if (uiBusy()) return; uiGuard(function () { psSetActive(id); psLayerAction("Layer lock", null, null); }); }
+function renameLayer(id) { if (uiBusy()) return; psSetActive(id); dlgLayerName = psActive().name; dialog = "rename"; }
+function layerButton(action) { runAction(action); }
+function setLayerBlend(v) { if (uiBusy()) return; uiGuard(function () { psLayerAction("Layer blend", String(v), null); }); }
+function setLayerOpacity(v) { if (uiBusy()) return; let n = psNum(v, NaN); if (!Number.isFinite(n)) return; uiGuard(function () { psLayerAction("Layer opacity", psClamp(n, 0, 100) / 100, null); }); }
+function showTab(t) { sidebarTab = t; }
+
+// ---------------------------------------------------------------------------
+// Files: open, place, save
+// ---------------------------------------------------------------------------
+function filesChosen(files) {
+  if (!files || !files.length) return;
+  let file = files[0];
+  if (file.size > PS_MAX_FILE_BYTES) { uiNotify("Files are limited to " + (PS_MAX_FILE_BYTES / 1048576) + " MiB in this edition.", true); return; }
+  let place = psPlacePending; psPlacePending = false;
+  let name = String(file.name || "image");
+  let lower = name.toLowerCase();
+  if (lower.slice(-7) === ".sphoto") {
+    if (place) { uiNotify("Open projects as documents, not placed layers.", true); return; }
+    psConfirmDiscard(function () {
+      jobActive = true; jobLabel = "Reading file";
+      softn.files.readText(file.ref, function (text) {
+        jobActive = psJobsPending() > 0;
+        if (typeof text !== "string") { uiNotify("Could not read that file. Choose Allow in the permission bar and try again.", true); return; }
+        psOpenProjectJob(name, text, function () { uiNotify("Project opened.", false); }, uiError);
+      });
+    });
+    return;
+  }
+  let proceed = function () {
+    jobActive = true; jobLabel = "Reading file";
+    softn.files.readBase64(file.ref, function (dataUrl) {
+      jobActive = psJobsPending() > 0;
+      if (typeof dataUrl !== "string") { uiNotify("Could not read that file. Choose Allow in the permission bar and try again.", true); return; }
+      let bytes;
+      try { bytes = psFromBase64(dataUrl); } catch (e) { uiNotify("Could not decode that file.", true); return; }
+      psOpenBytes(name, bytes, place);
+    });
+  };
+  if (place) proceed(); else psConfirmDiscard(proceed);
+}
+function psOpenBytes(name, bytes, place) {
+  if (psIsPsd(bytes)) {
+    if (place) { uiNotify("Open PSD files as documents.", true); return; }
+    psPsdReadJob(bytes, function (psd) {
+      if (psd.warnings.length) { psPendingPsd = { name: name, psd: psd }; dialogWarnings = psd.warnings.slice(); psdHasComposite = !!psd.composite; dialog = "psdChoice"; return; }
+      uiGuard(function () { psOpenPsdJob(name, psd, "layers", null, uiError); });
+    }, uiError);
+    return;
+  }
+  let onImage = function (img) {
+    psFitImageJob(img.w, img.h, img.data, function (w, h, data, scaled) {
+      uiGuard(function () {
+        let warnings = img.warnings ? img.warnings.slice() : [];
+        if (scaled) warnings.push("The image was downscaled to " + w + " x " + h + " to fit this edition's " + psMegapixelText() + " megapixel limit.");
+        if (place) psPlaceImage(name, w, h, data, function () { if (warnings.length) uiNotify(warnings[0], false); });
+        else { psOpenRaster(name, w, h, data, warnings); if (warnings.length) uiNotify(warnings[0], false); }
+      });
+    }, uiError);
+  };
+  if (psIsPng(bytes)) psPngDecodeJob(bytes, onImage, uiError);
+  else if (psIsJpeg(bytes)) psJpegDecodeJob(bytes, onImage, uiError, { maxPixels: PS_MAX_PIXELS });
+  else if (psIsGif(bytes)) psGifDecodeJob(bytes, onImage, uiError);
+  else if (psIsBmp(bytes)) psBmpDecodeJob(bytes, onImage, uiError);
+  else uiNotify("Open a PNG, JPEG, GIF, BMP, PSD or .sphoto file. WebP and AVIF need the native edition.", true);
+}
+function psdChoice(choice) {
+  let pending = psPendingPsd; psPendingPsd = null; dialog = "";
+  if (!pending || choice === "cancel") return;
+  uiGuard(function () { psOpenPsdJob(pending.name, pending.psd, choice, function () { uiNotify("Opened with " + pending.psd.warnings.length + " compatibility notice(s). See Help > Compatibility.", false); }, uiError); });
+}
+function psSaveBytes(name, bytes, mime, done) {
+  softn.files.saveFile(name, bytes.toBase64(), { mime: mime, base64: true }, function (r) {
+    if (r && r.error) uiNotify(r.error, true); else if (done) done();
+  });
+}
+function exportImage() {
+  let format = dlgFormat, quality = psClamp(psNum(dlgQuality, 92), 10, 100), bg = psIsHex(dlgJpegBg) ? dlgJpegBg : "#ffffff";
+  psCleanCompositeJob(function (comp) {
+    if (format === "jpeg") psJpegEncodeJob(comp, PS_W, PS_H, quality, psHexToRgb(bg), function (bytes) { psSaveBytes(PS_NAME + ".jpg", bytes, "image/jpeg", function () { uiNotify("JPEG download requested. Your layers are unchanged.", false); }); }, uiError);
+    else psPngEncodeJob(comp, PS_W, PS_H, function (bytes) { psSaveBytes(PS_NAME + ".png", bytes, "image/png", function () { uiNotify("PNG download requested. Your layers are unchanged.", false); }); }, uiError);
+  }, uiError);
+}
+function savePsd() {
+  psCleanCompositeJob(function (comp) {
+    psPsdWriteJob(psPsdDocument(comp), function (bytes) {
+      psSaveBytes(PS_NAME + ".psd", bytes, "image/vnd.adobe.photoshop", function () {
+        let hasText = false; for (let i = 0; i < PS_LAYERS.length; i++) if (PS_LAYERS[i].text) hasText = true;
+        if (!hasText && !PS_WARNINGS.length) psMarkSaved();
+        uiNotify("PSD download requested. Keep a .sphoto too for editable type.", false);
+        uiOnDocument("status");
+      });
+    }, uiError);
+  }, uiError);
+}
+function saveProject() {
+  if (uiBusy()) return;
+  psProjectJob(function (json) {
+    softn.files.saveFile(PS_NAME + ".sphoto", json, { mime: "application/json" }, function (r) {
+      if (r && r.error) { uiNotify(r.error, true); return; }
+      psMarkSaved(); uiNotify("Editable project download requested.", false); uiOnDocument("status");
+    });
+  }, uiError);
+}
+
+// ---------------------------------------------------------------------------
+// Welcome canvas
+// ---------------------------------------------------------------------------
+function buildDemoDocument() {
+  psNewDocument(1280, 800, "Something yours", "#171c34");
+  let w = PS_W, h = PS_H;
+  let bg = PS_LAYERS[0].data;
+  let steps = [];
+  steps.push(psRowStepper(h, psRowsFor(w, PS_STEP_HEAVY_PIXELS), function (y0, y1) { psGradientRows(bg, w, y0, y1, 0, 0, 1280, 800, false, [23, 28, 52], [50, 33, 59], 1, null); }));
+  let shape = psAddLayer("Colour studies", null);
+  let sd = shape.data;
+  steps.push(psRowStepper(h, psRowsFor(w, PS_STEP_HEAVY_PIXELS / 4), function (y0, y1) {
+    // Radial halo inside a rotated ellipse.
+    let cx = 1100, cy = 460, rx = 410, ry = 570, ang = -0.5, ca = Math.cos(ang), sa = Math.sin(ang);
+    for (let y = y0; y < y1; y++) for (let x = 0; x < w; x++) {
+      let dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+      let ux = (dx * ca + dy * sa) / rx, uy = (-dx * sa + dy * ca) / ry;
+      let f = ux * ux + uy * uy;
+      if (f > 1.02) continue;
+      let edge = f > 0.96 ? (1.02 - f) / 0.06 : 1;
+      let hx = x - 1000, hy = y - 380, t = Math.sqrt(hx * hx + hy * hy) / 520;
+      let r, g, b;
+      if (t < 0.42) { let k = t / 0.42; r = 255 + (233 - 255) * k; g = 209 + (124 - 209) * k; b = 159 + (118 - 159) * k; }
+      else if (t < 0.75) { let k = (t - 0.42) / 0.33; r = 233 + (164 - 233) * k; g = 124 + (136 - 124) * k; b = 118 + (224 - 118) * k; }
+      else { let k = Math.min(1, (t - 0.75) / 0.25); r = 164 + (84 - 164) * k; g = 136 + (104 - 136) * k; b = 224 + (167 - 224) * k; }
+      let i = (y * w + x) * 4;
+      sd[i] = r; sd[i + 1] = g; sd[i + 2] = b; sd[i + 3] = (255 * edge + 0.5) | 0;
+    }
+  }));
+  steps.push(psRowStepper(h, psRowsFor(w, PS_STEP_HEAVY_PIXELS / 12), function (y0, y1) {
+    // Concentric ellipse rings: twenty tests per pixel, so the slices are small and
+    // pixels well outside the outermost ring are skipped before any of them.
+    let ang = -0.55, ca = Math.cos(ang), sa = Math.sin(ang);
+    let outerRx = 240 + 19 * 12 + 4, outerRy = 370 + 19 * 14 + 4, innerRx = 240 - 4, innerRy = 370 - 4;
+    for (let y = y0; y < y1; y++) for (let x = 0; x < w; x++) {
+      let dx = x + 0.5 - 1020, dy = y + 0.5 - 440;
+      let px = dx * ca + dy * sa, py = -dx * sa + dy * ca;
+      let fo = (px * px) / (outerRx * outerRx) + (py * py) / (outerRy * outerRy);
+      if (fo > 1) continue;
+      let fi = (px * px) / (innerRx * innerRx) + (py * py) / (innerRy * innerRy);
+      if (fi < 1) continue;
+      let best = 0;
+      for (let k = 0; k < 20; k++) {
+        let rx = 240 + k * 12, ry = 370 + k * 14;
+        let f = (px * px) / (rx * rx) + (py * py) / (ry * ry);
+        let gx = 2 * px / (rx * rx), gy = 2 * py / (ry * ry), g = Math.sqrt(gx * gx + gy * gy);
+        if (g < 1e-9) continue;
+        let d = Math.abs(f - 1) / g;
+        let c = 1.2 - d; if (c > 1) c = 1;
+        if (c > best) best = c;
+      }
+      if (best <= 0) continue;
+      let a = best * 0.5, i = (y * w + x) * 4, da = sd[i + 3] / 255, oa = a + da * (1 - a), wS = a / oa, wD = 1 - wS;
+      sd[i] = (245 * wS + sd[i] * wD + 0.5) | 0; sd[i + 1] = (212 * wS + sd[i + 1] * wD + 0.5) | 0; sd[i + 2] = (191 * wS + sd[i + 2] * wD + 0.5) | 0; sd[i + 3] = (oa * 255 + 0.5) | 0;
+    }
+  }));
+  let label = psAddLayer("Edition & details", null);
+  let ld = label.data;
+  steps.push(psTextRasterStep(ld, w, h, { text: "SOFTN PHOTO STUDIO    /    SANDBOX EDITION", x: 80, y: 62, size: 15, color: "#b7b8d4", font: "mono", bold: false, align: "left" }));
+  steps.push(psTextRasterStep(ld, w, h, { text: "YOUR CANVAS. YOUR RULES.", x: 80, y: 698, size: 15, color: "#b7b8d4", font: "mono", bold: false, align: "left" }));
+  steps.push(function () { for (let y = 112; y < 115; y++) for (let x = 80; x < 125; x++) { let i = (y * w + x) * 4; ld[i] = 168; ld[i + 1] = 224; ld[i + 2] = 207; ld[i + 3] = 255; } return true; });
+  steps.push(psTextRasterStep(ld, w, h, { text: "A little colour. A lot of possibility.", x: 80, y: 600, size: 19, color: "#dddded", font: "sans", bold: false, align: "left" }));
+  let title = psAddLayer("Make something yours", null);
+  title.kind = "text"; title.text = { text: "Make\nsomething\nyours.", x: 73, y: 185, size: 105, color: "#f4f0eb", font: "sans", bold: true, align: "left" };
+  steps.push(psTextRasterStep(title.data, w, h, title.text));
+  psAddLayer("Your next idea", null);
+  psEnqueue("Preparing the welcome canvas", psSequence(steps), function () { psInvalidateAll(); psResetHistory("Welcome canvas"); psEmit("document"); }, uiError);
+}

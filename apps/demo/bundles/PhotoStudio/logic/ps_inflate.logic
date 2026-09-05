@@ -1,0 +1,405 @@
+// ps_inflate.logic - resumable DEFLATE decoder and a fixed-Huffman encoder.
+//
+// Both are state machines so a job can run them in bounded slices: PNG and
+// ZIP-compressed PSD data can be many megabytes, far more than one script call
+// may process. psInflateRun(state, targetOut) decodes until the output holds
+// at least targetOut bytes (or the stream ends); psDeflateRun(state, maxIn)
+// consumes up to maxIn input bytes.
+//
+// Huffman tables are a 10-bit fast lookup plus a canonical slow path for the
+// rare longer codes. A full 15-bit table cost 4 ms per block to build in the
+// interpreter, which was most of the decode time on photographic data.
+
+let PS_LEN_BASE = Int32Array.from([3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]);
+let PS_LEN_EXTRA = Int32Array.from([0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]);
+let PS_DIST_BASE = Int32Array.from([1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]);
+let PS_DIST_EXTRA = Int32Array.from([0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]);
+let PS_CL_ORDER = Int32Array.from([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]);
+let PS_FAST_BITS = 10;
+let PS_FIXED_LIT = null;
+let PS_FIXED_DIST = null;
+
+// Build decoding tables from code lengths.
+//   fast[bits & 1023] = (length << 16) | symbol for codes of at most 10 bits, 0 otherwise
+//   counts / symbols: canonical form for the slow path (codes of 11..15 bits)
+function psHuffTable(lengths, count) {
+  let fastSize = 1 << PS_FAST_BITS;
+  let fast = new Int32Array(fastSize);
+  let counts = new Int32Array(16);
+  for (let i = 0; i < count; i++) counts[lengths[i]]++;
+  counts[0] = 0;
+  let offs = new Int32Array(16);
+  for (let len = 1; len < 15; len++) offs[len + 1] = offs[len] + counts[len];
+  let symbols = new Int32Array(count);
+  let nextCode = new Int32Array(16);
+  let code = 0;
+  for (let bits = 1; bits <= 15; bits++) { code = (code + counts[bits - 1]) << 1; nextCode[bits] = code; }
+  let longest = 0;
+  for (let sym = 0; sym < count; sym++) {
+    let len = lengths[sym];
+    if (!len) continue;
+    symbols[offs[len]++] = sym;
+    if (len > longest) longest = len;
+    let c = nextCode[len]++;
+    if (len > PS_FAST_BITS) continue;
+    let rev = 0;
+    for (let i = 0; i < len; i++) { rev = (rev << 1) | (c & 1); c >>= 1; }
+    let entry = (len << 16) | sym;
+    for (let k = rev; k < fastSize; k += 1 << len) fast[k] = entry;
+  }
+  return { fast: fast, counts: counts, symbols: symbols, longest: longest };
+}
+
+function psFixedTables() {
+  if (PS_FIXED_LIT) return;
+  let lens = new Uint8Array(288);
+  for (let i = 0; i < 144; i++) lens[i] = 8;
+  for (let i = 144; i < 256; i++) lens[i] = 9;
+  for (let i = 256; i < 280; i++) lens[i] = 7;
+  for (let i = 280; i < 288; i++) lens[i] = 8;
+  PS_FIXED_LIT = psHuffTable(lens, 288);
+  let dl = new Uint8Array(30);
+  for (let i = 0; i < 30; i++) dl[i] = 5;
+  PS_FIXED_DIST = psHuffTable(dl, 30);
+}
+
+// zlib: true when a 2-byte zlib header precedes the deflate stream.
+// out: optional preallocated output of the exact expected size.
+function psInflateNew(input, start, end, zlib, out) {
+  return {
+    inp: input, pos: start, end: end, bb: 0, bc: 0,
+    out: out || new Uint8Array(Math.max(4096, Math.min(64 << 20, (end - start) * 4))), olen: 0, fixed: !!out,
+    mode: zlib ? 0 : 1, final: 0, lit: null, dist: null, storedLeft: 0, copyLen: 0, copyDist: 0,
+  };
+}
+
+function psInflateGrow(st, need) {
+  if (st.olen + need <= st.out.length) return;
+  if (st.fixed) psFail("Compressed data expands past its declared size.");
+  let cap = st.out.length * 2;
+  while (cap < st.olen + need) cap *= 2;
+  let nb = new Uint8Array(cap);
+  nb.set(st.out.subarray(0, st.olen));
+  st.out = nb;
+}
+
+// Pull whole bytes into the bit buffer until it holds n bits (or input ends).
+function psInflateFill(st, n) {
+  while (st.bc < n) {
+    if (st.pos >= st.end) return st.bc >= n;
+    st.bb |= st.inp[st.pos++] << st.bc;
+    st.bc += 8;
+  }
+  return true;
+}
+function psInflateBits(st, n) {
+  if (!psInflateFill(st, n)) psFail("Truncated compressed data.");
+  let v = st.bb & ((1 << n) - 1);
+  st.bb >>>= n; st.bc -= n;
+  return v;
+}
+
+// Canonical bit-by-bit decode for codes longer than the fast table.
+function psHuffSlow(st, table) {
+  let counts = table.counts, symbols = table.symbols;
+  let code = 0, first = 0, index = 0;
+  for (let len = 1; len <= 15; len++) {
+    if (st.bc < 1 && !psInflateFill(st, 1)) psFail("Truncated compressed data.");
+    code |= st.bb & 1; st.bb >>>= 1; st.bc -= 1;
+    let count = counts[len];
+    if (code - count < first) return symbols[index + (code - first)];
+    index += count; first += count; first <<= 1; code <<= 1;
+  }
+  psFail("Corrupt Huffman data.");
+  return 0;
+}
+function psInflateSymbol(st, table) {
+  psInflateFill(st, 15);
+  let e = table.fast[st.bb & 1023];
+  if (e !== 0) {
+    let len = e >>> 16;
+    if (len > st.bc) psFail("Corrupt Huffman data.");
+    st.bb >>>= len; st.bc -= len;
+    return e & 0xffff;
+  }
+  return psHuffSlow(st, table);
+}
+
+function psInflateHeader(st) {
+  if (st.mode === 0) {
+    let cmf = psInflateBits(st, 8), flg = psInflateBits(st, 8);
+    if ((cmf & 15) !== 8 || ((cmf << 8) | flg) % 31 !== 0) psFail("Not a zlib stream.");
+    if (flg & 32) psFail("Preset dictionaries are not supported.");
+    st.mode = 1;
+  }
+  st.final = psInflateBits(st, 1);
+  let type = psInflateBits(st, 2);
+  if (type === 0) {
+    st.bb >>>= st.bc & 7; st.bc -= st.bc & 7;
+    let len = psInflateBits(st, 16), nlen = psInflateBits(st, 16);
+    if ((len ^ 0xffff) !== nlen) psFail("Corrupt stored block.");
+    st.storedLeft = len; st.mode = 2;
+  } else if (type === 1) {
+    psFixedTables(); st.lit = PS_FIXED_LIT; st.dist = PS_FIXED_DIST; st.mode = 3;
+  } else if (type === 2) {
+    let hlit = psInflateBits(st, 5) + 257, hdist = psInflateBits(st, 5) + 1, hclen = psInflateBits(st, 4) + 4;
+    let clLens = new Uint8Array(19);
+    for (let i = 0; i < hclen; i++) clLens[PS_CL_ORDER[i]] = psInflateBits(st, 3);
+    let clTable = psHuffTable(clLens, 19);
+    let total = hlit + hdist;
+    let lens = new Uint8Array(total);
+    let i = 0;
+    while (i < total) {
+      let sym = psInflateSymbol(st, clTable);
+      if (sym < 16) lens[i++] = sym;
+      else if (sym === 16) { if (!i) psFail("Corrupt code lengths."); let prev = lens[i - 1], r = 3 + psInflateBits(st, 2); while (r-- > 0 && i < total) lens[i++] = prev; }
+      else if (sym === 17) { let r = 3 + psInflateBits(st, 3); while (r-- > 0 && i < total) lens[i++] = 0; }
+      else { let r = 11 + psInflateBits(st, 7); while (r-- > 0 && i < total) lens[i++] = 0; }
+    }
+    st.lit = psHuffTable(lens, hlit);
+    st.dist = psHuffTable(lens.subarray(hlit), hdist);
+    st.mode = 3;
+  } else psFail("Corrupt deflate block type.");
+}
+
+// Decode until olen >= targetOut or the stream ends. Returns true when finished.
+function psInflateRun(st, targetOut) {
+  let inp = st.inp;
+  while (st.mode !== 9) {
+    if (st.olen >= targetOut) return false;
+    if (st.mode === 1 || st.mode === 0) psInflateHeader(st);
+    if (st.mode === 2) {
+      // Drain whole bytes still in the bit buffer, then copy from the input.
+      psInflateGrow(st, st.storedLeft);
+      let out = st.out;
+      while (st.storedLeft > 0 && st.bc >= 8) { out[st.olen++] = st.bb & 255; st.bb >>>= 8; st.bc -= 8; st.storedLeft--; }
+      let n = Math.min(st.storedLeft, st.end - st.pos);
+      if (n < st.storedLeft) psFail("Truncated stored block.");
+      if (n > 0) { out.set(inp.subarray(st.pos, st.pos + n), st.olen); st.olen += n; st.pos += n; st.storedLeft = 0; }
+      st.mode = st.final ? 9 : 1;
+      continue;
+    }
+    // mode 3: Huffman-coded block
+    let out = st.out, olen = st.olen;
+    let litFast = st.lit.fast, distFast = st.dist.fast;
+    let lenBase = PS_LEN_BASE, lenExtra = PS_LEN_EXTRA, distBase = PS_DIST_BASE, distExtra = PS_DIST_EXTRA;
+    let bb = st.bb, bc = st.bc, pos = st.pos, end = st.end;
+    let copyLen = st.copyLen, copyDist = st.copyDist;
+    let limit = Math.max(targetOut, olen + 1);
+    let ended = false;
+    let cap = out.length;
+    while (true) {
+      if (copyLen > 0) {
+        if (olen + copyLen > cap) { st.olen = olen; psInflateGrow(st, copyLen); out = st.out; cap = out.length; }
+        let src = olen - copyDist;
+        if (src < 0) psFail("Corrupt back-reference.");
+        if (copyDist >= copyLen) { for (let k = 0; k < copyLen; k++) out[olen + k] = out[src + k]; olen += copyLen; }
+        else { for (let k = 0; k < copyLen; k++) out[olen++] = out[src++]; }
+        copyLen = 0;
+        if (olen >= limit) break;
+      }
+      while (bc < 15 && pos < end) { bb |= inp[pos++] << bc; bc += 8; }
+      let sym;
+      let e = litFast[bb & 1023];
+      if (e !== 0) {
+        let len = e >>> 16;
+        if (len > bc) psFail("Corrupt Huffman data.");
+        bb >>>= len; bc -= len;
+        sym = e & 0xffff;
+      } else {
+        st.bb = bb; st.bc = bc; st.pos = pos;
+        sym = psHuffSlow(st, st.lit);
+        bb = st.bb; bc = st.bc; pos = st.pos;
+      }
+      if (sym < 256) {
+        if (olen >= cap) { st.olen = olen; psInflateGrow(st, 1); out = st.out; cap = out.length; }
+        out[olen++] = sym;
+        if (olen >= limit) break;
+        continue;
+      }
+      if (sym === 256) { ended = true; break; }
+      sym -= 257;
+      if (sym >= 29) psFail("Corrupt length code.");
+      let extra = lenExtra[sym];
+      while (bc < extra && pos < end) { bb |= inp[pos++] << bc; bc += 8; }
+      if (bc < extra) psFail("Truncated compressed data.");
+      copyLen = lenBase[sym] + (bb & ((1 << extra) - 1)); bb >>>= extra; bc -= extra;
+      while (bc < 15 && pos < end) { bb |= inp[pos++] << bc; bc += 8; }
+      let dsym;
+      let de = distFast[bb & 1023];
+      if (de !== 0) {
+        let dlen = de >>> 16;
+        if (dlen > bc) psFail("Corrupt distance code.");
+        bb >>>= dlen; bc -= dlen;
+        dsym = de & 0xffff;
+      } else {
+        st.bb = bb; st.bc = bc; st.pos = pos;
+        dsym = psHuffSlow(st, st.dist);
+        bb = st.bb; bc = st.bc; pos = st.pos;
+      }
+      if (dsym >= 30) psFail("Corrupt distance code.");
+      let dextra = distExtra[dsym];
+      while (bc < dextra && pos < end) { bb |= inp[pos++] << bc; bc += 8; }
+      if (bc < dextra) psFail("Truncated compressed data.");
+      copyDist = distBase[dsym] + (bb & ((1 << dextra) - 1)); bb >>>= dextra; bc -= dextra;
+    }
+    st.olen = olen; st.bb = bb; st.bc = bc; st.pos = pos; st.copyLen = copyLen; st.copyDist = copyDist;
+    if (ended) st.mode = st.final ? 9 : 1;
+  }
+  return true;
+}
+
+// Convenience for small inputs (headers, thumbnails). Never for image data.
+function psInflateAll(input, start, end, zlib, expected) {
+  let st = psInflateNew(input, start, end, zlib, expected ? new Uint8Array(expected) : null);
+  psInflateRun(st, 1 << 30);
+  if (expected && st.olen !== expected) psFail("Compressed data length mismatch.");
+  return st.fixed ? st.out : st.out.slice(0, st.olen);
+}
+
+// ---------------------------------------------------------------------------
+// Encoder: LZ77 with a two-probe hash chain, one fixed-Huffman block, zlib wrapper.
+// ---------------------------------------------------------------------------
+let PS_FIXED_LIT_CODE = null;   // reversed codes per literal/length symbol
+let PS_FIXED_LIT_LEN = null;
+let PS_LEN_CODE_OF = null;      // length (3..258) -> code index 0..28
+let PS_DIST_CODE_OF = null;     // distance 1..32768 -> code index
+
+function psDeflateTables() {
+  if (PS_FIXED_LIT_CODE) return;
+  let lens = new Uint8Array(288);
+  for (let i = 0; i < 144; i++) lens[i] = 8;
+  for (let i = 144; i < 256; i++) lens[i] = 9;
+  for (let i = 256; i < 280; i++) lens[i] = 7;
+  for (let i = 280; i < 288; i++) lens[i] = 8;
+  let blCount = new Int32Array(16);
+  for (let i = 0; i < 288; i++) blCount[lens[i]]++;
+  let nextCode = new Int32Array(16);
+  let code = 0;
+  for (let bits = 1; bits <= 15; bits++) { code = (code + blCount[bits - 1]) << 1; nextCode[bits] = code; }
+  PS_FIXED_LIT_CODE = new Int32Array(288);
+  PS_FIXED_LIT_LEN = lens;
+  for (let sym = 0; sym < 288; sym++) {
+    let len = lens[sym], c = nextCode[len]++, rev = 0;
+    for (let i = 0; i < len; i++) { rev = (rev << 1) | (c & 1); c >>= 1; }
+    PS_FIXED_LIT_CODE[sym] = rev;
+  }
+  PS_LEN_CODE_OF = new Uint8Array(259);
+  for (let i = 0; i < 29; i++) {
+    let base = PS_LEN_BASE[i], top = i === 28 ? 258 : PS_LEN_BASE[i + 1] - 1;
+    for (let l = base; l <= top; l++) PS_LEN_CODE_OF[l] = i;
+  }
+  PS_DIST_CODE_OF = new Uint8Array(32769);
+  for (let i = 0; i < 30; i++) {
+    let base = PS_DIST_BASE[i], top = i === 29 ? 32768 : PS_DIST_BASE[i + 1] - 1;
+    for (let d = base; d <= top; d++) PS_DIST_CODE_OF[d] = i;
+  }
+}
+
+function psDeflateNew(input, zlib) {
+  psDeflateTables();
+  let st = {
+    inp: input, pos: 0, n: input.length, zlib: !!zlib,
+    out: new Uint8Array(Math.max(1024, (input.length >> 1) + 1024)), olen: 0, bb: 0, bc: 0,
+    head: new Int32Array(1 << 15), prev: new Int32Array(1 << 15),
+    a: 1, b: 0, adlerPos: 0, started: false, finished: false,
+  };
+  st.head.fill(-1);
+  return st;
+}
+function psDeflateByte(st, v) {
+  if (st.olen >= st.out.length) { let nb = new Uint8Array(st.out.length * 2); nb.set(st.out); st.out = nb; }
+  st.out[st.olen++] = v;
+}
+
+function psDeflateRun(st, maxIn) {
+  if (st.finished) return true;
+  let inp = st.inp, n = st.n, head = st.head, prev = st.prev;
+  let litCode = PS_FIXED_LIT_CODE, litLen = PS_FIXED_LIT_LEN, lenCodeOf = PS_LEN_CODE_OF, distCodeOf = PS_DIST_CODE_OF;
+  let lenBase = PS_LEN_BASE, lenExtra = PS_LEN_EXTRA, distBase = PS_DIST_BASE, distExtra = PS_DIST_EXTRA;
+  let out = st.out, olen = st.olen, cap = out.length, bb = st.bb, bc = st.bc;
+  let pos = st.pos, stop = Math.min(n, pos + maxIn);
+  let a = st.a, b = st.b;
+  if (!st.started) {
+    st.started = true;
+    if (st.zlib) { bb |= 0x78 << bc; bc += 8; bb |= 0x9c << bc; bc += 8; }
+    bb |= 1 << bc; bc += 1;       // BFINAL
+    bb |= 1 << bc; bc += 2;       // BTYPE = 01 (fixed)
+  }
+  while (pos < stop) {
+    while (bc >= 8) { if (olen >= cap) { let nb = new Uint8Array(cap * 2); nb.set(out); out = nb; cap = out.length; } out[olen++] = bb & 255; bb >>>= 8; bc -= 8; }
+    let matchLen = 0, matchDist = 0;
+    if (pos + 3 <= n) {
+      // Two probes at most: in the interpreter every extra probe costs about as
+      // much as emitting a byte, and image rows compress well enough without more.
+      let h = ((inp[pos] << 10) ^ (inp[pos + 1] << 5) ^ inp[pos + 2]) & 0x7fff;
+      let cand = head[h];
+      let chain = 2;
+      let maxLen = n - pos;
+      if (maxLen > 258) maxLen = 258;
+      while (cand >= 0 && chain-- > 0 && pos - cand <= 32768) {
+        if (inp[cand + matchLen] === inp[pos + matchLen] && inp[cand] === inp[pos] && inp[cand + 1] === inp[pos + 1] && inp[cand + 2] === inp[pos + 2]) {
+          let l = 3;
+          while (l < maxLen && inp[cand + l] === inp[pos + l]) l++;
+          if (l > matchLen) { matchLen = l; matchDist = pos - cand; if (l >= 32) break; }
+        }
+        let nxt = prev[cand & 0x7fff];
+        if (nxt >= cand) break;
+        cand = nxt;
+      }
+      prev[pos & 0x7fff] = head[h];
+      head[h] = pos;
+    }
+    if (matchLen >= 3) {
+      let lc = lenCodeOf[matchLen], sym = 257 + lc;
+      bb |= litCode[sym] << bc; bc += litLen[sym];
+      let le = lenExtra[lc];
+      if (le) { bb |= (matchLen - lenBase[lc]) << bc; bc += le; }
+      while (bc >= 8) { if (olen >= cap) { let nb = new Uint8Array(cap * 2); nb.set(out); out = nb; cap = out.length; } out[olen++] = bb & 255; bb >>>= 8; bc -= 8; }
+      let dc = distCodeOf[matchDist];
+      let rev = 0, c = dc;
+      for (let i = 0; i < 5; i++) { rev = (rev << 1) | (c & 1); c >>= 1; }
+      bb |= rev << bc; bc += 5;
+      while (bc >= 8) { if (olen >= cap) { let nb = new Uint8Array(cap * 2); nb.set(out); out = nb; cap = out.length; } out[olen++] = bb & 255; bb >>>= 8; bc -= 8; }
+      let de = distExtra[dc];
+      if (de) { bb |= (matchDist - distBase[dc]) << bc; bc += de; }
+      // Insert a few of the skipped positions so later matches can still find
+      // them; inserting every byte of a long run costs more than it saves.
+      let endIns = pos + matchLen;
+      let insEnd = endIns < pos + 8 ? endIns : pos + 8;
+      for (let q = pos + 1; q < insEnd && q + 3 <= n; q++) {
+        let hq = ((inp[q] << 10) ^ (inp[q + 1] << 5) ^ inp[q + 2]) & 0x7fff;
+        prev[q & 0x7fff] = head[hq]; head[hq] = q;
+      }
+      pos = endIns;
+    } else {
+      let v = inp[pos++];
+      bb |= litCode[v] << bc; bc += litLen[v];
+    }
+  }
+  // Adler32 over exactly the bytes consumed this run (a match may overrun the slice).
+  for (let i = st.adlerPos; i < pos; i++) { a += inp[i]; b += a; if ((i & 4095) === 4095) { a %= 65521; b %= 65521; } }
+  a %= 65521; b %= 65521;
+  st.adlerPos = pos; st.a = a; st.b = b;
+  if (pos >= n) {
+    bb |= litCode[256] << bc; bc += litLen[256];
+    while (bc > 0) { if (olen >= cap) { let nb = new Uint8Array(cap * 2); nb.set(out); out = nb; cap = out.length; } out[olen++] = bb & 255; bb >>>= 8; bc -= 8; }
+    st.out = out; st.olen = olen; st.bb = 0; st.bc = 0; st.pos = pos;
+    if (st.zlib) {
+      let adler = ((b << 16) | a) >>> 0;
+      psDeflateByte(st, (adler >>> 24) & 255); psDeflateByte(st, (adler >>> 16) & 255); psDeflateByte(st, (adler >>> 8) & 255); psDeflateByte(st, adler & 255);
+    }
+    st.finished = true;
+    return true;
+  }
+  st.out = out; st.olen = olen; st.bb = bb; st.bc = bc; st.pos = pos;
+  return pos / n;
+}
+function psDeflateResult(st) { return st.out.slice(0, st.olen); }
+
+// Convenience for small payloads only.
+function psDeflateAll(input, zlib) {
+  let st = psDeflateNew(input, zlib);
+  psDeflateRun(st, input.length + 1);
+  return psDeflateResult(st);
+}

@@ -1,0 +1,10 @@
+{
+  "app": { "id": "softn-photo-studio", "name": "Photo Studio", "version": "0.2.0" },
+  "permissions": {
+    "files": { "enabled": true, "scopes": ["user_selected"] },
+    "net": { "enabled": false },
+    "camera": { "enabled": false },
+    "mic": { "enabled": false },
+    "sync": { "enabled": false }
+  }
+}

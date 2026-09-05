@@ -1,0 +1,514 @@
+// ps_pixels.logic - pure pixel algorithms over straight-alpha RGBA8 buffers.
+//
+// Kernels take explicit row (or column) ranges so the editor can wrap them in
+// sliced jobs. Nothing here allocates per pixel or reads a global inside a loop.
+
+// ---------------------------------------------------------------------------
+// Flood fill (magic wand, paint bucket). Resumable BFS.
+// ---------------------------------------------------------------------------
+function psFloodNew(data, w, h, x, y, tolerance, contiguous) {
+  let n = w * h;
+  let mask = new Uint8Array(n);
+  x = Math.floor(x); y = Math.floor(y);
+  let st = { data: data, w: w, h: h, mask: mask, tol: psClamp(Math.round(tolerance), 0, 255), contiguous: !!contiguous, queue: null, head: 0, tail: 0, scan: 0, done: false, sr: 0, sg: 0, sb: 0, sa: 0 };
+  if (x < 0 || y < 0 || x >= w || y >= h) { st.done = true; return st; }
+  let si = (y * w + x) * 4;
+  st.sr = data[si]; st.sg = data[si + 1]; st.sb = data[si + 2]; st.sa = data[si + 3];
+  if (contiguous) { st.queue = new Int32Array(n); st.queue[0] = y * w + x; st.tail = 1; mask[y * w + x] = 255; }
+  return st;
+}
+function psFloodMatches(data, i, st) {
+  let a = data[i + 3];
+  let da = a > st.sa ? a - st.sa : st.sa - a;
+  if (da > st.tol) return false;
+  if (st.sa === 0 && a === 0) return true;
+  let dr = data[i] - st.sr, dg = data[i + 1] - st.sg, db = data[i + 2] - st.sb;
+  if (dr < 0) dr = -dr; if (dg < 0) dg = -dg; if (db < 0) db = -db;
+  let m = dr > dg ? dr : dg; if (db > m) m = db;
+  return m <= st.tol;
+}
+// Returns true when finished; processes at most `budget` pixels per call.
+function psFloodRun(st, budget) {
+  if (st.done) return true;
+  let data = st.data, mask = st.mask, w = st.w, n = st.w * st.h;
+  let tol = st.tol, sr = st.sr, sg = st.sg, sb = st.sb, sa = st.sa;
+  let work = 0;
+  if (!st.contiguous) {
+    let end = Math.min(n, st.scan + budget);
+    for (let p = st.scan; p < end; p++) {
+      let i = p * 4, a = data[i + 3];
+      let da = a > sa ? a - sa : sa - a;
+      if (da > tol) continue;
+      if (sa === 0 && a === 0) { mask[p] = 255; continue; }
+      let dr = data[i] - sr, dg = data[i + 1] - sg, db = data[i + 2] - sb;
+      if (dr < 0) dr = -dr; if (dg < 0) dg = -dg; if (db < 0) db = -db;
+      let m = dr > dg ? dr : dg; if (db > m) m = db;
+      if (m <= tol) mask[p] = 255;
+    }
+    st.scan = end;
+    if (end >= n) st.done = true;
+    return st.done;
+  }
+  let queue = st.queue, head = st.head, tail = st.tail;
+  while (head < tail && work < budget) {
+    let p = queue[head++];
+    work++;
+    let px = p % w;
+    let q;
+    if (px > 0) { q = p - 1; if (!mask[q]) { let i = q * 4, a = data[i + 3], da = a > sa ? a - sa : sa - a; if (da <= tol) { let ok = (sa === 0 && a === 0); if (!ok) { let dr = data[i] - sr, dg = data[i + 1] - sg, db = data[i + 2] - sb; if (dr < 0) dr = -dr; if (dg < 0) dg = -dg; if (db < 0) db = -db; let m = dr > dg ? dr : dg; if (db > m) m = db; ok = m <= tol; } if (ok) { mask[q] = 255; queue[tail++] = q; } } } }
+    if (px < w - 1) { q = p + 1; if (!mask[q]) { let i = q * 4, a = data[i + 3], da = a > sa ? a - sa : sa - a; if (da <= tol) { let ok = (sa === 0 && a === 0); if (!ok) { let dr = data[i] - sr, dg = data[i + 1] - sg, db = data[i + 2] - sb; if (dr < 0) dr = -dr; if (dg < 0) dg = -dg; if (db < 0) db = -db; let m = dr > dg ? dr : dg; if (db > m) m = db; ok = m <= tol; } if (ok) { mask[q] = 255; queue[tail++] = q; } } } }
+    if (p >= w) { q = p - w; if (!mask[q]) { let i = q * 4, a = data[i + 3], da = a > sa ? a - sa : sa - a; if (da <= tol) { let ok = (sa === 0 && a === 0); if (!ok) { let dr = data[i] - sr, dg = data[i + 1] - sg, db = data[i + 2] - sb; if (dr < 0) dr = -dr; if (dg < 0) dg = -dg; if (db < 0) db = -db; let m = dr > dg ? dr : dg; if (db > m) m = db; ok = m <= tol; } if (ok) { mask[q] = 255; queue[tail++] = q; } } } }
+    if (p < n - w) { q = p + w; if (!mask[q]) { let i = q * 4, a = data[i + 3], da = a > sa ? a - sa : sa - a; if (da <= tol) { let ok = (sa === 0 && a === 0); if (!ok) { let dr = data[i] - sr, dg = data[i + 1] - sg, db = data[i + 2] - sb; if (dr < 0) dr = -dr; if (dg < 0) dg = -dg; if (db < 0) db = -db; let m = dr > dg ? dr : dg; if (db > m) m = db; ok = m <= tol; } if (ok) { mask[q] = 255; queue[tail++] = q; } } } }
+  }
+  st.head = head; st.tail = tail;
+  if (head >= tail) { st.done = true; st.queue = null; }
+  return st.done;
+}
+
+// ---------------------------------------------------------------------------
+// Colour adjustments (in place on rows [y0, y1); selection weights the change)
+// ---------------------------------------------------------------------------
+function psAdjustRows(data, w, y0, y1, kind, amount, selection) {
+  let a = Number(amount);
+  if (!Number.isFinite(a)) psFail("Adjustment amount must be finite.");
+  let contrast = (259 * (psClamp(a, -100, 100) * 2.55 + 255)) / (255 * (259 - psClamp(a, -100, 100) * 2.55));
+  let levels = Math.max(2, Math.round(a || 6));
+  let bright = a * 2.55, expo = Math.pow(2, a), satk = 1 + a / 100, gammaInv = 1 / psClamp(a, 0.1, 5);
+  let hu = Math.cos(a * Math.PI / 180), hv = Math.sin(a * Math.PI / 180);
+  let m00 = 0.213 + hu * 0.787 - hv * 0.213, m01 = 0.715 - hu * 0.715 - hv * 0.715, m02 = 0.072 - hu * 0.072 + hv * 0.928;
+  let m10 = 0.213 - hu * 0.213 + hv * 0.143, m11 = 0.715 + hu * 0.285 + hv * 0.140, m12 = 0.072 - hu * 0.072 - hv * 0.283;
+  let m20 = 0.213 - hu * 0.213 - hv * 0.787, m21 = 0.715 - hu * 0.715 + hv * 0.715, m22 = 0.072 + hu * 0.928 + hv * 0.072;
+  let k = kind === "brightness" ? 1 : kind === "contrast" ? 2 : kind === "exposure" ? 3 : kind === "saturation" ? 4 : kind === "grayscale" ? 5 : kind === "invert" ? 6 :
+    kind === "threshold" ? 7 : kind === "posterize" ? 8 : kind === "sepia" ? 9 : kind === "gamma" ? 10 : kind === "hue" ? 11 : 0;
+  if (!k) psFail("Unknown adjustment: " + kind);
+  let sel = selection || null;
+  let lut = null;
+  // Per-channel operations use a lookup table: identical results, far fewer operations per pixel.
+  if (k === 1 || k === 2 || k === 3 || k === 6 || k === 8 || k === 10) {
+    lut = new Uint8Array(256);
+    for (let v = 0; v < 256; v++) {
+      let o;
+      if (k === 1) o = v + bright; else if (k === 2) o = contrast * (v - 128) + 128; else if (k === 3) o = v * expo; else if (k === 6) o = 255 - v;
+      else if (k === 8) o = Math.round(v / 255 * (levels - 1)) / (levels - 1) * 255; else o = 255 * Math.pow(v / 255, gammaInv);
+      lut[v] = psByte(o);
+    }
+  }
+  let d = data;
+  for (let p = y0 * w, end = y1 * w; p < end; p++) {
+    let i = p * 4;
+    let r = d[i], g = d[i + 1], b = d[i + 2];
+    let R, G, B;
+    if (lut) { R = lut[r]; G = lut[g]; B = lut[b]; }
+    else {
+      let l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (k === 4) { R = l + (r - l) * satk; G = l + (g - l) * satk; B = l + (b - l) * satk; }
+      else if (k === 5) { R = l; G = l; B = l; }
+      else if (k === 7) { R = l >= a ? 255 : 0; G = R; B = R; }
+      else if (k === 9) { R = r * 0.393 + g * 0.769 + b * 0.189; G = r * 0.349 + g * 0.686 + b * 0.168; B = r * 0.272 + g * 0.534 + b * 0.131; }
+      else { R = m00 * r + m01 * g + m02 * b; G = m10 * r + m11 * g + m12 * b; B = m20 * r + m21 * g + m22 * b; }
+      if (R < 0) R = 0; else if (R > 255) R = 255;
+      if (G < 0) G = 0; else if (G > 255) G = 255;
+      if (B < 0) B = 0; else if (B > 255) B = 255;
+    }
+    if (sel) {
+      let wgt = sel[p];
+      if (wgt === 0) continue;
+      if (wgt < 255) { let t = wgt / 255; R = r + (R - r) * t; G = g + (G - g) * t; B = b + (B - b) * t; }
+    }
+    d[i] = (R + 0.5) | 0; d[i + 1] = (G + 0.5) | 0; d[i + 2] = (B + 0.5) | 0;
+  }
+}
+
+// 3x3 sharpen from src into dst (dst may not alias src), rows [y0, y1).
+function psSharpenRows(src, dst, w, h, y0, y1, strength, selection) {
+  let s = psClamp(strength, 0, 5), sel = selection || null;
+  for (let y = y0; y < y1; y++) {
+    let up = y > 0 ? y - 1 : 0, dn = y < h - 1 ? y + 1 : h - 1;
+    for (let x = 0; x < w; x++) {
+      let p = y * w + x, i = p * 4;
+      let wgt = sel ? sel[p] / 255 : 1;
+      if (wgt === 0) { dst[i] = src[i]; dst[i + 1] = src[i + 1]; dst[i + 2] = src[i + 2]; dst[i + 3] = src[i + 3]; continue; }
+      let l = (y * w + (x > 0 ? x - 1 : 0)) * 4, r = (y * w + (x < w - 1 ? x + 1 : w - 1)) * 4, t = (up * w + x) * 4, b = (dn * w + x) * 4;
+      let f = wgt * s;
+      for (let c = 0; c < 3; c++) {
+        let v = src[i + c] + f * (4 * src[i + c] - src[l + c] - src[r + c] - src[t + c] - src[b + c]);
+        dst[i + c] = v < 0 ? 0 : v > 255 ? 255 : (v + 0.5) | 0;
+      }
+      dst[i + 3] = src[i + 3];
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Box blur passes (running sums, replicated edges). ch = 4 (RGBA) or 1 (mask).
+// Horizontal over rows [y0, y1); vertical over columns [x0, x1).
+// ---------------------------------------------------------------------------
+function psBoxBlurRows(src, dst, w, h, y0, y1, r, ch) {
+  if (r < 1) { for (let i = y0 * w * ch, end = y1 * w * ch; i < end; i++) dst[i] = src[i]; return; }
+  let inv = 1 / (2 * r + 1);
+  for (let y = y0; y < y1; y++) {
+    let row = y * w * ch;
+    for (let c = 0; c < ch; c++) {
+      let base = row + c;
+      let first = src[base], last = src[base + (w - 1) * ch];
+      let sum = (r + 1) * first;
+      for (let k = 0; k < r; k++) sum += src[base + (k < w ? k : w - 1) * ch];
+      for (let x = 0; x < w; x++) {
+        let addX = x + r, subX = x - r - 1;
+        sum += (addX < w ? src[base + addX * ch] : last) - (subX >= 0 ? src[base + subX * ch] : first);
+        dst[base + x * ch] = (sum * inv + 0.5) | 0;
+      }
+    }
+  }
+}
+function psBoxBlurCols(src, dst, w, h, x0, x1, r, ch) {
+  if (r < 1) { for (let y = 0; y < h; y++) for (let x = x0; x < x1; x++) for (let c = 0; c < ch; c++) { let i = (y * w + x) * ch + c; dst[i] = src[i]; } return; }
+  let inv = 1 / (2 * r + 1), stride = w * ch;
+  for (let x = x0; x < x1; x++) {
+    for (let c = 0; c < ch; c++) {
+      let base = x * ch + c;
+      let first = src[base], last = src[base + (h - 1) * stride];
+      let sum = (r + 1) * first;
+      for (let k = 0; k < r; k++) sum += src[base + (k < h ? k : h - 1) * stride];
+      for (let y = 0; y < h; y++) {
+        let addY = y + r, subY = y - r - 1;
+        sum += (addY < h ? src[base + addY * stride] : last) - (subY >= 0 ? src[base + subY * stride] : first);
+        dst[base + y * stride] = (sum * inv + 0.5) | 0;
+      }
+    }
+  }
+}
+// Three box radii approximating a Gaussian of the given sigma.
+function psBoxesForGauss(sigma) {
+  let n = 3;
+  let wIdeal = Math.sqrt((12 * sigma * sigma / n) + 1);
+  let wl = Math.floor(wIdeal); if (wl % 2 === 0) wl--;
+  let wu = wl + 2;
+  let mIdeal = (12 * sigma * sigma - n * wl * wl - 4 * n * wl - 3 * n) / (-4 * wl - 4);
+  let m = Math.round(mIdeal);
+  let sizes = [];
+  for (let i = 0; i < n; i++) sizes.push(((i < m ? wl : wu) - 1) / 2);
+  return sizes;
+}
+function psPremultiplyRows(data, w, y0, y1) {
+  for (let i = y0 * w * 4, end = y1 * w * 4; i < end; i += 4) {
+    let a = data[i + 3];
+    if (a === 255) continue;
+    if (a === 0) { data[i] = 0; data[i + 1] = 0; data[i + 2] = 0; continue; }
+    data[i] = (data[i] * a + 127) / 255 | 0; data[i + 1] = (data[i + 1] * a + 127) / 255 | 0; data[i + 2] = (data[i + 2] * a + 127) / 255 | 0;
+  }
+}
+function psUnpremultiplyRows(data, w, y0, y1) {
+  for (let i = y0 * w * 4, end = y1 * w * 4; i < end; i += 4) {
+    let a = data[i + 3];
+    if (a === 255 || a === 0) continue;
+    let r = (data[i] * 255 + (a >> 1)) / a | 0, g = (data[i + 1] * 255 + (a >> 1)) / a | 0, b = (data[i + 2] * 255 + (a >> 1)) / a | 0;
+    data[i] = r > 255 ? 255 : r; data[i + 1] = g > 255 ? 255 : g; data[i + 2] = b > 255 ? 255 : b;
+  }
+}
+// Blend `blurred` into `target` by the selection weights (target = original) over rows.
+function psMixRows(target, blurred, w, y0, y1, selection, ch) {
+  for (let p = y0 * w, end = y1 * w; p < end; p++) {
+    let wgt = selection ? selection[p] : 255;
+    if (wgt === 0) continue;
+    let i = p * ch;
+    if (wgt === 255) { for (let c = 0; c < ch; c++) target[i + c] = blurred[i + c]; continue; }
+    for (let c = 0; c < ch; c++) target[i + c] = target[i + c] + ((blurred[i + c] - target[i + c]) * wgt + 127) / 255 | 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Resampling: dst rows [y0, y1) from src. mode: "nearest" | "bilinear" | "area".
+// Works on premultiplied data for correct edges; caller premultiplies/unpremultiplies.
+// ---------------------------------------------------------------------------
+function psResampleRows(src, sw, sh, dst, dw, dh, y0, y1, mode) {
+  let sxScale = sw / dw, syScale = sh / dh;
+  if (mode === "nearest") {
+    for (let y = y0; y < y1; y++) {
+      let sy = Math.min(sh - 1, Math.floor((y + 0.5) * syScale));
+      let srow = sy * sw, drow = y * dw;
+      for (let x = 0; x < dw; x++) {
+        let sx = Math.min(sw - 1, Math.floor((x + 0.5) * sxScale));
+        let si = (srow + sx) * 4, di = (drow + x) * 4;
+        dst[di] = src[si]; dst[di + 1] = src[si + 1]; dst[di + 2] = src[si + 2]; dst[di + 3] = src[si + 3];
+      }
+    }
+    return;
+  }
+  if (mode === "bilinear" || (sxScale <= 1 && syScale <= 1)) {
+    for (let y = y0; y < y1; y++) {
+      let fy = (y + 0.5) * syScale - 0.5; if (fy < 0) fy = 0;
+      let iy = Math.floor(fy); if (iy > sh - 1) iy = sh - 1;
+      let iy1 = iy + 1 < sh ? iy + 1 : iy; let wy = fy - iy;
+      let r0 = iy * sw, r1 = iy1 * sw, drow = y * dw;
+      for (let x = 0; x < dw; x++) {
+        let fx = (x + 0.5) * sxScale - 0.5; if (fx < 0) fx = 0;
+        let ix = Math.floor(fx); if (ix > sw - 1) ix = sw - 1;
+        let ix1 = ix + 1 < sw ? ix + 1 : ix; let wx = fx - ix;
+        let a = (r0 + ix) * 4, b = (r0 + ix1) * 4, c = (r1 + ix) * 4, d = (r1 + ix1) * 4;
+        let w00 = (1 - wx) * (1 - wy), w01 = wx * (1 - wy), w10 = (1 - wx) * wy, w11 = wx * wy;
+        let di = (drow + x) * 4;
+        dst[di] = (src[a] * w00 + src[b] * w01 + src[c] * w10 + src[d] * w11 + 0.5) | 0;
+        dst[di + 1] = (src[a + 1] * w00 + src[b + 1] * w01 + src[c + 1] * w10 + src[d + 1] * w11 + 0.5) | 0;
+        dst[di + 2] = (src[a + 2] * w00 + src[b + 2] * w01 + src[c + 2] * w10 + src[d + 2] * w11 + 0.5) | 0;
+        dst[di + 3] = (src[a + 3] * w00 + src[b + 3] * w01 + src[c + 3] * w10 + src[d + 3] * w11 + 0.5) | 0;
+      }
+    }
+    return;
+  }
+  // Area averaging (downscale on at least one axis; upscaled axes fall back to point sampling weights).
+  let acc = new Float64Array(dw * 4);
+  for (let y = y0; y < y1; y++) {
+    let sy0 = y * syScale, sy1 = (y + 1) * syScale;
+    let iy0 = Math.floor(sy0), iy1 = Math.min(sh, Math.ceil(sy1));
+    for (let i = 0; i < acc.length; i++) acc[i] = 0;
+    let total = 0;
+    for (let sy = iy0; sy < iy1; sy++) {
+      let wy = Math.min(sy + 1, sy1) - Math.max(sy, sy0);
+      if (wy <= 0) continue;
+      total += wy;
+      let srow = sy * sw;
+      for (let x = 0; x < dw; x++) {
+        let sx0 = x * sxScale, sx1 = (x + 1) * sxScale;
+        let ix0 = Math.floor(sx0), ix1 = Math.min(sw, Math.ceil(sx1));
+        let ar = 0, ag = 0, ab = 0, aa = 0, wsum = 0;
+        for (let sx = ix0; sx < ix1; sx++) {
+          let wx = Math.min(sx + 1, sx1) - Math.max(sx, sx0);
+          if (wx <= 0) continue;
+          let si = (srow + sx) * 4;
+          ar += src[si] * wx; ag += src[si + 1] * wx; ab += src[si + 2] * wx; aa += src[si + 3] * wx; wsum += wx;
+        }
+        if (wsum > 0) { let f = wy / wsum; let o = x * 4; acc[o] += ar * f; acc[o + 1] += ag * f; acc[o + 2] += ab * f; acc[o + 3] += aa * f; }
+      }
+    }
+    let inv = total > 0 ? 1 / total : 0, drow = y * dw;
+    for (let x = 0; x < dw; x++) { let o = x * 4, di = (drow + x) * 4; dst[di] = (acc[o] * inv + 0.5) | 0; dst[di + 1] = (acc[o + 1] * inv + 0.5) | 0; dst[di + 2] = (acc[o + 2] * inv + 0.5) | 0; dst[di + 3] = (acc[o + 3] * inv + 0.5) | 0; }
+  }
+}
+// Single-channel resample (masks): nearest for speed with bilinear when upscaling.
+function psResampleMaskRows(src, sw, sh, dst, dw, dh, y0, y1) {
+  let sxScale = sw / dw, syScale = sh / dh;
+  for (let y = y0; y < y1; y++) {
+    let fy = (y + 0.5) * syScale - 0.5; if (fy < 0) fy = 0;
+    let iy = Math.floor(fy); if (iy > sh - 1) iy = sh - 1;
+    let iy1 = iy + 1 < sh ? iy + 1 : iy; let wy = fy - iy;
+    for (let x = 0; x < dw; x++) {
+      let fx = (x + 0.5) * sxScale - 0.5; if (fx < 0) fx = 0;
+      let ix = Math.floor(fx); if (ix > sw - 1) ix = sw - 1;
+      let ix1 = ix + 1 < sw ? ix + 1 : ix; let wx = fx - ix;
+      let v = src[iy * sw + ix] * (1 - wx) * (1 - wy) + src[iy * sw + ix1] * wx * (1 - wy) + src[iy1 * sw + ix] * (1 - wx) * wy + src[iy1 * sw + ix1] * wx * wy;
+      dst[y * dw + x] = (v + 0.5) | 0;
+    }
+  }
+}
+
+// Inverse-mapped affine transform with bilinear sampling of premultiplied RGBA.
+// inv = [a, b, c, d, e, f] maps destination (X, Y) to source (a*X + b*Y + e, c*X + d*Y + f).
+function psTransformRows(src, w, h, dst, y0, y1, inv, ch) {
+  let a = inv[0], b = inv[1], c = inv[2], d = inv[3], e = inv[4], f = inv[5];
+  for (let y = y0; y < y1; y++) {
+    for (let x = 0; x < w; x++) {
+      let sx = a * x + b * y + e, sy = c * x + d * y + f;
+      let di = (y * w + x) * ch;
+      if (sx <= -1 || sy <= -1 || sx >= w || sy >= h) { for (let k = 0; k < ch; k++) dst[di + k] = 0; continue; }
+      let ix = Math.floor(sx), iy = Math.floor(sy), wx = sx - ix, wy = sy - iy;
+      let x0 = ix, x1 = ix + 1, yy0 = iy, yy1 = iy + 1;
+      let w00 = (1 - wx) * (1 - wy), w01 = wx * (1 - wy), w10 = (1 - wx) * wy, w11 = wx * wy;
+      let ok00 = x0 >= 0 && yy0 >= 0 && x0 < w && yy0 < h, ok01 = x1 >= 0 && yy0 >= 0 && x1 < w && yy0 < h;
+      let ok10 = x0 >= 0 && yy1 >= 0 && x0 < w && yy1 < h, ok11 = x1 >= 0 && yy1 >= 0 && x1 < w && yy1 < h;
+      let i00 = (yy0 * w + x0) * ch, i01 = (yy0 * w + x1) * ch, i10 = (yy1 * w + x0) * ch, i11 = (yy1 * w + x1) * ch;
+      for (let k = 0; k < ch; k++) {
+        let v = (ok00 ? src[i00 + k] * w00 : 0) + (ok01 ? src[i01 + k] * w01 : 0) + (ok10 ? src[i10 + k] * w10 : 0) + (ok11 ? src[i11 + k] * w11 : 0);
+        dst[di + k] = (v + 0.5) | 0;
+      }
+    }
+  }
+}
+
+// Integer shift: dst (zeroed by caller) receives src moved by (dx, dy). Rows [y0, y1) of dst.
+function psShiftRows(src, w, h, dst, dx, dy, y0, y1, ch) {
+  for (let y = y0; y < y1; y++) {
+    let sy = y - dy;
+    if (sy < 0 || sy >= h) continue;
+    let xStart = dx > 0 ? dx : 0, xEnd = dx < 0 ? w + dx : w;
+    if (xEnd <= xStart) continue;
+    let sOff = (sy * w + (xStart - dx)) * ch, dOff = (y * w + xStart) * ch, count = (xEnd - xStart) * ch;
+    for (let k = 0; k < count; k++) dst[dOff + k] = src[sOff + k];
+  }
+}
+
+// Bounds of nonzero alpha (RGBA) or nonzero mask values; acc = { l, t, r, b } running across row slices.
+function psBoundsRows(data, w, y0, y1, acc, ch) {
+  for (let y = y0; y < y1; y++) {
+    let row = y * w;
+    let x0 = -1, x1 = -1;
+    for (let x = 0; x < w; x++) { if (data[(row + x) * ch + (ch - 1)]) { x0 = x; break; } }
+    if (x0 < 0) continue;
+    for (let x = w - 1; x >= x0; x--) { if (data[(row + x) * ch + (ch - 1)]) { x1 = x; break; } }
+    if (x0 < acc.l) acc.l = x0;
+    if (x1 > acc.r) acc.r = x1;
+    if (y < acc.t) acc.t = y;
+    if (y > acc.b) acc.b = y;
+  }
+}
+function psBoundsNew(w, h) { return { l: w, t: h, r: -1, b: -1 }; }
+function psBoundsResult(acc) { return acc.r < 0 ? null : { x: acc.l, y: acc.t, width: acc.r - acc.l + 1, height: acc.b - acc.t + 1 }; }
+
+// ---------------------------------------------------------------------------
+// Selection shapes into a mask (Uint8Array w*h), rows [y0, y1). Anti-aliased.
+// ---------------------------------------------------------------------------
+function psRectCoverage(px, py, x0, y0, x1, y1) {
+  let ox = Math.min(px + 1, x1) - Math.max(px, x0); if (ox <= 0) return 0;
+  let oy = Math.min(py + 1, y1) - Math.max(py, y0); if (oy <= 0) return 0;
+  return ox * oy;
+}
+function psEllipseCoverage(px, py, cx, cy, rx, ry) {
+  if (rx <= 0 || ry <= 0) return 0;
+  let dx = (px + 0.5 - cx) / rx, dy = (py + 0.5 - cy) / ry;
+  let f = dx * dx + dy * dy;
+  let gx = 2 * (px + 0.5 - cx) / (rx * rx), gy = 2 * (py + 0.5 - cy) / (ry * ry);
+  let g = Math.sqrt(gx * gx + gy * gy);
+  if (g < 1e-9) return f <= 1 ? 1 : 0;
+  let dist = (f - 1) / g;
+  let cov = 0.5 - dist;
+  return cov < 0 ? 0 : cov > 1 ? 1 : cov;
+}
+function psRectMaskRows(mask, w, y0, y1, rx0, ry0, rx1, ry1, value) {
+  let xs = Math.max(0, Math.floor(Math.min(rx0, rx1))), xe = Math.min(w - 1, Math.ceil(Math.max(rx0, rx1)));
+  let ax = Math.min(rx0, rx1), bx = Math.max(rx0, rx1), ay = Math.min(ry0, ry1), by = Math.max(ry0, ry1);
+  for (let y = y0; y < y1; y++) {
+    if (y + 1 <= ay || y >= by) continue;
+    for (let x = xs; x <= xe; x++) { let c = psRectCoverage(x, y, ax, ay, bx, by); if (c > 0) mask[y * w + x] = (c * value + 0.5) | 0; }
+  }
+}
+function psEllipseMaskRows(mask, w, y0, y1, rx0, ry0, rx1, ry1, value) {
+  let cx = (rx0 + rx1) / 2, cy = (ry0 + ry1) / 2, rx = Math.abs(rx1 - rx0) / 2, ry = Math.abs(ry1 - ry0) / 2;
+  let xs = Math.max(0, Math.floor(cx - rx - 1)), xe = Math.min(w - 1, Math.ceil(cx + rx + 1));
+  for (let y = y0; y < y1; y++) {
+    if (y + 1 < cy - ry - 1 || y > cy + ry + 1) continue;
+    for (let x = xs; x <= xe; x++) { let c = psEllipseCoverage(x, y, cx, cy, rx, ry); if (c > 0) mask[y * w + x] = (c * value + 0.5) | 0; }
+  }
+}
+// Polygon fill (even-odd) with 4 vertical subsamples per pixel row; points = [x0, y0, x1, y1, ...].
+function psPolygonMaskRows(mask, w, y0, y1, points, value) {
+  let n = points.length >> 1;
+  if (n < 3) return;
+  let xs = new Float64Array(n + 1);
+  let cover = new Float32Array(w);
+  for (let y = y0; y < y1; y++) {
+    for (let x = 0; x < w; x++) cover[x] = 0;
+    let any = false;
+    for (let s = 0; s < 4; s++) {
+      let sy = y + (s + 0.5) / 4;
+      let count = 0;
+      for (let i = 0; i < n; i++) {
+        let ax = points[i * 2], ay = points[i * 2 + 1], j = (i + 1) % n, bx = points[j * 2], by = points[j * 2 + 1];
+        if ((ay <= sy && by > sy) || (by <= sy && ay > sy)) xs[count++] = ax + (sy - ay) * (bx - ax) / (by - ay);
+      }
+      if (count < 2) continue;
+      // insertion sort of crossings
+      for (let i = 1; i < count; i++) { let v = xs[i], k = i - 1; while (k >= 0 && xs[k] > v) { xs[k + 1] = xs[k]; k--; } xs[k + 1] = v; }
+      for (let i = 0; i + 1 < count; i += 2) {
+        let xa = xs[i], xb = xs[i + 1];
+        if (xb <= 0 || xa >= w) continue;
+        if (xa < 0) xa = 0; if (xb > w) xb = w;
+        let ia = Math.floor(xa), ib = Math.floor(xb);
+        if (ia === ib) { cover[ia] += (xb - xa) * 0.25; any = true; continue; }
+        cover[ia] += (ia + 1 - xa) * 0.25;
+        for (let x = ia + 1; x < ib && x < w; x++) cover[x] += 0.25;
+        if (ib < w) cover[ib] += (xb - ib) * 0.25;
+        any = true;
+      }
+    }
+    if (!any) continue;
+    let row = y * w;
+    for (let x = 0; x < w; x++) { let c = cover[x]; if (c > 0) { if (c > 1) c = 1; mask[row + x] = (c * value + 0.5) | 0; } }
+  }
+}
+// Combine a new shape mask into the current selection: mode "replace" | "add" | "subtract" | "intersect".
+function psCombineMaskRows(current, shape, w, y0, y1, mode) {
+  let s = y0 * w, e = y1 * w;
+  if (mode === "add") { for (let p = s; p < e; p++) { let v = current[p] + shape[p]; current[p] = v > 255 ? 255 : v; } }
+  else if (mode === "subtract") { for (let p = s; p < e; p++) { let v = current[p] - shape[p]; current[p] = v < 0 ? 0 : v; } }
+  else if (mode === "intersect") { for (let p = s; p < e; p++) current[p] = (current[p] * shape[p] + 127) / 255 | 0; }
+  else { for (let p = s; p < e; p++) current[p] = shape[p]; }
+}
+
+// Source-over a solid colour with per-pixel alpha (coverage * opacity * selection) onto a layer. Rows [y0, y1).
+// coverageFn(x, y) -> 0..1. Used by shapes, gradients and bucket fills.
+function psPaintRows(data, w, y0, y1, rgb, opacity, selection, coverageFn, xs, xe) {
+  let cr = rgb[0], cg = rgb[1], cb = rgb[2];
+  for (let y = y0; y < y1; y++) {
+    for (let x = xs; x <= xe; x++) {
+      let cov = coverageFn(x, y);
+      if (cov <= 0) continue;
+      let p = y * w + x;
+      let a = cov * opacity * (selection ? selection[p] / 255 : 1);
+      if (a <= 0) continue;
+      if (a > 1) a = 1;
+      let i = p * 4;
+      let da = data[i + 3] / 255;
+      let oa = a + da * (1 - a);
+      if (oa <= 0) continue;
+      let wS = a / oa, wD = 1 - wS;
+      data[i] = (cr * wS + data[i] * wD + 0.5) | 0; data[i + 1] = (cg * wS + data[i + 1] * wD + 0.5) | 0; data[i + 2] = (cb * wS + data[i + 2] * wD + 0.5) | 0;
+      data[i + 3] = (oa * 255 + 0.5) | 0;
+    }
+  }
+}
+// Source-over a per-pixel colour (gradient) onto a layer.
+function psGradientRows(data, w, y0, y1, gx0, gy0, gx1, gy1, radial, c0, c1, opacity, selection) {
+  let dx = gx1 - gx0, dy = gy1 - gy0;
+  let len2 = dx * dx + dy * dy;
+  if (len2 < 1) { dx = 1; dy = 0; len2 = 1; }
+  let len = Math.sqrt(len2);
+  for (let y = y0; y < y1; y++) {
+    for (let x = 0; x < w; x++) {
+      let px = x + 0.5 - gx0, py = y + 0.5 - gy0;
+      let t = radial ? Math.sqrt(px * px + py * py) / len : (px * dx + py * dy) / len2;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      let p = y * w + x;
+      let a = opacity * (selection ? selection[p] / 255 : 1);
+      if (a <= 0) continue;
+      let r = c0[0] + (c1[0] - c0[0]) * t, g = c0[1] + (c1[1] - c0[1]) * t, b = c0[2] + (c1[2] - c0[2]) * t;
+      let i = p * 4;
+      let da = data[i + 3] / 255;
+      let oa = a + da * (1 - a);
+      let wS = a / oa, wD = 1 - wS;
+      data[i] = (r * wS + data[i] * wD + 0.5) | 0; data[i + 1] = (g * wS + data[i + 1] * wD + 0.5) | 0; data[i + 2] = (b * wS + data[i + 2] * wD + 0.5) | 0;
+      data[i + 3] = (oa * 255 + 0.5) | 0;
+    }
+  }
+}
+// Erase (destination-out) by a mask with opacity, rows [y0, y1).
+function psEraseRows(data, w, y0, y1, mask, opacity) {
+  for (let p = y0 * w, end = y1 * w; p < end; p++) {
+    let m = mask ? mask[p] : 255;
+    if (!m) continue;
+    let i = p * 4;
+    let a = data[i + 3];
+    if (!a) continue;
+    let keep = 1 - (m / 255) * opacity;
+    data[i + 3] = (a * keep + 0.5) | 0;
+    if (data[i + 3] === 0) { data[i] = 0; data[i + 1] = 0; data[i + 2] = 0; }
+  }
+}
+// Apply a layer mask permanently: alpha *= mask/255.
+function psApplyMaskRows(data, w, y0, y1, mask) {
+  for (let p = y0 * w, end = y1 * w; p < end; p++) {
+    let i = p * 4, m = mask[p];
+    if (m === 255) continue;
+    data[i + 3] = (data[i + 3] * m + 127) / 255 | 0;
+    if (data[i + 3] === 0) { data[i] = 0; data[i + 1] = 0; data[i + 2] = 0; }
+  }
+}
+
+// Distance from point to segment.
+function psSegmentDistance(px, py, ax, ay, bx, by) {
+  let vx = bx - ax, vy = by - ay, wx = px - ax, wy = py - ay;
+  let len2 = vx * vx + vy * vy;
+  let t = len2 > 0 ? (wx * vx + wy * vy) / len2 : 0;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  let dx = px - (ax + vx * t), dy = py - (ay + vy * t);
+  return Math.sqrt(dx * dx + dy * dy);
+}
