@@ -509,7 +509,7 @@ const App: React.FC = () => {
 
   // The same bar as the site, the runtime and Builder, over every view: the
   // way between them.
-  const bar = <ProductBar current="studio" layout="app" />;
+  const bar = <ProductBar current="studio" />;
 
   // Dashboard
   if (view === 'dashboard') {

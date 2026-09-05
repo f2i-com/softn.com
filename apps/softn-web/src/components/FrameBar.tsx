@@ -37,8 +37,11 @@ const frameBarStyles = `
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    min-height: 42px;
-    padding: 0.35rem 0.6rem 0.35rem 0.6rem;
+    /* The product bar's height and inset, so the mark stays where it was
+       when the app opened: same size, same spot, only the bar around it
+       changes. */
+    min-height: 3rem;
+    padding: 0.35rem var(--gutter);
     background: var(--ink-2);
     border-bottom: 1px solid var(--line-soft);
     font-family: var(--body);
@@ -51,8 +54,14 @@ const frameBarStyles = `
     align-items: center;
     gap: 0.5rem;
     padding: 0.25rem 0.5rem 0.25rem 0.3rem;
+    margin-left: -0.3rem;
     border: none;
     border-radius: 7px;
+    flex-shrink: 0;
+  }
+  .softn-frame-home svg {
+    /* The mark is never the thing that gives way when the bar is crowded. */
+    flex-shrink: 0;
     background: transparent;
     color: var(--paper);
     font: inherit;
@@ -161,12 +170,11 @@ const frameBarStyles = `
   .softn-frame-menu-sep { height: 1px; background: var(--line-soft); margin: 4px 6px; }
 
   @media (max-width: 640px) {
-    .softn-frame-bar { padding: 0.3rem 0.4rem; gap: 0.4rem; }
+    .softn-frame-bar { padding: 0.3rem var(--gutter); gap: 0.4rem; }
     .softn-frame-btn { padding: 0.35rem 0.5rem; }
     .softn-frame-hide-label, .softn-frame-home small { display: none; }
   }
   @media (pointer: coarse) {
-    .softn-frame-bar { min-height: 44px; }
     .softn-frame-btn, .softn-frame-menu-btn, .softn-frame-home { min-height: 36px; }
   }
 `;
@@ -295,7 +303,7 @@ export function FrameBar({ tab, onHome, onClose, onHide, fullscreenTarget, onDow
       <div className="softn-frame-bar">
         <div className="softn-frame-left">
           <button type="button" className="softn-frame-home" onClick={onHome} title="Back to the runtime. The app keeps running.">
-            <Mark size={18} radius={5} title="SoftN" />
+            <Mark size={22} radius={6} title="SoftN" />
             <small>runtime</small>
           </button>
           <span className="softn-frame-sep" aria-hidden="true">/</span>

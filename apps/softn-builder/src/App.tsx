@@ -1176,7 +1176,7 @@ function App() {
   return (
     <div style={styles.app}>
       {/* The same bar as the site, the runtime and Studio: the way between them. */}
-      <ProductBar current="builder" layout="app" />
+      <ProductBar current="builder" />
       <Toolbar
         view={view}
         onViewChange={setView}

@@ -14,6 +14,7 @@ export function Nav(): React.ReactElement {
   return (
     <ProductBar
       current={current}
+      sticky
       urls={{ home: '/', apps: '/apps', publish: '/publish', runtime: WEB_HREF, studio: STUDIO_HREF, builder: BUILDER_HREF, repo: REPO_URL }}
     />
   );
