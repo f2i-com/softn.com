@@ -2146,7 +2146,6 @@ export function Scene3D({
     const built = buildComposer(renderer, scene, cam, effectsRef.current, size.x, size.y);
     composerRef.current = built ? built.composer : null;
     grainPassRef.current = built ? built.grain : null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectsKey]);
 
   // Update background
