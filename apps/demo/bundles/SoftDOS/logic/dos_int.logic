@@ -36,6 +36,9 @@ let DOS_PIT_WRITE_STATE = 0;
 // cycles too. main.logic keeps DOS_CPU_HZ near the rate actually being
 // achieved, which is what makes game time track real time.
 let DOS_CPU_HZ = 4000000;
+let DOS_SPK_STATE = 0;            // PIT channel 2: which byte of the divisor is next
+let DOS_SPK_LATCH = 0;
+let DOS_SPK_ACCESS = 3;           // how the divisor arrives: 1 low byte, 2 high byte, 3 both
 let DOS_TIMER_NEXT = 0;
 let DOS_TICKS = 0;
 
@@ -115,6 +118,49 @@ function dosInt_pumpKeys() {
 
 // The PIC's interrupt mask (port 0x21). Bit n masks IRQ n.
 let DOS_PIC_MASK = 0x00;
+// The rest of the two 8259s that a handler looks at: which lines are in
+// service (set when an interrupt is entered, cleared by the handler's EOI)
+// and which are requesting, and which of the two a read of the command
+// port answers. Delivery is not gated on the in-service bits; a BIOS-level
+// handler here never sends an EOI, so gating would stall the machine.
+let DOS_PIC_ISR = 0;
+let DOS_PIC_ISR2 = 0;
+let DOS_PIC_SEL = 0;              // 3: the command port reads the ISR; otherwise the IRR
+let DOS_PIC_SEL2 = 0;
+let DOS_PIC_MASK2 = 0x00;
+
+function dosPic_inService(irq) {
+  if (irq < 8) DOS_PIC_ISR |= (1 << irq);
+  else { DOS_PIC_ISR2 |= (1 << (irq - 8)); DOS_PIC_ISR |= 0x04; }
+}
+
+// A write to a command port: ICW1 restarts the controller, OCW3 selects
+// what a read answers, OCW2 is an end-of-interrupt.
+function dosPic_command(slave, v) {
+  if (v & 0x10) { if (slave) { DOS_PIC_ISR2 = 0; DOS_PIC_SEL2 = 0; } else { DOS_PIC_ISR = 0; DOS_PIC_SEL = 0; } return; }
+  if (v & 0x08) { if (slave) DOS_PIC_SEL2 = v & 3; else DOS_PIC_SEL = v & 3; return; }
+  if ((v & 0x20) === 0) return;
+  let isr = slave ? DOS_PIC_ISR2 : DOS_PIC_ISR;
+  if (v & 0x40) isr &= ~(1 << (v & 7));                       // specific
+  else { for (let b = 0; b < 8; b++) if (isr & (1 << b)) { isr &= ~(1 << b); break; } }   // the highest priority in service
+  if (slave) DOS_PIC_ISR2 = isr; else DOS_PIC_ISR = isr;
+}
+
+// The request register: lines with something waiting.
+function dosPic_requests() {
+  let r = 0;
+  if (DOS_TIMER_NEXT !== 0 && DOS_TOTAL_CYCLES >= DOS_TIMER_NEXT) r |= 0x01;
+  if (DOS_KEY_OBF === 0 && DOS_SCAN_HEAD !== DOS_SCAN_TAIL) r |= 0x02;
+  if (DOS_SB_IRQ_PENDING === 1 && DOS_SB_IRQ < 8) r |= (1 << DOS_SB_IRQ);
+  return r;
+}
+
+function dosPic_read(port) {
+  if (port === 0x20) return (DOS_PIC_SEL === 3) ? DOS_PIC_ISR : dosPic_requests();
+  if (port === 0xA0) return (DOS_PIC_SEL2 === 3) ? DOS_PIC_ISR2 : 0;
+  if (port === 0x21) return DOS_PIC_MASK & 0xFF;
+  return DOS_PIC_MASK2 & 0xFF;
+}
 
 let DOS_INT_DELIVERED = 0;
 
@@ -164,9 +210,14 @@ function dosInt_reset() {
   DOS_KEY_SHIFT = 0;
   dosMouse_reset();
   DOS_MOUSE_USED = 0;
+  dosSb_reset();
+  dosOpl_init();
+  DOS_SPK_STATE = 0;
   DOS_TIMER_NEXT = 0;
   DOS_TICKS = 0;
   DOS_PIC_MASK = 0x00;
+  DOS_PIC_MASK2 = 0x00;
+  DOS_PIC_ISR = 0; DOS_PIC_ISR2 = 0; DOS_PIC_SEL = 0; DOS_PIC_SEL2 = 0;
   DOS_INT_DELIVERED = 0;
 }
 
@@ -245,7 +296,7 @@ function dosInt_poll() {
     if (t >= 0x1800B0) { t = 0; DOS_RAM[0x00470] = 1; }     // midnight
     dosMmu_write32(0x0046C, t);
     DOS_TIMER_NEXT = DOS_TOTAL_CYCLES + dosInt_cyclesPerTick();
-    if (DOS_VEC_SET[0x08] === 1 && dosInt_ready(0) === 1) { dosInt_enter(0x08); return 1; }
+    if (DOS_VEC_SET[0x08] === 1 && dosInt_ready(0) === 1) { dosPic_inService(0); dosInt_enter(0x08); return 1; }
   }
 
   // IRQ1, the keyboard: the next scan code moves into the output buffer
@@ -256,7 +307,7 @@ function dosInt_poll() {
     if ((DOS_PIC_MASK >> 1) & 1) {
       dosInt_loadScan();
     } else if (DOS_VEC_SET[0x09] === 1) {
-      if (dosInt_ready(1) === 1) { dosInt_loadScan(); dosInt_enter(0x09); return 1; }
+      if (dosInt_ready(1) === 1) { dosInt_loadScan(); dosPic_inService(1); dosInt_enter(0x09); return 1; }
     } else {
       dosInt_loadScan();
       dosInt_biosKey();
@@ -269,6 +320,19 @@ function dosInt_poll() {
     dosMouse_enterHandler();
     return 1;
   }
+
+  // The Sound Blaster's interrupt: a block of samples has played. With no
+  // handler installed it is dropped, as a masked line would be.
+  if (DOS_SB_IRQ_PENDING === 1) {
+    let vec = (DOS_SB_IRQ < 8) ? (0x08 + DOS_SB_IRQ) : (0x70 + DOS_SB_IRQ - 8);
+    if (DOS_VEC_SET[vec] !== 1) DOS_SB_IRQ_PENDING = 0;
+    else if (dosInt_ready(DOS_SB_IRQ) === 1) {
+      DOS_SB_IRQ_PENDING = 0;
+      dosPic_inService(DOS_SB_IRQ);
+      dosInt_enter(vec);
+      return 1;
+    }
+  }
   return 0;
 }
 
@@ -280,6 +344,7 @@ function dosInt_due() {
   if (DOS_TIMER_NEXT === 0 || DOS_TOTAL_CYCLES >= DOS_TIMER_NEXT) return 1;
   if (DOS_KEY_OBF === 0 && DOS_SCAN_HEAD !== DOS_SCAN_TAIL) return 1;
   if (dosMouse_pending() === 1) return 1;
+  if (DOS_SB_IRQ_PENDING === 1) return 1;
   return 0;
 }
 
@@ -295,8 +360,9 @@ function dosInt_cyclesPerTick() {
 // The PIT command and data ports, so a program can choose its own tick rate.
 function dosInt_pitWrite(port, v) {
   if (port === 0x43) {
-    // Only channel 0 in lobyte/hibyte mode matters here.
+    // Channel 0 in lobyte/hibyte mode, and channel 2 for the speaker.
     if (((v >> 6) & 3) === 0) DOS_PIT_WRITE_STATE = 0;
+    if (((v >> 6) & 3) === 2) { DOS_SPK_STATE = 0; let acc = (v >> 4) & 3; if (acc !== 0) DOS_SPK_ACCESS = acc; }
     return;
   }
   if (port === 0x40) {

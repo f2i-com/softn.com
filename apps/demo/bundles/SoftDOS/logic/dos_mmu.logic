@@ -113,8 +113,10 @@ function dosMmu_in8(port) {
     return (count >> 8) & 0xFF;
   }
 
-  // 8259 mask register.
-  if (p === 0x21) return DOS_PIC_MASK & 0xFF;
+  // 8259 mask register, and the command port, which answers the request
+  // or in-service register: nothing is pending, so a program that drains
+  // stale interrupts by reading it and sending EOIs stops at once.
+  if (p === 0x20 || p === 0x21 || p === 0xA0 || p === 0xA1) return dosPic_read(p);
 
   // VGA Input Status #1 (CRTC / Vertical Retrace)
   // Input status 1. Bit 3 is vertical retrace, which Doom polls for its
@@ -144,10 +146,11 @@ function dosMmu_in8(port) {
     return colorVal;
   }
 
-  // Sound Blaster DSP Read Status
-  if (p === 0x22E) {
-    return 0x80; // Data ready
-  }
+  // The Sound Blaster, the AdLib, and the DMA controller it plays through.
+  if (p >= 0x220 && p <= 0x22F) return dosSb_portRead(p);
+  if (p === 0x388 || p === 0x38A) return dosOpl_status();
+  if (p === 0x389 || p === 0x38B) return 0xFF;
+  if (p < 0x10 || p === 0x81 || p === 0x82 || p === 0x83 || p === 0x87) return dosDma_read(p);
 
   return 0xFF;
 }
@@ -165,8 +168,10 @@ function dosMmu_out8(port, val) {
 
   // 8259 interrupt controller. 0x20 takes the end-of-interrupt a handler
   // sends before its IRET; 0x21 is the mask.
-  if (p === 0x20) return;
+  if (p === 0x20) { dosPic_command(0, v); return; }
+  if (p === 0xA0) { dosPic_command(1, v); return; }
   if (p === 0x21) { DOS_PIC_MASK = v; return; }
+  if (p === 0xA1) { DOS_PIC_MASK2 = v; return; }
 
   // PC Speaker Control (Port 0x61)
   if (p === 0x61) {
@@ -174,14 +179,26 @@ function dosMmu_out8(port, val) {
     return;
   }
 
-  // PIT Timer Channel 2 (Port 0x42)
+  // PIT channel 2 drives the speaker: the divisor arrives low byte then
+  // high byte after a mode write that names the channel.
   if (p === 0x42) {
-    // Set frequency divisor for speaker
-    if (v > 0) {
-      DOS_SPEAKER_FREQ = Math.floor(1193180 / Math.max(100, v << 4));
+    let div = 0;
+    if (DOS_SPK_ACCESS === 1) div = v;
+    else if (DOS_SPK_ACCESS === 2) div = v << 8;
+    else {
+      if (DOS_SPK_STATE === 0) { DOS_SPK_LATCH = v; DOS_SPK_STATE = 1; return; }
+      div = (v << 8) | DOS_SPK_LATCH;
+      DOS_SPK_STATE = 0;
     }
+    if (div === 0) div = 65536;
+    DOS_SPEAKER_FREQ = Math.floor(1193182 / Math.max(18, div));
     return;
   }
+
+  // The Sound Blaster, the AdLib, and the DMA controller.
+  if (p >= 0x220 && p <= 0x22F) { dosSb_portWrite(p, v); return; }
+  if (p >= 0x388 && p <= 0x38B) { dosOpl_portWrite(p, v); return; }
+  if (p < 0x10 || p === 0x81 || p === 0x82 || p === 0x83 || p === 0x87) { dosDma_write(p, v); return; }
 
   // VGA DAC Write Address (Port 0x3C8)
   if (p === 0x3C8) {

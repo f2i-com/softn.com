@@ -1,0 +1,398 @@
+// dos_opl.logic — the AdLib: a YM3812 (OPL2) FM synthesizer at ports 388h/389h.
+//
+// Nine two-operator channels. A program writes registers through an index
+// port and a data port; the renderer turns the operator state into samples
+// at the host's 48 kHz. The state lives in typed arrays, allocated once and
+// never replaced, so the render loop can be compiled on the host through
+// the accel capability with views over the same arrays; without it the
+// guest runs the same code. Rhythm mode (register BDh bit 5) is not
+// modelled: channels 6-8 stay melodic, which is what most music uses.
+
+// Operator record, 16 doubles each, 18 operators.
+let OPL_PHASE = 0;      // fraction of a cycle
+let OPL_INC = 1;        // per sample
+let OPL_ENV = 2;        // attenuation in dB, 0 loud .. 96 silent
+let OPL_STAGE = 3;      // 0 off, 1 attack, 2 decay, 3 sustain, 4 release, 5 percussive fall
+let OPL_ATTK = 4;       // attack factor per sample, 1 for instant, 0 for none
+let OPL_DECS = 5;       // decay step, dB per sample
+let OPL_SUSL = 6;       // sustain level, dB
+let OPL_RELS = 7;       // release step, dB per sample
+let OPL_TOTAL = 8;      // total level + key scale level, dB
+let OPL_AM = 9;         // tremolo on
+let OPL_VIB = 10;       // vibrato on
+let OPL_EGT = 11;       // 1: hold at sustain; 0: fall through at the release rate
+let OPL_WAVE = 12;      // waveform 0..3, times 1024
+let OPL_OUT1 = 13;      // last output, for feedback
+let OPL_OUT2 = 14;      // the one before
+let OPL_KEY = 15;       // key on
+
+let DOS_OPL_REG = new Uint8Array(256);
+let DOS_OPL_OP = new Float64Array(18 * 16);
+let DOS_OPL_CH = new Float64Array(9 * 8);        // [0] feedback factor, [1] additive, [2] fnum, [3] block, [4] key
+let DOS_OPL_MAP = new Int32Array(18);            // channel c: ops MAP[2c], MAP[2c+1]
+let DOS_OPL_LFO = new Float64Array(8);           // [0] tremolo phase, [1] vibrato phase, [2] tremolo dB, [3] vibrato depth
+let DOS_OPL_WAVE_T = new Float32Array(4 * 1024);
+let DOS_OPL_EXPT = new Float32Array(1024);       // dB*10 -> amplitude
+let DOS_OPL_OUT = new Float32Array(4096);        // rendered samples, mono
+let DOS_OPL_ATTACK = new Float64Array(64);       // per effective rate
+let DOS_OPL_DECAY = new Float64Array(64);
+let DOS_OPL_SLOT_OF = new Int32Array(32);        // register offset -> operator, -1 for gaps
+let DOS_OPL_CH_OF = new Int32Array(18);          // operator -> channel
+let DOS_OPL_MULT = [0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 12, 12, 15, 15];
+let DOS_OPL_KSLROM = [0, 32, 40, 45, 48, 51, 53, 55, 56, 58, 59, 60, 61, 62, 63, 64];
+let DOS_OPL_KSLSHIFT = [8, 1, 2, 0];
+let DOS_OPL_RATE = 48000;
+let DOS_OPL_WSE = 0;              // waveform select enabled (register 01h bit 5)
+let DOS_OPL_INDEX = 0;
+let DOS_OPL_WRITES = 0;           // register writes, for the tests
+// Timers, which programs use only to detect the chip: the status register
+// shows a timer's flag once it has expired, some cycles after it started.
+let DOS_OPL_T1 = 0;
+let DOS_OPL_T2 = 0;
+let DOS_OPL_T1_AT = -1;
+let DOS_OPL_T2_AT = -1;
+let DOS_OPL_FLAGS = 0;
+let DOS_OPL_MASK = 0;
+let DOS_OPL_ACCEL = -1;           // the host's copy of the renderer, or -1
+let DOS_OPL_READY = 0;
+
+function dosOpl_init() {
+  if (DOS_OPL_READY === 1) { dosOpl_reset(); return; }
+  DOS_OPL_READY = 1;
+  // Waveforms: sine; half-sine; absolute sine; quarter pulses.
+  for (let i = 0; i < 1024; i++) {
+    let s = Math.sin((i / 1024) * 6.283185307179586);
+    DOS_OPL_WAVE_T[i] = s;
+    DOS_OPL_WAVE_T[1024 + i] = (s > 0) ? s : 0;
+    DOS_OPL_WAVE_T[2048 + i] = (s < 0) ? -s : s;
+    DOS_OPL_WAVE_T[3072 + i] = ((i & 255) < 128) ? ((s < 0) ? -s : s) : 0;
+  }
+  // Attenuation in tenths of a dB to amplitude.
+  for (let i = 0; i < 1024; i++) DOS_OPL_EXPT[i] = Math.pow(10, -(i / 10) / 20);
+  dosOpl_setRate(DOS_OPL_RATE);
+  // Register offset to operator, and operator to channel.
+  let offs = [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21];
+  for (let i = 0; i < 32; i++) DOS_OPL_SLOT_OF[i] = -1;
+  for (let s = 0; s < 18; s++) DOS_OPL_SLOT_OF[offs[s]] = s;
+  for (let c = 0; c < 9; c++) {
+    let op1 = c + Math.floor(c / 3) * 3;
+    DOS_OPL_MAP[c * 2] = op1;
+    DOS_OPL_MAP[c * 2 + 1] = op1 + 3;
+    DOS_OPL_CH_OF[op1] = c;
+    DOS_OPL_CH_OF[op1 + 3] = c;
+  }
+  dosOpl_reset();
+}
+
+// The rate the renderer produces: 48 kHz on the host, half that when the
+// guest has to do it. Envelope rates and the LFOs follow.
+function dosOpl_setRate(rate) {
+  DOS_OPL_RATE = rate;
+  // Envelope rates from the datasheet's timing: rate 4 attacks in 2826 ms
+  // and decays in 39281 ms; four more halves either. Attack multiplies the
+  // attenuation down each sample; decay and release subtract.
+  for (let r = 0; r < 64; r++) {
+    if (r === 0) { DOS_OPL_ATTACK[r] = 0; DOS_OPL_DECAY[r] = 0; continue; }
+    let ta = 5652.48 * Math.pow(2, -r / 4);
+    let td = 78561.28 * Math.pow(2, -r / 4);
+    let na = ta * rate / 1000;
+    DOS_OPL_ATTACK[r] = (r >= 60) ? 1 : (1 - Math.pow(0.003, 1 / na));
+    DOS_OPL_DECAY[r] = 96 / (td * rate / 1000);
+  }
+  DOS_OPL_LFO[4] = 3.7 / rate;       // tremolo, per sample
+  DOS_OPL_LFO[5] = 6.07 / rate;      // vibrato
+  if (DOS_OPL_READY === 1) dosOpl_refreshAll();
+}
+
+function dosOpl_reset() {
+  DOS_OPL_REG.fill(0);
+  DOS_OPL_OP.fill(0);
+  DOS_OPL_CH.fill(0);
+  DOS_OPL_LFO[0] = 0; DOS_OPL_LFO[1] = 0;
+  DOS_OPL_LFO[2] = 1;
+  DOS_OPL_LFO[3] = 0.004;
+  for (let s = 0; s < 18; s++) {
+    DOS_OPL_OP[s * 16 + OPL_ENV] = 96;
+    DOS_OPL_OP[s * 16 + OPL_TOTAL] = 0;
+  }
+  DOS_OPL_WSE = 0;
+  DOS_OPL_INDEX = 0;
+  DOS_OPL_T1 = 0; DOS_OPL_T2 = 0; DOS_OPL_T1_AT = -1; DOS_OPL_T2_AT = -1;
+  DOS_OPL_FLAGS = 0; DOS_OPL_MASK = 0;
+}
+
+// The status port. Bit 7: any timer expired; 6: timer 1; 5: timer 2. The
+// two low bits read as set on an OPL2, which is how a program tells it
+// from an OPL3.
+function dosOpl_status() {
+  if (DOS_OPL_T1_AT >= 0 && DOS_TOTAL_CYCLES >= DOS_OPL_T1_AT && (DOS_OPL_MASK & 0x40) === 0) DOS_OPL_FLAGS |= 0x40;
+  if (DOS_OPL_T2_AT >= 0 && DOS_TOTAL_CYCLES >= DOS_OPL_T2_AT && (DOS_OPL_MASK & 0x20) === 0) DOS_OPL_FLAGS |= 0x20;
+  let f = DOS_OPL_FLAGS & 0x60;
+  return (f !== 0 ? 0x80 : 0) | f | 0x06;
+}
+
+function dosOpl_portWrite(port, v) {
+  if (port === 0x388 || port === 0x38A) { DOS_OPL_INDEX = v & 0xFF; return; }
+  if (port === 0x389) { dosOpl_write(DOS_OPL_INDEX, v & 0xFF); return; }
+  // 38Bh is the OPL3's second bank; there is none here.
+}
+
+function dosOpl_write(reg, val) {
+  DOS_OPL_REG[reg] = val;
+  DOS_OPL_WRITES++;
+  if (reg === 0x01) { DOS_OPL_WSE = (val & 0x20) ? 1 : 0; dosOpl_refreshAll(); return; }
+  if (reg === 0x02) { DOS_OPL_T1 = val; return; }
+  if (reg === 0x03) { DOS_OPL_T2 = val; return; }
+  if (reg === 0x04) {
+    if (val & 0x80) { DOS_OPL_FLAGS = 0; return; }        // IRQ reset: flags clear
+    DOS_OPL_MASK = val & 0x60;
+    // A started timer expires a little later. Detection code waits with a
+    // short loop of port reads, so this is a few dozen cycles rather than
+    // the chip's 80 microseconds at the emulated clock.
+    let soon = 32;
+    DOS_OPL_T1_AT = (val & 0x01) ? (DOS_TOTAL_CYCLES + soon) : -1;
+    DOS_OPL_T2_AT = (val & 0x02) ? (DOS_TOTAL_CYCLES + soon * 4) : -1;
+    return;
+  }
+  if (reg === 0xBD) {
+    DOS_OPL_LFO[2] = (val & 0x80) ? 4.8 : 1;
+    DOS_OPL_LFO[3] = (val & 0x40) ? 0.008 : 0.004;
+    return;
+  }
+  if (reg >= 0x20 && reg <= 0x35) { dosOpl_updateOp(DOS_OPL_SLOT_OF[reg - 0x20]); return; }
+  if (reg >= 0x40 && reg <= 0x55) { dosOpl_updateOp(DOS_OPL_SLOT_OF[reg - 0x40]); return; }
+  if (reg >= 0x60 && reg <= 0x75) { dosOpl_updateOp(DOS_OPL_SLOT_OF[reg - 0x60]); return; }
+  if (reg >= 0x80 && reg <= 0x95) { dosOpl_updateOp(DOS_OPL_SLOT_OF[reg - 0x80]); return; }
+  if (reg >= 0xE0 && reg <= 0xF5) { dosOpl_updateOp(DOS_OPL_SLOT_OF[reg - 0xE0]); return; }
+  if (reg >= 0xA0 && reg <= 0xA8) { dosOpl_updateChannel(reg - 0xA0); return; }
+  if (reg >= 0xB0 && reg <= 0xB8) { dosOpl_updateChannel(reg - 0xB0); return; }
+  if (reg >= 0xC0 && reg <= 0xC8) {
+    let c = reg - 0xC0;
+    let fb = (val >> 1) & 7;
+    DOS_OPL_CH[c * 8] = (fb === 0) ? 0 : Math.pow(2, fb - 7);
+    DOS_OPL_CH[c * 8 + 1] = val & 1;
+    return;
+  }
+}
+
+function dosOpl_refreshAll() {
+  for (let s = 0; s < 18; s++) dosOpl_updateOp(s);
+}
+
+// The frequency and key of a channel, then both its operators, which take
+// their rates and level scaling from it.
+function dosOpl_updateChannel(c) {
+  let lo = DOS_OPL_REG[0xA0 + c];
+  let hi = DOS_OPL_REG[0xB0 + c];
+  let fnum = lo | ((hi & 3) << 8);
+  let block = (hi >> 2) & 7;
+  let key = (hi & 0x20) ? 1 : 0;
+  let b = c * 8;
+  DOS_OPL_CH[b + 2] = fnum;
+  DOS_OPL_CH[b + 3] = block;
+  let was = DOS_OPL_CH[b + 4];
+  DOS_OPL_CH[b + 4] = key;
+  let o1 = DOS_OPL_MAP[c * 2];
+  let o2 = DOS_OPL_MAP[c * 2 + 1];
+  dosOpl_updateOp(o1);
+  dosOpl_updateOp(o2);
+  if (key === 1 && was === 0) { dosOpl_keyOn(o1); dosOpl_keyOn(o2); }
+  else if (key === 0 && was === 1) { dosOpl_keyOff(o1); dosOpl_keyOff(o2); }
+}
+
+function dosOpl_keyOn(s) {
+  let a = s * 16;
+  DOS_OPL_OP[a + OPL_PHASE] = 0;
+  DOS_OPL_OP[a + OPL_KEY] = 1;
+  if (DOS_OPL_OP[a + OPL_ATTK] >= 1) { DOS_OPL_OP[a + OPL_ENV] = 0; DOS_OPL_OP[a + OPL_STAGE] = 2; }
+  else DOS_OPL_OP[a + OPL_STAGE] = 1;
+}
+
+function dosOpl_keyOff(s) {
+  let a = s * 16;
+  DOS_OPL_OP[a + OPL_KEY] = 0;
+  if (DOS_OPL_OP[a + OPL_STAGE] !== 0) DOS_OPL_OP[a + OPL_STAGE] = 4;
+}
+
+function dosOpl_updateOp(s) {
+  if (s < 0) return;
+  let c = DOS_OPL_CH_OF[s];
+  let off = -1;
+  for (let i = 0; i < 32; i++) if (DOS_OPL_SLOT_OF[i] === s) { off = i; break; }
+  let r20 = DOS_OPL_REG[0x20 + off];
+  let r40 = DOS_OPL_REG[0x40 + off];
+  let r60 = DOS_OPL_REG[0x60 + off];
+  let r80 = DOS_OPL_REG[0x80 + off];
+  let rE0 = DOS_OPL_REG[0xE0 + off];
+  let fnum = DOS_OPL_CH[c * 8 + 2];
+  let block = DOS_OPL_CH[c * 8 + 3];
+  let a = s * 16;
+  // Pitch: the F-number and block give the frequency, the multiplier the harmonic.
+  let hz = fnum * 49716 / Math.pow(2, 20 - block);
+  DOS_OPL_OP[a + OPL_INC] = hz * DOS_OPL_MULT[r20 & 15] / DOS_OPL_RATE;
+  // Rates scale with the key: the whole keycode, or a quarter of it.
+  let keycode = (block << 1) | ((fnum >> 9) & 1);
+  let rks = (r20 & 0x10) ? keycode : (keycode >> 2);
+  let ar = r60 >> 4, dr = r60 & 15, sl = r80 >> 4, rr = r80 & 15;
+  let rA = (ar === 0) ? 0 : Math.min(63, ar * 4 + rks);
+  let rD = (dr === 0) ? 0 : Math.min(63, dr * 4 + rks);
+  let rR = (rr === 0) ? 0 : Math.min(63, rr * 4 + rks);
+  DOS_OPL_OP[a + OPL_ATTK] = DOS_OPL_ATTACK[rA];
+  DOS_OPL_OP[a + OPL_DECS] = DOS_OPL_DECAY[rD];
+  DOS_OPL_OP[a + OPL_RELS] = DOS_OPL_DECAY[rR];
+  DOS_OPL_OP[a + OPL_SUSL] = (sl === 15) ? 96 : sl * 3;
+  // Level: the total level in 0.75 dB steps, plus key scaling toward the treble.
+  let ksl = DOS_OPL_KSLROM[(fnum >> 6) & 15] - ((8 - block) << 5);
+  if (ksl < 0) ksl = 0;
+  let shift = DOS_OPL_KSLSHIFT[(r40 >> 6) & 3];
+  let kslDb = (shift >= 8) ? 0 : ((ksl >> shift) * 0.375);
+  DOS_OPL_OP[a + OPL_TOTAL] = (r40 & 63) * 0.75 + kslDb;
+  DOS_OPL_OP[a + OPL_AM] = (r20 & 0x80) ? 1 : 0;
+  DOS_OPL_OP[a + OPL_VIB] = (r20 & 0x40) ? 1 : 0;
+  DOS_OPL_OP[a + OPL_EGT] = (r20 & 0x20) ? 1 : 0;
+  DOS_OPL_OP[a + OPL_WAVE] = (DOS_OPL_WSE === 1) ? ((rE0 & 3) * 1024) : 0;
+}
+
+// Render h samples into DOS_OPL_OUT. Written for the host's closed
+// language as well as the guest: only these arrays, locals and pure
+// arithmetic. The state argument is unused; the host passes it.
+function dosOpl_render(ST, h) {
+  let tp = DOS_OPL_LFO[0];
+  let vp = DOS_OPL_LFO[1];
+  let tdep = DOS_OPL_LFO[2];
+  let vdep = DOS_OPL_LFO[3];
+  let tinc = DOS_OPL_LFO[4];
+  let vinc = DOS_OPL_LFO[5];
+  let i = 0;
+  while (i < h) {
+    tp = tp + tinc;
+    if (tp >= 1) tp = tp - 1;
+    vp = vp + vinc;
+    if (vp >= 1) vp = vp - 1;
+    let ti = Math.floor(tp * 1024) & 1023;
+    let trem = tdep * (0.5 - 0.5 * DOS_OPL_WAVE_T[(ti + 256) & 1023]);
+    let vib = vdep * DOS_OPL_WAVE_T[Math.floor(vp * 1024) & 1023];
+    let mix = 0;
+    let c = 0;
+    while (c < 9) {
+      let b = c * 8;
+      let a1 = DOS_OPL_MAP[c * 2] * 16;
+      let a2 = DOS_OPL_MAP[c * 2 + 1] * 16;
+      if (DOS_OPL_OP[a1 + 3] !== 0 || DOS_OPL_OP[a2 + 3] !== 0) {
+        let out1 = 0;
+        let out2 = 0;
+        let k = 0;
+        while (k < 2) {
+          let a = (k === 0) ? a1 : a2;
+          let stage = DOS_OPL_OP[a + 3];
+          let out = 0;
+          if (stage !== 0) {
+            let env = DOS_OPL_OP[a + 2];
+            if (stage === 1) {
+              let ak = DOS_OPL_OP[a + 4];
+              if (ak >= 1) { env = 0; stage = 2; }
+              else { env = env - env * ak; if (env < 0.3) { env = 0; stage = 2; } }
+            } else if (stage === 2) {
+              env = env + DOS_OPL_OP[a + 5];
+              let sus = DOS_OPL_OP[a + 6];
+              if (env >= sus) { env = sus; stage = (DOS_OPL_OP[a + 11] === 1) ? 3 : 5; if (env >= 96) stage = 0; }
+            } else if (stage === 5 || stage === 4) {
+              env = env + DOS_OPL_OP[a + 7];
+              if (env >= 96) { env = 96; stage = 0; }
+            }
+            DOS_OPL_OP[a + 2] = env;
+            DOS_OPL_OP[a + 3] = stage;
+            if (stage !== 0) {
+              let att = DOS_OPL_OP[a + 8] + env;
+              if (DOS_OPL_OP[a + 9] === 1) att = att + trem;
+              if (att < 96) {
+                let amp = DOS_OPL_EXPT[Math.floor(att * 10)];
+                let mod = 0;
+                if (k === 0) mod = (DOS_OPL_OP[a + 13] + DOS_OPL_OP[a + 14]) * DOS_OPL_CH[b];
+                else if (DOS_OPL_CH[b + 1] === 0) mod = out1 * 2;
+                let ph = DOS_OPL_OP[a] + mod;
+                ph = ph - Math.floor(ph);
+                out = DOS_OPL_WAVE_T[DOS_OPL_OP[a + 12] + (Math.floor(ph * 1024) & 1023)] * amp;
+              }
+              let inc = DOS_OPL_OP[a + 1];
+              if (DOS_OPL_OP[a + 10] === 1) inc = inc * (1 + vib);
+              let np = DOS_OPL_OP[a] + inc;
+              DOS_OPL_OP[a] = np - Math.floor(np);
+            }
+          }
+          if (k === 0) { DOS_OPL_OP[a + 14] = DOS_OPL_OP[a + 13]; DOS_OPL_OP[a + 13] = out; out1 = out; }
+          else out2 = out;
+          k = k + 1;
+        }
+        mix = mix + ((DOS_OPL_CH[b + 1] === 1) ? (out1 + out2) : out2);
+      }
+      c = c + 1;
+    }
+    DOS_OPL_OUT[i] = mix;
+    i = i + 1;
+  }
+  DOS_OPL_LFO[0] = tp;
+  DOS_OPL_LFO[1] = vp;
+  return 0;
+}
+
+// Hand the renderer to the host, when the accel capability is granted.
+function dosOpl_accelInit() {
+  DOS_OPL_ACCEL = -1;
+  if (typeof accel === "undefined") return;
+  try {
+    let body = dosJit_fnBody(dosOpl_render);
+    body = dosJit_replaceAll(body, "DOS_OPL_LFO[", "LFO[");
+    body = dosJit_replaceAll(body, "DOS_OPL_WAVE_T[", "WAVE[");
+    body = dosJit_replaceAll(body, "DOS_OPL_MAP[", "MAP[");
+    body = dosJit_replaceAll(body, "DOS_OPL_OP[", "OP[");
+    body = dosJit_replaceAll(body, "DOS_OPL_CH[", "CH[");
+    body = dosJit_replaceAll(body, "DOS_OPL_EXPT[", "EXPT[");
+    body = dosJit_replaceAll(body, "DOS_OPL_OUT[", "OUT[");
+    let outer = accel.compile(["LFO", "WAVE", "MAP", "OP", "CH", "EXPT", "OUT"],
+      "return function(ST,h){" + body + "};");
+    DOS_OPL_ACCEL = accel.make(outer,
+      "LFO=g:DOS_OPL_LFO,WAVE=g:DOS_OPL_WAVE_T,MAP=g:DOS_OPL_MAP,OP=g:DOS_OPL_OP,CH=g:DOS_OPL_CH,EXPT=g:DOS_OPL_EXPT,OUT=g:DOS_OPL_OUT");
+  } catch (e) {
+    DOS_OPL_ACCEL = -1;
+  }
+  dosOpl_setRate((DOS_OPL_ACCEL >= 0) ? 48000 : 24000);
+}
+
+// Whether anything is sounding, so silence costs nothing.
+function dosOpl_active() {
+  for (let s = 0; s < 18; s++) if (DOS_OPL_OP[s * 16 + OPL_STAGE] !== 0) return 1;
+  return 0;
+}
+
+// Add n frames of the chip's output into an interleaved stereo Int16 buffer.
+function dosOpl_mix(pcm, n) {
+  if (dosOpl_active() === 0) return 0;
+  let done = 0;
+  while (done < n) {
+    let chunk = Math.min(4096, n - done);
+    if (DOS_OPL_ACCEL >= 0) {
+      accel.run(DOS_OPL_ACCEL, chunk);
+      for (let i = 0; i < chunk; i++) {
+        let v = DOS_OPL_OUT[i] * 7000;
+        let j = (done + i) * 2;
+        pcm[j] = pcm[j] + v;
+        pcm[j + 1] = pcm[j + 1] + v;
+      }
+    } else {
+      // Without the host, the guest renders at half rate and doubles each
+      // sample: the synthesizer is nine channels of arithmetic a sample,
+      // which the interpreter cannot afford at 48 kHz.
+      let step = (DOS_OPL_RATE === 24000) ? 1 : 0;
+      dosOpl_render(null, step === 1 ? ((chunk + 1) >> 1) : chunk);
+      for (let i = 0; i < chunk; i++) {
+        let v = DOS_OPL_OUT[i >> step] * 7000;
+        let j = (done + i) * 2;
+        pcm[j] = pcm[j] + v;
+        pcm[j + 1] = pcm[j + 1] + v;
+      }
+    }
+    done += chunk;
+  }
+  return 1;
+}
