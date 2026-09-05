@@ -29,7 +29,9 @@ import { fileURLToPath } from 'node:url';
 
 const CORE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ZIPP = resolve(CORE, process.env.ZIPP_REPO ?? '../../../../zipp.org');
-const OUT = join(CORE, 'wasm-zipp');
+// ZIPP_OUT builds somewhere else, to test a recipe change without touching
+// the vendored engine.
+const OUT = process.env.ZIPP_OUT ? resolve(process.env.ZIPP_OUT) : join(CORE, 'wasm-zipp');
 
 if (!existsSync(join(ZIPP, 'crates/zipp-wasm/Cargo.toml'))) {
   console.error(`No zipp-wasm crate at ${ZIPP}. Set ZIPP_REPO to a zipp.org checkout.`);
@@ -87,7 +89,15 @@ run(
 // browser's interpreter-only tier, it is worth 10-15% with identical
 // behaviour. Required rather than best-effort: a build without it would be a
 // silently slower engine with the same version stamp.
-run('wasm-opt', ['-O3', '--all-features',
+//
+// No `--all-features`: binaryen reads the features the module declares in its
+// target_features section and stays within them. Given every feature it once
+// emitted typed references (an "Unknown heap type" to Node 20's V8), and the
+// engine then failed to compile under the Node the CI test job runs — it only
+// showed on the runner, because Node 24 on the machine that built it accepted
+// them. zipp's own release (crates/zipp-wasm/README.md) ships without wasm-opt
+// at all; `vendor-zipp-release.mjs` takes that build as it is.
+run('wasm-opt', ['-O3',
   join(PKG, 'zipp_wasm_bg.wasm'), '-o', join(PKG, 'zipp_wasm_bg.opt.wasm')], WASM);
 copyFileSync(join(PKG, 'zipp_wasm_bg.opt.wasm'), join(PKG, 'zipp_wasm_bg.wasm'));
 rmSync(join(PKG, 'zipp_wasm_bg.opt.wasm'));
