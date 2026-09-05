@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Visual editor for SoftN applications" />
     <!-- The colour the browser paints around the app, which has to be the colour
-         the app actually is. This said #0c0a09 — a near-black — above a light
-         chrome, so the window furniture belonged to a different application. -->
-    <meta name="theme-color" content="#f4f6f9" />
+         the app actually is; the pre-paint script below corrects it for the
+         light theme. -->
+    <meta name="theme-color" content="#101317" />
     <meta name="mobile-web-app-capable" content="yes" />
     <!-- The apple- prefixed form is the deprecated spelling, kept because iOS Safari still
          only honours that one for standalone display. -->
@@ -15,6 +15,29 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/pwa-192x192.png" />
+    <!--
+      Runs before the first paint so a reader never sees the wrong ground flash
+      first. The same script, with the same key, is in every SoftN app's
+      index.html; @softn/brand's theme.ts is the copy to check against.
+    -->
+    <script>
+      (function () {
+        var theme = 'dark';
+        try {
+          var stored = localStorage.getItem('softn.site.theme');
+          if (stored === 'light' || stored === 'dark') {
+            theme = stored;
+          } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            theme = 'light';
+          }
+        } catch (e) {
+          /* Storage blocked; the dark default stands. */
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', theme === 'light' ? '#f4f6f9' : '#101317');
+      })();
+    </script>
     <title>SoftN Builder</title>
     <style>
       * {
@@ -35,7 +58,13 @@
         font-family: var(--b-body);
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
-        background: #f4f6f9;
+        background: var(--ink, #101317);
+        color: var(--paper, #f2f0ec);
+      }
+      /* Until the tokens arrive with the bundle, the pre-paint choice paints the ground. */
+      html[data-theme='light'] body {
+        background: var(--ink, #f4f6f9);
+        color: var(--paper, #14181d);
       }
     </style>
   </head>

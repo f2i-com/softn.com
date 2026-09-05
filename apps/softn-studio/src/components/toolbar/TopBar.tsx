@@ -9,7 +9,7 @@ interface TopBarProps {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
-  const { projectName, themePreview, setThemePreview } = useWorkspaceStore();
+  const { projectName } = useWorkspaceStore();
   const { files } = useVFSStore();
   const hasFiles = files.size > 0;
 
@@ -29,14 +29,8 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
       </div>
 
       <div style={styles.right}>
-        <button
-          onClick={() => setThemePreview(themePreview === 'light' ? 'dark' : 'light')}
-          style={styles.iconBtn}
-          title="Toggle theme"
-        >
-          <Icon name={themePreview === 'light' ? 'moon' : 'sun'} size={16} />
-        </button>
-
+        {/* The theme switch is in the product bar above, shared with every
+            other SoftN app; a second one here would be a second opinion. */}
         <button
           onClick={() => {
             if (!hasFiles) return;

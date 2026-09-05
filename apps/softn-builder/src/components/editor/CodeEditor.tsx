@@ -2,7 +2,9 @@
  * CodeEditor - Monaco editor wrapper for code editing
  */
 
+import { useEffect, useState } from 'react';
 import Editor, { OnMount, OnChange } from '@monaco-editor/react';
+import { currentTheme, subscribeTheme, type Theme } from '@softn/brand';
 import './monacoSetup';
 
 interface Props {
@@ -20,8 +22,14 @@ export function CodeEditor({
   language = 'javascript',
   readOnly = false,
   height = '100%',
-  theme = 'light',
+  theme,
 }: Props) {
+  // Left to itself, the editor follows the theme every SoftN app shares, so
+  // a light page does not carry a dark editor or the other way round.
+  const [shared, setShared] = useState<Theme>(currentTheme);
+  useEffect(() => subscribeTheme(setShared), []);
+  const effectiveTheme = theme ?? (shared === 'dark' ? 'vs-dark' : 'light');
+
   const handleEditorMount: OnMount = (editor, monaco) => {
     // Configure editor settings
     editor.updateOptions({
@@ -79,7 +87,7 @@ export function CodeEditor({
       value={value}
       onChange={handleChange}
       onMount={handleEditorMount}
-      theme={theme === 'vs-dark' ? 'vs-dark' : 'light'}
+      theme={effectiveTheme === 'vs-dark' ? 'vs-dark' : 'light'}
       options={{
         readOnly,
         domReadOnly: readOnly,
@@ -91,7 +99,7 @@ export function CodeEditor({
             alignItems: 'center',
             justifyContent: 'center',
             height: '100%',
-            color: '#656e7c',
+            color: 'var(--dimmer)',
           }}
         >
           Loading editor...

@@ -8,7 +8,7 @@ import { useCanvasStore } from '../../stores/canvasStore';
 const style: React.CSSProperties = {
   position: 'fixed',
   padding: '6px 12px',
-  background: '#14181d',
+  background: 'var(--paper)',
   color: '#fff',
   borderRadius: 4,
   fontSize: 12,

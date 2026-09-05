@@ -8,8 +8,8 @@ import type { EntityDef, SchemaField } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    background: '#fff',
-    borderTop: '1px solid #e4e9f0',
+    background: 'var(--ink-2)',
+    borderTop: '1px solid var(--line-soft)',
     maxHeight: 300,
     display: 'flex',
     flexDirection: 'column',
@@ -17,34 +17,34 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: '10px 16px',
-    borderBottom: '1px solid #e4e9f0',
+    borderBottom: '1px solid var(--line-soft)',
     fontWeight: 600,
     fontSize: 13,
-    color: '#14181d',
+    color: 'var(--paper)',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    background: '#f4f6f9',
+    background: 'var(--ink)',
   },
   tabs: {
     display: 'flex',
     gap: 4,
     padding: '8px 16px',
-    borderBottom: '1px solid #e4e9f0',
+    borderBottom: '1px solid var(--line-soft)',
     overflowX: 'auto',
   },
   tab: {
     padding: '6px 12px',
-    background: '#eef1f6',
+    background: 'var(--ink-3)',
     border: 'none',
     borderRadius: 4,
     fontSize: 12,
-    color: '#5a6472',
+    color: 'var(--dim)',
     cursor: 'pointer',
     whiteSpace: 'nowrap' as const,
   },
   tabActive: {
-    background: '#c2410c',
+    background: 'var(--coral)',
     color: '#fff',
   },
   content: {
@@ -55,7 +55,7 @@ const styles: Record<string, React.CSSProperties> = {
   emptyState: {
     textAlign: 'center' as const,
     padding: 24,
-    color: '#5a6472',
+    color: 'var(--dim)',
     fontSize: 13,
   },
   table: {
@@ -66,19 +66,19 @@ const styles: Record<string, React.CSSProperties> = {
   th: {
     textAlign: 'left' as const,
     padding: '8px 10px',
-    background: '#f4f6f9',
-    borderBottom: '1px solid #e4e9f0',
+    background: 'var(--ink)',
+    borderBottom: '1px solid var(--line-soft)',
     fontWeight: 600,
-    color: '#374151',
+    color: 'var(--dim)',
   },
   td: {
     padding: '6px 8px',
-    borderBottom: '1px solid #eef1f6',
+    borderBottom: '1px solid var(--ink-3)',
   },
   input: {
     width: '100%',
     padding: '6px 8px',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 4,
     fontSize: 12,
     outline: 'none',
@@ -87,11 +87,11 @@ const styles: Record<string, React.CSSProperties> = {
   select: {
     width: '100%',
     padding: '6px 8px',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 4,
     fontSize: 12,
     outline: 'none',
-    background: '#fff',
+    background: 'var(--ink-2)',
   },
   checkbox: {
     width: 16,
@@ -107,7 +107,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   addBtn: {
     padding: '6px 12px',
-    background: '#c2410c',
+    background: 'var(--coral)',
     color: '#fff',
     border: 'none',
     borderRadius: 4,
@@ -117,7 +117,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   recordCount: {
     fontSize: 11,
-    color: '#5a6472',
+    color: 'var(--dim)',
     fontWeight: 400,
   },
 };

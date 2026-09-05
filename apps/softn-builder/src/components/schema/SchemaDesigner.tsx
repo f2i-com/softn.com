@@ -29,7 +29,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column',
     height: '100%',
-    background: '#f4f6f9',
+    background: 'var(--ink)',
   },
   main: {
     display: 'flex',
@@ -60,25 +60,25 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 19,
     fontWeight: 600,
     letterSpacing: '-0.02em',
-    color: '#14181d',
+    color: 'var(--paper)',
   },
   emptyBody: {
     margin: 0,
     maxWidth: 430,
     fontSize: 13.5,
     lineHeight: 1.6,
-    color: '#5a6472',
+    color: 'var(--dim)',
   },
   emptyCode: {
     fontFamily: 'var(--b-mono)',
     fontSize: '0.92em',
-    color: '#c2410c',
+    color: 'var(--coral)',
   },
   emptyBtn: {
     pointerEvents: 'auto' as const,
     marginTop: 4,
     padding: '9px 18px',
-    background: '#c2410c',
+    background: 'var(--coral)',
     color: '#fff',
     border: 'none',
     borderRadius: 8,
@@ -92,12 +92,12 @@ const styles: Record<string, React.CSSProperties> = {
     maxWidth: 400,
     fontSize: 12.5,
     lineHeight: 1.5,
-    color: '#656e7c',
+    color: 'var(--dimmer)',
   },
   toolbar: {
     padding: '8px 16px',
-    borderBottom: '1px solid #e4e9f0',
-    background: '#fff',
+    borderBottom: '1px solid var(--line-soft)',
+    background: 'var(--ink-2)',
     display: 'flex',
     gap: 12,
     alignItems: 'center',
@@ -105,12 +105,12 @@ const styles: Record<string, React.CSSProperties> = {
   toolbarTitle: {
     fontWeight: 600,
     fontSize: 14,
-    color: '#14181d',
+    color: 'var(--paper)',
     marginRight: 16,
   },
   btn: {
     padding: '6px 12px',
-    background: '#c2410c',
+    background: 'var(--coral)',
     color: '#fff',
     border: 'none',
     borderRadius: 4,
@@ -122,13 +122,13 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 6,
   },
   btnSecondary: {
-    background: '#eef1f6',
-    color: '#374151',
+    background: 'var(--ink-3)',
+    color: 'var(--dim)',
   },
   hint: {
     marginLeft: 'auto',
     fontSize: 11,
-    color: '#656e7c',
+    color: 'var(--dimmer)',
   },
 };
 
@@ -172,7 +172,7 @@ export function SchemaDesigner() {
         label: rel.type,
         type: 'smoothstep',
         animated: true,
-        style: { stroke: '#656e7c' },
+        style: { stroke: 'var(--dimmer)' },
       })),
     [relationships]
   );
@@ -203,7 +203,7 @@ export function SchemaDesigner() {
         label: rel.type,
         type: 'smoothstep',
         animated: true,
-        style: { stroke: '#656e7c' },
+        style: { stroke: 'var(--dimmer)' },
       }))
     );
   }, [relationships, setEdges]);
@@ -328,14 +328,14 @@ export function SchemaDesigner() {
             snapToGrid
             snapGrid={[16, 16]}
           >
-            <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#d5dce5" />
+            <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="var(--line)" />
             <Controls />
             {/* A minimap of nothing is a grey rectangle claiming a corner of the
                 canvas for no reason. It appears once there is something to map. */}
             {entities.length > 0 && (
               <MiniMap
-                nodeColor={(node) => (node.selected ? '#c2410c' : '#656e7c')}
-                style={{ background: '#f4f6f9' }}
+                nodeColor={(node) => (node.selected ? 'var(--coral)' : 'var(--dimmer)')}
+                style={{ background: 'var(--ink)' }}
               />
             )}
           </ReactFlow>
@@ -347,7 +347,7 @@ export function SchemaDesigner() {
               than empty. This sits where the eye lands and offers the action. */}
           {entities.length === 0 && (
             <div style={styles.emptyOverlay}>
-              <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="#656e7c" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="var(--dimmer)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <ellipse cx="12" cy="5.5" rx="7.5" ry="2.8" />
                 <path d="M4.5 5.5v6c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-6" />
                 <path d="M4.5 11.5v6c0 1.5 3.4 2.8 7.5 2.8s7.5-1.3 7.5-2.8v-6" />
