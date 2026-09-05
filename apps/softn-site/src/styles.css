@@ -270,35 +270,7 @@ button {
   color: var(--on-invert-dim);
 }
 
-/* ── The player: source on the left, the running app on the right ── */
-
-.player {
-  margin-top: clamp(2.5rem, 5vw, 4rem);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
-  gap: 1px;
-  background: var(--line-soft);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-@media (max-width: 900px) {
-  .player {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* Stacked, the running app goes on top — it is the point, and a phone-height
-     wall of source before it buries the point. This moves the panel visually
-     only; a screen reader still meets the file first, which reads fine. */
-  .player .panel:last-child {
-    order: -1;
-  }
-
-  .panel-source {
-    height: 22rem;
-  }
-}
+/* ── Code panels: the language samples ────────────────────────── */
 
 .panel {
   background: var(--ink-2);
@@ -333,220 +305,6 @@ button {
   text-transform: uppercase;
   color: var(--dimmer);
   flex: none;
-}
-
-/* The live badge is the one place mint is allowed to move: it goes from grey
-   to mint when the runtime frame actually reports it has loaded. */
-.live {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4375rem;
-  font-size: 0.6875rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--dimmer);
-  transition: color 400ms var(--ease);
-}
-
-.live-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--dimmer);
-  transition:
-    background 400ms var(--ease),
-    box-shadow 400ms var(--ease);
-}
-
-.live[data-on='true'] {
-  color: var(--mint);
-}
-
-.live[data-on='true'] .live-dot {
-  background: var(--mint);
-  box-shadow: 0 0 0 3px var(--mint-glow);
-  animation: live-pulse 2.6s ease-in-out infinite;
-}
-
-@keyframes live-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 3px var(--mint-glow);
-  }
-  50% {
-    box-shadow: 0 0 0 5px var(--mint-glow-soft);
-  }
-}
-
-.panel-source {
-  margin: 0;
-  overflow: auto;
-  /* This, .shelf-row, .lang-list and .lang-code are the page's horizontal
-     scrollers, and every one of them runs out of content inside a single thumb
-     drag. Without containment the rest of that drag chains to the browser's edge
-     back-swipe, so reaching the end of a code line navigates away from the page. */
-  overscroll-behavior-x: contain;
-  height: clamp(320px, 52vh, 520px);
-  padding: 1rem 1.125rem 1.5rem;
-  font-family: var(--mono);
-  font-size: 0.78125rem;
-  line-height: 1.65;
-  tab-size: 2;
-  scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
-}
-
-.panel-source::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
-}
-
-.panel-source::-webkit-scrollbar-thumb {
-  background: var(--line);
-  border-radius: 6px;
-  border: 3px solid var(--ink-2);
-}
-
-.panel-stage {
-  position: relative;
-  height: clamp(320px, 52vh, 520px);
-  background: var(--ink-3);
-}
-
-.panel-stage iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  display: block;
-}
-
-.stage-msg {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.625rem;
-  text-align: center;
-  padding: 2rem;
-  font-size: 0.875rem;
-  color: var(--dim);
-  background: var(--ink-3);
-}
-
-.stage-msg code {
-  font-family: var(--mono);
-  font-size: 0.8125rem;
-  color: var(--paper);
-  background: var(--inset);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 0.1875rem 0.4375rem;
-}
-
-.stage-msg-title {
-  color: var(--paper);
-  font-weight: 500;
-}
-
-/* ── Demo shelf: the player's control strip ────────────────────── */
-
-.shelf {
-  margin-top: 1.25rem;
-}
-
-.shelf-label {
-  display: flex;
-  align-items: baseline;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-}
-
-.shelf-note {
-  font-size: 0.8125rem;
-  color: var(--dimmer);
-}
-
-.shelf-row {
-  display: flex;
-  gap: 0.5rem;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  /* A scroll container clips to its padding box, and the focus ring is drawn 3px
-     outside the chip, so on the top and both sides it had nowhere to land: a
-     focused chip showed two vertical slivers of mint and nothing else. 6px of
-     room for it, handed straight back as negative margin so the chips sit
-     exactly where they did. The bottom keeps its 8px for the scrollbar. */
-  padding: 0.375rem 0.375rem 0.5rem;
-  margin: -0.375rem -0.375rem 0;
-  scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
-}
-
-.shelf-row::-webkit-scrollbar {
-  height: 8px;
-}
-
-.shelf-row::-webkit-scrollbar-thumb {
-  background: var(--line);
-  border-radius: 6px;
-}
-
-.chip {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.125rem;
-  min-width: 9.5rem;
-  text-align: left;
-  padding: 0.625rem 0.875rem;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--ink-2);
-  transition:
-    border-color 180ms var(--ease),
-    background 180ms var(--ease);
-}
-
-.chip:hover {
-  border-color: var(--dimmer);
-  background: var(--ink-3);
-}
-
-.chip[aria-pressed='true'] {
-  border-color: var(--paper);
-  background: var(--ink-3);
-}
-
-.chip-name {
-  font-size: 0.875rem;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.chip-meta {
-  font-family: var(--mono);
-  font-size: 0.6875rem;
-  color: var(--dimmer);
-}
-
-.shelf-skeleton {
-  flex: none;
-  min-width: 9.5rem;
-  height: 3.25rem;
-  border: 1px solid var(--line-soft);
-  border-radius: 9px;
-  background: linear-gradient(90deg, var(--ink-2) 0%, var(--ink-3) 50%, var(--ink-2) 100%);
-  background-size: 200% 100%;
-  animation: shelf-shimmer 1.4s linear infinite;
-}
-
-@keyframes shelf-shimmer {
-  to {
-    background-position: -200% 0;
-  }
 }
 
 /* ── Doors: the three apps ─────────────────────────────────────── */
@@ -1272,9 +1030,6 @@ button {
    and the publish form. Colour rules as above: coral marks the language,
    mint marks the machine (the sandbox badge, the live frame), and the
    stars borrow the sand of the code samples. Nothing else is coloured. */
-.hero-dir .hero-inner {
-  max-width: 900px;
-}
 .hero-search {
   margin: 1.75rem 0 1rem;
   max-width: 640px;
@@ -1764,48 +1519,6 @@ button {
   border: 0;
   display: block;
   background: #000;
-}
-.app-frame-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.45rem 0.6rem 0.45rem 0.9rem;
-  background: var(--ink-2);
-  border-bottom: 1px solid var(--line-soft);
-  font-size: 0.8rem;
-  color: var(--dim);
-  flex-wrap: wrap;
-}
-.app-frame-live {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  color: var(--paper);
-}
-.app-frame-actions {
-  display: inline-flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-.app-frame-btn {
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--dim);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 0.35rem 0.65rem;
-  transition:
-    color 160ms var(--ease),
-    border-color 160ms var(--ease);
-}
-.app-frame-btn:hover {
-  color: var(--paper);
-  border-color: var(--dimmer);
-}
-.app-hero-thumb-playing .app-hero-play {
-  background: var(--mint-glow);
-  border-color: var(--mint-edge);
 }
 @media (max-width: 720px) {
   .app-frame {
@@ -2487,73 +2200,6 @@ button {
   transform: scale(1.03);
 }
 
-/* Spotlight */
-.spotlight {
-  display: grid;
-  grid-template-columns: minmax(0, 7fr) minmax(280px, 5fr);
-  gap: 2rem;
-  align-items: center;
-  background: var(--ink-2);
-  border: 1px solid var(--line-soft);
-  border-radius: 20px;
-  padding: 1.25rem;
-  margin-bottom: 2.5rem;
-  overflow: hidden;
-}
-.spotlight-media {
-  display: block;
-  border-radius: 14px;
-  overflow: hidden;
-  border: 1px solid var(--line-soft);
-}
-.spotlight-media .thumb {
-  aspect-ratio: 16 / 10;
-}
-.spotlight-title {
-  font-family: var(--display);
-  font-weight: 800;
-  font-size: clamp(1.6rem, 3.4vw, 2.4rem);
-  letter-spacing: -0.03em;
-  line-height: 1.05;
-  margin: 0.25rem 0 0.35rem;
-}
-.spotlight-byline {
-  color: var(--dim);
-  font-size: 0.9rem;
-  margin-bottom: 0.9rem;
-}
-.spotlight-byline a {
-  color: var(--paper);
-  text-decoration: underline;
-  text-decoration-color: var(--line);
-  text-underline-offset: 3px;
-}
-.spotlight-desc {
-  color: var(--dim);
-  line-height: 1.6;
-  margin-bottom: 1rem;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.spotlight-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem 0.75rem;
-  margin-bottom: 1.25rem;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--dimmer);
-}
-@media (max-width: 820px) {
-  .spotlight {
-    grid-template-columns: 1fr;
-    gap: 1rem;
-  }
-}
-
 /* Capability pills */
 .pills-caps {
   margin-top: 0.6rem;
@@ -2581,42 +2227,8 @@ button {
 }
 
 /* App page */
-.app-frame-name {
-  color: var(--dim);
-}
 .app-frame {
   position: relative;
-}
-.app-frame-starting {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: calc(100% - 42px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  overflow: hidden;
-}
-.app-frame-poster {
-  position: absolute;
-  inset: 0;
-  opacity: 0.35;
-  filter: blur(14px) saturate(0.8);
-  transform: scale(1.1);
-  aspect-ratio: auto;
-  height: 100%;
-}
-.app-frame-starting-text {
-  position: relative;
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  color: #fff;
-  background: rgba(16, 19, 23, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  padding: 0.5rem 1rem;
 }
 .badge-official {
   color: var(--mint);
@@ -2787,64 +2399,357 @@ button {
   }
 }
 
-/* The player, as a popup over the whole viewport. */
-.app-popup {
-  position: fixed;
+/* ── The Apps page ──────────────────────────────────────────────── */
+
+/* The heading and the search share a row: the page is the listing, and
+   the way to narrow it sits where the listing starts. */
+.directory-top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.25rem 2.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 2rem;
+}
+.directory-intro {
+  max-width: 34rem;
+}
+.directory-intro .page-title {
+  margin-bottom: 0;
+}
+.directory-lede {
+  margin-top: 0.625rem;
+  color: var(--dim);
+  font-size: 0.9375rem;
+  line-height: 1.55;
+}
+.directory-lede a {
+  color: var(--paper);
+  text-decoration: underline;
+  text-decoration-color: var(--dimmer);
+  text-underline-offset: 3px;
+}
+.directory-lede a:hover {
+  text-decoration-color: var(--paper);
+}
+.directory-top .directory-bar {
+  margin: 0;
+  flex: 1 1 380px;
+  max-width: 560px;
+  justify-content: flex-end;
+}
+.directory-top .directory-bar .search {
+  flex: 1 1 240px;
+}
+.directory-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.875rem;
+}
+.directory-section-title {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.375rem;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.directory-section-note,
+.directory-count {
+  font-size: 0.8125rem;
+  color: var(--dimmer);
+  margin: 0;
+}
+.directory-all {
+  margin-top: 2.75rem;
+}
+.directory-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  align-items: center;
+  justify-content: space-between;
+}
+.directory-filters .pills-caps {
+  margin-top: 0;
+}
+.directory-all .app-grid {
+  margin-top: 1.25rem;
+}
+
+/* An app without a picture: its initial on its own colour. */
+.thumb-letter span {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: clamp(2.25rem, 5vw, 3.5rem);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* The card is an article; its name is the link and stretches over the card,
+   and the play pill is a second link, into the runtime, drawn above it. */
+.app-card {
+  position: relative;
+}
+.app-card-link {
+  color: inherit;
+  text-decoration: none;
+}
+.app-card-link::after {
+  content: '';
+  position: absolute;
   inset: 0;
-  z-index: 200;
+  z-index: 1;
+  border-radius: inherit;
+}
+.app-card-link:focus-visible {
+  outline: none;
+}
+.app-card:has(.app-card-link:focus-visible) {
+  outline: 2px solid var(--mint);
+  outline-offset: 3px;
+}
+.app-card-play {
+  z-index: 2;
+  pointer-events: auto;
+  text-decoration: none;
+}
+.app-card-play:hover {
+  background: rgba(16, 19, 23, 0.96);
+}
+.app-card-play:focus-visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+}
+@media (hover: none) {
+  .app-card-play {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/* ── Featured ────────────────────────────────────────────────────── */
+
+/* One large and four small, every tile a picture with its name drawn over
+   the bottom. The lead has room for a description and a Play button; the
+   small ones show theirs on hover, and always on a touch screen. */
+.featured {
+  margin-top: 0.25rem;
+}
+.featured-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.875rem;
+}
+.featured-grid-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.featured-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: 16px;
+  background: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  aspect-ratio: 16 / 10;
+  min-width: 0;
+  isolation: isolate;
+  color: #fff;
+}
+.featured-lead {
+  grid-column: span 2;
+  grid-row: span 2;
+  aspect-ratio: auto;
+}
+.featured-card .thumb {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  aspect-ratio: auto;
+}
+.featured-card .thumb-image img {
+  transition: transform 700ms var(--ease);
+}
+.featured-card:hover .thumb-image img {
+  transform: scale(1.04);
+}
+.featured-card .thumb-letter span {
+  font-size: clamp(3rem, 7vw, 6rem);
+}
+.featured-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(10, 12, 15, 0.94) 0%, rgba(10, 12, 15, 0.62) 34%, rgba(10, 12, 15, 0.08) 62%, rgba(10, 12, 15, 0) 100%);
+}
+.featured-body {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 1rem 1.125rem 1.0625rem;
   display: flex;
   flex-direction: column;
-  background: #000;
+  align-items: flex-start;
+  gap: 0.2rem;
 }
-.app-popup iframe {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
-  border: 0;
-  display: block;
-  background: #000;
+.featured-lead .featured-body {
+  padding: 1.5rem 1.75rem 1.625rem;
+  gap: 0.3rem;
+  max-width: 36rem;
 }
-.app-popup .app-frame-bar {
-  flex: 0 0 auto;
-  border-bottom: 1px solid var(--line-soft);
+.featured-cat {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.72);
+  margin-bottom: 0.2rem;
 }
-.app-popup .app-frame-starting {
-  height: calc(100% - 42px);
+.featured-name {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.0625rem;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
+  color: #fff;
+  text-decoration: none;
 }
-.app-popup-bare .app-frame-starting {
-  height: 100%;
+.featured-lead .featured-name {
+  font-size: clamp(1.5rem, 2.4vw, 2.125rem);
+  letter-spacing: -0.03em;
+  font-weight: 800;
 }
-.app-frame-close {
-  border-color: var(--coral);
-  color: var(--coral);
-}
-.app-popup-peek {
+.featured-link::after {
+  content: '';
   position: absolute;
-  top: 0;
-  right: 1rem;
+  inset: 0;
+  z-index: 1;
+}
+.featured-link:focus-visible {
+  outline: none;
+}
+.featured-card:has(.featured-link:focus-visible) {
+  outline: 2px solid var(--mint);
+  outline-offset: 3px;
+}
+.featured-byline {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+.featured-desc {
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.84);
+  margin-top: 0.25rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.featured-actions {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  gap: 0.625rem;
+  margin-top: 0.875rem;
+}
+.featured-play,
+.featured-about {
+  position: relative;
   z-index: 2;
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  font-family: var(--mono);
-  font-size: 0.7rem;
-  color: var(--dim);
-  background: var(--nav-bg);
-  border: 1px solid var(--line);
-  border-top: 0;
-  border-radius: 0 0 10px 10px;
-  padding: 0.3rem 0.7rem;
-  opacity: 0.55;
-  backdrop-filter: blur(8px);
-  transition: opacity 160ms var(--ease);
+  gap: 0.4rem;
+  min-height: 2.5rem;
+  padding: 0 1.125rem;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.875rem;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background 160ms var(--ease),
+    border-color 160ms var(--ease),
+    opacity 160ms var(--ease),
+    transform 160ms var(--ease);
 }
-.app-popup-peek:hover,
-.app-popup-peek:focus-visible {
+.featured-play {
+  background: #fff;
+  color: #101317;
+}
+.featured-play:hover {
+  background: #e9ecf1;
+}
+.featured-about {
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  color: #fff;
+  font-weight: 500;
+}
+.featured-about:hover {
+  border-color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+.featured-play:focus-visible,
+.featured-about:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+}
+.featured-play-small {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  min-height: 2rem;
+  padding: 0 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 999px;
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.featured-card:hover .featured-play-small,
+.featured-play-small:focus-visible {
   opacity: 1;
-  color: var(--paper);
+  transform: none;
 }
-@media (max-width: 720px) {
-  .app-popup .app-frame-bar {
-    padding: 0.35rem 0.5rem;
+@media (hover: none) {
+  .featured-play-small {
+    opacity: 1;
+    transform: none;
   }
+}
+@media (max-width: 960px) {
+  .featured-grid,
+  .featured-grid-three {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .featured-lead {
+    grid-column: span 2;
+    grid-row: span 1;
+    aspect-ratio: 16 / 9;
+  }
+}
+@media (max-width: 480px) {
+  .featured-lead {
+    aspect-ratio: 4 / 3;
+  }
+  .featured-lead .featured-body {
+    padding: 1.125rem;
+  }
+  .featured-about {
+    display: none;
+  }
+  .directory-top {
+    margin-bottom: 1.5rem;
+  }
+}
+
+/* The home page hero carries the featured shelf under its headline. */
+.hero-shelf {
+  margin-top: clamp(2.25rem, 4.5vw, 3.5rem);
+}
+.featured-skeleton {
+  background: var(--ink-3);
+  border-color: transparent;
+  animation: dir-pulse 1.2s ease-in-out infinite;
 }

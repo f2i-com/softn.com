@@ -101,23 +101,15 @@ SQL)->fetchAll(PDO::FETCH_ASSOC);
                             error_log("softn-api: could not update seed app $file: " . $e->getMessage());
                         }
                     }
+                    // The picture is refreshed on its own: a screenshot retaken
+                    // for an unchanged bundle still reaches the directory.
+                    self::refreshThumbnail($id, $demos, basename($entry['file']));
                     continue;
                 }
 
                 try {
                     $created = Apps::create($file, $currentMeta, 'seed');
-                    // A screenshot beside the bundle, taken by the build, is the
-                    // demo's picture: a card with the app on it, not an icon.
-                    $base = preg_replace('/\.softn$/', '', basename($entry['file']));
-                    foreach (['webp', 'png', 'jpg'] as $ext) {
-                        $shot = "$demos/thumbs/$base.$ext";
-                        if (is_file($shot)) {
-                            $bytes = (string) file_get_contents($shot);
-                            $mime = Images::sniff($bytes);
-                            if ($mime !== null) Apps::setThumbnail($created['app']['slug'], [$bytes, $mime]);
-                            break;
-                        }
-                    }
+                    self::refreshThumbnail($created['app']['slug'], $demos, basename($entry['file']));
                 } catch (Throwable $e) {
                     error_log("softn-api: could not seed $file: " . $e->getMessage());
                 }
@@ -144,6 +136,31 @@ SQL)->fetchAll(PDO::FETCH_ASSOC);
         } finally {
             flock($lock, LOCK_UN);
             fclose($lock);
+        }
+    }
+
+    /**
+     * A screenshot beside the bundle, taken by the build, is the demo's
+     * picture: a card with the app on it, not an icon. It is stored when the
+     * app is seeded and again whenever the file beside the bundle changes, so
+     * a retaken screenshot shows up without the bundle having to change.
+     */
+    private static function refreshThumbnail(string $slug, string $demos, string $bundleFile): void
+    {
+        $base = preg_replace('/\.softn$/', '', $bundleFile);
+        foreach (['webp', 'png', 'jpg'] as $ext) {
+            $shot = "$demos/thumbs/$base.$ext";
+            if (!is_file($shot)) continue;
+            $current = glob(Apps::dir($slug) . '/thumb.*') ?: [];
+            if ($current !== [] && hash_file('sha256', $current[0]) === hash_file('sha256', $shot)) return;
+            try {
+                $bytes = (string) file_get_contents($shot);
+                $mime = Images::sniff($bytes);
+                if ($mime !== null) Apps::setThumbnail($slug, [$bytes, $mime]);
+            } catch (Throwable $e) {
+                error_log("softn-api: could not store the screenshot for $slug: " . $e->getMessage());
+            }
+            return;
         }
     }
 }

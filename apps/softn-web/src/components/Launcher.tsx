@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useRef } from 'react';
+import { DEFAULT_URLS } from '@softn/brand';
 import { groupByApp, hasStoredData, type CachedApp } from '../lib/appCache';
-import { publicPath } from '../lib/appUrl';
 
 /*
- * The runtime's home: open a file, come back to an app you had open, or try
- * one of the demos this deployment ships. Drawn from the shared tokens so it
+ * The runtime's home: open a file, or come back to an app you had open. The
+ * catalogue lives on the site's Apps page; this screen only points there. Drawn from the shared tokens so it
  * is the same surface as the site and the tools — the product bar above it
  * already says which product this is, so there is no second logo here.
  */
@@ -46,6 +46,15 @@ const launcherStyles = `
     font-size: 0.9375rem;
     max-width: 40rem;
   }
+  .softn-launcher-sub a,
+  .softn-launcher-empty a {
+    color: var(--paper);
+    text-decoration: underline;
+    text-decoration-color: var(--dimmer);
+    text-underline-offset: 3px;
+  }
+  .softn-launcher-sub a:hover,
+  .softn-launcher-empty a:hover { text-decoration-color: var(--paper); }
   .softn-launcher-sub code {
     font-family: var(--mono);
     font-size: 0.875em;
@@ -250,6 +259,51 @@ const launcherStyles = `
     cursor: pointer;
   }
   .softn-launcher-adopt:hover { background: var(--mint-glow); }
+  .softn-launcher-running {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .softn-launcher-run {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--ink-2);
+    overflow: hidden;
+  }
+  .softn-launcher-run-open,
+  .softn-launcher-run-stop {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 2.5rem;
+    padding: 0 0.875rem;
+    border: none;
+    background: transparent;
+    color: var(--paper);
+    font: inherit;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 160ms var(--ease);
+  }
+  .softn-launcher-run-open:hover { background: var(--ink-3); }
+  .softn-launcher-run-open:focus-visible, .softn-launcher-run-stop:focus-visible { outline: 2px solid var(--mint); outline-offset: -3px; }
+  .softn-launcher-run-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--mint);
+    box-shadow: 0 0 0 3px var(--mint-glow);
+    flex-shrink: 0;
+  }
+  .softn-launcher-run-icon { width: 18px; height: 18px; border-radius: 5px; object-fit: cover; }
+  .softn-launcher-run-stop {
+    border-left: 1px solid var(--line);
+    color: var(--dim);
+    font-size: 1.1rem;
+    padding: 0 0.75rem;
+  }
+  .softn-launcher-run-stop:hover { color: var(--paper); background: var(--ink-3); }
   .softn-launcher-empty {
     padding: 2.5rem 1.5rem;
     border: 1px dashed var(--line);
@@ -271,41 +325,24 @@ const launcherStyles = `
   }
 `;
 
+/** An app open in this runtime right now, behind the home screen. */
+export interface RunningApp {
+  id: string;
+  name: string;
+  icon?: string;
+}
+
 interface LauncherProps {
   apps: CachedApp[];
+  /** Apps still running behind this screen; the way back to each, and the way to stop it. */
+  running?: RunningApp[];
+  onResume?: (id: string) => void;
+  onStop?: (id: string) => void;
   onOpenFile: (data: Uint8Array, fileName: string) => void;
   onOpenCached: (app: CachedApp) => void;
-  onOpenUrl: (path: string) => void;
   onRemove: (id: string) => void;
   /** Copy `from`'s saved records into `to`, then open `to`. */
   onAdoptData: (from: CachedApp, to: CachedApp) => void;
-}
-
-/** One entry of public/demos/index.json — see that file for the full contract. */
-interface DemoEntry {
-  id: string;
-  file: string;
-  name: string;
-  description: string;
-  primary: string;
-  size: number;
-}
-
-function isDemoEntry(value: unknown): value is DemoEntry {
-  const entry = value as Partial<DemoEntry> | null;
-  return (
-    typeof entry === 'object' &&
-    entry !== null &&
-    typeof entry.id === 'string' &&
-    typeof entry.file === 'string' &&
-    typeof entry.name === 'string'
-  );
-}
-
-function formatSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '';
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${Math.round(bytes / 1024)} KB`;
 }
 
 function formatDate(ts: number): string {
@@ -346,32 +383,17 @@ function activateOnKey(run: () => void) {
 
 export function Launcher({
   apps,
+  running = [],
+  onResume,
+  onStop,
   onOpenFile,
   onOpenCached,
-  onOpenUrl,
   onRemove,
   onAdoptData,
 }: LauncherProps): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [demos, setDemos] = useState<DemoEntry[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch(publicPath('demos/index.json', import.meta.env.BASE_URL))
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((entries: unknown) => {
-        if (cancelled) return;
-        setDemos(Array.isArray(entries) ? entries.filter(isDemoEntry) : []);
-      })
-      .catch((err) => {
-        // The shelf is a convenience; the launcher still opens files without it.
-        console.warn('[SoftN] Could not load the demo index:', err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+  // The same place the product bar's "Apps" goes, so the two agree.
+  const directoryHref = DEFAULT_URLS.apps;
   const handleFileSelect = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -398,8 +420,8 @@ export function Launcher({
             <div>
               <h1 className="softn-launcher-title">Run an app</h1>
               <p className="softn-launcher-sub">
-                Open a <code>.softn</code> file from your machine, pick up one you had open, or try a demo. Apps run here
-                in a sandbox and keep their data in this browser.
+                Open a <code>.softn</code> file from your machine, or pick up one you had open. Apps run here in a sandbox
+                and keep their data in this browser. Looking for something to run? <a href={directoryHref}>Browse the directory</a>.
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', flexWrap: 'wrap' }}>
@@ -417,8 +439,46 @@ export function Launcher({
             </div>
           </div>
 
+          {running.length > 0 && (
+            // Apps take the whole screen while they run, so this is the way back
+            // to one that is still going — and the way to stop it without
+            // opening it first. Mint, because the thing behind each dot is
+            // genuinely executing.
+            <section className="softn-launcher-section" style={{ marginTop: 0 }} aria-label="Running now">
+              <div className="softn-launcher-section-head">
+                <h2 className="softn-launcher-section-title">Running now</h2>
+                <span className="softn-launcher-section-count">{running.length}</span>
+              </div>
+              <div className="softn-launcher-running">
+                {running.map((tab) => (
+                  <div key={tab.id} className="softn-launcher-run">
+                    <button
+                      type="button"
+                      className="softn-launcher-run-open"
+                      onClick={() => onResume?.(tab.id)}
+                      title={`Back to ${tab.name}`}
+                    >
+                      <span className="softn-launcher-run-dot" aria-hidden="true" />
+                      {tab.icon ? <img src={tab.icon} alt="" className="softn-launcher-run-icon" /> : null}
+                      <span className="softn-launcher-run-name">{tab.name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="softn-launcher-run-stop"
+                      onClick={() => onStop?.(tab.id)}
+                      aria-label={`Stop ${tab.name}`}
+                      title={`Stop ${tab.name}`}
+                    >
+                      &times;
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {groups.length > 0 ? (
-            <section className="softn-launcher-section" style={{ marginTop: 0 }}>
+            <section className="softn-launcher-section" style={{ marginTop: running.length > 0 ? undefined : 0 }}>
               <div className="softn-launcher-section-head">
                 <h2 className="softn-launcher-section-title">Your apps</h2>
                 <span className="softn-launcher-section-count">{groups.length}</span>
@@ -546,59 +606,12 @@ export function Launcher({
             </section>
           ) : (
             <div className="softn-launcher-empty">
-              <strong>Nothing open yet.</strong> Open a <strong>.softn</strong> file, or drop one anywhere on this page.
-              An app is one file — its interface, its logic and its assets — and it runs here without installing
-              anything.
+              <strong>Nothing open yet.</strong> Open a <strong>.softn</strong> file, drop one anywhere on this page, or pick
+              one from <a href={directoryHref}>the directory</a>. An app is one file — its interface, its logic and its
+              assets — and it runs here without installing anything.
             </div>
           )}
 
-          {/* Demo shelf — the bundles this site serves out of public/demos */}
-          {demos.length > 0 && (
-            <section className="softn-launcher-section">
-              <div className="softn-launcher-section-head">
-                <h2 className="softn-launcher-section-title">Demos</h2>
-                <span className="softn-launcher-section-count">{demos.length}</span>
-              </div>
-              <div className="softn-launcher-grid">
-                {demos.map((demo) => (
-                  <div
-                    key={demo.id}
-                    className="softn-launcher-card"
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Open the ${demo.name} demo`}
-                    onClick={() => onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL))}
-                    onKeyDown={activateOnKey(() =>
-                      onOpenUrl(publicPath(`demos/${demo.file}`, import.meta.env.BASE_URL))
-                    )}
-                  >
-                    <div className="softn-launcher-card-row">
-                      <div className="softn-launcher-icon">
-                        <span>{demo.name.charAt(0).toUpperCase()}</span>
-                        {/* The app's own icon, extracted beside the bundle at build
-                            time — the launcher only has index.json and is not going
-                            to download every bundle to draw a shelf. A demo without
-                            one 404s here and removes itself, leaving the letter. */}
-                        <img
-                          src={publicPath(`demos/icons/${demo.file.replace(/\.softn$/i, '')}.svg`, import.meta.env.BASE_URL)}
-                          alt=""
-                          onError={(e) => {
-                            (e.currentTarget as HTMLImageElement).style.display = 'none';
-                          }}
-                        />
-                      </div>
-                      <div style={{ minWidth: 0 }}>
-                        <div className="softn-launcher-card-name">{demo.name}</div>
-                        <div className="softn-launcher-card-meta">{formatSize(demo.size)}</div>
-                      </div>
-                    </div>
-                    {demo.description && <div className="softn-launcher-card-desc">{demo.description}</div>}
-                    <div className="softn-launcher-card-foot">Open demo</div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
         </div>
       </div>
     </>

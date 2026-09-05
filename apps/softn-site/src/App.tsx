@@ -10,8 +10,8 @@ import { getCategories, type Category } from './lib/api';
 
 /**
  * Four pages on one bundle. The directory API is asked for the categories
- * once; if it does not answer, every page still renders and says so, and the
- * demos on the home page still run — they are files, not database rows.
+ * once; if it does not answer, every page still renders and says so. No page
+ * runs an app: pressing Play hands the visitor to the runtime.
  */
 export default function App(): React.ReactElement {
   const route = useRoute();

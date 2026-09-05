@@ -4,7 +4,7 @@ import { ThemeProvider, Spinner, Box, Text } from '@softn/components';
 import { DropZone } from './components/DropZone';
 import { Launcher } from './components/Launcher';
 import { AppRunner } from './components/AppRunner';
-import { TabBar } from './components/TabBar';
+import { FrameBar } from './components/FrameBar';
 import { ProductBar } from '@softn/brand';
 import type { ConsentRequest } from './components/PermissionBar';
 import type { PermissionConfig } from '@softn/core';
@@ -24,9 +24,9 @@ const appShellStyles = `
        custom property is invalid at computed-value time. --softn-tab-bar-height
        is the name @softn/components sizes an app root against, so it stays;
        the base is what the breakpoints below move. */
-    /* The product bar and the tab strip together; --bar-height is the
-       product bar's, set by @softn/brand and taller on a phone. */
-    --softn-chrome-base: calc(var(--bar-height, 3rem) + 38px);
+    /* On the home screen the product bar; over a running app the slim frame
+       bar, which is what an app root is sized against. */
+    --softn-chrome-base: var(--bar-height, 3rem);
     --softn-tab-bar-height: var(--softn-chrome-base);
     display: flex;
     flex-direction: column;
@@ -34,6 +34,9 @@ const appShellStyles = `
     overflow: hidden;
     background: var(--ink);
     color: var(--paper);
+  }
+  .softn-shell.softn-shell--playing {
+    --softn-chrome-base: 42px;
   }
   .softn-shell-loading {
     animation: softn-shell-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -57,11 +60,6 @@ const appShellStyles = `
   }
   .softn-shell-error-btn:active {
     transform: translateY(0) scale(0.98);
-  }
-  @media (max-width: 640px) {
-    .softn-shell {
-      --softn-chrome-base: calc(var(--bar-height, 3rem) + 34px);
-    }
   }
   /* Embedded, there is no tab bar, so there is no chrome to subtract: without
      this an app in a host page's frame stopped 38px short of the bottom. The
@@ -95,11 +93,11 @@ const appShellStyles = `
     transition: opacity 160ms ease;
   }
   .softn-chrome-peek:hover, .softn-chrome-peek:focus-visible { opacity: 1; color: var(--paper); }
-  /* Touch overrides the narrow-window shrink: the bar has to match the 44px
-     targets TabBar gives its controls, or the app area is laid out short. */
+  /* Touch: the frame bar grows to give its controls 44px targets, and the
+     app area has to be laid out against that height or it comes out short. */
   @media (pointer: coarse) {
-    .softn-shell {
-      --softn-chrome-base: calc(var(--bar-height, 3rem) + 44px);
+    .softn-shell.softn-shell--playing {
+      --softn-chrome-base: 44px;
     }
   }
 `;
@@ -183,13 +181,20 @@ function readEntry(): {
   appName: string | null;
   page: string | null;
   embedded: boolean;
+  /** Where Close goes when the app was opened from another page of this site. */
+  backTo: string | null;
 } {
   restoreForwardedPath();
   const params = new URLSearchParams(window.location.search);
   const embedded = params.get('embed') === '1';
+  // `?back=` is a page of this origin — an app's directory page, usually —
+  // and nothing else: it arrives from the query string, so it is not ours to
+  // trust with a scheme or a second slash.
+  const back = params.get('back');
+  const backTo = back && back.startsWith('/') && !back.startsWith('//') && !back.startsWith('/\\') ? back : null;
   const openValue = params.get('open');
-  if (openValue) return { openValue, appName: null, page: null, embedded };
-  return { openValue: null, ...parseAppUrl(), embedded };
+  if (openValue) return { openValue, appName: null, page: null, embedded, backTo };
+  return { openValue: null, ...parseAppUrl(), embedded, backTo };
 }
 
 // ── Types ────────────────────────────────────────────────────────
@@ -250,6 +255,9 @@ function App(): React.ReactElement {
   // Pre-create a skeleton tab ID if loading from URL (so tab bar shows immediately)
   const [urlTabId] = useState(() => (urlInit.appName ? crypto.randomUUID() : null));
   const embedded = urlInit.embedded;
+  // Set when the app was opened from a page of this site — its directory page —
+  // so that Close returns there rather than to the runtime's home.
+  const backTo = urlInit.backTo;
   // The tab bar can be folded away for a game that wants the whole viewport;
   // the choice is remembered, and a fresh session keeps it.
   const [chromeHidden, setChromeHiddenState] = useState<boolean>(() => {
@@ -291,6 +299,8 @@ function App(): React.ReactElement {
   // A tab now carries its own request and raises it as a bar over the running
   // app, so no load waits on an answer and there is no queue to strand.
   const fileInputRef = useRef<HTMLInputElement>(null);
+  /** The shell — bar and app together — which is what fullscreen is asked of. */
+  const shellRef = useRef<HTMLDivElement>(null);
   const openTabsRef = useRef(openTabs);
   openTabsRef.current = openTabs;
   const activeTabIdRef = useRef(activeTabId);
@@ -881,7 +891,7 @@ function App(): React.ReactElement {
 
   /** Close a tab */
   const handleCloseTab = useCallback(
-    (tabId: string) => {
+    (tabId: string, andGoHome = false) => {
       // Clean up page tracking
       delete tabPagesRef.current[tabId];
 
@@ -904,9 +914,12 @@ function App(): React.ReactElement {
         const idx = prev.findIndex((t) => t.id === tabId);
         if (idx === -1) return prev;
         const next = prev.filter((t) => t.id !== tabId);
-        // If we're closing the active tab, activate the nearest neighbor or Home
+        // If we're closing the active tab, activate the nearest neighbor or
+        // Home — or Home regardless, when Close was pressed over the app: the
+        // person asked to stop what they were looking at, not to be handed
+        // whatever else happened to be open.
         if (activeTabIdRef.current === tabId) {
-          if (next.length === 0) {
+          if (andGoHome || next.length === 0) {
             setActiveTabId(null);
           } else if (idx < next.length) {
             setActiveTabId(next[idx].id);
@@ -924,11 +937,6 @@ function App(): React.ReactElement {
   const handleSelectTab = useCallback((id: string | null) => {
     setActiveTabId(id);
     setError(null);
-  }, []);
-
-  /** "+" button triggers file input */
-  const handleAddTab = useCallback(() => {
-    fileInputRef.current?.click();
   }, []);
 
   /** File input change handler */
@@ -1095,6 +1103,7 @@ function App(): React.ReactElement {
   }, [activeTabId]);
 
   const isHome = activeTabId === null;
+  const activeTab = isHome ? null : openTabs.find((t) => t.id === activeTabId) ?? null;
 
   return (
     <DropZone onFile={handleOpenFile}>
@@ -1108,31 +1117,38 @@ function App(): React.ReactElement {
         style={{ display: 'none' }}
       />
 
-      <div className={`softn-shell${embedded ? ' softn-shell--embedded' : ''}${chromeHidden ? ' softn-shell--bare' : ''}`}>
-        {/* Embedded in someone else's page: the app is the whole frame, and tabs
-            belong to the host document rather than to us. Folded away, the
-            bar leaves a corner tab to come back by. */}
-        {!embedded && chromeHidden && (
-          <button type="button" className="softn-chrome-peek" onClick={() => setChromeHidden(false)} title="Show the bars">
+      <div
+        ref={shellRef}
+        className={`softn-shell${embedded ? ' softn-shell--embedded' : ''}${!isHome ? ' softn-shell--playing' : ''}${!isHome && chromeHidden ? ' softn-shell--bare' : ''}`}
+      >
+        {/* Home wears the same product bar as the site, Studio and Builder. A
+            running app takes the whole window under the same slim frame bar
+            the site draws over an app playing from its directory page, so an
+            app looks the same wherever it was opened from; the bar folds to a
+            corner tab when the app wants every pixel. Embedded in someone
+            else's page, the app is the whole frame and the host has the bar. */}
+        {!embedded && isHome && <ProductBar current="runtime" layout="app" />}
+        {!embedded && !isHome && activeTab && chromeHidden && (
+          <button type="button" className="softn-chrome-peek" onClick={() => setChromeHidden(false)} title="Show the bar">
+            {activeTab.name}
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="m6 9 6 6 6-6" />
             </svg>
-            menu
           </button>
         )}
-        {/* The same bar as the site, Studio and Builder, so wherever an app
-            was opened from is one click away — and folded with the tabs when
-            an app wants the whole window. */}
-        {!embedded && !chromeHidden && <ProductBar current="runtime" layout="app" />}
-        {!embedded && !chromeHidden && (
-          <TabBar
-            tabs={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon, directorySlug: t.directorySlug }))}
-            activeTabId={activeTabId}
-            onSelectTab={handleSelectTab}
-            onCloseTab={handleCloseTab}
-            onAddTab={handleAddTab}
-            onDownloadTab={handleDownloadTab}
+        {!embedded && !isHome && activeTab && !chromeHidden && (
+          <FrameBar
+            tab={{ id: activeTab.id, name: activeTab.name, icon: activeTab.icon, directorySlug: activeTab.directorySlug }}
+            onHome={() => handleSelectTab(null)}
+            onClose={() => {
+              handleCloseTab(activeTab.id, true);
+              // Opened from an app's page on the site: Close is the way back
+              // there. Opened here: Close is the runtime's home.
+              if (backTo) window.location.assign(backTo);
+            }}
             onHide={() => setChromeHidden(true)}
+            fullscreenTarget={shellRef}
+            onDownload={handleDownloadTab}
           />
         )}
 
@@ -1267,9 +1283,11 @@ function App(): React.ReactElement {
           >
             <Launcher
               apps={apps}
+              running={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon }))}
+              onResume={(id) => handleSelectTab(id)}
+              onStop={(id) => handleCloseTab(id, true)}
               onOpenFile={handleOpenFile}
               onOpenCached={handleOpenCached}
-              onOpenUrl={openFromUrl}
               onRemove={handleRemove}
               onAdoptData={handleAdoptData}
             />

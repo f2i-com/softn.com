@@ -45,7 +45,14 @@
   gap: 1.25rem;
 }
 
-.softn-bar a,
+/* Two classes deep on purpose. In the runtime this bar shares a document
+   with whatever stylesheet the running app brought, and a bundle's plain
+   `a { text-decoration: underline }` — one element selector — must not
+   redraw the way out of the app. */
+.softn-bar .softn-bar-mark,
+.softn-bar .softn-bar-links a,
+.softn-bar .softn-bar-repo,
+.softn-bar .softn-bar-extra a,
 .softn-bar button {
   color: inherit;
   text-decoration: none;

@@ -3,10 +3,11 @@
  * Photograph every demo bundle, so the directory's cards show the app and
  * not its icon.
  *
- *   node scripts/screenshot-demos.mjs [--base http://localhost:1420] [--only Name,Name]
+ *   node scripts/screenshot-demos.mjs [--base http://localhost:1420/web] [--only Name,Name]
  *
  * Opens each bundle from apps/softn-web/public/demos/index.json in the web
- * runtime (a dev server or a built site; the default is `npm run dev:web`,
+ * runtime (a dev server or a built site; the default is the runtime behind
+ * `npm run dev`'s proxy,
  * but apps that run their script in a worker only start on a built site,
  * so pass --base http://127.0.0.1:5500/web for those),
  * in headless Edge or Chrome, follows a short per-app recipe where a title
@@ -32,7 +33,7 @@ const flag = (name, fallback) => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 };
-const base = flag('--base', 'http://localhost:1420').replace(/\/$/, '');
+const base = flag('--base', 'http://localhost:1420/web').replace(/\/$/, '');
 const only = flag('--only', '')
   .split(',')
   .map((s) => s.trim())
@@ -269,7 +270,7 @@ async function main() {
   try {
     await fetch(`${base}/`);
   } catch {
-    console.error(`Nothing answers at ${base}. Start the runtime (npm run dev:web) or pass --base.`);
+    console.error(`Nothing answers at ${base}. Start the dev set (npm run dev) or pass --base.`);
     process.exit(1);
   }
   const b = await launch(browser, 9400 + Math.floor(Math.random() * 100), 1280, 800);
