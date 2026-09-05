@@ -502,8 +502,9 @@ describe('# in text content', () => {
     expect(iff.template[0].type).toBe('IfBlock');
   });
 
-  it('leaves the \# escape working', () => {
-    const { errs, all } = survives('<Text>\#42</Text><Text>KEEPME</Text>');
+  it('leaves the \\# escape working', () => {
+    // A real backslash has to reach the lexer; in a JS literal `\#` is just `#`.
+    const { errs, all } = survives('<Text>\\#42</Text><Text>KEEPME</Text>');
     expect(errs).toHaveLength(0);
     expect(all).toContain('KEEPME');
   });

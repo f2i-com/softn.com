@@ -15,6 +15,12 @@ vi.mock('three', async (importOriginal) => {
     outputColorSpace = '';
     setSize() {}
     setPixelRatio() {}
+    // The effects composer asks the renderer how big it is before it decides
+    // whether there is anything to build.
+    getSize(target: { set(x: number, y: number): unknown }) {
+      target.set(300, 150);
+      return target;
+    }
     render() {}
     dispose() {}
     forceContextLoss() {}
