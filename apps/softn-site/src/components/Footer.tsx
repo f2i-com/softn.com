@@ -1,4 +1,5 @@
 import React from 'react';
+import { Mark } from '@softn/brand';
 import { BUILDER_HREF, REPO_URL, STUDIO_HREF, WEB_HREF, XDB_URL, ZIPP_URL } from '../lib/appUrls';
 
 export function Footer(): React.ReactElement {
@@ -8,7 +9,7 @@ export function Footer(): React.ReactElement {
         <div className="foot-grid">
           <div>
             <a className="nav-mark" href="/">
-              <span className="nav-mark-dot" aria-hidden="true" />
+              <Mark size={22} radius={6} />
               softn
             </a>
             <p className="foot-blurb">

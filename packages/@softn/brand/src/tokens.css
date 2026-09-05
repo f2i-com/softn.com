@@ -1,0 +1,99 @@
+/*
+ * The tokens every SoftN surface is drawn from: the site, the web runtime,
+ * Studio and Builder. One place, so a colour decided here is the colour
+ * everywhere, and the theme switch in any of the four moves all of them.
+ *
+ * Two accents, and each one means something.
+ *
+ *   --coral  marks the language — the syntax you type: tags, directives,
+ *            `@click`, `:bind`, `#each`, the braces around an expression, and
+ *            the mark that names the product.
+ *   --mint   marks the machine — and only the machine. It appears where
+ *            something is genuinely executing: the live badge on the player,
+ *            the running tab, the dot in the mark.
+ *
+ * Nothing else is allowed to be coloured. If a new element wants an accent, it
+ * has to be one of those two things.
+ *
+ * The dark values live on :root so a page with no JavaScript still renders as
+ * designed rather than unstyled. `data-theme` is stamped before first paint by
+ * the inline script each app's index.html carries, and the light theme is a
+ * turned-over version of the same cool graphite family rather than an
+ * inversion — the ground becomes cool paper and the ink becomes the graphite
+ * the dark theme used as its ground. Both accents are re-mixed for it, because
+ * neither of the dark pair reaches 4.5:1 on white.
+ */
+:root {
+  color-scheme: dark;
+
+  --ink: #101317;
+  --ink-2: #161a20;
+  --ink-3: #1d222a;
+  --line: #262c36;
+  --line-soft: #1c212a;
+  --line-strong: #333b47;
+  --paper: #f2f0ec;
+  --dim: #8b94a2;
+  /* Light enough to clear 4.5:1 against --ink-3, not just against --ink. */
+  --dimmer: #838c9a;
+  --coral: #ff8a4c;
+  --mint: #35e0c0;
+  --sand: #d8c39a;
+  --danger: #ff6b6b;
+  --warn: #e8a33d;
+
+  --tok-tag: rgba(242, 240, 236, 0.92);
+  --nav-bg: rgba(16, 19, 23, 0.82);
+  --rule: rgba(139, 148, 162, 0.07);
+  --inset: rgba(255, 255, 255, 0.05);
+  --invert-hover: #ffffff;
+  --on-invert-dim: rgba(16, 19, 23, 0.45);
+  --coral-glow: rgba(255, 138, 76, 0.14);
+  --mint-glow: rgba(53, 224, 192, 0.14);
+  --mint-glow-soft: rgba(53, 224, 192, 0.05);
+  --mint-edge: rgba(53, 224, 192, 0.35);
+  --select: rgba(255, 138, 76, 0.28);
+  --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+
+  --display: 'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif;
+  --body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --gutter: clamp(1.25rem, 4vw, 3.5rem);
+  --measure: 1220px;
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  /* The product bar's height, for anything laid out beneath it. */
+  --bar-height: 3rem;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --ink: #f4f6f9;
+  --ink-2: #ffffff;
+  --ink-3: #eef1f6;
+  --line: #d5dce5;
+  --line-soft: #e4e9f0;
+  --line-strong: #bcc6d2;
+  --paper: #14181d;
+  --dim: #5a6472;
+  --dimmer: #656e7c;
+  --coral: #c2410c;
+  --mint: #0f766e;
+  --sand: #8a5a17;
+  --danger: #b91c1c;
+  --warn: #a16207;
+
+  --tok-tag: rgba(20, 24, 29, 0.92);
+  --nav-bg: rgba(244, 246, 249, 0.85);
+  --rule: rgba(20, 24, 29, 0.06);
+  --inset: rgba(20, 24, 29, 0.05);
+  --invert-hover: #000000;
+  --on-invert-dim: rgba(244, 246, 249, 0.5);
+  --coral-glow: rgba(194, 65, 12, 0.1);
+  --mint-glow: rgba(15, 118, 110, 0.16);
+  --mint-glow-soft: rgba(15, 118, 110, 0.06);
+  --mint-edge: rgba(15, 118, 110, 0.4);
+  --select: rgba(194, 65, 12, 0.2);
+  --shadow: 0 20px 40px rgba(20, 24, 29, 0.07);
+}
