@@ -18,7 +18,7 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 1000,
   },
   dialog: {
-    background: '#fff',
+    background: 'var(--ink-2)',
     borderRadius: 12,
     width: 560,
     maxWidth: '90vw',
@@ -30,7 +30,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: '16px 24px',
-    borderBottom: '1px solid #e4e9f0',
+    borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -38,13 +38,13 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontSize: 18,
     fontWeight: 600,
-    color: '#14181d',
+    color: 'var(--paper)',
   },
   closeButton: {
     background: 'transparent',
     border: 'none',
     fontSize: 24,
-    color: '#656e7c',
+    color: 'var(--dimmer)',
     cursor: 'pointer',
     padding: 4,
     lineHeight: 1,
@@ -59,7 +59,7 @@ const styles: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#5a6472',
+    color: 'var(--dim)',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
     marginBottom: 8,
@@ -69,11 +69,11 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '6px 0',
-    borderBottom: '1px solid #eef1f6',
+    borderBottom: '1px solid var(--ink-3)',
   },
   action: {
     fontSize: 13,
-    color: '#374151',
+    color: 'var(--dim)',
   },
   shortcut: {
     display: 'flex',
@@ -82,18 +82,18 @@ const styles: Record<string, React.CSSProperties> = {
   key: {
     display: 'inline-block',
     padding: '2px 8px',
-    background: '#eef1f6',
-    border: '1px solid #e4e9f0',
+    background: 'var(--ink-3)',
+    border: '1px solid var(--line-soft)',
     borderRadius: 4,
     fontSize: 12,
     fontFamily: 'monospace',
-    color: '#3d444f',
+    color: 'var(--dim)',
     minWidth: 24,
     textAlign: 'center' as const,
   },
   plus: {
     fontSize: 12,
-    color: '#656e7c',
+    color: 'var(--dimmer)',
     lineHeight: '24px',
   },
 };

@@ -3,6 +3,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { ProductBar } from '@softn/brand';
 import { Toolbar } from './components/toolbar/Toolbar';
 import { NarrowScreenNotice } from './components/NarrowScreenNotice';
 import { ExportDialog } from './components/toolbar/ExportDialog';
@@ -47,7 +48,8 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100vh',
     display: 'flex',
     flexDirection: 'column',
-    background: '#f4f6f9',
+    background: 'var(--ink)',
+    color: 'var(--paper)',
   },
   main: {
     flex: 1,
@@ -56,17 +58,17 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0, // Important for flex scroll
     gap: 8,
     padding: 8,
-    background: 'linear-gradient(180deg, #f4f6f9 0%, #eef1f6 100%)',
+    background: 'var(--ink)',
   },
   leftPanel: {
     display: 'flex',
     flexDirection: 'column',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 10,
     overflow: 'hidden',
     width: 260,
     minWidth: 260,
-    background: '#fff',
+    background: 'var(--ink-2)',
   },
   center: {
     flex: 1,
@@ -80,9 +82,9 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     overflow: 'hidden',
     minWidth: 0, // Allow flex shrinking
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 10,
-    background: '#fff',
+    background: 'var(--ink-2)',
   },
   centerTop: {
     flex: 1,
@@ -91,18 +93,18 @@ const styles: Record<string, React.CSSProperties> = {
   },
   centerBottom: {
     height: 250,
-    borderTop: '1px solid #e4e9f0',
+    borderTop: '1px solid var(--line-soft)',
     overflow: 'hidden',
-    background: '#fff',
+    background: 'var(--ink-2)',
   },
   rightPanel: {
     display: 'flex',
     flexDirection: 'column',
     width: 320,
     minWidth: 320,
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 10,
-    background: '#fff',
+    background: 'var(--ink-2)',
     overflow: 'hidden',
   },
   rightPanelTop: {
@@ -110,7 +112,7 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
   },
   rightPanelBottom: {
-    borderTop: '1px solid #e4e9f0',
+    borderTop: '1px solid var(--line-soft)',
     maxHeight: '45%',
     overflow: 'auto',
   },
@@ -119,17 +121,17 @@ const styles: Record<string, React.CSSProperties> = {
   },
   statusBar: {
     height: 30,
-    borderTop: '1px solid #e4e9f0',
-    background: '#ffffff',
+    borderTop: '1px solid var(--line-soft)',
+    background: 'var(--ink-2)',
     display: 'flex',
     alignItems: 'center',
     gap: 16,
     padding: '0 12px',
     fontSize: 12,
-    color: '#5a6472',
+    color: 'var(--dim)',
   },
   statusStrong: {
-    color: '#0f1216',
+    color: 'var(--paper)',
     fontWeight: 600,
   },
   designShell: {
@@ -141,9 +143,9 @@ const styles: Record<string, React.CSSProperties> = {
   collapsedRailLeft: {
     width: 34,
     minWidth: 34,
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 10,
-    background: '#fff',
+    background: 'var(--ink-2)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
@@ -154,9 +156,9 @@ const styles: Record<string, React.CSSProperties> = {
   collapsedRailRight: {
     width: 34,
     minWidth: 34,
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 10,
-    background: '#fff',
+    background: 'var(--ink-2)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
@@ -167,9 +169,9 @@ const styles: Record<string, React.CSSProperties> = {
   collapsedRailBtn: {
     writingMode: 'vertical-rl',
     transform: 'rotate(180deg)',
-    border: '1px solid #d5dce5',
-    background: '#f4f6f9',
-    color: '#3d444f',
+    border: '1px solid var(--line)',
+    background: 'var(--ink)',
+    color: 'var(--dim)',
     borderRadius: 8,
     padding: '8px 4px',
     fontSize: 11,
@@ -180,17 +182,17 @@ const styles: Record<string, React.CSSProperties> = {
   },
   collapsedLogicBar: {
     height: 34,
-    borderTop: '1px solid #e4e9f0',
+    borderTop: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'flex-end',
     padding: '0 8px',
-    background: '#f4f6f9',
+    background: 'var(--ink)',
   },
   collapsedLogicBtn: {
-    border: '1px solid #d5dce5',
-    background: '#fff',
-    color: '#3d444f',
+    border: '1px solid var(--line)',
+    background: 'var(--ink-2)',
+    color: 'var(--dim)',
     borderRadius: 7,
     padding: '4px 9px',
     fontSize: 11,
@@ -203,21 +205,21 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '0 10px',
-    borderBottom: '1px solid #e4e9f0',
-    background: '#f4f6f9',
+    borderBottom: '1px solid var(--line-soft)',
+    background: 'var(--ink)',
   },
   // Peer of Files, Components and Properties, so it is set like them.
   logicDockTitle: {
     fontFamily: 'var(--b-display)',
     fontSize: 14,
-    color: '#14181d',
+    color: 'var(--paper)',
     letterSpacing: '-0.01em',
     fontWeight: 600,
   },
   logicDockHideBtn: {
-    border: '1px solid #d5dce5',
-    background: '#fff',
-    color: '#5a6472',
+    border: '1px solid var(--line)',
+    background: 'var(--ink-2)',
+    color: 'var(--dim)',
     borderRadius: 6,
     fontSize: 11,
     padding: '3px 7px',
@@ -231,27 +233,27 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     textAlign: 'center',
     padding: 24,
-    color: '#5a6472',
+    color: 'var(--dim)',
   },
   emptyFileTitle: {
     fontSize: 16,
     fontWeight: 600,
-    color: '#232830',
+    color: 'var(--paper)',
     marginBottom: 6,
   },
   emptyFileHint: {
     fontSize: 13,
-    color: '#5a6472',
+    color: 'var(--dim)',
   },
   assetPreview: {
     height: '100%',
     overflow: 'auto',
     padding: 18,
-    background: '#f4f6f9',
+    background: 'var(--ink)',
   },
   assetPreviewCard: {
-    background: '#fff',
-    border: '1px solid #e4e9f0',
+    background: 'var(--ink-2)',
+    border: '1px solid var(--line-soft)',
     borderRadius: 10,
     padding: 14,
     maxWidth: 900,
@@ -259,13 +261,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   assetPreviewMeta: {
     fontSize: 12,
-    color: '#5a6472',
+    color: 'var(--dim)',
     marginBottom: 12,
   },
   assetImageWrap: {
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 8,
-    background: '#fff',
+    background: 'var(--ink-2)',
     minHeight: 220,
     display: 'flex',
     alignItems: 'center',
@@ -279,7 +281,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   assetUnsupported: {
     padding: 20,
-    color: '#5a6472',
+    color: 'var(--dim)',
     fontSize: 13,
   },
 };
@@ -1173,6 +1175,8 @@ function App() {
 
   return (
     <div style={styles.app}>
+      {/* The same bar as the site, the runtime and Studio: the way between them. */}
+      <ProductBar current="builder" layout="app" />
       <Toolbar
         view={view}
         onViewChange={setView}

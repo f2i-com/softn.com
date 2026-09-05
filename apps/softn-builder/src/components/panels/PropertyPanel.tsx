@@ -13,15 +13,15 @@ const styles: Record<string, React.CSSProperties> = {
   container: {
     width: '100%',
     height: '100%',
-    background: '#fff',
-    borderLeft: '1px solid #e4e9f0',
+    background: 'var(--ink-2)',
+    borderLeft: '1px solid var(--line-soft)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
   },
   header: {
     padding: '12px 16px',
-    borderBottom: '1px solid #e4e9f0',
+    borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -30,12 +30,12 @@ const styles: Record<string, React.CSSProperties> = {
   headerTitle: {
     fontWeight: 600,
     fontSize: 14,
-    color: '#14181d',
+    color: 'var(--paper)',
   },
   dockBtn: {
-    border: '1px solid #d5dce5',
-    background: '#ffffff',
-    color: '#5a6472',
+    border: '1px solid var(--line)',
+    background: 'var(--ink-2)',
+    color: 'var(--dim)',
     borderRadius: 6,
     fontSize: 11,
     padding: '3px 7px',
@@ -61,7 +61,7 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 10,
     padding: '24px 28px',
     textAlign: 'center' as const,
-    color: '#656e7c',
+    color: 'var(--dimmer)',
     fontSize: 13,
   },
   emptyTitle: {
@@ -69,36 +69,36 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 15,
     fontWeight: 600,
     letterSpacing: '-0.01em',
-    color: '#14181d',
+    color: 'var(--paper)',
   },
   emptyHint: {
     fontSize: 12.5,
     lineHeight: 1.55,
-    color: '#5a6472',
+    color: 'var(--dim)',
     maxWidth: 240,
   },
   componentInfo: {
     marginBottom: 16,
     padding: 12,
-    background: '#f4f6f9',
+    background: 'var(--ink)',
     borderRadius: 8,
   },
   componentName: {
     fontSize: 16,
     fontWeight: 600,
-    color: '#14181d',
+    color: 'var(--paper)',
     marginBottom: 4,
   },
   componentDescription: {
     fontSize: 12,
-    color: '#5a6472',
+    color: 'var(--dim)',
   },
   section: {
     marginBottom: 16,
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 8,
     overflow: 'hidden',
-    background: '#fff',
+    background: 'var(--ink-2)',
   },
   sectionHeader: {
     display: 'flex',
@@ -106,21 +106,21 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'space-between',
     gap: 8,
     padding: '8px 10px',
-    background: '#f4f6f9',
-    borderBottom: '1px solid #e4e9f0',
+    background: 'var(--ink)',
+    borderBottom: '1px solid var(--line-soft)',
   },
   sectionTitle: {
     fontSize: 11,
     fontWeight: 600,
-    color: '#5a6472',
+    color: 'var(--dim)',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
   },
   sectionToggle: {
-    border: '1px solid #d5dce5',
-    background: '#fff',
+    border: '1px solid var(--line)',
+    background: 'var(--ink-2)',
     borderRadius: 6,
-    color: '#5a6472',
+    color: 'var(--dim)',
     fontSize: 11,
     width: 22,
     height: 20,
@@ -138,13 +138,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'block',
     fontSize: 12,
     fontWeight: 500,
-    color: '#374151',
+    color: 'var(--dim)',
     marginBottom: 4,
   },
   input: {
     width: '100%',
     padding: '8px 10px',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 6,
     fontSize: 13,
     outline: 'none',
@@ -152,11 +152,11 @@ const styles: Record<string, React.CSSProperties> = {
   select: {
     width: '100%',
     padding: '8px 10px',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 6,
     fontSize: 13,
     outline: 'none',
-    background: '#fff',
+    background: 'var(--ink-2)',
   },
   checkbox: {
     display: 'flex',
@@ -171,7 +171,7 @@ const styles: Record<string, React.CSSProperties> = {
     width: 40,
     height: 32,
     padding: 2,
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 4,
     cursor: 'pointer',
   },
@@ -183,7 +183,7 @@ const styles: Record<string, React.CSSProperties> = {
   textarea: {
     width: '100%',
     padding: '8px 10px',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 6,
     fontSize: 13,
     outline: 'none',
@@ -194,12 +194,12 @@ const styles: Record<string, React.CSSProperties> = {
   fieldHint: {
     marginTop: 4,
     fontSize: 11,
-    color: '#5a6472',
+    color: 'var(--dim)',
   },
   fieldSubLabel: {
     display: 'block',
     fontSize: 11,
-    color: '#5a6472',
+    color: 'var(--dim)',
     marginBottom: 4,
   },
 };
@@ -246,7 +246,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
             checked={Boolean(value)}
             onChange={(e) => onChange(e.target.checked)}
           />
-          <span style={{ fontSize: 12, color: '#5a6472' }}>{value ? 'Yes' : 'No'}</span>
+          <span style={{ fontSize: 12, color: 'var(--dim)' }}>{value ? 'Yes' : 'No'}</span>
         </div>
       );
 
@@ -323,7 +323,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
             placeholder="functionName()"
             title="Enter a function name from Logic tab"
           />
-          <small style={{ fontSize: 10, color: '#656e7c', marginTop: 2, display: 'block' }}>
+          <small style={{ fontSize: 10, color: 'var(--dimmer)', marginTop: 2, display: 'block' }}>
             Function defined in Logic tab
           </small>
         </div>
@@ -502,7 +502,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
       <div style={styles.container}>
         {header}
         <div style={styles.empty}>
-          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#656e7c" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--dimmer)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M4 4h7v7H4z" />
             <path d="M13.5 13.5 20 20" />
             <path d="M13 13h3.5M13 13v3.5" />

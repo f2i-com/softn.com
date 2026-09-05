@@ -8,7 +8,7 @@ interface FileGlyphProps {
   color?: string;
 }
 
-export function FileGlyph({ kind, size = 14, color = '#3d444f' }: FileGlyphProps) {
+export function FileGlyph({ kind, size = 14, color = 'var(--dim)' }: FileGlyphProps) {
   const common: React.CSSProperties = {
     width: size,
     height: size,
@@ -27,7 +27,7 @@ export function FileGlyph({ kind, size = 14, color = '#3d444f' }: FileGlyphProps
             d="M1.5 4.5C1.5 3.67 2.17 3 3 3h2.5l1.2 1.4H13c.83 0 1.5.67 1.5 1.5v6.6c0 .83-.67 1.5-1.5 1.5H3c-.83 0-1.5-.67-1.5-1.5V4.5Z"
             stroke={color}
             strokeWidth="1.2"
-            fill={kind === 'folder-open' ? '#eff6ff' : 'transparent'}
+            fill={kind === 'folder-open' ? 'var(--mint-glow-soft)' : 'transparent'}
           />
           {kind === 'folder-open' && (
             <path d="M2.3 6.5h11.4" stroke={color} strokeWidth="1.2" strokeLinecap="round" />
@@ -56,7 +56,7 @@ export function FileGlyph({ kind, size = 14, color = '#3d444f' }: FileGlyphProps
         <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
           <path
             d="M8.8 1.8 4.4 8h3l-.3 6.2L11.6 8H8.6l.2-6.2Z"
-            fill="#dbeafe"
+            fill="var(--mint-glow)"
             stroke={color}
             strokeWidth="1.1"
             strokeLinejoin="round"

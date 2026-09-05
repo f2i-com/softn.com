@@ -2,7 +2,6 @@ import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { Icon } from '../common/Icon';
 import { useWorkspaceStore, useVFSStore, useAIStore } from '../../stores';
 import { removeRecentProject, loadRecentProjects, loadWorkspaceSnapshot } from '../../lib/persistence';
-import { Mark } from '../common/Mark';
 
 interface RecentProject {
   id: string;
@@ -60,7 +59,7 @@ function getTheme(theme: ThemeMode) {
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProject, onLoadRecent, recentProjects: initialRecent = [] }) => {
-  const { themePreview, setThemePreview } = useWorkspaceStore();
+  const { themePreview } = useWorkspaceStore();
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -112,20 +111,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
       <div style={s.scroll}>
         <div style={{ ...s.page, padding: m ? '20px 16px 32px' : '40px 28px 60px' }}>
 
-          {/* Header */}
-          <div style={{ ...s.header, marginBottom: m ? 24 : 36 }}>
-            <div style={s.headerLeft}>
-              <Mark size={m ? 36 : 44} radius={m ? 10 : 12} />
-              <span style={{ ...s.logoLabel, fontSize: m ? 15 : 17, color: theme.text }}>SoftN Studio</span>
-            </div>
-            <button
-              onClick={() => setThemePreview(themePreview === 'dark' ? 'light' : 'dark')}
-              style={{ ...s.themeBtn, background: theme.cardBg, borderColor: theme.border, color: theme.textSecondary }}
-              title={themePreview === 'dark' ? 'Light mode' : 'Dark mode'}
-            >
-              <Icon name={themePreview === 'dark' ? 'sun' : 'moon'} size={16} />
-            </button>
-          </div>
+          {/* The product bar above carries the mark and the theme switch;
+              this page starts with what Studio is for. */}
 
           {/* Hero */}
           <div style={{ textAlign: m ? 'center' : 'left', marginBottom: m ? 28 : 40 }}>

@@ -14,11 +14,11 @@ const styles: Record<string, React.CSSProperties> = {
     height: '100%',
     display: 'flex',
     flexDirection: 'column',
-    background: '#fff',
+    background: 'var(--ink-2)',
   },
   header: {
     padding: '8px 16px',
-    borderBottom: '1px solid #e4e9f0',
+    borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -26,7 +26,7 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontWeight: 600,
     fontSize: 13,
-    color: '#14181d',
+    color: 'var(--paper)',
   },
   titleContainer: {
     display: 'flex',
@@ -41,7 +41,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   hint: {
     fontSize: 11,
-    color: '#656e7c',
+    color: 'var(--dimmer)',
   },
   editorWrapper: {
     flex: 1,

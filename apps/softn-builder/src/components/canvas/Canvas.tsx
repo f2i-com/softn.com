@@ -46,9 +46,9 @@ const styles: Record<string, React.CSSProperties> = {
     transition: 'all 0.2s',
   },
   emptyDragOver: {
-    borderColor: '#c2410c',
-    background: '#eff6ff',
-    color: '#c2410c',
+    borderColor: 'var(--coral)',
+    background: 'var(--mint-glow-soft)',
+    color: 'var(--coral)',
   },
   dropActive: {
     background: '#e8f4ff',
@@ -275,7 +275,7 @@ export function Canvas() {
 
   const rootIndicatorLineStyle: React.CSSProperties = {
     height: 3,
-    background: '#c2410c',
+    background: 'var(--coral)',
     borderRadius: 2,
     opacity: 0.8,
     margin: '0 4px',

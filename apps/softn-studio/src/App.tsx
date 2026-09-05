@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { ProductBar, currentTheme, subscribeTheme } from '@softn/brand';
 import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
 import { TopBar } from './components/toolbar/TopBar';
 import { LeftRail } from './components/layout/LeftRail';
@@ -149,6 +150,15 @@ const App: React.FC = () => {
     check();
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
+  }, []);
+
+  // The theme is the one every SoftN app shares — chosen in the product bar
+  // here or anywhere else, remembered under one key, and read by the script
+  // that painted the ground before this code ran. Studio's own tokens follow
+  // it rather than keeping a preference of their own.
+  useEffect(() => {
+    useWorkspaceStore.getState().setThemePreview(currentTheme());
+    return subscribeTheme((next) => useWorkspaceStore.getState().setThemePreview(next));
   }, []);
 
   // Each view applies the theme tokens to its own wrapper, so anything mounted
@@ -497,15 +507,24 @@ const App: React.FC = () => {
     }
   };
 
+  // The same bar as the site, the runtime and Builder, over every view: the
+  // way between them.
+  const bar = <ProductBar current="studio" layout="app" />;
+
   // Dashboard
   if (view === 'dashboard') {
     return (
-      <Dashboard
-        onNewProject={handleNewProject}
-        onImportProject={handleImportProject}
-        onLoadRecent={() => setView('editor')}
-        recentProjects={recentProjects}
-      />
+      <div style={{ ...styles.root, ...getStudioThemeVars(themePreview) }}>
+        {bar}
+        <div style={styles.fill}>
+          <Dashboard
+            onNewProject={handleNewProject}
+            onImportProject={handleImportProject}
+            onLoadRecent={() => setView('editor')}
+            recentProjects={recentProjects}
+          />
+        </div>
+      </div>
     );
   }
 
@@ -513,7 +532,10 @@ const App: React.FC = () => {
   if (view === 'brief') {
     return (
       <div style={{ ...styles.root, ...getStudioThemeVars(themePreview) }}>
-        <BriefWizard onBack={handleBackToDashboard} onSubmit={() => setView('editor')} />
+        {bar}
+        <div style={styles.fill}>
+          <BriefWizard onBack={handleBackToDashboard} onSubmit={() => setView('editor')} />
+        </div>
       </div>
     );
   }
@@ -528,6 +550,7 @@ const App: React.FC = () => {
   if (isMobile) {
     return (
       <div style={{ ...styles.mobileRoot, ...getStudioThemeVars(themePreview) }}>
+        {bar}
         {/* Compact mobile top bar */}
         <div style={styles.mobileTopBar}>
           <div style={styles.mobileTopLeft}>
@@ -599,6 +622,7 @@ const App: React.FC = () => {
   // Desktop editor
   return (
     <div style={{ ...styles.root, ...getStudioThemeVars(themePreview) }}>
+      {bar}
       <TopBar onBackToDashboard={handleBackToDashboard} />
       <div style={styles.main}>
         <LeftRail>{renderLeftPanelContent()}</LeftRail>
@@ -633,6 +657,13 @@ const styles: Record<string, React.CSSProperties> = {
     flex: 1,
     minHeight: 0,
     overflow: 'hidden',
+  },
+  /** The space under the product bar, for a view that fills the window itself. */
+  fill: {
+    flex: 1,
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
   },
   centerColumn: {
     flex: 1,

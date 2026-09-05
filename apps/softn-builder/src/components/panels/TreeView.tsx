@@ -9,22 +9,22 @@ import type { CanvasElement } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
-    background: '#fff',
-    borderTop: '1px solid #e4e9f0',
+    background: 'var(--ink-2)',
+    borderTop: '1px solid var(--line-soft)',
     maxHeight: 250,
     overflow: 'auto',
   },
   header: {
     padding: '8px 16px',
-    borderBottom: '1px solid #e4e9f0',
+    borderBottom: '1px solid var(--line-soft)',
     fontWeight: 600,
     fontSize: 12,
-    color: '#5a6472',
+    color: 'var(--dim)',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.05em',
     position: 'sticky' as const,
     top: 0,
-    background: '#fff',
+    background: 'var(--ink-2)',
     zIndex: 1,
   },
   tree: {
@@ -47,11 +47,11 @@ const nodeBaseStyle: React.CSSProperties = {
 };
 
 const nodeHoverStyle: React.CSSProperties = {
-  background: '#eef1f6',
+  background: 'var(--ink-3)',
 };
 
 const nodeSelectedStyle: React.CSSProperties = {
-  background: '#dbeafe',
+  background: 'var(--mint-glow)',
   color: '#1e40af',
 };
 
@@ -111,7 +111,7 @@ function TreeNode({ element, depth }: TreeNodeProps) {
               width: 16,
               textAlign: 'center' as const,
               fontSize: 10,
-              color: '#656e7c',
+              color: 'var(--dimmer)',
               cursor: 'pointer',
             }}
           >

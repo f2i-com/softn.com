@@ -26,7 +26,7 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 1000,
   },
   dialog: {
-    background: '#fff',
+    background: 'var(--ink-2)',
     borderRadius: 12,
     width: 480,
     maxWidth: '90vw',
@@ -35,7 +35,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   header: {
     padding: '16px 24px',
-    borderBottom: '1px solid #e4e9f0',
+    borderBottom: '1px solid var(--line-soft)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -43,13 +43,13 @@ const styles: Record<string, React.CSSProperties> = {
   title: {
     fontSize: 18,
     fontWeight: 600,
-    color: '#14181d',
+    color: 'var(--paper)',
   },
   closeButton: {
     background: 'transparent',
     border: 'none',
     fontSize: 24,
-    color: '#656e7c',
+    color: 'var(--dimmer)',
     cursor: 'pointer',
     padding: 4,
     lineHeight: 1,
@@ -64,13 +64,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'block',
     fontSize: 13,
     fontWeight: 500,
-    color: '#374151',
+    color: 'var(--dim)',
     marginBottom: 6,
   },
   input: {
     width: '100%',
     padding: '10px 12px',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 8,
     fontSize: 14,
     outline: 'none',
@@ -78,7 +78,7 @@ const styles: Record<string, React.CSSProperties> = {
   textarea: {
     width: '100%',
     padding: '10px 12px',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 8,
     fontSize: 14,
     outline: 'none',
@@ -88,15 +88,15 @@ const styles: Record<string, React.CSSProperties> = {
   select: {
     width: '100%',
     padding: '10px 12px',
-    border: '1px solid #e4e9f0',
+    border: '1px solid var(--line-soft)',
     borderRadius: 8,
     fontSize: 14,
     outline: 'none',
-    background: '#fff',
+    background: 'var(--ink-2)',
   },
   footer: {
     padding: '16px 24px',
-    borderTop: '1px solid #e4e9f0',
+    borderTop: '1px solid var(--line-soft)',
     display: 'flex',
     justifyContent: 'flex-end',
     gap: 12,
@@ -111,12 +111,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   cancelButton: {
     background: 'transparent',
-    border: '1px solid #e4e9f0',
-    color: '#5a6472',
+    border: '1px solid var(--line-soft)',
+    color: 'var(--dim)',
   },
   exportButton: {
-    background: '#c2410c',
-    border: '1px solid #c2410c',
+    background: 'var(--coral)',
+    border: '1px solid var(--coral)',
     color: '#fff',
   },
   exportButtonDisabled: {
@@ -126,7 +126,7 @@ const styles: Record<string, React.CSSProperties> = {
   progress: {
     textAlign: 'center' as const,
     padding: 24,
-    color: '#5a6472',
+    color: 'var(--dim)',
   },
   success: {
     textAlign: 'center' as const,

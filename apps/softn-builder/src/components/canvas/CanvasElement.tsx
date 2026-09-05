@@ -81,18 +81,18 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   hovered: {
-    borderColor: '#656e7c',
+    borderColor: 'var(--dimmer)',
     background: 'rgba(148, 163, 184, 0.05)',
   },
   selected: {
-    borderColor: '#c2410c',
+    borderColor: 'var(--coral)',
     background: 'rgba(194, 65, 12, 0.05)',
   },
   dragging: {
     opacity: 0.5,
   },
   dragOver: {
-    borderColor: '#c2410c',
+    borderColor: 'var(--coral)',
     background: 'rgba(194, 65, 12, 0.1)',
   },
   label: {
@@ -101,7 +101,7 @@ const styles: Record<string, React.CSSProperties> = {
     left: 8,
     fontSize: 10,
     fontWeight: 500,
-    color: '#c2410c',
+    color: 'var(--coral)',
     background: '#fff',
     padding: '0 4px',
     borderRadius: 2,
@@ -113,7 +113,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 4,
     borderWidth: 1,
     borderStyle: 'dashed',
-    borderColor: '#e4e9f0',
+    borderColor: 'var(--line-soft)',
     marginTop: 8,
     transition: 'all 0.2s',
   },
@@ -121,12 +121,12 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    color: '#656e7c',
+    color: 'var(--dimmer)',
     fontSize: 11,
     padding: 16,
   },
   childrenDragOver: {
-    borderColor: '#c2410c',
+    borderColor: 'var(--coral)',
     background: 'rgba(194, 65, 12, 0.05)',
   },
   notAllowed: {
@@ -555,8 +555,8 @@ export const CanvasElement = React.memo(function CanvasElement({
               padding: '8px 16px',
               borderRadius: 4,
               border: 'none',
-              background: props.variant === 'secondary' ? '#e4e9f0' : '#c2410c',
-              color: props.variant === 'secondary' ? '#14181d' : '#fff',
+              background: props.variant === 'secondary' ? 'var(--line-soft)' : 'var(--coral)',
+              color: props.variant === 'secondary' ? 'var(--paper)' : '#fff',
               cursor: 'pointer',
               fontSize: 14,
             }}
@@ -574,7 +574,7 @@ export const CanvasElement = React.memo(function CanvasElement({
             style={{
               padding: '8px 12px',
               borderRadius: 4,
-              border: '1px solid #e4e9f0',
+              border: '1px solid var(--line-soft)',
               fontSize: 14,
               width: '100%',
             }}
@@ -590,7 +590,7 @@ export const CanvasElement = React.memo(function CanvasElement({
             style={{
               padding: '8px 12px',
               borderRadius: 4,
-              border: '1px solid #e4e9f0',
+              border: '1px solid var(--line-soft)',
               fontSize: 14,
               width: '100%',
               minHeight: 80,
@@ -602,7 +602,7 @@ export const CanvasElement = React.memo(function CanvasElement({
 
       case 'Text':
         return (
-          <span style={{ fontSize: 14, color: '#14181d' }}>
+          <span style={{ fontSize: 14, color: 'var(--paper)' }}>
             {(props.children as string) || 'Text'}
           </span>
         );
@@ -624,7 +624,7 @@ export const CanvasElement = React.memo(function CanvasElement({
               borderRadius: 8,
               background: '#fff',
               boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-              border: '1px solid #e4e9f0',
+              border: '1px solid var(--line-soft)',
             }}
           >
             Card
@@ -639,7 +639,7 @@ export const CanvasElement = React.memo(function CanvasElement({
               flexDirection: props.direction === 'horizontal' ? 'row' : 'column',
               gap: 8,
               padding: 8,
-              background: '#f4f6f9',
+              background: 'var(--ink)',
               borderRadius: 4,
               minHeight: 40,
             }}
@@ -653,7 +653,7 @@ export const CanvasElement = React.memo(function CanvasElement({
           <div
             style={{
               padding: 12,
-              background: '#f4f6f9',
+              background: 'var(--ink)',
               borderRadius: 4,
               minHeight: 40,
             }}
@@ -666,15 +666,15 @@ export const CanvasElement = React.memo(function CanvasElement({
             style={{
               width: '100%',
               minHeight: 100,
-              background: '#f4f6f9',
+              background: 'var(--ink)',
               borderRadius: 4,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              color: '#5a6472',
+              color: 'var(--dim)',
               fontSize: 12,
               overflow: 'hidden',
-              border: '1px solid #e4e9f0',
+              border: '1px solid var(--line-soft)',
             }}
           >
             {imagePreviewUrl ? (
@@ -699,7 +699,7 @@ export const CanvasElement = React.memo(function CanvasElement({
               ? '#bbf7d0'
               : props.variant === 'warning'
                 ? '#fde68a'
-                : '#bfdbfe';
+                : 'var(--mint-edge)';
         return (
           <div
             style={{
@@ -712,7 +712,7 @@ export const CanvasElement = React.memo(function CanvasElement({
                     ? '#f0fdf4'
                     : props.variant === 'warning'
                       ? '#fffbeb'
-                      : '#eff6ff',
+                      : 'var(--mint-glow-soft)',
               border: `1px solid ${alertBorderColor}`,
               fontSize: 14,
             }}
@@ -784,11 +784,11 @@ export const CanvasElement = React.memo(function CanvasElement({
           <div
             style={{
               padding: 10,
-              background: '#f4f6f9',
+              background: 'var(--ink)',
               borderRadius: 6,
-              border: '1px solid #e4e9f0',
+              border: '1px solid var(--line-soft)',
               fontSize: 12,
-              color: '#232830',
+              color: 'var(--paper)',
               display: 'grid',
               gap: 4,
             }}
@@ -799,7 +799,7 @@ export const CanvasElement = React.memo(function CanvasElement({
                   width: 18,
                   height: 18,
                   borderRadius: 6,
-                  background: '#e4e9f0',
+                  background: 'var(--line-soft)',
                   display: 'inline-flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -810,7 +810,7 @@ export const CanvasElement = React.memo(function CanvasElement({
               <strong style={{ fontSize: 12 }}>{componentType}</strong>
             </div>
             {componentMeta?.description && (
-              <span style={{ color: '#5a6472', fontSize: 11 }}>{componentMeta.description}</span>
+              <span style={{ color: 'var(--dim)', fontSize: 11 }}>{componentMeta.description}</span>
             )}
           </div>
         );
@@ -823,7 +823,7 @@ export const CanvasElement = React.memo(function CanvasElement({
     left: 4,
     right: 4,
     height: 3,
-    background: '#c2410c',
+    background: 'var(--coral)',
     borderRadius: 2,
     opacity: 0.8,
     pointerEvents: 'none',

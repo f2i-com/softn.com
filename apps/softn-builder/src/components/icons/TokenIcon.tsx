@@ -29,7 +29,7 @@ interface TokenIconProps {
   color?: string;
 }
 
-export function TokenIcon({ token, size = 14, color = '#232830' }: TokenIconProps) {
+export function TokenIcon({ token, size = 14, color = 'var(--paper)' }: TokenIconProps) {
   const kind = resolveKind(token);
   const stroke = { stroke: color, strokeWidth: 1.4, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
 

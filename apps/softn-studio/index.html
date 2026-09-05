@@ -13,6 +13,30 @@
          only honours that one for standalone display. -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!--
+      Runs before the first paint so a light-mode reader never sees the dark
+      ground flash first. The same script, with the same key, is in every
+      SoftN app's index.html; @softn/brand's theme.ts is the copy to check
+      against.
+    -->
+    <script>
+      (function () {
+        var theme = 'dark';
+        try {
+          var stored = localStorage.getItem('softn.site.theme');
+          if (stored === 'light' || stored === 'dark') {
+            theme = stored;
+          } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            theme = 'light';
+          }
+        } catch (e) {
+          /* Storage blocked; the dark default stands. */
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', theme === 'light' ? '#f4f6f9' : '#101317');
+      })();
+    </script>
     <title>SoftN Studio</title>
     <style>
       *, *::before, *::after {
@@ -31,6 +55,11 @@
         background: var(--studio-bg, #101317);
         color: var(--studio-text, #f2f0ec);
         transition: background 0.2s ease, color 0.2s ease;
+      }
+      /* Until the tokens arrive with the bundle, the pre-paint choice paints the ground. */
+      html[data-theme='light'] body {
+        background: var(--studio-bg, #f4f6f9);
+        color: var(--studio-text, #14181d);
       }
     </style>
   </head>

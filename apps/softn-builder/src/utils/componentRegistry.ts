@@ -516,10 +516,10 @@ export const componentRegistry: ComponentMeta[] = [
     'Form',
     'droplet',
     'Color input',
-    { defaultValue: '#c2410c' },
+    { defaultValue: 'var(--coral)' },
     [
       { name: 'value', type: 'expression' },
-      { name: 'defaultValue', type: 'color', default: '#c2410c' },
+      { name: 'defaultValue', type: 'color', default: 'var(--coral)' },
       { name: 'format', type: 'select', options: ['hex', 'rgb', 'hsl'], default: 'hex' },
       { name: 'disabled', type: 'boolean', default: false },
       { name: 'onChange', type: 'event' },
@@ -1707,7 +1707,7 @@ export const componentRegistry: ComponentMeta[] = [
       { name: 'data', type: 'expression' },
       { name: 'xKey', type: 'string', default: 'name' },
       { name: 'yKey', type: 'string', default: 'value' },
-      { name: 'color', type: 'color', default: '#c2410c' },
+      { name: 'color', type: 'color', default: 'var(--coral)' },
       { name: 'className', type: 'string' },
     ],
     false
