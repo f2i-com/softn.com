@@ -87,20 +87,19 @@ const permissionBarStyles = `
     min-height: 46px;
     padding: 0.5rem 0.875rem;
     background:
-      linear-gradient(180deg, rgba(99, 102, 241, 0.12), rgba(99, 102, 241, 0.04)),
-      #111114;
-    border-bottom: 1px solid rgba(99, 102, 241, 0.24);
+            #161a20;
+    border-bottom: 1px solid #262c36;
     /* Runtime chrome, so the colours are fixed. Every var(--color-*) here would
        resolve from whichever theme the bundle picked — DeviceKit renders light,
        Promptly Unemployed renders dark — and the bar would read as the app's
        own UI, which is the one thing a consent surface must never do. */
-    color: #d4d4dc;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color: #f2f0ec;
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
     font-size: 0.8125rem;
     letter-spacing: -0.01em;
     user-select: none;
   }
-  .softn-consent-icon { display: flex; flex-shrink: 0; color: #818cf8; }
+  .softn-consent-icon { display: flex; flex-shrink: 0; color: #8b94a2; }
   .softn-consent-msg {
     flex: 1;
     min-width: 0;
@@ -110,7 +109,7 @@ const permissionBarStyles = `
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 1;
   }
-  .softn-consent-msg b { color: #ececf0; font-weight: 500; }
+  .softn-consent-msg b { color: #f2f0ec; font-weight: 500; }
   .softn-consent-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 
   .softn-consent-btn {
@@ -127,24 +126,24 @@ const permissionBarStyles = `
   /* .softn-app *:focus-visible does not reach out here — the bar sits outside
      the app root on purpose, so it draws its own ring. */
   .softn-consent-btn:focus-visible,
-  .softn-consent-chip:focus-visible { outline: 2px solid #818cf8; outline-offset: 2px; }
+  .softn-consent-chip:focus-visible { outline: 2px solid #8b94a2; outline-offset: 2px; }
 
   .softn-consent-allow {
-    background: #4f46e5; color: #ffffff; border: 1px solid rgba(99, 102, 241, 0.4);
+    background: #f2f0ec; color: #101317; border: 1px solid #f2f0ec;
   }
   .softn-consent-allow:hover {
-    background: #4338ca; transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+    background: #ffffff; transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
   }
   .softn-consent-later {
-    background: #1e1e23; color: #ececf0; border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #1d222a; color: #f2f0ec; border: 1px solid #333b47;
   }
-  .softn-consent-later:hover { background: #2a2a30; transform: translateY(-1px); }
+  .softn-consent-later:hover { background: #262c36; transform: translateY(-1px); }
   .softn-consent-more {
-    background: transparent; border: none; color: #a5b4fc; padding: 0 0.375rem;
+    background: transparent; border: none; color: #f2f0ec; padding: 0 0.375rem;
     text-decoration: underline dotted; text-underline-offset: 3px;
   }
-  .softn-consent-more:hover { color: #c7d2fe; }
+  .softn-consent-more:hover { color: #ffffff; }
 
   /* The dismissed state is a strip in the same flex column as the bar, not a
      button floating over the app.
@@ -162,16 +161,16 @@ const permissionBarStyles = `
     align-items: center;
     justify-content: flex-end;
     padding: 3px 6px;
-    background: #111114;
-    border-bottom: 1px solid rgba(99, 102, 241, 0.14);
+    background: #161a20;
+    border-bottom: 1px solid #1c212a;
   }
   .softn-consent-chip {
     width: 28px; height: 28px;
     display: flex; align-items: center; justify-content: center;
     border-radius: 8px;
-    background: rgba(17, 17, 20, 0.72);
-    border: 1px solid rgba(99, 102, 241, 0.28);
-    color: #818cf8;
+    background: rgba(22, 26, 32, 0.72);
+    border: 1px solid #333b47;
+    color: #8b94a2;
     cursor: pointer;
     opacity: 0.55;
     animation: softn-consent-fade-in 250ms cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -179,7 +178,7 @@ const permissionBarStyles = `
                 background 180ms cubic-bezier(0.16, 1, 0.3, 1);
   }
   .softn-consent-chip:hover, .softn-consent-chip:focus-visible {
-    opacity: 1; background: rgba(17, 17, 20, 0.92);
+    opacity: 1; background: rgba(22, 26, 32, 0.92);
   }
 
   /* A phone gets two rows: one sentence over one row of buttons. Side by side

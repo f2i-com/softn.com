@@ -250,7 +250,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
       alignItems: 'flex-start',
       justifyContent: 'center',
       overflowY: 'auto',
-      background: '#0c0c0e',
+      background: '#101317',
       zIndex: 20,
       padding: '1rem',
     }}>
@@ -263,8 +263,8 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
         style={{
         maxWidth: '440px',
         width: '100%',
-        background: '#16161a',
-        border: '1px solid rgba(255, 255, 255, 0.08)',
+        background: '#161a20',
+        border: '1px solid #262c36',
         borderRadius: '14px',
         boxShadow: '0 4px 24px rgba(0, 0, 0, 0.3)',
         padding: '2rem',
@@ -285,7 +285,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
                 height: '40px',
                 borderRadius: '10px',
                 objectFit: 'cover',
-                border: '1px solid rgba(255, 255, 255, 0.06)',
+                border: '1px solid #262c36',
               }}
             />
           ) : (
@@ -293,14 +293,14 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
               width: '40px',
               height: '40px',
               borderRadius: '10px',
-              background: 'rgba(99, 102, 241, 0.15)',
-              border: '1px solid rgba(99, 102, 241, 0.2)',
+              background: '#333b47',
+              border: '1px solid #333b47',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               flexShrink: 0,
             }}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8b94a2" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
                 <line x1="3" y1="9" x2="21" y2="9" />
                 <line x1="9" y1="21" x2="9" y2="9" />
@@ -309,7 +309,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
           )}
           <div>
             <div id={titleId} style={{
-              color: '#ececf0',
+              color: '#f2f0ec',
               fontWeight: 600,
               fontSize: '1.0625rem',
               letterSpacing: '-0.02em',
@@ -317,7 +317,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
               {appName}
             </div>
             <div id={descId} style={{
-              color: '#7a7a86',
+              color: '#8b94a2',
               fontSize: '0.75rem',
               marginTop: '2px',
             }}>
@@ -341,26 +341,26 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
               padding: '0.75rem 1rem',
               background: 'rgba(255, 255, 255, 0.02)',
               borderRadius: '8px',
-              border: '1px solid rgba(255, 255, 255, 0.04)',
+              border: '1px solid #262c36',
             }}>
               <div style={{
                 width: '32px',
                 height: '32px',
                 borderRadius: '8px',
-                background: 'rgba(99, 102, 241, 0.1)',
-                border: '1px solid rgba(99, 102, 241, 0.15)',
+                background: '#333b47',
+                border: '1px solid #333b47',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 flexShrink: 0,
-                color: '#818cf8',
+                color: '#8b94a2',
                 marginTop: '1px',
               }}>
                 {info.icon}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{
-                  color: '#ececf0',
+                  color: '#f2f0ec',
                   fontSize: '0.875rem',
                   fontWeight: 500,
                   letterSpacing: '-0.01em',
@@ -368,7 +368,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
                   {info.label}
                 </div>
                 <div style={{
-                  color: '#7a7a86',
+                  color: '#8b94a2',
                   fontSize: '0.75rem',
                   lineHeight: 1.5,
                   marginTop: '2px',
@@ -377,7 +377,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
                 </div>
                 {detail && (
                   <div style={{
-                    color: '#5a5a66',
+                    color: '#8b94a2',
                     fontSize: '0.6875rem',
                     fontFamily: 'monospace',
                     marginTop: '4px',
@@ -391,7 +391,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
           )) : (
             <div style={{
               padding: '0.75rem 1rem',
-              color: '#5a5a66',
+              color: '#8b94a2',
               fontSize: '0.8125rem',
               textAlign: 'center',
             }}>
@@ -407,7 +407,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
             claiming a viewfinder is off while it is visibly running. */}
         {requested.some(({ key }) => key === 'camera' || key === 'mic' || key === 'qr') && (
           <div style={{
-            color: '#5a5a66',
+            color: '#8b94a2',
             fontSize: '0.6875rem',
             lineHeight: 1.5,
             marginTop: '-0.75rem',
@@ -429,9 +429,9 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
             onClick={onClose}
             style={{
               padding: '0.5rem 1.25rem',
-              background: '#1e1e23',
-              color: '#ececf0',
-              border: '1px solid rgba(255, 255, 255, 0.08)',
+              background: '#1d222a',
+              color: '#f2f0ec',
+              border: '1px solid #262c36',
               borderRadius: '8px',
               cursor: 'pointer',
               fontSize: '0.8125rem',
@@ -440,11 +440,11 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
               transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = '#2a2a30';
+              e.currentTarget.style.background = '#262c36';
               e.currentTarget.style.transform = 'translateY(-1px)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = '#1e1e23';
+              e.currentTarget.style.background = '#1d222a';
               e.currentTarget.style.transform = 'translateY(0)';
             }}
           >
@@ -454,9 +454,9 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
             onClick={onAllow}
             style={{
               padding: '0.5rem 1.25rem',
-              background: '#4f46e5',
+              background: '#f2f0ec',
               color: '#ffffff',
-              border: '1px solid rgba(99, 102, 241, 0.4)',
+              border: '1px solid #333b47',
               borderRadius: '8px',
               cursor: 'pointer',
               fontSize: '0.8125rem',
@@ -465,12 +465,12 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
               transition: 'all 180ms cubic-bezier(0.16, 1, 0.3, 1)',
             }}
             onMouseEnter={(e) => {
-              e.currentTarget.style.background = '#4338ca';
+              e.currentTarget.style.background = '#ffffff';
               e.currentTarget.style.transform = 'translateY(-1px)';
               e.currentTarget.style.boxShadow = '0 4px 12px rgba(79, 70, 229, 0.3)';
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.background = '#4f46e5';
+              e.currentTarget.style.background = '#f2f0ec';
               e.currentTarget.style.transform = 'translateY(0)';
               e.currentTarget.style.boxShadow = 'none';
             }}

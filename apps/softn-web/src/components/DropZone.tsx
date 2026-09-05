@@ -15,8 +15,8 @@ const dropZoneStyles = `
     to { opacity: 1; transform: scale(1) translateY(0); }
   }
   @keyframes softn-drop-border-pulse {
-    0%, 100% { border-color: rgba(99, 102, 241, 0.4); box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
-    50% { border-color: rgba(99, 102, 241, 0.7); box-shadow: 0 0 40px -8px rgba(99, 102, 241, 0.15); }
+    0%, 100% { border-color: var(--mint-edge); box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+    50% { border-color: var(--mint-edge); box-shadow: 0 0 40px -8px var(--mint-edge); }
   }
   @keyframes softn-drop-icon-float {
     0%, 100% { transform: translateY(0); }
@@ -25,7 +25,7 @@ const dropZoneStyles = `
   .softn-drop-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(12, 12, 14, 0.6);
+    background: var(--nav-bg);
     backdrop-filter: blur(12px) saturate(0.8);
     -webkit-backdrop-filter: blur(12px) saturate(0.8);
     display: flex;
@@ -38,20 +38,20 @@ const dropZoneStyles = `
   .softn-drop-card {
     padding: 2.5rem 3.5rem;
     border-radius: 20px;
-    border: 2px dashed rgba(99, 102, 241, 0.4);
-    background: rgba(22, 22, 26, 0.95);
+    border: 2px dashed var(--mint-edge);
+    background: var(--ink-2);
     text-align: center;
     animation:
       softn-drop-card-in 300ms cubic-bezier(0.16, 1, 0.3, 1) 50ms both,
       softn-drop-border-pulse 2s ease-in-out infinite 350ms;
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.04);
+    box-shadow: 0 24px 80px var(--shadow);
   }
   .softn-drop-icon {
     width: 56px;
     height: 56px;
     border-radius: 16px;
-    background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(99, 102, 241, 0.06));
-    border: 1px solid rgba(99, 102, 241, 0.15);
+    background: linear-gradient(135deg, var(--mint-edge), var(--mint-edge));
+    border: 1px solid var(--mint-edge);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -130,7 +130,7 @@ export function DropZone({ onFile, children }: DropZoneProps): React.ReactElemen
         <div className="softn-drop-overlay">
           <div className="softn-drop-card">
             <div className="softn-drop-icon">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#6366f1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--mint)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
@@ -139,14 +139,14 @@ export function DropZone({ onFile, children }: DropZoneProps): React.ReactElemen
             <div style={{
               fontSize: '1.125rem',
               fontWeight: 600,
-              color: '#ececf0',
+              color: 'var(--paper)',
               marginBottom: '0.5rem',
               letterSpacing: '-0.02em',
             }}>
               Drop your .softn file
             </div>
             <div style={{
-              color: '#5a5a66',
+              color: 'var(--dim)',
               fontSize: '0.8125rem',
               letterSpacing: '-0.01em',
             }}>
