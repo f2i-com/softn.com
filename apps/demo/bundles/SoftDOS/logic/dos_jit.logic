@@ -285,6 +285,8 @@ function dosJit_regSet(r, size, expr) {
   let n3 = dosJit_rName(r);
   if (size === 2) return n3 + "=((" + n3 + "&4294901760)|((" + expr + ")&65535))>>>0;";
   if (dosJit_isReg(expr) === 1) return n3 + "=" + expr + ";";
+  let c0 = expr.charCodeAt(0);
+  if (c0 >= 48 && c0 <= 57) return n3 + "=" + expr + ";";
   return n3 + "=(" + expr + ")>>>0;";
 }
 
@@ -468,7 +470,16 @@ function dosJit_isSimple(expr) {
 // in DOS_JIT_OPA/OPB.
 let DOS_JIT_OPA = "";
 let DOS_JIT_OPB = "";
+let DOS_JIT_RES = "t2";
 function dosJit_aluValue(aop, a, b) {
+  DOS_JIT_RES = "t2";
+  if (aop === 6 && a === b && dosJit_isReg(a) === 1) {
+    // xor reg,reg: zero, and the record is of zero.
+    DOS_JIT_OPA = a;
+    DOS_JIT_OPB = b;
+    DOS_JIT_RES = "0";
+    return "";
+  }
   let out = "";
   let ea = a;
   let eb = b;
@@ -559,7 +570,7 @@ function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
   if (lazy !== 3) {
     out += "fd=" + dosJit_recOperand(dExpr, size) + ";fs=" + dosJit_recOperand(sExpr, size) + ";";
   }
-  out += "fr=" + dosJit_narrow(rTmp, size) + ";";
+  out += "fr=" + ((rTmp === "0") ? "0" : dosJit_narrow(rTmp, size)) + ";";
   if (DOS_JIT_FZ !== size) { out += "fz=" + size + ";"; DOS_JIT_FZ = size; }
   return out;
 }
@@ -687,8 +698,8 @@ function dosJit_one(body, tmp) {
         let a = toReg ? regE : rmE;
         let b = toReg ? rmE : regE;
         body.push(dosJit_aluValue(aop, a, b));
-        body.push(dosJit_setFlags(aop, sz, DOS_JIT_OPA, DOS_JIT_OPB, "t2"));
-        if (store) body.push(toReg ? dosJit_regSet(DOS_JM_REG, sz, "t2") : dosJit_regSet(DOS_JM_RM, sz, "t2"));
+        body.push(dosJit_setFlags(aop, sz, DOS_JIT_OPA, DOS_JIT_OPB, DOS_JIT_RES));
+        if (store) body.push(toReg ? dosJit_regSet(DOS_JM_REG, sz, DOS_JIT_RES) : dosJit_regSet(DOS_JM_RM, sz, DOS_JIT_RES));
       } else {
         body.push("ta=" + DOS_JM_ADDR + ";");
         let memE = dosJit_memRead("ta", sz);
