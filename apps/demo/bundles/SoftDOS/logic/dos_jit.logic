@@ -1822,7 +1822,9 @@ function dosJit_compile(phys) {
   // The pool stays inside the trace: a closure variable costs more to read
   // than a local on this engine, and a literal is read far more often than
   // the trace is entered.
-  let src = "let t0=0,t1=0,t2=0,t3=0,ta=0,tv=0,g=0;" + slotLoad +
+  // The temporaries are always written before they are read; only the loop
+  // counter needs a value.
+  let src = "let t0,t1,t2,t3,ta,tv,g=0;" + slotLoad +
             regLoad + hoistDecl + dosJit_poolDecl() +
             "for(;;){" + bodyText + "}" + dosJit_epilogue(regSpill, slotSpill);
 
