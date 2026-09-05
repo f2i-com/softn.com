@@ -1975,9 +1975,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.15"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
+checksum = "ef8e5e5a340588f4452631496976cf8636d4a7ecf600239fdc27615d2530bc16"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -4971,7 +4971,7 @@ dependencies = [
 
 [[package]]
 name = "softn-loader"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "image",
  "serde",

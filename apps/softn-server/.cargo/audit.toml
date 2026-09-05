@@ -1,0 +1,14 @@
+# Advisories `cargo audit` reports that cannot be fixed from this repository
+# yet, with the reason each is tolerated. Revisit when the parent crate moves.
+#
+# hickory-proto 0.25.0-alpha.5 arrives through xdb -> libp2p 0.55 -> libp2p-mdns
+# 0.47. Every published libp2p-mdns (0.48.0 included) still requires
+# hickory-proto ^0.25, and the patched version is 0.26.1, so no `cargo update`
+# and no libp2p bump reaches it. What the two advisories describe is not on
+# the path mDNS uses: RUSTSEC-2026-0118 is DNSSEC NSEC3 proof validation, which
+# multicast discovery never performs, and RUSTSEC-2026-0119 is quadratic name
+# compression while encoding, on messages that here carry a handful of peer
+# addresses. Drop these lines the moment libp2p-mdns depends on hickory-proto
+# 0.26 or later.
+[advisories]
+ignore = ["RUSTSEC-2026-0118", "RUSTSEC-2026-0119"]
