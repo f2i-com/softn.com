@@ -59,6 +59,7 @@ let DOS_JIT_STEPS = 0;
 let DOS_JIT_FAILED = 0;
 let DOS_JIT_DEAD = 0;            // flag records and flag-word writes dropped as dead
 let DOS_JIT_CTIME = 0;           // milliseconds spent in the engine's compiler
+let DOS_JIT_GTIME = 0;           // milliseconds spent generating trace source
 let DOS_JIT_TOTAL_INSNS = 0;
 
 // Decode cursor while compiling.
@@ -178,7 +179,7 @@ function dosJit_immExpr(addr, size, signed, value) {
     let a = (addr + i) & 0xFFFFFF;
     DOS_JIT_IMMAP[a >>> 3] = DOS_JIT_IMMAP[a >>> 3] | (1 << (a & 7));
   }
-  return String(value);
+  return dosJit_lit(value);
 }
 
 function dosJit_markCode(from, to) {
@@ -243,9 +244,9 @@ function dosJit_carryIn(body) {
 // The line that carries the pending result's CF into the flag word for an
 // INC or DEC, whose fold reads it from there.
 function dosJit_carryLine(cfe) {
-  if (cfe === "false") return "@@C@@ST[1]=ST[1]&~1;";
-  if (cfe === "true") return "@@C@@ST[1]=ST[1]|1;";
-  return "@@C@@ST[1]=(" + cfe + ")?(ST[1]|1):(ST[1]&~1);";
+  if (cfe === "false") return "@@C@@ST[k1]=ST[k1]&~k1;";
+  if (cfe === "true") return "@@C@@ST[k1]=ST[k1]|k1;";
+  return "@@C@@ST[k1]=(" + cfe + ")?(ST[k1]|k1):(ST[k1]&~k1);";
 }
 
 // A register write whose value is already narrow for its size -- a memory
@@ -256,31 +257,31 @@ function dosJit_regSetNarrow(r, size, expr) {
       DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r);
       DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << r);
       let n = dosJit_rName(r);
-      return n + "=((" + n + "&4294967040)|" + expr + ")>>>0;";
+      return n + "=((" + n + "&m25)|" + expr + ")>>>k0;";
     }
     let b = r - 4;
     DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << b);
     DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << b);
     let n2 = dosJit_rName(b);
-    return n2 + "=((" + n2 + "&4294902015)|(" + expr + "<<8))>>>0;";
+    return n2 + "=((" + n2 + "&m24)|(" + expr + "<<k8))>>>k0;";
   }
   DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r);
   DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << r);
   let n3 = dosJit_rName(r);
-  if (size === 2) return n3 + "=((" + n3 + "&4294901760)|" + expr + ")>>>0;";
+  if (size === 2) return n3 + "=((" + n3 + "&m23)|" + expr + ")>>>k0;";
   if (dosJit_isReg(expr) === 1) return n3 + "=" + expr + ";";
   return n3 + "=" + expr + ";";
 }
 
 function dosJit_regGet(r, size) {
   if (size === 1) {
-    if (r < 4) { DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r); return "(" + dosJit_rName(r) + "&255)"; }
+    if (r < 4) { DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r); return "(" + dosJit_rName(r) + "&k5)"; }
     let b = r - 4;
     DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << b);
-    return "((" + dosJit_rName(b) + ">>>8)&255)";
+    return "((" + dosJit_rName(b) + ">>>k8)&k5)";
   }
   DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r);
-  if (size === 2) return "(" + dosJit_rName(r) + "&65535)";
+  if (size === 2) return "(" + dosJit_rName(r) + "&k11)";
   return dosJit_rName(r);
 }
 
@@ -290,22 +291,23 @@ function dosJit_regSet(r, size, expr) {
       DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r);
       DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << r);
       let n = dosJit_rName(r);
-      return n + "=((" + n + "&4294967040)|((" + expr + ")&255))>>>0;";
+      return n + "=((" + n + "&m25)|((" + expr + ")&k5))>>>k0;";
     }
     let b = r - 4;
     DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << b);
     DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << b);
     let n2 = dosJit_rName(b);
-    return n2 + "=((" + n2 + "&4294902015)|(((" + expr + ")&255)<<8))>>>0;";
+    return n2 + "=((" + n2 + "&m24)|(((" + expr + ")&k5)<<k8))>>>k0;";
   }
   DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r);
   DOS_JIT_RMOD = DOS_JIT_RMOD | (1 << r);
   let n3 = dosJit_rName(r);
-  if (size === 2) return n3 + "=((" + n3 + "&4294901760)|((" + expr + ")&65535))>>>0;";
+  if (size === 2) return n3 + "=((" + n3 + "&m23)|((" + expr + ")&k11))>>>k0;";
   if (dosJit_isReg(expr) === 1) return n3 + "=" + expr + ";";
+  if (dosJit_isPosLitName(expr) === 1) return n3 + "=" + expr + ";";
   let c0 = expr.charCodeAt(0);
   if (c0 >= 48 && c0 <= 57) return n3 + "=" + expr + ";";
-  return n3 + "=(" + expr + ")>>>0;";
+  return n3 + "=(" + expr + ")>>>k0;";
 }
 
 // Address expressions and the stack use the same locals.
@@ -319,16 +321,16 @@ function dosJit_rRef(r) {
 function dosJit_liveImm(addr, size, signed) {
   let a = addr & 0xFFFFFF;
   if (size === 1) {
-    if (signed) return "((RAM[" + a + "]<<24)>>24)";
+    if (signed) return "((RAM[" + a + "]<<k7)>>k7)";
     return "RAM[" + a + "]";
   }
   if (size === 2) {
-    if ((a & 1) === 0) return signed ? ("((RAM16[" + (a >>> 1) + "]<<16)>>16)") : ("RAM16[" + (a >>> 1) + "]");
-    return "(RAM[" + a + "]|(RAM[" + (a + 1) + "]<<8))";
+    if ((a & 1) === 0) return signed ? ("((RAM16[" + (a >>> 1) + "]<<k6)>>k6)") : ("RAM16[" + (a >>> 1) + "]");
+    return "(RAM[" + a + "]|(RAM[" + (a + 1) + "]<<k8))";
   }
   if ((a & 3) === 0) return "RAM32[" + (a >>> 2) + "]";
-  return "((RAM[" + a + "]|(RAM[" + (a + 1) + "]<<8)|(RAM[" + (a + 2) +
-         "]<<16)|(RAM[" + (a + 3) + "]<<24))>>>0)";
+  return "((RAM[" + a + "]|(RAM[" + (a + 1) + "]<<k8)|(RAM[" + (a + 2) +
+         "]<<k6)|(RAM[" + (a + 3) + "]<<k7))>>>k0)";
 }
 
 // ModR/M state for the instruction being compiled.
@@ -363,16 +365,16 @@ function dosJit_modrm() {
     let index = (sib >> 3) & 7;
     let b = sib & 7;
     let parts = [];
-    if (b === 5 && DOS_JM_MOD === 0) parts.push(String(dosJc_u32()));
+    if (b === 5 && DOS_JM_MOD === 0) parts.push(dosJit_lit(dosJc_u32()));
     else parts.push(dosJit_rRef(b));
     if (index !== 4) {
       if (scale === 1) parts.push(dosJit_rRef(index));
-      else parts.push(dosJit_rRef(index) + "*" + scale);
+      else parts.push(dosJit_rRef(index) + "*" + dosJit_lit(scale));
     }
     base = parts.join("+");
   } else if (DOS_JM_MOD === 0 && DOS_JM_RM === 5) {
     let cst = dosJc_u32();
-    base = String(cst);
+    base = dosJit_lit(cst);
     DOS_JM_CONST = 1;
     DOS_JM_CADDR = cst & 0xFFFFFF;
   } else {
@@ -381,13 +383,13 @@ function dosJit_modrm() {
 
   if (DOS_JM_MOD === 1) {
     let d = dosJc_s8();
-    if (d !== 0) base = base + ((d < 0) ? ("-" + (-d)) : ("+" + d));
+    if (d !== 0) base = base + ((d < 0) ? ("-" + dosJit_lit(-d)) : ("+" + dosJit_lit(d)));
   } else if (DOS_JM_MOD === 2) {
     let d = dosJc_s32();
-    if (d !== 0) base = base + ((d < 0) ? ("-" + (-d)) : ("+" + d));
+    if (d !== 0) base = base + ((d < 0) ? ("-" + dosJit_lit(-d)) : ("+" + dosJit_lit(d)));
   }
-  DOS_JM_OFF = "((" + base + ")>>>0)";
-  DOS_JM_ADDR = (DOS_JM_CONST === 1) ? String(DOS_JM_CADDR) : ("((" + base + ")&16777215)");
+  DOS_JM_OFF = "((" + base + ")>>>k0)";
+  DOS_JM_ADDR = (DOS_JM_CONST === 1) ? dosJit_lit(DOS_JM_CADDR) : ("((" + base + ")&k3)");
 }
 
 // Is the address in `ta` a compile-time constant outside the VGA window?
@@ -406,19 +408,19 @@ function dosJit_memRead(tExpr, size) {
   // like `(ta+4)&16777215` read from the wrong place entirely.
   if (dosJit_taConst(tExpr, size) === 1) {
     let a = DOS_JM_CADDR;
-    if (size === 1) return "RAM[" + a + "]";
-    if (size === 2) return ((a & 1) === 0) ? ("RAM16[" + (a >>> 1) + "]") : ("RDU16(" + a + ")");
-    return ((a & 3) === 0) ? ("RAM32[" + (a >>> 2) + "]") : ("RDU32(" + a + ")");
+    if (size === 1) return "RAM[" + dosJit_lit(a) + "]";
+    if (size === 2) return ((a & 1) === 0) ? ("RAM16[" + dosJit_lit(a >>> 1) + "]") : ("RDU16(" + dosJit_lit(a) + ")");
+    return ((a & 3) === 0) ? ("RAM32[" + dosJit_lit(a >>> 2) + "]") : ("RDU32(" + dosJit_lit(a) + ")");
   }
   let t = "(" + tExpr + ")";
   // The VGA window is tested first because, for the program's own data, the
   // first comparison fails and nothing else is evaluated.
-  let guard = t + "<720896&&" + t + ">=655360&&vg===1";
+  let guard = t + "<k39&&" + t + ">=k32&&vg===k1";
   if (size === 1) return "(" + guard + "?RD8(" + t + "):RAM[" + t + "])";
   if (size === 2) {
-    return "(" + guard + "?RD16(" + t + "):((" + t + "&1)===0?RAM16[" + t + ">>>1]:RDU16(" + t + ")))";
+    return "(" + guard + "?RD16(" + t + "):((" + t + "&k1)===k0?RAM16[" + t + ">>>k1]:RDU16(" + t + ")))";
   }
-  return "(" + guard + "?RD32(" + t + "):((" + t + "&3)===0?RAM32[" + t + ">>>2]:RDU32(" + t + ")))";
+  return "(" + guard + "?RD32(" + t + "):((" + t + "&k9)===k0?RAM32[" + t + ">>>k4]:RDU32(" + t + ")))";
 }
 
 // Writes go through a helper: it carries the code-page barrier for both
@@ -428,24 +430,24 @@ function dosJit_memRead(tExpr, size) {
 // write: the page holds code some cache has already compiled or decoded, or
 // the address is VGA memory while the card is unchained.
 function dosJit_wGuard(tExpr) {
-  return "PG[(" + tExpr + ")>>>12]!==0";
+  return "PG[(" + tExpr + ")>>>k13]!==k0";
 }
 
 // After a slow-path store: if the write invalidated a trace, leave for the
 // dispatcher at the next instruction. The store is the instruction's last
 // effect at every site that stores.
 function dosJit_abort() {
-  return "@@A@@if(ST[11]!==0){ST[11]=0;" + dosJit_exitPlain(String(DOS_JC >>> 0)) + "}@@Z@@";
+  return "@@A@@if(ST[k29]!==k0){ST[k29]=k0;" + dosJit_exitPlain(DOS_JC >>> 0) + "}@@Z@@";
 }
 
 // One byte into the planes the map mask selects, at window offset t-0xA0000
 // plus `plus`. The byte goes in t0 -- not tv, which still holds the whole
 // value a 16-bit store's second byte is taken from; t3 holds the offset.
 function dosJit_planar(t, valExpr, plus) {
-  let off = (plus === 0) ? "t3" : ("(t3+" + plus + ")");
-  return "t3=" + t + "-655360;t0=(" + valExpr + ")&255;" +
-         "if(pm&1)VP[" + off + "]=t0;if(pm&2)VP[" + off + "+65536]=t0;" +
-         "if(pm&4)VP[" + off + "+131072]=t0;if(pm&8)VP[" + off + "+196608]=t0;ST[16]=1;";
+  let off = (plus === 0) ? "t3" : ("(t3+" + dosJit_lit(plus) + ")");
+  return "t3=" + t + "-k32;t0=(" + valExpr + ")&k5;" +
+         "if(pm&k1)VP[" + off + "]=t0;if(pm&k4)VP[" + off + "+k31]=t0;" +
+         "if(pm&k2)VP[" + off + "+k37]=t0;if(pm&k8)VP[" + off + "+k38]=t0;ST[k6]=k1;";
 }
 
 function dosJit_memWrite(tExpr, size, valExpr) {
@@ -456,25 +458,26 @@ function dosJit_memWrite(tExpr, size, valExpr) {
   let out = "tv=" + valExpr + ";";
   if (dosJit_taConst(tExpr, size) === 1) {
     let a = DOS_JM_CADDR;
-    let slow = "if(PG[" + (a >>> 12) + "]!==0){";
-    if (size === 1) return out + slow + "W8(" + a + ",tv);@@I@@" + dosJit_abort() + "}else{RAM[" + a + "]=tv&255;}";
+    let la = dosJit_lit(a);
+    let slow = "if(PG[" + dosJit_lit(a >>> 12) + "]!==k0){";
+    if (size === 1) return out + slow + "W8(" + la + ",tv);@@I@@" + dosJit_abort() + "}else{RAM[" + la + "]=tv&k5;}";
     if (size === 2) {
-      if ((a & 1) !== 0) return out + "W16(" + a + ",tv);@@I@@" + dosJit_abort();
-      return out + slow + "W16(" + a + ",tv);@@I@@" + dosJit_abort() + "}else{RAM16[" + (a >>> 1) + "]=tv&65535;}";
+      if ((a & 1) !== 0) return out + "W16(" + la + ",tv);@@I@@" + dosJit_abort();
+      return out + slow + "W16(" + la + ",tv);@@I@@" + dosJit_abort() + "}else{RAM16[" + dosJit_lit(a >>> 1) + "]=tv&k11;}";
     }
-    if ((a & 3) !== 0) return out + "W32(" + a + ",tv);@@I@@" + dosJit_abort();
-    return out + slow + "W32(" + a + ",tv);@@I@@" + dosJit_abort() + "}else{RAM32[" + (a >>> 2) + "]=tv>>>0;}";
+    if ((a & 3) !== 0) return out + "W32(" + la + ",tv);@@I@@" + dosJit_abort();
+    return out + slow + "W32(" + la + ",tv);@@I@@" + dosJit_abort() + "}else{RAM32[" + dosJit_lit(a >>> 2) + "]=tv>>>k0;}";
   }
   if (size === 1) {
-    out += "if((t3=PG[" + t + ">>>12])!==0){if(t3===2&&vg===1){" + dosJit_planar(t, "tv", 0) +
-           "}else{W8(" + t + ",tv);@@I@@" + dosJit_abort() + "}}else{RAM[" + t + "]=tv&255;}";
+    out += "if((t3=PG[" + t + ">>>k13])!==k0){if(t3===k4&&vg===k1){" + dosJit_planar(t, "tv", 0) +
+           "}else{W8(" + t + ",tv);@@I@@" + dosJit_abort() + "}}else{RAM[" + t + "]=tv&k5;}";
   } else if (size === 2) {
-    out += "if((t3=PG[" + t + ">>>12])!==0||(" + t + "&1)!==0){if(t3===2&&vg===1&&(" + t + "&1)===0){" +
-           dosJit_planar(t, "tv", 0) + dosJit_planar(t, "tv>>8", 1) +
-           "}else{W16(" + t + ",tv);@@I@@" + dosJit_abort() + "}}else{RAM16[" + t + ">>>1]=tv&65535;}";
+    out += "if((t3=PG[" + t + ">>>k13])!==k0||(" + t + "&k1)!==k0){if(t3===k4&&vg===k1&&(" + t + "&k1)===k0){" +
+           dosJit_planar(t, "tv", 0) + dosJit_planar(t, "tv>>k8", 1) +
+           "}else{W16(" + t + ",tv);@@I@@" + dosJit_abort() + "}}else{RAM16[" + t + ">>>k1]=tv&k11;}";
   } else {
-    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&3)!==0){W32(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM32[" +
-           t + ">>>2]=tv>>>0;}";
+    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&k9)!==k0){W32(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM32[" +
+           t + ">>>k4]=tv>>>k0;}";
   }
   return out;
 }
@@ -489,6 +492,7 @@ function dosJit_memWrite(tExpr, size, valExpr) {
 // live immediate's local.
 function dosJit_isSimple(expr) {
   if (dosJit_isReg(expr) === 1) return 1;
+  if (dosJit_isLitName(expr) === 1) return 1;
   let c = expr.charCodeAt(0);
   if (c >= 48 && c <= 57) return 1;
   if (c === 105 && expr.length <= 4 && expr.charCodeAt(1) >= 48 && expr.charCodeAt(1) <= 57) return 1;
@@ -508,7 +512,7 @@ function dosJit_aluValue(body, aop, a, b) {
     // xor reg,reg: zero, and the record is of zero.
     DOS_JIT_OPA = a;
     DOS_JIT_OPB = b;
-    DOS_JIT_RES = "0";
+    DOS_JIT_RES = dosJit_lit(0);
     return "";
   }
   let out = "";
@@ -523,8 +527,8 @@ function dosJit_aluValue(body, aop, a, b) {
 
 function dosJit_aluExpr(aop, a, b) {
   if (aop === 0) return "(" + a + "+" + b + ")";
-  if (aop === 2) return "(" + a + "+" + b + "+(ST[1]&1))";
-  if (aop === 3) return "(" + a + "-" + b + "-(ST[1]&1))";
+  if (aop === 2) return "(" + a + "+" + b + "+(ST[k1]&k1))";
+  if (aop === 3) return "(" + a + "-" + b + "-(ST[k1]&k1))";
   if (aop === 1) return "(" + a + "|" + b + ")";
   if (aop === 4) return "(" + a + "&" + b + ")";
   if (aop === 5) return "(" + a + "-" + b + ")";
@@ -552,21 +556,21 @@ function dosJit_aluSupported(aop) {
 function dosJit_keptOF(body) {
   if (DOS_JIT_PENDING !== 0) {
     let e = dosJit_flagExpr(4);
-    if (e !== "") return "(" + e + "?2048:0)";
+    if (e !== "") return "(" + e + "?k10:k0)";
     body.push(dosJit_spill() + "FC();" + dosJit_reload());
     DOS_JIT_PENDING = 0;
     DOS_JIT_FOLDED = 1;
   }
-  return "(ST[1]&2048)";
+  return "(ST[k1]&k10)";
 }
 
 // The flag-word write shared by shifts and double shifts: CF from cfExpr, OF
 // from ofExpr (2048 or 0), and ZF, SF and PF from the result in t2. Marked
 // so the dead-flag pass can drop it when nothing reads it before the next
 // write.
-function dosJit_flagWord(cfExpr, ofExpr, sign) {
-  return "@@F@@t3=" + cfExpr + ";t1=t2&255;t1^=t1>>4;t1^=t1>>2;t1^=t1>>1;" +
-         "ST[1]=(ST[1]&~2245)|" + ofExpr + "|(t3?1:0)|((t1&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);";
+function dosJit_flagWord(cfExpr, ofExpr, sz) {
+  return "@@F@@t3=" + cfExpr + ";t1=t2&k5;t1^=t1>>k2;t1^=t1>>k4;t1^=t1>>k1;" +
+         "ST[k1]=(ST[k1]&~k16)|" + ofExpr + "|(t3?k1:k0)|((t1&k1)?k0:k2)|((t2===k0)?k14:k0)|(" + dosJit_signTest("t2", sz) + "?k15:k0);";
 }
 
 // The size last written into `fz` by this trace, or 0 when unknown; the
@@ -583,13 +587,14 @@ let DOS_JIT_FOLDED = 0;
 function dosJit_guard() {
   if (DOS_JIT_PENDING !== 0 || DOS_JIT_FOLDED === 1) return "";
   DOS_JIT_FOLDED = 1;
-  return "@@G@@if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);fo=0;}";
+  return "@@G@@if(fo!==k0){ST[k1]=FL(fo,fd,fs,fr,fz,ST[k1]);fo=0;}";
 }
 
 // An operand as a record names it: t0 was read narrow, a literal was made
 // narrow, a register local or a live immediate is unsigned 32-bit already.
 function dosJit_recOperand(expr, size) {
   if (expr === "t0") return "t0";
+  if (dosJit_isLitName(expr) === 1) return expr;
   let c = expr.charCodeAt(0);
   if (c >= 48 && c <= 57) return expr;
   if (size === 4 && dosJit_isSimple(expr) === 1) return expr;
@@ -605,7 +610,7 @@ function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
   if (lazy !== 3) {
     out += "fd=" + dosJit_recOperand(dExpr, size) + ";fs=" + dosJit_recOperand(sExpr, size) + ";";
   }
-  out += "fr=" + ((rTmp === "0") ? "0" : dosJit_narrow(rTmp, size)) + ";";
+  out += "fr=" + ((rTmp === "0" || dosJit_isLitName(rTmp) === 1) ? rTmp : dosJit_narrow(rTmp, size)) + ";";
   if (DOS_JIT_FZ !== size) { out += "fz=" + size + ";"; DOS_JIT_FZ = size; }
   return out;
 }
@@ -643,7 +648,7 @@ function dosJit_one(body, tmp) {
       if (DOS_JM_ADDR === "") srcE = dosJit_regGet(DOS_JM_RM, srcSize);
       else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", srcSize); }
       let e = srcE;
-      if (signed) e = (srcSize === 1) ? ("((" + srcE + "<<24)>>24)") : ("((" + srcE + "<<16)>>16)");
+      if (signed) e = (srcSize === 1) ? ("((" + srcE + "<<k7)>>k7)") : ("((" + srcE + "<<k6)>>k6)");
       body.push(dosJit_regSet(DOS_JM_REG, size, e));
       return 1;
     }
@@ -653,22 +658,22 @@ function dosJit_one(body, tmp) {
       if (cond === "") { DOS_JC = start; return 0; }
       dosJit_modrm();
       if (DOS_JC_OK === 0) { DOS_JC = start; return 0; }
-      body.push("t0=(" + cond + ")?1:0;");
+      body.push("t0=(" + cond + ")?k1:k0;");
       if (DOS_JM_ADDR === "") body.push(dosJit_regSet(DOS_JM_RM, 1, "t0"));
       else { body.push("ta=" + DOS_JM_ADDR + ";"); body.push(dosJit_memWrite("ta", 1, "t0")); }
       return 1;
     }
     if ((op2 === 0xA0 || op2 === 0xA8) && size === 4) {   // PUSH FS / PUSH GS
       let sr = (op2 === 0xA0) ? 4 : 5;
-      body.push("t0=SEGS[" + sr + "];" + dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
+      body.push("t0=SEGS[" + sr + "];" + dosJit_rRef(4) + "=(e4-k2)>>>k0;ta=e4&k3;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       body.push(dosJit_memWrite("ta", 4, "t0"));
       return 1;
     }
     if ((op2 === 0xA1 || op2 === 0xA9) && size === 4) {   // POP FS / POP GS
       let sr2 = (op2 === 0xA1) ? 4 : 5;
-      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
-                ";e4=(e4+4)>>>0;SEGS[" + sr2 + "]=t0&65535;");
+      body.push("ta=" + dosJit_rRef(4) + "&k3;t0=" + dosJit_memRead("ta", 4) +
+                ";e4=(e4+k2)>>>k0;SEGS[" + sr2 + "]=t0&k11;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       return 1;
     }
@@ -681,12 +686,12 @@ function dosJit_one(body, tmp) {
       let srcE = dosJit_regGet(DOS_JM_REG, 4);
       body.push(dosJit_guard());
       let kept = dosJit_keptOF(body);
-      if (op2 === 0xAC) body.push("t2=((" + dstE + ">>>" + n + ")|(" + srcE + "<<" + (32 - n) + "))>>>0;");
-      else body.push("t2=((" + dstE + "<<" + n + ")|(" + srcE + ">>>" + (32 - n) + "))>>>0;");
+      if (op2 === 0xAC) body.push("t2=((" + dstE + ">>>" + dosJit_lit(n) + ")|(" + srcE + "<<" + dosJit_lit(32 - n) + "))>>>k0;");
+      else body.push("t2=((" + dstE + "<<" + dosJit_lit(n) + ")|(" + srcE + ">>>" + dosJit_lit(32 - n) + "))>>>k0;");
       // The shifted-out bit becomes CF; ZF, SF and PF come from the result;
       // OF stays what the last operation that defined it left.
-      let cfE = (op2 === 0xAC) ? ("(" + dstE + ">>>" + (n - 1) + ")&1") : ("(" + dstE + ">>>" + (32 - n) + ")&1");
-      body.push(dosJit_flagWord(cfE, kept, "2147483648"));
+      let cfE = (op2 === 0xAC) ? ("(" + dstE + ">>>" + dosJit_lit(n - 1) + ")&k1") : ("(" + dstE + ">>>" + dosJit_lit(32 - n) + ")&k1");
+      body.push(dosJit_flagWord(cfE, kept, 4));
       body.push("fo=0;");
       DOS_JIT_PENDING = 0;
       DOS_JIT_FOLDED = 1;
@@ -699,11 +704,11 @@ function dosJit_one(body, tmp) {
       let srcE = "";
       if (DOS_JM_ADDR === "") srcE = dosJit_regGet(DOS_JM_RM, 4);
       else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
-      body.push("t0=" + dosJit_regGet(DOS_JM_REG, 4) + "|0;t1=(" + srcE + ")|0;t2=Math.imul(t0,t1)>>>0;");
+      body.push("t0=" + dosJit_regGet(DOS_JM_REG, 4) + "|k0;t1=(" + srcE + ")|k0;t2=Math.imul(t0,t1)>>>k0;");
       body.push(dosJit_regSet(DOS_JM_REG, 4, "t2"));
-    body.push("@@F@@t3=t0*t1;tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
-              "ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|" +
-              "((t3>=-2147483648&&t3<=2147483647)?0:2049);");
+    body.push("@@F@@t3=t0*t1;tv=t2&k5;tv^=tv>>k2;tv^=tv>>k4;tv^=tv>>k1;" +
+              "ST[k1]=(ST[k1]&~k16)|((t2===k0)?k14:k0)|((t2>>k12)?k15:k0)|((tv&k1)?k0:k2)|" +
+              "((t3>=m22&&t3<=k33)?k0:k21);");
       body.push("fo=0;");
       DOS_JIT_PENDING = 0;
       DOS_JIT_FOLDED = 1;
@@ -753,7 +758,7 @@ function dosJit_one(body, tmp) {
       let sz = (lo === 4) ? 1 : size;
       let imm = (sz === 1) ? dosJc_u8() : ((sz === 2) ? dosJc_u16() : dosJc_u32());
       let accE = dosJit_regGet(0, sz);
-      body.push(dosJit_aluValue(body, aop, accE, String(imm)));
+      body.push(dosJit_aluValue(body, aop, accE, dosJit_lit(imm)));
       body.push(dosJit_setFlags(aop, sz, DOS_JIT_OPA, DOS_JIT_OPB, "t2"));
       if (store) body.push(dosJit_regSet(0, sz, "t2"));
       return 1;
@@ -780,10 +785,10 @@ function dosJit_one(body, tmp) {
     }
     let s0 = e;
     if (dosJit_isSimple(e) === 0) { body.push("t0=" + e + ";"); s0 = "t0"; }
-    body.push("t2=(" + s0 + (dec ? "-1" : "+1") + ");");
+    body.push("t2=(" + s0 + (dec ? "-" : "+") + dosJit_lit(1) + ");");
     let mask = (size === 2) ? "65535" : "4294967295";
     body.push("@@F@@fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_recOperand(s0, size) +
-              ";fs=1;fr=" + dosJit_narrow("t2", size) + ";");
+              ";fs=k1;fr=" + dosJit_narrow("t2", size) + ";");
     if (DOS_JIT_FZ !== size) { body.push("fz=" + size + ";"); DOS_JIT_FZ = size; }
     DOS_JIT_PENDING = dec ? 7 : 6;
     DOS_JIT_PSIZE = size;
@@ -795,15 +800,15 @@ function dosJit_one(body, tmp) {
   if (op >= 0x50 && op <= 0x57) {
     if (size !== 4) { DOS_JC = start; return 0; }
     body.push("t0=" + dosJit_regGet(op & 7, 4) + ";" + dosJit_rRef(4) +
-              "=(e4-4)>>>0;ta=e4&16777215;");
+              "=(e4-k2)>>>k0;ta=e4&k3;");
     DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
     body.push(dosJit_memWrite("ta", 4, "t0"));
     return 1;
   }
   if (op >= 0x58 && op <= 0x5F) {
     if (size !== 4) { DOS_JC = start; return 0; }
-    body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
-              ";e4=(e4+4)>>>0;");
+    body.push("ta=" + dosJit_rRef(4) + "&k3;t0=" + dosJit_memRead("ta", 4) +
+              ";e4=(e4+k2)>>>k0;");
     DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
     body.push(dosJit_regSet(op & 7, 4, "t0"));
     return 1;
@@ -824,7 +829,7 @@ function dosJit_one(body, tmp) {
     else if (op === 0x83) {
       let v8s = dosJc_s8();
       immE = dosJit_immExpr(immAt, 1, 1, (sz === 2) ? (v8s & 0xFFFF) : (v8s >>> 0));
-      if (DOS_JIT_IMM_WAS_LIVE === 1) immE = (sz === 2) ? ("(" + immE + "&65535)") : ("((" + immE + ")>>>0)");
+      if (DOS_JIT_IMM_WAS_LIVE === 1) immE = (sz === 2) ? ("(" + immE + "&k11)") : ("((" + immE + ")>>>k0)");
     } else if (sz === 2) { let v16 = dosJc_u16(); immE = dosJit_immExpr(immAt, 2, 0, v16); }
     else { let v32 = dosJc_u32(); immE = dosJit_immExpr(immAt, 4, 0, v32 >>> 0); }
     let imm = immE;
@@ -882,10 +887,10 @@ function dosJit_one(body, tmp) {
   }
 
   // ---- MOV r, imm ----------------------------------------------------------
-  if (op >= 0xB0 && op <= 0xB7) { body.push(dosJit_regSet(op & 7, 1, String(dosJc_u8()))); return 1; }
+  if (op >= 0xB0 && op <= 0xB7) { body.push(dosJit_regSet(op & 7, 1, dosJit_lit(dosJc_u8()))); return 1; }
   if (op >= 0xB8 && op <= 0xBF) {
     let imm = (size === 2) ? dosJc_u16() : dosJc_u32();
-    body.push(dosJit_regSet(op & 7, size, String(imm)));
+    body.push(dosJit_regSet(op & 7, size, dosJit_lit(imm)));
     return 1;
   }
 
@@ -895,8 +900,8 @@ function dosJit_one(body, tmp) {
     dosJit_modrm();
     if (DOS_JC_OK === 0 || DOS_JM_REG !== 0) { DOS_JC = start; return 0; }
     let imm = (sz === 1) ? dosJc_u8() : ((sz === 2) ? dosJc_u16() : dosJc_u32());
-    if (DOS_JM_ADDR === "") body.push(dosJit_regSet(DOS_JM_RM, sz, String(imm)));
-    else { body.push("ta=" + DOS_JM_ADDR + ";"); body.push(dosJit_memWrite("ta", sz, String(imm))); }
+    if (DOS_JM_ADDR === "") body.push(dosJit_regSet(DOS_JM_RM, sz, dosJit_lit(imm)));
+    else { body.push("ta=" + DOS_JM_ADDR + ";"); body.push(dosJit_memWrite("ta", sz, dosJit_lit(imm))); }
     return 1;
   }
 
@@ -914,15 +919,14 @@ function dosJit_one(body, tmp) {
     if (n === 0) return 1;
     let s0 = (dosJit_isSimple(src) === 1) ? src : "t0";
     let expr = "";
-    if (sub === 4) expr = "(" + s0 + "<<" + n + ")";                       // SHL
-    else if (sub === 5) expr = "(" + s0 + ">>>" + n + ")";                 // SHR
+    let ln = dosJit_lit(n);
+    if (sub === 4) expr = "(" + s0 + "<<" + ln + ")";                      // SHL
+    else if (sub === 5) expr = "(" + s0 + ">>>" + ln + ")";                // SHR
     else if (sub === 7) {                                                  // SAR
-      if (sz === 4) expr = "((" + s0 + "|0)>>" + n + ")";
-      else if (sz === 2) expr = "(((" + s0 + "<<16)>>16)>>" + n + ")";
-      else expr = "(((" + s0 + "<<24)>>24)>>" + n + ")";
+      if (sz === 4) expr = "((" + s0 + "|k0)>>" + ln + ")";
+      else if (sz === 2) expr = "(((" + s0 + "<<k6)>>k6)>>" + ln + ")";
+      else expr = "(((" + s0 + "<<k7)>>k7)>>" + ln + ")";
     } else { DOS_JC = start; return 0; }
-    let mask = (sz === 1) ? "255" : ((sz === 2) ? "65535" : "4294967295");
-    let sign = (sz === 1) ? "128" : ((sz === 2) ? "32768" : "2147483648");
     let bits = sz * 8;
     // A shift sets CF from the last bit shifted out, and ZF/SF/PF from the
     // result. Recording it as a lazy logic result would clear that carry, so
@@ -933,16 +937,16 @@ function dosJit_one(body, tmp) {
     if (s0 === "t0") body.push("t0=" + src + ";");
     body.push("t2=" + dosJit_narrow(expr, sz) + ";");
     let cfE = "0";
-    if (sub === 4) { if (n <= bits) cfE = "(" + s0 + ">>>" + (bits - n) + ")&1"; }
-    else if (sub === 5) { if (n <= bits) cfE = "(" + s0 + ">>>" + (n - 1) + ")&1"; }
-    else cfE = "(" + s0 + ">>>" + ((n <= bits) ? (n - 1) : (bits - 1)) + ")&1";
+    if (sub === 4) { if (n <= bits) cfE = "(" + s0 + ">>>" + dosJit_lit(bits - n) + ")&k1"; }
+    else if (sub === 5) { if (n <= bits) cfE = "(" + s0 + ">>>" + dosJit_lit(n - 1) + ")&k1"; }
+    else cfE = "(" + s0 + ">>>" + dosJit_lit((n <= bits) ? (n - 1) : (bits - 1)) + ")&k1";
     let ofE = kept;
     if (n === 1) {
-      if (sub === 4) ofE = "(((((t2&" + sign + ")?1:0)^t3)!==0)?2048:0)";
-      else if (sub === 5) ofE = "((" + s0 + "&" + sign + ")?2048:0)";
+      if (sub === 4) ofE = "((((" + dosJit_signTest("t2", sz) + "?k1:k0)^t3)!==k0)?k10:k0)";
+      else if (sub === 5) ofE = "(" + dosJit_signTest(s0, sz) + "?k10:k0)";
       else ofE = "0";
     }
-    body.push(dosJit_flagWord(cfE, ofE, sign));
+    body.push(dosJit_flagWord(cfE, ofE, sz));
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
     DOS_JIT_FOLDED = 1;
@@ -956,7 +960,7 @@ function dosJit_one(body, tmp) {
     body.push("t3=" + dosJit_rRef(4) + ";");
     for (let r = 0; r < 8; r++) {
       let v = (r === 4) ? "t3" : dosJit_regGet(r, 4);
-      body.push("t0=" + v + ";e4=(e4-4)>>>0;ta=e4&16777215;");
+      body.push("t0=" + v + ";e4=(e4-k2)>>>k0;ta=e4&k3;");
       body.push(dosJit_memWrite("ta", 4, "t0"));
     }
     DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
@@ -964,7 +968,7 @@ function dosJit_one(body, tmp) {
   }
   if (op === 0x61 && size === 4) {
     for (let r = 7; r >= 0; r--) {
-      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) + ";e4=(e4+4)>>>0;");
+      body.push("ta=" + dosJit_rRef(4) + "&k3;t0=" + dosJit_memRead("ta", 4) + ";e4=(e4+k2)>>>k0;");
       if (r !== 4) body.push(dosJit_regSet(r, 4, "t0"));   // ESP is discarded
     }
     DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
@@ -975,31 +979,31 @@ function dosJit_one(body, tmp) {
   if (op === 0xA8 || op === 0xA9) {
     let sz = (op === 0xA8) ? 1 : size;
     let imm = (sz === 1) ? dosJc_u8() : ((sz === 2) ? dosJc_u16() : dosJc_u32());
-    body.push("t0=" + dosJit_regGet(0, sz) + ";t1=" + imm + ";t2=(t0&t1);");
+    body.push("t0=" + dosJit_regGet(0, sz) + ";t1=" + dosJit_lit(imm) + ";t2=(t0&t1);");
     body.push(dosJit_setFlags(4, sz, "t0", "t1", "t2"));
     return 1;
   }
 
   // ---- port output ---------------------------------------------------------
   if (op === 0xEE || op === 0xEF || op === 0xE6 || op === 0xE7) {
-    let portE = (op === 0xEE || op === 0xEF) ? dosJit_regGet(2, 2) : String(dosJc_u8());
+    let portE = (op === 0xEE || op === 0xEF) ? dosJit_regGet(2, 2) : dosJit_lit(dosJc_u8());
     if (op === 0xEE || op === 0xE6) {
       body.push("OUT8(" + portE + "," + dosJit_regGet(0, 1) + ");");
     } else {
       body.push("t3=" + portE + ";t0=" + dosJit_regGet(0, size) + ";");
-      body.push("OUT8(t3,t0&255);OUT8(t3+1,(t0>>8)&255);");
-      if (size === 4) body.push("OUT8(t3+2,(t0>>16)&255);OUT8(t3+3,(t0>>>24)&255);");
+      body.push("OUT8(t3,t0&k5);OUT8(t3+k1,(t0>>k8)&k5);");
+      if (size === 4) body.push("OUT8(t3+k4,(t0>>k6)&k5);OUT8(t3+k9,(t0>>>k7)&k5);");
     }
     // A port write can switch the card between chained and unchained, and
     // the trace holds that flag in a local from its entry. DOOM's sequencer
     // code flips it and then reads video memory in the same trace, so the
     // local has to be refreshed here or every read after it takes the wrong
     // path.
-    body.push("vg=ST[8];pm=ST[7];");
+    body.push("vg=ST[k8];pm=ST[k27];");
     return 1;
   }
   if (op === 0xEC || op === 0xE4) {
-    let portE2 = (op === 0xEC) ? dosJit_regGet(2, 2) : String(dosJc_u8());
+    let portE2 = (op === 0xEC) ? dosJit_regGet(2, 2) : dosJit_lit(dosJc_u8());
     body.push(dosJit_regSet(0, 1, "IN8(" + portE2 + ")"));
     return 1;
   }
@@ -1012,29 +1016,28 @@ function dosJit_one(body, tmp) {
     let sub = DOS_JM_REG;
     if (sub !== 4 && sub !== 5 && sub !== 7) { DOS_JC = start; return 0; }
     let srcR = dosJit_regGet(DOS_JM_RM, sz);
-    let sign = dosJit_signLit(sz);
     let bits = sz * 8;
     body.push(dosJit_guard());
     let kept = dosJit_keptOF(body);
-    body.push("t3=" + dosJit_regGet(1, 1) + "&31;");
+    body.push("t3=" + dosJit_regGet(1, 1) + "&k12;");
     // A count of zero leaves every flag alone, so the whole thing is skipped.
-    body.push("if(t3!==0){t0=" + srcR + ";");
-    if (sub === 4) body.push("t2=" + dosJit_narrow("t0<<t3", sz) + ";t1=(t3<=" + bits + ")?((t0>>>(" + bits + "-t3))&1):0;");
-    else if (sub === 5) body.push("t2=" + dosJit_narrow("t0>>>t3", sz) + ";t1=(t0>>>(t3-1))&1;");
+    body.push("if(t3!==k0){t0=" + srcR + ";");
+    if (sub === 4) body.push("t2=" + dosJit_narrow("t0<<t3", sz) + ";t1=(t3<=" + dosJit_lit(bits) + ")?((t0>>>(" + dosJit_lit(bits) + "-t3))&k1):k0;");
+    else if (sub === 5) body.push("t2=" + dosJit_narrow("t0>>>t3", sz) + ";t1=(t0>>>(t3-k1))&k1;");
     else {
-      let sx = (sz === 4) ? "(t0|0)" : ((sz === 2) ? "((t0<<16)>>16)" : "((t0<<24)>>24)");
-      body.push("t2=" + dosJit_narrow(sx + ">>t3", sz) + ";t1=(" + sx + ">>(t3-1))&1;");
+      let sx = (sz === 4) ? "(t0|k0)" : ((sz === 2) ? "((t0<<k6)>>k6)" : "((t0<<k7)>>k7)");
+      body.push("t2=" + dosJit_narrow(sx + ">>t3", sz) + ";t1=(" + sx + ">>(t3-k1))&k1;");
     }
     let of1 = "0";
-    if (sub === 4) of1 = "(((((t2&" + sign + ")?1:0)^t1)!==0)?2048:0)";
-    else if (sub === 5) of1 = "((t0&" + sign + ")?2048:0)";
-    body.push("tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;");
-    body.push("ST[1]=(ST[1]&~2245)|((t3===1)?" + of1 + ":" + kept + ")|(t1?1:0)|((tv&1)?0:4)|((t2===0)?64:0)|((t2&" + sign + ")?128:0);");
+    if (sub === 4) of1 = "((((" + dosJit_signTest("t2", sz) + "?k1:k0)^t1)!==k0)?k10:k0)";
+    else if (sub === 5) of1 = "(" + dosJit_signTest("t0", sz) + "?k10:k0)";
+    body.push("tv=t2&k5;tv^=tv>>k2;tv^=tv>>k4;tv^=tv>>k1;");
+    body.push("ST[k1]=(ST[k1]&~k16)|((t3===k1)?" + of1 + ":" + kept + ")|(t1?k1:k0)|((tv&k1)?k0:k2)|((t2===k0)?k14:k0)|(" + dosJit_signTest("t2", sz) + "?k15:k0);");
     body.push(dosJit_regSet(DOS_JM_RM, sz, "t2"));
     // A zero count leaves every flag as it was, which means whatever result
     // was pending still is. Fold it into the flag word rather than drop it,
     // so that afterwards nothing is pending on either path.
-    body.push("}else if(fo!==0){ST[1]=FL(fo,fd,fs,fr,fz,ST[1]);}");
+    body.push("}else if(fo!==k0){ST[k1]=FL(fo,fd,fs,fr,fz,ST[k1]);}");
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
     DOS_JIT_FOLDED = 1;
@@ -1047,7 +1050,7 @@ function dosJit_one(body, tmp) {
   if (op === 0x8C) {
     dosJit_modrm();
     if (DOS_JC_OK === 0) { DOS_JC = start; return 0; }
-    let v = "SEGS[" + (DOS_JM_REG & 7) + "]";
+    let v = "SEGS[" + dosJit_lit(DOS_JM_REG & 7) + "]";
     if (DOS_JM_ADDR === "") body.push(dosJit_regSet(DOS_JM_RM, size, v));
     else { body.push("ta=" + DOS_JM_ADDR + ";"); body.push(dosJit_memWrite("ta", 2, v)); }
     return 1;
@@ -1058,13 +1061,13 @@ function dosJit_one(body, tmp) {
     let src = "";
     if (DOS_JM_ADDR === "") src = dosJit_regGet(DOS_JM_RM, 2);
     else { body.push("ta=" + DOS_JM_ADDR + ";"); src = dosJit_memRead("ta", 2); }
-    body.push("SEGS[" + (DOS_JM_REG & 7) + "]=(" + src + ")&65535;");
+    body.push("SEGS[" + dosJit_lit(DOS_JM_REG & 7) + "]=(" + src + ")&k11;");
     return 1;
   }
   if (op === 0x06 || op === 0x0E || op === 0x16 || op === 0x1E) {
     if (size !== 4) { DOS_JC = start; return 0; }
     let sreg = (op === 0x06) ? 0 : ((op === 0x0E) ? 1 : ((op === 0x16) ? 2 : 3));
-    body.push("t0=SEGS[" + sreg + "];" + dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
+    body.push("t0=SEGS[" + sreg + "];" + dosJit_rRef(4) + "=(e4-k2)>>>k0;ta=e4&k3;");
     DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
     body.push(dosJit_memWrite("ta", 4, "t0"));
     return 1;
@@ -1072,8 +1075,8 @@ function dosJit_one(body, tmp) {
   if (op === 0x07 || op === 0x17 || op === 0x1F) {
     if (size !== 4) { DOS_JC = start; return 0; }
     let sreg2 = (op === 0x07) ? 0 : ((op === 0x17) ? 2 : 3);
-    body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
-              ";e4=(e4+4)>>>0;SEGS[" + sreg2 + "]=t0&65535;");
+    body.push("ta=" + dosJit_rRef(4) + "&k3;t0=" + dosJit_memRead("ta", 4) +
+              ";e4=(e4+k2)>>>k0;SEGS[" + sreg2 + "]=t0&k11;");
     DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
     return 1;
   }
@@ -1089,13 +1092,13 @@ function dosJit_one(body, tmp) {
     let srcE = "";
     if (DOS_JM_ADDR === "") srcE = dosJit_regGet(DOS_JM_RM, 4);
     else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
-    body.push("ST[12]=" + dosJit_regGet(0, 4) + ";ST[13]=" + dosJit_regGet(2, 4) +
-              ";ST[14]=" + srcE + ";MD(" + sub + ",4);");
+    body.push("ST[k13]=" + dosJit_regGet(0, 4) + ";ST[k19]=" + dosJit_regGet(2, 4) +
+              ";ST[k35]=" + srcE + ";MD(" + sub + ",k2);");
     // A divide error is the interpreter's to raise: leave the trace with EIP
     // at this instruction and ST[9] set, which makes the dispatcher hand the
     // one instruction to the interpreter instead of finding this trace again.
-    body.push("if(ST[15]!==0){ST[9]=1;t0=" + (start >>> 0) + ";tv=-1;t3=g+" + DOS_JIT_N + ";break T;}");
-    body.push("t2=ST[12];t3=ST[13];");
+    body.push("if(ST[k36]!==k0){ST[k34]=k1;t0=" + dosJit_lit(start >>> 0) + ";tv=m26;t3=g+" + dosJit_lit(DOS_JIT_N) + ";break T;}");
+    body.push("t2=ST[k13];t3=ST[k19];");
     body.push(dosJit_regSet(0, 4, "t2"));
     body.push(dosJit_regSet(2, 4, "t3"));
     // MUL and IMUL set ZF, SF and PF from the low half, and CF and OF from
@@ -1103,11 +1106,11 @@ function dosJit_one(body, tmp) {
     // that the high half is the sign extension of the low. DIV and IDIV leave
     // every flag alone.
     if (sub === 4 || sub === 5) {
-      let fits = (sub === 4) ? "(t3===0)"
-                             : "((t3===0&&(t2|0)>=0)||(t3===4294967295&&(t2|0)<0))";
-      body.push("@@F@@tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
-                "ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|(" +
-                fits + "?0:2049);");
+      let fits = (sub === 4) ? "(t3===k0)"
+                             : "((t3===k0&&(t2|k0)>=k0)||(t3===k40&&(t2|k0)<k0))";
+      body.push("@@F@@tv=t2&k5;tv^=tv>>k2;tv^=tv>>k4;tv^=tv>>k1;" +
+                "ST[k1]=(ST[k1]&~k16)|((t2===k0)?k14:k0)|((t2>>k12)?k15:k0)|((tv&k1)?k0:k2)|(" +
+                fits + "?k0:k21);");
       // The multiply wrote every arithmetic flag; nothing is pending now.
       body.push("fo=0;");
       DOS_JIT_PENDING = 0;
@@ -1120,16 +1123,16 @@ function dosJit_one(body, tmp) {
   // ---- flag bits the program sets directly ---------------------------------
   // None of these is part of the lazy set, so the flag word can be touched
   // without disturbing a pending result.
-  if (op === 0xFA) { body.push("ST[1]=ST[1]&~512;"); return 1; }   // CLI
-  if (op === 0xFB) { body.push("ST[1]=ST[1]|512;"); return 1; }    // STI
-  if (op === 0xFC) { body.push("ST[1]=ST[1]&~1024;"); return 1; }  // CLD
-  if (op === 0xFD) { body.push("ST[1]=ST[1]|1024;"); return 1; }   // STD
+  if (op === 0xFA) { body.push("ST[k1]=ST[k1]&~k30;"); return 1; }   // CLI
+  if (op === 0xFB) { body.push("ST[k1]=ST[k1]|k30;"); return 1; }    // STI
+  if (op === 0xFC) { body.push("ST[k1]=ST[k1]&~k20;"); return 1; }  // CLD
+  if (op === 0xFD) { body.push("ST[k1]=ST[k1]|k20;"); return 1; }   // STD
 
   // ---- LEAVE ---------------------------------------------------------------
   if (op === 0xC9) {
     if (size !== 4) { DOS_JC = start; return 0; }
-    body.push(dosJit_rRef(4) + "=" + dosJit_rRef(5) + ";ta=e4&16777215;t0=" +
-              dosJit_memRead("ta", 4) + ";e4=(e4+4)>>>0;e5=t0>>>0;");
+    body.push(dosJit_rRef(4) + "=" + dosJit_rRef(5) + ";ta=e4&k3;t0=" +
+              dosJit_memRead("ta", 4) + ";e4=(e4+k2)>>>k0;e5=t0>>>k0;");
     DOS_JIT_RMOD = DOS_JIT_RMOD | 16 | 32;
     return 1;
   }
@@ -1142,13 +1145,13 @@ function dosJit_one(body, tmp) {
     let srcE = "";
     if (DOS_JM_ADDR === "") srcE = dosJit_regGet(DOS_JM_RM, 4);
     else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
-    body.push("t0=(" + srcE + ")|0;");
+    body.push("t0=(" + srcE + ")|k0;");
     let imm = (op === 0x6B) ? dosJc_s8() : dosJc_s32();
-    body.push("t1=" + imm + ";t2=Math.imul(t0,t1)>>>0;");
+    body.push("t1=" + dosJit_lit(imm) + ";t2=Math.imul(t0,t1)>>>k0;");
     body.push(dosJit_regSet(DOS_JM_REG, 4, "t2"));
-    body.push("@@F@@t3=t0*t1;tv=t2&255;tv^=tv>>4;tv^=tv>>2;tv^=tv>>1;" +
-              "ST[1]=(ST[1]&~2245)|((t2===0)?64:0)|((t2&2147483648)?128:0)|((tv&1)?0:4)|" +
-              "((t3>=-2147483648&&t3<=2147483647)?0:2049);");
+    body.push("@@F@@t3=t0*t1;tv=t2&k5;tv^=tv>>k2;tv^=tv>>k4;tv^=tv>>k1;" +
+              "ST[k1]=(ST[k1]&~k16)|((t2===k0)?k14:k0)|((t2>>k12)?k15:k0)|((tv&k1)?k0:k2)|" +
+              "((t3>=m22&&t3<=k33)?k0:k21);");
     body.push("fo=0;");
     DOS_JIT_PENDING = 0;
     DOS_JIT_FOLDED = 1;
@@ -1161,7 +1164,7 @@ function dosJit_one(body, tmp) {
     let off = dosJc_u32();
     DOS_JM_CONST = 1;
     DOS_JM_CADDR = off & 0xFFFFFF;
-    body.push("ta=" + DOS_JM_CADDR + ";");
+    body.push("ta=" + dosJit_lit(DOS_JM_CADDR) + ";");
     if (op === 0xA0 || op === 0xA1) body.push(dosJit_regSet(0, sz, dosJit_memRead("ta", sz)));
     else body.push(dosJit_memWrite("ta", sz, dosJit_regGet(0, sz)));
     return 1;
@@ -1169,13 +1172,13 @@ function dosJit_one(body, tmp) {
 
   // ---- CWDE / CDQ ----------------------------------------------------------
   if (op === 0x98) {
-    if (size === 4) body.push(dosJit_regSet(0, 4, "((" + dosJit_regGet(0, 2) + "<<16)>>16)"));
-    else body.push(dosJit_regSet(0, 2, "((" + dosJit_regGet(0, 1) + "<<24)>>24)"));
+    if (size === 4) body.push(dosJit_regSet(0, 4, "((" + dosJit_regGet(0, 2) + "<<k6)>>k6)"));
+    else body.push(dosJit_regSet(0, 2, "((" + dosJit_regGet(0, 1) + "<<k7)>>k7)"));
     return 1;
   }
   if (op === 0x99) {
-    if (size === 4) body.push(dosJit_regSet(2, 4, "((" + dosJit_regGet(0, 4) + "|0)>>31)"));
-    else body.push(dosJit_regSet(2, 2, "((" + dosJit_regGet(0, 2) + "<<16)>>31)"));
+    if (size === 4) body.push(dosJit_regSet(2, 4, "((" + dosJit_regGet(0, 4) + "|k0)>>k12)"));
+    else body.push(dosJit_regSet(2, 2, "((" + dosJit_regGet(0, 2) + "<<k6)>>k12)"));
     return 1;
   }
 
@@ -1191,7 +1194,7 @@ function dosJit_one(body, tmp) {
     let getE = isMem ? dosJit_memRead("ta", sz) : dosJit_regGet(DOS_JM_RM, sz);
     if (sub === 0 || sub === 1) {                // TEST r/m, imm
       let imm = (sz === 1) ? dosJc_u8() : ((sz === 2) ? dosJc_u16() : dosJc_u32());
-      body.push("t0=" + getE + ";t1=" + imm + ";t2=(t0&t1);");
+      body.push("t0=" + getE + ";t1=" + dosJit_lit(imm) + ";t2=(t0&t1);");
       body.push(dosJit_setFlags(4, sz, "t0", "t1", "t2"));
       return 1;
     }
@@ -1202,7 +1205,7 @@ function dosJit_one(body, tmp) {
       return 1;
     }
     // NEG is SUB from zero, and sets the flags that way.
-    body.push("t1=" + getE + ";t0=0;t2=(t0-t1);");
+    body.push("t1=" + getE + ";t0=k0;t2=(t0-t1);");
     body.push(dosJit_setFlags(5, sz, "t0", "t1", "t2"));
     if (isMem) body.push(dosJit_memWrite("ta", sz, "t2"));
     else body.push(dosJit_regSet(DOS_JM_RM, sz, "t2"));
@@ -1231,9 +1234,9 @@ function dosJit_one(body, tmp) {
       let dec = (sub === 1) ? 1 : 0;
       let s0 = getE;
       if (dosJit_isSimple(getE) === 0) { body.push("t0=" + getE + ";"); s0 = "t0"; }
-      body.push("t2=(" + s0 + (dec ? "-1" : "+1") + ");");
+      body.push("t2=(" + s0 + (dec ? "-" : "+") + dosJit_lit(1) + ");");
       body.push("@@F@@fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_recOperand(s0, sz) +
-                ";fs=1;fr=" + dosJit_narrow("t2", sz) + ";");
+                ";fs=k1;fr=" + dosJit_narrow("t2", sz) + ";");
       if (DOS_JIT_FZ !== sz) { body.push("fz=" + sz + ";"); DOS_JIT_FZ = sz; }
       DOS_JIT_PENDING = dec ? 7 : 6;
       DOS_JIT_PSIZE = sz;
@@ -1245,7 +1248,7 @@ function dosJit_one(body, tmp) {
       if (isMem) { body.push("ta=" + DOS_JM_ADDR + ";t0=" + dosJit_memRead("ta", 4) + ";"); }
       else body.push("t0=" + dosJit_regGet(DOS_JM_RM, 4) + ";");
       DOS_JM_CONST = 0;                          // ta is the stack from here on
-      body.push(dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
+      body.push(dosJit_rRef(4) + "=(e4-k2)>>>k0;ta=e4&k3;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       body.push(dosJit_memWrite("ta", 4, "t0"));
       return 1;
@@ -1272,54 +1275,62 @@ function dosJit_one(body, tmp) {
 // they were about a third of the work. Naming each distinct value once, before
 // the loop, turns every later use into a register read.
 
-function dosJit_isIdentChar(c) {
-  return (c >= "0" && c <= "9") || (c >= "a" && c <= "z") ||
-         (c >= "A" && c <= "Z") || c === "_" || c === "$";
-}
-
 let DOS_JIT_POOL_NAMES = null;
 let DOS_JIT_POOL_VALUES = null;
 let DOS_JIT_POOL_N = 0;
 let DOS_JIT_POOL_INDEX = null;   // literal text -> pool index, for the trace being compiled
+let DOS_JIT_KINDEX = null;       // literal text -> fixed name, for the values in DOS_JIT_KVALS
+// Constants the emitters name directly: k<i> (m<i> when negative) holds
+// DOS_JIT_KVALS[i], declared in a trace's prologue when the trace uses it.
+let DOS_JIT_KVALS = [0,1,4,16777215,2,255,16,24,8,3,2048,65535,31,12,64,128,2245,5,6,13,1024,2049,-2147483648,-65536,-65281,-256,-1,7,10,11,512,65536,655360,2147483647,9,14,15,131072,196608,720896,4294967295];
+let DOS_JIT_KNAMES = ["k0","k1","k2","k3","k4","k5","k6","k7","k8","k9","k10","k11","k12","k13","k14","k15","k16","k17","k18","k19","k20","k21","m22","m23","m24","m25","m26","k27","k28","k29","k30","k31","k32","k33","k34","k35","k36","k37","k38","k39","k40"];
 
-// Rewrite one emitted line, replacing integer literals with pooled names.
-function dosJit_poolLine(line) {
-  let out = "";
-  let i = 0;
-  let n = line.length;
-  while (i < n) {
-    let c = line.charAt(i);
-    let prevIdent = (i > 0) ? dosJit_isIdentChar(line.charAt(i - 1)) : false;
-    if (c >= "0" && c <= "9" && !prevIdent) {
-      let j = i;
-      while (j < n) {
-        let d = line.charAt(j);
-        if (d >= "0" && d <= "9") j++; else break;
-      }
-      // A digit run touching a following identifier character is part of a
-      // name (R32, RAM16), not a literal.
-      if (j < n && dosJit_isIdentChar(line.charAt(j))) {
-        out = out + line.substring(i, j + 1);
-        i = j + 1;
-        continue;
-      }
-      let lit = line.substring(i, j);
-      let idx = DOS_JIT_POOL_INDEX["_" + lit];
-      if (idx === undefined) {
-        idx = DOS_JIT_POOL_N;
-        DOS_JIT_POOL_VALUES[idx] = lit;
-        DOS_JIT_POOL_NAMES[idx] = "q" + idx;
-        DOS_JIT_POOL_INDEX["_" + lit] = idx;
-        DOS_JIT_POOL_N++;
-      }
-      out = out + DOS_JIT_POOL_NAMES[idx];
-      i = j;
-      continue;
-    }
-    out = out + c;
-    i++;
+// The local that holds the literal `n` in the trace being compiled: q<i>,
+// or n<i> when negative, so a name says whether a value can be stored as it
+// is. Past 512 names the literal is written out.
+function dosJit_lit(n) {
+  let key = "_" + n;
+  let fixed = DOS_JIT_KINDEX[key];
+  if (fixed !== undefined) return fixed;
+  let idx = DOS_JIT_POOL_INDEX[key];
+  if (idx === undefined) {
+    if (DOS_JIT_POOL_N >= 512) return String(n);
+    idx = DOS_JIT_POOL_N;
+    DOS_JIT_POOL_VALUES[idx] = String(n);
+    DOS_JIT_POOL_NAMES[idx] = ((n < 0) ? "n" : "q") + idx;
+    DOS_JIT_POOL_INDEX[key] = idx;
+    DOS_JIT_POOL_N++;
   }
-  return out;
+  return DOS_JIT_POOL_NAMES[idx];
+}
+
+// Is this expression the local of a literal (q<i>, n<i>, k<i>, m<i>)?
+function dosJit_isLitName(expr) {
+  let c = expr.charCodeAt(0);
+  if (c !== 113 && c !== 110 && c !== 107 && c !== 109) return 0;
+  let len = expr.length;
+  if (len < 2 || len > 4) return 0;
+  let d = expr.charCodeAt(1);
+  return (d >= 48 && d <= 57) ? 1 : 0;
+}
+
+// Is it the local of a literal that is not negative (q<i> or k<i>)?
+function dosJit_isPosLitName(expr) {
+  if (dosJit_isLitName(expr) === 0) return 0;
+  let c = expr.charCodeAt(0);
+  return (c === 113 || c === 107) ? 1 : 0;
+}
+
+// The fixed constants a trace uses, declared first in its prologue. A short
+// name is a prefix of longer ones (k1 of k12), so a few may be declared
+// unused; that costs one register each.
+function dosJit_kDecl(src) {
+  let out = "";
+  for (let i = 0; i < DOS_JIT_KVALS.length; i++) {
+    if (src.indexOf(DOS_JIT_KNAMES[i]) < 0) continue;
+    out = out + ((out === "") ? "let " : ",") + DOS_JIT_KNAMES[i] + "=" + DOS_JIT_KVALS[i];
+  }
+  return (out === "") ? "" : (out + ";");
 }
 
 function dosJit_replaceAll(text, find, into) {
@@ -1338,6 +1349,8 @@ function dosJit_poolReset() {
   if (DOS_JIT_POOL_NAMES === null) {
     DOS_JIT_POOL_NAMES = new Array(512);
     DOS_JIT_POOL_VALUES = new Array(512);
+    DOS_JIT_KINDEX = {};
+    for (let i = 0; i < DOS_JIT_KVALS.length; i++) DOS_JIT_KINDEX["_" + DOS_JIT_KVALS[i]] = DOS_JIT_KNAMES[i];
   }
   DOS_JIT_POOL_N = 0;
   DOS_JIT_POOL_INDEX = {};
@@ -1365,10 +1378,16 @@ function dosJit_maskLit(sz) { return (sz === 1) ? "255" : ((sz === 2) ? "65535" 
 
 // Narrow an expression to `sz` bytes and keep it unsigned.
 function dosJit_narrow(expr, sz) {
-  if (sz === 4) return "((" + expr + ")>>>0)";
-  return "((" + expr + ")&" + dosJit_maskLit(sz) + ")";
+  if (sz === 4) return "((" + expr + ")>>>k0)";
+  return "((" + expr + ")&" + dosJit_lit((sz === 1) ? 255 : 65535) + ")";
 }
 function dosJit_signLit(sz) { return (sz === 1) ? "128" : ((sz === 2) ? "32768" : "2147483648"); }
+// A truthy expression for the sign bit of `v` at size `sz`: a shift at 32
+// bits (no constant, no double), a mask below.
+function dosJit_signTest(v, sz) {
+  if (sz === 4) return "(" + v + ">>k12)";
+  return "(" + v + "&" + dosJit_lit((sz === 1) ? 128 : 32768) + ")";
+}
 
 // which: 0 CF, 1 PF, 2 ZF, 3 SF, 4 OF. Returns "" when the pending operation
 // cannot answer it inline, in which case the caller folds the flags first.
@@ -1380,32 +1399,32 @@ function dosJit_flagExpr(which) {
 
   if (p === 0) {
     // Already folded: read the bit out of the flag word.
-    if (which === 0) return "((ST[1]&1)!==0)";
-    if (which === 1) return "((ST[1]&4)!==0)";
-    if (which === 2) return "((ST[1]&64)!==0)";
-    if (which === 3) return "((ST[1]&128)!==0)";
-    return "((ST[1]&2048)!==0)";
+    if (which === 0) return "((ST[k1]&k1)!==k0)";
+    if (which === 1) return "((ST[k1]&k2)!==k0)";
+    if (which === 2) return "((ST[k1]&k14)!==k0)";
+    if (which === 3) return "((ST[k1]&k15)!==k0)";
+    return "((ST[k1]&k10)!==k0)";
   }
-  if (which === 2) return "(fr===0)";
-  if (which === 3) return "((fr&" + sign + ")!==0)";
+  if (which === 2) return "(fr===k0)";
+  if (which === 3) return "(" + dosJit_signTest("fr", sz) + "!==k0)";
   if (which === 1) return "";                       // parity: fold instead
   if (which === 0) {
     if (p === 1) return "(fr<fd)";                  // ADD
     if (p === 2) return "(fd<fs)";                  // SUB / CMP
     if (p === 3) return "false";                    // logic clears CF
-    if (p === 6 || p === 7) return "((ST[1]&1)!==0)"; // INC / DEC leave it
-    if (p === 8) return "(((ST[1]&1)!==0)?(fr<=fd):(fr<fd))";   // ADC, carry-in still in the word
-    if (p === 9) return "(((ST[1]&1)!==0)?(fd<=fs):(fd<fs))";   // SBB
+    if (p === 6 || p === 7) return "((ST[k1]&k1)!==k0)"; // INC / DEC leave it
+    if (p === 8) return "(((ST[k1]&k1)!==k0)?(fr<=fd):(fr<fd))";   // ADC, carry-in still in the word
+    if (p === 9) return "(((ST[k1]&k1)!==k0)?(fd<=fs):(fd<fs))";   // SBB
     return "";
   }
   // OF
-  if (p === 1) return "((~(fd^fs)&(fd^fr)&" + sign + ")!==0)";
-  if (p === 2) return "(((fd^fs)&(fd^fr)&" + sign + ")!==0)";
+  if (p === 1) return "(" + dosJit_signTest("(~(fd^fs)&(fd^fr))", sz) + "!==k0)";
+  if (p === 2) return "(" + dosJit_signTest("((fd^fs)&(fd^fr))", sz) + "!==k0)";
   if (p === 3) return "false";
-  if (p === 6) return "(fr===" + sign + ")";
-  if (p === 7) return "(fr===" + (parseInt(sign, 10) - 1) + ")";
-  if (p === 8) return "((~(fd^fs)&(fd^fr)&" + sign + ")!==0)";
-  if (p === 9) return "(((fd^fs)&(fd^fr)&" + sign + ")!==0)";
+  if (p === 6) return "(fr===" + dosJit_lit(parseInt(sign, 10)) + ")";
+  if (p === 7) return "(fr===" + dosJit_lit(parseInt(sign, 10) - 1) + ")";
+  if (p === 8) return "(" + dosJit_signTest("(~(fd^fs)&(fd^fr))", sz) + "!==k0)";
+  if (p === 9) return "(" + dosJit_signTest("((fd^fs)&(fd^fr))", sz) + "!==k0)";
   return "";
 }
 
@@ -1517,8 +1536,8 @@ function dosJit_dropDeadFlags(body) {
     let m = line.indexOf("@@F@@");
     if (m === 0) {
       line = line.substring(5);
-      if (line.indexOf("ST[1]") >= 0) {
-        let keepsOF = (line.indexOf("(ST[1]&2048)") >= 0) ? 1 : 0;
+      if (line.indexOf("ST[k1]") >= 0) {
+        let keepsOF = (line.indexOf("(ST[k1]&k10)") >= 0) ? 1 : 0;
         let needed = liveWord;
         if (keepsOF === 0 && liveOF === 1) needed = 1;
         if (needed === 0) { body[i] = ""; DOS_JIT_DEAD++; continue; }
@@ -1573,9 +1592,9 @@ function dosJit_dropDeadFlags(body) {
     let ab = line.indexOf("@@A@@");
     if (ab >= 0) { let az = line.indexOf("@@Z@@"); line = line.substring(0, ab) + line.substring(az + 5); }
     if (m > 0) { body[i] = dosJit_replaceAll(body[i], "@@F@@", ""); liveRec = 1; liveWord = 1; liveOF = 1; continue; }
-    if (line.indexOf("break T;") >= 0 || line.indexOf("ST[2]=fo") >= 0) { liveRec = 1; liveWord = 1; liveOF = 1; continue; }   // an exit, or a spill
+    if (line.indexOf("break T;") >= 0 || line.indexOf("ST[k4]=fo") >= 0) { liveRec = 1; liveWord = 1; liveOF = 1; continue; }   // an exit, or a spill
     if (dosJit_readsRecord(line) === 1) liveRec = 1;
-    if (line.indexOf("ST[1]") >= 0) { liveWord = 1; liveOF = 1; }
+    if (line.indexOf("ST[k1]") >= 0) { liveWord = 1; liveOF = 1; }
     if (line.indexOf("fo=") === 0) {                                                       // a reload, or fo=0
       if (liveRec === 0 && line === "fo=0;") { body[i] = ""; DOS_JIT_DEAD++; }
       liveRec = 0;
@@ -1586,57 +1605,61 @@ function dosJit_dropDeadFlags(body) {
 // A shift's flag-word write reduced to its OF bit: the CF it computed into t3
 // stays when the OF expression uses it.
 function dosJit_ofOnly(line) {
-  let a = line.indexOf("ST[1]=(ST[1]&~2245)|");
-  let b = line.indexOf("|(t3?1:0)|");
+  let head = "ST[k1]=(ST[k1]&~k16)|";
+  let a = line.indexOf(head);
+  let b = line.indexOf("|(t3?k1:k0)|");
   if (a < 0 || b < 0) return line;
-  let ofE = line.substring(a + 20, b);
-  let out = "ST[1]=(ST[1]&~2048)|" + ofE + ";";
+  let ofE = line.substring(a + head.length, b);
+  let out = "ST[k1]=(ST[k1]&~k10)|" + ofE + ";";
   if (ofE.indexOf("t3") >= 0 && line.indexOf("t3=") === 0) out = line.substring(0, line.indexOf(";") + 1) + out;
   return out;
 }
 
 function dosJit_spill() {
-  return "ST[2]=fo;ST[3]=fd;ST[4]=fs;ST[5]=fr;ST[6]=fz;";
+  return "ST[k4]=fo;ST[k9]=fd;ST[k2]=fs;ST[k17]=fr;ST[k18]=fz;";
 }
 
 function dosJit_reload() {
   DOS_JIT_FZ = 0;
-  return "fo=ST[2];fd=ST[3];fs=ST[4];fr=ST[5];fz=ST[6];";
+  return "fo=ST[k4];fd=ST[k9];fs=ST[k2];fr=ST[k17];fz=ST[k18];";
 }
 
 // `n` is the number of instructions emitted so far, including the one that
 // is exiting; @@L@@ becomes the loop body length once the trace is complete.
 // An exit that returns to the dispatcher: the target in t0, no link slot,
 // the count in t3, and out of the loop to the epilogue.
-function dosJit_exitPlain(targetLit) {
-  return "t0=" + targetLit + ";tv=-1;t3=g+" + DOS_JIT_N + ";break T;";
+function dosJit_exitPlain(target) {
+  let lit = (target === "t0") ? "t0" : dosJit_lit(target);
+  return "t0=" + lit + ";tv=m26;t3=g+" + dosJit_lit(DOS_JIT_N) + ";break T;";
 }
 
 // An exit that lets the epilogue call the next trace when it is compiled: a
 // literal target's table group is computed here, a return address's at run
 // time.
-function dosJit_exit(targetLit) {
+function dosJit_exit(target) {
   let pre = "";
-  if (targetLit === "t0") {
-    pre = "tv=t0&16777215;tv=(tv^(tv>>>13))&" + ((DOS_JIT_SLOTS - 1) & ~3) + ";";
+  if (target === "t0") {
+    pre = "tv=t0&k3;tv=(tv^(tv>>>k19))&" + dosJit_lit((DOS_JIT_SLOTS - 1) & ~3) + ";";
   } else {
-    let t = parseInt(targetLit, 10) & 0xFFFFFF;
-    pre = "t0=" + targetLit + ";tv=" + ((t ^ (t >>> 13)) & (DOS_JIT_SLOTS - 1) & ~3) + ";";
+    let t = target & 0xFFFFFF;
+    pre = "t0=" + dosJit_lit(target) + ";tv=" + dosJit_lit((t ^ (t >>> 13)) & (DOS_JIT_SLOTS - 1) & ~3) + ";";
   }
-  return pre + "t3=g+" + DOS_JIT_N + ";break T;";
+  return pre + "t3=g+" + dosJit_lit(DOS_JIT_N) + ";break T;";
 }
 
 // What every exit breaks to: write the registers and the lazy slots back,
 // then either call the next trace or return the count.
 function dosJit_epilogue(regSpill, slotSpill) {
-  return regSpill + slotSpill + "ST[0]=t0;" +
-         "if(h>0&&tv>=0){ta=t0&16777215;" +
-         "if(TAG[tv]===ta)return t3+FN[tv](ST,h-1);if(TAG[tv+1]===ta)return t3+FN[tv+1](ST,h-1);" +
-         "if(TAG[tv+2]===ta)return t3+FN[tv+2](ST,h-1);if(TAG[tv+3]===ta)return t3+FN[tv+3](ST,h-1);}" +
+  return regSpill + slotSpill + "ST[k0]=t0;" +
+         "if(h>k0&&tv>=k0){ta=t0&k3;" +
+         "if(TAG[tv]===ta)return t3+FN[tv](ST,h-k1);if(TAG[tv+k1]===ta)return t3+FN[tv+k1](ST,h-k1);" +
+         "if(TAG[tv+k4]===ta)return t3+FN[tv+k4](ST,h-k1);if(TAG[tv+k9]===ta)return t3+FN[tv+k9](ST,h-k1);}" +
          "return t3;";
 }
 
 function dosJit_compile(phys) {
+  let cg0 = Date.now();
+  dosJit_poolReset();
   if (DOS_JIT_SEEN === null) DOS_JIT_SEEN = new Int32Array(64);
   DOS_JIT_SPANS_N = 0;
   DOS_JC = phys;
@@ -1672,9 +1695,9 @@ function dosJit_compile(phys) {
       n++;
       if (target === phys) {
         loops = 1;
-        body.push("if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue T;}" + dosJit_exitPlain(String(phys)));
+        body.push("if(g<" + dosJit_lit(DOS_JIT_LOOPCAP) + "){g+=" + dosJit_lit(DOS_JIT_N) + ";continue T;}" + dosJit_exitPlain(phys));
       } else if (dosJit_seen(target) === 1 || follows >= 24) {
-        body.push(dosJit_exit(String(target)));
+        body.push(dosJit_exit(target));
       } else {
         follows++;
         DOS_JC = target;
@@ -1701,7 +1724,7 @@ function dosJit_compile(phys) {
         DOS_JIT_PENDING = 0;
         DOS_JIT_FOLDED = 1;
         cond = dosJit_condExpr(ccode);
-        if (cond === "") { body.push(dosJit_exitPlain(String(here))); ended = 1; break; }
+        if (cond === "") { body.push(dosJit_exitPlain(here)); ended = 1; break; }
       }
       DOS_JC = here + (isNear ? 2 : 1);
       let d = isNear ? dosJc_s32() : dosJc_s8();
@@ -1712,10 +1735,10 @@ function dosJit_compile(phys) {
       n++;
       if (target === phys) {
         loops = 1;
-        body.push("if(" + cond + "){if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue T;}" +
-                  dosJit_exitPlain(String(phys)) + "}");
+        body.push("if(" + cond + "){if(g<" + dosJit_lit(DOS_JIT_LOOPCAP) + "){g+=" + dosJit_lit(DOS_JIT_N) + ";continue T;}" +
+                  dosJit_exitPlain(phys) + "}");
       } else {
-        body.push("if(" + cond + "){" + dosJit_exit(String(target)) + "}");
+        body.push("if(" + cond + "){" + dosJit_exit(target) + "}");
       }
       continue;                          // fall-through keeps compiling
     }
@@ -1727,10 +1750,10 @@ function dosJit_compile(phys) {
       let target = (DOS_JC + d) >>> 0;
       let ret = DOS_JC >>> 0;
       DOS_JIT_N++;
-      body.push("" + dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
+      body.push("" + dosJit_rRef(4) + "=(e4-k2)>>>k0;ta=e4&k3;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
-      body.push(dosJit_memWrite("ta", 4, String(ret)));
-      body.push(dosJit_exit(String(target)));
+      body.push(dosJit_memWrite("ta", 4, dosJit_lit(ret)));
+      body.push(dosJit_exit(target));
       dosJit_noteSpan(here, DOS_JC);
       n++;
       ended = 1;
@@ -1742,8 +1765,8 @@ function dosJit_compile(phys) {
       DOS_JC = here + 1;
       let adj = dosJc_u16();
       DOS_JIT_N++;
-      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
-                ";e4=(e4+4+" + adj + ")>>>0;");
+      body.push("ta=" + dosJit_rRef(4) + "&k3;t0=" + dosJit_memRead("ta", 4) +
+                ";e4=(e4+k2+" + dosJit_lit(adj) + ")>>>k0;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       body.push(dosJit_exit("t0"));
       dosJit_noteSpan(here, DOS_JC);
@@ -1755,10 +1778,10 @@ function dosJit_compile(phys) {
     // ---- IRET ---------------------------------------------------------------
     if (peek === 0xCF) {
       DOS_JIT_N++;
-      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
-                ";tv=(ta+4)&16777215;t1=" + dosJit_memRead("tv", 4) +
-                ";tv=(ta+8)&16777215;t2=" + dosJit_memRead("tv", 4) +
-                ";e4=(e4+12)>>>0;SEGS[1]=t1&65535;ST[1]=(t2|2)>>>0;fo=0;");
+      body.push("ta=" + dosJit_rRef(4) + "&k3;t0=" + dosJit_memRead("ta", 4) +
+                ";tv=(ta+k2)&k3;t1=" + dosJit_memRead("tv", 4) +
+                ";tv=(ta+k8)&k3;t2=" + dosJit_memRead("tv", 4) +
+                ";e4=(e4+k13)>>>k0;SEGS[k1]=t1&k11;ST[k1]=(t2|k4)>>>k0;fo=0;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       DOS_JIT_PENDING = 0;
       body.push(dosJit_exitPlain("t0"));
@@ -1774,16 +1797,16 @@ function dosJit_compile(phys) {
       if (sub === 2 || sub === 4) {
         DOS_JC = here + 1;
         dosJit_modrm();
-        if (DOS_JC_OK === 0) { DOS_JC = here; body.push(dosJit_exitPlain(String(here))); ended = 1; break; }
+        if (DOS_JC_OK === 0) { DOS_JC = here; body.push(dosJit_exitPlain(here)); ended = 1; break; }
         DOS_JIT_N++;
         if (DOS_JM_ADDR === "") body.push("t0=" + dosJit_regGet(DOS_JM_RM, 4) + ";");
         else body.push("ta=" + DOS_JM_ADDR + ";t0=" + dosJit_memRead("ta", 4) + ";");
         if (sub === 2) {
           let ret = DOS_JC >>> 0;
           DOS_JM_CONST = 0;                      // ta is the stack from here on
-          body.push(dosJit_rRef(4) + "=(e4-4)>>>0;ta=e4&16777215;");
+          body.push(dosJit_rRef(4) + "=(e4-k2)>>>k0;ta=e4&k3;");
           DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
-          body.push(dosJit_memWrite("ta", 4, String(ret)));
+          body.push(dosJit_memWrite("ta", 4, dosJit_lit(ret)));
         }
         body.push(dosJit_exit("t0"));
         dosJit_noteSpan(here, DOS_JC);
@@ -1796,8 +1819,8 @@ function dosJit_compile(phys) {
     // ---- RET --------------------------------------------------------------
     if (peek === 0xC3) {
       DOS_JIT_N++;
-      body.push("ta=" + dosJit_rRef(4) + "&16777215;t0=" + dosJit_memRead("ta", 4) +
-                ";e4=(e4+4)>>>0;");
+      body.push("ta=" + dosJit_rRef(4) + "&k3;t0=" + dosJit_memRead("ta", 4) +
+                ";e4=(e4+k2)>>>k0;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       body.push(dosJit_exit("t0"));
       dosJit_noteSpan(here, here + 1);
@@ -1824,22 +1847,22 @@ function dosJit_compile(phys) {
       let si = movs ? dosJit_rRef(6) : "";
       DOS_JIT_RMOD = DOS_JIT_RMOD | (rp ? 2 : 0) | 128 | (movs ? 64 : 0);
       let src = movs ? "" : ("t0=" + dosJit_regGet(0, ssz) + ";");
-      let load = movs ? ("ta=" + si + "&16777215;t0=" + dosJit_memRead("ta", ssz) + ";") : "";
-      let step = (movs ? (si + "=(" + si + "+t1)>>>0;") : "") + di + "=(" + di + "+t1)>>>0;";
-      let dir = "t1=(ST[1]&1024)?" + (-ssz) + ":" + ssz + ";";
+      let load = movs ? ("ta=" + si + "&k3;t0=" + dosJit_memRead("ta", ssz) + ";") : "";
+      let step = (movs ? (si + "=(" + si + "+t1)>>>k0;") : "") + di + "=(" + di + "+t1)>>>k0;";
+      let dir = "t1=(ST[k1]&k20)?" + dosJit_lit(-ssz) + ":" + dosJit_lit(ssz) + ";";
       if (rp === 1) {
         // A bail-out after the store resumes at the REP with the remaining
         // work: the pointers and count are already past this element.
         DOS_JC = here;
         let store = dosJit_memWrite("ta", ssz, "t0");
         DOS_JC = here + slen;
-        body.push(dir + src + "for(t2=0;" + cx + "!==0&&t2<65536;t2++){" + load + "ta=" + di + "&16777215;" +
-                  step + cx + "=(" + cx + "-1)>>>0;" + store + "}");
+        body.push(dir + src + "for(t2=k0;" + cx + "!==k0&&t2<k31;t2++){" + load + "ta=" + di + "&k3;" +
+                  step + cx + "=(" + cx + "-k1)>>>k0;" + store + "}");
         // More than the cap left: the interpreter takes the rest, as it would
         // have taken it in a second step.
-        body.push("if(" + cx + "!==0){" + dosJit_exitPlain(String(here)) + "}");
+        body.push("if(" + cx + "!==k0){" + dosJit_exitPlain(here) + "}");
       } else {
-        body.push(dir + src + load + "ta=" + di + "&16777215;" + step + dosJit_memWrite("ta", ssz, "t0"));
+        body.push(dir + src + load + "ta=" + di + "&k3;" + step + dosJit_memWrite("ta", ssz, "t0"));
       }
       dosJit_noteSpan(here, DOS_JC);
       n++;
@@ -1849,7 +1872,7 @@ function dosJit_compile(phys) {
     // ---- everything else --------------------------------------------------
     if (dosJit_one(body, 0) === 0) {
       DOS_JC = here;
-      body.push(dosJit_exitPlain(String(here)));
+      body.push(dosJit_exitPlain(here));
       ended = 1;
       break;
     }
@@ -1859,7 +1882,7 @@ function dosJit_compile(phys) {
   }
 
   if (n === 0) return null;
-  if (ended === 0) body.push(dosJit_exit(String(DOS_JC >>> 0)));
+  if (ended === 0) body.push(dosJit_exit(DOS_JC >>> 0));
   dosJit_dropDeadFlags(body);
 
   // The pool has to run over the finished body: a literal is only worth a name
@@ -1868,8 +1891,8 @@ function dosJit_compile(phys) {
   let loadParts = [];
   let spillParts = [];
   for (let r = 0; r < 8; r++) {
-    if (DOS_JIT_RUSE & (1 << r)) loadParts.push("e" + r + "=R32[" + r + "]");
-    if (DOS_JIT_RMOD & (1 << r)) spillParts.push("R32[" + r + "]=e" + r + ";");
+    if (DOS_JIT_RUSE & (1 << r)) loadParts.push("e" + r + "=R32[" + dosJit_lit(r) + "]");
+    if (DOS_JIT_RMOD & (1 << r)) spillParts.push("R32[" + dosJit_lit(r) + "]=e" + r + ";");
   }
   let regLoad = (loadParts.length > 0) ? ("let " + loadParts.join(",") + ";") : "";
   let regSpill = spillParts.join("");
@@ -1877,36 +1900,35 @@ function dosJit_compile(phys) {
   let hoistReload = "";
   if (DOS_JIT_HOISTS.length > 0) {
     hoistDecl = "let " + DOS_JIT_HOISTS.join(",") + ";";
-    hoistReload = "if(ST[10]!==0){ST[10]=0;" + DOS_JIT_HOISTS.join(";") + ";}";
+    hoistReload = "if(ST[k28]!==k0){ST[k28]=k0;" + DOS_JIT_HOISTS.join(";") + ";}";
   }
   for (let i = 0; i < body.length; i++) {
+    if (body[i].indexOf("@@") < 0) continue;
     body[i] = dosJit_replaceAll(body[i], "@@I@@", hoistReload);
     body[i] = dosJit_replaceAll(dosJit_replaceAll(body[i], "@@A@@", ""), "@@Z@@", "");
   }
 
-  dosJit_poolReset();
-  let pooled = [];
-  for (let i = 0; i < body.length; i++) pooled.push(dosJit_poolLine(body[i]));
-
-  let bodyText = pooled.join("");
+  let bodyText = "";
+  for (let i = 0; i < body.length; i++) bodyText = bodyText + body[i];
   // Load, and later write back, only the slots the body names.
-  let slotLoad = "let fo=ST[2]";
-  let slotSpill = "ST[2]=fo;";
-  if (bodyText.indexOf("fd") >= 0) { slotLoad += ",fd=ST[3]"; slotSpill += "ST[3]=fd;"; }
-  if (bodyText.indexOf("fs") >= 0) { slotLoad += ",fs=ST[4]"; slotSpill += "ST[4]=fs;"; }
-  if (bodyText.indexOf("fr") >= 0) { slotLoad += ",fr=ST[5]"; slotSpill += "ST[5]=fr;"; }
-  if (bodyText.indexOf("fz") >= 0) { slotLoad += ",fz=ST[6]"; slotSpill += "ST[6]=fz;"; }
-  if (bodyText.indexOf("vg") >= 0) slotLoad += ",vg=ST[8]";
-  if (bodyText.indexOf("pm") >= 0) slotLoad += ",pm=ST[7]";
+  let slotLoad = "let fo=ST[k4]";
+  let slotSpill = "ST[k4]=fo;";
+  if (bodyText.indexOf("fd") >= 0) { slotLoad += ",fd=ST[k9]"; slotSpill += "ST[k9]=fd;"; }
+  if (bodyText.indexOf("fs") >= 0) { slotLoad += ",fs=ST[k2]"; slotSpill += "ST[k2]=fs;"; }
+  if (bodyText.indexOf("fr") >= 0) { slotLoad += ",fr=ST[k17]"; slotSpill += "ST[k17]=fr;"; }
+  if (bodyText.indexOf("fz") >= 0) { slotLoad += ",fz=ST[k18]"; slotSpill += "ST[k18]=fz;"; }
+  if (bodyText.indexOf("vg") >= 0) slotLoad += ",vg=ST[k8]";
+  if (bodyText.indexOf("pm") >= 0) slotLoad += ",pm=ST[k27]";
   slotLoad += ";";
   // The pool stays inside the trace: a closure variable costs more to read
   // than a local on this engine, and a literal is read far more often than
   // the trace is entered.
   // The temporaries are always written before they are read; only the loop
   // counter needs a value.
-  let src = "let t0,t1,t2,t3,ta,tv,g=0;" + slotLoad +
+  let src = "let t0,t1,t2,t3,ta,tv,g=k0;" + slotLoad +
             regLoad + hoistDecl + dosJit_poolDecl() +
             "T:for(;;){" + bodyText + "}" + dosJit_epilogue(regSpill, slotSpill);
+  src = dosJit_kDecl(src) + src;
 
   // Refuse rather than overrun: an exhausted allowance stops the whole VM.
   if (DOS_JIT_COMPILED >= DOS_JIT_MAX_COMPILES ||
@@ -1934,6 +1956,7 @@ function dosJit_compile(phys) {
     DOS_JIT_FAILED++;
     return null;
   }
+  DOS_JIT_GTIME += ct0 - cg0;
   DOS_JIT_CTIME += Date.now() - ct0;
   DOS_JIT_SOURCE_BYTES = DOS_JIT_SOURCE_BYTES + src.length;
   DOS_JIT_COMPILED++;
