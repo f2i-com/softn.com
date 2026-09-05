@@ -685,7 +685,10 @@ export function AudioStream({
         if (needed > MAX_SCRATCH_BYTES) {
           return refuse(`Audio block of ${needed} bytes exceeds the ${MAX_SCRATCH_BYTES}-byte limit`);
         }
-        upperFrames = Math.floor(needed / (bytesPerSample * blockChannels));
+        // The frame bound comes from the bytes the string actually carries,
+        // not the decoder's padded allocation: the +3 slack would have put a
+        // block of exactly the limit one frame over it.
+        upperFrames = Math.floor(((base64.length * 3) >>> 2) / (bytesPerSample * blockChannels));
       } else {
         upperFrames = Math.floor((numbers as number[]).length / blockChannels);
       }

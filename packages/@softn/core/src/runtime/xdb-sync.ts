@@ -58,6 +58,15 @@ export interface XDBSyncOptions {
   persist?: boolean;
   /** App ID — when set, syncs the per-app XDB instance instead of the default */
   appId?: string;
+  /**
+   * The identity the room is joined under on the wire. y-webrtc keeps one
+   * global table of rooms by name, so two apps in one document that both
+   * chose "lobby" would collide there even though this registry keeps them
+   * apart; with a scope the network room is `<scope>/<room>`. Peers meet
+   * when they share both — the stable id a bundle declares, so compatible
+   * builds still find each other. `room` itself stays what the app named.
+   */
+  roomScope?: string;
 }
 
 export interface XDBSyncStatus {
@@ -147,10 +156,13 @@ export class XDBSyncAdapter {
       // Empty array prevents y-webrtc from using its built-in public servers
       providerOptions.signaling = [];
     }
+    const wireRoom = this.options.roomScope
+      ? `${this.options.roomScope}/${this.options.room}`
+      : this.options.room;
     console.log('[XDB Sync] Connecting to room:', this.options.room,
       '| password:', effectivePassword ? '(encrypted)' : '(none)',
       '| signaling:', providerOptions.signaling);
-    this.provider = new WebrtcProvider(this.options.room, this.ydoc, providerOptions);
+    this.provider = new WebrtcProvider(wireRoom, this.ydoc, providerOptions);
 
     // 2. Set awareness (our display name)
     if (this.options.displayName) {
@@ -367,7 +379,9 @@ export class XDBSyncAdapter {
       ymap.forEach((val, recordId) => {
         const record = jsonToRecord(val as Record<string, unknown>);
         const mine = local.get(recordId);
-        if (!mine || isNewer(record, mine)) {
+        // The document wins a tie: two copies stamped alike but different are
+        // one record the room has already agreed on and one it has not.
+        if (!mine || isNewer(record, mine) || (!isNewer(mine, record) && !deepEqual(recordToJSON(mine), val))) {
           this.xdb.writeRecord(collName, record);
         }
       });

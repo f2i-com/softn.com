@@ -20,6 +20,8 @@ import { XDBService } from '../src/runtime/xdb';
 
 const persistenceNames: string[] = [];
 const persistenceInstances: Array<{ destroy: ReturnType<typeof vi.fn>; clearData: ReturnType<typeof vi.fn>; name: string }> = [];
+/** Every room name handed to the WebRTC provider, in order. */
+const wireRooms: string[] = [];
 
 vi.mock('y-webrtc', () => ({
   WebrtcProvider: class MockWebrtcProvider {
@@ -27,6 +29,9 @@ vi.mock('y-webrtc', () => ({
     awareness = { getStates: () => new Map([[1, {}]]), setLocalStateField: vi.fn() };
     room = { webrtcConns: new Map() };
     destroy = vi.fn();
+    constructor(room: string) {
+      wireRooms.push(room);
+    }
   },
 }));
 
@@ -80,6 +85,7 @@ beforeEach(() => {
   localStorage.clear();
   persistenceNames.length = 0;
   persistenceInstances.length = 0;
+  wireRooms.length = 0;
 });
 
 afterEach(() => {
@@ -93,6 +99,19 @@ describe('two apps that choose the same room label', () => {
     expect(a).not.toBe(b);
     expect(getSyncAdapter('lobby', 'AppA')).toBe(a);
     expect(getSyncAdapter('lobby', 'AppB')).toBe(b);
+  });
+
+  it('are two rooms on the wire, so the provider never sees one name twice', () => {
+    // y-webrtc keeps one global table of rooms by name and throws on a
+    // duplicate, so the registry keeping the two apart is not enough.
+    startSync({ room: 'lobby', appId: 'AppA', roomScope: 'com.example.a', signaling: [] });
+    startSync({ room: 'lobby', appId: 'AppB', roomScope: 'com.example.b', signaling: [] });
+    expect(wireRooms).toEqual(['com.example.a/lobby', 'com.example.b/lobby']);
+    // The app still sees the room it named.
+    expect(getSyncAdapter('lobby', 'AppA')?.getStatus().room).toBe('lobby');
+    // The default instance keeps the bare name, so its peers still meet it.
+    startSync({ room: 'lobby', signaling: [] });
+    expect(wireRooms[2]).toBe('lobby');
   });
 
   it('keep separate offline caches', () => {

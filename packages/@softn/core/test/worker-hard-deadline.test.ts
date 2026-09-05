@@ -56,7 +56,7 @@ const script = { type: 'script', code: '' } as unknown as CodeBlock;
 beforeEach(() => {
   FakeWorker.instances = [];
   vi.stubGlobal('Worker', FakeWorker);
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
 });
 
 afterEach(() => {
@@ -127,6 +127,50 @@ describe('a worker that never answers', () => {
     // The dead worker's answer to the init request, late.
     expect(() => worker.answer(worker.posted[0].id, { state: { revived: true } })).not.toThrow();
     expect(context.state).toEqual({});
+  });
+});
+
+describe('a worker that is slow but answering', () => {
+  it('is not mistaken for one that has stopped', async () => {
+    // Requests arrive faster than the worker clears them, so the oldest has
+    // been outstanding for longer than the deadline — but the worker keeps
+    // answering something. Silence is what the deadline measures.
+    const onFatal = vi.fn();
+    const runtime = new WorkerScriptRuntime(makeContext(), undefined, 'app', undefined, undefined, {
+      hardDeadlineMs: 50,
+      onFatal,
+    });
+    const worker = FakeWorker.instances[0];
+    const load = runtime.loadScript(script);
+    load.catch(() => {});
+    for (let i = 0; i < 6; i++) {
+      vi.advanceTimersByTime(20);
+      runtime.updateContext({ tick: i });
+      // Answer the most recent request only; the init stays outstanding.
+      const last = worker.posted[worker.posted.length - 1];
+      worker.answer(last.id, {});
+    }
+    expect(worker.terminated).toBe(false);
+    expect(onFatal).not.toHaveBeenCalled();
+    // Then it goes quiet with the init still unanswered: that is a hang.
+    vi.advanceTimersByTime(60);
+    expect(worker.terminated).toBe(true);
+    expect(onFatal).toHaveBeenCalledTimes(1);
+  });
+
+  it('is torn down as a runtime when it is killed, not just as a worker', async () => {
+    const runtime = new WorkerScriptRuntime(makeContext(), undefined, 'app', undefined, undefined, {
+      hardDeadlineMs: 10,
+    });
+    const load = runtime.loadScript(script);
+    load.catch(() => {});
+    const before = (globalThis as unknown as { __listeners?: number }).__listeners;
+    vi.advanceTimersByTime(11);
+    await expect(load).rejects.toThrow(/hard_deadline/);
+    // Nothing the dead runtime does afterwards reaches a worker or a caller.
+    runtime.updateContext({ a: 1 });
+    expect(FakeWorker.instances[0].posted.filter((m) => m.type === 'update_context')).toHaveLength(0);
+    expect(before).toBeUndefined();
   });
 });
 

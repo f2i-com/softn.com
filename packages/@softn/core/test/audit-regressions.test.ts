@@ -17,6 +17,7 @@ import {
   describeNetDestination,
   describeSocketDestination,
   describeSrcSetEgress,
+  filterSignalingUrls,
 } from '../src/runtime/egress-policy';
 
 describe('the render cache key', () => {
@@ -310,6 +311,19 @@ describe('the egress evaluator', () => {
   it('does not enforce when no host has published a config', () => {
     expect(describeMarkupEgress('https://cdn.example/x.png', null).allowed).toBe(true);
     expect(describeMarkupEgress('https://cdn.example/x.png', undefined).allowed).toBe(true);
+  });
+
+  it('holds a script-chosen signalling server to the same rule', () => {
+    const urls = ['wss://api.example/signal', 'wss://attacker.example/signal', 'ws://api.example/signal'];
+    const scopedNet = { permissions: { net: scoped } };
+    expect(filterSignalingUrls(urls, scopedNet).allowed).toEqual(['wss://api.example/signal']);
+    expect(filterSignalingUrls(urls, scopedNet).refused).toHaveLength(2);
+    // No net at all: nothing the script names is reached, whatever the host.
+    expect(filterSignalingUrls(urls, { permissions: {} }).allowed).toEqual([]);
+    expect(filterSignalingUrls(urls, { consentPending: true, permissions: {} }).allowed).toEqual([]);
+    // No host enforcing: the list is the script's to choose.
+    expect(filterSignalingUrls(urls, null).allowed).toEqual(urls);
+    expect(filterSignalingUrls('not a list', scopedNet).allowed).toEqual([]);
   });
 
   it('judges every candidate of a srcset', () => {

@@ -158,6 +158,38 @@ export function describeMarkupEgress(
 }
 
 /**
+ * Which of the signalling servers a script asked its sync room to use it may
+ * actually have.
+ *
+ * `db.startSync(room, { signaling: [...] })` opens a WebSocket to every URL in
+ * the list and pushes the room's awareness and CRDT updates through it. That
+ * is egress like any other, judged like any other: the bundle needs `net`,
+ * and the host must be one `allowed_hosts` permits. A URL that fails is
+ * dropped, not the whole request — the host's own default signalling still
+ * applies when nothing survives — and the caller is told which ones went.
+ */
+export function filterSignalingUrls(
+  urls: unknown,
+  config: EgressConfig | null | undefined
+): { allowed: string[]; refused: Array<{ url: string; reason: string }> } {
+  const allowed: string[] = [];
+  const refused: Array<{ url: string; reason: string }> = [];
+  if (!Array.isArray(urls)) return { allowed, refused };
+  for (const candidate of urls) {
+    if (typeof candidate !== 'string') continue;
+    let verdict: EgressVerdict;
+    if (!config) verdict = ALLOW;
+    else if (config.consentPending) verdict = deny('Withheld until the user answers the permission bar');
+    else if (!config.permissions?.net?.enabled) {
+      verdict = deny('Network access not permitted: a signalling server needs { "net": { "enabled": true } }');
+    } else verdict = describeSocketDestination(candidate, config.permissions.net);
+    if (verdict.allowed) allowed.push(candidate);
+    else refused.push({ url: candidate, reason: verdict.reason });
+  }
+  return { allowed, refused };
+}
+
+/**
  * The same decision for a `srcset`, which is a list rather than a URL: every
  * candidate must be allowed, because the browser picks whichever it prefers.
  */

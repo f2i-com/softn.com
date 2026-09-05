@@ -55,17 +55,28 @@ export interface FrameScheduler {
   cancel(handle: number): void;
 }
 
-/** requestAnimationFrame where it exists, a timer where it does not. */
+/**
+ * requestAnimationFrame where it will fire, a timer where it will not.
+ *
+ * A hidden document gets no animation frames, and a sample parked for one
+ * would wait until the tab was looked at again — a resize or a scroll that
+ * arrived in the background would reach the script minutes late, or never.
+ * Timers keep running there, so a hidden document schedules on one instead.
+ * Handles from the two are told apart by sign.
+ */
 export function defaultFrameScheduler(): FrameScheduler {
-  if (typeof requestAnimationFrame === 'function' && typeof cancelAnimationFrame === 'function') {
-    return {
-      request: (cb) => requestAnimationFrame(cb),
-      cancel: (h) => cancelAnimationFrame(h),
-    };
-  }
+  const hasFrames =
+    typeof requestAnimationFrame === 'function' && typeof cancelAnimationFrame === 'function';
   return {
-    request: (cb) => setTimeout(cb, COALESCE_WINDOW_MS) as unknown as number,
-    cancel: (h) => clearTimeout(h as unknown as ReturnType<typeof setTimeout>),
+    request: (cb) => {
+      const hidden = typeof document !== 'undefined' && document.hidden;
+      if (hasFrames && !hidden) return requestAnimationFrame(cb);
+      return -(setTimeout(cb, COALESCE_WINDOW_MS) as unknown as number);
+    },
+    cancel: (h) => {
+      if (h < 0) clearTimeout(-h as unknown as ReturnType<typeof setTimeout>);
+      else if (hasFrames) cancelAnimationFrame(h);
+    },
   };
 }
 

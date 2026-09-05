@@ -85,7 +85,8 @@ export function useCapabilityState(): CapabilityState {
 export function capabilityStatus(state: CapabilityState, name: CapabilityName): CapabilityStatus {
   if (state.consentPending) return 'pending';
   if (state.permissions === null) return 'unrestricted';
-  return state.permissions[name]?.enabled === true ? 'granted' : 'absent';
+  // A config whose `permissions` key is missing or malformed declared nothing.
+  return state.permissions?.[name]?.enabled === true ? 'granted' : 'absent';
 }
 
 /**

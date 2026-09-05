@@ -116,9 +116,14 @@ export function Camera({
   const cameraGrant = useCapability('camera');
   const micGrant = useCapability('mic');
   const consentPending = cameraGrant === 'pending';
-  const wantsAudio = audio ?? mode === 'video';
   const cameraAllowed = isCapabilityAllowed(cameraGrant);
-  const audioAllowed = !wantsAudio || isCapabilityAllowed(micGrant);
+  const micAllowed = isCapabilityAllowed(micGrant);
+  // Sound is the microphone's to give. Left to its default, a video mode
+  // records with sound where `mic` is declared and silently where it is not —
+  // `camera.modes: ["video"]` is a complete declaration on its own. Only an
+  // explicit `audio` that the declaration cannot honour is refused.
+  const wantsAudio = audio ?? (mode === 'video' && micAllowed);
+  const audioAllowed = !wantsAudio || micAllowed;
   const permitted = active && cameraAllowed && audioAllowed;
   const refusal = consentPending
     ? 'The camera stays off until you choose Allow in the permission bar at the top of this app.'
