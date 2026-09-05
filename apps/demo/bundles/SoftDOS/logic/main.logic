@@ -17,6 +17,8 @@ import "./dos_loader.logic"
 import "./dos_shell.logic"
 import "./dos_mouse.logic"
 import "./dos_zip.logic"
+import "./dos_opl.logic"
+import "./dos_sb.logic"
 
 // ---------------------------------------------------------------------------
 // Reactive UI State (scalars synchronized with React UI)
@@ -35,6 +37,7 @@ let mouseCursorStyle = "default";   // "none" while a program draws its own poin
 let programList = [];               // the .EXE and .COM files on drive C
 let driveFileCount = 0;
 let loadNote = "";                  // what the last load did
+let soundText = "";                 // what the program is playing through: AdLib, Sound Blaster, speaker
 
 // The keys a DOS program expects to get whole; the browser would otherwise
 // scroll on the arrows and Space, search on "/", and so on. F11 and F12 stay
@@ -44,6 +47,7 @@ let CAPTURED_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Ta
   "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10"];
 
 let pcmBuffer = null; // Preallocated audio buffer
+let pcmMix = null;    // the mix before it is clamped to 16 bits
 
 function _init() {
   dosState_init();
@@ -52,7 +56,11 @@ function _init() {
   dosLoader_bootShell();
   cyclesText = "";
 
-  pcmBuffer = new Int16Array(1024);
+  pcmBuffer = new Int16Array(4096 * 2);
+  pcmMix = new Float32Array(4096 * 2);
+  dosOpl_init();
+  dosSb_reset();
+  dosOpl_accelInit();
 
   // Install keyboard listeners on the window. A key headed for one of the
   // page's own text fields is left alone.
@@ -165,6 +173,7 @@ function handleKeyEvent(key, isDown) {
 // Hand the machine back to the prompt, whatever is running.
 function quitToDos() {
   if (activeMode === "custom") dosShell_returnToPrompt("^C");
+  soundText = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +282,14 @@ function frameSource() {
       return dosVga_getFrame();
     }
 
+    // What is sounding, for the badge: the FM chip (on the host when the
+    // accelerator compiled it), the DAC, the speaker.
+    let snd = "";
+    if (dosOpl_active() === 1) snd = (DOS_OPL_ACCEL >= 0) ? "AdLib (host)" : "AdLib";
+    if (DOS_SB_ACTIVE === 1 && DOS_SB_SPEAKER === 1) snd += (snd !== "" ? " + " : "") + "Sound Blaster";
+    if (DOS_SPEAKER_ON === 1) snd += (snd !== "" ? " + " : "") + "speaker";
+    if (snd !== soundText) soundText = snd;
+
     // The host's pointer stands in for the driver's: hidden while a program
     // that uses the mouse has asked for it hidden, since it draws its own.
     let cursor = (DOS_MOUSE_USED === 1 && DOS_MOUSE_CURSOR < 0) ? "none" : "default";
@@ -303,25 +320,37 @@ function fpsReport(fps) {
 // ---------------------------------------------------------------------------
 // Audio Sample Producer (called by <AudioStream>)
 // ---------------------------------------------------------------------------
-function sampleSource() {
-  if (isMuted || !isRunning || !pcmBuffer) return null;
+// The speaker, the AdLib and the Sound Blaster's DAC, mixed. The devices
+// are advanced here, paced by the audio clock, muted or not: the Sound
+// Blaster's interrupts come from its samples being consumed.
+function sampleSource(wantFrames) {
+  if (!isRunning || !pcmBuffer) return null;
+  let frames = (typeof wantFrames === "number" && wantFrames > 0) ? Math.floor(wantFrames) : 512;
+  if (frames < 128) frames = 128;
+  if (frames > 4096) frames = 4096;
+  let n2 = frames * 2;
+  let mix = pcmMix;
+  for (let i = 0; i < n2; i++) mix[i] = 0;
 
-  let frames = 512;
   let freq = DOS_SPEAKER_ON ? DOS_SPEAKER_FREQ : 0;
-
-  if (freq === 0) {
-    pcmBuffer.fill(0);
-  } else {
-    // Generate square wave for PC speaker
-    let step = (freq * 2 * Math.PI) / 48000;
+  if (freq > 0) {
+    let step = freq / 48000;
     for (let i = 0; i < frames; i++) {
       DOS_AUDIO_PHASE += step;
-      let val = Math.sin(DOS_AUDIO_PHASE) >= 0 ? 4000 : -4000;
-      pcmBuffer[i * 2] = val;     // Left
-      pcmBuffer[i * 2 + 1] = val; // Right
+      if (DOS_AUDIO_PHASE >= 1) DOS_AUDIO_PHASE -= 1;
+      let val = (DOS_AUDIO_PHASE < 0.5) ? 3000 : -3000;
+      mix[i * 2] += val;
+      mix[i * 2 + 1] += val;
     }
   }
+  dosOpl_mix(mix, frames);
+  dosSb_mix(mix, frames);
 
+  for (let i = 0; i < n2; i++) {
+    let v = mix[i];
+    if (v > 32767) v = 32767; else if (v < -32768) v = -32768;
+    pcmBuffer[i] = v;
+  }
   let u8View = new Uint8Array(pcmBuffer.buffer, 0, frames * 4);
   return {
     pcm: u8View.toBase64(),

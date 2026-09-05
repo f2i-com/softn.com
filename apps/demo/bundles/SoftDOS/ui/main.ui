@@ -339,6 +339,9 @@
         #if (cyclesText !== "")
           <Badge variant="outline" style={{ fontFamily: "monospace", fontSize: "0.72rem" }}>{cyclesText}</Badge>
         #end
+        #if (soundText !== "")
+          <Badge variant="outline" style={{ fontFamily: "monospace", fontSize: "0.72rem", color: "#7fd4ff" }}>♪ {soundText}</Badge>
+        #end
       </Stack>
 
       <Box className="dos-header-buttons">
@@ -464,7 +467,9 @@
             Everything lands on drive C, a zip unpacked. Then type the program's name at the
             prompt, or press it below. 16-bit .COM and .EXE programs run on the emulated CPU,
             and so do 32-bit DOS-extender images (DOS/4GW and the like). A program keeps its
-            configuration and saved games on the drive for as long as the page is open.
+            configuration and saved games on the drive for as long as the page is open. Sound
+            comes through an AdLib, a Sound Blaster at 220/7/1 and the speaker: include a game's
+            configuration file (DOOM's DEFAULT.CFG) or run its setup so it knows to use them.
           </Text>
 
           #if (programList.length > 0)

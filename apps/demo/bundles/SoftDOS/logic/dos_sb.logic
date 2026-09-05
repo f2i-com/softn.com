@@ -1,0 +1,297 @@
+// dos_sb.logic — a Sound Blaster 2.0 at port 220h, IRQ 7, DMA 1, and the
+// 8237 DMA controller it plays through.
+//
+// A program resets the DSP, reads AAh back, asks its version, and then
+// either writes samples to the DAC directly or programs a DMA channel with
+// a buffer and tells the DSP to play it: single blocks, or auto-initialise
+// mode where the controller wraps and the DSP raises an interrupt at the
+// end of every block so the program can refill the half just played. The
+// DSP here consumes the buffer at the rate its time constant says, paced by
+// the host's audio callback, and resamples to 48 kHz on the way.
+
+let DOS_SB_BASE = 0x220;
+let DOS_SB_IRQ = 7;
+let DOS_SB_DMA = 1;
+
+let DOS_SB_RESET = 0;             // last value written to the reset port
+let DOS_SB_RESP = new Uint8Array(16);
+let DOS_SB_RESP_HEAD = 0;
+let DOS_SB_RESP_TAIL = 0;
+let DOS_SB_LAST_RESP = 0xAA;
+let DOS_SB_CMD = -1;
+let DOS_SB_ARGN = 0;
+let DOS_SB_ARGC = 0;
+let DOS_SB_ARGS = new Uint8Array(4);
+let DOS_SB_SPEAKER = 0;
+let DOS_SB_TC = 0xA6;             // time constant: 11111 Hz
+let DOS_SB_RATE = 11111;
+let DOS_SB_BLOCKSIZE = 2048;      // from command 48h
+let DOS_SB_ACTIVE = 0;            // a DMA transfer is in progress
+let DOS_SB_AUTOINIT = 0;
+let DOS_SB_BLOCK_LEFT = 0;        // samples left in the current block
+let DOS_SB_PAUSED = 0;
+let DOS_SB_SILENCE = 0;           // samples of silence left (command 80h)
+let DOS_SB_IRQ_PENDING = 0;
+let DOS_SB_DIRECT = 0;            // the DAC's value from command 10h
+let DOS_SB_TEST = 0;
+let DOS_SB_S0 = 0;                // the last two samples, for interpolation
+let DOS_SB_S1 = 0;
+let DOS_SB_PHASE = 0;
+let DOS_SB_MIXER_IDX = 0;
+let DOS_SB_MIXER = new Uint8Array(256);
+let DOS_SB_IRQS = 0;              // interrupts raised, for the tests
+let DOS_SB_SAMPLES = 0;           // samples fetched through DMA, for the tests
+
+// The 8237: four channels of base and current address and count, a page
+// register each, a mode each, the mask bits and the byte flip-flop.
+let DOS_DMA_BASE_ADDR = new Int32Array(4);
+let DOS_DMA_BASE_COUNT = new Int32Array(4);
+let DOS_DMA_ADDR = new Int32Array(4);
+let DOS_DMA_COUNT = new Int32Array(4);
+let DOS_DMA_PAGE = new Int32Array(4);
+let DOS_DMA_MODE = new Int32Array(4);
+let DOS_DMA_MASK = 0x0F;
+let DOS_DMA_FLIP = 0;
+let DOS_DMA_STATUS = 0;
+
+function dosSb_reset() {
+  DOS_SB_RESET = 0;
+  DOS_SB_RESP_HEAD = 0; DOS_SB_RESP_TAIL = 0;
+  DOS_SB_LAST_RESP = 0xAA;
+  DOS_SB_CMD = -1; DOS_SB_ARGN = 0; DOS_SB_ARGC = 0;
+  DOS_SB_SPEAKER = 0;
+  DOS_SB_TC = 0xA6; DOS_SB_RATE = 11111;
+  DOS_SB_BLOCKSIZE = 2048;
+  DOS_SB_ACTIVE = 0; DOS_SB_AUTOINIT = 0; DOS_SB_BLOCK_LEFT = 0; DOS_SB_PAUSED = 0;
+  DOS_SB_SILENCE = 0;
+  DOS_SB_IRQ_PENDING = 0;
+  DOS_SB_DIRECT = 0;
+  DOS_SB_S0 = 0; DOS_SB_S1 = 0; DOS_SB_PHASE = 0;
+  DOS_SB_MIXER.fill(0);
+  DOS_SB_MIXER[0x04] = 0xEE; DOS_SB_MIXER[0x22] = 0xEE; DOS_SB_MIXER[0x26] = 0xEE;
+  DOS_SB_MIXER[0x28] = 0xEE; DOS_SB_MIXER[0x2E] = 0x00;
+  DOS_SB_MIXER_IDX = 0;
+  DOS_DMA_BASE_ADDR.fill(0); DOS_DMA_BASE_COUNT.fill(0);
+  DOS_DMA_ADDR.fill(0); DOS_DMA_COUNT.fill(0);
+  DOS_DMA_PAGE.fill(0); DOS_DMA_MODE.fill(0);
+  DOS_DMA_MASK = 0x0F; DOS_DMA_FLIP = 0; DOS_DMA_STATUS = 0;
+}
+
+function dosSb_respond(v) {
+  let next = (DOS_SB_RESP_HEAD + 1) & 15;
+  if (next === DOS_SB_RESP_TAIL) return;
+  DOS_SB_RESP[DOS_SB_RESP_HEAD] = v & 0xFF;
+  DOS_SB_RESP_HEAD = next;
+}
+
+// The DSP's reset line: a 1 then a 0 resets it, and it answers AAh.
+function dosSb_resetWrite(v) {
+  if ((v & 1) === 1) { DOS_SB_RESET = 1; return; }
+  if (DOS_SB_RESET === 1) {
+    let irq = DOS_SB_IRQ, dma = DOS_SB_DMA;
+    dosSb_reset();
+    DOS_SB_IRQ = irq; DOS_SB_DMA = dma;
+    dosSb_respond(0xAA);
+  }
+  DOS_SB_RESET = 0;
+}
+
+// How many argument bytes a command takes.
+function dosSb_argCount(cmd) {
+  if (cmd === 0x10 || cmd === 0x40 || cmd === 0xE0 || cmd === 0xE4 || cmd === 0x38) return 1;
+  if (cmd === 0x14 || cmd === 0x16 || cmd === 0x17 || cmd === 0x24 || cmd === 0x48 || cmd === 0x80 ||
+      cmd === 0x41 || cmd === 0x42 || cmd === 0x74 || cmd === 0x75 || cmd === 0x76 || cmd === 0x77) return 2;
+  if (cmd >= 0xB0 && cmd <= 0xCF) return 3;
+  return 0;
+}
+
+function dosSb_start(autoInit, block) {
+  DOS_SB_BLOCKSIZE = (autoInit === 1 && block > 0) ? block : DOS_SB_BLOCKSIZE;
+  DOS_SB_BLOCK_LEFT = (block > 0) ? block : DOS_SB_BLOCKSIZE;
+  DOS_SB_AUTOINIT = autoInit;
+  DOS_SB_ACTIVE = 1;
+  DOS_SB_PAUSED = 0;
+  // A tiny single block is a probe: a driver times the interrupt from it,
+  // and on the card it comes within a millisecond. Play it out now rather
+  // than on the next audio callback, which may be tens of milliseconds off.
+  if (autoInit === 0 && DOS_SB_BLOCK_LEFT <= 64) {
+    let n = DOS_SB_BLOCK_LEFT;
+    for (let i = 0; i < n && DOS_SB_ACTIVE === 1; i++) DOS_SB_S1 = dosSb_next();
+  }
+}
+
+function dosSb_command(cmd) {
+  let a0 = DOS_SB_ARGS[0], a1 = DOS_SB_ARGS[1];
+  if (cmd === 0x10) { DOS_SB_DIRECT = (a0 - 128) << 8; return; }
+  if (cmd === 0x14 || cmd === 0x16 || cmd === 0x17 || cmd === 0x91) { dosSb_start(0, (cmd === 0x91) ? 0 : ((a0 | (a1 << 8)) + 1)); return; }
+  if (cmd === 0x1C || cmd === 0x90 || cmd === 0x1F) { dosSb_start(1, 0); return; }
+  if (cmd === 0x24 || cmd === 0x2C) {
+    // Recording: nothing comes in, but the block completes so the program is not left waiting.
+    DOS_SB_SILENCE = (a0 | (a1 << 8)) + 1;
+    return;
+  }
+  if (cmd === 0x40) { DOS_SB_TC = a0; DOS_SB_RATE = Math.floor(1000000 / (256 - a0)); return; }
+  if (cmd === 0x41 || cmd === 0x42) { DOS_SB_RATE = (a0 << 8) | a1; return; }
+  if (cmd === 0x48) { DOS_SB_BLOCKSIZE = (a0 | (a1 << 8)) + 1; return; }
+  if (cmd === 0x80) { DOS_SB_SILENCE = (a0 | (a1 << 8)) + 1; return; }
+  if (cmd === 0xD0) { DOS_SB_PAUSED = 1; return; }
+  if (cmd === 0xD4) { DOS_SB_PAUSED = 0; return; }
+  if (cmd === 0xDA) { DOS_SB_AUTOINIT = 0; return; }
+  if (cmd === 0xD1) { DOS_SB_SPEAKER = 1; return; }
+  if (cmd === 0xD3) { DOS_SB_SPEAKER = 0; return; }
+  if (cmd === 0xD8) { dosSb_respond(DOS_SB_SPEAKER ? 0xFF : 0x00); return; }
+  if (cmd === 0xE1) { dosSb_respond(2); dosSb_respond(1); return; }
+  if (cmd === 0xE0) { dosSb_respond((~a0) & 0xFF); return; }
+  if (cmd === 0xE4) { DOS_SB_TEST = a0; return; }
+  if (cmd === 0xE8) { dosSb_respond(DOS_SB_TEST); return; }
+  if (cmd === 0xF2) { DOS_SB_IRQ_PENDING = 1; DOS_SB_IRQS++; return; }
+  if (cmd >= 0xB0 && cmd <= 0xCF) {
+    // 16-bit and 8-bit transfers of a Sound Blaster 16: the length is in the
+    // arguments after the mode byte; treated as 8-bit auto-init or single.
+    let len = (DOS_SB_ARGS[1] | (DOS_SB_ARGS[2] << 8)) + 1;
+    dosSb_start((cmd & 0x04) ? 1 : 0, len);
+    return;
+  }
+}
+
+function dosSb_dspWrite(v) {
+  if (DOS_SB_CMD < 0) {
+    DOS_SB_CMD = v & 0xFF;
+    DOS_SB_ARGN = dosSb_argCount(DOS_SB_CMD);
+    DOS_SB_ARGC = 0;
+    if (DOS_SB_ARGN === 0) { let c = DOS_SB_CMD; DOS_SB_CMD = -1; dosSb_command(c); }
+    return;
+  }
+  DOS_SB_ARGS[DOS_SB_ARGC++] = v & 0xFF;
+  if (DOS_SB_ARGC >= DOS_SB_ARGN) { let c = DOS_SB_CMD; DOS_SB_CMD = -1; dosSb_command(c); }
+}
+
+function dosSb_portRead(port) {
+  let o = port - DOS_SB_BASE;
+  if (o === 0x0A) {
+    if (DOS_SB_RESP_HEAD !== DOS_SB_RESP_TAIL) {
+      DOS_SB_LAST_RESP = DOS_SB_RESP[DOS_SB_RESP_TAIL];
+      DOS_SB_RESP_TAIL = (DOS_SB_RESP_TAIL + 1) & 15;
+    }
+    return DOS_SB_LAST_RESP;
+  }
+  if (o === 0x0E) {
+    // Read status: data waiting in bit 7. Reading it also acknowledges the interrupt.
+    DOS_SB_IRQ_PENDING = 0;
+    return (DOS_SB_RESP_HEAD !== DOS_SB_RESP_TAIL) ? 0xFF : 0x7F;
+  }
+  if (o === 0x0C) return 0x7F;                       // write status: ready
+  if (o === 0x0F) { DOS_SB_IRQ_PENDING = 0; return 0xFF; }
+  if (o === 0x05) return DOS_SB_MIXER[DOS_SB_MIXER_IDX];
+  if (o === 0x04) return DOS_SB_MIXER_IDX;
+  if (o === 0x08 || o === 0x09) return 0xFF;         // FM, as on the AdLib
+  return 0xFF;
+}
+
+function dosSb_portWrite(port, v) {
+  let o = port - DOS_SB_BASE;
+  if (o === 0x06) { dosSb_resetWrite(v); return; }
+  if (o === 0x0C) { dosSb_dspWrite(v); return; }
+  if (o === 0x04) { DOS_SB_MIXER_IDX = v & 0xFF; return; }
+  if (o === 0x05) { DOS_SB_MIXER[DOS_SB_MIXER_IDX] = v & 0xFF; return; }
+  if (o === 0x08 || o === 0x09) { dosOpl_portWrite(0x388 + (o - 8), v); return; }
+}
+
+// The 8237's ports.
+function dosDma_read(port) {
+  if (port < 8) {
+    let ch = port >> 1;
+    let v = (port & 1) ? DOS_DMA_COUNT[ch] : DOS_DMA_ADDR[ch];
+    let b = DOS_DMA_FLIP ? ((v >> 8) & 0xFF) : (v & 0xFF);
+    DOS_DMA_FLIP ^= 1;
+    return b;
+  }
+  if (port === 0x08) { let s = DOS_DMA_STATUS; DOS_DMA_STATUS &= 0xF0; return s; }
+  if (port === 0x0F) return DOS_DMA_MASK & 0x0F;
+  return 0xFF;
+}
+
+function dosDma_write(port, v) {
+  if (port < 8) {
+    let ch = port >> 1;
+    if (port & 1) {
+      let c = DOS_DMA_FLIP ? ((DOS_DMA_BASE_COUNT[ch] & 0xFF) | (v << 8)) : ((DOS_DMA_BASE_COUNT[ch] & 0xFF00) | v);
+      DOS_DMA_BASE_COUNT[ch] = c; DOS_DMA_COUNT[ch] = c;
+    } else {
+      let a = DOS_DMA_FLIP ? ((DOS_DMA_BASE_ADDR[ch] & 0xFF) | (v << 8)) : ((DOS_DMA_BASE_ADDR[ch] & 0xFF00) | v);
+      DOS_DMA_BASE_ADDR[ch] = a; DOS_DMA_ADDR[ch] = a;
+    }
+    DOS_DMA_FLIP ^= 1;
+    return;
+  }
+  if (port === 0x08) return;                                  // command register
+  if (port === 0x09) return;                                  // request register
+  if (port === 0x0A) { if (v & 4) DOS_DMA_MASK |= (1 << (v & 3)); else DOS_DMA_MASK &= ~(1 << (v & 3)); return; }
+  if (port === 0x0B) { DOS_DMA_MODE[v & 3] = v; return; }
+  if (port === 0x0C) { DOS_DMA_FLIP = 0; return; }
+  if (port === 0x0D) { DOS_DMA_MASK = 0x0F; DOS_DMA_FLIP = 0; DOS_DMA_STATUS = 0; return; }
+  if (port === 0x0E) { DOS_DMA_MASK = 0; return; }
+  if (port === 0x0F) { DOS_DMA_MASK = v & 0x0F; return; }
+  if (port === 0x87) { DOS_DMA_PAGE[0] = v; return; }
+  if (port === 0x83) { DOS_DMA_PAGE[1] = v; return; }
+  if (port === 0x81) { DOS_DMA_PAGE[2] = v; return; }
+  if (port === 0x82) { DOS_DMA_PAGE[3] = v; return; }
+}
+
+// The next sample the DAC plays: from the DMA buffer while a transfer runs,
+// the direct value otherwise. Blocks ending raise the interrupt.
+function dosSb_next() {
+  if (DOS_SB_SILENCE > 0) {
+    DOS_SB_SILENCE--;
+    if (DOS_SB_SILENCE === 0) { DOS_SB_IRQ_PENDING = 1; DOS_SB_IRQS++; }
+    return 0;
+  }
+  if (DOS_SB_ACTIVE === 0 || DOS_SB_PAUSED === 1) return DOS_SB_DIRECT;
+  let ch = DOS_SB_DMA;
+  if ((DOS_DMA_MASK >> ch) & 1) return DOS_SB_DIRECT;         // the channel is masked: nothing moves
+  let addr = ((DOS_DMA_PAGE[ch] << 16) | DOS_DMA_ADDR[ch]) & 0xFFFFFF;
+  let v = (DOS_RAM[addr] - 128) << 8;
+  DOS_SB_SAMPLES++;
+  DOS_DMA_ADDR[ch] = (DOS_DMA_ADDR[ch] + 1) & 0xFFFF;
+  DOS_DMA_COUNT[ch]--;
+  if (DOS_DMA_COUNT[ch] < 0) {
+    DOS_DMA_STATUS |= (1 << ch);
+    if (DOS_DMA_MODE[ch] & 0x10) {
+      DOS_DMA_ADDR[ch] = DOS_DMA_BASE_ADDR[ch];
+      DOS_DMA_COUNT[ch] = DOS_DMA_BASE_COUNT[ch];
+    } else {
+      DOS_DMA_MASK |= (1 << ch);
+      DOS_DMA_COUNT[ch] = 0xFFFF;
+    }
+  }
+  DOS_SB_BLOCK_LEFT--;
+  if (DOS_SB_BLOCK_LEFT <= 0) {
+    DOS_SB_IRQ_PENDING = 1;
+    DOS_SB_IRQS++;
+    if (DOS_SB_AUTOINIT === 1) DOS_SB_BLOCK_LEFT = DOS_SB_BLOCKSIZE;
+    else DOS_SB_ACTIVE = 0;
+  }
+  return v;
+}
+
+// Add n frames of the DAC into an interleaved stereo Int16 buffer.
+function dosSb_mix(pcm, n) {
+  if (DOS_SB_SPEAKER === 0 && DOS_SB_ACTIVE === 0 && DOS_SB_SILENCE === 0) return 0;
+  let step = DOS_SB_RATE / 48000;
+  let vol = ((DOS_SB_MIXER[0x22] & 0xF0) / 0xF0) * 0.9;
+  for (let i = 0; i < n; i++) {
+    DOS_SB_PHASE += step;
+    while (DOS_SB_PHASE >= 1) {
+      DOS_SB_PHASE -= 1;
+      DOS_SB_S0 = DOS_SB_S1;
+      DOS_SB_S1 = dosSb_next();
+    }
+    if (DOS_SB_SPEAKER === 1) {
+      let v = (DOS_SB_S0 + (DOS_SB_S1 - DOS_SB_S0) * DOS_SB_PHASE) * vol;
+      let j = i * 2;
+      pcm[j] = pcm[j] + v;
+      pcm[j + 1] = pcm[j + 1] + v;
+    }
+  }
+  return 1;
+}

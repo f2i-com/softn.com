@@ -43,7 +43,7 @@ function dosLoader_buildPsp(seg, name) {
 // own path, which a runtime reads for argv[0].
 function dosLoader_buildEnv(seg, name) {
   let e = seg << 4;
-  let s = "PATH=C:\\\u0000COMSPEC=C:\\COMMAND.COM\u0000\u0000\u0001\u0000C:\\" + name + "\u0000";
+  let s = "PATH=C:\\\u0000COMSPEC=C:\\COMMAND.COM\u0000BLASTER=A220 I7 D1 T3\u0000\u0000\u0001\u0000C:\\" + name + "\u0000";
   for (let i = 0; i < s.length; i++) DOS_RAM[e + i] = s.charCodeAt(i) & 0xFF;
 }
 
