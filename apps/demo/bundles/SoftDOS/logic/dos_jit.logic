@@ -444,10 +444,23 @@ function dosJit_abort() {
 // plus `plus`. The byte goes in t0 -- not tv, which still holds the whole
 // value a 16-bit store's second byte is taken from; t3 holds the offset.
 function dosJit_planar(t, valExpr, plus) {
+  // The second byte of a 16-bit store reuses the offset the first computed.
   let off = (plus === 0) ? "t3" : ("(t3+" + dosJit_lit(plus) + ")");
-  return "t3=" + t + "-k32;t0=(" + valExpr + ")&k5;" +
+  let head = (plus === 0) ? ("t3=" + t + "-k32;") : "";
+  return head + "t0=(" + valExpr + ")&k5;" +
+         "if(po>=k0)VP[" + off + "+po]=t0;else{" +
          "if(pm&k1)VP[" + off + "]=t0;if(pm&k4)VP[" + off + "+k31]=t0;" +
-         "if(pm&k2)VP[" + off + "+k37]=t0;if(pm&k8)VP[" + off + "+k38]=t0;ST[k6]=k1;";
+         "if(pm&k2)VP[" + off + "+k37]=t0;if(pm&k8)VP[" + off + "+k38]=t0;}" +
+         ((plus === 0) ? "ST[k6]=k1;" : "");
+}
+
+// `po` from `pm`: the offset of the one plane a single-bit map mask selects,
+// -1 for any other mask.
+function dosJit_planeOffset() {
+  return "po=(pm===" + dosJit_lit(1) + ")?" + dosJit_lit(0) +
+         ":((pm===" + dosJit_lit(2) + ")?" + dosJit_lit(65536) +
+         ":((pm===" + dosJit_lit(4) + ")?" + dosJit_lit(131072) +
+         ":((pm===" + dosJit_lit(8) + ")?" + dosJit_lit(196608) + ":" + dosJit_lit(-1) + ")))";
 }
 
 function dosJit_memWrite(tExpr, size, valExpr) {
@@ -999,7 +1012,7 @@ function dosJit_one(body, tmp) {
     // code flips it and then reads video memory in the same trace, so the
     // local has to be refreshed here or every read after it takes the wrong
     // path.
-    body.push("vg=ST[k8];pm=ST[k27];");
+    body.push("vg=ST[k8];pm=ST[k27];" + dosJit_planeOffset() + ";");
     return 1;
   }
   if (op === 0xEC || op === 0xE4) {
@@ -1945,7 +1958,7 @@ function dosJit_compile(phys) {
   if (bodyText.indexOf("fr") >= 0) { slotLoad += ",fr=ST[k17]"; slotSpill += "ST[k17]=fr;"; }
   if (bodyText.indexOf("fz") >= 0) { slotLoad += ",fz=ST[k18]"; slotSpill += "ST[k18]=fz;"; }
   if (bodyText.indexOf("vg") >= 0) slotLoad += ",vg=ST[k8]";
-  if (bodyText.indexOf("pm") >= 0) slotLoad += ",pm=ST[k27]";
+  if (bodyText.indexOf("pm") >= 0) slotLoad += ",pm=ST[k27]," + dosJit_planeOffset();
   slotLoad += ";";
   // The pool stays inside the trace: a closure variable costs more to read
   // than a local on this engine, and a literal is read far more often than
