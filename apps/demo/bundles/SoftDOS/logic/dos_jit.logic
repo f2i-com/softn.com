@@ -587,7 +587,7 @@ let DOS_JIT_FOLDED = 0;
 function dosJit_guard() {
   if (DOS_JIT_PENDING !== 0 || DOS_JIT_FOLDED === 1) return "";
   DOS_JIT_FOLDED = 1;
-  return "@@G@@if(fo!==k0){ST[k1]=FL(fo,fd,fs,fr,fz,ST[k1]);fo=0;}";
+  return "@@G@@if(fo!==k0){ST[k1]=FL(fo,fd,fs,fr,fz,ST[k1]);fo=k0;}";
 }
 
 // An operand as a record names it: t0 was read narrow, a literal was made
@@ -605,13 +605,13 @@ function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
   let lazy = dosJit_aluLazy(aop);
   DOS_JIT_PENDING = lazy;
   DOS_JIT_PSIZE = size;
-  let out = "@@F@@fo=" + lazy + ";";
+  let out = "@@F@@fo=" + dosJit_lit(lazy) + ";";
   // A logic result has no carry and no overflow; only the result is read.
   if (lazy !== 3) {
     out += "fd=" + dosJit_recOperand(dExpr, size) + ";fs=" + dosJit_recOperand(sExpr, size) + ";";
   }
   out += "fr=" + ((rTmp === "0" || dosJit_isLitName(rTmp) === 1) ? rTmp : dosJit_narrow(rTmp, size)) + ";";
-  if (DOS_JIT_FZ !== size) { out += "fz=" + size + ";"; DOS_JIT_FZ = size; }
+  if (DOS_JIT_FZ !== size) { out += "fz=" + dosJit_lit(size) + ";"; DOS_JIT_FZ = size; }
   return out;
 }
 
@@ -692,7 +692,7 @@ function dosJit_one(body, tmp) {
       // OF stays what the last operation that defined it left.
       let cfE = (op2 === 0xAC) ? ("(" + dstE + ">>>" + dosJit_lit(n - 1) + ")&k1") : ("(" + dstE + ">>>" + dosJit_lit(32 - n) + ")&k1");
       body.push(dosJit_flagWord(cfE, kept, 4));
-      body.push("fo=0;");
+      body.push("fo=k0;");
       DOS_JIT_PENDING = 0;
       DOS_JIT_FOLDED = 1;
       body.push(dosJit_regSet(DOS_JM_RM, 4, "t2"));
@@ -709,7 +709,7 @@ function dosJit_one(body, tmp) {
     body.push("@@F@@t3=t0*t1;tv=t2&k5;tv^=tv>>k2;tv^=tv>>k4;tv^=tv>>k1;" +
               "ST[k1]=(ST[k1]&~k16)|((t2===k0)?k14:k0)|((t2>>k12)?k15:k0)|((tv&k1)?k0:k2)|" +
               "((t3>=m22&&t3<=k33)?k0:k21);");
-      body.push("fo=0;");
+      body.push("fo=k0;");
       DOS_JIT_PENDING = 0;
       DOS_JIT_FOLDED = 1;
       return 1;
@@ -787,9 +787,9 @@ function dosJit_one(body, tmp) {
     if (dosJit_isSimple(e) === 0) { body.push("t0=" + e + ";"); s0 = "t0"; }
     body.push("t2=(" + s0 + (dec ? "-" : "+") + dosJit_lit(1) + ");");
     let mask = (size === 2) ? "65535" : "4294967295";
-    body.push("@@F@@fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_recOperand(s0, size) +
+    body.push("@@F@@fo=" + dosJit_lit(dec ? 7 : 6) + ";fd=" + dosJit_recOperand(s0, size) +
               ";fs=k1;fr=" + dosJit_narrow("t2", size) + ";");
-    if (DOS_JIT_FZ !== size) { body.push("fz=" + size + ";"); DOS_JIT_FZ = size; }
+    if (DOS_JIT_FZ !== size) { body.push("fz=" + dosJit_lit(size) + ";"); DOS_JIT_FZ = size; }
     DOS_JIT_PENDING = dec ? 7 : 6;
     DOS_JIT_PSIZE = size;
     body.push(dosJit_regSet(r, size, "t2"));
@@ -947,7 +947,7 @@ function dosJit_one(body, tmp) {
       else ofE = "0";
     }
     body.push(dosJit_flagWord(cfE, ofE, sz));
-    body.push("fo=0;");
+    body.push("fo=k0;");
     DOS_JIT_PENDING = 0;
     DOS_JIT_FOLDED = 1;
     if (isMemSh) body.push(dosJit_memWrite("ta", sz, "t2"));
@@ -1038,7 +1038,7 @@ function dosJit_one(body, tmp) {
     // was pending still is. Fold it into the flag word rather than drop it,
     // so that afterwards nothing is pending on either path.
     body.push("}else if(fo!==k0){ST[k1]=FL(fo,fd,fs,fr,fz,ST[k1]);}");
-    body.push("fo=0;");
+    body.push("fo=k0;");
     DOS_JIT_PENDING = 0;
     DOS_JIT_FOLDED = 1;
     return 1;
@@ -1093,7 +1093,7 @@ function dosJit_one(body, tmp) {
     if (DOS_JM_ADDR === "") srcE = dosJit_regGet(DOS_JM_RM, 4);
     else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
     body.push("ST[k13]=" + dosJit_regGet(0, 4) + ";ST[k19]=" + dosJit_regGet(2, 4) +
-              ";ST[k35]=" + srcE + ";MD(" + sub + ",k2);");
+              ";ST[k35]=" + srcE + ";MD(" + dosJit_lit(sub) + ",k2);");
     // A divide error is the interpreter's to raise: leave the trace with EIP
     // at this instruction and ST[9] set, which makes the dispatcher hand the
     // one instruction to the interpreter instead of finding this trace again.
@@ -1112,7 +1112,7 @@ function dosJit_one(body, tmp) {
                 "ST[k1]=(ST[k1]&~k16)|((t2===k0)?k14:k0)|((t2>>k12)?k15:k0)|((tv&k1)?k0:k2)|(" +
                 fits + "?k0:k21);");
       // The multiply wrote every arithmetic flag; nothing is pending now.
-      body.push("fo=0;");
+      body.push("fo=k0;");
       DOS_JIT_PENDING = 0;
       DOS_JIT_FOLDED = 1;
     }
@@ -1152,7 +1152,7 @@ function dosJit_one(body, tmp) {
     body.push("@@F@@t3=t0*t1;tv=t2&k5;tv^=tv>>k2;tv^=tv>>k4;tv^=tv>>k1;" +
               "ST[k1]=(ST[k1]&~k16)|((t2===k0)?k14:k0)|((t2>>k12)?k15:k0)|((tv&k1)?k0:k2)|" +
               "((t3>=m22&&t3<=k33)?k0:k21);");
-    body.push("fo=0;");
+    body.push("fo=k0;");
     DOS_JIT_PENDING = 0;
     DOS_JIT_FOLDED = 1;
     return 1;
@@ -1235,9 +1235,9 @@ function dosJit_one(body, tmp) {
       let s0 = getE;
       if (dosJit_isSimple(getE) === 0) { body.push("t0=" + getE + ";"); s0 = "t0"; }
       body.push("t2=(" + s0 + (dec ? "-" : "+") + dosJit_lit(1) + ");");
-      body.push("@@F@@fo=" + (dec ? 7 : 6) + ";fd=" + dosJit_recOperand(s0, sz) +
+      body.push("@@F@@fo=" + dosJit_lit(dec ? 7 : 6) + ";fd=" + dosJit_recOperand(s0, sz) +
                 ";fs=k1;fr=" + dosJit_narrow("t2", sz) + ";");
-      if (DOS_JIT_FZ !== sz) { body.push("fz=" + sz + ";"); DOS_JIT_FZ = sz; }
+      if (DOS_JIT_FZ !== sz) { body.push("fz=" + dosJit_lit(sz) + ";"); DOS_JIT_FZ = sz; }
       DOS_JIT_PENDING = dec ? 7 : 6;
       DOS_JIT_PSIZE = sz;
       if (isMem) body.push(dosJit_memWrite("ta", sz, "t2"));
@@ -1430,6 +1430,28 @@ function dosJit_flagExpr(which) {
 
 // A full condition code, 0x0-0xF as encoded in Jcc. "" means it needs a fold.
 function dosJit_condExpr(code) {
+  if (DOS_JIT_PENDING === 2) {
+    let sz = DOS_JIT_PSIZE;
+    if (code >= 0xC) {
+      let a = "(fd|k0)";
+      let b = "(fs|k0)";
+      if (sz !== 4) {
+        let sh = dosJit_lit((sz === 2) ? 16 : 24);
+        a = "((fd<<" + sh + ")>>" + sh + ")";
+        b = "((fs<<" + sh + ")>>" + sh + ")";
+      }
+      if (code === 0xC) return "(" + a + "<" + b + ")";
+      if (code === 0xD) return "(" + a + ">=" + b + ")";
+      if (code === 0xE) return "(" + a + "<=" + b + ")";
+      return "(" + a + ">" + b + ")";
+    }
+    if (code === 0x2) return "(fd<fs)";
+    if (code === 0x3) return "(fd>=fs)";
+    if (code === 0x4) return "(fr===k0)";
+    if (code === 0x5) return "(fr!==k0)";
+    if (code === 0x6) return "(fd<=fs)";
+    if (code === 0x7) return "(fd>fs)";
+  }
   let cf = dosJit_flagExpr(0);
   let zf = dosJit_flagExpr(2);
   let sf = dosJit_flagExpr(3);
@@ -1439,7 +1461,7 @@ function dosJit_condExpr(code) {
   if (code === 0x2) return cf;
   if (code === 0x3) return (cf === "") ? "" : ("!" + cf);
   if (code === 0x4) return zf;
-  if (code === 0x5) return (zf === "") ? "" : ("!" + zf);
+  if (code === 0x5) return (zf === "") ? "" : ((zf === "(fr===k0)") ? "(fr!==k0)" : ("!" + zf));
   if (code === 0x6) return (cf === "" || zf === "") ? "" : ("(" + cf + "||" + zf + ")");
   if (code === 0x7) return (cf === "" || zf === "") ? "" : ("!(" + cf + "||" + zf + ")");
   if (code === 0x8) return sf;
@@ -1525,6 +1547,11 @@ function dosJit_readsRecord(line) {
 // with it. A reload or a plain `fo=0` empties the slot, which kills the
 // record but not the word.
 function dosJit_dropDeadFlags(body) {
+  let fo0 = "fo=" + dosJit_lit(0) + ";";
+  let fo6 = "fo=" + dosJit_lit(6) + ";";
+  let fo7 = "fo=" + dosJit_lit(7) + ";";
+  let fo8 = "fo=" + dosJit_lit(8) + ";";
+  let fo9 = "fo=" + dosJit_lit(9) + ";";
   let liveRec = 1;
   let liveWord = 1;
   let liveOF = 1;
@@ -1547,8 +1574,8 @@ function dosJit_dropDeadFlags(body) {
         if (dosJit_readsRecord(line) === 1) liveRec = 1;
         continue;
       }
-      let incDec = (line.indexOf("fo=6;") === 0 || line.indexOf("fo=7;") === 0 ||
-                    line.indexOf("fo=8;") === 0 || line.indexOf("fo=9;") === 0) ? 1 : 0;
+      let incDec = (line.indexOf(fo6) === 0 || line.indexOf(fo7) === 0 ||
+                    line.indexOf(fo8) === 0 || line.indexOf(fo9) === 0) ? 1 : 0;
       if (liveRec === 0) {
         let k = line.indexOf("fz=");
         body[i] = (k >= 0) ? line.substring(k) : "";
@@ -1596,7 +1623,7 @@ function dosJit_dropDeadFlags(body) {
     if (dosJit_readsRecord(line) === 1) liveRec = 1;
     if (line.indexOf("ST[k1]") >= 0) { liveWord = 1; liveOF = 1; }
     if (line.indexOf("fo=") === 0) {                                                       // a reload, or fo=0
-      if (liveRec === 0 && line === "fo=0;") { body[i] = ""; DOS_JIT_DEAD++; }
+      if (liveRec === 0 && line === fo0) { body[i] = ""; DOS_JIT_DEAD++; }
       liveRec = 0;
     }
   }
@@ -1781,7 +1808,7 @@ function dosJit_compile(phys) {
       body.push("ta=" + dosJit_rRef(4) + "&k3;t0=" + dosJit_memRead("ta", 4) +
                 ";tv=(ta+k2)&k3;t1=" + dosJit_memRead("tv", 4) +
                 ";tv=(ta+k8)&k3;t2=" + dosJit_memRead("tv", 4) +
-                ";e4=(e4+k13)>>>k0;SEGS[k1]=t1&k11;ST[k1]=(t2|k4)>>>k0;fo=0;");
+                ";e4=(e4+k13)>>>k0;SEGS[k1]=t1&k11;ST[k1]=(t2|k4)>>>k0;fo=k0;");
       DOS_JIT_RMOD = DOS_JIT_RMOD | 16;
       DOS_JIT_PENDING = 0;
       body.push(dosJit_exitPlain("t0"));
