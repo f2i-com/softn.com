@@ -26,8 +26,17 @@ let DOS_JIT_SLOTS = 16384;
 let DOS_JIT_TAG = null;          // physical address occupying each slot
 let DOS_JIT_FN = null;           // the compiled function
 let DOS_JIT_HOT = null;          // times an address has been reached
+let DOS_JIT_RR = null;           // per group: the way the next eviction takes
+let DOS_JIT_LO = null;           // per slot: lowest code address the trace was compiled from
+let DOS_JIT_HI = null;           // per slot: one past the highest
+let DOS_JIT_CLO = 0;             // the range of the trace just compiled
+let DOS_JIT_CHI = 0;
+let DOS_JIT_INVALIDATED = 0;     // traces dropped by writes to their code
 let DOS_JIT_HOT_TAG = null;      // which address those counts belong to
 let DOS_JIT_CODEPAGE = null;     // one bit per byte of compiled code
+let DOS_JIT_PAGES = null;        // one byte per 4 KB page: non-zero if any store to it needs the slow path
+let DOS_JIT_IMMAP = null;        // one bit per byte: an immediate some trace embedded as a literal
+let DOS_JIT_VOL = null;          // one bit per byte: an immediate the program has rewritten, read live since
 // Byte ranges the trace being compiled decoded from, applied once it is known
 // the compile succeeded.
 let DOS_JIT_SPANS = null;
@@ -49,6 +58,7 @@ let DOS_JIT_INSNS = 0;
 let DOS_JIT_STEPS = 0;
 let DOS_JIT_FAILED = 0;
 let DOS_JIT_DEAD = 0;            // flag records and flag-word writes dropped as dead
+let DOS_JIT_CTIME = 0;           // milliseconds spent in the engine's compiler
 let DOS_JIT_TOTAL_INSNS = 0;
 
 // Decode cursor while compiling.
@@ -73,8 +83,14 @@ function dosJit_init() {
   DOS_JIT_TAG = new Int32Array(DOS_JIT_SLOTS);
   DOS_JIT_FN = new Array(DOS_JIT_SLOTS);
   DOS_JIT_HOT = new Uint16Array(DOS_JIT_SLOTS);
+  DOS_JIT_RR = new Uint8Array(DOS_JIT_SLOTS >> 2);
+  DOS_JIT_LO = new Int32Array(DOS_JIT_SLOTS);
+  DOS_JIT_HI = new Int32Array(DOS_JIT_SLOTS);
   DOS_JIT_HOT_TAG = new Int32Array(DOS_JIT_SLOTS);
   DOS_JIT_CODEPAGE = new Uint8Array(2097152);   // 16 MB of address space, one bit each
+  DOS_JIT_PAGES = new Uint8Array(4096);         // 16 MB of address space, one byte per page
+  DOS_JIT_IMMAP = new Uint8Array(2097152);
+  DOS_JIT_VOL = new Uint8Array(2097152);
   DOS_JIT_SPANS = new Int32Array(512);
   DOS_JIT_ST = new Uint32Array(16);
   DOS_JIT_MASK = new Uint32Array([0xFFFFFFFF, 0xFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF]);
@@ -94,6 +110,9 @@ function dosJit_flush() {
     DOS_JIT_HOT_TAG[i] = -1;
   }
   DOS_JIT_CODEPAGE.fill(0);
+  DOS_JIT_IMMAP.fill(0);                // what is volatile stays known across a flush
+  DOS_JIT_PAGES.fill(0);
+  for (let p = 0xA0; p < 0xC0; p++) DOS_JIT_PAGES[p] = 1;      // the VGA window
 }
 
 // A write to a byte that was compiled throws the cache away. Anything else,
@@ -101,7 +120,64 @@ function dosJit_flush() {
 function dosJit_touch(addr) {
   if (DOS_JIT_CODEPAGE === null) return;
   let a = addr & 0xFFFFFF;
-  if ((DOS_JIT_CODEPAGE[a >>> 3] >> (a & 7)) & 1) dosJit_flush();
+  if (((DOS_JIT_CODEPAGE[a >>> 3] >> (a & 7)) & 1) === 0) return;
+  if ((DOS_JIT_IMMAP[a >>> 3] >> (a & 7)) & 1) {
+    // An immediate some trace embedded: read live from now on, and the
+    // traces holding the old value go.
+    DOS_JIT_VOL[a >>> 3] = DOS_JIT_VOL[a >>> 3] | (1 << (a & 7));
+    DOS_JIT_IMMAP[a >>> 3] = DOS_JIT_IMMAP[a >>> 3] & ~(1 << (a & 7));
+    dosJit_invalidate(a);
+    return;
+  }
+  if ((DOS_JIT_VOL[a >>> 3] >> (a & 7)) & 1) {
+    // A live immediate: the trace holding it in a local reloads.
+    DOS_JIT_ST[10] = 1;
+    return;
+  }
+  dosJit_invalidate(a);
+}
+
+// Drop every trace whose code range holds the byte, and tell a running
+// trace to leave at its next slow-path store.
+function dosJit_invalidate(a) {
+  for (let i = 0; i < DOS_JIT_SLOTS; i++) {
+    if (DOS_JIT_TAG[i] !== -1 && DOS_JIT_LO[i] <= a && a < DOS_JIT_HI[i]) {
+      DOS_JIT_TAG[i] = -1;
+      DOS_JIT_FN[i] = null;
+      DOS_JIT_INVALIDATED++;
+    }
+  }
+  DOS_JIT_ST[11] = 1;
+}
+
+// Immediates a trace reads live, as `name=expression` declarations for its
+// prologue; the same expressions reload them after a slow-path store.
+let DOS_JIT_HOISTS = [];
+let DOS_JIT_IMM_WAS_LIVE = 0;
+
+function dosJit_immLive(addr, size) {
+  for (let i = 0; i < size; i++) {
+    let a = (addr + i) & 0xFFFFFF;
+    if ((DOS_JIT_VOL[a >>> 3] >> (a & 7)) & 1) return 1;
+  }
+  return 0;
+}
+
+// The expression for an immediate: its value as a literal, or the name of
+// the local that holds it when the program has rewritten it before.
+function dosJit_immExpr(addr, size, signed, value) {
+  if (dosJit_immLive(addr, size) === 1) {
+    DOS_JIT_IMM_WAS_LIVE = 1;
+    let name = "i" + DOS_JIT_HOISTS.length;
+    DOS_JIT_HOISTS.push(name + "=" + dosJit_liveImm(addr, size, signed));
+    return name;
+  }
+  DOS_JIT_IMM_WAS_LIVE = 0;
+  for (let i = 0; i < size; i++) {
+    let a = (addr + i) & 0xFFFFFF;
+    DOS_JIT_IMMAP[a >>> 3] = DOS_JIT_IMMAP[a >>> 3] | (1 << (a & 7));
+  }
+  return String(value);
 }
 
 function dosJit_markCode(from, to) {
@@ -109,6 +185,7 @@ function dosJit_markCode(from, to) {
   let b = to & 0xFFFFFF;
   while (a < b) {
     DOS_JIT_CODEPAGE[a >>> 3] = DOS_JIT_CODEPAGE[a >>> 3] | (1 << (a & 7));
+    DOS_JIT_PAGES[a >>> 12] = 1;
     a++;
   }
 }
@@ -177,12 +254,6 @@ function dosJit_rRef(r) {
   DOS_JIT_RUSE = DOS_JIT_RUSE | (1 << r);
   return dosJit_rName(r);
 }
-
-// Bytes of the current instruction that hold an immediate the compiled code
-// reads live rather than embedding. They are deliberately left out of the
-// code map, because rewriting them does not invalidate anything.
-let DOS_JIT_IMM_FROM = 0;
-let DOS_JIT_IMM_TO = 0;
 
 // An expression that reads `size` bytes from a known address in guest memory.
 // The address is constant, so the index is constant too.
@@ -276,9 +347,14 @@ function dosJit_memRead(tExpr, size) {
 // write: the page holds code some cache has already compiled or decoded, or
 // the address is VGA memory while the card is unchained.
 function dosJit_wGuard(tExpr) {
-  let t = "(" + tExpr + ")";
-  return "(((CP[" + t + ">>>3]>>(" + t + "&7))&1)!==0||(vg===1&&" + t +
-         ">=655360&&" + t + "<720896))";
+  return "PG[(" + tExpr + ")>>>12]!==0";
+}
+
+// After a slow-path store: if the write invalidated a trace, leave for the
+// dispatcher at the next instruction. The store is the instruction's last
+// effect at every site that stores.
+function dosJit_abort() {
+  return "@@A@@if(ST[11]!==0){ST[11]=0;" + dosJit_exitPlain(String(DOS_JC >>> 0)) + "}@@Z@@";
 }
 
 function dosJit_memWrite(tExpr, size, valExpr) {
@@ -288,12 +364,12 @@ function dosJit_memWrite(tExpr, size, valExpr) {
   // helper call, which is also where the write barrier lives.
   let out = "tv=" + valExpr + ";";
   if (size === 1) {
-    out += "if(" + dosJit_wGuard(t) + "){W8(" + t + ",tv);}else{RAM[" + t + "]=tv&255;}";
+    out += "if(" + dosJit_wGuard(t) + "){W8(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM[" + t + "]=tv&255;}";
   } else if (size === 2) {
-    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&1)!==0){W16(" + t + ",tv);}else{RAM16[" +
+    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&1)!==0){W16(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM16[" +
            t + ">>>1]=tv&65535;}";
   } else {
-    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&3)!==0){W32(" + t + ",tv);}else{RAM32[" +
+    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&3)!==0){W32(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM32[" +
            t + ">>>2]=tv>>>0;}";
   }
   return out;
@@ -384,8 +460,6 @@ function dosJit_setFlags(aop, size, dExpr, sExpr, rTmp) {
 // the block. `body` is an array of source lines.
 function dosJit_one(body, tmp) {
   let start = DOS_JC;
-  DOS_JIT_IMM_FROM = 0;
-  DOS_JIT_IMM_TO = 0;
   let op = dosJc_u8();
   let size = 4;
 
@@ -588,19 +662,16 @@ function dosJit_one(body, tmp) {
     let aop = DOS_JM_REG;
     if (dosJit_aluSupported(aop) === 0) { DOS_JC = start; return 0; }
     let store = (aop === 7) ? 0 : 1;
-    // Read the immediate where it lives, so a program that rewrites it is
-    // followed without recompiling anything.
+    // A literal, unless the program has rewritten this immediate before.
     let immAt = DOS_JC >>> 0;
     let immE = "";
-    if (op === 0x80) { dosJc_u8(); immE = dosJit_liveImm(immAt, 1, 0); }
+    if (op === 0x80) { let v8 = dosJc_u8(); immE = dosJit_immExpr(immAt, 1, 0, v8); }
     else if (op === 0x83) {
-      dosJc_s8();
-      immE = (sz === 2) ? ("(" + dosJit_liveImm(immAt, 1, 1) + "&65535)")
-                        : ("((" + dosJit_liveImm(immAt, 1, 1) + ")>>>0)");
-    } else if (sz === 2) { dosJc_u16(); immE = dosJit_liveImm(immAt, 2, 0); }
-    else { dosJc_u32(); immE = dosJit_liveImm(immAt, 4, 0); }
-    DOS_JIT_IMM_FROM = immAt;
-    DOS_JIT_IMM_TO = DOS_JC >>> 0;
+      let v8s = dosJc_s8();
+      immE = dosJit_immExpr(immAt, 1, 1, (sz === 2) ? (v8s & 0xFFFF) : (v8s >>> 0));
+      if (DOS_JIT_IMM_WAS_LIVE === 1) immE = (sz === 2) ? ("(" + immE + "&65535)") : ("((" + immE + ")>>>0)");
+    } else if (sz === 2) { let v16 = dosJc_u16(); immE = dosJit_immExpr(immAt, 2, 0, v16); }
+    else { let v32 = dosJc_u32(); immE = dosJit_immExpr(immAt, 4, 0, v32 >>> 0); }
     let imm = immE;
     if (DOS_JM_ADDR === "") {
       body.push("t0=" + dosJit_regGet(DOS_JM_RM, sz) + ";t1=" + imm + ";t2=" + dosJit_aluExpr(aop, "t0", "t1") + ";");
@@ -862,10 +933,10 @@ function dosJit_one(body, tmp) {
     else { body.push("ta=" + DOS_JM_ADDR + ";"); srcE = dosJit_memRead("ta", 4); }
     body.push("ST[12]=" + dosJit_regGet(0, 4) + ";ST[13]=" + dosJit_regGet(2, 4) +
               ";ST[14]=" + srcE + ";MD(" + sub + ",4);");
-    // A divide error stops the CPU, which the interpreter reports; leave the
-    // trace so it can do that with EIP pointing at this instruction.
-    body.push("if(ST[15]!==0){" + dosJit_spill() + "@@R@@ST[0]=" + (start >>> 0) +
-              ";t3=g+" + DOS_JIT_N + ";return t3;}");
+    // A divide error is the interpreter's to raise: leave the trace with EIP
+    // at this instruction and ST[9] set, which makes the dispatcher hand the
+    // one instruction to the interpreter instead of finding this trace again.
+    body.push("if(ST[15]!==0){ST[9]=1;t0=" + (start >>> 0) + ";tv=-1;t3=g+" + DOS_JIT_N + ";break;}");
     body.push("t2=ST[12];t3=ST[13];");
     body.push(dosJit_regSet(0, 4, "t2"));
     body.push(dosJit_regSet(2, 4, "t3"));
@@ -1319,11 +1390,19 @@ function dosJit_dropDeadFlags(body) {
       liveOF = 0;
       continue;
     }
-    if (m > 0) { body[i] = dosJit_replaceAll(line, "@@F@@", ""); liveRec = 1; liveWord = 1; liveOF = 1; continue; }
-    if (line.indexOf("ST[2]=fo") >= 0) { liveRec = 1; liveWord = 1; liveOF = 1; continue; }   // an exit, or a spill
+    // A slow store's abort path spills too, but only when the trace is
+    // being cut short, and the flags then are the program's own: it reads
+    // nothing as far as liveness is concerned.
+    let ab = line.indexOf("@@A@@");
+    if (ab >= 0) { let az = line.indexOf("@@Z@@"); line = line.substring(0, ab) + line.substring(az + 5); }
+    if (m > 0) { body[i] = dosJit_replaceAll(body[i], "@@F@@", ""); liveRec = 1; liveWord = 1; liveOF = 1; continue; }
+    if (line.indexOf("break;") >= 0 || line.indexOf("ST[2]=fo") >= 0) { liveRec = 1; liveWord = 1; liveOF = 1; continue; }   // an exit, or a spill
     if (dosJit_readsRecord(line) === 1) liveRec = 1;
     if (line.indexOf("ST[1]") >= 0) { liveWord = 1; liveOF = 1; }
-    if (line.indexOf("fo=") === 0) liveRec = 0;                                             // a reload, or fo=0
+    if (line.indexOf("fo=") === 0) {                                                       // a reload, or fo=0
+      if (liveRec === 0 && line === "fo=0;") { body[i] = ""; DOS_JIT_DEAD++; }
+      liveRec = 0;
+    }
   }
 }
 
@@ -1350,26 +1429,34 @@ function dosJit_reload() {
 
 // `n` is the number of instructions emitted so far, including the one that
 // is exiting; @@L@@ becomes the loop body length once the trace is complete.
+// An exit that returns to the dispatcher: the target in t0, no link slot,
+// the count in t3, and out of the loop to the epilogue.
 function dosJit_exitPlain(targetLit) {
-  return "@@R@@" + dosJit_spill() + "ST[0]=" + targetLit +
-         ";t3=g+" + DOS_JIT_N + ";return t3;";
+  return "t0=" + targetLit + ";tv=-1;t3=g+" + DOS_JIT_N + ";break;";
 }
 
-// An exit that calls the next trace itself when it is compiled. A literal
-// target's table slot is computed here; a return address is hashed at run
+// An exit that lets the epilogue call the next trace when it is compiled: a
+// literal target's table group is computed here, a return address's at run
 // time.
 function dosJit_exit(targetLit) {
-  let link = "";
+  let pre = "";
   if (targetLit === "t0") {
-    link = "tv=t0&16777215;ta=(tv^(tv>>>13))&" + (DOS_JIT_SLOTS - 1) +
-           ";if(h>0&&TAG[ta]===tv)return t3+FN[ta](ST,h-1);";
+    pre = "tv=t0&16777215;tv=(tv^(tv>>>13))&" + ((DOS_JIT_SLOTS - 1) & ~3) + ";";
   } else {
     let t = parseInt(targetLit, 10) & 0xFFFFFF;
-    let slot = (t ^ (t >>> 13)) & (DOS_JIT_SLOTS - 1);
-    link = "if(h>0&&TAG[" + slot + "]===" + t + ")return t3+FN[" + slot + "](ST,h-1);";
+    pre = "t0=" + targetLit + ";tv=" + ((t ^ (t >>> 13)) & (DOS_JIT_SLOTS - 1) & ~3) + ";";
   }
-  return "@@R@@" + dosJit_spill() + "ST[0]=" + targetLit +
-         ";t3=g+" + DOS_JIT_N + ";" + link + "return t3;";
+  return pre + "t3=g+" + DOS_JIT_N + ";break;";
+}
+
+// What every exit breaks to: write the registers and the lazy slots back,
+// then either call the next trace or return the count.
+function dosJit_epilogue(regSpill) {
+  return regSpill + dosJit_spill() + "ST[0]=t0;" +
+         "if(h>0&&tv>=0){ta=t0&16777215;" +
+         "if(TAG[tv]===ta)return t3+FN[tv](ST,h-1);if(TAG[tv+1]===ta)return t3+FN[tv+1](ST,h-1);" +
+         "if(TAG[tv+2]===ta)return t3+FN[tv+2](ST,h-1);if(TAG[tv+3]===ta)return t3+FN[tv+3](ST,h-1);}" +
+         "return t3;";
 }
 
 function dosJit_compile(phys) {
@@ -1381,6 +1468,7 @@ function dosJit_compile(phys) {
   DOS_JIT_PSIZE = 4;
   DOS_JIT_FZ = 0;
   DOS_JIT_FOLDED = 0;
+  DOS_JIT_HOISTS = [];
   DOS_JIT_RUSE = 0;
   DOS_JIT_RMOD = 0;
   DOS_JIT_SEEN_N = 0;
@@ -1546,12 +1634,7 @@ function dosJit_compile(phys) {
       ended = 1;
       break;
     }
-    if (DOS_JIT_IMM_TO > DOS_JIT_IMM_FROM) {
-      dosJit_noteSpan(here, DOS_JIT_IMM_FROM);
-      dosJit_noteSpan(DOS_JIT_IMM_TO, DOS_JC);
-    } else {
-      dosJit_noteSpan(here, DOS_JC);
-    }
+    dosJit_noteSpan(here, DOS_JC);
     DOS_JIT_N++;
     n++;
   }
@@ -1571,7 +1654,16 @@ function dosJit_compile(phys) {
   }
   let regLoad = (loadParts.length > 0) ? ("let " + loadParts.join(",") + ";") : "";
   let regSpill = spillParts.join("");
-  for (let i = 0; i < body.length; i++) body[i] = dosJit_replaceAll(body[i], "@@R@@", regSpill);
+  let hoistDecl = "";
+  let hoistReload = "";
+  if (DOS_JIT_HOISTS.length > 0) {
+    hoistDecl = "let " + DOS_JIT_HOISTS.join(",") + ";";
+    hoistReload = "if(ST[10]!==0){ST[10]=0;" + DOS_JIT_HOISTS.join(";") + ";}";
+  }
+  for (let i = 0; i < body.length; i++) {
+    body[i] = dosJit_replaceAll(body[i], "@@I@@", hoistReload);
+    body[i] = dosJit_replaceAll(dosJit_replaceAll(body[i], "@@A@@", ""), "@@Z@@", "");
+  }
 
   dosJit_poolReset();
   let pooled = [];
@@ -1579,8 +1671,8 @@ function dosJit_compile(phys) {
 
   let src = "let t0=0,t1=0,t2=0,t3=0,ta=0,tv=0,g=0;" +
             "let fo=ST[2],fd=ST[3],fs=ST[4],fr=ST[5],fz=ST[6],vg=ST[8];" +
-            regLoad + dosJit_poolDecl() +
-            "for(;;){" + pooled.join("") + "}";
+            regLoad + hoistDecl + dosJit_poolDecl() +
+            "for(;;){" + pooled.join("") + "}" + dosJit_epilogue(regSpill);
 
   // Refuse rather than overrun: an exhausted allowance stops the whole VM.
   if (DOS_JIT_COMPILED >= DOS_JIT_MAX_COMPILES ||
@@ -1592,27 +1684,35 @@ function dosJit_compile(phys) {
   // arrays and helpers as closure variables and returns the trace itself,
   // which then takes only the state array.
   let fn = null;
+  let ct0 = Date.now();
   try {
     let make = new Function("R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "MASK", "SIGN",
                             "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
-                            "RD16", "RD32", "RDU16", "RDU32", "FL", "TAG", "FN",
+                            "RD16", "RD32", "RDU16", "RDU32", "FL", "TAG", "FN", "PG",
                             "return function(ST,h){" + src + "};");
     fn = make(DOS_REGS32, DOS_REGS16, DOS_REGS8, DOS_RAM, DOS_RAM16, DOS_RAM32,
               DOS_SEGS, DOS_JIT_MASK, DOS_JIT_SIGN,
               dosJit_w8, dosJit_w16, dosJit_w32, dosJit_rd8, dosJit_fc,
               DOS_JIT_CODEPAGE, dosJit_muldiv, dosJit_out8, dosJit_in8,
               dosJit_rd16, dosJit_rd32, dosJit_rdu16, dosJit_rdu32, dosJit_fold,
-              DOS_JIT_TAG, DOS_JIT_FN);
+              DOS_JIT_TAG, DOS_JIT_FN, DOS_JIT_PAGES);
   } catch (e) {
     DOS_JIT_FAILED++;
     return null;
   }
+  DOS_JIT_CTIME += Date.now() - ct0;
   DOS_JIT_SOURCE_BYTES = DOS_JIT_SOURCE_BYTES + src.length;
   DOS_JIT_COMPILED++;
   DOS_JIT_TOTAL_INSNS += n;
+  let lo = 0x1000000;
+  let hi = 0;
   for (let i = 0; i + 1 < DOS_JIT_SPANS_N; i = i + 2) {
     dosJit_markCode(DOS_JIT_SPANS[i], DOS_JIT_SPANS[i + 1]);
+    if ((DOS_JIT_SPANS[i] & 0xFFFFFF) < lo) lo = DOS_JIT_SPANS[i] & 0xFFFFFF;
+    if ((DOS_JIT_SPANS[i + 1] & 0xFFFFFF) > hi) hi = DOS_JIT_SPANS[i + 1] & 0xFFFFFF;
   }
+  DOS_JIT_CLO = lo;
+  DOS_JIT_CHI = hi;
   return fn;
 }
 
@@ -1782,6 +1882,8 @@ function dosJit_rd8(a) {
 function dosJit_syncIn() {
   DOS_JIT_ST[0] = DOS_EIP >>> 0;
   DOS_JIT_ST[9] = 0;
+  DOS_JIT_ST[10] = 0;
+  DOS_JIT_ST[11] = 0;
   DOS_JIT_ST[1] = DOS_EFLAGS >>> 0;
   DOS_JIT_ST[2] = DOS_LAZY_OP;
   DOS_JIT_ST[3] = DOS_LAZY_DST >>> 0;
@@ -1815,9 +1917,12 @@ function dosJit_run(budget) {
     if (DOS_IS_32 !== 1) { if (synced === 0) dosJit_syncOut(); return; }
     let eip = (synced === 1) ? (DOS_EIP >>> 0) : (DOS_JIT_ST[0] >>> 0);
     let phys = eip & 0xFFFFFF;
-    let slot = (phys ^ (phys >>> 13)) & (DOS_JIT_SLOTS - 1);
+    let slot = (phys ^ (phys >>> 13)) & (DOS_JIT_SLOTS - 1) & ~3;
     let fn = null;
     if (DOS_JIT_TAG[slot] === phys) fn = DOS_JIT_FN[slot];
+    else if (DOS_JIT_TAG[slot + 1] === phys) fn = DOS_JIT_FN[slot + 1];
+    else if (DOS_JIT_TAG[slot + 2] === phys) fn = DOS_JIT_FN[slot + 2];
+    else if (DOS_JIT_TAG[slot + 3] === phys) fn = DOS_JIT_FN[slot + 3];
     if (fn === null && DOS_JIT_BUDGET_SPENT === 0) {
       // Count this address in the hotness table, which is separate so that a
       // cold address can never displace a compiled trace.
@@ -1830,8 +1935,16 @@ function dosJit_run(budget) {
         if (fn === null) {
           DOS_JIT_HOT[hs] = 65535;                  // could not compile: stop trying
         } else {
-          DOS_JIT_FN[slot] = fn;
-          DOS_JIT_TAG[slot] = phys;
+          let way = -1;
+          for (let w = 0; w < 4; w++) { if (DOS_JIT_TAG[slot + w] === -1) { way = w; break; } }
+          if (way < 0) {
+            way = DOS_JIT_RR[slot >> 2] & 3;
+            DOS_JIT_RR[slot >> 2] = (way + 1) & 3;
+          }
+          DOS_JIT_FN[slot + way] = fn;
+          DOS_JIT_TAG[slot + way] = phys;
+          DOS_JIT_LO[slot + way] = DOS_JIT_CLO;
+          DOS_JIT_HI[slot + way] = DOS_JIT_CHI;
         }
       }
     }
@@ -1854,6 +1967,16 @@ function dosJit_run(budget) {
       synced = 0;
     }
     let insns = fn(DOS_JIT_ST, DOS_JIT_HOPS);
+    if (DOS_JIT_ST[9] !== 0) {
+      // The trace left an instruction for the interpreter: a divide error.
+      DOS_JIT_ST[9] = 0;
+      dosJit_syncOut();
+      synced = 1;
+      remaining -= dosCpu_step();
+      DOS_JIT_STEPS++;
+      DOS_BC_INSTR++;
+      continue;
+    }
     let cyc = insns * 3;
     DOS_TOTAL_CYCLES += cyc;
     remaining -= cyc;
