@@ -92,7 +92,7 @@ function dosJit_init() {
   DOS_JIT_IMMAP = new Uint8Array(2097152);
   DOS_JIT_VOL = new Uint8Array(2097152);
   DOS_JIT_SPANS = new Int32Array(512);
-  DOS_JIT_ST = new Uint32Array(16);
+  DOS_JIT_ST = new Uint32Array(32);
   DOS_JIT_MASK = new Uint32Array([0xFFFFFFFF, 0xFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF]);
   DOS_JIT_SIGN = new Uint32Array([0x80000000, 0x80, 0x8000, 0x80000000, 0x80000000]);
   dosJit_flush();
@@ -112,7 +112,8 @@ function dosJit_flush() {
   DOS_JIT_CODEPAGE.fill(0);
   DOS_JIT_IMMAP.fill(0);                // what is volatile stays known across a flush
   DOS_JIT_PAGES.fill(0);
-  for (let p = 0xA0; p < 0xC0; p++) DOS_JIT_PAGES[p] = 1;      // the VGA window
+  for (let p = 0xA0; p < 0xB0; p++) DOS_JIT_PAGES[p] = 2;      // the graphics window: planar inline
+  for (let p = 0xB0; p < 0xC0; p++) DOS_JIT_PAGES[p] = 1;      // the text window: slow path
 }
 
 // A write to a byte that was compiled throws the cache away. Anything else,
@@ -420,6 +421,15 @@ function dosJit_abort() {
   return "@@A@@if(ST[11]!==0){ST[11]=0;" + dosJit_exitPlain(String(DOS_JC >>> 0)) + "}@@Z@@";
 }
 
+// One byte into the planes the map mask selects, at window offset t-0xA0000
+// plus `plus`. The value expression is masked to a byte; t3 holds the offset.
+function dosJit_planar(t, valExpr, plus) {
+  let off = (plus === 0) ? "t3" : ("(t3+" + plus + ")");
+  return "t3=" + t + "-655360;tv=(" + valExpr + ")&255;" +
+         "if(pm&1)VP[" + off + "]=tv;if(pm&2)VP[" + off + "+65536]=tv;" +
+         "if(pm&4)VP[" + off + "+131072]=tv;if(pm&8)VP[" + off + "+196608]=tv;ST[16]=1;";
+}
+
 function dosJit_memWrite(tExpr, size, valExpr) {
   let t = "(" + tExpr + ")";
   // Inline only the store that actually runs; everything else -- a page that
@@ -438,10 +448,12 @@ function dosJit_memWrite(tExpr, size, valExpr) {
     return out + slow + "W32(" + a + ",tv);@@I@@" + dosJit_abort() + "}else{RAM32[" + (a >>> 2) + "]=tv>>>0;}";
   }
   if (size === 1) {
-    out += "if(" + dosJit_wGuard(t) + "){W8(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM[" + t + "]=tv&255;}";
+    out += "if((t3=PG[" + t + ">>>12])!==0){if(t3===2&&vg===1){" + dosJit_planar(t, "tv", 0) +
+           "}else{W8(" + t + ",tv);@@I@@" + dosJit_abort() + "}}else{RAM[" + t + "]=tv&255;}";
   } else if (size === 2) {
-    out += "if(" + dosJit_wGuard(t) + "||(" + t + "&1)!==0){W16(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM16[" +
-           t + ">>>1]=tv&65535;}";
+    out += "if((t3=PG[" + t + ">>>12])!==0||(" + t + "&1)!==0){if(t3===2&&vg===1&&(" + t + "&1)===0){" +
+           dosJit_planar(t, "tv", 0) + dosJit_planar(t, "tv>>8", 1) +
+           "}else{W16(" + t + ",tv);@@I@@" + dosJit_abort() + "}}else{RAM16[" + t + ">>>1]=tv&65535;}";
   } else {
     out += "if(" + dosJit_wGuard(t) + "||(" + t + "&3)!==0){W32(" + t + ",tv);@@I@@" + dosJit_abort() + "}else{RAM32[" +
            t + ">>>2]=tv>>>0;}";
@@ -960,7 +972,7 @@ function dosJit_one(body, tmp) {
     // code flips it and then reads video memory in the same trace, so the
     // local has to be refreshed here or every read after it takes the wrong
     // path.
-    body.push("vg=ST[8];");
+    body.push("vg=ST[8];pm=ST[7];");
     return 1;
   }
   if (op === 0xEC || op === 0xE4) {
@@ -1818,6 +1830,7 @@ function dosJit_compile(phys) {
   if (bodyText.indexOf("fr") >= 0) { slotLoad += ",fr=ST[5]"; slotSpill += "ST[5]=fr;"; }
   if (bodyText.indexOf("fz") >= 0) { slotLoad += ",fz=ST[6]"; slotSpill += "ST[6]=fz;"; }
   if (bodyText.indexOf("vg") >= 0) slotLoad += ",vg=ST[8]";
+  if (bodyText.indexOf("pm") >= 0) slotLoad += ",pm=ST[7]";
   slotLoad += ";";
   // The pool stays inside the trace: a closure variable costs more to read
   // than a local on this engine, and a literal is read far more often than
@@ -1842,14 +1855,14 @@ function dosJit_compile(phys) {
   try {
     let make = new Function("R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "MASK", "SIGN",
                             "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
-                            "RD16", "RD32", "RDU16", "RDU32", "FL", "TAG", "FN", "PG",
+                            "RD16", "RD32", "RDU16", "RDU32", "FL", "TAG", "FN", "PG", "VP",
                             "return function(ST,h){" + src + "};");
     fn = make(DOS_REGS32, DOS_REGS16, DOS_REGS8, DOS_RAM, DOS_RAM16, DOS_RAM32,
               DOS_SEGS, DOS_JIT_MASK, DOS_JIT_SIGN,
               dosJit_w8, dosJit_w16, dosJit_w32, dosJit_rd8, dosJit_fc,
               DOS_JIT_CODEPAGE, dosJit_muldiv, dosJit_out8, dosJit_in8,
               dosJit_rd16, dosJit_rd32, dosJit_rdu16, dosJit_rdu32, dosJit_fold,
-              DOS_JIT_TAG, DOS_JIT_FN, DOS_JIT_PAGES);
+              DOS_JIT_TAG, DOS_JIT_FN, DOS_JIT_PAGES, DOS_VGA_VRAM);
   } catch (e) {
     DOS_JIT_FAILED++;
     return null;
@@ -1950,6 +1963,7 @@ function dosJit_muldiv(sub, size) {
 function dosJit_out8(port, v) {
   dosMmu_out8(port, v);
   DOS_JIT_ST[8] = DOS_VGA_UNCHAINED;
+  DOS_JIT_ST[7] = DOS_VGA_MAP_MASK;
 }
 // A port read inside a compiled loop has to see time passing, or a program
 // waiting on the retrace bit spins the whole loop cap out before the trace
@@ -2045,6 +2059,8 @@ function dosJit_syncIn() {
   DOS_JIT_ST[5] = DOS_LAZY_RES >>> 0;
   DOS_JIT_ST[6] = DOS_LAZY_SIZE;
   DOS_JIT_ST[8] = DOS_VGA_UNCHAINED;
+  DOS_JIT_ST[7] = DOS_VGA_MAP_MASK;
+  DOS_JIT_ST[16] = 0;
 }
 
 function dosJit_syncOut() {
@@ -2121,6 +2137,7 @@ function dosJit_run(budget) {
       synced = 0;
     }
     let insns = fn(DOS_JIT_ST, DOS_JIT_HOPS);
+    if (DOS_JIT_ST[16] !== 0) { DOS_JIT_ST[16] = 0; DOS_VGA_DIRTY = 1; }
     if (DOS_JIT_ST[9] !== 0) {
       // The trace left an instruction for the interpreter: a divide error.
       DOS_JIT_ST[9] = 0;
