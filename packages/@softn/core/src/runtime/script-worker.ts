@@ -260,6 +260,11 @@ self.onmessage = async (evt: MessageEvent) => {
       if (!permissions || permissions.storage !== false) {
         wasmAdapter.registerLocalStorageBridgeCustom(lsBridge);
       }
+      // The accelerator is a declared capability like the rest: a script that
+      // did not ask for it gets a preamble whose `accel.*` throws.
+      if (payload.accel === true) {
+        wasmAdapter.registerAccelBridge();
+      }
 
       // Resolve imports. The shell may already have inlined some of the logic
       // files and left their `import` lines in place; those paths arrive as

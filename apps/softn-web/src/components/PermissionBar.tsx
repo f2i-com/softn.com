@@ -56,6 +56,7 @@ const CAPABILITY_PHRASE: Record<Capability, string> = {
   gpu: 'your graphics card',
   sync: 'your other devices',
   storage: 'its own database on this site',
+  accel: "your browser's engine for the code it generates",
 };
 
 function describe(capabilities: string[]): string {

@@ -17,7 +17,8 @@
  *   in `.logic` still reaches devtools and the buffer cannot grow unbounded.
  */
 
-import initWasm, { Engine, zipp_install_panic_hook } from '../../wasm-zipp/zipp_wasm.js';
+import initWasm, { Engine, accelGuestCall, zipp_install_panic_hook } from '../../wasm-zipp/zipp_wasm.js';
+import { createAccelHost } from './accel-host';
 
 import type { DBNamespace } from './script-runtime';
 import { sanitizeArgs } from './vm-args';
@@ -27,10 +28,13 @@ import { sanitizeArgs } from './vm-args';
 // ============================================================================
 
 let wasmReady: Promise<void> | null = null;
+/** The instantiated module's exports; `memory` backs the accel bridge's views. */
+let wasmExports: { memory: WebAssembly.Memory } | null = null;
 
 function ensureWasm(): Promise<void> {
   if (!wasmReady) {
-    wasmReady = initWasm().then(() => {
+    wasmReady = initWasm().then((exports) => {
+      wasmExports = exports as unknown as { memory: WebAssembly.Memory };
       // Without this a Rust panic inside the engine surfaces as a bare
       // `unreachable` trap with no message or stack — undiagnosable from
       // devtools. With it, panics reach console.error intact.
@@ -115,6 +119,9 @@ const LOCAL_STORAGE_SYNC_OPS = [
 
 /** Everything `navigator.clipboard.*` can reach. Served by `setClipboardBridge`. */
 const CLIPBOARD_SYNC_OPS = ['nav.clipboardWrite', 'nav.clipboardRead'] as const;
+
+/** Everything `accel.*` can reach. Served by `setAccelBridge`. */
+const ACCEL_SYNC_OPS = ['accel.compile', 'accel.make', 'accel.state', 'accel.run', 'accel.install'] as const;
 
 // ============================================================================
 // ZippWasmAdapter
@@ -367,6 +374,27 @@ export class ZippWasmAdapter {
   }): void {
     for (const op of LOCAL_STORAGE_SYNC_OPS) this.pendingSyncCapabilities.add(op);
     this.wasm.setLocalStorageBridge(bridge);
+  }
+
+  /**
+   * Install the accelerator: the script's generated numeric functions compile
+   * with this engine and run over views of its typed arrays. See
+   * `accel-host.ts` for what keeps that safe. Granted by the `accel`
+   * capability; an engine without the bridge (a rolled-back artifact) makes
+   * this a no-op, and the guest's `accel.*` then throws as if denied.
+   */
+  registerAccelBridge(): void {
+    for (const op of ACCEL_SYNC_OPS) this.pendingSyncCapabilities.add(op);
+    if (typeof this.wasm.setAccelBridge !== 'function') return;
+    this.wasm.setAccelBridge(
+      createAccelHost({
+        memory: () => {
+          if (!wasmExports) throw new Error('accel: the engine is not instantiated');
+          return wasmExports.memory;
+        },
+        guestCall: (name, args) => accelGuestCall(name, args),
+      })
+    );
   }
 
   /**

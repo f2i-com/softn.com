@@ -183,6 +183,12 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   /** State changes not yet handed to React; flushed once a frame. */
   private pendingReactState: Record<string, unknown> = {};
   private reactFlushScheduled = false;
+  /**
+   * Whether the worker's engine gets the accelerator: the bundle declared
+   * `accel` and consent is not pending. Authority freezes when the engine
+   * compiles the script, so a grant given later applies at the next load.
+   */
+  private accelGranted = false;
 
   constructor(
     context: ScriptContext,
@@ -200,6 +206,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     this.observedStateNames = options?.observedStateNames ?? null;
     this.preIncludedLogicPaths = options?.preIncludedLogicPaths ? [...options.preIncludedLogicPaths] : [];
     this.externalFunctions = options?.externalFunctions ?? null;
+    this.accelGranted =
+      options?.permissionConfig?.permissions?.accel?.enabled === true &&
+      options.permissionConfig.consentPending !== true;
     this.hostExecutor = createHostCallExecutor(
       context,
       permissions,
@@ -479,6 +488,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     }>('init', {
       script,
       permissions: this.permissions,
+      accel: this.accelGranted,
       appId: this.appId,
       logicBasePath: this.logicBasePath,
       observedStateNames: this.observedStateNames ? [...this.observedStateNames] : null,
