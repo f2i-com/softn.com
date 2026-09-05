@@ -35,8 +35,10 @@ const appShellStyles = `
     background: var(--ink);
     color: var(--paper);
   }
+  /* The frame bar is one row at every width, where the product bar it
+     replaces grows to two on a phone. */
   .softn-shell.softn-shell--playing {
-    --softn-chrome-base: 42px;
+    --softn-chrome-base: 3rem;
   }
   .softn-shell-loading {
     animation: softn-shell-fade-in 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -93,13 +95,6 @@ const appShellStyles = `
     transition: opacity 160ms ease;
   }
   .softn-chrome-peek:hover, .softn-chrome-peek:focus-visible { opacity: 1; color: var(--paper); }
-  /* Touch: the frame bar grows to give its controls 44px targets, and the
-     app area has to be laid out against that height or it comes out short. */
-  @media (pointer: coarse) {
-    .softn-shell.softn-shell--playing {
-      --softn-chrome-base: 44px;
-    }
-  }
 `;
 import {
   readZip,
@@ -1127,7 +1122,7 @@ function App(): React.ReactElement {
             app looks the same wherever it was opened from; the bar folds to a
             corner tab when the app wants every pixel. Embedded in someone
             else's page, the app is the whole frame and the host has the bar. */}
-        {!embedded && isHome && <ProductBar current="runtime" layout="app" />}
+        {!embedded && isHome && <ProductBar current="runtime" />}
         {!embedded && !isHome && activeTab && chromeHidden && (
           <button type="button" className="softn-chrome-peek" onClick={() => setChromeHidden(false)} title="Show the bar">
             {activeTab.name}

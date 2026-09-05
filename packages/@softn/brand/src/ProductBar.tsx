@@ -42,8 +42,6 @@ export interface ProductBarProps {
   /** Which product this bar sits on, so it can be marked. */
   current: Product | null;
   urls?: Partial<ProductUrls>;
-  /** `site`: measured and guttered. `app`: edge to edge over a tool. */
-  layout?: 'site' | 'app';
   /** Stick to the top while the page scrolls. The tool apps do not scroll. */
   sticky?: boolean;
   /** Controls that belong to this product, placed before the theme switch. */
@@ -54,12 +52,14 @@ export interface ProductBarProps {
  * The strip at the top of every SoftN surface. It is the same element in the
  * site, the runtime, Studio and Builder — the same mark, the same five
  * destinations, the same theme switch — so that moving between them feels
- * like moving around one product rather than leaving it.
+ * like moving around one product rather than leaving it. It has one
+ * geometry: the same inset from the window's edge on every surface, so the
+ * mark never moves between pages.
  */
-export function ProductBar({ current, urls, layout = 'site', sticky = layout === 'site', children }: ProductBarProps): React.ReactElement {
+export function ProductBar({ current, urls, sticky = false, children }: ProductBarProps): React.ReactElement {
   const href: ProductUrls = { ...DEFAULT_URLS, ...urls };
   return (
-    <nav className="softn-bar" data-layout={layout} data-sticky={sticky ? 'true' : 'false'} aria-label="SoftN">
+    <nav className="softn-bar" data-sticky={sticky ? 'true' : 'false'} aria-label="SoftN">
       <div className="softn-bar-inner">
         <a className="softn-bar-mark" href={href.home} aria-current={current === 'home' ? 'page' : undefined}>
           <Mark size={22} radius={6} />

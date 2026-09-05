@@ -2,9 +2,12 @@
  * The product bar: the same strip at the top of the site, the runtime, Studio
  * and Builder, so wherever you are you can see where else you can go.
  *
- * Two layouts. `site` is measured and guttered like the pages under it;
- * `app` runs edge to edge over a tool that fills the window. Everything else
- * is identical, which is the point.
+ * One geometry everywhere. The bar runs the full width of the window and
+ * its contents sit one gutter in from either edge, on the site and over the
+ * tools alike, so the mark is in the same place on every page: moving
+ * between products must not make the logo jump. (A bar centred to the
+ * site's measure would put the mark 30px further in on a laptop and 300px
+ * on a wide monitor, and the tools have nothing to centre it against.)
  */
 
 .softn-bar {
@@ -32,17 +35,7 @@
   align-items: center;
   gap: 1.5rem;
   height: 100%;
-}
-
-.softn-bar[data-layout='site'] .softn-bar-inner {
-  max-width: var(--measure);
-  margin-inline: auto;
   padding-inline: var(--gutter);
-}
-
-.softn-bar[data-layout='app'] .softn-bar-inner {
-  padding-inline: 0.875rem;
-  gap: 1.25rem;
 }
 
 /* Two classes deep on purpose. In the runtime this bar shares a document
@@ -211,12 +204,6 @@
     scrollbar-width: none;
     border-top: 1px solid var(--line-soft);
     height: auto;
-  }
-
-  .softn-bar[data-layout='app'] .softn-bar-links {
-    width: calc(100% + 1.75rem);
-    margin-inline: -0.875rem;
-    padding-inline: 0.875rem;
   }
 
   .softn-bar-links::-webkit-scrollbar {
