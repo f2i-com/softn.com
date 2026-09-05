@@ -61,7 +61,7 @@
     "name": "SoftDOS",
     "description": "An x86 PC emulator written in .logic: a 16/32-bit CPU with the full 386 integer instruction set, VGA mode 13h and 80x25 text, a BIOS and DOS kernel, and a command line that runs real 8086 programs.",
     "primary": "#48d080",
-    "size": 337578
+    "size": 337659
   },
   {
     "id": "showcase",
