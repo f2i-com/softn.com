@@ -92,6 +92,8 @@ function handleKeyEvent(key, isDown) {
 
   if (!isDown) {
     keyMask = keyMask & ~mask;
+    let up = scanForKey(key);
+    if (up !== 0) dosInt_pushScan(up | 0x80);      // the break code
     return;
   }
   keyMask = keyMask | mask;
@@ -114,6 +116,10 @@ function handleKeyEvent(key, isDown) {
 
   if (scan === 0 && ascii === 0) return;
 
+  if (scan !== 0) dosInt_pushScan(scan);          // the make code
+  // A program that took over INT 9 reads the port itself; the BIOS key word
+  // is for the ones that read the keyboard through INT 16h.
+  if (DOS_VEC_SET !== null && DOS_VEC_SET[0x09] === 1) return;
   // Push the BIOS key word, dropping it if the ring is full.
   let next = (DOS_KEY_HEAD + 1) & 31;
   if (next !== DOS_KEY_TAIL) {
@@ -139,6 +145,7 @@ let cyclesRun = 0;
 let cyclesText = "";
 let flipsAtStamp = 0;     // page flips seen at the last readout
 let cyclesStamp = 0;
+let lastFrameAt = 0;      // when the previous frame ran the CPU, for the clock
 
 function updateCycleReadout() {
   let now = Date.now();
@@ -174,6 +181,14 @@ function frameSource() {
     dosCpu_runCycles(CPU_BUDGET);
     let spentMs = Date.now() - started;
     cyclesRun += DOS_TOTAL_CYCLES - before;
+    // The emulated clock is the achieved rate, smoothed, so the PIT's ticks
+    // (expressed in cycles) come at their real rate whatever the throughput.
+    if (lastFrameAt > 0 && started > lastFrameAt) {
+      let achieved = (DOS_TOTAL_CYCLES - before) * 1000 / (started - lastFrameAt);
+      let hz = Math.floor(DOS_CPU_HZ * 0.8 + achieved * 0.2);
+      DOS_CPU_HZ = (hz < 1000000) ? 1000000 : hz;
+    }
+    lastFrameAt = started;
     // Retune toward CPU_SLICE_MS. Date.now has millisecond granularity, so a
     // slice that reads as 0 ms is simply too small to measure: grow it.
     if (spentMs <= 0) {

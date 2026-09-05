@@ -41,6 +41,28 @@ let DOS_TICKS = 0;
 
 // Set when a key arrives and IRQ1 has a handler installed.
 let DOS_KEY_IRQ_PENDING = 0;
+// Raw scan codes for port 0x60: a press is the code, a release the code with
+// bit 7 set. A program that hooks INT 9 reads them one per interrupt.
+let DOS_SCAN_QUEUE = new Uint8Array(64);
+let DOS_SCAN_HEAD = 0;
+let DOS_SCAN_TAIL = 0;
+
+// A scan code from the keyboard: queued for port 0x60 and announced on IRQ1.
+function dosInt_pushScan(code) {
+  let next = (DOS_SCAN_HEAD + 1) & 63;
+  if (next === DOS_SCAN_TAIL) return;              // full: the key is lost
+  DOS_SCAN_QUEUE[DOS_SCAN_HEAD] = code & 0xFF;
+  DOS_SCAN_HEAD = next;
+  dosInt_keyArrived();
+}
+
+// The next scan code for port 0x60, or -1 when none is waiting.
+function dosInt_popScan() {
+  if (DOS_SCAN_HEAD === DOS_SCAN_TAIL) return -1;
+  let code = DOS_SCAN_QUEUE[DOS_SCAN_TAIL];
+  DOS_SCAN_TAIL = (DOS_SCAN_TAIL + 1) & 63;
+  return code;
+}
 
 // The PIC's interrupt mask (port 0x21). Bit n masks IRQ n.
 let DOS_PIC_MASK = 0x00;
@@ -79,6 +101,8 @@ function dosInt_reset() {
   DOS_PIT_DIVISOR = 65536;
   DOS_PIT_LATCH = 0;
   DOS_PIT_WRITE_STATE = 0;
+  DOS_SCAN_HEAD = 0;
+  DOS_SCAN_TAIL = 0;
   DOS_TIMER_NEXT = 0;
   DOS_TICKS = 0;
   DOS_KEY_IRQ_PENDING = 0;

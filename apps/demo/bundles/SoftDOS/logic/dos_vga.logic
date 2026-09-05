@@ -507,7 +507,16 @@ function dosVga_getFrame() {
     // Mode 13h: 320x200. Chained is a straight copy of the 0xA0000 window;
     // unchained has to be reassembled from the four planes.
     if (DOS_VGA_UNCHAINED === 1) {
-      if (DOS_VGA_DIRTY === 1) { dosVga_composeUnchained(); DOS_VGA_DIRTY = 0; }
+      if (DOS_VGA_DIRTY === 1) {
+        if (DOS_JIT_ACCEL === 1 && DOS_JIT_ACCEL_COMPOSE >= 0) {
+          DOS_JIT_ST[20] = DOS_VGA_START & 0xFFFF;
+          DOS_JIT_ST[21] = DOS_VGA_ROW_BYTES;
+          accel.run(DOS_JIT_ACCEL_COMPOSE, 0);
+        } else {
+          dosVga_composeUnchained();
+        }
+        DOS_VGA_DIRTY = 0;
+      }
     }
     else DOS_FB.set(DOS_RAM.subarray(0xA0000, 0xA0000 + 64000));
     return {

@@ -96,6 +96,7 @@ function dosJit_init() {
   DOS_JIT_ST = new Uint32Array(32);
   DOS_JIT_MASK = new Uint32Array([0xFFFFFFFF, 0xFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFF]);
   DOS_JIT_SIGN = new Uint32Array([0x80000000, 0x80, 0x8000, 0x80000000, 0x80000000]);
+  dosJit_accelInit();
   dosJit_flush();
 }
 
@@ -1503,6 +1504,104 @@ let DOS_JIT_N = 0;
 let DOS_JIT_SEEN = null;
 let DOS_JIT_SEEN_N = 0;
 let DOS_JIT_MAXI = 220;
+let DOS_JIT_ACCEL = 0;           // 1 while the host compiles and runs traces
+let DOS_JIT_ACCEL_SPEC = "";     // how a trace's parameters bind on the host
+let DOS_JIT_ACCEL_COMPOSE = -1;  // the host's copy of the unchained frame composer
+let DOS_JIT_ACCEL_PARAMS = ["R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "MASK", "SIGN",
+                            "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
+                            "RD16", "RD32", "RDU16", "RDU32", "FL", "TAG", "FN", "PG", "VP"];
+
+// The body of a function, from its own source, without comments: what the
+// host compiles for the helpers a trace calls.
+function dosJit_fnBody(f) {
+  let src = String(f);
+  let body = src.substring(src.indexOf("{") + 1, src.lastIndexOf("}"));
+  let out = "";
+  let i = 0;
+  let n = body.length;
+  while (i < n) {
+    let c = body.charCodeAt(i);
+    if (c === 47 && i + 1 < n && body.charCodeAt(i + 1) === 47) {        // // to end of line
+      while (i < n && body.charCodeAt(i) !== 10) i++;
+      continue;
+    }
+    if (c === 47 && i + 1 < n && body.charCodeAt(i + 1) === 42) {        // /* to */
+      let j = body.indexOf("*/", i + 2);
+      i = (j < 0) ? n : (j + 2);
+      continue;
+    }
+    out = out + body.charAt(i);
+    i++;
+  }
+  return out;
+}
+
+// A helper's globals become parameters or locals of the host's copy.
+function dosJit_accelRename(body) {
+  body = dosJit_replaceAll(body, "DOS_JIT_ST[", "ST[");
+  body = dosJit_replaceAll(body, "DOS_JIT_SIGN[", "SIGN[");
+  body = dosJit_replaceAll(body, "DOS_RAM[", "RAM[");
+  body = dosJit_replaceAll(body, "DOS_MUL_LO", "MUL_LO");
+  body = dosJit_replaceAll(body, "DOS_MUL_HI", "MUL_HI");
+  body = dosJit_replaceAll(body, "DOS_DIV_Q", "DIV_Q");
+  body = dosJit_replaceAll(body, "DOS_DIV_R", "DIV_R");
+  body = dosJit_replaceAll(body, "dosOps_umul64(", "umul64(");
+  body = dosJit_replaceAll(body, "dosOps_udiv64(", "udiv64(");
+  body = dosJit_replaceAll(body, "dosOps_neg64(", "neg64(");
+  return body;
+}
+
+// Ask the host for the bridge; when it answers, compile the helpers and
+// build the binding spec. Any refusal leaves DOS_JIT_ACCEL at 0.
+function dosJit_accelInit() {
+  DOS_JIT_ACCEL = 0;
+  try {
+    accel.state("DOS_JIT_ST");
+    let fl = accel.make(accel.compile(["SIGN"],
+      "return function(op,d,sr,r,size,f){" + dosJit_accelRename(dosJit_fnBody(dosJit_fold)) + "};"),
+      "SIGN=g:DOS_JIT_SIGN");
+    let r16 = accel.make(accel.compile(["RAM"],
+      "return function(a){" + dosJit_accelRename(dosJit_fnBody(dosJit_rdu16)) + "};"), "RAM=g:DOS_RAM");
+    let r32 = accel.make(accel.compile(["RAM"],
+      "return function(a){" + dosJit_accelRename(dosJit_fnBody(dosJit_rdu32)) + "};"), "RAM=g:DOS_RAM");
+    let md = accel.make(accel.compile(["ST"],
+      "let MUL_LO=0,MUL_HI=0,DIV_Q=0,DIV_R=0;" +
+      "let umul64=function(a,b){" + dosJit_accelRename(dosJit_fnBody(dosOps_umul64)) + "};" +
+      "let udiv64=function(hi,lo,d){" + dosJit_accelRename(dosJit_fnBody(dosOps_udiv64)) + "};" +
+      "let neg64=function(hi,lo){" + dosJit_accelRename(dosJit_fnBody(dosOps_neg64)) + "};" +
+      "return function(sub,size){" + dosJit_accelRename(dosJit_fnBody(dosJit_muldiv)) + "};"),
+      "ST=g:DOS_JIT_ST");
+    DOS_JIT_ACCEL_SPEC =
+      "R32=g:DOS_REGS32,R16=g:DOS_REGS16,R8=g:DOS_REGS8,RAM=g:DOS_RAM,RAM16=g:DOS_RAM16,RAM32=g:DOS_RAM32," +
+      "SEGS=g:DOS_SEGS,MASK=g:DOS_JIT_MASK,SIGN=g:DOS_JIT_SIGN," +
+      "W8=c:dosJit_w8,W16=c:dosJit_w16,W32=c:dosJit_w32,RD8=c:dosJit_rd8,FC=c:dosJit_fc," +
+      "CP=g:DOS_JIT_CODEPAGE,MD=a:" + md + ",OUT8=c:dosJit_out8,IN8=c:dosJit_in8," +
+      "RD16=c:dosJit_rd16,RD32=c:dosJit_rd32,RDU16=a:" + r16 + ",RDU32=a:" + r32 + ",FL=a:" + fl +
+      ",TAG=g:DOS_JIT_TAG,FN=t,PG=g:DOS_JIT_PAGES,VP=g:DOS_VGA_VRAM";
+    DOS_JIT_ACCEL_COMPOSE = accel.make(accel.compile(["FB", "VP"],
+      "return function(ST,h){" +
+      dosJit_replaceAll(dosJit_replaceAll(dosJit_replaceAll(dosJit_replaceAll(
+        dosJit_fnBody(dosVga_composeUnchained),
+        "DOS_VGA_START & 0xFFFF", "ST[20]"), "DOS_VGA_ROW_BYTES", "ST[21]"), "DOS_FB[", "FB["), "DOS_VGA_VRAM[", "VP[") +
+      "return 0;};"), "FB=g:DOS_FB,VP=g:DOS_VGA_VRAM");
+    DOS_JIT_ACCEL = 1;
+    // A hop on the host costs a call; the dispatcher's turn costs a host
+    // round trip. Interrupts are still polled every chain.
+    DOS_JIT_HOPS = 96;
+  } catch (e) {
+    DOS_JIT_ACCEL = 0;
+    DOS_JIT_ACCEL_COMPOSE = -1;
+    DOS_JIT_HOPS = 32;
+  }
+}
+
+// The table entry for a trace the host holds: the dispatcher calls it like
+// any other, and it asks the host to run the trace over the state array.
+function dosJit_accelStub(id) {
+  let stub = function (ST, h) { return accel.run(id, h); };
+  stub.accelId = id;
+  return stub;
+}
 // Instructions a single call may run round a loop before coming back, so the
 // timer and the frame loop get a turn.
 let DOS_JIT_LOOPCAP = 16384;
@@ -1981,7 +2080,15 @@ function dosJit_compile(phys) {
   // which then takes only the state array.
   let fn = null;
   let ct0 = Date.now();
-  try {
+  if (DOS_JIT_ACCEL === 1) {
+    try {
+      let outer = accel.compile(DOS_JIT_ACCEL_PARAMS, "return function(ST,h){" + src + "};");
+      fn = dosJit_accelStub(accel.make(outer, DOS_JIT_ACCEL_SPEC));
+    } catch (e) {
+      DOS_JIT_FAILED++;
+      return null;
+    }
+  } else try {
     let make = new Function("R32", "R16", "R8", "RAM", "RAM16", "RAM32", "SEGS", "MASK", "SIGN",
                             "W8", "W16", "W32", "RD8", "FC", "CP", "MD", "OUT8", "IN8",
                             "RD16", "RD32", "RDU16", "RDU32", "FL", "TAG", "FN", "PG", "VP",
@@ -2242,6 +2349,7 @@ function dosJit_run(budget) {
             DOS_JIT_RR[slot >> 2] = (way + 1) & 3;
           }
           DOS_JIT_FN[slot + way] = fn;
+          if (DOS_JIT_ACCEL === 1) accel.install(slot + way, fn.accelId);
           DOS_JIT_TAG[slot + way] = phys;
           DOS_JIT_LO[slot + way] = DOS_JIT_CLO;
           DOS_JIT_HI[slot + way] = DOS_JIT_CHI;

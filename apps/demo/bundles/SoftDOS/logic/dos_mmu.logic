@@ -94,19 +94,17 @@ function dosMmu_in8(port) {
 
   // Keyboard Controller data port
   if (p === 0x60) {
-    if (DOS_KEY_HEAD !== DOS_KEY_TAIL) {
-      let code = DOS_KEY_BUFFER[DOS_KEY_TAIL];
-      DOS_KEY_TAIL = (DOS_KEY_TAIL + 1) & 31;
-      DOS_KEY_LAST_SCAN = (code >> 8) & 0xFF;
-      return DOS_KEY_LAST_SCAN;
-    }
+    // Presses and releases, in order; a read with nothing waiting repeats
+    // the last code, as the controller's output buffer does.
+    let scan = dosInt_popScan();
+    if (scan >= 0) DOS_KEY_LAST_SCAN = scan;
     return DOS_KEY_LAST_SCAN;
   }
 
   // Keyboard Controller status port
   if (p === 0x64) {
     let status = 0;
-    if (DOS_KEY_HEAD !== DOS_KEY_TAIL) status |= 0x01; // Output buffer full
+    if (DOS_SCAN_HEAD !== DOS_SCAN_TAIL) status |= 0x01; // Output buffer full
     return status;
   }
 

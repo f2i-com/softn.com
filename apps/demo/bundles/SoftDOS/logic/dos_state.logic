@@ -172,4 +172,7 @@ function dosState_reset() {
     DOS_HANDLE_VFS[h] = -1;
     DOS_HANDLE_POS[h] = 0;
   }
+  // The registers, segments and frame buffers are new arrays now: a trace
+  // compiler that bound the old ones (the host accelerator does) starts over.
+  if (DOS_JIT_TAG !== null) dosJit_init();
 }
