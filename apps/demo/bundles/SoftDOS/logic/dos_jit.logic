@@ -1071,7 +1071,7 @@ function dosJit_one(body, tmp) {
     // A divide error is the interpreter's to raise: leave the trace with EIP
     // at this instruction and ST[9] set, which makes the dispatcher hand the
     // one instruction to the interpreter instead of finding this trace again.
-    body.push("if(ST[15]!==0){ST[9]=1;t0=" + (start >>> 0) + ";tv=-1;t3=g+" + DOS_JIT_N + ";break;}");
+    body.push("if(ST[15]!==0){ST[9]=1;t0=" + (start >>> 0) + ";tv=-1;t3=g+" + DOS_JIT_N + ";break T;}");
     body.push("t2=ST[12];t3=ST[13];");
     body.push(dosJit_regSet(0, 4, "t2"));
     body.push(dosJit_regSet(2, 4, "t3"));
@@ -1546,7 +1546,7 @@ function dosJit_dropDeadFlags(body) {
     let ab = line.indexOf("@@A@@");
     if (ab >= 0) { let az = line.indexOf("@@Z@@"); line = line.substring(0, ab) + line.substring(az + 5); }
     if (m > 0) { body[i] = dosJit_replaceAll(body[i], "@@F@@", ""); liveRec = 1; liveWord = 1; liveOF = 1; continue; }
-    if (line.indexOf("break;") >= 0 || line.indexOf("ST[2]=fo") >= 0) { liveRec = 1; liveWord = 1; liveOF = 1; continue; }   // an exit, or a spill
+    if (line.indexOf("break T;") >= 0 || line.indexOf("ST[2]=fo") >= 0) { liveRec = 1; liveWord = 1; liveOF = 1; continue; }   // an exit, or a spill
     if (dosJit_readsRecord(line) === 1) liveRec = 1;
     if (line.indexOf("ST[1]") >= 0) { liveWord = 1; liveOF = 1; }
     if (line.indexOf("fo=") === 0) {                                                       // a reload, or fo=0
@@ -1582,7 +1582,7 @@ function dosJit_reload() {
 // An exit that returns to the dispatcher: the target in t0, no link slot,
 // the count in t3, and out of the loop to the epilogue.
 function dosJit_exitPlain(targetLit) {
-  return "t0=" + targetLit + ";tv=-1;t3=g+" + DOS_JIT_N + ";break;";
+  return "t0=" + targetLit + ";tv=-1;t3=g+" + DOS_JIT_N + ";break T;";
 }
 
 // An exit that lets the epilogue call the next trace when it is compiled: a
@@ -1596,7 +1596,7 @@ function dosJit_exit(targetLit) {
     let t = parseInt(targetLit, 10) & 0xFFFFFF;
     pre = "t0=" + targetLit + ";tv=" + ((t ^ (t >>> 13)) & (DOS_JIT_SLOTS - 1) & ~3) + ";";
   }
-  return pre + "t3=g+" + DOS_JIT_N + ";break;";
+  return pre + "t3=g+" + DOS_JIT_N + ";break T;";
 }
 
 // What every exit breaks to: write the registers and the lazy slots back,
@@ -1645,7 +1645,7 @@ function dosJit_compile(phys) {
       n++;
       if (target === phys) {
         loops = 1;
-        body.push("if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue;}" + dosJit_exitPlain(String(phys)));
+        body.push("if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue T;}" + dosJit_exitPlain(String(phys)));
       } else if (dosJit_seen(target) === 1 || follows >= 24) {
         body.push(dosJit_exit(String(target)));
       } else {
@@ -1685,7 +1685,7 @@ function dosJit_compile(phys) {
       n++;
       if (target === phys) {
         loops = 1;
-        body.push("if(" + cond + "){if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue;}" +
+        body.push("if(" + cond + "){if(g<" + DOS_JIT_LOOPCAP + "){g+=" + DOS_JIT_N + ";continue T;}" +
                   dosJit_exitPlain(String(phys)) + "}");
       } else {
         body.push("if(" + cond + "){" + dosJit_exit(String(target)) + "}");
@@ -1779,6 +1779,46 @@ function dosJit_compile(phys) {
       break;
     }
 
+    // ---- MOVS / STOS, repeated or not ------------------------------------
+    let rp = 0;
+    let sop = peek;
+    let slen = 1;
+    if (peek === 0xF3 || peek === 0xF2) { rp = 1; sop = DOS_RAM[(here + 1) & 0xFFFFFF]; slen = 2; }
+    if (sop === 0xA4 || sop === 0xA5 || sop === 0xAA || sop === 0xAB) {
+      let ssz = (sop === 0xA4 || sop === 0xAA) ? 1 : 4;
+      let movs = (sop === 0xA4 || sop === 0xA5) ? 1 : 0;
+      DOS_JIT_N++;
+      DOS_JC = here + slen;
+      DOS_JM_CONST = 0;
+      // EDI and (for MOVS) ESI are read and written, ECX too when repeating;
+      // EAX is read for STOS.
+      let cx = dosJit_rRef(1);
+      let di = dosJit_rRef(7);
+      let si = movs ? dosJit_rRef(6) : "";
+      DOS_JIT_RMOD = DOS_JIT_RMOD | (rp ? 2 : 0) | 128 | (movs ? 64 : 0);
+      let src = movs ? "" : ("t0=" + dosJit_regGet(0, ssz) + ";");
+      let load = movs ? ("ta=" + si + "&16777215;t0=" + dosJit_memRead("ta", ssz) + ";") : "";
+      let step = (movs ? (si + "=(" + si + "+t1)>>>0;") : "") + di + "=(" + di + "+t1)>>>0;";
+      let dir = "t1=(ST[1]&1024)?" + (-ssz) + ":" + ssz + ";";
+      if (rp === 1) {
+        // A bail-out after the store resumes at the REP with the remaining
+        // work: the pointers and count are already past this element.
+        DOS_JC = here;
+        let store = dosJit_memWrite("ta", ssz, "t0");
+        DOS_JC = here + slen;
+        body.push(dir + src + "for(t2=0;" + cx + "!==0&&t2<65536;t2++){" + load + "ta=" + di + "&16777215;" +
+                  step + cx + "=(" + cx + "-1)>>>0;" + store + "}");
+        // More than the cap left: the interpreter takes the rest, as it would
+        // have taken it in a second step.
+        body.push("if(" + cx + "!==0){" + dosJit_exitPlain(String(here)) + "}");
+      } else {
+        body.push(dir + src + load + "ta=" + di + "&16777215;" + step + dosJit_memWrite("ta", ssz, "t0"));
+      }
+      dosJit_noteSpan(here, DOS_JC);
+      n++;
+      continue;
+    }
+
     // ---- everything else --------------------------------------------------
     if (dosJit_one(body, 0) === 0) {
       DOS_JC = here;
@@ -1839,7 +1879,7 @@ function dosJit_compile(phys) {
   // counter needs a value.
   let src = "let t0,t1,t2,t3,ta,tv,g=0;" + slotLoad +
             regLoad + hoistDecl + dosJit_poolDecl() +
-            "for(;;){" + bodyText + "}" + dosJit_epilogue(regSpill, slotSpill);
+            "T:for(;;){" + bodyText + "}" + dosJit_epilogue(regSpill, slotSpill);
 
   // Refuse rather than overrun: an exhausted allowance stops the whole VM.
   if (DOS_JIT_COMPILED >= DOS_JIT_MAX_COMPILES ||
