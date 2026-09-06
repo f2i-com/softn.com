@@ -247,21 +247,29 @@ ${switches}
 `;
 }
 
-/** One page: a component the shell imports. The first page lists every collection. */
-function buildPageUi(blueprint: Blueprint, page: BlueprintPage, slug: string, index: number): string {
-  const name = pageComponentName(slug);
+/**
+ * One page: a component the shell imports. The first page lists every
+ * collection.
+ *
+ * A bare template, nothing else: the runtime's composer replaces `<HomePage />`
+ * in the shell with the imported file's text as it stands, so a `<component>`
+ * declaration or a `<data>` block here would land inside the shell's tree and
+ * fail to parse. The shell binds the collections; an inlined page sees them.
+ */
+function buildPageUi(blueprint: Blueprint, page: BlueprintPage, index: number): string {
   const label = uiText(page.name);
   const parts: string[] = [];
-  parts.push(`<component name="${name}" />\n\n${buildDataBlock(blueprint)}`);
   parts.push(`<Stack direction="vertical" gap="md">\n  <Heading level={2}>${label}</Heading>`);
   if (index === 0) {
     parts.push(`  <Text color="muted">The first page of the app. Describe to the AI what belongs here and it will build it out.</Text>`);
     for (const collection of blueprint.collections) {
       const key = collectionKey(collection.name);
       const fields = collection.fields.filter((f) => f.name !== 'id' && FIELD_IDENT.test(f.name)).slice(0, 4);
+      // A record bound from a collection carries its fields under `data`;
+      // `id` and the timestamps sit beside it.
       const cells = fields.length > 0
-        ? fields.map((f) => `          <Text>{item.${f.name}}</Text>`).join('\n')
-        : `          <Text>{JSON.stringify(item)}</Text>`;
+        ? fields.map((f) => `          <Text>{item.data.${f.name}}</Text>`).join('\n')
+        : `          <Text>{JSON.stringify(item.data)}</Text>`;
       parts.push(`  <Card title="${uiText(collection.name)}">
     #each (item in ${key})
       <Stack direction="horizontal" gap="md" align="center" wrap>
@@ -308,18 +316,25 @@ function buildMainLogic(brief: ProjectBrief, blueprint: Blueprint, slugs: string
   ].join('\n');
 }
 
-/** A seed record per collection, in the flat form the runtime reads. */
+/**
+ * A seed record per collection, in the flat form the runtime reads, with a
+ * value in every field so the first page shows a row rather than a blank one.
+ */
 function buildXdb(collection: BlueprintCollection): string {
   const key = collectionKey(collection.name);
+  const sample = (f: BlueprintCollection['fields'][number]): unknown => {
+    if (f.defaultValue !== undefined) return f.defaultValue;
+    if (f.type === 'number') return 1;
+    if (f.type === 'boolean') return false;
+    if (f.type === 'date') return new Date().toISOString().slice(0, 10);
+    return `Sample ${f.name}`;
+  };
   return JSON.stringify({
     collection: key,
     records: collection.fields.length > 0
       ? [{
           id: '1',
-          ...Object.fromEntries(collection.fields.filter((f) => f.name !== 'id').map((f) => [
-            f.name,
-            f.defaultValue ?? (f.type === 'number' ? 0 : f.type === 'boolean' ? false : f.type === 'date' ? new Date().toISOString().slice(0, 10) : ''),
-          ])),
+          ...Object.fromEntries(collection.fields.filter((f) => f.name !== 'id').map((f) => [f.name, sample(f)])),
         }]
       : [],
   }, null, 2);
@@ -431,7 +446,7 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
   for (const [index, page] of blueprint.pages.entries()) {
     files.push({
       path: pagePaths[index],
-      content: buildPageUi(blueprint, page, slugs[index], index),
+      content: buildPageUi(blueprint, page, index),
     });
   }
 
