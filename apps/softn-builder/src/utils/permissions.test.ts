@@ -71,7 +71,7 @@ describe('an exported bundle', () => {
       themeMode: 'light',
       uiFiles: new Map([['a', uiFile('ui/main.ui', '<App></App>')]]),
       logicFiles: new Map([['b', logicFile('logic/main.logic', 'let x = 1')]]),
-      collections: [{ name: 'notes', fields: [], seedData: [] }],
+      collections: [{ name: 'notes', alias: 'notes', fields: [], seedData: [] }],
       assets: [{ name: 'icon.png', type: 'image/png', data: icon.bytes }],
       permissions: { ...decl, capabilities: [...decl.capabilities] },
       icon: icon.bytes,
