@@ -77,7 +77,6 @@ const RECIPES = {
   AIChat: [{ click: 'Allow' }, { wait: 800 }],
   MazeEscape3D: [{ click: 'Start' }, { set: { __scene3dLocked: true } }, { key: 'w', hold: 1500 }, { wait: 400 }],
   PromptlyUnemployed: [{ wait: 2500 }],
-  LastSound3D: [{ wait: 3000 }],
   Pocket: [{ click: 'Allow' }, { wait: 2500 }],
   WarbleWire: [{ click: 'Allow' }, { wait: 800 }],
   TexasHoldem: [{ wait: 2500 }],

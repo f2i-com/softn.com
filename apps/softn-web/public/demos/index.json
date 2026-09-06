@@ -11,7 +11,7 @@
     "id": "device-kit",
     "file": "DeviceKit.softn",
     "name": "Device Kit",
-    "description": "A tour of what a sandboxed app may ask for: fetch a URL, read and make QR codes, take a photo, open a file — each behind the permission that gates it",
+    "description": "A tour of what a sandboxed app may ask for: fetch a URL, read and make QR codes, take a photo, open a file \u2014 each behind the permission that gates it",
     "primary": "#3b82f6",
     "size": 34562
   },
@@ -30,14 +30,6 @@
     "description": "Vector maths on your graphics card: two compute shaders run through the runtime's WebGPU bridge, with the numbers shown as they come back",
     "primary": "#10b981",
     "size": 13500
-  },
-  {
-    "id": "last-sound-3d",
-    "file": "LastSound3D.softn",
-    "name": "Last Sound 3D",
-    "description": "A fully voiced first-person survey of a blood ocean from inside a sealed pressure hull: walk three compartments, photograph six anomalies, keep life support alive, and decide which record leaves the trench. An unofficial Iron Lung fan story",
-    "primary": "#c9a865",
-    "size": 11504028
   },
   {
     "id": "maze-escape-3d",
@@ -59,7 +51,7 @@
     "id": "pocket",
     "file": "Pocket.softn",
     "name": "Pocket",
-    "description": "An 8-bit handheld emulator — CPU, PPU, APU and mappers all in .logic, drawn by PixelCanvas and heard through AudioStream",
+    "description": "An 8-bit handheld emulator \u2014 CPU, PPU, APU and mappers all in .logic, drawn by PixelCanvas and heard through AudioStream",
     "primary": "#9bbc0f",
     "size": 358284
   },
@@ -83,7 +75,7 @@
     "id": "snake-game",
     "file": "SnakeGame.softn",
     "name": "Snake",
-    "description": "The classic: eat, grow, don't hit the walls — with a shared top ten kept on the site",
+    "description": "The classic: eat, grow, don't hit the walls \u2014 with a shared top ten kept on the site",
     "primary": "#4ade80",
     "size": 64351
   },
@@ -115,7 +107,7 @@
     "id": "warble-wire",
     "file": "WarbleWire.softn",
     "name": "WarbleWire",
-    "description": "Send a message as synthetic birdsong and decode it back — the QXW acoustic transport",
+    "description": "Send a message as synthetic birdsong and decode it back \u2014 the QXW acoustic transport",
     "primary": "#c7ee53",
     "size": 111885
   },
@@ -155,7 +147,7 @@
     "id": "blockfall",
     "file": "Blockfall.softn",
     "name": "Blockfall",
-    "description": "Falling blocks in a 10×20 well: seven pieces, wall kicks, a ghost piece, hold, a preview, and levels that speed up",
+    "description": "Falling blocks in a 10\u00d720 well: seven pieces, wall kicks, a ghost piece, hold, a preview, and levels that speed up",
     "primary": "#22d3ee",
     "size": 103452
   },

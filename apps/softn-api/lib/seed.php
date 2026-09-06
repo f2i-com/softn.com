@@ -13,7 +13,6 @@ final class Seed
     private const CATEGORY = [
         'snake-game' => 'games', 'pocket' => 'games', 'maze-escape-3d' => 'games', 'texas-holdem' => 'games',
         'promptly-unemployed' => 'games', 'the-office' => 'games', 'blockscape' => 'games', 'dead-hours' => 'games', 'twenty48' => 'games', 'blockfall' => 'games',
-        'last-sound-3d' => 'games',
         'train-yard' => 'simulations', 'predator-prey' => 'simulations',
         'warble-wire' => 'tools', 'ai-chat' => 'ai', 'house-builder' => 'creative', 'sim-lives' => 'games',
         // Sample apps: they show what the runtime can do rather than being
@@ -24,7 +23,7 @@ final class Seed
 
     private const TAGS = [
         'snake-game' => 'arcade,classic', 'pocket' => 'emulator,handheld,retro', 'maze-escape-3d' => '3d,maze',
-        'texas-holdem' => 'cards,poker', 'promptly-unemployed' => 'story,comedy', 'last-sound-3d' => '3d,story,horror,voiced',
+        'texas-holdem' => 'cards,poker', 'promptly-unemployed' => 'story,comedy',
         'blockscape' => '3d,sandbox,voxel', 'dead-hours' => '3d,shooter,zombies', 'twenty48' => 'puzzle,classic', 'blockfall' => 'arcade,puzzle,classic',
         'the-office' => 'simulation', 'train-yard' => '3d,simulation,railway', 'predator-prey' => 'ecosystem,simulation,biology,3d',
         'notes' => 'notes,local-first', 'glamour-studio' => 'business,scheduling',
