@@ -2785,3 +2785,59 @@ button {
 .side-sublist code {
   font-size: 0.75rem;
 }
+
+/* The pre-publish report under the drop zone. */
+.prepublish {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ink-2);
+  font-size: 0.8125rem;
+}
+.prepublish-head {
+  margin: 0 0 0.375rem;
+  color: var(--paper);
+  font-weight: 600;
+}
+.prepublish-list {
+  margin: 0;
+  padding: 0 0 0 1.125rem;
+  color: var(--dim);
+}
+.prepublish-list li {
+  margin: 0.2rem 0;
+}
+.prepublish-error {
+  color: var(--coral);
+}
+.prepublish-error::marker {
+  color: var(--coral);
+}
+
+/* The pre-publish report under the drop zone. */
+.prepublish {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--ink-2);
+  font-size: 0.8125rem;
+}
+.prepublish-head {
+  margin: 0 0 0.375rem;
+  color: var(--paper);
+  font-weight: 600;
+}
+.prepublish-list {
+  margin: 0;
+  padding: 0 0 0 1.125rem;
+  color: var(--dim);
+}
+.prepublish-list li {
+  margin: 0.2rem 0;
+}
+.prepublish-error,
+.prepublish-error::marker {
+  color: var(--coral);
+}

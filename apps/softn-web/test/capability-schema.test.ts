@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { CAPABILITIES, CAPABILITY_INFO, CAPABILITY_SCHEMA_VERSION, STORAGE_POLICIES, STORAGE_POLICY_INFO } from '@softn/core';
+import { CAPABILITIES, CAPABILITY_INFO, CAPABILITY_SCHEMA_VERSION, STORAGE_POLICIES, STORAGE_POLICY_INFO, inspectDeclaration } from '@softn/core';
 import * as site from '../../softn-site/src/lib/capabilities';
 import { CAPABILITIES as loaderList } from '../src/lib/bundleProcessor';
 import { PERMISSION_INFO } from '../src/components/PermissionPrompt';
@@ -77,6 +77,28 @@ describe('the capability schema', () => {
   it('marks the same capabilities as reaching towards the person', () => {
     for (const name of CAPABILITIES) {
       expect(site.CAPABILITY_INFO[name].sensitive, name).toBe(CAPABILITY_INFO[name].sensitive);
+    }
+  });
+});
+
+describe('reading a declaration', () => {
+  // The site refuses, in its pre-publish report, exactly what the directory
+  // refuses; both are the runtime's reading. Same fixtures, same answers.
+  const fixtures: unknown[] = [
+    null,
+    [],
+    {},
+    { permissions: {} },
+    { permissions: [] },
+    { permissions: { net: { enabled: true }, storage: { enabled: true, collections: { notes: 'private', '*': 'append-only' } } } },
+    { permissions: { network: { enabled: true }, net: 'yes', camera: { enabled: 'true' }, mic: null, accel: { enabled: true } } },
+    { permissions: { storage: { enabled: true, collections: ['scores'] } } },
+    { permissions: { storage: { enabled: true, collections: { scores: 'readonly', 'Bad-Name': 'public', ok_name: 'owner-write' } } } },
+    { permissions: { net: undefined, qr: { enabled: false }, gpu: {} } },
+  ];
+  it('is the same reading in the runtime and on the site', () => {
+    for (const fixture of fixtures) {
+      expect(site.inspectDeclaration(fixture), JSON.stringify(fixture)).toEqual(inspectDeclaration(fixture));
     }
   });
 });

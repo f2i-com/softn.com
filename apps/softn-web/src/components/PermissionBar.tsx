@@ -11,6 +11,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { PermissionConfig } from '@softn/core';
 import type { Capability } from '../lib/bundleProcessor';
+import { diffCapabilities, type PreviousBuild } from '../lib/consentDiff';
 import { PermissionPrompt } from './PermissionPrompt';
 
 /** What a tab needs to raise the bar. Absent once a grant exists. */
@@ -21,6 +22,12 @@ export interface ConsentRequest {
   capabilities: string[];
   appName: string;
   appIcon?: string;
+  /**
+   * The build of this app opened before this one, when there was one: the
+   * bar says what this build asks for that it did not, so an update cannot
+   * add a capability under a familiar-looking request.
+   */
+  previous?: PreviousBuild;
   onAllow: () => void;
 }
 
@@ -221,6 +228,7 @@ export function PermissionBar({
   appIcon,
   config,
   capabilities,
+  previous,
   onAllow,
   onHeightChange,
 }: PermissionBarProps): React.ReactElement | null {
@@ -263,6 +271,16 @@ export function PermissionBar({
   if (capabilities.length === 0) return null;
 
   const sentence = describe(capabilities);
+  // Against the build opened before this one, when there was one: what an
+  // update adds is the part that must not slide past a familiar request.
+  const change = previous ? diffCapabilities(capabilities, previous.capabilities) : null;
+  const changeText = !change || !previous
+    ? ''
+    : change.added.length > 0
+      ? `New since v${previous.version}: ${describe(change.added)}.`
+      : change.removed.length > 0
+        ? `No longer asks for ${describe(change.removed)}, as v${previous.version} did.`
+        : `The same as v${previous.version}.`;
 
   return (
     <>
@@ -292,8 +310,16 @@ export function PermissionBar({
         // discoverability is carried by focus order instead.
         <div ref={barRef} className="softn-consent-bar" role="status">
           <span className="softn-consent-icon">{SHIELD}</span>
-          <span className="softn-consent-msg" title={`This app wants to use ${sentence}.`}>
+          <span className="softn-consent-msg" title={`This app wants to use ${sentence}.${changeText ? ` ${changeText}` : ''}`}>
             This app wants to use <b>{sentence}</b>.
+            {change && change.added.length > 0 && (
+              <>
+                {' '}
+                New since v{previous!.version}: <b>{describe(change.added)}</b>.
+              </>
+            )}
+            {change && change.added.length === 0 && change.removed.length > 0 && <> No longer asks for {describe(change.removed)}, as v{previous!.version} did.</>}
+            {change && change.added.length === 0 && change.removed.length === 0 && <> The same as v{previous!.version}.</>}
           </span>
           <span className="softn-consent-actions">
             <button

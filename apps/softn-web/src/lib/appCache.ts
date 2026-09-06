@@ -31,6 +31,12 @@ export interface CachedApp {
    * its server storage.
    */
   directorySlug?: string;
+  /**
+   * What the bundle's permission.json asked for, as cached. Kept so an
+   * update's consent bar can say what it asks for that the build before it
+   * did not, without unpacking the older bundle again.
+   */
+  requestedCapabilities?: string[];
 }
 
 interface SoftNAppDB {
@@ -282,6 +288,8 @@ export interface DataTransferResult {
   skipped: number;
   /** Why it stopped, when it did. */
   error?: string;
+  /** A machine-readable reason, where a caller decides differently on it. */
+  code?: string;
 }
 
 function keysWithPrefix(prefix: string): string[] {
@@ -428,6 +436,171 @@ function migrateAppStorage(fromAppId: string, toAppId: string): DataTransferResu
   return transferStorageKeys(`xdb:${fromAppId}:`, `xdb:${toAppId}:`, { move: true, overwrite: false });
 }
 
+// ── Portable data ────────────────────────────────────────────────────
+//
+// A build's records, as a file: to keep, to move to another browser, to put
+// back after an update went wrong. The file names the build it came from,
+// and importing it is whole or not at all — a corrupt file, or a write that
+// fails part way, leaves the build's data exactly as it was. What must never
+// happen is a failed import quietly turning into an empty app.
+
+export const APP_DATA_FORMAT = 'softn-app-data';
+export const APP_DATA_VERSION = 1;
+
+export interface AppDataSnapshot {
+  format: typeof APP_DATA_FORMAT;
+  version: typeof APP_DATA_VERSION;
+  app: { name: string; version: string; origin: string };
+  exportedAt: number;
+  /** Every key under `xdb:<origin>:`, with that prefix removed, and its value as stored. */
+  entries: Record<string, string>;
+}
+
+/** This build's records as a snapshot, or null where the build has no identity or storage is unreadable. */
+export function exportAppData(app: Pick<CachedApp, 'name' | 'version' | 'origin'>, now = Date.now()): AppDataSnapshot | null {
+  if (!app.origin) return null;
+  const prefix = `xdb:${app.origin}:`;
+  const entries: Record<string, string> = {};
+  try {
+    for (const key of keysWithPrefix(prefix)) {
+      const value = localStorage.getItem(key);
+      if (value !== null) entries[key.slice(prefix.length)] = value;
+    }
+  } catch {
+    return null;
+  }
+  return {
+    format: APP_DATA_FORMAT,
+    version: APP_DATA_VERSION,
+    app: { name: app.name, version: app.version, origin: app.origin },
+    exportedAt: now,
+    entries,
+  };
+}
+
+export type SnapshotRead = { ok: true; snapshot: AppDataSnapshot } | { ok: false; error: string };
+
+/**
+ * A file that claims to be an export, checked before anything is touched.
+ * Every refusal says what was wrong; none of them is silent.
+ */
+export function readAppDataSnapshot(text: string): SnapshotRead {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, error: 'The file is not JSON, so it is not a SoftN data export.' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, error: 'The file does not hold a SoftN data export.' };
+  }
+  const s = parsed as Record<string, unknown>;
+  if (s.format !== APP_DATA_FORMAT) return { ok: false, error: 'The file is not a SoftN data export.' };
+  if (typeof s.version !== 'number') return { ok: false, error: 'The export does not say which format it is in.' };
+  if (s.version > APP_DATA_VERSION) {
+    return { ok: false, error: `This export was made by a newer runtime (format ${s.version}) and cannot be read here.` };
+  }
+  if (s.version !== APP_DATA_VERSION) return { ok: false, error: `This export's format (${s.version}) is not one this runtime reads.` };
+  const app = s.app as Record<string, unknown> | undefined;
+  if (!app || typeof app !== 'object' || typeof app.name !== 'string' || typeof app.version !== 'string' || typeof app.origin !== 'string' || !app.origin) {
+    return { ok: false, error: 'The export does not say which app it came from.' };
+  }
+  const entries = s.entries;
+  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return { ok: false, error: 'The export holds no records.' };
+  for (const [key, value] of Object.entries(entries as Record<string, unknown>)) {
+    if (!key || key.split('').some((c) => c.charCodeAt(0) < 32)) return { ok: false, error: 'The export has a record with an unusable name.' };
+    if (typeof value !== 'string') return { ok: false, error: `The export's record "${key}" is not stored text; the file is corrupt.` };
+  }
+  return {
+    ok: true,
+    snapshot: {
+      format: APP_DATA_FORMAT,
+      version: APP_DATA_VERSION,
+      app: { name: app.name, version: app.version, origin: app.origin },
+      exportedAt: typeof s.exportedAt === 'number' ? s.exportedAt : 0,
+      entries: entries as Record<string, string>,
+    },
+  };
+}
+
+/**
+ * Replace everything under `prefix` with `entries`, whole or not at all.
+ * What was there is held until every new key is written; a write that fails
+ * removes what was written and puts the old keys back.
+ */
+export function replaceStorageKeys(prefix: string, entries: Record<string, string>): DataTransferResult {
+  const result: DataTransferResult = { ok: false, copied: 0, total: Object.keys(entries).length, skipped: 0 };
+  let previous: Array<{ key: string; value: string }>;
+  try {
+    previous = keysWithPrefix(prefix).map((key) => ({ key, value: localStorage.getItem(key) ?? '' }));
+  } catch (err) {
+    result.error = `Stored data could not be read: ${err instanceof Error ? err.message : String(err)}`;
+    return result;
+  }
+  const written: string[] = [];
+  const restore = (): void => {
+    for (const key of written) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // Nothing more to do for a key that will not go.
+      }
+    }
+    for (const { key, value } of previous) {
+      try {
+        localStorage.setItem(key, value);
+      } catch {
+        // The old value fitted before the import began; if it does not now,
+        // nothing here can make room for it.
+      }
+    }
+  };
+  try {
+    for (const { key } of previous) localStorage.removeItem(key);
+    for (const [suffix, value] of Object.entries(entries)) {
+      const key = prefix + suffix;
+      localStorage.setItem(key, value);
+      written.push(key);
+      result.copied += 1;
+    }
+  } catch (err) {
+    restore();
+    result.copied = 0;
+    result.error = `Stored data could not be written: ${err instanceof Error ? err.message : String(err)}`;
+    return result;
+  }
+  result.ok = true;
+  return result;
+}
+
+/**
+ * Put a snapshot's records into a build, replacing what it has. A snapshot
+ * from a different build is refused unless the caller says the person
+ * importing it knows — the file names the build it came from, and the
+ * runtime cannot tell whether two builds are related; only they can.
+ */
+export function importAppData(
+  snapshot: AppDataSnapshot,
+  app: Pick<CachedApp, 'origin'>,
+  options: { allowDifferentApp?: boolean } = {}
+): DataTransferResult {
+  const total = Object.keys(snapshot.entries).length;
+  if (!app.origin) {
+    return { ok: false, copied: 0, total, skipped: 0, code: 'NO_IDENTITY', error: 'This build has no identity to import data into.' };
+  }
+  if (snapshot.app.origin !== app.origin && !options.allowDifferentApp) {
+    return {
+      ok: false,
+      copied: 0,
+      total,
+      skipped: 0,
+      code: 'DIFFERENT_APP',
+      error: `This data was exported from "${snapshot.app.name}" v${snapshot.app.version}, a different build.`,
+    };
+  }
+  return replaceStorageKeys(`xdb:${app.origin}:`, snapshot.entries);
+}
+
 // ── Adoption of older records ────────────────────────────────────────
 
 type AppStore = IDBPObjectStore<SoftNAppDB, ['softn-apps'], 'softn-apps', 'readwrite'>;
@@ -547,7 +720,8 @@ export async function cacheApp(
   bundleData: Uint8Array,
   manifest: { name: string; version: string; description?: string },
   icon?: string,
-  directorySlug?: string
+  directorySlug?: string,
+  requestedCapabilities?: string[]
 ): Promise<CachedApp | null> {
   try {
     const db = await getDB();
@@ -590,6 +764,7 @@ export async function cacheApp(
         lastOpened: Date.now(),
         icon: icon ?? existing.icon,
         directorySlug: directorySlug ?? existing.directorySlug,
+        requestedCapabilities: requestedCapabilities ?? existing.requestedCapabilities,
       };
       await store.put(updated);
       await tx.done;
@@ -617,6 +792,7 @@ export async function cacheApp(
       lastOpened: Date.now(),
       icon,
       directorySlug,
+      requestedCapabilities,
     };
     await store.add(app);
     await tx.done;

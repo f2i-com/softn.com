@@ -259,6 +259,25 @@ const launcherStyles = `
     cursor: pointer;
   }
   .softn-launcher-adopt:hover { background: var(--mint-glow); }
+  .softn-launcher-data {
+    margin-top: 0.5rem;
+    display: flex;
+    gap: 0.375rem;
+    flex-wrap: wrap;
+  }
+  .softn-launcher-data-btn {
+    min-height: 26px;
+    padding: 0.1875rem 0.5rem;
+    border-radius: 6px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .softn-launcher-data-btn:hover { color: var(--paper); border-color: var(--paper); }
   .softn-launcher-running {
     display: flex;
     flex-wrap: wrap;
@@ -341,6 +360,10 @@ interface LauncherProps {
   onOpenFile: (data: Uint8Array, fileName: string) => void;
   onOpenCached: (app: CachedApp) => void;
   onRemove: (id: string) => void;
+  /** Save this build's records as a file. */
+  onExportData: (app: CachedApp) => void;
+  /** Replace this build's records with the records in a file exported here. */
+  onImportData: (app: CachedApp, file: File) => void;
   /** Copy `from`'s saved records into `to`, then open `to`. */
   onAdoptData: (from: CachedApp, to: CachedApp) => void;
 }
@@ -390,6 +413,8 @@ export function Launcher({
   onOpenCached,
   onRemove,
   onAdoptData,
+  onExportData,
+  onImportData,
 }: LauncherProps): React.ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   // The same place the product bar's "Apps" goes, so the two agree.
@@ -411,9 +436,31 @@ export function Launcher({
 
   const groups = groupByApp(apps);
 
+  // One hidden picker for every card's "Import data…": the card it was
+  // pressed on is remembered until the file arrives.
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const importTargetRef = useRef<CachedApp | null>(null);
+  const pickImport = (app: CachedApp): void => {
+    importTargetRef.current = app;
+    importInputRef.current?.click();
+  };
+
   return (
     <>
       <style dangerouslySetInnerHTML={{ __html: launcherStyles }} />
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          const target = importTargetRef.current;
+          importTargetRef.current = null;
+          if (file && target) onImportData(target, file);
+          if (importInputRef.current) importInputRef.current.value = '';
+        }}
+      />
       <div className="softn-launcher">
         <div className="softn-launcher-inner">
           <div className="softn-launcher-head">
@@ -528,6 +575,30 @@ export function Launcher({
                       </div>
                       {app.description && <div className="softn-launcher-card-desc">{app.description}</div>}
                       <div className="softn-launcher-card-foot">Opened {formatDate(app.lastOpened).toLowerCase()}</div>
+
+                      {/* A build's records as a file: to keep, to move, to put
+                          back. Import replaces, whole or not at all, and never
+                          leaves an app emptier than the file it was given. */}
+                      <div className="softn-launcher-data" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                        {hasStoredData(app.origin) && (
+                          <button
+                            type="button"
+                            className="softn-launcher-data-btn"
+                            onClick={() => onExportData(app)}
+                            title={`Save the records of v${app.version} as a file you can keep or move to another browser`}
+                          >
+                            Export data
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="softn-launcher-data-btn"
+                          onClick={() => pickImport(app)}
+                          title={`Replace the records of v${app.version} with a file exported here`}
+                        >
+                          Import data…
+                        </button>
+                      </div>
 
                       {olderVersions.length > 0 && (
                         // Earlier builds, in the same place rather than as cards
