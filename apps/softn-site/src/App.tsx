@@ -5,6 +5,7 @@ import { HomePage } from './pages/HomePage';
 import { DirectoryPage } from './pages/DirectoryPage';
 import { AppPage } from './pages/AppPage';
 import { PublishPage } from './pages/PublishPage';
+import { DropAnywhere } from './components/DropAnywhere';
 import { useLinkInterception, useRoute } from './lib/router';
 import { getCategories, type Category } from './lib/api';
 
@@ -68,6 +69,7 @@ export default function App(): React.ReactElement {
       <Nav />
       {route.path === '/' ? <main>{page}</main> : page}
       <Footer />
+      <DropAnywhere active={route.path !== '/publish'} />
     </>
   );
 }

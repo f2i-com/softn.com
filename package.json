@@ -14,7 +14,7 @@
     "build:apps": "npm run build --workspace=apps --if-present",
     "build:core": "npm run build -w @softn/core",
     "build:components": "npm run build -w @softn/components",
-    "build:site": "node scripts/fetch-demos.mjs && node scripts/build-site.mjs",
+    "build:site": "node scripts/build-site.mjs",
     "package:site": "node scripts/package-site.mjs",
     "licenses:site": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",

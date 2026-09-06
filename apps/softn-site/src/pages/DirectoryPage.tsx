@@ -187,7 +187,9 @@ export function DirectoryPage({
                 <div className="empty">
                   <p className="empty-title">No app matches that yet.</p>
                   <p className="muted">
-                    {filtered ? 'Try fewer filters, or a different word.' : 'The directory is empty, which is a first.'}
+                    {filtered
+                      ? 'Try fewer filters, or a different word.'
+                      : 'The directory is empty. Drop .softn files anywhere on this page to publish them, one or a folder at once.'}
                   </p>
                   <p className="app-actions">
                     {filtered && (

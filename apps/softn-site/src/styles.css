@@ -2024,6 +2024,72 @@ button {
   background: var(--ink-3);
   flex-shrink: 0;
 }
+/* Files dragged over any page: the whole window is the drop target. */
+.drop-anywhere {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 10, 12, 0.72);
+  pointer-events: none;
+}
+.drop-anywhere-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-items: center;
+  text-align: center;
+  padding: 2rem 2.5rem;
+  border: 2px dashed var(--mint-edge);
+  border-radius: 18px;
+  background: var(--ink-2);
+  color: var(--paper);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+/* Several bundles at once: one row each, one form for all. */
+.batch-list {
+  list-style: none;
+  margin: 1rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.batch-item {
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--ink-2);
+}
+.batch-item.is-skipped,
+.batch-item.is-failed {
+  border-color: var(--coral);
+}
+.batch-item.is-done {
+  border-color: var(--mint-edge);
+}
+.batch-item .dropzone-icon {
+  width: 36px;
+  height: 36px;
+}
+.batch-main {
+  flex: 1;
+  min-width: 0;
+}
+.batch-status {
+  color: var(--dim);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.batch-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  word-break: break-all;
+}
 .capabilities-preview {
   display: flex;
   flex-wrap: wrap;

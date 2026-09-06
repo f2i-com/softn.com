@@ -24,8 +24,18 @@ import { Thumb } from '../components/directory/AppCard';
 import { CategoriesNotice } from '../components/directory/Controls';
 import { inspectBundle, type Inspection } from '../lib/inspectBundle';
 import { openedForHandoff, takeBundleHandoff } from '../lib/handoff';
+import { bundleFiles, takeDroppedBundles } from '../lib/dropped';
 
 const AUTHOR_KEY = 'softn.site.author';
+
+/** One bundle of several dropped together, and what became of it. */
+interface BatchItem {
+  file: File;
+  info: Inspection;
+  status: 'pending' | 'publishing' | 'done' | 'failed' | 'skipped';
+  result?: Published;
+  error?: string;
+}
 
 /**
  * What the directory will refuse and what will make the listing worse,
@@ -79,8 +89,8 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** A drop target for a .softn, with the inspection it triggers. */
-function BundleDrop({ file, info, onFile }: { file: File | null; info: Inspection | null; onFile: (f: File) => void }): React.ReactElement {
+/** A drop target for one .softn or several, with the inspection it triggers. */
+function BundleDrop({ file, info, onFiles }: { file: File | null; info: Inspection | null; onFiles: (files: File[]) => void }): React.ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   return (
@@ -94,8 +104,8 @@ function BundleDrop({ file, info, onFile }: { file: File | null; info: Inspectio
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
-        const f = e.dataTransfer.files[0];
-        if (f) onFile(f);
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length > 0) onFiles(files);
       }}
       onClick={() => inputRef.current?.click()}
       role="button"
@@ -111,10 +121,11 @@ function BundleDrop({ file, info, onFile }: { file: File | null; info: Inspectio
         ref={inputRef}
         type="file"
         accept=".softn,application/zip,application/octet-stream"
+        multiple
         hidden
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) onFile(f);
+          const files = Array.from(e.target.files ?? []);
+          if (files.length > 0) onFiles(files);
         }}
       />
       {file ? (
@@ -137,7 +148,7 @@ function BundleDrop({ file, info, onFile }: { file: File | null; info: Inspectio
             <path d="M12 16V4m0 0-4 4m4-4 4 4" />
             <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
           </svg>
-          <strong>Drop a .softn here</strong> or click to choose one
+          <strong>Drop .softn files here</strong> or click to choose — one, or a folder at once
         </>
       )}
     </div>
@@ -237,6 +248,8 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Published | null>(null);
   const [copied, setCopied] = useState(false);
+  const [batch, setBatch] = useState<BatchItem[] | null>(null);
+  const [adminKey, setAdminKey] = useState('');
 
   useEffect(() => {
     document.title = 'Publish an app — SoftN';
@@ -269,6 +282,43 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
       setDescription((d) => d || i.description);
     }
   }, []);
+
+  // One file is the form below; several are a batch, each named and described
+  // from its manifest and all filed under one category. A file that is not a
+  // bundle is left out; a bundle the directory would refuse is listed as
+  // skipped, with the reason.
+  const takeFiles = useCallback(
+    async (files: File[]) => {
+      const bundles = bundleFiles(files);
+      if (bundles.length === 0) {
+        setError('None of those is a .softn bundle.');
+        return;
+      }
+      if (bundles.length === 1) {
+        setBatch(null);
+        await takeFile(bundles[0]);
+        return;
+      }
+      setFile(null);
+      setInfo(null);
+      setResult(null);
+      setError(null);
+      const items: BatchItem[] = await Promise.all(
+        bundles.map(async (f) => {
+          const info = inspectBundle(new Uint8Array(await f.arrayBuffer()));
+          return { file: f, info, status: info.problem ? 'skipped' : 'pending' } as BatchItem;
+        }),
+      );
+      setBatch(items);
+    },
+    [takeFile],
+  );
+
+  // Bundles dropped on another page of the site were stashed for this one.
+  useEffect(() => {
+    const dropped = takeDroppedBundles();
+    if (dropped.length > 0) void takeFiles(dropped);
+  }, [takeFiles]);
 
   // Opened by Builder or Studio with a bundle staged for this page: take it
   // as if it had been dropped here. A stale or missing hand-off falls back
@@ -327,6 +377,54 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
     }
   };
 
+  const setItem = (index: number, patch: Partial<BatchItem>) =>
+    setBatch((items) => (items ? items.map((it, i) => (i === index ? { ...it, ...patch } : it)) : items));
+
+  // In order, one request each, so a refusal names the file it was for. The
+  // hourly limit ends the batch with what is left marked, not silently lost.
+  const publishBatch = async () => {
+    if (!batch || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      localStorage.setItem(AUTHOR_KEY, author.trim());
+    } catch {
+      /* storage blocked */
+    }
+    let stoppedAt: string | null = null;
+    for (let i = 0; i < batch.length; i++) {
+      const item = batch[i];
+      if (item.status !== 'pending') continue;
+      if (stoppedAt) {
+        setItem(i, { status: 'failed', error: stoppedAt });
+        continue;
+      }
+      setItem(i, { status: 'publishing' });
+      try {
+        const r = await publish({
+          bundle: item.file,
+          name: item.info.name,
+          description: item.info.description,
+          author: author.trim(),
+          category,
+          tags,
+          adminKey: adminKey || undefined,
+          website,
+        });
+        if (r.editKey) rememberKey(r.app.slug, r.editKey);
+        setItem(i, { status: 'done', result: r });
+      } catch (err) {
+        const text = errorText(err);
+        setItem(i, { status: 'failed', error: text });
+        if (err instanceof ApiError && err.status === 429) {
+          stoppedAt = `Not tried: ${text} The site owner's admin key, from data/config.json, is not held to the limit.`;
+        }
+      }
+    }
+    setBusy(false);
+    window.scrollTo({ top: 0 });
+  };
+
   const suggest = async () => {
     setSuggestError(null);
     try {
@@ -339,6 +437,129 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
       setSuggestError(err instanceof Error ? err.message : String(err));
     }
   };
+
+  if (batch) {
+    const ready = batch.filter((b) => b.status === 'pending').length;
+    const done = batch.filter((b) => b.status === 'done').length;
+    const failed = batch.filter((b) => b.status === 'failed').length;
+    const finished = ready === 0 && !busy;
+    const startOver = () => {
+      setBatch(null);
+      setError(null);
+    };
+    return (
+      <main className="publish">
+        <div className="wrap wrap-narrow">
+          <p className="eyebrow">{finished ? 'Published' : 'Publish'}</p>
+          <h1 className="page-title">
+            {finished
+              ? `${done} ${done === 1 ? 'app is' : 'apps are'} live.`
+              : `${batch.length} bundles, one go`}
+          </h1>
+          <p className="band-sub">
+            {finished
+              ? failed > 0
+                ? `${failed} ${failed === 1 ? 'was' : 'were'} not published; each row says why.`
+                : 'Each one has its own page and its own edit key, kept in this browser.'
+              : 'Each is named and described from its manifest. They all go under the category you pick; you can change any listing afterwards with its edit key.'}
+          </p>
+          <ul className="batch-list">
+            {batch.map((item, i) => (
+              <li key={`${item.file.name}-${i}`} className={`batch-item is-${item.status}`}>
+                {item.info.iconDataUrl ? <img className="dropzone-icon" src={item.info.iconDataUrl} alt="" /> : <span className="dropzone-icon" aria-hidden="true" />}
+                <div className="batch-main">
+                  <strong>{item.info.problem ? item.file.name : item.info.name}</strong>
+                  {!item.info.problem && (
+                    <span className="muted">
+                      {' '}
+                      v{item.info.version} · {formatBytes(item.file.size)}
+                    </span>
+                  )}
+                  {item.status === 'skipped' && <div className="form-error">{item.info.problem}</div>}
+                  {item.status === 'failed' && <div className="form-error">{item.error}</div>}
+                  {item.status === 'done' && item.result && (
+                    <div className="muted">
+                      <a href={item.result.app.urls.page}>{window.location.origin + item.result.app.urls.page}</a>
+                      {item.result.editKey && (
+                        <>
+                          {' '}
+                          · edit key <code className="batch-key">{item.result.editKey}</code>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <span className="batch-status">
+                  {item.status === 'pending' && 'ready'}
+                  {item.status === 'publishing' && 'publishing…'}
+                  {item.status === 'done' && 'live'}
+                  {item.status === 'failed' && 'not published'}
+                  {item.status === 'skipped' && 'skipped'}
+                </span>
+              </li>
+            ))}
+          </ul>
+          {!finished && (
+            <form
+              className="publish-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void publishBatch();
+              }}
+            >
+              <div className="field-row">
+                <label className="field">
+                  <span className="field-label">Your name</span>
+                  <input type="text" value={author} onChange={(e) => setAuthor(e.target.value)} maxLength={40} placeholder="Shown as the author of each" />
+                </label>
+                <label className="field">
+                  <span className="field-label">Category for all of them</span>
+                  <select value={category} onChange={(e) => setCategory(e.target.value)} required>
+                    <option value="" disabled>
+                      Pick one…
+                    </option>
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.emoji} {c.name}
+                        {c.suggested ? ' (suggested)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <label className="field">
+                <span className="field-label">Tags (optional)</span>
+                <input type="text" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Applied to each — up to eight, comma separated" />
+              </label>
+              <label className="field">
+                <span className="field-label">Site owner? Your admin key (optional)</span>
+                <input type="password" value={adminKey} onChange={(e) => setAdminKey(e.target.value)} autoComplete="off" placeholder="From data/config.json on the server" />
+                <span className="muted">Visitors may publish ten apps an hour. The admin key is not held to that, so a whole folder goes in at once.</span>
+              </label>
+              <input type="text" name="website" value={website} onChange={(e) => setWebsite(e.target.value)} className="comment-hp" tabIndex={-1} autoComplete="off" aria-hidden="true" />
+              {error && <p className="form-error">{error}</p>}
+              <div className="publish-foot">
+                <p className="muted">By publishing you make each bundle public: anyone can run it, read it and remix it.</p>
+                <button type="submit" className="cta cta-primary" disabled={ready === 0 || !category || busy}>
+                  {busy ? 'Publishing…' : `Publish ${ready} ${ready === 1 ? 'app' : 'apps'}`}
+                </button>
+              </div>
+            </form>
+          )}
+          <div className="app-actions">
+            {finished && (
+              <a className="cta cta-primary" href="/apps">
+                See the directory
+              </a>
+            )}
+            <button type="button" className="cta" onClick={startOver}>
+              {finished ? 'Publish more' : 'Start over'}
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   if (result) {
     const app = result.app;
@@ -399,13 +620,13 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
         <p className="eyebrow">{parent ? 'Publish a remix' : 'Publish'}</p>
         <h1 className="page-title">{parent ? `Your take on ${parent.name}` : 'Put an app in the directory'}</h1>
         <p className="band-sub">
-          A <code>.softn</code> bundle from <a href="/studio/">Studio</a>, <a href="/builder/">Builder</a> or your own editor. No account:
-          you get an edit key when it is published, and that key is what lets you update it.
+          A <code>.softn</code> bundle from <a href="/studio/">Studio</a>, <a href="/builder/">Builder</a> or your own editor — or several at
+          once. No account: you get an edit key when it is published, and that key is what lets you update it.
         </p>
         <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} what="so there is none to choose yet" />
 
         <form className="publish-form" onSubmit={submit}>
-          <BundleDrop file={file} info={info} onFile={(f) => void takeFile(f)} />
+          <BundleDrop file={file} info={info} onFiles={(files) => void takeFiles(files)} />
           <PrepublishReport info={info} />
           <PrepublishReport info={info} extra={info && !info.problem && !thumb ? ['No screenshot yet: the card will show the icon, or an initial. A screenshot is what most visitors decide on.'] : []} />
 
@@ -754,7 +975,7 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
           <h2 className="section-title">
             A new version <span className="section-count">v{app.version + 1}</span>
           </h2>
-          <BundleDrop file={file} info={info} onFile={(f) => void takeFile(f)} />
+          <BundleDrop file={file} info={info} onFiles={(files) => void takeFile(files[0])} />
           <label className="field">
             <span className="field-label">What changed</span>
             <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={400} placeholder="Shown under the version on the app page" />

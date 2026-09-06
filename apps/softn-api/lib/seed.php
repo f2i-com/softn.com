@@ -39,8 +39,14 @@ final class Seed
         $flag = "$dir/seeded";
         $pdo = Db::catalog();
         Categories::ensure();
+        // A built site keeps its example bundles beside the API, at
+        // dist/demos; a build without them (the default) has no directory
+        // there and seeds nothing. Only the API run from its source tree
+        // (apps/softn-api, in dev and the tests) may reach for the runtime's
+        // fetched bundles or a built dist/ instead — a built site tested
+        // inside the checkout must not pick up the developer's bundles.
         $demos = dirname(__DIR__, 2) . '/demos';
-        if (!is_dir($demos)) {
+        if (!is_dir($demos) && basename(dirname(__DIR__, 2)) === 'softn-api') {
             $candidate = dirname(__DIR__, 3) . '/apps/softn-web/public/demos';
             if (is_dir($candidate)) $demos = $candidate;
             else {

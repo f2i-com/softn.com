@@ -41,9 +41,16 @@ function fail(message) {
   process.exit(1);
 }
 
-for (const required of ['index.html', 'web/index.html', 'api/index.php', 'api/router.php', 'demos/index.json', '.htaccess']) {
+for (const required of ['index.html', 'web/index.html', 'api/index.php', 'api/router.php', '.htaccess', 'BUILD-INFO.json']) {
   if (!fs.existsSync(path.join(root, required))) fail(`${root} has no ${required}; is it a built site?`);
 }
+// The default build ships no example bundles and the directory starts empty;
+// `--with-demos` ships them and the API seeds the directory. BUILD-INFO.json
+// says which this is, so the checks below expect the right one.
+const buildInfo = JSON.parse(fs.readFileSync(path.join(root, 'BUILD-INFO.json'), 'utf8'));
+const bundled = Number(buildInfo?.examples?.bundled ?? 0);
+if (bundled > 0 && !fs.existsSync(path.join(root, 'demos/index.json'))) fail(`${root} claims ${bundled} example bundles but has no demos/index.json`);
+if (bundled === 0 && fs.existsSync(path.join(root, 'demos'))) fail(`${root} claims no example bundles but has a demos/ directory`);
 
 const php = spawnSync('php', ['-v'], { encoding: 'utf8' });
 if (php.status !== 0) fail('php is not on PATH. The smoke test serves the site through PHP, as a host does.');
@@ -174,14 +181,16 @@ await check('api health', '/api/health', {
   },
 });
 let firstSlug = null;
-await check('api lists the seeded demos', '/api/apps?perPage=48', {
+await check(bundled > 0 ? 'api lists the seeded examples' : 'api answers with an empty directory', '/api/apps?perPage=48', {
   accept: 'application/json',
   type: 'application/json',
   body: (t) => {
     const j = json(t);
     if (!j || j.ok !== true) return `not ok: ${t.slice(0, 200)}`;
-    if (!Array.isArray(j.apps) || j.apps.length === 0) return 'no apps: the demos beside the API did not seed';
-    firstSlug = j.apps.find((a) => a.slug === 'notes')?.slug ?? j.apps[0].slug;
+    if (!Array.isArray(j.apps)) return 'no apps array';
+    if (bundled > 0 && j.apps.length === 0) return 'no apps: the examples beside the API did not seed';
+    if (bundled === 0 && j.apps.length !== 0) return `${j.apps.length} apps in a build that ships none`;
+    firstSlug = j.apps.find((a) => a.slug === 'notes')?.slug ?? j.apps[0]?.slug ?? null;
     return true;
   },
 });
@@ -219,9 +228,10 @@ await check('api 404 is JSON', '/api/apps/no-such-app-here', {
 });
 
 // ── Static files, with the isolation headers ───────────────────────────
-const demoIndex = json(fs.readFileSync(path.join(root, 'demos/index.json'), 'utf8'));
+const demoIndex = bundled > 0 ? json(fs.readFileSync(path.join(root, 'demos/index.json'), 'utf8')) : null;
 const firstDemo = Array.isArray(demoIndex) && demoIndex.length > 0 ? demoIndex[0].file : null;
-await check('demo index', '/demos/index.json', { accept: 'application/json', type: 'application/json', isolated: true });
+if (bundled > 0) await check('demo index', '/demos/index.json', { accept: 'application/json', type: 'application/json', isolated: true });
+else await check('no demo index', '/demos/index.json', { status: 404 });
 if (firstDemo) {
   await check('demo bundle', `/demos/${firstDemo}`, {
     accept: '*/*',
