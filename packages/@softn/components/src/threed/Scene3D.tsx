@@ -10,6 +10,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { BoundedTextureCache } from './textureCache';
 import { describeMarkupEgress, isSafeUrl, useCapabilityState } from '@softn/core';
 
 type Scene3DWindow = Window & {
@@ -403,14 +404,55 @@ function createGeometry(obj: Scene3DObject): THREE.BufferGeometry {
   }
 }
 
-const proceduralTextureCache = new Map<string, THREE.CanvasTexture>();
+/**
+ * Procedural textures shared across every Scene3D on the page, counted per
+ * material and bounded when idle. See textureCache.ts for the rules; the
+ * numbers: a 256x256 canvas texture is 256 KB on the GPU, so the idle budget
+ * below is a few megabytes at most kept for reuse between scenes.
+ */
+const PROCEDURAL_TEXTURE_IDLE_BUDGET = 24;
+const proceduralTextureCache = new BoundedTextureCache<THREE.CanvasTexture>(PROCEDURAL_TEXTURE_IDLE_BUDGET);
+/** Set on each cached texture so a material's disposal can hand it back. */
+const TEXTURE_CACHE_KEY = '__softnTextureKey';
 
+/** Cache counts, for a development inspector. Not for apps. */
+export function proceduralTextureCacheStats() {
+  return proceduralTextureCache.stats();
+}
+
+/**
+ * The cached texture for these parameters, counted as in use by the caller's
+ * material until releaseMaterialTextures runs on it.
+ */
 function createProceduralTexture(type: string, baseColorStr?: string, repeat?: { x: number; y: number }): THREE.CanvasTexture | null {
   if (typeof document === 'undefined') return null;
   const key = `${type}_${baseColorStr || ''}_${repeat?.x ?? 1}_${repeat?.y ?? 1}`;
-  const existing = proceduralTextureCache.get(key);
-  if (existing) return existing;
+  return proceduralTextureCache.acquire(key, () => {
+    const texture = paintProceduralTexture(type, baseColorStr, repeat);
+    if (texture) texture.userData[TEXTURE_CACHE_KEY] = key;
+    return texture;
+  });
+}
 
+/** Give back the procedural texture a material was holding, if it held one; dispose any other. */
+function releaseMaterialTextures(mat: THREE.Material): void {
+  const m = mat as THREE.MeshStandardMaterial;
+  const maps = [m.map, m.normalMap, m.roughnessMap, m.metalnessMap, m.emissiveMap, m.aoMap, m.alphaMap, m.envMap];
+  for (const tex of maps) {
+    if (!tex) continue;
+    const key = tex.userData?.[TEXTURE_CACHE_KEY];
+    if (typeof key === 'string') proceduralTextureCache.release(key);
+    else tex.dispose();
+  }
+}
+
+/** A material and whatever it was holding: shared textures released, its own disposed. */
+function disposeMaterial(mat: THREE.Material): void {
+  releaseMaterialTextures(mat);
+  mat.dispose();
+}
+
+function paintProceduralTexture(type: string, baseColorStr?: string, repeat?: { x: number; y: number }): THREE.CanvasTexture | null {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 256;
@@ -618,7 +660,6 @@ function createProceduralTexture(type: string, baseColorStr?: string, repeat?: {
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.repeat.set(repeat?.x ?? 1, repeat?.y ?? 1);
-  proceduralTextureCache.set(key, texture);
   return texture;
 }
 
@@ -936,17 +977,12 @@ function disposeObject3D(obj: THREE.Object3D) {
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       for (const mat of materials) {
         if (!mat) continue;
-        // Dispose all texture properties to free GPU memory
-        const m = mat as THREE.MeshStandardMaterial;
-        m.map?.dispose();
-        m.normalMap?.dispose();
-        m.roughnessMap?.dispose();
-        m.metalnessMap?.dispose();
-        m.emissiveMap?.dispose();
-        m.aoMap?.dispose();
-        m.alphaMap?.dispose();
-        m.envMap?.dispose();
-        mat.dispose();
+        // Textures the material owns are disposed; a procedural texture from
+        // the shared cache is handed back instead. Disposing it here used to
+        // free a texture other meshes were still drawing with, which three.js
+        // silently re-uploaded on the next frame — and the cache still held
+        // the entry, so nothing was ever freed for good either.
+        disposeMaterial(mat);
       }
     }
   });
@@ -2498,7 +2534,7 @@ export function Scene3D({
             existingMesh.geometry = createGeometry(obj);
           }
           if (needsMaterialUpdate(existing.spec, obj)) {
-            (existingMesh.material as THREE.Material).dispose();
+            disposeMaterial(existingMesh.material as THREE.Material);
             existingMesh.material = createMaterial(obj);
           }
           applyTransform(existing.mesh, obj, true);

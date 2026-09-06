@@ -116,6 +116,7 @@ import {
   cacheApp,
   computeAppOrigin,
   copyAppData,
+  isSecureAppOrigin,
   getCachedAppByName,
   getCachedAppByOrigin,
   removeAppData,
@@ -124,6 +125,7 @@ import {
   recordPermissionGrant,
   type CachedApp,
 } from './lib/appCache';
+import { displayNameFor, findPlaceholder, findRunningTab, findTabForUrlName } from './lib/tabIdentity';
 import { parseAppPath, buildAppPath } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
 
@@ -203,6 +205,8 @@ interface OpenTab {
    * a skeleton tab, which has no bundle yet.
    */
   appId?: string;
+  /** The manifest's version, to tell two open tabs with one name apart. */
+  version?: string;
   source: string; // empty string = skeleton tab (loading)
   icon?: string;
   initialPage?: string;
@@ -229,6 +233,8 @@ interface OpenTab {
   serverCollections?: string[];
   /** The app's slug in the site's directory, when it was opened from there. */
   directorySlug?: string;
+  /** The address the bundle was fetched from, when it came from one. */
+  bundleUrl?: string;
 }
 
 /** The directory slug a bundle URL names, if it is one of the directory's. */
@@ -385,14 +391,23 @@ function App(): React.ReactElement {
     setActiveTabId((current) => (current === tabId ? null : current));
   }, []);
 
-  /** Process a .softn bundle from raw bytes. Resolves with the app's name, or null if it did not open. */
+  /**
+   * Process a .softn bundle from raw bytes. Resolves with the app's name, or null if it did not open.
+   *
+   * `placeholderId` is the tab the caller put in the bar while the bytes were
+   * on their way; this call adopts that tab and no other. A placeholder used
+   * to be found by name — the file's name, which need not match the manifest's
+   * — and a running tab by the manifest's name, so an update, or an unrelated
+   * bundle with the same name, activated whatever was already open under it.
+   */
   const processBundleData = useCallback(
     async (
       data: Uint8Array,
       fileName: string,
       cachedAppId?: string,
       initialPage?: string,
-      directorySlug?: string
+      directorySlug?: string,
+      placeholderId?: string
     ): Promise<string | null> => {
       // The placeholder tab this call adopted, once it has adopted one.
       //
@@ -438,31 +453,24 @@ function App(): React.ReactElement {
         // chooses for itself and could therefore choose to be someone else's.
         const appOrigin = await computeAppOrigin(data);
 
-        // Check if a tab with this name already exists (use ref for fresh value).
-        //
-        // A URL load names its placeholder after the file, which need not match
-        // the name inside — AIChat.softn calls itself "AI Chat" — so a
-        // placeholder still waiting on this file counts as the same tab. Without
-        // that second lookup the bundle would open in a fresh tab and leave the
-        // placeholder loading forever.
-        const placeholderName = fileName.replace(/\.softn$/i, '');
-        const existingTab =
-          openTabsRef.current.find((t) => t.name === appName) ||
-          openTabsRef.current.find((t) => !t.source && t.name === placeholderName);
-        if (existingTab && existingTab.source) {
-          // Already fully loaded — just switch to it
-          setActiveTabId(existingTab.id);
-          // A placeholder opened for this file has nothing left to become, and
-          // would otherwise sit in the tab bar loading forever.
-          setOpenTabs((prev) => prev.filter((t) => t.source || t.name !== placeholderName));
+        // These exact bytes already running: the same app, opened again.
+        // Identity, not name — two builds of one app, or two unrelated
+        // bundles called Notes, are two tabs, and the bar tells them apart.
+        const running = findRunningTab(openTabsRef.current, appOrigin);
+        if (running) {
+          setActiveTabId(running.id);
+          // The placeholder this load was given has nothing left to become,
+          // and would otherwise sit in the tab bar loading forever.
+          if (placeholderId) setOpenTabs((prev) => prev.filter((t) => t.id !== placeholderId));
           return appName;
         }
 
-        // Use existing skeleton tab ID (from URL pre-populate) or create new
-        const tabId = existingTab?.id || crypto.randomUUID();
-        // A tab with no source is a placeholder waiting for this load. If the
+        // The placeholder this load was given, if it is still there; else a
+        // fresh tab. A tab with no source is waiting for this load, and if the
         // load fails it has to go, or it renders "Loading …" indefinitely.
-        if (existingTab && !existingTab.source) skeletonTabId = existingTab.id;
+        const existingTab = findPlaceholder(openTabsRef.current, placeholderId);
+        const tabId = existingTab?.id || crypto.randomUUID();
+        if (existingTab) skeletonTabId = existingTab.id;
 
         if (!existingTab) {
           // Fresh open (not from URL) — show loading overlay
@@ -641,10 +649,17 @@ function App(): React.ReactElement {
           else grantedResolver.dispose();
         };
 
+        if (!isSecureAppOrigin(appOrigin)) {
+          console.warn(
+            `[SoftN Web] "${appName}" is identified without a secure context (no crypto.subtle); its data stays isolated but no grant will be remembered.`
+          );
+        }
+
         const newTab: OpenTab = {
           id: tabId,
           name: appName,
           appId: appOrigin,
+          version: typeof manifest.version === 'string' ? manifest.version : undefined,
           source,
           icon: icon || undefined,
           initialPage: initialPage || existingTab?.initialPage,
@@ -718,9 +733,15 @@ function App(): React.ReactElement {
 
       // A bundle from the directory is known by its slug; the placeholder tab
       // wears it until the manifest's own name arrives.
+      // A tab already opened from this address is the same app — the slug is
+      // the directory's identity for it, the address the runtime's — and is
+      // shown again rather than fetched again. Not by name: that is the
+      // bundle's own, and two bundles may share it.
       const directorySlug = directorySlugOf(url);
       const displayName = directorySlug ?? bundleNameFromUrl(url);
-      const loadedTab = openTabsRef.current.find((t) => t.name === displayName && t.source);
+      const loadedTab = openTabsRef.current.find(
+        (t) => t.source && (directorySlug ? t.directorySlug === directorySlug : t.bundleUrl === url.href)
+      );
       if (loadedTab) {
         setActiveTabId(loadedTab.id);
         return Promise.resolve(loadedTab.name);
@@ -774,12 +795,13 @@ function App(): React.ReactElement {
         // opened the bundle, in which case the tab it adopted is the running app.
         let opened: string | null = null;
         try {
-          opened = await processBundleData(data, `${displayName}.softn`, undefined, undefined, directorySlug);
-          // One run, counted where the app is published. Best effort: a
-          // directory that is down must not be a reason the app does not open.
-          if (opened && directorySlug) {
-            void fetch(`/api/apps/${encodeURIComponent(directorySlug)}/runs`, { method: 'POST' }).catch(() => {});
+          opened = await processBundleData(data, `${displayName}.softn`, undefined, undefined, directorySlug, skeletonTabId);
+          if (opened) {
+            setOpenTabs((prev) => prev.map((t) => (t.id === skeletonTabId && t.source ? { ...t, bundleUrl: url.href } : t)));
           }
+          // The run is counted when the app reports itself ready, not here:
+          // see announceReady. Counting at this point said "the bundle
+          // parsed", which is not the same as "the app ran".
           return opened;
         } catch (err) {
           // processBundleData reports its own failures, so anything thrown out
@@ -818,9 +840,23 @@ function App(): React.ReactElement {
   const handleAdoptData = useCallback(
     (from: CachedApp, to: CachedApp) => {
       if (!from.origin || !to.origin) return;
-      const copied = copyAppData(from.origin, to.origin);
+      const result = copyAppData(from.origin, to.origin);
+      if (!result.ok) {
+        // Whole or not at all: the destination is as it was, and the user
+        // stays where they can try again rather than being sent into an
+        // update that carries some of their records and none of the rest.
+        console.warn(`[SoftN Web] Could not copy stored data from v${from.version} to v${to.version}: ${result.error}`);
+        setError(
+          new Error(
+            `Your data could not be brought forward from v${from.version} to v${to.version}: ${result.error ?? 'unknown error'} ` +
+              `Nothing was changed: v${from.version} still has its data, and v${to.version} is as it was.`
+          )
+        );
+        setActiveTabId(null);
+        return;
+      }
       console.info(
-        `[SoftN Web] Copied ${copied} stored keys from "${from.name}" v${from.version} to v${to.version}.`
+        `[SoftN Web] Copied ${result.copied} of ${result.total} stored keys from "${from.name}" v${from.version} to v${to.version}${result.skipped ? ` (${result.skipped} already there)` : ''}.`
       );
       handleOpenCached(to);
     },
@@ -962,10 +998,34 @@ function App(): React.ReactElement {
    * nothing sensitive in the message, so it is not worth narrowing the target
    * origin to a list the runtime would then have to maintain.
    */
+  /** Tabs whose run has been counted, so a reload of the runtime inside one tab is not a second run. */
+  const countedRunsRef = useRef(new Set<string>());
+
+  /**
+   * The app is up: its script loaded and its first page rendered. Two things
+   * hear about it. An embedding page, if there is one, so it can stop
+   * showing a spinner. And the directory the app came from, which counts the
+   * run — here, on readiness, rather than when the bundle was fetched, so
+   * that the number on the app's page means "ran" and not "was downloaded".
+   * The site counts the press of Play separately, as a launch. A tab is
+   * counted once: a permission grant reloads the runtime in place, and that
+   * is the same run.
+   */
   const announceReady = useCallback(
-    (appName: string) => {
-      if (!embedded || window.parent === window) return;
-      window.parent.postMessage({ type: 'softn:app-ready', app: appName }, '*');
+    (tab: OpenTab) => {
+      if (embedded && window.parent !== window) {
+        window.parent.postMessage({ type: 'softn:app-ready', app: tab.name }, '*');
+      }
+      if (tab.directorySlug && !countedRunsRef.current.has(tab.id)) {
+        countedRunsRef.current.add(tab.id);
+        // Best effort: a directory that is down is not a reason the app is not running.
+        void fetch(`/api/apps/${encodeURIComponent(tab.directorySlug)}/runs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stage: 'open' }),
+          keepalive: true,
+        }).catch(() => {});
+      }
     },
     [embedded]
   );
@@ -1076,8 +1136,8 @@ function App(): React.ReactElement {
         return;
       }
 
-      // Find open tab with matching name
-      const tab = openTabsRef.current.find((t) => t.name === appName);
+      // The address carries a name; the tab being looked at wins a tie.
+      const tab = findTabForUrlName(openTabsRef.current, appName, activeTabIdRef.current);
       if (tab) {
         setActiveTabId(tab.id);
       } else {
@@ -1278,7 +1338,7 @@ function App(): React.ReactElement {
           >
             <Launcher
               apps={apps}
-              running={openTabs.map((t) => ({ id: t.id, name: t.name, icon: t.icon }))}
+              running={openTabs.map((t) => ({ id: t.id, name: displayNameFor(t, openTabs), icon: t.icon }))}
               onResume={(id) => handleSelectTab(id)}
               onStop={(id) => handleCloseTab(id, true)}
               onOpenFile={handleOpenFile}
@@ -1306,7 +1366,7 @@ function App(): React.ReactElement {
               permissionConfig={tab.permissionConfig}
               consent={tab.consent}
               onPageChange={(page) => handlePageChange(tab.id, page)}
-              onReady={() => announceReady(tab.name)}
+              onReady={() => announceReady(tab)}
               serverUrl={tab.serverUrl}
               serverToken={tab.serverToken}
               serverCollections={tab.serverCollections}

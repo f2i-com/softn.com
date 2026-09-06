@@ -29,7 +29,7 @@ const UNDESCRIBED_ICON = (
 );
 
 /** Human-readable descriptions for each permission category */
-const PERMISSION_INFO: Record<string, { label: string; description: string; icon: React.ReactNode }> = {
+export const PERMISSION_INFO: Record<string, { label: string; description: string; icon: React.ReactNode }> = {
   net: {
     label: 'Network Access',
     description: 'Send and receive data over the internet (fetch, WebSocket).',

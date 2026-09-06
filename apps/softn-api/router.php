@@ -70,9 +70,17 @@ if ($real !== false && $rootReal !== false && str_starts_with(str_replace('\\', 
     }
 }
 
+// The single-page shells for every route inside them. These carry the
+// isolation headers too: /web/app/Pocket is the document a worker-mode app
+// runs in, and a document without them has no SharedArrayBuffer whatever
+// its scripts were served with. The deployed configs set the headers on
+// every response; this file has to say so for each branch it answers from,
+// and the release smoke test (scripts/smoke-site.mjs) checks that it does.
 foreach (['web', 'builder', 'studio'] as $app) {
     if (preg_match("#^/$app(/|$)#", $path) && is_file("$root/$app/index.html")) {
         header('Content-Type: text/html; charset=utf-8');
+        header('Cross-Origin-Opener-Policy: same-origin');
+        header('Cross-Origin-Embedder-Policy: credentialless');
         readfile("$root/$app/index.html");
         return true;
     }
@@ -84,5 +92,7 @@ if (preg_match('#\.[a-z0-9]+$#i', $path)) {
     return true;
 }
 header('Content-Type: text/html; charset=utf-8');
+header('Cross-Origin-Opener-Policy: same-origin');
+header('Cross-Origin-Embedder-Policy: credentialless');
 readfile("$root/index.html");
 return true;

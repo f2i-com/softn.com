@@ -105,11 +105,23 @@ final class Social
         return self::rating($req, $slug);
     }
 
-    public static function recordRun(Request $req, string $slug): void
+    /**
+     * Count a play. Two stages are counted apart: `launch`, a press of Play
+     * on the directory, and `open`, the runtime reporting the app ready. The
+     * pages show opens as runs, because an open is the one that means the app
+     * actually ran; the site used to count the click as a run and the runtime
+     * counted the open as well, so every Play from the directory was two. A
+     * request naming no stage is an open, which is what the count always meant.
+     */
+    public static function recordRun(Request $req, string $slug, string $stage = 'open'): void
     {
         $visitor = Config::visitorHash($req->ip);
         Db::rateLimit('run', $visitor);
         $pdo = Db::catalog();
+        if ($stage === 'launch') {
+            $pdo->prepare('UPDATE apps SET launches = launches + 1 WHERE slug = ?')->execute([$slug]);
+            return;
+        }
         $day = (int) floor(time() / 86400);
         $pdo->prepare('INSERT INTO runs_daily (slug, day, count) VALUES (?, ?, 1) ON CONFLICT(slug, day) DO UPDATE SET count = count + 1')->execute([$slug, $day]);
         $pdo->prepare('UPDATE apps SET runs = runs + 1 WHERE slug = ?')->execute([$slug]);

@@ -17,6 +17,13 @@ name: Release
 # infrastructure failure without moving a tag that has already been published,
 # and deliberately cannot release an arbitrary branch: both paths check out
 # refs/tags/<tag> and refuse if HEAD is not that tag's commit.
+#
+# Nothing is packaged until the tagged commit has passed the same
+# verification a push gets (verify.yml: install, audit, build, typecheck,
+# lint, every test suite), run against the tag itself rather than whatever
+# main last passed with. Then the packaged archive is unpacked and served
+# the way a host would serve it — PHP in front of the API, the SPA routes,
+# the isolation headers — and asked the questions a visitor's browser asks.
 on:
   push:
     tags:
@@ -32,11 +39,20 @@ env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # The exact tagged commit, through the complete suite. `env` is not
+  # available to a reusable-workflow call, so the tag is spelled out again.
+  verify:
+    name: Verify the tagged commit
+    uses: ./.github/workflows/verify.yml
+    with:
+      ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
   # `build:site` writes dist/; that directory is packaged in full as one
   # archive by scripts/package-site.mjs, which reads the archive back and
   # compares every entry with dist/ before the file is allowed to exist.
   website:
     name: Package the website
+    needs: verify
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -147,6 +163,21 @@ jobs:
           unzip -Z1 "$zip" | grep -qx '.htaccess'
           (cd release && sha256sum -c ./*.sha256 --strict)
           echo "$zip: $listed entries, $(du -h "$zip" | cut -f1)"
+
+      # The archive, unpacked and served: PHP's built-in server with the
+      # API's router in front of it, which is what a host does with the
+      # .htaccess. The smoke test asks for the pages, the nested SPA routes,
+      # the API, a bundle and a hashed asset, and checks the answers and the
+      # isolation headers on each. The archive that reaches the release is
+      # the one that answered.
+      - name: Smoke-test the packaged website
+        run: |
+          set -euo pipefail
+          zip="$(ls release/*.zip)"
+          rm -rf smoke-root && mkdir smoke-root
+          unzip -q "$zip" -d smoke-root
+          node scripts/smoke-site.mjs --root smoke-root
+          rm -rf smoke-root
 
       - name: Keep the archive with the workflow run
         uses: actions/upload-artifact@v4

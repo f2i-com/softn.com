@@ -1,0 +1,78 @@
+name: Verify
+
+# The one verification job, shared by every workflow that needs to know a
+# commit is good: the push/PR checks (build.yml) and the tag release
+# (release.yml) both call this rather than carrying their own copy of the
+# steps. A release used to run its own shorter list — install, audit,
+# licences, build the site — so a tag could package a commit that had never
+# been typechecked, linted or tested as that exact commit; the checks on main
+# had run on whatever main was when it was pushed, which is not always the
+# tagged commit. Factoring the steps here means "verified" means the same
+# thing on both paths, and the release job cannot start until it holds.
+#
+# `ref` is what to verify. Empty means the ref that triggered the caller,
+# which is what a push or pull request wants; a release passes its tag so the
+# exact tagged commit is what is checked out, built and tested.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The git ref to verify; the caller's own ref when empty
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  verify:
+    name: Typecheck, lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` installs exactly what package-lock.json pins and fails loudly if
+      # the lockfile has drifted, which is the whole point of running it in CI.
+      # It replaces `npm install --legacy-peer-deps`: the peer conflicts that
+      # flag existed for are resolved, and installing without the lockfile meant
+      # CI silently tested a different dependency set than anyone else runs.
+      - name: Install dependencies
+        run: npm ci
+
+      # Include development tooling: the lockfile is part of the shipped build
+      # pipeline, and vulnerable parsers/globbers there can still process
+      # attacker-controlled repository content.
+      - name: Audit dependency lockfile
+        run: npm audit --audit-level=high
+
+      # The scripting engine is committed at packages/@softn/core/wasm-zipp/,
+      # so there is nothing to compile first and no Rust toolchain needed.
+      # build:packages builds core, then components, then vite-plugin — in that
+      # order, because each needs the one before it to have emitted its types.
+      - name: Build packages
+        run: npm run build:packages
+
+      # Production bundling catches configuration, PWA and asset-pipeline
+      # failures that TypeScript and unit tests cannot. This also covers Studio
+      # and the marketing site, which have no platform-specific matrix job.
+      - name: Build browser applications
+        run: npm run build:apps
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `lint` is the stricter aspiration (--max-warnings 0); the tree carries
+      # several hundred deliberate `no-console` warnings, so CI gates on errors.
+      - name: Lint
+        run: npm run lint:errors
+
+      # Every workspace's suite, the directory API's among them: the runner
+      # image ships PHP, so those run here rather than being skipped.
+      - name: Test
+        run: npm test

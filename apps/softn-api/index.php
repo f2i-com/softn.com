@@ -31,7 +31,7 @@ set_error_handler(static function (int $no, string $str, string $file, int $line
 // so an open origin costs nothing.
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-Edit-Key, X-Admin-Key');
+header('Access-Control-Allow-Headers: Content-Type, X-Edit-Key, X-Admin-Key, X-Visitor-Token');
 header('Access-Control-Max-Age: 86400');
 header('X-Content-Type-Options: nosniff');
 
@@ -329,7 +329,7 @@ function handle(string $handler, array $args, Request $req): Response
         case 'run': {
             $slug = Apps::resolveSlug($args[0]);
             Apps::row($slug);
-            Social::recordRun($req, $slug);
+            Social::recordRun($req, $slug, $req->field('stage') === 'launch' ? 'launch' : 'open');
             return Response::noContent();
         }
 

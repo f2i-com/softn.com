@@ -13,6 +13,7 @@ import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
 import { deepEqual } from './vm-state';
+import { storageVisitorToken } from './visitor-token';
 
 import type { ScriptBlock, LogicBlock, SoftNDocument } from '../parser/ast';
 import type { AppPermissions } from '../bundle/types';
@@ -176,6 +177,12 @@ export interface ScriptRuntimeOptions {
    * from a file, which then has no server storage and is told so.
    */
   storageEndpoint?: string;
+  /**
+   * The visitor identity sent with storage requests, for collections whose
+   * policy records who added a record. Absent, the runtime uses the token
+   * this browser keeps (see visitor-token.ts); null sends none.
+   */
+  storageVisitorToken?: string | null;
 }
 
 export interface ScriptLoadResult {
@@ -210,7 +217,15 @@ export interface PermissionConfig {
      * through `softn.storage.*`. Unrelated to the manifest's legacy
      * `permissions.storage` flag, which is about localStorage.
      */
-    storage?: { enabled?: boolean };
+    storage?: {
+      enabled?: boolean;
+      /**
+       * A policy per collection name (`*` for the rest): who may read, add,
+       * change and remove its records. See STORAGE_POLICIES in capabilities.ts.
+       * Fixed at publication; the directory enforces it, not the runtime.
+       */
+      collections?: Record<string, string>;
+    };
     /**
      * Generated numeric code runs on the host's own engine: the script hands
      * over functions it builds at run time (an emulator's compiled traces, a
@@ -496,6 +511,7 @@ export class SoftNScriptRuntime {
   /** Identifiers the document can resolve; null means "assume all of them". */
   private observedStateNames: ReadonlySet<string> | null = null;
   private storageEndpoint: string | null = null;
+  private visitorToken: string | null | undefined = undefined;
   /** State variables held back from syncing, for diagnostics only. */
   private vmOwnedStateNames: string[] = [];
   /** The same names as a set, for the per-key push to consult on every call. */
@@ -636,6 +652,7 @@ export class SoftNScriptRuntime {
     this.runtimeMode = options?.mode || 'main';
     this.observedStateNames = options?.observedStateNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
+    this.visitorToken = options?.storageVisitorToken;
     this.externalFunctions = externalFunctions ?? null;
     this.db = createDBNamespace(() => this.permissionConfig, appId);
     if (typeof importResolver === 'function') {
@@ -2935,9 +2952,15 @@ export class SoftNScriptRuntime {
     const timeout = setTimeout(() => abortController.abort(), 20_000);
     this.netAbortControllers.add(abortController);
     try {
+      // The visitor's standing for collections that record who added what.
+      // The host's token if it gave one; else this browser's; else none, and
+      // such collections refuse with a message that says why.
+      const token = this.visitorToken === undefined ? storageVisitorToken() : this.visitorToken;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['X-Visitor-Token'] = token;
       const resp = await fetch(this.storageEndpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ op, ...args }),
         signal: abortController.signal,
         credentials: 'same-origin',

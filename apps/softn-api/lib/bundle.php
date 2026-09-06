@@ -16,13 +16,24 @@ final class Bundle
     public const MAX_ENTRIES = 4000;
     public const MAX_UNCOMPRESSED = 128 * 1024 * 1024;
     public const MAX_ICON_BYTES = 512 * 1024;
-    /** What the runtime asks the visitor to allow; the order the app page lists them in. */
-    public const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage'];
+    /**
+     * The capability schema, as the runtime has it: one name for each thing a
+     * bundle's permission.json may ask for, in the order the app page lists
+     * them. This is a copy of packages/@softn/core/src/runtime/capabilities.ts
+     * — PHP cannot import it — and apps/softn-web/test/capability-schema.test.ts
+     * fails when the two disagree. It once did: this list lacked `accel` for
+     * months, so an app asking for host acceleration was listed as asking for
+     * nothing of the kind.
+     */
+    public const CAPABILITY_SCHEMA_VERSION = 2;
+    public const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'];
+    /** A storage collection name, or `*` for every collection not named. */
+    private const COLLECTION_NAME = '/^(?:\*|[a-z][a-z0-9_]{0,31})$/';
 
     /**
      * @return array{
      *   manifest: array<string, mixed>, name: string, version: string, description: string,
-     *   capabilities: string[], execution: string, icon: array{0: string, 1: string}|null,
+     *   capabilities: string[], storagePolicies: array<string, string>, execution: string, icon: array{0: string, 1: string}|null,
      *   size: int, sha256: string, entries: int
      * }
      */
@@ -64,15 +75,9 @@ final class Bundle
             $description = Text::clean(is_string($manifest['description'] ?? null) ? $manifest['description'] : '', 600, true);
 
             $capabilities = [];
+            $storagePolicies = [];
             $permText = $zip->getFromName('permission.json');
-            if ($permText !== false) {
-                $perm = json_decode($permText, true, 16);
-                $declared = is_array($perm) && is_array($perm['permissions'] ?? null) ? $perm['permissions'] : [];
-                foreach (self::CAPABILITIES as $cap) {
-                    $entry = $declared[$cap] ?? null;
-                    if (is_array($entry) && !empty($entry['enabled'])) $capabilities[] = $cap;
-                }
-            }
+            if ($permText !== false) ['capabilities' => $capabilities, 'storagePolicies' => $storagePolicies] = self::readDeclaration($permText);
             $execution = 'main';
             $config = is_array($manifest['config'] ?? null) ? $manifest['config'] : [];
             if (($config['execution'] ?? null) === 'worker') $execution = 'worker';
@@ -99,12 +104,97 @@ final class Bundle
             'version' => $version,
             'description' => $description,
             'capabilities' => $capabilities,
+            'storagePolicies' => $storagePolicies,
             'execution' => $execution,
             'icon' => $icon,
             'size' => $size,
             'sha256' => hash_file('sha256', $path) ?: '',
             'entries' => $count,
         ];
+    }
+
+    /**
+     * What a permission.json asks for, held to the schema.
+     *
+     * The declaration is what the listing shows a visitor before they press
+     * Play, so it has to be read the way the runtime reads it. A name the
+     * runtime would never enforce (`network` for `net`), an entry that is not
+     * an object, or an `enabled` that is not a boolean used to fall out of the
+     * loop silently and publish as an app that asks for nothing. Each is now
+     * refused at publication with the name in the message, which is the one
+     * moment the author is there to fix it.
+     *
+     * The storage entry may name a policy per collection (`collections`), the
+     * same five as the runtime's STORAGE_POLICIES; a collection or a policy the
+     * schema does not know is refused the same way.
+     *
+     * @return array{capabilities: string[], storagePolicies: array<string, string>}
+     *   the capabilities declared with `enabled: true`, in schema order, and the policies by collection
+     */
+    public static function readDeclaration(string $permText): array
+    {
+        $perm = json_decode($permText, true, 16);
+        if (!is_array($perm) || (array_is_list($perm) && $perm !== [])) {
+            throw new ApiError(400, "The bundle's permission.json is not a JSON object.");
+        }
+        $declared = $perm['permissions'] ?? null;
+        if ($declared === null) return ['capabilities' => [], 'storagePolicies' => []];
+        if (!is_array($declared) || (array_is_list($declared) && $declared !== [])) {
+            throw new ApiError(400, "The bundle's permission.json: \"permissions\" must be an object.");
+        }
+        $unknown = [];
+        $malformed = [];
+        foreach ($declared as $name => $entry) {
+            $name = (string) $name;
+            if (!in_array($name, self::CAPABILITIES, true)) {
+                $unknown[] = $name;
+                continue;
+            }
+            if (!is_array($entry) || (array_is_list($entry) && $entry !== [])) {
+                $malformed[] = $name;
+                continue;
+            }
+            if (array_key_exists('enabled', $entry) && !is_bool($entry['enabled'])) $malformed[] = $name;
+        }
+        if ($unknown !== []) {
+            throw new ApiError(400, "The bundle's permission.json names capabilities the runtime does not have: " . implode(', ', $unknown)
+                . '. The capabilities are ' . implode(', ', self::CAPABILITIES) . '.');
+        }
+        if ($malformed !== []) {
+            throw new ApiError(400, "The bundle's permission.json: a capability is an object with a boolean \"enabled\". Not so for: " . implode(', ', $malformed) . '.');
+        }
+        $capabilities = [];
+        foreach (self::CAPABILITIES as $cap) {
+            $entry = $declared[$cap] ?? null;
+            if (is_array($entry) && ($entry['enabled'] ?? null) === true) $capabilities[] = $cap;
+        }
+        return ['capabilities' => $capabilities, 'storagePolicies' => self::readStoragePolicies($declared['storage'] ?? null)];
+    }
+
+    /** @return array<string, string> */
+    private static function readStoragePolicies(mixed $storage): array
+    {
+        if (!is_array($storage) || !array_key_exists('collections', $storage)) return [];
+        $collections = $storage['collections'];
+        if (!is_array($collections) || (array_is_list($collections) && $collections !== [])) {
+            throw new ApiError(400, "The bundle's permission.json: storage.collections must be an object of collection name to policy.");
+        }
+        if (count($collections) > 64) throw new ApiError(400, "The bundle's permission.json: storage.collections names more than 64 collections.");
+        $bad = [];
+        $policies = [];
+        foreach ($collections as $name => $policy) {
+            $name = (string) $name;
+            if (!preg_match(self::COLLECTION_NAME, $name) || !is_string($policy) || !in_array($policy, Storage::POLICIES, true)) {
+                $bad[] = $name . '=' . (is_string($policy) ? $policy : gettype($policy));
+                continue;
+            }
+            $policies[$name] = $policy;
+        }
+        if ($bad !== []) {
+            throw new ApiError(400, "The bundle's permission.json: storage.collections names a collection or a policy the directory does not accept: " . implode(', ', $bad)
+                . '. A collection is lowercase letters, digits and underscores (or * for the rest); the policies are ' . implode(', ', Storage::POLICIES) . '.');
+        }
+        return $policies;
     }
 
     /**

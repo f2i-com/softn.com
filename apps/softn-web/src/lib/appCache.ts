@@ -21,7 +21,8 @@ export interface CachedApp {
   /**
    * What this app IS, as opposed to what it calls itself: a digest of the
    * bundle's bytes. Absent on records written before identity moved off the
-   * manifest name; see adoptLegacyRecord below.
+   * manifest name; see adoptLegacyRecord below. Sixteen hex characters on
+   * records written before the full digest was kept; see adoptShortOrigin.
    */
   origin?: string;
   /**
@@ -40,6 +41,13 @@ interface SoftNAppDB {
   };
 }
 
+// ── Identity ─────────────────────────────────────────────────────────
+
+/** Length of the truncated digest earlier records were keyed by. */
+const SHORT_ORIGIN_LENGTH = 16;
+/** What an identity computed without a cryptographic hash is prefixed with. */
+const INSECURE_ORIGIN_PREFIX = 'insecure-';
+
 /**
  * Derive an app's identity from its contents.
  *
@@ -50,7 +58,11 @@ interface SoftNAppDB {
  * user had already granted it, and replaced its cached copy. None of that
  * required a flaw to exploit; it was the intended path, taken by an impostor.
  *
- * A digest cannot be claimed, only earned by being the bytes.
+ * A digest cannot be claimed, only earned by being the bytes. The whole
+ * SHA-256 is kept: it used to be cut to sixteen hex characters, which is
+ * short enough that "same identity" and "same bytes" were no longer the same
+ * claim, for a saving of forty-eight characters in a key. Display can
+ * abbreviate; identity does not.
  */
 export async function computeAppOrigin(bundleData: Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
@@ -61,20 +73,36 @@ export async function computeAppOrigin(bundleData: Uint8Array): Promise<string> 
     const digest = await subtle.digest('SHA-256', bytes);
     return Array.from(new Uint8Array(digest))
       .map((b) => b.toString(16).padStart(2, '0'))
-      .join('')
-      .slice(0, 16);
+      .join('');
   }
   // crypto.subtle needs a secure context. Without one this keeps apps isolated
   // from each other, which is the point, but it is NOT collision-resistant —
   // someone able to choose bundle bytes could aim at another app's namespace.
-  // Serve the runtime over HTTPS or localhost and this branch never runs.
+  // The prefix says so to everything that reads it: no grant is persisted
+  // under such an identity (see recordPermissionGrant), and it can never
+  // collide with a real digest's namespace. Serve the runtime over HTTPS or
+  // localhost and this branch never runs.
   let h1 = 0x811c9dc5;
   let h2 = 0x01000193;
   for (let i = 0; i < bundleData.length; i++) {
     h1 = Math.imul(h1 ^ bundleData[i], 0x01000193) >>> 0;
     h2 = Math.imul(h2 + bundleData[i], 0x85ebca6b) >>> 0;
   }
-  return (h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0')).slice(0, 16);
+  return INSECURE_ORIGIN_PREFIX + h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
+}
+
+/**
+ * Whether an identity was computed cryptographically, and so may carry
+ * durable trust: a persisted permission grant, in particular.
+ */
+export function isSecureAppOrigin(origin: string | undefined): boolean {
+  return Boolean(origin) && !origin!.startsWith(INSECURE_ORIGIN_PREFIX);
+}
+
+/** The first characters of an identity, for a label; never for a lookup. */
+export function abbreviateOrigin(origin: string | undefined, length = 12): string {
+  if (!origin) return '';
+  return origin.startsWith(INSECURE_ORIGIN_PREFIX) ? origin : origin.slice(0, length);
 }
 
 // ── Database ─────────────────────────────────────────────────────────
@@ -235,6 +263,126 @@ export function groupByApp(apps: CachedApp[]): AppVersions[] {
     .sort((a, b) => b.current.lastOpened - a.current.lastOpened);
 }
 
+// ── Stored data ──────────────────────────────────────────────────────
+//
+// An app's records live in localStorage under `xdb:<appId>:<collection>`,
+// where appId is the origin above. Everything that moves records between
+// identities goes through transferStorageKeys, which is the one place that
+// knows how to do it without leaving half a job behind.
+
+/** The outcome of moving or copying one app's stored keys to another identity. */
+export interface DataTransferResult {
+  /** Every key was written (and, for a move, removed from its source). */
+  ok: boolean;
+  /** Keys written to the destination. Equal to `total` when `ok`. */
+  copied: number;
+  /** Keys found under the source. */
+  total: number;
+  /** Keys the destination already had, left as they were. */
+  skipped: number;
+  /** Why it stopped, when it did. */
+  error?: string;
+}
+
+function keysWithPrefix(prefix: string): string[] {
+  // Snapshot the keys first: writing to localStorage while iterating its
+  // indices is how you skip half of them.
+  const keys: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(prefix)) keys.push(key);
+  }
+  return keys;
+}
+
+/**
+ * Copy (or move) every key under one identity to another, whole or not at all.
+ *
+ * localStorage has no transactions, so this makes its own: every write is
+ * recorded, and a write that fails — quota, most often, part way through a
+ * large save — undoes the ones before it, restoring whatever the destination
+ * held. The source is not touched until every destination key is in place, so
+ * a move that fails is a copy that failed: nothing has been lost. Copying
+ * used to stop at the first failure and report how far it got, and the
+ * caller opened the updated app on top of a destination holding some of the
+ * old records and none of the rest.
+ *
+ * Keys the destination already has are kept (`overwrite: false`): an update
+ * that has been used has data of its own, and this must never write over it.
+ */
+export function transferStorageKeys(
+  fromPrefix: string,
+  toPrefix: string,
+  options: { move: boolean; overwrite: boolean }
+): DataTransferResult {
+  const result: DataTransferResult = { ok: false, copied: 0, total: 0, skipped: 0 };
+  let keys: string[];
+  try {
+    keys = keysWithPrefix(fromPrefix);
+  } catch (err) {
+    result.error = `Stored data could not be read: ${err instanceof Error ? err.message : String(err)}`;
+    return result;
+  }
+  result.total = keys.length;
+
+  // What each destination key held before this transfer, so it can be put
+  // back: `null` for a key that did not exist.
+  const written: Array<{ key: string; previous: string | null }> = [];
+  const rollback = (): void => {
+    for (let i = written.length - 1; i >= 0; i--) {
+      const { key, previous } = written[i];
+      try {
+        if (previous === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, previous);
+      } catch {
+        // Undoing a write that succeeded moments ago should not fail; if it
+        // does there is nothing further to do about it here.
+      }
+    }
+  };
+
+  try {
+    for (const key of keys) {
+      const value = localStorage.getItem(key);
+      if (value === null) continue;
+      const target = toPrefix + key.slice(fromPrefix.length);
+      const previous = localStorage.getItem(target);
+      if (previous !== null && !options.overwrite) {
+        result.skipped += 1;
+        continue;
+      }
+      if (previous === value) {
+        // Already there, byte for byte. Nothing to write, nothing to undo.
+        result.copied += 1;
+        continue;
+      }
+      localStorage.setItem(target, value);
+      written.push({ key: target, previous });
+      result.copied += 1;
+    }
+  } catch (err) {
+    rollback();
+    result.copied = 0;
+    result.error = `Stored data could not be written: ${err instanceof Error ? err.message : String(err)}`;
+    return result;
+  }
+
+  if (options.move) {
+    // Every destination key is in place; only now does the source go. A
+    // failure here leaves duplicates, which is recoverable, rather than a
+    // gap, which is not.
+    for (const key of keys) {
+      try {
+        localStorage.removeItem(key);
+      } catch {
+        // Leave it; the next migration will find it already copied.
+      }
+    }
+  }
+  result.ok = true;
+  return result;
+}
+
 /**
  * Copy one build's stored data onto another.
  *
@@ -243,107 +391,154 @@ export function groupByApp(apps: CachedApp[]): AppVersions[] {
  * person who chose to install the update can say so, and this is what carries
  * their records across. It copies rather than moves, so the older build still
  * has its own data to go back to if the update turns out to be wrong.
+ *
+ * All or nothing: on failure the destination is as it was, and `ok` is
+ * false. The caller decides what to tell the user; it must not open the
+ * update as though the data came with it.
  */
-export function copyAppData(fromOrigin: string, toOrigin: string): number {
-  if (!fromOrigin || !toOrigin || fromOrigin === toOrigin) return 0;
-  let copied = 0;
-  try {
-    const from = `xdb:${fromOrigin}:`;
-    const to = `xdb:${toOrigin}:`;
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(from)) keys.push(key);
-    }
-    for (const key of keys) {
-      const value = localStorage.getItem(key);
-      if (value === null) continue;
-      localStorage.setItem(to + key.slice(from.length), value);
-      copied += 1;
-    }
-  } catch {
-    // Storage unavailable or full — the update still opens, without the data.
+export function copyAppData(fromOrigin: string, toOrigin: string): DataTransferResult {
+  if (!fromOrigin || !toOrigin || fromOrigin === toOrigin) {
+    return { ok: false, copied: 0, total: 0, skipped: 0, error: 'Nothing to copy between these builds.' };
   }
-  return copied;
+  return transferStorageKeys(`xdb:${fromOrigin}:`, `xdb:${toOrigin}:`, { move: false, overwrite: false });
 }
 
 /** Whether a build has any stored records of its own, i.e. whether it has been used. */
 export function hasStoredData(origin: string | undefined): boolean {
   if (!origin) return false;
   try {
-    const prefix = `xdb:${origin}:`;
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(prefix)) return true;
-    }
+    return keysWithPrefix(`xdb:${origin}:`).length > 0;
   } catch {
     return false;
   }
-  return false;
 }
 
 /**
- * Move an app's stored data from the old name-based namespace to its origin.
+ * Move an app's stored data from one identity to another.
  *
  * XDB keys are `xdb:<appId>:<collection>`, and appId used to be the manifest
- * name. Without this, everything a user had saved in an app would be orphaned
- * the moment identity stopped being that name — their notes would still be on
- * disk, under a prefix nothing reads any more.
+ * name, then a truncated digest. Without this, everything a user had saved in
+ * an app would be orphaned the moment identity changed — their notes would
+ * still be on disk, under a prefix nothing reads any more. Copies first and
+ * removes the source only once every key is in place, so an interrupted
+ * migration leaves the original where it was.
  */
-function migrateAppStorage(fromAppId: string, toAppId: string): number {
-  if (fromAppId === toAppId) return 0;
-  let moved = 0;
-  try {
-    const from = `xdb:${fromAppId}:`;
-    const to = `xdb:${toAppId}:`;
-    // Snapshot the keys first: writing to localStorage while iterating its
-    // indices is how you skip half of them.
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(from)) keys.push(key);
-    }
-    for (const key of keys) {
-      const value = localStorage.getItem(key);
-      if (value === null) continue;
-      const target = to + key.slice(from.length);
-      // Never clobber data already under the new identity.
-      if (localStorage.getItem(target) === null) localStorage.setItem(target, value);
-      localStorage.removeItem(key);
-      moved += 1;
-    }
-  } catch {
-    // Storage unavailable or full; the app still opens, just without its history.
-  }
-  return moved;
+function migrateAppStorage(fromAppId: string, toAppId: string): DataTransferResult {
+  if (fromAppId === toAppId) return { ok: true, copied: 0, total: 0, skipped: 0 };
+  return transferStorageKeys(`xdb:${fromAppId}:`, `xdb:${toAppId}:`, { move: true, overwrite: false });
+}
+
+// ── Adoption of older records ────────────────────────────────────────
+
+type AppStore = IDBPObjectStore<SoftNAppDB, ['softn-apps'], 'softn-apps', 'readwrite'>;
+
+/**
+ * What the pre-transaction look-around found: a record written under an
+ * earlier identity scheme that these bytes may claim. Hashing is
+ * asynchronous, and an IndexedDB transaction commits the moment nothing is
+ * pending on it, so every digest is computed before the transaction opens
+ * and the record is read again inside it before anything is written.
+ */
+interface Adoption {
+  /** The record as it was when found; re-read and compared before use. */
+  record: CachedApp;
+  /** The identity its stored data lives under today. */
+  fromAppId: string;
+  /** Carry the consent record across? Only where the bytes are provably the same. */
+  carryGrants: boolean;
+  why: string;
+}
+
+function sameRecord(a: CachedApp, b: CachedApp | undefined): boolean {
+  return Boolean(b) && a.id === b!.id && a.origin === b!.origin && a.cachedAt === b!.cachedAt && a.bundleData.byteLength === b!.bundleData.byteLength;
 }
 
 /**
- * Claim a pre-identity record for this bundle, once.
+ * A record from before identity existed, which these exact bytes may claim.
  *
  * A record with this name and no origin was cached before identity moved off
- * the manifest name. The user installed it themselves, so the first bundle to
- * turn up under that name afterwards is overwhelmingly theirs — this is
- * trust-on-first-use, and it is the only point at which a name still confers
- * anything. Every bundle after it gets its own record.
+ * the manifest name. The user installed it themselves, so a bundle turning up
+ * under that name afterwards is probably theirs — but "probably" was doing
+ * too much work: adoption used to go to the first bundle to arrive with the
+ * name, whatever its bytes, and it took the old record's stored data with it.
+ * A name is not authority. Now the cached bytes are hashed and only the same
+ * bytes adopt the record; different bytes are a different app, cached beside
+ * it, and the legacy record is upgraded to its own digest identity so the
+ * launcher can offer its data through the explicit "bring my data forward"
+ * flow, where the person who installed both can say they are related.
  */
-async function adoptLegacyRecord(
-  store: IDBPObjectStore<SoftNAppDB, ['softn-apps'], 'softn-apps', 'readwrite'>,
-  name: string,
-  origin: string,
-): Promise<CachedApp | null> {
-  const sameName = await store.index('by-name').getAll(name);
+async function findLegacyAdoption(db: IDBPDatabase<SoftNAppDB>, name: string, origin: string): Promise<Adoption | null> {
+  const sameName = await db.getAllFromIndex('softn-apps', 'by-name', name);
   const legacy = sameName.find((app) => !app.origin);
   if (!legacy) return null;
-  const moved = migrateAppStorage(name, origin);
+  const legacyOrigin = await computeAppOrigin(legacy.bundleData);
+  if (legacyOrigin === origin) {
+    return { record: legacy, fromAppId: name, carryGrants: false, why: 'adopted its content identity' };
+  }
+  return null;
+}
+
+/**
+ * Give a name-keyed legacy record an identity of its own, without adopting it.
+ *
+ * Called when a different bundle has arrived under the legacy record's name:
+ * the record cannot stay name-keyed, because the next bundle with that name
+ * would try to adopt it too, and it cannot be handed to this bundle. Its data
+ * moves from the name namespace to its own digest's, so it is reachable by
+ * the launcher's version chips and its data-transfer flow. Grants are dropped
+ * as they always were on adoption: they were keyed by a name.
+ */
+async function findLegacyUpgrade(db: IDBPDatabase<SoftNAppDB>, name: string): Promise<(Adoption & { toOrigin: string }) | null> {
+  const sameName = await db.getAllFromIndex('softn-apps', 'by-name', name);
+  const legacy = sameName.find((app) => !app.origin);
+  if (!legacy) return null;
+  const legacyOrigin = await computeAppOrigin(legacy.bundleData);
+  return { record: legacy, fromAppId: name, carryGrants: false, why: 'was given its own identity', toOrigin: legacyOrigin };
+}
+
+/**
+ * A record keyed by the sixteen-character digest earlier versions kept.
+ *
+ * The full digest of these bytes starts with that prefix, and the record's
+ * own bytes hash to the full digest too, so this is the same app under a
+ * shorter name for itself. Its data and its grants come across: the user
+ * approved these bytes, and these are the bytes.
+ */
+async function findShortOriginAdoption(db: IDBPDatabase<SoftNAppDB>, origin: string): Promise<Adoption | null> {
+  if (!isSecureAppOrigin(origin) || origin.length <= SHORT_ORIGIN_LENGTH) return null;
+  const short = origin.slice(0, SHORT_ORIGIN_LENGTH);
+  const candidate = await db.getFromIndex('softn-apps', 'by-origin', short);
+  if (!candidate) return null;
+  const full = await computeAppOrigin(candidate.bundleData);
+  if (full !== origin) return null;
+  return { record: candidate, fromAppId: short, carryGrants: true, why: 'kept under its full digest' };
+}
+
+/**
+ * Apply an adoption inside the write transaction: re-read the record, make
+ * sure it is the one that was examined, move its data, and return the record
+ * to write under the new identity. Returns null if the record changed in the
+ * meantime or its data could not be moved, in which case the caller treats
+ * the bundle as new and the old record is left exactly as it was.
+ */
+async function applyAdoption(store: AppStore, adoption: Adoption, origin: string): Promise<CachedApp | null> {
+  const current = await store.get(adoption.record.id);
+  if (!sameRecord(adoption.record, current)) return null;
+  const moved = migrateAppStorage(adoption.fromAppId, origin);
+  if (!moved.ok) {
+    console.warn(`[SoftN Web] "${current!.name}" keeps its earlier identity: ${moved.error}`);
+    return null;
+  }
   console.info(
-    `[SoftN Web] "${name}" adopted its content identity${moved ? `, moving ${moved} stored keys` : ''}.`,
+    `[SoftN Web] "${current!.name}" ${adoption.why}${moved.copied ? `, moving ${moved.copied} stored keys` : ''}.`
   );
-  // Everything on the legacy record was keyed by a name the bundle chose for
-  // itself, so its consent record cannot be carried over: the spread would hand
-  // whatever now claims that name the capabilities the user approved for the
-  // old one. Data and icon move, approval does not — the app asks again.
-  const { grantedPermissions: _dropped, permissionsPromptedAt: _alsoDropped, ...carried } = legacy;
+  if (adoption.carryGrants) return { ...current!, origin };
+  // Everything on a name-keyed record was keyed by a name the bundle chose
+  // for itself, so its consent record cannot be carried over: the spread
+  // would hand whatever now claims that name the capabilities the user
+  // approved for the old one. Data and icon move, approval does not — the
+  // app asks again.
+  const { grantedPermissions: _dropped, permissionsPromptedAt: _alsoDropped, ...carried } = current!;
   return { ...carried, origin };
 }
 
@@ -358,6 +553,19 @@ export async function cacheApp(
     const db = await getDB();
     const origin = await computeAppOrigin(bundleData);
 
+    // Everything that hashes happens here, before the transaction: an
+    // IndexedDB transaction commits as soon as nothing is pending on it, so
+    // an `await` on crypto inside one would leave the later `put` with a
+    // transaction that had already closed. Each candidate is re-read and
+    // checked inside the transaction before it is acted on.
+    let adoption: Adoption | null = null;
+    let legacyUpgrade: (Adoption & { toOrigin: string }) | null = null;
+    const already = await db.getFromIndex('softn-apps', 'by-origin', origin);
+    if (!already) {
+      adoption = (await findShortOriginAdoption(db, origin)) ?? (await findLegacyAdoption(db, manifest.name, origin));
+      if (!adoption) legacyUpgrade = await findLegacyUpgrade(db, manifest.name);
+    }
+
     // Read and write in one transaction. Split across two, this raced
     // recordPermissionGrant: opening the same app in a second tab read the
     // record before the grant landed, then wrote its stale spread back over
@@ -369,9 +577,8 @@ export async function cacheApp(
     // Same bytes as something already cached: the same app, opened again.
     // Matching on origin rather than name is the whole fix — an impostor no
     // longer lands on the record, the grants or the data of the app it names.
-    const existing =
-      (await store.index('by-origin').get(origin)) ??
-      (await adoptLegacyRecord(store, manifest.name, origin));
+    let existing = await store.index('by-origin').get(origin);
+    if (!existing && adoption) existing = (await applyAdoption(store, adoption, origin)) ?? undefined;
 
     if (existing) {
       const updated: CachedApp = {
@@ -387,6 +594,13 @@ export async function cacheApp(
       await store.put(updated);
       await tx.done;
       return updated;
+    }
+
+    // A legacy record shares this name but not these bytes. It keeps its
+    // data and gets an identity of its own; this bundle is cached beside it.
+    if (legacyUpgrade) {
+      const upgraded = await applyAdoption(store, legacyUpgrade, legacyUpgrade.toOrigin);
+      if (upgraded) await store.put(upgraded);
     }
 
     // A different bundle that happens to share a name is a different app, and is
@@ -407,8 +621,8 @@ export async function cacheApp(
     await store.add(app);
     await tx.done;
     return app;
-  } catch {
-    console.warn('[SoftN Web] Failed to cache app:', manifest.name);
+  } catch (err) {
+    console.warn('[SoftN Web] Failed to cache app:', manifest.name, err);
     return null;
   }
 }
@@ -423,7 +637,6 @@ export async function getCachedApp(id: string): Promise<CachedApp | null> {
   }
 }
 
-/** Remove a cached app */
 /**
  * Delete everything one build of an app has stored.
  *
@@ -436,14 +649,7 @@ export function removeAppData(origin: string | undefined): number {
   if (!origin) return 0;
   let removed = 0;
   try {
-    const prefix = `xdb:${origin}:`;
-    // Collect first: deleting while walking the index skips entries.
-    const keys: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith(prefix)) keys.push(key);
-    }
-    for (const key of keys) {
+    for (const key of keysWithPrefix(`xdb:${origin}:`)) {
       localStorage.removeItem(key);
       removed += 1;
     }
@@ -462,11 +668,19 @@ export async function removeCachedApp(id: string): Promise<void> {
   }
 }
 
-/** Get a cached app by name (uses the by-name index) */
+/**
+ * A cached app by name: the most recently opened of any that share it.
+ *
+ * For the one place a name is all there is — the address bar, offline, with
+ * `/app/<name>` and no directory to ask. Never for anything that decides what
+ * an app may read; that is getCachedAppByOrigin.
+ */
 export async function getCachedAppByName(name: string): Promise<CachedApp | null> {
   try {
     const db = await getDB();
-    return (await db.getFromIndex('softn-apps', 'by-name', name)) ?? null;
+    const matches = await db.getAllFromIndex('softn-apps', 'by-name', name);
+    if (matches.length === 0) return null;
+    return matches.sort((a, b) => b.lastOpened - a.lastOpened)[0];
   } catch {
     return null;
   }
@@ -515,8 +729,17 @@ export async function updateLastOpened(id: string): Promise<void> {
  * Writes nothing if no record exists: the user removed the app from Home while
  * its tab was open, and resurrecting it would undo that. The running instance
  * keeps its grant in memory either way.
+ *
+ * Writes nothing for an identity computed without a cryptographic hash (an
+ * insecure context). A grant is durable trust in exactly these bytes, and an
+ * identity that other bytes could be made to share cannot carry it; the bar
+ * asks again next session, which is the honest outcome.
  */
 export async function recordPermissionGrant(origin: string, perms: Record<string, boolean>): Promise<boolean> {
+  if (!isSecureAppOrigin(origin)) {
+    console.warn('[SoftN Web] Not remembering a grant for an app identified without a secure context; it will be asked again next time.');
+    return false;
+  }
   try {
     const db = await getDB();
     const tx = db.transaction('softn-apps', 'readwrite');

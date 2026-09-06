@@ -18,6 +18,24 @@ export const CAP_FILTERS: Array<{ id: CapabilityFilter; name: string; hint: stri
   { id: 'worker', name: 'Off-main-thread', hint: 'Runs its script in a worker' },
 ];
 
+/**
+ * The categories request failed. Nothing else on the page depends on it —
+ * the apps list without their category labels, and the chips are simply
+ * absent — so this says only what is missing and offers to ask again.
+ * `what` finishes the sentence for the page it is on.
+ */
+export function CategoriesNotice({ error, onRetry, what }: { error: string | null; onRetry: () => void; what?: string }): React.ReactElement | null {
+  if (!error) return null;
+  return (
+    <div className="notice notice-soft" role="status">
+      <strong>Categories could not be loaded{what ? `, ${what}` : ''}.</strong> {error}{' '}
+      <button type="button" className="cta cta-small" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
 /** The search box. Submitting goes to the directory with the words. */
 export function SearchBox({
   initial = '',

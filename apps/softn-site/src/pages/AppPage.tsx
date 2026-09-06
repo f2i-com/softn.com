@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { ApiError, getApp, getRating, listApps, rate, recordRun, savedKey, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
+import { ApiError, getApp, getRating, listApps, rate, savedKey, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
+import { launchApp } from '../lib/launch';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
 import { runtimeAppUrl } from '../lib/appUrls';
 import type { Route } from '../lib/router';
@@ -8,18 +9,7 @@ import { StarInput, Stars } from '../components/directory/Stars';
 import { ShareMenu } from '../components/directory/ShareMenu';
 import { Comments } from '../components/directory/Comments';
 import { SourceViewer } from '../components/directory/SourceViewer';
-
-const CAPABILITY_NAMES: Record<string, string> = {
-  net: 'Network',
-  camera: 'Camera',
-  mic: 'Microphone',
-  files: 'Files',
-  qr: 'QR codes',
-  ai: 'AI models',
-  gpu: 'GPU',
-  sync: 'Sync',
-  storage: 'Server storage',
-};
+import { describeCapability, describeStoragePolicy } from '../lib/capabilities';
 
 function PlayGlyph({ size = 14 }: { size?: number }): React.ReactElement {
   return (
@@ -32,7 +22,7 @@ function PlayGlyph({ size = 14 }: { size?: number }): React.ReactElement {
 function Badges({ capabilities, execution, official }: { capabilities: string[]; execution: string; official: boolean }): React.ReactElement {
   const { safe } = capabilitySummary(capabilities);
   return (
-    <div className="badges" aria-label="What this app can reach">
+    <div className="badges" aria-label="What this app asks to reach">
       <span className={`badge ${safe ? 'badge-safe' : ''}`}>
         <span className="badge-dot" aria-hidden="true" />
         Sandboxed
@@ -40,11 +30,14 @@ function Badges({ capabilities, execution, official }: { capabilities: string[];
       {capabilities.length === 0 ? (
         <span className="badge">No capabilities</span>
       ) : (
-        capabilities.map((c) => (
-          <span key={c} className={`badge ${c === 'net' || c === 'camera' || c === 'mic' || c === 'files' ? 'badge-warn' : ''}`}>
-            {CAPABILITY_NAMES[c] ?? c}
-          </span>
-        ))
+        capabilities.map((c) => {
+          const info = describeCapability(c);
+          return (
+            <span key={c} className={`badge ${info.sensitive ? 'badge-warn' : ''}`} title={info.known ? `Asks for: ${info.summary}` : info.summary}>
+              {info.label}
+            </span>
+          );
+        })
       )}
       {!capabilities.includes('net') && <span className="badge">No network</span>}
       {execution === 'worker' && (
@@ -165,14 +158,12 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
     }
   };
 
-  // Count the run, then go. The count is best effort: a directory that is
-  // not answering must not stand between someone and the app.
+  // Go, and count the run on the way out. The count is best effort and is
+  // not waited for: a directory that is not answering must not stand between
+  // someone and the app.
   const play = () => {
     if (!app) return;
-    const to = runUrl(app.slug);
-    recordRun(app.slug)
-      .catch(() => {})
-      .finally(() => window.location.assign(to));
+    launchApp(app.slug);
   };
 
   if (error) {
@@ -268,7 +259,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                 <strong>{app.rating.count > 0 ? app.rating.average.toFixed(1) : '–'}</strong>
                 <span className="stat-label">{app.rating.count} rating{app.rating.count === 1 ? '' : 's'}</span>
               </span>
-              <span className="stat">
+              <span className="stat" title={`Reported up by the runtime ${app.runs} time${app.runs === 1 ? '' : 's'}; Play pressed here ${app.launches ?? 0} time${app.launches === 1 ? '' : 's'}`}>
                 <strong>{formatCount(app.runs)}</strong>
                 <span className="stat-label">run{app.runs === 1 ? '' : 's'}</span>
               </span>
@@ -377,27 +368,42 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
             </section>
 
             <section className="side-card">
-              <h2 className="side-title">What it can reach</h2>
+              <h2 className="side-title">What it asks for</h2>
               <ul className="side-list">
                 <li>
                   <span className="badge-dot" aria-hidden="true" /> Runs in the zipp sandbox: no DOM, no filesystem, no ambient network.
                 </li>
                 {app.capabilities.length === 0 && <li>Declares no capabilities at all.</li>}
-                {app.capabilities.map((c) => (
-                  <li key={c}>
-                    <strong>{CAPABILITY_NAMES[c] ?? c}</strong>
-                    {c === 'storage' && ' — keeps records in its own database on this site.'}
-                    {c === 'net' && ' — may call the internet; the runtime asks you first.'}
-                    {c === 'camera' && ' — may take pictures, with your permission.'}
-                    {c === 'mic' && ' — may record audio, with your permission.'}
-                    {c === 'files' && ' — may read files you choose.'}
-                    {c === 'ai' && ' — downloads and runs a model in your browser.'}
-                    {c === 'gpu' && ' — uses your graphics card for compute.'}
-                    {c === 'sync' && ' — replicates its data to your other devices.'}
-                    {c === 'qr' && ' — scans QR codes.'}
-                  </li>
-                ))}
+                {app.capabilities.map((c) => {
+                  const info = describeCapability(c);
+                  const policies = c === 'storage' ? Object.entries(app.storagePolicies ?? {}) : [];
+                  return (
+                    <li key={c}>
+                      <strong>{info.label}</strong> — {info.summary}.
+                      {policies.length > 0 && (
+                        <ul className="side-sublist">
+                          {policies.map(([collection, policy]) => {
+                            const p = describeStoragePolicy(policy);
+                            return (
+                              <li key={collection} title={p.summary}>
+                                <code>{collection === '*' ? 'every other collection' : collection}</code>: {p.label}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
+              {app.capabilities.length > 0 && (
+                <p className="muted">
+                  {/* A declaration is a request. The bundle wrote it; the runtime
+                      decides, per capability, after asking, and only where the
+                      device has the thing at all. */}
+                  These are what the bundle declares. The runtime grants each one only when you allow it, on a device that has it.
+                </p>
+              )}
               {canStore && (
                 <p className="muted">
                   Stored here so far: {app.storage.records} record{app.storage.records === 1 ? '' : 's'} in {app.storage.collections} collection

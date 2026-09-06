@@ -487,6 +487,179 @@ test('the share page carries the app into its meta tags', skip, async () => {
   assert.match(await missing.text(), /<title>SoftN — a UI language and its runtime<\/title>/, 'an unknown app gets the plain site');
 });
 
+/**
+ * Empty the rate-limit windows. The publish window is ten an hour per
+ * visitor and every test here is the same visitor; a test that publishes
+ * several bundles of its own starts from a clean window rather than from
+ * whatever the tests before it left.
+ */
+function resetRateLimits() {
+  const script = path.join(root, 'reset-ratelimit.php');
+  fs.writeFileSync(script, "<?php $p = new PDO('sqlite:' . $argv[1]); $p->exec('DELETE FROM ratelimit');");
+  const r = spawnSync('php', [script, path.join(root, 'data/directory.sqlite')], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`could not reset rate limits: ${r.stderr}`);
+}
+
+test("a bundle's declaration is held to the capability schema", skip, async () => {
+  resetRateLimits();
+  const { zipSync, strToU8 } = require('fflate');
+  const withPermissionJson = (name, text) => {
+    const files = {
+      'manifest.json': strToU8(JSON.stringify({ name, version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] } })),
+      'ui/main.ui': strToU8('<App><Text>hello</Text></App>'),
+      'permission.json': strToU8(text),
+    };
+    return zipSync(files);
+  };
+  const publish = async (bytes) => {
+    const fd = new FormData();
+    fd.append('bundle', new Blob([bytes]), 'app.softn');
+    return api('POST', '/api/apps', { body: fd });
+  };
+
+  // accel is a capability the runtime enforces; the directory used to list
+  // nine names and describe an app asking only for it as asking for nothing.
+  const accel = await publish(makeBundle('Accelerated', { permissions: { accel: { enabled: true } } }));
+  assert.equal(accel.status, 201, JSON.stringify(accel.json));
+  assert.deepEqual(accel.json.app.capabilities, ['accel']);
+  const page = await api('GET', '/api/apps/accelerated');
+  assert.deepEqual(page.json.app.capabilities, ['accel']);
+
+  const every = await publish(makeBundle('Everything', { permissions: Object.fromEntries(['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'].map((c) => [c, { enabled: true }])) }));
+  assert.equal(every.status, 201, JSON.stringify(every.json));
+  assert.deepEqual(every.json.app.capabilities, ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel']);
+
+  // A declaration the runtime could not honour is refused with the name in
+  // the message, not published as an app that asks for nothing.
+  const unknown = await publish(withPermissionJson('Typo', JSON.stringify({ permissions: { network: { enabled: true } } })));
+  assert.equal(unknown.status, 400, JSON.stringify(unknown.json));
+  assert.match(unknown.json.error, /network/);
+  assert.match(unknown.json.error, /accel/);
+
+  const malformed = await publish(withPermissionJson('Malformed', JSON.stringify({ permissions: { net: { enabled: 'yes' }, camera: true } })));
+  assert.equal(malformed.status, 400, JSON.stringify(malformed.json));
+  assert.match(malformed.json.error, /net, camera/);
+
+  const notJson = await publish(withPermissionJson('Broken', '{ "permissions": { "net": { "enabled": true }, } }'));
+  assert.equal(notJson.status, 400, JSON.stringify(notJson.json));
+  assert.match(notJson.json.error, /permission\.json/);
+
+  const listNotObject = await publish(withPermissionJson('Listed', JSON.stringify({ permissions: ['net'] })));
+  assert.equal(listNotObject.status, 400);
+
+  // Disabled and absent are both "not requested"; an empty file is an empty declaration.
+  const disabled = await publish(withPermissionJson('Quiet', JSON.stringify({ permissions: { net: { enabled: false }, files: {} } })));
+  assert.equal(disabled.status, 201, JSON.stringify(disabled.json));
+  assert.deepEqual(disabled.json.app.capabilities, []);
+  const empty = await publish(withPermissionJson('Empty', '{}'));
+  assert.equal(empty.status, 201, JSON.stringify(empty.json));
+  assert.deepEqual(empty.json.app.capabilities, []);
+});
+
+test('storage collection policies: who may do what, per collection', skip, async () => {
+  resetRateLimits();
+  const fd = new FormData();
+  const permissions = {
+    storage: {
+      enabled: true,
+      collections: { scores: 'append-only', posts: 'owner-write', notes: 'private', config: 'publisher', '*': 'public' },
+    },
+  };
+  fd.append('bundle', new Blob([makeBundle('Policy Board', { permissions })]), 'policy.softn');
+  const pub = await api('POST', '/api/apps', { body: fd });
+  assert.equal(pub.status, 201, JSON.stringify(pub.json));
+  assert.deepEqual(pub.json.app.storagePolicies, permissions.storage.collections);
+  const editKey = pub.json.editKey;
+  const page = await api('GET', '/api/apps/policy-board');
+  assert.deepEqual(page.json.app.storagePolicies, permissions.storage.collections);
+
+  // Two visitors, told apart by the token their runtimes keep; and the publisher.
+  const ann = { 'X-Visitor-Token': 'ann-token-0123456789abcdef' };
+  const bob = { 'X-Visitor-Token': 'bob-token-0123456789abcdef' };
+  const owner = { 'X-Edit-Key': editKey };
+  const S = (body, headers = {}) => api('POST', '/api/apps/policy-board/storage', { body, headers });
+
+  // append-only: anyone adds and reads; changing or removing needs the edit key.
+  const s1 = await S({ op: 'insert', collection: 'scores', data: { player: 'Ann', score: 10 } }, ann);
+  assert.equal(s1.status, 200, JSON.stringify(s1.json));
+  const s2 = await S({ op: 'insert', collection: 'scores', data: { player: 'Anon', score: 5 } });
+  assert.equal(s2.status, 200, 'no token needed to append');
+  assert.equal((await S({ op: 'update', collection: 'scores', id: s1.json.result.id, data: { score: 999 } }, ann)).status, 403, 'not even by whoever added it');
+  assert.equal((await S({ op: 'remove', collection: 'scores', id: s1.json.result.id }, bob)).status, 403);
+  assert.equal((await S({ op: 'set', collection: 'scores', id: s1.json.result.id, data: { score: 1 } }, bob)).status, 403);
+  const readBack = await S({ op: 'query', collection: 'scores' }, bob);
+  assert.equal(readBack.json.result.total, 2, 'everyone reads');
+  assert.equal((await S({ op: 'update', collection: 'scores', id: s1.json.result.id, data: { score: 11 } }, owner)).status, 200, 'the edit key can');
+  assert.equal((await S({ op: 'remove', collection: 'scores', id: s2.json.result.id }, owner)).json.result.removed, 1);
+
+  // owner-write: anyone reads; a record is changed or removed by whoever added it, or the publisher.
+  const p1 = await S({ op: 'insert', collection: 'posts', data: { text: 'hello' } }, ann);
+  assert.equal(p1.status, 200);
+  assert.equal(p1.json.result.mine, true);
+  assert.equal((await S({ op: 'insert', collection: 'posts', data: { text: 'anon' } })).status, 403, 'adding needs a token');
+  const bobSees = await S({ op: 'query', collection: 'posts' }, bob);
+  assert.equal(bobSees.json.result.total, 1);
+  assert.equal(bobSees.json.result.records[0].mine, false);
+  assert.equal((await S({ op: 'update', collection: 'posts', id: p1.json.result.id, data: { text: 'hijacked' } }, bob)).status, 403);
+  assert.equal((await S({ op: 'remove', collection: 'posts', id: p1.json.result.id }, bob)).status, 403);
+  const annEdit = await S({ op: 'update', collection: 'posts', id: p1.json.result.id, data: { text: 'edited' } }, ann);
+  assert.equal(annEdit.status, 200, JSON.stringify(annEdit.json));
+  assert.equal(annEdit.json.result.data.text, 'edited');
+  assert.equal(annEdit.json.result.mine, true);
+  assert.equal((await S({ op: 'set', collection: 'posts', id: p1.json.result.id, data: { text: 'replaced' } }, owner)).status, 200, 'the publisher can');
+  assert.equal((await S({ op: 'get', collection: 'posts', id: p1.json.result.id }, ann)).json.result.mine, true, 'replacing does not adopt');
+  assert.equal((await S({ op: 'remove', collection: 'posts', id: p1.json.result.id }, ann)).json.result.removed, 1);
+
+  // private: each visitor sees only their own; nobody else, the publisher included.
+  const n1 = await S({ op: 'insert', collection: 'notes', data: { text: "Ann's" } }, ann);
+  assert.equal(n1.status, 200, JSON.stringify(n1.json));
+  await S({ op: 'insert', collection: 'notes', data: { text: "Bob's" } }, bob);
+  assert.equal((await S({ op: 'insert', collection: 'notes', data: { text: 'anon' } })).status, 403);
+  assert.equal((await S({ op: 'query', collection: 'notes' })).status, 403, 'reading needs a token');
+  const annNotes = await S({ op: 'query', collection: 'notes' }, ann);
+  assert.equal(annNotes.json.result.total, 1);
+  assert.equal(annNotes.json.result.records[0].data.text, "Ann's");
+  assert.equal((await S({ op: 'count', collection: 'notes' }, bob)).json.result.count, 1);
+  assert.equal((await S({ op: 'get', collection: 'notes', id: n1.json.result.id }, bob)).json.result, null, "Bob cannot see Ann's");
+  assert.equal((await S({ op: 'update', collection: 'notes', id: n1.json.result.id, data: { text: 'x' } }, bob)).status, 404);
+  assert.equal((await S({ op: 'remove', collection: 'notes', id: n1.json.result.id }, bob)).status, 404);
+  const ownerReads = await S({ op: 'query', collection: 'notes' }, owner);
+  assert.equal(ownerReads.status, 403, 'the edit key is not a visitor');
+  const browse = await api('GET', '/api/apps/policy-board/storage/notes');
+  assert.equal(browse.status, 403, 'nor is the browse route without a token');
+  assert.equal((await S({ op: 'clear', collection: 'notes' }, owner)).json.result.removed, 2, 'clearing is still the publisher');
+
+  // publisher: reading and writing need the edit key.
+  assert.equal((await S({ op: 'insert', collection: 'config', data: { theme: 'dark' } }, ann)).status, 403);
+  assert.equal((await S({ op: 'query', collection: 'config' }, ann)).status, 403);
+  const cfg = await S({ op: 'set', collection: 'config', id: 'main', data: { theme: 'dark' } }, owner);
+  assert.equal(cfg.status, 200, JSON.stringify(cfg.json));
+  assert.equal((await S({ op: 'get', collection: 'config', id: 'main' }, owner)).json.result.data.theme, 'dark');
+
+  // The default, spelled out as public: as it always was.
+  const g = await S({ op: 'insert', collection: 'guestbook', data: { text: 'hi' } });
+  assert.equal(g.status, 200);
+  assert.equal((await S({ op: 'update', collection: 'guestbook', id: g.json.result.id, data: { text: 'bye' } }, bob)).status, 200);
+
+  // A policy the directory does not know is refused at publication, by name.
+  const badFd = new FormData();
+  badFd.append('bundle', new Blob([makeBundle('Bad Policy', { permissions: { storage: { enabled: true, collections: { notes: 'readonly' } } } })]), 'bad.softn');
+  const bad = await api('POST', '/api/apps', { body: badFd });
+  assert.equal(bad.status, 400, JSON.stringify(bad.json));
+  assert.match(bad.json.error, /notes=readonly/);
+  assert.match(bad.json.error, /append-only/);
+});
+
+test('a launch and a run are counted apart', skip, async () => {
+  const before = (await api('GET', '/api/apps/test-snake')).json.app;
+  assert.equal((await api('POST', '/api/apps/test-snake/runs', { body: { stage: 'launch' } })).status, 204);
+  assert.equal((await api('POST', '/api/apps/test-snake/runs', { body: { stage: 'open' } })).status, 204);
+  assert.equal((await api('POST', '/api/apps/test-snake/runs')).status, 204, 'no stage is an open, as before');
+  const after = (await api('GET', '/api/apps/test-snake')).json.app;
+  assert.equal(after.launches, before.launches + 1);
+  assert.equal(after.runs, before.runs + 2);
+});
+
 test('rate limits refuse a flood', skip, async () => {
   // The publish window is ten an hour; the tests above used some of it.
   let refused = false;

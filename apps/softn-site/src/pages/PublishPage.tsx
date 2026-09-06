@@ -22,6 +22,7 @@ import { copyText } from '../lib/share';
 import { formatBytes, formatDate } from '../lib/format';
 import { navigate, type Route } from '../lib/router';
 import { Thumb } from '../components/directory/AppCard';
+import { CategoriesNotice } from '../components/directory/Controls';
 
 const AUTHOR_KEY = 'softn.site.author';
 
@@ -232,13 +233,19 @@ function YourApps(): React.ReactElement | null {
   );
 }
 
-export function PublishPage({ route, categories, onCategories, apiDown }: { route: Route; categories: Category[]; onCategories: (c: Category[]) => void; apiDown: string | null }): React.ReactElement {
-  const updateOf = route.query.get('update') ?? '';
-  if (updateOf) return <UpdatePage slug={updateOf} categories={categories} apiDown={apiDown} />;
-  return <NewAppPage route={route} categories={categories} onCategories={onCategories} apiDown={apiDown} />;
+interface CategoriesStatus {
+  /** Why the categories request failed, when it did; the page still renders. */
+  categoriesError: string | null;
+  onRetryCategories: () => void;
 }
 
-function NewAppPage({ route, categories, onCategories, apiDown }: { route: Route; categories: Category[]; onCategories: (c: Category[]) => void; apiDown: string | null }): React.ReactElement {
+export function PublishPage({ route, categories, onCategories, categoriesError, onRetryCategories }: { route: Route; categories: Category[]; onCategories: (c: Category[]) => void } & CategoriesStatus): React.ReactElement {
+  const updateOf = route.query.get('update') ?? '';
+  if (updateOf) return <UpdatePage slug={updateOf} categories={categories} categoriesError={categoriesError} onRetryCategories={onRetryCategories} />;
+  return <NewAppPage route={route} categories={categories} onCategories={onCategories} categoriesError={categoriesError} onRetryCategories={onRetryCategories} />;
+}
+
+function NewAppPage({ route, categories, onCategories, categoriesError, onRetryCategories }: { route: Route; categories: Category[]; onCategories: (c: Category[]) => void } & CategoriesStatus): React.ReactElement {
   const remixOf = route.query.get('remix') ?? '';
   const [parent, setParent] = useState<AppCard | null>(null);
   const [parentSlug, setParentSlug] = useState(remixOf);
@@ -416,11 +423,7 @@ function NewAppPage({ route, categories, onCategories, apiDown }: { route: Route
           A <code>.softn</code> bundle from <a href="/studio/">Studio</a>, <a href="/builder/">Builder</a> or your own editor. No account:
           you get an edit key when it is published, and that key is what lets you update it.
         </p>
-        {apiDown && (
-          <div className="notice">
-            <strong>The directory is not answering.</strong> {apiDown}
-          </div>
-        )}
+        <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} what="so there is none to choose yet" />
 
         <form className="publish-form" onSubmit={submit}>
           <BundleDrop file={file} info={info} onFile={(f) => void takeFile(f)} />
@@ -567,7 +570,7 @@ function NewAppPage({ route, categories, onCategories, apiDown }: { route: Route
  * The other half of publishing: with the edit key, change the listing, push
  * a new version, replace the screenshot, or take the app down.
  */
-function UpdatePage({ slug, categories, apiDown }: { slug: string; categories: Category[]; apiDown: string | null }): React.ReactElement {
+function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { slug: string; categories: Category[] } & CategoriesStatus): React.ReactElement {
   const [app, setApp] = useState<AppDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [key, setKey] = useState(() => savedKey(slug) ?? '');
@@ -696,11 +699,7 @@ function UpdatePage({ slug, categories, apiDown }: { slug: string; categories: C
         <p className="band-sub">
           v{app.version} · published {formatDate(app.createdAt)} · {app.runs} runs. Everything here needs the edit key publishing handed out.
         </p>
-        {apiDown && (
-          <div className="notice">
-            <strong>The directory is not answering.</strong> {apiDown}
-          </div>
-        )}
+        <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} what="so the listing cannot be moved to another yet" />
 
         <section className="update-section">
           <label className="field">

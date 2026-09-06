@@ -10,28 +10,36 @@ import { getCategories, type Category } from './lib/api';
 
 /**
  * Four pages on one bundle. The directory API is asked for the categories
- * once; if it does not answer, every page still renders and says so. No page
- * runs an app: pressing Play hands the visitor to the runtime.
+ * once; if that does not answer, every page still renders — and still asks
+ * for its apps. The categories are labels on the cards and chips to filter
+ * by, not a precondition for the list: an earlier version treated their
+ * failure as "the directory is down" and skipped the app-list request on
+ * every page, so a taxonomy endpoint could make a working directory look
+ * empty. Each request now carries its own status, and categories can be
+ * retried in place. No page runs an app: pressing Play hands the visitor to
+ * the runtime.
  */
 export default function App(): React.ReactElement {
   const route = useRoute();
   useLinkInterception();
   const [categories, setCategories] = useState<Category[]>([]);
-  const [apiDown, setApiDown] = useState<string | null>(null);
+  const [categoriesError, setCategoriesError] = useState<string | null>(null);
+  const [categoriesAttempt, setCategoriesAttempt] = useState(0);
+  const retryCategories = () => setCategoriesAttempt((n) => n + 1);
 
   useEffect(() => {
     const ac = new AbortController();
     getCategories(ac.signal)
       .then((c) => {
         setCategories(c);
-        setApiDown(null);
+        setCategoriesError(null);
       })
       .catch((e) => {
         if (ac.signal.aborted) return;
-        setApiDown(e instanceof Error ? e.message : String(e));
+        setCategoriesError(e instanceof Error ? e.message : String(e));
       });
     return () => ac.abort();
-  }, []);
+  }, [categoriesAttempt]);
 
   useEffect(() => {
     if (route.path === '/') document.title = 'SoftN — apps that run anywhere, safely';
@@ -40,7 +48,7 @@ export default function App(): React.ReactElement {
   let page: React.ReactElement;
   const appMatch = route.path.match(/^\/app\/([^/]+)$/);
   if (route.path === '/apps') {
-    page = <DirectoryPage route={route} categories={categories} apiDown={apiDown} />;
+    page = <DirectoryPage route={route} categories={categories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
   } else if (appMatch) {
     let slug = appMatch[1];
     try {
@@ -50,9 +58,9 @@ export default function App(): React.ReactElement {
     }
     page = <AppPage slug={slug} categories={categories} route={route} />;
   } else if (route.path === '/publish') {
-    page = <PublishPage route={route} categories={categories} onCategories={setCategories} apiDown={apiDown} />;
+    page = <PublishPage route={route} categories={categories} onCategories={setCategories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
   } else {
-    page = <HomePage categories={categories} apiDown={apiDown} />;
+    page = <HomePage categories={categories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
   }
 
   return (
