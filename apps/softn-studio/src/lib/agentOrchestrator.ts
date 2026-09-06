@@ -442,6 +442,7 @@ console.log("debug:", value)
 \`\`\`
 
 Bind to collections in .ui files with \`<data><collection name="tasks" as="tasks" /></data>\`.
+A record bound from a collection carries its fields under \`data\` — \`{item.data.title}\`, not \`{item.title}\` — with \`id\`, \`created_at\` and \`updated_at\` beside it. Records the logic pushes itself are whatever shape it pushed.
 
 ---
 
