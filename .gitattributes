@@ -2,17 +2,13 @@
 
 # Bundle sources are packed into .softn archives byte for byte, so an archive
 # and the file it was built from have to agree exactly. On Windows core.autocrlf
-# rewrites text files on checkout, and the packed copy then no longer matches:
-# a fresh clone failed `npm test` with "Archive file is stale" on 10 of Pocket's
-# 14 entries, because the committed archives hold whichever line ending the
-# machine that packed them happened to use. Pinning LF makes the bundle check
-# reproducible on every platform instead of only where it was last built.
+# rewrites text files on checkout, and a packed copy then no longer matches.
+# Pinning LF keeps core's demo bundle reproducible on every platform. (The
+# example applications themselves live in f2i-com/softn-Examples now.)
 *.ui       text eol=lf
 *.logic    text eol=lf
 *.xdb      text eol=lf
 *.wgsl     text eol=lf
-apps/demo/bundles/**/*.json                text eol=lf
-apps/demo/bundles/**/*.svg                 text eol=lf
 packages/@softn/core/demo-bundle/**/*.json text eol=lf
 packages/@softn/core/demo-bundle/**/*.svg  text eol=lf
 

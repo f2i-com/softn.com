@@ -10,9 +10,9 @@
  * step; core's reader knew no audio format at all and UTF-8-decoded the bytes,
  * which is not reversible. One registry, and every reader asks it.
  *
- * The demo build script (apps/demo/scripts/build-bundle.cjs) is CommonJS and
- * cannot import this module; its extension list is maintained by hand against
- * this one.
+ * The examples' build script (scripts/build-bundle.cjs in
+ * f2i-com/softn-Examples) is CommonJS and cannot import this module; its
+ * extension list is maintained by hand against this one.
  */
 
 export type AssetKind = 'model' | 'audio' | 'video' | 'image' | 'font' | 'text' | 'binary';

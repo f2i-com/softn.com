@@ -42,8 +42,7 @@ softn.com/
 |   +-- softn-loader/          # Desktop runtime (Tauri)
 |   +-- softn-server/          # Rust host for `.logic` server routes and XDB sync
 |   +-- softn-api/             # The app directory: PHP + SQLite, deployed as /api/ beside the site
-|   +-- demo/                  # The demo bundles, with their build and test scripts
-+-- scripts/                   # dev-all, site assembly, release packaging, demo screenshots
++-- scripts/                   # dev-all, site assembly, release packaging, demo fetching and screenshots
 +-- .github/workflows/         # CI/CD
 ```
 
@@ -53,6 +52,8 @@ softn.com/
 |-----------|-------------|
 | [zipp.org](https://github.com/f2i-com/zipp.org) | zipp -- the JavaScript engine `.logic` runs on (Rust to WebAssembly) |
 | [xdb.org](https://github.com/f2i-com/xdb.org) | XDB database (Tauri/Rust -- SQLite + libp2p + Y-CRDT) |
+| [softn-Examples](https://github.com/f2i-com/softn-Examples) | The example applications: every demo in the directory as source, released as `.softn` archives that this repository fetches |
+| [softn-TheNightWindow](https://github.com/f2i-com/softn-TheNightWindow) | The Night Window, a SoftN game in its own repository with the same source-and-release shape |
 
 ---
 
@@ -613,8 +614,22 @@ demos change.
 
 ### Demos
 
-Every bundle under `apps/demo/bundles/` is published on softn.com, and each is
-a worked example of some part of the runtime.
+The demos are the example applications in
+[softn-Examples](https://github.com/f2i-com/softn-Examples): every bundle the
+directory lists, as source, with the packer, the validator and the tests. That
+repository's `Release` workflow packs them and publishes the archives, and this
+one carries no copies. `apps/softn-web/public/demos/index.json` pins a release
+by download URL, size and SHA-256 for each bundle, and `npm run fetch:demos`
+downloads whatever is missing or stale and refuses an archive that does not
+verify. `dev`, `dev:web`, `build:site`, `screenshot:demos` and `test` fetch
+first, so a fresh clone needs nothing more than the network the first time.
+
+```bash
+node scripts/fetch-demos.mjs --pin v1.0.1   # move to a new release: rewrites the sizes, digests and URLs in index.json, then fetches
+node scripts/fetch-demos.mjs --check        # verify what is on disk without downloading
+```
+
+Each is a worked example of some part of the runtime.
 
 **Games**
 
@@ -650,17 +665,12 @@ a worked example of some part of the runtime.
 | **ThreeDemo** | Shapes drifting over a floor in `Scene3D`: look around, pick one, add more |
 | **GPUDemo** | Vector maths in two compute shaders through the WebGPU bridge |
 
-Each demo is source under `apps/demo/bundles/<Name>/`. From `apps/demo`,
-`node scripts/build-bundle.cjs <Name>` packs it and copies the archive into
-the runtime's `public/demos/`, and `npm test -w @softn/demo` checks that every
-archive is complete and current, runs the poker and WarbleWire logic tests,
-and validates Promptly Unemployed's geometry and audio. The games' sound
-effects are synthesized rather than recorded: `apps/demo/scripts/sfx-lib.cjs`
-writes 16-bit WAVs from a few tone and noise primitives, and each game's
-`assets-src/make-sfx.cjs` describes its own. `npm run screenshot:demos`
-photographs every demo in a headless browser for the directory's thumbnails;
-pass `--base http://127.0.0.1:5500/web` for the worker-mode apps, which need
-the built site.
+A new demo is added to `index.json` by hand (id, file, name, description and
+primary colour) once a release of softn-Examples publishes it, then pinned with
+`--pin`. `npm run screenshot:demos` photographs every demo in a headless
+browser for the directory's thumbnails under `public/demos/thumbs/`; pass
+`--base http://127.0.0.1:5500/web` for the worker-mode apps, which need the
+built site.
 
 ---
 
@@ -774,13 +784,13 @@ cargo test --manifest-path apps/softn-server/Cargo.toml
 ### Testing
 
 ```bash
-npm test                      # every workspace: core, components, web, api, demo
+npm test                      # every workspace: core, components, web, api (the demo bundles are fetched first)
 npm test -w @softn/core       # one of them
 npm run lint && npm run typecheck
 ```
 
-The API suite starts its own `php -S` on a temporary root; the demo suite
-rebuilds nothing and fails if a bundle's archive is older than its source.
+The API suite starts its own `php -S` on a temporary root and seeds it from
+the fetched demo bundles; `npm test` fetches them first.
 
 ### Key File Paths
 
@@ -797,6 +807,7 @@ rebuilds nothing and fails if a bundle's archive is older than its source.
 | `packages/@softn/components/src/threed/Scene3D.tsx` | The 3D scene: instancing, pointer lock, attached objects |
 | `apps/softn-api/index.php` | The directory API's routes |
 | `scripts/build-site.mjs` | Assembles `dist/` and writes `.htaccess`, `nginx.conf.example` and `DEPLOY.md` |
+| `scripts/fetch-demos.mjs` | Fetches and verifies the demo bundles from the softn-Examples release `public/demos/index.json` pins |
 
 ---
 

@@ -8,8 +8,10 @@ runtime can reach it. This page is the recipe.
 
 ## What runs
 
+The bundle's sources are in [softn-Examples](https://github.com/f2i-com/softn-Examples); point the server at its `bundles/TexasHoldem/` directory.
+
 ```
-softn-server run apps/demo/bundles/TexasHoldem --port 9877 --host 127.0.0.1 --data-dir /var/lib/softn/poker
+softn-server run path/to/softn-Examples/bundles/TexasHoldem --port 9877 --host 127.0.0.1 --data-dir /var/lib/softn/poker
 ```
 
 - The bundle can be the directory or the packed `TexasHoldem.softn`.

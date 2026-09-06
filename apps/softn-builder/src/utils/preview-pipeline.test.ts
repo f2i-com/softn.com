@@ -30,14 +30,8 @@ function mergeGeneratedTemplateIntoSource(
   originalSource: string | undefined,
   generatedSource: string
 ): string {
-  const generatedDataBlock = extractFirstBlock(
-    generatedSource,
-    /<data>[\s\S]*?<\/data>/i
-  );
-  const generatedLogicBlock = extractFirstBlock(
-    generatedSource,
-    /<logic>[\s\S]*?<\/logic>/i
-  );
+  const generatedDataBlock = extractFirstBlock(generatedSource, /<data>[\s\S]*?<\/data>/i);
+  const generatedLogicBlock = extractFirstBlock(generatedSource, /<logic>[\s\S]*?<\/logic>/i);
   const templateOnly = generatedSource
     .replace(/<data>[\s\S]*?<\/data>/gi, '')
     .replace(/<logic>[\s\S]*?<\/logic>/gi, '')
@@ -47,29 +41,16 @@ function mergeGeneratedTemplateIntoSource(
     return generatedSource;
   }
 
-  const preservedLogicSrc = extractFirstBlock(
-    originalSource,
-    /<logic\s+src=["'][^"']+["']\s*\/>/i
-  );
-  const preservedInlineLogic = extractFirstBlock(
-    originalSource,
-    /<logic>[\s\S]*?<\/logic>/i
-  );
+  const preservedLogicSrc = extractFirstBlock(originalSource, /<logic\s+src=["'][^"']+["']\s*\/>/i);
+  const preservedInlineLogic = extractFirstBlock(originalSource, /<logic>[\s\S]*?<\/logic>/i);
   const preservedImports = extractAllBlocks(
     originalSource,
     /<import\s+(?:\{\s*[^}]+\s*\}|\w+)\s+from=["'][^"']+["']\s*\/>/gi
   );
-  const preservedData = extractFirstBlock(
-    originalSource,
-    /<data>[\s\S]*?<\/data>/i
-  );
-  const preservedStyles = extractAllBlocks(
-    originalSource,
-    /<style>[\s\S]*?<\/style>/gi
-  );
+  const preservedData = extractFirstBlock(originalSource, /<data>[\s\S]*?<\/data>/i);
+  const preservedStyles = extractAllBlocks(originalSource, /<style>[\s\S]*?<\/style>/gi);
 
-  const logicBlock =
-    preservedLogicSrc || preservedInlineLogic || generatedLogicBlock;
+  const logicBlock = preservedLogicSrc || preservedInlineLogic || generatedLogicBlock;
   const dataBlock = preservedData || generatedDataBlock;
 
   const headerBlocks = [
@@ -79,10 +60,7 @@ function mergeGeneratedTemplateIntoSource(
     ...preservedStyles,
   ].filter((block): block is string => Boolean(block && block.trim()));
 
-  return [headerBlocks.join('\n\n'), templateOnly]
-    .filter(Boolean)
-    .join('\n\n')
-    .trim();
+  return [headerBlocks.join('\n\n'), templateOnly].filter(Boolean).join('\n\n').trim();
 }
 
 function stripComments(source: string): string {
@@ -95,17 +73,11 @@ function stripComments(source: string): string {
 
 // ─── Tests ───
 
-const GLAMOUR_DIR = path.resolve(
-  __dirname,
-  '../../../demo/bundles/GlamourStudio'
-);
+const GLAMOUR_DIR = path.resolve(__dirname, './__fixtures__/GlamourStudio');
 
 describe('Preview pipeline round-trip', () => {
   it('parseSource succeeds for main.ui', () => {
-    const source = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/main.ui'),
-      'utf-8'
-    );
+    const source = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/main.ui'), 'utf-8');
     const parsed = parseSource(source);
 
     expect(parsed.elements.size).toBeGreaterThan(0);
@@ -123,10 +95,7 @@ describe('Preview pipeline round-trip', () => {
   });
 
   it('generateSource produces valid template from parsed elements', () => {
-    const source = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/main.ui'),
-      'utf-8'
-    );
+    const source = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/main.ui'), 'utf-8');
     const parsed = parseSource(source);
 
     // Generate with empty logic/collections (template-only, like updateUIFile)
@@ -145,14 +114,8 @@ describe('Preview pipeline round-trip', () => {
   });
 
   it('generateSource with logic and collections', () => {
-    const source = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/main.ui'),
-      'utf-8'
-    );
-    const logicSource = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'logic/main.logic'),
-      'utf-8'
-    );
+    const source = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/main.ui'), 'utf-8');
+    const logicSource = fs.readFileSync(path.join(GLAMOUR_DIR, 'logic/main.logic'), 'utf-8');
     const parsed = parseSource(source);
 
     // Generate with logic (like the preview does)
@@ -163,9 +126,7 @@ describe('Preview pipeline round-trip', () => {
       parsed.collections
     );
 
-    console.log(
-      '\n[main.ui] Generated with logic+collections (first 500 chars):'
-    );
+    console.log('\n[main.ui] Generated with logic+collections (first 500 chars):');
     console.log(generated.substring(0, 500));
     console.log('...');
     console.log('[main.ui] Full generated length:', generated.length);
@@ -175,14 +136,8 @@ describe('Preview pipeline round-trip', () => {
   });
 
   it('mergeGeneratedTemplateIntoSource preserves headers for main.ui', () => {
-    const originalSource = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/main.ui'),
-      'utf-8'
-    );
-    const logicSource = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'logic/main.logic'),
-      'utf-8'
-    );
+    const originalSource = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/main.ui'), 'utf-8');
+    const logicSource = fs.readFileSync(path.join(GLAMOUR_DIR, 'logic/main.logic'), 'utf-8');
     const parsed = parseSource(originalSource);
     const generated = generateSource(
       parsed.elements,
@@ -203,12 +158,8 @@ describe('Preview pipeline round-trip', () => {
     expect(merged).not.toContain('<logic>\n');
 
     // Should preserve imports
-    expect(merged).toContain(
-      '<import Sidebar from="./components/Sidebar.ui" />'
-    );
-    expect(merged).toContain(
-      '<import SyncModal from="./modals/SyncModal.ui" />'
-    );
+    expect(merged).toContain('<import Sidebar from="./components/Sidebar.ui" />');
+    expect(merged).toContain('<import SyncModal from="./modals/SyncModal.ui" />');
 
     // Should preserve data block with original format
     expect(merged).toContain('<collection name="clients" as="clients" />');
@@ -224,14 +175,8 @@ describe('Preview pipeline round-trip', () => {
   });
 
   it('stripComments does not break the merged source', () => {
-    const originalSource = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/main.ui'),
-      'utf-8'
-    );
-    const logicSource = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'logic/main.logic'),
-      'utf-8'
-    );
+    const originalSource = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/main.ui'), 'utf-8');
+    const logicSource = fs.readFileSync(path.join(GLAMOUR_DIR, 'logic/main.logic'), 'utf-8');
     const parsed = parseSource(originalSource);
     const generated = generateSource(
       parsed.elements,
@@ -255,10 +200,7 @@ describe('Preview pipeline round-trip', () => {
   });
 
   it('round-trip for simple component: Header.ui', () => {
-    const source = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/components/Header.ui'),
-      'utf-8'
-    );
+    const source = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/components/Header.ui'), 'utf-8');
     const parsed = parseSource(source);
     const generated = generateSource(parsed.elements, parsed.rootId, '', []);
 
@@ -273,34 +215,24 @@ describe('Preview pipeline round-trip', () => {
     // Key: does it preserve expression props like conditional attributes?
     for (const [, el] of parsed.elements) {
       if (el.conditionalIf) {
-        console.log(
-          `[Header.ui] Element ${el.componentType} has if={${el.conditionalIf}}`
-        );
+        console.log(`[Header.ui] Element ${el.componentType} has if={${el.conditionalIf}}`);
       }
       if (el.events && Object.keys(el.events).length > 0) {
-        console.log(
-          `[Header.ui] Element ${el.componentType} has events:`,
-          el.events
-        );
+        console.log(`[Header.ui] Element ${el.componentType} has events:`, el.events);
       }
       if (el.expressionProps && el.expressionProps.length > 0) {
         console.log(
           `[Header.ui] Element ${el.componentType} has expression props:`,
           el.expressionProps,
           'values:',
-          Object.fromEntries(
-            el.expressionProps.map((p) => [p, el.props[p]])
-          )
+          Object.fromEntries(el.expressionProps.map((p) => [p, el.props[p]]))
         );
       }
     }
   });
 
   it('round-trip for Dashboard.ui', () => {
-    const source = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/pages/Dashboard.ui'),
-      'utf-8'
-    );
+    const source = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/pages/Dashboard.ui'), 'utf-8');
     const parsed = parseSource(source);
     const generated = generateSource(parsed.elements, parsed.rootId, '', []);
 
@@ -325,10 +257,7 @@ describe('Preview pipeline round-trip', () => {
 
   it('CRITICAL: generateSource preserves all explicit props (no default stripping)', () => {
     // Header.ui has variant=primary on some buttons and variant=ghost on others
-    const source = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/components/Header.ui'),
-      'utf-8'
-    );
+    const source = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/components/Header.ui'), 'utf-8');
     const parsed = parseSource(source);
     const generated = generateSource(parsed.elements, parsed.rootId, '', []);
 
@@ -362,10 +291,7 @@ describe('Preview pipeline round-trip', () => {
   it('CRITICAL: round-trip does not inject App wrapper into component files', () => {
     // Dashboard.ui starts with <Stack>, not <App>.
     // After parseSource → generateSource round-trip, it must NOT have an <App> wrapper.
-    const source = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/pages/Dashboard.ui'),
-      'utf-8'
-    );
+    const source = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/pages/Dashboard.ui'), 'utf-8');
     const parsed = parseSource(source);
 
     // Generate with skipRootAppWrapper (what updateUIFile would use)
@@ -386,14 +312,8 @@ describe('Preview pipeline round-trip', () => {
 
   it('full pipeline simulation: main.ui → resolved preview source', () => {
     // Load all source files
-    const mainSource = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'ui/main.ui'),
-      'utf-8'
-    );
-    const logicSource = fs.readFileSync(
-      path.join(GLAMOUR_DIR, 'logic/main.logic'),
-      'utf-8'
-    );
+    const mainSource = fs.readFileSync(path.join(GLAMOUR_DIR, 'ui/main.ui'), 'utf-8');
+    const logicSource = fs.readFileSync(path.join(GLAMOUR_DIR, 'logic/main.logic'), 'utf-8');
 
     // Load all imported component files
     const componentFiles = new Map<string, string>();
@@ -404,18 +324,12 @@ describe('Preview pipeline round-trip', () => {
           walkDir(path.join(dir, entry.name), `${prefix}${entry.name}/`);
         } else if (entry.name.endsWith('.ui')) {
           const filePath = `${prefix}${entry.name}`;
-          componentFiles.set(
-            filePath,
-            fs.readFileSync(path.join(dir, entry.name), 'utf-8')
-          );
+          componentFiles.set(filePath, fs.readFileSync(path.join(dir, entry.name), 'utf-8'));
         }
       }
     }
     walkDir(uiDir, '');
-    console.log(
-      '\n[Pipeline] Component files:',
-      Array.from(componentFiles.keys())
-    );
+    console.log('\n[Pipeline] Component files:', Array.from(componentFiles.keys()));
 
     // Step 1: Parse main.ui
     const parsed = parseSource(mainSource);
@@ -439,8 +353,7 @@ describe('Preview pipeline round-trip', () => {
     );
 
     // Step 5: Resolve imports (simplified - just inline component templates)
-    const importRegex =
-      /<import\s+(\w+)\s+from=["']([^"']+)["']\s*\/>/g;
+    const importRegex = /<import\s+(\w+)\s+from=["']([^"']+)["']\s*\/>/g;
     const imports: { name: string; path: string }[] = [];
     let m;
     while ((m = importRegex.exec(resolved)) !== null) {

@@ -1,6 +1,0 @@
-{
-  "app": { "id": "com.softn.deadhours", "name": "DeadHours", "version": "1.0.0" },
-  "permissions": {
-    "storage": { "enabled": true }
-  }
-}
