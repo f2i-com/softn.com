@@ -1,9 +1,10 @@
 /**
  * A build's records as a file, and back.
  *
- * Pinned: an export holds exactly the build's keys and names the build; a
- * file that is not an export, or is from a newer format, or is corrupt, is
- * refused by name and touches nothing; an import replaces the build's data
+ * Pinned: an export holds exactly the build's keys, in both of its stores,
+ * and names the build; a file that is not an export, or is from a newer
+ * format, or is corrupt, is refused by name and touches nothing; a format-1
+ * file (records alone) still reads; an import replaces the build's data
  * whole, and one that fails part way leaves what was there; a file from a
  * different build is refused until the person importing it says so.
  */
@@ -79,10 +80,10 @@ describe('exportAppData', () => {
     const snapshot = exportAppData(app, 1234)!;
     expect(snapshot).toEqual({
       format: 'softn-app-data',
-      version: 1,
+      version: 2,
       app: { name: 'Notes', version: '1.2.0', origin },
       exportedAt: 1234,
-      entries: { notes: '[{"id":1}]', settings: '{"theme":"dark"}' },
+      stores: { xdb: { notes: '[{"id":1}]', settings: '{"theme":"dark"}' }, local: {} },
     });
   });
 
@@ -99,7 +100,7 @@ describe('readAppDataSnapshot', () => {
     const text = JSON.stringify(exportAppData(app));
     const read = readAppDataSnapshot(text);
     expect(read.ok).toBe(true);
-    if (read.ok) expect(read.snapshot.entries).toEqual({ notes: '[1]' });
+    if (read.ok) expect(read.snapshot.stores).toEqual({ xdb: { notes: '[1]' }, local: {} });
   });
 
   it('refuses, by name, everything that is not a readable export', async () => {
@@ -110,7 +111,9 @@ describe('readAppDataSnapshot', () => {
       ['"text"', /does not hold/],
       [JSON.stringify({ format: 'something-else', version: 1 }), /not a SoftN data export/],
       [JSON.stringify({ format: 'softn-app-data' }), /which format/],
-      [JSON.stringify({ format: 'softn-app-data', version: 2, app, entries: {} }), /newer runtime/],
+      [JSON.stringify({ format: 'softn-app-data', version: 3, app, stores: {} }), /newer runtime/],
+      [JSON.stringify({ format: 'softn-app-data', version: 2, app }), /holds no records/],
+      [JSON.stringify({ format: 'softn-app-data', version: 2, app, stores: { local: { save: 7 } } }), /not stored text/],
       [JSON.stringify({ format: 'softn-app-data', version: 0, app, entries: {} }), /not one this runtime reads/],
       [JSON.stringify({ format: 'softn-app-data', version: 1, entries: {} }), /which app/],
       [JSON.stringify({ format: 'softn-app-data', version: 1, app: { name: 'N', version: '1', origin: '' }, entries: {} }), /which app/],
@@ -133,7 +136,7 @@ describe('importAppData', () => {
     ls.setItem(`xdb:${origin}:notes`, 'old');
     ls.setItem(`xdb:${origin}:stale`, 'gone after import');
     ls.setItem('xdb:other:notes', 'untouched');
-    const result = importAppData({ format: 'softn-app-data', version: 1, app, exportedAt: 0, entries: { notes: 'new', settings: '{}' } }, app);
+    const result = importAppData({ format: 'softn-app-data', version: 2, app, exportedAt: 0, stores: { xdb: { notes: 'new', settings: '{}' }, local: {} } }, app);
     expect(result).toEqual({ ok: true, copied: 2, total: 2, skipped: 0 });
     expect(ls.snapshot()).toEqual({ 'xdb:other:notes': 'untouched', [`xdb:${origin}:notes`]: 'new', [`xdb:${origin}:settings`]: '{}' });
   });
@@ -142,10 +145,13 @@ describe('importAppData', () => {
     const { importAppData } = await fresh();
     ls.setItem(`xdb:${origin}:notes`, 'old');
     ls.setItem(`xdb:${origin}:settings`, 'old settings');
-    // Room for the old data and a little more: the import's first two keys
-    // fit, the third does not.
-    ls.quota(ls.bytes() + 20);
-    const result = importAppData({ format: 'softn-app-data', version: 1, app, exportedAt: 0, entries: { notes: 'new', settings: 'new', extra: 'new' } }, app);
+    // Room for the old data, the journal that holds a copy of it, and a
+    // little more: the import's first two keys fit, the third does not.
+    ls.quota(ls.bytes() + 400);
+    const result = importAppData(
+      { format: 'softn-app-data', version: 2, app, exportedAt: 0, stores: { xdb: { notes: 'new', settings: 'new', extra: 'x'.repeat(400) }, local: {} } },
+      app
+    );
     expect(result.ok).toBe(false);
     expect(result.copied).toBe(0);
     expect(result.error).toMatch(/QuotaExceeded/);
@@ -156,7 +162,7 @@ describe('importAppData', () => {
   it('refuses a file from a different build unless told the person knows', async () => {
     const { importAppData } = await fresh();
     ls.setItem(`xdb:${origin}:notes`, 'mine');
-    const foreign = { format: 'softn-app-data' as const, version: 1 as const, app: { name: 'Notes', version: '2.0.0', origin: 'b'.repeat(64) }, exportedAt: 0, entries: { notes: 'theirs' } };
+    const foreign = { format: 'softn-app-data' as const, version: 2 as const, app: { name: 'Notes', version: '2.0.0', origin: 'b'.repeat(64) }, exportedAt: 0, stores: { xdb: { notes: 'theirs' }, local: {} } };
     const refused = importAppData(foreign, app);
     expect(refused.ok).toBe(false);
     expect(refused.code).toBe('DIFFERENT_APP');
@@ -169,7 +175,7 @@ describe('importAppData', () => {
 
   it('refuses a build with no identity', async () => {
     const { importAppData } = await fresh();
-    const result = importAppData({ format: 'softn-app-data', version: 1, app, exportedAt: 0, entries: { notes: 'x' } }, { origin: undefined });
+    const result = importAppData({ format: 'softn-app-data', version: 2, app, exportedAt: 0, stores: { xdb: { notes: 'x' }, local: {} } }, { origin: undefined });
     expect(result.ok).toBe(false);
     expect(result.code).toBe('NO_IDENTITY');
   });

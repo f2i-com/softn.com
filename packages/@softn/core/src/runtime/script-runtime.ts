@@ -183,6 +183,23 @@ export interface ScriptRuntimeOptions {
    * this browser keeps (see visitor-token.ts); null sends none.
    */
   storageVisitorToken?: string | null;
+  /**
+   * Called when a `localStorage` write the script made was refused by the
+   * browser — quota, most often. The script sees the failure too, as an
+   * exception from the call; this is for the host to tell the person, who
+   * otherwise learns of a lost save when they come back for it.
+   */
+  onPersistenceFailure?: (failure: PersistenceFailure) => void;
+}
+
+/** A write to the browser's storage that was not kept, as reported to the host. */
+export interface PersistenceFailure {
+  /** `setItem`, `removeItem` or `clear`. */
+  operation: string;
+  /** The script's own key, without the app prefix; empty for `clear`. */
+  key: string;
+  /** The browser's exception, with its own name for the cause. */
+  error: Error;
 }
 
 export interface ScriptLoadResult {
@@ -492,6 +509,7 @@ function extractComputedDeclarations(code: string): Array<{ name: string; expres
  */
 export class SoftNScriptRuntime {
   private vmEngine: VmAdapter | null = null;
+  private readonly onPersistenceFailure: ((failure: PersistenceFailure) => void) | null;
   private context: ScriptContext;
   private db: DBNamespace;
   private permissions?: AppPermissions;
@@ -653,6 +671,7 @@ export class SoftNScriptRuntime {
     this.observedStateNames = options?.observedStateNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
     this.visitorToken = options?.storageVisitorToken;
+    this.onPersistenceFailure = options?.onPersistenceFailure ?? null;
     this.externalFunctions = externalFunctions ?? null;
     this.db = createDBNamespace(() => this.permissionConfig, appId);
     if (typeof importResolver === 'function') {
@@ -777,6 +796,9 @@ export class SoftNScriptRuntime {
     const perms = this.permissions || {};
     if (perms.storage !== false) {
       this.vmEngine.registerLocalStorageBridge(this.appId);
+      // The script gets the failure as an exception; the host gets it here,
+      // with the browser's own reason, to put in front of the person.
+      this.vmEngine.onStorageFailure = (failure) => this.onPersistenceFailure?.(failure);
     }
     // Clipboard is its own manifest permission and its own engine bridge in
     // v0.0.1. It used to ride on the localStorage bridge because the old engine

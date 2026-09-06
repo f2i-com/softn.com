@@ -417,7 +417,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                 Sandboxed
               </span>
               {info.capabilities.length === 0 ? <span className="badge">No capabilities</span> : info.capabilities.map((c) => <span key={c} className="badge">{c}</span>)}
-              {!info.capabilities.includes('net') && <span className="badge">No network</span>}
+              {!info.capabilities.includes('net') && <span className="badge">No general network access</span>}
             </div>
           )}
 

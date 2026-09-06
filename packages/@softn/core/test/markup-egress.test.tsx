@@ -122,6 +122,20 @@ describe('a remote source in the markup while consent is pending', () => {
   it('leaves an inline style with no url() untouched', () => {
     expect(html('<div style={{ color: "red" }}>x</div>', true)).toContain('color:red');
   });
+
+  it('is not fooled by another spelling of the inline fetch', () => {
+    // The check used to look for the text `url(`. Each of these is the same
+    // request once the browser has read it.
+    for (const value of [
+      `URL(${REMOTE})`,
+      `image-set("${REMOTE}" 1x)`,
+      `\\75rl(${REMOTE})`,
+      `u/**/rl(${REMOTE})`,
+    ]) {
+      const out = html(`<div style={{ backgroundImage: ${JSON.stringify(value)} }}>x</div>`, true);
+      expect(out, value).not.toContain('attacker.example');
+    }
+  });
 });
 
 describe('the same markup once the user has allowed', () => {

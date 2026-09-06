@@ -25,7 +25,7 @@
  *   outside any bundle — and gets the old behaviour.
  */
 
-import { isRemoteUrl } from '../renderer/sanitize-html';
+import { isRemoteUrl, type MarkupUrlJudge } from '../renderer/sanitize-html';
 
 export interface NetPermission {
   enabled?: boolean;
@@ -187,6 +187,28 @@ export function filterSignalingUrls(
     else refused.push({ url: candidate, reason: verdict.reason });
   }
   return { allowed, refused };
+}
+
+/**
+ * The judge `sanitizeRichText` and `sanitizeSvg` take: the decision the
+ * renderer makes for a URL prop, applied to markup that arrives as a string
+ * and never passes through a prop. A rich-text value with `<img
+ * src="https://…">` and an icon with `<use href="https://…">` used to be
+ * judged on scheme alone, so a bundle with no `net` reached the network
+ * through them on first paint.
+ *
+ * `href` on an `<a>` is navigation the user chooses and can see, withheld
+ * only while the consent bar is unanswered; everywhere else — `src`,
+ * `srcset`, `poster`, an SVG `href` — is a fetch the render performs. No
+ * config means the host is not enforcing, and there is no judge.
+ */
+export function markupUrlJudge(config: EgressConfig | null | undefined): MarkupUrlJudge | undefined {
+  if (!config) return undefined;
+  return (url, attribute, tag) => {
+    if (attribute === 'href' && tag === 'a') return !(config.consentPending && isRemoteUrl(url));
+    if (attribute === 'srcset') return describeSrcSetEgress(url, config).allowed;
+    return describeMarkupEgress(url, config).allowed;
+  };
 }
 
 /**

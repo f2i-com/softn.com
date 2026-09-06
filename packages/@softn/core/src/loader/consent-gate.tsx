@@ -33,6 +33,7 @@
  */
 
 import React from 'react';
+import type { EgressConfig } from '../runtime/egress-policy';
 
 /** The capability names permission.json can declare. */
 export type CapabilityName =
@@ -111,6 +112,23 @@ export function isCapabilityAllowed(status: CapabilityStatus): boolean {
  */
 export function useConsentPending(): boolean {
   return React.useContext(CapabilityContext).consentPending;
+}
+
+/**
+ * The host's whole network decision for markup below this point, in the
+ * shape egress-policy.ts reads: null where the host is not enforcing. For
+ * the components that take markup as a string — `<RichTextEditor value>`,
+ * `<Icon svg>` — and so never have a URL prop the renderer could judge.
+ */
+export function useEgressConfig(): EgressConfig | null {
+  const state = React.useContext(CapabilityContext);
+  return React.useMemo(
+    () =>
+      state.permissions === null
+        ? null
+        : { consentPending: state.consentPending, permissions: state.permissions as EgressConfig['permissions'] },
+    [state]
+  );
 }
 
 /**

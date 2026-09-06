@@ -16,7 +16,7 @@ import React, {
 import { parse } from '../parser';
 import { renderDocument } from '../renderer';
 import { getDefaultRegistry } from '../renderer/registry';
-import { rewriteCssUrls } from '../renderer/sanitize-html';
+import { rewriteCssResources } from '../renderer/sanitize-html';
 import {
   collectObservedStateNames,
   createScriptRuntime,
@@ -31,6 +31,7 @@ import {
   type ScriptRuntimeMode,
   type BundleFileProvider,
   type PermissionConfig,
+  type PersistenceFailure,
 } from '../runtime/script-runtime';
 // The off-main-thread runtime. Reached only by `?exec=worker` for now; every
 // other path routes calls through the main-thread VM. See the note where
@@ -87,14 +88,17 @@ export function sanitizeBundleCSS(css: string): string {
     /@import\b(?:\s|\/\*[\s\S]*?\*\/)*(?:url\s*\([^)]*\)|["'][^"']*["'])[^;]*;?/gi,
     '/* @import removed */'
   );
-  // Remove url() values that reference external or dangerous protocols.
+  // Remove url() values that reference external or dangerous protocols, and
+  // the image functions that take their targets as plain strings —
+  // `image-set("https://…" 1x)` loads exactly what `url(https://…)` does and
+  // used to pass because it contains no `url(`.
   //
-  // The matching lives in `rewriteCssUrls` because the inline `style={{…}}`
-  // path needs the identical quoted/unquoted handling with a different verdict:
-  // a style block never gets a remote url(), while an inline one only has it
-  // withheld until the user answers the consent bar.
-  sanitized = rewriteCssUrls(sanitized, (target) =>
-    /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/)/i.test(target)
+  // The matching lives in `rewriteCssResources` because the inline `style={{…}}`
+  // path judges the same forms with a different verdict: a style block never
+  // gets a remote resource, while an inline one is held to the bundle's
+  // network permission.
+  sanitized = rewriteCssResources(sanitized, (target) =>
+    /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/|\\)/i.test(target)
   );
   // Remove expression() (IE) and -moz-binding (Firefox) — code execution vectors
   sanitized = sanitized.replace(/expression\s*\([^)]*\)/gi, '/* expression removed */');
@@ -374,6 +378,66 @@ function templateRequiresSyncCalls(nodes: TemplateNode[]): boolean {
 /**
  * Default runtime error fallback
  */
+/**
+ * A refused save, in words. The browser's own name for the cause is kept —
+ * a person who searches for "QuotaExceededError" finds the answer — and the
+ * advice is the one thing that helps in every case: get the data out.
+ */
+function describePersistenceFailure(failure: PersistenceFailure): string {
+  const cause = failure.error.name && failure.error.name !== 'Error' ? failure.error.name : 'the browser refused it';
+  const what =
+    failure.operation === 'clear'
+      ? 'could not clear its saved data'
+      : failure.operation === 'removeItem'
+        ? `could not remove its saved "${failure.key}"`
+        : `could not save "${failure.key}"`;
+  return `This app ${what} (${cause}). What it saved before is unchanged; free up storage in the browser, or export the app's data before going on.`;
+}
+
+/** The bar that carries a refused save to the person, until they dismiss it. */
+function PersistenceNotice({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}): React.ReactElement {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-softn-notice="persistence"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.75rem',
+        padding: '0.5rem 0.75rem',
+        backgroundColor: '#fffbeb',
+        borderBottom: '1px solid #fcd34d',
+        color: '#78350f',
+        fontSize: '0.875rem',
+        lineHeight: 1.4,
+      }}
+    >
+      <span style={{ flex: 1 }}>{message}</span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        style={{
+          border: '1px solid #fcd34d',
+          background: 'transparent',
+          color: 'inherit',
+          borderRadius: '0.25rem',
+          padding: '0.2rem 0.5rem',
+          cursor: 'pointer',
+        }}
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
 function DefaultRuntimeErrorFallback({
   error,
   reset,
@@ -467,6 +531,10 @@ export function SoftNRenderer({
     scriptSyncFunctions: {},
     scriptComputed: {},
   });
+  // A save the browser refused, in words for the person using the app. The
+  // script is told by an exception; without this the person is told by
+  // nothing, and finds out when they come back for the save.
+  const [persistenceNotice, setPersistenceNotice] = useState<string | null>(null);
 
   // Script runtime ref for .logic execution
   const scriptRuntimeRef = useRef<ScriptRuntimeHandle | null>(null);
@@ -666,6 +734,8 @@ export function SoftNRenderer({
     // Per-invocation stale flag — prevents React Strict Mode double-mount from
     // allowing the first mount's async loadScript callback to run after cleanup.
     let stale = false;
+    // A refused save belonged to the runtime being replaced.
+    setPersistenceNotice(null);
 
     if (resolvedSource) {
       // Capture scroll/focus before re-parsing for hot reload
@@ -868,6 +938,10 @@ export function SoftNRenderer({
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
                 observedStateNames,
+                onPersistenceFailure: (failure) => {
+                  if (stale || !mountedRef.current) return;
+                  setPersistenceNotice(describePersistenceFailure(failure));
+                },
               },
               bundleFileProvider,
               runtimeFunctions
@@ -909,6 +983,10 @@ export function SoftNRenderer({
                   if (stale || !mountedRef.current) return;
                   setState((prev) => ({ ...prev, error: err }));
                 },
+                onPersistenceFailure: (failure) => {
+                  if (stale || !mountedRef.current) return;
+                  setPersistenceNotice(describePersistenceFailure(failure));
+                },
               }
             );
           } else if (effectiveMode === 'worker') {
@@ -926,6 +1004,10 @@ export function SoftNRenderer({
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
                 observedStateNames,
+                onPersistenceFailure: (failure) => {
+                  if (stale || !mountedRef.current) return;
+                  setPersistenceNotice(describePersistenceFailure(failure));
+                },
               },
               bundleFileProvider,
               runtimeFunctions
@@ -954,6 +1036,10 @@ export function SoftNRenderer({
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
                 observedStateNames,
+                onPersistenceFailure: (failure) => {
+                  if (stale || !mountedRef.current) return;
+                  setPersistenceNotice(describePersistenceFailure(failure));
+                },
               },
               bundleFileProvider,
               runtimeFunctions
@@ -1484,6 +1570,12 @@ export function SoftNRenderer({
         {state.document.style?.content && (
           <style
             dangerouslySetInnerHTML={{ __html: sanitizeBundleCSS(state.document.style.content) }}
+          />
+        )}
+        {persistenceNotice && (
+          <PersistenceNotice
+            message={persistenceNotice}
+            onDismiss={() => setPersistenceNotice(null)}
           />
         )}
         <SoftNErrorBoundary

@@ -111,8 +111,11 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
             </span>
           )}
           {!app.capabilities.includes('net') && (
-            <span className="app-card-stat app-card-safe" title="Declares no network access">
-              offline
+            <span
+              className="app-card-stat app-card-safe"
+              title="Makes no network requests of its own; a hosted service it declares, such as server storage, still reaches this site"
+            >
+              no net
             </span>
           )}
           {app.execution === 'worker' && (

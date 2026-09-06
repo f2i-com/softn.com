@@ -12,7 +12,7 @@ export const SORTS: Array<{ id: string; name: string }> = [
 ];
 
 export const CAP_FILTERS: Array<{ id: CapabilityFilter; name: string; hint: string }> = [
-  { id: 'nonet', name: 'Offline', hint: 'Declares no network access' },
+  { id: 'nonet', name: 'No general network', hint: 'Makes no network requests of its own; server storage, sync and AI are declared separately' },
   { id: 'none', name: 'No capabilities', hint: 'Asks for nothing beyond the sandbox' },
   { id: 'storage', name: 'Server storage', hint: 'Keeps records on this site — scoreboards, shared notes' },
   { id: 'worker', name: 'Off-main-thread', hint: 'Runs its script in a worker' },

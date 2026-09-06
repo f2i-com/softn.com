@@ -128,6 +128,25 @@ const LOCAL_STORAGE_SYNC_OPS = [
 /** Everything `navigator.clipboard.*` can reach. Served by `setClipboardBridge`. */
 const CLIPBOARD_SYNC_OPS = ['nav.clipboardWrite', 'nav.clipboardRead'] as const;
 
+/**
+ * A host storage failure as the script sees it: an exception carrying the
+ * browser's own name for what went wrong — `QuotaExceededError`,
+ * `SecurityError` — so a script that catches around a save can tell the
+ * player what happened, and one that does not fails loudly instead of
+ * silently.
+ */
+function storageFailure(operation: string, key: string, cause: unknown): Error {
+  // A DOMException is not an Error in every realm (jsdom's is not), so the
+  // name and message are read off whatever was thrown rather than typed.
+  const thrown = (cause ?? {}) as { name?: unknown; message?: unknown };
+  const name = typeof thrown.name === 'string' && thrown.name ? thrown.name : 'Error';
+  const detail =
+    typeof thrown.message === 'string' && thrown.message ? thrown.message : String(cause);
+  const error = new Error(`localStorage.${operation}("${key}") was not kept: ${name}: ${detail}`);
+  error.name = name;
+  return error;
+}
+
 /** Everything `accel.*` can reach. Served by `setAccelBridge`. */
 const ACCEL_SYNC_OPS = ['accel.compile', 'accel.make', 'accel.state', 'accel.run', 'accel.install'] as const;
 
@@ -291,6 +310,8 @@ export class ZippWasmAdapter {
   /**
    * Register the localStorage bridge, delegating to real browser storage with
    * app-scoped key prefixing so two bundles cannot read each other's keys.
+   * Writes that the browser refuses reach the script as exceptions; see the
+   * bridge below.
    *
    * `navigator.clipboard` used to be served from this same object — the old
    * engine routed `nav.*` to the localStorage bridge. v0.0.1 refuses to, so it
@@ -302,6 +323,14 @@ export class ZippWasmAdapter {
     const safeAppId = (appId || '_default').replace(/[^a-zA-Z0-9_-]/g, '_');
     const prefix = `softn:${safeAppId}:`;
 
+    // A write that fails is thrown to the guest, not logged and swallowed.
+    // The bridge used to catch the browser's exception — quota, most often —
+    // and return, so a script's `try { localStorage.setItem(...) } catch` saw
+    // the save succeed after it had failed, and told the player so. A throw
+    // here crosses the VM boundary the same way a `db.create` error does,
+    // and lands in the script's catch with the browser's own name for what
+    // went wrong. Reads stay lenient: an unreadable store reads as empty,
+    // which is what it is.
     this.wasm.setLocalStorageBridge({
       getItem: (key: string) => {
         try {
@@ -314,14 +343,14 @@ export class ZippWasmAdapter {
         try {
           localStorage.setItem(prefix + key, value);
         } catch (e) {
-          console.error('[zipp bridge] localStorage.setItem error:', e);
+          throw this.refuseStorage('setItem', key, e);
         }
       },
       removeItem: (key: string) => {
         try {
           localStorage.removeItem(prefix + key);
         } catch (e) {
-          console.error('[zipp bridge] localStorage.removeItem error:', e);
+          throw this.refuseStorage('removeItem', key, e);
         }
       },
       clear: () => {
@@ -334,10 +363,28 @@ export class ZippWasmAdapter {
           }
           for (const k of keysToRemove) localStorage.removeItem(k);
         } catch (e) {
-          console.error('[zipp bridge] localStorage.clear error:', e);
+          throw this.refuseStorage('clear', '', e);
         }
       },
     });
+  }
+
+  /**
+   * Where a refused storage write is reported before it is thrown to the
+   * script. The engine hands the script a generic failure; the host gets the
+   * browser's own exception and can say why.
+   */
+  onStorageFailure: ((failure: { operation: string; key: string; error: Error }) => void) | null =
+    null;
+
+  private refuseStorage(operation: string, key: string, cause: unknown): Error {
+    const failure = storageFailure(operation, key, cause);
+    try {
+      this.onStorageFailure?.({ operation, key, error: failure });
+    } catch (e) {
+      console.error('[zipp bridge] the storage failure handler threw:', e);
+    }
+    return failure;
   }
 
   /**

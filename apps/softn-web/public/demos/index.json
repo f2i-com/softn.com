@@ -6,7 +6,7 @@
     "description": "A chat with a small language model that downloads once and runs entirely in your browser; nothing you type leaves the machine",
     "primary": "#10b981",
     "size": 42367,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/AIChat.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/AIChat.softn",
     "sha256": "24ca3bb7ecb764e84e17a78a954d53927a97c5c0f05fac48cd2d07c59d8dc84b"
   },
   {
@@ -16,7 +16,7 @@
     "description": "A tour of what a sandboxed app may ask for: fetch a URL, read and make QR codes, take a photo, open a file — each behind the permission that gates it",
     "primary": "#3b82f6",
     "size": 34562,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/DeviceKit.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/DeviceKit.softn",
     "sha256": "a2331efadcfeb253677982b2e20384cf35121a190a1e14fe734ea92848aad0dd"
   },
   {
@@ -26,7 +26,7 @@
     "description": "A salon's front desk: appointments, clients, staff and services in a local-first database that syncs between devices",
     "primary": "#d4a574",
     "size": 94192,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/GlamourStudio.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/GlamourStudio.softn",
     "sha256": "723a2a7ff2cb07912e6ecc6b401ec4bc1677332e6c1e4ed2aa09852cb82921c8"
   },
   {
@@ -36,7 +36,7 @@
     "description": "Vector maths on your graphics card: two compute shaders run through the runtime's WebGPU bridge, with the numbers shown as they come back",
     "primary": "#10b981",
     "size": 13500,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/GPUDemo.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/GPUDemo.softn",
     "sha256": "738ff335a5e6ed98e3404ef287349d77b2005303f5ebe5dda155ffd57e1e17c6"
   },
   {
@@ -46,7 +46,7 @@
     "description": "A first-person maze carved fresh every game: find the golden ring, with a minimap that fills in as you explore and a best time that sticks",
     "primary": "#4ade80",
     "size": 93707,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/MazeEscape3D.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/MazeEscape3D.softn",
     "sha256": "c971bef7321972b5a7b563b80360e3cdedf2e7b2d2287fd9fece1a1f3ac1dc7b"
   },
   {
@@ -55,9 +55,9 @@
     "name": "Notes",
     "description": "A shared notes board kept in the app's own storage on this site: add, search and delete, and everyone who opens it here sees the same notes",
     "primary": "#6366f1",
-    "size": 16581,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/Notes.softn",
-    "sha256": "4dc23f1a585d1b15be4c3b1d992e25f6b3427efe0df1097f9b796fdade3aa1a2"
+    "size": 16625,
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/Notes.softn",
+    "sha256": "556588d789598ba6996ae81d3379df90cb908d539bb40ba29bbb1bbe1e360caa"
   },
   {
     "id": "pocket",
@@ -65,9 +65,9 @@
     "name": "Pocket",
     "description": "An 8-bit handheld emulator — CPU, PPU, APU and mappers all in .logic, drawn by PixelCanvas and heard through AudioStream",
     "primary": "#9bbc0f",
-    "size": 358284,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/Pocket.softn",
-    "sha256": "3e4060423e0fefe354c8219b0e8737575f9f2957b17444d2ac58f4b245502fe2"
+    "size": 361687,
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/Pocket.softn",
+    "sha256": "efd1acc9db4c9dc3e07262e7a0568ac5fe9283f6d7e9e33bf8d2c7dd5b00c6a4"
   },
   {
     "id": "soft-dos",
@@ -76,7 +76,7 @@
     "description": "An x86 PC emulator written in .logic: a 16/32-bit CPU with the full 386 integer instruction set, VGA mode 13h and 80x25 text, a BIOS and DOS kernel, and a command line that runs real 8086 programs.",
     "primary": "#48d080",
     "size": 453792,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/SoftDOS.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/SoftDOS.softn",
     "sha256": "e5fb063da36d04838d2e0afbe6f23fc9989b3c22cb0575d1dcf44d9a859604e6"
   },
   {
@@ -86,7 +86,7 @@
     "description": "Every chart, animation and interactive component the runtime ships, on three pages, in light and dark",
     "primary": "#6366f1",
     "size": 45755,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/Showcase.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/Showcase.softn",
     "sha256": "d482fde37e6d8eae0177a84e3afd3f34690e3c8632b7f39b248f3f63cd088f5f"
   },
   {
@@ -95,9 +95,9 @@
     "name": "Snake",
     "description": "The classic: eat, grow, don't hit the walls — with a shared top ten kept on the site",
     "primary": "#4ade80",
-    "size": 64351,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/SnakeGame.softn",
-    "sha256": "579d202c288727193404a9410e3c7775a276c243d96a7d447feb56e2a730be39"
+    "size": 64585,
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/SnakeGame.softn",
+    "sha256": "6535228151446fd6308eea3790ccce00856883f07221ec5e8e43a182d1d30294"
   },
   {
     "id": "texas-holdem",
@@ -105,9 +105,9 @@
     "name": "Texas Hold'em",
     "description": "Texas Hold'em Poker for friends who trust each other: every player's client holds the whole table, hole cards included, over peer-to-peer sync",
     "primary": "#c8aa6e",
-    "size": 318425,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/TexasHoldem.softn",
-    "sha256": "c90bae5ad7210468e5d8dd6e187d6ab2d1bb0e23c11b41adeab79d3413319ed1"
+    "size": 322601,
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/TexasHoldem.softn",
+    "sha256": "a59582255d91fe08a77b88a7fc5026237f4e22a08b274dc237002f5f978df818"
   },
   {
     "id": "the-office",
@@ -116,7 +116,7 @@
     "description": "Local AI sim game where 6 Office-inspired characters chat autonomously using Qwen3.5-0.8B",
     "primary": "#58a6ff",
     "size": 623342,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/TheOffice.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/TheOffice.softn",
     "sha256": "377e7e2387b0664571f2f4a307d4587dc5dace6cef5bcb3aa9fe4af16e1a2b0b"
   },
   {
@@ -126,7 +126,7 @@
     "description": "Seven shapes drifting over a floor: drag to look around, click a shape to select it, add more and recolour them",
     "primary": "#f59e0b",
     "size": 12444,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/ThreeDemo.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/ThreeDemo.softn",
     "sha256": "0645cef734161b711266e73f5a0c7dde04bcc51606e390c20f2a05925dfaa95b"
   },
   {
@@ -136,7 +136,7 @@
     "description": "Send a message as synthetic birdsong and decode it back — the QXW acoustic transport",
     "primary": "#c7ee53",
     "size": 111885,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/WarbleWire.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/WarbleWire.softn",
     "sha256": "fa2390663097432eb6377fbc21b54fc4233fe2f4cb55fb59c20171c30fd07b84"
   },
   {
@@ -146,7 +146,7 @@
     "description": "First-person 3D narrative tragicomedy, part one: laid off by an avatar, home by dinner, a business by midnight. Fully voiced, and one file.",
     "primary": "#f59e0b",
     "size": 17903428,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/PromptlyUnemployed.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/PromptlyUnemployed.softn",
     "sha256": "4567c7a4bb4b4218e5d00ff70cbfdd64d8a4b2edda64a136ef33a09737e82de6"
   },
   {
@@ -156,7 +156,7 @@
     "description": "A first-person voxel sandbox: an island of blocks to mine, build on and save, with gravity, swimming, flight and a day-night cycle",
     "primary": "#5cae4a",
     "size": 78520,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/Blockscape.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/Blockscape.softn",
     "sha256": "250df2fc85ecac783b9f4567cd327a45d1a8f666769fefff320b7420da11f68d"
   },
   {
@@ -165,9 +165,9 @@
     "name": "Dead Hours",
     "description": "A first-person zombie shooter: hold a fenced yard at night against waves of the dead with a pistol and a shotgun",
     "primary": "#ff5a3c",
-    "size": 305437,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/DeadHours.softn",
-    "sha256": "50eec98e81baf693539383695c144ab70feae0695ad738c5fa0c6fc9b132c335"
+    "size": 305676,
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/DeadHours.softn",
+    "sha256": "1c2714b112b262713d5e1b6dc3ec9833c04ec2ecaa00d0522270e728e4959a4b"
   },
   {
     "id": "twenty48",
@@ -176,7 +176,7 @@
     "description": "The sliding-tile classic: merge equal tiles to reach 2048 and beyond, with undo and a best score",
     "primary": "#edc22e",
     "size": 80437,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/Twenty48.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/Twenty48.softn",
     "sha256": "6ebb3d169e53f1599f11f79a11b71b969100d0054c2a471eb0fae3a6b57eaf5e"
   },
   {
@@ -186,7 +186,7 @@
     "description": "Falling blocks in a 10×20 well: seven pieces, wall kicks, a ghost piece, hold, a preview, and levels that speed up",
     "primary": "#22d3ee",
     "size": 103452,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/Blockfall.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/Blockfall.softn",
     "sha256": "61a5b50451e3faa3c02a469e9a5265d1aac86cebc5f39dbaf1595b7acc8282bd"
   },
   {
@@ -196,7 +196,7 @@
     "description": "An animated HO-scale model train yard diorama on a wooden table with running trains, turntable, busy harbor, town, day-night cycle, and tactile physical controls",
     "primary": "#3b82f6",
     "size": 157331,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/TrainYard.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/TrainYard.softn",
     "sha256": "b1af37042f74c65b63050f77c0239aa63e3d95d9ab00f286f453d72af1e92144"
   },
   {
@@ -206,7 +206,7 @@
     "description": "An interactive 3D ecosystem diorama: watch foxes hunt rabbits, rabbits graze on grass, and population dynamics balance in real time",
     "primary": "#10b981",
     "size": 87274,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/PredatorPrey.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/PredatorPrey.softn",
     "sha256": "df9f3e4fe6323f3c7b4e0327095d36aceafb6cb771c6a7fbd96645cdf9472fa0"
   },
   {
@@ -216,7 +216,7 @@
     "description": "Draw a house from above and see it in 3D: walls, doors, windows, room floors, a roof, furniture and garden, then walk through it in first person",
     "primary": "#f59e0b",
     "size": 110487,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/HouseBuilder.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/HouseBuilder.softn",
     "sha256": "b769e03b377a60c55c39778d376adaf49270652b21ad4d451e4163413ff774ef"
   },
   {
@@ -226,7 +226,7 @@
     "description": "Build a house, design avatars and move a household in: steer them to eat, sleep, wash, play and chat, or switch on free will and watch their day",
     "primary": "#22c55e",
     "size": 261764,
-    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.0/SimLives.softn",
+    "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/SimLives.softn",
     "sha256": "d6f3db1c4900c0671d899904a8a889e61c6b81ba23293c4200b48c399f996406"
   }
 ]

@@ -19,7 +19,7 @@ import type {
 } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { ComponentRegistry, SoftNComponent } from './registry';
-import { isRemoteUrl, isSafeUrl, rewriteCssUrls, URL_ATTRIBUTES } from './sanitize-html';
+import { cssResourceReferences, isRemoteUrl, isSafeUrl, URL_ATTRIBUTES } from './sanitize-html';
 import {
   describeMarkupEgress,
   describeSrcSetEgress,
@@ -485,6 +485,16 @@ function sanitizeUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy):
  * question every other sink asks, with the same answer: `net`, granted, to a
  * permitted host. A bundle that legitimately points at a CDN declares it.
  *
+ * The check used to look for the text `url(`, which is one of the ways to
+ * spell a fetch and not the others: `URL(`, `\75rl(`, a name split by an
+ * empty comment and `image-set("https://…" 1x)` all reached the page, and each made the
+ * request. The scan now undoes comments and escapes and knows every CSS
+ * function that loads something, and a declaration that carries a resource
+ * the app may not load is dropped whole — a value that needed escapes to say
+ * what it says is dropped too, because nothing an inline style legitimately
+ * says needs them, and the alternative is trusting a parser to have thought
+ * of every spelling.
+ *
  * The object is copied rather than mutated: it may be the app's own state, and
  * deleting from that would corrupt the state as well as the render.
  */
@@ -495,11 +505,14 @@ function withholdRemoteStyleUrls(props: SoftNProps, policy: EgressPolicy): void 
 
   let copy: Record<string, unknown> | null = null;
   for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
-    if (typeof value !== 'string' || !value.includes('url(')) continue;
-    const withheld = rewriteCssUrls(value, (target) => !describeMarkupEgress(target, policy).allowed);
-    if (withheld === value) continue;
+    if (typeof value !== 'string') continue;
+    const scan = cssResourceReferences(value);
+    if (!scan.opaque && scan.urls.length === 0) continue;
+    const withheld =
+      scan.opaque || scan.urls.some((target) => !describeMarkupEgress(target, policy).allowed);
+    if (!withheld) continue;
     if (!copy) copy = { ...(style as Record<string, unknown>) };
-    copy[name] = withheld;
+    delete copy[name];
   }
   if (copy) props.style = copy;
 }
