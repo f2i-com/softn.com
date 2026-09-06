@@ -28,6 +28,7 @@ export const engine_setInstructionBudget: (a: number, b: number) => number;
 export const engine_setLocalStorageBridge: (a: number, b: any) => [number, number];
 export const engine_setSyncHostCapabilities: (a: number, b: any) => [number, number];
 export const engine_takeOutput: (a: number) => [number, number, number];
+export const zippProfile: () => [number, number];
 export const zipp_install_panic_hook: () => void;
 export const zipp_start: () => void;
 export const __wbindgen_malloc: (a: number, b: number) => number;

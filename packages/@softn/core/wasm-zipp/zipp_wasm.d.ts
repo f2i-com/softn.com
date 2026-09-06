@@ -157,11 +157,21 @@ export class Engine {
      * and be cut off on the other. This is the host-side knob for that; the
      * clamp is the fuse it cannot remove.
      *
-     * Host-only, like renewal: a method on the Engine binding, unreachable
-     * from guest code. Setting the budget restores nothing else — heap,
-     * output and dynamic-code ceilings stay where setup left them. Returns
-     * false once a budget has actually been spent, exactly as renewal does;
-     * call it before the first re-entry.
+     * Called BEFORE `initScript`, the allowance governs top-level execution
+     * and `_init` as well: it used to need existing script state, so the one
+     * phase a host most wants to bound — a stranger's top level — always ran
+     * under the default (the 6 September 2026 audit's Z06). Called after,
+     * it renews the running budget to the new size, and every later
+     * `renewInstructionBudget` restores that size rather than the default.
+     *
+     * The value's handling is defined, not incidental: a non-finite number
+     * selects the default; a fraction is truncated; zero and negatives clamp
+     * to one step; anything above the maximum clamps to it. Host-only, like
+     * renewal: a method on the Engine binding, unreachable from guest code.
+     * Setting the budget restores nothing else — heap, output and
+     * dynamic-code ceilings stay where setup left them. Returns false once a
+     * budget has actually been spent, exactly as renewal does, and on a
+     * disposed engine.
      */
     setInstructionBudget(steps: number): boolean;
     /**
@@ -194,6 +204,16 @@ export class Engine {
  * nested host call while it runs.
  */
 export function accelGuestCall(name: string, args: Float64Array): number;
+
+/**
+ * The limits and semantics this artifact was built with, as JSON.
+ *
+ * A host used to have only the README's table to go by, and at v0.0.14 four
+ * of its rows described an older build (the 6 September 2026 audit's Z04).
+ * This is read from the same constants the engine enforces, so it cannot
+ * drift; `tests/node/profile-matches-readme.cjs` holds the README to it.
+ */
+export function zippProfile(): string;
 
 /**
  * Route Rust panics to `console.error` with a message instead of a bare
@@ -239,6 +259,7 @@ export interface InitOutput {
     readonly engine_setLocalStorageBridge: (a: number, b: any) => [number, number];
     readonly engine_setSyncHostCapabilities: (a: number, b: any) => [number, number];
     readonly engine_takeOutput: (a: number) => [number, number, number];
+    readonly zippProfile: () => [number, number];
     readonly zipp_install_panic_hook: () => void;
     readonly zipp_start: () => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
