@@ -1,5 +1,7 @@
 /** Numbers and dates the way a card has room for. */
 
+import { describeCapability } from './capabilities';
+
 export function formatCount(n: number): string {
   if (!Number.isFinite(n)) return '0';
   if (n < 1000) return String(n);
@@ -37,21 +39,15 @@ export function formatDate(iso: string): string {
   return new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-/** The capabilities an app declared, as the one line a visitor reads first. */
+/**
+ * The capabilities an app declared, as the one line a visitor reads first.
+ * "safe" means nothing declared reaches towards the person — their network,
+ * camera, microphone or files — not that the app is harmless.
+ */
 export function capabilitySummary(capabilities: string[]): { label: string; safe: boolean } {
-  const names: Record<string, string> = {
-    net: 'Network',
-    camera: 'Camera',
-    mic: 'Microphone',
-    files: 'Files',
-    qr: 'QR',
-    ai: 'AI models',
-    gpu: 'GPU',
-    sync: 'Sync',
-    storage: 'Storage',
-  };
   if (capabilities.length === 0) return { label: 'Sandboxed · No capabilities', safe: true };
-  const listed = capabilities.map((c) => names[c] ?? c);
-  const safe = !capabilities.includes('net') && !capabilities.includes('camera') && !capabilities.includes('mic') && !capabilities.includes('files');
+  const described = capabilities.map(describeCapability);
+  const listed = described.map((c) => c.label);
+  const safe = !described.some((c) => c.sensitive);
   return { label: `Sandboxed · ${listed.join(' · ')}${capabilities.includes('net') ? '' : ' · No network'}`, safe };
 }

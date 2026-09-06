@@ -12,6 +12,8 @@ export interface AppCard {
   category: string;
   tags: string[];
   capabilities: string[];
+  /** Storage collection policies by name; `*` is the default for the rest. Empty when none are declared. */
+  storagePolicies: Record<string, string>;
   execution: 'main' | 'worker';
   version: number;
   size: number;
@@ -19,7 +21,10 @@ export interface AppCard {
   thumbnail: string;
   thumbnailKind: 'image' | 'icon' | 'placeholder';
   icon: string | null;
+  /** Times the runtime reported the app up. */
   runs: number;
+  /** Presses of Play on this site, which need not all have become runs. */
+  launches: number;
   remixes: number;
   rating: { average: number; count: number };
   comments: number;
@@ -278,12 +283,32 @@ export async function unpublish(slug: string, editKey: string): Promise<void> {
   await call<Record<string, never>>(`/apps/${encodeURIComponent(slug)}`, { method: 'DELETE', headers: { 'X-Edit-Key': editKey } });
 }
 
-export async function recordRun(slug: string): Promise<void> {
+/**
+ * Count a play. Fire and forget: the caller is about to leave for the runtime,
+ * and nothing about opening an app may wait on this. `keepalive` lets the
+ * request outlive the page; the timeout keeps a counter endpoint that never
+ * answers from holding a connection open for the rest of the runtime session.
+ * Nothing is returned, so nothing can be awaited by mistake — Play once
+ * navigated in this request's `.finally()`, and a slow `/runs` was a Play
+ * button that appeared to do nothing.
+ */
+export function recordRun(slug: string): void {
   try {
-    // keepalive: the caller is usually about to leave for the runtime.
-    await fetch(`/api/apps/${encodeURIComponent(slug)}/runs`, { method: 'POST', credentials: 'same-origin', keepalive: true });
+    const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(10_000) : undefined;
+    // A launch: the press of Play. The runtime counts the run itself, when
+    // the app is up, so a bundle that failed to open is a launch and not a run.
+    fetch(`/api/apps/${encodeURIComponent(slug)}/runs`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      keepalive: true,
+      signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stage: 'launch' }),
+    }).catch(() => {
+      // A count nobody is waiting on.
+    });
   } catch {
-    // A count nobody is waiting on.
+    // fetch itself threw (no network stack, a blocked request): same answer.
   }
 }
 

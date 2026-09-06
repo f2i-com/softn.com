@@ -121,6 +121,9 @@ final class Apps
             'category' => (string) $row['category'],
             'tags' => json_decode((string) $row['tags'], true) ?: [],
             'capabilities' => json_decode((string) $row['capabilities'], true) ?: [],
+            // By collection name; `*` is the default for the rest. Always an
+            // object on the wire, so a page can index it without checking.
+            'storagePolicies' => (object) Storage::policiesOf($row),
             'execution' => (string) $row['execution'],
             'version' => (int) $row['latest_version'],
             'size' => (int) $row['size'],
@@ -131,6 +134,9 @@ final class Apps
             'thumbnailKind' => $row['thumb'] ? 'image' : ($row['icon'] ? 'icon' : 'placeholder'),
             'icon' => $row['icon'] ? "/api/apps/$slug/icon?v=" . (int) $row['updated_at'] : null,
             'runs' => (int) $row['runs'],
+            // Presses of Play on the directory, which need not become runs:
+            // a bundle that failed to open counts here and not there.
+            'launches' => (int) ($row['launches'] ?? 0),
             'remixes' => (int) $row['remixes'],
             'rating' => ['average' => $count > 0 ? round((int) $row['rating_sum'] / $count, 2) : 0, 'count' => $count],
             'comments' => (int) $row['comments'],
@@ -377,13 +383,14 @@ final class Apps
         try {
             $pdo->prepare(<<<'SQL'
 INSERT INTO apps (slug, name, description, author, category, tags, parent_slug, root_slug, latest_version, capabilities, execution,
-  thumb, icon, primary_color, edit_key_hash, source, size, created_at, updated_at)
+  storage_policies, thumb, icon, primary_color, edit_key_hash, source, size, created_at, updated_at)
 VALUES (:slug, :name, :description, :author, :category, :tags, :parent, :root, 1, :capabilities, :execution,
-  NULL, :icon, :primary, :hash, :source, :size, :now, :now)
+  :policies, NULL, :icon, :primary, :hash, :source, :size, :now, :now)
 SQL)->execute([
                 ':slug' => $slug, ':name' => $name, ':description' => $description, ':author' => $author,
                 ':category' => $category, ':tags' => json_encode($tags), ':parent' => $parentSlug, ':root' => $rootSlug,
                 ':capabilities' => json_encode($info['capabilities']), ':execution' => $info['execution'],
+                ':policies' => json_encode((object) $info['storagePolicies']),
                 ':icon' => $icon, ':primary' => $primary, ':hash' => $editKey === null ? null : hash('sha256', $editKey),
                 ':source' => $source, ':size' => $info['size'], ':now' => $now,
             ]);
@@ -418,8 +425,8 @@ SQL)->execute([
         try {
             $pdo->prepare('INSERT INTO versions (slug, version, file, size, sha256, manifest_version, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
                 ->execute([$slug, $next, $file, $info['size'], $info['sha256'], $info['version'], Text::clean($notes, 400, true), $now]);
-            $pdo->prepare('UPDATE apps SET latest_version = ?, capabilities = ?, execution = ?, icon = ?, size = ?, updated_at = ? WHERE slug = ?')
-                ->execute([$next, json_encode($info['capabilities']), $info['execution'], $icon, $info['size'], $now, $slug]);
+            $pdo->prepare('UPDATE apps SET latest_version = ?, capabilities = ?, execution = ?, storage_policies = ?, icon = ?, size = ?, updated_at = ? WHERE slug = ?')
+                ->execute([$next, json_encode($info['capabilities']), $info['execution'], json_encode((object) $info['storagePolicies']), $icon, $info['size'], $now, $slug]);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
@@ -454,12 +461,13 @@ SQL)->execute([
         try {
             $pdo->prepare(<<<'SQL'
 UPDATE apps SET name = :name, description = :description, category = :category, tags = :tags,
-  capabilities = :capabilities, execution = :execution, icon = COALESCE(:icon, icon),
+  capabilities = :capabilities, execution = :execution, storage_policies = :policies, icon = COALESCE(:icon, icon),
   primary_color = :primary, size = :size, updated_at = :now WHERE slug = :slug
 SQL)->execute([
                 ':slug' => $slug, ':name' => $name, ':description' => $description,
                 ':category' => $category, ':tags' => json_encode($tags),
                 ':capabilities' => json_encode($info['capabilities']), ':execution' => $info['execution'],
+                ':policies' => json_encode((object) $info['storagePolicies']),
                 ':icon' => $icon, ':primary' => $primary, ':size' => $info['size'], ':now' => $now,
             ]);
             $pdo->prepare(<<<'SQL'
@@ -552,6 +560,17 @@ SQL)->execute([
      * The edit key, or the admin key, or nothing. A seeded app has no edit key
      * and belongs to the site.
      */
+    /** requireOwner's question without its refusal. */
+    public static function isOwner(Request $req, string $slug): bool
+    {
+        try {
+            self::requireOwner($req, $slug);
+            return true;
+        } catch (ApiError) {
+            return false;
+        }
+    }
+
     public static function requireOwner(Request $req, string $slug): void
     {
         if (Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) return;

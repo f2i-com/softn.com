@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type CapabilityFilter, type Category } from '../lib/api';
 import { navigate, type Route } from '../lib/router';
 import { AppGrid, Featured, pickFeatured } from '../components/directory/AppCard';
-import { CAP_FILTERS, CapabilityChips, CategoryChips, Pagination, SearchBox, SortSelect } from '../components/directory/Controls';
+import { CAP_FILTERS, CapabilityChips, CategoriesNotice, CategoryChips, Pagination, SearchBox, SortSelect } from '../components/directory/Controls';
 
 interface Filters {
   q: string;
@@ -36,8 +36,22 @@ function asCap(v: string | null): CapabilityFilter | '' {
  * shelf leads when nobody has narrowed anything; the moment a filter is on,
  * the listing is the whole page, because a visitor who typed a word wants
  * the answer, not the shelf again.
+ *
+ * The categories are labels and chips. When their request fails the listing
+ * is still asked for and still shown, without them; the failure is a notice
+ * with a retry, not a reason to show nothing.
  */
-export function DirectoryPage({ route, categories, apiDown }: { route: Route; categories: Category[]; apiDown: string | null }): React.ReactElement {
+export function DirectoryPage({
+  route,
+  categories,
+  categoriesError,
+  onRetryCategories,
+}: {
+  route: Route;
+  categories: Category[];
+  categoriesError: string | null;
+  onRetryCategories: () => void;
+}): React.ReactElement {
   const q = route.query.get('q') ?? '';
   const category = route.query.get('category') ?? 'all';
   const tag = route.query.get('tag') ?? '';
@@ -54,13 +68,13 @@ export function DirectoryPage({ route, categories, apiDown }: { route: Route; ca
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [featured, setFeatured] = useState<AppCardData[]>([]);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     document.title = q ? `${q} — apps on SoftN` : author ? `Apps by ${author} — SoftN` : 'Apps — SoftN';
   }, [q, author]);
 
   useEffect(() => {
-    if (apiDown) return undefined;
     const ac = new AbortController();
     setLoading(true);
     listApps({ q, category, tag, author, cap, sort: sort === 'relevance' ? undefined : sort, page, perPage: 24 }, ac.signal)
@@ -77,11 +91,11 @@ export function DirectoryPage({ route, categories, apiDown }: { route: Route; ca
         if (!ac.signal.aborted) setLoading(false);
       });
     return () => ac.abort();
-  }, [q, category, tag, author, cap, sort, page, apiDown]);
+  }, [q, category, tag, author, cap, sort, page, attempt]);
 
   // The featured shelf is chosen from the most-played dozen and changes as
   // the directory does. It only appears on the unfiltered front page.
-  const showFeatured = !apiDown && !filtered && page === 1;
+  const showFeatured = !filtered && page === 1;
   useEffect(() => {
     if (!showFeatured) return undefined;
     const ac = new AbortController();
@@ -102,6 +116,8 @@ export function DirectoryPage({ route, categories, apiDown }: { route: Route; ca
   if (q) heading = <>Matching “{q}”</>;
   else if (author) heading = <>By {author}</>;
   else if (current) heading = <>{current.emoji} {current.name}</>;
+  // The category is known by id even when the categories request failed.
+  else if (category !== 'all') heading = <>In {category}</>;
   else if (tag) heading = <>Tagged #{tag}</>;
   else if (cap) heading = CAP_FILTERS.find((c) => c.id === cap)?.name ?? 'All apps';
 
@@ -138,29 +154,31 @@ export function DirectoryPage({ route, categories, apiDown }: { route: Route; ca
             <h2 id="all-apps-title" className="directory-section-title">
               {heading}
             </h2>
-            {!apiDown && !error && (
+            {!error && (
               <p className="directory-count" aria-live="polite">
                 {count}
               </p>
             )}
           </div>
           <div className="directory-filters">
-            <CategoryChips categories={categories} selected={category} hrefFor={(id) => buildUrl({ ...filters, page: 1, category: id })} onSelect={(id) => go({ category: id })} />
+            {categories.length > 0 && (
+              <CategoryChips categories={categories} selected={category} hrefFor={(id) => buildUrl({ ...filters, page: 1, category: id })} onSelect={(id) => go({ category: id })} />
+            )}
             <CapabilityChips selected={cap} onSelect={(id) => go({ cap: id })} />
           </div>
+          <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} />
           {tag && (
             <p className="muted">
               Showing apps tagged <strong>#{tag}</strong>.{' '}
               <a href={buildUrl({ ...filters, tag: '', page: 1 })}>Clear</a>
             </p>
           )}
-          {apiDown ? (
-            <div className="notice">
-              <strong>The directory is not answering.</strong> {apiDown}
-            </div>
-          ) : error ? (
-            <div className="notice">
-              <strong>Could not load the apps.</strong> {error}
+          {error ? (
+            <div className="notice" role="status">
+              <strong>Could not load the apps.</strong> {error}{' '}
+              <button type="button" className="cta cta-small" onClick={() => setAttempt((n) => n + 1)}>
+                Retry
+              </button>
             </div>
           ) : (
             <>

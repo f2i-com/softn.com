@@ -227,6 +227,14 @@ CREATE TABLE IF NOT EXISTS ratelimit (
 SQL);
             $pdo->exec('PRAGMA user_version = 1');
         }
+        if ($version < 2) {
+            // Storage collection policies, fixed at publication from the bundle's
+            // permission.json; and launches, a press of Play on the directory,
+            // counted apart from runs, which is the runtime reporting the app up.
+            $pdo->exec("ALTER TABLE apps ADD COLUMN storage_policies TEXT NOT NULL DEFAULT '{}'");
+            $pdo->exec('ALTER TABLE apps ADD COLUMN launches INTEGER NOT NULL DEFAULT 0');
+            $pdo->exec('PRAGMA user_version = 2');
+        }
         // The full-text index is optional: a host whose SQLite lacks FTS5
         // still searches, with LIKE.
         try {

@@ -71,6 +71,46 @@ the endpoint from the address it loaded the bundle from, so an app opened from
 a file rather than the directory gets `{error}` back and can say so. Snake's
 shared top ten and the Notes board are the worked examples.
 
+The data is **shared**: everyone running the app reaches the same database.
+What each of them may do to a collection is its **policy**, declared per
+collection in the same `storage` entry and fixed at publication:
+
+```json
+{
+  "permissions": {
+    "storage": {
+      "enabled": true,
+      "collections": { "scores": "append-only", "posts": "owner-write", "notes": "private", "settings": "publisher", "*": "public" }
+    }
+  }
+}
+```
+
+| Policy | Read | Add | Change or remove a record |
+|---|---|---|---|
+| `public` (the default) | anyone | anyone | anyone |
+| `append-only` | anyone | anyone | the edit key only |
+| `owner-write` | anyone | anyone with a visitor token | whoever added it, or the edit key |
+| `private` | each visitor, their own records only | anyone with a visitor token | whoever added it |
+| `publisher` | the edit key only | the edit key only | the edit key only |
+
+`*` sets the policy for every collection not named. Clearing a whole
+collection needs the edit key under every policy. The key-value store has no
+policies and is always public. Records carry `mine: true` when the visitor
+asking added them, which is what an owner-write interface needs to know.
+
+"Whoever added it" is a **visitor token**: a random string the runtime mints
+once per browser, keeps in local storage, and sends as `X-Visitor-Token`.
+The server keeps only a salted hash of it bound to the app, so the token is
+never stored and one app's owners cannot be matched with another's. It is
+custody, not an account, in the way the edit key is: clear the browser's
+storage and the records stay where their policy leaves them, but nothing can
+claim them again. A request without a token is refused by collections that
+need one, with a message that says so. Nothing here verifies a game's
+outcome: a score in an append-only collection is one nobody can alter, not
+one that was earned. A publisher must never embed the edit key in a bundle to
+get around a policy — the bundle is downloaded by every visitor.
+
 ## Running it locally
 
 ```bash

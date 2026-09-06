@@ -7,9 +7,27 @@
  * store, and the host translates those into queries here — which is what
  * makes quotas, row limits, query bounds and field validation enforceable,
  * and what keeps one app's careless SELECT from being everybody's problem.
- * Anybody running the app can read and write (a high-score table is the
- * canonical use, and a score comes from whoever just played); clearing a
- * collection is the publisher's alone.
+ *
+ * The data is shared: anybody running the app reaches the same database.
+ * What each of them may do to a collection is its policy, declared in the
+ * bundle's permission.json under `storage.collections` and fixed at
+ * publication (the schema is packages/@softn/core/src/runtime/capabilities.ts):
+ *
+ *   public       anyone reads, changes and removes every record (the default)
+ *   append-only  anyone adds and reads; changing or removing needs the edit key
+ *   owner-write  anyone reads; a record is changed or removed by whoever
+ *                added it, or with the edit key
+ *   private      each visitor sees and changes only the records they added;
+ *                nobody else reads them, the publisher included
+ *   publisher    reading and writing need the edit key
+ *
+ * "Whoever added it" is a visitor identity: a hash of a token the runtime
+ * keeps in the visitor's browser, salted and bound to this app, sent as
+ * X-Visitor-Token. It is not an account. Clear the browser's storage and the
+ * records stay where the policy leaves them, but nothing can claim them
+ * again. The rate limit is per visitor address per app and is not
+ * ownership. Clearing a whole collection needs the edit key under every
+ * policy. The key-value store has no policies: it is public.
  */
 declare(strict_types=1);
 
@@ -19,6 +37,10 @@ final class Storage
     private const FIELD = '/^[A-Za-z_][A-Za-z0-9_]{0,63}(\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,3}$/';
     private const KEY = '/^[A-Za-z0-9_.:\-]{1,128}$/';
     private const OPS = ['eq', 'ne', 'lt', 'lte', 'gt', 'gte', 'in', 'contains', 'exists'];
+    /** The visitor token as the runtime mints it: URL-safe base64, never stored, only hashed. */
+    private const TOKEN = '/^[A-Za-z0-9_-]{16,128}$/';
+    /** The policies a collection may declare; the same list as the schema's STORAGE_POLICIES. */
+    public const POLICIES = ['public', 'append-only', 'owner-write', 'private', 'publisher'];
 
     private static function path(string $slug): string
     {
@@ -46,6 +68,12 @@ CREATE TABLE IF NOT EXISTS kv (
   updated_at INTEGER NOT NULL
 );
 SQL);
+        // Who added a record. Absent on records from before policies existed;
+        // under a policy that asks, such a record belongs to nobody, so only
+        // the edit key can change it.
+        $columns = array_column($pdo->query('PRAGMA table_info(records)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+        if (!in_array('owner', $columns, true)) $pdo->exec('ALTER TABLE records ADD COLUMN owner TEXT');
+        $pdo->exec('CREATE INDEX IF NOT EXISTS records_owner ON records(collection, owner)');
         return $open[$slug] = $pdo;
     }
 
@@ -61,6 +89,18 @@ SQL);
             'keys' => (int) $pdo->query('SELECT COUNT(*) FROM kv')->fetchColumn(),
             'bytes' => (int) filesize($path),
         ];
+    }
+
+    /** The policies an app row declares, by collection name (`*` is the default). @return array<string, string> */
+    public static function policiesOf(array $appRow): array
+    {
+        $decoded = json_decode((string) ($appRow['storage_policies'] ?? '{}'), true);
+        if (!is_array($decoded)) return [];
+        $out = [];
+        foreach ($decoded as $name => $policy) {
+            if (is_string($name) && is_string($policy) && in_array($policy, self::POLICIES, true)) $out[$name] = $policy;
+        }
+        return $out;
     }
 
     /**
@@ -83,14 +123,15 @@ SQL);
                 throw new ApiError(507, 'This app has used all the storage it is allowed.');
             }
         }
+        $ctx = self::actor($req, $slug);
         return match ($op) {
-            'insert' => self::insert($pdo, $body, $limits),
-            'get' => self::get($pdo, $body),
-            'update' => self::update($pdo, $body, $limits),
-            'set' => self::set($pdo, $body, $limits),
-            'remove' => self::remove($pdo, $body),
-            'query' => self::query($pdo, $body, $limits),
-            'count' => self::count($pdo, $body),
+            'insert' => self::insert($pdo, $body, $limits, $ctx),
+            'get' => self::get($pdo, $body, $ctx),
+            'update' => self::update($pdo, $body, $limits, $ctx),
+            'set' => self::set($pdo, $body, $limits, $ctx),
+            'remove' => self::remove($pdo, $body, $ctx),
+            'query' => self::query($pdo, $body, $limits, $ctx),
+            'count' => self::count($pdo, $body, $ctx),
             'collections' => self::collections($pdo),
             'clear' => self::clear($req, $slug, $pdo, $body),
             'kvGet' => self::kvGet($pdo, $body),
@@ -98,6 +139,95 @@ SQL);
             'kvRemove' => self::kvRemove($pdo, $body),
             default => throw new ApiError(400, "Unknown storage operation: $op"),
         };
+    }
+
+    // ── Who is asking, and what the collection allows ──────────────────────
+
+    /**
+     * The request's standing: the visitor's storage identity, if the runtime
+     * sent a token; whether it carries the edit key or the admin key; and the
+     * app's declared policies. The identity is the token hashed with the
+     * site's salt and this app's slug, so one app's owners cannot be matched
+     * with another's and the token itself is never written down.
+     *
+     * @return array{owner: ?string, publisher: bool, policies: array<string, string>}
+     */
+    private static function actor(Request $req, string $slug): array
+    {
+        $token = $req->header('x-visitor-token');
+        $owner = is_string($token) && preg_match(self::TOKEN, $token) ? Config::visitorHash("storage|$slug|$token") : null;
+        $app = Apps::row($slug);
+        return ['owner' => $owner, 'publisher' => Apps::isOwner($req, $slug), 'policies' => self::policiesOf($app)];
+    }
+
+    private static function policy(array $ctx, string $collection): string
+    {
+        return $ctx['policies'][$collection] ?? $ctx['policies']['*'] ?? 'public';
+    }
+
+    private static function noToken(string $c): ApiError
+    {
+        return new ApiError(403, "Collection \"$c\" records who adds to it, and this request carries no visitor token. Open the app from the directory in a runtime that sends one.");
+    }
+
+    /** May this actor read from the collection at all? Private collections read only their own rows; see `own`. */
+    private static function allowRead(array $ctx, string $c): void
+    {
+        $policy = self::policy($ctx, $c);
+        if ($policy === 'publisher' && !$ctx['publisher']) throw new ApiError(403, "Collection \"$c\" is the publisher's: reading it needs the edit key.");
+        if ($policy === 'private' && $ctx['owner'] === null) throw self::noToken($c);
+    }
+
+    /** May this actor add a record? */
+    private static function allowAdd(array $ctx, string $c): void
+    {
+        $policy = self::policy($ctx, $c);
+        if ($ctx['publisher'] && $policy !== 'private') return;
+        if ($policy === 'publisher') throw new ApiError(403, "Collection \"$c\" is the publisher's: writing to it needs the edit key.");
+        if (($policy === 'owner-write' || $policy === 'private') && $ctx['owner'] === null) throw self::noToken($c);
+    }
+
+    /**
+     * May this actor change or remove this record? `$rowOwner` is who added
+     * it, or null for a record from before policies or added without a token.
+     */
+    private static function allowModify(array $ctx, string $c, ?string $rowOwner): void
+    {
+        $policy = self::policy($ctx, $c);
+        switch ($policy) {
+            case 'public':
+                return;
+            case 'append-only':
+                if ($ctx['publisher']) return;
+                throw new ApiError(403, "Collection \"$c\" is append-only: records are changed or removed only with the edit key.");
+            case 'publisher':
+                if ($ctx['publisher']) return;
+                throw new ApiError(403, "Collection \"$c\" is the publisher's: writing to it needs the edit key.");
+            case 'owner-write':
+                if ($ctx['publisher']) return;
+                if ($ctx['owner'] === null) throw self::noToken($c);
+                if ($rowOwner === null || !hash_equals($rowOwner, $ctx['owner'])) {
+                    throw new ApiError(403, 'That record was added by someone else; only they, or the publisher, can change it.');
+                }
+                return;
+            case 'private':
+                // A private record that is not yours is one you cannot see, so
+                // the answer is the same as for a record that does not exist.
+                if ($ctx['owner'] === null) throw self::noToken($c);
+                if ($rowOwner === null || !hash_equals($rowOwner, $ctx['owner'])) throw new ApiError(404, 'No such record.');
+                return;
+        }
+    }
+
+    /**
+     * The SQL that keeps a read to what this actor may see: under `private`,
+     * their own rows. Everything else sees the whole collection.
+     * @return array{0: string, 1: array<int, string>}
+     */
+    private static function own(array $ctx, string $c): array
+    {
+        if (self::policy($ctx, $c) === 'private') return [' AND owner = ?', [(string) $ctx['owner']]];
+        return ['', []];
     }
 
     // ── Records ────────────────────────────────────────────────────────────
@@ -136,13 +266,16 @@ SQL);
         return is_array($data) && $data !== [] ? $data : new stdClass();
     }
 
-    private static function record(array $row): array
+    /** A row as the app sees it. `mine` says whether this visitor added it, which is what an owner-write UI needs to know. */
+    private static function record(array $row, array $ctx): array
     {
+        $owner = $row['owner'] ?? null;
         return [
             'id' => $row['id'],
             'data' => self::obj(json_decode((string) $row['data'], true)),
             'createdAt' => (int) $row['created_at'],
             'updatedAt' => (int) $row['updated_at'],
+            'mine' => is_string($owner) && $ctx['owner'] !== null && hash_equals($owner, $ctx['owner']),
         ];
     }
 
@@ -161,32 +294,36 @@ SQL);
         }
     }
 
-    private static function insert(PDO $pdo, array $body, array $limits): array
+    private static function insert(PDO $pdo, array $body, array $limits, array $ctx): array
     {
         $c = self::collection($body);
+        self::allowAdd($ctx, $c);
         $data = self::data($body, $limits);
         self::assertRoom($pdo, $c, $limits);
         $id = isset($body['id']) ? self::id($body) : self::newId();
         $now = time();
         try {
-            $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-                ->execute([$c, $id, json_encode($data, JSON_UNESCAPED_UNICODE), $now, $now]);
+            $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)')
+                ->execute([$c, $id, json_encode($data, JSON_UNESCAPED_UNICODE), $now, $now, $ctx['owner']]);
         } catch (PDOException $e) {
             if (str_contains($e->getMessage(), 'UNIQUE')) throw new ApiError(409, 'A record with that id already exists.');
             throw $e;
         }
-        return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $now, 'updatedAt' => $now];
+        return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $now, 'updatedAt' => $now, 'mine' => $ctx['owner'] !== null];
     }
 
-    private static function get(PDO $pdo, array $body): ?array
+    private static function get(PDO $pdo, array $body, array $ctx): ?array
     {
-        $stmt = $pdo->prepare('SELECT * FROM records WHERE collection = ? AND id = ?');
-        $stmt->execute([self::collection($body), self::id($body)]);
+        $c = self::collection($body);
+        self::allowRead($ctx, $c);
+        [$ownSql, $ownParams] = self::own($ctx, $c);
+        $stmt = $pdo->prepare("SELECT * FROM records WHERE collection = ? AND id = ?$ownSql");
+        $stmt->execute(array_merge([$c, self::id($body)], $ownParams));
         $row = $stmt->fetch();
-        return $row ? self::record($row) : null;
+        return $row ? self::record($row, $ctx) : null;
     }
 
-    private static function update(PDO $pdo, array $body, array $limits): array
+    private static function update(PDO $pdo, array $body, array $limits, array $ctx): array
     {
         $c = self::collection($body);
         $id = self::id($body);
@@ -200,6 +337,7 @@ SQL);
                 $pdo->rollBack();
                 throw new ApiError(404, 'No such record.');
             }
+            self::allowModify($ctx, $c, $row['owner'] ?? null);
             $merged = array_replace(json_decode((string) $row['data'], true) ?: [], $patch);
             $encoded = json_encode($merged, JSON_UNESCAPED_UNICODE);
             if ($encoded === false || strlen($encoded) > (int) $limits['maxRecordBytes']) {
@@ -209,33 +347,50 @@ SQL);
             $now = time();
             $pdo->prepare('UPDATE records SET data = ?, updated_at = ? WHERE collection = ? AND id = ?')->execute([$encoded, $now, $c, $id]);
             $pdo->commit();
-            return ['id' => $id, 'data' => self::obj($merged), 'createdAt' => (int) $row['created_at'], 'updatedAt' => $now];
+            return self::record(['id' => $id, 'data' => $encoded, 'created_at' => $row['created_at'], 'updated_at' => $now, 'owner' => $row['owner'] ?? null], $ctx);
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
             throw $e;
         }
     }
 
-    /** Replace a record by id, creating it when absent. */
-    private static function set(PDO $pdo, array $body, array $limits): array
+    /** Replace a record by id, creating it when absent. Adding follows the add rule, replacing the modify rule. */
+    private static function set(PDO $pdo, array $body, array $limits, array $ctx): array
     {
         $c = self::collection($body);
         $id = self::id($body);
         $data = self::data($body, $limits);
         $now = time();
-        $stmt = $pdo->prepare('SELECT created_at FROM records WHERE collection = ? AND id = ?');
+        $stmt = $pdo->prepare('SELECT created_at, owner FROM records WHERE collection = ? AND id = ?');
         $stmt->execute([$c, $id]);
-        $created = $stmt->fetchColumn();
-        if ($created === false) self::assertRoom($pdo, $c, $limits);
-        $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(collection, id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at')
-            ->execute([$c, $id, json_encode($data, JSON_UNESCAPED_UNICODE), $now, $now]);
-        return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $created === false ? $now : (int) $created, 'updatedAt' => $now];
+        $existing = $stmt->fetch();
+        if ($existing === false) {
+            self::allowAdd($ctx, $c);
+            self::assertRoom($pdo, $c, $limits);
+            $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)')
+                ->execute([$c, $id, json_encode($data, JSON_UNESCAPED_UNICODE), $now, $now, $ctx['owner']]);
+            return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $now, 'updatedAt' => $now, 'mine' => $ctx['owner'] !== null];
+        }
+        self::allowModify($ctx, $c, $existing['owner'] ?? null);
+        // The record keeps whoever added it: replacing its fields is not adopting it.
+        $pdo->prepare('UPDATE records SET data = ?, updated_at = ? WHERE collection = ? AND id = ?')
+            ->execute([json_encode($data, JSON_UNESCAPED_UNICODE), $now, $c, $id]);
+        $owner = $existing['owner'] ?? null;
+        return ['id' => $id, 'data' => self::obj($data), 'createdAt' => (int) $existing['created_at'], 'updatedAt' => $now,
+            'mine' => is_string($owner) && $ctx['owner'] !== null && hash_equals($owner, $ctx['owner'])];
     }
 
-    private static function remove(PDO $pdo, array $body): array
+    private static function remove(PDO $pdo, array $body, array $ctx): array
     {
+        $c = self::collection($body);
+        $id = self::id($body);
+        $stmt = $pdo->prepare('SELECT owner FROM records WHERE collection = ? AND id = ?');
+        $stmt->execute([$c, $id]);
+        $row = $stmt->fetch();
+        if (!$row) return ['removed' => 0];
+        self::allowModify($ctx, $c, $row['owner'] ?? null);
         $stmt = $pdo->prepare('DELETE FROM records WHERE collection = ? AND id = ?');
-        $stmt->execute([self::collection($body), self::id($body)]);
+        $stmt->execute([$c, $id]);
         return ['removed' => $stmt->rowCount()];
     }
 
@@ -247,27 +402,31 @@ SQL);
      *
      * @return array{records: array<int, array<string, mixed>>, total: int, limit: int, offset: int}
      */
-    private static function query(PDO $pdo, array $body, array $limits): array
+    private static function query(PDO $pdo, array $body, array $limits, array $ctx): array
     {
         $c = self::collection($body);
+        self::allowRead($ctx, $c);
+        [$ownSql, $ownParams] = self::own($ctx, $c);
         [$whereSql, $params] = self::where($body['where'] ?? null);
         $order = self::orderBy($body['orderBy'] ?? null);
         $limit = max(1, min((int) $limits['maxQueryLimit'], (int) ($body['limit'] ?? 50)));
         $offset = max(0, min(10000, (int) ($body['offset'] ?? 0)));
-        $count = $pdo->prepare("SELECT COUNT(*) FROM records WHERE collection = ? $whereSql");
-        $count->execute(array_merge([$c], $params));
+        $count = $pdo->prepare("SELECT COUNT(*) FROM records WHERE collection = ?$ownSql $whereSql");
+        $count->execute(array_merge([$c], $ownParams, $params));
         $total = (int) $count->fetchColumn();
-        $stmt = $pdo->prepare("SELECT * FROM records WHERE collection = ? $whereSql ORDER BY $order LIMIT $limit OFFSET $offset");
-        $stmt->execute(array_merge([$c], $params));
-        return ['records' => array_map([self::class, 'record'], $stmt->fetchAll()), 'total' => $total, 'limit' => $limit, 'offset' => $offset];
+        $stmt = $pdo->prepare("SELECT * FROM records WHERE collection = ?$ownSql $whereSql ORDER BY $order LIMIT $limit OFFSET $offset");
+        $stmt->execute(array_merge([$c], $ownParams, $params));
+        return ['records' => array_map(fn($r) => self::record($r, $ctx), $stmt->fetchAll()), 'total' => $total, 'limit' => $limit, 'offset' => $offset];
     }
 
-    private static function count(PDO $pdo, array $body): array
+    private static function count(PDO $pdo, array $body, array $ctx): array
     {
         $c = self::collection($body);
+        self::allowRead($ctx, $c);
+        [$ownSql, $ownParams] = self::own($ctx, $c);
         [$whereSql, $params] = self::where($body['where'] ?? null);
-        $count = $pdo->prepare("SELECT COUNT(*) FROM records WHERE collection = ? $whereSql");
-        $count->execute(array_merge([$c], $params));
+        $count = $pdo->prepare("SELECT COUNT(*) FROM records WHERE collection = ?$ownSql $whereSql");
+        $count->execute(array_merge([$c], $ownParams, $params));
         return ['count' => (int) $count->fetchColumn()];
     }
 

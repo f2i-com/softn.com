@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type Category } from '../lib/api';
 import { AppGrid, Featured, FeaturedSkeleton, pickFeatured } from '../components/directory/AppCard';
-import { CategoryChips, SearchBox } from '../components/directory/Controls';
+import { CategoriesNotice, CategoryChips, SearchBox } from '../components/directory/Controls';
 import { Doors } from '../components/Doors';
 import { Language } from '../components/Language';
 import { Pipeline } from '../components/Pipeline';
@@ -14,6 +14,42 @@ const LISTS: Array<{ id: string; name: string }> = [
   { id: 'top', name: 'Top rated' },
   { id: 'remixed', name: 'Most remixed' },
 ];
+
+/**
+ * The featured shelf, as it was the last time the directory answered.
+ *
+ * Kept in this browser so that a directory outage leaves the front page with
+ * something to press rather than a headline over nothing. Shown only when
+ * the live request fails, and always marked with when it was seen: a
+ * visitor must not mistake last week's shelf for today's.
+ */
+const FEATURED_MEMORY = 'softn.site.featured';
+
+interface RememberedFeatured {
+  at: number;
+  items: AppCardData[];
+}
+
+export function rememberFeatured(items: AppCardData[], now = Date.now()): void {
+  try {
+    localStorage.setItem(FEATURED_MEMORY, JSON.stringify({ at: now, items } satisfies RememberedFeatured));
+  } catch {
+    // Storage blocked or full: the live shelf is still on screen.
+  }
+}
+
+export function recallFeatured(): RememberedFeatured | null {
+  try {
+    const raw = localStorage.getItem(FEATURED_MEMORY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<RememberedFeatured> | null;
+    if (!parsed || typeof parsed.at !== 'number' || !Array.isArray(parsed.items)) return null;
+    const items = parsed.items.filter((a): a is AppCardData => Boolean(a && typeof a === 'object' && typeof (a as AppCardData).slug === 'string'));
+    return items.length > 0 ? { at: parsed.at, items } : null;
+  } catch {
+    return null;
+  }
+}
 
 function Arrow(): React.ReactElement {
   return (
@@ -32,8 +68,22 @@ function Arrow(): React.ReactElement {
  * directory keeps, and an app's bundle is only fetched when someone presses
  * Play, which opens it in the runtime — so a visit here downloads the site,
  * not the apps.
+ *
+ * Three requests feed the page — categories, the featured shelf, the list —
+ * and each has its own status. None gates another: the categories are labels
+ * on the cards, and a failure there used to be read as "the directory is
+ * down", which skipped the list request and showed an empty directory over
+ * a working one.
  */
-export function HomePage({ categories, apiDown }: { categories: Category[]; apiDown: string | null }): React.ReactElement {
+export function HomePage({
+  categories,
+  categoriesError,
+  onRetryCategories,
+}: {
+  categories: Category[];
+  categoriesError: string | null;
+  onRetryCategories: () => void;
+}): React.ReactElement {
   const [sort, setSort] = useState('trending');
   const [apps, setApps] = useState<AppCardData[]>([]);
   const [total, setTotal] = useState<number | null>(null);
@@ -41,32 +91,33 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
   const [listError, setListError] = useState<string | null>(null);
   const [listAttempt, setListAttempt] = useState(0);
   const [featured, setFeatured] = useState<AppCardData[] | null>(null);
+  /** When the shelf on screen was fetched, if it is a remembered one rather than today's. */
+  const [featuredSeenAt, setFeaturedSeenAt] = useState<number | null>(null);
 
   // The featured shelf: the most-played dozen, ranked the way the Apps page
-  // ranks them. When the directory cannot answer, the hero is the headline.
+  // ranks them. When the directory cannot answer, the last shelf it gave this
+  // browser stands in, marked as such; failing that, the hero is the headline.
   useEffect(() => {
-    if (apiDown) {
-      setFeatured([]);
-      return undefined;
-    }
     const ac = new AbortController();
     listApps({ sort: 'runs', perPage: 12 }, ac.signal)
       .then((r) => {
-        if (!ac.signal.aborted) setFeatured(pickFeatured(r.items));
+        if (ac.signal.aborted) return;
+        const picked = pickFeatured(r.items);
+        setFeatured(picked);
+        setFeaturedSeenAt(null);
+        if (picked.length > 0) rememberFeatured(picked);
       })
       .catch(() => {
-        if (!ac.signal.aborted) setFeatured([]);
+        if (ac.signal.aborted) return;
+        const remembered = recallFeatured();
+        setFeatured(remembered ? remembered.items : []);
+        setFeaturedSeenAt(remembered ? remembered.at : null);
       });
     return () => ac.abort();
-  }, [apiDown]);
+  }, []);
 
-  // The list has its own loading and failure state. It used to swallow a
-  // failed request on the theory that the outage banner already covered it —
-  // but the banner reflects the categories request, and the two can fail
-  // independently: categories cached, list down, and the page showed eight
-  // skeleton cards forever with nothing to press.
+  // The list has its own loading and failure state, and its own retry.
   useEffect(() => {
-    if (apiDown) return undefined;
     const ac = new AbortController();
     setListError(null);
     setListLoading(true);
@@ -78,13 +129,13 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
         setTotal(r.total);
         setListLoading(false);
       })
-      .catch(() => {
+      .catch((e) => {
         if (ac.signal.aborted) return;
-        setListError('This list could not be loaded.');
+        setListError(e instanceof Error ? e.message : String(e));
         setListLoading(false);
       });
     return () => ac.abort();
-  }, [sort, apiDown, listAttempt]);
+  }, [sort, listAttempt]);
 
   return (
     <>
@@ -117,6 +168,12 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
           {(featured === null || featured.length >= 3) && (
             <div className="hero-shelf rise" style={{ animationDelay: '260ms' }}>
               {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
+              {featuredSeenAt !== null && (
+                <p className="hero-shelf-note muted" role="status">
+                  The directory is not answering right now. This shelf is as it was on{' '}
+                  {new Date(featuredSeenAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -143,17 +200,16 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
           <div className="hero-search">
             <SearchBox autoFocus={false} />
           </div>
-          <div className="hero-pills">
-            <CategoryChips categories={categories} selected="" hrefFor={(id) => (id === 'all' ? '/apps' : `/apps?category=${encodeURIComponent(id)}`)} limit={9} />
-          </div>
-          {apiDown ? (
-            <div className="notice">
-              <strong>The directory is not answering.</strong> {apiDown}
+          {categories.length > 0 && (
+            <div className="hero-pills">
+              <CategoryChips categories={categories} selected="" hrefFor={(id) => (id === 'all' ? '/apps' : `/apps?category=${encodeURIComponent(id)}`)} limit={9} />
             </div>
-          ) : listError ? (
+          )}
+          <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} />
+          {listError ? (
             <div className="notice" role="status">
-              <strong>{listError}</strong>{' '}
-              <button type="button" className="cta" onClick={() => setListAttempt((n) => n + 1)}>
+              <strong>This list could not be loaded.</strong> {listError}{' '}
+              <button type="button" className="cta cta-small" onClick={() => setListAttempt((n) => n + 1)}>
                 Retry
               </button>
             </div>
@@ -206,7 +262,7 @@ export function HomePage({ categories, apiDown }: { categories: Category[]; apiD
               <p className="how-copy">
                 Upload a <code>.softn</code>, pick a category, get an edit key. That is the whole process, and it is also an API: a
                 script or an AI agent can publish with one <code>POST</code>. Apps that declare <code>storage</code> get their own
-                database on the server — a scoreboard, shared notes, whatever the app needs.
+                database on the server — a scoreboard, shared notes, whatever the app needs — that everyone running the app shares.
               </p>
             </div>
           </div>

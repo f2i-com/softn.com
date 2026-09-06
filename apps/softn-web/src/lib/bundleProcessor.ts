@@ -14,6 +14,7 @@ import {
   parseXDBFile,
   seedXDBBundleData,
   composeBundleSource,
+  inspectDeclaration,
 } from '@softn/core';
 import type { PermissionConfig } from '@softn/core';
 
@@ -348,19 +349,19 @@ export function withheldPermissions(declared: PermissionConfig): PermissionConfi
 /**
  * Every capability a permission config asks for.
  *
- * One list, read by the consent check, the grant record and the bar's wording,
- * so none of the three can disagree about what was approved. Exported for the
- * last of those: PermissionBar keys its phrasing off `Capability`, so adding a
- * name here without giving it words fails the build instead of shipping a bar
- * that says "a capability called \"webusb\"".
+ * The list itself is the schema in `@softn/core` — one list for the runtime's
+ * enforcement, this launcher's consent, the directory's inspection and its
+ * pages — re-exported here because the consent check, the grant record and
+ * the bar's wording all read it from this module. PermissionBar keys its
+ * phrasing off `Capability`, so a name added to the schema without words here
+ * fails the build instead of shipping a bar that says "a capability called
+ * \"webusb\"".
  */
-export const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel'] as const;
-
-export type Capability = (typeof CAPABILITIES)[number];
+export { CAPABILITIES } from '@softn/core';
+export type { Capability } from '@softn/core';
 
 export function requestedCapabilities(config: PermissionConfig): string[] {
-  const perms = (config.permissions ?? {}) as Record<string, { enabled?: boolean } | undefined>;
-  return CAPABILITIES.filter((name) => perms[name]?.enabled);
+  return inspectDeclaration(config).requested;
 }
 
 /** Extract icon as a data URL from bundle binary files */
