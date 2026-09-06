@@ -624,7 +624,6 @@ a worked example of some part of the runtime.
 | **DeadHours** | A first-person zombie shooter: waves through the gates of a fenced yard at night, a pistol, a shotgun, a camera-attached torch, headshots, pickups and a shared leaderboard |
 | **MazeEscape3D** | A first-person maze carved fresh every game, with a minimap that fills in as you explore and a best time that sticks |
 | **PromptlyUnemployed** | A first-person narrative tragicomedy, fully voiced: laid off by an avatar, home by dinner, a business by midnight |
-| **LastSound3D** | A fully voiced first-person survey of a blood ocean from inside a sealed pressure hull: walk three compartments, photograph six anomalies, keep life support alive, and decide which record leaves the trench. An unofficial Iron Lung fan story |
 | **TexasHoldem** | Multiplayer poker over peer-to-peer sync, with bots for a table of one |
 | **SnakeGame** | The classic on a `PixelGrid`, with a shared top ten in the app's own server storage |
 | **Twenty48** | The sliding-tile classic with swipes, undo, a best score and a game that resumes |
