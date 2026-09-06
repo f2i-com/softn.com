@@ -155,7 +155,10 @@ async function download(url, { maxBytes, deadlineMs, attempts = 3 }) {
       return await downloadOnce(url, { maxBytes, signal: controller.signal });
     } catch (error) {
       lastError = error;
-      if (!error.retryable || attempt === attempts) break;
+      // A network failure or a deadline is tried again; an answer that will
+      // not change — a 4xx, a source that is not https, an archive larger
+      // than pinned — is not.
+      if (error.retryable === false || attempt === attempts) break;
       await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
     } finally {
       clearTimeout(timer);
@@ -164,16 +167,22 @@ async function download(url, { maxBytes, deadlineMs, attempts = 3 }) {
   throw new Error(`could not download ${url}: ${lastError.message}`);
 }
 
+function definitive(message) {
+  const error = new Error(message);
+  error.retryable = false;
+  return error;
+}
+
 async function downloadOnce(url, { maxBytes, signal }) {
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    if (!/^https:\/\//.test(current)) throw new Error(`refusing a non-https source: ${current}`);
+    if (!/^https:\/\//.test(current)) throw definitive(`refusing a non-https source: ${current}`);
     const headers = { 'User-Agent': 'softn.com fetch-demos', Accept: 'application/octet-stream' };
     if (token && mayCarryCredential(current)) headers.Authorization = `Bearer ${token}`;
     const response = await fetch(current, { headers, redirect: 'manual', signal });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
-      if (!location) throw new Error(`HTTP ${response.status} without a location`);
+      if (!location) throw definitive(`HTTP ${response.status} without a location`);
       current = new URL(location, current).toString();
       continue;
     }
@@ -184,20 +193,25 @@ async function downloadOnce(url, { maxBytes, signal }) {
     }
     const declared = Number(response.headers.get('content-length'));
     if (Number.isFinite(declared) && declared > maxBytes) {
-      throw new Error(`${current} announces ${declared} bytes, more than the ${maxBytes} pinned`);
+      throw definitive(`${current} announces ${declared} bytes, more than the ${maxBytes} pinned`);
     }
+    if (!response.body) return Buffer.alloc(0);
     const chunks = [];
     let received = 0;
-    for await (const chunk of response.body) {
-      received += chunk.length;
+    const reader = response.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.length;
       if (received > maxBytes) {
-        throw new Error(`${current} sent more than the ${maxBytes} bytes pinned; stopped reading`);
+        await reader.cancel().catch(() => {});
+        throw definitive(`${current} sent more than the ${maxBytes} bytes pinned; stopped reading`);
       }
-      chunks.push(chunk);
+      chunks.push(value);
     }
     return Buffer.concat(chunks);
   }
-  throw new Error(`more than ${MAX_REDIRECTS} redirects from ${url}`);
+  throw definitive(`more than ${MAX_REDIRECTS} redirects from ${url}`);
 }
 
 async function pin(index, tag) {

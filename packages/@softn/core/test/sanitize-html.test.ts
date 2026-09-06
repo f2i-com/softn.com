@@ -17,7 +17,8 @@ import { markupUrlJudge } from '../src/runtime/egress-policy';
 
 describe('sanitizeSvg', () => {
   it('keeps ordinary icon markup intact', () => {
-    const icon = '<svg viewBox="0 0 24 24"><path d="M2 2 L20 20"/><circle cx="5" cy="5" r="2"/></svg>';
+    const icon =
+      '<svg viewBox="0 0 24 24"><path d="M2 2 L20 20"/><circle cx="5" cy="5" r="2"/></svg>';
     const out = sanitizeSvg(icon);
     expect(out).toContain('<path');
     expect(out).toContain('<circle');
@@ -54,7 +55,9 @@ describe('sanitizeSvg', () => {
   });
 
   it('drops a foreignObject wrapper but keeps nothing executable', () => {
-    const out = sanitizeSvg('<svg><foreignObject><iframe src="https://evil.test"></iframe></foreignObject></svg>');
+    const out = sanitizeSvg(
+      '<svg><foreignObject><iframe src="https://evil.test"></iframe></foreignObject></svg>'
+    );
     expect(out).not.toMatch(/iframe/i);
     expect(out).not.toMatch(/evil\.test/);
   });
@@ -132,6 +135,13 @@ describe('isSafeUrl', () => {
  * arrive as strings, never as a URL prop the renderer could judge, so the
  * sanitizer takes the same judge the renderer applies.
  */
+/** Whether the browser would fetch or follow `host` from this markup: a URL on a real attribute, not one waiting on a data attribute. */
+function reaches(markup: string, host: string): boolean {
+  return new RegExp(
+    `\\s(?:src|srcset|href|xlink:href|poster|ping)="[^"]*${host.replace('.', '\\.')}`
+  ).test(markup);
+}
+
 describe("a judge from the bundle's permission", () => {
   const REMOTE = 'https://attacker.example/beacon';
   const pending = markupUrlJudge({ consentPending: true, permissions: { net: { enabled: true } } });
@@ -142,37 +152,41 @@ describe("a judge from the bundle's permission", () => {
 
   it('withholds a remote image while consent is pending, and keeps a local one', () => {
     const out = sanitizeRichText(`<img src="${REMOTE}"><img src="/a.png">`, pending);
-    expect(out).not.toContain('attacker.example');
-    expect(out).toContain('/a.png');
+    expect(reaches(out, 'attacker.example')).toBe(false);
+    expect(out).toContain('src="/a.png"');
   });
 
   it('refuses it outright for a bundle that declares no net', () => {
-    expect(sanitizeRichText(`<img src="${REMOTE}">`, noNet)).not.toContain('attacker.example');
-    expect(sanitizeRichText(`<img srcset="/a.png 1x, ${REMOTE} 2x">`, noNet)).not.toContain(
-      'attacker.example'
+    expect(reaches(sanitizeRichText(`<img src="${REMOTE}">`, noNet), 'attacker.example')).toBe(
+      false
     );
+    expect(
+      reaches(sanitizeRichText(`<img srcset="/a.png 1x, ${REMOTE} 2x">`, noNet), 'attacker.example')
+    ).toBe(false);
   });
 
   it('holds it to the allowed hosts once net is granted', () => {
-    expect(sanitizeRichText(`<img src="${REMOTE}">`, scoped)).not.toContain('attacker.example');
-    expect(sanitizeRichText('<img src="https://cdn.example/a.png">', scoped)).toContain(
-      'cdn.example'
+    expect(reaches(sanitizeRichText(`<img src="${REMOTE}">`, scoped), 'attacker.example')).toBe(
+      false
     );
+    expect(
+      reaches(sanitizeRichText('<img src="https://cdn.example/a.png">', scoped), 'cdn.example')
+    ).toBe(true);
   });
 
   it('lets a link through once consent is answered, and withholds it while pending', () => {
-    expect(sanitizeRichText('<a href="https://example.com">x</a>', noNet)).toContain(
-      'https://example.com'
-    );
-    expect(sanitizeRichText('<a href="https://example.com">x</a>', pending)).not.toContain(
-      'https://example.com'
-    );
+    expect(
+      reaches(sanitizeRichText('<a href="https://example.com">x</a>', noNet), 'example.com')
+    ).toBe(true);
+    expect(
+      reaches(sanitizeRichText('<a href="https://example.com">x</a>', pending), 'example.com')
+    ).toBe(false);
   });
 
   it('judges an SVG use reference as a fetch, not a link', () => {
-    expect(sanitizeSvg(`<svg><use href="${REMOTE}#i"/></svg>`, noNet)).not.toContain(
-      'attacker.example'
-    );
+    expect(
+      reaches(sanitizeSvg(`<svg><use href="${REMOTE}#i"/></svg>`, noNet), 'attacker.example')
+    ).toBe(false);
     expect(sanitizeSvg('<svg><use href="#i"/></svg>', noNet)).toContain('href="#i"');
   });
 
@@ -180,6 +194,34 @@ describe("a judge from the bundle's permission", () => {
     expect(sanitizeRichText('<a href="javascript:alert(1)">x</a>', noNet)).not.toContain(
       'javascript:'
     );
+  });
+
+  it('keeps a withheld URL waiting on the element, and puts it back once allowed', () => {
+    // An editor reads its value out of the DOM it was given, so a URL that
+    // was simply removed would be gone from what the app saves.
+    const withheld = sanitizeRichText(`<img src="${REMOTE}">`, pending);
+    expect(withheld).not.toMatch(/ src=/);
+    expect(withheld).toContain(`data-softn-withheld-src="${REMOTE}"`);
+    const allowed = markupUrlJudge({ permissions: { net: { enabled: true } } });
+    const restored = sanitizeRichText(withheld, allowed);
+    expect(restored).toContain(`src="${REMOTE}"`);
+    expect(restored).not.toContain('data-softn-withheld');
+    // Without a judge — a host that is not enforcing — it is restored too.
+    expect(sanitizeRichText(withheld)).toContain(`src="${REMOTE}"`);
+  });
+
+  it('judges a withheld URL as it would judge the attribute it came from', () => {
+    const smuggled =
+      '<img data-softn-withheld-src="javascript:alert(1)"><img data-softn-withheld-onerror="x">';
+    const out = sanitizeRichText(smuggled);
+    expect(out).not.toContain('javascript:');
+    expect(out).not.toContain('withheld-onerror');
+    expect(
+      reaches(
+        sanitizeRichText(`<img data-softn-withheld-src="${REMOTE}">`, noNet),
+        'attacker.example'
+      )
+    ).toBe(false);
   });
 });
 
@@ -219,9 +261,11 @@ describe('cssResourceReferences', () => {
     expect(cssResourceReferences('src("f.woff2") format("woff2")').urls).toEqual(['f.woff2']);
   });
 
-  it('is opaque about escapes and a function that never closes', () => {
+  it('is opaque about escapes beside a call and a function that never closes', () => {
     expect(cssResourceReferences('\\75rl(a.png)').opaque).toBe(true);
     expect(cssResourceReferences('url("https://x').opaque).toBe(true);
     expect(cssResourceReferences('color: red')).toEqual({ urls: [], opaque: false });
+    // An escape with no call anywhere near it is only a character.
+    expect(cssResourceReferences('"\\201C"')).toEqual({ urls: [], opaque: false });
   });
 });
