@@ -105,9 +105,9 @@
     "name": "Texas Hold'em",
     "description": "Texas Hold'em Poker for friends who trust each other: every player's client holds the whole table, hole cards included, over peer-to-peer sync",
     "primary": "#c8aa6e",
-    "size": 322601,
+    "size": 322765,
     "source": "https://github.com/f2i-com/softn-Examples/releases/download/v1.0.1/TexasHoldem.softn",
-    "sha256": "a59582255d91fe08a77b88a7fc5026237f4e22a08b274dc237002f5f978df818"
+    "sha256": "789a69e9890d4dba191e894ac74b312c432770608e49b0d26531b294ffd4dab8"
   },
   {
     "id": "the-office",

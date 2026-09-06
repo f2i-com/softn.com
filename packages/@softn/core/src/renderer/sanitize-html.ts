@@ -193,7 +193,13 @@ export interface CssResourceScan {
 export function cssResourceReferences(value: string): CssResourceScan {
   const stripped = value.replace(/\/\*[\s\S]*?\*\//g, '');
   const decoded = decodeCssEscapes(stripped);
-  const scan: CssResourceScan = { urls: [], opaque: decoded !== stripped };
+  // An escape next to a function call could be hiding the function's name;
+  // an escape in a value with no call at all — `content: "\201C"` — cannot,
+  // and is left to mean what it says.
+  const scan: CssResourceScan = {
+    urls: [],
+    opaque: decoded !== stripped && decoded.includes('('),
+  };
   const lower = lowerAscii(decoded);
   const pattern = new RegExp(CSS_RESOURCE_FUNCTION.source, 'g');
   let m: RegExpExecArray | null;
@@ -371,6 +377,13 @@ const RICH_TEXT_TAGS = new Set([
 ]);
 
 /**
+ * Where a URL the judge withheld waits: `data-softn-withheld-src` for a
+ * `src`, and so on. Prefixed with `data-` so the browser fetches nothing from
+ * it, and named so a later pass can put it back.
+ */
+const WITHHELD_PREFIX = 'data-softn-withheld-';
+
+/**
  * Strip everything outside `allowed` from a fragment of markup.
  *
  * A disallowed element is unwrapped rather than deleted — its text survives, so
@@ -428,9 +441,22 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       // the app may make it is the judge's question, the same one the
       // renderer asks of a `src` prop: an XSS filter and an egress policy
       // solve different problems, and this used to apply only the first.
-      if (URL_ATTRIBUTES.has(name) && (!isSafeUrl(attr.value) || (judge && !judge(attr.value, name, tag)))) {
-        node.removeAttribute(attr.name);
-        continue;
+      if (URL_ATTRIBUTES.has(name)) {
+        if (!isSafeUrl(attr.value)) {
+          node.removeAttribute(attr.name);
+          continue;
+        }
+        if (judge && !judge(attr.value, name, tag)) {
+          // Withheld, not forgotten. A rich-text editor reads its value back
+          // out of this DOM, so a URL simply removed here would be gone from
+          // what the app saves the moment the person typed — and would not
+          // come back when they pressed Allow. It waits on a data attribute
+          // the browser does not fetch, and is put back below once the judge
+          // lets it through.
+          node.setAttribute(WITHHELD_PREFIX + name, attr.value);
+          node.removeAttribute(attr.name);
+          continue;
+        }
       }
       // `style` can load remote resources, which is a beacon — through
       // `url()`, through `image-set("…")`, or through either spelled with
@@ -438,6 +464,25 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       if (name === 'style') {
         const scan = cssResourceReferences(attr.value);
         if (scan.opaque || scan.urls.length > 0) node.removeAttribute(attr.name);
+      }
+    }
+
+    // A URL withheld earlier — by this pass, or by an earlier sanitization
+    // whose output is now the value — goes back on its attribute once the
+    // judge allows it, and stays waiting while it does not. Nothing on a
+    // withheld attribute is trusted further than the attribute it came from:
+    // it is judged exactly as if it had arrived there.
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (!name.startsWith(WITHHELD_PREFIX)) continue;
+      const original = name.slice(WITHHELD_PREFIX.length);
+      if (!URL_ATTRIBUTES.has(original) || !isSafeUrl(attr.value)) {
+        node.removeAttribute(attr.name);
+        continue;
+      }
+      if (!judge || judge(attr.value, original, tag)) {
+        node.setAttribute(original, attr.value);
+        node.removeAttribute(attr.name);
       }
     }
   };
