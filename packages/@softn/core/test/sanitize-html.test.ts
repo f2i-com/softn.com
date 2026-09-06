@@ -210,6 +210,12 @@ describe("a judge from the bundle's permission", () => {
     expect(sanitizeRichText(withheld)).toContain(`src="${REMOTE}"`);
   });
 
+  it('does not let a stale stash write over a live attribute', () => {
+    const out = sanitizeRichText(`<img src="/live.png" data-softn-withheld-src="${REMOTE}">`);
+    expect(out).toContain('src="/live.png"');
+    expect(out).not.toContain('attacker.example');
+  });
+
   it('judges a withheld URL as it would judge the attribute it came from', () => {
     const smuggled =
       '<img data-softn-withheld-src="javascript:alert(1)"><img data-softn-withheld-onerror="x">';
