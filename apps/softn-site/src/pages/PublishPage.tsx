@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { unzipSync } from 'fflate';
 import {
   ApiError,
   addVersion,
@@ -23,71 +22,36 @@ import { formatBytes, formatDate } from '../lib/format';
 import { navigate, type Route } from '../lib/router';
 import { Thumb } from '../components/directory/AppCard';
 import { CategoriesNotice } from '../components/directory/Controls';
+import { inspectBundle, type Inspection } from '../lib/inspectBundle';
 
 const AUTHOR_KEY = 'softn.site.author';
 
-interface Inspection {
-  name: string;
-  version: string;
-  description: string;
-  main: string;
-  files: number;
-  capabilities: string[];
-  execution: string;
-  iconDataUrl: string | null;
-  problem: string | null;
-}
-
-/** What the bundle says about itself, read in the browser before anything is sent. */
-function inspect(bytes: Uint8Array): Inspection {
-  const empty: Inspection = { name: '', version: '', description: '', main: '', files: 0, capabilities: [], execution: 'main', iconDataUrl: null, problem: null };
-  let entries: Record<string, Uint8Array>;
-  try {
-    entries = unzipSync(bytes);
-  } catch {
-    return { ...empty, problem: 'That file is not a .softn bundle (it does not open as an archive).' };
-  }
-  const decoder = new TextDecoder();
-  const manifestBytes = entries['manifest.json'];
-  if (!manifestBytes) return { ...empty, files: Object.keys(entries).length, problem: 'The bundle has no manifest.json.' };
-  let manifest: { name?: string; version?: string; description?: string; main?: string; icon?: string; config?: { execution?: string } };
-  try {
-    manifest = JSON.parse(decoder.decode(manifestBytes));
-  } catch {
-    return { ...empty, problem: 'The manifest.json is not valid JSON.' };
-  }
-  const capabilities: string[] = [];
-  const perm = entries['permission.json'];
-  if (perm) {
-    try {
-      const p = JSON.parse(decoder.decode(perm)) as { permissions?: Record<string, { enabled?: boolean }> };
-      for (const [k, v] of Object.entries(p.permissions ?? {})) if (v?.enabled) capabilities.push(k);
-    } catch {
-      /* an unreadable permission file is the server's to refuse */
-    }
-  }
-  let iconDataUrl: string | null = null;
-  if (manifest.icon && entries[manifest.icon] && entries[manifest.icon].length < 512 * 1024) {
-    const ext = manifest.icon.split('.').pop()?.toLowerCase();
-    const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : null;
-    if (mime) {
-      let bin = '';
-      const data = entries[manifest.icon];
-      for (let i = 0; i < data.length; i++) bin += String.fromCharCode(data[i]);
-      iconDataUrl = `data:${mime};base64,${btoa(bin)}`;
-    }
-  }
-  return {
-    name: manifest.name ?? '',
-    version: manifest.version ?? '',
-    description: manifest.description ?? '',
-    main: manifest.main ?? '',
-    files: Object.keys(entries).filter((k) => !k.endsWith('/')).length,
-    capabilities,
-    execution: manifest.config?.execution === 'worker' ? 'worker' : 'main',
-    iconDataUrl,
-    problem: !manifest.name ? 'The manifest has no name.' : !manifest.main ? 'The manifest names no entry file.' : null,
-  };
+/**
+ * What the directory will refuse and what will make the listing worse,
+ * while the file is still the author's to fix. Errors keep the submit
+ * button off; warnings only say so.
+ */
+function PrepublishReport({ info, extra = [] }: { info: Inspection | null; extra?: string[] }): React.ReactElement | null {
+  if (!info) return null;
+  const lines = [...info.report, ...extra.map((text) => ({ level: 'warn' as const, text }))];
+  if (lines.length === 0) return null;
+  const errors = lines.filter((l) => l.level === 'error').length;
+  const notes = lines.length - errors;
+  return (
+    <section className="prepublish" aria-label="Pre-publish report">
+      <p className="prepublish-head">
+        {errors > 0 ? `${errors} thing${errors === 1 ? '' : 's'} the directory will refuse` : 'Before you publish'}
+        {notes > 0 && ` · ${notes} ${notes === 1 ? 'note' : 'notes'}`}
+      </p>
+      <ul className="prepublish-list">
+        {lines.map((line, i) => (
+          <li key={i} className={`prepublish-${line.level}`}>
+            {line.text}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 /** A screenshot resized to fit the card, as a PNG (or JPEG when it came in as one). */
@@ -297,7 +261,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
     setError(null);
     setResult(null);
     const bytes = new Uint8Array(await f.arrayBuffer());
-    const i = inspect(bytes);
+    const i = inspectBundle(bytes);
     setInfo(i);
     if (!i.problem) {
       setName((n) => n || i.name);
@@ -427,6 +391,8 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
 
         <form className="publish-form" onSubmit={submit}>
           <BundleDrop file={file} info={info} onFile={(f) => void takeFile(f)} />
+          <PrepublishReport info={info} />
+          <PrepublishReport info={info} extra={info && !info.problem && !thumb ? ['No screenshot yet: the card will show the icon, or an initial. A screenshot is what most visitors decide on.'] : []} />
 
           {info && !info.problem && (
             <div className="capabilities-preview">
@@ -630,7 +596,7 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
   const takeFile = async (f: File) => {
     setFile(f);
     setError(null);
-    setInfo(inspect(new Uint8Array(await f.arrayBuffer())));
+    setInfo(inspectBundle(new Uint8Array(await f.arrayBuffer())));
   };
   const takeThumb = async (f: File) => {
     if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) {

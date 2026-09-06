@@ -116,6 +116,10 @@ import {
   cacheApp,
   computeAppOrigin,
   copyAppData,
+  exportAppData,
+  importAppData,
+  readAppDataSnapshot,
+  hasStoredData,
   isSecureAppOrigin,
   getCachedAppByName,
   getCachedAppByOrigin,
@@ -126,6 +130,7 @@ import {
   type CachedApp,
 } from './lib/appCache';
 import { displayNameFor, findPlaceholder, findRunningTab, findTabForUrlName } from './lib/tabIdentity';
+import { previousBuildFor, type PreviousBuild } from './lib/consentDiff';
 import { parseAppPath, buildAppPath } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
 
@@ -235,6 +240,22 @@ interface OpenTab {
   directorySlug?: string;
   /** The address the bundle was fetched from, when it came from one. */
   bundleUrl?: string;
+}
+
+/**
+ * What a cached bundle's permission.json asked for, read from the bytes: for
+ * records cached before the list was kept on the record.
+ */
+function requestedCapabilitiesOf(bundleData: Uint8Array): string[] {
+  try {
+    const { textFiles } = readZip(bundleData);
+    const manifestText = textFiles.get('manifest.json');
+    const manifest = (manifestText ? JSON.parse(manifestText) : {}) as BundleManifest;
+    const config = extractPermissions(textFiles, manifest);
+    return config ? requestedCapabilities(config) : [];
+  } catch {
+    return [];
+  }
 }
 
 /** The directory slug a bundle URL names, if it is one of the directory's. */
@@ -538,7 +559,7 @@ function App(): React.ReactElement {
         // can already write records into its own database, and removing it from
         // Home is the only thing that deletes those. No record, nothing to
         // remove them with. Origin dedup means opening it again is an update.
-        await cacheApp(data, manifest, icon, directorySlug);
+        await cacheApp(data, manifest, icon, directorySlug, requested);
 
         if (cachedAppId) {
           await updateLastOpened(cachedAppId);
@@ -547,6 +568,15 @@ function App(): React.ReactElement {
         // Refresh cached apps list
         const updatedApps = await getCachedApps();
         setApps(updatedApps);
+
+        // What this build asks for that the one before it did not, for the
+        // consent bar: an update must not add a capability under a request
+        // that reads like the one the user already approved.
+        let previousBuild: PreviousBuild | undefined;
+        if (!hasGrant && permissionConfig) {
+          const prev = previousBuildFor(updatedApps, appName, appOrigin);
+          if (prev) previousBuild = { version: prev.version, capabilities: prev.requestedCapabilities ?? requestedCapabilitiesOf(prev.bundleData) };
+        }
 
         // Create or update the tab
         // Build server sync URL (convert http(s) to ws(s) if needed)
@@ -668,7 +698,7 @@ function App(): React.ReactElement {
           consent:
             hasGrant || !permissionConfig
               ? undefined
-              : { config: permissionConfig, capabilities: requested, appName, appIcon: icon || undefined, onAllow },
+              : { config: permissionConfig, capabilities: requested, appName, appIcon: icon || undefined, previous: previousBuild, onAllow },
           importResolver,
           assetResolver: createAssetResolver(binaryFiles, textFiles),
           logicBasePath,
@@ -884,6 +914,77 @@ function App(): React.ReactElement {
     },
     [processBundleData]
   );
+
+  /** One line on Home about something that went right; the error card is for what did not. */
+  const [notice, setNotice] = useState<string | null>(null);
+
+  /**
+   * A build's records as a file. What is written is exactly what the build
+   * has stored, named for it, so it can be kept, moved to another browser or
+   * put back after an update turns out wrong.
+   */
+  const handleExportData = useCallback((app: CachedApp) => {
+    const snapshot = exportAppData(app);
+    if (!snapshot) {
+      setError(new Error('This build has no identity to export data for.'));
+      setActiveTabId(null);
+      return;
+    }
+    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${app.name.replace(/[\\/:*?"<>|]+/g, '-')}-v${app.version}-data.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    const n = Object.keys(snapshot.entries).length;
+    setNotice(`Exported ${n} stored ${n === 1 ? 'record' : 'records'} of "${app.name}" v${app.version}.`);
+  }, []);
+
+  /**
+   * Records from a file, into a build. The file is checked before anything
+   * is touched, a file from a different build is confirmed first, and an
+   * import that fails part way leaves the build's data exactly as it was.
+   * There is no path here by which a bad file becomes an empty app.
+   */
+  const handleImportData = useCallback(async (app: CachedApp, file: File) => {
+    let text: string;
+    try {
+      text = await file.text();
+    } catch (err) {
+      setError(new Error(`Nothing was imported: the file could not be read. ${err instanceof Error ? err.message : String(err)}`));
+      setActiveTabId(null);
+      return;
+    }
+    const read = readAppDataSnapshot(text);
+    if (!read.ok) {
+      setError(new Error(`Nothing was imported and "${app.name}" v${app.version} is as it was. ${read.error}`));
+      setActiveTabId(null);
+      return;
+    }
+    const n = Object.keys(read.snapshot.entries).length;
+    let allowDifferentApp = false;
+    if (read.snapshot.app.origin !== app.origin) {
+      allowDifferentApp = window.confirm(
+        `This file was exported from "${read.snapshot.app.name}" v${read.snapshot.app.version}, which is a different build from "${app.name}" v${app.version}. ` +
+          `Import its ${n} ${n === 1 ? 'record' : 'records'} anyway? The data v${app.version} has now will be replaced.`
+      );
+      if (!allowDifferentApp) return;
+    } else if (hasStoredData(app.origin)) {
+      const replace = window.confirm(`Replace the data "${app.name}" v${app.version} has now with the ${n} ${n === 1 ? 'record' : 'records'} in ${file.name}?`);
+      if (!replace) return;
+    }
+    const result = importAppData(read.snapshot, app, { allowDifferentApp });
+    if (!result.ok) {
+      setError(new Error(`Nothing was imported and "${app.name}" v${app.version} is as it was. ${result.error ?? ''}`));
+      setActiveTabId(null);
+      return;
+    }
+    setNotice(`Imported ${result.copied} stored ${result.copied === 1 ? 'record' : 'records'} into "${app.name}" v${app.version} from ${file.name}.`);
+    setApps(await getCachedApps());
+  }, []);
 
   /** Handle removing a cached app */
   const handleRemove = useCallback(async (id: string) => {
@@ -1336,6 +1437,14 @@ function App(): React.ReactElement {
               display: isHome && !loadingTabId && !error ? 'block' : 'none',
             }}
           >
+            {notice && (
+              <div className="softn-shell-notice" role="status" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', margin: '1rem 1.5rem 0', padding: '0.625rem 0.875rem', borderRadius: '10px', border: '1px solid var(--mint-edge, #2e7d5b)', background: 'var(--mint-glow-soft, rgba(46,125,91,0.12))', color: 'var(--paper, #f2f0ec)', fontSize: '0.8125rem' }}>
+                <span style={{ flex: 1 }}>{notice}</span>
+                <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss" style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '1rem' }}>
+                  &times;
+                </button>
+              </div>
+            )}
             <Launcher
               apps={apps}
               running={openTabs.map((t) => ({ id: t.id, name: displayNameFor(t, openTabs), icon: t.icon }))}
@@ -1345,6 +1454,8 @@ function App(): React.ReactElement {
               onOpenCached={handleOpenCached}
               onRemove={handleRemove}
               onAdoptData={handleAdoptData}
+              onExportData={handleExportData}
+              onImportData={(app, file) => void handleImportData(app, file)}
             />
           </div>
 

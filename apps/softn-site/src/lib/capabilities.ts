@@ -83,3 +83,74 @@ export const STORAGE_POLICY_INFO: Record<StoragePolicy, { label: string; summary
 export function describeStoragePolicy(policy: string): { label: string; summary: string } {
   return (STORAGE_POLICY_INFO as Record<string, { label: string; summary: string }>)[policy] ?? { label: policy, summary: 'a policy this directory does not describe' };
 }
+
+// ── Reading a declaration ──────────────────────────────────────────────
+// The same reading as core's inspectDeclaration, so the pre-publish report
+// refuses exactly what the directory refuses. Held equal to core's by
+// apps/softn-web/test/capability-schema.test.ts over a set of fixtures.
+
+const COLLECTION_NAME = /^(?:\*|[a-z][a-z0-9_]{0,31})$/;
+
+export interface DeclarationReport {
+  requested: Capability[];
+  unknown: string[];
+  malformed: string[];
+  storagePolicies: Record<string, StoragePolicy>;
+}
+
+export function isStoragePolicy(name: string): name is StoragePolicy {
+  return (STORAGE_POLICIES as readonly string[]).includes(name);
+}
+
+export function inspectDeclaration(config: unknown): DeclarationReport {
+  const report: DeclarationReport = { requested: [], unknown: [], malformed: [], storagePolicies: {} };
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) {
+    report.malformed.push('permissions');
+    return report;
+  }
+  const permissions = (config as { permissions?: unknown }).permissions;
+  if (permissions === undefined || permissions === null) return report;
+  if (typeof permissions !== 'object' || Array.isArray(permissions)) {
+    report.malformed.push('permissions');
+    return report;
+  }
+  const declared = permissions as Record<string, unknown>;
+  for (const name of Object.keys(declared)) {
+    const entry = declared[name];
+    if (!isCapability(name)) {
+      report.unknown.push(name);
+      continue;
+    }
+    if (entry === undefined) continue;
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      report.malformed.push(name);
+      continue;
+    }
+    const enabled = (entry as { enabled?: unknown }).enabled;
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      report.malformed.push(name);
+      continue;
+    }
+    if (name === 'storage') {
+      const collections = (entry as { collections?: unknown }).collections;
+      if (collections !== undefined) {
+        if (collections === null || typeof collections !== 'object' || Array.isArray(collections)) {
+          report.malformed.push('storage.collections');
+        } else {
+          for (const [collection, policy] of Object.entries(collections as Record<string, unknown>)) {
+            if (!COLLECTION_NAME.test(collection) || typeof policy !== 'string' || !isStoragePolicy(policy)) {
+              report.malformed.push(`storage.collections.${collection}`);
+              continue;
+            }
+            report.storagePolicies[collection] = policy;
+          }
+        }
+      }
+    }
+  }
+  for (const name of CAPABILITIES) {
+    const entry = declared[name];
+    if (entry && typeof entry === 'object' && (entry as { enabled?: unknown }).enabled === true) report.requested.push(name);
+  }
+  return report;
+}
