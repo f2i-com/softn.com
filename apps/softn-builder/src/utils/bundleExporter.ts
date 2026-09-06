@@ -13,6 +13,7 @@ import type {
 } from '../types/builder';
 import { generateSource } from './sourceGenerator';
 import { debug } from './debug';
+import { buildPermissionJson, type PermissionDeclaration } from './permissions';
 
 export const BUNDLE_FORMAT_VERSION = '1.0';
 
@@ -52,6 +53,10 @@ export interface BundleOptions {
   collections: CollectionDef[];
   assets: AssetFile[];
   icon?: Uint8Array;
+  /** Where the icon goes in the archive; `assets/icon.png` when not said. */
+  iconPath?: string;
+  /** What the app declares it needs; nothing declared writes no permission.json. */
+  permissions?: PermissionDeclaration;
 }
 
 export interface MultiBundleOptions {
@@ -64,6 +69,30 @@ export interface MultiBundleOptions {
   collections: CollectionDef[];
   assets: AssetFile[];
   icon?: Uint8Array;
+  iconPath?: string;
+  permissions?: PermissionDeclaration;
+}
+
+/**
+ * The archive entries every export shares: the declaration, the icon at its
+ * own path, and the assets. The icon is listed among the assets once.
+ */
+function addSharedEntries(
+  files: Record<string, Uint8Array>,
+  manifest: BundleManifest,
+  options: { assets: AssetFile[]; icon?: Uint8Array; iconPath?: string; permissions?: PermissionDeclaration }
+): void {
+  for (const asset of options.assets) {
+    files[`assets/${asset.name}`] = asset.data;
+  }
+  if (options.icon) {
+    const iconPath = options.iconPath || 'assets/icon.png';
+    manifest.icon = iconPath;
+    files[iconPath] = options.icon;
+    if (!manifest.files.assets.includes(iconPath)) manifest.files.assets.push(iconPath);
+  }
+  const permission = options.permissions ? buildPermissionJson(options.permissions) : null;
+  if (permission) files['permission.json'] = strToU8(permission);
 }
 
 /** Whether the project carries a `logic/main.logic` for the entry file to link. */
@@ -106,10 +135,7 @@ export async function exportBundle(options: BundleOptions): Promise<Uint8Array> 
     },
   };
 
-  if (options.icon) {
-    manifest.icon = 'assets/icon.png';
-  }
-
+  addSharedEntries(files, manifest, options);
   files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2));
 
   // Generate main.ui from canvas
@@ -158,16 +184,6 @@ export async function exportBundle(options: BundleOptions): Promise<Uint8Array> 
       })),
     };
     files[`xdb/${col.name}.xdb`] = strToU8(JSON.stringify(xdbFile, null, 2));
-  }
-
-  // Add icon if provided
-  if (options.icon) {
-    files['assets/icon.png'] = options.icon;
-  }
-
-  // Add other assets
-  for (const asset of options.assets) {
-    files[`assets/${asset.name}`] = asset.data;
   }
 
   // Create ZIP
@@ -252,10 +268,7 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
     },
   };
 
-  if (options.icon) {
-    manifest.icon = 'assets/icon.png';
-  }
-
+  addSharedEntries(files, manifest, options);
   files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2));
 
   // Generate XDB seed files
@@ -272,16 +285,6 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
       })),
     };
     files[`xdb/${col.name}.xdb`] = strToU8(JSON.stringify(xdbFile, null, 2));
-  }
-
-  // Add icon if provided
-  if (options.icon) {
-    files['assets/icon.png'] = options.icon;
-  }
-
-  // Add other assets
-  for (const asset of options.assets) {
-    files[`assets/${asset.name}`] = asset.data;
   }
 
   debug('[exportMultiFileBundle] Creating bundle with', Object.keys(files).length, 'files');

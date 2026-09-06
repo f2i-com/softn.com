@@ -23,6 +23,7 @@ import { navigate, type Route } from '../lib/router';
 import { Thumb } from '../components/directory/AppCard';
 import { CategoriesNotice } from '../components/directory/Controls';
 import { inspectBundle, type Inspection } from '../lib/inspectBundle';
+import { openedForHandoff, takeBundleHandoff } from '../lib/handoff';
 
 const AUTHOR_KEY = 'softn.site.author';
 
@@ -268,6 +269,20 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
       setDescription((d) => d || i.description);
     }
   }, []);
+
+  // Opened by Builder or Studio with a bundle staged for this page: take it
+  // as if it had been dropped here. A stale or missing hand-off falls back
+  // to the ordinary upload, with a line saying why.
+  useEffect(() => {
+    if (!openedForHandoff()) return;
+    void takeBundleHandoff().then((handoff) => {
+      if (!handoff) {
+        setError('Nothing was handed over from Builder or Studio. Choose the bundle file instead.');
+        return;
+      }
+      void takeFile(new File([handoff.bytes as BlobPart], `${handoff.name || 'app'}.softn`, { type: 'application/zip' }));
+    });
+  }, [takeFile]);
 
   const takeThumb = async (f: File) => {
     if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) {

@@ -2,16 +2,46 @@ import React from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { Mark } from '../common/Mark';
-import { exportAsBundle } from '../../lib/exportBundle';
+import { buildBundle, exportAsBundle } from '../../lib/exportBundle';
+import { RUNTIME_URL, SITE_URL } from '../../lib/siteUrls';
+import { stageBundleHandoff, handoffUrl } from '@softn/core';
 
 interface TopBarProps {
   onBackToDashboard?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
-  const { projectName } = useWorkspaceStore();
+  const { projectName, errors } = useWorkspaceStore();
   const { files } = useVFSStore();
   const hasFiles = files.size > 0;
+  // The validator runs the inspector the directory runs; an error there is a
+  // bundle the directory would refuse, so the two buttons that send it on
+  // wait until it is fixed. Export stays: a file on disk can be looked at.
+  const refused = errors.some((e) => e.level === 'error' && e.type === 'bundle-refused');
+
+  /**
+   * Stage the bundle for the runtime or the publish page and open it. Both
+   * are pages of this origin in a deployment; in development they are other
+   * ports, and the page opens without the bundle and says so.
+   */
+  const handOff = async (to: 'runtime' | 'publish') => {
+    if (!hasFiles) return;
+    const log = useWorkspaceStore.getState().addConsoleOutput;
+    try {
+      const bytes = buildBundle(files);
+      const staged = await stageBundleHandoff(bytes, projectName || 'app', 'studio');
+      if (!staged) {
+        log('This browser could not hold the bundle for the next page. Export it and open the file there instead.');
+        return;
+      }
+      const target = handoffUrl(to === 'runtime' ? RUNTIME_URL : SITE_URL, to);
+      const opened = window.open(target, '_blank', 'noopener');
+      if (!opened) window.location.assign(target);
+      log(to === 'runtime' ? 'Opened the bundle in the runtime.' : 'Handed the bundle to the publish page.');
+    } catch (err: unknown) {
+      log(`Hand-off failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   return (
     <div style={styles.bar}>
@@ -31,6 +61,24 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
       <div style={styles.right}>
         {/* The theme switch is in the product bar above, shared with every
             other SoftN app; a second one here would be a second opinion. */}
+        <button
+          onClick={() => void handOff('runtime')}
+          disabled={!hasFiles || refused}
+          style={{ ...styles.exportBtn, opacity: hasFiles && !refused ? 1 : 0.4, cursor: hasFiles && !refused ? 'pointer' : 'not-allowed' }}
+          title={refused ? 'Fix what the validator found first' : hasFiles ? 'Open the bundle in the SoftN runtime' : 'No files to run'}
+        >
+          <Icon name="play" size={16} />
+          <span>Run</span>
+        </button>
+        <button
+          onClick={() => void handOff('publish')}
+          disabled={!hasFiles || refused}
+          style={{ ...styles.exportBtn, opacity: hasFiles && !refused ? 1 : 0.4, cursor: hasFiles && !refused ? 'pointer' : 'not-allowed' }}
+          title={refused ? 'Fix what the validator found first' : hasFiles ? 'Hand the bundle to the directory’s publish page' : 'No files to publish'}
+        >
+          <Icon name="upload" size={16} />
+          <span>Publish</span>
+        </button>
         <button
           onClick={() => {
             if (!hasFiles) return;

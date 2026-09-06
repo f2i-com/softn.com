@@ -1,8 +1,16 @@
+import { inspectEntries } from '@softn/core';
 import type { ValidationError, VFSFile, Blueprint } from '../types/studio';
+import { normalizeManifestForBundle } from './exportBundle';
 
 /**
- * Run basic validation checks on VFS files and blueprint.
- * Returns an array of validation errors/warnings/info.
+ * The bundle the project would export, inspected the way the directory and
+ * the runtime will inspect it — the same checks Builder runs before an
+ * export and the site runs before an upload — plus what only Studio knows:
+ * the blueprint's pages, and files that are still empty.
+ *
+ * Studio's validator used to look for a manifest `entry` field the runtime
+ * never read, and pass an export the directory then refused for having no
+ * `main`. Now it asks the one inspector.
  */
 export function validateProject(
   files: Map<string, VFSFile>,
@@ -10,62 +18,36 @@ export function validateProject(
 ): ValidationError[] {
   const errors: ValidationError[] = [];
 
-  // 1. Check for manifest.json
-  const manifest = files.get('manifest.json');
-  if (!manifest) {
-    errors.push({
-      file: 'manifest.json',
-      level: 'warning',
-      type: 'missing-manifest',
-      message: 'No manifest.json found. Export and preview may not work correctly.',
-      suggestion: 'Create a manifest.json with at least a "name" and "entry" field.',
-    });
-  } else if (typeof manifest.content === 'string') {
-    try {
-      const parsed = JSON.parse(manifest.content);
-      if (!parsed.entry) {
-        errors.push({
-          file: 'manifest.json',
-          level: 'warning',
-          type: 'missing-entry',
-          message: 'manifest.json has no "entry" field. Preview won\'t know which page to load.',
-          suggestion: 'Add an "entry" field pointing to your main HTML or UI file.',
-        });
-      } else if (!files.has(parsed.entry)) {
-        errors.push({
-          file: 'manifest.json',
-          level: 'error',
-          type: 'broken-entry',
-          message: `Entry file "${parsed.entry}" referenced in manifest does not exist.`,
-          suggestion: 'Create the entry file or update the manifest entry path.',
-        });
-      }
-    } catch {
+  // What the archive will hold: every project file except Studio's own, with
+  // the manifest as the export writes it.
+  const entries = new Map<string, Uint8Array>();
+  const encoder = new TextEncoder();
+  for (const [path, file] of files) {
+    if (path.startsWith('builder/')) continue;
+    entries.set(path, typeof file.content === 'string' ? encoder.encode(file.content) : file.content);
+  }
+  const manifest = normalizeManifestForBundle(files);
+  if (manifest !== null) entries.set('manifest.json', encoder.encode(manifest));
+
+  if (entries.size > 0) {
+    const inspection = inspectEntries(entries);
+    for (const line of inspection.report) {
+      const mentionsManifest = /manifest/i.test(line.text);
+      const mentionsPermission = /permission\.json/i.test(line.text);
       errors.push({
-        file: 'manifest.json',
-        level: 'error',
-        type: 'invalid-json',
-        message: 'manifest.json contains invalid JSON.',
+        file: mentionsPermission ? 'permission.json' : mentionsManifest ? 'manifest.json' : fileNamedIn(line.text, files) ?? 'manifest.json',
+        level: line.level === 'error' ? 'error' : 'warning',
+        type: line.level === 'error' ? 'bundle-refused' : 'bundle-note',
+        message: line.text,
+        suggestion: line.level === 'error' ? 'The directory will refuse this bundle until it is fixed.' : undefined,
       });
     }
   }
 
-  // 2. Check HTML files for basic validity
+  // JSON files must parse; the inspector reads only the manifest and the declaration.
   for (const [path, file] of files) {
     if (typeof file.content !== 'string') continue;
-
-    if (path.endsWith('.html') || path.endsWith('.htm')) {
-      if (!file.content.includes('<html') && !file.content.includes('<!DOCTYPE') && !file.content.includes('<!doctype')) {
-        errors.push({
-          file: path,
-          level: 'info',
-          type: 'html-fragment',
-          message: 'This HTML file may be a fragment (no <html> or <!DOCTYPE> tag).',
-        });
-      }
-    }
-
-    // 3. Check JSON files for parse errors
+    if (path === 'manifest.json' || path === 'permission.json') continue;
     if (path.endsWith('.json') || path.endsWith('.xdb')) {
       try {
         JSON.parse(file.content);
@@ -80,19 +62,20 @@ export function validateProject(
     }
   }
 
-  // 4. Check blueprint pages have matching files
+  // Blueprint pages should each have a file, in either format.
   if (blueprint) {
     for (const page of blueprint.pages) {
       const slugName = page.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
       const expectedPaths = [
-        `pages/${slugName}.html`,
-        `pages/${slugName}.ui`,
+        `ui/pages/${slugName}.ui`,
         `ui/${slugName}.ui`,
+        `pages/${slugName}.ui`,
+        `pages/${slugName}.html`,
       ];
       const hasFile = expectedPaths.some((p) => files.has(p));
       if (!hasFile) {
         errors.push({
-          file: `pages/${slugName}.html`,
+          file: `ui/pages/${slugName}.ui`,
           level: 'info',
           type: 'missing-page-file',
           message: `Blueprint page "${page.name}" has no matching file.`,
@@ -102,7 +85,6 @@ export function validateProject(
     }
   }
 
-  // 5. Check for empty files
   for (const [path, file] of files) {
     if (typeof file.content === 'string' && file.content.trim().length === 0) {
       errors.push({
@@ -115,4 +97,12 @@ export function validateProject(
   }
 
   return errors;
+}
+
+/** The project file a report line names, if it names one. */
+function fileNamedIn(text: string, files: Map<string, VFSFile>): string | null {
+  for (const path of files.keys()) {
+    if (text.includes(path)) return path;
+  }
+  return null;
 }

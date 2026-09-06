@@ -13,3 +13,5 @@ export { createBundleRuntime, SoftNBundleRenderer, useSoftNBundle } from './runt
 
 // Note: CLI (cli.ts) is Node.js only and should be run directly via ts-node or compiled separately
 // Example: npx ts-node src/bundle/cli.ts bundle ./demo-bundle ./demo.softn
+export * from './inspect';
+export * from './handoff';
