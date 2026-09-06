@@ -4971,7 +4971,7 @@ dependencies = [
 
 [[package]]
 name = "softn-loader"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "image",
  "serde",

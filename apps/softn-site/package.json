@@ -1,6 +1,6 @@
 {
   "name": "@softn/site",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "description": "softn.com — the SoftN landing page",
   "license": "Apache-2.0",
