@@ -93,26 +93,181 @@ export function hasRemoteSrcSetCandidate(value: string): boolean {
 }
 
 /**
- * Rewrite `url(...)` targets a predicate rejects, leaving the rest of the CSS
- * alone.
+ * The CSS functions that make the browser fetch something.
  *
- * Quoted and unquoted forms are matched separately. A single pattern with
+ * `url()` is the one everybody checks. `image-set()`, `image()`, `src()` and
+ * `cross-fade()` take their targets as plain strings — `image-set("https://…"
+ * 1x)` reaches the network with no `url(` anywhere in it — so a check that
+ * looks for `url(` alone lets those through. The names are matched on a
+ * lowercased copy, because `URL(` is `url(` to the browser, and with no
+ * word boundary in front: `@importurl(…)` is nothing to the browser, but
+ * a check that let it through would be one guess about the parser away
+ * from being wrong, and removing it costs nothing.
+ */
+const CSS_RESOURCE_FUNCTION =
+  /(-webkit-image-set|-webkit-cross-fade|image-set|cross-fade|image|url|src)\s*\(/g;
+
+/** ASCII-only lowercasing: the same length as its input, so indices carry over. */
+function lowerAscii(text: string): string {
+  return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/**
+ * The index of the `)` that closes the function whose `(` is at `open`,
+ * honouring quotes and nesting; -1 if it never closes. A single pattern with
  * `[^)]*` cannot cross a literal `)`, so a URL that contains one inside its
  * quotes — `url("https://evil.test/beacon?a=(b)")`, a perfectly ordinary query
  * string — failed to match and the declaration reached the page untouched.
  */
-export function rewriteCssUrls(css: string, isBlocked: (target: string) => boolean): string {
-  let out = css;
-  const strip = (pattern: RegExp): void => {
-    out = out.replace(pattern, (match, inner: string) =>
-      isBlocked(inner) ? 'url(/* removed */)' : match
-    );
-  };
-  strip(/url\s*\(\s*"([^"]*)"\s*\)/gi);
-  strip(/url\s*\(\s*'([^']*)'\s*\)/gi);
-  strip(/url\s*\(\s*([^)'"]*?)\s*\)/gi);
+function closeOfCssFunction(text: string, open: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * `\75rl(` is `url(`: the browser undoes CSS escapes before it reads a
+ * function name or a scheme, so anything judging either has to as well.
+ */
+export function decodeCssEscapes(text: string): string {
+  return text.replace(
+    /\\(?:([0-9a-fA-F]{1,6})[ \t\n\f\r]?|([\s\S]))/g,
+    (_match, hex: string | undefined, ch: string | undefined) => {
+      if (hex !== undefined) {
+        const cp = parseInt(hex, 16);
+        return cp === 0 || cp > 0x10ffff ? '�' : String.fromCodePoint(cp);
+      }
+      return ch ?? '';
+    }
+  );
+}
+
+/** The quoted strings in a run of CSS, unquoted, with their escapes undone. */
+function cssStringsIn(text: string): string[] {
+  const out: string[] = [];
+  const pattern = /"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(text))) out.push(decodeCssEscapes(m[1] ?? m[2] ?? ''));
   return out;
 }
+
+/** The target of one `url(...)`: the string inside its quotes, or the bare token. */
+function urlTarget(inner: string): string {
+  const trimmed = inner.trim();
+  const quoted = /^(["'])([\s\S]*)\1$/.exec(trimmed);
+  return quoted ? quoted[2] : trimmed;
+}
+
+/** What a run of CSS would make the browser fetch. */
+export interface CssResourceScan {
+  /** Every target found: `url()` arguments, and the strings inside the image functions. */
+  urls: string[];
+  /**
+   * The CSS carried a resource-bearing form this scan could not read to a
+   * URL — an escape sequence, a function that never closes. Nothing an inline
+   * style legitimately says needs either, so a caller withholds rather than
+   * guesses.
+   */
+  opaque: boolean;
+}
+
+/**
+ * Every resource a declaration or an inline style would load.
+ *
+ * Comments are dropped and escapes undone first, because both are ways of
+ * spelling `url(https://…)` so that a search for that text does not find it:
+ * an empty comment in the middle of the name and `\75rl(` are both `url(`
+ * once the browser has read them.
+ */
+export function cssResourceReferences(value: string): CssResourceScan {
+  const stripped = value.replace(/\/\*[\s\S]*?\*\//g, '');
+  const decoded = decodeCssEscapes(stripped);
+  const scan: CssResourceScan = { urls: [], opaque: decoded !== stripped };
+  const lower = lowerAscii(decoded);
+  const pattern = new RegExp(CSS_RESOURCE_FUNCTION.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(lower))) {
+    const name = m[1];
+    const open = m.index + m[0].length - 1;
+    const close = closeOfCssFunction(lower, open);
+    if (close < 0) {
+      scan.opaque = true;
+      break;
+    }
+    const inner = decoded.slice(open + 1, close);
+    if (name === 'url') scan.urls.push(urlTarget(inner));
+    else scan.urls.push(...cssStringsIn(inner));
+    // Carry on inside the function: `image-set(url(…) 1x)` nests one.
+    pattern.lastIndex = open + 1;
+  }
+  return scan;
+}
+
+/**
+ * Rewrite the resource functions whose target a predicate rejects, leaving
+ * the rest of the CSS alone. A rejected `url()` becomes a `url()` of a
+ * "removed" comment, as it always did; a rejected `image-set()`, `image()`, `src()` or
+ * `cross-fade()` becomes `none`, which every property that takes them accepts.
+ *
+ * This works on the text as given — a caller that wants escapes judged
+ * decodes or neuters them first, as `sanitizeBundleCSS` does — and matches
+ * function names regardless of case.
+ */
+export function rewriteCssResources(css: string, isBlocked: (target: string) => boolean): string {
+  const lower = lowerAscii(css);
+  const pattern = new RegExp(CSS_RESOURCE_FUNCTION.source, 'g');
+  let out = '';
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(lower))) {
+    const name = m[1];
+    const start = m.index;
+    const open = m.index + m[0].length - 1;
+    const removed = name === 'url' ? 'url(/* removed */)' : 'none';
+    const close = closeOfCssFunction(lower, open);
+    if (close < 0) {
+      // Never closes: whatever follows was meant as its argument.
+      out += css.slice(last, start) + removed;
+      last = css.length;
+      break;
+    }
+    const inner = css.slice(open + 1, close);
+    const targets = name === 'url' ? [urlTarget(inner)] : cssStringsIn(inner);
+    if (targets.some(isBlocked)) {
+      out += css.slice(last, start) + removed;
+      last = close + 1;
+      pattern.lastIndex = close + 1;
+    } else {
+      pattern.lastIndex = open + 1;
+    }
+  }
+  return out + css.slice(last);
+}
+
+/** The earlier name of {@link rewriteCssResources}, kept for callers that have it. */
+export const rewriteCssUrls = rewriteCssResources;
+
+/**
+ * A caller's verdict on a URL the markup would fetch or follow: true keeps
+ * it, false removes it. `attribute` is the lowercased attribute name and
+ * `tag` the element's, so a judge can treat a link the user chooses to follow
+ * (`href` on an `<a>`) differently from a fetch the render performs (`src`,
+ * `srcset`, or `href` on an SVG `<use>`). Without a judge the only test is
+ * the scheme; `markupUrlJudge` in egress-policy.ts is the one that applies
+ * the bundle's network permission.
+ */
+export type MarkupUrlJudge = (url: string, attribute: string, tag: string) => boolean;
 
 /** Attributes whose value the browser will fetch or navigate to. */
 export const URL_ATTRIBUTES = new Set([
@@ -222,7 +377,7 @@ const RICH_TEXT_TAGS = new Set([
  * a stray `<div>` in an icon does not silently swallow the label inside it —
  * except for elements that carry executable content, which are removed whole.
  */
-function sanitizeFragment(markup: string, allowed: Set<string>): string {
+function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUrlJudge): string {
   // No DOM (server render, worker). Refusing is the safe answer: the value is
   // untrusted and there is nothing here to check it with.
   if (typeof DOMParser === 'undefined') return '';
@@ -268,13 +423,21 @@ function sanitizeFragment(markup: string, allowed: Set<string>): string {
         node.removeAttribute(attr.name);
         continue;
       }
-      if (URL_ATTRIBUTES.has(name) && !isSafeUrl(attr.value)) {
+      // A scheme that executes is never kept. A scheme that is safe — https,
+      // most of all — is still a fetch of somebody else's server, and whether
+      // the app may make it is the judge's question, the same one the
+      // renderer asks of a `src` prop: an XSS filter and an egress policy
+      // solve different problems, and this used to apply only the first.
+      if (URL_ATTRIBUTES.has(name) && (!isSafeUrl(attr.value) || (judge && !judge(attr.value, name, tag)))) {
         node.removeAttribute(attr.name);
         continue;
       }
-      // `style` can load remote resources via url(), which is a beacon.
-      if (name === 'style' && /url\s*\(/i.test(attr.value)) {
-        node.removeAttribute(attr.name);
+      // `style` can load remote resources, which is a beacon — through
+      // `url()`, through `image-set("…")`, or through either spelled with
+      // escapes. Rich text has no legitimate use for any of them.
+      if (name === 'style') {
+        const scan = cssResourceReferences(attr.value);
+        if (scan.opaque || scan.urls.length > 0) node.removeAttribute(attr.name);
       }
     }
   };
@@ -288,14 +451,23 @@ function sanitizeFragment(markup: string, allowed: Set<string>): string {
  *
  * `<Icon svg={record.body} />` used to inject its argument verbatim, so a
  * record containing `<img src=x onerror=…>` executed on the host origin.
+ * With a judge, a `<use href>` or `xlink:href` that points off the page is
+ * held to the bundle's network permission as well.
  */
-export function sanitizeSvg(markup: string): string {
-  return sanitizeFragment(markup, SVG_TAGS);
+export function sanitizeSvg(markup: string, judge?: MarkupUrlJudge): string {
+  return sanitizeFragment(markup, SVG_TAGS, judge);
 }
 
 /**
  * Restrict markup to inert rich text.
+ *
+ * With a judge, an `<img src>`, `srcset`, `poster` or the like that points
+ * off the page is held to the bundle's network permission — withheld while
+ * the consent bar is unanswered, and refused outright by a bundle that
+ * declares no `net` or one that scopes itself to other hosts. A link's `href`
+ * is navigation the user chooses, and is only withheld while consent is
+ * pending, as in the renderer.
  */
-export function sanitizeRichText(markup: string): string {
-  return sanitizeFragment(markup, RICH_TEXT_TAGS);
+export function sanitizeRichText(markup: string, judge?: MarkupUrlJudge): string {
+  return sanitizeFragment(markup, RICH_TEXT_TAGS, judge);
 }

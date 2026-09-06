@@ -120,6 +120,8 @@ import {
   exportAppData,
   importAppData,
   readAppDataSnapshot,
+  recoverInterruptedImports,
+  snapshotEntryCount,
   hasStoredData,
   isSecureAppOrigin,
   getCachedAppByName,
@@ -132,7 +134,7 @@ import {
 } from './lib/appCache';
 import { displayNameFor, findPlaceholder, findRunningTab, findTabForUrlName } from './lib/tabIdentity';
 import { previousBuildFor, type PreviousBuild } from './lib/consentDiff';
-import { parseAppPath, buildAppPath } from './lib/appUrl';
+import { parseAppPath, buildAppPath, publicPath } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
 
 // ── URL Routing Helpers ──────────────────────────────────────────
@@ -143,6 +145,55 @@ function parseAppUrl(): { appName: string | null; page: string | null } {
 
 function buildAppUrl(appName: string | null, page?: string | null): string {
   return buildAppPath(appName, page, import.meta.env.BASE_URL);
+}
+
+// ── Demo catalogue ──
+//
+// The directory API answers /api/apps/<slug>/bundle.softn in production and
+// knows an app by the slug of its name. A development checkout without PHP has
+// no API at all, so reloading /app/<name> for a demo the runtime ships 404ed
+// and fell back to whatever the cache held — a console error on every refresh
+// of every demo. The catalogue in public/demos lists each shipped demo by id,
+// name and file, so the same demo can be reopened from there. The slug rule
+// matches the API's (Apps::slugify) so that "The Night Window" finds
+// the-night-window either way.
+function slugOfName(name: string): string {
+  const s = name
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return (s || 'app').slice(0, 48);
+}
+
+async function demoBundleUrlFor(appName: string): Promise<string | null> {
+  try {
+    const response = await fetch(publicPath('demos/index.json', import.meta.env.BASE_URL), {
+      credentials: 'same-origin',
+      cache: 'no-cache',
+    });
+    if (!response.ok) return null;
+    const parsed: unknown = await response.json();
+    const entries: unknown[] = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as { demos?: unknown }).demos)
+        ? ((parsed as { demos: unknown[] }).demos)
+        : [];
+    const wanted = slugOfName(appName);
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      const { id, name, file } = entry as { id?: unknown; name?: unknown; file?: unknown };
+      // A catalogue file is a bare name inside demos/, never a path.
+      if (typeof file !== 'string' || !/^[^/\\]+\.softn$/i.test(file) || file.includes('..')) continue;
+      if (id === wanted || (typeof name === 'string' && slugOfName(name) === wanted)) {
+        return publicPath(`demos/${file}`, import.meta.env.BASE_URL);
+      }
+    }
+  } catch {
+    // No catalogue is not an error: the cache is the next place to look.
+  }
+  return null;
 }
 
 /** The URL as the history API sees it, base and query included. */
@@ -382,8 +433,15 @@ function App(): React.ReactElement {
     [embedded]
   );
 
-  // Load cached apps on mount
+  // Load cached apps on mount. An import of app data that the browser cut
+  // short is finished first — the data it was replacing goes back — before
+  // any app can open on top of the half it left.
   useEffect(() => {
+    try {
+      recoverInterruptedImports();
+    } catch (err) {
+      console.warn('[SoftN Web] Could not check for interrupted imports:', err);
+    }
     getCachedApps().then(setApps).catch(console.error);
   }, []);
 
@@ -955,7 +1013,7 @@ function App(): React.ReactElement {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
-    const n = Object.keys(snapshot.entries).length;
+    const n = snapshotEntryCount(snapshot);
     setNotice(`Exported ${n} stored ${n === 1 ? 'record' : 'records'} of "${app.name}" v${app.version}.`);
   }, []);
 
@@ -980,7 +1038,7 @@ function App(): React.ReactElement {
       setActiveTabId(null);
       return;
     }
-    const n = Object.keys(read.snapshot.entries).length;
+    const n = snapshotEntryCount(read.snapshot);
     let allowDifferentApp = false;
     if (read.snapshot.app.origin !== app.origin) {
       allowDifferentApp = window.confirm(
@@ -1184,8 +1242,21 @@ function App(): React.ReactElement {
     if (urlInit.appName) {
       // Always fetch the latest bundle from the directory API so updates/changes
       // are loaded immediately, with graceful offline fallback to cached app.
+      // A shipped demo can also come from the catalogue in public/demos: first
+      // in development, where there is usually no API to ask, and otherwise
+      // only once the API has said no.
       if (urlTabId) discardPlaceholder(urlTabId);
-      openFromUrl(`/api/apps/${encodeURIComponent(urlInit.appName!)}/bundle.softn`).then((appName) => {
+      const wanted = urlInit.appName;
+      const fromApi = (): Promise<string | null> =>
+        openFromUrl(`/api/apps/${encodeURIComponent(wanted)}/bundle.softn`);
+      const fromCatalogue = async (): Promise<string | null> => {
+        const demoUrl = await demoBundleUrlFor(wanted);
+        return demoUrl ? openFromUrl(demoUrl) : null;
+      };
+      const attempt = import.meta.env.DEV
+        ? fromCatalogue().then((opened) => opened ?? fromApi())
+        : fromApi().then((opened) => opened ?? fromCatalogue());
+      attempt.then((appName) => {
         if (appName) {
           window.history.replaceState({}, '', entryUrl(buildAppUrl(appName, urlInit.page)));
           urlReadyRef.current = true;

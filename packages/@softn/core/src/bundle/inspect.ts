@@ -204,6 +204,21 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
           error(`permission.json: "${m}" must be an object with a boolean "enabled".`);
         }
       }
+      // Server storage with no policy is public: anyone running the app can
+      // change or remove any record, a leaderboard included. That is a fine
+      // choice made on purpose and a surprise made by default, so the author
+      // hears it here, at the one moment they are around to decide. (A
+      // malformed declaration is refused above and needs no second warning.)
+      if (
+        capabilities.includes('storage') &&
+        Object.keys(storagePolicies).length === 0 &&
+        !d.malformed.some((m) => m.startsWith('storage.collections'))
+      ) {
+        warn(
+          'Server storage is enabled with no collection policies, so every collection is public: anyone running the app can change or remove any record, including other players\' scores. ' +
+            'To keep records as they were added, declare "collections" under "storage" in permission.json — for example { "scores": "append-only" }.'
+        );
+      }
     }
   } else {
     warn('No permission.json: the app declares nothing and gets no capability. Fine for an app that needs none.');

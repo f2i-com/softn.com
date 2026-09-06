@@ -28,7 +28,7 @@
     "fetch:demos": "node scripts/fetch-demos.mjs",
     "screenshot:demos": "node scripts/fetch-demos.mjs && node scripts/screenshot-demos.mjs",
     "pretest": "node scripts/fetch-demos.mjs",
-    "test": "npm run test --workspaces --if-present",
+    "test": "node --test scripts/*.test.mjs && npm run test --workspaces --if-present",
     "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",
     "lint:errors": "eslint . --ext .ts,.tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",

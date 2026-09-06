@@ -43,11 +43,19 @@ export function formatDate(iso: string): string {
  * The capabilities an app declared, as the one line a visitor reads first.
  * "safe" means nothing declared reaches towards the person — their network,
  * camera, microphone or files — not that the app is harmless.
+ *
+ * Without `net` the line says "no general network access", not "no network":
+ * server storage, sync and hosted AI are capabilities of their own, each
+ * listed by name, and each reaches softn.com. An app that keeps a shared
+ * leaderboard is not offline, and the old wording said it was.
  */
 export function capabilitySummary(capabilities: string[]): { label: string; safe: boolean } {
   if (capabilities.length === 0) return { label: 'Sandboxed · No capabilities', safe: true };
   const described = capabilities.map(describeCapability);
   const listed = described.map((c) => c.label);
   const safe = !described.some((c) => c.sensitive);
-  return { label: `Sandboxed · ${listed.join(' · ')}${capabilities.includes('net') ? '' : ' · No network'}`, safe };
+  return {
+    label: `Sandboxed · ${listed.join(' · ')}${capabilities.includes('net') ? '' : ' · No general network access'}`,
+    safe,
+  };
 }

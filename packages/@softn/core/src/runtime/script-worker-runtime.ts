@@ -64,6 +64,15 @@ export interface WorkerRuntimeOptions {
   onFatal?: (error: Error) => void;
   /** Override the hard deadline, for tests and for hosts that know their workload. */
   hardDeadlineMs?: number;
+  /**
+   * Called when a `localStorage` write the worker's script made could not be
+   * kept by the browser. In worker mode a write lands in an in-memory
+   * snapshot first and reaches the browser's storage only after the call
+   * returns, so the script cannot see the failure the way a main-thread
+   * script does; the next snapshot the worker receives is taken from what
+   * was actually kept, and this is how the host learns the write was lost.
+   */
+  onPersistenceFailure?: (failure: { operation: string; key: string; error: Error }) => void;
 }
 
 /** Host calls resolved per chain before it is judged a runaway. */
@@ -159,6 +168,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private generation = 0;
   private terminated = false;
   private readonly onFatal: ((error: Error) => void) | null;
+  private readonly onPersistenceFailure: WorkerRuntimeOptions['onPersistenceFailure'] | null;
   /** The script's `db` namespace on this thread: the same gates the main-thread runtime applies. */
   private readonly dbNamespace: DBNamespace;
   /** Per-frame delivery for the high-frequency events; disposed with the listeners. */
@@ -234,6 +244,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       options.permissionConfig.consentPending !== true;
     this.hardDeadlineMs = options?.hardDeadlineMs ?? WorkerScriptRuntime.HARD_DEADLINE_MS;
     this.onFatal = options?.onFatal ?? null;
+    this.onPersistenceFailure = options?.onPersistenceFailure ?? null;
     // The worker's `db.startSync` used to reach the sync layer directly, with
     // whatever options the script wrote and no app identity: no `sync`
     // permission check, no shared-room key derivation, and an adapter on the
@@ -472,8 +483,13 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // Worker mutations change LS state — mark dirty so next call sends a fresh snapshot
     this.lsDirty = true;
     const prefix = `softn:${this.safeAppId}:`;
-    try {
-      for (const m of mutations) {
+    // One failed write does not stop the ones after it, and each is reported:
+    // the script has already been told its write happened, so the least the
+    // host can do is know which ones did not. The snapshot the worker gets
+    // next is taken from the browser's storage, not from this list, so the
+    // script reads back what was actually kept.
+    for (const m of mutations) {
+      try {
         switch (m.type) {
           case 'setItem':
             localStorage.setItem(prefix + m.key, m.value);
@@ -491,9 +507,12 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
             break;
           }
         }
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        const key = m.type === 'clear' ? '' : m.key;
+        console.error(`[Worker Bridge] localStorage.${m.type}("${key}") was not kept:`, error);
+        this.onPersistenceFailure?.({ operation: m.type, key, error });
       }
-    } catch (err) {
-      console.error('[Worker Bridge] applyLSMutations error:', err);
     }
   }
 

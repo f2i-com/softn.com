@@ -28,6 +28,16 @@
  * again. The rate limit is per visitor address per app and is not
  * ownership. Clearing a whole collection needs the edit key under every
  * policy. The key-value store has no policies: it is public.
+ *
+ * Every write is one SQLite transaction that takes the write lock before it
+ * reads (`write` below): the row a policy check looked at is the row the
+ * change lands on, and the change names that row's owner as well as its id,
+ * so a record removed and re-added by somebody else between the check and
+ * the write is a conflict, never a write onto their record. The quota is
+ * the data itself — the bytes of every record and key an app holds, counted
+ * inside the same transaction — not the size of the database file, which
+ * says little in WAL mode (the file can be a few pages while the log holds
+ * megabytes) and nothing about what an app actually keeps.
  */
 declare(strict_types=1);
 
@@ -77,18 +87,95 @@ SQL);
         return $open[$slug] = $pdo;
     }
 
-    /** What the app page shows: how much this app keeps on the server. */
+    /**
+     * What the app page shows: how much this app keeps on the server.
+     * `bytes` is the data — what the quota counts; `diskBytes` is what the
+     * database, its write-ahead log and its shared-memory index take on disk,
+     * which is the operator's number and can be larger or, after deletions,
+     * smaller.
+     */
     public static function summary(string $slug): array
     {
         $path = self::path($slug);
-        if (!is_file($path)) return ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0];
+        if (!is_file($path)) return ['collections' => 0, 'records' => 0, 'keys' => 0, 'bytes' => 0, 'diskBytes' => 0];
         $pdo = self::open($slug);
         return [
             'collections' => (int) $pdo->query('SELECT COUNT(DISTINCT collection) FROM records')->fetchColumn(),
             'records' => (int) $pdo->query('SELECT COUNT(*) FROM records')->fetchColumn(),
             'keys' => (int) $pdo->query('SELECT COUNT(*) FROM kv')->fetchColumn(),
-            'bytes' => (int) filesize($path),
+            'bytes' => self::usedBytes($pdo),
+            'diskBytes' => self::diskBytes($path),
         ];
+    }
+
+    /** The bytes an app's data takes: every record's collection, id and JSON, and every key and value. */
+    private static function usedBytes(PDO $pdo): int
+    {
+        $records = (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(collection) + LENGTH(id) + LENGTH(data)), 0) FROM records')->fetchColumn();
+        $kv = (int) $pdo->query('SELECT COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0) FROM kv')->fetchColumn();
+        return $records + $kv;
+    }
+
+    /** What the database takes on disk: the main file, the write-ahead log and the shared-memory index. */
+    private static function diskBytes(string $path): int
+    {
+        clearstatcache(true, $path);
+        $total = 0;
+        foreach ([$path, "$path-wal", "$path-shm"] as $file) {
+            if (is_file($file)) $total += (int) filesize($file);
+        }
+        return $total;
+    }
+
+    /**
+     * Refuse a write that would take the app's data over its quota. Called
+     * inside the write transaction, so the count is of the data as it is at
+     * the moment of the write and nothing can slip in between. `$incoming`
+     * is what the write adds; `$replacing` what it removes.
+     */
+    private static function assertQuota(PDO $pdo, array $limits, int $incoming, int $replacing = 0): void
+    {
+        if (self::usedBytes($pdo) - $replacing + $incoming > (int) $limits['maxDatabaseBytes']) {
+            throw new ApiError(507, 'This app has used all the storage it is allowed.');
+        }
+    }
+
+    /**
+     * One write, whole. BEGIN IMMEDIATE takes SQLite's write lock before the
+     * first read, so the ownership and room a check finds are the ownership
+     * and room the change lands on; a second writer waits (busy_timeout) and
+     * then sees the committed result. A statement that fails rolls the whole
+     * thing back, and a lock that could not be had in time is a 503 the
+     * runtime retries, never a half-applied write.
+     */
+    private static function write(PDO $pdo, callable $fn): mixed
+    {
+        try {
+            $pdo->exec('BEGIN IMMEDIATE');
+        } catch (PDOException $e) {
+            throw self::contention($e);
+        }
+        try {
+            $out = $fn();
+            $pdo->exec('COMMIT');
+            return $out;
+        } catch (Throwable $e) {
+            try {
+                $pdo->exec('ROLLBACK');
+            } catch (Throwable) {
+                // The connection is past helping; the original failure is the one to report.
+            }
+            throw $e instanceof PDOException ? self::contention($e) : $e;
+        }
+    }
+
+    private static function contention(PDOException $e): Throwable
+    {
+        $message = $e->getMessage();
+        if (str_contains($message, 'locked') || str_contains($message, 'busy')) {
+            return new ApiError(503, "The app's storage is busy; try again in a moment.");
+        }
+        return $e;
     }
 
     /** The policies an app row declares, by collection name (`*` is the default). @return array<string, string> */
@@ -117,12 +204,7 @@ SQL);
         Db::rateLimit(in_array($op, $writes, true) ? 'storageWrite' : 'storageRead', "$visitor|$slug");
         $pdo = self::open($slug);
         $limits = Config::get('storage');
-        if (in_array($op, $writes, true) && $op !== 'remove' && $op !== 'clear' && $op !== 'kvRemove') {
-            $path = self::path($slug);
-            if (is_file($path) && filesize($path) > (int) $limits['maxDatabaseBytes']) {
-                throw new ApiError(507, 'This app has used all the storage it is allowed.');
-            }
-        }
+        // The quota is checked by each write, inside its transaction: see assertQuota.
         $ctx = self::actor($req, $slug);
         return match ($op) {
             'insert' => self::insert($pdo, $body, $limits, $ctx),
@@ -132,7 +214,7 @@ SQL);
             'remove' => self::remove($pdo, $body, $ctx),
             'query' => self::query($pdo, $body, $limits, $ctx),
             'count' => self::count($pdo, $body, $ctx),
-            'collections' => self::collections($pdo),
+            'collections' => self::collections($pdo, $ctx),
             'clear' => self::clear($req, $slug, $pdo, $body),
             'kvGet' => self::kvGet($pdo, $body),
             'kvSet' => self::kvSet($pdo, $body, $limits),
@@ -299,17 +381,21 @@ SQL);
         $c = self::collection($body);
         self::allowAdd($ctx, $c);
         $data = self::data($body, $limits);
-        self::assertRoom($pdo, $c, $limits);
         $id = isset($body['id']) ? self::id($body) : self::newId();
+        $encoded = json_encode($data, JSON_UNESCAPED_UNICODE);
         $now = time();
-        try {
-            $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)')
-                ->execute([$c, $id, json_encode($data, JSON_UNESCAPED_UNICODE), $now, $now, $ctx['owner']]);
-        } catch (PDOException $e) {
-            if (str_contains($e->getMessage(), 'UNIQUE')) throw new ApiError(409, 'A record with that id already exists.');
-            throw $e;
-        }
-        return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $now, 'updatedAt' => $now, 'mine' => $ctx['owner'] !== null];
+        return self::write($pdo, function () use ($pdo, $c, $id, $encoded, $now, $limits, $ctx, $data) {
+            self::assertRoom($pdo, $c, $limits);
+            self::assertQuota($pdo, $limits, strlen($c) + strlen($id) + strlen($encoded));
+            try {
+                $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)')
+                    ->execute([$c, $id, $encoded, $now, $now, $ctx['owner']]);
+            } catch (PDOException $e) {
+                if (str_contains($e->getMessage(), 'UNIQUE')) throw new ApiError(409, 'A record with that id already exists.');
+                throw $e;
+            }
+            return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $now, 'updatedAt' => $now, 'mine' => $ctx['owner'] !== null];
+        });
     }
 
     private static function get(PDO $pdo, array $body, array $ctx): ?array
@@ -323,35 +409,35 @@ SQL);
         return $row ? self::record($row, $ctx) : null;
     }
 
+    /**
+     * Change one record's fields in place. The UPDATE names the owner the
+     * check saw as well as the id, and must change exactly one row: inside
+     * BEGIN IMMEDIATE nothing can have moved, and if the count says otherwise
+     * something has gone very wrong and the write is refused rather than
+     * landing on a record the check never saw.
+     */
     private static function update(PDO $pdo, array $body, array $limits, array $ctx): array
     {
         $c = self::collection($body);
         $id = self::id($body);
         $patch = self::data($body, $limits, 'data');
-        $pdo->beginTransaction();
-        try {
+        return self::write($pdo, function () use ($pdo, $c, $id, $patch, $limits, $ctx) {
             $stmt = $pdo->prepare('SELECT * FROM records WHERE collection = ? AND id = ?');
             $stmt->execute([$c, $id]);
             $row = $stmt->fetch();
-            if (!$row) {
-                $pdo->rollBack();
-                throw new ApiError(404, 'No such record.');
-            }
-            self::allowModify($ctx, $c, $row['owner'] ?? null);
+            if (!$row) throw new ApiError(404, 'No such record.');
+            $owner = $row['owner'] ?? null;
+            self::allowModify($ctx, $c, $owner);
             $merged = array_replace(json_decode((string) $row['data'], true) ?: [], $patch);
             $encoded = json_encode($merged, JSON_UNESCAPED_UNICODE);
             if ($encoded === false || strlen($encoded) > (int) $limits['maxRecordBytes']) {
-                $pdo->rollBack();
                 throw new ApiError(413, 'The updated record would be larger than a record may be.');
             }
+            self::assertQuota($pdo, $limits, strlen($encoded), strlen((string) $row['data']));
             $now = time();
-            $pdo->prepare('UPDATE records SET data = ?, updated_at = ? WHERE collection = ? AND id = ?')->execute([$encoded, $now, $c, $id]);
-            $pdo->commit();
-            return self::record(['id' => $id, 'data' => $encoded, 'created_at' => $row['created_at'], 'updated_at' => $now, 'owner' => $row['owner'] ?? null], $ctx);
-        } catch (Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            throw $e;
-        }
+            self::changeOne($pdo, 'UPDATE records SET data = ?, updated_at = ? WHERE collection = ? AND id = ? AND owner IS ?', [$encoded, $now, $c, $id, $owner]);
+            return self::record(['id' => $id, 'data' => $encoded, 'created_at' => $row['created_at'], 'updated_at' => $now, 'owner' => $owner], $ctx);
+        });
     }
 
     /** Replace a record by id, creating it when absent. Adding follows the add rule, replacing the modify rule. */
@@ -360,38 +446,59 @@ SQL);
         $c = self::collection($body);
         $id = self::id($body);
         $data = self::data($body, $limits);
+        $encoded = json_encode($data, JSON_UNESCAPED_UNICODE);
         $now = time();
-        $stmt = $pdo->prepare('SELECT created_at, owner FROM records WHERE collection = ? AND id = ?');
-        $stmt->execute([$c, $id]);
-        $existing = $stmt->fetch();
-        if ($existing === false) {
-            self::allowAdd($ctx, $c);
-            self::assertRoom($pdo, $c, $limits);
-            $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)')
-                ->execute([$c, $id, json_encode($data, JSON_UNESCAPED_UNICODE), $now, $now, $ctx['owner']]);
-            return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $now, 'updatedAt' => $now, 'mine' => $ctx['owner'] !== null];
-        }
-        self::allowModify($ctx, $c, $existing['owner'] ?? null);
-        // The record keeps whoever added it: replacing its fields is not adopting it.
-        $pdo->prepare('UPDATE records SET data = ?, updated_at = ? WHERE collection = ? AND id = ?')
-            ->execute([json_encode($data, JSON_UNESCAPED_UNICODE), $now, $c, $id]);
-        $owner = $existing['owner'] ?? null;
-        return ['id' => $id, 'data' => self::obj($data), 'createdAt' => (int) $existing['created_at'], 'updatedAt' => $now,
-            'mine' => is_string($owner) && $ctx['owner'] !== null && hash_equals($owner, $ctx['owner'])];
+        return self::write($pdo, function () use ($pdo, $c, $id, $data, $encoded, $now, $limits, $ctx) {
+            $stmt = $pdo->prepare('SELECT created_at, owner, LENGTH(data) AS bytes FROM records WHERE collection = ? AND id = ?');
+            $stmt->execute([$c, $id]);
+            $existing = $stmt->fetch();
+            if ($existing === false) {
+                self::allowAdd($ctx, $c);
+                self::assertRoom($pdo, $c, $limits);
+                self::assertQuota($pdo, $limits, strlen($c) + strlen($id) + strlen($encoded));
+                $pdo->prepare('INSERT INTO records (collection, id, data, created_at, updated_at, owner) VALUES (?, ?, ?, ?, ?, ?)')
+                    ->execute([$c, $id, $encoded, $now, $now, $ctx['owner']]);
+                return ['id' => $id, 'data' => self::obj($data), 'createdAt' => $now, 'updatedAt' => $now, 'mine' => $ctx['owner'] !== null];
+            }
+            $owner = $existing['owner'] ?? null;
+            self::allowModify($ctx, $c, $owner);
+            self::assertQuota($pdo, $limits, strlen($encoded), (int) $existing['bytes']);
+            // The record keeps whoever added it: replacing its fields is not adopting it.
+            self::changeOne($pdo, 'UPDATE records SET data = ?, updated_at = ? WHERE collection = ? AND id = ? AND owner IS ?', [$encoded, $now, $c, $id, $owner]);
+            return ['id' => $id, 'data' => self::obj($data), 'createdAt' => (int) $existing['created_at'], 'updatedAt' => $now,
+                'mine' => is_string($owner) && $ctx['owner'] !== null && hash_equals($owner, $ctx['owner'])];
+        });
     }
 
     private static function remove(PDO $pdo, array $body, array $ctx): array
     {
         $c = self::collection($body);
         $id = self::id($body);
-        $stmt = $pdo->prepare('SELECT owner FROM records WHERE collection = ? AND id = ?');
-        $stmt->execute([$c, $id]);
-        $row = $stmt->fetch();
-        if (!$row) return ['removed' => 0];
-        self::allowModify($ctx, $c, $row['owner'] ?? null);
-        $stmt = $pdo->prepare('DELETE FROM records WHERE collection = ? AND id = ?');
-        $stmt->execute([$c, $id]);
-        return ['removed' => $stmt->rowCount()];
+        return self::write($pdo, function () use ($pdo, $c, $id, $ctx) {
+            $stmt = $pdo->prepare('SELECT owner FROM records WHERE collection = ? AND id = ?');
+            $stmt->execute([$c, $id]);
+            $row = $stmt->fetch();
+            if (!$row) return ['removed' => 0];
+            $owner = $row['owner'] ?? null;
+            self::allowModify($ctx, $c, $owner);
+            self::changeOne($pdo, 'DELETE FROM records WHERE collection = ? AND id = ? AND owner IS ?', [$c, $id, $owner]);
+            return ['removed' => 1];
+        });
+    }
+
+    /**
+     * Run a statement that must change exactly the one row the check
+     * authorized. Any other count means the row is not what was checked, and
+     * the authorization does not carry: the caller's transaction is rolled
+     * back and the runtime is told to look again.
+     */
+    private static function changeOne(PDO $pdo, string $sql, array $params): void
+    {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        if ($stmt->rowCount() !== 1) {
+            throw new ApiError(409, 'That record changed while this request was being checked; read it again and retry.');
+        }
     }
 
     /**
@@ -430,10 +537,35 @@ SQL);
         return ['count' => (int) $count->fetchColumn()];
     }
 
-    private static function collections(PDO $pdo): array
+    /**
+     * The collections this actor may read, with the counts they would see.
+     * The listing used to be the whole table for everyone, which told a
+     * visitor how many rows a publisher-only collection held and how many
+     * private notes everybody else had written — metadata the record reads
+     * were careful to withhold. A publisher's collection is not listed to a
+     * visitor; a private one is listed with the visitor's own count, and not
+     * at all without a token.
+     */
+    private static function collections(PDO $pdo, array $ctx): array
     {
         $rows = $pdo->query('SELECT collection, COUNT(*) AS n, MAX(updated_at) AS u FROM records GROUP BY collection ORDER BY collection')->fetchAll();
-        return ['collections' => array_map(fn($r) => ['name' => $r['collection'], 'records' => (int) $r['n'], 'updatedAt' => (int) $r['u']], $rows)];
+        $own = null;
+        $out = [];
+        foreach ($rows as $r) {
+            $c = (string) $r['collection'];
+            $policy = self::policy($ctx, $c);
+            if ($policy === 'publisher' && !$ctx['publisher']) continue;
+            if ($policy === 'private') {
+                if ($ctx['owner'] === null) continue;
+                $own ??= $pdo->prepare('SELECT COUNT(*), MAX(updated_at) FROM records WHERE collection = ? AND owner = ?');
+                $own->execute([$c, $ctx['owner']]);
+                [$n, $u] = $own->fetch(PDO::FETCH_NUM);
+                $out[] = ['name' => $c, 'records' => (int) $n, 'updatedAt' => (int) $u];
+                continue;
+            }
+            $out[] = ['name' => $c, 'records' => (int) $r['n'], 'updatedAt' => (int) $r['u']];
+        }
+        return ['collections' => $out];
     }
 
     private static function clear(Request $req, string $slug, PDO $pdo, array $body): array
@@ -576,13 +708,19 @@ SQL);
         if (!array_key_exists('value', $body)) throw new ApiError(400, 'value is required.');
         $encoded = json_encode($body['value'], JSON_UNESCAPED_UNICODE);
         if ($encoded === false || strlen($encoded) > (int) $limits['maxRecordBytes']) throw new ApiError(413, 'A value is at most ' . (int) ($limits['maxRecordBytes'] / 1024) . ' KB.');
-        $count = (int) $pdo->query('SELECT COUNT(*) FROM kv')->fetchColumn();
-        $exists = $pdo->prepare('SELECT 1 FROM kv WHERE key = ?');
-        $exists->execute([$key]);
-        if (!$exists->fetchColumn() && $count >= (int) $limits['maxRecordsPerCollection']) throw new ApiError(400, 'The key-value store is full.');
         $now = time();
-        $pdo->prepare('INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')->execute([$key, $encoded, $now]);
-        return ['value' => $body['value'], 'updatedAt' => $now];
+        return self::write($pdo, function () use ($pdo, $key, $encoded, $now, $limits, $body) {
+            $existing = $pdo->prepare('SELECT LENGTH(key) + LENGTH(value) FROM kv WHERE key = ?');
+            $existing->execute([$key]);
+            $replacing = $existing->fetchColumn();
+            if ($replacing === false) {
+                $count = (int) $pdo->query('SELECT COUNT(*) FROM kv')->fetchColumn();
+                if ($count >= (int) $limits['maxRecordsPerCollection']) throw new ApiError(400, 'The key-value store is full.');
+            }
+            self::assertQuota($pdo, $limits, strlen($key) + strlen($encoded), (int) $replacing);
+            $pdo->prepare('INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')->execute([$key, $encoded, $now]);
+            return ['value' => $body['value'], 'updatedAt' => $now];
+        });
     }
 
     private static function kvRemove(PDO $pdo, array $body): array

@@ -39,7 +39,18 @@ function Badges({ capabilities, execution, official }: { capabilities: string[];
           );
         })
       )}
-      {!capabilities.includes('net') && <span className="badge">No network</span>}
+      {!capabilities.includes('net') && (
+        <span
+          className="badge"
+          title={
+            capabilities.some((c) => c === 'storage' || c === 'sync' || c === 'ai')
+              ? 'It cannot make requests of its own; the hosted services it lists here still reach softn.com'
+              : 'It cannot make network requests of its own'
+          }
+        >
+          No general network access
+        </span>
+      )}
       {execution === 'worker' && (
         <span className="badge" title="Its script runs in a worker thread, so the page stays responsive">
           Off-main-thread

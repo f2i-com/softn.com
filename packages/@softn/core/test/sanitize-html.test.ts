@@ -7,7 +7,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { sanitizeSvg, sanitizeRichText, isSafeUrl } from '../src/renderer/sanitize-html';
+import {
+  sanitizeSvg,
+  sanitizeRichText,
+  isSafeUrl,
+  cssResourceReferences,
+} from '../src/renderer/sanitize-html';
+import { markupUrlJudge } from '../src/runtime/egress-policy';
 
 describe('sanitizeSvg', () => {
   it('keeps ordinary icon markup intact', () => {
@@ -118,5 +124,104 @@ describe('isSafeUrl', () => {
     ]) {
       expect(isSafeUrl(u), u).toBe(false);
     }
+  });
+});
+
+/**
+ * A safe scheme is still a request to somebody's server. Rich text and SVG
+ * arrive as strings, never as a URL prop the renderer could judge, so the
+ * sanitizer takes the same judge the renderer applies.
+ */
+describe("a judge from the bundle's permission", () => {
+  const REMOTE = 'https://attacker.example/beacon';
+  const pending = markupUrlJudge({ consentPending: true, permissions: { net: { enabled: true } } });
+  const noNet = markupUrlJudge({ permissions: {} });
+  const scoped = markupUrlJudge({
+    permissions: { net: { enabled: true, allowed_hosts: ['cdn.example'] } },
+  });
+
+  it('withholds a remote image while consent is pending, and keeps a local one', () => {
+    const out = sanitizeRichText(`<img src="${REMOTE}"><img src="/a.png">`, pending);
+    expect(out).not.toContain('attacker.example');
+    expect(out).toContain('/a.png');
+  });
+
+  it('refuses it outright for a bundle that declares no net', () => {
+    expect(sanitizeRichText(`<img src="${REMOTE}">`, noNet)).not.toContain('attacker.example');
+    expect(sanitizeRichText(`<img srcset="/a.png 1x, ${REMOTE} 2x">`, noNet)).not.toContain(
+      'attacker.example'
+    );
+  });
+
+  it('holds it to the allowed hosts once net is granted', () => {
+    expect(sanitizeRichText(`<img src="${REMOTE}">`, scoped)).not.toContain('attacker.example');
+    expect(sanitizeRichText('<img src="https://cdn.example/a.png">', scoped)).toContain(
+      'cdn.example'
+    );
+  });
+
+  it('lets a link through once consent is answered, and withholds it while pending', () => {
+    expect(sanitizeRichText('<a href="https://example.com">x</a>', noNet)).toContain(
+      'https://example.com'
+    );
+    expect(sanitizeRichText('<a href="https://example.com">x</a>', pending)).not.toContain(
+      'https://example.com'
+    );
+  });
+
+  it('judges an SVG use reference as a fetch, not a link', () => {
+    expect(sanitizeSvg(`<svg><use href="${REMOTE}#i"/></svg>`, noNet)).not.toContain(
+      'attacker.example'
+    );
+    expect(sanitizeSvg('<svg><use href="#i"/></svg>', noNet)).toContain('href="#i"');
+  });
+
+  it('is not needed for the scheme check, which stands on its own', () => {
+    expect(sanitizeRichText('<a href="javascript:alert(1)">x</a>', noNet)).not.toContain(
+      'javascript:'
+    );
+  });
+});
+
+describe('a style that loads something', () => {
+  const REMOTE = 'https://attacker.example/beacon';
+
+  it('is dropped whatever spelling the fetch uses', () => {
+    for (const style of [
+      `background:url(${REMOTE})`,
+      `background:URL(${REMOTE})`,
+      `background:IMAGE-SET("${REMOTE}" 1x)`,
+      `background:\\75rl(${REMOTE})`,
+      `background:u/**/rl(${REMOTE})`,
+    ]) {
+      expect(sanitizeRichText(`<p style='${style}'>x</p>`), style).not.toContain(
+        'attacker.example'
+      );
+    }
+  });
+
+  it('leaves a style that loads nothing alone', () => {
+    expect(sanitizeRichText('<p style="color:red">x</p>')).toContain('color:red');
+  });
+});
+
+describe('cssResourceReferences', () => {
+  it('finds every spelling of a fetch', () => {
+    expect(cssResourceReferences('url(a.png)').urls).toEqual(['a.png']);
+    expect(cssResourceReferences('URL( "a.png" )').urls).toEqual(['a.png']);
+    expect(cssResourceReferences('image-set("a.png" 1x, "b.png" 2x)').urls).toEqual([
+      'a.png',
+      'b.png',
+    ]);
+    expect(cssResourceReferences('image-set(url(a.png) 1x)').urls).toEqual(['a.png']);
+    expect(cssResourceReferences('u/**/rl(a.png)').urls).toEqual(['a.png']);
+    expect(cssResourceReferences('url("a?x=(1)")').urls).toEqual(['a?x=(1)']);
+    expect(cssResourceReferences('src("f.woff2") format("woff2")').urls).toEqual(['f.woff2']);
+  });
+
+  it('is opaque about escapes and a function that never closes', () => {
+    expect(cssResourceReferences('\\75rl(a.png)').opaque).toBe(true);
+    expect(cssResourceReferences('url("https://x').opaque).toBe(true);
+    expect(cssResourceReferences('color: red')).toEqual({ urls: [], opaque: false });
   });
 });

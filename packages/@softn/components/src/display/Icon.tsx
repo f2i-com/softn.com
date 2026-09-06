@@ -6,7 +6,7 @@
  */
 
 import React from 'react';
-import { sanitizeSvg } from '@softn/core';
+import { markupUrlJudge, sanitizeSvg, useEgressConfig } from '@softn/core';
 
 export interface IconProps {
   /** Built-in icon name */
@@ -77,6 +77,9 @@ export function Icon({
   className,
   style,
 }: IconProps): React.ReactElement {
+  // What custom markup may fetch: a `<use href="https://…">` is a request to
+  // that host, judged by the bundle's `net` like any other.
+  const judge = markupUrlJudge(useEgressConfig());
   const pxSize = typeof size === 'number' ? `${size}px` : size;
 
   const wrapperStyle: React.CSSProperties = {
@@ -100,7 +103,7 @@ export function Icon({
       <span
         className={className}
         style={wrapperStyle}
-        dangerouslySetInnerHTML={{ __html: sanitizeSvg(svg) }}
+        dangerouslySetInnerHTML={{ __html: sanitizeSvg(svg, judge) }}
       />
     );
   }

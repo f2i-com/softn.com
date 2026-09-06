@@ -28,6 +28,8 @@ const require = createRequire(import.meta.url);
 const php = spawnSync('php', ['-v'], { encoding: 'utf8' });
 const HAVE_PHP = php.status === 0;
 if (!HAVE_PHP) console.log('# php is not on PATH; the API tests are skipped');
+/** The per-app storage quota the test server runs with; see `before`. */
+const STORAGE_QUOTA_BYTES = 256 * 1024;
 
 let root = '';
 let server = null;
@@ -106,6 +108,10 @@ before(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-api-'));
   copyDir(apiDir, path.join(root, 'api'));
   copyDir(path.join(repo, 'apps/softn-web/public/demos'), path.join(root, 'demos'));
+  // A storage quota small enough to reach in a test. The server fills in the
+  // rest of the configuration around it on first use.
+  fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'data/config.json'), JSON.stringify({ storage: { maxDatabaseBytes: STORAGE_QUOTA_BYTES } }));
   fs.writeFileSync(
     path.join(root, 'index.html'),
     `<!doctype html><html><head><title>SoftN — a UI language and its runtime</title>
@@ -648,6 +654,71 @@ test('storage collection policies: who may do what, per collection', skip, async
   assert.equal(bad.status, 400, JSON.stringify(bad.json));
   assert.match(bad.json.error, /notes=readonly/);
   assert.match(bad.json.error, /append-only/);
+});
+
+test('a collection listing shows each visitor what they may read', skip, async () => {
+  // The policy board from the test above: scores (append-only), posts
+  // (owner-write), notes (private), config (publisher), guestbook (public).
+  const ann = { 'X-Visitor-Token': 'ann-token-0123456789abcdef' };
+  const bob = { 'X-Visitor-Token': 'bob-token-0123456789abcdef' };
+  const S = (body, headers = {}) => api('POST', '/api/apps/policy-board/storage', { body, headers });
+  await S({ op: 'insert', collection: 'notes', data: { text: 'ann 1' } }, ann);
+  await S({ op: 'insert', collection: 'notes', data: { text: 'ann 2' } }, ann);
+  await S({ op: 'insert', collection: 'notes', data: { text: 'bob 1' } }, bob);
+  const names = (r) => r.json.result.collections.map((c) => c.name);
+  const count = (r, name) => r.json.result.collections.find((c) => c.name === name)?.records;
+
+  const anon = await S({ op: 'collections' });
+  assert.ok(!names(anon).includes('config'), "a visitor is not told about the publisher's collection");
+  assert.ok(!names(anon).includes('notes'), 'nor about private notes without a token');
+  assert.ok(names(anon).includes('scores'));
+
+  const annSees = await S({ op: 'collections' }, ann);
+  assert.equal(count(annSees, 'notes'), 2, 'a visitor sees the count of their own private records');
+  assert.equal(count(await S({ op: 'collections' }, bob), 'notes'), 1);
+  assert.ok(!names(annSees).includes('config'));
+});
+
+test('a write lands on the record the check saw, or not at all', skip, async () => {
+  const ann = { 'X-Visitor-Token': 'ann-token-0123456789abcdef' };
+  const bob = { 'X-Visitor-Token': 'bob-token-0123456789abcdef' };
+  const S = (body, headers = {}) => api('POST', '/api/apps/policy-board/storage', { body, headers });
+  // Ann adds a post, removes it, and Bob re-adds one under the same id. Ann's
+  // authorization on the old record does not carry to Bob's new one.
+  const p = await S({ op: 'insert', collection: 'posts', id: 'reused', data: { text: 'ann' } }, ann);
+  assert.equal(p.status, 200, JSON.stringify(p.json));
+  assert.equal((await S({ op: 'remove', collection: 'posts', id: 'reused' }, ann)).json.result.removed, 1);
+  assert.equal((await S({ op: 'insert', collection: 'posts', id: 'reused', data: { text: 'bob' } }, bob)).status, 200);
+  assert.equal((await S({ op: 'set', collection: 'posts', id: 'reused', data: { text: 'ann again' } }, ann)).status, 403);
+  assert.equal((await S({ op: 'update', collection: 'posts', id: 'reused', data: { text: 'ann again' } }, ann)).status, 403);
+  assert.equal((await S({ op: 'remove', collection: 'posts', id: 'reused' }, ann)).status, 403);
+  assert.equal((await S({ op: 'get', collection: 'posts', id: 'reused' }, bob)).json.result.data.text, 'bob');
+});
+
+test('the storage quota is the data itself, and is enforced as it is written', skip, async () => {
+  resetRateLimits();
+  const fd = new FormData();
+  fd.append('bundle', new Blob([makeBundle('Quota Board', { permissions: { storage: { enabled: true } } })]), 'quota.softn');
+  const pub = await api('POST', '/api/apps', { body: fd });
+  assert.equal(pub.status, 201, JSON.stringify(pub.json));
+  const S = (body, headers = {}) => api('POST', '/api/apps/quota-board/storage', { body, headers });
+  const blob = 'x'.repeat(15 * 1024);
+  let full = null;
+  for (let i = 0; i < 40 && full === null; i++) {
+    const r = await S({ op: 'insert', collection: 'blobs', id: `b${i}`, data: { blob } });
+    if (r.status === 507) full = i;
+    else assert.equal(r.status, 200, JSON.stringify(r.json));
+  }
+  assert.ok(full !== null && full > 5, `the quota was reached after ${full} records`);
+  const summary = (await api('GET', '/api/apps/quota-board')).json.app.storage;
+  assert.ok(summary.bytes <= STORAGE_QUOTA_BYTES, `${summary.bytes} bytes of data is within the quota`);
+  assert.ok(summary.bytes > STORAGE_QUOTA_BYTES - 16 * 1024, 'and close to it');
+  assert.equal(typeof summary.diskBytes, 'number', 'what the files take on disk is reported separately');
+  // Removing makes room; the key-value store shares the same quota.
+  assert.equal((await S({ op: 'remove', collection: 'blobs', id: 'b0' })).json.result.removed, 1);
+  assert.equal((await S({ op: 'insert', collection: 'blobs', id: 'again', data: { blob } })).status, 200);
+  assert.equal((await S({ op: 'kvSet', key: 'big', value: blob })).status, 507);
+  assert.equal((await S({ op: 'kvSet', key: 'small', value: 'ok' })).status, 200);
 });
 
 test('a launch and a run are counted apart', skip, async () => {

@@ -271,10 +271,29 @@ export function groupByApp(apps: CachedApp[]): AppVersions[] {
 
 // ── Stored data ──────────────────────────────────────────────────────
 //
-// An app's records live in localStorage under `xdb:<appId>:<collection>`,
-// where appId is the origin above. Everything that moves records between
-// identities goes through transferStorageKeys, which is the one place that
-// knows how to do it without leaving half a job behind.
+// An app's state lives in localStorage under two prefixes, both keyed by the
+// origin above: `xdb:<origin>:<collection>` holds its records, and
+// `softn:<origin>:<key>` holds what its script keeps through `localStorage`
+// itself — a save slot, a cartridge's battery, the ticket for a seat at an
+// online table. Everything that counts, moves, exports, imports or removes
+// an app's data goes through `appDataStores` below, the one place that knows
+// there are two. Export, migration and removal used to know the first alone:
+// a backup of Pocket carried its records and not the game it had saved, an
+// update brought the records forward and stranded the saves, and removing a
+// build left them behind for nothing to reach or clear.
+
+/** The two places a build keeps state, by name. */
+export type AppDataStore = 'xdb' | 'local';
+
+/** The prefix each store keeps one build's keys under. */
+export function appDataStores(origin: string): Array<{ store: AppDataStore; prefix: string }> {
+  return [
+    { store: 'xdb', prefix: `xdb:${origin}:` },
+    // The bridge folds anything outside [A-Za-z0-9_-] to `_` before it
+    // prefixes. A digest never has any, but the two spellings must agree.
+    { store: 'local', prefix: `softn:${origin.replace(/[^a-zA-Z0-9_-]/g, '_')}:` },
+  ];
+}
 
 /** The outcome of moving or copying one app's stored keys to another identity. */
 export interface DataTransferResult {
@@ -303,6 +322,10 @@ function keysWithPrefix(prefix: string): string[] {
   return keys;
 }
 
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Copy (or move) every key under one identity to another, whole or not at all.
  *
@@ -323,12 +346,26 @@ export function transferStorageKeys(
   toPrefix: string,
   options: { move: boolean; overwrite: boolean }
 ): DataTransferResult {
+  return transferStorageRuns([{ from: fromPrefix, to: toPrefix }], options);
+}
+
+/**
+ * The same, over several prefix pairs as one unit: both of a build's stores
+ * move together, and the destination is as it was unless every key of every
+ * pair was written.
+ */
+function transferStorageRuns(
+  runs: Array<{ from: string; to: string }>,
+  options: { move: boolean; overwrite: boolean }
+): DataTransferResult {
   const result: DataTransferResult = { ok: false, copied: 0, total: 0, skipped: 0 };
-  let keys: string[];
+  let keys: Array<{ key: string; target: string }>;
   try {
-    keys = keysWithPrefix(fromPrefix);
+    keys = runs.flatMap((run) =>
+      keysWithPrefix(run.from).map((key) => ({ key, target: run.to + key.slice(run.from.length) }))
+    );
   } catch (err) {
-    result.error = `Stored data could not be read: ${err instanceof Error ? err.message : String(err)}`;
+    result.error = `Stored data could not be read: ${describeError(err)}`;
     return result;
   }
   result.total = keys.length;
@@ -350,10 +387,9 @@ export function transferStorageKeys(
   };
 
   try {
-    for (const key of keys) {
+    for (const { key, target } of keys) {
       const value = localStorage.getItem(key);
       if (value === null) continue;
-      const target = toPrefix + key.slice(fromPrefix.length);
       const previous = localStorage.getItem(target);
       if (previous !== null && !options.overwrite) {
         result.skipped += 1;
@@ -371,7 +407,7 @@ export function transferStorageKeys(
   } catch (err) {
     rollback();
     result.copied = 0;
-    result.error = `Stored data could not be written: ${err instanceof Error ? err.message : String(err)}`;
+    result.error = `Stored data could not be written: ${describeError(err)}`;
     return result;
   }
 
@@ -379,7 +415,7 @@ export function transferStorageKeys(
     // Every destination key is in place; only now does the source go. A
     // failure here leaves duplicates, which is recoverable, rather than a
     // gap, which is not.
-    for (const key of keys) {
+    for (const { key } of keys) {
       try {
         localStorage.removeItem(key);
       } catch {
@@ -389,6 +425,19 @@ export function transferStorageKeys(
   }
   result.ok = true;
   return result;
+}
+
+/** Both of one build's stores to another build's, as one transfer. */
+function transferAppData(
+  fromOrigin: string,
+  toOrigin: string,
+  options: { move: boolean; overwrite: boolean }
+): DataTransferResult {
+  const to = appDataStores(toOrigin);
+  return transferStorageRuns(
+    appDataStores(fromOrigin).map((from, i) => ({ from: from.prefix, to: to[i].prefix })),
+    options
+  );
 }
 
 /**
@@ -408,14 +457,14 @@ export function copyAppData(fromOrigin: string, toOrigin: string): DataTransferR
   if (!fromOrigin || !toOrigin || fromOrigin === toOrigin) {
     return { ok: false, copied: 0, total: 0, skipped: 0, error: 'Nothing to copy between these builds.' };
   }
-  return transferStorageKeys(`xdb:${fromOrigin}:`, `xdb:${toOrigin}:`, { move: false, overwrite: false });
+  return transferAppData(fromOrigin, toOrigin, { move: false, overwrite: false });
 }
 
-/** Whether a build has any stored records of its own, i.e. whether it has been used. */
+/** Whether a build has any stored state of its own, in either store, i.e. whether it has been used. */
 export function hasStoredData(origin: string | undefined): boolean {
   if (!origin) return false;
   try {
-    return keysWithPrefix(`xdb:${origin}:`).length > 0;
+    return appDataStores(origin).some(({ prefix }) => keysWithPrefix(prefix).length > 0);
   } catch {
     return false;
   }
@@ -424,47 +473,59 @@ export function hasStoredData(origin: string | undefined): boolean {
 /**
  * Move an app's stored data from one identity to another.
  *
- * XDB keys are `xdb:<appId>:<collection>`, and appId used to be the manifest
- * name, then a truncated digest. Without this, everything a user had saved in
- * an app would be orphaned the moment identity changed — their notes would
- * still be on disk, under a prefix nothing reads any more. Copies first and
- * removes the source only once every key is in place, so an interrupted
- * migration leaves the original where it was.
+ * Keys are prefixed by appId, and appId used to be the manifest name, then a
+ * truncated digest. Without this, everything a user had saved in an app would
+ * be orphaned the moment identity changed — their notes would still be on
+ * disk, under a prefix nothing reads any more. Copies first and removes the
+ * source only once every key is in place, so an interrupted migration leaves
+ * the original where it was.
  */
 function migrateAppStorage(fromAppId: string, toAppId: string): DataTransferResult {
   if (fromAppId === toAppId) return { ok: true, copied: 0, total: 0, skipped: 0 };
-  return transferStorageKeys(`xdb:${fromAppId}:`, `xdb:${toAppId}:`, { move: true, overwrite: false });
+  return transferAppData(fromAppId, toAppId, { move: true, overwrite: false });
 }
 
 // ── Portable data ────────────────────────────────────────────────────
 //
-// A build's records, as a file: to keep, to move to another browser, to put
+// A build's state, as a file: to keep, to move to another browser, to put
 // back after an update went wrong. The file names the build it came from,
 // and importing it is whole or not at all — a corrupt file, or a write that
-// fails part way, leaves the build's data exactly as it was. What must never
-// happen is a failed import quietly turning into an empty app.
+// fails part way, leaves the build's data exactly as it was, and so does a
+// browser that dies part way, which the journal below is for. What must
+// never happen is a failed import quietly turning into an empty app.
 
 export const APP_DATA_FORMAT = 'softn-app-data';
-export const APP_DATA_VERSION = 1;
+/**
+ * Format 1 carried the XDB records alone, as `entries`. Format 2 carries both
+ * stores, each under its name in `stores`; a format-1 file is read as records
+ * with no saved keys, which is exactly what it was.
+ */
+export const APP_DATA_VERSION = 2;
 
 export interface AppDataSnapshot {
   format: typeof APP_DATA_FORMAT;
   version: typeof APP_DATA_VERSION;
   app: { name: string; version: string; origin: string };
   exportedAt: number;
-  /** Every key under `xdb:<origin>:`, with that prefix removed, and its value as stored. */
-  entries: Record<string, string>;
+  /** Every key of each store, with the store's prefix removed, and its value as stored. */
+  stores: Record<AppDataStore, Record<string, string>>;
 }
 
-/** This build's records as a snapshot, or null where the build has no identity or storage is unreadable. */
+/** How many keys a snapshot holds, across its stores. */
+export function snapshotEntryCount(snapshot: Pick<AppDataSnapshot, 'stores'>): number {
+  return Object.values(snapshot.stores).reduce((n, entries) => n + Object.keys(entries).length, 0);
+}
+
+/** This build's state as a snapshot, or null where the build has no identity or storage is unreadable. */
 export function exportAppData(app: Pick<CachedApp, 'name' | 'version' | 'origin'>, now = Date.now()): AppDataSnapshot | null {
   if (!app.origin) return null;
-  const prefix = `xdb:${app.origin}:`;
-  const entries: Record<string, string> = {};
+  const stores: AppDataSnapshot['stores'] = { xdb: {}, local: {} };
   try {
-    for (const key of keysWithPrefix(prefix)) {
-      const value = localStorage.getItem(key);
-      if (value !== null) entries[key.slice(prefix.length)] = value;
+    for (const { store, prefix } of appDataStores(app.origin)) {
+      for (const key of keysWithPrefix(prefix)) {
+        const value = localStorage.getItem(key);
+        if (value !== null) stores[store][key.slice(prefix.length)] = value;
+      }
     }
   } catch {
     return null;
@@ -474,11 +535,21 @@ export function exportAppData(app: Pick<CachedApp, 'name' | 'version' | 'origin'
     version: APP_DATA_VERSION,
     app: { name: app.name, version: app.version, origin: app.origin },
     exportedAt: now,
-    entries,
+    stores,
   };
 }
 
 export type SnapshotRead = { ok: true; snapshot: AppDataSnapshot } | { ok: false; error: string };
+
+/** The keys of one store, checked: names that can be stored, values that are stored text. */
+function readEntries(value: unknown, what: string): { ok: true; entries: Record<string, string> } | { ok: false; error: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok: false, error: `The export holds no ${what}.` };
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (!key || key.split('').some((c) => c.charCodeAt(0) < 32)) return { ok: false, error: 'The export has a record with an unusable name.' };
+    if (typeof entry !== 'string') return { ok: false, error: `The export's record "${key}" is not stored text; the file is corrupt.` };
+  }
+  return { ok: true, entries: value as Record<string, string> };
+}
 
 /**
  * A file that claims to be an export, checked before anything is touched.
@@ -500,16 +571,26 @@ export function readAppDataSnapshot(text: string): SnapshotRead {
   if (s.version > APP_DATA_VERSION) {
     return { ok: false, error: `This export was made by a newer runtime (format ${s.version}) and cannot be read here.` };
   }
-  if (s.version !== APP_DATA_VERSION) return { ok: false, error: `This export's format (${s.version}) is not one this runtime reads.` };
+  if (s.version !== 1 && s.version !== APP_DATA_VERSION) {
+    return { ok: false, error: `This export's format (${s.version}) is not one this runtime reads.` };
+  }
   const app = s.app as Record<string, unknown> | undefined;
   if (!app || typeof app !== 'object' || typeof app.name !== 'string' || typeof app.version !== 'string' || typeof app.origin !== 'string' || !app.origin) {
     return { ok: false, error: 'The export does not say which app it came from.' };
   }
-  const entries = s.entries;
-  if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return { ok: false, error: 'The export holds no records.' };
-  for (const [key, value] of Object.entries(entries as Record<string, unknown>)) {
-    if (!key || key.split('').some((c) => c.charCodeAt(0) < 32)) return { ok: false, error: 'The export has a record with an unusable name.' };
-    if (typeof value !== 'string') return { ok: false, error: `The export's record "${key}" is not stored text; the file is corrupt.` };
+  let stores: AppDataSnapshot['stores'];
+  if (s.version === 1) {
+    const xdb = readEntries(s.entries, 'records');
+    if (!xdb.ok) return xdb;
+    stores = { xdb: xdb.entries, local: {} };
+  } else {
+    const holder = s.stores;
+    if (!holder || typeof holder !== 'object' || Array.isArray(holder)) return { ok: false, error: 'The export holds no records.' };
+    const xdb = readEntries((holder as Record<string, unknown>).xdb ?? {}, 'records');
+    if (!xdb.ok) return xdb;
+    const local = readEntries((holder as Record<string, unknown>).local ?? {}, 'saved keys');
+    if (!local.ok) return local;
+    stores = { xdb: xdb.entries, local: local.entries };
   }
   return {
     ok: true,
@@ -518,25 +599,64 @@ export function readAppDataSnapshot(text: string): SnapshotRead {
       version: APP_DATA_VERSION,
       app: { name: app.name, version: app.version, origin: app.origin },
       exportedAt: typeof s.exportedAt === 'number' ? s.exportedAt : 0,
-      entries: entries as Record<string, string>,
+      stores,
     },
   };
 }
 
 /**
- * Replace everything under `prefix` with `entries`, whole or not at all.
- * What was there is held until every new key is written; a write that fails
- * removes what was written and puts the old keys back.
+ * Where an interrupted import leaves what it was replacing, so the next
+ * start can put it back. One key per import in flight; see
+ * recoverInterruptedImports.
  */
-export function replaceStorageKeys(prefix: string, entries: Record<string, string>): DataTransferResult {
-  const result: DataTransferResult = { ok: false, copied: 0, total: Object.keys(entries).length, skipped: 0 };
-  let previous: Array<{ key: string; value: string }>;
+const RESTORE_JOURNAL_PREFIX = 'softn-web:restore:';
+
+interface RestoreJournal {
+  /** The prefixes being replaced: everything under them is the import's, or nothing is. */
+  prefixes: string[];
+  /** Every key under those prefixes before the import, with its value. */
+  previous: Array<[string, string]>;
+  at: number;
+}
+
+/**
+ * Replace everything under each prefix with the given entries, whole or not
+ * at all — including across a crash.
+ *
+ * Rolling back from an in-memory copy handles a write that throws, and
+ * nothing else: a tab killed between removing the old keys and finishing
+ * the new ones used to leave a build with some of neither. So the old keys
+ * are written to a journal in storage first. If the journal cannot be
+ * written — quota, usually — nothing has been touched and the import is
+ * refused. If the browser dies after it, the next start finds the journal
+ * and puts the old keys back (recoverInterruptedImports); if a write fails
+ * here, the same is done at once. Only once every new key is in place does
+ * the journal go, and with it the last way to see the old state.
+ */
+export function replaceStorageRuns(runs: Array<{ prefix: string; entries: Record<string, string> }>): DataTransferResult {
+  const result: DataTransferResult = {
+    ok: false,
+    copied: 0,
+    total: runs.reduce((n, run) => n + Object.keys(run.entries).length, 0),
+    skipped: 0,
+  };
+  let previous: Array<[string, string]>;
   try {
-    previous = keysWithPrefix(prefix).map((key) => ({ key, value: localStorage.getItem(key) ?? '' }));
+    previous = runs.flatMap(({ prefix }) => keysWithPrefix(prefix).map((key) => [key, localStorage.getItem(key) ?? ''] as [string, string]));
   } catch (err) {
-    result.error = `Stored data could not be read: ${err instanceof Error ? err.message : String(err)}`;
+    result.error = `Stored data could not be read: ${describeError(err)}`;
     return result;
   }
+
+  const journalKey = `${RESTORE_JOURNAL_PREFIX}${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const journal: RestoreJournal = { prefixes: runs.map((run) => run.prefix), previous, at: Date.now() };
+  try {
+    localStorage.setItem(journalKey, JSON.stringify(journal));
+  } catch (err) {
+    result.error = `Nothing was changed: there is no room to keep a copy of the data being replaced, which an import needs so it can be undone. ${describeError(err)}`;
+    return result;
+  }
+
   const written: string[] = [];
   const restore = (): void => {
     for (const key of written) {
@@ -546,45 +666,110 @@ export function replaceStorageKeys(prefix: string, entries: Record<string, strin
         // Nothing more to do for a key that will not go.
       }
     }
-    for (const { key, value } of previous) {
+    for (const [key, value] of previous) {
       try {
         localStorage.setItem(key, value);
       } catch {
         // The old value fitted before the import began; if it does not now,
-        // nothing here can make room for it.
+        // the journal still holds it for the next start.
+        return;
       }
+    }
+    try {
+      localStorage.removeItem(journalKey);
+    } catch {
+      // Left in place, the journal is replayed at the next start: harmless.
     }
   };
   try {
-    for (const { key } of previous) localStorage.removeItem(key);
-    for (const [suffix, value] of Object.entries(entries)) {
-      const key = prefix + suffix;
-      localStorage.setItem(key, value);
-      written.push(key);
-      result.copied += 1;
+    for (const [key] of previous) localStorage.removeItem(key);
+    for (const { prefix, entries } of runs) {
+      for (const [suffix, value] of Object.entries(entries)) {
+        const key = prefix + suffix;
+        localStorage.setItem(key, value);
+        written.push(key);
+        result.copied += 1;
+      }
     }
   } catch (err) {
     restore();
     result.copied = 0;
-    result.error = `Stored data could not be written: ${err instanceof Error ? err.message : String(err)}`;
+    result.error = `Stored data could not be written: ${describeError(err)}`;
     return result;
+  }
+  try {
+    localStorage.removeItem(journalKey);
+  } catch {
+    // Removing frees space and does not fail in practice. If it ever did,
+    // the next start would put the old keys back over the new ones, which
+    // is the wrong answer but a complete one; see recoverInterruptedImports.
   }
   result.ok = true;
   return result;
 }
 
 /**
- * Put a snapshot's records into a build, replacing what it has. A snapshot
- * from a different build is refused unless the caller says the person
- * importing it knows — the file names the build it came from, and the
- * runtime cannot tell whether two builds are related; only they can.
+ * Replace everything under `prefix` with `entries`, whole or not at all.
+ * The one-prefix form of replaceStorageRuns.
+ */
+export function replaceStorageKeys(prefix: string, entries: Record<string, string>): DataTransferResult {
+  return replaceStorageRuns([{ prefix, entries }]);
+}
+
+/**
+ * Finish what an interrupted import left, once, before any app opens: every
+ * journal still in storage names an import that did not reach its end, and
+ * the keys it holds are the state the build had before it. Those go back,
+ * the import's partial keys go, and the journal goes. Returns how many
+ * builds were put back.
+ */
+export function recoverInterruptedImports(): number {
+  let recovered = 0;
+  let journals: string[];
+  try {
+    journals = keysWithPrefix(RESTORE_JOURNAL_PREFIX);
+  } catch {
+    return 0;
+  }
+  for (const journalKey of journals) {
+    try {
+      const journal = JSON.parse(localStorage.getItem(journalKey) ?? 'null') as RestoreJournal | null;
+      if (!journal || !Array.isArray(journal.prefixes) || !Array.isArray(journal.previous)) {
+        localStorage.removeItem(journalKey);
+        continue;
+      }
+      for (const prefix of journal.prefixes) {
+        if (typeof prefix !== 'string' || !prefix) continue;
+        for (const key of keysWithPrefix(prefix)) localStorage.removeItem(key);
+      }
+      for (const entry of journal.previous) {
+        if (Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string') {
+          localStorage.setItem(entry[0], entry[1]);
+        }
+      }
+      localStorage.removeItem(journalKey);
+      recovered += 1;
+      console.warn('[SoftN Web] An import of app data was interrupted; the data it was replacing has been put back.');
+    } catch (err) {
+      console.warn('[SoftN Web] Could not finish recovering an interrupted import:', err);
+    }
+  }
+  return recovered;
+}
+
+/**
+ * Put a snapshot's state into a build, replacing what it has, in both
+ * stores. A snapshot from a different build is refused unless the caller
+ * says the person importing it knows — the file names the build it came
+ * from, and the runtime cannot tell whether two builds are related; only
+ * they can.
  */
 export function importAppData(
   snapshot: AppDataSnapshot,
   app: Pick<CachedApp, 'origin'>,
   options: { allowDifferentApp?: boolean } = {}
 ): DataTransferResult {
-  const total = Object.keys(snapshot.entries).length;
+  const total = snapshotEntryCount(snapshot);
   if (!app.origin) {
     return { ok: false, copied: 0, total, skipped: 0, code: 'NO_IDENTITY', error: 'This build has no identity to import data into.' };
   }
@@ -598,7 +783,7 @@ export function importAppData(
       error: `This data was exported from "${snapshot.app.name}" v${snapshot.app.version}, a different build.`,
     };
   }
-  return replaceStorageKeys(`xdb:${app.origin}:`, snapshot.entries);
+  return replaceStorageRuns(appDataStores(app.origin).map(({ store, prefix }) => ({ prefix, entries: snapshot.stores[store] ?? {} })));
 }
 
 // ── Adoption of older records ────────────────────────────────────────
@@ -819,15 +1004,19 @@ export async function getCachedApp(id: string): Promise<CachedApp | null> {
  * Removing a cached app used to drop the record and leave its records behind:
  * keys under an origin nothing referenced any more, which no screen could show
  * and no action could clear. Every removal leaked, and versions accumulating
- * made it worse. Removing a build now removes what it saved.
+ * made it worse. Removing a build now removes what it saved, in both stores:
+ * the records, and the keys its script kept through localStorage itself,
+ * which the first version of this left behind.
  */
 export function removeAppData(origin: string | undefined): number {
   if (!origin) return 0;
   let removed = 0;
   try {
-    for (const key of keysWithPrefix(`xdb:${origin}:`)) {
-      localStorage.removeItem(key);
-      removed += 1;
+    for (const { prefix } of appDataStores(origin)) {
+      for (const key of keysWithPrefix(prefix)) {
+        localStorage.removeItem(key);
+        removed += 1;
+      }
     }
   } catch {
     // Storage unavailable; the cache record still goes.

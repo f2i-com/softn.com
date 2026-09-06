@@ -17,6 +17,7 @@ export type { SoftNRendererProps, SoftNWithXDBProps } from './SoftNRenderer';
 // the bundle declared and the user granted, and whether the bar is unanswered.
 export {
   useConsentPending,
+  useEgressConfig,
   ConsentPendingProvider,
   CapabilityProvider,
   useCapability,

@@ -5,8 +5,8 @@
  * For more advanced features, consider integrating Quill, TipTap, or Slate.
  */
 
-import React, { useRef, useCallback, useEffect, useState } from 'react';
-import { sanitizeRichText } from '@softn/core';
+import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react';
+import { markupUrlJudge, sanitizeRichText, useEgressConfig } from '@softn/core';
 
 export interface RichTextEditorProps {
   /** Current HTML value */
@@ -82,6 +82,14 @@ export function RichTextEditor({
 
   // Initialize content.
   //
+  // What the markup may fetch. A value with `<img src="https://…">` is a
+  // request to that host the moment it is assigned, and it is held to the
+  // bundle's `net` like a `src` prop would be: withheld while the consent bar
+  // is unanswered, and let through when the user allows — the grant arrives
+  // as a re-render, and the value is sanitized again under it.
+  const egress = useEgressConfig();
+  const judge = useMemo(() => markupUrlJudge(egress), [egress]);
+
   // Sanitized on the way in: this value is normally a record loaded from XDB or
   // arriving over sync, and assigning it to innerHTML executes whatever markup
   // it carries on the host origin.
@@ -89,15 +97,18 @@ export function RichTextEditor({
     const editor = editorRef.current;
     if (!editor) return;
 
-    editor.innerHTML = sanitizeRichText(initialContentRef.current);
+    editor.innerHTML = sanitizeRichText(initialContentRef.current, judge);
     setIsEmpty(!(editor.textContent ?? '').trim());
+    // Once, at mount: the value effect below handles every later change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Update content when value prop changes externally
+  // Update content when value prop changes externally, or when what it may
+  // load does.
   useEffect(() => {
     if (value !== undefined && editorRef.current) {
       const currentHtml = editorRef.current.innerHTML;
-      const safe = sanitizeRichText(value);
+      const safe = sanitizeRichText(value, judge);
       // Compare against the sanitized form, or a value that only differs in the
       // parts sanitization strips would rewrite the DOM on every render and
       // move the caret to the start each time.
@@ -106,11 +117,11 @@ export function RichTextEditor({
         setIsEmpty(!(editorRef.current.textContent ?? '').trim());
       }
     }
-  }, [value]);
+  }, [value, judge]);
 
   const handleInput = useCallback(() => {
     if (editorRef.current) {
-      const html = sanitizeRichText(editorRef.current.innerHTML);
+      const html = sanitizeRichText(editorRef.current.innerHTML, judge);
       // Pasted HTML is not guaranteed to be inert. Only rewrite the DOM when
       // sanitization actually removed something so ordinary typing keeps its
       // selection and caret position.
@@ -121,7 +132,7 @@ export function RichTextEditor({
       setIsEmpty(!textContent.trim());
       onChange?.(html);
     }
-  }, [onChange]);
+  }, [onChange, judge]);
 
   const execCommand = useCallback(
     (command: string, value?: string) => {

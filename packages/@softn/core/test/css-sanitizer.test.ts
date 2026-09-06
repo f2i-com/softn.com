@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { sanitizeBundleCSS } from '../src/loader/SoftNRenderer';
+import { cssResourceReferences, isRemoteUrl } from '../src/renderer/sanitize-html';
 
 describe('remote url() references', () => {
   it('are removed when unquoted', () => {
@@ -86,5 +87,51 @@ describe('url() references a bundle legitimately uses', () => {
     expect(sanitizeBundleCSS('width: expression(alert(1))')).not.toContain('alert');
     expect(sanitizeBundleCSS('-moz-binding: url(x.xml#y);')).not.toContain('-moz-binding:');
     expect(sanitizeBundleCSS('behavior: url(x.htc);')).not.toContain('behavior:');
+  });
+});
+
+/** The remote targets a browser would still fetch from a run of CSS: none, once sanitized. */
+function remoteTargets(css: string): string[] {
+  return cssResourceReferences(css).urls.filter(isRemoteUrl);
+}
+
+describe('the other spellings of a fetch', () => {
+  it('removes the image functions that take their target as a string', () => {
+    const out = sanitizeBundleCSS(
+      '.a { background-image: image-set("https://evil.test/a.png" 1x, "https://evil.test/b.png" 2x); }'
+    );
+    expect(out).not.toContain('evil.test');
+    expect(out).toContain('background-image: none');
+    expect(sanitizeBundleCSS('@font-face { src: src("https://evil.test/f.woff2"); }')).not.toContain(
+      'evil.test'
+    );
+    expect(
+      sanitizeBundleCSS(
+        '.a { background: cross-fade(url(https://evil.test/a.png) 50%, "https://evil.test/b.png"); }'
+      )
+    ).not.toContain('evil.test');
+  });
+
+  it('keeps the same functions when they point at the bundle', () => {
+    expect(
+      sanitizeBundleCSS('.a { background-image: image-set("img/a.png" 1x, "img/a@2x.png" 2x); }')
+    ).toContain('img/a@2x.png');
+  });
+
+  it('matches a function name whatever its case', () => {
+    expect(sanitizeBundleCSS('.a { background: URL(https://evil.test/a.png) }')).not.toContain(
+      'evil.test'
+    );
+    expect(
+      sanitizeBundleCSS('.a { background: Image-Set("https://evil.test/a.png" 1x) }')
+    ).not.toContain('evil.test');
+  });
+
+  it('leaves nothing fetchable behind an escaped function name or scheme', () => {
+    expect(remoteTargets(sanitizeBundleCSS('.a { background: \\75rl(https://evil.test/a.png) }'))).toEqual([]);
+    expect(remoteTargets(sanitizeBundleCSS('.a { background: url(\\68ttps://evil.test/a.png) }'))).toEqual([]);
+    expect(
+      remoteTargets(sanitizeBundleCSS('.a { background: image-set("\\68ttps://evil.test/a.png" 1x) }'))
+    ).toEqual([]);
   });
 });
