@@ -1,6 +1,6 @@
 {
   "name": "@softn/brand",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
   "description": "The one look the four SoftN apps share: tokens, type, the theme switch and the product bar",
   "license": "Apache-2.0",
