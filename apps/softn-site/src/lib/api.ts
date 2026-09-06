@@ -195,6 +195,8 @@ export interface PublishFields {
   parent?: string;
   thumbnail?: Blob | null;
   website?: string;
+  /** The site owner's key from data/config.json: not held to the hourly publish limit. */
+  adminKey?: string;
 }
 
 export interface Published {
@@ -211,7 +213,9 @@ export async function publish(fields: PublishFields): Promise<Published> {
     if (typeof v === 'string' && v !== '') fd.append(key, v);
   }
   if (fields.thumbnail) fd.append('thumbnail', fields.thumbnail, 'thumbnail.png');
-  return call<Published>('/apps', { method: 'POST', body: fd });
+  const headers: Record<string, string> = {};
+  if (fields.adminKey && fields.adminKey.trim() !== '') headers['X-Admin-Key'] = fields.adminKey.trim();
+  return call<Published>('/apps', { method: 'POST', body: fd, headers });
 }
 
 // ── Updating an app you published ─────────────────────────────────────────

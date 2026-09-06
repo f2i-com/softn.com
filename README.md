@@ -539,8 +539,8 @@ subdomains or cross-origin configuration are required:
 
 ```
 dist/             landing page and app directory
-dist/demos/       .softn bundles
-dist/softn-files/ the same bundles with a download page
+dist/demos/       the example .softn bundles — only with --with-demos
+dist/softn-files/ the same bundles with a download page — only with --with-demos
 dist/web/         web runtime
 dist/builder/     visual builder
 dist/studio/      AI studio
@@ -607,10 +607,14 @@ php -S 127.0.0.1:5500 -t dist apps/softn-api/router.php
 
 The router does what the deployed `.htaccess` does: `/api/` to PHP, `/data/`
 refused, `/app/<slug>` a share page with Open Graph tags, and every static
-file served with the isolation headers. The directory seeds itself from the
-demo bundles on the first request; delete
-`dist/data/{apps,directory.sqlite,seeded,seed.lock}` to seed again after the
-demos change.
+file served with the isolation headers. By default the build ships no example
+apps and the directory starts empty: drop `.softn` files on any page to publish
+them (a folder at once, with the admin key from `data/config.json` for the site
+owner). `npm run build:site -- --with-demos` fetches the pinned softn-Examples
+release, ships the bundles under `/demos/` and `/softn-files/`, and has the
+directory seed itself from them on the first request — the shape softn.com
+itself deploys; delete `dist/data/{apps,directory.sqlite,seeded,seed.lock}` to
+seed again after the demos change.
 
 ### Demos
 
@@ -621,7 +625,7 @@ repository's `Release` workflow packs them and publishes the archives, and this
 one carries no copies. `apps/softn-web/public/demos/index.json` pins a release
 by download URL, size and SHA-256 for each bundle, and `npm run fetch:demos`
 downloads whatever is missing or stale and refuses an archive that does not
-verify. `dev`, `dev:web`, `build:site`, `screenshot:demos` and `test` fetch
+verify. `dev`, `dev:web`, `build:site --with-demos`, `screenshot:demos` and `test` fetch
 first, so a fresh clone needs nothing more than the network the first time.
 
 ```bash

@@ -747,6 +747,26 @@ test('rate limits refuse a flood', skip, async () => {
   assert.ok(refused, 'the eleventh publish in an hour is refused');
 });
 
+test('the admin key is not held to the publish limit; a wrong key is', skip, async () => {
+  // The flood above left this visitor at the limit.
+  const visitor = await api('POST', '/api/apps', { raw: makeBundle('Owner Batch 0'), headers: { 'Content-Type': 'application/octet-stream' } });
+  assert.equal(visitor.status, 429, 'the visitor is still refused');
+  const wrong = await api('POST', '/api/apps', {
+    raw: makeBundle('Owner Batch 0'),
+    headers: { 'Content-Type': 'application/octet-stream', 'X-Admin-Key': 'not-the-key' },
+  });
+  assert.equal(wrong.status, 429, 'a wrong admin key is a visitor');
+  for (let i = 1; i <= 3; i++) {
+    const owner = await api('POST', '/api/apps', {
+      raw: makeBundle(`Owner Batch ${i}`),
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Admin-Key': adminKey },
+    });
+    assert.equal(owner.status, 201, JSON.stringify(owner.json));
+    assert.equal(owner.json.app.slug, `owner-batch-${i}`);
+  }
+  resetRateLimits();
+});
+
 test('the api root describes itself and unknown routes are 404 JSON', skip, async () => {
   const idx = await api('GET', '/api');
   assert.equal(idx.status, 200);

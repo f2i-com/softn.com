@@ -3,9 +3,10 @@
  * Build everything softn.com serves, into one `dist/` you can upload anywhere.
  *
  *   dist/            the landing page and app directory
- *   dist/demos/      the .softn bundles, at the root so `?open=/demos/x.softn`
+ *   dist/demos/      the example .softn bundles — only with --with-demos, at the
+ *                    root so `?open=/demos/x.softn`
  *                    resolves the same way from the site and from the runtime
- *   dist/softn-files/ a clearly named copy of the canonical portable bundles
+ *   dist/softn-files/ a clearly named copy of those bundles — only with --with-demos
  *   dist/web/        the web runtime
  *   dist/builder/    the visual builder
  *   dist/studio/     the AI studio
@@ -30,6 +31,14 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'dist');
+
+// By default the site ships without the example apps: the directory starts
+// empty and fills with what its visitors publish, which keeps the release
+// archive to the site itself. `--with-demos` (or SOFTN_WITH_DEMOS=1) fetches
+// the pinned softn-Examples release, ships the bundles under /demos/ and
+// /softn-files/, and lets the API seed the directory with them on first
+// use — the shape softn.com itself deploys.
+const withDemos = process.argv.includes('--with-demos') || process.env.SOFTN_WITH_DEMOS === '1';
 
 const APPS = [
   { workspace: '@softn/web', dir: 'apps/softn-web', base: '/web/', into: 'web' },
@@ -335,11 +344,31 @@ What it needs from the host:
   instead; if publishing a large bundle fails, raise \`upload_max_filesize\`
   and \`post_max_size\` wherever this host takes them.
 
-On first use the API publishes the demo bundles into the directory and writes
-\`data/config.json\` — which holds the site's **admin key**. Keep that file
+On first use the API writes \`data/config.json\` — which holds the site's
+**admin key**${withDemos ? ' — and publishes the example bundles into the directory' : ''}. Keep that file
 private (it is, by the rules above) and use the key to moderate: approve or
 rename suggested categories, hide apps, remove comments. Back the directory up
 by copying \`data/\`; move it by copying it; reset it by emptying it.
+
+## Adding apps
+
+${
+  withDemos
+    ? 'The directory starts with the example apps. '
+    : 'The directory starts empty; this build ships no example apps. '
+}Anyone can add one: drop \`.softn\` files onto any page of the site, or open
+\`/publish\`. Several files at once publish as a batch, named and described
+from their manifests. No account: publishing hands back an edit key, and the
+key is what updates or removes the listing later.
+
+Visitors may publish ten apps an hour. The site owner is not held to that:
+paste the admin key from \`data/config.json\` into the batch form, or send it
+as the \`X-Admin-Key\` header, to publish any number at once — a fresh install
+takes a whole folder of bundles in one drop.
+
+The example apps that softn.com shows are published as \`.softn\` downloads
+with every softn-Examples release (https://github.com/f2i-com/softn-Examples/releases);
+download the ones you want and drop them on the site.
 
 Publishing from a script: \`POST /api/apps\` with the bundle as a multipart
 field, as the raw body, or as base64 in JSON. \`GET /api\` lists the routes.
@@ -397,9 +426,7 @@ workers and browser permissions outside localhost.
 - \`/web/\` — browser runtime
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
-- \`/demos/\` — bundles used by the live site
-- \`/softn-files/\` — clearly separated, canonical \`.softn\` files for download
-- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
+${withDemos ? '- \\`/demos/\\` — the example bundles the live site links to\n- \\`/softn-files/\\` — the same bundles, clearly separated, as \\`.softn\\` downloads\n' : ''}- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
 \`BUILD-INFO.json\` records the exact SoftN revision, whether the source tree had
 uncommitted changes, and the Zipp revision/hash used by the browser runtime.
@@ -575,6 +602,9 @@ function writeBuildInfo() {
         formatVersion: 1,
         builtAt,
         softn: { revision, dirty },
+        // How many example bundles ship in this build; 0 is the default
+        // release shape, and the smoke test reads it to know what to expect.
+        examples: { bundled: bundleCount },
         zipp,
       },
       null,
@@ -582,6 +612,10 @@ function writeBuildInfo() {
     )}\n`,
   );
 }
+
+// The example bundles come from the pinned softn-Examples release, verified
+// against the pins in apps/softn-web/public/demos/index.json.
+if (withDemos) run(['run', 'fetch:demos']);
 
 // The apps import @softn/core and @softn/components from dist/, so those have
 // to exist before any app build starts.
@@ -611,12 +645,19 @@ for (const app of APPS) {
   copyDir(appDist, path.join(outDir, app.into));
 }
 
-// A second copy of the bundles at the root. The runtime serves its own set from
-// /web/demos/ for its launcher, but every `?open=` link on the landing page is
-// root-relative so that one path works from both places.
+// With the examples: a second copy of the bundles at the root. The runtime
+// serves its own set from /web/demos/ for its launcher, but every `?open=`
+// link on the landing page is root-relative so that one path works from both
+// places. Without them: the runtime's public copy, which the app build carried
+// into dist/web/demos, is removed as well, so the archive holds no bundle —
+// the launcher treats a missing catalogue as "nothing to offer", not an error.
 const demos = path.join(root, 'apps/softn-web/public/demos');
-requireDir(demos, 'The runtime');
-copyDir(demos, path.join(outDir, 'demos'));
+if (withDemos) {
+  requireDir(demos, 'The runtime');
+  copyDir(demos, path.join(outDir, 'demos'));
+} else {
+  fs.rmSync(path.join(outDir, 'web', 'demos'), { recursive: true, force: true });
+}
 
 // The directory API travels with the site: the PHP under apps/softn-api goes
 // to dist/api, and dist/data — its state — starts out holding only the rules
@@ -799,7 +840,7 @@ function countFiles(dir) {
 
 copyProjectLicences();
 copyDirectoryApi();
-const bundleCount = copyCanonicalBundles(demos);
+const bundleCount = withDemos ? copyCanonicalBundles(demos) : 0;
 writeDeepLinkFallbacks();
 writeDeploymentFiles();
 run(['run', 'licenses:site']);
@@ -808,8 +849,12 @@ precompressAssets();
 
 console.log(`\nBuilt ${countFiles(outDir)} files into dist/`);
 console.log('  dist/           landing page');
-console.log('  dist/demos/     .softn bundles');
-console.log(`  dist/softn-files/ canonical .softn bundles (${bundleCount} apps)`);
+if (withDemos) {
+  console.log(`  dist/demos/     the example .softn bundles (${bundleCount} apps)`);
+  console.log('  dist/softn-files/ the same bundles, as downloads');
+} else {
+  console.log('  (no example bundles: the directory starts empty; --with-demos ships them)');
+}
 console.log('  dist/api/       the directory API (PHP + SQLite); dist/data/ its state');
 console.log('  dist/.htaccess, nginx.conf.example, DEPLOY.md');
 console.log('  dist/BUILD-INFO.json');

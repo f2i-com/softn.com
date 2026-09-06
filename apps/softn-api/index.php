@@ -127,7 +127,7 @@ function handle(string $handler, array $args, Request $req): Response
                     'GET /api/apps/{slug}/comments?page=',
                     'GET /api/apps/{slug}/rating',
                     'GET /api/categories',
-                    'POST /api/apps  (multipart bundle=@file, or raw zip body, or JSON {bundleBase64}; fields: name, description, author, category, tags, notes, primary, parent, thumbnail)',
+                    'POST /api/apps  (multipart bundle=@file, or raw zip body, or JSON {bundleBase64}; fields: name, description, author, category, tags, notes, primary, parent, thumbnail; X-Admin-Key lifts the hourly limit)',
                     'POST /api/apps/{slug}/versions  (X-Edit-Key)',
                     'PATCH /api/apps/{slug}  (X-Edit-Key; JSON fields)',
                     'POST /api/apps/{slug}/thumbnail  (X-Edit-Key)',
@@ -185,7 +185,12 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'publish': {
             if (($req->field('website') ?? '') !== '') throw new ApiError(400, 'The bundle was not accepted.');
-            Db::rateLimit('publish', Config::visitorHash($req->ip));
+            // The hourly limit is for visitors. The site owner, who has the
+            // admin key from data/config.json, fills a fresh directory in one
+            // batch — a whole folder of bundles dropped on the publish page.
+            if (!Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) {
+                Db::rateLimit('publish', Config::visitorHash($req->ip));
+            }
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent. Upload a .softn as the multipart field "bundle", as the raw request body, or as JSON {"bundleBase64": ...}.');
             $parent = $req->field('parent');

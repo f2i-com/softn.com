@@ -214,7 +214,16 @@ export function HomePage({
               </button>
             </div>
           ) : !listLoading && apps.length === 0 ? (
-            <div className="notice">Nothing in this list yet.</div>
+            <div className="notice" role="status">
+              {total === 0 ? (
+                <>
+                  <strong>The directory is empty.</strong> Drop <code>.softn</code> files anywhere on this page to publish them — one, or a
+                  folder at once — or <a href="/publish">open the publish page</a>.
+                </>
+              ) : (
+                'Nothing in this list yet.'
+              )}
+            </div>
           ) : (
             <AppGrid apps={apps} categories={categories} skeleton={listLoading ? 8 : 0} loading={listLoading} />
           )}
