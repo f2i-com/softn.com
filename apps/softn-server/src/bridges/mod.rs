@@ -58,10 +58,25 @@ pub struct HttpResponse {
 }
 
 /// Persistence, backed by the bundle's XDB database.
+/// What a conditional write did.
+pub enum DbUpdateIf {
+    Updated(DbRecord),
+    /// The record's field no longer held the expected value; nothing was written.
+    Conflict,
+    Missing,
+}
+
 pub trait DbBridge: Send {
     fn query(&self, collection: &str) -> Result<Vec<DbRecord>, String>;
     fn create(&mut self, collection: &str, data: &str) -> Result<DbRecord, String>;
     fn update(&mut self, id: &str, data: &str) -> Result<Option<DbRecord>, String>;
+    /// Merge `data` into the record only if its top-level `field` still equals
+    /// `expected` (both JSON). The check and the write happen under the
+    /// store's one writer lock, so two workers racing on a record cannot both
+    /// succeed — which is what lets a script keep a revision on a record and
+    /// trust it. `update` alone is read-merge-write across two host calls,
+    /// and last writer wins.
+    fn update_if(&mut self, id: &str, data: &str, field: &str, expected: &str) -> Result<DbUpdateIf, String>;
     fn delete(&mut self, id: &str) -> Result<(), String>;
     fn hard_delete(&mut self, collection: &str, id: &str) -> Result<(), String>;
     fn get(&self, collection: &str, id: &str) -> Result<Option<DbRecord>, String>;

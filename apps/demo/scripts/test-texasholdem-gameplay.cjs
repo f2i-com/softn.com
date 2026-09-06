@@ -109,6 +109,7 @@ function loadTexasRuntime() {
     'actions.logic',
     'bot.logic',
     'ui-helpers.logic',
+    'authority-client.logic',
   ];
 
   let source = '';

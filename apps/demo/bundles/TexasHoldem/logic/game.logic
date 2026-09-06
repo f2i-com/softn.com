@@ -8,6 +8,12 @@
   }
 
   function startHand() {
+    if (authorityMode) {
+      // The server deals. Anyone seated may ask it to.
+      showResultsModal = false
+      authorityAct({ type: "start" })
+      return
+    }
     if (TableStateClass.isLiveHandPhase(gamePhase)) return
     // Re-read table to ensure tableId is valid (could be stale after ID swap)
     let tableRec = getFreshTableRecord()
@@ -820,6 +826,10 @@
 
   function nextHand() {
     showResultsModal = false
+    if (authorityMode) {
+      authorityAct({ type: "start" })
+      return
+    }
     showdownAutoDelay = 0
     showdownAutoDeadlineMs = 0
     showdownStartedAtMs = 0
@@ -832,6 +842,11 @@
   }
 
   function forceReset() {
+    if (authorityMode) {
+      toastMessage = "An online table is reset by leaving it"
+      toastType = "info"
+      return
+    }
     // Re-read fresh table ID
     let resetTable = getFreshTableRecord()
     if (!resetTable) return

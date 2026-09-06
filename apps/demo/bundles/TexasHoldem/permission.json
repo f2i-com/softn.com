@@ -1,5 +1,13 @@
 {
   "permissions": {
+    "net": {
+      "enabled": true,
+      "allow_http": true,
+      "allowed_hosts": [
+        "localhost",
+        "127.0.0.1"
+      ]
+    },
     "sync": {
       "enabled": true
     }

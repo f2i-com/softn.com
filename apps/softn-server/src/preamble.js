@@ -26,6 +26,11 @@ var db = {
   update: function (id, d) {
     return JSON.parse(__zippHostCall("db.update", String(id), JSON.stringify(d === undefined ? {} : d)));
   },
+  // Write only if the record's top-level `field` still equals `expected`:
+  // {updated: true, record} or {updated: false, reason: "conflict" | "missing"}.
+  updateIf: function (id, d, field, expected) {
+    return JSON.parse(__zippHostCall("db.updateIf", String(id), JSON.stringify(d === undefined ? {} : d), String(field), JSON.stringify(expected === undefined ? null : expected)));
+  },
   delete: function (id) { __zippHostCall("db.delete", String(id)); },
   hardDelete: function (c, id) { __zippHostCall("db.hardDelete", String(c), String(id)); },
   startSync: function (room) { __zippHostCall("db.startSync", String(room)); },

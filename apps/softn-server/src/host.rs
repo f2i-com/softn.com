@@ -10,7 +10,7 @@
 //! with a message naming it rather than answering a default. Silently returning
 //! an empty result would let a script believe it had written a file.
 
-use crate::bridges::{DbBridge, EnvBridge, FsBridge, HttpBridge};
+use crate::bridges::{DbBridge, EnvBridge, FsBridge, HttpBridge, DbUpdateIf};
 
 /// Collection of bridge instances, created per worker thread.
 ///
@@ -55,6 +55,14 @@ pub fn dispatch(bridges: &mut BridgeSet, kind: &str, args: &[String]) -> Result<
             match db.update(arg(0), arg(1))? {
                 Some(r) => enc(&r.to_json()),
                 None => Ok("null".into()),
+            }
+        }
+        "db.updateIf" => {
+            let db = need_mut(bridges.db.as_deref_mut(), kind)?;
+            match db.update_if(arg(0), arg(1), arg(2), arg(3))? {
+                DbUpdateIf::Updated(r) => enc(&serde_json::json!({ "updated": true, "record": r.to_json() })),
+                DbUpdateIf::Conflict => enc(&serde_json::json!({ "updated": false, "reason": "conflict" })),
+                DbUpdateIf::Missing => enc(&serde_json::json!({ "updated": false, "reason": "missing" })),
             }
         }
         "db.delete" => {

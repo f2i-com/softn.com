@@ -2,6 +2,8 @@
 
 **Proposal, not an implemented or standardized SoftN API.** Prepared 5 September 2026. Existing application APIs should continue working during an additive transition. See `docs/audit-2026-09.md` for the findings this responds to and what has been implemented.
 
+*Status, 6 September 2026:* section 8's reference app exists in part. Texas Hold'em has a pure rule module (`apps/demo/bundles/TexasHoldem/server/rules.logic`) and a table authority (`server/authority.logic`) that softn-server runs as the bundle's own server logic, with public and per-seat projections, seat tickets, revisions, idempotent journalled actions and reconnect; the client reaches it over `softn.net.fetch`. That is one service's authenticated server actor, not the `softn.net.rooms` facade, transports or routing proposed below. See `docs/audit-2026-09-06.md`.
+
 ## 1. Design position
 
 SoftN already exposes `softn.net.fetch`, XDB/Yjs peer synchronization, server synchronization, capability-mediated host calls and a Rust server. Add a high-level room abstraction above these building blocks. Do not replace them with unrestricted browser `fetch`, WebSocket or RTCPeerConnection objects inside the VM.

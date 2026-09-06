@@ -13,6 +13,10 @@
   }
 
   function doFold() {
+    if (authorityMode) {
+      authorityAct({ type: "fold" })
+      return
+    }
     // Re-read fresh state so IDs are current
     refreshFromDB()
     if (isActionBusy()) return
@@ -32,6 +36,10 @@
   }
 
   function doCheck() {
+    if (authorityMode) {
+      authorityAct({ type: "check" })
+      return
+    }
     refreshFromDB()
     if (isActionBusy()) return
     if (!TableStateClass.isLiveHandPhase(gamePhase)) return
@@ -57,6 +65,10 @@
   }
 
   function doCall() {
+    if (authorityMode) {
+      authorityAct({ type: "call" })
+      return
+    }
     refreshFromDB()
     if (isActionBusy()) return
     if (!TableStateClass.isLiveHandPhase(gamePhase)) return
@@ -106,6 +118,10 @@
   }
 
   function doRaise() {
+    if (authorityMode) {
+      authorityRaise()
+      return
+    }
     refreshFromDB()
     if (isActionBusy()) return
     if (!TableStateClass.isLiveHandPhase(gamePhase)) return

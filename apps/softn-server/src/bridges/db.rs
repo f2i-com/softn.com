@@ -1,5 +1,5 @@
 use crate::pool::{self, ServerDb};
-use super::{DbBridge, DbRecord, DbSyncStatus};
+use super::{DbBridge, DbRecord, DbSyncStatus, DbUpdateIf};
 
 pub struct NativeDbBridge {
     db: ServerDb,
@@ -55,6 +55,31 @@ impl DbBridge for NativeDbBridge {
             Ok((r, _)) => Ok(Some(xdb_to_record(r))),
             Err(xdb::DbError::NotFound(_)) => Ok(None),
             Err(e) => Err(format!("db.update failed: {}", e)),
+        }
+    }
+
+    fn update_if(&mut self, id: &str, data: &str, field: &str, expected: &str) -> Result<DbUpdateIf, String> {
+        // The guard is the store's writer mutex: between reading the field and
+        // writing the record, no other worker can write.
+        let mut db = self.db.write();
+        let json: serde_json::Value = serde_json::from_str(data)
+            .map_err(|e| format!("db.updateIf: invalid JSON: {}", e))?;
+        let expected: serde_json::Value = serde_json::from_str(expected)
+            .map_err(|e| format!("db.updateIf: invalid expected value: {}", e))?;
+        let existing = match db.get_record(id) {
+            Ok(r) if !r.deleted => r,
+            Ok(_) => return Ok(DbUpdateIf::Missing),
+            Err(xdb::DbError::NotFound(_)) => return Ok(DbUpdateIf::Missing),
+            Err(e) => return Err(format!("db.updateIf failed: {}", e)),
+        };
+        let current = existing.data.get(field).cloned().unwrap_or(serde_json::Value::Null);
+        if current != expected {
+            return Ok(DbUpdateIf::Conflict);
+        }
+        match db.update_record(id, json) {
+            Ok((r, _)) => Ok(DbUpdateIf::Updated(xdb_to_record(r))),
+            Err(xdb::DbError::NotFound(_)) => Ok(DbUpdateIf::Missing),
+            Err(e) => Err(format!("db.updateIf failed: {}", e)),
         }
     }
 

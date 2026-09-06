@@ -120,9 +120,11 @@
   import "./actions.logic"
   import "./bot.logic"
   import "./ui-helpers.logic"
+  import "./authority-client.logic"
   // --- Room / Sync Management ---
 
   function pollIntervalMs() {
+    if (authorityMode) return 250
     // Fast poll only when bots are acting; slow down for human turns and idle phases.
     if (TableStateClass.isLiveHandPhase(gamePhase)) {
       if (isHost && currentTurnSeat >= 0 && isBotSeat(currentTurnSeat)) return 200
@@ -197,6 +199,34 @@
     // Load wallet avatar if available
     if (typeof getAvatar === "function") {
       walletAvatarUrl = getAvatar()
+    }
+
+    // The table server used last time is offered again.
+    let savedAuthorityUrl = localStorage.getItem("poker-authority-url")
+    if (savedAuthorityUrl) authorityUrl = savedAuthorityUrl
+
+    // A seat at an online table survives a reload: the ticket is kept, and
+    // the server is asked whether it still holds the seat.
+    let savedAuthority = localStorage.getItem("poker-authority")
+    if (savedAuthority) {
+      let saved = null
+      try {
+        saved = JSON.parse(savedAuthority)
+      } catch (e) {
+        saved = null
+      }
+      if (saved && saved.url && saved.code && saved.ticket) {
+        authorityUrl = saved.url
+        authorityCode = saved.code
+        authorityTicket = saved.ticket
+        authorityMode = true
+        syncRoom = saved.code
+        syncConnecting = true
+        currentPage = "table"
+        resumeOnlineTable()
+        return
+      }
+      authorityForget()
     }
 
     // Clean up any corrupted player records (e.g. from XDB field-order bugs)
@@ -494,6 +524,11 @@
   function leaveUnseat() {
     // Unseat the player but stay in the room
     showLeaveModal = false
+    if (authorityMode) {
+      // An online seat is given up at the server; the table goes with it.
+      leaveOnlineTable()
+      return
+    }
     let allPlayers = db.query("poker_players")
     let lpi = 0
     while (lpi < allPlayers.length) {
@@ -519,6 +554,10 @@
   function leaveLobby() {
     // Unseat, disconnect sync, return to lobby
     showLeaveModal = false
+    if (authorityMode) {
+      leaveOnlineTable()
+      return
+    }
     let allPlayers = db.query("poker_players")
     let lpi = 0
     while (lpi < allPlayers.length) {
@@ -799,6 +838,8 @@
   // (otherwise UI waits up to 250ms for the next pollGameState tick)
 
   function refreshFromDB() {
+    // An online table has no local records; its view arrives from the server.
+    if (authorityMode) return
     let tables = db.query("poker_table")
     if (tables.length > 0) {
       let t = TableRepositoryClass.selectCurrentTableRecord(tables, tableId)
@@ -932,6 +973,11 @@
   // --- Seat Management ---
 
   function takeSeat(seatNum) {
+    if (authorityMode) {
+      toastMessage = "At an online table your seat is given when you join"
+      toastType = "info"
+      return
+    }
     if (mySeat >= 0) {
       // Verify our record actually exists; if not, reset so we can re-seat
       let verifyPlayers = db.query("poker_players")
@@ -997,6 +1043,10 @@
   function rebuy() {
     if (mySeat < 0) return
     if (myChips > 0) return
+    if (authorityMode) {
+      authorityAct({ type: "rebuy" })
+      return
+    }
     if (gamePhase !== TableStateClass.phaseWaiting() && gamePhase !== TableStateClass.phaseShowdown()) return
     let me = getMyPlayerRecord()
     if (!me) return
@@ -1011,35 +1061,13 @@
   }
   // --- Polling ---
 
-  function pollGameState() {
-    let tickStartMs = perfTickStart()
-    let runSlowLane = shouldRunSlowLane()
-    if (syncConnecting || !syncConnected) {
-      runSlowLane = true
-    }
-    if (runSlowLane) {
-      refreshSyncStatus()
-    }
-    // Read table state - dedup if multiple tables exist
-    let tables = db.query("poker_table")
-    if (tables.length > 1) {
-      // Keep one canonical table record to avoid flicker from stale duplicates.
-      let keepRec = TableRepositoryClass.selectCurrentTableRecord(tables, tableId)
-      let di = 0
-      while (di < tables.length) {
-        if (tables[di].id !== keepRec.id) {
-          db.hardDelete("poker_table", tables[di].id)
-        }
-        di = di + 1
-      }
-      // Use the kept table
-      tables = [keepRec]
-    }
-    if (tables.length > 0) {
-      let t = tables[0]
-      applyTableSnapshotSafe(t)
-    }
-
+  /**
+   * The deal, board, pot and bet animations, driven off changes in the
+   * globals since the last tick. Shared by both kinds of table: the peer
+   * table after it has read its records, the online table after the
+   * server's view has been applied.
+   */
+  function advancePollAnimations() {
     // Animation state tracking (fast poll tick)
     if (handNumber < animLastSeenHand) {
       animLastSeenHand = handNumber
@@ -1111,6 +1139,48 @@
       }
       acd = acd + 1
     }
+
+  }
+
+  function pollGameState() {
+    let tickStartMs = perfTickStart()
+    if (authorityMode) {
+      // The server holds the table. Ask it, animate what changed, and
+      // leave every host duty — bots, repairs, auto-advance — where it is.
+      advancePollAnimations()
+      authorityTick()
+      perfTickEnd(tickStartMs)
+      return
+    }
+    let runSlowLane = shouldRunSlowLane()
+    if (syncConnecting || !syncConnected) {
+      runSlowLane = true
+    }
+    if (runSlowLane) {
+      refreshSyncStatus()
+    }
+    // Read table state - dedup if multiple tables exist
+    let tables = db.query("poker_table")
+    if (tables.length > 1) {
+      // Keep one canonical table record to avoid flicker from stale duplicates.
+      let keepRec = TableRepositoryClass.selectCurrentTableRecord(tables, tableId)
+      let di = 0
+      while (di < tables.length) {
+        if (tables[di].id !== keepRec.id) {
+          db.hardDelete("poker_table", tables[di].id)
+        }
+        di = di + 1
+      }
+      // Use the kept table
+      tables = [keepRec]
+    }
+    if (tables.length > 0) {
+      let t = tables[0]
+      applyTableSnapshotSafe(t)
+    }
+
+    advancePollAnimations()
+    let nowMs = Date.now()
 
     // Read players
     players = db.query("poker_players")
