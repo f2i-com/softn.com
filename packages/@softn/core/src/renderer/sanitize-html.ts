@@ -480,6 +480,12 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
         node.removeAttribute(attr.name);
         continue;
       }
+      if (node.hasAttribute(original)) {
+        // The element has a live value for this attribute already; the
+        // stash is stale and must not write over it.
+        node.removeAttribute(attr.name);
+        continue;
+      }
       if (!judge || judge(attr.value, original, tag)) {
         node.setAttribute(original, attr.value);
         node.removeAttribute(attr.name);
