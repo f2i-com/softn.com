@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <rect width="64" height="64" rx="14" fill="#18262d"/>
-  <!-- Three rising calls, loudest in the middle: a bird's-eye view of a burst. -->
-  <path d="M8 32 Q14 18 20 32 T32 32" stroke="#c7ee53" stroke-width="3" fill="none" stroke-linecap="round"/>
-  <path d="M24 32 Q31 12 38 32 T52 32" stroke="#7de8cf" stroke-width="3" fill="none" stroke-linecap="round"/>
-  <path d="M40 32 Q47 22 54 32" stroke="#7ab6ff" stroke-width="3" fill="none" stroke-linecap="round"/>
-  <circle cx="32" cy="46" r="3" fill="#f37561"/>
-</svg>

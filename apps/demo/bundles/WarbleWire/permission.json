@@ -1,6 +1,0 @@
-{
-  "app": { "id": "org.qxw.warblewire", "name": "WarbleWire", "version": "0.1.0" },
-  "permissions": {
-    "mic": { "enabled": true, "maxSeconds": 20 }
-  }
-}

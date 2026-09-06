@@ -40,3 +40,9 @@ apps/softn-api/data/*
 
 # Local DOS game data (DOOM.EXE / DOOM1.WAD and the like) — not project source.
 games/
+
+# The demo bundles are fetched from the softn-Examples release that
+# apps/softn-web/public/demos/index.json pins (npm run fetch:demos); only the
+# catalogue, icons and thumbnails are source.
+apps/softn-web/public/demos/*.softn
+apps/softn-web/public/demos/*.softn.download

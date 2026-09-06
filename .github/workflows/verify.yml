@@ -45,6 +45,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The demo bundles are not in this repository: their sources live in
+      # f2i-com/softn-Examples, whose releases publish the archives, and
+      # apps/softn-web/public/demos/index.json pins one by URL, size and digest.
+      # The directory API's tests seed from them and the site build ships them,
+      # so they are fetched and verified against their digests here. (`npm test`
+      # fetches too, through its pretest hook; this step just makes it visible.)
+      - name: Fetch the demo bundles
+        run: npm run fetch:demos
+
       # Include development tooling: the lockfile is part of the shipped build
       # pipeline, and vulnerable parsers/globbers there can still process
       # attacker-controlled repository content.
