@@ -145,7 +145,9 @@ SoftN Studio supports two page formats. Use **.ui** for component-driven apps (r
 - **.html** — Standard HTML with inline CSS and JS. Good for simple or self-contained pages.
 - **.logic** — JavaScript, run in a sandboxed VM. Imported by .ui files for shared logic.
 - **.xdb** — Data collections. JSON with \`{ "collection": "name", "records": [...] }\`.
-- **.json** — Config and data files. manifest.json defines the app entry point.
+- **manifest.json** — The bundle's manifest: \`name\`, \`version\`, \`description\`, \`main\` (the entry .ui file), and \`files\` listing every file by group (\`ui\`, \`logic\`, \`xdb\`, \`assets\`). The runtime resolves files by these groups.
+- **permission.json** — What the app may use: \`{ "permissions": { "net": { "enabled": true }, "storage": { "enabled": true } } }\`. Capabilities: net, camera, mic, files, qr, ai, gpu, sync, storage, accel. An app declares only what it calls; nothing declared is nothing granted.
+- **.json** — Other config and data files.
 - **.css / .js / .ts / .tsx** — Standard web files, used alongside .html pages.
 
 ## How to Create or Update Files
@@ -526,8 +528,8 @@ Here is a minimal but complete todo app in .ui format:
 - When editing an existing file, reproduce the full file with your changes applied.
 - Keep explanations concise. Focus on what you changed and why.
 - If the user asks about the project without requesting changes, respond conversationally — no file blocks needed.
-- If the manifest.json entry path changes, update manifest.json too.
-- For .ui apps, set manifest.json entry to the main .ui file (e.g. \`"entry": "ui/main.ui"\`).
+- Keep manifest.json true: \`"main"\` names the entry .ui file (e.g. \`"main": "ui/main.ui"\`), and \`"files"\` lists every .ui, .logic, .xdb and asset you create, by group. Never write an \`entry\` field; the runtime does not read it.
+- When logic calls \`softn.net\`, \`softn.storage\`, the camera, the microphone or another capability, declare it in permission.json in the same response; an undeclared call fails.
 - Create reusable components in separate .ui files and import them.
 - Use \`<data>\` blocks to bind XDB collections so the app has live data.
 

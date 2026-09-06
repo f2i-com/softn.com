@@ -121,7 +121,7 @@ export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
       status: 'complete',
       dependencies: ['task-blueprint'],
       retries: 0,
-      files: blueprint.pages.map((page) => `pages/${slugify(page.name)}.html`),
+      files: ['ui/main.ui', ...blueprint.pages.map((page) => `ui/pages/${slugify(page.name)}.ui`)],
     },
     {
       id: 'task-data',
@@ -130,7 +130,7 @@ export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
       status: blueprint.collections.length > 0 ? 'complete' : 'skipped',
       dependencies: ['task-blueprint'],
       retries: 0,
-      files: blueprint.collections.map((collection) => `data/${slugify(collection.name)}.xdb`),
+      files: blueprint.collections.map((collection) => `xdb/${collectionKey(collection.name)}.xdb`),
     },
     {
       id: 'task-export',
@@ -139,261 +139,204 @@ export function generateTaskGraph(blueprint: Blueprint): AgentTask[] {
       status: 'pending',
       dependencies: ['task-pages'],
       retries: 0,
-      files: ['manifest.json'],
+      files: ['manifest.json', 'permission.json'],
     },
   ];
 }
 
-function buildPalette(style: ProjectBrief['style']): {
-  background: string;
-  panel: string;
-  accent: string;
-  accentSoft: string;
-  text: string;
-  muted: string;
-} {
+/** The App theme for a brief's style; the minimal style is the light one. */
+function themeFor(style: ProjectBrief['style']): 'light' | 'dark' {
+  return style === 'minimal' ? 'light' : 'dark';
+}
+
+/** The accent a style's headings wear. */
+function accentFor(style: ProjectBrief['style']): string {
   switch (style) {
-    case 'bold':
-      return {
-        background: '#140c0c',
-        panel: '#221515',
-        accent: '#f97316',
-        accentSoft: 'rgba(249,115,22,0.16)',
-        text: '#fff7ed',
-        muted: '#fdba74',
-      };
-    case 'minimal':
-      return {
-        background: '#f6f6f4',
-        panel: '#ffffff',
-        accent: '#0f172a',
-        accentSoft: 'rgba(15,23,42,0.08)',
-        text: '#111827',
-        muted: '#64748b',
-      };
-    case 'playful':
-      return {
-        background: '#0f1020',
-        panel: '#17192c',
-        accent: '#f59e0b',
-        accentSoft: 'rgba(245,158,11,0.14)',
-        text: '#fff7ed',
-        muted: '#fcd34d',
-      };
-    case 'dark':
-      return {
-        background: '#070b14',
-        panel: '#101826',
-        accent: '#38bdf8',
-        accentSoft: 'rgba(56,189,248,0.14)',
-        text: '#e0f2fe',
-        muted: '#94a3b8',
-      };
+    case 'bold': return '#f97316';
+    case 'minimal': return '#0f172a';
+    case 'playful': return '#f59e0b';
+    case 'dark': return '#38bdf8';
     case 'clean':
-    default:
-      return {
-        background: '#08131d',
-        panel: '#101b28',
-        accent: '#14b8a6',
-        accentSoft: 'rgba(20,184,166,0.14)',
-        text: '#ecfeff',
-        muted: '#99f6e4',
-      };
+    default: return '#14b8a6';
   }
 }
 
-function buildPageHtml(brief: ProjectBrief, blueprint: Blueprint, page: BlueprintPage, index: number): string {
-  const palette = buildPalette(brief.style);
-  const links = blueprint.pages.map((entry) => {
-    const slug = slugify(entry.name);
-    return `<a class="nav-link ${entry.id === page.id ? 'active' : ''}" href="${slug}.html">${esc(entry.name)}</a>`;
-  }).join('');
-
-  const dataCards = blueprint.collections.length > 0
-    ? blueprint.collections.map((collection) => `
-      <article class="card">
-        <span class="eyebrow">Collection</span>
-        <h3>${esc(collection.name)}</h3>
-        <p>${collection.fields.length} starter fields ready for schema editing.</p>
-      </article>`).join('')
-    : `
-      <article class="card wide">
-        <span class="eyebrow">Starter flow</span>
-        <h3>Describe, refine, and export.</h3>
-        <p>Add data collections to unlock schema-driven generation and richer previews.</p>
-      </article>`;
-
-  const authCard = brief.authNeeded
-    ? `<article class="card"><span class="eyebrow">Access</span><h3>Authentication enabled</h3><p>Plan for sign-in, permissions, and session-aware pages.</p></article>`
-    : `<article class="card"><span class="eyebrow">Access</span><h3>Open workflow</h3><p>This starter uses lightweight navigation with no auth wall.</p></article>`;
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${esc(brief.appName)} - ${esc(page.name)}</title>
-  <style>
-    :root {
-      --bg: ${palette.background};
-      --panel: ${palette.panel};
-      --accent: ${palette.accent};
-      --accent-soft: ${palette.accentSoft};
-      --text: ${palette.text};
-      --muted: ${palette.muted};
-      --line: rgba(148, 163, 184, 0.12);
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(255,255,255,0.08), transparent 25%),
-        radial-gradient(circle at top right, var(--accent-soft), transparent 26%),
-        var(--bg);
-      color: var(--text);
-    }
-    .shell {
-      max-width: 1160px;
-      margin: 0 auto;
-      padding: 32px 20px 48px;
-    }
-    .hero {
-      padding: 28px;
-      border-radius: 28px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
-      border: 1px solid var(--line);
-      box-shadow: 0 30px 60px rgba(2, 6, 23, 0.24);
-    }
-    .eyebrow {
-      display: inline-block;
-      margin-bottom: 12px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-    h1, h2, h3, p { margin: 0; }
-    h1 { font-size: clamp(2.4rem, 5vw, 4.6rem); line-height: 0.96; margin-bottom: 14px; }
-    .hero p {
-      max-width: 760px;
-      color: rgba(255,255,255,0.72);
-      font-size: 16px;
-      line-height: 1.65;
-    }
-    .hero-grid {
-      display: grid;
-      grid-template-columns: 1.5fr 1fr;
-      gap: 18px;
-      margin-top: 22px;
-    }
-    .panel {
-      padding: 18px;
-      border-radius: 20px;
-      background: rgba(2,6,23,0.24);
-      border: 1px solid var(--line);
-    }
-    .nav {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 18px;
-    }
-    .nav-link {
-      display: inline-flex;
-      align-items: center;
-      padding: 10px 14px;
-      border-radius: 999px;
-      text-decoration: none;
-      color: rgba(255,255,255,0.72);
-      background: rgba(255,255,255,0.04);
-      border: 1px solid transparent;
-      font-weight: 600;
-    }
-    .nav-link.active {
-      color: white;
-      border-color: rgba(255,255,255,0.12);
-      background: var(--accent-soft);
-    }
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 14px;
-      margin-top: 24px;
-    }
-    .stat {
-      padding: 18px;
-      border-radius: 20px;
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--line);
-    }
-    .stat strong {
-      display: block;
-      font-size: 28px;
-      margin-top: 10px;
-    }
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 16px;
-      margin-top: 24px;
-    }
-    .card {
-      padding: 20px;
-      border-radius: 22px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
-    }
-    .card.wide { grid-column: span 2; }
-    .card h3 { margin-bottom: 8px; }
-    .card p { color: rgba(255,255,255,0.68); line-height: 1.6; }
-    @media (max-width: 760px) {
-      .shell { padding: 20px 14px 32px; }
-      .hero { padding: 20px; border-radius: 22px; }
-      .hero-grid { grid-template-columns: 1fr; }
-      .card.wide { grid-column: span 1; }
-    }
-  </style>
-</head>
-<body>
-  <main class="shell">
-    <section class="hero">
-      <span class="eyebrow">${esc(brief.target)} target / ${esc(page.name)}</span>
-      <h1>${esc(brief.appName)}</h1>
-      <p>${esc(brief.description)}</p>
-      <div class="nav">${links}</div>
-      <div class="hero-grid">
-        <div class="panel">
-          <span class="eyebrow">AI blueprint</span>
-          <h2>${esc(page.name)} experience</h2>
-          <p>This starter page is generated from the current SoftN Studio brief so the bundle has a live, navigable preview from the first pass.</p>
-        </div>
-        <div class="panel">
-          <span class="eyebrow">Current focus</span>
-          <h2>${index === 0 ? 'Primary entry page' : `Step ${index + 1} in navigation`}</h2>
-          <p>${brief.authNeeded ? 'Authentication-aware flow is expected for production.' : 'Open access flow is currently assumed.'}</p>
-        </div>
-      </div>
-      <div class="stats">
-        <div class="stat"><span class="eyebrow">Pages</span><strong>${blueprint.pages.length}</strong></div>
-        <div class="stat"><span class="eyebrow">Collections</span><strong>${blueprint.collections.length}</strong></div>
-        <div class="stat"><span class="eyebrow">AI</span><strong>Configured</strong></div>
-      </div>
-      <div class="cards">
-        ${dataCards}
-        ${authCard}
-      </div>
-    </section>
-  </main>
-</body>
-</html>`;
+/**
+ * A collection name as the directory's storage and a `<data>` alias both
+ * accept: a letter, then letters, digits and underscores, at most 32.
+ */
+export function collectionKey(value: string): string {
+  const key = value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32);
+  if (!key) return 'items';
+  return /^[a-z]/.test(key) ? key : `c_${key}`.slice(0, 32);
 }
 
+/** A field name usable as `item.<name>` in a template; others are left out of the scaffold. */
+const FIELD_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Text that goes into a .ui template as text: escaped like markup, and with
+ * braces removed, since `{…}` in a template is an expression. Names the app
+ * shows come through logic as data instead (see buildMainLogic); this is for
+ * the few labels a page states in place.
+ */
+function uiText(value: unknown): string {
+  return esc(String(value).replace(/[{}]/g, ''));
+}
+
+/** Each page's slug, made unique when two names collapse to one. */
+function pageSlugs(pages: BlueprintPage[]): string[] {
+  const seen = new Map<string, number>();
+  return pages.map((page) => {
+    const base = slugify(page.name);
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return n === 0 ? base : `${base}-${n + 1}`;
+  });
+}
+
+/** The component name a page file declares: an identifier, starting with a letter. */
+function pageComponentName(slug: string): string {
+  const base = titleCase(slug).replace(/[^A-Za-z0-9]/g, '');
+  return /^[A-Za-z]/.test(base) ? `${base}Page` : `Page${base}`;
+}
+
+/** The `<data>` block binding every collection, the same on the shell and every page. */
+function buildDataBlock(blueprint: Blueprint): string {
+  if (blueprint.collections.length === 0) return '';
+  const lines = blueprint.collections.map((c) => `  <collection name="${collectionKey(c.name)}" as="${collectionKey(c.name)}" />`);
+  return `<data>\n${lines.join('\n')}\n</data>\n\n`;
+}
+
+/**
+ * The app's shell: nav across the pages, and the page that is showing.
+ *
+ * What the user typed — the name, the description, the page labels — is not
+ * written into the template at all. It is data in main.logic, and the
+ * template reads it; a name that closes a tag or opens an expression is then
+ * only ever a string.
+ */
+function buildMainUi(brief: ProjectBrief, blueprint: Blueprint, slugs: string[]): string {
+  const imports = slugs.map((slug) => `<import ${pageComponentName(slug)} from="./pages/${slug}.ui" />`).join('\n');
+  const switches = slugs
+    .map((slug) => `      #if (page === ${JSON.stringify(slug)})\n        <${pageComponentName(slug)} />\n      #end`)
+    .join('\n');
+  return `${imports}
+
+${buildDataBlock(blueprint)}<logic src="../logic/main.logic" />
+
+<App theme="${themeFor(brief.style)}" title={appName}>
+  <Container maxWidth="960px">
+    <Stack direction="vertical" gap="lg" padding="xl">
+      <Stack direction="horizontal" gap="md" align="center" wrap>
+        <Heading level={1} class="brand">{appName}</Heading>
+        <Spacer />
+        #each (item in pages)
+          <Button variant={page === item.id ? "primary" : "ghost"} size="sm" @click={() => go(item.id)}>{item.label}</Button>
+        #end
+      </Stack>
+      <Text color="muted">{appDescription}</Text>
+${switches}
+    </Stack>
+  </Container>
+</App>
+
+<style>
+  .brand { color: ${accentFor(brief.style)}; }
+</style>
+`;
+}
+
+/** One page: a component the shell imports. The first page lists every collection. */
+function buildPageUi(blueprint: Blueprint, page: BlueprintPage, slug: string, index: number): string {
+  const name = pageComponentName(slug);
+  const label = uiText(page.name);
+  const parts: string[] = [];
+  parts.push(`<component name="${name}" />\n\n${buildDataBlock(blueprint)}`);
+  parts.push(`<Stack direction="vertical" gap="md">\n  <Heading level={2}>${label}</Heading>`);
+  if (index === 0) {
+    parts.push(`  <Text color="muted">The first page of the app. Describe to the AI what belongs here and it will build it out.</Text>`);
+    for (const collection of blueprint.collections) {
+      const key = collectionKey(collection.name);
+      const fields = collection.fields.filter((f) => f.name !== 'id' && FIELD_IDENT.test(f.name)).slice(0, 4);
+      const cells = fields.length > 0
+        ? fields.map((f) => `          <Text>{item.${f.name}}</Text>`).join('\n')
+        : `          <Text>{JSON.stringify(item)}</Text>`;
+      parts.push(`  <Card title="${uiText(collection.name)}">
+    #each (item in ${key})
+      <Stack direction="horizontal" gap="md" align="center" wrap>
+${cells}
+      </Stack>
+    #empty
+      <EmptyState title="Nothing here yet" description="Records in this collection will appear here." />
+    #end
+  </Card>`);
+    }
+  } else {
+    parts.push(`  <Text color="muted">A starting point. Describe to the AI what this page does and it will build it out.</Text>`);
+    if (page.components.length > 0) {
+      const items = page.components.map((c) => `      <ListItem>${uiText(c)}</ListItem>`).join('\n');
+      parts.push(`  <Card title="Planned for this page">\n    <List>\n${items}\n    </List>\n  </Card>`);
+    }
+  }
+  parts.push(`</Stack>\n`);
+  return parts.join('\n');
+}
+
+/**
+ * The app's state and the names it shows. Everything from the brief goes in
+ * through JSON.stringify: this is generated JavaScript, where an HTML escaper
+ * is no help, and a name carrying a quote once closed the literal it sat in.
+ */
+function buildMainLogic(brief: ProjectBrief, blueprint: Blueprint, slugs: string[]): string {
+  const pages = blueprint.pages.map((page, i) => ({ id: slugs[i], label: page.name }));
+  return [
+    '// The app shell: which page is showing, and the names the shell displays.',
+    `let appName = ${JSON.stringify(brief.appName)}`,
+    `let appDescription = ${JSON.stringify(brief.description)}`,
+    `let pages = ${JSON.stringify(pages)}`,
+    `let page = ${JSON.stringify(slugs[0] ?? 'home')}`,
+    '',
+    'function go(id) {',
+    '  page = id',
+    '}',
+    '',
+    'function _init() {',
+    '  console.log(appName + " initialized")',
+    '}',
+    '',
+  ].join('\n');
+}
+
+/** A seed record per collection, in the flat form the runtime reads. */
+function buildXdb(collection: BlueprintCollection): string {
+  const key = collectionKey(collection.name);
+  return JSON.stringify({
+    collection: key,
+    records: collection.fields.length > 0
+      ? [{
+          id: '1',
+          ...Object.fromEntries(collection.fields.filter((f) => f.name !== 'id').map((f) => [
+            f.name,
+            f.defaultValue ?? (f.type === 'number' ? 0 : f.type === 'boolean' ? false : f.type === 'date' ? new Date().toISOString().slice(0, 10) : ''),
+          ])),
+        }]
+      : [],
+  }, null, 2);
+}
+
+/**
+ * The starter project: a bundle the runtime opens and the directory takes,
+ * plus Studio's own notes under builder/.
+ *
+ * It used to be HTML pages behind a manifest `entry` field — a shape nothing
+ * else in SoftN read. The runtime and the directory read `main`, resolve
+ * files by the manifest's groups, and run .ui; so that is what is written.
+ */
 export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint): Array<{ path: string; content: string }> {
-  const firstPage = blueprint.pages[0];
+  const slugs = pageSlugs(blueprint.pages);
+  const pagePaths = slugs.map((slug) => `ui/pages/${slug}.ui`);
+  const xdbPaths = blueprint.collections.map((c) => `xdb/${collectionKey(c.name)}.xdb`);
   const requirements = [
     `# ${brief.appName}`,
     '',
@@ -411,15 +354,29 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
       content: JSON.stringify({
         name: brief.appName,
         version: '1.0.0',
-        entry: `pages/${slugify(firstPage.name)}.html`,
+        description: brief.description,
+        main: 'ui/main.ui',
         target: brief.target,
-        pages: blueprint.pages.map((page) => ({
+        files: {
+          ui: ['ui/main.ui', ...pagePaths],
+          logic: ['logic/main.logic'],
+          xdb: xdbPaths,
+          assets: [],
+        },
+        config: { theme: { mode: themeFor(brief.style) } },
+        pages: blueprint.pages.map((page, i) => ({
           id: page.id,
           name: page.name,
-          path: `pages/${slugify(page.name)}.html`,
+          path: pagePaths[i],
           route: page.route,
         })),
       }, null, 2),
+    },
+    {
+      // Nothing declared: the app gets no capability until this says
+      // otherwise. The file is here so there is somewhere to say it.
+      path: 'permission.json',
+      content: JSON.stringify({ permissions: {} }, null, 2),
     },
     {
       path: 'builder/blueprint.json',
@@ -440,9 +397,9 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
     {
       path: 'builder/component-map.json',
       content: JSON.stringify({
-        pages: blueprint.pages.map((page) => ({
+        pages: blueprint.pages.map((page, i) => ({
           id: page.id,
-          path: `pages/${slugify(page.name)}.html`,
+          path: pagePaths[i],
           components: page.components,
         })),
       }, null, 2),
@@ -462,39 +419,24 @@ export function scaffoldProjectFiles(brief: ProjectBrief, blueprint: Blueprint):
       content: JSON.stringify({ perRoleModels: 'configured in settings' }, null, 2),
     },
     {
-      // JSON.stringify, not a hand-quoted "..." — this interpolation lands
-      // inside a JavaScript string literal in generated source, where an HTML
-      // escaper is no help. An app name containing a quote closed the literal:
-      // `x"); evil(); //` produced a logic file that ran evil(), and a name with
-      // a newline in it produced one that would not parse at all.
-      path: 'logic/app.logic',
-      content: `function _init() {\n  console.log(${JSON.stringify(`${brief.appName} initialized`)});\n}\n`,
+      path: 'logic/main.logic',
+      content: buildMainLogic(brief, blueprint, slugs),
+    },
+    {
+      path: 'ui/main.ui',
+      content: buildMainUi(brief, blueprint, slugs),
     },
   ];
 
   for (const [index, page] of blueprint.pages.entries()) {
     files.push({
-      path: `pages/${slugify(page.name)}.html`,
-      content: buildPageHtml(brief, blueprint, page, index),
+      path: pagePaths[index],
+      content: buildPageUi(blueprint, page, slugs[index], index),
     });
   }
 
-  for (const collection of blueprint.collections) {
-    files.push({
-      path: `data/${slugify(collection.name)}.xdb`,
-      content: JSON.stringify({
-        collection: collection.name.toLowerCase(),
-        records: collection.fields.length > 0
-          ? [{
-              id: '1',
-              ...Object.fromEntries(collection.fields.filter((f) => f.name !== 'id').map((f) => [
-                f.name,
-                f.defaultValue ?? (f.type === 'number' ? 0 : f.type === 'boolean' ? false : f.type === 'date' ? new Date().toISOString().slice(0, 10) : ''),
-              ])),
-            }]
-          : [],
-      }, null, 2),
-    });
+  for (const [index, collection] of blueprint.collections.entries()) {
+    files.push({ path: xdbPaths[index], content: buildXdb(collection) });
   }
 
   return files;
@@ -517,10 +459,12 @@ export function getPreviewablePaths(files: Map<string, VFSFile>): string[] {
 
 export function getBundleEntryPath(files: Map<string, VFSFile>): string | null {
   const manifest = resolveManifest(files);
-  const manifestEntry = typeof manifest?.entry === 'string'
-    ? manifest.entry
-    : typeof manifest?.main === 'string'
-      ? manifest.main
+  // `main` is the runtime's field; `entry` is what Studio wrote before it
+  // emitted runnable bundles, and is still honoured for projects saved then.
+  const manifestEntry = typeof manifest?.main === 'string'
+    ? manifest.main
+    : typeof manifest?.entry === 'string'
+      ? manifest.entry
       : null;
   if (manifestEntry && files.has(manifestEntry)) return manifestEntry;
 
@@ -566,7 +510,7 @@ export function inferBlueprintFromFiles(projectName: string, files: Map<string, 
     });
 
   const dataFiles = Array.from(files.keys())
-    .filter((path) => /\.(xdb|json)$/i.test(path) && path !== 'manifest.json' && !path.startsWith('builder/'))
+    .filter((path) => /\.(xdb|json)$/i.test(path) && path !== 'manifest.json' && path !== 'permission.json' && !path.startsWith('builder/'))
     .map((path) => ({
       id: `${slugify(path)}-collection`,
       name: titleCase(path.split('/').pop()?.replace(/\.(xdb|json)$/i, '') ?? path),

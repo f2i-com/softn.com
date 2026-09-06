@@ -6,6 +6,7 @@ import { debug } from './debug';
 import { parseBundle, BUNDLE_FORMAT_VERSION, type BundleManifest } from './bundleExporter';
 import { parseSource, parseLogicFile } from './sourceParser';
 import { validateBundle as validateBundleIntegrity } from './bundleValidator';
+import { emptyDeclaration, readPermissionJson, type PermissionDeclaration } from './permissions';
 import type {
   CollectionDef,
   UIFileState,
@@ -24,6 +25,23 @@ export interface LoadedBundle {
   seedData: Map<string, Record<string, unknown>[]>;
   assets: Map<string, Uint8Array>;
   warnings: string[];
+  /** What the bundle's permission.json declares; nothing when it has none. */
+  permissions: PermissionDeclaration;
+  /** The manifest's icon as a data URL, when the bundle carries it. */
+  iconDataUrl: string | null;
+}
+
+/** The icon named by a manifest, as a data URL the project store keeps. */
+function readIcon(manifest: BundleManifest, files: Map<string, Uint8Array>): string | null {
+  if (!manifest.icon) return null;
+  const bytes = getFileContent(files, manifest.icon, 'assets');
+  if (!bytes) return null;
+  const ext = manifest.icon.split('.').pop()?.toLowerCase();
+  const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : null;
+  if (!mime) return null;
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return `data:${mime};base64,${btoa(bin)}`;
 }
 
 let fileIdCounter = 0;
@@ -303,6 +321,9 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     console.warn('[bundleLoader] Warnings:', warnings);
   }
 
+  const permissionEntry = files.get('permission.json');
+  const permissions = permissionEntry ? readPermissionJson(decoder.decode(permissionEntry)) : emptyDeclaration();
+
   return {
     manifest,
     uiFiles,
@@ -312,6 +333,8 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     seedData,
     assets,
     warnings,
+    permissions,
+    iconDataUrl: readIcon(manifest, files),
   };
 }
 

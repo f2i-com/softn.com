@@ -15,7 +15,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { CAPABILITIES, CAPABILITY_INFO, CAPABILITY_SCHEMA_VERSION, STORAGE_POLICIES, STORAGE_POLICY_INFO, inspectDeclaration } from '@softn/core';
+import { strToU8, zipSync } from 'fflate';
+import { CAPABILITIES, CAPABILITY_INFO, CAPABILITY_SCHEMA_VERSION, STORAGE_POLICIES, STORAGE_POLICY_INFO, inspectDeclaration, inspectBundle as coreInspect } from '@softn/core';
+import { inspectBundle as siteInspect } from '../../softn-site/src/lib/inspectBundle';
 import * as site from '../../softn-site/src/lib/capabilities';
 import { CAPABILITIES as loaderList } from '../src/lib/bundleProcessor';
 import { PERMISSION_INFO } from '../src/components/PermissionPrompt';
@@ -99,6 +101,45 @@ describe('reading a declaration', () => {
   it('is the same reading in the runtime and on the site', () => {
     for (const fixture of fixtures) {
       expect(site.inspectDeclaration(fixture), JSON.stringify(fixture)).toEqual(inspectDeclaration(fixture));
+    }
+  });
+});
+
+/**
+ * The bundle inspector has two copies for the same reason the schema does:
+ * the engine's (Builder, Studio and the runtime read it) and the site's
+ * (which does not depend on the engine). What one refuses the other must
+ * refuse, in the same words, or an author is told a bundle is fine in
+ * Builder and refused on the publish page.
+ */
+describe('the bundle inspector', () => {
+  const zip = (files: Record<string, string>) => {
+    const entries: Record<string, Uint8Array> = {};
+    for (const [k, v] of Object.entries(files)) entries[k] = strToU8(v, true);
+    return zipSync(entries);
+  };
+  const manifest = (over: Record<string, unknown>) =>
+    JSON.stringify({ name: 'Notes', version: '1.0.0', description: 'Keeps notes', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] }, ...over });
+  const fixtures: Record<string, Uint8Array> = {
+    good: zip({ 'manifest.json': manifest({}), 'ui/main.ui': '<App/>', 'permission.json': JSON.stringify({ permissions: { net: { enabled: true } } }) }),
+    'no manifest': zip({ 'ui/main.ui': '<App/>' }),
+    'bad manifest': zip({ 'manifest.json': '{', 'ui/main.ui': '<App/>' }),
+    'missing main': zip({ 'manifest.json': manifest({ main: 'ui/gone.ui' }) }),
+    'missing listed file': zip({ 'manifest.json': manifest({ files: { ui: ['ui/main.ui'], logic: ['logic/x.logic'] } }), 'ui/main.ui': '<App/>' }),
+    'unknown capability': zip({ 'manifest.json': manifest({}), 'ui/main.ui': '<App/>', 'permission.json': JSON.stringify({ permissions: { network: { enabled: true } } }) }),
+    'bad policy': zip({ 'manifest.json': manifest({}), 'ui/main.ui': '<App/>', 'permission.json': JSON.stringify({ permissions: { storage: { enabled: true, collections: { notes: 'nope' } } } }) }),
+    'no description or icon': zip({ 'manifest.json': manifest({ description: '' }), 'ui/main.ui': '<App/>' }),
+    'icon missing': zip({ 'manifest.json': manifest({ icon: 'assets/icon.png' }), 'ui/main.ui': '<App/>' }),
+    'icon present': zip({ 'manifest.json': manifest({ icon: 'assets/icon.svg' }), 'ui/main.ui': '<App/>', 'assets/icon.svg': '<svg/>' }),
+    'worker': zip({ 'manifest.json': manifest({ config: { execution: 'worker' } }), 'ui/main.ui': '<App/>' }),
+    'not a zip': strToU8('hello', true),
+  };
+
+  it('says the same in the engine and on the site, over the same bundles', () => {
+    for (const [label, bytes] of Object.entries(fixtures)) {
+      const a = JSON.parse(JSON.stringify(coreInspect(bytes)));
+      const b = JSON.parse(JSON.stringify(siteInspect(bytes)));
+      expect(a, label).toEqual(b);
     }
   });
 });

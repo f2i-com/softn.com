@@ -36,7 +36,9 @@ import type {
 } from './types/builder';
 import type { SerializedProject } from './stores/projectStore';
 import { openBundleFile, loadBundle, type LoadedBundle } from './utils/bundleLoader';
-import { exportBundle, exportMultiFileBundle, saveBundleToFile } from './utils/bundleExporter';
+import { saveBundleToFile } from './utils/bundleExporter';
+import { buildProjectBundle, bundleFileName } from './utils/buildProjectBundle';
+import { STUDIO_URL, RUNTIME_URL } from './utils/siteUrls';
 import { ToastContainer } from './components/feedback/ToastContainer';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
@@ -345,12 +347,6 @@ interface BuilderSession {
   };
 }
 
-/**
- * Where the two apps that do work on a phone live. Dev serves each on its own
- * port; a deployed softn.com puts them under one origin.
- */
-const STUDIO_URL = import.meta.env.VITE_STUDIO_URL || (import.meta.env.DEV ? 'http://localhost:1423' : '/studio/');
-const RUNTIME_URL = import.meta.env.VITE_WEB_URL || (import.meta.env.DEV ? 'http://localhost:1420' : '/web/');
 
 /** True while the window is too narrow for the builder's panel layout. */
 function useNarrowScreen(minWidth = 900): boolean {
@@ -527,6 +523,10 @@ function App() {
       setProjectVersion(bundle.manifest.version);
       setProjectDescription(bundle.manifest.description || '');
       setThemeMode(bundle.manifest.config?.theme?.mode || 'light');
+      // What the bundle declared and the icon it carried come back with it,
+      // so a save writes them out again rather than dropping them.
+      useProjectStore.getState().setPermissions(bundle.permissions);
+      useProjectStore.getState().setIcon(bundle.iconDataUrl);
 
       const loadedAssets: AssetFile[] = Array.from(bundle.assets.entries()).map(
         ([path, bytes]) => ({
@@ -694,80 +694,12 @@ function App() {
       const projectState = useProjectStore.getState();
       const canvasState = useCanvasStore.getState();
       const schemaState = useSchemaStore.getState();
-      const filesState = useFilesStore.getState();
-
-      // 1. Flush current canvas state to the active UI file
-      if (filesState.activeFileId) {
-        const activeNode = filesState.nodes.get(filesState.activeFileId);
-        if (activeNode?.type === 'file' && activeNode.fileType === 'ui') {
-          filesState.updateUIFile(filesState.activeFileId, canvasState.elements, canvasState.rootId);
-        }
-      }
-
-      // Re-read filesState after flush
+      // The bundle as the export dialog and the pre-flight check build it:
+      // canvas flushed, collections gathered, declaration and icon included.
+      const bundleData = await buildProjectBundle();
       const updatedFilesState = useFilesStore.getState();
 
-      // 2. Build collections from schema entities (same logic as ExportDialog)
-      // refEntity holds an entity ID, and IDs are generated fresh every time a
-      // bundle is opened — so a reference written as an id points at nothing the
-      // moment the project is reopened. Names survive the round trip; the loader
-      // maps them back. Without this a "supplier" field came back referencing an
-      // entity that no longer exists, and its picker rendered empty.
-      const entityNameById = new Map(schemaState.entities.map((e) => [e.id, e.name]));
-      const schemaCollections: import('./types/builder').CollectionDef[] = schemaState.entities.map((entity) => ({
-        name: entity.name,
-        alias: entity.alias,
-        fields: entity.fields.map((f) =>
-          f.refEntity ? { ...f, refEntity: entityNameById.get(f.refEntity) ?? f.refEntity } : f
-        ),
-        seedData: schemaState.seedData.get(entity.id) || [],
-      }));
-      const schemaNames = new Set(schemaCollections.map((c) => c.name));
-      const manualCollections = projectState.collections.filter((c) => !schemaNames.has(c.name));
-      const collections = [...schemaCollections, ...manualCollections];
-
-      // 3. Determine single-file vs multi-file export
-      // Count the files, do not ask whether any came from a bundle.
-      //
-      // `originalSource` is only ever set for files parsed out of an opened
-      // bundle — `createEmptyUIFile` never sets it and `updateUIFile` only
-      // refreshes one that already exists. So a project built from New Project
-      // answered false however many files it had, took the single-file path,
-      // and Save wrote a bundle containing just `ui/main.ui` — holding the
-      // *active* file's canvas — with every other file silently dropped.
-      const hasMultipleFiles =
-        updatedFilesState.uiFiles.size + updatedFilesState.logicFiles.size > 1;
-
-      let bundleData: Uint8Array;
-
-      if (hasMultipleFiles) {
-        bundleData = await exportMultiFileBundle({
-          name: projectState.name,
-          version: projectState.version,
-          description: projectState.description,
-          themeMode: projectState.themeMode,
-          uiFiles: updatedFilesState.uiFiles,
-          logicFiles: updatedFilesState.logicFiles,
-          collections,
-          assets: projectState.assets,
-        });
-      } else {
-        bundleData = await exportBundle({
-          name: projectState.name,
-          version: projectState.version,
-          description: projectState.description,
-          themeMode: projectState.themeMode,
-          elements: canvasState.elements,
-          rootId: canvasState.rootId,
-          logicSource: projectState.logicSource,
-          collections,
-          assets: projectState.assets,
-        });
-      }
-
-      // 4. Save to file
-      const safeName = projectState.name.replace(/\s+/g, '-').toLowerCase() || 'untitled';
-      const handle = await saveBundleToFile(bundleData, safeName, fileHandleRef.current);
+      const handle = await saveBundleToFile(bundleData, bundleFileName(projectState.name).replace(/\.softn$/, ''), fileHandleRef.current);
       fileHandleRef.current = handle;
 
       // 5. Also save session to localStorage for session restore

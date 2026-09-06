@@ -8,6 +8,7 @@ import { FrameBar } from './components/FrameBar';
 import { ProductBar } from '@softn/brand';
 import type { ConsentRequest } from './components/PermissionBar';
 import type { PermissionConfig } from '@softn/core';
+import { takeBundleHandoff } from '@softn/core';
 
 const appShellStyles = `
   @keyframes softn-shell-fade-in {
@@ -750,6 +751,21 @@ function App(): React.ReactElement {
    */
   const openFromUrl = useCallback(
     (value: string): Promise<string | null> => {
+      // A bundle handed over by Builder or Studio on this origin, staged in
+      // IndexedDB rather than fetched. Taking it removes it; a reload finds
+      // nothing and says so, rather than reopening a bundle the editor has
+      // since changed.
+      if (value === 'handoff') {
+        return takeBundleHandoff().then((handoff) => {
+          if (!handoff) {
+            setError(new Error('Nothing was handed to the runtime. Open the bundle from Builder or Studio again, or choose the file.'));
+            setActiveTabId(null);
+            return null;
+          }
+          return processBundleData(handoff.bytes, `${handoff.name || 'app'}.softn`);
+        });
+      }
+
       let url: URL;
       try {
         url = resolveBundleUrl(value, window.location.origin);

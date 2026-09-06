@@ -4,6 +4,7 @@
 
 import { create } from 'zustand';
 import type { CollectionDef, AssetFile } from '../types/builder';
+import { emptyDeclaration, type PermissionDeclaration } from '../utils/permissions';
 
 interface ProjectStore {
   // Project metadata
@@ -12,6 +13,12 @@ interface ProjectStore {
   description: string;
   icon: string | null;
   themeMode: 'light' | 'dark' | 'system';
+
+  /**
+   * What the app declares it needs: written to permission.json on export,
+   * read back from it on open. Nothing declared is nothing granted.
+   */
+  permissions: PermissionDeclaration;
 
   // Logic source (.logic — JavaScript)
   logicSource: string;
@@ -32,6 +39,7 @@ interface ProjectStore {
   setDescription: (description: string) => void;
   setIcon: (icon: string | null) => void;
   setThemeMode: (mode: 'light' | 'dark' | 'system') => void;
+  setPermissions: (permissions: PermissionDeclaration) => void;
 
   // Actions - Logic
   setLogicSource: (source: string) => void;
@@ -63,6 +71,7 @@ export interface SerializedProject {
   description: string;
   icon: string | null;
   themeMode: 'light' | 'dark' | 'system';
+  permissions?: PermissionDeclaration;
   logicSource: string;
   collections: CollectionDef[];
 }
@@ -73,6 +82,7 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
   description: '',
   icon: null,
   themeMode: 'light',
+  permissions: emptyDeclaration(),
   logicSource: `// SoftN logic — JavaScript, run in a sandboxed VM
 // Define your state, computed values, and functions
 
@@ -105,6 +115,10 @@ function decrement() {
 
   setIcon: (icon) => {
     set({ icon, isDirty: true });
+  },
+
+  setPermissions: (permissions) => {
+    set({ permissions, isDirty: true });
   },
 
   setThemeMode: (mode) => {
@@ -194,6 +208,7 @@ function decrement() {
       description: '',
       icon: null,
       themeMode: 'light',
+      permissions: emptyDeclaration(),
       logicSource: `// SoftN logic — JavaScript, run in a sandboxed VM
 // Define your state, computed values, and functions
 
@@ -222,6 +237,7 @@ function decrement() {
       description: state.description,
       icon: state.icon,
       themeMode: state.themeMode,
+      permissions: state.permissions,
       logicSource: state.logicSource,
       collections: state.collections,
     };
@@ -234,6 +250,7 @@ function decrement() {
       description: data.description || '',
       icon: data.icon || null,
       themeMode: data.themeMode || 'light',
+      permissions: data.permissions ? { ...emptyDeclaration(), ...data.permissions } : emptyDeclaration(),
       logicSource: data.logicSource || '',
       collections: data.collections || [],
       isDirty: false,

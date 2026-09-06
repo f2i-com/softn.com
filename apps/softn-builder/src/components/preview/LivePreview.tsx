@@ -10,7 +10,9 @@ import { useFilesStore } from '../../stores/filesStore';
 import { generateSource } from '../../utils/sourceGenerator';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { debug } from '../../utils/debug';
+import { buildPermissionJson } from '../../utils/permissions';
 import type { CollectionDef, LogicFileState, UIFileState } from '../../types/builder';
+import type { PermissionConfig } from '@softn/core';
 
 // Error boundary to catch rendering errors in the preview
 interface ErrorBoundaryProps {
@@ -636,7 +638,14 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
 
 export function LivePreview() {
   const { elements, rootId } = useCanvasStore();
-  const { logicSource, collections: projectCollections, themeMode } = useProjectStore();
+  const { logicSource, collections: projectCollections, themeMode, permissions } = useProjectStore();
+  // The preview runs under the project's own declaration, as the runtime
+  // will: a call the app has not declared fails here too, not first in the
+  // runtime after export.
+  const previewPermissionConfig = useMemo<PermissionConfig | undefined>(() => {
+    const json = buildPermissionJson(permissions);
+    return json ? (JSON.parse(json) as PermissionConfig) : undefined;
+  }, [permissions]);
   const { entities, seedData } = useSchemaStore();
   const { activeFileId, uiFiles, logicFiles, nodes } = useFilesStore();
   const [device, setDevice] = useState<DevicePreset>('desktop');
@@ -649,6 +658,7 @@ export function LivePreview() {
     error?: React.ReactNode | ((error: Error) => React.ReactNode);
     initialData?: Record<string, unknown[]>;
     initialState?: Record<string, unknown>;
+    permissionConfig?: PermissionConfig;
     onLoad?: (doc: unknown) => void;
     onError?: (err: Error) => void;
   }> | null>(null);
@@ -1090,6 +1100,7 @@ export function LivePreview() {
             loading={loadingFallback}
             error={errorFallback}
             initialData={mockInitialData}
+            permissionConfig={previewPermissionConfig}
             onLoad={(doc: unknown) => {
               debug('[LivePreview] SoftNRenderer onLoad - document parsed:', doc);
             }}
