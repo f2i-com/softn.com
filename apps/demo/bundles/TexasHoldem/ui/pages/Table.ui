@@ -48,7 +48,7 @@
         <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{syncConnected ? syncPeers + " peers" : (syncConnecting ? "connecting..." : "offline")}</Text>
       </Box>
       <Text className="poker-topbar-hide-mobile" if={handNumber > 0} style={{ color: "rgba(255,255,255,0.3)", fontSize: "clamp(10px, 1.5vw, 11px)" }}>{"Hand #" + handNumber}</Text>
-      <Button className="poker-topbar-hide-mobile" variant="ghost" if={isHost && gamePhase !== "waiting"} @click={forceReset} title="Reset the table" style={{ background: "transparent", color: "rgba(239,68,68,0.75)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: "6px", padding: "4px 10px", fontSize: "10px", fontWeight: "600", cursor: "pointer" }}>Reset</Button>
+      <Button className="poker-topbar-hide-mobile" variant="ghost" if={isHost && gamePhase !== "waiting" && !authorityMode} @click={forceReset} title="Reset the table" style={{ background: "transparent", color: "rgba(239,68,68,0.75)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: "6px", padding: "4px 10px", fontSize: "10px", fontWeight: "600", cursor: "pointer" }}>Reset</Button>
 
       // Developer tools: hidden unless the "dev" toggle at the far right is on
       <Button className="poker-topbar-hide-mobile" variant="ghost" if={devTools && soundEnabled} @click={testSoundNow} style={{ background: "rgba(250,204,21,0.18)", color: "#fde68a", border: "1px solid rgba(250,204,21,0.35)", borderRadius: "6px", padding: "4px 8px", fontSize: "10px", fontWeight: "700", cursor: "pointer" }}>Test Sound</Button>
@@ -365,7 +365,7 @@
     }}>
       {gamePhase === "showdown" ? "Next Hand" : "Deal Cards"}
     </Button>
-    <Button if={(gamePhase === "waiting" || gamePhase === "showdown") && countSeatedPlayers() < 6} @click={addBot} style={{
+    <Button if={(gamePhase === "waiting" || gamePhase === "showdown") && countSeatedPlayers() < 6 && !authorityMode} @click={addBot} style={{
       background: "rgba(255,255,255,0.1)", color: "rgba(255,255,255,0.8)", border: "1px solid rgba(255,255,255,0.2)",
       borderRadius: "10px", padding: "10px 20px", fontSize: "13px", fontWeight: "600",
       cursor: "pointer"

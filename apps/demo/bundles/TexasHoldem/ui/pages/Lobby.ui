@@ -166,6 +166,78 @@
               </Button>
             </Stack>
           </Stack>
+
+          // ── Online table: the server holds the cards ──
+          <Box style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
+            <Text style={{ color: "rgba(255,255,255,0.3)", fontSize: "12px", textTransform: "uppercase", letterSpacing: "2px" }}>or online</Text>
+            <Box style={{ flex: 1, height: "1px", background: "rgba(255,255,255,0.1)" }} />
+          </Box>
+
+          <Stack direction=vertical gap=sm>
+            <Text style={{ color: "rgba(255,255,255,0.6)", fontSize: "12px", fontWeight: "600", textTransform: "uppercase", letterSpacing: "1px" }}>Table server</Text>
+            <Input
+              :bind={authorityUrl}
+              placeholder="http://localhost:9877"
+              style={{
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(200,170,110,0.2)",
+                borderRadius: "10px",
+                padding: "10px 14px",
+                color: "#fff",
+                fontSize: "13px",
+                fontFamily: "monospace"
+              }}
+            />
+            <Text style={{ color: "rgba(255,255,255,0.4)", fontSize: "12px", lineHeight: 1.5 }}>
+              The deck and every hand stay on the server; you are sent only your own cards. Run one with
+              softn-server on this bundle (see server/authority.logic).
+            </Text>
+            <Stack direction=horizontal gap=sm>
+              <Button @click={createOnlineTable} style={{
+                flex: 1,
+                background: "rgba(200,170,110,0.15)",
+                color: "#c8aa6e",
+                border: "1px solid rgba(200,170,110,0.3)",
+                borderRadius: "10px",
+                padding: "12px 16px",
+                fontSize: "14px",
+                fontWeight: "600",
+                cursor: "pointer"
+              }}>
+                Create online table
+              </Button>
+            </Stack>
+            <Stack direction=horizontal gap=sm>
+              <Input
+                :bind={authorityJoinCode}
+                placeholder="table code, e.g. t-k3m9pq"
+                style={{
+                  flex: 1,
+                  background: "rgba(255,255,255,0.06)",
+                  border: "1px solid rgba(200,170,110,0.2)",
+                  borderRadius: "10px",
+                  padding: "12px 16px",
+                  color: "#fff",
+                  fontSize: "15px",
+                  fontFamily: "monospace"
+                }}
+              />
+              <Button @click={joinOnlineTable} style={{
+                background: "rgba(200,170,110,0.15)",
+                color: "#c8aa6e",
+                border: "1px solid rgba(200,170,110,0.3)",
+                borderRadius: "10px",
+                padding: "12px 20px",
+                fontSize: "14px",
+                fontWeight: "600",
+                cursor: "pointer",
+                flexShrink: 0
+              }}>
+                Join
+              </Button>
+            </Stack>
+          </Stack>
         </Stack>
       </Box>
     </Stack>

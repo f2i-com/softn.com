@@ -1,0 +1,860 @@
+  // --- Texas Hold'em rules, pure ---
+  //
+  // The whole game as data and functions over it. A state is plain JSON:
+  // the table, six seats, the deck. Every function here takes a state and
+  // either returns a new one or says why it cannot; none of them reads a
+  // database, a clock or the screen. That is what lets the same rules run
+  // on an authority nobody at the table controls — the deck and every hole
+  // card live in the state, and what each player is shown is a projection
+  // of it computed here, not a hidden field on a client.
+  //
+  // The rules mirror logic/game.logic and logic/actions.logic (the peer-mode
+  // client): blinds by last big blind, min-raise by last full raise, short
+  // all-ins that do not reopen action, side pots by contribution level, odd
+  // chips left of the dealer. Card values and hand evaluation come from
+  // logic/cards.logic, which is shared.
+  //
+  // Randomness is an argument: `rng()` returns a number in [0, 1). The
+  // authority passes the host's; a test passes a seeded one.
+
+  function Rules_clone(value) {
+    return JSON.parse(JSON.stringify(value))
+  }
+
+  function Rules_newState(smallBlind, bigBlind) {
+    return {
+      handNumber: 0,
+      phase: "waiting",
+      dealerSeat: -1,
+      lastBigBlindSeat: -1,
+      currentTurnSeat: -1,
+      currentBet: 0,
+      lastFullRaise: bigBlind,
+      pot: 0,
+      deck: [],
+      deckPosition: 0,
+      communityCards: [],
+      smallBlind: smallBlind,
+      bigBlind: bigBlind,
+      seats: [null, null, null, null, null, null],
+      result: null,
+      turnDeadlineMs: 0,
+      turnMs: 45000
+    }
+  }
+
+  function Rules_isLive(phase) {
+    return phase === "preflop" || phase === "flop" || phase === "turn" || phase === "river"
+  }
+
+  function Rules_seat(state, seat, name, chips) {
+    if (typeof seat !== "number" || seat < 0 || seat > 5 || Math.floor(seat) !== seat) return { ok: false, code: "BAD_SEAT" }
+    if (state.seats[seat]) return { ok: false, code: "SEAT_TAKEN" }
+    let next = Rules_clone(state)
+    next.seats[seat] = {
+      seat: seat,
+      name: name,
+      chips: chips,
+      bet: 0,
+      handContribution: 0,
+      holeCards: [],
+      status: "waiting",
+      hasActed: false,
+      showCards: false,
+      leaving: false
+    }
+    return { ok: true, state: next }
+  }
+
+  /** The first empty seat, or -1. */
+  function Rules_freeSeat(state) {
+    let s = 0
+    while (s < 6) {
+      if (!state.seats[s]) return s
+      s = s + 1
+    }
+    return -1
+  }
+
+  /**
+   * A player leaves. Between hands the seat empties at once. During a hand
+   * the seat folds — what it put in the pot stays there — and empties when
+   * the next hand is dealt, so the hand in progress resolves correctly.
+   */
+  function Rules_unseat(state, seat, nowMs) {
+    let p = state.seats[seat]
+    if (!p) return { ok: false, code: "NO_SUCH_SEAT" }
+    let next = Rules_clone(state)
+    if (Rules_isLive(next.phase) && (p.status === "active" || p.status === "allin")) {
+      next.seats[seat].status = "folded"
+      next.seats[seat].hasActed = true
+      next.seats[seat].leaving = true
+      if (next.currentTurnSeat === seat) {
+        next = Rules_advanceTurn(next, nowMs)
+      } else {
+        next = Rules_settleIfNobodyLeft(next, nowMs)
+      }
+      return { ok: true, state: next }
+    }
+    next.seats[seat] = null
+    return { ok: true, state: next }
+  }
+
+  function Rules_rebuy(state, seat, chips) {
+    let p = state.seats[seat]
+    if (!p) return { ok: false, code: "NO_SUCH_SEAT" }
+    if (p.chips > 0) return { ok: false, code: "HAS_CHIPS" }
+    if (Rules_isLive(state.phase)) return { ok: false, code: "HAND_IN_PROGRESS" }
+    let next = Rules_clone(state)
+    next.seats[seat].chips = chips
+    next.seats[seat].status = "waiting"
+    return { ok: true, state: next }
+  }
+
+  // --- Seat order ---
+
+  function Rules_nextActive(state, afterSeat) {
+    let check = 1
+    while (check <= 6) {
+      let s = (afterSeat + check + 6) % 6
+      let p = state.seats[s]
+      if (p && p.status === "active") return s
+      check = check + 1
+    }
+    return -1
+  }
+
+  function Rules_previousActive(state, beforeSeat) {
+    let check = 1
+    while (check <= 6) {
+      let s = (beforeSeat - check + 60) % 6
+      let p = state.seats[s]
+      if (p && p.status === "active") return s
+      check = check + 1
+    }
+    return -1
+  }
+
+  /** The next seat that still has to act this street. */
+  function Rules_nextToAct(state, afterSeat) {
+    let check = 1
+    while (check <= 6) {
+      let s = (afterSeat + check + 6) % 6
+      let p = state.seats[s]
+      if (p && p.status === "active" && !p.hasActed) return s
+      check = check + 1
+    }
+    return -1
+  }
+
+  function Rules_countWithChips(state) {
+    let n = 0
+    let s = 0
+    while (s < 6) {
+      if (state.seats[s] && state.seats[s].chips > 0) n = n + 1
+      s = s + 1
+    }
+    return n
+  }
+
+  function Rules_countStatus(state, status) {
+    let n = 0
+    let s = 0
+    while (s < 6) {
+      if (state.seats[s] && state.seats[s].status === status) n = n + 1
+      s = s + 1
+    }
+    return n
+  }
+
+  // --- Dealing ---
+
+  function Rules_shuffle(rng) {
+    let deck = []
+    let i = 0
+    while (i < 52) {
+      deck.push(i)
+      i = i + 1
+    }
+    let j = 51
+    while (j > 0) {
+      let k = Math.floor(rng() * (j + 1))
+      if (k < 0) k = 0
+      if (k > j) k = j
+      let tmp = deck[j]
+      deck[j] = deck[k]
+      deck[k] = tmp
+      j = j - 1
+    }
+    return deck
+  }
+
+  function Rules_startHand(state, rng, nowMs) {
+    if (Rules_isLive(state.phase)) return { ok: false, code: "HAND_IN_PROGRESS" }
+    let next = Rules_clone(state)
+    // Seats that left during the last hand empty now.
+    let ls = 0
+    while (ls < 6) {
+      if (next.seats[ls] && next.seats[ls].leaving) next.seats[ls] = null
+      ls = ls + 1
+    }
+    if (Rules_countWithChips(next) < 2) return { ok: false, code: "NOT_ENOUGH_PLAYERS" }
+
+    let s = 0
+    while (s < 6) {
+      let p = next.seats[s]
+      if (p) {
+        p.holeCards = []
+        p.bet = 0
+        p.handContribution = 0
+        p.hasActed = false
+        p.showCards = false
+        p.status = p.chips > 0 ? "active" : "sitting-out"
+      }
+      s = s + 1
+    }
+
+    next.deck = Rules_shuffle(rng)
+    next.deckPosition = 0
+    // Round-robin, by seat: one card each, then the second.
+    let pass = 0
+    while (pass < 2) {
+      let ds = 0
+      while (ds < 6) {
+        let dp = next.seats[ds]
+        if (dp && dp.status === "active") {
+          dp.holeCards.push(next.deck[next.deckPosition])
+          next.deckPosition = next.deckPosition + 1
+        }
+        ds = ds + 1
+      }
+      pass = pass + 1
+    }
+
+    next.dealerSeat = Rules_nextActive(next, next.dealerSeat)
+    next.handNumber = next.handNumber + 1
+    next.phase = "preflop"
+    next.communityCards = []
+    next.currentBet = 0
+    next.lastFullRaise = next.bigBlind
+    next.pot = 0
+    next.result = null
+    Rules_postBlinds(next)
+    next.turnDeadlineMs = nowMs + next.turnMs
+    // Everyone all-in from the blinds alone: nothing to decide, run it out.
+    next = Rules_continue(next, nowMs)
+    return { ok: true, state: next }
+  }
+
+  function Rules_postBlinds(state) {
+    let activeCount = Rules_countStatus(state, "active")
+    let sbSeat = -1
+    let bbSeat = -1
+    if (activeCount === 2) {
+      // Heads-up: the dealer posts the small blind.
+      let dealer = state.seats[state.dealerSeat]
+      sbSeat = dealer && dealer.status === "active" ? state.dealerSeat : Rules_nextActive(state, state.dealerSeat)
+      bbSeat = Rules_nextActive(state, sbSeat)
+    } else if (state.lastBigBlindSeat >= 0) {
+      bbSeat = Rules_nextActive(state, state.lastBigBlindSeat)
+      if (bbSeat < 0) {
+        sbSeat = Rules_nextActive(state, state.dealerSeat)
+        bbSeat = Rules_nextActive(state, sbSeat)
+      } else {
+        sbSeat = Rules_previousActive(state, bbSeat)
+        if (sbSeat < 0 || sbSeat === bbSeat) sbSeat = Rules_nextActive(state, state.dealerSeat)
+      }
+    } else {
+      sbSeat = Rules_nextActive(state, state.dealerSeat)
+      bbSeat = Rules_nextActive(state, sbSeat)
+    }
+
+    let sbPosted = Rules_postBlind(state, sbSeat, state.smallBlind)
+    let bbPosted = Rules_postBlind(state, bbSeat, state.bigBlind)
+    let opening = bbPosted > sbPosted ? bbPosted : sbPosted
+    state.currentBet = opening
+    state.lastFullRaise = opening > state.bigBlind ? opening : state.bigBlind
+    state.lastBigBlindSeat = bbSeat
+    state.currentTurnSeat = Rules_nextToAct(state, bbSeat)
+  }
+
+  function Rules_postBlind(state, seat, amount) {
+    let p = seat >= 0 ? state.seats[seat] : null
+    if (!p || p.status !== "active") return 0
+    let posted = amount < p.chips ? amount : p.chips
+    p.bet = p.bet + posted
+    p.chips = p.chips - posted
+    p.handContribution = p.handContribution + posted
+    if (p.chips === 0) p.status = "allin"
+    state.pot = state.pot + posted
+    return posted
+  }
+
+  // --- Actions ---
+
+  /**
+   * One player's action on their turn. `action` is `{type, amount}` with
+   * type fold, check, call, raise (amount = the raise increment over the
+   * current bet, held to the minimum) or allin. The result is a new state
+   * with the turn advanced, the street dealt or the hand settled as the
+   * rules require, or `{ok: false, code}` with nothing changed.
+   */
+  function Rules_apply(state, seat, action, nowMs) {
+    if (!Rules_isLive(state.phase)) return { ok: false, code: "NOT_LIVE" }
+    if (state.currentTurnSeat !== seat) return { ok: false, code: "NOT_YOUR_TURN" }
+    let me = state.seats[seat]
+    if (!me || me.status !== "active") return { ok: false, code: "CANNOT_ACT" }
+    let type = action && typeof action.type === "string" ? action.type : ""
+    let next = Rules_clone(state)
+    let p = next.seats[seat]
+
+    if (type === "fold") {
+      p.status = "folded"
+      p.hasActed = true
+    } else if (type === "check") {
+      if (next.currentBet > p.bet) return { ok: false, code: "MUST_CALL" }
+      p.hasActed = true
+    } else if (type === "call") {
+      let callAmount = next.currentBet - p.bet
+      if (callAmount <= 0) {
+        p.hasActed = true
+      } else if (callAmount >= p.chips) {
+        Rules_putIn(next, p, p.chips)
+        p.status = "allin"
+        p.hasActed = true
+      } else {
+        Rules_putIn(next, p, callAmount)
+        p.hasActed = true
+      }
+    } else if (type === "raise" || type === "allin") {
+      if (p.chips <= 0) return { ok: false, code: "CANNOT_ACT" }
+      let increment = type === "allin" ? p.chips : action.amount
+      if (typeof increment !== "number" || !(increment > 0) || Math.floor(increment) !== increment) increment = next.bigBlind
+      let minIncrement = next.bigBlind
+      if (next.currentBet > 0 && next.lastFullRaise > minIncrement) minIncrement = next.lastFullRaise
+      if (increment < minIncrement) increment = minIncrement
+      let newBet = next.currentBet + increment
+      let needed = newBet - p.bet
+      if (needed <= 0) {
+        p.hasActed = true
+      } else if (needed >= p.chips) {
+        // All-in. A short all-in does not reopen the action for those who
+        // already acted; a full one does, and sets the new minimum.
+        let allInAmount = p.chips
+        let newCurrentBet = p.bet + allInAmount
+        let raiseDelta = newCurrentBet - next.currentBet
+        Rules_putIn(next, p, allInAmount)
+        p.status = "allin"
+        p.hasActed = true
+        if (newCurrentBet > next.currentBet) {
+          if (raiseDelta >= minIncrement) {
+            Rules_reopen(next, seat)
+            next.lastFullRaise = raiseDelta
+          }
+          next.currentBet = newCurrentBet
+        }
+      } else {
+        Rules_putIn(next, p, needed)
+        p.hasActed = true
+        Rules_reopen(next, seat)
+        next.currentBet = newBet
+        next.lastFullRaise = increment
+      }
+    } else {
+      return { ok: false, code: "UNKNOWN_ACTION" }
+    }
+
+    next = Rules_advanceTurn(next, nowMs)
+    return { ok: true, state: next }
+  }
+
+  function Rules_putIn(state, p, amount) {
+    p.bet = p.bet + amount
+    p.chips = p.chips - amount
+    p.handContribution = p.handContribution + amount
+    state.pot = state.pot + amount
+  }
+
+  /** A full raise: everyone else still active has to act again. */
+  function Rules_reopen(state, exceptSeat) {
+    let s = 0
+    while (s < 6) {
+      let p = state.seats[s]
+      if (p && s !== exceptSeat && p.status === "active") p.hasActed = false
+      s = s + 1
+    }
+  }
+
+  /**
+   * The turn has to move after a player's action, which took effect this
+   * street already: forfeited by everyone else folding, then the seat to
+   * act next; else the next street; else the showdown.
+   */
+  function Rules_advanceTurn(state, nowMs) {
+    let alive = Rules_countStatus(state, "active") + Rules_countStatus(state, "allin")
+    if (alive <= 1) return Rules_settleIfNobodyLeft(state, nowMs)
+    if (Rules_bettingComplete(state)) return Rules_advancePhase(state, nowMs)
+    let nextSeat = Rules_nextToAct(state, state.currentTurnSeat)
+    if (nextSeat < 0) return Rules_advancePhase(state, nowMs)
+    state.currentTurnSeat = nextSeat
+    state.turnDeadlineMs = nowMs + state.turnMs
+    return state
+  }
+
+  function Rules_bettingComplete(state) {
+    let s = 0
+    while (s < 6) {
+      let p = state.seats[s]
+      if (p && p.status === "active") {
+        if (!p.hasActed) return false
+        if (p.bet < state.currentBet && p.chips > 0) return false
+      }
+      s = s + 1
+    }
+    return true
+  }
+
+  /** Everyone else folded: the last one standing takes the pot without a showdown. */
+  function Rules_settleIfNobodyLeft(state, nowMs) {
+    let alive = []
+    let s = 0
+    while (s < 6) {
+      let p = state.seats[s]
+      if (p && (p.status === "active" || p.status === "allin")) alive.push(p)
+      s = s + 1
+    }
+    if (alive.length > 1) return state
+    let total = Rules_totalContribution(state)
+    if (alive.length === 1) {
+      let winner = alive[0]
+      winner.chips = winner.chips + total
+      winner.showCards = true
+      state.result = {
+        winnerNames: winner.name,
+        handName: "Last Standing",
+        mainPot: total,
+        details: "",
+        summary: winner.name + " wins $" + total + " · everyone else folded"
+      }
+    } else {
+      state.result = { winnerNames: "", handName: "", mainPot: 0, details: "", summary: "" }
+    }
+    state.phase = "showdown"
+    state.currentTurnSeat = -1
+    state.currentBet = 0
+    state.turnDeadlineMs = 0
+    return state
+  }
+
+  function Rules_totalContribution(state) {
+    let total = 0
+    let s = 0
+    while (s < 6) {
+      if (state.seats[s]) total = total + state.seats[s].handContribution
+      s = s + 1
+    }
+    return total
+  }
+
+  /** Streets where nobody can act any more are dealt through to the showdown. */
+  function Rules_continue(state, nowMs) {
+    let guard = 0
+    while (guard < 5 && Rules_isLive(state.phase)) {
+      let alive = Rules_countStatus(state, "active") + Rules_countStatus(state, "allin")
+      if (alive <= 1) return Rules_settleIfNobodyLeft(state, nowMs)
+      let canAct = 0
+      let s = 0
+      while (s < 6) {
+        let p = state.seats[s]
+        if (p && p.status === "active" && !p.hasActed) canAct = canAct + 1
+        s = s + 1
+      }
+      let activeCount = Rules_countStatus(state, "active")
+      if (activeCount <= 1 && alive >= 2 && (canAct === 0 || Rules_bettingComplete(state))) {
+        state = Rules_advancePhase(state, nowMs)
+      } else if (canAct === 0) {
+        state = Rules_advancePhase(state, nowMs)
+      } else {
+        return state
+      }
+      guard = guard + 1
+    }
+    return state
+  }
+
+  function Rules_advancePhase(state, nowMs) {
+    let s = 0
+    while (s < 6) {
+      let p = state.seats[s]
+      if (p && (p.status === "active" || p.status === "allin")) {
+        p.bet = 0
+        p.hasActed = false
+      } else if (p && p.status === "folded") {
+        p.bet = 0
+      }
+      s = s + 1
+    }
+    let dk = state.deck
+    let dp = state.deckPosition
+    if (state.phase === "preflop") {
+      dp = dp + 1
+      state.communityCards = [dk[dp], dk[dp + 1], dk[dp + 2]]
+      dp = dp + 3
+      state.phase = "flop"
+    } else if (state.phase === "flop") {
+      dp = dp + 1
+      state.communityCards = [state.communityCards[0], state.communityCards[1], state.communityCards[2], dk[dp]]
+      dp = dp + 1
+      state.phase = "turn"
+    } else if (state.phase === "turn") {
+      dp = dp + 1
+      state.communityCards = [state.communityCards[0], state.communityCards[1], state.communityCards[2], state.communityCards[3], dk[dp]]
+      dp = dp + 1
+      state.phase = "river"
+    } else if (state.phase === "river") {
+      return Rules_showdown(state)
+    } else {
+      return state
+    }
+    state.deckPosition = dp
+    state.currentBet = 0
+    state.lastFullRaise = state.bigBlind
+    state.currentTurnSeat = Rules_nextToAct(state, state.dealerSeat)
+    state.turnDeadlineMs = nowMs + state.turnMs
+    // A street nobody can act on is dealt straight through.
+    return Rules_continue(state, nowMs)
+  }
+
+  // --- Showdown ---
+
+  function Rules_strength(holeCards, board) {
+    if (!holeCards || holeCards.length !== 2 || !board || board.length < 5) return null
+    return evaluateBestHand([holeCards[0], holeCards[1], board[0], board[1], board[2], board[3], board[4]])
+  }
+
+  /** Positive when first is stronger. Same ordering as engine.logic's HandStrength_compare. */
+  function Rules_compareStrength(first, second) {
+    if (!first && !second) return 0
+    if (!first) return -1
+    if (!second) return 1
+    if (first.rank > second.rank) return 1
+    if (first.rank < second.rank) return -1
+    return compareKickers(first.kickers || [], second.kickers || [])
+  }
+
+  function Rules_distanceLeftOfDealer(seat, dealerSeat) {
+    let start = dealerSeat < 0 ? 0 : dealerSeat
+    let dist = seat - start
+    if (dist <= 0) dist = dist + 6
+    return dist
+  }
+
+  /** Split a pot among winners; odd chips go to the seats nearest the dealer's left. */
+  function Rules_awardSplit(awards, winners, potAmount, dealerSeat) {
+    if (winners.length === 0 || potAmount <= 0) return
+    let ordered = []
+    let i = 0
+    while (i < winners.length) {
+      ordered.push(winners[i])
+      i = i + 1
+    }
+    let oi = 0
+    while (oi < ordered.length) {
+      let oj = oi + 1
+      while (oj < ordered.length) {
+        if (Rules_distanceLeftOfDealer(ordered[oj].seat, dealerSeat) < Rules_distanceLeftOfDealer(ordered[oi].seat, dealerSeat)) {
+          let tmp = ordered[oi]
+          ordered[oi] = ordered[oj]
+          ordered[oj] = tmp
+        }
+        oj = oj + 1
+      }
+      oi = oi + 1
+    }
+    let share = Math.floor(potAmount / ordered.length)
+    let remainder = potAmount - share * ordered.length
+    let k = 0
+    while (k < ordered.length) {
+      let award = share + (k < remainder ? 1 : 0)
+      awards[ordered[k].seat] = (awards[ordered[k].seat] || 0) + award
+      k = k + 1
+    }
+  }
+
+  function Rules_bestOf(contenders) {
+    if (contenders.length === 0) return []
+    let winners = [contenders[0]]
+    let i = 1
+    while (i < contenders.length) {
+      let cmp = Rules_compareStrength(contenders[i].strength, winners[0].strength)
+      if (cmp > 0) winners = [contenders[i]]
+      else if (cmp === 0) winners.push(contenders[i])
+      i = i + 1
+    }
+    return winners
+  }
+
+  function Rules_showdown(state) {
+    let board = state.communityCards
+    let contenders = []
+    let contributors = []
+    let total = 0
+    let s = 0
+    while (s < 6) {
+      let p = state.seats[s]
+      if (p) {
+        p.showCards = false
+        if (p.handContribution > 0) {
+          contributors.push(p)
+          total = total + p.handContribution
+        }
+        if ((p.status === "active" || p.status === "allin") && p.holeCards.length === 2) {
+          let strength = Rules_strength(p.holeCards, board)
+          if (strength) {
+            contenders.push({ seat: p.seat, name: p.name, contribution: p.handContribution, strength: strength })
+            p.showCards = true
+          }
+        }
+      }
+      s = s + 1
+    }
+
+    let awards = {}
+    if (contenders.length === 0) {
+      // Nothing to evaluate. Chips never vanish: the lowest live seat, else
+      // the lowest contributor, takes it.
+      let fallback = null
+      let fi = 0
+      while (fi < contributors.length) {
+        let c = contributors[fi]
+        let live = c.status === "active" || c.status === "allin"
+        if (!fallback || (live && !(fallback.status === "active" || fallback.status === "allin")) || (live === (fallback.status === "active" || fallback.status === "allin") && c.seat < fallback.seat)) {
+          fallback = c
+        }
+        fi = fi + 1
+      }
+      if (fallback) {
+        fallback.chips = fallback.chips + total
+        fallback.showCards = true
+        state.result = { winnerNames: fallback.name, handName: "Awarded", mainPot: total, details: "", summary: fallback.name + " wins $" + total + " (awarded)" }
+      } else {
+        state.result = { winnerNames: "", handName: "", mainPot: 0, details: "", summary: "" }
+      }
+      state.phase = "showdown"
+      state.currentTurnSeat = -1
+      state.currentBet = 0
+      state.turnDeadlineMs = 0
+      return state
+    }
+
+    // Contribution levels, ascending: each step is one pot, shared by
+    // everyone who put in at least that much and won by the best of the
+    // contenders among them.
+    let levels = []
+    let li = 0
+    while (li < contributors.length) {
+      let lv = contributors[li].handContribution
+      let seen = false
+      let lj = 0
+      while (lj < levels.length) {
+        if (levels[lj] === lv) seen = true
+        lj = lj + 1
+      }
+      if (!seen) levels.push(lv)
+      li = li + 1
+    }
+    let si = 0
+    while (si < levels.length) {
+      let sj = si + 1
+      while (sj < levels.length) {
+        if (levels[sj] < levels[si]) {
+          let tmp = levels[si]
+          levels[si] = levels[sj]
+          levels[sj] = tmp
+        }
+        sj = sj + 1
+      }
+      si = si + 1
+    }
+
+    let prevLevel = 0
+    let mainWinners = []
+    let mainPot = 0
+    let mainRank = 0
+    let sidePots = []
+    let lvi = 0
+    while (lvi < levels.length) {
+      let level = levels[lvi]
+      let step = level - prevLevel
+      if (step > 0) {
+        let inPot = 0
+        let ci = 0
+        while (ci < contributors.length) {
+          if (contributors[ci].handContribution >= level) inPot = inPot + 1
+          ci = ci + 1
+        }
+        let potAmount = step * inPot
+        if (potAmount > 0) {
+          let eligible = []
+          let ei = 0
+          while (ei < contenders.length) {
+            if (contenders[ei].contribution >= level) eligible.push(contenders[ei])
+            ei = ei + 1
+          }
+          if (eligible.length > 0) {
+            let winners = Rules_bestOf(eligible)
+            Rules_awardSplit(awards, winners, potAmount, state.dealerSeat)
+            if (prevLevel === 0 && mainWinners.length === 0) {
+              mainWinners = winners
+              mainPot = potAmount
+              mainRank = winners[0].strength.rank
+            } else {
+              sidePots.push({ amount: potAmount, winners: winners })
+            }
+          }
+        }
+      }
+      prevLevel = level
+      lvi = lvi + 1
+    }
+
+    // Whatever the levels did not reach goes to the best hand overall.
+    let awarded = 0
+    let as = 0
+    while (as < 6) {
+      awarded = awarded + (awards[as] || 0)
+      as = as + 1
+    }
+    if (total - awarded > 0) Rules_awardSplit(awards, Rules_bestOf(contenders), total - awarded, state.dealerSeat)
+
+    let ps = 0
+    while (ps < 6) {
+      if (state.seats[ps] && awards[ps]) state.seats[ps].chips = state.seats[ps].chips + awards[ps]
+      ps = ps + 1
+    }
+
+    let names = Rules_joinNames(mainWinners)
+    let split = mainWinners.length > 1
+    let summary = names + (split ? " split $" : " wins $") + mainPot + " · " + handRankName(mainRank)
+    let details = ""
+    if (sidePots.length > 0) {
+      let side = ""
+      let sp = 0
+      while (sp < sidePots.length) {
+        if (side) side = side + "; "
+        side = side + "$" + sidePots[sp].amount + " -> " + (sidePots[sp].winners.length > 1 ? "split " : "") + Rules_joinNames(sidePots[sp].winners)
+        sp = sp + 1
+      }
+      details = "Main pot $" + mainPot + ". Side pots: " + side + "."
+      summary = summary + " · side " + side
+    }
+    state.result = { winnerNames: names, handName: handRankName(mainRank), mainPot: mainPot, details: details, summary: summary }
+    state.phase = "showdown"
+    state.currentTurnSeat = -1
+    state.currentBet = 0
+    state.turnDeadlineMs = 0
+    return state
+  }
+
+  function Rules_joinNames(list) {
+    let out = ""
+    let i = 0
+    while (i < list.length) {
+      if (out) out = out + ", "
+      out = out + list[i].name
+      i = i + 1
+    }
+    return out
+  }
+
+  // --- Time ---
+
+  /**
+   * A turn not taken by its deadline is taken for the player: a check where
+   * one is allowed, else a fold. Returns the state unchanged when nothing
+   * was due.
+   */
+  function Rules_timeout(state, nowMs) {
+    if (!Rules_isLive(state.phase) || state.currentTurnSeat < 0) return { changed: false, state: state }
+    if (!(state.turnDeadlineMs > 0) || nowMs < state.turnDeadlineMs) return { changed: false, state: state }
+    let seat = state.currentTurnSeat
+    let p = state.seats[seat]
+    let action = p && state.currentBet <= p.bet ? { type: "check" } : { type: "fold" }
+    let applied = Rules_apply(state, seat, action, nowMs)
+    if (!applied.ok) return { changed: false, state: state }
+    return { changed: true, state: applied.state, seat: seat, action: action.type }
+  }
+
+  // --- Projections ---
+
+  /**
+   * What everyone at the table sees, the spectators and the display
+   * included: never the deck, never a hole card that has not been shown.
+   */
+  function Rules_publicView(state) {
+    let seats = []
+    let s = 0
+    while (s < 6) {
+      let p = state.seats[s]
+      if (!p) {
+        seats.push(null)
+      } else {
+        let shown = p.showCards && state.phase === "showdown" ? p.holeCards : []
+        seats.push({
+          seat: p.seat,
+          name: p.name,
+          chips: p.chips,
+          bet: p.bet,
+          handContribution: p.handContribution,
+          status: p.status,
+          hasActed: p.hasActed,
+          showCards: p.showCards,
+          holeCards: shown,
+          cardsDealt: p.holeCards.length
+        })
+      }
+      s = s + 1
+    }
+    return {
+      handNumber: state.handNumber,
+      phase: state.phase,
+      dealerSeat: state.dealerSeat,
+      currentTurnSeat: state.currentTurnSeat,
+      currentBet: state.currentBet,
+      pot: state.pot,
+      communityCards: state.communityCards,
+      smallBlind: state.smallBlind,
+      bigBlind: state.bigBlind,
+      lastFullRaise: state.lastFullRaise,
+      turnDeadlineMs: state.turnDeadlineMs,
+      result: state.result,
+      seats: seats
+    }
+  }
+
+  /** What one seat sees of itself, and nothing of anyone else. */
+  function Rules_privateView(state, seat) {
+    let p = seat >= 0 && seat <= 5 ? state.seats[seat] : null
+    if (!p) return null
+    return {
+      seat: p.seat,
+      name: p.name,
+      holeCards: p.holeCards,
+      chips: p.chips,
+      bet: p.bet,
+      status: p.status,
+      canAct: Rules_isLive(state.phase) && state.currentTurnSeat === seat && p.status === "active"
+    }
+  }
+
+  /** Every chip the table is holding: stacks, plus the pot while a hand is live. */
+  function Rules_bankroll(state) {
+    let total = 0
+    let s = 0
+    while (s < 6) {
+      if (state.seats[s]) total = total + state.seats[s].chips
+      s = s + 1
+    }
+    if (Rules_isLive(state.phase)) total = total + Rules_totalContribution(state)
+    return total
+  }

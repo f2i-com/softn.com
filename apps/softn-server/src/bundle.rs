@@ -181,12 +181,20 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
     let manifest: ServerManifest = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse manifest: {}", e))?;
 
-    // Validate manifest fields
+    // Validate manifest fields. The name is what people read — "Texas
+    // Hold'em" — and only becomes a path when there is no `id` to name the
+    // data directory by; so with an id it need only be printable, and
+    // without one it is held to the characters a directory name can take.
     if manifest.name.is_empty() || manifest.name.len() > 64 {
         return Err("Manifest name must be 1-64 characters".into());
     }
-    if !manifest.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.') {
-        return Err("Manifest name must be alphanumeric, dash, underscore, or dot".into());
+    if manifest.name.chars().any(|c| c.is_control()) {
+        return Err("Manifest name must not contain control characters".into());
+    }
+    if manifest.id.is_none()
+        && !manifest.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+    {
+        return Err("Manifest name must be alphanumeric, dash, underscore, or dot when the manifest has no `id` (the name then names the data directory)".into());
     }
     if let Some(ref id) = manifest.id {
         if id.is_empty() || id.len() > 128 {

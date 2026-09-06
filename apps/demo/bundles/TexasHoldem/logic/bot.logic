@@ -10,6 +10,11 @@
   }
 
   function addBot() {
+    if (authorityMode) {
+      toastMessage = "No bots at an online table"
+      toastType = "info"
+      return
+    }
     if (TableStateClass.isLiveHandPhase(gamePhase)) return
     // Re-read latest players so we do not place bots on newly occupied seats
     players = db.query("poker_players")

@@ -1,0 +1,405 @@
+  // --- Online table: the client of the authority ---
+  //
+  // The peer-to-peer table (createRoom / joinRoom) replicates the whole game
+  // through the shared database, hole cards and deck included, so it is a
+  // table for friends who trust each other. An online table is different:
+  // the game lives on a server (server/authority.logic, run by
+  // softn-server), this client is sent the public table and its own two
+  // cards, and every action it takes is judged there. Nothing below writes
+  // to the local database; the table's records are the server's.
+  //
+  // What this file does is translate: a view from the server into the same
+  // globals the table page already reads (players, gamePhase, myHoleCards,
+  // ...), and a button press into an action request. The page does not know
+  // which kind of table it is showing.
+
+  let authorityMode = false
+  let authorityUrl = "http://localhost:9877"
+  let authorityCode = ""
+  let authorityTicket = ""
+  let authorityRevision = 0
+  let authorityJoinCode = ""
+  let authorityBusy = false
+  let authorityActing = false
+  let authorityError = ""
+  let authorityPollTicks = 0
+  let authorityActionSeq = 0
+
+  function authorityHeaders() {
+    return { "Content-Type": "application/json" }
+  }
+
+  function authorityParse(result) {
+    if (!result) return null
+    let body = result.body
+    if (typeof body === "string") {
+      try {
+        body = JSON.parse(body)
+      } catch (e) {
+        body = null
+      }
+    }
+    return body && typeof body === "object" ? body : null
+  }
+
+  function authorityRemember() {
+    localStorage.setItem("poker-authority", JSON.stringify({ url: authorityUrl, code: authorityCode, ticket: authorityTicket }))
+    // The server's address outlives the seat: the next table is usually at the same one.
+    localStorage.setItem("poker-authority-url", authorityUrl)
+  }
+
+  function authorityForget() {
+    localStorage.setItem("poker-authority", "")
+  }
+
+  function authorityFail(result, body, what) {
+    let detail = ""
+    if (body && body.error && body.error.message) detail = body.error.message
+    else if (result && result.error) detail = "" + result.error
+    else if (result && result.status) detail = "the server answered " + result.status
+    else detail = "no answer from " + authorityUrl
+    authorityError = detail
+    toastMessage = what + ": " + detail
+    toastType = "warning"
+  }
+
+  function authorityTrimmedUrl() {
+    let url = ("" + authorityUrl).replace(/^\s+|\s+$/g, "").replace(/\/+$/, "")
+    authorityUrl = url
+    return url
+  }
+
+  /** Create a table on the server and sit at it. */
+  function createOnlineTable() {
+    if (!playerName) {
+      toastMessage = "Please enter your name"
+      toastType = "warning"
+      return
+    }
+    if (authorityBusy) return
+    localStorage.setItem("poker-player-name", playerName)
+    let url = authorityTrimmedUrl()
+    authorityBusy = true
+    softn.net.fetch(url + "/api/rooms", { method: "POST", headers: authorityHeaders(), body: { name: playerName } }, function (result) {
+      authorityBusy = false
+      let body = authorityParse(result)
+      if (!result || !result.ok || !body || !body.ok) {
+        authorityFail(result, body, "Could not create an online table")
+        return
+      }
+      enterAuthorityTable(body, body.ticket)
+    })
+  }
+
+  /** Take a seat at a table someone else created, by its code. */
+  function joinOnlineTable() {
+    if (!playerName) {
+      toastMessage = "Please enter your name"
+      toastType = "warning"
+      return
+    }
+    let code = ("" + authorityJoinCode).replace(/^\s+|\s+$/g, "")
+    if (!code) {
+      toastMessage = "Please enter the table code"
+      toastType = "warning"
+      return
+    }
+    if (authorityBusy) return
+    localStorage.setItem("poker-player-name", playerName)
+    let url = authorityTrimmedUrl()
+    authorityBusy = true
+    softn.net.fetch(url + "/api/rooms/join", { method: "POST", headers: authorityHeaders(), body: { code: code, name: playerName } }, function (result) {
+      authorityBusy = false
+      let body = authorityParse(result)
+      if (!result || !result.ok || !body || !body.ok) {
+        if (body && body.error && body.error.code === "RETRY") {
+          toastMessage = "The table is busy; try joining again"
+          toastType = "info"
+          return
+        }
+        authorityFail(result, body, "Could not join that table")
+        return
+      }
+      enterAuthorityTable(body, body.ticket)
+    })
+  }
+
+  /** Back at a table this browser was sitting at: the ticket is still good until the table closes or we leave. */
+  function resumeOnlineTable() {
+    let url = authorityTrimmedUrl()
+    authorityBusy = true
+    softn.net.fetch(url + "/api/rooms/view", { method: "POST", headers: authorityHeaders(), body: { code: authorityCode, ticket: authorityTicket } }, function (result) {
+      authorityBusy = false
+      let body = authorityParse(result)
+      if (!result || !result.ok || !body || !body.ok || !body.you || body.closed) {
+        exitAuthorityTable()
+        toastMessage = "That online table is no longer yours to return to"
+        toastType = "info"
+        return
+      }
+      enterAuthorityTable(body, authorityTicket)
+    })
+  }
+
+  function enterAuthorityTable(view, ticket) {
+    authorityMode = true
+    authorityCode = view.code
+    authorityTicket = ticket
+    authorityRevision = view.revision
+    authorityError = ""
+    authorityPollTicks = 0
+    // Nothing of a peer table carries over: no local records, no bots, no host.
+    mySeat = -1
+    myRecordMissingTicks = 0
+    players = []
+    botSeats = []
+    tableId = ""
+    isHost = false
+    hasExternalRoom = false
+    showResultsModal = false
+    showLeaveModal = false
+    showdownAutoDelay = 0
+    showdownAutoDeadlineMs = 0
+    showdownStartedAtMs = 0
+    // The top bar shows the room code and the connection; both are the server's now.
+    syncRoom = view.code
+    syncConnected = true
+    syncConnecting = false
+    applyAuthorityView(view)
+    authorityRemember()
+    currentPage = "table"
+  }
+
+  /** Leave the table on the server, then the page. */
+  function leaveOnlineTable() {
+    let url = authorityTrimmedUrl()
+    let code = authorityCode
+    let ticket = authorityTicket
+    if (code && ticket) {
+      softn.net.fetch(url + "/api/rooms/leave", { method: "POST", headers: authorityHeaders(), body: { code: code, ticket: ticket } }, function (result) {})
+    }
+    exitAuthorityTable()
+  }
+
+  function exitAuthorityTable() {
+    authorityMode = false
+    authorityCode = ""
+    authorityTicket = ""
+    authorityRevision = 0
+    authorityBusy = false
+    authorityActing = false
+    authorityForget()
+    showLeaveModal = false
+    showResultsModal = false
+    syncConnected = false
+    syncConnecting = false
+    syncPeers = 0
+    syncRoom = ""
+    currentPage = "lobby"
+    mySeat = -1
+    myRecordMissingTicks = 0
+    gamePhase = TableStateClass.phaseWaiting()
+    handNumber = 0
+    dealerSeat = 0
+    currentTurnSeat = -1
+    currentBet = 0
+    pot = 0
+    communityCards = []
+    tableId = ""
+    myHoleCards = []
+    myChips = 0
+    myBet = 0
+    myStatus = TableStateClass.statusWaiting()
+    players = []
+    isHost = false
+    botSeats = []
+    myHandName = ""
+    resultSummary = ""
+    toastMessage = ""
+  }
+
+  /**
+   * The server's view, into the globals the table reads. Other seats' cards
+   * arrive as a count, and are shown as card backs the way the peer table
+   * shows a hand it must not reveal; at the showdown the server sends the
+   * cards of the hands that were shown, and only those.
+   */
+  function applyAuthorityView(view) {
+    if (!view || !view.public) return
+    let pub = view.public
+    authorityRevision = view.revision
+    let wasShowdown = gamePhase === TableStateClass.phaseShowdown()
+    if (pub.phase !== gamePhase || pub.handNumber !== handNumber) raiseAmount = ""
+    gamePhase = pub.phase
+    handNumber = pub.handNumber
+    dealerSeat = pub.dealerSeat < 0 ? 0 : pub.dealerSeat
+    currentTurnSeat = pub.currentTurnSeat
+    currentBet = pub.currentBet
+    pot = pub.pot
+    communityCards = pub.communityCards || []
+    smallBlind = pub.smallBlind
+    bigBlind = pub.bigBlind
+    lastFullRaise = pub.lastFullRaise
+    if (pub.result) {
+      resultSummary = pub.result.summary || ""
+      resultWinnerName = pub.result.winnerNames || ""
+      resultHandName = pub.result.handName || ""
+      resultPotAmount = pub.result.mainPot || 0
+      resultDetails = pub.result.details || ""
+    } else {
+      resultSummary = ""
+    }
+
+    let you = view.you
+    let seated = you && you.role === "player" && you.seat >= 0
+    mySeat = seated ? you.seat : -1
+    myHoleCards = seated && you.holeCards ? you.holeCards : []
+    myChips = seated ? you.chips : 0
+    myBet = seated ? you.bet : 0
+    myStatus = seated && you.status ? you.status : TableStateClass.statusWaiting()
+
+    let list = []
+    let s = 0
+    while (s < 6) {
+      let seat = pub.seats[s]
+      if (seat) {
+        let cards = seat.holeCards || []
+        if (s === mySeat) cards = myHoleCards
+        else if (cards.length === 0 && seat.cardsDealt === 2) cards = [-1, -1]
+        list.push({
+          id: "seat-" + s,
+          data: {
+            peerId: s === mySeat ? peerId : "seat-" + s,
+            name: seat.name,
+            seat: s,
+            chips: seat.chips,
+            bet: seat.bet,
+            handContribution: seat.handContribution,
+            status: seat.status,
+            hasActed: seat.hasActed,
+            holeCards: cards,
+            showCardsAtShowdown: seat.showCards,
+            avatarUrl: s === mySeat ? walletAvatarUrl : ""
+          }
+        })
+      }
+      s = s + 1
+    }
+    players = list
+    botSeats = []
+    // Anyone seated may deal; the server decides whether a hand can start.
+    isHost = mySeat >= 0
+
+    let online = 0
+    let mi = 0
+    let members = view.members || []
+    while (mi < members.length) {
+      if (members[mi].role === "player" && members[mi].connected) online = online + 1
+      mi = mi + 1
+    }
+    syncPeers = online > 0 ? online - 1 : 0
+    syncConnected = true
+    syncConnecting = false
+
+    if (gamePhase === TableStateClass.phaseShowdown() && !wasShowdown && resultWinnerName) showResultsModal = true
+    if (gamePhase !== TableStateClass.phaseShowdown()) showResultsModal = false
+    evaluateMyHand()
+  }
+
+  /** One poll tick: ask the server for the view every few ticks, and keep the toast timer going. */
+  function authorityTick() {
+    authorityPollTicks = authorityPollTicks + 1
+    if (!authorityBusy && !authorityActing && authorityPollTicks >= 3) {
+      authorityPollTicks = 0
+      authorityBusy = true
+      let url = authorityTrimmedUrl()
+      let code = authorityCode
+      softn.net.fetch(url + "/api/rooms/view", { method: "POST", headers: authorityHeaders(), body: { code: code, ticket: authorityTicket } }, function (result) {
+        authorityBusy = false
+        if (!authorityMode || authorityCode !== code) return
+        let body = authorityParse(result)
+        if (!result || !result.ok || !body || !body.ok) {
+          syncConnected = false
+          syncConnecting = true
+          return
+        }
+        if (body.closed) {
+          exitAuthorityTable()
+          toastMessage = "The table closed"
+          toastType = "info"
+          return
+        }
+        applyAuthorityView(body)
+      })
+    }
+    if (toastMessage) {
+      toastClearDelay = toastClearDelay + 1
+      if (toastClearDelay >= 30) {
+        toastMessage = ""
+        toastClearDelay = 0
+      }
+    } else {
+      toastClearDelay = 0
+    }
+  }
+
+  /**
+   * An action, decided on the view we have: the server judges it against
+   * the revision that view carried. Refused as stale, the fresh view it sends
+   * back is applied and the player decides again; nothing is replayed.
+   */
+  function authorityAct(action) {
+    if (!authorityMode) return
+    if (authorityActing || isActionBusy()) return
+    lockActionUI()
+    authorityActionSeq = authorityActionSeq + 1
+    let id = peerId + "-" + handNumber + "-" + authorityActionSeq + "-" + Date.now()
+    let url = authorityTrimmedUrl()
+    let code = authorityCode
+    authorityActing = true
+    softn.net.fetch(url + "/api/rooms/act", {
+      method: "POST",
+      headers: authorityHeaders(),
+      body: { code: code, ticket: authorityTicket, id: id, expectedRevision: authorityRevision, action: action }
+    }, function (result) {
+      authorityActing = false
+      if (!authorityMode || authorityCode !== code) return
+      let body = authorityParse(result)
+      if (body && body.view) applyAuthorityView(body.view)
+      if (!result || !result.ok || !body || !body.ok) {
+        let errCode = body && body.error ? body.error.code : ""
+        if (errCode === "STALE_VIEW" || errCode === "RETRY") {
+          toastMessage = "The table moved on; look again"
+          toastType = "info"
+        } else if (errCode === "NOT_YOUR_TURN") {
+          toastMessage = "Not your turn"
+          toastType = "warning"
+        } else if (errCode === "MUST_CALL") {
+          toastMessage = "Cannot check, must call or raise"
+          toastType = "warning"
+        } else if (errCode === "NOT_ENOUGH_PLAYERS") {
+          toastMessage = "Need at least 2 players with chips"
+          toastType = "warning"
+        } else {
+          authorityFail(result, body, "The table refused that")
+        }
+        return
+      }
+      if (action.type === "raise" || action.type === "allin") raiseAmount = ""
+      if (action.type === "fold" || action.type === "check" || action.type === "call" || action.type === "raise" || action.type === "allin") {
+        playActionSound(action.type)
+      }
+    })
+  }
+
+  /** The raise the raise controls describe, as the server wants it: an increment over the current bet. */
+  function authorityRaise() {
+    let totalRaise = parseInt(raiseAmount) || bigBlind
+    if (totalRaise < bigBlind) totalRaise = bigBlind
+    let me = getMyPlayerRecord()
+    if (me && me.data && currentBet + totalRaise - me.data.bet >= me.data.chips) {
+      authorityAct({ type: "allin" })
+      return
+    }
+    authorityAct({ type: "raise", amount: totalRaise })
+  }

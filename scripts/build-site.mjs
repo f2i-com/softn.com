@@ -372,6 +372,14 @@ read. Either way, anything with no twin still falls back to compressing live.
 Bundles are left alone: a \`.softn\` is a ZIP, so a second pass would spend CPU
 to produce a slightly larger file.
 
+## Optional: the poker table authority
+
+Texas Hold'em's online table is a separate process — softn-server running
+the bundle's own server logic — which this static release does not include.
+Without it the app still plays solo, with bots, and over peer-to-peer sync.
+To offer online tables, run the process and proxy a path of the site to it;
+the recipe is \`docs/hosting-the-poker-authority.md\` in the repository.
+
 ## nginx
 
 nginx ignores \`.htaccess\`. Copy \`nginx.conf.example\` into nginx's HTTP

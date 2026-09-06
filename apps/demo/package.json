@@ -7,7 +7,7 @@
   "scripts": {
     "bundle": "node scripts/build-bundle.cjs",
     "bundle:glamour": "node scripts/build-bundle.cjs",
-    "test": "node scripts/test-texasholdem-gameplay.cjs && node scripts/test-warblewire-protocol.cjs && npm run test:validators && npm run test:promptly && npm run test:bundles",
+    "test": "node scripts/test-texasholdem-gameplay.cjs && node scripts/test-texasholdem-authority.cjs && node scripts/test-texasholdem-authority-client.cjs && node scripts/test-texasholdem-authority-http.cjs && node scripts/test-warblewire-protocol.cjs && npm run test:validators && npm run test:promptly && npm run test:bundles",
     "test:validators": "node scripts/test-bundle-validator.cjs && node scripts/test-promptly-audio-validator.cjs",
     "test:promptly": "node bundles/PromptlyUnemployed/check-geometry.cjs && node bundles/PromptlyUnemployed/check-spawns.cjs && node bundles/PromptlyUnemployed/check-audio.cjs",
     "test:bundles": "node scripts/test-all-bundles.cjs"

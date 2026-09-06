@@ -91,9 +91,9 @@
     "id": "texas-holdem",
     "file": "TexasHoldem.softn",
     "name": "Texas Hold'em",
-    "description": "Multiplayer Texas Hold'em Poker with P2P sync",
+    "description": "Texas Hold'em Poker for friends who trust each other: every player's client holds the whole table, hole cards included, over peer-to-peer sync",
     "primary": "#c8aa6e",
-    "size": 252642
+    "size": 318425
   },
   {
     "id": "the-office",

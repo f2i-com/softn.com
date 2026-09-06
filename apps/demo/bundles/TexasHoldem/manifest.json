@@ -1,7 +1,8 @@
 {
   "name": "Texas Hold'em",
+  "id": "com.softn.texas-holdem",
   "version": "1.0.0",
-  "description": "Multiplayer Texas Hold'em Poker with P2P sync",
+  "description": "Texas Hold'em Poker: a peer table for friends who trust each other (every client holds the whole table, hole cards included), or an online table whose deck and cards stay on a server that sends each player only their own",
   "main": "ui/main.ui",
   "icon": "assets/icon.svg",
   "files": {
@@ -23,14 +24,21 @@
       "logic/game.logic",
       "logic/actions.logic",
       "logic/bot.logic",
-      "logic/ui-helpers.logic"
+      "logic/ui-helpers.logic",
+      "logic/authority-client.logic"
     ],
     "xdb": [
       "xdb/poker_table.xdb",
       "xdb/poker_players.xdb",
       "xdb/poker_actions.xdb"
     ],
-    "assets": ["assets/icon.svg"]
+    "assets": [
+      "assets/icon.svg"
+    ],
+    "server": [
+      "server/authority.logic",
+      "server/rules.logic"
+    ]
   },
   "config": {
     "window": {
@@ -45,5 +53,50 @@
     "mobile": {
       "orientation": "landscape"
     }
+  },
+  "server": {
+    "entry": "server/authority.logic",
+    "scripts": [
+      "logic/cards.logic",
+      "server/rules.logic"
+    ],
+    "routes": [
+      {
+        "method": "GET",
+        "path": "/api/rooms/health",
+        "handler": "roomHealth",
+        "public": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/rooms",
+        "handler": "roomCreate",
+        "public": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/rooms/join",
+        "handler": "roomJoin",
+        "public": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/rooms/view",
+        "handler": "roomView",
+        "public": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/rooms/act",
+        "handler": "roomAct",
+        "public": true
+      },
+      {
+        "method": "POST",
+        "path": "/api/rooms/leave",
+        "handler": "roomLeave",
+        "public": true
+      }
+    ]
   }
 }
