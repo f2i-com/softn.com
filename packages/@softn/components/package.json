@@ -1,6 +1,6 @@
 {
   "name": "@softn/components",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "SoftN Built-in Component Library",
   "license": "Apache-2.0",
   "repository": {
@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@rc-component/qrcode": "^1.1.1",
-    "@softn/core": "^0.0.2",
+    "@softn/core": "^0.0.3",
     "@yudiel/react-qr-scanner": "^2.5.1",
     "three": "^0.170.0"
   },

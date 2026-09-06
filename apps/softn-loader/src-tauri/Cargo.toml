@@ -1,6 +1,6 @@
 [package]
 name = "softn-loader"
-version = "0.0.2"
+version = "0.0.3"
 description = "SoftN Application Runtime"
 authors = ["SoftN Team"]
 license = "Apache-2.0"
