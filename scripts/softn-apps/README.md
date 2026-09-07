@@ -56,9 +56,12 @@ runs the directory's own seeder over the folder, offline, and writes
 `scripts/softn-apps/data/` (or `-- --out <dir>`): `directory.sqlite` with every
 app's rows, `apps/<slug>/v1.softn` and `thumb.*` for each, `config.json` with a
 fresh admin key — printed once, keep it — and the rules that keep the folder
-unserved. Upload it as `data/` beside `api/` and the directory is populated
-before its first visitor. Never put it over a `data/` that already holds
-visitors' apps; for a live site, use one of the ways below. It needs PHP 8.1+
+unserved, with `seedDemos` off in its config so the site it lands in does not
+seed again from whatever bundles sit beside its API (set it back to `true`
+to have a `demos/` upload re-sync). Upload it as `data/` beside `api/` — or
+copy it over `apps/softn-api/data/` in a checkout — and the directory is
+populated before its first visitor. Never put it over a `data/` that already
+holds visitors' apps; for a live site, use one of the ways below. It needs PHP 8.1+
 with `pdo_sqlite` and `zip` (what the site needs), on PATH or named by
 `-- --php <path>`; run it again to bring an output up to date with the folder.
 

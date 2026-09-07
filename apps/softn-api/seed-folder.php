@@ -95,7 +95,16 @@ RULES);
         if (glob(Apps::dir((string) $slug) . '/thumb.*')) $pictures++;
     }
     $config = json_decode((string) file_get_contents("$out/config.json"), true);
-    echo "$apps apps seeded into $out ($pictures with a picture" . ($others > 0 ? ", $others published by visitors kept" : '') . ")\n";
+    // The output is complete, so the site it lands in must not seed again from
+    // whatever bundles sit beside its API — in a source checkout that is the
+    // pinned examples, which would retire every other app here as gone.
+    // `seedDemos: true` in config.json turns the re-sync back on.
+    if (is_array($config)) {
+        $config['seedDemos'] = false;
+        $written = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        if ($written !== false) file_put_contents("$out/config.json", $written . PHP_EOL, LOCK_EX);
+    }
+    echo "$apps apps seeded into $out ($pictures with a picture; seedDemos off in its config.json" . ($others > 0 ? ", $others published by visitors kept" : '') . ")\n";
     echo "admin key: " . (is_array($config) && is_string($config['adminKey'] ?? null) ? $config['adminKey'] : '(see config.json)') . "\n";
     echo "Upload the folder as data/ beside api/ — never over a data/ that already holds visitors' apps.\n";
 } catch (Throwable $e) {
