@@ -812,6 +812,7 @@ the fetched demo bundles; `npm test` fetches them first.
 | `apps/softn-api/index.php` | The directory API's routes |
 | `scripts/build-site.mjs` | Assembles `dist/` and writes `.htaccess`, `nginx.conf.example` and `DEPLOY.md` |
 | `scripts/fetch-demos.mjs` | Fetches and verifies the demo bundles from the softn-Examples release `public/demos/index.json` pins |
+| `scripts/softn-apps/` | Every app from every release in `repos.json`, photographed, as one folder a site loads: `npm run apps:build`, then `build:site -- --demos-dir`, an upload beside `api/` as `demos/`, or `apps:publish` (its README explains) |
 
 ---
 
