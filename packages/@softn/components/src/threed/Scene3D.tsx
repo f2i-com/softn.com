@@ -1,3 +1,4 @@
+import { applyModelAppearance, type ModelAppearance } from './model-appearance';
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -110,6 +111,8 @@ export type Scene3DShape =
   | 'octahedron';
 
 export interface Scene3DObject {
+  /** Named morph weights, material colours and mesh visibility for imported assets. */
+  appearance?: ModelAppearance;
   id: string;
   type: Scene3DShape | 'model' | 'instanced' | 'group' | 'particles';
   modelUrl?: string;
@@ -1998,6 +2001,7 @@ export function Scene3D({
 
       // Clip mixers take real delta seconds, not the 60fps-normalised dtScale
       animationMap.forEach((entry) => entry.mixer.update(dt));
+      meshMap.forEach((entry) => { if (entry.spec.type === 'model') applyModelAppearance(entry.mesh, entry.spec.appearance); });
 
       if (enablePointerLock) {
         if (sceneWindow.__scene3dWantLock && !isLocked()) {
@@ -2409,6 +2413,7 @@ export function Scene3D({
               scene.remove(placeholder);
               applyTransform(loaded, spec, false);
               applyMaterialOverrides(loaded, spec);
+              applyModelAppearance(loaded, spec.appearance);
               prepareModelMaterials(loaded, rendererRef.current?.capabilities.getMaxAnisotropy() ?? 1);
               scene.add(loaded);
               meshMap.set(obj.id, {
