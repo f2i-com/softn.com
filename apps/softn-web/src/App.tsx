@@ -1,3 +1,4 @@
+import { reopenBundle } from './lib/reopenBundle';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { ThemeProvider, Spinner, Box, Text } from '@softn/components';
@@ -168,6 +169,8 @@ function slugOfName(name: string): string {
 }
 
 async function demoBundleUrlFor(appName: string): Promise<string | null> {
+  // The production distribution has no bundled demo catalogue.
+  if (!import.meta.env.DEV) return null;
   try {
     const response = await fetch(publicPath('demos/index.json', import.meta.env.BASE_URL), {
       credentials: 'same-origin',
@@ -1240,11 +1243,9 @@ function App(): React.ReactElement {
     }
 
     if (urlInit.appName) {
-      // Always fetch the latest bundle from the directory API so updates/changes
-      // are loaded immediately, with graceful offline fallback to cached app.
-      // A shipped demo can also come from the catalogue in public/demos: first
-      // in development, where there is usually no API to ask, and otherwise
-      // only once the API has said no.
+      // Local imports reopen from their cached bytes. Directory apps still
+      // refresh from the API, with the existing offline cache fallback.
+      // Development checkouts can also resolve their bundled demo catalogue.
       if (urlTabId) discardPlaceholder(urlTabId);
       const wanted = urlInit.appName;
       const fromApi = (): Promise<string | null> =>
@@ -1253,9 +1254,14 @@ function App(): React.ReactElement {
         const demoUrl = await demoBundleUrlFor(wanted);
         return demoUrl ? openFromUrl(demoUrl) : null;
       };
-      const attempt = import.meta.env.DEV
+      const fromRemote = () => import.meta.env.DEV
         ? fromCatalogue().then((opened) => opened ?? fromApi())
-        : fromApi().then((opened) => opened ?? fromCatalogue());
+        : fromApi();
+      const attempt = reopenBundle(
+        () => getCachedAppByName(wanted),
+        (cached) => processBundleData(cached.bundleData, `${cached.name}.softn`, cached.id, urlInit.page || undefined),
+        fromRemote,
+      );
       attempt.then((appName) => {
         if (appName) {
           window.history.replaceState({}, '', entryUrl(buildAppUrl(appName, urlInit.page)));
