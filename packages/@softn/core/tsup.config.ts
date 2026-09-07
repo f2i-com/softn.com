@@ -1,6 +1,7 @@
 import { defineConfig } from 'tsup';
 import { cpSync, existsSync, mkdirSync, readdirSync, copyFileSync } from 'fs';
 import path from 'path';
+import { execFileSync } from 'node:child_process';
 
 function copyDirRecursive(src: string, dest: string) {
   if (!existsSync(dest)) mkdirSync(dest, { recursive: true });
@@ -37,6 +38,7 @@ export default defineConfig({
     // .wasm file must sit next to the chunk.
     cpSync('wasm-zipp/zipp_wasm_bg.wasm', 'dist/zipp_wasm_bg.wasm');
     console.log('[tsup] Copied the zipp engine to dist/');
+    execFileSync(process.execPath,['scripts/build-speech-worker.mjs'],{stdio:'inherit'});
     // Mirror dist/ into dist/core-runtime/ so static worker URL resolution (./core-runtime/runtime/script-worker.js) succeeds on disk
     copyDirRecursive('dist', 'dist/core-runtime');
     console.log('[tsup] Mirrored dist/ to dist/core-runtime/ for worker resolution');

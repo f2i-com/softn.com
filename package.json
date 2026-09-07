@@ -50,6 +50,7 @@
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-react": "^7.33.0",
     "eslint-plugin-react-hooks": "^4.6.0",
+    "kokoro-js": "1.2.1",
     "prettier": "^3.2.0",
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",

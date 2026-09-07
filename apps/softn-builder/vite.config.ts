@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -14,6 +15,7 @@ const base = isTauri ? './' : env.VITE_BASE || '/';
 export default defineConfig({
   plugins: [
     react(),
+    coreWorkerAssetPlugin(),
     VitePWA({
       // A service worker buys nothing inside the Tauri webview — the assets are
       // already local — and it can keep serving a previous build after the app
@@ -65,7 +67,7 @@ export default defineConfig({
         // The ONNX runtime binaries are 20+ MB each and back optional AI
         // features. Precaching them would make an install download tens of
         // megabytes it will most likely never use, so they stay on-demand.
-        globIgnores: ['**/ort-*.wasm'],
+        globIgnores: ['**/ort-*.wasm', '**/core-runtime/**'],
         // Everything left after that ignore fits inside 8 MiB — the largest
         // are Monaco's TypeScript worker at ~5.8 MiB and the main chunk at
         // ~5.1 MiB. Raise this rather than let Workbox skip a file, because a

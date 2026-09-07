@@ -1,86 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
-import fs from 'node:fs';
-import path from 'node:path';
+import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
-
-const coreDistRoot = path.resolve(__dirname, '../../packages/@softn/core/dist');
-
-// The engine binary is the one thing this copy must not bring. Vite already
-// emits a content-hashed copy for the main thread, from the `new URL(...,
-// import.meta.url)` in core's inlined glue, and that is the one the app
-// actually loads. Copying core's dist wholesale duplicated 6 MB next to chunks
-// that do not reference it — dead weight in every deployment and every upload.
-//
-// The off-main-thread script runtime is now reachable (`?exec=worker`, see
-// SoftNRenderer), and its worker resolves the binary relative to ITSELF, here,
-// so the engine is copied after all. That is a second 5.5 MB of the same bytes
-// in every deployment for as long as the worker path is opt-in; when it is the
-// default, the main thread and the worker should share one URL instead. Dev is
-// unaffected either way: the middleware above serves these files straight from
-// core's dist.
-const WORKER_COPY_SKIP = new Set<string>();
-
-function copyDirRecursive(srcDir: string, destDir: string) {
-  if (!fs.existsSync(srcDir)) return;
-  fs.mkdirSync(destDir, { recursive: true });
-  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
-    if (WORKER_COPY_SKIP.has(entry.name)) continue;
-    const srcPath = path.join(srcDir, entry.name);
-    const destPath = path.join(destDir, entry.name);
-    if (entry.isDirectory()) {
-      copyDirRecursive(srcPath, destPath);
-    } else if (entry.isFile()) {
-      fs.copyFileSync(srcPath, destPath);
-    }
-  }
-}
-
-function coreWorkerAssetPlugin() {
-  return {
-    name: 'core-worker-asset',
-    configureServer(server: { middlewares: { use: (fn: (req: { url?: string }, res: { statusCode: number; setHeader: (name: string, value: string) => void; end: (body: string | Buffer) => void }, next: () => void) => void) => void } }) {
-      server.middlewares.use((req: { url?: string }, res, next) => {
-        const rawUrl = String(req.url || '');
-        const match = rawUrl.match(/(?:^|\/)assets\/core-runtime\/([^?#]+)/);
-        if (!match) {
-          next();
-          return;
-        }
-        const relPath = match[1];
-        if (!relPath || relPath.includes('..')) {
-          next();
-          return;
-        }
-        const sourcePath = path.join(coreDistRoot, relPath);
-        if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) {
-          next();
-          return;
-        }
-        // Read as a Buffer, never utf8: the engine .wasm is not text, and
-        // decoding it replaces every invalid byte sequence with U+FFFD, so it
-        // arrives bigger than it left and WebAssembly rejects it.
-        const source = fs.readFileSync(sourcePath);
-        res.statusCode = 200;
-        if (sourcePath.endsWith('.js')) {
-          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
-        } else if (sourcePath.endsWith('.map')) {
-          res.setHeader('Content-Type', 'application/json; charset=utf-8');
-        } else if (sourcePath.endsWith('.wasm')) {
-          res.setHeader('Content-Type', 'application/wasm');
-        }
-        res.end(source);
-      });
-    },
-    writeBundle(options: { dir?: string }) {
-      const outDir = options.dir || path.resolve(__dirname, 'dist');
-      const destRoot = path.join(outDir, 'assets', 'core-runtime');
-      copyDirRecursive(coreDistRoot, destRoot);
-    },
-  };
-}
 
 export default defineConfig({
   // Serving from a subpath such as /web/ is a deployment decision, so the base

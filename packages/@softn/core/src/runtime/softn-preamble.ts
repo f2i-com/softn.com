@@ -51,6 +51,29 @@ let softn = {
     }
   },
   audio: {
+    speechCapabilities: function(callback) {
+      host.call("audio.speechCapabilities", [], callback || function(){});
+    },
+    loadSpeechModel: function(options, callback) {
+      if(typeof options === "function") { callback=options;options={provider:"kokoro"}; }
+      host.call("audio.loadSpeechModel", [JSON.stringify(options || {provider:"kokoro"})], callback || function(){});
+    },
+    releaseSpeechModel: function(callback) {
+      host.call("audio.releaseSpeechModel", [], callback || function(){});
+    },
+    speak: function(options, callback) {
+      host.call("audio.speak", [JSON.stringify(options || {})], callback || function(){});
+    },
+    speechState: function(handle, callback) {
+      host.call("audio.speechState", [handle == null ? "" : String(handle)], callback || function(){});
+    },
+    whenSpeechEnded: function(handle, callback) {
+      host.call("audio.whenSpeechEnded", [handle == null ? "" : String(handle)], callback || function(){});
+    },
+    stopSpeech: function(handle, callback) {
+      if(typeof handle === "function") { callback=handle;handle=""; }
+      host.call("audio.stopSpeech", [handle == null ? "" : String(handle)], callback || function(){});
+    },
     play: function(src, options, callback) {
       if (typeof options === "function") { callback = options; options = {}; }
       host.call("audio.play", [src, typeof options === "object" ? JSON.stringify(options) : "{}"], callback || function(){});

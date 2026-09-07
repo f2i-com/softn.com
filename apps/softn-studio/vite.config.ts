@@ -1,12 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
 export default defineConfig({
   plugins: [
     react(),
+    coreWorkerAssetPlugin(),
     VitePWA({
       registerType: 'autoUpdate',
       // PWAPrompt registers the worker itself, so the plugin must not also
@@ -51,7 +53,7 @@ export default defineConfig({
         // back optional AI features. Precaching them would make first load pay
         // for capabilities most sessions never touch; they are fetched on
         // demand instead.
-        globIgnores: ['**/ort-*.wasm'],
+        globIgnores: ['**/ort-*.wasm', '**/core-runtime/**'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
       },
     }),
