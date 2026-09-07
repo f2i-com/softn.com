@@ -1,0 +1,9 @@
+Options -Indexes
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  <FilesMatch "\.(softn|json)$">
+    Header set Cache-Control "no-store"
+  </FilesMatch>
+</IfModule>
+AddType application/wasm .wasm
+AddType application/javascript .mjs
