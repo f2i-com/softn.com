@@ -21,6 +21,8 @@
     "apps:build": "node scripts/softn-apps/build.mjs",
     "apps:seed": "node scripts/softn-apps/seed.mjs",
     "package:site": "node scripts/package-site.mjs",
+    "build:single": "npm run build:packages && npm run build -w @softn/single",
+    "package:single": "node scripts/package-single.mjs",
     "licenses:site": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "preview:site": "npm run build:site && node scripts/serve-site.mjs",

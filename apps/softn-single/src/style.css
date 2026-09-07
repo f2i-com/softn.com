@@ -1,0 +1,116 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root,
+.single-app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: system-ui, sans-serif;
+}
+.single-app {
+  --softn-tab-bar-height: 0px;
+  --softn-chrome-base: 0px;
+  min-height: 100dvh;
+  background: #171821;
+  color: #f5f5f8;
+}
+.loading {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  text-align: center;
+}
+.loading h1 {
+  font-size: 22px;
+  margin: 0;
+}
+.loading p {
+  max-width: 520px;
+  line-height: 1.5;
+}
+.application-layout {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.application-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  contain: layout paint;
+}
+.application-content .loading {
+  min-height: 100%;
+}
+.permission-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-height: 45dvh;
+  overflow: auto;
+  text-align: left;
+  padding: 12px 20px;
+  border-bottom: 1px solid #ffffff30;
+  background: #20212c;
+}
+.permission-message {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 14px;
+}
+.permission-message summary {
+  cursor: pointer;
+}
+.permission-message pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+@media (max-width: 540px) {
+  .permission-bar {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+button {
+  font: inherit;
+  cursor: pointer;
+  padding: 10px 16px;
+  color: inherit;
+  background: #343647;
+  border: 1px solid #ffffff50;
+  border-radius: 8px;
+}
+button:focus-visible {
+  outline: 3px solid #acb8ff;
+  outline-offset: 3px;
+}
+.review {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 100;
+}
+.wheel {
+  flex-shrink: 0;
+}
