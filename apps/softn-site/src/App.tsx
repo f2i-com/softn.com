@@ -69,7 +69,7 @@ export default function App(): React.ReactElement {
       <Nav />
       {route.path === '/' ? <main>{page}</main> : page}
       <Footer />
-      <DropAnywhere active={route.path !== '/publish'} />
+      <DropAnywhere onPublishPage={route.path === '/publish'} />
     </>
   );
 }

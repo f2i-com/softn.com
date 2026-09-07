@@ -8,12 +8,13 @@
  * the visitor's until they publish it.
  */
 
-const BUNDLE_NAME = /\.softn$/i;
+const BUNDLE_NAME = /\.(softn|zip)$/i;
 const ZIP_TYPE = /zip/i;
 
 let pending: File[] = [];
+const listeners = new Set<() => void>();
 
-/** A `.softn` by name, or a zip by type when the name says nothing. */
+/** A `.softn` (or a `.zip`, which is what a bundle is) by name, or a zip by type when the name says nothing. */
 export function isBundleFile(file: File): boolean {
   return BUNDLE_NAME.test(file.name) || (!/\.[a-z0-9]+$/i.test(file.name) && ZIP_TYPE.test(file.type));
 }
@@ -23,10 +24,19 @@ export function bundleFiles(list: ArrayLike<File>): File[] {
   return Array.from(list).filter(isBundleFile);
 }
 
-/** Keep a drop's bundles for the publish page; answers how many there are. */
+/** Keep a drop's bundles for the publish page; answers how many there are, and tells whoever is listening. */
 export function stashDroppedBundles(list: ArrayLike<File>): number {
   pending = bundleFiles(list);
+  if (pending.length > 0) for (const listener of listeners) listener();
   return pending.length;
+}
+
+/** Hear about a stash while mounted — the publish page, when the drop lands on it. Returns the unsubscribe. */
+export function onDroppedBundles(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 /** The stashed bundles, once: a second call answers none. */
