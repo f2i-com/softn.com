@@ -11,7 +11,7 @@
  * (a host upload that misses `.htaccess` serves brotli as text), with the
  * directory layout intact so the contents can be dropped into a document root.
  *
- * Files that are already compressed — the .br/.gz twins, the engine, fonts,
+ * Files that are already compressed — the .br/.gz twins, fonts,
  * images, the .softn bundles — are stored, not deflated: deflating a brotli
  * stream makes it larger and costs the time. Everything else is deflated at
  * level 9. No zip64: the release is a few hundred MB in under a thousand
@@ -119,9 +119,10 @@ for (const required of DATA_KEEP) {
 }
 if (files.length >= 0xffff) fail(`${files.length} files is more than a zip without zip64 can list.`);
 
-// Already compressed on disk; stored as they are.
+// Already compressed on disk; stored as they are. WebAssembly is a binary
+// format, not a compression format: deflate its raw bytes like JavaScript.
 const STORED = new Set([
-  '.br', '.gz', '.zip', '.wasm', '.softn',
+  '.br', '.gz', '.zip', '.softn',
   '.woff', '.woff2',
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico',
   '.mp3', '.mp4', '.webm', '.ogg',
