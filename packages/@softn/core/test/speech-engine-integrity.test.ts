@@ -1,3 +1,5 @@
+// @vitest-environment node
+// Keep buffers and Web Crypto in the same realm; this suite needs no DOM.
 import {describe,it,expect,vi,afterEach} from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
