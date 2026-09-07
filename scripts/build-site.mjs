@@ -433,7 +433,7 @@ workers and browser permissions outside localhost.
 - \`/web/\` — browser runtime
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
-${withDemos ? '- \\`/demos/\\` — the example bundles the live site links to\n- \\`/softn-files/\\` — the same bundles, clearly separated, as \\`.softn\\` downloads\n' : ''}- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
+${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — the same bundles, clearly separated, as `.softn` downloads\n' : ''}- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
 \`BUILD-INFO.json\` records the exact SoftN revision, whether the source tree had
 uncommitted changes, and the Zipp revision/hash used by the browser runtime.

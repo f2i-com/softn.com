@@ -64,10 +64,28 @@ try {
     Config::get('siteName'); // writes config.json, admin key and salt included, when absent
     Seed::ifEmpty($from);
     @unlink("$out/seed.lock");
-    // The rules the site build ships beside a fresh data/: never served, and a note saying so.
+    // The rules the site build ships beside a fresh data/: never served, and a
+    // note saying so. A deployed api/ carries no data/ templates (the build
+    // leaves them out), so the rules are written from here in that case.
     foreach (['.htaccess', 'README.txt'] as $name) {
         $src = __DIR__ . "/data/$name";
         if (is_file($src) && !is_file("$out/$name")) copy($src, "$out/$name");
+    }
+    if (!is_file("$out/.htaccess")) {
+        file_put_contents("$out/.htaccess", <<<'RULES'
+# The directory's state lives here: the catalogue, every uploaded bundle,
+# each app's own database and the site's config with its admin key. None of
+# it is ever served; the API reads it from disk.
+<IfModule mod_authz_core.c>
+  Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order deny,allow
+  Deny from all
+</IfModule>
+Options -Indexes
+
+RULES);
     }
     $pdo = Db::catalog();
     $apps = (int) $pdo->query("SELECT COUNT(*) FROM apps WHERE source = 'seed'")->fetchColumn();

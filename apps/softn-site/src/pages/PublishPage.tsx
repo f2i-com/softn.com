@@ -24,7 +24,7 @@ import { Thumb } from '../components/directory/AppCard';
 import { CategoriesNotice } from '../components/directory/Controls';
 import { inspectBundle, type Inspection } from '../lib/inspectBundle';
 import { openedForHandoff, takeBundleHandoff } from '../lib/handoff';
-import { bundleFiles, takeDroppedBundles } from '../lib/dropped';
+import { bundleFiles, onDroppedBundles, takeDroppedBundles } from '../lib/dropped';
 
 const AUTHOR_KEY = 'softn.site.author';
 
@@ -103,6 +103,8 @@ function BundleDrop({ file, info, onFiles }: { file: File | null; info: Inspecti
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
         e.preventDefault();
+        // The page-wide drop must not take these too.
+        e.stopPropagation();
         setDragging(false);
         const files = Array.from(e.dataTransfer.files);
         if (files.length > 0) onFiles(files);
@@ -314,10 +316,15 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
     [takeFile],
   );
 
-  // Bundles dropped on another page of the site were stashed for this one.
+  // Bundles dropped on another page of the site were stashed for this one;
+  // a drop beside the zone while this page is up is stashed the same way.
   useEffect(() => {
-    const dropped = takeDroppedBundles();
-    if (dropped.length > 0) void takeFiles(dropped);
+    const take = () => {
+      const dropped = takeDroppedBundles();
+      if (dropped.length > 0) void takeFiles(dropped);
+    };
+    take();
+    return onDroppedBundles(take);
   }, [takeFiles]);
 
   // Opened by Builder or Studio with a bundle staged for this page: take it
