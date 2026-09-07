@@ -1121,6 +1121,7 @@ export class Parser {
 
       if (this.curTokenIs(TokenType.ELSEIF)) {
         alternate = this.parseIfBlock();
+        return { type: 'IfBlock', condition, consequent, alternate, loc };
       } else if (this.curTokenIs(TokenType.ELSE)) {
         this.nextToken();
         alternate = [];
@@ -1154,6 +1155,8 @@ export class Parser {
         }
       } else if (this.curTokenIs(TokenType.END)) {
         this.nextToken();
+        // A following #end belongs to the parent block, not this one.
+        return { type: 'IfBlock', condition, consequent, alternate, loc };
       }
     }
 

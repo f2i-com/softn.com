@@ -142,7 +142,9 @@ export default defineConfig({
         // both WASM engines. The copy stays so re-enabling the worker works in
         // dev and production alike; precaching a directory the app never
         // references does not.
-        globIgnores: ['**/ort-*.wasm', '**/core-runtime/**'],
+        // Optional demos are removed from the default website distribution.
+        // Missing demo icons must not prevent the worker from installing.
+        globIgnores: ['**/ort-*.wasm', '**/core-runtime/**', '**/demos/**'],
         maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
         runtimeCaching: [
           {
