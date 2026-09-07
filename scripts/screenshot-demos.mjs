@@ -3,7 +3,7 @@
  * Photograph every demo bundle, so the directory's cards show the app and
  * not its icon.
  *
- *   node scripts/screenshot-demos.mjs [--base http://localhost:1420/web] [--only Name,Name]
+ *   node scripts/screenshot-demos.mjs [--base http://localhost:1420/web] [--only Name,Name] [--dir <folder>] [--no-api]
  *
  * Opens each bundle from apps/softn-web/public/demos/index.json in the web
  * runtime (a dev server or a built site; the default is the runtime behind
@@ -14,7 +14,9 @@
  * screen needs a click or a keypress, and writes a 1280×800 WebP to
  * apps/softn-web/public/demos/thumbs/<Name>.webp. The site build copies the
  * folder beside the bundles, and the directory's seed attaches each picture
- * to its app.
+ * to its app. `--dir` photographs another folder of the same shape (an
+ * index.json beside its bundles, served as /demos/ by whatever answers at
+ * --base), writing its thumbs/ there — the softn-apps folder uses it.
  *
  * No dependencies: Node 22's global WebSocket talks the DevTools protocol.
  */
@@ -25,19 +27,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const demosDir = path.join(root, 'apps/softn-web/public/demos');
-const outDir = path.join(demosDir, 'thumbs');
 
 const args = process.argv.slice(2);
 const flag = (name, fallback) => {
   const i = args.indexOf(name);
   return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
 };
+const demosDir = path.resolve(flag('--dir', path.join(root, 'apps/softn-web/public/demos')));
+const outDir = path.join(demosDir, 'thumbs');
 const base = flag('--base', 'http://localhost:1420/web').replace(/\/$/, '');
 const only = flag('--only', '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+// A recipe may open an app the way the directory serves it (Notes wants the
+// API behind it). Against a static server with no API, `--no-api` opens
+// every app from /demos/ instead.
+const noApi = args.includes('--no-api');
 
 const BROWSERS = [
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -81,6 +87,10 @@ const RECIPES = {
   WarbleWire: [{ click: 'Allow' }, { wait: 800 }],
   TexasHoldem: [{ wait: 2500 }],
   TheOffice: [{ wait: 3000 }],
+  // Games published from their own repositories (the softn-apps folder):
+  // their title screens are the picture, once the scene behind has drawn.
+  TheNightWindow: [{ click: 'Allow' }, { wait: 4000 }],
+  LastSound3D: [{ click: 'Allow' }, { wait: 4000 }],
 };
 
 const KEYS = {
@@ -280,7 +290,7 @@ async function main() {
     const t0 = Date.now();
     try {
       const recipe = RECIPES[name] ?? [{ wait: 1500 }];
-      const open = recipe.find((s) => s.open)?.open ?? `/demos/${entry.file}`;
+      const open = (noApi ? undefined : recipe.find((s) => s.open)?.open) ?? `/demos/${entry.file}`;
       await page.goto(`${base}/?open=${encodeURIComponent(open)}&embed=1`);
       const ready = await waitForApp(page, 25000);
       await page.wait(ready ? 900 : 0);

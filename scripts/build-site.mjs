@@ -38,7 +38,14 @@ const outDir = path.join(root, 'dist');
 // the pinned softn-Examples release, ships the bundles under /demos/ and
 // /softn-files/, and lets the API seed the directory with them on first
 // use — the shape softn.com itself deploys.
-const withDemos = process.argv.includes('--with-demos') || process.env.SOFTN_WITH_DEMOS === '1';
+// `--demos-dir <folder>` ships a folder of that shape instead — an index.json
+// beside its bundles and a thumbs/ of screenshots, the shape the softn-apps
+// folder produces — without fetching anything.
+const demosDirArg = (() => {
+  const i = process.argv.indexOf('--demos-dir');
+  return i >= 0 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : process.env.SOFTN_DEMOS_DIR ? path.resolve(process.env.SOFTN_DEMOS_DIR) : null;
+})();
+const withDemos = demosDirArg !== null || process.argv.includes('--with-demos') || process.env.SOFTN_WITH_DEMOS === '1';
 
 const APPS = [
   { workspace: '@softn/web', dir: 'apps/softn-web', base: '/web/', into: 'web' },
@@ -615,7 +622,7 @@ function writeBuildInfo() {
 
 // The example bundles come from the pinned softn-Examples release, verified
 // against the pins in apps/softn-web/public/demos/index.json.
-if (withDemos) run(['run', 'fetch:demos']);
+if (withDemos && demosDirArg === null) run(['run', 'fetch:demos']);
 
 // The apps import @softn/core and @softn/components from dist/, so those have
 // to exist before any app build starts.
@@ -651,10 +658,18 @@ for (const app of APPS) {
 // places. Without them: the runtime's public copy, which the app build carried
 // into dist/web/demos, is removed as well, so the archive holds no bundle —
 // the launcher treats a missing catalogue as "nothing to offer", not an error.
-const demos = path.join(root, 'apps/softn-web/public/demos');
+const demos = demosDirArg ?? path.join(root, 'apps/softn-web/public/demos');
 if (withDemos) {
-  requireDir(demos, 'The runtime');
+  requireDir(demos, demosDirArg ? 'The --demos-dir folder' : 'The runtime');
+  if (!fs.existsSync(path.join(demos, 'index.json'))) throw new Error(`${demos} has no index.json`);
   copyDir(demos, path.join(outDir, 'demos'));
+  // The runtime's own copy under /web/demos/ is the pinned set; with a
+  // folder of someone else's apps the root copy is the one the site links
+  // to, so the runtime's launcher list follows it.
+  if (demosDirArg) {
+    fs.rmSync(path.join(outDir, 'web', 'demos'), { recursive: true, force: true });
+    copyDir(demos, path.join(outDir, 'web', 'demos'));
+  }
 } else {
   fs.rmSync(path.join(outDir, 'web', 'demos'), { recursive: true, force: true });
 }

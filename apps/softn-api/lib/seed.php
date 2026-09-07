@@ -88,9 +88,12 @@ SQL)->fetchAll(PDO::FETCH_ASSOC);
                     'slug' => $id,
                     'name' => is_string($entry['name'] ?? null) ? $entry['name'] : null,
                     'description' => is_string($entry['description'] ?? null) ? $entry['description'] : null,
-                    'author' => 'SoftN',
-                    'category' => self::CATEGORY[$id] ?? 'demos',
-                    'tags' => self::TAGS[$id] ?? '',
+                    // An index can name these itself (the softn-apps folder does,
+                    // for games from their own repositories); the built-in
+                    // examples keep their tables.
+                    'author' => is_string($entry['author'] ?? null) && $entry['author'] !== '' ? $entry['author'] : 'SoftN',
+                    'category' => self::CATEGORY[$id] ?? (is_string($entry['category'] ?? null) && $entry['category'] !== '' ? $entry['category'] : 'demos'),
+                    'tags' => self::TAGS[$id] ?? (is_string($entry['tags'] ?? null) ? $entry['tags'] : ''),
                     'primary' => is_string($entry['primary'] ?? null) ? $entry['primary'] : null,
                 ];
 
