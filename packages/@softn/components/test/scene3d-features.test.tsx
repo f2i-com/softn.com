@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { createRoot, type Root } from 'react-dom/client';
 import { Scene3D, type Scene3DObject, type Scene3DLight } from '../src/threed/Scene3D';
+const environmentProbe = vi.hoisted(() => ({ created: 0, disposed: 0 }));
 
 vi.mock('three', async (importOriginal) => {
   const actual = await importOriginal<typeof import('three')>();
@@ -26,7 +27,17 @@ vi.mock('three', async (importOriginal) => {
     forceContextLoss() {}
   }
 
-  return { ...actual, WebGLRenderer: TestWebGLRenderer };
+  class TestPMREMGenerator {
+    fromScene() {
+      environmentProbe.created++;
+      const target = new actual.WebGLRenderTarget(16, 16);
+      const dispose = target.dispose.bind(target);
+      target.dispose = () => { environmentProbe.disposed++; dispose(); };
+      return target;
+    }
+    dispose() {}
+  }
+  return { ...actual, WebGLRenderer: TestWebGLRenderer, PMREMGenerator: TestPMREMGenerator };
 });
 
 let container: HTMLDivElement;
@@ -48,6 +59,36 @@ afterEach(() => {
 });
 
 describe('Scene3D enhanced features', () => {
+  it('owns studio environment resources and updates intensity without regenerating', () => {
+    const before = environmentProbe.created, disposed = environmentProbe.disposed;
+    act(() => root.render(<Scene3D environment="studio" environmentIntensity={.5} />));
+    const canvas = container.querySelector('canvas') as HTMLCanvasElement & { __softnScene: THREE.Scene };
+    const texture = canvas.__softnScene.environment;
+    expect(texture).not.toBeNull();
+    act(() => root.render(<Scene3D environment="studio" environmentIntensity={2} />));
+    expect(canvas.__softnScene.environment).toBe(texture);
+    expect(canvas.__softnScene.environmentIntensity).toBe(2);
+    expect(environmentProbe.created).toBe(before+1);
+    act(() => root.render(<Scene3D environment="none" />));
+    expect(canvas.__softnScene.environment).toBeNull();
+    expect(environmentProbe.disposed).toBe(disposed+1);
+  });
+  it('updates AgX tone mapping and clamps exposure', () => {
+    act(() => root.render(<Scene3D toneMapping="aces" />));
+    const canvas = container.querySelector('canvas') as HTMLCanvasElement & { __softnRenderer: THREE.WebGLRenderer };
+    act(() => root.render(<Scene3D toneMapping="agx" toneMappingExposure={100} />));
+    expect(canvas.__softnRenderer.toneMapping).toBe(THREE.AgXToneMapping);
+    expect(canvas.__softnRenderer.toneMappingExposure).toBe(8);
+  });
+  it('preserves a non-origin initial camera target with orbit controls', () => {
+    const position = { x: 0.12, y: 1.38, z: 3.32 };
+    const lookAt = { x: 0, y: 1.06, z: 0 };
+    act(() => root.render(<Scene3D camera={{ position, lookAt }} orbitControls />));
+    const canvas = container.querySelector('canvas') as HTMLCanvasElement & { __softnCamera: THREE.Camera };
+    const direction = canvas.__softnCamera.getWorldDirection(new THREE.Vector3());
+    const expected = new THREE.Vector3(lookAt.x-position.x, lookAt.y-position.y, lookAt.z-position.z).normalize();
+    expect(direction.distanceTo(expected)).toBeLessThan(0.00001);
+  });
   it('renders capsule and prism shapes without error', () => {
     const objects: Scene3DObject[] = [
       { id: 'boiler', type: 'capsule', radius: 0.5, height: 2, color: '#333333' },

@@ -2,6 +2,8 @@ import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { prepareModelMaterials } from './model-material-quality';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
@@ -330,7 +332,11 @@ export interface Scene3DProps {
    */
   maxPixelRatio?: number;
   /** Tone mapping curve for cinematic highlights. Defaults to 'aces'. */
-  toneMapping?: 'aces' | 'linear' | 'reinhard' | 'cineon' | 'none';
+  toneMapping?: 'aces' | 'agx' | 'linear' | 'reinhard' | 'cineon' | 'none';
+  /** Optional built-in image-based studio lighting; no network/HDR download. */
+  environment?: 'none' | 'studio';
+  /** Studio lighting strength, clamped to 0..4. Default 0.7. */
+  environmentIntensity?: number;
   /** Exposure multiplier for tone mapping (default 1.0). */
   toneMappingExposure?: number;
   /**
@@ -1322,6 +1328,8 @@ export function Scene3D({
   cameraSmoothing = 0,
   maxPixelRatio = 2,
   toneMapping = 'aces',
+  environment = 'none',
+  environmentIntensity = .7,
   effects,
   toneMappingExposure = 1,
   onReady,
@@ -1481,7 +1489,8 @@ export function Scene3D({
       renderer.outputColorSpace = THREE.SRGBColorSpace;
     }
     if ('toneMapping' in renderer) {
-      if (toneMapping === 'linear') renderer.toneMapping = THREE.LinearToneMapping;
+      if (toneMapping === 'agx') renderer.toneMapping = THREE.AgXToneMapping;
+      else if (toneMapping === 'linear') renderer.toneMapping = THREE.LinearToneMapping;
       else if (toneMapping === 'reinhard') renderer.toneMapping = THREE.ReinhardToneMapping;
       else if (toneMapping === 'cineon') renderer.toneMapping = THREE.CineonToneMapping;
       else if (toneMapping === 'none') renderer.toneMapping = THREE.NoToneMapping;
@@ -1592,6 +1601,10 @@ export function Scene3D({
     let controls: OrbitControls | null = null;
     if (enableOrbitControls) {
       controls = new OrbitControls(cam, renderer.domElement);
+      // OrbitControls otherwise replaces the initial lookAt with the origin
+      // on its first update, before a camera-prop change can repair it.
+      controls.target.set(lookAt.x, lookAt.y, lookAt.z);
+      controls.update();
       controls.enableDamping = true;
       controls.dampingFactor = 0.05;
       controls.autoRotate = autoRotate;
@@ -2150,6 +2163,40 @@ export function Scene3D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Own the generated environment independently from the model cache. Changing
+  // intensity does not regenerate the cubemap; unmount releases GPU resources.
+  useEffect(() => {
+    const renderer = rendererRef.current, scene = sceneRef.current;
+    if (!renderer || !scene || environment !== 'studio') return;
+    const room = new RoomEnvironment();
+    const generator = new THREE.PMREMGenerator(renderer);
+    let target: THREE.WebGLRenderTarget;
+    try { target = generator.fromScene(room, .04); }
+    finally { room.dispose(); generator.dispose(); }
+    scene.environment = target.texture;
+    return () => {
+      if (scene.environment === target.texture) scene.environment = null;
+      target.dispose();
+    };
+  }, [environment]);
+
+  useEffect(() => {
+    if (sceneRef.current) sceneRef.current.environmentIntensity = Number.isFinite(environmentIntensity)
+      ? Math.max(0, Math.min(4, environmentIntensity)) : .7;
+  }, [environmentIntensity, environment]);
+
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    renderer.toneMapping = toneMapping === 'agx' ? THREE.AgXToneMapping
+      : toneMapping === 'linear' ? THREE.LinearToneMapping
+      : toneMapping === 'reinhard' ? THREE.ReinhardToneMapping
+      : toneMapping === 'cineon' ? THREE.CineonToneMapping
+      : toneMapping === 'none' ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = Number.isFinite(toneMappingExposure)
+      ? Math.max(0, Math.min(8, toneMappingExposure)) : 1;
+  }, [toneMapping, toneMappingExposure]);
+
   // Fullscreen toggle
   const toggleFullscreen = useCallback(() => {
     const wrapper = wrapperRef.current;
@@ -2362,6 +2409,7 @@ export function Scene3D({
               scene.remove(placeholder);
               applyTransform(loaded, spec, false);
               applyMaterialOverrides(loaded, spec);
+              prepareModelMaterials(loaded, rendererRef.current?.capabilities.getMaxAnisotropy() ?? 1);
               scene.add(loaded);
               meshMap.set(obj.id, {
                 mesh: loaded,
