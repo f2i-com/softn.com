@@ -44,12 +44,25 @@ jobs:
         run: |
           npm run build:packages
           npm run build -w @softn/web
+          npm run build -w @softn/single
+          npm run package:single
 
       - name: Upload web build
         uses: actions/upload-artifact@v4
         with:
           name: softn-web
           path: apps/softn-web/dist/
+          retention-days: 7
+
+      - name: Upload single-app hosting ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: softn-single-hosting
+          path: |
+            release/softn-single-v*.zip
+            release/softn-single-v*.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
           retention-days: 7
 
   build-tauri:
