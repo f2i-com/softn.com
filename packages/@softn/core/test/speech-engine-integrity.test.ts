@@ -20,12 +20,12 @@ it('the compiled worker excludes the optional engine executable and names its pi
 describe('speech worker request lifecycle',()=>{
  afterEach(()=>{vi.unstubAllGlobals();vi.useRealTimers();});
  function setup(){
-  let worker!:FakeWorker;
   class FakeWorker {
+    static instance:FakeWorker;
     onmessage:((event:{data:unknown})=>void)|null=null;onerror:(()=>void)|null=null;onmessageerror:(()=>void)|null=null;sent:Array<{id:number,type:string}>=[];terminated=false;
-    constructor(){worker=this;}postMessage(value:{id:number,type:string}){this.sent.push(value);}terminate(){this.terminated=true;}
+    constructor(){FakeWorker.instance=this;}postMessage(value:{id:number,type:string}){this.sent.push(value);}terminate(){this.terminated=true;}
   }
-  vi.stubGlobal('Worker',FakeWorker);const client=new SpeechWorkerClient();return {client,getWorker:()=>worker};
+  vi.stubGlobal('Worker',FakeWorker);const client=new SpeechWorkerClient();return {client,getWorker:()=>FakeWorker.instance};
  }
  it('bounds progress and terminates owned pending work on dispose',async()=>{
   const {client,getWorker}=setup();const progress=vi.fn();const load=client.load(progress);const worker=getWorker();
