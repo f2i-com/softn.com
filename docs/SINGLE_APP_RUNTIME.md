@@ -6,7 +6,7 @@ After loading, the site favicon uses the bundled image at `manifest.icon`, inclu
 
 ## Build and deploy
 
-Use the repository's CI toolchain (Node 20.19+ with npm 10). Run `npm ci`, `npm run build:single`, then `npm run package:single`. Upload the **contents** of `release/softn-single-v0.0.6.zip` to an HTTPS web directory, at the root or in a subdirectory. PHP, the directory API and a service worker are not required. Keep the adjacent `assets` paths intact. Serve `.wasm` as `application/wasm` and `.mjs` as JavaScript; the included Apache file sets those types and disables directory listing. Other servers need equivalent MIME settings. Development: `npm run dev -w @softn/single`; production preview: `npm run preview -w @softn/single`.
+Use the repository's CI toolchain (Node 20.19+ with npm 10). Run `npm ci`, `npm run build:single`, then `npm run package:single`. Upload the **contents** of `release/softn-single-v0.0.7.zip` to an HTTPS web directory, at the root or in a subdirectory. PHP, the directory API and a service worker are not required. Keep the adjacent `assets` paths intact. Serve `.wasm` as `application/wasm` and `.mjs` as JavaScript; the included Apache file sets those types and disables directory listing. Other servers need equivalent MIME settings. Development: `npm run dev -w @softn/single`; production preview: `npm run preview -w @softn/single`.
 
 Replace the sample `app.softn` in the deployed directory and edit `runtime.config.json`:
 

@@ -4,7 +4,7 @@ name: Release
 # by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so the release
 # builds the shared packages directly from the checked-in engine.
 #
-# One artifact goes on the release: the website — the complete static
+# Two hosting archives go on the release: the single-app runtime and the website — the complete static
 # softn.com as one archive whose contents drop into a web host's document
 # root. The desktop apps used to be built here too, one job per app and
 # platform; that took tens of minutes on three operating systems for every
@@ -51,7 +51,7 @@ jobs:
   # archive by scripts/package-site.mjs, which reads the archive back and
   # compares every entry with dist/ before the file is allowed to exist.
   website:
-    name: Package the website
+    name: Package website and single-app runtime
     needs: verify
     permissions:
       contents: write
@@ -102,6 +102,7 @@ jobs:
             fi
           }
           check "package.json" "$(node -p "require('./package.json').version")"
+          check "apps/softn-single/package.json" "$(node -p "require('./apps/softn-single/package.json').version")"
           for app in softn-loader softn-builder; do
             check "apps/$app/src-tauri/tauri.conf.json" \
               "$(node -p "require('./apps/$app/src-tauri/tauri.conf.json').version")"
@@ -152,7 +153,7 @@ jobs:
       - name: Test the archive with unzip
         run: |
           set -euo pipefail
-          zip="$(ls release/*.zip)"
+          zip="$(ls release/softn-com-*.zip)"
           unzip -tq "$zip"
           listed="$(unzip -Z1 "$zip" | wc -l)"
           onDisk="$(find dist -type f | wc -l)"
@@ -173,22 +174,47 @@ jobs:
       - name: Smoke-test the packaged website
         run: |
           set -euo pipefail
-          zip="$(ls release/*.zip)"
+          zip="$(ls release/softn-com-*.zip)"
           rm -rf smoke-root && mkdir smoke-root
           unzip -q "$zip" -d smoke-root
           node scripts/smoke-site.mjs --root smoke-root
           rm -rf smoke-root
+
+      - name: Build and package the single-app runtime
+        run: |
+          set -euo pipefail
+          npm run build -w @softn/single
+          npm run package:single
+          zip="release/softn-single-$RELEASE_TAG.zip"
+          unzip -tq "$zip"
+          unzip -Z1 "$zip" | grep -qx 'index.html'
+          unzip -Z1 "$zip" | grep -qx 'runtime.config.json'
+          unzip -Z1 "$zip" | grep -qx '.htaccess'
+          listed="$(unzip -Z1 "$zip" | wc -l)"
+          onDisk="$(find apps/softn-single/dist -type f ! -name '*.map' | wc -l)"
+          test "$listed" -eq "$onDisk"
+          (cd release && sha256sum -c "softn-single-$RELEASE_TAG.zip.sha256" --strict)
 
       - name: Keep the archive with the workflow run
         uses: actions/upload-artifact@v4
         with:
           name: website-${{ env.RELEASE_TAG }}
           path: |
-            release/*.zip
-            release/*.sha256
+            release/softn-com-*.zip
+            release/softn-com-*.sha256
           if-no-files-found: error
 
-      - name: Attach the archive to the release
+      - name: Keep the single-app hosting ZIP with the workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: single-app-${{ env.RELEASE_TAG }}
+          path: |
+            release/softn-single-${{ env.RELEASE_TAG }}.zip
+            release/softn-single-${{ env.RELEASE_TAG }}.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Attach both hosting archives to the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
