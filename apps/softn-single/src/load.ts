@@ -4,6 +4,7 @@ import {
   loadXDBData,
   createAssetResolver,
   extractPermissions,
+  extractIconDataUrl,
   type BundleManifest,
 } from '../../softn-web/src/lib/bundleProcessor';
 import { digest, fetchBytes, parseConfig, parsePermissions } from './config';
@@ -44,6 +45,11 @@ export async function loadApplication(configUrl: string, signal: AbortSignal) {
     grantKey,
     appId,
     textFiles,
+    icon:
+      typeof raw.icon === 'string' &&
+      (binaryFiles.get(raw.icon)?.byteLength ?? Infinity) <= 256 * 1024
+        ? extractIconDataUrl(binaryFiles, raw)
+        : undefined,
     ...source,
     assets: createAssetResolver(binaryFiles, textFiles),
   };

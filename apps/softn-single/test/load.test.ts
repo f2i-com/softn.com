@@ -25,6 +25,65 @@ function bundle(permission = '{"permissions":{}}') {
   });
 }
 afterEach(() => vi.unstubAllGlobals());
+it.each(['assets/icon.svg', 'assets/icon.png', 'assets/icon.ico'])(
+  'extracts a bundled favicon from %s',
+  async (icon) => {
+    const image = strToU8('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const bytes = zipSync({
+      'manifest.json': strToU8(
+        JSON.stringify({
+          name: 'Icon example',
+          main: 'main.ui',
+          icon,
+          files: { ui: ['main.ui'], logic: [], xdb: [] },
+        })
+      ),
+      'main.ui': strToU8('<App><Text>Example</Text></App>'),
+      [icon]: image,
+    });
+    vi.stubGlobal(
+      'fetch',
+      async (url: string) =>
+        new Response(
+          url === base
+            ? JSON.stringify({ version: 1, id: 'sample', title: 'Example', bundle: 'app.softn' })
+            : bytes
+        )
+    );
+    const app = await loadApplication(base, new AbortController().signal);
+    expect(app.icon).toMatch(/^data:image\/(svg\+xml|png|x-icon);base64,/);
+    app.assets.dispose();
+  }
+);
+it.each(['https://example.test/icon.svg', '../icon.svg', 'missing.png', 'assets/icon.html', 7])(
+  'ignores an unavailable or unsupported icon: %s',
+  async (icon) => {
+    const bytes = zipSync({
+      'manifest.json': strToU8(
+        JSON.stringify({
+          name: 'Icon example',
+          main: 'main.ui',
+          icon,
+          files: { ui: ['main.ui'], logic: [], xdb: [] },
+        })
+      ),
+      'main.ui': strToU8('<App><Text>Example</Text></App>'),
+      'assets/icon.html': strToU8('<script>alert(1)</script>'),
+    });
+    vi.stubGlobal(
+      'fetch',
+      async (url: string) =>
+        new Response(
+          url === base
+            ? JSON.stringify({ version: 1, id: 'sample', title: 'Example', bundle: 'app.softn' })
+            : bytes
+        )
+    );
+    const app = await loadApplication(base, new AbortController().signal);
+    expect(app.icon).toBeUndefined();
+    app.assets.dispose();
+  }
+);
 it('ships a sample whose event handler and state are included in the composed source', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'single-example-'));
   try {

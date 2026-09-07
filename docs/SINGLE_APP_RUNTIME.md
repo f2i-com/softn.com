@@ -2,6 +2,8 @@
 
 `apps/softn-single` is a separate entry point that uses the real renderer, component registry, ZIPP sandbox and XDB. It does not import the launcher, catalogue, editor, account bar, bundle cache or download controls. Its loader is a spinner, its document title comes from configuration, and its shell has no product branding. The application's own UI is rendered unchanged.
 
+After loading, the site favicon uses the bundled image at `manifest.icon`, including SVG, PNG and ICO. Icons must be supported bundled images no larger than 256 KiB; missing or unsupported icons leave a blank, unbranded fallback. No external icon URL or root `/favicon.ico` request is needed. The favicon is available before the permission bar is accepted.
+
 ## Build and deploy
 
 Use the repository's CI toolchain (Node 20.19+ with npm 10). Run `npm ci`, `npm run build:single`, then `npm run package:single`. Upload the **contents** of `release/softn-single-v0.0.6.zip` to an HTTPS web directory, at the root or in a subdirectory. PHP, the directory API and a service worker are not required. Keep the adjacent `assets` paths intact. Serve `.wasm` as `application/wasm` and `.mjs` as JavaScript; the included Apache file sets those types and disables directory listing. Other servers need equivalent MIME settings. Development: `npm run dev -w @softn/single`; production preview: `npm run preview -w @softn/single`.
