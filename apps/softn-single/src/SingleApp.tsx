@@ -3,6 +3,7 @@ import { SoftNWithXDB, inspectDeclaration, type Capability } from '@softn/core';
 import { ThemeProvider } from '@softn/components';
 import { createImportResolver, withheldPermissions } from '../../softn-web/src/lib/bundleProcessor';
 import { loadApplication, type LoadedApplication } from './load';
+import { installFavicon } from './favicon';
 const labels: Record<Capability, string> = {
   net: 'Internet access',
   camera: 'Camera',
@@ -145,6 +146,7 @@ export function SingleApp({ configUrl }: { configUrl: string }) {
   useEffect(() => {
     const controller = new AbortController();
     let owned: LoadedApplication | null = null;
+    let restoreFavicon: (() => void) | undefined;
     let active = true;
     const timeout = setTimeout(() => controller.abort(), 60000);
     void loadApplication(configUrl, controller.signal)
@@ -155,6 +157,7 @@ export function SingleApp({ configUrl }: { configUrl: string }) {
           return;
         }
         document.title = result.config.title;
+        restoreFavicon = installFavicon(result.icon);
         setApp(result);
       })
       .catch(() => {
@@ -166,6 +169,7 @@ export function SingleApp({ configUrl }: { configUrl: string }) {
       controller.abort();
       clearTimeout(timeout);
       owned?.assets.dispose();
+      restoreFavicon?.();
     };
   }, [configUrl]);
   return (
