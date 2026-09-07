@@ -33,6 +33,7 @@ const DEPLOYED_WORKSPACES = [
 // runtime copied into dist. A production-only dependency walk would otherwise
 // omit the licence for code the PWA actually serves.
 const EMITTED_BUILD_PACKAGES = [
+  'kokoro-js',
   'workbox-cacheable-response',
   'workbox-core',
   'workbox-expiration',
@@ -48,6 +49,9 @@ const EMITTED_BUILD_PACKAGES = [
 // Keeping this list narrow and parent-qualified prevents a package name from
 // being excluded when another runtime dependency genuinely uses it.
 const STATIC_BROWSER_OMISSIONS = new Map([
+  // The distributed worker uses a verifier for the separately downloaded engine,
+  // not phonemizer's embedded eSpeak binary. Its provenance is in speech/NOTICE.
+  ['kokoro-js', new Set(['phonemizer'])],
   ['@huggingface/transformers', new Set(['onnxruntime-node', 'sharp'])],
   ['zxing-wasm', new Set(['@types/emscripten', 'type-fest'])],
 ]);

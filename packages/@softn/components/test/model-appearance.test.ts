@@ -31,4 +31,22 @@ describe('declarative model appearance',()=>{
   const {mesh}=fixture();applyModelAppearance(mesh,{morphs:{Shape:NaN,toString:1}});
   expect(mesh.morphTargetInfluences).toEqual([0,.7]);
  });
+ it('smooths only requested targets across mixer writes and closes on silence',()=>{
+  const {mesh}=fixture(); const spec={morphs:{Shape:1},morphSmoothingMs:{Shape:50}};
+  applyModelAppearance(mesh,spec,1/60); const first=mesh.morphTargetInfluences![0];
+  expect(first).toBeGreaterThan(0); expect(first).toBeLessThan(1);
+  mesh.morphTargetInfluences![0]=0; applyModelAppearance(mesh,spec,1/60);
+  expect(mesh.morphTargetInfluences![0]).toBeGreaterThan(first); expect(mesh.morphTargetInfluences![1]).toBe(.7);
+  for(let i=0;i<30;i++){mesh.morphTargetInfluences![0]=1;applyModelAppearance(mesh,{morphs:{Shape:0},morphSmoothingMs:{Shape:50}},1/60);}
+  expect(mesh.morphTargetInfluences![0]).toBe(0);
+ });
+ it('bounds smoothing and frame gaps and clears removed controls',()=>{
+  const {mesh}=fixture();applyModelAppearance(mesh,{morphs:{Shape:1},morphSmoothingMs:{Shape:Infinity}},1/60);
+  expect(mesh.morphTargetInfluences![0]).toBe(1);
+  applyModelAppearance(mesh,{morphs:{Shape:0},morphSmoothingMs:{Shape:99999}},9999);
+  expect(mesh.morphTargetInfluences![0]).toBeCloseTo(Math.exp(-.5));
+  applyModelAppearance(mesh,undefined,1/60);expect(mesh.morphTargetInfluences![0]).toBe(0);
+  applyModelAppearance(mesh,{morphs:{Shape:1},morphSmoothingMs:{Shape:50}},1/60);
+  expect(mesh.morphTargetInfluences![0]).toBeCloseTo(1-Math.exp(-1/3));
+ });
 });

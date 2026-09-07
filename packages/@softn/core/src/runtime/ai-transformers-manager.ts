@@ -437,7 +437,11 @@ export class TransformersManager {
     }
 
     // Apply chat template to get the prompt text
-    const templateOpts = { add_generation_prompt: true };
+    const templateOpts: Record<string, unknown> = { add_generation_prompt: true };
+    // False must survive the bridge; never pass template switches to generate().
+    if (typeof options?.enable_thinking === 'boolean') {
+      templateOpts.enable_thinking = options.enable_thinking;
+    }
     let promptText: string;
     if (processor) {
       promptText = processor.apply_chat_template(messages, templateOpts);

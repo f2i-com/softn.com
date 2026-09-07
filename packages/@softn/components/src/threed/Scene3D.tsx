@@ -2001,7 +2001,7 @@ export function Scene3D({
 
       // Clip mixers take real delta seconds, not the 60fps-normalised dtScale
       animationMap.forEach((entry) => entry.mixer.update(dt));
-      meshMap.forEach((entry) => { if (entry.spec.type === 'model') applyModelAppearance(entry.mesh, entry.spec.appearance); });
+      meshMap.forEach((entry) => { if (entry.spec.type === 'model') applyModelAppearance(entry.mesh, entry.spec.appearance, dt); });
 
       if (enablePointerLock) {
         if (sceneWindow.__scene3dWantLock && !isLocked()) {

@@ -1,0 +1,49 @@
+Optional local speech
+=====================
+
+The runtime includes Kokoro.js 1.2.1 (Apache-2.0), its isolated browser
+Transformers/ONNX runtime dependencies, and six Kokoro preset voice files.
+The Apache Kokoro license is provided as Kokoro-LICENSE.txt. Browser dependency
+licenses are included in the hosting distribution's third-party notices.
+
+Kokoro source:
+https://github.com/hexgrad/kokoro/tree/dfb907a02bba8152ca444717ca5d78747ccb4bec/kokoro.js
+Model and voice provenance:
+https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
+
+An explicit Load speech model action additionally downloads the model weights
+and a pinned optional phonemizer component directly to the user's browser.
+The hosting ZIP does NOT contain the phonemizer component or its embedded
+eSpeak executable/data. The worker verifies the downloaded component's exact
+byte size and SHA-256 before importing it; cached copies are reverified too.
+No speech input is sent in this download request. Synthesis runs locally.
+
+Optional component: phonemizer 1.2.1, 1,322,380 bytes
+URL: https://cdn.jsdelivr.net/npm/phonemizer@1.2.1/dist/phonemizer.js
+SHA-256: 193481f474f7c1ea81df3195d18b45df8ef7254dbdccb3f193d60215c4897bec
+Wrapper source:
+https://github.com/xenova/phonemizer.js/tree/6835144b7ee9043129222549c1ed2f6a27216278
+
+The wrapper's package declares Apache-2.0, but its embedded eSpeak NG engine
+and data are GPL-3.0-or-later. Included eSpeak-GPL-3.0.txt and
+eSpeak-BSD-2-Clause.txt retain the upstream engine license notices. This does
+not relabel the combined downloaded component as Apache-only.
+
+Upstream eSpeak source and build instructions:
+https://github.com/espeak-ng/espeak-ng
+https://github.com/espeak-ng/espeak-ng/blob/master/emscripten/README.md
+
+The published phonemizer repository contains a precompiled engine blob and
+does not identify its precise C-source revision/toolchain. Those upstream
+links are provenance information, not a claim of verified corresponding source
+for that exact blob. Consequently this hosting distribution deliberately does
+not redistribute it. A future bundled replacement must retain the exact
+engine source revision and reproducible build inputs.
+
+Preset voice files, 522,240 bytes each, verified against official model LFS:
+af_heart.bin   d583ccff3cdca2f7fae535cb998ac07e9fcb90f09737b9a41fa2734ec44a8f0b
+af_bella.bin   f69d836209b78eb8c66e75e3cda491e26ea838a3674257e9d4e5703cbaf55c8b
+af_sarah.bin   4409fbc125afabacc615d94db5398d847006a737b0247d6892b7a9a0007a2f0a
+bf_emma.bin    669fe0647f9dd04fcab92f1439a40eeb4c8b4ab1f82e4996fe3d918ce4a63b73
+am_michael.bin 1d1f21dd8da39c30705cd4c75d039d265e9bc4a2a93ed09bc9e1b1225eb95ba1
+bm_george.bin  c4b235a4c1f2cd3b939fed08b899ce9385638b763f7b73a59616c4fc9bd6c9bc

@@ -10,6 +10,7 @@
 
 import { VmAdapter, VM_BRIDGE_PREAMBLE, type SymbolScope } from './vm-adapter';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
+import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, parseCapturedKeys, setCapturedKeys, shouldCaptureKey } from './key-capture';
 import { deepEqual } from './vm-state';
@@ -612,6 +613,7 @@ export class SoftNScriptRuntime {
   private externalValuesGlobalIndex = -1;
   /** Network requests owned by this runtime, cancelled when the app closes. */
   private netAbortControllers = new Set<AbortController>();
+  private localSpeech: LocalSpeechHost | null = null;
   private static readonly MAX_NET_RESPONSE_BYTES = 10 * 1024 * 1024;
 
   /** Sounds this app currently has playing, by the handle its script holds.
@@ -1669,6 +1671,8 @@ export class SoftNScriptRuntime {
     // the tab on an app playing music would otherwise leave it playing for
     // the rest of the session with nothing on screen to stop it.
     this.stopAllAudio();
+    this.localSpeech?.dispose();
+    this.localSpeech = null;
 
     // And stop listening. A microphone left open outlives the app that opened
     // it: the tracks stay live, the OS recording indicator stays lit, and
@@ -2043,6 +2047,14 @@ export class SoftNScriptRuntime {
         return this.handleAudioSetVolume(call);
       case 'audio.whenEnded':
         return this.handleAudioWhenEnded(call);
+      case 'audio.speechCapabilities':
+      case 'audio.loadSpeechModel':
+      case 'audio.releaseSpeechModel':
+      case 'audio.speak':
+      case 'audio.speechState':
+      case 'audio.whenSpeechEnded':
+      case 'audio.stopSpeech':
+        return this.handleLocalSpeech(call);
       case 'files.pickFile':
         return this.handleFilesPickFile(call);
       case 'files.readText':
@@ -2278,6 +2290,21 @@ export class SoftNScriptRuntime {
       clearTimeout(timeout);
       this.netAbortControllers.delete(abortController);
     }
+  }
+
+  private async handleLocalSpeech(call: PendingHostCall): Promise<unknown> {
+    let neural = call.kind === 'audio.loadSpeechModel';
+    if(call.kind === 'audio.speak' && call.args[0] && call.args[0].length <= 20000) {
+      try { neural = JSON.parse(call.args[0]).provider === 'kokoro'; } catch { /* Host returns a bounded payload error. */ }
+    }
+    if(neural) {
+      this.checkPermission('ai');
+      const config=this.permissionConfig?.permissions.ai;
+      if(config?.allowedSources && !config.allowedSources.includes('huggingface'))return {loaded:false,started:false,reason:'speech-model-source-not-permitted'};
+      if(typeof config?.maxModelSizeMB==='number' && config.maxModelSizeMB < 96)return {loaded:false,started:false,reason:'speech-model-size-not-permitted'};
+    }
+    if(!this.localSpeech)this.localSpeech=new LocalSpeechHost();
+    return this.localSpeech.handle(call.kind,call.args);
   }
 
   private async handleQrEncode(call: PendingHostCall): Promise<unknown> {

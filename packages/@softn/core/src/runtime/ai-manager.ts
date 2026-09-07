@@ -91,6 +91,8 @@ export interface PipelineOptions {
 
 /** Options for text generation */
 export interface GenerateOptions {
+  /** Direct-model chat-template reasoning switch; omitted preserves model defaults. */
+  enable_thinking?: boolean;
   max_new_tokens?: number;
   temperature?: number;
   top_k?: number;
