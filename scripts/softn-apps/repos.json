@@ -1,0 +1,8 @@
+{
+  "//": "Where the apps come from. Each entry is a GitHub repository whose latest release carries .softn bundles. `kind: catalogue` reads the release's catalogue.json (softn-Examples); anything else takes every .softn asset and its SHA256SUMS.txt. `tag` pins a release instead of the latest. `category`, `tags` and `author` are what the directory files them under; the built-in examples keep the directory's own tables.",
+  "sources": [
+    { "repo": "f2i-com/softn-Examples", "kind": "catalogue", "category": "demos" },
+    { "repo": "f2i-com/softn-TheNightWindow", "category": "games", "tags": "horror,text,terminal", "author": "SoftN" },
+    { "repo": "f2i-com/softn-LastSound", "category": "games", "tags": "3d,horror", "author": "SoftN" }
+  ]
+}
