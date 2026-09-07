@@ -2,6 +2,8 @@ import { LocalSystemSpeechHost } from './local-system-speech.mjs';
 import { SpeechWorkerClient, type NeuralSpeechBackend, type SpeechPCM, type SpeechProgress } from './speech-worker-client';
 
 const clamp=(value:unknown,lo:number,hi:number,fallback:number):number=>typeof value==='number' && Number.isFinite(value)?Math.min(hi,Math.max(lo,value)):fallback;
+// Intentionally remove C0 controls while preserving tabs and line breaks.
+// eslint-disable-next-line no-control-regex
 const clean=(value:unknown,max:number):string=>typeof value==='string'?value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').trim().slice(0,max):'';
 export const NEURAL_SPEECH_VOICES=[
   {voiceURI:'af_heart',name:'Heart',lang:'en-US',local:true},
