@@ -767,6 +767,32 @@ test('the admin key is not held to the publish limit; a wrong key is', skip, asy
   resetRateLimits();
 });
 
+test('the offline seed writes a complete data/ from a folder of apps', skip, () => {
+  // The temporary site laid out above: its api/ is the deployed shape, and its
+  // demos/ is a folder of apps in the seeder's format.
+  const folder = path.join(root, 'demos');
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-seed-'));
+  const seedFolder = path.join(root, 'api', 'seed-folder.php');
+  const r = spawnSync('php', [seedFolder, '--from', folder, '--out', out], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  const expected = JSON.parse(fs.readFileSync(path.join(folder, 'index.json'), 'utf8')).length;
+  assert.match(r.stdout, new RegExp(`^${expected} apps seeded into `), r.stdout);
+  assert.match(r.stdout, /admin key: [0-9a-f]{40}/, 'the admin key is reported once');
+  const cfg = JSON.parse(fs.readFileSync(path.join(out, 'config.json'), 'utf8'));
+  assert.match(cfg.adminKey, /^[0-9a-f]{40}$/);
+  assert.ok(fs.existsSync(path.join(out, 'directory.sqlite')), 'the catalogue');
+  assert.ok(fs.existsSync(path.join(out, '.htaccess')), 'the rules that keep data/ unserved');
+  assert.ok(fs.existsSync(path.join(out, 'apps', 'notes', 'v1.softn')), 'the bundle laid down as v1');
+  assert.ok(fs.readdirSync(path.join(out, 'apps', 'notes')).some((f) => f.startsWith('thumb.')), 'the picture attached');
+  const count = spawnSync('php', ['-r', 'echo (new PDO("sqlite:" . $argv[1]))->query("SELECT COUNT(*) FROM apps")->fetchColumn();', path.join(out, 'directory.sqlite')], { encoding: 'utf8' });
+  assert.equal(Number(count.stdout.trim()), expected, 'every app has its rows');
+  // A second run over the same output changes nothing: the folder is the truth.
+  const again = spawnSync('php', [seedFolder, '--from', folder, '--out', out], { encoding: 'utf8' });
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, new RegExp(`^${expected} apps seeded into `));
+  fs.rmSync(out, { recursive: true, force: true });
+});
+
 test('the api root describes itself and unknown routes are 404 JSON', skip, async () => {
   const idx = await api('GET', '/api');
   assert.equal(idx.status, 200);

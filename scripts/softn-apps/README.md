@@ -8,9 +8,11 @@ repos.json      where the apps come from: one GitHub repository per line
 fetch.mjs       downloads each release's .softn bundles into the folder
 screenshot.mjs  photographs each app in the web runtime into its thumbs/
 publish.mjs     publishes the folder into a running site
+seed.mjs        a ready-made data/ from the folder, to upload beside api/
 build.mjs       fetch, then screenshot
 apps/           the default output, ignored by git: index.json, the .softn
                 files, thumbs/ — pass --out / --dir for another folder
+data/           what seed.mjs writes, ignored by git
 ```
 
 Node 22, nothing to install beyond the repository's own `npm ci`.
@@ -42,7 +44,23 @@ writes a 1280×800 WebP per app. `--only Name,Name` retakes the ones named.
 
 ## Put the folder in a site
 
-Three ways, all the same folder.
+Four ways, all the same folder.
+
+**Drop in a ready-made `data/`.**
+
+```
+npm run apps:seed
+```
+
+runs the directory's own seeder over the folder, offline, and writes
+`scripts/softn-apps/data/` (or `-- --out <dir>`): `directory.sqlite` with every
+app's rows, `apps/<slug>/v1.softn` and `thumb.*` for each, `config.json` with a
+fresh admin key — printed once, keep it — and the rules that keep the folder
+unserved. Upload it as `data/` beside `api/` and the directory is populated
+before its first visitor. Never put it over a `data/` that already holds
+visitors' apps; for a live site, use one of the ways below. It needs PHP 8.1+
+with `pdo_sqlite` and `zip` (what the site needs), on PATH or named by
+`-- --php <path>`; run it again to bring an output up to date with the folder.
 
 **Upload it.** Copy the folder into a deployed site's document root under
 the name `demos/`, beside `api/` — that name is where the directory looks

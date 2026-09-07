@@ -19,6 +19,7 @@
     "apps:screenshot": "node scripts/softn-apps/screenshot.mjs",
     "apps:publish": "node scripts/softn-apps/publish.mjs",
     "apps:build": "node scripts/softn-apps/build.mjs",
+    "apps:seed": "node scripts/softn-apps/seed.mjs",
     "package:site": "node scripts/package-site.mjs",
     "licenses:site": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",

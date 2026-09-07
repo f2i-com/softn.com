@@ -32,9 +32,14 @@ final class Seed
         'ai-demo' => 'llm', 'gpu-demo' => 'webgpu,compute', 'three-demo' => '3d,webgl', 'showcase' => 'components',
     ];
 
-    public static function ifEmpty(): void
+    /**
+     * `$from` names a folder of apps to seed from instead of the bundles
+     * beside the API — the offline seed (seed-folder.php) writing a data/
+     * ahead of a site's first request.
+     */
+    public static function ifEmpty(?string $from = null): void
     {
-        if (!Config::get('seedDemos', true)) return;
+        if ($from === null && !Config::get('seedDemos', true)) return;
         $dir = Config::dataDir();
         $flag = "$dir/seeded";
         $pdo = Db::catalog();
@@ -45,8 +50,8 @@ final class Seed
         // (apps/softn-api, in dev and the tests) may reach for the runtime's
         // fetched bundles or a built dist/ instead — a built site tested
         // inside the checkout must not pick up the developer's bundles.
-        $demos = dirname(__DIR__, 2) . '/demos';
-        if (!is_dir($demos) && basename(dirname(__DIR__, 2)) === 'softn-api') {
+        $demos = $from ?? dirname(__DIR__, 2) . '/demos';
+        if ($from === null && !is_dir($demos) && basename(dirname(__DIR__, 2)) === 'softn-api') {
             $candidate = dirname(__DIR__, 3) . '/apps/softn-web/public/demos';
             if (is_dir($candidate)) $demos = $candidate;
             else {
