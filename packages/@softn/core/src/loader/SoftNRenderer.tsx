@@ -114,11 +114,15 @@ export function sanitizeBundleCSS(css: string): string {
   sanitized = rewriteCssResources(sanitized, (target) =>
     /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/|\\)/i.test(target)
   );
-  // Remove expression() (IE) and -moz-binding (Firefox) — code execution vectors
+  // Remove expression() (IE) — a code execution vector.
   sanitized = sanitized.replace(/expression\s*\([^)]*\)/gi, '/* expression removed */');
-  sanitized = sanitized.replace(/-moz-binding\s*:[^;]+;?/gi, '/* -moz-binding removed */');
-  // Remove behavior: (IE HTC component loading)
-  sanitized = sanitized.replace(/behavior\s*:[^;]+;?/gi, '/* behavior removed */');
+  // Match legacy properties at declaration boundaries, not the suffix of
+  // scroll-behavior / overscroll-behavior. Preserve rule braces and separators:
+  // a final declaration need not have a semicolon, even inside a media query.
+  sanitized = sanitized.replace(
+    /((?:^|[;{])(?:\s|\/\*[\s\S]*?\*\/)*)(-moz-binding|behavior)\s*:[^;{}]*/gi,
+    '$1/* $2 removed */'
+  );
   return sanitized;
 }
 
