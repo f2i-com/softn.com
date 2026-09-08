@@ -37,7 +37,7 @@ kept.
 |-------|--------------|
 | `GET /api/apps` | Search and browse. `q=`, `category=`, `tag=`, `author=`, `cap=nonet\|none\|storage\|worker`, `sort=trending\|newest\|top\|remixed\|runs\|name`, `page=`, `perPage=` |
 | `GET /api/apps/{slug}` | One listing, with its versions |
-| `GET /api/apps/{slug}/bundle.softn` | The bundle. `v=` picks a version, `download=1` sends it as an attachment |
+| `GET /api/apps/{slug}/bundle.softn` | The bundle. `v=` picks a version, `download=1` sends it as an attachment. Carries an `ETag` and answers `If-None-Match` with a 304; `HEAD` gives the headers alone. See "Caching a bundle" |
 | `GET /api/apps/{slug}/thumbnail`, `/icon` | Pictures. The URLs the API hands out carry `?v=<updated_at>` because pictures are cached for ten minutes |
 | `GET /api/apps/{slug}/source` | The bundle's source files, for the app page's viewer |
 | `GET /api/apps/{slug}/comments`, `/rating` | Comments (paged) and the rating summary |
@@ -59,6 +59,35 @@ kept.
 
 `/app/{slug}` (no `api`) is a share page: the listing rendered as HTML with
 Open Graph tags, for links pasted into chat.
+
+## Caching a bundle
+
+A bundle response carries `ETag: "<sha256 of the archive>"`. A request with
+`If-None-Match` naming that tag (weak `W/` tags and `*` count too, as RFC 9110
+§13.1.2 prescribes for this header) is answered with a bodyless `304` that
+repeats the `ETag` and `Cache-Control`, so a runtime or a cache that already
+holds the bytes never downloads them twice.
+
+That works from another origin too. Every response allows any origin, the
+preflight allows `If-None-Match` (which is not CORS-safelisted, so a browser
+would otherwise refuse to send it), and `ETag`, `Content-Disposition` and
+`Retry-After` are exposed, so a page elsewhere can read the tag, revalidate
+with it, name a download, and honour a rate limit.
+
+The two shapes of URL cache differently. `bundle.softn` with no `v=` is the
+latest version, which the next publish moves: it is `no-cache, must-revalidate`,
+so every use asks the server, and the answer is usually the 304. `bundle.softn?v=N`
+names one version whose bytes are settled: it is `public, max-age=86400` — a day,
+not immutable, because an unpublish or an admin purge has to reach every cache
+within a day, and because the seed can replace a demo's v1 in place.
+
+`HEAD` on either URL returns the status and headers a `GET` would, `Content-Length`
+and `ETag` included, with no body. `Range` requests are not implemented: the
+response says `Accept-Ranges: none`, a `Range` header is ignored, and the whole
+archive is sent with a 200 on every host (Apache would otherwise slice a
+script's output into a 206 on its own, which nginx and PHP's built-in server do
+not). A runtime opening a bundle needs the whole archive anyway, since its
+identity and integrity are the digest of every byte.
 
 ## Per-app storage
 

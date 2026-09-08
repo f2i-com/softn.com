@@ -304,6 +304,113 @@ test('metadata, versions and the thumbnail need the edit key', skip, async () =>
   assert.equal(notImage.status, 400);
 });
 
+test('a bundle revalidates by ETag, answers HEAD, and holds a version-addressed URL for a day', skip, async () => {
+  // test-snake has two versions by now; the bare URL is v2.
+  const url = `${base}/api/apps/test-snake/bundle.softn`;
+  const full = await fetch(url, { redirect: 'manual' });
+  assert.equal(full.status, 200);
+  const etag = full.headers.get('etag');
+  assert.match(etag || '', /^"[0-9a-f]{64}"$/, 'the ETag is the quoted sha256');
+  assert.equal(full.headers.get('cache-control'), 'no-cache, must-revalidate');
+  const body = Buffer.from(await full.arrayBuffer());
+  const onDisk = fs.readFileSync(path.join(root, 'data/apps/test-snake/v2.softn'));
+  assert.ok(body.equals(onDisk), 'the body is the published archive');
+  assert.equal(full.headers.get('content-length'), String(body.length));
+  assert.equal(full.headers.get('accept-ranges'), 'none');
+  const ranged = await fetch(url, { redirect: 'manual', headers: { Range: 'bytes=0-9' } });
+  assert.equal(ranged.status, 200, 'a Range is ignored, not served');
+  assert.equal((await ranged.arrayBuffer()).byteLength, body.length);
+
+  const same = await fetch(url, { redirect: 'manual', headers: { 'If-None-Match': etag } });
+  assert.equal(same.status, 304);
+  assert.equal((await same.arrayBuffer()).byteLength, 0, 'a 304 has no body');
+  assert.equal(same.headers.get('etag'), etag);
+  assert.equal(same.headers.get('cache-control'), 'no-cache, must-revalidate');
+  assert.equal(same.headers.get('content-type'), 'application/octet-stream');
+  assert.equal(same.headers.get('content-length'), null, 'no Content-Length of a body that was not sent');
+  const weak = await fetch(url, { redirect: 'manual', headers: { 'If-None-Match': `W/${etag}` } });
+  assert.equal(weak.status, 304, 'a weak tag compares by its opaque part');
+  const listed = await fetch(url, { redirect: 'manual', headers: { 'If-None-Match': `"stale", ${etag}` } });
+  assert.equal(listed.status, 304, 'the tag may be one of several');
+  const any = await fetch(url, { redirect: 'manual', headers: { 'If-None-Match': '*' } });
+  assert.equal(any.status, 304);
+  const other = await fetch(url, { redirect: 'manual', headers: { 'If-None-Match': '"0123456789abcdef"' } });
+  assert.equal(other.status, 200);
+  assert.equal((await other.arrayBuffer()).byteLength, body.length);
+  const dl = await fetch(`${url}?download=1`, { redirect: 'manual', headers: { 'If-None-Match': etag } });
+  assert.equal(dl.status, 304);
+  assert.equal(dl.headers.get('content-disposition'), null, 'the attachment disposition goes with a 200 only');
+
+  const head = await fetch(url, { method: 'HEAD', redirect: 'manual' });
+  assert.equal(head.status, 200);
+  assert.equal((await head.arrayBuffer()).byteLength, 0);
+  assert.equal(head.headers.get('content-length'), String(body.length));
+  assert.equal(head.headers.get('etag'), etag);
+  assert.equal(head.headers.get('content-type'), 'application/octet-stream');
+  const headSame = await fetch(url, { method: 'HEAD', redirect: 'manual', headers: { 'If-None-Match': etag } });
+  assert.equal(headSame.status, 304);
+  // Every GET route answers HEAD, not only the bundle's.
+  const headJson = await fetch(`${base}/api/apps/test-snake`, { method: 'HEAD', redirect: 'manual' });
+  assert.equal(headJson.status, 200);
+  assert.equal((await headJson.arrayBuffer()).byteLength, 0);
+  assert.ok(Number(headJson.headers.get('content-length')) > 2, 'the length of the JSON a GET would send');
+
+  const v1 = await fetch(`${url}?v=1`, { redirect: 'manual' });
+  assert.equal(v1.status, 200);
+  assert.equal(v1.headers.get('cache-control'), 'public, max-age=86400');
+  const v1Tag = v1.headers.get('etag');
+  assert.notEqual(v1Tag, etag);
+  assert.ok(Buffer.from(await v1.arrayBuffer()).equals(fs.readFileSync(path.join(root, 'data/apps/test-snake/v1.softn'))));
+  const v1Same = await fetch(`${url}?v=1`, { redirect: 'manual', headers: { 'If-None-Match': v1Tag } });
+  assert.equal(v1Same.status, 304);
+  assert.equal(v1Same.headers.get('cache-control'), 'public, max-age=86400');
+  const v1Latest = await fetch(`${url}?v=1`, { redirect: 'manual', headers: { 'If-None-Match': etag } });
+  assert.equal(v1Latest.status, 200, "the latest version's tag does not stand for v1");
+});
+
+test('a page on another origin can revalidate a bundle and read its ETag', skip, async () => {
+  // The headers a browser sends before a cross-origin conditional GET. Node's
+  // fetch enforces none of this; the assertions are on what a browser would
+  // be told.
+  const url = `${base}/api/apps/test-snake/bundle.softn`;
+  const preflight = await fetch(url, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://elsewhere.example',
+      'Access-Control-Request-Method': 'GET',
+      'Access-Control-Request-Headers': 'if-none-match',
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), '*');
+  const allowed = (preflight.headers.get('access-control-allow-headers') || '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase());
+  assert.ok(allowed.includes('if-none-match'), 'If-None-Match is not CORS-safelisted, so it has to be allowed');
+  const exposed = (preflight.headers.get('access-control-expose-headers') || '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase());
+  assert.ok(exposed.includes('etag'), 'the tag a page revalidates with');
+  assert.ok(exposed.includes('content-disposition'), 'the filename a download carries');
+
+  const full = await fetch(url, { redirect: 'manual', headers: { Origin: 'https://elsewhere.example' } });
+  assert.equal(full.status, 200);
+  assert.equal(full.headers.get('access-control-allow-origin'), '*');
+  const exposedOnGet = (full.headers.get('access-control-expose-headers') || '')
+    .split(',')
+    .map((h) => h.trim().toLowerCase());
+  assert.ok(exposedOnGet.includes('etag'));
+  assert.ok(exposedOnGet.includes('content-disposition'));
+  const etag = full.headers.get('etag');
+  const same = await fetch(url, {
+    redirect: 'manual',
+    headers: { Origin: 'https://elsewhere.example', 'If-None-Match': etag },
+  });
+  assert.equal(same.status, 304);
+  assert.equal(same.headers.get('access-control-allow-origin'), '*', 'the 304 is a CORS response too');
+  assert.ok((same.headers.get('access-control-expose-headers') || '').toLowerCase().includes('etag'));
+});
+
 test('comments, ratings and runs', skip, async () => {
   const c1 = await api('POST', '/api/apps/test-snake/comments', { body: { name: 'Ann', body: 'Lovely little game.' } });
   assert.equal(c1.status, 201, JSON.stringify(c1.json));
@@ -803,4 +910,6 @@ test('the api root describes itself and unknown routes are 404 JSON', skip, asyn
   const opt = await fetch(`${base}/api/apps`, { method: 'OPTIONS' });
   assert.equal(opt.status, 204);
   assert.equal(opt.headers.get('access-control-allow-origin'), '*');
+  assert.match(opt.headers.get('access-control-allow-headers') || '', /\bIf-None-Match\b/);
+  assert.match(opt.headers.get('access-control-expose-headers') || '', /\bETag\b/);
 });
