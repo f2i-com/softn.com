@@ -34,7 +34,7 @@ afterEach(() => {
   localStorage.clear();
   vi.unstubAllGlobals();
 });
-function mount() {
+function mount(permissionMode: 'prompt' | 'preapproved' = 'prompt') {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal(
     'ResizeObserver',
@@ -45,7 +45,7 @@ function mount() {
   );
   root = createRoot(element);
   const app = {
-    config: { title: 'Example', theme: 'dark' },
+    config: { title: 'Example', theme: 'dark', permissionMode },
     declared: { permissions: { net: { enabled: true, allowed_hosts: ['example.test'] } } },
     grantKey: 'test-grant',
     textFiles: new Map(),
@@ -54,6 +54,12 @@ function mount() {
   } as unknown as LoadedApplication;
   act(() => root.render(<Application app={app} />));
 }
+it('uses operator-preapproved declared access without a banner or a stored visitor grant', () => {
+  mount('preapproved');
+  expect(element.querySelector('.permission-bar')).toBeNull();
+  expect(element.querySelector('[data-app]')?.getAttribute('data-net')).toBe('true');
+  expect(localStorage.getItem('test-grant')).toBeNull();
+});
 function click(text: string) {
   const button = [...element.querySelectorAll('button')].find((b) => b.textContent === text);
   expect(button).toBeTruthy();

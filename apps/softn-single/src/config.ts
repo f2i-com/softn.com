@@ -8,6 +8,7 @@ export interface SingleConfig {
   loadingText: string;
   theme: 'light' | 'dark';
   sha256?: string;
+  permissionMode?: 'prompt' | 'preapproved';
 }
 export function localUrl(value: unknown, base: string): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 2048)
@@ -37,6 +38,7 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     'loadingText',
     'theme',
     'sha256',
+    'permissionMode',
   ];
   if (
     Object.keys(c).some((k) => !keys.includes(k)) ||
@@ -56,6 +58,10 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     throw Error('Invalid theme');
   if (c.sha256 !== undefined && (typeof c.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(c.sha256)))
     throw Error('Invalid digest');
+  if (c.permissionMode !== undefined && c.permissionMode !== 'prompt' && c.permissionMode !== 'preapproved')
+    throw Error('Invalid permission mode');
+  if (c.permissionMode === 'preapproved' && !c.sha256)
+    throw Error('Preapproved deployments require a pinned bundle digest');
   return {
     version: 1,
     id: c.id,
@@ -65,6 +71,7 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     loadingText: (c.loadingText as string) ?? 'Loading…',
     theme: (c.theme as 'light' | 'dark') ?? 'dark',
     sha256: c.sha256 as string | undefined,
+    permissionMode: (c.permissionMode as SingleConfig['permissionMode']) ?? 'prompt',
   };
 }
 export function parsePermissions(value: unknown): PermissionConfig {

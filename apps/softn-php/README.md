@@ -14,6 +14,8 @@ node apps/softn-php/package.mjs --runtime <compiled-single-runtime> --bundle <ex
 
 Use `--template` without --bundle/--client to produce a reusable runtime archive. Build tools are needed only on the packaging machine. Hosts receive compiled assets and a bundled executable.
 
+For a site-owner-approved application, pass `--preapprove-permissions` with a current single-app frontend build. This writes `permissionMode:"preapproved"` into the public runtime.config.json and pins the bundle SHA-256. The single-app shell immediately enables only the bundle's declared permissions and hides its consent banner; browser file pickers and camera/microphone permission prompts remain browser-controlled. Default deployments still prompt. This is an operator setting in the deployment config, not a self-approval flag inside an app bundle. Older frontend builds must be replaced before using this setting.
+
 ## Supported contract
 
 - manifest.server.entry selects the private .logic source; manifest.server.routes selects handler functions. Request paths must be exact `/api/` paths (no route parameters/wildcards yet), with GET/POST/PUT/DELETE, authorization `application` or `anonymous`, and transaction `read` or `write`.

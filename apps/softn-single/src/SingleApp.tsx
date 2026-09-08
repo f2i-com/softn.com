@@ -55,7 +55,7 @@ function savedGrant(key: string) {
 export function Application({ app }: { app: LoadedApplication }) {
   const requested = inspectDeclaration(app.declared).requested;
   const [answer, setAnswer] = useState<'pending' | 'allow' | 'deny'>(() =>
-    !requested.length || savedGrant(app.grantKey) ? 'allow' : 'pending'
+    app.config.permissionMode === 'preapproved' || !requested.length || savedGrant(app.grantKey) ? 'allow' : 'pending'
   );
   const granted = answer === 'allow';
   const permissions = useMemo(
