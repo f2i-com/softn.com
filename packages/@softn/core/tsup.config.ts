@@ -25,6 +25,12 @@ export default defineConfig({
     'src/runtime/index.ts',
     'src/runtime/script-worker.ts',
     'src/loader/index.ts',
+    // The archive reader on its own, for a host's inflate worker. Importing it
+    // from the root barrel pulls the whole of core into the worker — measured
+    // at 1.35 MB for softn-web, yjs and the engine glue included, because a
+    // bundler cannot tree-shake past this build's side-effectful chunks —
+    // where the reader and fflate are a few kilobytes.
+    'src/bundle/zip.ts',
   ],
   format: ['esm'],
   dts: true,

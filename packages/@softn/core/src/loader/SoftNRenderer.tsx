@@ -13,9 +13,10 @@ import React, {
   useRef,
   Component,
 } from 'react';
-import { parse } from '../parser';
+import { parseCached } from '../parser';
 import { renderDocument } from '../renderer';
 import { getDefaultRegistry } from '../renderer/registry';
+import { collectFirstScreenTags } from '../renderer/document-tags';
 import { rewriteCssResources } from '../renderer/sanitize-html';
 import {
   collectObservedStateNames,
@@ -38,9 +39,11 @@ import {
 // `forceWorker` is decided.
 import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
 import { CapabilityProvider, type CapabilityState } from './consent-gate';
+import { AppScopeProvider, type AppAssetResolver, type AppScope } from './app-scope';
 import { bindSyncOptions } from '../runtime/host-bound-sync-options';
 import { describeHostAllowlist, filterSignalingUrls } from '../runtime/egress-policy';
-import { getXDB, setActiveXDBApp } from '../runtime/xdb';
+import { getXDB, type XDBService } from '../runtime/xdb';
+import { readSavedSyncRoom } from '../runtime/xdb-sync-key';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNDocument } from '../parser/ast';
 import type { Expression, TemplateNode } from '../parser/ast';
@@ -59,6 +62,17 @@ function useStructurallyStableValue<T>(value: T): T {
     ref.current = { serialized, value };
   }
   return ref.current.value;
+}
+
+/**
+ * A phase boundary on the performance timeline, where a profile can read it
+ * back. Every phase is `softn:<phase>:start` / `softn:<phase>:end`. Guarded
+ * because the renderer also runs under Node and older WebViews.
+ */
+function perfMark(name: string): void {
+  if (typeof performance !== 'undefined' && typeof performance.mark === 'function') {
+    performance.mark(name);
+  }
 }
 
 /**
@@ -283,6 +297,29 @@ export interface SoftNRendererProps {
    * Useful for persisting state across page refreshes.
    */
   stateRef?: React.MutableRefObject<(() => Record<string, unknown>) | null>;
+
+  /**
+   * Whether the host is showing this app. softn-web keeps every open tab
+   * mounted and toggles them with `display`, so a renderer cannot tell from
+   * its own tree whether it is on screen. Published to the components below;
+   * defaults to true for a host that shows one app at a time.
+   */
+  active?: boolean;
+
+  /**
+   * How this app's markup reaches the files in its bundle, published to the
+   * components below so a loader can resolve paths against the bundle rather
+   * than against whichever app rendered last.
+   */
+  assetResolver?: AppAssetResolver;
+
+  /**
+   * The store this app's data block already subscribed to. SoftNWithXDB
+   * passes the instance useDataBlock gave it, so the data the markup reads
+   * and the store its forms write are one object by construction rather than
+   * two lookups that happen to agree. Defaults to the store for `appId`.
+   */
+  xdb?: XDBService;
 }
 
 /**
@@ -517,6 +554,9 @@ export function SoftNRenderer({
   resumeSavedSyncRoom = false,
   bundleFileProvider,
   stateRef,
+  active = true,
+  assetResolver,
+  xdb: xdbProp,
 }: SoftNRendererProps): React.ReactElement | null {
   const runtimePermissions = useStructurallyStableValue(permissions);
   const runtimePermissionConfig = useStructurallyStableValue(permissionConfig);
@@ -719,15 +759,17 @@ export function SoftNRenderer({
     };
   }, []);
 
-  // Point XDB's no-argument callers at this app.
-  //
-  // Storage is namespaced per app, but a few callers cannot reach an appId —
-  // `<SmartForm collection="…">` is an ordinary component well below here, and
-  // the bundle seeder is a plain module. They must resolve to the same store
-  // this app's own logic uses, or a form would write records the app can never
-  // read. Done during render rather than in an effect because those children
-  // render before any effect runs.
-  setActiveXDBApp(appId);
+  // The store the components below write to. Storage is namespaced per app,
+  // and `<SmartForm collection="…">` is an ordinary component well below here
+  // with no appId of its own; it must land on the same store this app's own
+  // logic uses, or it writes records the app can never read. This used to be
+  // done by pointing a module-level fallback at `appId` during render, which
+  // named whichever app had rendered last — with every softn-web tab mounted
+  // at once, a re-render of tab B between a form handler's await and its
+  // resume sent tab A's record into B's store. Published as context instead
+  // (see app-scope.tsx); the instance is memoised per appId so a re-render
+  // cannot move it, and the provider goes on at the render below.
+  const scopedXdb = useMemo(() => xdbProp ?? getXDB(appId), [xdbProp, appId]);
 
   // Parse source when provided directly
   useEffect(() => {
@@ -742,7 +784,31 @@ export function SoftNRenderer({
       captureScrollAndFocus();
 
       try {
-        const doc = parse(resolvedSource);
+        // Through the cache: SoftNWithXDB above has just parsed this same
+        // string to find its data block, and hot reload hands the same source
+        // back for every save that did not change it. A hit is a Map lookup
+        // and still carries the marks, so a profile shows a shared parse as a
+        // near-zero phase rather than a missing one. Only the document is
+        // shared — the VM, its subscriptions and the permissions are made
+        // below, per instance, from what the document says.
+        perfMark('softn:parse:start');
+        let doc: SoftNDocument;
+        try {
+          doc = parseCached(resolvedSource);
+        } finally {
+          perfMark('softn:parse:end');
+        }
+
+        // What the first screen renders is known now, and the VM below takes
+        // a while to come up: fetch those components' feature modules in the
+        // meantime rather than on first render. Only unconditional tags —
+        // a component behind a condition is a later route, and its download
+        // is deferred until it renders (see document-tags.ts). Never awaited:
+        // a failed fetch is reported where the component renders.
+        perfMark('softn:component-preload:start');
+        void getDefaultRegistry()
+          .preload(collectFirstScreenTags(doc))
+          .finally(() => perfMark('softn:component-preload:end'));
 
         // Log parse diagnostics (fault-tolerant parsing may have recovered from errors)
         if (doc.diagnostics && doc.diagnostics.length > 0) {
@@ -916,6 +982,9 @@ export function SoftNRenderer({
             }
           }
 
+          // From here to the script's top level having run: engine creation,
+          // compilation, and the first evaluation, on whichever thread.
+          perfMark('softn:vm-init:start');
           let runtime: ScriptRuntimeHandle;
           if (effectiveMode === 'hybrid-worker') {
             // Main-thread-first hybrid: ALL function calls execute on the main-thread
@@ -1050,6 +1119,9 @@ export function SoftNRenderer({
           // Load the script in the VM (async — compiles, runs, extracts state + functions)
           runtime
             .loadScript(codeBlock)
+            // Before the handlers, so the phase ends when the VM is up — not
+            // after the React work its result starts.
+            .finally(() => perfMark('softn:vm-init:end'))
             .then((result) => {
               if (stale || !mountedRef.current) return;
 
@@ -1108,15 +1180,7 @@ export function SoftNRenderer({
               // Auto-poll sync status if there's a saved sync room
               if (resumeSavedSyncRoom && result.functions['refreshSyncStatus']) {
                 try {
-                  let savedRoom: string | null = null;
-                  try {
-                    const roomKey = appId
-                      ? `xdb-sync-active-room:${appId}`
-                      : 'xdb-sync-active-room';
-                    savedRoom = localStorage.getItem(roomKey);
-                  } catch {
-                    // localStorage may be unavailable in restricted contexts
-                  }
+                  const savedRoom = readSavedSyncRoom(appId);
                   if (savedRoom) {
                     const refreshFn = result.functions['refreshSyncStatus'];
                     let polls = 0;
@@ -1498,6 +1562,13 @@ export function SoftNRenderer({
     [runtimePermissionConfig]
   );
 
+  // Which app the components below are in. One object per change of its
+  // parts, for the same reason as the capability state above.
+  const appScope = useMemo<AppScope>(
+    () => ({ appId, xdb: scopedXdb, active, assets: assetResolver }),
+    [appId, scopedXdb, active, assetResolver]
+  );
+
   // Get the default registry
   const registry = useMemo(() => getDefaultRegistry(), []);
 
@@ -1554,12 +1625,21 @@ export function SoftNRenderer({
     const stateKey = (state.componentState['currentPage'] as string) ?? 'default';
 
     return (
-      // Outside the keyed container, so a page change does not tear the
-      // provider down with the page. Components below read this instead of a
-      // prop: <Camera>, <QRReader> and <Microphone> open the hardware from
-      // their own effects and permission.json does not cover them, so what is
-      // published here — consent state and the granted capability list — is
-      // the only thing standing between an entry page and the device.
+      // Both providers sit outside the keyed container, so a page change does
+      // not tear them down with the page. Components below read these instead
+      // of props: they are instantiated from the .ui template, so a prop
+      // would have to be threaded through every component in the registry.
+      //
+      // The scope says which app they are in — the store a <SmartForm> saves
+      // to, whether the tab is on screen, where its assets are — and it is
+      // the only thing that does: no global says it any more.
+      //
+      // <Camera>, <QRReader> and <Microphone> open the hardware from their own
+      // effects and permission.json does not cover them, so what the
+      // capability provider publishes — consent state and the granted
+      // capability list — is the only thing standing between an entry page
+      // and the device.
+      <AppScopeProvider value={appScope}>
       <CapabilityProvider value={capabilityState}>
       <div
         ref={containerRef}
@@ -1596,6 +1676,7 @@ export function SoftNRenderer({
         </SoftNErrorBoundary>
       </div>
       </CapabilityProvider>
+      </AppScopeProvider>
     );
   }
 
@@ -1624,7 +1705,9 @@ export function useSoftN(source: string | undefined): {
     if (source) {
       setState({ document: null, error: null, loading: true });
       try {
-        const doc = parse(source);
+        // The SoftNRenderer that SoftNWithXDB renders from this source asks
+        // the cache for the same string and gets this very object back.
+        const doc = parseCached(source);
         setState({ document: doc, error: null, loading: false });
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
@@ -2082,14 +2165,7 @@ export function createXDBHelpers(
       return { connected: false, peers: 0, room: '', peerId: '' };
     },
 
-    getSavedSyncRoom: () => {
-      const key = appId ? `xdb-sync-active-room:${appId}` : 'xdb-sync-active-room';
-      try {
-        return localStorage.getItem(key);
-      } catch {
-        return null;
-      }
-    },
+    getSavedSyncRoom: () => readSavedSyncRoom(appId),
 
     getDbPath: () => {
       return xdb.getDbPath();
@@ -2232,15 +2308,29 @@ export function SoftNWithXDB({
   // mounted in one realm (App.tsx renders all openTabs and toggles them with
   // display), so opening a second app silently tore down the first one's live
   // sync: no error, no callback, and the first app's writes stopped reaching its
-  // peers while still landing locally. Passing appId also clears the correct
-  // namespaced localStorage key instead of the un-namespaced one, which used to
-  // leave storage claiming the app was still in a room it had been cut from.
+  // peers while still landing locally.
+  //
+  // It then called stopSync(saved, appId), which closes the adapter and also
+  // forgets the saved room — and the room it was closing was, by construction,
+  // the saved one. The web runner seeds its sync control from that key as "the
+  // room this app was last in", so the control came up filled in after one
+  // reload and empty after the next, unless the user had reconnected in
+  // between. closeSyncRoom releases the adapter and leaves the key alone; an
+  // app that leaves a room on purpose still goes through xdb_stopSync, which
+  // forgets it.
+  //
+  // The key is read before the import, not by it. Asking the sync module
+  // whether a room was saved meant loading the sync module to ask, and that
+  // module carries yjs: measured, every app on both hosts fetched the 195 KB
+  // xdb-sync chunk on every cold visit, whether or not it had ever synced.
+  // An app with nothing saved has no adapter to close and loads nothing.
   useEffect(() => {
     if (props.resumeSavedSyncRoom) return;
+    const saved = readSavedSyncRoom(props.appId);
+    if (!saved) return;
     import('../runtime/xdb-sync')
-      .then(({ stopSync, getSavedSyncRoom }) => {
-        const saved = getSavedSyncRoom(props.appId);
-        if (saved) stopSync(saved, props.appId);
+      .then(({ closeSyncRoom }) => {
+        closeSyncRoom(saved, props.appId);
       })
       .catch(() => {
         // Ignore sync cleanup failures in constrained environments.
@@ -2258,8 +2348,7 @@ export function SoftNWithXDB({
     if (syncResumedAppRef.current === appKey) return;
     syncResumedAppRef.current = appKey;
     try {
-      const key = props.appId ? `xdb-sync-active-room:${props.appId}` : 'xdb-sync-active-room';
-      const savedRoom = localStorage.getItem(key);
+      const savedRoom = readSavedSyncRoom(props.appId);
       if (savedRoom) {
         // Check if this is a shared/multiplayer room (set by wallet App Sync).
         // Shared rooms must NOT use per-user encryption keys, otherwise different
@@ -2339,6 +2428,9 @@ export function SoftNWithXDB({
       source={source}
       initialData={mergedData}
       functions={mergedFunctions}
+      // The instance the data block subscribed to, so the forms below write
+      // where the markup reads.
+      xdb={xdb}
     />
   );
 }

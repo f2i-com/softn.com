@@ -12,6 +12,7 @@ import { parse } from '../parser';
 import { renderDocument } from '../renderer';
 import { getDefaultRegistry } from '../renderer/registry';
 import { getXDB } from '../runtime/xdb';
+import { AppScopeProvider, type AppScope } from '../loader/app-scope';
 import { builtinHelpers } from '../runtime/helpers';
 import type { SoftNRenderContext, SoftNDocument } from '../types';
 import { parseStatePath } from '../runtime/state-path';
@@ -87,10 +88,23 @@ function unregisterWindowAssetResolver(resolver: WindowAssetResolver): void {
   if (activeWindowAssetResolvers.length === 0) previousWindowAssetResolver = undefined;
 }
 
+export interface BundleRuntimeOptions {
+  /**
+   * The app the bundled data belongs to. A bundle carries no identity of its
+   * own — the host derives one from its bytes — so without this the seeder
+   * lands on whatever the no-argument lookup resolves: the store a host
+   * pointed it at, or the shared default.
+   */
+  appId?: string;
+}
+
 /**
  * Create a runtime from a loaded bundle
  */
-export function createBundleRuntime(bundle: SoftNBundle): BundleRuntime {
+export function createBundleRuntime(
+  bundle: SoftNBundle,
+  options: BundleRuntimeOptions = {}
+): BundleRuntime {
   // Cache for parsed documents
   const documentCache = new Map<string, SoftNDocument>();
   // Cache for executed logic
@@ -264,7 +278,7 @@ export function createBundleRuntime(bundle: SoftNBundle): BundleRuntime {
    * Initialize XDB with bundled data
    */
   async function initializeXDB(signal?: AbortSignal): Promise<void> {
-    const xdb = getXDB();
+    const xdb = getXDB(options.appId);
     // Desktop XDB hydrates from SQLite asynchronously. Seeding before it is
     // ready can mistake a persisted tombstone for a missing row and upsert the
     // bundled live copy over it.
@@ -363,6 +377,11 @@ export interface SoftNBundleRendererProps {
   error?: (error: Error) => React.ReactNode;
   /** Callback when bundle loads */
   onLoad?: (runtime: BundleRuntime) => void;
+  /**
+   * The app this bundle runs as: where its seed data goes and where the
+   * components it renders save. Absent, both fall to the shared default.
+   */
+  appId?: string;
 }
 
 /**
@@ -378,6 +397,7 @@ export function SoftNBundleRenderer({
   loading: loadingComponent,
   error: errorComponent,
   onLoad,
+  appId,
 }: SoftNBundleRendererProps): React.ReactElement | null {
   const [runtime, setRuntime] = useState<BundleRuntime | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -437,7 +457,7 @@ export function SoftNBundleRenderer({
           throw new Error('No bundle source provided');
         }
 
-        const rt = createBundleRuntime(bundle);
+        const rt = createBundleRuntime(bundle, { appId });
 
         // The source may have changed (or the component may have unmounted)
         // while the bundle was being read. Never publish an orphaned runtime;
@@ -480,7 +500,14 @@ export function SoftNBundleRenderer({
       abortController.abort();
       loadedRuntime?.dispose();
     };
-  }, [data, url, filePath, preloadedBundle]);
+  }, [data, url, filePath, preloadedBundle, appId]);
+
+  // The store the seeder filled is the one the components below must save
+  // to; resolved once per app so a re-render cannot move it.
+  const appScope = useMemo<AppScope>(
+    () => ({ appId, xdb: getXDB(appId), active: true }),
+    [appId]
+  );
 
   // Build render context
   const context = useMemo<SoftNRenderContext>(() => {
@@ -523,7 +550,7 @@ export function SoftNBundleRenderer({
   // Render
   if (runtime) {
     try {
-      return <>{runtime.render(context)}</>;
+      return <AppScopeProvider value={appScope}>{runtime.render(context)}</AppScopeProvider>;
     } catch (err) {
       const renderError = err instanceof Error ? err : new Error(String(err));
       return errorComponent ? (

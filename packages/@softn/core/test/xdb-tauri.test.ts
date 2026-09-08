@@ -117,6 +117,10 @@ describe('XDB Service (Tauri mode)', () => {
           }
           throw new Error('Record not found');
         }
+        case 'clear_collection': {
+          backend.delete(String(args?.collection ?? ''));
+          return true;
+        }
         default:
           throw new Error(`Unexpected command: ${cmd}`);
       }
@@ -182,6 +186,44 @@ describe('XDB Service (Tauri mode)', () => {
     xdb.writeRecord('tasks', record);
 
     expect(invokeMock).toHaveBeenCalledWith('upsert_record', { record });
+  });
+
+  it('clears the SQLite collection before a replacing import upserts', async () => {
+    backend.set('tasks', [makeRecord('stale', 'tasks', { title: 'Stale' })]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await flushPromises();
+    await flushPromises();
+    expect(xdb.getAll('tasks')).toHaveLength(1);
+
+    invokeMock.mockClear();
+    const fresh = makeRecord('fresh', 'tasks', { title: 'Fresh' });
+    xdb.import({ version: 1, exportedAt: '', collections: { tasks: [fresh] } }, { merge: false });
+    await flushPromises();
+
+    // Replacing used to swap the memory Map alone; upserts never delete, so
+    // the stale row came back on the next hydration.
+    const commands = invokeMock.mock.calls.map(([cmd]: [string]) => cmd);
+    expect(commands.indexOf('clear_collection')).toBeGreaterThanOrEqual(0);
+    expect(commands.indexOf('clear_collection')).toBeLessThan(commands.indexOf('upsert_record'));
+    expect(invokeMock).toHaveBeenCalledWith('clear_collection', { collection: 'tasks' });
+    expect(invokeMock).toHaveBeenCalledWith('upsert_record', { record: fresh });
+    expect(backend.get('tasks')?.map((r) => r.id)).toEqual(['fresh']);
+    expect(xdb.getAll('tasks').map((r) => r.id)).toEqual(['fresh']);
+  });
+
+  it('leaves the SQLite collection in place for a merging import', async () => {
+    backend.set('tasks', [makeRecord('kept', 'tasks', { title: 'Kept' })]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await flushPromises();
+    await flushPromises();
+
+    invokeMock.mockClear();
+    const fresh = makeRecord('fresh', 'tasks', { title: 'Fresh' });
+    xdb.import({ version: 1, exportedAt: '', collections: { tasks: [fresh] } });
+    await flushPromises();
+
+    expect(invokeMock).not.toHaveBeenCalledWith('clear_collection', expect.anything());
+    expect(backend.get('tasks')?.map((r) => r.id)).toEqual(['kept', 'fresh']);
   });
 
   it('createAsync uses Tauri backend and updates cache', async () => {

@@ -94,8 +94,15 @@ import {
   getSyncAdapter,
   getAllSyncStatus,
   getSavedSyncRoom,
+  closeSyncRoom,
   type XDBSyncOptions,
 } from '../src/runtime/xdb-sync';
+
+// For the mount-time cleanup below, which runs inside SoftNWithXDB.
+import React from 'react';
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { SoftNWithXDB } from '../src/loader/SoftNRenderer';
 
 // ═══════════════════════════════════════════════════════════
 // Tests
@@ -593,5 +600,107 @@ describe('XDB data sync through adapter', () => {
     expect(adapter.getStatus().connected).toBe(true);
 
     adapter.disconnect();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// closeSyncRoom — leaving a room's adapter without forgetting the room
+// ═══════════════════════════════════════════════════════════
+
+describe('closeSyncRoom', () => {
+  beforeEach(() => {
+    stopSync();
+    localStorage.clear();
+    setDefaultSignaling(['ws://localhost:8700/ws']);
+  });
+
+  afterEach(() => {
+    stopSync();
+    setDefaultSignaling([]);
+  });
+
+  it('releases the adapter and leaves the saved room where it was', () => {
+    startSync({ room: 'keep-me', appId: 'keeper', signaling: ['ws://localhost/ws'] });
+    expect(closeSyncRoom('keep-me', 'keeper')).toBe(true);
+    expect(getSyncAdapter('keep-me', 'keeper')).toBeNull();
+    expect(getSavedSyncRoom('keeper')).toBe('keep-me');
+    // Nothing left to close, and still nothing forgotten.
+    expect(closeSyncRoom('keep-me', 'keeper')).toBe(false);
+    expect(getSavedSyncRoom('keeper')).toBe('keep-me');
+  });
+
+  it("closes only that app's adapter for the room", () => {
+    startSync({ room: 'lobby', appId: 'one', signaling: ['ws://localhost/ws'] });
+    startSync({ room: 'lobby', appId: 'two', signaling: ['ws://localhost/ws'] });
+    closeSyncRoom('lobby', 'one');
+    expect(getSyncAdapter('lobby', 'one')).toBeNull();
+    expect(getSyncAdapter('lobby', 'two')).not.toBeNull();
+    expect(getSavedSyncRoom('one')).toBe('lobby');
+  });
+
+  it('is what stopSync does, minus forgetting the room', () => {
+    startSync({ room: 'leave-me', appId: 'leaver', signaling: ['ws://localhost/ws'] });
+    stopSync('leave-me', 'leaver');
+    expect(getSyncAdapter('leave-me', 'leaver')).toBeNull();
+    expect(getSavedSyncRoom('leaver')).toBeNull();
+  });
+});
+
+// The web runner seeds its sync control from the saved room — "the room this
+// app was last in" — and SoftNWithXDB closes any stale adapter for that room
+// when it mounts without `resumeSavedSyncRoom`. That cleanup went through
+// stopSync, which forgot the room it had just been asked about, so the room
+// survived exactly one reload. These mount the component the way the runner
+// does and read the key back.
+describe('SoftNWithXDB mounting with a saved room', () => {
+  (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  let container: HTMLElement;
+  let root: Root;
+
+  beforeEach(() => {
+    stopSync();
+    localStorage.clear();
+    document.body.innerHTML = '';
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    stopSync();
+  });
+
+  async function mountOnce(appId: string): Promise<void> {
+    await act(async () => {
+      root.render(React.createElement(SoftNWithXDB, { source: '<div class="up">up</div>', appId }));
+    });
+    // The cleanup runs after a dynamic import; let it land.
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      });
+    }
+    expect(container.querySelector('.up')).not.toBeNull();
+  }
+
+  it('keeps the saved room across mounts when not asked to resume it', async () => {
+    localStorage.setItem('xdb-sync-active-room:reloaded', 'lobby');
+    await mountOnce('reloaded');
+    expect(getSavedSyncRoom('reloaded')).toBe('lobby');
+
+    // The next reload: a fresh mount still finds the room.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mountOnce('reloaded');
+    expect(getSavedSyncRoom('reloaded')).toBe('lobby');
+  });
+
+  it('still forgets the room when the app itself stops syncing', async () => {
+    localStorage.setItem('xdb-sync-active-room:leaving', 'lobby');
+    await mountOnce('leaving');
+    expect(getSavedSyncRoom('leaving')).toBe('lobby');
+    stopSync('lobby', 'leaving');
+    expect(getSavedSyncRoom('leaving')).toBeNull();
   });
 });

@@ -1342,60 +1342,93 @@ export class XDBService {
   }
 
   /**
-   * Import data from an export object
+   * An export file is user-supplied JSON, so a row can be anything. Without a
+   * string id a row could never be addressed, deduplicated or updated again,
+   * and a non-object would crash the first property read.
+   */
+  private isImportableRecord(value: unknown): value is XDBRecord {
+    if (typeof value !== 'object' || value === null) return false;
+    const id = (value as { id?: unknown }).id;
+    return typeof id === 'string' && id.length > 0;
+  }
+
+  /**
+   * Import data from an export object.
+   *
+   * Merging (the default) builds one id-keyed index per collection, seeded
+   * from the stored records in their stored order, then applies the incoming
+   * rows in the order they arrive. The policy is last value wins: an id the
+   * collection already holds is replaced in place and keeps its position, an
+   * id that appears twice in one import keeps only the later row, and unseen
+   * ids append. That is exactly what the Tauri branch's `coll.set` has always
+   * done; the browser branch used to snapshot the existing ids once and append
+   * every row missing from that snapshot, so two new rows sharing an id both
+   * landed and the collection could never be deduplicated again.
+   *
+   * Replacing (`merge: false`) drops what the collection held — in memory and,
+   * on Tauri, in SQLite — but writes the incoming rows through the same index,
+   * so a batch cannot store one id twice either.
+   *
+   * A row that is not an object with a non-empty string id, or a collection
+   * whose value is not an array, is skipped and counted in `skipped` rather
+   * than thrown. Collections persist one by one, so throwing midway would
+   * leave the store half-updated, which is worse than dropping a bad row.
+   *
    * @param data - The exported data object
    * @param options - Import options
    */
   import(
     data: XDBExportData,
     options: { merge?: boolean; clearFirst?: boolean } = {}
-  ): { imported: number; collections: string[] } {
+  ): XDBImportResult {
     const { merge = true, clearFirst = false } = options;
     let importedCount = 0;
+    let skippedCount = 0;
     const importedCollections: string[] = [];
 
-    for (const [collection, records] of Object.entries(data.collections)) {
+    for (const [collection, incoming] of Object.entries(data.collections)) {
+      if (!Array.isArray(incoming)) {
+        skippedCount++;
+        continue;
+      }
+
       if (clearFirst) {
         this.clear(collection);
       }
 
+      const index = new Map<string, XDBRecord>();
       if (merge) {
-        if (this.useTauri) {
-          // O(1) merge via Map
-          const coll = this.getOrCreateCollection(collection);
-          for (const record of records) {
-            coll.set(record.id, record);
-            importedCount++;
-          }
-        } else {
-          // Array-based merge for localStorage
-          const existingRecords = this.getAllCollectionData(collection);
-          const existingIds = new Set(existingRecords.map((r) => r.id));
-
-          for (const record of records) {
-            if (existingIds.has(record.id)) {
-              const index = existingRecords.findIndex((r) => r.id === record.id);
-              if (index !== -1) {
-                existingRecords[index] = record;
-              }
-            } else {
-              existingRecords.push(record);
-            }
-            importedCount++;
-          }
-
-          this.setCollectionData(collection, existingRecords);
+        for (const existing of this.getAllCollectionData(collection)) {
+          index.set(existing.id, existing);
         }
-      } else {
-        // Replace all data in collection
-        this.setCollectionData(collection, records);
-        importedCount += records.length;
+      }
+      for (const record of incoming as unknown[]) {
+        if (!this.isImportableRecord(record)) {
+          skippedCount++;
+          continue;
+        }
+        index.set(record.id, record);
+        importedCount++;
       }
 
+      // One write per collection: setCollectionData persists (localStorage
+      // or the memory cache) but does not notify — the refresh below does.
+      this.setCollectionData(collection, [...index.values()]);
       importedCollections.push(collection);
 
       // Persist imported records to Tauri backend
       if (this.useTauri) {
+        // A replace has to reach SQLite as a delete: setCollectionData only
+        // swapped the memory Map, and upsert_record never removes a row, so
+        // without this every row the import left out came back on the next
+        // hydration. clearFirst has already been through clear(), which sends
+        // its own clear_collection. The invokes go out in order, clear before
+        // upserts, as restore() has always relied on.
+        if (!merge && !clearFirst) {
+          tauriInvoke<boolean>('clear_collection', this.tauriArgs({ collection })).catch((err) => {
+            console.error('[XDB] Failed to clear collection in Tauri:', err);
+          });
+        }
         const allRecords = this.getAllCollectionData(collection);
         for (const record of allRecords) {
           tauriInvoke<XDBRecord>('upsert_record', this.tauriArgs({ record })).catch((err) => {
@@ -1407,7 +1440,7 @@ export class XDBService {
       this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
     }
 
-    return { imported: importedCount, collections: importedCollections };
+    return { imported: importedCount, skipped: skippedCount, collections: importedCollections };
   }
 
   /**
@@ -1416,7 +1449,7 @@ export class XDBService {
   importFromJSON(
     jsonString: string,
     options: { merge?: boolean; clearFirst?: boolean } = {}
-  ): { imported: number; collections: string[] } {
+  ): XDBImportResult {
     const data = JSON.parse(jsonString) as XDBExportData;
     return this.import(data, options);
   }
@@ -1445,11 +1478,23 @@ export interface XDBExportData {
   collections: Record<string, XDBRecord[]>;
 }
 
+/**
+ * What an import did. `imported` counts the rows accepted, before duplicate
+ * ids collapse into one; `skipped` counts rows (and whole collections) that
+ * were not importable and were dropped rather than allowed to abort the import.
+ */
+export interface XDBImportResult {
+  imported: number;
+  skipped: number;
+  collections: string[];
+}
+
 // ============================================================================
 // React Hooks
 // ============================================================================
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useContext } from 'react';
+import { AppScopeContext } from './app-scope-context';
 
 // ── Sync signaling configuration ──────────────────────────
 
@@ -1486,23 +1531,29 @@ export function getSyncStatuses(): { connected: boolean; peers: number; room: st
 const xdbInstances = new Map<string, XDBService>();
 
 /**
- * The app currently running in this document.
+ * A module-level pointer that once named the running app.
  *
- * Most callers pass an appId, but a few cannot reasonably reach one — a
- * `<SmartForm collection="…">` is an ordinary component several levels down,
- * and the bundle seeder and worker mutation path are both plain modules. Before
- * storage was namespaced they all landed on the same keys, so it did not
- * matter. Now it does: if those callers resolved to a different instance than
- * the app's own logic, a form would write records the app could never read.
- *
- * A module-level pointer is honest about what this already is — the host runs
- * one app per document — and keeps every caller on one store.
+ * Before the app scope existed (loader/app-scope.tsx), SoftNRenderer set this
+ * during render and every no-argument getXDB() resolved through it. It named
+ * whichever app had rendered most recently, not the app a caller was in, and
+ * softn-web keeps every open tab mounted, so a handler that yielded in tab A
+ * could resume after tab B re-rendered and write A's record into B's store.
+ * Nothing in the loader sets it any more. getXDB(undefined) still honours it
+ * only so that a test, or a host written before the scope existed, keeps the
+ * behaviour it had.
  */
 let activeAppId: string | undefined;
 
 /**
- * Point the no-argument callers at an app. Called by the loader when a bundle
- * starts; passing undefined restores the shared default.
+ * Point the no-argument callers at an app; undefined restores the shared
+ * default.
+ *
+ * @deprecated The loader no longer calls this. React code reads the app it
+ * is in from the scope — useAppXDB(), or useCollection/useRecord, which
+ * consult it — and a non-React caller must pass its appId to getXDB()
+ * explicitly. Setting this moves every bare getXDB() while AppScope.appId
+ * still reports what the renderer was given, so the two disagree. It remains
+ * for tests and for legacy hosts only.
  */
 export function setActiveXDBApp(appId?: string): void {
   activeAppId = appId;
@@ -1600,7 +1651,14 @@ export function useCollection(
   collectionName: string,
   options: UseCollectionOptions = {}
 ): UseCollectionResult {
-  const xdb = options.xdb || getXDB();
+  // The store of the app this component is rendered in, when a renderer
+  // published one; nothing else knows which app a component several levels
+  // below the renderer belongs to. Read unconditionally — hook order — and
+  // consulted only when the caller named no store, since an explicit option
+  // is the caller saying it knows better than the tree it sits in. Below no
+  // provider this is the shared default, as before.
+  const scoped = useContext(AppScopeContext)?.xdb;
+  const xdb = options.xdb ?? scoped ?? getXDB();
 
   const [records, setRecords] = useState<XDBRecord[]>([]);
   const [loading, setLoading] = useState(!options.skip);
@@ -1760,7 +1818,10 @@ export function useRecord(
   recordId: string | null,
   options: { xdb?: XDBService } = {}
 ): { record: XDBRecord | null; loading: boolean; error: Error | null; refresh: () => void } {
-  const xdb = options.xdb || getXDB();
+  // Same resolution as useCollection: the caller's store, else the app's
+  // from context, else the shared default.
+  const scoped = useContext(AppScopeContext)?.xdb;
+  const xdb = options.xdb ?? scoped ?? getXDB();
 
   const [record, setRecord] = useState<XDBRecord | null>(null);
   const [loading, setLoading] = useState(!!recordId);

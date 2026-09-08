@@ -6,4 +6,6 @@
 
 export * from './render';
 export * from './registry';
+export * from './lazy-component';
+export * from './document-tags';
 export * from './sanitize-html';

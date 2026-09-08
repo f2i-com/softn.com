@@ -1930,3 +1930,16 @@ export function parse(source: string): SoftNDocument {
   const parser = new Parser(source);
   return parser.parse();
 }
+
+/**
+ * The shape of what `parse` produces, as a number a cache can key on.
+ *
+ * `parseCached` (parse-cache.ts) hands the same document to every stage that
+ * asks for the same source, and keeps it for the next asker. So a change in
+ * what `parse` returns for a given source — a node gaining a field, a
+ * construct read differently, a diagnostic added — must bump this, or a
+ * document parsed under the old rules is served to a renderer written for
+ * the new ones. Nothing in this file reads it; it is the parser's promise to
+ * its callers about the output, not the input.
+ */
+export const PARSER_VERSION = 1;

@@ -27,6 +27,17 @@ export {
 } from './consent-gate';
 export type { CapabilityName, CapabilityStatus, CapabilityState } from './consent-gate';
 
+// Which app a component is in: its store, its visibility, its assets. Read
+// from context, so a handler that suspends resumes in the app it started in.
+export {
+  AppScopeProvider,
+  useAppScope,
+  useAppXDB,
+  useAppActive,
+  useAppAssets,
+} from './app-scope';
+export type { AppScope, AppAssetResolver } from './app-scope';
+
 // Dynamic loading for Tauri apps
 export { useDynamicSoftN, useSoftNFiles } from './useDynamicSoftN';
 export type { UseDynamicSoftNOptions, UseDynamicSoftNResult } from './useDynamicSoftN';
