@@ -53,8 +53,8 @@ npm run apps:seed
 ```
 
 runs the directory's own seeder over the folder, offline, and writes
-`scripts/softn-apps/data/` (or `-- --out <dir>`): `directory.sqlite` with every
-app's rows, `apps/<slug>/v1.softn` and `thumb.*` for each, `config.json` with a
+`scripts/softn-apps/data/` (or `-- --out <dir>`): `apps/<slug>/app.json` with every
+app's metadata, `v1.softn` and `thumb.*` for each, `config.json` with a
 fresh admin key — printed once, keep it — and the rules that keep the folder
 unserved, with `seedDemos` off in its config so the site it lands in does not
 seed again from whatever bundles sit beside its API (set it back to `true`
@@ -99,3 +99,5 @@ bundle's own manifest. Give the entry a `category` and `tags` so the
 directory files it well. If the game needs a click to get past its title
 screen before a screenshot, add a recipe under its bundle's name in
 `scripts/screenshot-demos.mjs`.
+
+**Copy an individual app folder.** Put `v1.softn` under `data/apps/<slug>/`. The API discovers it automatically and writes `app.json`; copy a minimal `app.json` with name/category alongside it if desired. See the API README for metadata fields, locking and legacy migration.

@@ -3,7 +3,7 @@
  * The catalogue: publishing, versions, remixes, the listing and its search,
  * categories, thumbnails.
  *
- * Every published app is a row and a directory of immutable version files.
+ * Every published app is a JSON document beside its version files.
  * Publishing hands back an edit key; a new version, a metadata change or a
  * thumbnail needs it, and nothing else does. A remix is a new app that
  * remembers where it came from — that lineage is a first-class fact here,
@@ -15,6 +15,13 @@ declare(strict_types=1);
 final class Apps
 {
     private const SORTS = ['trending', 'newest', 'top', 'remixed', 'runs', 'name'];
+
+    private static function copyBundle(string $from, string $to): void {
+        $tmp=tempnam(dirname($to),'.upload-');
+        if($tmp===false)throw new ApiError(503,'Cannot stage bundle.');
+        try { if(!copy($from,$tmp) || !rename($tmp,$to))throw new ApiError(503,'Cannot store bundle.'); }
+        finally { if(is_file($tmp))@unlink($tmp); }
+    }
 
     // ── Slugs ──────────────────────────────────────────────────────────────
 
@@ -31,71 +38,42 @@ final class Apps
         return substr($s, 0, 48);
     }
 
-    private static function uniqueSlug(string $base): string
-    {
-        $pdo = Db::catalog();
-        $stmt = $pdo->prepare('SELECT 1 FROM apps WHERE slug = ?');
-        $slug = $base;
-        for ($n = 2; $n < 1000; $n++) {
-            $stmt->execute([$slug]);
-            if (!$stmt->fetchColumn()) return $slug;
-            $slug = substr($base, 0, 44) . '-' . $n;
-        }
-        throw new ApiError(500, 'Could not find a free name for the app.');
+    private static function uniqueSlug(string $base): string {
+        $rows = Catalog::all(); $slug=$base;
+        for ($n=2;$n<1000;$n++) { if (!isset($rows[$slug]) && !is_dir(Catalog::path($slug))) return $slug; $slug=substr($base,0,44).'-'.$n; }
+        throw new ApiError(500,'Could not find a free name for the app.');
     }
 
     /** A slug as a visitor typed it into a URL: the manifest name works too. */
-    public static function resolveSlug(string $given): string
-    {
-        $given = trim($given);
-        $pdo = Db::catalog();
-        $stmt = $pdo->prepare('SELECT slug FROM apps WHERE slug = ?');
-        $stmt->execute([$given]);
-        $found = $stmt->fetchColumn();
-        if (is_string($found)) return $found;
-        $stmt->execute([self::slugify($given)]);
-        $found = $stmt->fetchColumn();
-        if (is_string($found)) return $found;
-        $byName = $pdo->prepare('SELECT slug FROM apps WHERE name = ? COLLATE NOCASE AND hidden = 0 ORDER BY created_at LIMIT 1');
-        $byName->execute([$given]);
-        $found = $byName->fetchColumn();
-        if (is_string($found)) return $found;
-        throw new ApiError(404, 'No app is published under that name.');
+    public static function resolveSlug(string $given): string {
+        $given=trim($given); $rows=Catalog::all();
+        foreach ([$given,self::slugify($given)] as $slug) if (isset($rows[$slug])) return $slug;
+        uasort($rows,fn($a,$b)=>$a['created_at']<=>$b['created_at']);
+        foreach ($rows as $slug=>$r) if (!$r['hidden'] && mb_strtolower($r['name'])===mb_strtolower($given)) return $slug;
+        throw new ApiError(404,'No app is published under that name.');
     }
 
     // ── Rows ───────────────────────────────────────────────────────────────
 
     /** @return array<string, mixed> */
-    public static function row(string $slug, bool $includeHidden = false): array
-    {
-        $stmt = Db::catalog()->prepare('SELECT * FROM apps WHERE slug = ?');
-        $stmt->execute([$slug]);
-        $row = $stmt->fetch();
-        if (!$row || (!$includeHidden && (int) $row['hidden'] === 1)) throw new ApiError(404, 'No app is published under that name.');
+    public static function row(string $slug, bool $includeHidden = false): array {
+        $row=Catalog::all()[$slug]??null;
+        if (!$row || (!$includeHidden && $row['hidden'])) throw new ApiError(404,'No app is published under that name.');
         return $row;
     }
 
     public static function dir(string $slug): string
     {
-        $dir = Config::dataDir() . '/apps/' . $slug;
+        $dir = Catalog::path($slug);
         if (!is_dir($dir) && !@mkdir($dir, 0775, true)) throw new ApiError(500, 'Could not create the app\'s directory.');
         return $dir;
     }
 
     /** @return array<string, mixed> */
-    public static function version(string $slug, ?int $version = null): array
-    {
-        $pdo = Db::catalog();
-        if ($version === null) {
-            $stmt = $pdo->prepare('SELECT * FROM versions WHERE slug = ? ORDER BY version DESC LIMIT 1');
-            $stmt->execute([$slug]);
-        } else {
-            $stmt = $pdo->prepare('SELECT * FROM versions WHERE slug = ? AND version = ?');
-            $stmt->execute([$slug, $version]);
-        }
-        $row = $stmt->fetch();
-        if (!$row) throw new ApiError(404, 'That version does not exist.');
-        return $row;
+    public static function version(string $slug, ?int $version = null): array {
+        $rows=Catalog::doc($slug)['versions']; usort($rows,fn($a,$b)=>$b['version']<=>$a['version']);
+        foreach ($rows as $row) if ($version===null || (int)$row['version']===$version) return $row;
+        throw new ApiError(404,'That version does not exist.');
     }
 
     // ── Presentation ───────────────────────────────────────────────────────
@@ -108,9 +86,7 @@ final class Apps
         $count = (int) $row['rating_count'];
         $parent = null;
         if (!empty($row['parent_slug'])) {
-            $p = Db::catalog()->prepare('SELECT slug, name FROM apps WHERE slug = ?');
-            $p->execute([$row['parent_slug']]);
-            $pr = $p->fetch();
+            $pr = Catalog::all()[$row['parent_slug']] ?? null;
             if ($pr) $parent = ['slug' => $pr['slug'], 'name' => $pr['name']];
         }
         return [
@@ -160,12 +136,11 @@ final class Apps
     public static function detail(array $row): array
     {
         $slug = (string) $row['slug'];
-        $pdo = Db::catalog();
+        $doc=Catalog::doc($slug);
         $card = self::card($row);
-        $v = $pdo->prepare('SELECT version, size, sha256, manifest_version, notes, created_at FROM versions WHERE slug = ? ORDER BY version DESC');
-        $v->execute([$slug]);
         $versions = [];
-        foreach ($v->fetchAll() as $r) {
+        usort($doc['versions'],fn($a,$b)=>$b['version']<=>$a['version']);
+        foreach ($doc['versions'] as $r) {
             $versions[] = [
                 'version' => (int) $r['version'],
                 'manifestVersion' => (string) $r['manifest_version'],
@@ -176,23 +151,17 @@ final class Apps
                 'bundle' => "/api/apps/$slug/bundle.softn?v=" . (int) $r['version'],
             ];
         }
-        $dist = $pdo->prepare('SELECT stars, COUNT(*) AS n FROM ratings WHERE slug = ? GROUP BY stars');
-        $dist->execute([$slug]);
-        $breakdown = [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
-        foreach ($dist->fetchAll() as $r) $breakdown[(int) $r['stars']] = (int) $r['n'];
-        $kids = $pdo->prepare('SELECT slug, name, author, created_at FROM apps WHERE parent_slug = ? AND hidden = 0 ORDER BY created_at DESC LIMIT 12');
-        $kids->execute([$slug]);
-        $remixes = [];
-        foreach ($kids->fetchAll() as $r) {
-            $remixes[] = ['slug' => $r['slug'], 'name' => $r['name'], 'author' => $r['author'], 'createdAt' => gmdate('c', (int) $r['created_at'])];
-        }
+        $breakdown = [1=>0,2=>0,3=>0,4=>0,5=>0];
+        foreach ($doc['ratings'] as $r) $breakdown[(int)$r['stars']]++;
+        $kids=array_values(array_filter(Catalog::all(),fn($r)=>$r['parent_slug']===$slug && !$r['hidden']));
+        usort($kids,fn($a,$b)=>$b['created_at']<=>$a['created_at']);
+        $remixes=[];
+        foreach (array_slice($kids,0,12) as $r) $remixes[]=['slug'=>$r['slug'],'name'=>$r['name'],'author'=>$r['author'],'createdAt'=>gmdate('c',(int)$r['created_at'])];
         $lineage = [];
         $cur = $row['parent_slug'] ?? null;
         $hops = 0;
         while (is_string($cur) && $cur !== '' && $hops++ < 8) {
-            $p = $pdo->prepare('SELECT slug, name, author, parent_slug FROM apps WHERE slug = ?');
-            $p->execute([$cur]);
-            $pr = $p->fetch();
+            $pr = Catalog::all()[$cur] ?? null;
             if (!$pr) break;
             $lineage[] = ['slug' => $pr['slug'], 'name' => $pr['name'], 'author' => $pr['author']];
             $cur = $pr['parent_slug'];
@@ -235,113 +204,35 @@ final class Apps
     // ── Listing ────────────────────────────────────────────────────────────
 
     /** @param array<string, string> $q @return array<string, mixed> */
-    public static function list(array $q): array
-    {
-        $pdo = Db::catalog();
-        $search = Text::clean($q['q'] ?? '', 80);
-        $category = Text::clean($q['category'] ?? '', 40);
-        $tag = strtolower(Text::clean($q['tag'] ?? '', 24));
-        $author = Text::clean($q['author'] ?? '', 40);
-        $sort = in_array($q['sort'] ?? '', self::SORTS, true) ? $q['sort'] : ($search !== '' ? 'relevance' : 'trending');
-        $perPage = max(1, min(48, (int) ($q['perPage'] ?? 24)));
-        $page = max(1, min(500, (int) ($q['page'] ?? 1)));
-
-        $where = ['a.hidden = 0'];
-        $params = [];
-        if ($category !== '' && $category !== 'all') {
-            $where[] = 'a.category = :category';
-            $params[':category'] = $category;
+    public static function list(array $q): array {
+        $search=Text::clean($q['q']??'',80);$category=Text::clean($q['category']??'',40);$tag=strtolower(Text::clean($q['tag']??'',24));$author=Text::clean($q['author']??'',40);$cap=Text::clean($q['cap']??'',16);
+        $sort=in_array($q['sort']??'',self::SORTS,true)?$q['sort']:($search!==''?'relevance':'trending');
+        $perPage=max(1,min(48,(int)($q['perPage']??24)));$page=max(1,min(500,(int)($q['page']??1)));
+        $rows=[];$since=time()-7*86400;
+        foreach (Catalog::all() as $r) {
+            if ($r['hidden'] || ($category!=='' && $category!=='all' && $r['category']!==$category)) continue;
+            $tags=json_decode($r['tags'],true)?:[];$caps=json_decode($r['capabilities'],true)?:[];
+            if ($tag!=='' && !in_array($tag,$tags,true)) continue;
+            if ($author!=='' && mb_strtolower($r['author'])!==mb_strtolower($author)) continue;
+            if (($cap==='none' && $caps) || ($cap==='nonet' && in_array('net',$caps,true)) || ($cap==='storage' && !in_array('storage',$caps,true)) || ($cap==='worker' && $r['execution']!=='worker')) continue;
+            $text=mb_strtolower($r['name'].' '.$r['description'].' '.implode(' ',$tags).' '.$r['author']);
+            $words=preg_split('/\s+/u',trim(mb_strtolower($search)))?:[];
+            if ($search!=='' && array_filter($words,fn($w)=>!str_contains($text,$w))) continue;
+            $r['_relevance']=$search!=='' && str_contains(mb_strtolower($r['name']),mb_strtolower($search))?1:0;
+            $daily=Catalog::doc($r['slug'])['runsDaily'];$runs7=0;
+            foreach ($daily as $d) if ($d['day']>=floor($since/86400)) $runs7+=$d['count'];
+            $r['_trend']=$runs7*3+$r['remixes']*5+$r['rating_count']*2+$r['comments']+($r['created_at']>$since?4:0);
+            $r['_average']=$r['rating_count']?$r['rating_sum']/$r['rating_count']:0;
+            $rows[]=$r;
         }
-        if ($tag !== '') {
-            $where[] = "EXISTS (SELECT 1 FROM json_each(a.tags) WHERE json_each.value = :tag)";
-            $params[':tag'] = $tag;
-        }
-        if ($author !== '') {
-            $where[] = 'a.author = :author COLLATE NOCASE';
-            $params[':author'] = $author;
-        }
-        // What an app may reach, as the visitor filters for it: nothing at
-        // all, no network, its own server storage, or an off-main-thread script.
-        $cap = Text::clean($q['cap'] ?? '', 16);
-        if ($cap === 'none') {
-            $where[] = "json_array_length(a.capabilities) = 0";
-        } elseif ($cap === 'nonet') {
-            $where[] = "NOT EXISTS (SELECT 1 FROM json_each(a.capabilities) WHERE json_each.value = 'net')";
-        } elseif ($cap === 'storage') {
-            $where[] = "EXISTS (SELECT 1 FROM json_each(a.capabilities) WHERE json_each.value = 'storage')";
-        } elseif ($cap === 'worker') {
-            $where[] = "a.execution = 'worker'";
-        }
-        $join = '';
-        $relevance = '0';
-        if ($search !== '') {
-            if (Db::hasFts()) {
-                // FTS5 wants its own name on the left of MATCH, never an alias.
-                $join = 'JOIN apps_fts ON apps_fts.slug = a.slug';
-                $where[] = 'apps_fts MATCH :match';
-                $params[':match'] = self::ftsQuery($search);
-                $relevance = 'bm25(apps_fts)';
-            } else {
-                $where[] = "(a.name LIKE :like ESCAPE '\\' OR a.description LIKE :like ESCAPE '\\' OR a.tags LIKE :like ESCAPE '\\' OR a.author LIKE :like ESCAPE '\\')";
-                $params[':like'] = '%' . addcslashes($search, '%_\\') . '%';
-            }
-        }
-        $since = time() - 7 * 86400;
-        $runs7 = '(SELECT COALESCE(SUM(count), 0) FROM runs_daily r WHERE r.slug = a.slug AND r.day >= ' . (int) floor($since / 86400) . ')';
-        $order = match ($sort) {
-            'newest' => 'a.created_at DESC',
-            'top' => '(CASE WHEN a.rating_count > 0 THEN a.rating_sum * 1.0 / a.rating_count ELSE 0 END) DESC, a.rating_count DESC, a.runs DESC',
-            'remixed' => 'a.remixes DESC, a.runs DESC',
-            'runs' => 'a.runs DESC',
-            'name' => 'a.name COLLATE NOCASE ASC',
-            'relevance' => "$relevance ASC, a.runs DESC",
-            default => "($runs7 * 3 + a.remixes * 5 + a.rating_count * 2 + a.comments + CASE WHEN a.created_at > $since THEN 4 ELSE 0 END) DESC, a.runs DESC, a.created_at DESC",
-        };
-        $whereSql = implode(' AND ', $where);
-        $count = $pdo->prepare("SELECT COUNT(*) FROM apps a $join WHERE $whereSql");
-        $count->execute($params);
-        $total = (int) $count->fetchColumn();
-        $stmt = $pdo->prepare("SELECT a.* FROM apps a $join WHERE $whereSql ORDER BY $order LIMIT :limit OFFSET :offset");
-        foreach ($params as $k => $v) $stmt->bindValue($k, $v);
-        $stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
-        $stmt->bindValue(':offset', ($page - 1) * $perPage, PDO::PARAM_INT);
-        $stmt->execute();
-        $apps = array_map([self::class, 'card'], $stmt->fetchAll());
-        return [
-            'apps' => $apps,
-            'page' => $page,
-            'perPage' => $perPage,
-            'total' => $total,
-            'pages' => max(1, (int) ceil($total / $perPage)),
-            'sort' => $sort,
-            'query' => $search,
-            'category' => $category,
-        ];
-    }
-
-    /** A visitor's words as an FTS5 query: each word a prefix, none of them syntax. */
-    private static function ftsQuery(string $search): string
-    {
-        $words = preg_split('/\s+/u', $search) ?: [];
-        $terms = [];
-        foreach ($words as $w) {
-            $w = preg_replace('/[^\p{L}\p{N}]+/u', '', $w) ?? '';
-            if ($w === '') continue;
-            $terms[] = '"' . str_replace('"', '', $w) . '"*';
-            if (count($terms) >= 8) break;
-        }
-        return $terms ? implode(' ', $terms) : '""';
-    }
-
-    private static function indexForSearch(string $slug): void
-    {
-        if (!Db::hasFts()) return;
-        $pdo = Db::catalog();
-        $row = self::row($slug, true);
-        $pdo->prepare('DELETE FROM apps_fts WHERE slug = ?')->execute([$slug]);
-        $tags = implode(' ', json_decode((string) $row['tags'], true) ?: []);
-        $pdo->prepare('INSERT INTO apps_fts (slug, name, description, tags, author) VALUES (?, ?, ?, ?, ?)')
-            ->execute([$slug, $row['name'], $row['description'], $tags, $row['author']]);
+        usort($rows,function($a,$b) use($sort) {
+            if ($sort==='name') return strcasecmp($a['name'],$b['name']) ?: strcmp($a['slug'],$b['slug']);
+            $keys=match($sort){'newest'=>['created_at'],'top'=>['_average','rating_count','runs'],'remixed'=>['remixes','runs'],'runs'=>['runs'],'relevance'=>['_relevance','runs'],default=>['_trend','runs','created_at']};
+            foreach($keys as $k) if($a[$k]!=$b[$k])return $b[$k]<=>$a[$k];
+            return strcmp($a['slug'],$b['slug']);
+        });
+        $total=count($rows);
+        return ['apps'=>array_map([self::class,'card'],array_slice($rows,($page-1)*$perPage,$perPage)),'page'=>$page,'perPage'=>$perPage,'total'=>$total,'pages'=>max(1,(int)ceil($total/$perPage)),'sort'=>$sort,'query'=>$search,'category'=>$category];
     }
 
     // ── Publishing ─────────────────────────────────────────────────────────
@@ -364,13 +255,13 @@ final class Apps
         $notes = Text::clean($opts['notes'] ?? '', 400, true);
         $primary = self::color($opts['primary'] ?? null) ?? self::color($info['manifest']['config']['theme']['primary'] ?? null);
 
-        $pdo = Db::catalog();
+        Catalog::boot();
         // A seed names its own slug: the id the site already uses for that demo.
         $wanted = is_string($opts['slug'] ?? null) && $opts['slug'] !== '' ? self::slugify($opts['slug']) : self::slugify($name);
         $slug = self::uniqueSlug($wanted);
         $dir = self::dir($slug);
         $file = 'v1.softn';
-        if (!@copy($bundlePath, "$dir/$file")) throw new ApiError(500, 'Could not store the bundle.');
+        self::copyBundle($bundlePath, "$dir/$file");
         $icon = self::storeIcon($dir, $info['icon']);
         $editKey = $source === 'seed' ? null : bin2hex(random_bytes(20));
         $now = time();
@@ -379,60 +270,27 @@ final class Apps
             $parent = self::row($parentSlug);
             $rootSlug = $parent['root_slug'] ?: $parent['slug'];
         }
-        $pdo->beginTransaction();
-        try {
-            $pdo->prepare(<<<'SQL'
-INSERT INTO apps (slug, name, description, author, category, tags, parent_slug, root_slug, latest_version, capabilities, execution,
-  storage_policies, thumb, icon, primary_color, edit_key_hash, source, size, created_at, updated_at)
-VALUES (:slug, :name, :description, :author, :category, :tags, :parent, :root, 1, :capabilities, :execution,
-  :policies, NULL, :icon, :primary, :hash, :source, :size, :now, :now)
-SQL)->execute([
-                ':slug' => $slug, ':name' => $name, ':description' => $description, ':author' => $author,
-                ':category' => $category, ':tags' => json_encode($tags), ':parent' => $parentSlug, ':root' => $rootSlug,
-                ':capabilities' => json_encode($info['capabilities']), ':execution' => $info['execution'],
-                ':policies' => json_encode((object) $info['storagePolicies']),
-                ':icon' => $icon, ':primary' => $primary, ':hash' => $editKey === null ? null : hash('sha256', $editKey),
-                ':source' => $source, ':size' => $info['size'], ':now' => $now,
-            ]);
-            $pdo->prepare('INSERT INTO versions (slug, version, file, size, sha256, manifest_version, notes, created_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?)')
-                ->execute([$slug, $file, $info['size'], $info['sha256'], $info['version'], $notes, $now]);
-            if ($parentSlug !== null) {
-                $pdo->prepare('UPDATE apps SET remixes = remixes + 1 WHERE slug = ?')->execute([$parentSlug]);
-            }
-            $pdo->commit();
-        } catch (Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            throw $e;
-        }
-        self::indexForSearch($slug);
+        $app=array_replace(Catalog::defaults($slug),[
+            'name'=>$name,'description'=>$description,'author'=>$author,'category'=>$category,'tags'=>json_encode($tags),'parent_slug'=>$parentSlug,'root_slug'=>$rootSlug,
+            'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),
+            'icon'=>$icon,'primary_color'=>$primary,'edit_key_hash'=>$editKey===null?null:hash('sha256',$editKey),'source'=>$source,'size'=>$info['size'],'created_at'=>$now,'updated_at'=>$now
+        ]);
+        Catalog::put($slug,['app'=>$app,'versions'=>[['slug'=>$slug,'version'=>1,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>$notes,'created_at'=>$now]],'comments'=>[],'ratings'=>[],'runsDaily'=>[]]);
         return ['app' => self::card(self::row($slug)), 'editKey' => $editKey];
     }
 
     /** @return array<string, mixed> */
-    public static function addVersion(string $slug, string $bundlePath, ?string $notes): array
-    {
-        $row = self::row($slug, true);
-        $info = Bundle::inspect($bundlePath);
-        $pdo = Db::catalog();
-        $next = (int) $row['latest_version'] + 1;
-        if ($next > (int) Config::get('maxVersionsPerApp', 50)) throw new ApiError(400, 'This app has reached its version limit.');
-        $dir = self::dir($slug);
-        $file = "v$next.softn";
-        if (!@copy($bundlePath, "$dir/$file")) throw new ApiError(500, 'Could not store the bundle.');
-        $icon = self::storeIcon($dir, $info['icon']) ?? $row['icon'];
-        $now = time();
-        $pdo->beginTransaction();
-        try {
-            $pdo->prepare('INSERT INTO versions (slug, version, file, size, sha256, manifest_version, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-                ->execute([$slug, $next, $file, $info['size'], $info['sha256'], $info['version'], Text::clean($notes, 400, true), $now]);
-            $pdo->prepare('UPDATE apps SET latest_version = ?, capabilities = ?, execution = ?, storage_policies = ?, icon = ?, size = ?, updated_at = ? WHERE slug = ?')
-                ->execute([$next, json_encode($info['capabilities']), $info['execution'], json_encode((object) $info['storagePolicies']), $icon, $info['size'], $now, $slug]);
-            $pdo->commit();
-        } catch (Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            throw $e;
-        }
-        return self::detail(self::row($slug, true));
+    public static function addVersion(string $slug, string $bundlePath, ?string $notes): array {
+        $row=self::row($slug,true);$info=Bundle::inspect($bundlePath);$doc=Catalog::doc($slug);
+        $next=(int)$row['latest_version']+1;
+        if($next>(int)Config::get('maxVersionsPerApp',50))throw new ApiError(400,'This app has reached its version limit.');
+        $dir=self::dir($slug);$file="v$next.softn";
+        self::copyBundle($bundlePath,"$dir/$file");
+        $icon=self::storeIcon($dir,$info['icon'])??$row['icon'];$now=time();
+        $doc['versions'][]=['slug'=>$slug,'version'=>$next,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>Text::clean($notes,400,true),'created_at'=>$now];
+        $doc['app']=array_replace($doc['app'],['latest_version'=>$next,'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon,'size'=>$info['size'],'updated_at'=>$now]);
+        Catalog::put($slug,$doc);
+        return self::detail(self::row($slug,true));
     }
 
     /**
@@ -443,6 +301,7 @@ SQL)->execute([
      */
     public static function updateSeedApp(string $slug, string $bundlePath, array $meta = []): void
     {
+        Catalog::boot();
         $info = Bundle::inspect($bundlePath);
         $name = Text::clean($meta['name'] ?? '', 64) ?: $info['name'];
         $description = Text::clean($meta['description'] ?? '', 600, true) ?: $info['description'];
@@ -452,37 +311,14 @@ SQL)->execute([
 
         $dir = self::dir($slug);
         $file = 'v1.softn';
-        if (!@copy($bundlePath, "$dir/$file")) throw new ApiError(500, 'Could not store the bundle.');
+        self::copyBundle($bundlePath, "$dir/$file");
         $icon = self::storeIcon($dir, $info['icon']);
         $now = time();
 
-        $pdo = Db::catalog();
-        $pdo->beginTransaction();
-        try {
-            $pdo->prepare(<<<'SQL'
-UPDATE apps SET name = :name, description = :description, category = :category, tags = :tags,
-  capabilities = :capabilities, execution = :execution, storage_policies = :policies, icon = COALESCE(:icon, icon),
-  primary_color = :primary, size = :size, updated_at = :now WHERE slug = :slug
-SQL)->execute([
-                ':slug' => $slug, ':name' => $name, ':description' => $description,
-                ':category' => $category, ':tags' => json_encode($tags),
-                ':capabilities' => json_encode($info['capabilities']), ':execution' => $info['execution'],
-                ':policies' => json_encode((object) $info['storagePolicies']),
-                ':icon' => $icon, ':primary' => $primary, ':size' => $info['size'], ':now' => $now,
-            ]);
-            $pdo->prepare(<<<'SQL'
-UPDATE versions SET file = :file, size = :size, sha256 = :sha256, manifest_version = :mver, created_at = :now
-WHERE slug = :slug AND version = 1
-SQL)->execute([
-                ':slug' => $slug, ':file' => $file, ':size' => $info['size'],
-                ':sha256' => $info['sha256'], ':mver' => $info['version'], ':now' => $now,
-            ]);
-            $pdo->commit();
-        } catch (Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            throw $e;
-        }
-        self::indexForSearch($slug);
+        $doc=Catalog::doc($slug);
+        $doc['app']=array_replace($doc['app'],['name'=>$name,'description'=>$description,'category'=>$category,'tags'=>json_encode($tags),'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon??$doc['app']['icon'],'primary_color'=>$primary,'size'=>$info['size'],'updated_at'=>$now]);
+        foreach($doc['versions'] as &$v)if((int)$v['version']===1)$v=array_replace($v,['file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'created_at'=>$now]);
+        unset($v);Catalog::put($slug,$doc);
     }
 
     /** @param array<string, mixed> $fields @return array<string, mixed> */
@@ -524,36 +360,23 @@ SQL)->execute([
         if (!$sets) return self::detail($row);
         $sets[] = 'updated_at = :now';
         $params[':now'] = time();
-        Db::catalog()->prepare('UPDATE apps SET ' . implode(', ', $sets) . ' WHERE slug = :slug')->execute($params);
-        self::indexForSearch($slug);
+        unset($params[':slug']);$changes=[];foreach($params as $k=>$v){$field=substr($k,1);$field=match($field){'primary'=>'primary_color','now'=>'updated_at',default=>$field};$changes[$field]=$v;}Catalog::patch($slug,$changes);
         return self::detail(self::row($slug, true));
     }
 
     /** @param array{0: string, 1: string} $image */
     public static function setThumbnail(string $slug, array $image): void
     {
+        self::row($slug,true);
         [$bytes, $mime] = $image;
         $dir = self::dir($slug);
         foreach (glob("$dir/thumb.*") ?: [] as $old) @unlink($old);
         $file = 'thumb.' . Images::extension($mime);
         if (file_put_contents("$dir/$file", $bytes, LOCK_EX) === false) throw new ApiError(500, 'Could not store the thumbnail.');
-        Db::catalog()->prepare('UPDATE apps SET thumb = ?, updated_at = ? WHERE slug = ?')->execute([$file, time(), $slug]);
+        Catalog::patch($slug,['thumb'=>$file,'updated_at'=>time()]);
     }
 
-    public static function remove(string $slug): void
-    {
-        $pdo = Db::catalog();
-        $pdo->prepare('DELETE FROM apps WHERE slug = ?')->execute([$slug]);
-        $pdo->prepare('DELETE FROM versions WHERE slug = ?')->execute([$slug]);
-        $pdo->prepare('DELETE FROM comments WHERE slug = ?')->execute([$slug]);
-        $pdo->prepare('DELETE FROM ratings WHERE slug = ?')->execute([$slug]);
-        $pdo->prepare('DELETE FROM runs_daily WHERE slug = ?')->execute([$slug]);
-        if (Db::hasFts()) $pdo->prepare('DELETE FROM apps_fts WHERE slug = ?')->execute([$slug]);
-        $dir = Config::dataDir() . '/apps/' . $slug;
-        if (is_dir($dir)) {
-            foreach (glob("$dir/*") ?: [] as $f) @unlink($f);
-            @rmdir($dir);
-        }
+    public static function remove(string $slug): void { Catalog::remove($slug);
     }
 
     /**
@@ -614,7 +437,7 @@ SQL)->execute([
     public static function thumbnailResponse(string $slug): Response
     {
         $row = self::row($slug);
-        $dir = Config::dataDir() . '/apps/' . $slug;
+        $dir = Catalog::path($slug);
         $cache = ['Cache-Control' => 'public, max-age=600'];
         foreach ([$row['thumb'], $row['icon']] as $file) {
             if (is_string($file) && $file !== '' && is_file("$dir/$file")) {
@@ -628,7 +451,7 @@ SQL)->execute([
     public static function iconResponse(string $slug): Response
     {
         $row = self::row($slug);
-        $dir = Config::dataDir() . '/apps/' . $slug;
+        $dir = Catalog::path($slug);
         $file = $row['icon'];
         if (is_string($file) && $file !== '' && is_file("$dir/$file")) {
             return Response::file("$dir/$file", Images::mimeForExtension(pathinfo($file, PATHINFO_EXTENSION)), ['Cache-Control' => 'public, max-age=600']);
@@ -688,29 +511,22 @@ final class Categories
         ['other', 'Other', 'Everything else', '📦', 90],
     ];
 
-    public static function ensure(): void
-    {
-        // Once a request: the core rows are written in, and a core row whose
-        // wording changed in a release is brought up to date, so a rename here
-        // reaches a database that was seeded by an older version.
-        static $done = false;
-        if ($done) return;
-        $done = true;
-        $pdo = Db::catalog();
-        $ins = $pdo->prepare(<<<'SQL'
-INSERT INTO categories (id, name, description, emoji, status, sort, created_at) VALUES (?, ?, ?, ?, 'core', ?, ?)
-ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, emoji = excluded.emoji, sort = excluded.sort
-WHERE categories.status = 'core'
-SQL);
-        foreach (self::CORE as [$id, $name, $desc, $emoji, $sort]) $ins->execute([$id, $name, $desc, $emoji, $sort, time()]);
+    public static function ensure(): void {
+        $rows=Catalog::categories();$before=$rows;
+        foreach(self::CORE as [$id,$name,$desc,$emoji,$sort]) {
+            if(isset($rows[$id]) && $rows[$id]['status']!=='core')continue;
+            $rows[$id]=['id'=>$id,'name'=>$name,'description'=>$desc,'emoji'=>$emoji,'status'=>'core','sort'=>$sort,'created_at'=>$rows[$id]['created_at']??time()];
+        }
+        if($rows!==$before)Catalog::saveCategories($rows);
     }
 
     /** @return array<int, array<string, mixed>> */
     public static function all(bool $includeHidden = false): array
     {
         self::ensure();
-        $pdo = Db::catalog();
-        $rows = $pdo->query("SELECT c.*, (SELECT COUNT(*) FROM apps a WHERE a.category = c.id AND a.hidden = 0) AS app_count FROM categories c ORDER BY CASE c.status WHEN 'core' THEN 0 WHEN 'approved' THEN 0 ELSE 1 END, c.sort, c.name")->fetchAll();
+        $rows=array_values(Catalog::categories());$apps=Catalog::all();
+        foreach($rows as &$r)$r['app_count']=count(array_filter($apps,fn($a)=>$a['category']===$r['id']&&!$a['hidden']));unset($r);
+        usort($rows,fn($a,$b)=>[in_array($a['status'],['core','approved'])?0:1,$a['sort'],$a['name']]<=>[in_array($b['status'],['core','approved'])?0:1,$b['sort'],$b['name']]);
         $out = [];
         foreach ($rows as $r) {
             if (!$includeHidden && $r['status'] === 'hidden') continue;
@@ -728,15 +544,10 @@ SQL);
     }
 
     /** A category id the visitor gave, or 'other'. */
-    public static function resolve(string $given): string
-    {
-        self::ensure();
-        if ($given === '') return 'other';
-        $id = Apps::slugify($given);
-        $stmt = Db::catalog()->prepare("SELECT id FROM categories WHERE (id = ? OR name = ? COLLATE NOCASE) AND status != 'hidden'");
-        $stmt->execute([$id, $given]);
-        $found = $stmt->fetchColumn();
-        return is_string($found) ? $found : 'other';
+    public static function resolve(string $given): string {
+        self::ensure();$id=Apps::slugify($given);
+        foreach(Catalog::categories() as $r)if($r['status']!=='hidden' && ($r['id']===$id || mb_strtolower($r['name'])===mb_strtolower($given)))return $r['id'];
+        return 'other';
     }
 
     /**
@@ -752,17 +563,12 @@ SQL);
         $name = Text::clean($name, 32);
         if (mb_strlen($name) < 2) throw new ApiError(400, 'A category name needs at least two characters.');
         $id = Apps::slugify($name);
-        $pdo = Db::catalog();
-        $existing = $pdo->prepare('SELECT id FROM categories WHERE id = ? OR name = ? COLLATE NOCASE');
-        $existing->execute([$id, $name]);
-        $found = $existing->fetchColumn();
-        if (is_string($found)) return self::one($found);
-        $total = (int) $pdo->query('SELECT COUNT(*) FROM categories')->fetchColumn();
-        if ($total >= 200) throw new ApiError(400, 'There are already as many categories as the directory will hold.');
+        $rows=Catalog::categories();
+        foreach($rows as $r)if($r['id']===$id||mb_strtolower($r['name'])===mb_strtolower($name))return self::one($r['id']);
+        if(count($rows)>=200)throw new ApiError(400,'There are already as many categories as the directory will hold.');
         $emoji = Text::clean($emoji, 4);
         if ($emoji !== '' && !preg_match('/^\p{So}\p{M}*(\x{200D}\p{So}\p{M}*)*$/u', $emoji)) $emoji = '';
-        $pdo->prepare("INSERT INTO categories (id, name, description, emoji, status, sort, created_at) VALUES (?, ?, ?, ?, 'suggested', 500, ?)")
-            ->execute([$id, $name, Text::clean($description, 120), $emoji ?: '🏷️', time()]);
+        $rows[$id]=['id'=>$id,'name'=>$name,'description'=>Text::clean($description,120),'emoji'=>$emoji?:'🏷️','status'=>'suggested','sort'=>500,'created_at'=>time()];Catalog::saveCategories($rows);
         return self::one($id);
     }
 
@@ -776,26 +582,11 @@ SQL);
     }
 
     /** @param array<string, mixed> $fields @return array<string, mixed> */
-    public static function update(string $id, array $fields): array
-    {
-        self::one($id);
-        $pdo = Db::catalog();
-        if (isset($fields['status']) && in_array($fields['status'], ['core', 'approved', 'suggested', 'hidden'], true)) {
-            $pdo->prepare('UPDATE categories SET status = ? WHERE id = ?')->execute([$fields['status'], $id]);
-        }
-        if (isset($fields['name'])) {
-            $name = Text::clean((string) $fields['name'], 32);
-            if ($name !== '') $pdo->prepare('UPDATE categories SET name = ? WHERE id = ?')->execute([$name, $id]);
-        }
-        if (isset($fields['description'])) {
-            $pdo->prepare('UPDATE categories SET description = ? WHERE id = ?')->execute([Text::clean((string) $fields['description'], 120), $id]);
-        }
-        if (isset($fields['emoji'])) {
-            $pdo->prepare('UPDATE categories SET emoji = ? WHERE id = ?')->execute([Text::clean((string) $fields['emoji'], 4), $id]);
-        }
-        if (isset($fields['sort'])) {
-            $pdo->prepare('UPDATE categories SET sort = ? WHERE id = ?')->execute([(int) $fields['sort'], $id]);
-        }
-        return self::one($id);
+    public static function update(string $id, array $fields): array {
+        self::one($id);$rows=Catalog::categories();$r=$rows[$id];
+        if(isset($fields['status'])&&in_array($fields['status'],['core','approved','suggested','hidden'],true))$r['status']=$fields['status'];
+        foreach(['name'=>32,'description'=>120,'emoji'=>4] as $k=>$max)if(isset($fields[$k])){$v=Text::clean((string)$fields[$k],$max);if($k!=='name'||$v!=='')$r[$k]=$v;}
+        if(isset($fields['sort']))$r['sort']=(int)$fields['sort'];
+        $rows[$id]=$r;Catalog::saveCategories($rows);return self::one($id);
     }
 }

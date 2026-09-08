@@ -43,7 +43,7 @@ softn.com/
 |   +-- softn-builder/         # Visual IDE / builder
 |   +-- softn-loader/          # Desktop runtime (Tauri)
 |   +-- softn-rust/            # Rust host for `.logic` server routes and XDB sync
-|   +-- softn-api/             # The app directory: PHP + SQLite, deployed as /api/ beside the site
+|   +-- softn-api/             # The app directory: PHP + folder JSON, deployed as /api/ beside the site
 +-- scripts/                   # dev-all, site assembly, release packaging, demo fetching and screenshots
 +-- .github/workflows/         # CI/CD
 ```
@@ -72,7 +72,7 @@ softn.com/
 | Build Tooling | Vite 5+ / tsup |
 | State Management | React Context + Zustand (builder) |
 | 3D Graphics | Three.js |
-| App Directory | PHP 8.1 + SQLite (full-text search when the host's SQLite has FTS5) |
+| App Directory | PHP 8.1 + folder discovery and JSON metadata |
 
 ---
 
@@ -523,7 +523,7 @@ them shows the engine's debug readout.
 | **softn-studio** | Brief to blueprint to app, against whichever model provider you configure. Installable PWA |
 | **softn-builder** | Visual IDE with drag-and-drop editor, live preview, bundle export. Installable PWA |
 | **softn-loader** | Tauri desktop runtime with `.softn` file association and XDB/SQLite |
-| **softn-api** | The directory behind softn.com: PHP and SQLite, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes and per-app storage |
+| **softn-api** | The directory behind softn.com: PHP and folder-based JSON, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes and per-app storage |
 
 The three browser apps are installable PWAs: each ships a web app manifest and a
 service worker that precaches the runtime, the component library and the
@@ -615,8 +615,11 @@ them (a folder at once, with the admin key from `data/config.json` for the site
 owner). `npm run build:site -- --with-demos` fetches the pinned softn-Examples
 release, ships the bundles under `/demos/` and `/softn-files/`, and has the
 directory seed itself from them on the first request — the shape softn.com
-itself deploys; delete `dist/data/{apps,directory.sqlite,seeded,seed.lock}` to
-seed again after the demos change.
+itself deploys. Demo changes are refreshed while `seedDemos` is enabled.
+You can also copy a folder containing `v1.softn` directly into
+`data/apps/<slug>/`: the API discovers it and maintains an `app.json` for its
+metadata and social history, with locked atomic updates. Existing SQLite
+catalogues migrate automatically; see the API README before upgrading.
 
 ### Demos
 

@@ -2,9 +2,9 @@
   "name": "@softn/api",
   "version": "0.0.8",
   "private": true,
-  "description": "The softn.com directory API: PHP and SQLite, deployed as /api/ beside the static site",
+  "description": "The softn.com directory API: PHP with folder discovery and atomic JSON metadata",
   "type": "module",
   "scripts": {
-    "test": "node --test test/api.test.mjs"
+    "test": "node --test test/*.test.mjs"
   }
 }

@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/lib/http.php';
 require __DIR__ . '/lib/db.php';
+require __DIR__ . '/lib/catalog.php';
 require __DIR__ . '/lib/bundle.php';
 require __DIR__ . '/lib/apps.php';
 require __DIR__ . '/lib/social.php';
@@ -112,6 +113,7 @@ try {
     if ($matched === null) throw new ApiError(404, 'No such route: ' . $req->method . ' ' . $req->path);
     [$handler, $args] = $matched;
     $response = handle($handler, $args, $req);
+    Catalog::release();
     $response->send();
 } catch (ApiError $e) {
     Response::json(['ok' => false, 'error' => $e->getMessage()] + $e->extra, $e->status,
@@ -158,12 +160,10 @@ function handle(string $handler, array $args, Request $req): Response
             return Response::file(__DIR__ . '/README.md', 'text/markdown; charset=utf-8');
 
         case 'health': {
-            $fts = false;
             $sqlite = null;
             $writable = false;
             try {
-                $sqlite = (string) Db::catalog()->query('select sqlite_version()')->fetchColumn();
-                $fts = Db::hasFts();
+                Catalog::boot();
                 $writable = is_writable(Config::dataDir());
             } catch (ApiError $e) {
                 return Response::json(['ok' => false, 'error' => $e->getMessage(), 'php' => PHP_VERSION], 503);
@@ -172,7 +172,9 @@ function handle(string $handler, array $args, Request $req): Response
                 'ok' => $writable,
                 'php' => PHP_VERSION,
                 'sqlite' => $sqlite,
-                'fts5' => $fts,
+                'fts5' => false,
+                'catalog' => 'folder-json',
+                'cache' => 'rebuildable-json',
                 'zip' => class_exists('ZipArchive'),
                 'dataWritable' => $writable,
                 'uploadMax' => ini_get('upload_max_filesize'),
@@ -417,15 +419,15 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'adminStats': {
             if (!Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) throw new ApiError(403, 'That needs the admin key.');
-            $pdo = Db::catalog();
+            $rows=Catalog::all();$docs=array_map(fn($a)=>Catalog::doc($a['slug']),$rows);
             return Response::json([
                 'ok' => true,
-                'apps' => (int) $pdo->query('SELECT COUNT(*) FROM apps WHERE hidden = 0')->fetchColumn(),
-                'hidden' => (int) $pdo->query('SELECT COUNT(*) FROM apps WHERE hidden = 1')->fetchColumn(),
-                'versions' => (int) $pdo->query('SELECT COUNT(*) FROM versions')->fetchColumn(),
-                'comments' => (int) $pdo->query('SELECT COUNT(*) FROM comments')->fetchColumn(),
-                'ratings' => (int) $pdo->query('SELECT COUNT(*) FROM ratings')->fetchColumn(),
-                'runs' => (int) $pdo->query('SELECT COALESCE(SUM(runs), 0) FROM apps')->fetchColumn(),
+                'apps' => count(array_filter($rows,fn($a)=>!$a['hidden'])),
+                'hidden' => count(array_filter($rows,fn($a)=>(bool)$a['hidden'])),
+                'versions' => array_sum(array_map(fn($d)=>count($d['versions']),$docs)),
+                'comments' => array_sum(array_map(fn($d)=>count($d['comments']),$docs)),
+                'ratings' => array_sum(array_map(fn($d)=>count($d['ratings']),$docs)),
+                'runs' => array_sum(array_column($rows,'runs')),
                 'suggestedCategories' => array_values(array_filter(Categories::all(true), fn($c) => $c['status'] === 'suggested')),
                 'dataDir' => Config::dataDir(),
             ]);

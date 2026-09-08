@@ -336,7 +336,8 @@ directory layout intact and make sure your upload includes the hidden
 
 \`/api/\` is the app directory: the catalogue, uploads, comments, ratings,
 remixes and each published app's own database. It is plain PHP (8.1 or newer)
-with SQLite, and it keeps every piece of state as files under \`data/\`, so the
+with folder discovery and JSON catalogue metadata. Optional app databases use
+SQLite. It keeps every piece of state as files under \`data/\`, so the
 host needs no database server and no accounts.
 
 What it needs from the host:
@@ -358,6 +359,18 @@ rename suggested categories, hide apps, remove comments. Back the directory up
 by copying \`data/\`; move it by copying it; reset it by emptying it.
 
 ## Adding apps
+
+You can also add apps directly: create \`data/apps/<slug>/\` and copy a
+\`.softn\` bundle into it. The next catalogue request discovers it and creates
+\`app.json\` beside it for listing details, play counts, comments and ratings.
+Bundle inspection uses a disposable cache under \`data/cache/\`. PHP serializes
+updates with filesystem locks and replaces JSON files atomically; all workers
+must share the same filesystem with working locks and atomic renames.
+
+When upgrading an existing installation, back up and preserve its \`data/\`
+directory and stop old PHP workers before switching versions. The first request
+imports \`directory.sqlite\` into the app JSON files, leaving the original
+database as a backup. See \`api/README.md\` for migration and metadata details.
 
 ${
   withDemos
@@ -870,7 +883,7 @@ if (withDemos) {
 } else {
   console.log('  (no example bundles: the directory starts empty; --with-demos ships them)');
 }
-console.log('  dist/api/       the directory API (PHP + SQLite); dist/data/ its state');
+console.log('  dist/api/       the directory API (PHP + folder JSON); dist/data/ its state');
 console.log('  dist/.htaccess, nginx.conf.example, DEPLOY.md');
 console.log('  dist/BUILD-INFO.json');
 console.log('  *.br / *.gz     precompressed twins for brotli_static / gzip_static');
