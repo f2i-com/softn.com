@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {join,dirname} from 'node:path';
 import {createWasmHost} from './wasm-host.mjs';
 import {applyMigration} from './migrations.mjs';
+import {invokeWithHook} from './request-hook.mjs';
 const root=dirname(fileURLToPath(import.meta.url));
 let db;
 try {
@@ -61,7 +62,7 @@ try {
   else {
     if(!required.capabilities.includes('trusted-client-ip'))delete request.client_ip;
     if(route.upload!=='photo')delete request.upload;
-    result=host.invoke(request,route);
+    result=await invokeWithHook({request,route,host,config,db,loadHook:()=>import('./operator/request.mjs')});
   }
   // Optional operator-installed adapter, never selected by a request or bundle.
   // This is trusted host code, not part of the WASM guest's authority.

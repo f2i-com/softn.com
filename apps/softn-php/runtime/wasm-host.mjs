@@ -68,7 +68,7 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
     ...Object.fromEntries(['sha256','hmac','randomHex','randomInt','equal','seal'].map(k=>['crypto.'+k,services.crypto[k]])),
     ...Object.fromEntries(['now','parseZoned','format','age'].map(k=>['time.'+k,services.time[k]]))
   });
-  function invoke(request,route) {
+  function invoke(request,route,context={}) {
     let engine,transaction=false,calls=0;
     try {
       db.exec(route.transaction==='read'?'BEGIN':'BEGIN IMMEDIATE');transaction=true;
@@ -80,7 +80,7 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
       }});
       engine.initScript(SHIM+'\nsoftn.config='+JSON.stringify({...appConfig,development})+';\n'+source);
       engine.evalInContext('typeof onStart === "function" ? onStart() : null');
-      const result=engine.callFunction(route.handler,[request]);
+      const result=engine.callFunction(route.handler,[{...request,context}]);
       if(!result||!Number.isInteger(result.status)||result.status<200||result.status>599||!Object.hasOwn(result,'body')||Buffer.byteLength(JSON.stringify(result))>3*1024*1024)throw new Error('Invalid response');
       db.exec(result.rollback?'ROLLBACK':'COMMIT');transaction=false;
       delete result.rollback;return result;
