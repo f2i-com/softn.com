@@ -6,8 +6,8 @@
  *
  * Runs the directory's own seeder over a folder in the shape scripts/softn-apps
  * builds (index.json beside the bundles, thumbs/ beside them) and writes what a
- * site's first request would have written: directory.sqlite with every app's
- * rows, apps/<slug>/v1.softn and thumb.* for each, config.json with a fresh
+ * site's first request would have written: apps/<slug>/app.json with every app's
+ * metadata, apps/<slug>/v1.softn and thumb.* for each, config.json with a fresh
  * admin key and salt, the rules that keep the folder unserved. Upload the result
  * as data/ beside api/ and the directory is populated before its first visitor.
  * Run it again over the same output to bring it up to date with the folder.
@@ -53,6 +53,7 @@ putenv("SOFTN_DATA_DIR=$out");
 
 require __DIR__ . '/lib/http.php';
 require __DIR__ . '/lib/db.php';
+require __DIR__ . '/lib/catalog.php';
 require __DIR__ . '/lib/bundle.php';
 require __DIR__ . '/lib/apps.php';
 require __DIR__ . '/lib/social.php';
@@ -87,11 +88,11 @@ Options -Indexes
 
 RULES);
     }
-    $pdo = Db::catalog();
-    $apps = (int) $pdo->query("SELECT COUNT(*) FROM apps WHERE source = 'seed'")->fetchColumn();
-    $others = (int) $pdo->query("SELECT COUNT(*) FROM apps WHERE source != 'seed'")->fetchColumn();
+    $rows=Catalog::all();
+    $apps=count(array_filter($rows,fn($a)=>$a['source']==='seed'));
+    $others=count($rows)-$apps;
     $pictures = 0;
-    foreach ($pdo->query("SELECT slug FROM apps WHERE source = 'seed'")->fetchAll(PDO::FETCH_COLUMN) as $slug) {
+    foreach (array_keys(array_filter($rows,fn($a)=>$a['source']==='seed')) as $slug) {
         if (glob(Apps::dir((string) $slug) . '/thumb.*')) $pictures++;
     }
     $config = json_decode((string) file_get_contents("$out/config.json"), true);

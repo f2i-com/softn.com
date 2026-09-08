@@ -42,7 +42,7 @@ final class Seed
         if ($from === null && !Config::get('seedDemos', true)) return;
         $dir = Config::dataDir();
         $flag = "$dir/seeded";
-        $pdo = Db::catalog();
+        Catalog::boot();
         Categories::ensure();
         // A built site keeps its example bundles beside the API, at
         // dist/demos; a build without them (the default) has no directory
@@ -66,14 +66,11 @@ final class Seed
 
         // Bring seeded app categories up to date
         foreach (self::CATEGORY as $slug => $cat) {
-            $pdo->prepare('UPDATE apps SET category = ? WHERE slug = ? AND category != ?')->execute([$cat, $slug, $cat]);
+            if(isset(Catalog::all()[$slug]) && Catalog::all()[$slug]['category']!==$cat)Catalog::patch($slug,['category'=>$cat]);
         }
 
-        $existing = $pdo->query(<<<'SQL'
-SELECT a.slug, a.name, v.size, v.sha256
-FROM apps a
-LEFT JOIN versions v ON a.slug = v.slug AND a.latest_version = v.version
-SQL)->fetchAll(PDO::FETCH_ASSOC);
+        $existing=array_values(Catalog::all());
+        foreach($existing as &$r){$v=Apps::version($r['slug']);$r['size']=$v['size'];$r['sha256']=$v['sha256'];}unset($r);
 
         $existingMap = [];
         foreach ($existing as $r) {
@@ -136,7 +133,7 @@ SQL)->fetchAll(PDO::FETCH_ASSOC);
                 $id = is_string($entry['id'] ?? null) ? $entry['id'] : Apps::slugify((string) ($entry['name'] ?? $entry['file'] ?? ''));
                 if ($id !== '') $indexed[$id] = true;
             }
-            $seeded = $pdo->query("SELECT slug FROM apps WHERE source = 'seed'")->fetchAll(PDO::FETCH_COLUMN);
+            $seeded=array_keys(array_filter(Catalog::all(),fn($a)=>$a['source']==='seed'));
             foreach ($seeded as $slug) {
                 if (isset($indexed[$slug])) continue;
                 try {

@@ -108,6 +108,14 @@ before(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-api-'));
   copyDir(apiDir, path.join(root, 'api'));
   copyDir(path.join(repo, 'apps/softn-web/public/demos'), path.join(root, 'demos'));
+  // API tests are self-contained: source checkouts need not fetch release demos.
+  for (const entry of JSON.parse(fs.readFileSync(path.join(root, 'demos/index.json'), 'utf8'))) {
+    const target = path.join(root, 'demos', entry.file);
+    if (!fs.existsSync(target)) fs.writeFileSync(target, makeBundle(entry.name));
+  }
+  fs.mkdirSync(path.join(root, 'demos/thumbs'), {recursive:true});
+  const notesThumb=path.join(root,'demos/thumbs/Notes.png');
+  if(!fs.existsSync(notesThumb))fs.writeFileSync(notesThumb,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8XcAAAAASUVORK5CYII=','base64'));
   // A storage quota small enough to reach in a test. The server fills in the
   // rest of the configuration around it on first use.
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
@@ -151,12 +159,14 @@ after(() => {
 
 const skip = { skip: !HAVE_PHP };
 
-test('health reports a working SQLite with FTS5 and a writable data dir', skip, async () => {
+test('health reports a folder catalogue and writable data dir', skip, async () => {
   const { status, json } = await api('GET', '/api/health');
   assert.equal(status, 200);
   assert.equal(json.ok, true);
   assert.equal(json.dataWritable, true);
   assert.equal(json.zip, true);
+  assert.equal(json.catalog, "folder-json");
+  assert.equal(json.sqlite, null);
 });
 
 test('the demos are seeded on first use, into their categories', skip, async () => {
@@ -606,11 +616,7 @@ test('the share page carries the app into its meta tags', skip, async () => {
  * several bundles of its own starts from a clean window rather than from
  * whatever the tests before it left.
  */
-function resetRateLimits() {
-  const script = path.join(root, 'reset-ratelimit.php');
-  fs.writeFileSync(script, "<?php $p = new PDO('sqlite:' . $argv[1]); $p->exec('DELETE FROM ratelimit');");
-  const r = spawnSync('php', [script, path.join(root, 'data/directory.sqlite')], { encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`could not reset rate limits: ${r.stderr}`);
+function resetRateLimits() { fs.writeFileSync(path.join(root, 'data/ratelimits.json'), '{}');
 }
 
 test("a bundle's declaration is held to the capability schema", skip, async () => {
@@ -887,12 +893,12 @@ test('the offline seed writes a complete data/ from a folder of apps', skip, () 
   assert.match(r.stdout, /admin key: [0-9a-f]{40}/, 'the admin key is reported once');
   const cfg = JSON.parse(fs.readFileSync(path.join(out, 'config.json'), 'utf8'));
   assert.match(cfg.adminKey, /^[0-9a-f]{40}$/);
-  assert.ok(fs.existsSync(path.join(out, 'directory.sqlite')), 'the catalogue');
+  assert.ok(!fs.existsSync(path.join(out, 'directory.sqlite')), 'no directory database');
+  assert.ok(fs.existsSync(path.join(out,'apps','notes','app.json')), 'per-app metadata');
   assert.ok(fs.existsSync(path.join(out, '.htaccess')), 'the rules that keep data/ unserved');
   assert.ok(fs.existsSync(path.join(out, 'apps', 'notes', 'v1.softn')), 'the bundle laid down as v1');
   assert.ok(fs.readdirSync(path.join(out, 'apps', 'notes')).some((f) => f.startsWith('thumb.')), 'the picture attached');
-  const count = spawnSync('php', ['-r', 'echo (new PDO("sqlite:" . $argv[1]))->query("SELECT COUNT(*) FROM apps")->fetchColumn();', path.join(out, 'directory.sqlite')], { encoding: 'utf8' });
-  assert.equal(Number(count.stdout.trim()), expected, 'every app has its rows');
+  assert.equal(fs.readdirSync(path.join(out,'apps')).filter(slug=>fs.existsSync(path.join(out,'apps',slug,'app.json'))).length,expected);
   // A second run over the same output changes nothing: the folder is the truth.
   const again = spawnSync('php', [seedFolder, '--from', folder, '--out', out], { encoding: 'utf8' });
   assert.equal(again.status, 0, again.stderr);

@@ -7,7 +7,7 @@
  *
  * Runs the API's own seeder (apps/softn-api/seed-folder.php) over the folder,
  * so the output is exactly what a site's first request would have written:
- * directory.sqlite, apps/<slug>/ with each bundle and picture, config.json
+ * apps/<slug>/app.json with each bundle and picture, config.json
  * with a fresh admin key, and the rules that keep the folder unserved. The
  * default output is scripts/softn-apps/data/ (ignored by git). Run it again
  * to bring an output up to date with the folder.
@@ -49,4 +49,4 @@ if (/no-pdo_sqlite|no-zip/.test(probe.stdout)) {
 
 const r = spawnSync(php, [path.join(root, 'apps', 'softn-api', 'seed-folder.php'), '--from', appsDir, '--out', outDir], { stdio: 'inherit' });
 if (r.status !== 0) process.exit(r.status ?? 1);
-console.log(`\nReady: ${outDir}\n  directory.sqlite, apps/<slug>/, config.json (the admin key is in it — keep it), .htaccess`);
+console.log(`\nReady: ${outDir}\n  apps/<slug>/app.json, bundles and pictures, config.json (the admin key is in it — keep it), .htaccess`);

@@ -1,15 +1,22 @@
-This directory holds everything the softn.com directory keeps:
+This private directory holds the app catalogue and app-owned data:
 
-  config.json          site settings, the visitor-hash salt and the ADMIN KEY
-  directory.sqlite     the catalogue: apps, versions, comments, ratings, categories
-  apps/<slug>/         one directory per published app
-    v1.softn, v2...    every version ever published, unchanged
-    icon.*, thumb.*    its pictures
-    storage.sqlite     the app's own data, created the first time it stores something
-  seeded               present once the demo bundles have been published
+  config.json               settings, visitor-hash salt and ADMIN KEY
+  catalog.lock              stable cross-process lock; never delete while serving
+  sequences.json            monotonic comment identifier allocation
+  categories.json           category definitions
+  ratelimits.json           expiring request-limit windows
+  cache/bundles.json        rebuildable bundle inspection cache
+  apps/<slug>/app.json      listing, versions, plays, comments, ratings and edit hash
+  apps/<slug>/*.softn       versioned bundles, discovered automatically
+  apps/<slug>/icon.*, thumb.*  pictures
+  apps/<slug>/storage.sqlite  optional app-owned saved data (not directory metadata)
+  directory-migrated.json   present after importing a legacy catalogue
+  directory.sqlite         retained legacy backup only; not created by new installs
 
-PHP must be able to write here. It is never served: the .htaccess beside this
-file refuses every request, and the site's own rules refuse them first.
+Copy a named app folder into apps/ to add it. Use v1.softn, v2.softn, etc.
+JSON is generated on first discovery; see ../README.md for a minimal app.json.
+For concurrent updates, use the API. Manual JSON edits and consistent backups
+must also hold catalog.lock or be made while API requests are stopped.
 
-Back the site up by copying this directory. Move it by copying it. Reset the
-directory by emptying it; the demos are published again on the next request.
+PHP must be able to write here. The web server must never serve this folder:
+.htaccess and the site's rules refuse it. Keep keys and private metadata safe.

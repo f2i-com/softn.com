@@ -1,6 +1,6 @@
 # The softn.com directory API
 
-One PHP script and a SQLite file, deployed as `/api/` beside the static site.
+PHP with a folder-based JSON catalogue, deployed as `/api/` beside the static site.
 It is what turns softn.com from a landing page into an app directory: a
 catalogue of `.softn` bundles that anyone can publish to, play from, rate,
 comment on and remix, plus a small server-side database for each app that asks
@@ -9,9 +9,111 @@ takes a zip upload.
 
 ## Requirements
 
-- PHP 8.1 or newer with `pdo_sqlite` and `zip`
+- PHP 8.1 or newer with `zip` and `mbstring`; `pdo_sqlite` is needed only for legacy migration and apps that use server-side storage
 - A writable `data/` directory beside `api/` (the build creates it; `GET /api/health` reports whether it is writable)
 - Upload limits large enough for a bundle; `api/.user.ini` asks for 64 MB on PHP-FPM and CGI hosts
+
+## Add an app by copying a folder
+
+Put a valid bundle here (lower-case letters, digits and hyphens in the folder name):
+
+```text
+data/
+  apps/
+    urbanward/
+      v1.softn
+      app.json           generated on discovery; kept with the app
+      icon.svg           extracted from a declared bundle icon, when present
+      thumb.png          optional: reference it as app.thumb in app.json
+      storage.sqlite     optional app-owned saved data, not directory metadata
+  sequences.json         monotonic comment identifier allocation
+  categories.json        category definitions
+  ratelimits.json        expiring visitor action windows
+  cache/bundles.json     disposable bundle inspection cache
+  catalog.lock           stable process lock; never delete it while serving
+  config.json            private site configuration and keys
+```
+
+The next API request discovers new folders and `.softn` files. There is no
+SQL registration step or server restart. Prefer `v1.softn`, `v2.softn`, etc.
+Other safe `.softn` filenames are accepted and assigned a stable version
+number in `app.json`. Upload a bundle with a temporary extension, then rename
+it to `.softn` when complete. Removing a bundle removes that version from the
+listing; removing the folder removes the app. A folder with no valid bundles
+is not listed. Invalid bundles are skipped; malformed authoritative JSON
+returns an error and is never silently replaced with empty metadata.
+
+You can also provide this minimal `app.json` alongside a new bundle:
+
+```json
+{
+  "schemaVersion": 1,
+  "app": {
+    "name": "Urbanward",
+    "category": "games",
+    "description": "Build a city that tells a story.",
+    "tags": ["city", "simulation"]
+  }
+}
+```
+
+Missing fields are filled on discovery. A generated file contains `app`
+(listing fields, counters and hashed edit key), `versions`, `comments`,
+`ratings`, and `runsDaily`. Tags and permissions are JSON arrays/objects,
+not embedded JSON strings. `app.runs` counts successful opens;
+`app.launches` counts presses of Play. Plays, comments, moderation and ratings
+update this file atomically. A folder-added app belongs to the administrator;
+published apps retain their edit keys. Keep the entire `data/` folder private:
+metadata includes hashed identities and ownership information.
+
+For live edits, use the existing PATCH/admin APIs. If editing JSON manually,
+pause API writes or have your editor acquire `data/catalog.lock` before reading
+and replacing the file. An ordinary editor or file-copy command does not
+participate in the API's locking protocol and can overwrite newer counters.
+Back up while requests are stopped or hold that same lock for a consistent
+snapshot. Do not replace the whole app.json just to change a category.
+
+## Concurrency and cache
+
+Independent PHP workers acquire an OS `flock` on the stable catalogue lock
+before reading the folder snapshot. The lock covers validation, version/slug
+allocation, and metadata updates. Read-modify-write operations are therefore
+serialized, including ratings, comments, plays and rate limits. A write uses
+a unique sibling temporary file, flush/fsync, and rename; it never truncates
+the live JSON file. Counter plus history updates for one app are in the same
+JSON replacement. The OS releases the lock if a worker exits or is killed.
+The lock is released before the response body is sent. Remix counts derive
+from folder relationships, so they need no second app-file transaction.
+
+This is a single shared-filesystem design. All writers must use the same
+lock and a filesystem supporting `flock` and atomic same-directory rename.
+It is not distributed coordination across independent disks. Serializing the
+catalogue trades peak request throughput for simple, reliable updates; large
+comment histories also increase the size of an app's JSON rewrite. This does
+not promise power-loss durability of filesystem directory entries.
+
+Folder entries and app.json are reread for each request. The derived bundle
+cache avoids reopening ZIPs on every request, refreshes when file stats
+change, and revalidates at least every five seconds while requests arrive.
+A same-size replacement preserving timestamps may take up to five seconds.
+Deleting or corrupting `cache/bundles.json` rebuilds it without losing any
+plays, comments, ratings or ownership. Search/filter/sort use PHP over the
+current metadata snapshot; search is case-insensitive word matching, with
+name matches ranked first, rather than SQLite FTS stemming.
+
+## Existing SQLite installations
+
+On the first catalogue request, an existing `directory.sqlite` is imported
+under the catalogue lock into per-app JSON and `categories.json`. Versions,
+comments (including hidden ones), ratings, counters and edit-key hashes are
+preserved. Existing app.json files take precedence, so an interrupted import
+can resume without replacing completed files. A `directory-migrated.json`
+marker prevents later imports. The original SQLite file is retained as a
+backup and is no longer used after migration. Stop old API workers during the
+upgrade: older code writing SQLite does not acquire the new lock. Back up
+`data/` before deploying; do not delete the marker while the backup remains.
+Transient rate-limit windows restart at migration. Apps' own `storage.sqlite`
+files are unchanged.
 
 ## Ownership
 
@@ -41,7 +143,7 @@ kept.
 | `GET /api/apps/{slug}/thumbnail`, `/icon` | Pictures. The URLs the API hands out carry `?v=<updated_at>` because pictures are cached for ten minutes |
 | `GET /api/apps/{slug}/source` | The bundle's source files, for the app page's viewer |
 | `GET /api/apps/{slug}/comments`, `/rating` | Comments (paged) and the rating summary |
-| `GET /api/categories` | Categories with counts. The site-owned ones (Games, Examples, …) are recreated on every request so renames reach old databases |
+| `GET /api/categories` | Categories with counts. The site-owned ones (Games, Examples, …) are refreshed on every request so renamed core categories reach existing directories |
 | `POST /api/apps` | Publish. The bundle goes as a multipart field named `bundle`, as the raw request body, or as `bundleBase64` in JSON; other fields are `name`, `description`, `author`, `category`, `tags`, `notes`, `primary`, `parent`, `thumbnail`. Answers with the listing and its `editKey` |
 | `POST /api/apps/{slug}/versions` | A new version of the bundle (`X-Edit-Key`) |
 | `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`) |
@@ -55,7 +157,7 @@ kept.
 | `GET /api/apps/{slug}/storage`, `/storage/{collection}` | What an app has stored: collection names and counts, then a page of one collection |
 | `GET /api/README.md` | This file |
 | `POST /api/categories` | `{name, description, emoji}` (admin) |
-| `GET /api/health` | SQLite version, full-text search availability, whether `data/` is writable |
+| `GET /api/health` | Folder catalogue/cache backend, ZIP support and whether `data/` is writable |
 
 `/app/{slug}` (no `api`) is a share page: the listing rendered as HTML with
 Open Graph tags, for links pasted into chat.
@@ -150,13 +252,10 @@ php -S 127.0.0.1:5500 -t dist apps/softn-api/router.php
 `router.php` stands in for the deployed `.htaccess`: `/api/` goes to PHP,
 `/data/` is refused, `/app/{slug}` renders the share page, and every static
 file is served with the cross-origin isolation headers the runtime's worker
-mode depends on. The directory seeds itself from the demo bundles on the first
-request, taking each app's picture from
-`apps/softn-web/public/demos/thumbs/`. To seed again after the demos change:
-
-```bash
-rm -rf dist/data/apps dist/data/directory.sqlite dist/data/seeded dist/data/seed.lock
-```
+mode depends on. New folders under `data/apps/` are discovered automatically.
+The optional demo seeder also refreshes bundles and pictures when its index
+changes; keep `seedDemos` enabled to use that workflow. Do not delete the live
+app folders or lock files to refresh demos.
 
 ## Tests
 
@@ -166,4 +265,6 @@ npm test -w @softn/api
 
 The suite starts its own `php -S` on a temporary root and exercises
 publishing, versions, the edit key, comments, ratings, remixes, storage and
-the share page.
+the share page. A separate suite starts independent PHP processes to test
+concurrent plays/comments/ratings/version uploads, lock-holder termination,
+folder/cache changes and SQLite migration.

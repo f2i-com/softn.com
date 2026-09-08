@@ -316,7 +316,7 @@ export function recordRun(slug: string): void {
   }
 }
 
-export async function health(): Promise<{ ok: boolean; php?: string; sqlite?: string; fts5?: boolean; error?: string }> {
+export async function health(): Promise<{ ok: boolean; php?: string; sqlite?: string | null; fts5?: boolean; catalog?: string; cache?: string; error?: string }> {
   const res = await fetch('/api/health', { credentials: 'same-origin' });
   try {
     return (await res.json()) as { ok: boolean };
