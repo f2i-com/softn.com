@@ -11,13 +11,14 @@ vi.mock('../../softn-web/src/lib/bundleProcessor', async (importOriginal) => ({
 }));
 import { loadApplication } from '../src/load';
 const base = 'https://example.test/nested/runtime.config.json';
-function bundle(permission = '{"permissions":{}}') {
+function bundle(permission = '{"permissions":{}}', config?: unknown) {
   return zipSync({
     'manifest.json': strToU8(
       JSON.stringify({
         name: 'Example',
         main: 'main.ui',
         files: { ui: ['main.ui'], logic: [], xdb: [] },
+        config,
       })
     ),
     'main.ui': strToU8('<App><Text>Hello</Text></App>'),
@@ -156,4 +157,89 @@ it('rejects an app that does not match the configured hash', async () => {
       )
   );
   await expect(loadApplication(base, new AbortController().signal)).rejects.toThrow('integrity');
+});
+it.each([
+  [{ execution: 'worker' }, 'worker'],
+  [{ execution: 'main' }, 'main'],
+  [{}, 'main'],
+  [undefined, 'main'],
+  [{ execution: 'thread' }, 'main'],
+  [{ execution: 'Worker' }, 'main'],
+])('forwards manifest config %o as execution %s', async (config, expected) => {
+  const permission = '{"permissions":{"net":{"enabled":true,"allowed_hosts":["example.test"]}}}';
+  vi.stubGlobal(
+    'fetch',
+    async (url: string) =>
+      new Response(
+        url === base
+          ? JSON.stringify({ version: 1, id: 'sample', title: 'Example', bundle: 'app.softn' })
+          : bundle(permission, config)
+      )
+  );
+  const app = await loadApplication(base, new AbortController().signal);
+  expect(app.execution).toBe(expected);
+  expect(app.declared).toEqual(JSON.parse(permission));
+  expect(app.source).toContain('Hello');
+  expect(app.appId).toBe('single:/nested/runtime.config.json:sample');
+  app.assets.dispose();
+});
+it('marks each startup phase on the performance timeline, in order', async () => {
+  const marked = vi.spyOn(performance, 'mark');
+  try {
+    vi.stubGlobal(
+      'fetch',
+      async (url: string) =>
+        new Response(
+          url === base
+            ? JSON.stringify({ version: 1, id: 'sample', title: 'Example', bundle: 'app.softn' })
+            : bundle()
+        )
+    );
+    const app = await loadApplication(base, new AbortController().signal);
+    app.assets.dispose();
+    const names = marked.mock.calls.map((call) => String(call[0]));
+    expect(names.filter((name) => name.startsWith('softn:'))).toEqual([
+      'softn:bundle-fetch:start',
+      'softn:bundle-fetch:end',
+      'softn:digest:start',
+      'softn:digest:end',
+      'softn:zip:start',
+      'softn:zip:end',
+      'softn:compose:start',
+      'softn:compose:end',
+      'softn:xdb-seed:start',
+      'softn:xdb-seed:end',
+    ]);
+  } finally {
+    marked.mockRestore();
+  }
+});
+it('warms the assets the source names by literal, without a Worker, and does not throw', async () => {
+  expect(typeof Worker).toBe('undefined');
+  const bytes = zipSync({
+    'manifest.json': strToU8(
+      JSON.stringify({
+        name: 'Warm example',
+        main: 'main.ui',
+        files: { ui: ['main.ui'], logic: [], xdb: [], assets: ['assets/pixel.png'] },
+      })
+    ),
+    'main.ui': strToU8('<App><Image src={asset("assets/pixel.png")} /></App>'),
+    'assets/pixel.png': strToU8('not really a png, but bytes'),
+  });
+  vi.stubGlobal(
+    'fetch',
+    async (url: string) =>
+      new Response(
+        url === base
+          ? JSON.stringify({ version: 1, id: 'sample', title: 'Example', bundle: 'app.softn' })
+          : bytes
+      )
+  );
+  const app = await loadApplication(base, new AbortController().signal);
+  await expect(app.warmup.done).resolves.toBeUndefined();
+  // Warm or not, asset() answers synchronously from the same bytes.
+  expect(app.assets('assets/pixel.png')).toMatch(/^blob:/);
+  app.assets.dispose();
+  expect(app.assets('assets/pixel.png')).toBe('');
 });

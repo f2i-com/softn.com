@@ -37,6 +37,27 @@ export interface CachedApp {
    * did not, without unpacking the older bundle again.
    */
   requestedCapabilities?: string[];
+  /**
+   * Whether this app can be opened without a network, as last established by
+   * lib/offlineInstall.ts. Absent until an install has run. The bundle's own
+   * bytes are on this record and never in doubt; what is in doubt is the code
+   * that renders them — the feature chunks, the sync runtime, a worker's
+   * files — which the service worker only holds once something fetched them.
+   */
+  offline?: OfflineState;
+}
+
+/** What the last offline install of a record established. */
+export interface OfflineState {
+  /** Everything the app can reach was fetched through the service worker. */
+  ready: boolean;
+  /** The lazy component names the install covered, plus the sync runtime when the app asked for it. */
+  features: string[];
+  /** Capabilities whose runtime stays online by design (`ai`: models are downloads). */
+  optionalOnline?: string[];
+  /** The shell build the install was made against; see currentBuildId. */
+  build: string;
+  at: number;
 }
 
 interface SoftNAppDB {
@@ -109,6 +130,57 @@ export function isSecureAppOrigin(origin: string | undefined): boolean {
 export function abbreviateOrigin(origin: string | undefined, length = 12): string {
   if (!origin) return '';
   return origin.startsWith(INSECURE_ORIGIN_PREFIX) ? origin : origin.slice(0, length);
+}
+
+// ── Build identity ───────────────────────────────────────────────────
+//
+// A record's offline state is a claim about hashed files: the chunks the
+// service worker holds are the ones the shell that installed them references,
+// and a new deployment references new names. So the claim is only good
+// against the build that made it, and each record carries that build's id.
+//
+// Nothing in the build hands the page an id. BUILD-INFO.json is written
+// beside the site by scripts/build-site.mjs, not into the app's env, and
+// vite.config.ts defines no VITE_BUILD_ID — one is honoured if a deployment
+// sets it. Otherwise the id is the hash Vite put in the entry chunk's name,
+// `assets/index-<hash>.js`, which changes whenever the shell's contents do.
+// That name is read from the document's own module script rather than from
+// any import, because the entry cannot name itself. A dev server serves
+// `/src/main.tsx` unhashed, and everything it serves is one build, `dev`.
+
+/** The hash in an entry script's URL, or null for an unhashed (dev) one. */
+export function buildIdFromEntry(src: string | null | undefined): string | null {
+  if (!src) return null;
+  const hashed = /-([A-Za-z0-9_-]{6,})\.js(?:[?#]|$)/.exec(src);
+  return hashed ? hashed[1] : null;
+}
+
+let buildId: string | null = null;
+
+/** The identifier of the shell build this page is running; constant for the page's life. */
+export function currentBuildId(): string {
+  if (buildId !== null) return buildId;
+  const env = import.meta.env as { VITE_BUILD_ID?: unknown };
+  if (typeof env.VITE_BUILD_ID === 'string' && env.VITE_BUILD_ID) {
+    buildId = env.VITE_BUILD_ID;
+    return buildId;
+  }
+  const entry =
+    typeof document !== 'undefined'
+      ? document.querySelector('script[type="module"][src]')?.getAttribute('src')
+      : null;
+  buildId = buildIdFromEntry(entry) ?? 'dev';
+  return buildId;
+}
+
+/**
+ * Whether a record's last install still holds: it succeeded, and against
+ * this build. A record installed before a deployment is stale — the chunks
+ * it fetched are the previous release's — and reads as needing a connection
+ * until the app is opened online again.
+ */
+export function isOfflineReady(app: Pick<CachedApp, 'offline'>, build: string = currentBuildId()): boolean {
+  return Boolean(app.offline?.ready) && app.offline?.build === build;
 }
 
 // ── Database ─────────────────────────────────────────────────────────
@@ -1078,6 +1150,35 @@ export async function updateLastOpened(id: string): Promise<void> {
     }
   } catch {
     // Non-critical, ignore
+  }
+}
+
+/**
+ * Record what an offline install established for one record.
+ *
+ * Read-modify-written inside one transaction, for the same reason as
+ * recordPermissionGrant below: an install finishes seconds after the open
+ * that started it, and cacheApp or a grant may have rewritten the record in
+ * between — a get/put pair in two transactions would write the older copy
+ * back over theirs. Writes nothing if the record is gone (the app was removed
+ * from Home while it was installing), and never throws: the install's
+ * outcome is shown from memory either way.
+ */
+export async function setOfflineState(id: string, state: OfflineState): Promise<boolean> {
+  try {
+    const db = await getDB();
+    const tx = db.transaction('softn-apps', 'readwrite');
+    const store = tx.objectStore('softn-apps');
+    const app = await store.get(id);
+    if (app) {
+      app.offline = state;
+      await store.put(app);
+    }
+    await tx.done;
+    return Boolean(app);
+  } catch {
+    console.warn('[SoftN Web] Failed to record offline state for app:', id);
+    return false;
   }
 }
 

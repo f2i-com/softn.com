@@ -1,7 +1,12 @@
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState, type ErrorInfo } from 'react';
-import { SoftNWithXDB } from '@softn/core';
-import { ThemeProvider, Spinner, Box, Text, Card } from '@softn/components';
+import { SoftNWithXDB, type AppAssetResolver } from '@softn/core';
+// From the minimal and theme entries, not the root barrel: the barrel is the
+// eager path, and keeping Scene3D out of the shell would then rest on the
+// bundler tree-shaking it away (docs/COMPONENT_LOADING.md).
+import { Spinner, Box, Text, Card } from '@softn/components/minimal';
+import { ThemeProvider } from '@softn/components/theme';
 import { PermissionBar, type ConsentRequest } from './PermissionBar';
+import { buildRunnerInitialState, savedSyncRoomKey } from '../lib/runnerState';
 
 interface AppRunnerProps {
   source: string;
@@ -18,7 +23,7 @@ interface AppRunnerProps {
   permissions?: import('@softn/core').AppPermissions;
   importResolver?: (path: string) => Promise<string | null>;
   /** Provides the `asset()` the templates call; without it every image is missing. */
-  assetResolver?: (assetPath: string) => string;
+  assetResolver?: AppAssetResolver;
   logicBasePath?: string;
   preIncludedLogicPaths?: string[];
   /** The manifest's `config.execution`, forwarded to the renderer. */
@@ -294,37 +299,27 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
   // strip of nothing reserved above it for the rest of the session.
   const consentBarHeight = consent ? barHeight : 0;
 
-  // Build initial state: page from URL + saved sync room from localStorage
+  // The identity the renderer runs this app under: its database, its grants,
+  // and the key its sync room is saved under all belong to it.
+  const runtimeAppId = appId ?? appName;
+
+  // The state the app *starts* from: the page it was opened at and the room
+  // it was last in. Only that — see runnerState.ts for why the room is seeded
+  // without a connection flag: nothing here reconnects it, so a flag would
+  // describe a connection nothing is attempting, and nothing would clear it.
+  //
+  // Deliberately not rebuilt on the consent grant: the renderer keeps its own
+  // componentState across the reload, and a fresh object here would re-seed
+  // currentPage and throw the user back to the page they arrived on.
   const initialState = useMemo(() => {
-    const state: Record<string, unknown> = {};
-    if (initialPage) state.currentPage = initialPage;
+    let savedRoom: string | null = null;
     try {
-      const savedRoom = localStorage.getItem('xdb-sync-active-room');
-      if (savedRoom) {
-        state.syncRoom = savedRoom;
-        // Not while the bar is unanswered. startSync is refused in that state
-        // and nothing clears the flag, so an app with a saved room came up
-        // saying "connecting" forever, with nothing on screen connecting it to
-        // the bar that would have.
-        //
-        // Allow does not reconnect it either. The renderer only resumes a saved
-        // room when it is handed resumeSavedSyncRoom, and softn-web never
-        // passes it — the room is seeded into state so the app's own sync
-        // control comes up filled in, and reconnecting is the user's press.
-        // Setting the flag here would therefore be claiming a connection that
-        // nothing is making, which is what it was doing.
-        if (!consent) state.syncConnecting = true;
-      }
+      savedRoom = localStorage.getItem(savedSyncRoomKey(runtimeAppId));
     } catch {
       // localStorage may be unavailable (privacy mode / sandboxed context)
     }
-    return Object.keys(state).length > 0 ? state : undefined;
-    // `consent` is read for the flag above but deliberately absent from the
-    // deps: this is the state the app *starts* from, and rebuilding it on the
-    // grant would re-seed currentPage and throw the user back to the page they
-    // arrived on. The renderer keeps its own componentState across the reload.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialPage]);
+    return buildRunnerInitialState({ initialPage, savedRoom });
+  }, [initialPage, runtimeAppId]);
 
   // Skeleton tab (source not yet loaded) — show loading inside the tab
   if (!source) {
@@ -409,7 +404,10 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
             preIncludedLogicPaths={preIncludedLogicPaths}
             executionPreference={executionPreference}
             permissionConfig={permissionConfig}
-            appId={appId ?? appName}
+            appId={runtimeAppId}
+            // Every tab stays mounted; only this says which one is on screen.
+            active={active}
+            assetResolver={assetResolver}
             onPageChange={onPageChange}
             onLoad={onReady}
             serverUrl={serverUrl}
