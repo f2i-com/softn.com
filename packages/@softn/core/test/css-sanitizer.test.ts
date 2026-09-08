@@ -83,6 +83,39 @@ describe('url() references a bundle legitimately uses', () => {
     expect(sanitizeBundleCSS(css)).toBe(css);
   });
 
+  it('preserves modern behavior properties and media-query boundaries', () => {
+    const css =
+      '.app{scroll-behavior:smooth;overscroll-behavior:contain;transition-behavior:allow-discrete}' +
+      '@media(prefers-reduced-motion:reduce){.app{scroll-behavior:auto}}' +
+      '.heading{display:block}.card{height:auto;white-space:normal}';
+    expect(sanitizeBundleCSS(css)).toBe(css);
+    const style = document.createElement('style');
+    style.textContent = sanitizeBundleCSS(css);
+    document.head.appendChild(style);
+    try {
+      const rules = Array.from(style.sheet!.cssRules);
+      expect(rules).toHaveLength(4);
+      expect((rules[1] as CSSMediaRule).cssRules).toHaveLength(1);
+      expect((rules[2] as CSSStyleRule).selectorText).toBe('.heading');
+      expect((rules[3] as CSSStyleRule).selectorText).toBe('.card');
+    } finally {
+      style.remove();
+    }
+  });
+
+  it.each(['behavior', '-moz-binding'])('removes %s without consuming closing braces', (property) => {
+    const css = `@media(min-width:1px){.a{${property}:url(local.xml)}}.b{display:flex}`;
+    const out = sanitizeBundleCSS(css);
+    expect(out).not.toContain(`${property}:`);
+    expect(out).toContain('}}.b{display:flex}');
+    expect(sanitizeBundleCSS(`.a{${property}:url(a);${property}:url(b);color:red}`)).not.toContain(
+      `${property}:`
+    );
+    expect(
+      sanitizeBundleCSS(`.a{ /* local component */ ${property.toUpperCase()}:url(a);color:red}`)
+    ).not.toContain('url(a)');
+  });
+
   it('still strips the legacy execution vectors', () => {
     expect(sanitizeBundleCSS('width: expression(alert(1))')).not.toContain('alert');
     expect(sanitizeBundleCSS('-moz-binding: url(x.xml#y);')).not.toContain('-moz-binding:');
