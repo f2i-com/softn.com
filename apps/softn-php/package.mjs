@@ -5,6 +5,12 @@ import {createHash} from 'node:crypto';
 const here=dirname(fileURLToPath(import.meta.url));
 const {zipSync,unzipSync}=await import(pathToFileURL(resolve(here,'../../node_modules/fflate/esm/index.mjs')));
 const sha=b=>createHash('sha256').update(b).digest('hex');
+export function deploymentConfig(manifest,clientBytes) {
+  // The deployment namespace has a stricter grammar than bundle IDs (which
+  // commonly use reverse-domain notation). Preserve already-valid namespaces.
+  const id=/^[a-z0-9][a-z0-9_-]{0,63}$/.test(manifest.id)?manifest.id:'app-'+sha(String(manifest.id)).slice(0,32);
+  return {version:1,id,title:manifest.name,bundle:'./app.softn',theme:'light',sha256:sha(clientBytes)};
+}
 export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,operator,readme,template=false}) {
   const entries={};
   const add=(name,file)=>{entries[name]=readFileSync(file);};
@@ -29,7 +35,7 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,notices,out,op
     const clientBytes=readFileSync(client),clientFiles=unzipSync(clientBytes),publicManifest=JSON.parse(Buffer.from(clientFiles['manifest.json']).toString());
     if(publicManifest.id!==manifest.id||publicManifest.server||Object.keys(clientFiles).some(n=>n.startsWith('server/')))throw new Error('Client identity/private-server isolation mismatch');
     tree(bundle,'backend/app/');entries['webroot/app.softn']=clientBytes;
-    entries['webroot/runtime.config.json']=Buffer.from(JSON.stringify({version:1,id:manifest.id,title:manifest.name,bundle:'./app.softn',theme:'light',sha256:sha(clientBytes)},null,2));
+    entries['webroot/runtime.config.json']=Buffer.from(JSON.stringify(deploymentConfig(manifest,clientBytes),null,2));
     if(operator)tree(operator,'backend/operator/');
   }
   add('backend/wasm/zipp_wasm.mjs',join(wasmDir,'zipp_wasm.js'));
