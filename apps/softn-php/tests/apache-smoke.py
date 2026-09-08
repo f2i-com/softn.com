@@ -6,9 +6,11 @@ with zipfile.ZipFile(args.archive) as zipped:zipped.extractall(root/'counter')
 counter=root/'counter/backend/app'
 counter.mkdir()
 manifest={'id':'org.example.counter','name':'Counter','version':'1.0.0','config':{'server':{'allowedOrigins':['https://counter.example']}},'server':{'entry':'main.logic','requires':{'apiVersion':1,'capabilities':['sql','transaction-scope']},'database':{'kind':'private-sqlite','migrations':['schema.sql']},'routes':[{'method':'POST','path':'/api/increment','handler':'increment','authorization':'application','transaction':'write'}]}}
+manifest['server']['routes'].append({'method':'GET','path':'/api/counter','handler':'readCounter','authorization':'application','transaction':'read','poll':True})
 (counter/'manifest.json').write_text(json.dumps(manifest))
 (counter/'schema.sql').write_text('CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0);')
 (counter/'main.logic').write_text('function increment(req){if(req.headers.authorization!=="Bearer fixture")return {status:401,body:{error:"unauthorized"},rollback:true};softn.sql.execute("UPDATE counter SET value=value+1",[]);return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}')
+with (counter/'main.logic').open('a') as f:f.write('function readCounter(req){if(req.headers.authorization!=="Bearer fixture")return {status:401,body:{error:"unauthorized"}};return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}')
 modules=['mpm_prefork','authz_core','authz_host','dir','mime','headers','rewrite','alias','actions','cgi']
 for name in ['counter']:subprocess.run(['php',str(root/name/'backend/setup.php')],check=True)
 config=f'ServerRoot "{root}"\nServerName localhost\nListen 127.0.0.1:8811\nPidFile "{root}/httpd.pid"\nErrorLog "{root}/error.log"\n'
@@ -20,9 +22,12 @@ for name,port in [('counter',8811)]:
     config+=f'<VirtualHost 127.0.0.1:{port}>\nServerName {name}.example\nDocumentRoot "{web}"\n<Directory "{web}">\nRequire all granted\nAllowOverride All\nOptions +ExecCGI\n</Directory>\n</VirtualHost>\n'
 (root/'httpd.conf').write_text(config)
 subprocess.run(['/usr/sbin/apache2','-t','-f',str(root/'httpd.conf')],check=True)
+last_headers={}
 def req(path,port=8811,method='GET',headers={},data=None):
+    global last_headers
     try:
-        with urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{port}'+path,method=method,headers=headers,data=data),timeout=32) as r:return r.status,r.read()
+        with urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{port}'+path,method=method,headers=headers,data=data),timeout=32) as r:
+            last_headers=dict(r.headers);return r.status,r.read()
     except urllib.error.HTTPError as e:return e.code,e.read()
 with open(root/'apache.log','w') as log:
     server=subprocess.Popen(['/usr/sbin/apache2','-X','-f',str(root/'httpd.conf')],stdout=log,stderr=log,start_new_session=True)
@@ -40,6 +45,11 @@ with open(root/'apache.log','w') as log:
             assert status==200,(status,body)
             assert json.loads(body)['value']==count
         assert req('/api/increment',method='POST',headers={'Origin':'https://evil.example'})[0]==403
+        assert req('/api/counter',headers={'Authorization':'Bearer fixture'})[0]==200
+        etag=last_headers['ETag']
+        assert req('/api/counter',headers={'Authorization':'Bearer fixture','If-None-Match':etag})[0]==304
+        assert req('/api/counter',headers={'Authorization':'Bearer wrong','If-None-Match':etag})[0]==401
+        print('Conditional polling returns 304 only after the handler authorizes the request.',flush=True)
         for path in ['/backend/private/config.json','/server/main.logic','/private/config.json','/.htaccess']:
             assert req(path)[0] in [403,404],path
         print('Generic template with independent counter bundle: persistence, bearer forwarding, origins and private-file isolation passed.',flush=True)

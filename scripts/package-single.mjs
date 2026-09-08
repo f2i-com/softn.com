@@ -46,3 +46,4 @@ fs.writeFileSync(output + '.sha256', sha + '  ' + path.basename(output) + '\n');
 console.log(
   output + '\n' + bytes.length + ' bytes; ' + Object.keys(entries).length + ' files; SHA-256 ' + sha
 );
+if(process.argv.includes('--with-backend'))execFileSync(process.execPath,[path.join(root,'scripts/package-single-backend.mjs')],{cwd:root,stdio:'inherit'});

@@ -45,7 +45,15 @@ jobs:
           npm run build:packages
           npm run build -w @softn/web
           npm run build -w @softn/single
-          npm run package:single
+          npm run package:single -- --with-backend
+
+      - name: Install Apache/PHP test dependencies
+        run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
+
+      - name: Verify the optional backend distribution
+        run: |
+          python3 scripts/test-single-backend.py --archive "$(ls release/softn-single-php-linux-x64-v*.zip)"
+          python3 apps/softn-php/tests/apache-smoke.py --archive "$(ls release/softn-single-php-linux-x64-v*.zip)"
 
       - name: Upload web build
         uses: actions/upload-artifact@v4
@@ -61,6 +69,8 @@ jobs:
           path: |
             release/softn-single-v*.zip
             release/softn-single-v*.zip.sha256
+            release/softn-single-php-linux-x64-v*.zip
+            release/softn-single-php-linux-x64-v*.zip.sha256
           compression-level: 0
           if-no-files-found: error
           retention-days: 7

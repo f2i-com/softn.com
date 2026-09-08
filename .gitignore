@@ -51,3 +51,6 @@ apps/softn-web/public/demos/*.softn.download
 scripts/softn-apps/apps/
 scripts/softn-apps/data/
 apps/softn-single/public/app.softn
+
+# Verified binary inputs for optional single-app backend packaging
+.cache/single-backend/

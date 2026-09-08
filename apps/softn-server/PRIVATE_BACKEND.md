@@ -5,6 +5,10 @@ with a separate client bundle hosted by `softn-single`. The browser
 receives the client artifact; the native server loads the private directory
 containing `server/main.logic`, its manifest and SQL migrations.
 
+For an Apache/PHP deployment without a persistent service, use the optional
+[PHP/WASM single-app distribution](../softn-php/SINGLE_APP_DEPLOYMENT.md).
+This native host remains available for its broader native and synchronization capabilities.
+
 ## Build and run
 
 From the SoftN repository:

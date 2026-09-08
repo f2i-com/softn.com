@@ -4,7 +4,7 @@ name: Release
 # by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so the release
 # builds the shared packages directly from the checked-in engine.
 #
-# Two hosting archives go on the release: the single-app runtime and the website — the complete static
+# Three hosting archives go on the release: the optional PHP/WASM server package, the single-app runtime and the website — the complete static
 # softn.com as one archive whose contents drop into a web host's document
 # root. The desktop apps used to be built here too, one job per app and
 # platform; that took tens of minutes on three operating systems for every
@@ -184,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           npm run build -w @softn/single
-          npm run package:single
+          npm run package:single -- --with-backend
           zip="release/softn-single-$RELEASE_TAG.zip"
           unzip -tq "$zip"
           unzip -Z1 "$zip" | grep -qx 'index.html'
@@ -194,6 +194,14 @@ jobs:
           onDisk="$(find apps/softn-single/dist -type f ! -name '*.map' | wc -l)"
           test "$listed" -eq "$onDisk"
           (cd release && sha256sum -c "softn-single-$RELEASE_TAG.zip.sha256" --strict)
+
+      - name: Install Apache/PHP test dependencies
+        run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
+
+      - name: Verify the optional backend distribution
+        run: |
+          python3 scripts/test-single-backend.py --archive "$(ls release/softn-single-php-linux-x64-v*.zip)"
+          python3 apps/softn-php/tests/apache-smoke.py --archive "$(ls release/softn-single-php-linux-x64-v*.zip)"
 
       - name: Keep the archive with the workflow run
         uses: actions/upload-artifact@v4
@@ -211,10 +219,12 @@ jobs:
           path: |
             release/softn-single-${{ env.RELEASE_TAG }}.zip
             release/softn-single-${{ env.RELEASE_TAG }}.zip.sha256
+            release/softn-single-php-linux-x64-${{ env.RELEASE_TAG }}.zip
+            release/softn-single-php-linux-x64-${{ env.RELEASE_TAG }}.zip.sha256
           compression-level: 0
           if-no-files-found: error
 
-      - name: Attach both hosting archives to the release
+      - name: Attach all hosting archives to the release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
