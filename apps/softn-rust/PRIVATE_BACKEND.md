@@ -14,8 +14,8 @@ This native host remains available for its broader native and synchronization ca
 From the SoftN repository:
 
 ```powershell
-cargo test --manifest-path apps/softn-server/Cargo.toml
-cargo build --release --manifest-path apps/softn-server/Cargo.toml
+cargo test --manifest-path apps/softn-rust/Cargo.toml
+cargo build --release --manifest-path apps/softn-rust/Cargo.toml
 ```
 
 Build separate public client and private server artifacts, create the operator

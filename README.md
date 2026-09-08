@@ -15,7 +15,7 @@ SoftN is a complete system for creating modular, reactive UI applications using 
 - **XDB Database** -- Local-first database with CRDT-based P2P synchronization
 - **Web Runtime** -- Browser-based `.softn` bundle runner with PWA support
 - **Single-app Runtime** -- Configured, unbranded browser shell with a loading spinner and non-blocking permission bar. [Build and deployment guide](docs/SINGLE_APP_RUNTIME.md).
-- **Private native backends** -- Tenant-scoped SQLite transactions, crypto, IANA timezone handling and sanitized photo uploads for server `.logic` apps. [Server API v1 and operator guide](apps/softn-server/PRIVATE_BACKEND.md).
+- **Private native backends** -- Tenant-scoped SQLite transactions, crypto, IANA timezone handling and sanitized photo uploads for server `.logic` apps. [Server API v1 and operator guide](apps/softn-rust/PRIVATE_BACKEND.md).
 - **Desktop Runtime** -- Tauri-based loader for running `.softn` bundles natively
 - **Visual Builder** -- Full IDE for visually creating SoftN applications
 - **Bundle System** -- Portable `.softn` files (ZIP archives) for distribution
@@ -42,7 +42,7 @@ softn.com/
 |   +-- softn-studio/          # AI studio (brief -> blueprint -> app)
 |   +-- softn-builder/         # Visual IDE / builder
 |   +-- softn-loader/          # Desktop runtime (Tauri)
-|   +-- softn-server/          # Rust host for `.logic` server routes and XDB sync
+|   +-- softn-rust/            # Rust host for `.logic` server routes and XDB sync
 |   +-- softn-api/             # The app directory: PHP + SQLite, deployed as /api/ beside the site
 +-- scripts/                   # dev-all, site assembly, release packaging, demo fetching and screenshots
 +-- .github/workflows/         # CI/CD
@@ -784,7 +784,7 @@ before running their Cargo commands:
 ```bash
 git clone https://github.com/f2i-com/zipp.org.git ../zipp.org
 git clone https://github.com/f2i-com/xdb.org.git ../xdb.org
-cargo test --manifest-path apps/softn-server/Cargo.toml
+cargo test --manifest-path apps/softn-rust/Cargo.toml
 ```
 
 ### Testing

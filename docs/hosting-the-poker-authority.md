@@ -24,7 +24,7 @@ softn-server run path/to/softn-Examples/bundles/TexasHoldem --port 9877 --host 1
 - `--trusted-proxy` when nginx sits in front, so rate limits see the visitor's
   address and not the proxy's.
 
-Build the binary with `cargo build --release` in `apps/softn-server` (the
+Build the binary with `cargo build --release` in `apps/softn-rust` (the
 engine crate is the sibling `zipp.org` checkout).
 
 ## Where to put it
