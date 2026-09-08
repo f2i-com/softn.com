@@ -3,6 +3,7 @@
 ### What's new in 0.0.8
 
 - Optional Apache/PHP backend for single-app deployments: on-demand ZIPP WASM execution, SQLite transactions, private configuration, trusted integration hooks and optional photo uploads.
+- The Linux backend bundles checksum-pinned Node 24.20.0 LTS, including the intervening Node 24 security updates.
 - Authenticated conditional polling and an optional WebSocket bridge. Polling needs no separate service; WebSockets require a running Node process and an Apache reverse proxy.
 - Faster browser startup through lazy component loading, demand-read bundles and per-app offline installation.
 - Correct CSS declaration and media-query boundaries in rendered apps, valid deployment identifiers and operator-configured permission preapproval for single-app hosting.

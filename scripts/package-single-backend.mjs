@@ -8,8 +8,8 @@ import {packagePhp} from '../apps/softn-php/package.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const cache=join(root,'.cache/single-backend');mkdirSync(cache,{recursive:true});
 const sha=b=>createHash('sha256').update(b).digest('hex');
-const nodeVersion='24.12.0',nodeName='node-v'+nodeVersion+'-linux-x64';
-const nodeHash='bdebee276e58d0ef5448f3d5ac12c67daa963dd5e0a9bb621a53d1cefbc852fd';
+const nodeVersion='24.20.0',nodeName='node-v'+nodeVersion+'-linux-x64';
+const nodeHash='2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2';
 async function download(url,file,digest) {
   if(existsSync(file)&&sha(readFileSync(file))===digest)return readFileSync(file);
   const response=await fetch(url,{signal:AbortSignal.timeout(120000)});
