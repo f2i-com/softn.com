@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use zipp_vm::embed::{compile_script, HostValue, ScriptState, SymbolScope};
 
 use crate::host;
+use crate::bundle::TransactionMode;
 pub use crate::host::BridgeSet;
 
 /// Host bridge definitions prepended to every script. See `preamble.js`.
@@ -155,7 +156,8 @@ fn preamble_names() -> &'static HashSet<String> {
     NAMES.get_or_init(|| {
         match compile_script(PREAMBLE) {
             Ok(mut probe) => {
-                // The preamble only declares; running it cannot reach the host.
+                // A metadata-only probe has no host; symbols remain inspectable
+                // even when the preamble's configuration call cannot complete.
                 let _ = probe.run_init();
                 probe.symbols().into_iter().map(|s| s.name).collect()
             }
@@ -207,6 +209,8 @@ enum ScriptRequest {
     Call {
         name: String,
         args: Vec<serde_json::Value>,
+        transaction: TransactionMode,
+        cancellation: Arc<AtomicBool>,
         reply: std::sync::mpsc::Sender<Result<serde_json::Value, String>>,
     },
 }
@@ -558,6 +562,9 @@ impl ServerRuntime {
                 guard.disarm();
 
                 // Circuit breaker: track panic frequency
+                if let Some(w) = worker.as_mut() {
+                    if let Some(sql) = w.bridges.borrow_mut().sql.as_mut() { let _ = sql.finish(false); }
+                }
                 let now = Instant::now();
                 if now.duration_since(window_start) > PANIC_WINDOW {
                     // Reset window
@@ -716,9 +723,9 @@ impl ServerRuntime {
                     }
                 }
             }
-            ScriptRequest::Call { name, args, reply } => {
+            ScriptRequest::Call { name, args, transaction, cancellation, reply } => {
                 let result = match worker.as_mut() {
-                    Some(w) => Self::call_handler(w, &name, args, mutation_warned, guard),
+                    Some(w) => Self::call_handler(w, &name, args, transaction, cancellation, mutation_warned, guard),
                     None => Err("Runtime not initialized".into()),
                 };
                 let _ = reply.send(result);
@@ -730,14 +737,39 @@ impl ServerRuntime {
         w: &mut Worker,
         name: &str,
         args: Vec<serde_json::Value>,
+        transaction: TransactionMode,
+        cancellation: Arc<AtomicBool>,
         mutation_warned: &mut MutationWarned,
         guard: &CallGuard,
     ) -> Result<serde_json::Value, String> {
-        // One deadline for the whole request, covering the reset as well as the
-        // handler: the reset walks VM state and, on a rebuild, recompiles and
-        // re-runs the top level. Arming per step would give each its own 25s.
         guard.arm();
-        let result = Self::run_request(w, name, args, mutation_warned, guard);
+        let result = (|| {
+            if cancellation.load(Ordering::Relaxed) { return Err("Request cancelled".into()); }
+            // Rebuilding executes script initialization. Keep SQL unavailable
+            // until initialization is complete, just as it is at first startup.
+            Self::isolate(w, name, mutation_warned, guard)?;
+            if let Some(sql) = w.bridges.borrow_mut().sql.as_mut() {
+                sql.begin(transaction, cancellation.clone())?;
+            } else if transaction != TransactionMode::None {
+                return Err("Route transaction requires the private SQL capability".into());
+            }
+            let mut result = Self::run_request(w, name, args, guard);
+            // Validate the exact response before committing any application writes.
+            if transaction != TransactionMode::None {
+                if let Ok(value) = &result {
+                    if let Err(error) = validate_private_response(value) { result = Err(error); }
+                }
+            }
+            if guard.abort.load(Ordering::Relaxed) || cancellation.load(Ordering::Relaxed) {
+                result = Err("Request cancelled or timed out".into());
+            }
+            let commit = result.as_ref().is_ok_and(|value| value.get("rollback") != Some(&serde_json::Value::Bool(true)));
+            if let Some(sql) = w.bridges.borrow_mut().sql.as_mut() {
+                if let Err(e) = sql.finish(commit) { result = Err(e); }
+            }
+            if let Ok(serde_json::Value::Object(value)) = &mut result { value.remove("rollback"); }
+            result
+        })();
         guard.disarm();
         result
     }
@@ -746,13 +778,8 @@ impl ServerRuntime {
         w: &mut Worker,
         name: &str,
         args: Vec<serde_json::Value>,
-        mutation_warned: &mut MutationWarned,
         guard: &CallGuard,
     ) -> Result<serde_json::Value, String> {
-        // Start this handler from pristine globals, whatever a prior request on
-        // this worker did to them.
-        Self::isolate(w, name, mutation_warned, guard)?;
-
         let slot = *w.slots.get(name).ok_or_else(|| format!("No such function '{name}'"))?;
         let host_args: Result<Vec<HostValue>, String> =
             args.into_iter().map(|v| json_to_host(v, 0)).collect();
@@ -910,11 +937,23 @@ impl ServerRuntime {
         name: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
+        self.call_transaction(name, args, TransactionMode::None, Arc::new(AtomicBool::new(false)))
+    }
+
+    pub fn call_transaction(
+        &self,
+        name: &str,
+        args: Vec<serde_json::Value>,
+        transaction: TransactionMode,
+        cancellation: Arc<AtomicBool>,
+    ) -> Result<serde_json::Value, String> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.work_tx
             .try_send(ScriptRequest::Call {
                 name: name.to_string(),
                 args,
+                transaction,
+                cancellation: cancellation.clone(),
                 reply: reply_tx,
             })
             .map_err(|e| match e {
@@ -933,6 +972,7 @@ impl ServerRuntime {
         match reply_rx.recv_timeout(MAX_CALL_WAIT) {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                cancellation.store(true, Ordering::Relaxed);
                 Err("Handler did not return — the worker is wedged".to_string())
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -982,6 +1022,19 @@ const MAX_JSON_DEPTH: usize = 64;
 /// into the sandboxed VM heap. Scripts needing larger data should use the
 /// FS bridge to read/write files instead.
 const MAX_STRING_VALUE_LEN: usize = 2 * 1024 * 1024;
+const MAX_INPUT_STRING_VALUE_LEN: usize = 16 * 1024 * 1024;
+
+pub(crate) fn validate_private_response(value: &serde_json::Value) -> Result<(), String> {
+    let valid = value.get("status").and_then(|s| s.as_u64())
+        .is_some_and(|status| (200..=599).contains(&status))
+        && value.get("body").is_some();
+    let bounded = serde_json::to_vec(value)
+        .is_ok_and(|bytes| bytes.len() <= MAX_STRING_VALUE_LEN);
+    if !valid || !bounded {
+        return Err("Handler returned an invalid or oversized response".into());
+    }
+    Ok(())
+}
 
 fn json_to_host(val: serde_json::Value, depth: usize) -> Result<HostValue, String> {
     // `>=`, not `>`: the engine replaces anything at or past its own depth cap
@@ -995,10 +1048,10 @@ fn json_to_host(val: serde_json::Value, depth: usize) -> Result<HostValue, Strin
         serde_json::Value::Bool(b) => HostValue::Bool(b),
         serde_json::Value::Number(n) => HostValue::Number(n.as_f64().unwrap_or(0.0)),
         serde_json::Value::String(s) => {
-            if s.len() > MAX_STRING_VALUE_LEN {
+            if s.len() > MAX_INPUT_STRING_VALUE_LEN {
                 return Err(format!(
                     "String value too large ({} bytes, max {})",
-                    s.len(), MAX_STRING_VALUE_LEN
+                    s.len(), MAX_INPUT_STRING_VALUE_LEN
                 ));
             }
             HostValue::String(s)
@@ -1030,7 +1083,10 @@ fn host_to_json(val: &HostValue, depth: usize) -> Result<serde_json::Value, Stri
         HostValue::Undefined | HostValue::Null | HostValue::Opaque => serde_json::Value::Null,
         HostValue::Bool(b) => serde_json::Value::Bool(*b),
         HostValue::Number(n) => number_to_json(*n),
-        HostValue::String(s) => serde_json::Value::String(clamp_string(s)),
+        HostValue::String(s) => {
+            if s.len() > MAX_STRING_VALUE_LEN { return Err("Handler string result exceeds host limit".into()); }
+            serde_json::Value::String(s.clone())
+        },
         HostValue::Array(items) => {
             let mut vals = Vec::with_capacity(items.len());
             for v in items {
@@ -1062,17 +1118,41 @@ fn number_to_json(n: f64) -> serde_json::Value {
     }
 }
 
-/// Truncate at a UTF-8 boundary to prevent allocation of massive JSON strings
-/// from script-generated values.
-fn clamp_string(s: &str) -> String {
-    if s.len() <= MAX_STRING_VALUE_LEN {
-        return s.to_string();
+#[cfg(test)]
+mod private_sql_tests {
+    use super::*;
+    use crate::bridges::sql::{NativeSql, open_connection};
+
+    #[test]
+    fn real_vm_commits_rejections_and_rolls_back_faults_and_invalid_responses() {
+        let path = std::env::temp_dir().join(format!("softn-vm-sql-{}.sqlite", uuid::Uuid::new_v4()));
+        open_connection(&path).unwrap().execute_batch("CREATE TABLE attempts(id INTEGER PRIMARY KEY, count INTEGER);").unwrap();
+        let worker_path = path.clone();
+        let runtime = ServerRuntime::new(move || BridgeSet {
+            db: None, http: None, fs: None, env: None,
+            sql: Some(NativeSql::new(worker_path.clone())), crypto: None,
+            allow_time: false, development: true, allow_photos: false,
+        }, Some(2));
+        runtime.init(r#"
+            var forceRebuild = {};
+            try { softn.sql.execute('INSERT INTO attempts(count) VALUES(99)',[]); } catch(e) {}
+            function change(req) {
+                softn.sql.execute('INSERT INTO attempts(count) VALUES(?)',[1]);
+                if(req.mode==='throw') throw new Error('fault');
+                if(req.mode==='rollback') return {status:400,body:{error:'rejected'},rollback:true};
+                if(req.mode==='invalid') return {status:999,body:{}};
+                if(req.mode==='caught') { try {softn.sql.query('SELECT * FROM _migrations',[]);} catch(e) {} }
+                return {status:401,body:{error:'wrong OTP'}};
+            }
+            function read() {return {status:200,body:softn.sql.first('SELECT COUNT(*) AS count FROM attempts',[])};}
+        "#.to_string()).unwrap();
+        let invoke = |mode: &str| runtime.call_transaction("change", vec![serde_json::json!({"mode":mode})], TransactionMode::Write, Arc::new(AtomicBool::new(false)));
+        assert_eq!(invoke("commit").unwrap()["status"], 401);
+        assert_eq!(invoke("rollback").unwrap()["status"], 400);
+        assert!(invoke("throw").is_err());
+        assert!(invoke("invalid").is_err());
+        assert!(invoke("caught").is_err());
+        let result = runtime.call_transaction("read", vec![], TransactionMode::Read, Arc::new(AtomicBool::new(false))).unwrap();
+        assert_eq!(result["body"]["count"], 1);
     }
-    let mut end = MAX_STRING_VALUE_LEN;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut truncated = s[..end].to_string();
-    truncated.push_str("...(truncated)");
-    truncated
 }

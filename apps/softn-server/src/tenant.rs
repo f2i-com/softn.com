@@ -203,6 +203,9 @@ fn load_tenant(
     };
 
     let manifest = bundle::load_manifest(&bundle_path)?;
+    if manifest.server.as_ref().is_some_and(|s| s.requires.is_some()) && data_dir_base.is_none() {
+        return Err("API v1 tenants require an explicit operator --data-dir".into());
+    }
 
     // Tenant ID: prefer manifest.id, fall back to manifest.name
     let tenant_id = manifest.id.clone().unwrap_or_else(|| manifest.name.clone());
@@ -230,9 +233,13 @@ fn load_tenant(
     };
     std::fs::create_dir_all(&data_dir)
         .map_err(|e| format!("Failed to create data dir: {}", e))?;
+    let private_backend = crate::private_backend::PrivateBackend::load(&manifest, &bundle_path, &data_dir)?;
 
     // Open DB
-    let db_path = data_dir.join(format!("{}.sqlite", manifest.name));
+    let db_path = data_dir.join(if manifest.server.as_ref().is_some_and(|s| s.requires.is_some()) {
+        "xdb.sqlite".to_string()
+    } else { format!("{}.sqlite", manifest.name) });
+    crate::bridges::sql::reject_symlink(&db_path)?;
     let shared_db = xdb::create_shared_db(db_path.clone())
         .map_err(|e| format!("Failed to open DB: {}", e))?;
     let read_pool_size = manifest.config.as_ref()
@@ -258,6 +265,12 @@ fn load_tenant(
                 .and_then(|sc| sc.auth_token)
         });
 
+    if auth_token.is_none() && manifest.server.as_ref().is_some_and(|s|
+        s.requires.is_some() && s.routes.as_ref().is_some_and(|routes|
+            routes.iter().any(|r| r.authorization == Some(bundle::AuthorizationMode::HostToken)))) {
+        return Err("A host-token route requires an operator authentication token".into());
+    }
+
     // Load runtime
     let runtime = if let Some(server) = &manifest.server {
         let source = bundle::load_server_scripts(&bundle_path, server)?;
@@ -280,7 +293,7 @@ fn load_tenant(
 
         // Capabilities
         let permissions = server.permissions.as_ref();
-        let allow_http = if permissions.is_none() && allow_all_capabilities {
+        let allow_http = if server.requires.is_some() { false } else if permissions.is_none() && allow_all_capabilities {
             true
         } else {
             permissions
@@ -288,7 +301,7 @@ fn load_tenant(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
         };
-        let allow_fs = if permissions.is_none() && allow_all_capabilities {
+        let allow_fs = if server.requires.is_some() { false } else if permissions.is_none() && allow_all_capabilities {
             true
         } else {
             permissions
@@ -302,6 +315,11 @@ fn load_tenant(
             http: if allow_http { Some(Box::new(NativeHttpBridge::new())) } else { None },
             fs: if allow_fs { Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))) } else { None },
             env: Some(Box::new(NativeEnvBridge)),
+            sql: private_backend.sql(),
+            crypto: private_backend.crypto.clone(),
+            allow_time: private_backend.time,
+            development: private_backend.development,
+                allow_photos: private_backend.photos,
         }, configured_workers);
 
         rt.init(source)?;
@@ -310,10 +328,10 @@ fn load_tenant(
         if let Some(routes) = server.routes.as_ref() {
             for route in routes {
                 if !rt.has_function(&route.handler) {
-                    tracing::warn!(
+                    return Err(format!(
                         "[{}] Route {} {} references undefined handler '{}'",
                         tenant_id, route.method, route.path, route.handler
-                    );
+                    ));
                 }
             }
         }
@@ -322,7 +340,7 @@ fn load_tenant(
         if rt.has_function("onStart") {
             match rt.call("onStart", vec![]) {
                 Ok(_) => tracing::info!("[{}] onStart() completed", tenant_id),
-                Err(e) => tracing::error!("[{}] onStart() error: {}", tenant_id, e),
+                Err(e) => return Err(format!("[{tenant_id}] onStart() failed: {e}")),
             }
         }
 

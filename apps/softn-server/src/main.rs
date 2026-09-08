@@ -4,6 +4,7 @@ mod bundle;
 mod host;
 mod http;
 mod pool;
+mod private_backend;
 mod runtime;
 mod sync;
 mod tenant;

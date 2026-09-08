@@ -103,3 +103,36 @@ var console = {
   error: function (a, b, c, d, e, f, g, h, i, j) { env.log("ERROR", __zFmt(a, b, c, d, e, f, g, h, i, j)); },
   info: function (a, b, c, d, e, f, g, h, i, j) { env.log("INFO", __zFmt(a, b, c, d, e, f, g, h, i, j)); },
 };
+
+// Server API v1: capability-scoped native bridges.
+function __softnRpc(kind, args) {
+  var values = [kind];
+  for (var i = 0; i < args.length; i++) values.push(String(args[i]));
+  return JSON.parse(__zippHostCall.apply(null, values));
+}
+var __softnConfig = __softnRpc('server.config', []);
+var softn = {
+  serverApiVersion: __softnConfig.apiVersion,
+  config: Object.freeze({development: __softnConfig.development === true, photos: __softnConfig.photos === true}),
+  media: Object.freeze({sanitizePhoto: function(dataUrl) { return __softnRpc("media.sanitizePhoto", [dataUrl]); }}),
+  sql: Object.freeze({
+    query: function(sql, params) { return __softnRpc('sql.query', [sql, JSON.stringify(params || [])]); },
+    first: function(sql, params) { return __softnRpc('sql.first', [sql, JSON.stringify(params || [])]); },
+    execute: function(sql, params) { return __softnRpc('sql.execute', [sql, JSON.stringify(params || [])]); }
+  }),
+  crypto: Object.freeze({
+    sha256: function(text) { return __softnRpc('crypto.sha256', [text]); },
+    hmac: function(text) { return __softnRpc('crypto.hmac', [text]); },
+    randomHex: function(bytes) { return __softnRpc('crypto.randomHex', [bytes]); },
+    randomInt: function(max) { return __softnRpc('crypto.randomInt', [max]); },
+    equal: function(a, b) { return __softnRpc('crypto.equal', [a, b]); },
+    seal: function(text) { return __softnRpc('crypto.seal', [text]); }
+  }),
+  time: Object.freeze({
+    now: function() { return __softnRpc('time.now', []); },
+    age: function(date, zone) { return __softnRpc('time.age', [date, zone === undefined ? 'UTC' : zone]); },
+    parseZoned: function(date, time, zone) { return __softnRpc('time.parseZoned', [date, time, zone]); },
+    format: function(epoch, zone) { return __softnRpc('time.format', [epoch, zone]); }
+  })
+};
+Object.freeze(softn);
