@@ -1,0 +1,16 @@
+Options -Indexes -MultiViews
+DirectoryIndex index.html
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+AddType application/wasm .wasm
+AddType text/javascript .mjs
+RewriteEngine On
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteRule ^api(?:/.*)?$ api.php [END]
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    <FilesMatch "^(index\.html|runtime\.config\.json|app\.softn)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>
