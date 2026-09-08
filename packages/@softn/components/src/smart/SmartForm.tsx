@@ -9,6 +9,7 @@
  */
 
 import React, { useState, useCallback, useMemo } from 'react';
+import { useAppXDB } from '@softn/core';
 
 export interface FieldConfig {
   /** Field name (required) */
@@ -214,6 +215,12 @@ export function SmartForm({
 }: SmartFormProps): React.ReactElement {
   // Determine mode from recordId if not specified
   const mode = modeProp || (recordId ? 'edit' : 'create');
+  // The store of the app this form is in, taken at render time. The submit
+  // handler used to look it up after an await, through a module-level pointer
+  // that named whichever app had rendered most recently — with every
+  // softn-web tab mounted at once, that was routinely a different app by the
+  // time the handler resumed, and the record went into its store.
+  const xdb = useAppXDB();
   // Parse fields if string
   const fields = useMemo(() => {
     if (typeof fieldsProp === 'string') {
@@ -359,10 +366,6 @@ export function SmartForm({
       try {
         // If collection is specified, use XDB for persistence
         if (collection) {
-          // Dynamically import XDB to avoid circular dependencies
-          const { getXDB } = await import('@softn/core');
-          const xdb = getXDB();
-
           let savedRecord;
           if (mode === 'edit' && recordId) {
             // Update existing record
@@ -389,7 +392,7 @@ export function SmartForm({
         setIsSubmitting(false);
       }
     },
-    [formData, onSubmit, validateAll, collection, mode, recordId, onSaved]
+    [formData, onSubmit, validateAll, collection, mode, recordId, onSaved, xdb]
   );
 
   // Styles

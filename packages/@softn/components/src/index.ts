@@ -2,6 +2,13 @@
  * SoftN Component Library
  *
  * Exports all built-in components and the registration utility.
+ *
+ * This is the eager barrel: importing anything from it puts every component,
+ * Three.js included, into the importing chunk. It stays for Studio, the
+ * Builder, the desktop loader and the Vite plugin. A host that wants the
+ * runtime's demand loading imports from the entries instead —
+ * '@softn/components/lazy' for registration, '/minimal' and '/theme' for its
+ * own chrome, a feature entry for a feature. See docs/COMPONENT_LOADING.md.
  */
 
 // Layout components

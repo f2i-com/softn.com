@@ -1,20 +1,46 @@
 import { applyModelAppearance, type ModelAppearance } from './model-appearance';
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { prepareModelMaterials } from './model-material-quality';
-import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
-import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
-import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { BoundedTextureCache } from './textureCache';
-import { describeMarkupEgress, isSafeUrl, useCapabilityState } from '@softn/core';
+import {
+  describeMarkupEgress,
+  useAppActive,
+  useAppAssets,
+  useAppScope,
+  useCapabilityState,
+} from '@softn/core';
+import {
+  detectModelFormat,
+  importOrbitControls,
+  importPostprocessing,
+  importRoomEnvironment,
+  loadModelTemplate,
+  type ModelFormat,
+} from './model-loaders';
+import { loadTextureThrough, type ModelResourcePolicy } from './model-resources';
+import { modelTemplateAddress, modelTemplateCache, type ModelInstance } from './model-cache';
+import {
+  buildEffectsRig,
+  effectsShapeKey,
+  effectsTuneKey,
+  planEffects,
+  type EffectsRig,
+  type Scene3DEffects,
+} from './effects';
+import { FrameLoop, useDocumentVisible } from './activity';
+import {
+  MARK_ASSETS_READY,
+  MARK_FIRST_FRAME,
+  MARK_RENDERER_READY,
+  markInstant,
+  RequiredAssets,
+} from './milestones';
+
+export type { ModelFormat } from './model-loaders';
+export type { Scene3DEffects } from './effects';
+export { modelTemplateCacheStats } from './model-cache';
 
 type Scene3DWindow = Window & {
   __scene3dYaw?: number;
@@ -94,8 +120,6 @@ function releaseMouseLookOwner(sceneWindow: Scene3DWindow, owner: MouseLookOwner
   else delete sceneWindow.__scene3dPitch;
 }
 
-export type ModelFormat = 'gltf' | 'obj' | 'fbx' | 'stl';
-
 export type Scene3DShape =
   | 'box'
   | 'sphere'
@@ -117,6 +141,13 @@ export interface Scene3DObject {
   type: Scene3DShape | 'model' | 'instanced' | 'group' | 'particles';
   modelUrl?: string;
   modelFormat?: ModelFormat;
+  /**
+   * For `type: 'model'`: change this number to fetch the same URL again —
+   * after a failure, or when the file behind the URL has changed. Each
+   * change is a new attempt, reported through `onModelState`; the URL
+   * itself changing starts the count over.
+   */
+  reload?: number;
   /**
    * For `type: 'instanced'`: one mesh, drawn once, standing in for thousands
    * of copies of `shape` — a voxel world, a forest, a crowd of the same crate.
@@ -258,10 +289,16 @@ export interface Scene3DLight {
   attach?: 'camera';
 }
 
-export interface Scene3DEffects {
-  bloom?: boolean | { strength?: number; radius?: number; threshold?: number };
-  vignette?: number;
-  grain?: number;
+/** Where a model's load stands, as `onModelState` reports it. */
+export interface ModelLoadState {
+  state: 'pending' | 'loaded' | 'error';
+  /** 1 for the first load of a URL; one more for each `reload` of it. */
+  attempt: number;
+  error?: string;
+}
+
+export interface Scene3DModelStateInfo extends ModelLoadState {
+  objectId: string;
 }
 
 export interface Scene3DProps {
@@ -336,7 +373,11 @@ export interface Scene3DProps {
   maxPixelRatio?: number;
   /** Tone mapping curve for cinematic highlights. Defaults to 'aces'. */
   toneMapping?: 'aces' | 'agx' | 'linear' | 'reinhard' | 'cineon' | 'none';
-  /** Optional built-in image-based studio lighting; no network/HDR download. */
+  /**
+   * Optional built-in image-based studio lighting, generated on the GPU
+   * from a procedural room: no HDR download. The room generator itself is
+   * a small chunk fetched the first time a scene asks for it.
+   */
   environment?: 'none' | 'studio';
   /** Studio lighting strength, clamped to 0..4. Default 0.7. */
   environmentIntensity?: number;
@@ -348,7 +389,25 @@ export interface Scene3DProps {
    * frame to a composer with tone mapping applied at the end.
    */
   effects?: Scene3DEffects;
+  /**
+   * Three milestones, in order. `onReady`: the renderer exists and has
+   * drawn a frame — the world may still be empty. `onAssetsReady`: every
+   * model the scene opened with has settled, loaded or failed (a failure is
+   * reported through `onModelState`; a model withheld by the permission
+   * policy is not counted, since it is not loading). `onFirstFrame`: the
+   * first frame drawn after that — the one a loading screen should wait
+   * for. Each fires once per mount.
+   */
   onReady?: () => void;
+  onAssetsReady?: () => void;
+  onFirstFrame?: () => void;
+  /**
+   * Each model's load as it happens: `pending` when a fetch starts,
+   * `loaded` or `error` (with the reason, naming a refused subresource
+   * when that is why) when it settles. `attempt` counts `reload`s of the
+   * same URL.
+   */
+  onModelState?: (info: Scene3DModelStateInfo) => void;
   onClick?: (info: Scene3DHit) => void;
   onPointerDown?: (info: Scene3DHit) => void;
   onPointerMove?: (info: Scene3DHit) => void;
@@ -725,7 +784,12 @@ function createSkyTexture(sky: Scene3DProps['sky']): THREE.CanvasTexture | null 
   return tex;
 }
 
-function createMaterial(obj: Scene3DObject): THREE.MeshStandardMaterial {
+/**
+ * The material for a primitive. `policy` is the scene's: an image texture
+ * named by URL is fetched through a manager of its own, like a model's
+ * images, never through three's page-wide default.
+ */
+function createMaterial(obj: Scene3DObject, policy: ModelResourcePolicy): THREE.MeshStandardMaterial {
   const opacity = obj.opacity ?? 1;
   // Instance colours multiply the material's, so a palette needs a white base.
   const usesPalette = obj.type === 'instanced' && Array.isArray(obj.palette) && obj.palette.length > 0;
@@ -734,18 +798,9 @@ function createMaterial(obj: Scene3DObject): THREE.MeshStandardMaterial {
   if (obj.texture) {
     const tex = createProceduralTexture(obj.texture, obj.color, obj.textureRepeat);
     if (tex) map = tex;
-  } else if (obj.textureUrl && isSafeUrl(obj.textureUrl)) {
-    try {
-      const tex = new THREE.TextureLoader().load(obj.textureUrl);
-      if (obj.textureRepeat) {
-        tex.wrapS = THREE.RepeatWrapping;
-        tex.wrapT = THREE.RepeatWrapping;
-        tex.repeat.set(obj.textureRepeat.x, obj.textureRepeat.y);
-      }
-      map = tex;
-    } catch {
-      // Ignore texture load failure
-    }
+  } else if (obj.textureUrl) {
+    const tex = loadTextureThrough(obj.textureUrl, policy, obj.textureRepeat);
+    if (tex) map = tex;
   }
 
   // A decal texture has transparent pixels: cut them out, and draw the
@@ -773,63 +828,6 @@ function createMaterial(obj: Scene3DObject): THREE.MeshStandardMaterial {
     mat.polygonOffsetUnits = -2;
   }
   return mat;
-}
-
-// Vignette and film grain, applied after tone mapping so they act on the
-// final picture.
-const GrainVignetteShader = {
-  uniforms: {
-    tDiffuse: { value: null as THREE.Texture | null },
-    vignette: { value: 0 },
-    grain: { value: 0 },
-    time: { value: 0 },
-  },
-  vertexShader: `
-    varying vec2 vUv;
-    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: `
-    uniform sampler2D tDiffuse;
-    uniform float vignette;
-    uniform float grain;
-    uniform float time;
-    varying vec2 vUv;
-    float rnd(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-    void main() {
-      vec4 c = texture2D(tDiffuse, vUv);
-      vec2 d = vUv - 0.5;
-      float v = 1.0 - smoothstep(0.3, 0.95, length(d) * 1.4) * vignette;
-      float g = (rnd(vUv * 1024.0 + fract(time) * 7.0) - 0.5) * grain * 0.35;
-      gl_FragColor = vec4(c.rgb * v + g, c.a);
-    }`,
-};
-
-/**
- * A post-processing chain for the requested effects, or null when none are
- * on, in which case the scene renders straight to the canvas as before.
- */
-function buildComposer(renderer: THREE.WebGLRenderer, scene: THREE.Scene, cam: THREE.Camera, effects: Scene3DEffects | undefined, width: number, height: number): { composer: EffectComposer; grain: ShaderPass | null } | null {
-  if (!effects) return null;
-  const bloomOn = !!effects.bloom;
-  const vignette = Math.max(0, Math.min(1, effects.vignette ?? 0));
-  const grain = Math.max(0, Math.min(1, effects.grain ?? 0));
-  if (!bloomOn && vignette === 0 && grain === 0) return null;
-  const composer = new EffectComposer(renderer);
-  composer.setSize(width, height);
-  composer.addPass(new RenderPass(scene, cam));
-  if (bloomOn) {
-    const b = typeof effects.bloom === 'object' ? effects.bloom : {};
-    composer.addPass(new UnrealBloomPass(new THREE.Vector2(width, height), b.strength ?? 0.45, b.radius ?? 0.4, b.threshold ?? 0.85));
-  }
-  // Tone mapping and the sRGB conversion the renderer would have done.
-  composer.addPass(new OutputPass());
-  if (vignette > 0 || grain > 0) {
-    const pass = new ShaderPass(GrainVignetteShader);
-    pass.uniforms.vignette.value = vignette;
-    pass.uniforms.grain.value = grain;
-    composer.addPass(pass);
-    return { composer, grain: pass };
-  }
-  return { composer, grain: null };
 }
 
 /** How many numbers describe one instance: a palette index rides along when there is a palette. */
@@ -869,82 +867,12 @@ function fillInstances(mesh: THREE.InstancedMesh, obj: Scene3DObject): void {
   mesh.computeBoundingSphere();
 }
 
-function createInstanced(obj: Scene3DObject): THREE.InstancedMesh {
+function createInstanced(obj: Scene3DObject, policy: ModelResourcePolicy): THREE.InstancedMesh {
   const count = Math.max(1, instanceCount(obj));
-  const mesh = new THREE.InstancedMesh(createGeometry(obj), createMaterial(obj), count);
+  const mesh = new THREE.InstancedMesh(createGeometry(obj), createMaterial(obj, policy), count);
   mesh.frustumCulled = true;
   fillInstances(mesh, obj);
   return mesh;
-}
-
-// Detect model format from URL extension
-function detectModelFormat(url: string): ModelFormat {
-  const clean = url.split('?')[0].split('#')[0].toLowerCase();
-  if (clean.endsWith('.glb') || clean.endsWith('.gltf')) return 'gltf';
-  if (clean.endsWith('.obj')) return 'obj';
-  if (clean.endsWith('.fbx')) return 'fbx';
-  if (clean.endsWith('.stl')) return 'stl';
-  return 'gltf'; // default
-}
-
-// Load a 3D model from URL, returns the root Object3D plus any animation clips
-// (glTF carries them beside the scene, FBX on the group; OBJ/STL have none)
-function loadModel(
-  url: string,
-  format?: ModelFormat
-): Promise<{ object: THREE.Object3D; animations: THREE.AnimationClip[] }> {
-  // A scene names its own models, so this URL is bundle-supplied and gets the
-  // same scheme check as every other source a bundle points at. The caller
-  // already catches, and leaves the placeholder group in the scene.
-  if (!isSafeUrl(url)) {
-    return Promise.reject(new Error(`Unsafe model URL: ${url}`));
-  }
-  const fmt = format || detectModelFormat(url);
-  return new Promise((resolve, reject) => {
-    switch (fmt) {
-      case 'gltf': {
-        const loader = new GLTFLoader();
-        loader.load(
-          url,
-          (gltf) => resolve({ object: gltf.scene, animations: gltf.animations ?? [] }),
-          undefined,
-          reject
-        );
-        break;
-      }
-      case 'obj': {
-        const loader = new OBJLoader();
-        loader.load(url, (group) => resolve({ object: group, animations: [] }), undefined, reject);
-        break;
-      }
-      case 'fbx': {
-        const loader = new FBXLoader();
-        loader.load(
-          url,
-          (group) => resolve({ object: group, animations: group.animations ?? [] }),
-          undefined,
-          reject
-        );
-        break;
-      }
-      case 'stl': {
-        const loader = new STLLoader();
-        loader.load(
-          url,
-          (geometry) => {
-            const material = new THREE.MeshStandardMaterial({ color: '#6366f1' });
-            const mesh = new THREE.Mesh(geometry, material);
-            resolve({ object: mesh, animations: [] });
-          },
-          undefined,
-          reject
-        );
-        break;
-      }
-      default:
-        reject(new Error(`Unsupported model format: ${fmt}`));
-    }
-  });
 }
 
 // Apply material overrides to all meshes in an Object3D hierarchy.
@@ -1040,41 +968,145 @@ function updateParticles(points: THREE.Points, obj: Scene3DObject): void {
   geom.computeBoundingSphere();
 }
 
-function createSubObject(child: Scene3DObject, parentId: string): THREE.Object3D {
+/** What the picker reads off a node: its id, its parent, its cursor. */
+function tagNode(node: THREE.Object3D, spec: Scene3DObject, parentId?: string): void {
+  node.userData.__softnId = spec.id;
+  if (parentId !== undefined) node.userData.__softnParentId = parentId;
+  if (spec.cursor) node.userData.__softnCursor = spec.cursor;
+  else delete node.userData.__softnCursor;
+  if (spec.interactive) node.userData.__softnInteractive = spec.interactive;
+  else delete node.userData.__softnInteractive;
+}
+
+function createSubObject(
+  child: Scene3DObject,
+  parentId: string,
+  policy: ModelResourcePolicy
+): THREE.Object3D {
   let sub: THREE.Object3D;
   if (child.type === 'group') {
-    sub = createGroup(child);
+    sub = createGroup(child, policy);
   } else if (child.type === 'particles') {
     sub = createParticles(child);
   } else if (child.type === 'instanced') {
-    sub = createInstanced(child);
+    sub = createInstanced(child, policy);
   } else {
     const geom = createGeometry(child);
-    const mat = createMaterial(child);
+    const mat = createMaterial(child, policy);
     sub = new THREE.Mesh(geom, mat);
   }
-  sub.userData.__softnId = child.id;
-  sub.userData.__softnParentId = parentId;
-  if (child.cursor) sub.userData.__softnCursor = child.cursor;
-  if (child.interactive) sub.userData.__softnInteractive = child.interactive;
+  tagNode(sub, child, parentId);
   applyTransform(sub, child, false);
   return sub;
 }
 
-function createGroup(obj: Scene3DObject): THREE.Group {
+function createGroup(obj: Scene3DObject, policy: ModelResourcePolicy): THREE.Group {
   const group = new THREE.Group();
-  group.userData.__softnId = obj.id;
   group.userData.__softnGroup = true;
-  if (obj.cursor) group.userData.__softnCursor = obj.cursor;
-  if (obj.interactive) group.userData.__softnInteractive = obj.interactive;
+  tagNode(group, obj);
   if (Array.isArray(obj.children)) {
+    // Two children with one id: the first wins and the rest are skipped,
+    // the rule the reconcile applies. Building both would leave the
+    // reconcile a second node it can neither patch nor find to remove.
+    const seen = new Set<string>();
     for (const child of obj.children) {
-      if (!child || typeof child.id !== 'string') continue;
-      const childObj = createSubObject(child, obj.id);
-      group.add(childObj);
+      if (!child || typeof child.id !== 'string' || seen.has(child.id)) continue;
+      seen.add(child.id);
+      group.add(createSubObject(child, obj.id, policy));
     }
   }
   return group;
+}
+
+/**
+ * Bring one child of a group up to date in place. False means the change
+ * is not one that can be patched — a different type, a new geometry count —
+ * and the caller replaces the node.
+ */
+function patchSubObject(
+  node: THREE.Object3D,
+  prev: Scene3DObject,
+  next: Scene3DObject,
+  policy: ModelResourcePolicy
+): boolean {
+  if (prev.type !== next.type) return false;
+  if (next.type === 'group') {
+    reconcileGroupChildren(node as THREE.Group, prev.children, next.children, next.id, policy);
+  } else if (next.type === 'particles') {
+    if (prev.color !== next.color || prev.particleSize !== next.particleSize) return false;
+    updateParticles(node as THREE.Points, next);
+  } else if (next.type === 'instanced') {
+    if (
+      needsGeometryUpdate(prev, next) ||
+      needsMaterialUpdate(prev, next) ||
+      instanceCount(prev) !== instanceCount(next)
+    ) {
+      return false;
+    }
+    if (prev.instances !== next.instances || prev.palette !== next.palette) {
+      fillInstances(node as THREE.InstancedMesh, next);
+    }
+  } else {
+    // Primitives, and a `model` child: a group never loads models, so one
+    // has always been drawn as a primitive and is patched as one.
+    const mesh = node as THREE.Mesh;
+    if (needsGeometryUpdate(prev, next)) {
+      mesh.geometry.dispose();
+      mesh.geometry = createGeometry(next);
+    }
+    if (needsMaterialUpdate(prev, next)) {
+      disposeMaterial(mesh.material as THREE.Material);
+      mesh.material = createMaterial(next, policy);
+    }
+  }
+  tagNode(node, next, node.userData.__softnParentId as string | undefined);
+  // Children are not driven by the render loop, so every axis is the spec's.
+  applyTransform(node, next, false);
+  return true;
+}
+
+/**
+ * Reconcile a group's children by id. A whole group used to be rebuilt
+ * whenever any child changed — a train of forty parts recreated its forty
+ * meshes to move one wheel — so a child whose id persists is patched, one
+ * whose id is gone is disposed, and only a new id is built. A child whose
+ * spec is the same object as last time is not even looked at.
+ */
+function reconcileGroupChildren(
+  group: THREE.Group,
+  prevChildren: Scene3DObject[] | undefined,
+  nextChildren: Scene3DObject[] | undefined,
+  parentId: string,
+  policy: ModelResourcePolicy
+): void {
+  const prevById = new Map<string, Scene3DObject>();
+  for (const child of prevChildren ?? []) {
+    if (child && typeof child.id === 'string' && !prevById.has(child.id)) prevById.set(child.id, child);
+  }
+  const nodeById = new Map<string, THREE.Object3D>();
+  for (const node of group.children) {
+    const id = node.userData.__softnId;
+    if (typeof id === 'string' && !nodeById.has(id)) nodeById.set(id, node);
+  }
+  const keep = new Set<string>();
+  for (const child of nextChildren ?? []) {
+    if (!child || typeof child.id !== 'string' || keep.has(child.id)) continue;
+    keep.add(child.id);
+    const node = nodeById.get(child.id);
+    const prev = prevById.get(child.id);
+    if (node && prev === child) continue;
+    if (node && prev && patchSubObject(node, prev, child, policy)) continue;
+    if (node) {
+      group.remove(node);
+      disposeObject3D(node);
+    }
+    group.add(createSubObject(child, parentId, policy));
+  }
+  for (const [id, node] of nodeById) {
+    if (keep.has(id)) continue;
+    group.remove(node);
+    disposeObject3D(node);
+  }
 }
 
 // Apply transform but preserve animated axes to avoid snapping
@@ -1145,6 +1177,12 @@ function needsGeometryUpdate(prev: Scene3DObject, next: Scene3DObject): boolean 
 function needsMaterialUpdate(prev: Scene3DObject, next: Scene3DObject): boolean {
   return (
     prev.color !== next.color ||
+    prev.texture !== next.texture ||
+    // A `textureUrl` the policy withheld and later allowed arrives as a
+    // change here, and is the only way the texture ever gets fetched.
+    prev.textureUrl !== next.textureUrl ||
+    (prev.textureRepeat?.x ?? 1) !== (next.textureRepeat?.x ?? 1) ||
+    (prev.textureRepeat?.y ?? 1) !== (next.textureRepeat?.y ?? 1) ||
     (prev.palette?.length ?? 0) !== (next.palette?.length ?? 0) ||
     prev.metalness !== next.metalness ||
     prev.roughness !== next.roughness ||
@@ -1213,6 +1251,26 @@ interface MeshEntry {
   spec: Scene3DObject;
   baseY: number;
   loadVersion?: number; // tracks in-flight model loads to cancel stale ones
+  /**
+   * For a loaded model: the lease on the cached template behind `mesh`.
+   * Released, never disposed — the geometry and textures are the cache's.
+   */
+  instance?: ModelInstance;
+  /** For a model: where its load stands. */
+  load?: ModelLoadState;
+}
+
+/** The renderer's anisotropy limit, or 1 for a renderer that cannot say (a test double). */
+function maxAnisotropy(renderer: THREE.WebGLRenderer | null): number {
+  const limit = renderer?.capabilities?.getMaxAnisotropy?.();
+  return typeof limit === 'number' && Number.isFinite(limit) ? limit : 1;
+}
+
+/** Take an entry's mesh out of the scene and give back what it held. */
+function discardEntry(scene: THREE.Scene, entry: MeshEntry): void {
+  scene.remove(entry.mesh);
+  if (entry.instance) entry.instance.release();
+  else disposeObject3D(entry.mesh);
 }
 
 interface AnimationEntry {
@@ -1336,6 +1394,9 @@ export function Scene3D({
   effects,
   toneMappingExposure = 1,
   onReady,
+  onAssetsReady,
+  onFirstFrame,
+  onModelState,
   onClick,
   onPointerDown,
   onPointerMove,
@@ -1352,14 +1413,35 @@ export function Scene3D({
   // all (a bundle asset), or `net` granted to a permitted host. What the
   // policy refuses is dropped from the object before anything is built.
   const capability = useCapabilityState();
-  const allowUrl = useMemo(() => {
+  const judgeUrl = useMemo(() => {
     const egress =
       capability.permissions === null
         ? null
         : { consentPending: capability.consentPending, permissions: capability.permissions };
-    return (url: string | undefined): url is string =>
-      typeof url === 'string' && url.length > 0 && describeMarkupEgress(url, egress).allowed;
+    return (url: string) => describeMarkupEgress(url, egress);
   }, [capability]);
+  const allowUrl = useMemo(
+    () =>
+      (url: string | undefined): url is string =>
+        typeof url === 'string' && url.length > 0 && judgeUrl(url).allowed,
+    [judgeUrl]
+  );
+  // The app this scene is in: its bundle resolver, so a model's relative
+  // URIs can be found in the archive; its id, so its cached models are its
+  // own; whether the host is showing it, so a hidden tab draws nothing.
+  const assets = useAppAssets();
+  const appId = useAppScope().appId;
+  const appIdRef = useRef(appId);
+  appIdRef.current = appId;
+  const active = useAppActive();
+  const documentVisible = useDocumentVisible();
+  // The same judge, for everything a model goes on to ask for. A load in
+  // flight is handed a getter over this ref, read on every URL its loader
+  // asks about, so a consent answer that arrives mid-load is the policy the
+  // rest of that load sees.
+  const policy = useMemo<ModelResourcePolicy>(() => ({ judge: judgeUrl, assets }), [judgeUrl, assets]);
+  const policyRef = useRef(policy);
+  policyRef.current = policy;
 
   const safeObjects = useMemo<Scene3DObject[]>(() => {
     const withheld = (obj: Scene3DObject): Scene3DObject => {
@@ -1424,22 +1506,51 @@ export function Scene3D({
   const height = fill ? (measured?.h ?? heightProp) : heightProp;
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
-  const composerRef = useRef<EffectComposer | null>(null);
-  const grainPassRef = useRef<ShaderPass | null>(null);
-  // Rebuilt only when the effect settings actually change, not on every
-  // render of an object prop the host recreates each tick.
-  const effectsKey = JSON.stringify(effects ?? null);
-  const effectsRef = useRef(effects);
-  effectsRef.current = effects;
+  const effectsRigRef = useRef<EffectsRig | null>(null);
+  // The shape (which passes) rebuilds the chain; the tune (their numbers)
+  // is written into it. Neither reacts to an object prop the host recreates
+  // each tick.
+  const effectsPlan = planEffects(effects);
+  const effectsShape = effectsShapeKey(effectsPlan);
+  const effectsTune = effectsTuneKey(effectsPlan);
+  const effectsPlanRef = useRef(effectsPlan);
+  effectsPlanRef.current = effectsPlan;
+  // Bumped for every rebuild request, so a chain whose modules arrive after
+  // the next request, or after unmount, is not installed.
+  const effectsVersionRef = useRef(0);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  /** Where the camera looks, for controls that arrive after it was set. */
+  const lookAtRef = useRef({ x: 0, y: 0, z: 0 });
+  const autoRotateRef = useRef({ autoRotate, autoRotateSpeed });
+  autoRotateRef.current = { autoRotate, autoRotateSpeed };
   const meshMapRef = useRef<Map<string, MeshEntry>>(new Map());
   const loadVersionRef = useRef<Map<string, number>>(new Map());
   const animationMapRef = useRef<Map<string, AnimationEntry>>(new Map());
   const lightMapRef = useRef<Map<string, THREE.Light>>(new Map());
-  const animFrameRef = useRef<number>(0);
+  const loopRef = useRef<FrameLoop | null>(null);
+  const wantRunning = active && documentVisible;
+  const wantRunningRef = useRef(wantRunning);
+  wantRunningRef.current = wantRunning;
   const clockRef = useRef<THREE.Clock>(new THREE.Clock());
   const readyFiredRef = useRef(false);
+  const onAssetsReadyRef = useRef(onAssetsReady);
+  onAssetsReadyRef.current = onAssetsReady;
+  const onFirstFrameRef = useRef(onFirstFrame);
+  onFirstFrameRef.current = onFirstFrame;
+  const onModelStateRef = useRef(onModelState);
+  onModelStateRef.current = onModelState;
+  // Armed by assets-ready; the next frame drawn fires first-frame.
+  const firstFrameArmedRef = useRef(false);
+  const firstFrameFiredRef = useRef(false);
+  const requiredAssetsRef = useRef<RequiredAssets | null>(null);
+  if (!requiredAssetsRef.current) {
+    requiredAssetsRef.current = new RequiredAssets(() => {
+      markInstant(MARK_ASSETS_READY);
+      firstFrameArmedRef.current = true;
+      onAssetsReadyRef.current?.();
+    });
+  }
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
   const onPointerDownRef = useRef(onPointerDown);
@@ -1506,6 +1617,20 @@ export function Scene3D({
     // A handle for tests and debugging: what the canvas is drawing.
     (renderer.domElement as HTMLCanvasElement & { __softnScene?: THREE.Scene; __softnRenderer?: THREE.WebGLRenderer }).__softnScene = scene;
     (renderer.domElement as HTMLCanvasElement & { __softnRenderer?: THREE.WebGLRenderer }).__softnRenderer = renderer;
+    // The same, for what is not a scene graph: the post-processing chain in
+    // force and where each model's load stands.
+    const handles = renderer.domElement as HTMLCanvasElement & {
+      __softnEffects?: () => EffectsRig | null;
+      __softnModelLoads?: () => Record<string, ModelLoadState>;
+    };
+    handles.__softnEffects = () => effectsRigRef.current;
+    handles.__softnModelLoads = () => {
+      const loads: Record<string, ModelLoadState> = {};
+      meshMap.forEach((entry, id) => {
+        if (entry.load) loads[id] = entry.load;
+      });
+      return loads;
+    };
     if (!alpha) {
       if (sky) {
         const skyTex = createSkyTexture(sky);
@@ -1588,6 +1713,7 @@ export function Scene3D({
     (renderer.domElement as HTMLCanvasElement & { __softnCamera?: THREE.Camera }).__softnCamera = cam;
     const lookAt = cameraProp?.lookAt ?? { x: 0, y: 0, z: 0 };
     cam.lookAt(lookAt.x, lookAt.y, lookAt.z);
+    lookAtRef.current = lookAt;
 
     // Store initial camera values
     lastCamPosRef.current = JSON.stringify(pos);
@@ -1597,22 +1723,35 @@ export function Scene3D({
     rendererRef.current = renderer;
     sceneRef.current = scene;
     cameraRef.current = cam;
-    const built = buildComposer(renderer, scene, cam, effectsRef.current, width, height);
-    composerRef.current = built ? built.composer : null;
-    grainPassRef.current = built ? built.grain : null;
+    // The post-processing chain, when there is one, is built by its own
+    // effect once its modules arrive; until then the frame goes straight to
+    // the canvas.
 
+    // OrbitControls is a chunk of its own, taken only by a scene that asks
+    // for it. The camera looks where it should from the first frame; the
+    // controls adopt that target when they arrive, so their first update
+    // does not swing the view to the origin. The loop reads `controls`, so
+    // steering starts the frame after.
     let controls: OrbitControls | null = null;
+    let controlsWanted = enableOrbitControls;
     if (enableOrbitControls) {
-      controls = new OrbitControls(cam, renderer.domElement);
-      // OrbitControls otherwise replaces the initial lookAt with the origin
-      // on its first update, before a camera-prop change can repair it.
-      controls.target.set(lookAt.x, lookAt.y, lookAt.z);
-      controls.update();
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.05;
-      controls.autoRotate = autoRotate;
-      controls.autoRotateSpeed = autoRotateSpeed;
-      controlsRef.current = controls;
+      importOrbitControls()
+        .then(({ OrbitControls }) => {
+          if (!controlsWanted) return;
+          const created = new OrbitControls(cam, renderer.domElement);
+          const target = lookAtRef.current;
+          created.target.set(target.x, target.y, target.z);
+          created.update();
+          created.enableDamping = true;
+          created.dampingFactor = 0.05;
+          created.autoRotate = autoRotateRef.current.autoRotate;
+          created.autoRotateSpeed = autoRotateRef.current.autoRotateSpeed;
+          controls = created;
+          controlsRef.current = created;
+        })
+        .catch((err: unknown) => {
+          console.warn('[Scene3D] Orbit controls unavailable:', err);
+        });
     }
 
     // Turn the view by a mouse delta, whether it came from a drag or from a
@@ -1979,9 +2118,9 @@ export function Scene3D({
     const attachedRotation = new THREE.Euler();
     const attachedQuat = new THREE.Quaternion();
 
-    // Animation loop
-    const animate = () => {
-      animFrameRef.current = requestAnimationFrame(animate);
+    // One frame: advance what moves, then draw. Scheduled by the loop below,
+    // which runs only while the app is shown.
+    const renderFrame = () => {
       const dt = clockRef.current.getDelta();
       const elapsed = clockRef.current.getElapsedTime();
       // Scale rotation by delta time (values are per-frame at 60fps ≈ 0.01667s)
@@ -2080,24 +2219,37 @@ export function Scene3D({
         attachedRotation.set(rot?.x ?? 0, rot?.y ?? 0, rot?.z ?? 0);
         entry.mesh.quaternion.copy(cam.quaternion).multiply(attachedQuat.setFromEuler(attachedRotation));
       });
-      const composer = composerRef.current;
-      if (composer) {
-        const gp = grainPassRef.current;
-        if (gp) gp.uniforms.time.value = (performance.now() % 100000) / 1000;
-        composer.render();
+      const rig = effectsRigRef.current;
+      if (rig) {
+        if (rig.grain) rig.grain.uniforms.time.value = (performance.now() % 100000) / 1000;
+        rig.composer.render();
       } else {
         renderer.render(scene, cam);
       }
+      if (firstFrameArmedRef.current && !firstFrameFiredRef.current) {
+        firstFrameFiredRef.current = true;
+        markInstant(MARK_FIRST_FRAME);
+        onFirstFrameRef.current?.();
+      }
     };
-    animate();
 
-    if (!readyFiredRef.current && onReady) {
+    // The first frame is drawn here, whether or not the app is shown, so
+    // "renderer ready" means what it says; the loop then runs only while
+    // the app is active and the document visible.
+    const loop = new FrameLoop(clockRef.current, renderFrame);
+    loopRef.current = loop;
+    renderFrame();
+    loop.setRunning(wantRunningRef.current);
+
+    if (!readyFiredRef.current) {
       readyFiredRef.current = true;
-      onReady();
+      markInstant(MARK_RENDERER_READY);
+      onReady?.();
     }
 
     return () => {
-      cancelAnimationFrame(animFrameRef.current);
+      loop.dispose();
+      if (loopRef.current === loop) loopRef.current = null;
       if (clickPointerId !== null) {
         const pointerId = clickPointerId;
         clickPointerId = null;
@@ -2136,16 +2288,14 @@ export function Scene3D({
       if (enableMouseLook) {
         releaseMouseLookOwner(sceneWindow, mouseLookOwner);
       }
+      controlsWanted = false;
       if (controls) controls.dispose();
       animationMap.forEach((entry) => {
         entry.mixer.stopAllAction();
         entry.mixer.uncacheRoot(entry.mixer.getRoot());
       });
       animationMap.clear();
-      meshMap.forEach((entry) => {
-        disposeObject3D(entry.mesh);
-        scene.remove(entry.mesh);
-      });
+      meshMap.forEach((entry) => discardEntry(scene, entry));
       meshMap.clear();
       loadVersions.clear();
       lightMap.forEach((light) => {
@@ -2158,7 +2308,12 @@ export function Scene3D({
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
-      if (composerRef.current) { composerRef.current.dispose(); composerRef.current = null; grainPassRef.current = null; }
+      // A chain still being fetched must not be installed on a dead renderer.
+      effectsVersionRef.current += 1;
+      if (effectsRigRef.current) {
+        effectsRigRef.current.dispose();
+        effectsRigRef.current = null;
+      }
       if (rendererRef.current === renderer) rendererRef.current = null;
       if (sceneRef.current === scene) sceneRef.current = null;
       if (cameraRef.current === cam) cameraRef.current = null;
@@ -2169,20 +2324,39 @@ export function Scene3D({
 
   // Own the generated environment independently from the model cache. Changing
   // intensity does not regenerate the cubemap; unmount releases GPU resources.
+  // The room is a chunk of its own, fetched only by a scene that asks for
+  // studio lighting; a cleanup that runs before it arrives leaves nothing
+  // behind.
   useEffect(() => {
     const renderer = rendererRef.current, scene = sceneRef.current;
     if (!renderer || !scene || environment !== 'studio') return;
-    const room = new RoomEnvironment();
-    const generator = new THREE.PMREMGenerator(renderer);
-    let target: THREE.WebGLRenderTarget;
-    try { target = generator.fromScene(room, .04); }
-    finally { room.dispose(); generator.dispose(); }
-    scene.environment = target.texture;
+    let cancelled = false;
+    let target: THREE.WebGLRenderTarget | null = null;
+    importRoomEnvironment()
+      .then(({ RoomEnvironment }) => {
+        if (cancelled || rendererRef.current !== renderer) return;
+        const room = new RoomEnvironment();
+        const generator = new THREE.PMREMGenerator(renderer);
+        try { target = generator.fromScene(room, .04); }
+        finally { room.dispose(); generator.dispose(); }
+        scene.environment = target.texture;
+      })
+      .catch((err: unknown) => {
+        console.warn('[Scene3D] Studio environment unavailable:', err);
+      });
     return () => {
+      cancelled = true;
+      if (!target) return;
       if (scene.environment === target.texture) scene.environment = null;
       target.dispose();
     };
   }, [environment]);
+
+  // The app went to the background, or came back: stop drawing, or resume
+  // with a fresh clock. Every mesh, mixer and load stays exactly as it was.
+  useEffect(() => {
+    loopRef.current?.setRunning(wantRunning);
+  }, [wantRunning]);
 
   useEffect(() => {
     if (sceneRef.current) sceneRef.current.environmentIntensity = Number.isFinite(environmentIntensity)
@@ -2224,11 +2398,11 @@ export function Scene3D({
         const w = window.innerWidth;
         const h = window.innerHeight;
         renderer.setSize(w, h);
-        composerRef.current?.setSize(w, h);
+        effectsRigRef.current?.setSize(w, h);
         cam.aspect = w / h;
       } else {
         renderer.setSize(width, height);
-        composerRef.current?.setSize(width, height);
+        effectsRigRef.current?.setSize(width, height);
         cam.aspect = width / height;
       }
       cam.updateProjectionMatrix();
@@ -2244,24 +2418,47 @@ export function Scene3D({
     const cam = cameraRef.current;
     if (!renderer || !cam) return;
     renderer.setSize(width, height);
-    composerRef.current?.setSize(width, height);
+    effectsRigRef.current?.setSize(width, height);
     cam.aspect = width / height;
     cam.updateProjectionMatrix();
   }, [width, height, isFullscreen]);
 
-  // Effects switched on, off or retuned after mount: rebuild the composer.
+  // Which effects are on decides which passes exist: a change here fetches
+  // the post-processing modules (once per page) and rebuilds the chain,
+  // disposing every pass of the old one. Until the chain exists the frame
+  // goes straight to the canvas; a chain that arrives after a newer request
+  // or after unmount is dropped.
   useEffect(() => {
     const renderer = rendererRef.current;
     const scene = sceneRef.current;
     const cam = cameraRef.current;
     if (!renderer || !scene || !cam) return;
-    if (composerRef.current) composerRef.current.dispose();
-    const size = new THREE.Vector2();
-    renderer.getSize(size);
-    const built = buildComposer(renderer, scene, cam, effectsRef.current, size.x, size.y);
-    composerRef.current = built ? built.composer : null;
-    grainPassRef.current = built ? built.grain : null;
-  }, [effectsKey]);
+    const version = ++effectsVersionRef.current;
+    if (effectsShape === '') {
+      effectsRigRef.current?.dispose();
+      effectsRigRef.current = null;
+      return;
+    }
+    importPostprocessing()
+      .then((mods) => {
+        if (effectsVersionRef.current !== version || rendererRef.current !== renderer) return;
+        const size = new THREE.Vector2();
+        renderer.getSize(size);
+        effectsRigRef.current?.dispose();
+        effectsRigRef.current = buildEffectsRig(mods, renderer, scene, cam, effectsPlanRef.current, size.x, size.y);
+      })
+      .catch((err: unknown) => {
+        console.warn('[Scene3D] Post-processing unavailable; rendering plainly:', err);
+      });
+  }, [effectsShape]);
+
+  // The numbers changed, the passes did not: write them into the chain in
+  // place. A chain still being fetched reads the current plan when built.
+  useEffect(() => {
+    const rig = effectsRigRef.current;
+    const plan = effectsPlanRef.current;
+    if (rig && plan && rig.shape === effectsShape) rig.retune(plan);
+  }, [effectsTune, effectsShape]);
 
   // Update background
   useEffect(() => {
@@ -2319,6 +2516,7 @@ export function Scene3D({
       const lookAtKey = JSON.stringify(cameraProp.lookAt);
       if (lookAtKey !== lastCamLookAtRef.current) {
         lastCamLookAtRef.current = lookAtKey;
+        lookAtRef.current = cameraProp.lookAt;
         if (controlsRef.current) {
           controlsRef.current.target.set(
             cameraProp.lookAt.x,
@@ -2351,120 +2549,162 @@ export function Scene3D({
     if (!scene) return;
 
     const meshMap = meshMapRef.current;
+    const animationMap = animationMapRef.current;
+    const required = requiredAssetsRef.current as RequiredAssets;
+    const policy = policyRef.current;
     const currentIds = new Set(safeObjects.map((o) => o.id));
+
+    const reportModel = (id: string, load: ModelLoadState) => {
+      onModelStateRef.current?.({ objectId: id, ...load });
+    };
+
+    // Take an entry out of the scene: for good, or ahead of its replacement.
+    // Either way a required model that had not settled no longer holds the
+    // scene's readiness: the load it was waiting on is discarded here, and
+    // whatever takes the id — a primitive, a group, another URL, a retry —
+    // is a model added later, which readiness does not count.
+    const remove = (id: string, entry: MeshEntry) => {
+      disposeAnimationEntry(animationMap, id);
+      discardEntry(scene, entry);
+      meshMap.delete(id);
+      loadVersionRef.current.delete(id);
+      required.settle(id);
+    };
 
     // Remove meshes no longer in objects
     meshMap.forEach((entry, id) => {
-      if (!currentIds.has(id)) {
-        disposeAnimationEntry(animationMapRef.current, id);
-        scene.remove(entry.mesh);
-        disposeObject3D(entry.mesh);
-        meshMap.delete(id);
-        loadVersionRef.current.delete(id);
-      }
+      if (!currentIds.has(id)) remove(id, entry);
     });
+
+    const startLoad = (obj: Scene3DObject, url: string, existing: MeshEntry | undefined) => {
+      const bundlePath = policy.assets?.pathOf?.(url);
+      const format = obj.modelFormat ?? detectModelFormat(bundlePath ?? url);
+      // Filed under its archive path when the model is in the bundle, so
+      // the template outlives the object URL the host minted for this open.
+      const { key, keepIdle } = modelTemplateAddress(appIdRef.current, url, format, bundlePath);
+      // The same URL again is a retry: the cache forgets what it holds for
+      // it so the bytes are fetched afresh, and the attempt count goes on.
+      const retry =
+        !!existing &&
+        existing.spec.type === 'model' &&
+        existing.spec.modelUrl === url &&
+        existing.spec.modelFormat === obj.modelFormat;
+      const attempt = retry ? (existing.load?.attempt ?? 0) + 1 : 1;
+      if (retry) modelTemplateCache.invalidate(key);
+      if (existing) remove(obj.id, existing);
+
+      // Bump load version to invalidate any in-flight load (global counter avoids reset on remove/re-add)
+      const version = ++_modelLoadCounter;
+      loadVersionRef.current.set(obj.id, version);
+
+      // Create a placeholder group so transform/animation can start immediately
+      const placeholder = new THREE.Group();
+      applyTransform(placeholder, obj, false);
+      scene.add(placeholder);
+      const pending: ModelLoadState = { state: 'pending', attempt };
+      meshMap.set(obj.id, {
+        mesh: placeholder,
+        spec: obj,
+        baseY: obj.position?.y ?? 0,
+        loadVersion: version,
+        load: pending,
+      });
+      reportModel(obj.id, pending);
+
+      const settle = (state: ModelLoadState) => {
+        const entry = meshMap.get(obj.id);
+        if (entry) entry.load = state;
+        reportModel(obj.id, state);
+        required.settle(obj.id);
+      };
+
+      modelTemplateCache
+        .acquire(key, () => loadModelTemplate({ url, format, policy: () => policyRef.current }), {
+          keepIdle,
+        })
+        .then((instance) => {
+          // Stale check — if version has changed, discard
+          if (loadVersionRef.current.get(obj.id) !== version) {
+            instance.release();
+            return;
+          }
+          const loaded = instance.object;
+          const { animations } = instance;
+          // Reconciles during the load update the placeholder entry's spec in
+          // place — the capture from load start may be stale
+          const spec = meshMap.get(obj.id)?.spec ?? obj;
+          // Replace placeholder with loaded model
+          scene.remove(placeholder);
+          applyTransform(loaded, spec, false);
+          applyMaterialOverrides(loaded, spec);
+          applyModelAppearance(loaded, spec.appearance);
+          prepareModelMaterials(loaded, maxAnisotropy(rendererRef.current));
+          scene.add(loaded);
+          meshMap.set(obj.id, {
+            mesh: loaded,
+            spec,
+            baseY: spec.position?.y ?? 0,
+            loadVersion: version,
+            instance,
+          });
+          if (animations.length > 0) {
+            const mixer = new THREE.AnimationMixer(loaded);
+            mixer.addEventListener('finished', (e) => {
+              onAnimationRef.current?.({
+                objectId: obj.id,
+                clip: e.action.getClip().name,
+                type: 'finished',
+              });
+            });
+            const animEntry: AnimationEntry = {
+              mixer,
+              clips: animations,
+              actions: new Map(),
+              currentClip: null,
+              warnedMissing: new Set(),
+            };
+            animationMap.set(obj.id, animEntry);
+            applyAnimationSpec(obj.id, animEntry, spec.animation, (info) =>
+              onAnimationRef.current?.(info)
+            );
+          } else if (spec.animation?.clip) {
+            // A clip requested on a clipless model can never resolve — report once here
+            console.warn(
+              `[Scene3D] Animation clip "${spec.animation.clip}" not found on model "${obj.id}"`
+            );
+            onAnimationRef.current?.({
+              objectId: obj.id,
+              clip: spec.animation.clip,
+              type: 'missing',
+            });
+          }
+          settle({ state: 'loaded', attempt });
+        })
+        .catch((err: unknown) => {
+          // Removal and unmount deliberately invalidate in-flight loads. A
+          // rejection arriving afterwards is expected and must not report a
+          // failure for a scene that no longer owns the request.
+          if (loadVersionRef.current.get(obj.id) !== version) return;
+          console.error(`[Scene3D] Failed to load model "${obj.id}" from ${url}:`, err);
+          settle({ state: 'error', attempt, error: err instanceof Error ? err.message : String(err) });
+        });
+    };
 
     // Add or update meshes
     for (const obj of safeObjects) {
       const existing = meshMap.get(obj.id);
 
       if (obj.type === 'model' && obj.modelUrl) {
+        const url = obj.modelUrl;
         // Model objects — load asynchronously
         const needsLoad =
           !existing ||
-          existing.spec.modelUrl !== obj.modelUrl ||
+          existing.spec.modelUrl !== url ||
           existing.spec.modelFormat !== obj.modelFormat ||
-          existing.spec.type !== 'model';
+          existing.spec.type !== 'model' ||
+          (existing.spec.reload ?? 0) !== (obj.reload ?? 0);
         if (needsLoad) {
-          // Bump load version to invalidate any in-flight load (global counter avoids reset on remove/re-add)
-          const version = ++_modelLoadCounter;
-          loadVersionRef.current.set(obj.id, version);
-
-          // Remove old entry if present
-          if (existing) {
-            disposeAnimationEntry(animationMapRef.current, obj.id);
-            scene.remove(existing.mesh);
-            disposeObject3D(existing.mesh);
-            meshMap.delete(obj.id);
-          }
-
-          // Create a placeholder group so transform/animation can start immediately
-          const placeholder = new THREE.Group();
-          applyTransform(placeholder, obj, false);
-          scene.add(placeholder);
-          meshMap.set(obj.id, {
-            mesh: placeholder,
-            spec: obj,
-            baseY: obj.position?.y ?? 0,
-            loadVersion: version,
-          });
-
-          loadModel(obj.modelUrl, obj.modelFormat)
-            .then(({ object: loaded, animations }) => {
-              // Stale check — if version has changed, discard
-              if (loadVersionRef.current.get(obj.id) !== version) {
-                disposeObject3D(loaded);
-                return;
-              }
-              // Reconciles during the load update the placeholder entry's spec in
-              // place — the capture from load start may be stale
-              const spec = meshMap.get(obj.id)?.spec ?? obj;
-              // Replace placeholder with loaded model
-              scene.remove(placeholder);
-              applyTransform(loaded, spec, false);
-              applyMaterialOverrides(loaded, spec);
-              applyModelAppearance(loaded, spec.appearance);
-              prepareModelMaterials(loaded, rendererRef.current?.capabilities.getMaxAnisotropy() ?? 1);
-              scene.add(loaded);
-              meshMap.set(obj.id, {
-                mesh: loaded,
-                spec,
-                baseY: spec.position?.y ?? 0,
-                loadVersion: version,
-              });
-              if (animations.length > 0) {
-                const mixer = new THREE.AnimationMixer(loaded);
-                mixer.addEventListener('finished', (e) => {
-                  onAnimationRef.current?.({
-                    objectId: obj.id,
-                    clip: e.action.getClip().name,
-                    type: 'finished',
-                  });
-                });
-                const animEntry: AnimationEntry = {
-                  mixer,
-                  clips: animations,
-                  actions: new Map(),
-                  currentClip: null,
-                  warnedMissing: new Set(),
-                };
-                animationMapRef.current.set(obj.id, animEntry);
-                applyAnimationSpec(obj.id, animEntry, spec.animation, (info) =>
-                  onAnimationRef.current?.(info)
-                );
-              } else if (spec.animation?.clip) {
-                // A clip requested on a clipless model can never resolve — report once here
-                console.warn(
-                  `[Scene3D] Animation clip "${spec.animation.clip}" not found on model "${obj.id}"`
-                );
-                onAnimationRef.current?.({
-                  objectId: obj.id,
-                  clip: spec.animation.clip,
-                  type: 'missing',
-                });
-              }
-            })
-            .catch((err) => {
-              // Removal and unmount deliberately invalidate in-flight loads. A
-              // rejection arriving afterwards is expected and must not report a
-              // failure for a scene that no longer owns the request.
-              if (loadVersionRef.current.get(obj.id) === version) {
-                console.error(
-                  `[Scene3D] Failed to load model "${obj.id}" from ${obj.modelUrl}:`,
-                  err
-                );
-              }
-            });
+          startLoad(obj, url, existing);
         } else if (existing) {
           // Model URL unchanged — just update transform and material overrides
           applyTransform(existing.mesh, obj, true);
@@ -2472,7 +2712,7 @@ export function Scene3D({
             applyMaterialOverrides(existing.mesh, obj);
           }
           // Re-apply only on spec change — see applyAnimationSpec's guard note
-          const animEntry = animationMapRef.current.get(obj.id);
+          const animEntry = animationMap.get(obj.id);
           if (
             animEntry &&
             JSON.stringify(existing.spec.animation) !== JSON.stringify(obj.animation)
@@ -2494,13 +2734,8 @@ export function Scene3D({
           needsMaterialUpdate(existing.spec, obj) ||
           instanceCount(existing.spec) !== instanceCount(obj);
         if (rebuild) {
-          if (existing) {
-            disposeAnimationEntry(animationMapRef.current, obj.id);
-            scene.remove(existing.mesh);
-            disposeObject3D(existing.mesh);
-            loadVersionRef.current.delete(obj.id);
-          }
-          const mesh = createInstanced(obj);
+          if (existing) remove(obj.id, existing);
+          const mesh = createInstanced(obj, policy);
           applyTransform(mesh, obj, false);
           scene.add(mesh);
           meshMap.set(obj.id, { mesh, spec: obj, baseY: obj.position?.y ?? 0 });
@@ -2513,22 +2748,24 @@ export function Scene3D({
           existing.baseY = obj.position?.y ?? 0;
         }
       } else if (obj.type === 'group') {
-        const needsGroupRebuild =
-          !existing ||
-          existing.spec.type !== 'group' ||
-          JSON.stringify(existing.spec.children) !== JSON.stringify(obj.children);
-        if (needsGroupRebuild) {
-          if (existing) {
-            disposeAnimationEntry(animationMapRef.current, obj.id);
-            scene.remove(existing.mesh);
-            disposeObject3D(existing.mesh);
-            loadVersionRef.current.delete(obj.id);
-          }
-          const group = createGroup(obj);
+        if (!existing || existing.spec.type !== 'group') {
+          if (existing) remove(obj.id, existing);
+          const group = createGroup(obj, policy);
           applyTransform(group, obj, false);
           scene.add(group);
           meshMap.set(obj.id, { mesh: group, spec: obj, baseY: obj.position?.y ?? 0 });
-        } else if (existing) {
+        } else {
+          // The children are reconciled by id; the group itself is patched.
+          if (existing.spec.children !== obj.children) {
+            reconcileGroupChildren(
+              existing.mesh as THREE.Group,
+              existing.spec.children,
+              obj.children,
+              obj.id,
+              policy
+            );
+          }
+          tagNode(existing.mesh, obj);
           applyTransform(existing.mesh, obj, true);
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
@@ -2540,12 +2777,7 @@ export function Scene3D({
           existing.spec.color !== obj.color ||
           existing.spec.particleSize !== obj.particleSize;
         if (needsParticleRebuild) {
-          if (existing) {
-            disposeAnimationEntry(animationMapRef.current, obj.id);
-            scene.remove(existing.mesh);
-            disposeObject3D(existing.mesh);
-            loadVersionRef.current.delete(obj.id);
-          }
+          if (existing) remove(obj.id, existing);
           const points = createParticles(obj);
           applyTransform(points, obj, false);
           scene.add(points);
@@ -2559,7 +2791,7 @@ export function Scene3D({
       } else if (!existing) {
         // Primitive objects — create synchronously
         const geometry = createGeometry(obj);
-        const material = createMaterial(obj);
+        const material = createMaterial(obj, policy);
         const mesh = new THREE.Mesh(geometry, material);
         mesh.userData.__softnId = obj.id;
         applyTransform(mesh, obj, false);
@@ -2569,12 +2801,9 @@ export function Scene3D({
         // Primitive update
         if (existing.spec.type === 'model' || existing.spec.type === 'instanced' || existing.spec.type === 'group' || existing.spec.type === 'particles') {
           // Switching from a model/batch/group/particles to a primitive — remove the old mesh
-          disposeAnimationEntry(animationMapRef.current, obj.id);
-          scene.remove(existing.mesh);
-          disposeObject3D(existing.mesh);
-          loadVersionRef.current.delete(obj.id);
+          remove(obj.id, existing);
           const geometry = createGeometry(obj);
-          const material = createMaterial(obj);
+          const material = createMaterial(obj, policy);
           const mesh = new THREE.Mesh(geometry, material);
           mesh.userData.__softnId = obj.id;
           applyTransform(mesh, obj, false);
@@ -2588,13 +2817,23 @@ export function Scene3D({
           }
           if (needsMaterialUpdate(existing.spec, obj)) {
             disposeMaterial(existingMesh.material as THREE.Material);
-            existingMesh.material = createMaterial(obj);
+            existingMesh.material = createMaterial(obj, policy);
           }
           applyTransform(existing.mesh, obj, true);
           existing.spec = obj;
           existing.baseY = obj.position?.y ?? 0;
         }
       }
+    }
+
+    // The scene's first reconcile names the models it opened with; readiness
+    // waits for those and no others.
+    if (!required.hasBegun) {
+      const loading: string[] = [];
+      meshMap.forEach((entry, id) => {
+        if (entry.load?.state === 'pending') loading.push(id);
+      });
+      required.begin(loading);
     }
   }, [safeObjects]);
 

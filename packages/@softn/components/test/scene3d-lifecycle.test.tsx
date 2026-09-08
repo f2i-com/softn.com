@@ -39,15 +39,18 @@ vi.mock('three', async (importOriginal) => {
   return { ...actual, WebGLRenderer: TestWebGLRenderer };
 });
 
+// The scene fetches a model's bytes itself and hands them to the loader's
+// `parse`, so that is the seam a test holds open.
 vi.mock('three/addons/loaders/GLTFLoader.js', () => ({
   GLTFLoader: class {
-    load(
-      _url: string,
+    setMeshoptDecoder() {}
+    parse(
+      _data: ArrayBuffer,
+      _path: string,
       resolve: (value: {
         scene: import('three').Object3D;
         animations: import('three').AnimationClip[];
       }) => void,
-      _progress: unknown,
       reject: (error: unknown) => void
     ) {
       sceneMocks.pendingLoad = { resolve, reject };
@@ -58,6 +61,18 @@ vi.mock('three/addons/loaders/GLTFLoader.js', () => ({
 import * as THREE from 'three';
 import { createRoot, type Root } from 'react-dom/client';
 import { Scene3D } from '../src/threed/Scene3D';
+import { modelTemplateCache } from '../src/threed/model-cache';
+
+/** Let the loader chunk import, the fetch and the cache's hand-off run. */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/** Wait until the scene has handed bytes to the loader. */
+async function untilParsing(): Promise<void> {
+  for (let i = 0; i < 20 && sceneMocks.pendingLoad === null; i++) await settle();
+  expect(sceneMocks.pendingLoad).not.toBeNull();
+}
 
 function pointerEvent(
   type: string,
@@ -87,6 +102,11 @@ beforeEach(() => {
     vi.fn(() => 1)
   );
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
+  // The bytes are nothing; the mocked loader never reads them.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => new Response(new ArrayBuffer(0), { status: 200 }))
+  );
 });
 
 afterEach(() => {
@@ -111,11 +131,18 @@ describe('Scene3D resource ownership', () => {
     expect(cancelAnimationFrame).toHaveBeenCalledWith(1);
   });
 
-  it('disposes a model that finishes loading after unmount', async () => {
+  // A model that arrives after its scene has gone belongs to the template
+  // cache, not the scene: the scene's lease is released at once, the parsed
+  // resources stay for the next scene that names the URL, and they go when
+  // the cache lets the idle template go.
+  it('releases a model that finishes loading after unmount to the cache, which disposes it', async () => {
+    modelTemplateCache.clearIdle();
     act(() =>
-      root.render(<Scene3D objects={[{ id: 'late', type: 'model', modelUrl: '/late.glb' }]} />)
+      root.render(
+        <Scene3D objects={[{ id: 'late', type: 'model', modelUrl: 'https://models.test/late.glb' }]} />
+      )
     );
-    expect(sceneMocks.pendingLoad).not.toBeNull();
+    await untilParsing();
 
     const geometry = new THREE.BoxGeometry();
     const material = new THREE.MeshStandardMaterial();
@@ -127,9 +154,12 @@ describe('Scene3D resource ownership', () => {
     act(() => root.unmount());
     await act(async () => {
       sceneMocks.pendingLoad!.resolve({ scene: loaded, animations: [] });
-      await Promise.resolve();
+      await settle();
     });
 
+    expect(disposeGeometry).not.toHaveBeenCalled();
+    expect(modelTemplateCache.stats().idle).toBeGreaterThanOrEqual(1);
+    modelTemplateCache.clearIdle();
     expect(disposeGeometry).toHaveBeenCalledOnce();
     expect(disposeMaterial).toHaveBeenCalledOnce();
   });
@@ -137,13 +167,18 @@ describe('Scene3D resource ownership', () => {
   it('does not report an expected stale load rejection after unmount', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     act(() =>
-      root.render(<Scene3D objects={[{ id: 'late', type: 'model', modelUrl: '/late.glb' }]} />)
+      root.render(
+        <Scene3D
+          objects={[{ id: 'late', type: 'model', modelUrl: 'https://models.test/late-fail.glb' }]}
+        />
+      )
     );
+    await untilParsing();
 
     act(() => root.unmount());
     await act(async () => {
       sceneMocks.pendingLoad!.reject(new Error('request aborted'));
-      await Promise.resolve();
+      await settle();
     });
 
     expect(consoleError.mock.calls.some(([message]) => String(message).includes('[Scene3D]'))).toBe(
