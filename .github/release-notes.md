@@ -1,5 +1,15 @@
 ## SoftN RELEASE_TAG
 
+### What's new in 0.0.8
+
+- Optional Apache/PHP backend for single-app deployments: on-demand ZIPP WASM execution, SQLite transactions, private configuration, trusted integration hooks and optional photo uploads.
+- Authenticated conditional polling and an optional WebSocket bridge. Polling needs no separate service; WebSockets require a running Node process and an Apache reverse proxy.
+- Faster browser startup through lazy component loading, demand-read bundles and per-app offline installation.
+- Correct CSS declaration and media-query boundaries in rendered apps, valid deployment identifiers and operator-configured permission preapproval for single-app hosting.
+- The native Rust host remains available under `apps/softn-rust`; its executable is still `softn-server`.
+
+The backend download targets Linux x86-64 with Apache/PHP and process execution enabled. It is a generic, unconfigured distribution: install your own public and private app bundles and preserve existing configuration, keys and databases when upgrading. Native XDB synchronization remains a Rust-host feature.
+
 ### Downloads
 
 | File | What it is |
