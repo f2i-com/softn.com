@@ -67,9 +67,11 @@ describe('two apps in the same browser', () => {
 
 describe('callers that cannot reach an appId', () => {
   it('resolve to the active app, not a separate store', async () => {
-    // SmartForm, the bundle seeder and the worker mutation path all call
-    // getXDB() bare. If they landed on their own instance, a form would write
-    // records the app itself could never read.
+    // The loader no longer moves this pointer — a component reads its app from
+    // the scope (app-scope-isolation.test.tsx, xdb-hooks-scope.test.tsx) — but
+    // a host written before the scope existed may still set it, and the bare
+    // lookup keeps honouring it: had it landed on its own instance, that host's
+    // forms would write records its app could never read.
     const { getXDB, setActiveXDBApp } = await freshXdb();
 
     setActiveXDBApp('AppA');

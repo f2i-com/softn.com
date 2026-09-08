@@ -571,10 +571,12 @@ function jsonToRecord(json: Record<string, unknown>): XDBRecord {
 // xdb-sync.ts imports from xdb.ts, never the reverse.
 
 import { getXDB } from './xdb';
+// The key's spelling lives in a module that imports nothing, so the renderer
+// can read it without loading this one (and yjs behind it).
+import { getSyncRoomKey, readSavedSyncRoom } from './xdb-sync-key';
 
 /** Adapters, keyed by app scope and room together. */
 const syncAdapters = new Map<string, XDBSyncAdapter>();
-const SYNC_ROOM_KEY_PREFIX = 'xdb-sync-active-room';
 
 /**
  * The registry key for an app's room: a JSON tuple, so no app identifier or
@@ -587,11 +589,6 @@ function registryKey(appId: string | undefined, room: string): string {
 function inScope(key: string, appId: string | undefined): boolean {
   const [owner] = JSON.parse(key) as [string | null, string];
   return owner === (appId ?? null);
-}
-
-/** Get the localStorage key for persisting the active sync room, namespaced by appId. */
-function getSyncRoomKey(appId?: string): string {
-  return appId ? `${SYNC_ROOM_KEY_PREFIX}:${appId}` : SYNC_ROOM_KEY_PREFIX;
 }
 
 /**
@@ -621,8 +618,29 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
 }
 
 /**
+ * Leave a room and release its adapter, and nothing else: the saved room —
+ * what {@link getSavedSyncRoom} answers, the app's memory of where it last
+ * was — is left where it is. Returns whether there was an adapter to close.
+ *
+ * For a host clearing a leftover at mount, not for an app leaving a room; an
+ * app calls {@link stopSync}, and forgetting the room is part of leaving it.
+ * The host's mount-time cleanup used `stopSync` for this, and because the
+ * room it closed was the saved one, each mount erased the very room it was
+ * there to offer back: a room survived exactly one reload.
+ */
+export function closeSyncRoom(room: string, appId?: string): boolean {
+  const key = registryKey(appId, room);
+  const adapter = syncAdapters.get(key);
+  if (!adapter) return false;
+  syncAdapters.delete(key);
+  adapter.close();
+  return true;
+}
+
+/**
  * Stop syncing — leaves the room and releases the adapter; the offline cache
- * in IndexedDB is kept.
+ * in IndexedDB is kept. The saved room is forgotten with it, so the next
+ * mount does not offer back a room the app chose to leave.
  *
  * With a room, stops that room for this app. Without one, stops every room
  * this app is in — and only this app's: a document that mounts several apps
@@ -631,12 +649,7 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
  */
 export function stopSync(room?: string, appId?: string): void {
   if (room) {
-    const key = registryKey(appId, room);
-    const adapter = syncAdapters.get(key);
-    if (adapter) {
-      syncAdapters.delete(key);
-      adapter.close();
-    }
+    closeSyncRoom(room, appId);
     try {
       const storageKey = getSyncRoomKey(appId);
       const saved = localStorage.getItem(storageKey);
@@ -723,5 +736,5 @@ export function getAllSyncStatus(appId?: string): XDBSyncStatus[] {
  * Get the saved sync room from localStorage (for auto-resume after reload).
  */
 export function getSavedSyncRoom(appId?: string): string | null {
-  try { return localStorage.getItem(getSyncRoomKey(appId)); } catch { return null; }
+  return readSavedSyncRoom(appId);
 }

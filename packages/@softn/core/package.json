@@ -40,6 +40,10 @@
       "types": "./dist/loader/index.d.ts",
       "default": "./dist/loader/index.js"
     },
+    "./bundle": {
+      "types": "./dist/bundle/zip.d.ts",
+      "default": "./dist/bundle/zip.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
