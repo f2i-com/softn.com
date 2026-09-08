@@ -24,8 +24,45 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./minimal": {
+      "types": "./dist/minimal.d.ts",
+      "default": "./dist/minimal.js"
+    },
+    "./lazy": {
+      "types": "./dist/lazy.d.ts",
+      "default": "./dist/lazy.js"
+    },
+    "./theme": {
+      "types": "./dist/theme.d.ts",
+      "default": "./dist/theme.js"
+    },
+    "./scene3d": {
+      "types": "./dist/scene3d.d.ts",
+      "default": "./dist/scene3d.js"
+    },
+    "./charts": {
+      "types": "./dist/charts.d.ts",
+      "default": "./dist/charts.js"
+    },
+    "./editors": {
+      "types": "./dist/editors.d.ts",
+      "default": "./dist/editors.js"
+    },
+    "./smart": {
+      "types": "./dist/smart.d.ts",
+      "default": "./dist/smart.js"
+    },
+    "./media": {
+      "types": "./dist/media.d.ts",
+      "default": "./dist/media.js"
+    },
+    "./animation": {
+      "types": "./dist/animation.d.ts",
+      "default": "./dist/animation.js"
+    },
     "./package.json": "./package.json"
   },
+  "sideEffects": false,
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",

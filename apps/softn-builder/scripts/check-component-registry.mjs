@@ -5,12 +5,52 @@ const root = process.cwd();
 const componentsRegistryPath = path.resolve(root, '../../packages/@softn/components/src/registry.ts');
 const builderRegistryPath = path.resolve(root, 'src/utils/componentRegistry.ts');
 
+/**
+ * Names inside an object literal body: `  Name,` lines, `{ A, B, C }` on one
+ * line, and `...spreadName` spreads. Spreads are resolved by looking the
+ * spread identifier up among the `export const <name> = {...}` objects of the
+ * file that exports it (the registry composes the per-feature entry objects
+ * under src/entries/, so the check follows those imports).
+ */
+function objectBody(source, name) {
+  const match = source.match(new RegExp(`export const ${name} = \\{([\\s\\S]*?)\\};?\\s*$`, 'm'));
+  return match ? match[1] : null;
+}
+
+function importSourceFor(source, identifier) {
+  const match = source.match(new RegExp(`import \\{[^}]*\\b${identifier}\\b[^}]*\\} from '([^']+)'`));
+  return match ? match[1] : null;
+}
+
+function extractObjectNames(source, name, filePath, seen = new Set()) {
+  const body = objectBody(source, name);
+  if (body === null) return [];
+  const names = [];
+  const withoutComments = body.replace(/\/\/.*$/gm, '');
+  for (const entry of withoutComments.split(',')) {
+    const token = entry.trim();
+    if (!token) continue;
+    const spread = token.match(/^\.\.\.([A-Za-z0-9_]+)$/);
+    if (spread) {
+      const identifier = spread[1];
+      if (seen.has(identifier)) continue;
+      seen.add(identifier);
+      const importPath = importSourceFor(source, identifier);
+      const resolvedPath = importPath
+        ? path.resolve(path.dirname(filePath), importPath.endsWith('.ts') ? importPath : `${importPath}.ts`)
+        : filePath;
+      const resolvedSource = resolvedPath === filePath ? source : fs.readFileSync(resolvedPath, 'utf8');
+      names.push(...extractObjectNames(resolvedSource, identifier, resolvedPath, seen));
+      continue;
+    }
+    const plain = token.match(/^([A-Za-z0-9_]+)(?:\s*:\s*[A-Za-z0-9_.]+)?$/);
+    if (plain) names.push(plain[1]);
+  }
+  return names;
+}
+
 function extractBuiltinNames(source) {
-  const sectionMatch = source.match(/export const builtinComponents = \{([\s\S]*?)\n\};/);
-  if (!sectionMatch) return [];
-  const section = sectionMatch[1];
-  const names = [...section.matchAll(/^\s{2}([A-Za-z0-9_]+),\s*$/gm)].map((m) => m[1]);
-  return [...new Set(names)].sort();
+  return [...new Set(extractObjectNames(source, 'builtinComponents', componentsRegistryPath))].sort();
 }
 
 function extractBuilderNames(source) {

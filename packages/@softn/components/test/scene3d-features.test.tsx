@@ -58,11 +58,20 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Wait for a demand-loaded chunk (the studio room) to arrive and take effect. */
+async function waitFor(ready: () => boolean): Promise<void> {
+  for (let i = 0; i < 400 && !ready(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(ready()).toBe(true);
+}
+
 describe('Scene3D enhanced features', () => {
-  it('owns studio environment resources and updates intensity without regenerating', () => {
+  // The room is fetched on demand, so the environment appears a tick after
+  // mount rather than during it.
+  it('owns studio environment resources and updates intensity without regenerating', async () => {
     const before = environmentProbe.created, disposed = environmentProbe.disposed;
     act(() => root.render(<Scene3D environment="studio" environmentIntensity={.5} />));
     const canvas = container.querySelector('canvas') as HTMLCanvasElement & { __softnScene: THREE.Scene };
+    await act(() => waitFor(() => canvas.__softnScene.environment !== null));
     const texture = canvas.__softnScene.environment;
     expect(texture).not.toBeNull();
     act(() => root.render(<Scene3D environment="studio" environmentIntensity={2} />));
