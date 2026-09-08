@@ -27,8 +27,14 @@ describe('single application configuration', () => {
     { theme: 'script' },
     { sha256: 'bad' },
     { unexpected: true },
+    { permissionMode: 'always' },
+    { permissionMode: 'preapproved' },
   ])('rejects unsupported settings: %j', (extra) => {
     expect(() => parseConfig({ ...config, ...extra }, base)).toThrow();
+  });
+  it('accepts explicit preapproval only for a pinned deployment and defaults to prompting', () => {
+    expect(parseConfig(config, base).permissionMode).toBe('prompt');
+    expect(parseConfig({ ...config, permissionMode: 'preapproved', sha256: 'a'.repeat(64) }, base).permissionMode).toBe('preapproved');
   });
   it('validates declarations without broadening malformed or missing permissions', () => {
     expect(

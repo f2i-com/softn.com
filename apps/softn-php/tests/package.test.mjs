@@ -13,3 +13,10 @@ test('reverse-domain bundle IDs produce valid, stable deployment namespaces',()=
   assert.equal(deploymentConfig({id:'valid-app',name:'Example'},bytes).id,'valid-app');
   assert.notEqual(deploymentConfig({id:'org.example.app',name:'Example'},bytes).id,deploymentConfig({id:'org-example-app',name:'Example'},bytes).id);
 });
+test('preapproval is explicit and the bundle remains hash-pinned',()=>{
+  const manifest={id:'example',name:'Example'},bytes=Buffer.from('bundle');
+  assert.equal(deploymentConfig(manifest,bytes).permissionMode,undefined);
+  const config=deploymentConfig(manifest,bytes,'preapproved');
+  assert.equal(config.permissionMode,'preapproved');assert.match(config.sha256,/^[a-f0-9]{64}$/);
+  assert.throws(()=>deploymentConfig(manifest,bytes,'unknown'));
+});
