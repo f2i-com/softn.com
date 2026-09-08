@@ -1,0 +1,29 @@
+<logic src="../logic/main.logic" />
+
+<style>
+.bench-root { position: relative; width: 100%; height: 100%; min-height: 100vh; background: #0b0b14; color: #e4e4e7; font-family: system-ui, sans-serif; }
+.bench-scene { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
+.bench-label { position: absolute; left: 16px; top: 12px; }
+</style>
+
+<Box className="bench-root">
+  <Box className="bench-scene">
+    <Scene3D
+      fill={true}
+      objects={[
+        { id: "tetra", type: "model", modelUrl: asset("assets/models/tetra.glb"), modelFormat: "gltf", position: { x: 0, y: 0.3, z: 0 }, animate: { rotateY: 0.01 } },
+        floor
+      ]}
+      lights={lights}
+      camera={{ position: { x: 0, y: 1.4, z: 4.5 }, lookAt: { x: 0, y: 0, z: 0 }, fov: 50 }}
+      background="#0b0b14"
+      antialias={false}
+      shadows={false}
+      maxPixelRatio={1}
+      effects={{ bloom: { strength: 0.6, radius: 0.4, threshold: 0.7 } }}
+    />
+  </Box>
+  <Box className="bench-label">
+    <Text style={{ color: "#e4e4e7" }}>Bench scene is ready</Text>
+  </Box>
+</Box>

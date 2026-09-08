@@ -1,0 +1,6 @@
+let name = ""
+let greeting = "waiting for a name"
+
+function submit() {
+  greeting = name !== "" ? "hello, " + name : "hello"
+}

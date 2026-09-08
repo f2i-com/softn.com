@@ -1,0 +1,17 @@
+<logic src="../logic/main.logic" />
+
+<style>
+.bench-root { max-width: 640px; margin: 0 auto; padding: 32px 24px; font-family: system-ui, sans-serif; }
+</style>
+
+<Stack className="bench-root" gap={16}>
+  <Text style={{ display: "block", fontSize: "28px", fontWeight: 700 }}>Bench minimal</Text>
+  <Text>A heading, this paragraph and one form. No 3D, no assets, no permissions: what the runtime costs before an app asks it for anything.</Text>
+  <Form @submit={submit}>
+    <Stack direction="horizontal" gap={8}>
+      <Input placeholder="Your name" :bind={name} />
+      <Button @click={submit}>Submit</Button>
+    </Stack>
+  </Form>
+  <Text>{"Bench minimal is ready · " + greeting}</Text>
+</Stack>

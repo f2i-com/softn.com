@@ -1,0 +1,12 @@
+{
+  "name": "BenchMinimal",
+  "version": "1.0.0",
+  "description": "A heading, a paragraph and a one-field form: the least an app can be.",
+  "main": "ui/main.ui",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "xdb": [],
+    "assets": []
+  }
+}
