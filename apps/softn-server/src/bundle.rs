@@ -21,15 +21,47 @@ pub struct ServerManifest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerBlock {
     pub entry: Option<String>,
     pub scripts: Option<Vec<String>>,
     pub routes: Option<Vec<RouteDefinition>>,
     #[allow(dead_code)]
     pub permissions: Option<serde_json::Value>,
+    pub requires: Option<ServerRequirements>,
+    pub database: Option<PrivateDatabase>,
+    pub sync: Option<SyncConfig>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerRequirements {
+    #[serde(rename = "apiVersion")]
+    pub api_version: u32,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrivateDatabase {
+    pub kind: String,
+    pub migrations: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncConfig { pub enabled: bool }
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthorizationMode { #[default] HostToken, Application, Anonymous }
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TransactionMode { #[default] None, Read, Write }
+
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RouteDefinition {
     pub method: String,
     pub path: String,
@@ -39,6 +71,13 @@ pub struct RouteDefinition {
     /// webhooks or health checks exposed through the script layer.
     #[serde(default)]
     pub public: bool,
+    #[serde(default)]
+    pub authorization: Option<AuthorizationMode>,
+    #[serde(default)]
+    pub transaction: TransactionMode,
+    /// Per-route JSON body limit, also bounded by config.server.maxBodySize.
+    #[serde(default, rename = "maxBodySize")]
+    pub max_body_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -191,13 +230,16 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
     if manifest.name.chars().any(|c| c.is_control()) {
         return Err("Manifest name must not contain control characters".into());
     }
+    if manifest.name == "." || manifest.name == ".." || manifest.name.contains(['/', '\\', ':']) {
+        return Err("Manifest name cannot contain path separators or a drive prefix".into());
+    }
     if manifest.id.is_none()
         && !manifest.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
     {
         return Err("Manifest name must be alphanumeric, dash, underscore, or dot when the manifest has no `id` (the name then names the data directory)".into());
     }
     if let Some(ref id) = manifest.id {
-        if id.is_empty() || id.len() > 128 {
+        if id.is_empty() || id.len() > 128 || id == "." || id.contains("..") {
             return Err("Manifest id must be 1-128 characters".into());
         }
         // Allow reverse-domain style: alphanumeric, dash, underscore, dot
@@ -209,11 +251,62 @@ pub fn load_manifest(bundle_path: &Path) -> Result<ServerManifest, String> {
         return Err("Manifest version must not be empty".into());
     }
 
+    if let Some(server) = &manifest.server {
+        if server.requires.is_some() && manifest.id.is_none() {
+            return Err("API v1 requires a stable application id".into());
+        }
+        if server.requires.is_some() && server.permissions.as_ref().is_some_and(|p|
+            p.get("http").and_then(|v| v.as_bool()) == Some(true)
+                || p.get("fs").and_then(|v| v.as_bool()) == Some(true)) {
+            return Err("API v1 private apps do not support general http/fs grants; use an operator-side service".into());
+        }
+        if let Some(required) = &server.requires {
+            if required.api_version != 1 { return Err("Unsupported server API version".into()); }
+            for cap in &required.capabilities {
+                if !matches!(cap.as_str(), "sql" | "crypto" | "time" | "trusted-client-ip" | "transaction-scope" | "photos") {
+                    return Err(format!("Unsupported required server capability: {cap}"));
+                }
+            }
+        }
+        if let Some(db) = &server.database {
+            if db.kind != "private-sqlite" || db.migrations.is_empty() || db.migrations.len() > 100 {
+                return Err("Private database requires kind private-sqlite and 1-100 migrations".into());
+            }
+            if !server.requires.as_ref().is_some_and(|r| r.capabilities.iter().any(|c| c == "sql")) {
+                return Err("Private database must require the sql capability".into());
+            }
+        }
+        if let Some(routes) = &server.routes {
+            let mut seen = std::collections::HashSet::new();
+            for route in routes {
+                if route.max_body_size.is_some_and(|n| n == 0 || n > 16 * 1024 * 1024) {
+                    return Err("Route maxBodySize must be between 1 and 16777216 bytes".into());
+                }
+                if server.requires.is_some() {
+                    if !matches!(route.method.as_str(), "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD")
+                        || !route.path.starts_with("/api/")
+                        || route.path.contains(['{', '}', '*', ':', '?', '#', '\\'])
+                        || route.path.ends_with('/') || route.path.contains("..")
+                        || !seen.insert((route.method.clone(), route.path.clone())) {
+                        return Err("API v1 requires unique explicit /api/ routes with supported HTTP methods".into());
+                    }
+                    if route.public { return Err("API v1 routes must use explicit authorization instead of public".into()); }
+                    if route.authorization.is_none() { return Err("API v1 routes require explicit authorization".into()); }
+                    if server.database.is_some() && route.transaction == TransactionMode::None {
+                        return Err("Private SQL routes require an explicit read or write transaction".into());
+                    }
+                    if server.database.is_none() && route.transaction != TransactionMode::None {
+                        return Err("Route transactions require a private database declaration".into());
+                    }
+                }
+            }
+        }
+    }
     Ok(manifest)
 }
 
 /// Validate a script path stays within the bundle directory.
-fn validate_script_path(bundle_path: &Path, relative: &str) -> Result<PathBuf, String> {
+pub(crate) fn validate_script_path(bundle_path: &Path, relative: &str) -> Result<PathBuf, String> {
     // Reject path traversal and absolute paths (which would overwrite the base in join())
     if relative.contains("..") || Path::new(relative).is_absolute() {
         return Err(format!("Path traversal rejected in script path: {}", relative));
@@ -294,6 +387,48 @@ pub fn client_manifest(manifest: &ServerManifest) -> serde_json::Value {
     // Include config (contains server URL, theme, etc. needed by clients)
     if let Some(config) = &manifest.config {
         val["config"] = config.clone();
+        if let Some(server) = val["config"].get_mut("server").and_then(|s| s.as_object_mut()) {
+            server.remove("auth_token");
+            server.remove("authToken");
+        }
     }
     val
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn validates_critical_server_fields_and_redacts_private_declarations() {
+        let root = std::env::temp_dir().join(format!("softn-manifest-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut value = serde_json::json!({"id":"com.example.private", "name":"Private app", "version":"1",
+            "server":{"requires":{"apiVersion":1,"capabilities":["sql"]},
+                "database":{"kind":"private-sqlite","migrations":["server/001.sql"]},
+                "routes":[{"method":"POST","path":"/api/test","handler":"api","authorization":"application","transaction":"write"}]},
+            "files":{"logic":["server/private.logic","logic/public.logic"]}});
+        let write = |v: &serde_json::Value| std::fs::write(root.join("manifest.json"), serde_json::to_vec(v).unwrap()).unwrap();
+        write(&value);
+        let manifest = load_manifest(&root).unwrap();
+        let public = client_manifest(&manifest);
+        assert!(public.get("server").is_none());
+        assert_eq!(public["files"]["logic"], serde_json::json!(["logic/public.logic"]));
+        value["server"]["routes"][0]["maxBodySize"] = 5_600_100.into(); write(&value);
+        assert_eq!(load_manifest(&root).unwrap().server.unwrap().routes.unwrap()[0].max_body_size, Some(5_600_100));
+        for size in [0, 16 * 1024 * 1024 + 1] {
+            value["server"]["routes"][0]["maxBodySize"] = size.into(); write(&value);
+            assert!(load_manifest(&root).is_err());
+        }
+        value["server"]["routes"][0].as_object_mut().unwrap().remove("maxBodySize");
+        value["server"]["requires"]["apiVersion"] = 2.into(); write(&value);
+        assert!(load_manifest(&root).is_err());
+        value["server"]["requires"]["apiVersion"] = 1.into();
+        value["server"]["requires"]["capabilities"] = serde_json::json!(["arbitrary-files"]); write(&value);
+        assert!(load_manifest(&root).is_err());
+        value["server"]["requires"]["capabilities"] = serde_json::json!(["sql"]);
+        value["server"]["routes"][0].as_object_mut().unwrap().remove("authorization"); write(&value);
+        assert!(load_manifest(&root).is_err());
+        value["id"] = "..".into(); write(&value);
+        assert!(load_manifest(&root).is_err());
+    }
 }

@@ -15,6 +15,7 @@ SoftN is a complete system for creating modular, reactive UI applications using 
 - **XDB Database** -- Local-first database with CRDT-based P2P synchronization
 - **Web Runtime** -- Browser-based `.softn` bundle runner with PWA support
 - **Single-app Runtime** -- Configured, unbranded browser shell with a loading spinner and non-blocking permission bar. [Build and deployment guide](docs/SINGLE_APP_RUNTIME.md).
+- **Private native backends** -- Tenant-scoped SQLite transactions, crypto, IANA timezone handling and sanitized photo uploads for server `.logic` apps. [Server API v1 and operator guide](apps/softn-server/PRIVATE_BACKEND.md).
 - **Desktop Runtime** -- Tauri-based loader for running `.softn` bundles natively
 - **Visual Builder** -- Full IDE for visually creating SoftN applications
 - **Bundle System** -- Portable `.softn` files (ZIP archives) for distribution

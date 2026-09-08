@@ -21,6 +21,11 @@ pub struct BridgeSet {
     pub http: Option<Box<dyn HttpBridge>>,
     pub fs: Option<Box<dyn FsBridge>>,
     pub env: Option<Box<dyn EnvBridge>>,
+    pub sql: Option<crate::bridges::sql::NativeSql>,
+    pub crypto: Option<crate::bridges::crypto::NativeCrypto>,
+    pub allow_time: bool,
+    pub development: bool,
+    pub allow_photos: bool,
 }
 
 /// Service one `__zippHostCall`.
@@ -29,9 +34,32 @@ pub struct BridgeSet {
 /// the one call whose result is a raw string). `Err` becomes a catchable throw
 /// inside the script carrying the host's message.
 pub fn dispatch(bridges: &mut BridgeSet, kind: &str, args: &[String]) -> Result<String, String> {
+    let result = dispatch_inner(bridges, kind, args);
+    if result.is_err() {
+        if let Some(sql) = bridges.sql.as_mut() { sql.mark_failed(); }
+    }
+    result
+}
+
+fn dispatch_inner(bridges: &mut BridgeSet, kind: &str, args: &[String]) -> Result<String, String> {
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or("");
 
     match kind {
+        "server.config" => enc(&serde_json::json!({"apiVersion":1,"development":bridges.development,"photos":bridges.allow_photos})),
+        "media.sanitizePhoto" => {
+            if !bridges.allow_photos { return Err(capability_denied("photos.sanitizePhoto")); }
+            enc(&crate::bridges::media::sanitize_photo(arg(0))?)
+        }
+        "sql.query" | "sql.first" | "sql.execute" => {
+            enc(&need_mut(bridges.sql.as_mut(), kind)?.call(kind, arg(0), arg(1))?)
+        }
+        "crypto.sha256" | "crypto.hmac" | "crypto.equal" | "crypto.randomHex" | "crypto.randomInt" | "crypto.seal" => {
+            enc(&need(bridges.crypto.as_ref(), kind)?.dispatch(kind, arg(0), arg(1))?)
+        }
+        "time.now" | "time.age" | "time.parseZoned" | "time.format" => {
+            if !bridges.allow_time { return Err(capability_denied(kind)); }
+            enc(&crate::bridges::time::dispatch(kind, arg(0), arg(1), arg(2))?)
+        }
         // ── db ──
         "db.query" => {
             let db = need(bridges.db.as_deref(), kind)?;

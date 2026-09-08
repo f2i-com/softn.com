@@ -1,5 +1,6 @@
 use crate::app::AppContext;
 use crate::bundle;
+use crate::bundle::{AuthorizationMode, TransactionMode};
 use crate::tenant::{TenantContext, TenantManager};
 use crate::util;
 use crate::ws;
@@ -112,9 +113,11 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tok
 
     let mut router = Router::new()
         .route("/health", get(health))
-        .route("/manifest.json", get(serve_manifest))
-        .route("/sync", get(ws_upgrade))
-        .route("/sync/ticket", axum::routing::post(issue_ticket));
+        .route("/manifest.json", get(serve_manifest));
+    if crate::private_backend::sync_enabled(&ctx.manifest) {
+        router = router.route("/sync", get(ws_upgrade))
+            .route("/sync/ticket", axum::routing::post(issue_ticket));
+    }
 
     // Explicit body limit for API routes (2MB default).
     const MAX_BODY_CEILING: u64 = 16 * 1024 * 1024;
@@ -128,7 +131,7 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tok
     // Register custom API routes from manifest
     if let Some(server) = &ctx.manifest.server {
         if let Some(routes) = &server.routes {
-            router = register_api_routes(router, routes, false);
+            router = register_api_routes(router, routes, server.requires.is_some());
         }
     }
 
@@ -186,14 +189,16 @@ fn build_multi_tenant_router(
             .unwrap_or(2 * 1024 * 1024) as usize;
 
         let mut tenant_router: Router<Arc<TenantContext>> = Router::new()
-            .route("/manifest.json", get(tenant_serve_manifest))
-            .route("/sync", get(tenant_ws_upgrade))
-            .route("/sync/ticket", axum::routing::post(tenant_issue_ticket));
+            .route("/manifest.json", get(tenant_serve_manifest));
+        if crate::private_backend::sync_enabled(&tenant.manifest) {
+            tenant_router = tenant_router.route("/sync", get(tenant_ws_upgrade))
+                .route("/sync/ticket", axum::routing::post(tenant_issue_ticket));
+        }
 
         // Register tenant's API routes
         if let Some(server) = &tenant.manifest.server {
             if let Some(routes) = &server.routes {
-                tenant_router = register_api_routes_tenant(tenant_router, routes);
+                tenant_router = register_api_routes_tenant(tenant_router, routes, server.requires.is_some());
             }
         }
 
@@ -224,7 +229,7 @@ fn build_multi_tenant_router(
 }
 
 /// Register API routes from manifest onto a single-tenant router.
-fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bundle::RouteDefinition], _is_tenant: bool) -> Router<Arc<AppContext>> {
+fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bundle::RouteDefinition], private_api: bool) -> Router<Arc<AppContext>> {
     let mut registered = std::collections::HashSet::<String>::new();
 
     for route in routes {
@@ -245,21 +250,23 @@ fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bun
 
         tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
 
-        let make_handler = |name: String, is_public: bool| {
+        let make_handler = |name: String, is_public: bool, options: ApiRouteOptions| {
             move |
                 State(ctx): State<Arc<AppContext>>,
+                info: ConnectInfo<SocketAddr>,
+                axum::Extension(proxy): axum::Extension<TrustedProxy>,
                 method: axum::http::Method,
                 uri: axum::http::Uri,
                 headers: axum::http::HeaderMap,
                 query: axum::extract::Query<HashMap<String, String>>,
                 body: axum::body::Bytes,
             | {
-                api_handler_single(ctx, name, is_public, method, uri, headers, query, body)
+                api_handler_single(ctx, name, is_public, options, extract_client_ip(&headers, info.0.ip(), proxy.0), method, uri, headers, query, body)
             }
         };
-        let is_public = route.public;
+        let is_public = route.public || matches!(route.authorization, Some(AuthorizationMode::Application | AuthorizationMode::Anonymous));
 
-        router = add_method_route(router, &method, &path, make_handler(handler_name, is_public));
+        router = add_method_route(router, &method, &path, make_handler(handler_name, is_public, ApiRouteOptions { transaction: route.transaction, input_limit: route.max_body_size.unwrap_or(MAX_JSON_PARSE_SIZE), private_api }));
     }
 
     router
@@ -269,7 +276,7 @@ fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bun
 /// Uses relaxed validation: tenant routes are nested under `/<tenant-id>/`,
 /// so paths like `/health` or `/sync` don't conflict with global routes.
 /// Only wildcards/params and static dir conflicts are checked.
-fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[crate::bundle::RouteDefinition]) -> Router<Arc<TenantContext>> {
+fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[crate::bundle::RouteDefinition], private_api: bool) -> Router<Arc<TenantContext>> {
     let mut registered = std::collections::HashSet::<String>::new();
 
     for route in routes {
@@ -305,21 +312,23 @@ fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[
 
         tracing::info!("Registering route: {} {} -> {}", method, path, handler_name);
 
-        let make_handler = |name: String, is_public: bool| {
+        let make_handler = |name: String, is_public: bool, options: ApiRouteOptions| {
             move |
                 State(tenant): State<Arc<TenantContext>>,
+                info: ConnectInfo<SocketAddr>,
+                axum::Extension(proxy): axum::Extension<TrustedProxy>,
                 method: axum::http::Method,
                 uri: axum::http::Uri,
                 headers: axum::http::HeaderMap,
                 query: axum::extract::Query<HashMap<String, String>>,
                 body: axum::body::Bytes,
             | {
-                api_handler_tenant(tenant, name, is_public, method, uri, headers, query, body)
+                api_handler_tenant(tenant, name, is_public, options, extract_client_ip(&headers, info.0.ip(), proxy.0), method, uri, headers, query, body)
             }
         };
-        let is_public = route.public;
+        let is_public = route.public || matches!(route.authorization, Some(AuthorizationMode::Application | AuthorizationMode::Anonymous));
 
-        router = add_method_route_tenant(router, &method, &path, make_handler(handler_name, is_public));
+        router = add_method_route_tenant(router, &method, &path, make_handler(handler_name, is_public, ApiRouteOptions { transaction: route.transaction, input_limit: route.max_body_size.unwrap_or(MAX_JSON_PARSE_SIZE), private_api }));
     }
 
     router
@@ -367,6 +376,8 @@ where
         "PUT" => router.route(path, axum::routing::put(handler)),
         "DELETE" => router.route(path, axum::routing::delete(handler)),
         "PATCH" => router.route(path, axum::routing::patch(handler)),
+        "OPTIONS" => router.route(path, axum::routing::options(handler)),
+        "HEAD" => router.route(path, axum::routing::head(handler)),
         _ => {
             tracing::warn!("Unsupported method: {}", method);
             router
@@ -385,6 +396,8 @@ where
         "PUT" => router.route(path, axum::routing::put(handler)),
         "DELETE" => router.route(path, axum::routing::delete(handler)),
         "PATCH" => router.route(path, axum::routing::patch(handler)),
+        "OPTIONS" => router.route(path, axum::routing::options(handler)),
+        "HEAD" => router.route(path, axum::routing::head(handler)),
         _ => {
             tracing::warn!("Unsupported method: {}", method);
             router
@@ -553,6 +566,8 @@ async fn api_handler_single(
     ctx: Arc<AppContext>,
     handler_name: String,
     is_public: bool,
+    options: ApiRouteOptions,
+    client_ip: std::net::IpAddr,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
@@ -576,7 +591,7 @@ async fn api_handler_single(
         }
     };
 
-    execute_api_handler(runtime, handler_name, method, uri, headers, query, body).await
+    execute_api_handler(runtime, handler_name, options, client_ip, method, uri, headers, query, body).await
 }
 
 // ── Multi-tenant handlers ──
@@ -670,6 +685,8 @@ async fn api_handler_tenant(
     tenant: Arc<TenantContext>,
     handler_name: String,
     is_public: bool,
+    options: ApiRouteOptions,
+    client_ip: std::net::IpAddr,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
@@ -692,7 +709,7 @@ async fn api_handler_tenant(
         }
     };
 
-    execute_api_handler(runtime, handler_name, method, uri, headers, query, body).await
+    execute_api_handler(runtime, handler_name, options, client_ip, method, uri, headers, query, body).await
 }
 
 // ── Shared helpers ──
@@ -731,21 +748,47 @@ fn check_auth(
 /// Maximum JSON body size for API handlers.
 const MAX_JSON_PARSE_SIZE: usize = 2 * 1024 * 1024;
 
+#[derive(Clone, Copy)]
+struct ApiRouteOptions {
+    transaction: TransactionMode,
+    input_limit: usize,
+    private_api: bool,
+}
+
 async fn execute_api_handler(
     runtime: Arc<crate::runtime::ServerRuntime>,
     handler_name: String,
+    options: ApiRouteOptions,
+    client_ip: std::net::IpAddr,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
     query: axum::extract::Query<HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    if body.len() > MAX_JSON_PARSE_SIZE {
+    let input_limit = options.input_limit;
+    if body.len() > input_limit {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
-            Json(serde_json::json!({"error": format!("Body too large ({} bytes, max {})", body.len(), MAX_JSON_PARSE_SIZE)})),
+            Json(serde_json::json!({"error": format!("Body too large ({} bytes, max {})", body.len(), input_limit)})),
         );
     }
+
+    let private_body = if options.private_api {
+        if body.is_empty() { Some(serde_json::json!({})) } else {
+            let media_type = headers.get("content-type").and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(';').next()).unwrap_or("").trim();
+            if !media_type.eq_ignore_ascii_case("application/json") {
+                return (StatusCode::UNSUPPORTED_MEDIA_TYPE, Json(serde_json::json!({"error":"Use application/json","code":"unsupported_media_type"})));
+            }
+            let parsed = std::str::from_utf8(&body).ok()
+                .and_then(|text| util::parse_json_bounded(text, util::MAX_JSON_DEPTH).ok());
+            match parsed {
+                Some(value) if value.is_object() => Some(value),
+                _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error":"Request body must be a JSON object","code":"invalid_request"}))),
+            }
+        }
+    } else { None };
 
     let headers_json: serde_json::Map<String, serde_json::Value> = headers
         .iter()
@@ -761,10 +804,12 @@ async fn execute_api_handler(
 
     // Must exceed the runtime's own wait, or this fires first on a handler that
     // was about to answer — and the blocking task keeps running either way.
+    let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _request_lifetime = ApiCancellation(cancellation.clone());
     let result = tokio::time::timeout(
         crate::runtime::MAX_CALL_WAIT + std::time::Duration::from_secs(5),
         tokio::task::spawn_blocking(move || {
-            let body_json = if body.is_empty() {
+            let body_json = if let Some(value) = private_body { value } else if body.is_empty() {
                 serde_json::Value::Null
             } else {
                 match std::str::from_utf8(&body) {
@@ -780,9 +825,10 @@ async fn execute_api_handler(
                 "body": body_json,
                 "query": query_json,
                 "headers": headers_json,
+                "client_ip": client_ip.to_string(),
             });
 
-            runtime.call(&handler_name, vec![request])
+            runtime.call_transaction(&handler_name, vec![request], options.transaction, cancellation)
         }),
     )
     .await;
@@ -806,6 +852,13 @@ async fn execute_api_handler(
 
     match call_result {
         Ok(result) => {
+            // SQL routes validate before committing. Other API v1 routes still
+            // share the exact same response shape and serialized byte bound.
+            if options.private_api && options.transaction == TransactionMode::None
+                && crate::runtime::validate_private_response(&result).is_err() {
+                return (StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error":"Internal server error"})));
+            }
             if let Some(obj) = result.as_object() {
                 let status = obj
                     .get("status")
@@ -826,6 +879,9 @@ async fn execute_api_handler(
             }
         }
         Err(e) => {
+            if e.starts_with("Worker queue full") || e.starts_with("Private database is busy") {
+                return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error":"The server is busy. Retry the same action.","code":"server_busy"})));
+            }
             tracing::error!("Script handler error: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -883,5 +939,49 @@ async fn shutdown_signal_multi(shutdown_tx: tokio::sync::watch::Sender<bool>) {
             tracing::error!("Failed to install CTRL+C handler: {}", e);
             std::future::pending::<()>().await;
         }
+    }
+}
+
+// Dropping the HTTP future (including disconnects/timeouts) prevents a worker
+// still computing from committing its transaction after the caller is gone.
+struct ApiCancellation(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for ApiCancellation {
+    fn drop(&mut self) { self.0.store(true, std::sync::atomic::Ordering::Relaxed); }
+}
+
+#[cfg(test)]
+mod private_api_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn validates_json_and_route_limits_without_requiring_sql() {
+        let runtime = crate::runtime::ServerRuntime::new(|| crate::host::BridgeSet {
+            db: None, http: None, fs: None, env: None, sql: None, crypto: None,
+            allow_time: false, development: true, allow_photos: false,
+        }, Some(1));
+        runtime.init("function inspect(req) { if(req.body.invalid) return {status:999,body:{}}; if(req.body.large) return {status:200,body:{a:req.body.value,b:req.body.value}}; return {status:200,body:{length:req.body.value ? req.body.value.length : 0, ip:req.client_ip}}; }".into()).unwrap();
+        let invoke = |body: Vec<u8>, content_type: &'static str, input_limit: usize| {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("content-type", content_type.parse().unwrap());
+            execute_api_handler(runtime.clone(), "inspect".into(), ApiRouteOptions {
+                transaction: TransactionMode::None, input_limit, private_api: true,
+            }, "127.0.0.1".parse().unwrap(), axum::http::Method::POST,
+                "/api/attachments".parse().unwrap(), headers,
+                axum::extract::Query(HashMap::new()), body.into())
+        };
+        assert_eq!(invoke(b"{}".to_vec(), "text/plain", 100).await.0, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        for invalid in [b"[]".as_slice(), b"null", b"{bad", &[0xff]] {
+            assert_eq!(invoke(invalid.to_vec(), "application/json", 100).await.0, StatusCode::BAD_REQUEST);
+        }
+        let body = serde_json::to_vec(&serde_json::json!({"value":"x".repeat(MAX_JSON_PARSE_SIZE)})).unwrap();
+        assert_eq!(invoke(body.clone(), "application/json", MAX_JSON_PARSE_SIZE).await.0, StatusCode::PAYLOAD_TOO_LARGE);
+        let (status, Json(value)) = invoke(body, "application/json; charset=utf-8", MAX_JSON_PARSE_SIZE + 100).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["length"], MAX_JSON_PARSE_SIZE);
+        assert_eq!(value["ip"], "127.0.0.1");
+        assert_eq!(invoke(Vec::new(), "application/json", 100).await.0, StatusCode::OK);
+        assert_eq!(invoke(br#"{"invalid":true}"#.to_vec(), "application/json", 100).await.0, StatusCode::INTERNAL_SERVER_ERROR);
+        let oversized = serde_json::to_vec(&serde_json::json!({"large":true,"value":"x".repeat(MAX_JSON_PARSE_SIZE / 2)})).unwrap();
+        assert_eq!(invoke(oversized, "application/json", MAX_JSON_PARSE_SIZE).await.0, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

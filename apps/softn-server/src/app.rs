@@ -22,6 +22,30 @@ pub struct AppContext {
     pub shutdown: tokio::sync::watch::Sender<bool>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn missing_handlers_and_startup_faults_prevent_readiness() {
+        let root = std::env::temp_dir().join(format!("softn-readiness-{}", uuid::Uuid::new_v4()));
+        let bundle = root.join("bundle");
+        std::fs::create_dir_all(bundle.join("server")).unwrap();
+        let script = bundle.join("server/main.logic");
+        let mut manifest = serde_json::json!({"id":"com.example.startup", "name":"Startup", "version":"1",
+            "config":{"server":{"workers":1,"readPoolSize":2}},
+            "server":{"entry":"server/main.logic","routes":[{"method":"GET","path":"/api/test","handler":"missing"}]}});
+        std::fs::write(&script, "function onStart() {}").unwrap();
+        std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let error = AppContext::load(bundle.clone(), Some(root.join("data")), Some(1), false).err().unwrap();
+        assert!(error.contains("not defined"));
+        manifest["server"]["routes"] = serde_json::json!([]);
+        std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        std::fs::write(script, "function onStart() { throw new Error('startup failed'); }").unwrap();
+        let error = AppContext::load(bundle, Some(root.join("data2")), Some(1), false).err().unwrap();
+        assert!(error.contains("onStart() failed"));
+    }
+}
+
 impl AppContext {
     pub fn load(bundle_path: PathBuf, data_dir: Option<PathBuf>, workers: Option<usize>, allow_all_capabilities: bool) -> Result<Arc<Self>, String> {
         let bundle_path = std::fs::canonicalize(&bundle_path)
@@ -40,6 +64,9 @@ impl AppContext {
         };
 
         let manifest = bundle::load_manifest(&bundle_path)?;
+        if manifest.server.as_ref().is_some_and(|s| s.requires.is_some()) && data_dir.is_none() {
+            return Err("API v1 apps require an explicit operator --data-dir".into());
+        }
         tracing::info!("Loaded app: {} v{}", manifest.name, manifest.version);
 
         // Data directory: prefer explicit --data-dir, then platform data dir,
@@ -79,12 +106,16 @@ impl AppContext {
         });
         std::fs::create_dir_all(&data_dir)
             .map_err(|e| format!("Failed to create data dir: {}", e))?;
+        let private_backend = crate::private_backend::PrivateBackend::load(&manifest, &bundle_path, &data_dir)?;
 
         // Open XDB (writer) and create a read-only connection pool.
         // Read pool size: 2x CPUs, capped at 32. SQLite WAL reads are fast and
         // non-blocking, but under high concurrency (HTTP + WebSocket sync_pull)
         // a larger pool prevents simple reads from queuing behind long queries.
-        let db_path = data_dir.join(format!("{}.sqlite", manifest.name));
+        let db_path = data_dir.join(if manifest.server.as_ref().is_some_and(|s| s.requires.is_some()) {
+            "xdb.sqlite".to_string()
+        } else { format!("{}.sqlite", manifest.name) });
+        crate::bridges::sql::reject_symlink(&db_path)?;
         let shared_db = xdb::create_shared_db(db_path.clone())
             .map_err(|e| format!("Failed to open DB: {}", e))?;
         let read_pool_size = manifest.config.as_ref()
@@ -114,6 +145,11 @@ impl AppContext {
             });
         if auth_token.is_some() && std::env::var("SOFTN_AUTH_TOKEN").ok().filter(|s| !s.is_empty()).is_some() {
             tracing::info!("Auth token loaded from SOFTN_AUTH_TOKEN environment variable");
+        }
+        if auth_token.is_none() && manifest.server.as_ref().is_some_and(|s|
+            s.requires.is_some() && s.routes.as_ref().is_some_and(|routes|
+                routes.iter().any(|r| r.authorization == Some(bundle::AuthorizationMode::HostToken)))) {
+            return Err("A host-token route requires an operator authentication token".into());
         }
 
         // Load and run server scripts
@@ -147,7 +183,7 @@ impl AppContext {
             // from silently gaining network/filesystem access by simply
             // omitting the permissions block.
             let permissions = server.permissions.as_ref();
-            let allow_http = if permissions.is_none() && allow_all_capabilities {
+            let allow_http = if server.requires.is_some() { false } else if permissions.is_none() && allow_all_capabilities {
                 true
             } else {
                 permissions
@@ -155,7 +191,7 @@ impl AppContext {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false)
             };
-            let allow_fs = if permissions.is_none() && allow_all_capabilities {
+            let allow_fs = if server.requires.is_some() { false } else if permissions.is_none() && allow_all_capabilities {
                 true
             } else {
                 permissions
@@ -182,6 +218,11 @@ impl AppContext {
                 fs: if allow_fs { Some(Box::new(NativeFsBridge::new(fs_root_for_factory.clone()))) } else { None },
                 // env is always enabled (provides console.log via env.log)
                 env: Some(Box::new(NativeEnvBridge)),
+                sql: private_backend.sql(),
+                crypto: private_backend.crypto.clone(),
+                allow_time: private_backend.time,
+                development: private_backend.development,
+                allow_photos: private_backend.photos,
             }, configured_workers);
 
             // Initialize all worker threads with the same source
@@ -192,10 +233,10 @@ impl AppContext {
             if let Some(routes) = server.routes.as_ref() {
                 for route in routes {
                     if !rt.has_function(&route.handler) {
-                        tracing::warn!(
+                        return Err(format!(
                             "Route {} {} references handler '{}' which is not defined in the script",
                             route.method, route.path, route.handler
-                        );
+                        ));
                     }
                 }
             }
@@ -204,7 +245,7 @@ impl AppContext {
             if rt.has_function("onStart") {
                 match rt.call("onStart", vec![]) {
                     Ok(_) => tracing::info!("onStart() completed"),
-                    Err(e) => tracing::error!("onStart() error: {}", e),
+                    Err(e) => return Err(format!("onStart() failed: {e}")),
                 }
             }
 

@@ -12,7 +12,17 @@ export interface InputProps {
   /** Input id (generated when omitted) */
   id?: string;
   /** Input type */
-  type?: 'text' | 'email' | 'password' | 'number' | 'tel' | 'url' | 'search';
+  type?:
+    | 'text'
+    | 'email'
+    | 'password'
+    | 'number'
+    | 'tel'
+    | 'url'
+    | 'search'
+    | 'date'
+    | 'time'
+    | 'datetime-local';
   /** Input name */
   name?: string;
   /** Current value */

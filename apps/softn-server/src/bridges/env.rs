@@ -2,42 +2,14 @@ use super::EnvBridge;
 
 pub struct NativeEnvBridge;
 
-/// Names the server keeps for itself. These live inside the `SOFTN_` prefix the
-/// allowlist below grants to scripts, so without an explicit denial a script
-/// could simply ask for the token that guards every authenticated route
-/// (`http::check_auth`) and the sync socket — the one secret the allowlist most
-/// needs to protect. `SOFTN_AUTH_TOKEN_<TENANT>` makes it worse under
-/// multi-tenancy: `GET /tenants` is unauthenticated, so one tenant's script can
-/// enumerate the others and then read their tokens out of `keys()`.
-///
-/// Matched by prefix so per-tenant suffixes are covered too.
-const RESERVED_PREFIXES: [&str; 2] = ["SOFTN_AUTH_TOKEN", "SOFTN_ALLOW_ALL_CAPABILITIES"];
-
-fn is_reserved_env_name(upper: &str) -> bool {
-    RESERVED_PREFIXES.iter().any(|p| upper.starts_with(p))
-}
-
-/// Shared allowlist for both `get()` and `keys()`. Only vars matching these
-/// prefixes are accessible to scripts. Everything else is hidden to prevent
-/// secret exfiltration (AWS_SECRET_*, DATABASE_URL, signing keys, etc.).
-fn is_allowed_env_name(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
-    if is_reserved_env_name(&upper) {
-        return false;
-    }
-    upper.starts_with("SOFTN_")
-        || upper.starts_with("APP_")
-        || upper == "NODE_ENV"
-        || upper == "PORT"
-}
+// Process environment is operator-owned and may contain sibling tenant keys.
+// Non-secret application settings belong in the explicitly scoped config bridge.
+fn is_allowed_env_name(_name: &str) -> bool { false }
 
 impl EnvBridge for NativeEnvBridge {
     fn get(&self, name: &str) -> Option<String> {
-        // Apply the same prefix filter as keys() to prevent scripts from
-        // reading arbitrary secrets (AWS_SECRET_*, DATABASE_URL, signing keys).
-        // Without this, a script that knows (or guesses) an env var name can
-        // exfiltrate it via the HTTP bridge. Returns None (indistinguishable
-        // from "not set") to prevent probing which vars exist.
+        // Ambient process values can belong to another tenant. Returning None
+        // also prevents probing whether a secret exists at all.
         if !is_allowed_env_name(name) {
             return None;
         }
@@ -45,12 +17,7 @@ impl EnvBridge for NativeEnvBridge {
     }
 
     fn keys(&self) -> Vec<String> {
-        // Only expose vars with app-relevant prefixes to prevent
-        // scripts from enumerating secrets (AWS_SECRET_*, GITHUB_TOKEN, etc.).
-        std::env::vars()
-            .map(|(k, _)| k)
-            .filter(|k| is_allowed_env_name(k))
-            .collect()
+        Vec::new()
     }
 
     fn log(&self, level: &str, message: &str) {
@@ -95,11 +62,11 @@ mod tests {
     }
 
     #[test]
-    fn still_allows_ordinary_app_configuration() {
-        assert!(is_allowed_env_name("SOFTN_REGION"));
-        assert!(is_allowed_env_name("APP_TITLE"));
-        assert!(is_allowed_env_name("NODE_ENV"));
-        assert!(is_allowed_env_name("PORT"));
+    fn hides_ambient_configuration_and_secrets() {
+        assert!(!is_allowed_env_name("SOFTN_REGION"));
+        assert!(!is_allowed_env_name("APP_TITLE"));
+        assert!(!is_allowed_env_name("NODE_ENV"));
+        assert!(!is_allowed_env_name("PORT"));
     }
 
     #[test]

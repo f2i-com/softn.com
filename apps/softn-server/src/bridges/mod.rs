@@ -13,6 +13,10 @@ pub mod db;
 pub mod env;
 pub mod fs;
 pub mod http;
+pub mod sql;
+pub mod crypto;
+pub mod time;
+pub mod media;
 
 /// One database row as scripts see it.
 ///
