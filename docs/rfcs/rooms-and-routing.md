@@ -302,4 +302,4 @@ Roll out in dependency order: fix identity/grants; specify the room/route contra
 
 - **R1:** [Broadcast Channel API, including storage partition behavior](https://developer.mozilla.org/en-US/docs/Web/API/Broadcast_Channel_API).
 - **R2:** [WebRTC connectivity and signalling](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Connectivity).
-- **R3:** Existing source evidence in `AUDIT.md`, especially `script-runtime.ts`, `xdb-sync.ts`, `SoftNRenderer.tsx`, and `apps/softn-server/src/{host,http,ws,sync}.rs` plus native HTTP/filesystem bridges.
+- **R3:** Existing source evidence in `AUDIT.md`, especially `script-runtime.ts`, `xdb-sync.ts`, `SoftNRenderer.tsx`, and `apps/softn-rust/src/{host,http,ws,sync}.rs` plus native HTTP/filesystem bridges.
