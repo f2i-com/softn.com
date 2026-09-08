@@ -1,6 +1,9 @@
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { SoftNWithXDB, inspectDeclaration, type Capability } from '@softn/core';
-import { ThemeProvider } from '@softn/components';
+// The theme entry, not the root barrel: the barrel is the eager path, and
+// keeping Scene3D out of this shell would then rest on the bundler
+// tree-shaking it away (docs/COMPONENT_LOADING.md).
+import { ThemeProvider } from '@softn/components/theme';
 import { createImportResolver, withheldPermissions } from '../../softn-web/src/lib/bundleProcessor';
 import { loadApplication, type LoadedApplication } from './load';
 import { installFavicon } from './favicon';
@@ -123,8 +126,10 @@ export function Application({ app }: { app: LoadedApplication }) {
               appId={app.appId}
               functions={functions}
               importResolver={imports}
+              assetResolver={app.assets}
               logicBasePath={app.logicBasePath}
               preIncludedLogicPaths={app.preIncludedLogicPaths}
+              executionPreference={app.execution}
               permissionConfig={permissions}
               loading={<Loading text={app.config.loadingText} />}
               error={() => <Failure />}

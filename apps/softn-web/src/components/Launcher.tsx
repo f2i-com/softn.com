@@ -1,6 +1,6 @@
 import React, { useCallback, useRef } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
-import { groupByApp, hasStoredData, type CachedApp } from '../lib/appCache';
+import { groupByApp, hasStoredData, isOfflineReady, type CachedApp } from '../lib/appCache';
 
 /*
  * The runtime's home: open a file, or come back to an app you had open. The
@@ -191,6 +191,16 @@ const launcherStyles = `
     font-size: 0.75rem;
     color: var(--dimmer);
   }
+  /* Whether the app opens without a connection. Words, not a dot: the three
+     states have to be told apart without colour. */
+  .softn-launcher-offline {
+    margin-left: 0.5rem;
+    padding-left: 0.5rem;
+    border-left: 1px solid var(--line-soft);
+    white-space: nowrap;
+  }
+  .softn-launcher-offline[data-state="ready"] { color: var(--mint); }
+  .softn-launcher-offline[data-state="installing"] { color: var(--dim); }
   .softn-launcher-remove {
     position: absolute;
     top: 8px;
@@ -353,6 +363,8 @@ export interface RunningApp {
 
 interface LauncherProps {
   apps: CachedApp[];
+  /** Cache records an offline install is running for right now. */
+  installing?: ReadonlySet<string>;
   /** Apps still running behind this screen; the way back to each, and the way to stop it. */
   running?: RunningApp[];
   onResume?: (id: string) => void;
@@ -384,6 +396,46 @@ function formatDate(ts: number): string {
 }
 
 /**
+ * What a card says about opening its app without a connection.
+ *
+ * "Offline ready" is the install's claim, and only against the build that
+ * made it — a record installed before a deployment names chunks the new
+ * shell does not, so it reads as needing a connection until the app is
+ * opened online again (see isOfflineReady). "Needs connection" is also what
+ * a never-installed record says: the bundle is here, the code to render
+ * every route of it may not be.
+ */
+function offlineStatus(
+  app: CachedApp,
+  installing: ReadonlySet<string> | undefined
+): { state: 'ready' | 'installing' | 'needs-connection'; label: string; title: string } {
+  if (installing?.has(app.id)) {
+    return {
+      state: 'installing',
+      label: 'Installing…',
+      title: 'Fetching what this app needs to open without a connection.',
+    };
+  }
+  if (isOfflineReady(app)) {
+    const online = app.offline?.optionalOnline ?? [];
+    return {
+      state: 'ready',
+      label: 'Offline ready',
+      title: online.includes('ai')
+        ? 'Opens without a connection. Its AI features still need one: models are downloaded.'
+        : 'Opens without a connection: everything it can reach is kept in this browser.',
+    };
+  }
+  return {
+    state: 'needs-connection',
+    label: 'Needs connection',
+    title: app.offline
+      ? 'Installed against an earlier build of the runtime. Opening it online installs it again.'
+      : 'Open it online once and the runtime fetches what it needs to open offline.',
+  };
+}
+
+/**
  * Enter and Space on a `role="button"` element.
  *
  * The launcher's cards were plain divs with an onClick, so every app and every
@@ -406,6 +458,7 @@ function activateOnKey(run: () => void) {
 
 export function Launcher({
   apps,
+  installing,
   running = [],
   onResume,
   onStop,
@@ -541,6 +594,7 @@ export function Launcher({
                   const olderVersions = group.versions.slice(1);
                   // The most recently used older build that actually has records.
                   const dataSource = olderVersions.find((v) => hasStoredData(v.origin));
+                  const offline = offlineStatus(app, installing);
                   return (
                     <div
                       key={app.id}
@@ -574,7 +628,12 @@ export function Launcher({
                         </div>
                       </div>
                       {app.description && <div className="softn-launcher-card-desc">{app.description}</div>}
-                      <div className="softn-launcher-card-foot">Opened {formatDate(app.lastOpened).toLowerCase()}</div>
+                      <div className="softn-launcher-card-foot">
+                        Opened {formatDate(app.lastOpened).toLowerCase()}
+                        <span className="softn-launcher-offline" data-state={offline.state} title={offline.title}>
+                          {offline.label}
+                        </span>
+                      </div>
 
                       {/* A build's records as a file: to keep, to move, to put
                           back. Import replaces, whole or not at all, and never

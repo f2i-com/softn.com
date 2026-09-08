@@ -1,7 +1,11 @@
 import { reopenBundle } from './lib/reopenBundle';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
-import { ThemeProvider, Spinner, Box, Text } from '@softn/components';
+// From the minimal and theme entries, not the root barrel: the barrel is the
+// eager path, and keeping Scene3D out of the shell would then rest on the
+// bundler tree-shaking it away (docs/COMPONENT_LOADING.md).
+import { Spinner, Box, Text } from '@softn/components/minimal';
+import { ThemeProvider } from '@softn/components/theme';
 import { DropZone } from './components/DropZone';
 import { Launcher } from './components/Launcher';
 import { AppRunner } from './components/AppRunner';
@@ -106,29 +110,36 @@ import {
   createAssetResolver,
   extractIconDataUrl,
   extractPermissions,
+  firstScreenAssets,
   requestedCapabilities,
   withheldPermissions,
   type BundleManifest,
   type AssetResolver,
   type DisposableImportResolver,
+  type ZipResult,
 } from './lib/bundleProcessor';
+import { installAppOffline } from './lib/offlineInstall';
+import { warmFirstScreen, type FirstScreenWarmup } from './lib/zipWarmup';
 import {
   getCachedApp,
   getCachedApps,
   cacheApp,
   computeAppOrigin,
   copyAppData,
+  currentBuildId,
   exportAppData,
   importAppData,
   readAppDataSnapshot,
   recoverInterruptedImports,
   snapshotEntryCount,
   hasStoredData,
+  isOfflineReady,
   isSecureAppOrigin,
   getCachedAppByName,
   getCachedAppByOrigin,
   removeAppData,
   removeCachedApp,
+  setOfflineState,
   updateLastOpened,
   recordPermissionGrant,
   type CachedApp,
@@ -302,14 +313,19 @@ interface OpenTab {
  * records cached before the list was kept on the record.
  */
 function requestedCapabilitiesOf(bundleData: Uint8Array): string[] {
+  let archive: import('@softn/core').BundleArchive | undefined;
   try {
-    const { textFiles } = readZip(bundleData);
-    const manifestText = textFiles.get('manifest.json');
+    const zip = readZip(bundleData);
+    archive = zip.archive;
+    const manifestText = zip.textFiles.get('manifest.json');
     const manifest = (manifestText ? JSON.parse(manifestText) : {}) as BundleManifest;
-    const config = extractPermissions(textFiles, manifest);
+    const config = extractPermissions(zip.textFiles, manifest);
     return config ? requestedCapabilities(config) : [];
   } catch {
     return [];
+  } finally {
+    // A peek at the manifest, not an open: nothing will read an asset from it.
+    archive?.release();
   }
 }
 
@@ -398,6 +414,10 @@ function App(): React.ReactElement {
   const inFlightRef = useRef(new Map<string, Promise<string | null>>());
   /** Downloads still running, by the placeholder tab they belong to. */
   const loadAbortsRef = useRef(new Map<string, AbortController>());
+  /** Offline installs still running, by the tab whose open started them. */
+  const installAbortsRef = useRef(new Map<string, AbortController>());
+  /** Cache records an install is running for, so Home can say "Installing…". */
+  const [installing, setInstalling] = useState<ReadonlySet<string>>(() => new Set());
   const unmountCleanupTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Stop work and release blob URLs when the runtime itself is unmounted.
@@ -405,6 +425,7 @@ function App(): React.ReactElement {
   // from the entire shell while tabs or downloads are still alive.
   useEffect(() => {
     const pendingDownloads = loadAbortsRef.current;
+    const pendingInstalls = installAbortsRef.current;
     const tabsRef = openTabsRef;
 
     // React Strict Mode immediately replays mount effects in development. Its
@@ -421,6 +442,8 @@ function App(): React.ReactElement {
         unmountCleanupTimerRef.current = null;
         for (const controller of pendingDownloads.values()) controller.abort();
         pendingDownloads.clear();
+        for (const controller of pendingInstalls.values()) controller.abort();
+        pendingInstalls.clear();
         for (const tab of tabsRef.current) {
           tab.importResolver?.dispose();
           tab.assetResolver?.dispose();
@@ -475,6 +498,70 @@ function App(): React.ReactElement {
   }, []);
 
   /**
+   * Fetch what an app needs to open without a network, after it has opened
+   * with one.
+   *
+   * The record's `offline` says whether an earlier install still holds: it
+   * must have succeeded, and against this shell build, because a deployment
+   * renames every chunk — so a record installed before one is stale and is
+   * installed again here. A record that holds is left alone. Nothing waits
+   * on this: the app is on screen, and the outcome is a word on its card at
+   * Home ("Offline ready", "Installing…", "Needs connection"). The tab owns
+   * the run; closing it aborts, and an aborted run records nothing.
+   */
+  const beginOfflineInstall = useCallback(
+    (
+      tabId: string,
+      record: CachedApp,
+      source: string,
+      execution: 'worker' | 'main' | undefined,
+      capabilities: string[]
+    ): void => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      if (isOfflineReady(record)) return;
+      const controller = new AbortController();
+      installAbortsRef.current.get(tabId)?.abort();
+      installAbortsRef.current.set(tabId, controller);
+      setInstalling((prev) => new Set(prev).add(record.id));
+      void installAppOffline(
+        { id: record.id, source, execution, capabilities },
+        { signal: controller.signal }
+      )
+        .then(async (result) => {
+          if (controller.signal.aborted) return;
+          await setOfflineState(record.id, {
+            ready: result.ready,
+            features: result.features,
+            optionalOnline: result.optionalOnline,
+            build: currentBuildId(),
+            at: Date.now(),
+          });
+          if (!result.ready) {
+            const why =
+              result.error ??
+              `missing ${[...result.missing, ...(result.workerAssets === 'unavailable' ? ['worker assets'] : [])].join(', ')}`;
+            console.warn(`[SoftN Web] "${record.name}" is not installed offline: ${why}`);
+          }
+          if (controller.signal.aborted) return;
+          setApps(await getCachedApps());
+        })
+        .catch((err) => {
+          console.warn(`[SoftN Web] Offline install of "${record.name}" failed:`, err);
+        })
+        .finally(() => {
+          if (installAbortsRef.current.get(tabId) === controller) installAbortsRef.current.delete(tabId);
+          setInstalling((prev) => {
+            if (!prev.has(record.id)) return prev;
+            const next = new Set(prev);
+            next.delete(record.id);
+            return next;
+          });
+        });
+    },
+    []
+  );
+
+  /**
    * Process a .softn bundle from raw bytes. Resolves with the app's name, or null if it did not open.
    *
    * `placeholderId` is the tab the caller put in the bar while the bytes were
@@ -500,10 +587,37 @@ function App(): React.ReactElement {
       // placeholder retire it themselves.
       let skeletonTabId: string | null = null;
 
+      // The first-screen warm-up this open started, so a failure after it
+      // began stops it rather than leaving a worker inflating for a tab that
+      // will never exist.
+      let warmup: FirstScreenWarmup | undefined;
+
+      // Phase boundaries for scripts/bench/measure.mjs, which pairs each
+      // `softn:<phase>:start` with the first `:end` after it. Guarded because
+      // the runtime is also rendered where the User Timing API is absent or
+      // stubbed. Every `:end` below is in a finally: a corrupt archive or a
+      // rejected seed used to throw between the two, leaving a `:start` the
+      // harness then paired with the NEXT open's `:end` — a phase measured
+      // across two opens and a failure, reported as one number.
+      const mark = (name: string) => {
+        if (typeof performance !== 'undefined' && typeof performance.mark === 'function') {
+          performance.mark(name);
+        }
+      };
+
       try {
         setError(null);
 
-        const { textFiles, binaryFiles } = readZip(data);
+        // Indexes the archive and reads its text; binaries are read when an
+        // asset() asks for them, or by the warm-up below.
+        let zip: ZipResult;
+        mark('softn:zip:start');
+        try {
+          zip = readZip(data);
+        } finally {
+          mark('softn:zip:end');
+        }
+        const { textFiles, binaryFiles, archive } = zip;
 
         const manifestContent = textFiles.get('manifest.json');
         if (!manifestContent) {
@@ -605,10 +719,30 @@ function App(): React.ReactElement {
             requested.every((capability) => granted[capability] === true));
 
         // Load XDB data (per-app isolation)
-        await loadXDBData(textFiles, manifest, appOrigin);
+        mark('softn:xdb-seed:start');
+        try {
+          await loadXDBData(textFiles, manifest, appOrigin);
+        } finally {
+          mark('softn:xdb-seed:end');
+        }
 
         // Process source
-        const { source, logicBasePath, preIncludedLogicPaths } = processBundle(textFiles, manifest);
+        let composed: ReturnType<typeof processBundle>;
+        mark('softn:compose:start');
+        try {
+          composed = processBundle(textFiles, manifest);
+        } finally {
+          mark('softn:compose:end');
+        }
+        const { source, logicBasePath, preIncludedLogicPaths } = composed;
+
+        // The assets the composed source names by literal, then the manifest's
+        // asset list, start inflating now, in a worker where there is one,
+        // while the cache write, the consent lookup and the render go on. Not
+        // awaited: an asset() the app makes before its entry lands reads the
+        // entry itself. Disposing the tab's asset resolver releases the
+        // archive, which ends the warm-up.
+        warmup = warmFirstScreen(archive, data, firstScreenAssets(source, manifest, binaryFiles));
         // Withheld until the user answers, and withheld here too: a remote
         // `import` is network access just as surely as fetch() in app logic,
         // and it resolves during loadScript — before the bar has been on
@@ -621,7 +755,9 @@ function App(): React.ReactElement {
         // can already write records into its own database, and removing it from
         // Home is the only thing that deletes those. No record, nothing to
         // remove them with. Origin dedup means opening it again is an update.
-        await cacheApp(data, manifest, icon, directorySlug, requested);
+        // The record comes back for the offline install below, which is keyed
+        // by it and writes its outcome onto it.
+        const cachedRecord = await cacheApp(data, manifest, icon, directorySlug, requested);
 
         if (cachedAppId) {
           await updateLastOpened(cachedAppId);
@@ -782,8 +918,17 @@ function App(): React.ReactElement {
         setActiveTabId(tabId);
         setLoadingTabId(null);
         setLoadingFileName('');
+
+        // Make the app openable without a network, in the background. It is
+        // on screen already; nothing waits on this, and the outcome is a word
+        // on its card at Home. Not started for a record the cache could not
+        // write: there is nothing to record the outcome on.
+        if (cachedRecord) {
+          beginOfflineInstall(tabId, cachedRecord, source, manifest.config?.execution, requested);
+        }
         return appName;
       } catch (err) {
+        warmup?.abort();
         console.error('[SoftN Web] Failed to load bundle:', err);
         setError(err instanceof Error ? err : new Error(String(err)));
         setLoadingTabId(null);
@@ -795,7 +940,7 @@ function App(): React.ReactElement {
         return null;
       }
     },
-    []
+    [beginOfflineInstall]
   );
 
   /** Handle file from picker or drag-drop */
@@ -1110,6 +1255,14 @@ function App(): React.ReactElement {
       if (pending) {
         pending.abort();
         loadAbortsRef.current.delete(tabId);
+      }
+
+      // An offline install this tab's open started stops with it. The next
+      // open of the app starts its own, from whatever the cache holds by then.
+      const installingFor = installAbortsRef.current.get(tabId);
+      if (installingFor) {
+        installingFor.abort();
+        installAbortsRef.current.delete(tabId);
       }
 
       // Asset resolvers own blob URLs. A closed SoftN tab should release its
@@ -1540,6 +1693,7 @@ function App(): React.ReactElement {
             )}
             <Launcher
               apps={apps}
+              installing={installing}
               running={openTabs.map((t) => ({ id: t.id, name: displayNameFor(t, openTabs), icon: t.icon }))}
               onResume={(id) => handleSelectTab(id)}
               onStop={(id) => handleCloseTab(id, true)}
