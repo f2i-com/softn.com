@@ -1,0 +1,16 @@
+let floor = {
+  id: "floor",
+  type: "plane",
+  position: { x: 0, y: -0.9, z: 0 },
+  rotation: { x: -1.5707963, y: 0, z: 0 },
+  width: 10,
+  height: 10,
+  color: "#1e1b4b",
+  roughness: 0.9,
+  metalness: 0.1
+}
+
+let lights = [
+  { id: "ambient", type: "ambient", color: "#8080a0", intensity: 0.7 },
+  { id: "key", type: "directional", color: "#ffffff", intensity: 1.4, position: { x: 3, y: 5, z: 4 } }
+]

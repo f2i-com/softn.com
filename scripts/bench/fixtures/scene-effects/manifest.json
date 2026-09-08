@@ -1,0 +1,12 @@
+{
+  "name": "BenchSceneEffects",
+  "version": "1.0.0",
+  "description": "The scene-glb fixture with bloom enabled: the same model through the post-processing path.",
+  "main": "ui/main.ui",
+  "files": {
+    "ui": ["ui/main.ui"],
+    "logic": ["logic/main.logic"],
+    "xdb": [],
+    "assets": ["assets/models/tetra.glb"]
+  }
+}
