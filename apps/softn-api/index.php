@@ -30,8 +30,15 @@ set_error_handler(static function (int $no, string $str, string $file, int $line
 // and by scripts publishing from anywhere; nothing here relies on a cookie,
 // so an open origin costs nothing.
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, PATCH, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-Edit-Key, X-Admin-Key, X-Visitor-Token');
+header('Access-Control-Allow-Methods: GET, HEAD, POST, PATCH, DELETE, OPTIONS');
+// If-None-Match is not CORS-safelisted: without it here a page on another
+// origin revalidating a bundle is refused at the preflight and downloads the
+// archive every time.
+header('Access-Control-Allow-Headers: Content-Type, If-None-Match, X-Edit-Key, X-Admin-Key, X-Visitor-Token');
+// The same page sees only the safelisted response headers unless the rest are
+// exposed: the ETag it revalidates with, the filename a download carries, the
+// wait a rate limit names.
+header('Access-Control-Expose-Headers: ETag, Content-Disposition, Retry-After');
 header('Access-Control-Max-Age: 86400');
 header('X-Content-Type-Options: nosniff');
 
@@ -44,6 +51,11 @@ if ($req->method === 'OPTIONS') {
 /** @return array{0: string, 1: string[]}|null */
 function match_route(string $method, string $path, array $routes): ?array
 {
+    // HEAD is answered by whichever route answers GET, as RFC 9110 §9.3.2
+    // expects of any resource that has a GET: the handler runs as for GET, and
+    // Response::send() leaves the content out. Doing it here, once, is
+    // smaller than a HEAD row per route and cannot drift from the GET.
+    if ($method === 'HEAD') $method = 'GET';
     foreach ($routes as [$m, $pattern, $handler]) {
         if ($m !== $method && $m !== '*') continue;
         if (preg_match($pattern, $path, $matches)) {
@@ -245,11 +257,35 @@ function handle(string $handler, array $args, Request $req): Response
             $ver = Apps::version($slug, $v);
             $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
             if (!is_file($path)) throw new ApiError(404, 'The bundle file is missing.');
-            $headers = ['Cache-Control' => 'no-cache, must-revalidate', 'ETag' => '"' . $ver['sha256'] . '"'];
+            // The bare URL is "latest", which the next publish moves, so a
+            // cache must ask every time. An explicit ?v= names one version
+            // whose bytes are settled, so it may be held for a day. A day
+            // rather than immutable for a year, because the two things that
+            // do change a version — an unpublish or a purge, and the seed
+            // replacing a demo's v1 — must reach every cache within a day;
+            // the ETag lets a cache revalidate cheaply until then.
+            $type = 'application/octet-stream';
+            $headers = [
+                'Cache-Control' => $v === null ? 'no-cache, must-revalidate' : 'public, max-age=86400',
+                'ETag' => '"' . $ver['sha256'] . '"',
+            ];
+            // The validator is the archive's own digest, so a client holding
+            // these bytes is told so without them being sent again. Only the
+            // headers a cache refreshes from go with the 304: the attachment
+            // disposition belongs to a download that is actually happening.
+            if ($req->ifNoneMatch($headers['ETag'])) {
+                return Response::notModified($headers + ['Content-Type' => $type]);
+            }
             if (($req->query['download'] ?? '') === '1') {
                 $headers['Content-Disposition'] = 'attachment; filename="' . $slug . '.softn"';
             }
-            return Response::file($path, 'application/octet-stream', $headers);
+            // Ranges are not implemented, and the response says so rather than
+            // leaving it to the host: Apache would otherwise slice this whole
+            // output into a 206 by itself, which nginx and the built-in server
+            // do not, and a client must not be led to expect a resume that
+            // works on one host and not another.
+            $headers['Accept-Ranges'] = 'none';
+            return Response::file($path, $type, $headers);
         }
 
         case 'thumbnail':

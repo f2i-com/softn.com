@@ -108,6 +108,25 @@ final class Request
         return strtolower(trim(explode(';', $ct)[0]));
     }
 
+    /**
+     * Whether If-None-Match names this entity tag, so a GET or HEAD can answer
+     * 304 instead of sending the representation again (RFC 9110 §13.1.2).
+     * The comparison is the weak one the RFC prescribes for this header: a
+     * W/ prefix on either side is ignored and only the opaque tags have to be
+     * identical, and `*` matches whatever the current representation is. The
+     * tags are picked out by their quotes rather than split on commas, since
+     * a comma is a legal character inside one.
+     */
+    public function ifNoneMatch(string $etag): bool
+    {
+        $raw = $this->header('if-none-match');
+        if ($raw === null) return false;
+        if (trim($raw) === '*') return true;
+        $want = preg_replace('#^W/#', '', trim($etag)) ?? $etag;
+        preg_match_all('#"[^"]*"#', $raw, $m);
+        return in_array($want, $m[0], true);
+    }
+
     public function body(): string
     {
         if ($this->rawBody === null) {
@@ -307,15 +326,47 @@ final class Response
         return $r;
     }
 
+    /**
+     * A 304 for a conditional GET whose validator matched: the headers a
+     * cache refreshes its stored copy from and no content, so no
+     * Content-Length either — the cache keeps the length it stored. The
+     * representation's Content-Type belongs among the headers: PHP adds its
+     * text/html default to any response that names none, header_remove()
+     * does not stop it, and a cache replaces the headers it holds with the
+     * ones a 304 carries (RFC 9111 §4.3.4), so a 304 without one would
+     * relabel a stored archive as HTML.
+     *
+     * @param array<string, string> $headers
+     */
+    public static function notModified(array $headers): self
+    {
+        return new self(304, $headers, '');
+    }
+
     public function send(): void
     {
         http_response_code($this->status);
         foreach ($this->headers as $k => $v) header("$k: $v");
+        if ($this->status === 304) return;
+        // HEAD is GET without the content: the same status and headers,
+        // Content-Length included, since the length is what HEAD is usually
+        // asked for. Apache and nginx would discard the content themselves;
+        // PHP's built-in server passes through whatever is printed, so the
+        // content is simply never printed. A file response already carries its
+        // length; a string body gets one here, where it is known.
+        $head = ($_SERVER['REQUEST_METHOD'] ?? '') === 'HEAD';
         if ($this->file !== null) {
+            if ($head) return;
             $fh = fopen($this->file, 'rb');
             if ($fh !== false) {
                 fpassthru($fh);
                 fclose($fh);
+            }
+            return;
+        }
+        if ($head) {
+            if (!in_array('content-length', array_map('strtolower', array_keys($this->headers)), true)) {
+                header('Content-Length: ' . strlen($this->body));
             }
             return;
         }
