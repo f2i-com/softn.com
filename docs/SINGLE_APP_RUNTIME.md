@@ -44,3 +44,17 @@ The shell does not inject visible branding, but application text, browser develo
 On 2026-09-07, the production build was tested in Chromium on Windows at the site root and at `/nested/`. The sample's click handler executed in the actual ZIPP VM. The app was interactive while the permission bar was visible; Not now and Review permissions preserved its state. Allowing persisted the grant, and changing allowed hosts requested consent again. An intentionally delayed config response displayed the loading spinner. A separate primitive 3D scene rendered without browser warnings or errors. The package script verifies every archive entry against its input bytes.
 
 The new workspace has regression coverage for configuration, bounded loading, permissions, integrity, sample logic composition and the non-blocking permission bar. Browser smoke checks do not establish compatibility with every app, local model, speech device or hosting configuration. No model weights were downloaded during these checks. The full distribution is approximately 41 MiB compressed, including optional engine assets and legal notices; the initial JavaScript entry is approximately 470 KiB gzip, with additional runtime assets loaded separately.
+
+## Optional Apache/PHP backend
+
+`npm run package:single -- --with-backend` produces both the static-only ZIP and
+`softn-single-php-linux-x64-vVERSION.zip`. CI builds and tests both, and tag releases
+attach both alongside the website archive. The backend variant contains `webroot/`
+and a separate private `backend/` with bundled Linux x64 Node, SQLite and ZIPP WASM.
+The example client works without configuring a backend. Enable server support only
+when your app needs it; follow the included START-HERE.md and
+[PHP deployment guide](../apps/softn-php/SINGLE_APP_DEPLOYMENT.md).
+
+PHP/WASM is the Apache hosting option; the Rust server remains available for its
+additional native capabilities. No private applications or provider credentials are
+included. The standalone browser archive remains available without any server files.

@@ -38,6 +38,7 @@ try {
   if(!Array.isArray(routes)||routes.length>256||routes.some(r=>!/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path)||!['GET','POST','PUT','DELETE'].includes(r.method)||!/^[$A-Z_a-z][$\w]*$/.test(r.handler)||!['read','write'].includes(r.transaction)||!['application','anonymous'].includes(r.authorization)))throw new Error('Unsupported route declaration');
   if(routes.some(r=>r.upload!==undefined&&(r.upload!=='photo'||!required.capabilities.includes('photos')||r.method!=='POST')))throw new Error('Unsupported upload capability');
   if(new Set(routes.map(r=>r.method+' '+r.path)).size!==routes.length)throw new Error('Duplicate route');
+  if(routes.some(r=>r.poll!==undefined&&(typeof r.poll!=='boolean'||r.poll&&(r.method!=='GET'||r.transaction!=='read'))))throw new Error('Invalid polling route');
   startupStage='data_directory';
   const data=realpathSync(join(root,'private/data'));
   if(lstatSync(join(root,'private/data')).isSymbolicLink()||!data.startsWith(realpathSync(join(root,'private'))+'/'))throw new Error('Invalid data path');

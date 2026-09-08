@@ -17,10 +17,11 @@ $origins=$manifest['config']['server']['allowedOrigins']??[];
 $origin=$_SERVER['HTTP_ORIGIN']??null;
 if($origin!==null&&!in_array($origin,$origins,true))reply(403,['error'=>'Origin not allowed.']);
 if($origin!==null){header('Access-Control-Allow-Origin: '.$origin);header('Vary: Origin');}
+header('Access-Control-Expose-Headers: ETag, X-SoftN-Poll-Interval');
 if ($method==='OPTIONS') {
     if($origin===null)reply(403,['error'=>'Origin required.']);
     header('Access-Control-Allow-Origin: '.$origin);
-    header('Access-Control-Allow-Headers: Content-Type, Authorization, Idempotency-Key');
+    header('Access-Control-Allow-Headers: Content-Type, Authorization, Idempotency-Key, If-None-Match');
     header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
     http_response_code(204); exit;
 }
@@ -109,4 +110,12 @@ try {
     }
     flock($slot,LOCK_UN);fclose($slot);
 }
-http_response_code($result['status']);echo json_encode($result['body'],JSON_INVALID_UTF8_SUBSTITUTE);
+$responseBody=json_encode($result['body'],JSON_INVALID_UTF8_SUBSTITUTE);
+// Always run the authenticated handler first, including on conditional polls.
+// No server-side user-response cache and no bypass of revocation checks.
+if(($route['poll']??false)===true && $method==='GET' && $result['status']===200) {
+    $etag='"'.hash('sha256',$responseBody).'"';
+    header('ETag: '.$etag);header('X-SoftN-Poll-Interval: 5000');
+    if(($_SERVER['HTTP_IF_NONE_MATCH']??'')===$etag){http_response_code(304);exit;}
+}
+http_response_code($result['status']);echo $responseBody;

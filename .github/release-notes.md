@@ -6,6 +6,7 @@
 |------|------------|
 | `softn-com-RELEASE_TAG-zipp-*.zip` | The complete static softn.com: the directory, the web runtime, Studio and Builder. Upload its contents to a web host's document root; `DEPLOY.md` inside explains the rest. The `.sha256` beside it is its checksum. |
 | `softn-single-RELEASE_TAG.zip` | Lightweight, unbranded single-app runtime with a loading spinner, non-blocking permission bar and bundled-app favicon. Upload its contents, replace `app.softn` and edit `runtime.config.json`; `DEPLOYMENT.md` explains configuration and permissions. A `.sha256` checksum is included. |
+| `softn-single-php-linux-x64-RELEASE_TAG.zip` | Single-app browser runtime plus an optional Apache/PHP server backend, bundled Linux x64 Node/SQLite, ZIPP WASM, polling and an optional WebSocket bridge. The backend is unconfigured until you install a private server bundle and run setup. `START-HERE.md` explains both static-only and server-backed deployment. |
 
 The complete website archive's name carries the tag of the zipp engine inside it. It ships no
 example apps: the directory starts empty, and `.softn` files dropped on any
@@ -16,4 +17,4 @@ example apps are published as `.softn` downloads with every
 The desktop loader and builder are not attached to releases; they build from
 this tag's manifests with `npm run tauri build` in their apps.
 
-The single-app archive includes a small counter example; replace it with your own bundle. It has no app download controls, but browser-delivered app bytes remain extractable. Required license notices are included in both archives.
+The single-app archive includes a small counter example; replace it with your own bundle. It has no app download controls, but browser-delivered app bytes remain extractable. Required license notices are included in all archives.

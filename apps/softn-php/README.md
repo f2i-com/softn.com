@@ -6,7 +6,7 @@ An application-independent host for SoftN server API v1. Apache/PHP starts one b
 
 Linux x86-64, glibc 2.28+, PHP 8.1+, enabled proc_open/proc_get_status/proc_terminate, executable-file permission, Apache mod_rewrite. PHP GD enables the photo adapter. Put webroot/ contents in the existing DocumentRoot and backend/ outside all public directories. api.php defaults to a sibling backend directory; edit its absolute path if necessary. Allow the supplied .htaccess FileInfo/Options/Indexes/AuthConfig directives (or AllowOverride All) and retain the site's PHP handler. Remove any old /api/ reverse proxy. Run `php backend/setup.php` as the PHP service account, which must own the backend folder. Setup creates private config/data; it does not start a service.
 
-Template archives contain no application. Install the expanded private bundle at backend/app/, place the public .softn at webroot/app.softn, and supply a matching runtime.config.json before setup. Prefer the packager to generate the client hash and validate separation automatically:
+Low-level template archives contain no application. The optional-backend single-app distribution includes the public counter example, but no private server bundle. Install the expanded private bundle at backend/app/, place the public .softn at webroot/app.softn, and supply a matching runtime.config.json before setup. Prefer the packager to generate the client hash and validate separation automatically:
 
 ```
 node apps/softn-php/package.mjs --runtime <compiled-single-runtime> --bundle <expanded-private-bundle> --client <public.softn> --node-dir <node-linux-x64> --wasm-dir <zipp-web-artifacts> --notices <native-notices> --out <hosting.zip>
@@ -17,6 +17,11 @@ Use `--template` without --bundle/--client to produce a reusable runtime archive
 For a site-owner-approved application, pass `--preapprove-permissions` with a current single-app frontend build. This writes `permissionMode:"preapproved"` into the public runtime.config.json and pins the bundle SHA-256. The single-app shell immediately enables only the bundle's declared permissions and hides its consent banner; browser file pickers and camera/microphone permission prompts remain browser-controlled. Default deployments still prompt. This is an operator setting in the deployment config, not a self-approval flag inside an app bundle. Older frontend builds must be replaced before using this setting.
 
 ## Supported contract
+
+Optional read-only polling routes and the separately started WebSocket bridge are
+documented in [LIVE_UPDATES.md](LIVE_UPDATES.md). The single-app CI distribution
+includes both; polling requires no persistent service. The static-only ZIP remains
+available without backend files.
 
 - manifest.server.entry selects the private .logic source; manifest.server.routes selects handler functions. Request paths must be exact `/api/` paths (no route parameters/wildcards yet), with GET/POST/PUT/DELETE, authorization `application` or `anonymous`, and transaction `read` or `write`.
 - Requires server API v1. Implemented capabilities: sql, crypto, time, trusted-client-ip, transaction-scope, photos. Requested capabilities must also be granted in private/config.json. Unsupported capabilities and enabled XDB sync fail closed; apps requiring db/XDB sync, arbitrary HTTP/FS, native modules or persistent callbacks are not compatible with this first adapter.
