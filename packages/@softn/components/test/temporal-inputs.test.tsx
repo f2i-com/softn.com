@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
 import { Input, type InputProps } from '../src/form/Input';
 import { mount, type } from './dom';
