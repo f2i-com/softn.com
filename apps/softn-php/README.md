@@ -48,3 +48,9 @@ python3 apps/softn-php/tests/apache-smoke.py --archive /path/to/template.zip
 ```
 
 The integration test targets Debian/Ubuntu Apache module paths and php-cgi, runs an isolated local instance on port 8811, installs a separate counter app, checks bearer forwarding and persistent data, and exercises process-slot/output/deadline limits. It stops its Apache process and leaves its temporary extraction/logs for inspection. It does not change an existing Apache site.
+
+## Trusted request integrations
+
+Private configuration can opt into `enableRequestHook:true`. The host then loads the fixed operator-installed `operator/request.mjs` and calls its async `handleRequest({request,route,invoke,db,crypto,config})` for declared routes after migrations and host rate admission. A missing or failing enabled hook fails closed. `invoke(context)` executes the original request in the normal WASM transaction with a separate trusted `request.context`; any client-supplied context is discarded, including when the hook is disabled. The default context is empty. This supports bounded provider checks outside the guest and outside SQL transactions. The existing 20-second supervisor and 25-second PHP deadlines still apply.
+
+The hook is privileged operator code with database and host access, not a guest capability or manifest-selected extension. Only install trusted integrations. Keep provider credentials in private configuration; pass only necessary validated results into context. Apps without this setting retain the normal route invocation. The after-request hook remains a separate opt-in.
