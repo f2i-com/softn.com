@@ -9,6 +9,8 @@ final class Catalog
     private static array $docs = [];
     private static array $cache = [];
     private static bool $cacheDirty = false;
+    /** slug => why the folder was skipped this boot; its files are untouched. */
+    private static array $skipped = [];
 
     public static function validSlug(string $slug): bool { return (bool) preg_match('/^[a-z0-9][a-z0-9-]{0,63}$/D', $slug); }
     public static function path(string $slug): string {
@@ -28,25 +30,22 @@ final class Catalog
         register_shutdown_function([self::class, 'release']);
         try {
             if (!is_dir("$root/apps") && !mkdir("$root/apps", 0775, true)) throw new ApiError(503, 'Cannot create apps folder.');
-            self::migrateLegacy();
+            try { self::migrateLegacy(); }
+            catch (Throwable $e) { error_log('softn-api: legacy import did not complete and will retry on the next request: ' . $e->getMessage()); }
             self::$cache = self::readJson("$root/cache/bundles.json", true);
             foreach (scandir("$root/apps") ?: [] as $slug) {
                 if (!self::validSlug($slug) || is_link("$root/apps/$slug") || !is_dir("$root/apps/$slug")) continue;
-                $path = self::path($slug) . '/app.json';
-                $doc = is_file($path) ? self::readJson($path) : null;
-                if ($doc !== null) {
-                    if (($doc['schemaVersion'] ?? 1) !== 1 || !is_array($doc['app'] ?? null) || ($doc['app']['slug'] ?? $slug) !== $slug)
-                        throw new ApiError(503, "Invalid app.json in $slug; repair it before updating the directory.");
-                    $doc['schemaVersion']=1;
-                    $doc['app']=array_replace(self::defaults($slug),$doc['app']);
-                    foreach(['versions','comments','ratings','runsDaily'] as $field)if(!array_key_exists($field,$doc))$doc[$field]=[];
-                    foreach(['thumb','icon'] as $field)if($doc['app'][$field]!==null && (!is_string($doc['app'][$field]) || basename($doc['app'][$field])!==$doc['app'][$field] || str_contains($doc['app'][$field],'\\')))throw new ApiError(503,"Invalid image filename in $slug/app.json.");
-                    foreach (['tags','capabilities','storage_policies'] as $field) if (is_array($doc['app'][$field] ?? null)) $doc['app'][$field] = json_encode($field==='storage_policies'?(object)$doc['app'][$field]:$doc['app'][$field]);
-                    foreach (['versions','comments','ratings','runsDaily'] as $field) if (!is_array($doc[$field] ?? null)) throw new ApiError(503, "Invalid $field in $slug/app.json.");
-                    self::validate($slug,$doc);
-                    self::$docs[$slug] = $doc;
+                // One folder's trouble is that folder's alone: a malformed or
+                // invalid app.json, an unreadable bundle or an unwritable
+                // directory skips the app, logs why, leaves its files exactly
+                // as they are, and the rest of the directory is served. The
+                // folder still occupies its slug, so nothing publishes over it.
+                try { self::load($slug); }
+                catch (Throwable $e) {
+                    unset(self::$docs[$slug]);
+                    self::$skipped[$slug] = $e->getMessage();
+                    error_log("softn-api: skipping app folder $slug: " . $e->getMessage());
                 }
-                self::discover($slug);
             }
             foreach(array_keys(self::$cache) as $key)if(!is_file("$root/apps/$key")){unset(self::$cache[$key]);self::$cacheDirty=true;}
             if (self::$cacheDirty) {try {self::writeJson("$root/cache/bundles.json", self::$cache);}catch(Throwable $e){error_log('softn-api: bundle cache could not be written');}}
@@ -55,6 +54,25 @@ final class Catalog
             throw $e;
         }
     }
+    private static function load(string $slug): void {
+        $path = self::path($slug) . '/app.json';
+        $doc = is_file($path) ? self::readJson($path) : null;
+        if ($doc !== null) {
+            if (($doc['schemaVersion'] ?? 1) !== 1 || !is_array($doc['app'] ?? null) || ($doc['app']['slug'] ?? $slug) !== $slug)
+                throw new ApiError(503, "Invalid app.json in $slug; the app is not listed until it is repaired.");
+            $doc['schemaVersion']=1;
+            $doc['app']=array_replace(self::defaults($slug),$doc['app']);
+            foreach(['versions','comments','ratings','runsDaily'] as $field)if(!array_key_exists($field,$doc))$doc[$field]=[];
+            foreach(['thumb','icon'] as $field)if($doc['app'][$field]!==null && (!is_string($doc['app'][$field]) || basename($doc['app'][$field])!==$doc['app'][$field] || str_contains($doc['app'][$field],'\\')))throw new ApiError(503,"Invalid image filename in $slug/app.json.");
+            foreach (['tags','capabilities','storage_policies'] as $field) if (is_array($doc['app'][$field] ?? null)) $doc['app'][$field] = json_encode($field==='storage_policies'?(object)$doc['app'][$field]:$doc['app'][$field]);
+            foreach (['versions','comments','ratings','runsDaily'] as $field) if (!is_array($doc[$field] ?? null)) throw new ApiError(503, "Invalid $field in $slug/app.json.");
+            self::validate($slug,$doc);
+            self::$docs[$slug] = $doc;
+        }
+        self::discover($slug);
+    }
+    /** Folders skipped by this boot, slug => reason. Empty when every folder loaded. */
+    public static function skipped(): array { self::boot(); return self::$skipped; }
     private static function validate(string $slug, array $doc): void {
         $fail=static function() use($slug): never {throw new ApiError(503,"Invalid metadata fields in $slug/app.json. The file has been preserved.");};
         $app=$doc['app'];
@@ -71,7 +89,7 @@ final class Catalog
     }
     public static function release(): void {
         if (is_resource(self::$lock)) { flock(self::$lock, LOCK_UN); fclose(self::$lock); }
-        self::$lock = null; self::$ready=false; self::$docs=[]; self::$cache=[]; self::$cacheDirty=false;
+        self::$lock = null; self::$ready=false; self::$docs=[]; self::$cache=[]; self::$cacheDirty=false; self::$skipped=[];
     }
     public static function readJson(string $path, bool $cache = false): array {
         if (is_link($path)) throw new ApiError(503, 'JSON metadata must not be a symlink.');
@@ -152,18 +170,23 @@ final class Catalog
             if (is_link($path)) continue;
             $file = basename($path);
             if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._-]*\.softn$/D', $file)) continue;
-            $key = "$slug/$file"; $stat = stat($path); $fingerprint = [$stat['size'],$stat['mtime'],$stat['ctime']];
+            $key = "$slug/$file"; $stat = @stat($path);
+            if ($stat === false) { error_log("softn-api: unreadable bundle $slug/$file"); continue; }
+            $fingerprint = [$stat['size'],$stat['mtime'],$stat['ctime']];
             $cached = self::$cache[$key] ?? null;
             if(!is_array($cached) || !is_array($cached['info']??null) || array_diff(['manifest','name','version','description','capabilities','storagePolicies','execution','icon','size','sha256'],array_keys($cached['info'])))$cached=null;
             if (!$cached || ($cached['stat'] ?? []) !== $fingerprint || time() - ($cached['checked'] ?? 0) >= 5) {
+                // Any failure to read one bundle skips that bundle, not the
+                // app and not the directory: a truncated upload, a zip the
+                // extension refuses, a manifest that is not JSON.
                 try { $info = Bundle::inspect($path); }
-                catch (ApiError $e) { error_log("softn-api: invalid bundle in $slug/$file"); continue; }
+                catch (Throwable $e) { error_log("softn-api: invalid bundle in $slug/$file: " . $e->getMessage()); if (isset(self::$cache[$key])) { unset(self::$cache[$key]); self::$cacheDirty = true; } continue; }
                 if ($info['icon']) $info['icon'][0] = base64_encode($info['icon'][0]);
                 self::$cache[$key] = ['stat'=>$fingerprint,'checked'=>time(),'info'=>$info]; self::$cacheDirty = true;
             } else $info = $cached['info'];
             if (!isset($info)) $info = self::$cache[$key]['info'];
             $number = $used[$file] ?? (preg_match('/^v([1-9][0-9]*)\.softn$/D',$file,$m) ? (int)$m[1] : max([0,...array_values($used)])+1);
-            if (isset($versions[$number])) throw new ApiError(503, "Duplicate bundle version in $slug.");
+            if (isset($versions[$number])) { error_log("softn-api: $slug/$file would be version $number, already taken by {$versions[$number]['file']}; skipped"); continue; }
             $used[$file]=$number;$infos[$number]=$info;
             $previous = null; foreach ($doc['versions'] as $v) if ($v['file']===$file) $previous=$v;
             $versions[$number] = ['slug'=>$slug,'version'=>$number,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>$previous['notes']??'','created_at'=>$previous['created_at']??$stat['mtime']];
@@ -171,7 +194,7 @@ final class Catalog
                 if (!$old) { $doc['app']['name']=$info['name']; $doc['app']['description']=$info['description']; $author=$info['manifest']['author']??'Anonymous'; $doc['app']['author']=is_string($author)?$author:($author['name']??'Anonymous'); }
                 $doc['app']['latest_version']=$number; $doc['app']['size']=$info['size'];
                 $doc['app']['capabilities']=json_encode($info['capabilities']); $doc['app']['execution']=$info['execution']; $doc['app']['storage_policies']=json_encode((object)$info['storagePolicies']);
-                if (!$old && $info['icon']) { $icon='icon.'.Images::extension($info['icon'][1]); file_put_contents("$dir/$icon",base64_decode($info['icon'][0]),LOCK_EX); $doc['app']['icon']=$icon; }
+                if (!$old && $info['icon']) { $icon='icon.'.Images::extension($info['icon'][1]); if (@file_put_contents("$dir/$icon",base64_decode($info['icon'][0]),LOCK_EX) !== false) $doc['app']['icon']=$icon; else error_log("softn-api: icon for $slug could not be written"); }
             }
             unset($info);
         }
@@ -181,7 +204,12 @@ final class Catalog
         $doc['app']['latest_version']=$latest['version'];$doc['app']['size']=$info['size'];
         $doc['app']['capabilities']=json_encode($info['capabilities']);$doc['app']['execution']=$info['execution'];$doc['app']['storage_policies']=json_encode((object)$info['storagePolicies']);
         if($old && $old['versions']!==$doc['versions'])$doc['app']['updated_at']=time();
-        if ($old !== $doc) self::put($slug,$doc);
+        if ($old !== $doc) {
+            // A folder that cannot take its app.json is still served from what
+            // was read; the write is retried on the next request.
+            try { self::put($slug,$doc); }
+            catch (Throwable $e) { error_log("softn-api: metadata for $slug could not be written: " . $e->getMessage()); self::$docs[$slug] = $doc; }
+        }
     }
     /** One-time, restartable import. Keep the original database as a backup. */
     private static function migrateLegacy(): void {

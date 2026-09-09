@@ -40,8 +40,13 @@ Other safe `.softn` filenames are accepted and assigned a stable version
 number in `app.json`. Upload a bundle with a temporary extension, then rename
 it to `.softn` when complete. Removing a bundle removes that version from the
 listing; removing the folder removes the app. A folder with no valid bundles
-is not listed. Invalid bundles are skipped; malformed authoritative JSON
-returns an error and is never silently replaced with empty metadata.
+is not listed. Invalid bundles are skipped. A folder whose `app.json` is
+malformed or invalid, or that cannot be read or written, is skipped with the
+reason in the PHP error log; its files are never touched or replaced with
+empty metadata, it keeps its slug so nothing is published over it, and the
+rest of the directory is served. Repair the file and the app is listed again
+on the next request. A bundle that would repeat a version number already
+held by another file in the folder is skipped, not the app.
 
 You can also provide this minimal `app.json` alongside a new bundle:
 

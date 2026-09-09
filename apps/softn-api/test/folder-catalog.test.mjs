@@ -29,7 +29,8 @@ try {
  case 'rate':echo json_encode(Social::rate($r,$job['slug']));break;
  case 'patch':Apps::patch($job['slug'],$job['fields']);break;
  case 'version':Apps::addVersion($job['slug'],$job['bundle'],'parallel');break;
- case 'publish':echo json_encode(Apps::create($job['bundle'],['name'=>'Concurrent']));break;
+ case 'publish':echo json_encode(Apps::create($job['bundle'],['name'=>$job['name']??'Concurrent']));break;
+ case 'skipped':echo json_encode(Catalog::skipped());break;
  case 'lock':Catalog::boot();file_put_contents($argv[1].'/locked','1');sleep(30);break;
  }
 }catch(ApiError $e){fwrite(STDERR,$e->status.':'.$e->getMessage());exit(1);}
@@ -60,10 +61,37 @@ test('folders are discovered, metadata is editable, cache is disposable, and rem
   fs.renameSync(path.join(f.root,'apps/another'),path.join(f.root,'removed-app'));
   assert.equal(f.run({op:'list'}).total,1);
   fs.writeFileSync(file,'{broken authoritative metadata');
-  const r=spawnSync('php',f.args({op:'list'}),{encoding:'utf8'});
-  assert.equal(r.status,1);assert.match(r.stderr,/503:Invalid JSON/);
-  assert.equal(fs.readFileSync(file,'utf8'),'{broken authoritative metadata');
+  f.add('neighbour');
+  const listing=f.run({op:'list'});
+  assert.deepEqual(listing.apps.map(a=>a.slug),['neighbour'],'a broken folder is skipped, the rest is served');
+  assert.match(f.run({op:'skipped'}).oceanview,/Invalid JSON/);
+  assert.equal(fs.readFileSync(file,'utf8'),'{broken authoritative metadata','the broken file is preserved');
+  const r=spawnSync('php',f.args({op:'doc',slug:'oceanview'}),{encoding:'utf8'});assert.equal(r.status,1);assert.match(r.stderr,/^404:/);
+  const published=f.run({op:'publish',bundle:path.join(f.root,'apps/neighbour/v1.softn'),name:'Oceanview'});
+  assert.notEqual(published.app.slug,'oceanview','a skipped folder keeps its slug');
+  fs.writeFileSync(file,JSON.stringify(doc));
+  assert.ok(f.run({op:'list'}).apps.some(a=>a.slug==='oceanview'),'a repaired folder is listed again');
+  assert.deepEqual(f.run({op:'skipped'}),[]);
   assert.ok(!fs.existsSync(path.join(f.root,'directory.sqlite')));
+ }finally{f.close();}
+});
+test('one folder\'s bad bundle, bad fields or duplicate version never takes the directory down',skip,()=>{
+ const f=fixture();try{
+  f.add('good',1,'Good');
+  const badDir=path.join(f.root,'apps/truncated');fs.mkdirSync(badDir);fs.writeFileSync(path.join(badDir,'v1.softn'),'PK\u0003\u0004 not really a zip');
+  f.add('mixed',1,'Mixed');fs.writeFileSync(path.join(f.root,'apps/mixed/v2.softn'),'garbage');
+  f.add('fields',1,'Fields');f.run({op:'list'});
+  const fieldsFile=path.join(f.root,'apps/fields/app.json');const fieldsDoc=JSON.parse(fs.readFileSync(fieldsFile));fieldsDoc.app.runs='forty';fs.writeFileSync(fieldsFile,JSON.stringify(fieldsDoc));
+  f.add('twice',1,'Twice');f.run({op:'list'});
+  const twiceFile=path.join(f.root,'apps/twice/app.json');const twiceDoc=JSON.parse(fs.readFileSync(twiceFile));twiceDoc.versions=[{...twiceDoc.versions[0],file:'first.softn'}];fs.writeFileSync(twiceFile,JSON.stringify(twiceDoc));
+  fs.renameSync(path.join(f.root,'apps/twice/v1.softn'),path.join(f.root,'apps/twice/first.softn'));fs.copyFileSync(path.join(f.root,'apps/twice/first.softn'),path.join(f.root,'apps/twice/v1.softn'));
+  const listing=f.run({op:'list'});
+  assert.deepEqual(listing.apps.map(a=>a.slug).sort(),['good','mixed','twice']);
+  assert.equal(f.run({op:'doc',slug:'mixed'}).versions.length,1,'a corrupt bundle beside a good one is skipped');
+  assert.deepEqual(f.run({op:'doc',slug:'twice'}).versions.map(v=>v.file),['first.softn'],'a file that would repeat a version is skipped');
+  const skipped=f.run({op:'skipped'});assert.match(skipped.fields,/Invalid metadata fields/);assert.equal(Object.keys(skipped).length,1);
+  assert.equal(JSON.parse(fs.readFileSync(fieldsFile)).app.runs,'forty','the invalid file is preserved');
+  assert.equal(fs.readFileSync(path.join(badDir,'v1.softn'),'utf8'),'PK\u0003\u0004 not really a zip');
  }finally{f.close();}
 });
 test('parallel processes preserve runs, comments, ratings, patches and unique versions',skip,async()=>{

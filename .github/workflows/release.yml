@@ -4,7 +4,8 @@ name: Release
 # by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so the release
 # builds the shared packages directly from the checked-in engine.
 #
-# Three hosting archives go on the release: the optional PHP/WASM server package, the single-app runtime and the website — the complete static
+# The hosting archives go on the release: the optional PHP/WASM server package, the single-app runtime, the PHP-served
+# single app (alone and with that backend) and the website — the complete static
 # softn.com as one archive whose contents drop into a web host's document
 # root. The desktop apps used to be built here too, one job per app and
 # platform; that took tens of minutes on three operating systems for every
@@ -195,6 +196,22 @@ jobs:
           test "$listed" -eq "$onDisk"
           (cd release && sha256sum -c "softn-single-$RELEASE_TAG.zip.sha256" --strict)
 
+      - name: Build and package the PHP-served single app
+        run: |
+          set -euo pipefail
+          npm run build -w @softn/single-php-serve
+          npm run package:single-php-serve
+          npm run package:private-single-php
+          for zip in "release/softn-single-php-serve-$RELEASE_TAG.zip" "release/softn-private-single-php-linux-x64-$RELEASE_TAG.zip"; do
+            unzip -tq "$zip"
+            unzip -Z1 "$zip" | grep -qx 'webroot/index.php'
+            unzip -Z1 "$zip" | grep -qx 'private/serve.config.php'
+            # The only archive in the archive is the sample, under private/.
+            test "$(unzip -Z1 "$zip" | grep '\.softn$')" = 'private/app.softn'
+          done
+          (cd release && sha256sum -c "softn-single-php-serve-$RELEASE_TAG.zip.sha256" --strict)
+          (cd release && sha256sum -c "softn-private-single-php-linux-x64-$RELEASE_TAG.zip.sha256" --strict)
+
       - name: Install Apache/PHP test dependencies
         run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
 
@@ -202,6 +219,8 @@ jobs:
         run: |
           python3 scripts/test-single-backend.py --archive "$(ls release/softn-single-php-linux-x64-v*.zip)"
           python3 apps/softn-php/tests/apache-smoke.py --archive "$(ls release/softn-single-php-linux-x64-v*.zip)"
+          python3 scripts/test-single-backend.py --private --archive "$(ls release/softn-private-single-php-linux-x64-v*.zip)"
+          python3 apps/softn-php/tests/apache-smoke.py --private --archive "$(ls release/softn-private-single-php-linux-x64-v*.zip)"
 
       - name: Keep the archive with the workflow run
         uses: actions/upload-artifact@v4
@@ -221,6 +240,10 @@ jobs:
             release/softn-single-${{ env.RELEASE_TAG }}.zip.sha256
             release/softn-single-php-linux-x64-${{ env.RELEASE_TAG }}.zip
             release/softn-single-php-linux-x64-${{ env.RELEASE_TAG }}.zip.sha256
+            release/softn-single-php-serve-${{ env.RELEASE_TAG }}.zip
+            release/softn-single-php-serve-${{ env.RELEASE_TAG }}.zip.sha256
+            release/softn-private-single-php-linux-x64-${{ env.RELEASE_TAG }}.zip
+            release/softn-private-single-php-linux-x64-${{ env.RELEASE_TAG }}.zip.sha256
           compression-level: 0
           if-no-files-found: error
 
