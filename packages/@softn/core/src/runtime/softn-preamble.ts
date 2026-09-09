@@ -101,7 +101,13 @@ let softn = {
       host.call("input.captureKeys", [JSON.stringify(Array.isArray(keys) ? keys : (keys == null ? [] : [String(keys)]))], callback || function(){});
     }
   },
+  sandbox: {
+    run: function(source, input, callback) {
+      host.call("sandbox.run", [String(source), JSON.stringify(input)], callback);
+    }
+  },
   files: {
+    readZipText: function(fileRef, callback) {host.call("files.readZipText", [fileRef], callback);},
     pickFile: function(options, callback) {
       host.call("files.pickFile", [typeof options === "object" ? JSON.stringify(options) : "{}"], callback);
     },

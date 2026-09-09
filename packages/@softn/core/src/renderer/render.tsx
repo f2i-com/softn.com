@@ -1783,6 +1783,8 @@ const REACT_EVENT_PROPS: Readonly<Record<string, string>> = {
   pointerover: 'onPointerOver',
   pointerout: 'onPointerOut',
   pointercancel: 'onPointerCancel',
+  lostpointercapture: 'onLostPointerCapture',
+  gotpointercapture: 'onGotPointerCapture',
   touchstart: 'onTouchStart',
   touchend: 'onTouchEnd',
   touchmove: 'onTouchMove',
