@@ -1,6 +1,6 @@
 from pathlib import Path
 import zipfile,tempfile,subprocess,os,time,urllib.request,urllib.error,json,signal,fcntl,argparse
-parser=argparse.ArgumentParser();parser.add_argument('--archive',required=True);args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument('--archive',required=True);parser.add_argument('--private',action='store_true');args=parser.parse_args()
 root=Path(tempfile.mkdtemp(prefix='softn-apache-php-'))
 with zipfile.ZipFile(args.archive) as zipped:zipped.extractall(root/'counter')
 counter=root/'counter/backend/app'
@@ -52,6 +52,19 @@ with open(root/'apache.log','w') as log:
         print('Conditional polling returns 304 only after the handler authorizes the request.',flush=True)
         for path in ['/backend/private/config.json','/server/main.logic','/private/config.json','/.htaccess']:
             assert req(path)[0] in [403,404],path
+        if args.private:
+            # The served application beside the backend: the page renders on
+            # the server and sets the viewer cookie; the pack and entries need
+            # it; the archive and the private directory have no URL.
+            status,body=req('/');assert status==200 and b'id="softn-boot"' in body,(status,body[:200])
+            cookie=last_headers.get('Set-Cookie','').split(';')[0];assert cookie.startswith('softn_viewer='),last_headers
+            assert req('/index.php?source')[0]==403
+            status,body=req('/index.php?source',headers={'Cookie':cookie});assert status==200,(status,body[:200])
+            pack=json.loads(body);assert pack['manifest']['main'] in pack['text'] and 'manifest.json' not in pack['text']
+            assert req('/index.php?entry='+pack['manifest']['main'],headers={'Cookie':cookie})[0]==404
+            for path in ['/app.softn','/private/app.softn','/private/serve.config.php','/softn-serve.php','/private/shell.html']:
+                assert req(path,headers={'Cookie':cookie})[0] in [403,404],path
+            print('Privately served application: server-rendered page, viewer cookie, source pack and hidden archive passed.',flush=True)
         print('Generic template with independent counter bundle: persistence, bearer forwarding, origins and private-file isolation passed.',flush=True)
         locks=[]
         for i in range(4):

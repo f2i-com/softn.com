@@ -1,0 +1,24 @@
+Options -Indexes -MultiViews
+DirectoryIndex index.php
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+# The library is included by index.php; it is not an entry point.
+<FilesMatch "^softn-serve\.php$">
+    Require all denied
+</FilesMatch>
+# Nothing of the private directory belongs here, and if it is copied here by
+# mistake it must still not be downloadable.
+<FilesMatch "\.(softn|key|cache)$">
+    Require all denied
+</FilesMatch>
+AddType application/wasm .wasm
+AddType text/javascript .mjs
+# The optional backend: /api/... is answered by api.php once backend/ is set
+# up, and the Authorization header reaches PHP under CGI and FastCGI.
+RewriteEngine On
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteRule ^api(?:/.*)?$ api.php [END]
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+</IfModule>

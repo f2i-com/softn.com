@@ -124,6 +124,18 @@ absent; neither overwrites an operator's file. Runtime bounds: an entry up to
 50 MB, a source pack up to 32 MB decoded, an icon up to 256 KiB, sixty
 seconds to fetch the pack.
 
+## With the optional backend
+
+`npm run package:private-single-php` produces
+`release/softn-private-single-php-linux-x64-vVERSION.zip`: the same `webroot/`
+and `private/` with `api.php` and a `.htaccess` that also routes `/api/...`,
+plus the `backend/` folder of the static variant's backend archive (bundled
+Linux x64 Node, SQLite and ZIPP WASM). The application is served privately
+with or without the backend; enabling it follows the included START-HERE.md,
+which is [apps/softn-single-php-serve/PRIVATE_DEPLOYMENT.md](../apps/softn-single-php-serve/PRIVATE_DEPLOYMENT.md).
+CI verifies that archive with the backend checks and an Apache smoke test
+that also loads the served page, the pack and the refusals.
+
 ## Local preview
 
 `npm run preview -w @softn/single-php-serve` serves `dist/webroot` with PHP's
