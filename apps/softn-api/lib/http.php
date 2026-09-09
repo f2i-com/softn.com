@@ -178,6 +178,21 @@ final class Request
     }
 
     /**
+     * A key — the edit key or the admin key — from its header or from the
+     * body, and never from the query string, unlike field(): a URL is what
+     * ends up in access logs, browser history and Referer headers.
+     */
+    public function credential(string $header, string $field): ?string
+    {
+        $v = $this->header($header);
+        if ($v !== null) return $v;
+        $json = $this->json();
+        if (is_string($json[$field] ?? null)) return $json[$field];
+        if (isset($_POST[$field]) && is_string($_POST[$field])) return $_POST[$field];
+        return null;
+    }
+
+    /**
      * The uploaded bundle, as a path to a temporary file. Three ways in: a
      * multipart field named `bundle`, a raw zip as the whole body, or a JSON
      * body with the bytes in `bundleBase64`. Returns null when none was sent.
@@ -258,6 +273,10 @@ final class Request
     {
         $tmp = tempnam(sys_get_temp_dir(), 'softn-');
         if ($tmp === false) throw new ApiError(500, 'Could not create a temporary file.');
+        // PHP removes a multipart upload's file when the request ends; this
+        // one it does not know about, so it is removed here, whatever the
+        // request went on to do with it.
+        register_shutdown_function(static fn() => @unlink($tmp));
         file_put_contents($tmp, $bytes);
         return $tmp;
     }
@@ -276,6 +295,8 @@ final class Response
     public string $body;
     /** When set, the body is streamed from this file instead. */
     public ?string $file = null;
+    /** The file, open since the response was built. @var resource|null */
+    private $handle = null;
 
     /** @param array<string, string> $headers */
     private function __construct(int $status, array $headers, string $body)
@@ -321,8 +342,16 @@ final class Response
     /** @param array<string, string> $headers */
     public static function file(string $path, string $contentType, array $headers = []): self
     {
-        $r = new self(200, $headers + ['Content-Type' => $contentType, 'Content-Length' => (string) filesize($path)], '');
+        // Opened now, under the catalogue lock, not in send() after it is
+        // released: an unpublish or a seed replacing the file in between
+        // would otherwise send a body that does not match the length, or
+        // none. What the handle is open on is what the length was taken from.
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) throw new ApiError(404, 'The file is missing.');
+        $size = fstat($fh)['size'] ?? filesize($path);
+        $r = new self(200, $headers + ['Content-Type' => $contentType, 'Content-Length' => (string) $size], '');
         $r->file = $path;
+        $r->handle = $fh;
         return $r;
     }
 
@@ -356,12 +385,9 @@ final class Response
         // length; a string body gets one here, where it is known.
         $head = ($_SERVER['REQUEST_METHOD'] ?? '') === 'HEAD';
         if ($this->file !== null) {
-            if ($head) return;
-            $fh = fopen($this->file, 'rb');
-            if ($fh !== false) {
-                fpassthru($fh);
-                fclose($fh);
-            }
+            if (!$head && is_resource($this->handle)) fpassthru($this->handle);
+            if (is_resource($this->handle)) fclose($this->handle);
+            $this->handle = null;
             return;
         }
         if ($head) {

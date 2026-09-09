@@ -13,6 +13,7 @@
  */
 
 import * as React from 'react';
+import { useJudgedBackground } from '../utils/egress';
 
 export interface PanViewProps {
   /** Width of the content, in its own unscaled units. */
@@ -161,10 +162,14 @@ export function PanView({
     el.scrollTop = drag.top - (e.clientY - drag.y);
   };
 
+  // A `url()` in `background` is a fetch the renderer's scrub of `style`
+  // never sees; the same policy decides it here.
+  const safeBackground = useJudgedBackground(background);
+
   const viewportStyle: React.CSSProperties = {
     position: 'relative',
     overflow: 'auto',
-    background,
+    background: safeBackground,
     cursor: draggable ? 'grab' : undefined,
     // Keeps a wheel over the map from scrolling the page behind it once the
     // map has reached its own edge.

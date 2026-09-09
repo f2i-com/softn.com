@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { useJudgedBackground } from '../utils/egress';
 
 export interface HeaderProps {
   /** Header content */
@@ -32,12 +33,16 @@ export function Header({
   className,
   style,
 }: HeaderProps): React.ReactElement {
+  // A `url()` in `background` is a fetch the renderer's scrub of `style`
+  // never sees; the same policy decides it here.
+  const safeBackground = useJudgedBackground(background);
+
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '1rem 1.5rem',
-    background,
+    background: safeBackground,
     borderBottom: `1px solid ${borderColor}`,
     ...(sticky && {
       position: 'sticky',

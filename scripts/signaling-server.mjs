@@ -50,19 +50,31 @@ wss.on('connection', (conn) => {
   });
 
   conn.on('message', (raw) => {
-    const msg = JSON.parse(raw);
-    if (!msg || !msg.type) return;
+    // One peer's malformed frame is that peer's problem: a throw inside a ws
+    // listener is an uncaught exception that would take the whole signaling
+    // process, and every other peer's connection, down with it.
+    let msg;
+    try {
+      msg = JSON.parse(raw);
+    } catch {
+      conn.close(1003, 'expected JSON');
+      return;
+    }
+    if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return;
+    const topicNames = Array.isArray(msg.topics)
+      ? msg.topics.filter((t) => typeof t === 'string' && t.length > 0 && t.length <= 256)
+      : [];
 
     switch (msg.type) {
       case 'subscribe':
-        (msg.topics || []).forEach((t) => {
+        topicNames.forEach((t) => {
           if (!topics.has(t)) topics.set(t, new Set());
           topics.get(t).add(conn);
           subscribedTopics.add(t);
         });
         break;
       case 'unsubscribe':
-        (msg.topics || []).forEach((t) => {
+        topicNames.forEach((t) => {
           const subs = topics.get(t);
           if (subs) subs.delete(conn);
         });

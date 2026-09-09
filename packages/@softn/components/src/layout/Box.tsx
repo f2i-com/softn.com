@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { useJudgedBackground } from '../utils/egress';
 
 export interface BoxProps {
   /** Padding */
@@ -122,10 +123,14 @@ export function Box({
     }
   };
 
+  // `background` is CSS the bundle wrote, and a `url()` in it is a fetch the
+  // renderer's scrub of `style` never sees. Same policy, asked here.
+  const safeBackground = useJudgedBackground(background);
+
   const computedStyle: React.CSSProperties = {
     padding: padding === 'none' ? undefined : (spacingValues[padding] ?? padding),
     margin: margin === 'none' ? undefined : (spacingValues[margin] ?? margin),
-    background,
+    background: safeBackground,
     borderRadius: radiusValues[borderRadius] ?? borderRadius,
     border,
     boxShadow: shadowValues[shadow] ?? shadow,

@@ -231,12 +231,32 @@ function currentUrl(): string {
  * visitor actually typed and the address bar shows it. Same-origin paths only:
  * the value arrives from the query string, so it is not ours to trust.
  */
+/**
+ * A query-string value as a path of this origin, or null.
+ *
+ * Judged by where the URL parser actually sends it, not by its first
+ * characters: the parser strips tabs and newlines before it looks for a
+ * scheme or an authority, so `/%09/evil.com` — which a string test passes as
+ * a plain path — resolves to `//evil.com`. What comes back is the parsed
+ * path, query and fragment, so what is navigated to is what was checked.
+ */
+function sameOriginPath(value: string | null): string | null {
+  if (!value || !value.startsWith('/')) return null;
+  let url: URL;
+  try {
+    url = new URL(value, window.location.href);
+  } catch {
+    return null;
+  }
+  if (url.origin !== window.location.origin) return null;
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  return url.pathname + url.search + url.hash;
+}
+
 function restoreForwardedPath(): void {
   const params = new URLSearchParams(window.location.search);
-  const forwarded = params.get('softn-restore');
+  const forwarded = sameOriginPath(params.get('softn-restore'));
   if (!forwarded) return;
-  // A leading single slash and nothing that could read as another origin.
-  if (!forwarded.startsWith('/') || forwarded.startsWith('//')) return;
   try {
     window.history.replaceState(null, '', forwarded);
   } catch {
@@ -258,8 +278,7 @@ function readEntry(): {
   // `?back=` is a page of this origin — an app's directory page, usually —
   // and nothing else: it arrives from the query string, so it is not ours to
   // trust with a scheme or a second slash.
-  const back = params.get('back');
-  const backTo = back && back.startsWith('/') && !back.startsWith('//') && !back.startsWith('/\\') ? back : null;
+  const backTo = sameOriginPath(params.get('back'));
   const openValue = params.get('open');
   if (openValue) return { openValue, appName: null, page: null, embedded, backTo };
   return { openValue: null, ...parseAppUrl(), embedded, backTo };
@@ -605,6 +624,17 @@ function App(): React.ReactElement {
         }
       };
 
+      // Whether the placeholder this load was given has since been closed.
+      //
+      // Asked again after every await below. The caller checks once, after
+      // the download, but the steps here — hashing the bytes, seeding the
+      // database, writing the cache — take long enough on a large bundle that
+      // a tab closed during them used to open anyway: the app the user had
+      // just dismissed appeared a moment later. A load with no placeholder
+      // has nothing to be closed and never bails.
+      const placeholderClosed = (): boolean =>
+        placeholderId !== undefined && !openTabsRef.current.some((t) => t.id === placeholderId);
+
       try {
         setError(null);
 
@@ -649,6 +679,10 @@ function App(): React.ReactElement {
         // copy — hangs off this rather than off manifest.name, which the bundle
         // chooses for itself and could therefore choose to be someone else's.
         const appOrigin = await computeAppOrigin(data);
+        // Before the running-tab check as well: a closed placeholder means the
+        // user dismissed this load, not that they asked for whatever copy of
+        // the app is already open.
+        if (placeholderClosed()) return null;
 
         // These exact bytes already running: the same app, opened again.
         // Identity, not name — two builds of one app, or two unrelated
@@ -686,8 +720,15 @@ function App(): React.ReactElement {
         // camera and remote images unasked while an honest one was refused.
         const permissionConfig = extractPermissions(textFiles, manifest) ?? { permissions: {} };
 
-        // Extract icon early (the consent bar's detail dialog shows it)
-        const icon = extractIconDataUrl(binaryFiles, manifest);
+        // Extract icon early (the consent bar's detail dialog shows it).
+        //
+        // Bounded by the declared size before its bytes exist, as softn-single
+        // does: the archive allows an entry of 50 MB, and an icon that size
+        // was inflated and base64-encoded whole on the way to a data: URL.
+        const icon =
+          typeof manifest.icon === 'string' && (binaryFiles.declaredSize(manifest.icon) ?? Infinity) <= 256 * 1024
+            ? extractIconDataUrl(binaryFiles, manifest)
+            : undefined;
 
         // Decide what the app runs with. It runs either way — the bundle's UI
         // is on screen from the first frame and the request becomes a bar over
@@ -706,6 +747,7 @@ function App(): React.ReactElement {
         // cacheApp below: that call adopts a legacy record on the way past, and
         // reading after it would find the record it had just written.
         const cachedApp = permissionConfig ? await getCachedAppByOrigin(appOrigin) : null;
+        if (placeholderClosed()) return null;
         const requested = permissionConfig ? requestedCapabilities(permissionConfig) : [];
         const granted = cachedApp?.grantedPermissions ?? {};
         // A bundle that asks for nothing has nothing to consent to, and a bar
@@ -725,6 +767,7 @@ function App(): React.ReactElement {
         } finally {
           mark('softn:xdb-seed:end');
         }
+        if (placeholderClosed()) return null;
 
         // Process source
         let composed: ReturnType<typeof processBundle>;
@@ -766,6 +809,15 @@ function App(): React.ReactElement {
         // Refresh cached apps list
         const updatedApps = await getCachedApps();
         setApps(updatedApps);
+        // The record stays — it is the memory of an app that was opened, and
+        // Home shows it — but the warm-up and the resolver were minted for a
+        // tab that no longer exists, so they go the way the failure path
+        // below sends them.
+        if (placeholderClosed()) {
+          warmup.abort();
+          importResolver.dispose();
+          return null;
+        }
 
         // What this build asks for that the one before it did not, for the
         // consent bar: an update must not add a capability under a request

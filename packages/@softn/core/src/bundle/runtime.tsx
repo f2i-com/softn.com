@@ -423,7 +423,12 @@ export function SoftNBundleRenderer({
         if (!(part in current) || typeof current[part] !== 'object') {
           current[part] = {};
         }
-        current[part] = { ...(current[part] as Record<string, unknown>) };
+        // Copy an array as an array. Spreading one into `{}` turned `todos`
+        // into an object keyed "0", "1", … on the first `:bind={todos[0].title}`
+        // keystroke, and every `#each` over it then rendered nothing.
+        current[part] = Array.isArray(current[part])
+          ? [...(current[part] as unknown[])]
+          : { ...(current[part] as Record<string, unknown>) };
         current = current[part] as Record<string, unknown>;
       }
 

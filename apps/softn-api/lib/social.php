@@ -11,6 +11,7 @@ final class Social
 {
     /** @return array<string, mixed> */
     public static function comments(string $slug, int $page, int $perPage = 20): array {
+        Apps::row($slug); // an unpublished app's comments go with it
         $rows=array_values(array_filter(Catalog::doc($slug)['comments'],fn($r)=>!$r['hidden']));
         usort($rows,fn($a,$b)=>[$b['created_at'],$b['id']]<=>[$a['created_at'],$a['id']]);
         $page=max(1,min(1000,$page));$perPage=max(1,min(50,$perPage));$total=count($rows);
@@ -70,6 +71,7 @@ final class Social
     {
         $stars = (int) ($req->field('stars') ?? 0);
         if ($stars < 1 || $stars > 5) throw new ApiError(400, 'A rating is one to five stars.');
+        Apps::row($slug); // refused for an unpublished app before anything is written
         $visitor = Config::visitorHash($req->ip);
         Db::rateLimit('rate', $visitor);
         $doc=Catalog::doc($slug);$ratings=[];

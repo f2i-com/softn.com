@@ -43,11 +43,19 @@ export function Collapse({
       const contentHeight = contentRef.current?.scrollHeight ?? 0;
       setHeight(contentHeight);
 
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
+      // Two frames: the first commits the measured height so the second has
+      // something to transition from. Both are cancelled on cleanup, or a
+      // reopen (or unmount) inside those frames still collapsed to 0.
+      let inner: number | undefined;
+      const outer = requestAnimationFrame(() => {
+        inner = requestAnimationFrame(() => {
           setHeight(0);
         });
       });
+      return () => {
+        cancelAnimationFrame(outer);
+        if (inner !== undefined) cancelAnimationFrame(inner);
+      };
     }
   }, [isOpen, duration]);
 

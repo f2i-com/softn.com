@@ -259,23 +259,33 @@ final class Apps
         // A seed names its own slug: the id the site already uses for that demo.
         $wanted = is_string($opts['slug'] ?? null) && $opts['slug'] !== '' ? self::slugify($opts['slug']) : self::slugify($name);
         $slug = self::uniqueSlug($wanted);
-        $dir = self::dir($slug);
-        $file = 'v1.softn';
-        self::copyBundle($bundlePath, "$dir/$file");
-        $icon = self::storeIcon($dir, $info['icon']);
-        $editKey = $source === 'seed' ? null : bin2hex(random_bytes(20));
-        $now = time();
+        // Everything that can refuse is settled before the folder exists: a
+        // parent that is hidden is a 404 here, not after the bundle is on disk.
         $rootSlug = null;
         if ($parentSlug !== null) {
             $parent = self::row($parentSlug);
             $rootSlug = $parent['root_slug'] ?: $parent['slug'];
         }
-        $app=array_replace(Catalog::defaults($slug),[
-            'name'=>$name,'description'=>$description,'author'=>$author,'category'=>$category,'tags'=>json_encode($tags),'parent_slug'=>$parentSlug,'root_slug'=>$rootSlug,
-            'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),
-            'icon'=>$icon,'primary_color'=>$primary,'edit_key_hash'=>$editKey===null?null:hash('sha256',$editKey),'source'=>$source,'size'=>$info['size'],'created_at'=>$now,'updated_at'=>$now
-        ]);
-        Catalog::put($slug,['app'=>$app,'versions'=>[['slug'=>$slug,'version'=>1,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>$notes,'created_at'=>$now]],'comments'=>[],'ratings'=>[],'runsDaily'=>[]]);
+        $editKey = $source === 'seed' ? null : bin2hex(random_bytes(20));
+        $dir = self::dir($slug);
+        $file = 'v1.softn';
+        try {
+            self::copyBundle($bundlePath, "$dir/$file");
+            $icon = self::storeIcon($dir, $info['icon']);
+            $now = time();
+            $app=array_replace(Catalog::defaults($slug),[
+                'name'=>$name,'description'=>$description,'author'=>$author,'category'=>$category,'tags'=>json_encode($tags),'parent_slug'=>$parentSlug,'root_slug'=>$rootSlug,
+                'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'storage_policies'=>json_encode((object)$info['storagePolicies']),
+                'icon'=>$icon,'primary_color'=>$primary,'edit_key_hash'=>$editKey===null?null:hash('sha256',$editKey),'source'=>$source,'size'=>$info['size'],'created_at'=>$now,'updated_at'=>$now
+            ]);
+            Catalog::put($slug,['app'=>$app,'versions'=>[['slug'=>$slug,'version'=>1,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>$notes,'created_at'=>$now]],'comments'=>[],'ratings'=>[],'runsDaily'=>[]]);
+        } catch (Throwable $e) {
+            // A folder with a bundle and no app.json is discovered on the
+            // next request as an app of its own, with no edit key — the
+            // admin's. Retire what was written the way an unpublish does.
+            try { Catalog::retire($slug); } catch (Throwable $retire) { error_log("softn-api: could not retire the half-published $slug: " . $retire->getMessage()); }
+            throw $e;
+        }
         return ['app' => self::card(self::row($slug)), 'editKey' => $editKey];
     }
 
@@ -396,9 +406,9 @@ final class Apps
 
     public static function requireOwner(Request $req, string $slug): void
     {
-        if (Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) return;
+        if (Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) return;
         $row = self::row($slug, true);
-        $presented = $req->header('x-edit-key') ?? $req->field('editKey');
+        $presented = $req->credential('x-edit-key', 'editKey');
         $hash = $row['edit_key_hash'];
         if (!is_string($presented) || $presented === '' || !is_string($hash) || !hash_equals($hash, hash('sha256', $presented))) {
             throw new ApiError(403, 'That needs the edit key this app was published with.');

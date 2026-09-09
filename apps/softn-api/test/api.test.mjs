@@ -15,6 +15,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,7 +62,7 @@ async function waitFor(url, ms = 15000) {
   throw new Error(`${url} did not come up`);
 }
 
-async function api(method, route, { body, headers = {}, raw } = {}) {
+async function api(method, route, { body, headers = {}, raw, query } = {}) {
   const init = { method, headers: { ...headers } };
   if (raw !== undefined) init.body = raw;
   else if (body instanceof FormData) init.body = body;
@@ -69,6 +70,7 @@ async function api(method, route, { body, headers = {}, raw } = {}) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
+  if (query) route += (route.includes('?') ? '&' : '?') + query;
   const res = await fetch(base + route, init);
   const text = await res.text();
   let json = null;
@@ -487,6 +489,11 @@ test('a remix is a new app that remembers its parent', skip, async () => {
 test('per-app storage: records, queries, the key-value store, and the limits', skip, async () => {
   const noCap = await api('POST', '/api/apps/test-snake/storage', { body: { op: 'insert', collection: 'scores', data: { n: 1 } } });
   assert.equal(noCap.status, 403, 'an app that did not declare storage has none');
+  // The GET routes make the same check: a listing used to create the
+  // database in any app's folder.
+  assert.equal((await api('GET', '/api/apps/test-snake/storage')).status, 403);
+  assert.equal((await api('GET', '/api/apps/test-snake/storage/scores')).status, 403);
+  assert.ok(!fs.existsSync(path.join(root, 'data/apps/test-snake/storage.sqlite')), 'no database was created by asking');
 
   const fd = new FormData();
   fd.append('bundle', new Blob([makeBundle('Score Board', { permissions: { storage: { enabled: true } } })]), 'scores.softn');
@@ -588,6 +595,15 @@ test('hiding an app takes it out of the directory; the admin can purge it', skip
   assert.equal((await api('DELETE', `/api/apps/${child}`, { headers: { 'X-Edit-Key': childKey } })).status, 204);
   assert.equal((await api('GET', `/api/apps/${child}`)).status, 404);
   assert.ok(!(await api('GET', '/api/apps?q=snake&perPage=48')).json.apps.some((a) => a.slug === child));
+  // What hangs off a hidden app is hidden with it: its comments cannot be
+  // read, it cannot be rated, and it cannot be remixed.
+  assert.equal((await api('GET', `/api/apps/${child}/comments`)).status, 404);
+  assert.equal((await api('POST', `/api/apps/${child}/rating`, { body: { stars: 5 } })).status, 404);
+  resetRateLimits();
+  const orphan = await api('POST', '/api/apps', { raw: makeBundle('Orphan Of Hidden'), headers: { 'Content-Type': 'application/octet-stream' }, query: `parent=${child}` });
+  assert.equal(orphan.status, 404, JSON.stringify(orphan.json));
+  assert.ok(!fs.existsSync(path.join(root, 'data/apps/orphan-of-hidden')), 'a refused publish leaves no folder to be discovered');
+  assert.equal((await api('GET', '/api/apps/orphan-of-hidden')).status, 404);
   const purge = await api('DELETE', `/api/apps/${child}?purge=1`, { headers: { 'X-Admin-Key': adminKey } });
   assert.equal(purge.status, 204);
   assert.ok(!fs.existsSync(path.join(root, 'data/apps', child)), 'the files are gone');
@@ -918,4 +934,150 @@ test('the api root describes itself and unknown routes are 404 JSON', skip, asyn
   assert.equal(opt.headers.get('access-control-allow-origin'), '*');
   assert.match(opt.headers.get('access-control-allow-headers') || '', /\bIf-None-Match\b/);
   assert.match(opt.headers.get('access-control-expose-headers') || '', /\bETag\b/);
+});
+
+test("a bundle's manifest.json and permission.json are refused by size before they are read", skip, async () => {
+  resetRateLimits();
+  const { zipSync, strToU8 } = require('fflate');
+  // A manifest that is valid JSON and would publish, except for the padding:
+  // 128 MB of expansion is allowed to the bundle as a whole, and the
+  // manifest used to be decoded whole within it.
+  const padded = (size) => JSON.stringify({ name: 'Padded', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] }, pad: 'x'.repeat(size) });
+  const bundle = (manifest, permission) => {
+    const files = { 'manifest.json': strToU8(manifest), 'ui/main.ui': strToU8('<App><Text>hello</Text></App>') };
+    if (permission !== undefined) files['permission.json'] = strToU8(permission);
+    return zipSync(files);
+  };
+  const publish = (bytes) => api('POST', '/api/apps', { raw: bytes, headers: { 'Content-Type': 'application/octet-stream' } });
+  const big = await publish(bundle(padded(300 * 1024)));
+  assert.equal(big.status, 400, JSON.stringify(big.json));
+  assert.match(big.json.error, /manifest\.json is larger than 256 KB/);
+  const bigPermission = await publish(bundle(padded(1024), JSON.stringify({ permissions: { net: { enabled: true } }, pad: 'x'.repeat(70 * 1024) })));
+  assert.equal(bigPermission.status, 400, JSON.stringify(bigPermission.json));
+  assert.match(bigPermission.json.error, /permission\.json is larger than 64 KB/);
+  // Under the caps the same shapes publish: the size is the only objection.
+  const fits = await publish(bundle(padded(200 * 1024), JSON.stringify({ permissions: { net: { enabled: true } }, pad: 'x'.repeat(50 * 1024) })));
+  assert.equal(fits.status, 201, JSON.stringify(fits.json));
+  assert.deepEqual(fits.json.app.capabilities, ['net']);
+  // A folder holding such a bundle is skipped, not served, and never
+  // enters the bundle cache with its manifest.
+  const dir = path.join(root, 'data/apps/padded-folder');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'v1.softn'), bundle(padded(300 * 1024)));
+  assert.equal((await api('GET', '/api/apps/padded-folder')).status, 404);
+  const cache = JSON.parse(fs.readFileSync(path.join(root, 'data/cache/bundles.json'), 'utf8'));
+  assert.ok(!Object.keys(cache).some((k) => k.startsWith('padded-folder/')), 'nothing cached for a refused bundle');
+  for (const entry of Object.values(cache)) {
+    assert.ok(!('manifest' in entry.info), 'the cache holds what discovery reads, not the manifest');
+    assert.equal(typeof entry.info.author, 'string');
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the edit key and the admin key are read from headers and the body, never the query string', skip, async () => {
+  const change = { description: 'from the query string' };
+  assert.equal((await api('PATCH', '/api/apps/test-snake', { body: change, query: `editKey=${editKey}` })).status, 403);
+  assert.equal((await api('PATCH', '/api/apps/test-snake', { body: change, query: `adminKey=${adminKey}` })).status, 403);
+  assert.equal((await api('GET', '/api/admin/stats', { query: `adminKey=${adminKey}` })).status, 403);
+  assert.equal((await api('DELETE', '/api/apps/test-snake', { query: `editKey=${editKey}` })).status, 403);
+  assert.notEqual((await api('GET', '/api/apps/test-snake')).json.app.description, change.description);
+  // The same keys in a JSON body or a form field are still accepted.
+  assert.equal((await api('PATCH', '/api/apps/test-snake', { body: { ...change, editKey } })).status, 200);
+  // A form field carries a key on a POST route, as the publish page sends it.
+  const fd = new FormData();
+  fd.append('adminKey', adminKey);
+  fd.append('thumbnail', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')], { type: 'image/png' }), 'thumb.png');
+  assert.equal((await api('POST', '/api/apps/test-snake/thumbnail', { body: fd })).status, 200);
+  assert.equal((await api('GET', '/api/admin/stats', { headers: { 'X-Admin-Key': adminKey } })).status, 200);
+});
+
+test('the docs are a route: GET /api/README.md is the file, as markdown', skip, async () => {
+  const res = await fetch(`${base}/api/README.md`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') || '', /^text\/markdown/);
+  const text = await res.text();
+  assert.equal(text, fs.readFileSync(path.join(root, 'api/README.md'), 'utf8'));
+  assert.equal(res.headers.get('content-length'), String(Buffer.byteLength(text)));
+  const head = await fetch(`${base}/api/README.md`, { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal((await head.arrayBuffer()).byteLength, 0);
+  assert.equal(head.headers.get('content-length'), String(Buffer.byteLength(text)));
+});
+
+/** A request line as written, which fetch() would normalise before sending. */
+function rawGet(target) {
+  const { hostname, port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    let data = '';
+    const sock = net.createConnection({ host: hostname, port: Number(port) }, () => {
+      sock.write(`GET ${target} HTTP/1.1\r\nHost: ${hostname}:${port}\r\nConnection: close\r\n\r\n`);
+    });
+    sock.setEncoding('utf8');
+    sock.on('data', (d) => { data += d; });
+    sock.on('end', () => resolve(data));
+    sock.on('error', reject);
+  });
+}
+
+test('the dev router keeps data/ and the api/ files unserved however the path is spelt', skip, async () => {
+  assert.ok(fs.existsSync(path.join(root, 'data/config.json')));
+  assert.match(await rawGet('/data/config.json'), /^HTTP\/1\.[01] 404/);
+  // Dot segments are folded by realpath() after the plain-path refusal.
+  const dotted = await rawGet('/./data/config.json');
+  assert.match(dotted, /^HTTP\/1\.[01] 404/);
+  assert.doesNotMatch(dotted, /adminKey/);
+  assert.match(await rawGet('/demos/../data/config.json'), /^HTTP\/1\.[01] 404/);
+  assert.match(await rawGet('/./api/lib/http.php'), /^HTTP\/1\.[01] 404/);
+  assert.match(await rawGet('/./api/README.md'), /^HTTP\/1\.[01] 404/);
+  // A real file still is one.
+  assert.match(await rawGet('/./demos/index.json'), /^HTTP\/1\.[01] 200/);
+});
+
+test('a data directory PHP cannot use is a 503 with JSON and CORS headers, not a bare fatal', skip, async () => {
+  // The data directory named is a file, so it can be neither used nor made.
+  const blocker = path.join(root, 'not-a-directory');
+  fs.writeFileSync(blocker, '');
+  const port = Number(new URL(base).port) + 1;
+  const broken = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', root, path.join(root, 'api/router.php')], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    env: { ...process.env, SOFTN_DATA_DIR: blocker },
+  });
+  try {
+    const res = await waitFor(`http://127.0.0.1:${port}/api/health`);
+    assert.equal(res.status, 503);
+    assert.equal(res.headers.get('access-control-allow-origin'), '*');
+    const json = await res.json();
+    assert.equal(json.ok, false);
+    assert.match(json.error, /data directory/);
+    const listing = await fetch(`http://127.0.0.1:${port}/api/apps`);
+    assert.equal(listing.status, 503);
+    assert.equal((await listing.json()).ok, false);
+  } finally {
+    broken.kill();
+    fs.unlinkSync(blocker);
+  }
+});
+
+test('a seeded folder the catalogue skips is left alone by the seeder', skip, async () => {
+  // Notes is one of the seeded demos. With its app.json broken the catalogue
+  // skips the folder; the seeder used to see the demo as missing, publish it
+  // again as notes-2, then retire that copy as one the index does not name.
+  const file = path.join(root, 'data/apps/notes/app.json');
+  const apps = path.join(root, 'data/apps');
+  const original = fs.readFileSync(file);
+  fs.writeFileSync(file, '{broken');
+  try {
+    // A folder made or retired under data/apps moves its modification time.
+    const before = fs.statSync(apps).mtimeMs;
+    for (let i = 0; i < 2; i++) {
+      const list = (await api('GET', '/api/apps?perPage=48')).json;
+      assert.ok(!list.apps.some((a) => a.slug === 'notes'), 'the broken folder is not listed');
+      assert.ok(!list.apps.some((a) => a.slug === 'notes-2'), 'and not seeded again beside itself');
+    }
+    assert.equal(fs.statSync(apps).mtimeMs, before, 'nothing was created or retired under data/apps');
+    assert.ok(!fs.existsSync(path.join(apps, 'notes-2')));
+  } finally {
+    fs.writeFileSync(file, original);
+  }
+  assert.equal((await api('GET', '/api/apps/notes')).status, 200, 'the repaired folder is listed again');
 });

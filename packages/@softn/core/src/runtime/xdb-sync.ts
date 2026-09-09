@@ -370,6 +370,23 @@ export class XDBSyncAdapter {
    * local database lacks or holds an older copy of. Runs with the echo guard
    * up, so the writes do not come straight back as outbound changes.
    */
+  /** Collections a malformed value has already been reported for. */
+  private warnedMalformed = new Set<string>();
+
+  /**
+   * Say once per collection that a peer's value could not be applied. Once,
+   * because a document with a thousand bad rows is reported at every update
+   * otherwise, and the message is the same each time.
+   */
+  private warnMalformed(collName: string, recordId: string, err?: unknown): void {
+    if (this.warnedMalformed.has(collName)) return;
+    this.warnedMalformed.add(collName);
+    console.warn(
+      `[XDB Sync] Skipping a record in "${collName}" that could not be applied (${recordId})`,
+      err ?? ''
+    );
+  }
+
   private projectCollection(collName: string, ymap: Y.Map<unknown>): void {
     if (ymap.size === 0) return;
     this.isSyncing = true;
@@ -377,12 +394,23 @@ export class XDBSyncAdapter {
       // Build a map of local records once (avoids O(n*m) re-reads from storage)
       const local = new Map(this.xdb.getAllRaw(collName).map((r) => [r.id, r]));
       ymap.forEach((val, recordId) => {
-        const record = jsonToRecord(val as Record<string, unknown>);
-        const mine = local.get(recordId);
-        // The document wins a tie: two copies stamped alike but different are
-        // one record the room has already agreed on and one it has not.
-        if (!mine || isNewer(record, mine) || (!isNewer(mine, record) && !deepEqual(recordToJSON(mine), val))) {
-          this.xdb.writeRecord(collName, record);
+        // One bad value from a peer used to throw out of here, inside Yjs's
+        // update dispatch, and the collections after this one in the
+        // document were never discovered. It is skipped instead.
+        if (!isRecordJSON(val)) {
+          this.warnMalformed(collName, recordId);
+          return;
+        }
+        try {
+          const record = jsonToRecord(val);
+          const mine = local.get(recordId);
+          // The document wins a tie: two copies stamped alike but different are
+          // one record the room has already agreed on and one it has not.
+          if (!mine || isNewer(record, mine) || (!isNewer(mine, record) && !deepEqual(recordToJSON(mine), val))) {
+            this.xdb.writeRecord(collName, record);
+          }
+        } catch (err) {
+          this.warnMalformed(collName, recordId, err);
         }
       });
     } finally {
@@ -438,9 +466,20 @@ export class XDBSyncAdapter {
             // Now only what differs is written: changed or new records are
             // set, records the refresh no longer lists are deleted, and the
             // rest are not touched.
+            //
+            // Read from the raw collection, not `event.records`: the refresh
+            // lists live records only, and every VM function call runs inside
+            // a suppress/resume pair, so a `db.delete()` in one arrived here
+            // as a record that had merely gone missing and was removed from
+            // the map — a hard delete where the `delete` branch writes a
+            // tombstone. A peer that was offline at the time then had no
+            // tombstone to lose against and put the record back on reconnect.
+            // The raw list carries the tombstones, which are written as the
+            // `delete` branch writes them; only a key the raw list lacks —
+            // one a hard remove took — comes out of the map.
             if (event.records) {
               const listed = new Set<string>();
-              for (const record of event.records) {
+              for (const record of this.xdb.getAllRaw(event.collection)) {
                 listed.add(record.id);
                 const json = recordToJSON(record);
                 const existing = ymap.get(record.id);
@@ -494,13 +533,22 @@ export class XDBSyncAdapter {
       this.isSyncing = true;
       try {
         for (const [recordId, change] of event.changes.keys) {
-          if (change.action === 'add' || change.action === 'update') {
-            const val = ymap.get(recordId) as Record<string, unknown>;
-            if (!val) continue;
-            this.xdb.writeRecord(collName, jsonToRecord(val));
-          } else if (change.action === 'delete') {
-            // Remote hard-delete
-            this.xdb.removeRecord(collName, recordId);
+          try {
+            if (change.action === 'add' || change.action === 'update') {
+              const val = ymap.get(recordId);
+              // Same rule as projectCollection: a value that is not a record
+              // is skipped, not thrown at the rest of the batch.
+              if (!isRecordJSON(val)) {
+                if (val !== undefined) this.warnMalformed(collName, recordId);
+                continue;
+              }
+              this.xdb.writeRecord(collName, jsonToRecord(val));
+            } else if (change.action === 'delete') {
+              // Remote hard-delete
+              this.xdb.removeRecord(collName, recordId);
+            }
+          } catch (err) {
+            this.warnMalformed(collName, recordId, err);
           }
         }
       } finally {
@@ -552,6 +600,22 @@ function recordToJSON(record: XDBRecord): Record<string, unknown> {
     updated_at: record.updated_at,
     deleted: record.deleted,
   };
+}
+
+/**
+ * Whether a value from the document has the shape of a record. Peers are not
+ * trusted to have written one: `null`, a string, or a record whose `data` is
+ * an array or a number would each have thrown inside `jsonToRecord` or the
+ * write that followed.
+ */
+function isRecordJSON(val: unknown): val is Record<string, unknown> {
+  if (typeof val !== 'object' || val === null || Array.isArray(val)) return false;
+  const json = val as Record<string, unknown>;
+  if (typeof json.id !== 'string') return false;
+  return (
+    json.data === undefined ||
+    (typeof json.data === 'object' && json.data !== null && !Array.isArray(json.data))
+  );
 }
 
 function jsonToRecord(json: Record<string, unknown>): XDBRecord {

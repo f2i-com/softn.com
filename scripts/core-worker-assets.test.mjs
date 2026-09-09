@@ -36,7 +36,11 @@ test('every browser runtime consumer registers assets before its PWA and exclude
     const source = fs.readFileSync(path.join(root, `apps/softn-${name}/vite.config.ts`), 'utf8');
     assert.ok(source.includes("from '../../scripts/core-worker-assets.mjs'"), name);
     assert.ok(source.indexOf('coreWorkerAssetPlugin(),') < source.indexOf('VitePWA({'), name);
-    assert.match(source, /globIgnores:[^\n]*'\*\*\/core-runtime\/\*\*'/, name);
+    // The list may span lines; what matters is that the runtime folder is in it.
+    const ignores = source.indexOf('globIgnores:');
+    assert.ok(ignores >= 0, name);
+    const block = source.slice(ignores, source.indexOf(']', ignores));
+    assert.ok(block.includes("'**/core-runtime/**'"), name);
   }
 });
 

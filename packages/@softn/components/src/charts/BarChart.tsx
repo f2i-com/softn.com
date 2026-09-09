@@ -6,6 +6,7 @@
  */
 
 import * as React from 'react';
+import { normaliseSeries } from './series';
 
 export interface BarDataPoint {
   label: string;
@@ -41,7 +42,7 @@ export interface BarChartProps {
 const defaultColors = ['#6366f1', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 export function BarChart({
-  series,
+  series: rawSeries,
   width = 600,
   height = 300,
   padding = { top: 20, right: 20, bottom: 50, left: 50 },
@@ -62,6 +63,8 @@ export function BarChart({
   className = '',
   style,
 }: BarChartProps) {
+  // Data that has not arrived yet is an empty chart, not a throw.
+  const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
   const [hoveredBar, setHoveredBar] = React.useState<string | null>(null);
   const [tooltip, setTooltip] = React.useState<{ x: number; y: number; label: string; value: number; series: string; color: string } | null>(null);
 

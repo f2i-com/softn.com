@@ -14,6 +14,8 @@ import type {
   ChatMessage,
   AIPermissionConfig,
 } from './ai-manager';
+import { describeNetDestination, type NetPermission } from './egress-policy';
+import { isRemoteUrl } from '../renderer/sanitize-html';
 
 /** @huggingface/transformers types (subset we use) */
 interface TransformersModule {
@@ -108,9 +110,12 @@ export class TransformersManager {
   private nextPipelineId = 1;
   private nextModelId = 1;
   private permissionConfig: AIPermissionConfig | null = null;
+  /** The bundle's `net` declaration, which a remote image URL is judged against. */
+  private netPermission: NetPermission | undefined;
 
-  setPermissionConfig(config: AIPermissionConfig): void {
+  setPermissionConfig(config: AIPermissionConfig, net?: NetPermission): void {
     this.permissionConfig = config;
+    this.netPermission = net;
   }
 
   /** Lazy-load @huggingface/transformers */
@@ -425,6 +430,15 @@ export class TransformersManager {
           if (part && typeof part === 'object' && (part as Record<string, unknown>).type === 'image') {
             const imageUrl = (part as Record<string, unknown>).image as string;
             if (imageUrl && tf.RawImage) {
+              // `RawImage.fromURL` is a fetch. A data: or blob: image — the
+              // ordinary case — carries its bytes; a remote one is egress and
+              // is held to the same `allow_http` / `allowed_hosts` verdict
+              // as `softn.net.fetch`. Thrown, not warned past: the script
+              // asked for something the bundle is not allowed to do.
+              if (typeof imageUrl === 'string' && isRemoteUrl(imageUrl)) {
+                const verdict = describeNetDestination(imageUrl, this.netPermission);
+                if (!verdict.allowed) throw new Error(`Image URL not allowed: ${verdict.reason}`);
+              }
               try {
                 image = await tf.RawImage.fromURL(imageUrl);
               } catch (e) {

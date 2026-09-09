@@ -485,6 +485,12 @@ function softn_entry(array $config, string $name, bool $icon): never
     }
     $head = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD';
     $range = $_SERVER['HTTP_RANGE'] ?? null;
+    // A range is only meaningful against the entry the client has part of.
+    // If-Range names that entry; when it is not this one — the bundle was
+    // republished under the same address — the whole entry goes back as 200,
+    // else the client stitches bytes of the new file onto bytes of the old.
+    $ifRange = $_SERVER['HTTP_IF_RANGE'] ?? null;
+    if (is_string($ifRange) && trim($ifRange) !== $etag) $range = null;
     if (is_string($range) && $size > 0 && preg_match('/^bytes=(\d*)-(\d*)$/', $range, $m) && ($m[1] !== '' || $m[2] !== '')) {
         if ($m[1] === '') {
             $suffix = min((int)$m[2], $size);

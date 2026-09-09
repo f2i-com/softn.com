@@ -720,10 +720,13 @@ export function extractIconDataUrl(
   const mime = safeMimeTypes[ext];
   if (!mime) return undefined;
 
-  // Convert Uint8Array to base64
-  let binary = '';
-  for (let i = 0; i < iconData.length; i++) {
-    binary += String.fromCharCode(iconData[i]);
+  // Convert Uint8Array to base64. In slices, not a byte at a time: appending
+  // one character per byte re-copies the string as it grows, and a whole
+  // slice is one call — kept under the argument-count limit an engine puts
+  // on apply().
+  const parts: string[] = [];
+  for (let i = 0; i < iconData.length; i += 0x8000) {
+    parts.push(String.fromCharCode.apply(null, Array.from(iconData.subarray(i, i + 0x8000))));
   }
-  return `data:${mime};base64,${btoa(binary)}`;
+  return `data:${mime};base64,${btoa(parts.join(''))}`;
 }

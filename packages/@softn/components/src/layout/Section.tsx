@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { useJudgedBackground } from '../utils/egress';
 
 export interface SectionProps {
   /** Section content */
@@ -58,11 +59,14 @@ export function Section({
   const [collapsed, setCollapsed] = React.useState(defaultCollapsed);
   const paddingValue = sizeMap[padding] || padding;
   const gapValue = sizeMap[gap] || gap;
+  // A `url()` in `background` is a fetch the renderer's scrub of `style`
+  // never sees; the same policy decides it here.
+  const safeBackground = useJudgedBackground(background);
 
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
-    background,
+    background: safeBackground,
     borderRadius,
     border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
     overflow: 'hidden',

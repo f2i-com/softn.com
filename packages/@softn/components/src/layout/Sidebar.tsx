@@ -5,6 +5,7 @@
  */
 
 import React, { useState, useCallback, createContext, useContext } from 'react';
+import { useJudgedBackground } from '../utils/egress';
 
 // Context for sidebar collapsed state
 export const SidebarContext = createContext<{ collapsed: boolean }>({ collapsed: false });
@@ -69,6 +70,10 @@ export function Sidebar({
     onCollapse?.(newState);
   }, [isCollapsed, controlledCollapsed, onCollapse]);
 
+  // A `url()` in `background` is a fetch the renderer's scrub of `style`
+  // never sees; the same policy decides it here.
+  const safeBackground = useJudgedBackground(background);
+
   const containerStyle: React.CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
@@ -76,7 +81,7 @@ export function Sidebar({
     minWidth: isCollapsed ? collapsedWidth : width,
     maxWidth: isCollapsed ? collapsedWidth : width,
     alignSelf: 'stretch',
-    background,
+    background: safeBackground,
     borderRight: position === 'left' ? `1px solid ${borderColor}` : 'none',
     borderLeft: position === 'right' ? `1px solid ${borderColor}` : 'none',
     transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',

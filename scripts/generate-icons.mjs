@@ -27,9 +27,12 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
 
-const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
+// fileURLToPath, not URL.pathname: the pathname keeps percent-encoding, so a
+// checkout under a directory with a space could not find its own node_modules.
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // The mark, on the 32x32 grid it is authored on. Coral brackets because they
 // are the language, a mint dot because it is the thing that runs — the same

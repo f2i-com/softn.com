@@ -18,6 +18,8 @@ import {
   StyleBlock,
   TemplateNode,
   ElementNode,
+  SlotNode,
+  TemplateSlotNode,
   ExpressionNode,
   IfBlock,
   EachBlock,
@@ -41,7 +43,13 @@ import {
   isStyleBlock,
   isTemplateNode,
 } from './ast';
-import { SoftNParseError, UnexpectedTokenError, MismatchedTagError, InvalidCollectionError } from './errors';
+import {
+  SoftNParseError,
+  UnexpectedTokenError,
+  UnclosedTagError,
+  MismatchedTagError,
+  InvalidCollectionError,
+} from './errors';
 
 export class Parser {
   private lexer: Lexer;
@@ -724,12 +732,19 @@ export class Parser {
    * Parse an element
    * Supports inline conditionals (if=) and loops (each=/as=)
    */
-  private parseElement(): ElementNode {
+  private parseElement(): ElementNode | SlotNode | TemplateSlotNode {
     const loc = this.currentLoc();
 
-    // Get tag name
+    // Get tag name.
+    //
+    // Keywords included: the lexer types `slot`, `template`, `data`,
+    // `component` as keyword tokens, and matching IDENTIFIER alone left such
+    // an element with an empty tag and its name still unconsumed as the first
+    // "attribute". Its close tag then never matched the empty name, so the
+    // element swallowed every sibling after it — `<Card><slot/></Card><Text>`
+    // lost the Text — with only a "expected </>" diagnostic to go on.
     let tagName = '';
-    if (this.curTokenIs(TokenType.IDENTIFIER)) {
+    if (this.isPropertyName()) {
       tagName = this.curToken.literal;
       this.nextToken();
     }
@@ -826,17 +841,47 @@ export class Parser {
 
     // Parse children if not self-closing
     if (!element.selfClosing) {
-      element.children = this.parseChildren(tagName);
+      element.children = this.parseChildren(tagName, loc);
+    }
+
+    // `<slot>` and `<template slot="…">` are the Slot / TemplateSlot nodes the
+    // renderer already resolves (renderSlot, extractSlotContent); nothing
+    // produced them before because the tags did not parse at all (see the tag
+    // name above). Only the plain forms: a slot carrying `if=` / `each=` is
+    // left as an element rather than have its condition dropped on the floor.
+    if (!element.conditionalIf && !element.inlineEach) {
+      if (tagName === 'slot') {
+        return {
+          type: 'Slot',
+          name: this.staticPropValue(element, 'name') ?? 'default',
+          fallback: element.children,
+          loc,
+        };
+      }
+      if (tagName === 'template') {
+        const slotName = this.staticPropValue(element, 'slot');
+        if (slotName !== undefined) {
+          return { type: 'TemplateSlot', name: slotName, children: element.children, loc };
+        }
+      }
     }
 
     return element;
   }
 
+  /** The value of a quoted attribute — `name="x"` — or undefined if not written that way. */
+  private staticPropValue(element: ElementNode, name: string): string | undefined {
+    const prop = element.props.find((p) => p.name === name);
+    return prop && prop.value.type === 'static' ? prop.value.value : undefined;
+  }
+
   /**
    * Parse children until closing tag
    */
-  private parseChildren(parentTag: string): TemplateNode[] {
+  private parseChildren(parentTag: string, openLoc: SourceLocation): TemplateNode[] {
     const children: TemplateNode[] = [];
+    let closed = false;
+    const diagnosticsBefore = this.diagnostics.length;
 
     while (!this.curTokenIs(TokenType.EOF)) {
       this.skipComments();
@@ -844,13 +889,15 @@ export class Parser {
       // Check for closing tag
       if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
         this.nextToken(); // consume </
-        if (this.curTokenIs(TokenType.IDENTIFIER)) {
+        // Keyword tags (`</slot>`) close like any other — see parseElement.
+        if (this.isPropertyName()) {
           const closeTagName = this.curToken.literal;
           if (closeTagName === parentTag) {
             this.nextToken(); // consume tag name
             if (this.curTokenIs(TokenType.TAG_CLOSE)) {
               this.nextToken(); // consume >
             }
+            closed = true;
             break;
           }
           // Mismatched tag - record diagnostic and skip it, then continue
@@ -893,6 +940,16 @@ export class Parser {
         this.addDiagnostic(error);
         this.skipToChildRecoveryPoint(parentTag);
       }
+    }
+
+    // Reaching EOF without the close tag used to be silent: a missing `</Card>`,
+    // an unterminated `{` or `"` inside it, all simply ended the document there
+    // with fewer nodes and no diagnostic, so the author had nothing to search
+    // for. Only when nothing else was reported inside this element, though —
+    // a mismatched tag or an unterminated template literal already explains
+    // the truncation, and every ancestor would otherwise repeat it.
+    if (!closed && this.diagnostics.length === diagnosticsBefore) {
+      this.addDiagnostic(new UnclosedTagError(parentTag, openLoc, this.source));
     }
 
     return children;
@@ -1534,10 +1591,15 @@ export class Parser {
           const args: Expression[] = [];
 
           while (!this.curTokenIs(TokenType.RPAREN) && !this.curTokenIs(TokenType.EOF)) {
+            const argStart = this.curToken.start;
             args.push(this.parseExpression());
             if (this.curTokenIs(TokenType.COMMA)) {
               this.nextToken();
             }
+            // Same guard as the plain call below: `fn?.(x => x)` or
+            // `fn?.(...args)` otherwise pushes a synthetic `undefined` here
+            // forever, and the args array grows until the heap gives out.
+            this.expectProgress(argStart, TokenType.RPAREN);
           }
 
           this.expectToken(TokenType.RPAREN);

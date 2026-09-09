@@ -267,6 +267,27 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     expect(bad.status).toBe(416);
   });
 
+  it('honours a range only when If-Range names the entry being served', async () => {
+    const whole = await fetch(`${origin}/index.php?entry=images/pixel.png`, {
+      headers: withCookie(),
+    });
+    const etag = whole.headers.get('etag')!;
+    const current = await fetch(`${origin}/index.php?entry=images/pixel.png`, {
+      headers: withCookie({ Range: 'bytes=10-19', 'If-Range': etag }),
+    });
+    expect(current.status).toBe(206);
+    expect(new Uint8Array(await current.arrayBuffer())).toEqual(pixel.slice(10, 20));
+    // A validator for some earlier build of the entry: the range is ignored
+    // and the whole entry comes back, so the client does not splice bytes
+    // of two different files together.
+    const stale = await fetch(`${origin}/index.php?entry=images/pixel.png`, {
+      headers: withCookie({ Range: 'bytes=10-19', 'If-Range': '"deadbeef-300"' }),
+    });
+    expect(stale.status).toBe(200);
+    expect(stale.headers.get('content-range')).toBeNull();
+    expect(new Uint8Array(await stale.arrayBuffer())).toEqual(pixel);
+  });
+
   it('streams a large entry intact', async () => {
     const response = await fetch(`${origin}/index.php?entry=media/big.bin`, {
       headers: withCookie(),

@@ -187,7 +187,11 @@ export const KEYWORDS: Record<string, TokenType> = {
  * Check if a string is a keyword
  */
 export function lookupKeyword(identifier: string): TokenType {
-  return KEYWORDS[identifier] ?? TokenType.IDENTIFIER;
+  // Own keys only. KEYWORDS is a plain object, so `KEYWORDS['toString']` found
+  // Object.prototype's method and `{toString}` lexed as a token of type
+  // `function toString() …` — the parser rendered nothing for it, and the
+  // same went for `constructor`, `valueOf`, `__proto__`, and the rest.
+  return Object.hasOwn(KEYWORDS, identifier) ? KEYWORDS[identifier] : TokenType.IDENTIFIER;
 }
 
 /**

@@ -16,7 +16,7 @@
  */
 
 import React, { useState, useMemo, useCallback, useId } from 'react';
-import { isSafeUrl } from '@softn/core';
+import { describeMarkupEgress, isSafeUrl, useEgressConfig } from '@softn/core';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -160,6 +160,10 @@ export function SmartCards<T extends Record<string, unknown>>({
   const [searchQuery, setSearchQuery] = useState('');
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const instanceId = useId().replace(/:/g, '');
+  // Whether a record's image may be fetched at all: the scheme check below
+  // stops `javascript:`, and this is the bundle's `net` grant, the same
+  // question the renderer asks of an `<img src>` prop.
+  const egress = useEgressConfig();
 
   // Ensure data is array
   const safeData = useMemo(() => (Array.isArray(data) ? data : []), [data]);
@@ -349,7 +353,11 @@ export function SmartCards<T extends Record<string, unknown>>({
             // the initials the card already draws when there is no image.
             const rawImage = image ? getFieldValue(item, image) : null;
             const imageValue =
-              typeof rawImage === 'string' && isSafeUrl(rawImage) ? rawImage : null;
+              typeof rawImage === 'string' &&
+              isSafeUrl(rawImage) &&
+              describeMarkupEgress(rawImage, egress).allowed
+                ? rawImage
+                : null;
 
             return (
               <div

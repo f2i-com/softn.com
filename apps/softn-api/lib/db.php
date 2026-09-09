@@ -57,6 +57,7 @@ final class Config
                 'limits' => [
                     // [count, seconds] per visitor
                     'publish' => [10, 3600],
+                    'version' => [30, 3600],
                     'comment' => [10, 600],
                     'rate' => [60, 600],
                     'run' => [120, 60],

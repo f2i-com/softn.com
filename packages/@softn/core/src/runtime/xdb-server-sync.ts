@@ -103,6 +103,10 @@ export class XDBServerSync {
   connect(): void {
     if (this.ws) return;
     this.destroyed = false;
+    // Queue local mutations from now on, not from the first auth_ok: what the
+    // app writes before the socket is up is exactly what "accumulated while
+    // offline" means, and it used to be dropped.
+    this.listenForLocalChanges();
     this.createConnection();
   }
 
@@ -117,12 +121,18 @@ export class XDBServerSync {
       this.xdbUnsubscribe();
       this.xdbUnsubscribe = null;
     }
+    const wasConnected = this.connected;
     if (this.ws) {
-      this.ws.close();
+      // Cleared before close(): the socket's own onclose sees it is no longer
+      // the current socket and leaves the state alone, so a connect() that
+      // follows is not undone by the old socket closing late.
+      const ws = this.ws;
       this.ws = null;
+      ws.close();
     }
     this.connected = false;
     this.clientId = null;
+    if (wasConnected) this.listeners.disconnect.forEach((fn) => fn());
   }
 
   /** Get the current connection status. */
@@ -148,23 +158,32 @@ export class XDBServerSync {
   private createConnection(): void {
     // Enforce wss:// in production to prevent MitM. Allow ws:// only when
     // explicitly opted in (local development against localhost).
+    // URL schemes are case-insensitive: `WS://` dials the same plaintext
+    // socket `ws://` does, and used to walk past this check.
     const url = this.config.wsUrl;
-    if (url.startsWith('ws://') && !this.config.allowInsecureWs) {
-      const host = new URL(url.replace('ws://', 'http://')).hostname;
-      if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+    if (/^ws:\/\//i.test(url) && !this.config.allowInsecureWs) {
+      const host = new URL(url.replace(/^ws:\/\//i, 'http://')).hostname;
+      if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1' && host !== '[::1]') {
         this.listeners.error.forEach((fn) => fn('Insecure ws:// connections are blocked outside localhost. Use wss:// or set allowInsecureWs for development.'));
         return;
       }
     }
 
+    let ws: WebSocket;
     try {
-      this.ws = new WebSocket(url);
+      ws = new WebSocket(url);
     } catch (e) {
       this.scheduleReconnect();
       return;
     }
+    this.ws = ws;
 
-    this.ws.onopen = () => {
+    // Every handler checks it still belongs to the current socket. After a
+    // disconnect()+connect(), or a reconnect racing a slow close, the old
+    // socket's onclose used to null out the new one and schedule a second
+    // reconnect, leaving two live sockets behind.
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.send({
         type: 'auth',
         token: this.config.token,
@@ -172,7 +191,8 @@ export class XDBServerSync {
       });
     };
 
-    this.ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
       try {
         const raw = event.data as string;
         if (raw.length > XDBServerSync.MAX_MESSAGE_SIZE) {
@@ -190,7 +210,8 @@ export class XDBServerSync {
       }
     };
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
       this.connected = false;
       this.ws = null;
       this.listeners.disconnect.forEach((fn) => fn());
@@ -199,7 +220,7 @@ export class XDBServerSync {
       }
     };
 
-    this.ws.onerror = () => {
+    ws.onerror = () => {
       // onclose will fire after onerror
     };
   }
@@ -247,16 +268,35 @@ export class XDBServerSync {
 
       // Pull initial state
       this.send({ type: 'sync_pull', collections });
+    } else {
+      // Nothing to pull is a pull that is done. Left false, no local
+      // mutation was ever pushed for an app whose first record is still to
+      // be written.
+      this.initialPullDone = true;
     }
 
-    // Flush any mutations that accumulated while offline
-    if (this.pendingOps.size > 0) {
-      const ops = Array.from(this.pendingOps.values());
-      this.send({ type: 'sync_push', ops });
-    }
+    // Flush any mutations that accumulated while offline. Ops queued before
+    // the first pull wait for it, and go out from handleSyncState.
+    this.flushPendingOps();
 
     // Listen for local XDB mutations and push them to the server
     this.listenForLocalChanges();
+  }
+
+  /**
+   * Push every queued op and forget the ones that went out. The protocol has
+   * no ack — a `sync_reject` is the only answer an op ever gets — so an op
+   * is done once the socket has taken it. Keeping it made every reconnect
+   * replay the whole history of the session.
+   */
+  private flushPendingOps(): void {
+    if (!this.connected || !this.initialPullDone || this.pendingOps.size === 0) return;
+    const ops = Array.from(this.pendingOps.values());
+    // Stamped now: an op queued before auth knew no client id.
+    for (const op of ops) op.clientId = this.clientId ?? op.clientId;
+    if (this.send({ type: 'sync_push', ops })) {
+      for (const op of ops) this.pendingOps.delete(op.id);
+    }
   }
 
   /** Replace local collection data with the server's authoritative state. */
@@ -274,6 +314,7 @@ export class XDBServerSync {
       });
     }
     this.initialPullDone = true;
+    this.flushPendingOps();
   }
 
   /** Apply live deltas from other clients. */
@@ -323,8 +364,6 @@ export class XDBServerSync {
     // Subscribe to XDB events. When the local app creates/updates/deletes
     // a record, we push the mutation to the server.
     this.xdbUnsubscribe = this.xdb.onMutation((event) => {
-      if (!this.connected || !this.initialPullDone) return;
-
       // Don't re-push mutations that came from the server
       if (event.source === 'server') return;
 
@@ -339,8 +378,11 @@ export class XDBServerSync {
         clientId: this.clientId ?? 'unknown',
       };
 
+      // Queued whether or not the socket is up. The connected check used to
+      // come first, so a mutation made offline was never queued at all and
+      // the "flush on reconnect" step had nothing to flush.
       this.pendingOps.set(opId, op);
-      this.send({ type: 'sync_push', ops: [op] });
+      this.flushPendingOps();
     });
   }
 
@@ -354,10 +396,13 @@ export class XDBServerSync {
     return [];
   }
 
-  private send(msg: ClientMessage): void {
+  /** Send on an open socket; false when there was none to send on. */
+  private send(msg: ClientMessage): boolean {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+      return true;
     }
+    return false;
   }
 
   private scheduleReconnect(): void {

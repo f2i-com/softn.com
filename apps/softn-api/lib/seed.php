@@ -76,6 +76,11 @@ final class Seed
         foreach ($existing as $r) {
             $existingMap[$r['slug']] = $r;
         }
+        // A folder the catalogue skipped this boot is not listed, but it is
+        // still there: seeding over it would publish the demo again as
+        // `<slug>-2`, and the sweep below would retire that copy as one the
+        // index does not name — on every request until the folder is fixed.
+        $skipped = Catalog::skipped();
 
         // A second request arriving while this one seeds must not seed too.
         $lock = fopen("$dir/seed.lock", 'c');
@@ -86,6 +91,7 @@ final class Seed
                 $file = "$demos/" . basename($entry['file']);
                 if (!is_file($file)) continue;
                 $id = is_string($entry['id'] ?? null) ? $entry['id'] : Apps::slugify((string) ($entry['name'] ?? $entry['file']));
+                if (isset($skipped[$id])) continue;
                 $currentMeta = [
                     'slug' => $id,
                     'name' => is_string($entry['name'] ?? null) ? $entry['name'] : null,
@@ -135,7 +141,7 @@ final class Seed
             }
             $seeded=array_keys(array_filter(Catalog::all(),fn($a)=>$a['source']==='seed'));
             foreach ($seeded as $slug) {
-                if (isset($indexed[$slug])) continue;
+                if (isset($indexed[$slug]) || isset($skipped[$slug])) continue;
                 try {
                     Apps::remove((string) $slug);
                 } catch (Throwable $e) {

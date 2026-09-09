@@ -397,17 +397,22 @@ export class GpuComputeManager {
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
 
-    const encoder = device.createCommandEncoder();
-    encoder.copyBufferToBuffer(entry.buffer, 0, staging, 0, entry.size);
-    device.queue.submit([encoder.finish()]);
+    // Destroyed on every path: a mapAsync that rejects (device lost, buffer
+    // released mid-copy) used to leave the staging buffer allocated for the
+    // life of the device, once per failed read.
+    try {
+      const encoder = device.createCommandEncoder();
+      encoder.copyBufferToBuffer(entry.buffer, 0, staging, 0, entry.size);
+      device.queue.submit([encoder.finish()]);
 
-    await staging.mapAsync(GPUMapMode.READ);
-    const Ctor = getTypedArrayCtor(entry.dtype);
-    const result = new Ctor(staging.getMappedRange().slice(0));
-    staging.unmap();
-    staging.destroy();
-
-    return { data: Array.from(result) };
+      await staging.mapAsync(GPUMapMode.READ);
+      const Ctor = getTypedArrayCtor(entry.dtype);
+      const result = new Ctor(staging.getMappedRange().slice(0));
+      staging.unmap();
+      return { data: Array.from(result) };
+    } finally {
+      staging.destroy();
+    }
   }
 
   // ── Release ──

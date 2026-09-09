@@ -35,6 +35,9 @@ const flag = (name, fallback) => {
 const outArg = flag('--out', process.env.SOFTN_APPS_DIR || '');
 const outDir = outArg ? path.resolve(process.cwd(), outArg) : path.join(here, 'apps');
 const includeUnlisted = args.includes('--include-unlisted');
+// Every source publishes SHA256SUMS.txt beside its bundles; a release without
+// one is a mistake to stop on, not a bundle to index and publish unverified.
+const allowUnverified = args.includes('--allow-unverified');
 
 const config = JSON.parse(fs.readFileSync(path.join(here, 'repos.json'), 'utf8'));
 const sources = Array.isArray(config.sources) ? config.sources : [];
@@ -144,6 +147,7 @@ let reused = 0;
 
 function place(file, bytes, expectedSha) {
   const hash = sha256(bytes);
+  if (!expectedSha && !allowUnverified) throw new Error(`${file}: the release has no checksum for it; add SHA256SUMS.txt to the release, or pass --allow-unverified to take it as downloaded`);
   if (expectedSha && hash !== expectedSha) throw new Error(`${file}: hash ${hash} does not match the release's ${expectedSha}`);
   fs.writeFileSync(path.join(outDir, file), bytes);
   return hash;

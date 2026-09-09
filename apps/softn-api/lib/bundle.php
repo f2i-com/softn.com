@@ -17,6 +17,14 @@ final class Bundle
     public const MAX_UNCOMPRESSED = 128 * 1024 * 1024;
     public const MAX_ICON_BYTES = 512 * 1024;
     /**
+     * The two JSON files are decoded whole, so they are capped before they
+     * are read: the 128 MB expansion limit alone let a 122 KB upload carry
+     * a 120 MB manifest, and decoding it exhausted memory — a fatal no
+     * catch sees — on every request that inspected the bundle.
+     */
+    public const MAX_MANIFEST_BYTES = 256 * 1024;
+    public const MAX_PERMISSION_BYTES = 64 * 1024;
+    /**
      * The capability schema, as the runtime has it: one name for each thing a
      * bundle's permission.json may ask for, in the order the app page lists
      * them. This is a copy of packages/@softn/core/src/runtime/capabilities.ts
@@ -61,8 +69,8 @@ final class Bundle
                 $total += (int) $stat['size'];
                 if ($total > self::MAX_UNCOMPRESSED) throw new ApiError(400, 'The bundle expands to more than 128 MB.');
             }
-            $manifestText = $zip->getFromName('manifest.json');
-            if ($manifestText === false) throw new ApiError(400, 'The bundle has no manifest.json.');
+            $manifestText = self::readJsonEntry($zip, 'manifest.json', self::MAX_MANIFEST_BYTES);
+            if ($manifestText === null) throw new ApiError(400, 'The bundle has no manifest.json.');
             $manifest = json_decode($manifestText, true, 32);
             if (!is_array($manifest)) throw new ApiError(400, 'The bundle\'s manifest.json is not valid JSON.');
             $name = Text::clean(is_string($manifest['name'] ?? null) ? $manifest['name'] : '', 64);
@@ -76,8 +84,8 @@ final class Bundle
 
             $capabilities = [];
             $storagePolicies = [];
-            $permText = $zip->getFromName('permission.json');
-            if ($permText !== false) ['capabilities' => $capabilities, 'storagePolicies' => $storagePolicies] = self::readDeclaration($permText);
+            $permText = self::readJsonEntry($zip, 'permission.json', self::MAX_PERMISSION_BYTES);
+            if ($permText !== null) ['capabilities' => $capabilities, 'storagePolicies' => $storagePolicies] = self::readDeclaration($permText);
             $execution = 'main';
             $config = is_array($manifest['config'] ?? null) ? $manifest['config'] : [];
             if (($config['execution'] ?? null) === 'worker') $execution = 'worker';
@@ -111,6 +119,21 @@ final class Bundle
             'sha256' => hash_file('sha256', $path) ?: '',
             'entries' => $count,
         ];
+    }
+
+    /**
+     * One of the bundle's JSON files, or null when it has none: refused by
+     * its declared size before a byte is read, and read to no more than that
+     * cap in case the declaration lied.
+     */
+    private static function readJsonEntry(ZipArchive $zip, string $name, int $max): ?string
+    {
+        $stat = $zip->statName($name);
+        if ($stat === false) return null;
+        if ((int) $stat['size'] > $max) throw new ApiError(400, "The bundle's $name is larger than " . intdiv($max, 1024) . ' KB.');
+        $text = $zip->getFromName($name, $max);
+        if ($text === false) throw new ApiError(400, "The bundle's $name cannot be read.");
+        return $text;
     }
 
     /**

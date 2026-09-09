@@ -53,4 +53,7 @@ scripts/softn-apps/data/
 apps/softn-single/public/app.softn
 
 # Verified binary inputs for optional single-app backend packaging
-.cache/single-backend/
+.cache/
+
+# Python bytecode from the verification scripts
+__pycache__/

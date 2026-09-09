@@ -168,3 +168,43 @@ describe('the other spellings of a fetch', () => {
     ).toEqual([]);
   });
 });
+
+describe('non-hex escapes and backslash slashes', () => {
+  // The browser undoes `\r` to `r` and `\t` to `t` before it reads a name or
+  // a scheme, and resolves `/\host` as `//host`, so each of these was a fetch
+  // the sanitizer could not see. A style block gets no remote resource at all,
+  // whatever the bundle's capabilities.
+  it('blocks a function name split by a non-hex escape', () => {
+    expect(remoteTargets(sanitizeBundleCSS('.a { background: u\\rl(https://evil.test/x) }'))).toEqual([]);
+    expect(sanitizeBundleCSS('.a { background: u\\rl(https://evil.test/x) }')).not.toContain('evil.test');
+  });
+
+  it('blocks a scheme split by a non-hex escape', () => {
+    const out = sanitizeBundleCSS('.a { background: url("h\\ttps://evil.test/x") }');
+    expect(remoteTargets(out)).toEqual([]);
+    expect(out).not.toContain('evil.test');
+  });
+
+  it('blocks a protocol-relative URL spelled with escaped backslashes', () => {
+    for (const css of [
+      '.a { background: url("/\\/evil.test/x") }',
+      '.a { background: url("\\\\\\\\evil.test/x") }',
+      '.a { background: url(/\\\\evil.test/x) }',
+    ]) {
+      const out = sanitizeBundleCSS(css);
+      expect(remoteTargets(out)).toEqual([]);
+      expect(out).not.toContain('evil.test');
+    }
+  });
+
+  it('removes an @import whose keyword carries a non-hex escape', () => {
+    const out = sanitizeBundleCSS('@im\\port "https://evil.test/x.css"; .a { color: red }');
+    expect(out).not.toContain('evil.test');
+    expect(out).toBe('/* @import removed */ .a { color: red }');
+  });
+
+  it('still keeps a plain relative url()', () => {
+    const css = '.a { background: url(images/bg.png) } .b { background: url("./fonts/x.woff2") }';
+    expect(sanitizeBundleCSS(css)).toBe(css);
+  });
+});

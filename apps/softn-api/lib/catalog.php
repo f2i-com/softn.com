@@ -149,10 +149,13 @@ final class Catalog
     public static function patch(string $slug, array $fields): void { $d = self::doc($slug); $d['app'] = array_replace($d['app'], $fields); self::put($slug, $d); }
     public static function remove(string $slug): void {
         self::doc($slug);
-        // Atomically retire the entire directory; recovery never rediscovers it.
+        self::retire($slug);
+        unset(self::$docs[$slug]);
+    }
+    /** Atomically retire the entire directory, listed or not; recovery never rediscovers it. */
+    public static function retire(string $slug): void {
         $from = self::path($slug); $trash = Config::dataDir() . '/.retired-' . $slug . '-' . bin2hex(random_bytes(6));
         if (!rename($from, $trash)) throw new ApiError(503, 'Cannot retire app folder.');
-        unset(self::$docs[$slug]);
         foreach (scandir($trash) ?: [] as $name) if ($name !== '.' && $name !== '..' && !is_dir("$trash/$name")) @unlink("$trash/$name");
         @rmdir($trash);
     }
@@ -174,14 +177,23 @@ final class Catalog
             if ($stat === false) { error_log("softn-api: unreadable bundle $slug/$file"); continue; }
             $fingerprint = [$stat['size'],$stat['mtime'],$stat['ctime']];
             $cached = self::$cache[$key] ?? null;
-            if(!is_array($cached) || !is_array($cached['info']??null) || array_diff(['manifest','name','version','description','capabilities','storagePolicies','execution','icon','size','sha256'],array_keys($cached['info'])))$cached=null;
+            // The icon is only needed the first time a folder is met, so it is only cached then; an entry without one is re-read if the need arises.
+            if(!is_array($cached) || !is_array($cached['info']??null) || array_diff(['author','name','version','description','capabilities','storagePolicies','execution','size','sha256'],array_keys($cached['info'])) || (!$old && !array_key_exists('icon',$cached['info'])))$cached=null;
             if (!$cached || ($cached['stat'] ?? []) !== $fingerprint || time() - ($cached['checked'] ?? 0) >= 5) {
                 // Any failure to read one bundle skips that bundle, not the
                 // app and not the directory: a truncated upload, a zip the
                 // extension refuses, a manifest that is not JSON.
-                try { $info = Bundle::inspect($path); }
+                try { $full = Bundle::inspect($path); }
                 catch (Throwable $e) { error_log("softn-api: invalid bundle in $slug/$file: " . $e->getMessage()); if (isset(self::$cache[$key])) { unset(self::$cache[$key]); self::$cacheDirty = true; } continue; }
-                if ($info['icon']) $info['icon'][0] = base64_encode($info['icon'][0]);
+                // Only what this function reads is cached. The whole manifest
+                // (and every icon) went in once, and cache/bundles.json is
+                // read back on every request, for every bundle.
+                $author = $full['manifest']['author'] ?? null;
+                if (is_array($author)) $author = $author['name'] ?? null;
+                $info = ['author'=>is_string($author) ? (Text::clean($author, 40) ?: 'Anonymous') : 'Anonymous'];
+                foreach (['name','version','description','capabilities','storagePolicies','execution','size','sha256'] as $field) $info[$field] = $full[$field];
+                if (!$old) $info['icon'] = $full['icon'] ? [base64_encode($full['icon'][0]), $full['icon'][1]] : null;
+                unset($full);
                 self::$cache[$key] = ['stat'=>$fingerprint,'checked'=>time(),'info'=>$info]; self::$cacheDirty = true;
             } else $info = $cached['info'];
             if (!isset($info)) $info = self::$cache[$key]['info'];
@@ -191,10 +203,10 @@ final class Catalog
             $previous = null; foreach ($doc['versions'] as $v) if ($v['file']===$file) $previous=$v;
             $versions[$number] = ['slug'=>$slug,'version'=>$number,'file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'notes'=>$previous['notes']??'','created_at'=>$previous['created_at']??$stat['mtime']];
             if (!$old || $number >= (int)$doc['app']['latest_version']) {
-                if (!$old) { $doc['app']['name']=$info['name']; $doc['app']['description']=$info['description']; $author=$info['manifest']['author']??'Anonymous'; $doc['app']['author']=is_string($author)?$author:($author['name']??'Anonymous'); }
+                if (!$old) { $doc['app']['name']=$info['name']; $doc['app']['description']=$info['description']; $doc['app']['author']=$info['author']; }
                 $doc['app']['latest_version']=$number; $doc['app']['size']=$info['size'];
                 $doc['app']['capabilities']=json_encode($info['capabilities']); $doc['app']['execution']=$info['execution']; $doc['app']['storage_policies']=json_encode((object)$info['storagePolicies']);
-                if (!$old && $info['icon']) { $icon='icon.'.Images::extension($info['icon'][1]); if (@file_put_contents("$dir/$icon",base64_decode($info['icon'][0]),LOCK_EX) !== false) $doc['app']['icon']=$icon; else error_log("softn-api: icon for $slug could not be written"); }
+                if (!$old && !empty($info['icon'])) { $icon='icon.'.Images::extension($info['icon'][1]); if (@file_put_contents("$dir/$icon",base64_decode($info['icon'][0]),LOCK_EX) !== false) $doc['app']['icon']=$icon; else error_log("softn-api: icon for $slug could not be written"); }
             }
             unset($info);
         }

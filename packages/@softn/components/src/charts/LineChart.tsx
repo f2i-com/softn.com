@@ -6,6 +6,7 @@
  */
 
 import * as React from 'react';
+import { normaliseSeries } from './series';
 
 export interface DataPoint {
   x: number | string;
@@ -48,7 +49,7 @@ export interface LineChartProps {
 const defaultColors = ['#6366f1', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 export function LineChart({
-  series,
+  series: rawSeries,
   width = 600,
   height = 300,
   padding = { top: 20, right: 20, bottom: 40, left: 50 },
@@ -70,6 +71,8 @@ export function LineChart({
   className = '',
   style,
 }: LineChartProps) {
+  // Data that has not arrived yet is an empty chart, not a throw.
+  const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
   const [hoveredSeries, setHoveredSeries] = React.useState<number | null>(null);
   const [hoveredPointIndex, setHoveredPointIndex] = React.useState<number | null>(null);
   const svgRef = React.useRef<SVGSVGElement>(null);

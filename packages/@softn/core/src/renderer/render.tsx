@@ -1381,14 +1381,19 @@ export function evaluateExpression(
 
   switch (expr.type) {
     case 'Identifier':
-      // Look up in state, data, computed, props, functions, then JS globals
-      if (expr.name in context.state) {
+      // Look up in state, data, computed, props, functions, then JS globals.
+      //
+      // Own keys only: these are plain objects, so `in` also answered yes for
+      // everything on Object.prototype, and an identifier named `constructor`
+      // resolved to `Object` itself — from which `defineProperty(__proto__, …)`
+      // is a short step to running arbitrary code from a template.
+      if (Object.hasOwn(context.state, expr.name)) {
         return context.state[expr.name];
       }
-      if (expr.name in context.data) {
+      if (Object.hasOwn(context.data, expr.name)) {
         return context.data[expr.name];
       }
-      if (expr.name in context.computed) {
+      if (Object.hasOwn(context.computed, expr.name)) {
         // A computed is stored as a thunk — `() => callComputed(name)` — because
         // its value has to be re-derived whenever the state it reads moves.
         // Returning the thunk handed the template the function instead of the
@@ -1398,13 +1403,13 @@ export function evaluateExpression(
         const value = context.computed[expr.name];
         return typeof value === 'function' ? (value as () => unknown)() : value;
       }
-      if (expr.name in context.props) {
+      if (Object.hasOwn(context.props, expr.name)) {
         return context.props[expr.name];
       }
-      if (expr.name in context.functions) {
+      if (Object.hasOwn(context.functions, expr.name)) {
         return context.functions[expr.name];
       }
-      if (expr.name in JS_GLOBALS) {
+      if (Object.hasOwn(JS_GLOBALS, expr.name)) {
         return JS_GLOBALS[expr.name];
       }
       // Identifier not found - return undefined (data may not be loaded yet)

@@ -578,6 +578,24 @@ export class SoftNScriptRuntime {
   private syncKeys: Set<string> = new Set();
   /** Cached: true when at least one syncKey is defined on the real window */
   private windowSyncActive = false;
+  /**
+   * The `__` globals the host page already had when this runtime was made —
+   * `__TAURI__`, `__softnAsset`, a devtools hook. A script may read them, and
+   * a script that sets `window.__TAURI__` in the VM is welcome to its own
+   * copy, but none of them is written back to the real window: that is the
+   * host's bridge to native, and a bundle replacing it is a bundle taking the
+   * host over. Everything the app introduces itself still syncs both ways,
+   * which is what the games' input latches (`__scene3dLocked`, `__dhFire`)
+   * rely on — Scene3D and the demo driver set those on the real window after
+   * the script has declared them.
+   */
+  private readonly hostWindowKeys: Set<string>;
+  /**
+   * Keys this runtime wrote onto the real window. Removed again at cleanup,
+   * so that a reload of the same app does not find its own latches already
+   * there and mistake them for the host's.
+   */
+  private windowKeysWritten = new Set<string>();
 
   /** Event types already bridged from VM → browser (prevents duplicate listeners) */
   private bridgedEventTypes: Set<string> = new Set();
@@ -672,6 +690,12 @@ export class SoftNScriptRuntime {
     this.context = context;
     this.permissions = permissions;
     this.appId = appId;
+    // Taken before the app's document mounts, so what is here is the host's.
+    this.hostWindowKeys = new Set(
+      typeof window === 'undefined'
+        ? []
+        : Object.getOwnPropertyNames(window).filter((k) => k.startsWith('__'))
+    );
     this.runtimeMode = options?.mode || 'main';
     this.observedStateNames = options?.observedStateNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
@@ -1592,6 +1616,16 @@ export class SoftNScriptRuntime {
           // Deferred for throttled events since they rarely add new sync keys.
           this.discoverWindowSyncKeys();
         }
+
+        // A handler that called `softn.*` queued a host call the engine is
+        // holding until someone drains it. `callFunction` drains after every
+        // call and the worker runtime drains after every dispatch, but this
+        // path drained nothing, so a `softn.audio.play` from a keydown
+        // handler sat in the queue until the next function call happened to
+        // release it. Not awaited: the handler has returned and the browser
+        // event is over; the calls resolve into the VM as they complete.
+        const pending = this.vmEngine.drainPendingHostCalls();
+        if (pending.length > 0) void this.processPendingHostCallsUnlocked(pending);
       };
 
       let listener: (event: Event) => void;
@@ -1671,6 +1705,21 @@ export class SoftNScriptRuntime {
     this.syncKeys.clear();
     this.windowSyncSeen.clear();
     this.windowSyncActive = false;
+    // The app's latches go with the app. Left behind, the next runtime on
+    // this page — a reload of the same bundle — would snapshot them as the
+    // host's and refuse to write them, and pointer lock would never engage.
+    if (typeof window !== 'undefined') {
+      const realWin = window as unknown as Record<string, unknown>;
+      for (const key of this.windowKeysWritten) {
+        if (this.hostWindowKeys.has(key)) continue;
+        try {
+          delete realWin[key];
+        } catch {
+          // A non-configurable property is not this runtime's to remove.
+        }
+      }
+    }
+    this.windowKeysWritten.clear();
 
     // Silence. A looping track has no reason to stop on its own, so closing
     // the tab on an app playing music would otherwise leave it playing for
@@ -1899,12 +1948,18 @@ export class SoftNScriptRuntime {
     for (const key of this.syncKeys) {
       const value = vmWinObj[key];
       if (value === undefined) continue;
+      // The host's own globals are read-only from in here — see hostWindowKeys.
+      // A function is the host's as well whatever its name: the VM never
+      // receives one (syncWindowToVM skips them), so it cannot be handing one
+      // back, only replacing it.
+      if (this.hostWindowKeys.has(key) || typeof realWin[key] === 'function') continue;
       // A value the script did not touch is not written back. The browser
       // may have moved it since the call began — a pointer-locked camera
       // writes __scene3dYaw on every mouse move — and echoing the copy the
       // VM was handed would throw that movement away.
       if (this.windowSyncSeen.has(key) && Object.is(this.windowSyncSeen.get(key), value)) continue;
       realWin[key] = value;
+      this.windowKeysWritten.add(key);
       this.windowSyncSeen.set(key, value);
     }
   }
@@ -2241,7 +2296,16 @@ export class SoftNScriptRuntime {
       const resp = await fetch(url, {
         method: options.method || 'GET',
         headers: options.headers,
-        body: options.body ? JSON.stringify(options.body) : undefined,
+        // The bridge serialises the whole options object once, so a string
+        // body arrives here as the string the script wrote; encoding it again
+        // sent `"a=1"` as `"\"a=1\""` and no form or text endpoint could read
+        // it. An object body is what the second encoding was for.
+        body:
+          typeof options.body === 'string'
+            ? options.body || undefined
+            : options.body
+              ? JSON.stringify(options.body)
+              : undefined,
         signal: abortController.signal,
         redirect: 'error',
       });
@@ -2334,6 +2398,14 @@ export class SoftNScriptRuntime {
   private async handleQrDecode(call: PendingHostCall): Promise<unknown> {
     this.checkPermission('qr');
     const [imageDataUrl] = call.args;
+    // The argument goes straight to `img.src`, so a remote URL here is a GET
+    // to that host on the bundle's behalf — the same egress `softn.net.fetch`
+    // and `softn.audio.play` are held to. `qr` alone says nothing about the
+    // network; a data: or blob: image, the ordinary case, carries its bytes.
+    if (typeof imageDataUrl === 'string' && isRemoteUrl(imageDataUrl)) {
+      this.checkPermission('net');
+      this.checkNetHost(imageDataUrl);
+    }
     // Use BarcodeDetector API if available
     if ('BarcodeDetector' in globalThis) {
       try {
@@ -3065,7 +3137,11 @@ export class SoftNScriptRuntime {
         this.onnxManager.setBundleFileProvider(this.bundleFileProvider);
       }
       if (this.permissionConfig?.permissions.ai) {
-        this.onnxManager.setPermissionConfig(this.permissionConfig.permissions.ai);
+        // The net declaration rides along: a model URL is egress like any other.
+        this.onnxManager.setPermissionConfig(
+          this.permissionConfig.permissions.ai,
+          this.permissionConfig.permissions.net
+        );
       }
     }
     return this.onnxManager;
@@ -3078,7 +3154,10 @@ export class SoftNScriptRuntime {
       const { TransformersManager } = await import('./ai-transformers-manager');
       this.transformersManager = new TransformersManager();
       if (this.permissionConfig?.permissions.ai) {
-        this.transformersManager.setPermissionConfig(this.permissionConfig.permissions.ai);
+        this.transformersManager.setPermissionConfig(
+          this.permissionConfig.permissions.ai,
+          this.permissionConfig.permissions.net
+        );
       }
     }
     return this.transformersManager;

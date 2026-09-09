@@ -17,7 +17,7 @@ import { parseCached } from '../parser';
 import { renderDocument } from '../renderer';
 import { getDefaultRegistry } from '../renderer/registry';
 import { collectFirstScreenTags } from '../renderer/document-tags';
-import { rewriteCssResources } from '../renderer/sanitize-html';
+import { isRemoteUrl, rewriteCssResources } from '../renderer/sanitize-html';
 import {
   collectObservedStateNames,
   createScriptRuntime,
@@ -90,6 +90,17 @@ export function sanitizeBundleCSS(css: string): string {
   // Strip CSS escape sequences that could bypass protocol detection
   // (e.g. \6a avascript:, \68 ttp:, \75rl)
   let sanitized = css.replace(/\\[0-9a-fA-F]{1,6}\s?/g, '_');
+  // A backslash before anything that is not a hex digit is an escape too: the
+  // browser reads `u\rl(` as `url(`, `h\ttps:` as `https:` and `@im\port` as
+  // `@import`, and the passes below match on the text as written, so each of
+  // those reached the network. An escaped backslash is folded to a slash
+  // rather than kept, because the URL parser treats `\` as `/` under an
+  // http(s) base — `/\host/x` is `//host/x` — and the target test below asks
+  // about slashes. A backslash before a newline is a string continuation and
+  // is left to mean what it says.
+  sanitized = sanitized.replace(/\\([^0-9a-fA-F\r\n\f])/g, (_match, ch: string) =>
+    ch === '\\' ? '/' : ch
+  );
   // Remove @import rules (with or without url()).
   //
   // The separator is `\b` followed by any run of whitespace OR comments, not
@@ -111,8 +122,18 @@ export function sanitizeBundleCSS(css: string): string {
   // path judges the same forms with a different verdict: a style block never
   // gets a remote resource, while an inline one is held to the bundle's
   // network permission.
-  sanitized = rewriteCssResources(sanitized, (target) =>
-    /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/|\\)/i.test(target)
+  //
+  // `isRemoteUrl` is the judge the other sinks use: it drops the characters a
+  // browser ignores before reading a scheme and folds backslashes, so a
+  // target the escape pass above did not fully flatten is still seen for what
+  // it is. The pattern beside it keeps the schemes a style block has never
+  // been allowed — `data:`, `blob:` and `javascript:` carry no host, so the
+  // remote test does not speak to them.
+  sanitized = rewriteCssResources(
+    sanitized,
+    (target) =>
+      isRemoteUrl(target) ||
+      /^\s*(?:https?:|data:|javascript:|blob:|ftp:|\/\/|\\)/i.test(target)
   );
   // Remove expression() (IE) — a code execution vector.
   sanitized = sanitized.replace(/expression\s*\([^)]*\)/gi, '/* expression removed */');
