@@ -92,7 +92,8 @@ data/apps/outerstead/
 The app appears in the directory with its picture, description, rating,
 comments and share page like any other. Its card carries `external`
 (`{url, host}`) and `urls.run` is the address itself: Play opens it in a new
-tab and counts a launch. There is nothing to run here, download, read or
+tab and counts a launch, which for a linked app is also the run (no runtime
+will ever report one). There is nothing to run here, download, read or
 remix, so `urls.bundle`, `download`, `studio`, `builder` and `remix` are
 null and `/bundle.softn`, `/source`, `/versions` and `/remix` answer 404.
 `play_url` (or `playUrl`) must be an `http(s)` address of at most 300
