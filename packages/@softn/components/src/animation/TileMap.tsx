@@ -8,6 +8,7 @@
 
 import * as React from 'react';
 import { isSafeUrl } from '@softn/core';
+import {ViewportTileMap} from './ViewportTileMap';
 
 export interface TileMapProps {
   /** URL of the tileset sprite sheet */
@@ -24,13 +25,18 @@ export interface TileMapProps {
   mapHeight: number;
   /** Display scale multiplier */
   scale?: number;
+  /** Render only the clipped visible region, with a bounded screen-density backing store. */
+  viewport?: boolean;
+  /** Smooth high-resolution artwork when sampling down to the display density. */
+  smooth?: boolean;
+  onVisibleRangeChange?: (range:{x:number;y:number;width:number;height:number})=>void;
   /** Additional inline styles for the canvas */
   style?: React.CSSProperties;
   /** CSS class */
   className?: string;
 }
 
-export function TileMap({
+function LegacyTileMap({
   src,
   tileSize = 32,
   tilesetColumns = 16,
@@ -126,4 +132,5 @@ export function TileMap({
   );
 }
 
+export function TileMap(props:TileMapProps){return props.viewport?<ViewportTileMap {...props}/>:<LegacyTileMap {...props}/>;}
 export default TileMap;

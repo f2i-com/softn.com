@@ -1,0 +1,10 @@
+// @vitest-environment node
+import {afterEach,it,expect,vi} from 'vitest';
+import {SandboxHost} from '../src/runtime/sandbox-host';
+let instances:any[]=[];
+class FakeWorker {onmessage:any;onerror:any;terminate=vi.fn();postMessage=vi.fn();constructor(){instances.push(this);}}
+afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();instances=[];});
+it('bounds startup and replaces a timed-out worker',async()=>{vi.useFakeTimers();vi.stubGlobal('Worker',FakeWorker);const host=new SandboxHost();const result=host.run('code','{}');await vi.advanceTimersByTimeAsync(10000);expect(await result).toEqual({error:'Sandbox startup timed out'});expect(instances[0].terminate).toHaveBeenCalled();const next=host.run('code','{}');expect(instances.length).toBe(2);host.dispose();expect(await next).toEqual({error:'Sandbox cancelled'});});
+it('bounds execution, rejects overlapping work and tolerates late callbacks',async()=>{vi.useFakeTimers();vi.stubGlobal('Worker',FakeWorker);const host=new SandboxHost(),result=host.run('code','{}');expect(await host.run('other','{}')).toEqual({error:'Sandbox is busy'});instances[0].onmessage({data:{ready:true}});await vi.advanceTimersByTimeAsync(1500);expect(await result).toEqual({error:'Sandbox execution timed out'});instances[0].onmessage({data:{value:'late'}});host.dispose();});
+it('reuses warm workers without retaining guest engines and disposes idle workers',async()=>{vi.stubGlobal('Worker',FakeWorker);const host=new SandboxHost();for(let i=0;i<2;i++){const p=host.run('code','{}');instances[0].onmessage({data:{value:i}});expect(await p).toEqual({value:i});}expect(instances.length).toBe(1);host.dispose();expect(instances[0].terminate).toHaveBeenCalled();expect(await host.run('code','{}')).toEqual({error:'Sandbox host closed'});});
+it('rejects invalid input before creating a worker',async()=>{vi.stubGlobal('Worker',FakeWorker);const host=new SandboxHost();expect(await host.run('code','bad')).toHaveProperty('error');expect(await host.run('x'.repeat(65537),'{}')).toHaveProperty('error');expect(instances.length).toBe(0);});

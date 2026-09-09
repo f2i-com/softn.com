@@ -24,6 +24,7 @@ export default defineConfig({
     'src/renderer/index.ts',
     'src/runtime/index.ts',
     'src/runtime/script-worker.ts',
+    'src/runtime/sandbox-worker.ts',
     'src/loader/index.ts',
     // The archive reader on its own, for a host's inflate worker. Importing it
     // from the root barrel pulls the whole of core into the worker — measured

@@ -9,6 +9,8 @@
  */
 
 import { VmAdapter, VM_BRIDGE_PREAMBLE, type SymbolScope } from './vm-adapter';
+import { SandboxHost } from './sandbox-host';
+import { readZipText } from './zip-text';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
 import { LocalSpeechHost } from './local-speech';
 import { extractEventProps } from './event-props';
@@ -604,6 +606,7 @@ export class SoftNScriptRuntime {
   /** Bundle file provider for loading models from .softn bundles */
   private bundleFileProvider: BundleFileProvider | null = null;
   /** External functions (e.g. wallet bridge) to inject into the VM as callable globals */
+  private sandboxHost: SandboxHost | null = null;
   private externalFunctions: Record<string, (...args: unknown[]) => unknown> | null = null;
   /** No-argument external bridge names compiled into the current VM. */
   private externalFunctionNames: string[] = [];
@@ -1640,6 +1643,8 @@ export class SoftNScriptRuntime {
    * Clean up resources (event listeners, WASM engine, etc.)
    */
   cleanup(): void {
+    this.sandboxHost?.dispose();
+    this.sandboxHost=null;
     // Set before anything else: an in-flight `loadScript` checks this after
     // each of its awaits, so a cleanup that lands mid-load stops the script
     // from being executed into an engine nobody will ever dispose.
@@ -2055,6 +2060,18 @@ export class SoftNScriptRuntime {
       case 'audio.whenSpeechEnded':
       case 'audio.stopSpeech':
         return this.handleLocalSpeech(call);
+      case 'sandbox.run':
+        this.sandboxHost ??= new SandboxHost();
+        return this.sandboxHost.run(call.args[0],call.args[1]);
+      case 'files.readZipText': {
+        this.checkPermission('files');
+        const file=getFileByRef(call.args[0]);
+        if(!file||file.size>262144)throw Error('Choose a ZIP smaller than 256 KiB');
+        const bytes=new Uint8Array(await file.arrayBuffer());
+        const files=readZipText(bytes);
+        const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(x=>x.toString(16).padStart(2,'0')).join('');
+        return {files,hash};
+      }
       case 'files.pickFile':
         return this.handleFilesPickFile(call);
       case 'files.readText':
