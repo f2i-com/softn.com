@@ -76,6 +76,19 @@ final class Apps
         throw new ApiError(404,'That version does not exist.');
     }
 
+    /** The address a linked app plays at, or null for an app whose bundle is here. */
+    public static function playUrl(array $row): ?string {
+        $url = $row['play_url'] ?? null;
+        return is_string($url) && $url !== '' ? $url : null;
+    }
+
+    /** The routes that hand out or take in bundle bytes have nothing for a linked app. */
+    public static function requireBundle(string $slug): array {
+        $row = self::row($slug);
+        if (self::playUrl($row) !== null) throw new ApiError(404, 'This app plays on its own site; there is no bundle here to run, download, read or remix.');
+        return $row;
+    }
+
     // ── Presentation ───────────────────────────────────────────────────────
 
     /** @param array<string, mixed> $row @return array<string, mixed> */
@@ -83,6 +96,8 @@ final class Apps
     {
         $slug = (string) $row['slug'];
         $bundle = "/api/apps/$slug/bundle.softn";
+        $playUrl = self::playUrl($row);
+        $external = $playUrl === null ? null : ['url' => $playUrl, 'host' => (string) (parse_url($playUrl, PHP_URL_HOST) ?: '')];
         $count = (int) $row['rating_count'];
         $parent = null;
         if (!empty($row['parent_slug'])) {
@@ -118,16 +133,19 @@ final class Apps
             'comments' => (int) $row['comments'],
             'parent' => $parent,
             'source' => (string) $row['source'],
+            // Set when the app lives on its own site: Play opens this address in
+            // a new tab, and the bundle URLs below are null because there is none.
+            'external' => $external,
             'createdAt' => gmdate('c', (int) $row['created_at']),
             'updatedAt' => gmdate('c', (int) $row['updated_at']),
             'urls' => [
                 'page' => "/app/$slug",
-                'run' => "/web/app/$slug",
-                'bundle' => $bundle,
-                'download' => "$bundle?download=1",
-                'studio' => '/studio/?open=' . rawurlencode($bundle),
-                'builder' => '/builder/?open=' . rawurlencode($bundle),
-                'remix' => "/publish?remix=$slug",
+                'run' => $playUrl ?? "/web/app/$slug",
+                'bundle' => $external ? null : $bundle,
+                'download' => $external ? null : "$bundle?download=1",
+                'studio' => $external ? null : '/studio/?open=' . rawurlencode($bundle),
+                'builder' => $external ? null : '/builder/?open=' . rawurlencode($bundle),
+                'remix' => $external ? null : "/publish?remix=$slug",
             ],
         ];
     }
@@ -171,7 +189,7 @@ final class Apps
         $card['remixList'] = $remixes;
         $card['lineage'] = $lineage;
         $card['storage'] = Storage::summary($slug);
-        $card['manifest'] = self::manifestSummary($slug, (int) $row['latest_version']);
+        $card['manifest'] = $card['external'] ? null : self::manifestSummary($slug, (int) $row['latest_version']);
         return $card;
     }
 

@@ -31,6 +31,9 @@ try {
  case 'version':Apps::addVersion($job['slug'],$job['bundle'],'parallel');break;
  case 'publish':echo json_encode(Apps::create($job['bundle'],['name'=>$job['name']??'Concurrent']));break;
  case 'skipped':echo json_encode(Catalog::skipped());break;
+ case 'card':echo json_encode(Apps::card(Apps::row($job['slug'])));break;
+ case 'detail':echo json_encode(Apps::detail(Apps::row($job['slug'])));break;
+ case 'bundle':Apps::requireBundle($job['slug']);echo json_encode(Apps::version($job['slug']));break;
  case 'lock':Catalog::boot();file_put_contents($argv[1].'/locked','1');sleep(30);break;
  }
 }catch(ApiError $e){fwrite(STDERR,$e->status.':'.$e->getMessage());exit(1);}
@@ -142,5 +145,45 @@ CREATE TABLE categories (id TEXT,name TEXT,description TEXT,emoji TEXT,status TE
   f.run({op:'run',slug:'legacy'});assert.equal(f.run({op:'doc',slug:'legacy'}).app.runs,18);
   assert.deepEqual(fs.readFileSync(path.join(f.root,'directory.sqlite')),original);
   assert.ok(fs.existsSync(path.join(f.root,'directory-migrated.json')));
+ }finally{f.close();}
+});
+test('a folder with only app.json and a play_url is a linked app: listed, played elsewhere, with no bundle here',skip,()=>{
+ const f=fixture();try{
+  f.add('hosted',1,'Hosted');
+  const dir=path.join(f.root,'apps/outerstead');fs.mkdirSync(dir,{recursive:true});
+  fs.writeFileSync(path.join(dir,'thumb.png'),Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc0f01f0005000201c1a4a5b40000000049454e44ae426082','hex'));
+  fs.writeFileSync(path.join(dir,'app.json'),JSON.stringify({schemaVersion:1,app:{name:'Outerstead',author:'Lance',category:'games',description:'A frontier colony sim.',tags:['colony'],thumb:'thumb.png',playUrl:'https://outerstead.com/'}}));
+  // Neither a bundle nor an address: still not listed.
+  fs.mkdirSync(path.join(f.root,'apps/empty'));fs.writeFileSync(path.join(f.root,'apps/empty/app.json'),JSON.stringify({schemaVersion:1,app:{name:'Empty'}}));
+  const listing=f.run({op:'list'});
+  assert.deepEqual(listing.apps.map(a=>a.slug).sort(),['hosted','outerstead']);
+  const card=listing.apps.find(a=>a.slug==='outerstead');
+  assert.deepEqual(card.external,{url:'https://outerstead.com/',host:'outerstead.com'});
+  assert.equal(card.urls.run,'https://outerstead.com/');
+  for(const k of ['bundle','download','studio','builder','remix'])assert.equal(card.urls[k],null,`urls.${k} is null for a linked app`);
+  assert.equal(card.version,0);assert.equal(card.size,0);assert.deepEqual(card.capabilities,[]);
+  assert.equal(card.thumbnailKind,'image');assert.equal(card.name,'Outerstead');assert.equal(card.author,'Lance');
+  const hosted=listing.apps.find(a=>a.slug==='hosted');
+  assert.equal(hosted.external,null);assert.equal(hosted.urls.run,'/web/app/hosted');assert.equal(hosted.urls.bundle,'/api/apps/hosted/bundle.softn');
+  // The generated metadata keeps the address under its stored name, and reading it back changes nothing.
+  const doc=JSON.parse(fs.readFileSync(path.join(dir,'app.json')));
+  assert.equal(doc.app.play_url,'https://outerstead.com/');assert.equal('playUrl' in doc.app,false);assert.equal(doc.app.latest_version,0);
+  const mtime=fs.statSync(path.join(dir,'app.json')).mtimeMs;f.run({op:'list'});assert.equal(fs.statSync(path.join(dir,'app.json')).mtimeMs,mtime);
+  // Play counts like any other app; the detail page has no versions or manifest; the bundle routes have nothing.
+  f.run({op:'run',slug:'outerstead',count:3});
+  const detail=f.run({op:'detail',slug:'outerstead'});
+  assert.equal(detail.runs,3);assert.deepEqual(detail.versions,[]);assert.equal(detail.manifest,null);assert.deepEqual(detail.external,{url:'https://outerstead.com/',host:'outerstead.com'});
+  const r=spawnSync('php',f.args({op:'bundle',slug:'outerstead'}),{encoding:'utf8'});assert.equal(r.status,1);assert.match(r.stderr,/404:This app plays on its own site/);
+  assert.equal(f.run({op:'bundle',slug:'hosted'}).version,1);
+  // An address that is not http(s) skips the folder with the reason, like any invalid app.json.
+  fs.writeFileSync(path.join(dir,'app.json'),JSON.stringify({...doc,app:{...doc.app,play_url:'javascript:alert(1)'}}));
+  assert.deepEqual(f.run({op:'list'}).apps.map(a=>a.slug),['hosted']);
+  assert.match(f.run({op:'skipped'}).outerstead,/Invalid play_url/);
+  fs.writeFileSync(path.join(dir,'app.json'),JSON.stringify({...doc,app:{...doc.app,play_url:'https://outerstead.com/?utm=softn'}}));
+  assert.equal(f.run({op:'card',slug:'outerstead'}).urls.run,'https://outerstead.com/?utm=softn');
+  // A bundle dropped beside the address: the address keeps precedence, the version is now there.
+  f.add('outerstead',1,'Outerstead');
+  const both=f.run({op:'card',slug:'outerstead'});
+  assert.equal(both.external.host,'outerstead.com');assert.equal(both.version,1);assert.equal(both.urls.bundle,null);
  }finally{f.close();}
 });
