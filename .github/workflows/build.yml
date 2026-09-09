@@ -46,6 +46,8 @@ jobs:
           npm run build -w @softn/web
           npm run build -w @softn/single
           npm run package:single -- --with-backend
+          npm run build -w @softn/single-php-serve
+          npm run package:single-php-serve
 
       - name: Install Apache/PHP test dependencies
         run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
@@ -71,6 +73,8 @@ jobs:
             release/softn-single-v*.zip.sha256
             release/softn-single-php-linux-x64-v*.zip
             release/softn-single-php-linux-x64-v*.zip.sha256
+            release/softn-single-php-serve-v*.zip
+            release/softn-single-php-serve-v*.zip.sha256
           compression-level: 0
           if-no-files-found: error
           retention-days: 7

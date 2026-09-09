@@ -23,6 +23,8 @@
     "package:site": "node scripts/package-site.mjs",
     "build:single": "npm run build:packages && npm run build -w @softn/single",
     "package:single": "node scripts/package-single.mjs",
+    "build:single-php-serve": "npm run build:packages && npm run build -w @softn/single-php-serve",
+    "package:single-php-serve": "node scripts/package-single-php-serve.mjs",
     "licenses:site": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "preview:site": "npm run build:site && node scripts/serve-site.mjs",

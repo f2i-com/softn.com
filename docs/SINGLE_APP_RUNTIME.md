@@ -56,5 +56,7 @@ when your app needs it; follow the included START-HERE.md and
 [PHP deployment guide](../apps/softn-php/SINGLE_APP_DEPLOYMENT.md).
 
 PHP/WASM is the Apache hosting option; the Rust server remains available for its
-additional native capabilities. No private applications or provider credentials are
+additional native capabilities. A third option, [the PHP-served single app](SINGLE_APP_PHP_SERVE.md),
+keeps the archive in a private directory and serves the page and its entries from PHP
+instead of putting `app.softn` on a URL. No private applications or provider credentials are
 included. The standalone browser archive remains available without any server files.
