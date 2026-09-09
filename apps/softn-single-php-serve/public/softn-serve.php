@@ -9,6 +9,8 @@ declare(strict_types=1);
  *   index.php             the page: the shell template with the title, theme,
  *                         icon and boot configuration rendered on the server,
  *                         plus the viewer cookie
+ *   index.php?manifest    the web app manifest for installation, built from
+ *                         the deployment settings; no cookie needed
  *   index.php?source      the source pack: the deployment settings, the
  *                         manifest with only the fields the runtime reads,
  *                         every text entry, and the names of the rest
@@ -148,7 +150,7 @@ function softn_config(string $private): array
     $raw = require $file;
     if (!is_array($raw)) softn_fail(503, 'serve.config.php must return an array.');
     $known = ['id', 'title', 'description', 'lang', 'bundle', 'theme', 'loadingText', 'permissionMode', 'permissions', 'sha256',
-        'viewerToken', 'tokenLifetime', 'secret', 'withhold', 'cacheSeconds', 'allowPrivateInWebroot'];
+        'viewerToken', 'tokenLifetime', 'secret', 'withhold', 'cacheSeconds', 'allowPrivateInWebroot', 'pwa'];
     foreach (array_keys($raw) as $key) {
         if (!in_array($key, $known, true)) softn_fail(503, 'Unknown setting in serve.config.php: ' . $key);
     }
@@ -188,12 +190,193 @@ function softn_config(string $private): array
     if (!is_int($cacheSeconds) || $cacheSeconds < 0 || $cacheSeconds > 31536000) softn_fail(503, 'cacheSeconds must be between 0 and 31536000.');
     $allowPrivateInWebroot = $raw['allowPrivateInWebroot'] ?? false;
     if (!is_bool($allowPrivateInWebroot)) softn_fail(503, 'allowPrivateInWebroot must be true or false.');
+    $pwa = softn_pwa_config($raw['pwa'] ?? true, $title, $theme);
     return [
         'id' => $id, 'title' => $title, 'description' => $description, 'lang' => $lang, 'bundle' => $bundle, 'theme' => $theme,
         'loadingText' => $loadingText, 'permissionMode' => $permissionMode, 'permissions' => $permissions, 'sha256' => $sha256,
         'viewerToken' => $viewerToken, 'tokenLifetime' => $tokenLifetime, 'secret' => $secret, 'withhold' => array_values($withhold),
-        'cacheSeconds' => $cacheSeconds, 'allowPrivateInWebroot' => $allowPrivateInWebroot,
+        'cacheSeconds' => $cacheSeconds, 'allowPrivateInWebroot' => $allowPrivateInWebroot, 'pwa' => $pwa,
     ];
+}
+
+/**
+ * The installable-app and link-preview settings: `'pwa' => true` (the default) takes every
+ * default below, an array overrides some of them, `false` turns the whole layer off. Paths are
+ * relative to the page's directory unless they are absolute http(s) URLs. Null means off.
+ */
+function softn_pwa_config(mixed $raw, string $title, string $theme): ?array
+{
+    if ($raw === false) return null;
+    if ($raw === true || $raw === null) $raw = [];
+    if (!is_array($raw)) softn_fail(503, 'pwa must be true, false or an array of settings.');
+    $known = ['shortName', 'themeColor', 'backgroundColor', 'display', 'orientation', 'icons', 'appleTouchIcon', 'shareImage',
+        'shareImageWidth', 'shareImageHeight', 'siteUrl', 'serviceWorker'];
+    foreach (array_keys($raw) as $key) {
+        if (!in_array($key, $known, true)) softn_fail(503, 'Unknown pwa setting in serve.config.php: ' . $key);
+    }
+    $dark = $theme === 'dark';
+    $shortName = $raw['shortName'] ?? mb_substr($title, 0, 30);
+    if (!is_string($shortName) || trim($shortName) === '' || mb_strlen($shortName) > 30) softn_fail(503, 'pwa.shortName must be 1 to 30 characters.');
+    $colour = static function (mixed $value, string $default, string $name): string {
+        if ($value === null) return $default;
+        if (!is_string($value) || !preg_match('/^#[0-9a-fA-F]{6}$/', $value)) softn_fail(503, $name . ' must be a #rrggbb colour.');
+        return strtolower($value);
+    };
+    $themeColor = $colour($raw['themeColor'] ?? null, $dark ? '#171821' : '#f5f5f8', 'pwa.themeColor');
+    $backgroundColor = $colour($raw['backgroundColor'] ?? null, $dark ? '#171821' : '#f5f5f8', 'pwa.backgroundColor');
+    $display = $raw['display'] ?? 'standalone';
+    if (!in_array($display, ['standalone', 'minimal-ui', 'fullscreen', 'browser'], true)) softn_fail(503, 'pwa.display must be standalone, minimal-ui, fullscreen or browser.');
+    $orientation = $raw['orientation'] ?? 'any';
+    if (!in_array($orientation, ['any', 'natural', 'landscape', 'portrait'], true)) softn_fail(503, 'pwa.orientation must be any, natural, landscape or portrait.');
+    $path = static function (mixed $value, string $name): string {
+        if (!is_string($value) || $value === '' || strlen($value) > 200 || preg_match('/[\s"<>]/', $value)) softn_fail(503, $name . ' must be a relative path or an http(s) URL of up to 200 characters.');
+        if (preg_match('#^https?://#i', $value)) return $value;
+        if (str_contains($value, '..') || str_starts_with($value, '/') || str_contains($value, '://')) softn_fail(503, $name . ' must be relative to the page directory, without leading slash or "..".');
+        return $value;
+    };
+    $icons = $raw['icons'] ?? [
+        ['src' => 'pwa-icons/icon-192.png', 'sizes' => '192x192', 'type' => 'image/png', 'purpose' => 'any'],
+        ['src' => 'pwa-icons/icon-512.png', 'sizes' => '512x512', 'type' => 'image/png', 'purpose' => 'any'],
+        ['src' => 'pwa-icons/icon-maskable-512.png', 'sizes' => '512x512', 'type' => 'image/png', 'purpose' => 'maskable'],
+    ];
+    if (!is_array($icons) || $icons === [] || count($icons) > 12) softn_fail(503, 'pwa.icons must list 1 to 12 icons.');
+    $checkedIcons = [];
+    foreach ($icons as $icon) {
+        if (!is_array($icon)) softn_fail(503, 'Each pwa icon must be an array with src, sizes and type.');
+        $entry = ['src' => $path($icon['src'] ?? null, 'pwa.icons src')];
+        $sizes = $icon['sizes'] ?? null;
+        if (!is_string($sizes) || !preg_match('/^\d{2,4}x\d{2,4}$/', $sizes)) softn_fail(503, 'pwa.icons sizes must look like 512x512.');
+        $entry['sizes'] = $sizes;
+        $type = $icon['type'] ?? 'image/png';
+        if (!is_string($type) || !preg_match('#^image/[a-z0-9.+-]+$#', $type)) softn_fail(503, 'pwa.icons type must be an image MIME type.');
+        $entry['type'] = $type;
+        if (array_key_exists('purpose', $icon)) {
+            if (!in_array($icon['purpose'], ['any', 'maskable', 'monochrome'], true)) softn_fail(503, 'pwa.icons purpose must be any, maskable or monochrome.');
+            $entry['purpose'] = $icon['purpose'];
+        }
+        $checkedIcons[] = $entry;
+    }
+    $appleTouchIcon = $raw['appleTouchIcon'] ?? 'apple-touch-icon.png';
+    if ($appleTouchIcon !== false) $appleTouchIcon = $path($appleTouchIcon, 'pwa.appleTouchIcon');
+    $shareImage = $raw['shareImage'] ?? 'share.png';
+    if ($shareImage !== false) $shareImage = $path($shareImage, 'pwa.shareImage');
+    $dimension = static function (mixed $value, int $default, string $name): int {
+        if ($value === null) return $default;
+        if (!is_int($value) || $value < 1 || $value > 8192) softn_fail(503, $name . ' must be between 1 and 8192.');
+        return $value;
+    };
+    $shareImageWidth = $dimension($raw['shareImageWidth'] ?? null, 1200, 'pwa.shareImageWidth');
+    $shareImageHeight = $dimension($raw['shareImageHeight'] ?? null, 630, 'pwa.shareImageHeight');
+    $siteUrl = $raw['siteUrl'] ?? null;
+    if ($siteUrl !== null) {
+        if (!is_string($siteUrl) || strlen($siteUrl) > 200 || !preg_match('#^https?://[A-Za-z0-9.-]+(?::\d{1,5})?(?:/[^\s?\#"<>]*)?$#', $siteUrl)) softn_fail(503, 'pwa.siteUrl must be the absolute http(s) URL of the page directory, without query or fragment.');
+        $siteUrl = rtrim($siteUrl, '/');
+    }
+    $serviceWorker = $raw['serviceWorker'] ?? true;
+    if (!is_bool($serviceWorker)) softn_fail(503, 'pwa.serviceWorker must be true or false.');
+    return [
+        'shortName' => $shortName, 'themeColor' => $themeColor, 'backgroundColor' => $backgroundColor, 'display' => $display,
+        'orientation' => $orientation, 'icons' => $checkedIcons, 'appleTouchIcon' => $appleTouchIcon, 'shareImage' => $shareImage,
+        'shareImageWidth' => $shareImageWidth, 'shareImageHeight' => $shareImageHeight, 'siteUrl' => $siteUrl, 'serviceWorker' => $serviceWorker,
+    ];
+}
+
+/** A pwa path resolved against the page directory: relative paths gain the directory, absolute URLs pass through. */
+function softn_pwa_url(string $value, string $base): string
+{
+    return preg_match('#^https?://#i', $value) ? $value : $base . $value;
+}
+
+/**
+ * The absolute URL of the page directory for link previews: the configured siteUrl, else
+ * the request's own scheme and host when the host header is a plain host name.
+ */
+function softn_pwa_origin(array $pwa, string $base): ?string
+{
+    if ($pwa['siteUrl'] !== null) return $pwa['siteUrl'] . '/';
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    if (!preg_match('/^[A-Za-z0-9.-]+(?::\d{1,5})?$/', $host)) return null;
+    $secure = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+    return ($secure ? 'https' : 'http') . '://' . $host . $base;
+}
+
+/** The head tags that make the page installable and give links a card. */
+function softn_pwa_tags(array $config, string $endpoint, ?string $description): string
+{
+    $pwa = $config['pwa'];
+    if ($pwa === null) return '';
+    $escape = static fn(string $value): string => htmlspecialchars($value, ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML5, 'UTF-8');
+    $base = softn_cookie_path();
+    $dark = $config['theme'] === 'dark';
+    $lines = [
+        '<link rel="manifest" href="' . $escape($endpoint . '?manifest') . '">',
+        '<meta name="application-name" content="' . $escape($pwa['shortName']) . '">',
+        '<meta name="mobile-web-app-capable" content="yes">',
+        '<meta name="apple-mobile-web-app-capable" content="yes">',
+        '<meta name="apple-mobile-web-app-title" content="' . $escape($pwa['shortName']) . '">',
+        '<meta name="apple-mobile-web-app-status-bar-style" content="' . ($dark ? 'black-translucent' : 'default') . '">',
+    ];
+    if ($pwa['appleTouchIcon'] !== false) $lines[] = '<link rel="apple-touch-icon" href="' . $escape(softn_pwa_url($pwa['appleTouchIcon'], $base)) . '">';
+    $origin = softn_pwa_origin($pwa, $base);
+    $lines[] = '<meta property="og:type" content="website">';
+    $lines[] = '<meta property="og:site_name" content="' . $escape($pwa['shortName']) . '">';
+    $lines[] = '<meta property="og:title" content="' . $escape($config['title']) . '">';
+    if ($description !== null) $lines[] = '<meta property="og:description" content="' . $escape($description) . '">';
+    if ($origin !== null) {
+        $lines[] = '<meta property="og:url" content="' . $escape($origin) . '">';
+        $lines[] = '<link rel="canonical" href="' . $escape($origin) . '">';
+    }
+    $share = null;
+    if ($pwa['shareImage'] !== false) {
+        $share = preg_match('#^https?://#i', $pwa['shareImage']) ? $pwa['shareImage'] : ($origin === null ? null : $origin . $pwa['shareImage']);
+    }
+    if ($share !== null) {
+        $lines[] = '<meta property="og:image" content="' . $escape($share) . '">';
+        $lines[] = '<meta property="og:image:width" content="' . $pwa['shareImageWidth'] . '">';
+        $lines[] = '<meta property="og:image:height" content="' . $pwa['shareImageHeight'] . '">';
+        $lines[] = '<meta property="og:image:alt" content="' . $escape($config['title']) . '">';
+        $lines[] = '<meta name="twitter:card" content="summary_large_image">';
+        $lines[] = '<meta name="twitter:image" content="' . $escape($share) . '">';
+    } else {
+        $lines[] = '<meta name="twitter:card" content="summary">';
+    }
+    $lines[] = '<meta name="twitter:title" content="' . $escape($config['title']) . '">';
+    if ($description !== null) $lines[] = '<meta name="twitter:description" content="' . $escape($description) . '">';
+    if ($pwa['serviceWorker']) {
+        $worker = json_encode($base . 'sw.js', JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES);
+        $lines[] = '<script>if ("serviceWorker" in navigator) addEventListener("load", function () { navigator.serviceWorker.register(' . $worker . ').catch(function () {}); });</script>';
+    }
+    return implode("\n    ", $lines);
+}
+
+/** index.php?manifest: the web app manifest, built from the deployment's own settings. No cookie needed. */
+function softn_webmanifest(array $config, string $private): never
+{
+    $pwa = $config['pwa'];
+    if ($pwa === null) softn_fail(404, 'Not found.');
+    $zip = softn_open($config);
+    $manifest = softn_manifest($zip);
+    $zip->close();
+    $base = softn_cookie_path();
+    $description = $config['description'] ?? (is_string($manifest['description'] ?? null) ? mb_substr($manifest['description'], 0, 300) : null);
+    $icons = [];
+    foreach ($pwa['icons'] as $icon) {
+        $icon['src'] = softn_pwa_url($icon['src'], $base);
+        $icons[] = $icon;
+    }
+    $out = [
+        'id' => $base, 'name' => $config['title'], 'short_name' => $pwa['shortName'], 'start_url' => $base, 'scope' => $base,
+        'display' => $pwa['display'], 'orientation' => $pwa['orientation'], 'background_color' => $pwa['backgroundColor'],
+        'theme_color' => $pwa['themeColor'], 'lang' => $config['lang'], 'icons' => $icons,
+    ];
+    if ($description !== null) $out['description'] = $description;
+    $json = json_encode($out, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json === false) softn_fail(503, 'The web app manifest could not be encoded.');
+    header('Content-Type: application/manifest+json; charset=utf-8');
+    header('Cache-Control: max-age=3600');
+    header('Content-Length: ' . strlen($json));
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') echo $json;
+    exit;
 }
 
 function softn_open(array $config): ZipArchive
@@ -376,6 +559,8 @@ function softn_shell(array $config, string $private): never
         '{{TITLE}}' => $escape($config['title']),
         '{{THEME}}' => $dark ? 'dark' : 'light',
         '{{BACKGROUND}}' => $dark ? '#171821' : '#f5f5f8',
+        '{{THEME_COLOR}}' => $config['pwa'] === null ? ($dark ? '#171821' : '#f5f5f8') : $config['pwa']['themeColor'],
+        '{{PWA_TAGS}}' => softn_pwa_tags($config, $endpoint, $description),
         '{{FOREGROUND}}' => $dark ? '#f5f5f8' : '#171821',
         '{{DESCRIPTION_TAG}}' => $description === null ? '' : '<meta name="description" content="' . $escape($description) . '">',
         '{{ICON_TAG}}' => $iconTag,
@@ -554,6 +739,9 @@ $public = realpath((string)($_SERVER['DOCUMENT_ROOT'] ?? __DIR__));
 if ($privateReal === false) softn_fail(503, 'The private directory is missing.');
 if (!$config['allowPrivateInWebroot'] && $public !== false && ($privateReal === $public || str_starts_with($privateReal, $public . DIRECTORY_SEPARATOR))) {
     softn_fail(503, 'The private directory must be outside the public document root.');
+}
+if (array_key_exists('manifest', $_GET)) {
+    softn_webmanifest($config, $privateReal);
 }
 if (array_key_exists('source', $_GET)) {
     softn_guard($config, $privateReal);

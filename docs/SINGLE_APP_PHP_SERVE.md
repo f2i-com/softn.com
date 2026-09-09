@@ -21,6 +21,7 @@ What differs is delivery.
 | `index.php?source`       | The source pack: the deployment's settings, the manifest reduced to the fields the runtime reads, every text entry (`.ui`, `.logic`, `.json`, `.xdb`, …) and the names of the rest. |
 | `index.php?entry=PATH`   | One binary entry with its MIME type, an ETag, a private cache policy and byte ranges, so `<video>` and `<audio>` can seek.                                                     |
 | `index.php?icon`         | The manifest icon, for the favicon.                                                                                                                                           |
+| `index.php?manifest`     | The web app manifest for installation, built from the deployment settings; no cookie needed.                                                                                  |
 
 The manifest is never sent raw: `config.server`, with any token in it, and
 every field the runtime does not read are dropped. Entries listed under
@@ -123,6 +124,14 @@ and the sample configuration only when `dist/private/serve.config.php` is
 absent; neither overwrites an operator's file. Runtime bounds: an entry up to
 50 MB, a source pack up to 32 MB decoded, an icon up to 256 KiB, sixty
 seconds to fetch the pack.
+
+## Installable app and link previews
+
+The page is a Progressive Web App out of the box. `index.php` renders a manifest link, the Apple and Android install tags, Open Graph and Twitter card tags, and registers `sw.js`; `index.php?manifest` answers with a web app manifest built from the deployment's `title`, `description`, `lang` and `theme`. The archive holds placeholders carrying the SoftN mark: `webroot/pwa-icons/icon-192.png`, `icon-512.png` and `icon-maskable-512.png` (the installed-app icons), `webroot/apple-touch-icon.png` (iOS home screen) and `webroot/share.png` (the 1200 × 630 picture shown when the link is posted). Replace them with your own artwork under the same names, or point `pwa.icons`, `pwa.appleTouchIcon` and `pwa.shareImage` at other paths.
+
+`serve.config.php` accepts `'pwa' => true` (the default), `false`, or an array: `shortName` (up to 30 characters under the icon), `themeColor` and `backgroundColor` (`#rrggbb`), `display`, `orientation`, `icons` (a list of `src`, `sizes`, `type`, optional `purpose`), `appleTouchIcon`, `shareImage`, `shareImageWidth`, `shareImageHeight`, `siteUrl` (the public address of the page directory, for previews behind a proxy or CDN that hides the host name) and `serviceWorker`. Paths are relative to the page's directory, so a deployment under `/app/` works unchanged; absolute `http(s)` URLs pass through.
+
+The service worker caches only the runtime's hashed `assets/`, the icons and the share image, and answers navigations network-first with the last page as an offline fallback. It never caches `index.php` with a query, so the source pack, entries and the manifest always come from the server and a redeployed application is seen on the next visit. Ubuntu's Apache maps `/icons/` to its own directory-listing images; the placeholders live in `pwa-icons/` so they never collide with it.
 
 ## With the optional backend
 

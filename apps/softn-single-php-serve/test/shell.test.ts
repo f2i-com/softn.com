@@ -33,8 +33,9 @@ it('writes a template with every placeholder index.php fills and the boot JSON b
   for (const placeholder of PLACEHOLDERS) expect(html).toContain(placeholder);
   expect(html.indexOf('id="softn-boot"')).toBeLessThan(html.indexOf('type="module"'));
   expect(html).not.toMatch(
-    /\{\{(?!LANG|THEME|BACKGROUND|FOREGROUND|DESCRIPTION_TAG|TITLE|ICON_TAG|BOOT_JSON|LOADING_TEXT)[A-Z_]+\}\}/
+    /\{\{(?!LANG|THEME|BACKGROUND|FOREGROUND|DESCRIPTION_TAG|TITLE|ICON_TAG|THEME_COLOR|PWA_TAGS|BOOT_JSON|LOADING_TEXT)[A-Z_]+\}\}/
   );
+  expect(html.indexOf('{{PWA_TAGS}}')).toBeLessThan(html.indexOf('<style>'));
 });
 
 it('ships a sample whose event handler and state are in the bundle', () => {
