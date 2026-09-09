@@ -1,6 +1,6 @@
 {
   "name": "@softn/api",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "private": true,
   "description": "The softn.com directory API: PHP with folder discovery and atomic JSON metadata",
   "type": "module",
