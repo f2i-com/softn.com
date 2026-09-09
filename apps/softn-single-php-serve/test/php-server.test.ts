@@ -219,7 +219,7 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     expect(html).toContain('<meta property="og:url" content="https://example.test/app/">');
     expect(html).toContain('<meta property="og:image" content="https://cdn.example.test/card.png">');
     expect(html).not.toContain('serviceWorker.register');
-    let manifest = await (await fetch(`${origin}/index.php?manifest`)).json();
+    const manifest = await (await fetch(`${origin}/index.php?manifest`)).json();
     expect(manifest.short_name).toBe('Served');
     expect(manifest.orientation).toBe('landscape');
     expect(manifest.icons).toEqual([{ src: '/my/icon.png', sizes: '512x512', type: 'image/png' }]);
