@@ -169,6 +169,71 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     cookie = set.split(';')[0];
   });
 
+  it('makes the page installable and gives links a card, with the manifest served without a cookie', async () => {
+    const html = await (await fetch(`${origin}/`)).text();
+    expect(html).toContain('<meta name="theme-color" content="#f5f5f8" />');
+    expect(html).toContain('<link rel="manifest" href="/index.php?manifest">');
+    expect(html).toContain('<meta name="application-name" content="Served &lt;Title&gt; &amp; &quot;Co&quot;">');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png">');
+    expect(html).toContain('<meta property="og:title" content="Served &lt;Title&gt; &amp; &quot;Co&quot;">');
+    expect(html).toContain('<meta property="og:description" content="A &quot;quoted&quot; description">');
+    expect(html).toContain(`<meta property="og:url" content="${origin}/">`);
+    expect(html).toContain(`<meta property="og:image" content="${origin}/share.png">`);
+    expect(html).toContain('<meta name="twitter:card" content="summary_large_image">');
+    expect(html).toContain('navigator.serviceWorker.register("/sw.js")');
+    const response = await fetch(`${origin}/index.php?manifest`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/application\/manifest\+json/);
+    const manifest = await response.json();
+    expect(manifest).toMatchObject({
+      id: '/',
+      name: 'Served <Title> & "Co"',
+      short_name: 'Served <Title> & "Co"',
+      start_url: '/',
+      scope: '/',
+      display: 'standalone',
+      orientation: 'any',
+      theme_color: '#f5f5f8',
+      background_color: '#f5f5f8',
+      lang: 'en',
+      description: 'A "quoted" description',
+    });
+    expect(manifest.icons).toEqual([
+      { src: '/pwa-icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/pwa-icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/pwa-icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+    ]);
+    expect((await fetch(`${origin}/index.php?manifest`, { method: 'HEAD' })).status).toBe(200);
+  });
+
+  it('lets the operator tune the installable app, point previews at the public address, or turn it off', async () => {
+    writeFileSync(
+      join(root, 'private/serve.config.php'),
+      config(
+        `'pwa' => ['shortName' => 'Served', 'themeColor' => '#123456', 'orientation' => 'landscape', 'siteUrl' => 'https://example.test/app/', 'icons' => [['src' => 'my/icon.png', 'sizes' => '512x512', 'type' => 'image/png']], 'shareImage' => 'https://cdn.example.test/card.png', 'serviceWorker' => false],`
+      )
+    );
+    let html = await (await fetch(`${origin}/`)).text();
+    expect(html).toContain('<meta name="theme-color" content="#123456" />');
+    expect(html).toContain('<meta name="application-name" content="Served">');
+    expect(html).toContain('<meta property="og:url" content="https://example.test/app/">');
+    expect(html).toContain('<meta property="og:image" content="https://cdn.example.test/card.png">');
+    expect(html).not.toContain('serviceWorker.register');
+    let manifest = await (await fetch(`${origin}/index.php?manifest`)).json();
+    expect(manifest.short_name).toBe('Served');
+    expect(manifest.orientation).toBe('landscape');
+    expect(manifest.icons).toEqual([{ src: '/my/icon.png', sizes: '512x512', type: 'image/png' }]);
+    writeFileSync(join(root, 'private/serve.config.php'), config(`'pwa' => false,`));
+    html = await (await fetch(`${origin}/`)).text();
+    expect(html).not.toContain('rel="manifest"');
+    expect(html).not.toContain('og:title');
+    expect(html).toContain('<meta name="theme-color" content="#f5f5f8" />');
+    expect((await fetch(`${origin}/index.php?manifest`)).status).toBe(404);
+    writeFileSync(join(root, 'private/serve.config.php'), config(`'pwa' => ['icons' => [['src' => '../evil.png', 'sizes' => '512x512']]],`));
+    expect((await fetch(`${origin}/`)).status).toBe(503);
+    writeFileSync(join(root, 'private/serve.config.php'), config());
+  });
+
   it('answers HEAD for the page without a body', async () => {
     const response = await fetch(`${origin}/index.php`, { method: 'HEAD' });
     expect(response.status).toBe(200);

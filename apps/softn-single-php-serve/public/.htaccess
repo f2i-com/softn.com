@@ -16,4 +16,9 @@ AddType application/wasm .wasm
 AddType text/javascript .mjs
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
+    # The service worker may control the whole directory and must never be stale.
+    <FilesMatch "^sw\.js$">
+        Header set Service-Worker-Allowed "/"
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
 </IfModule>

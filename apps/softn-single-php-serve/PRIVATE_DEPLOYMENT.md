@@ -71,10 +71,12 @@ README-RUNTIME.md and LIVE_UPDATES.md.
 ## Updates
 
 To update the runtime, replace `webroot/assets/`, `webroot/index.php`,
-`webroot/softn-serve.php`, `webroot/api.php` and `private/shell.html`. Keep
-`private/app.softn`, `private/serve.config.php`, `private/secret.key`,
-`backend/app/`, `backend/private/` and your edited `index.php`/`api.php`
-paths. A backend packaged for Linux x64 will not run on ARM or Windows; the
+`webroot/softn-serve.php`, `webroot/api.php`, `webroot/sw.js` and
+`private/shell.html`. Keep `private/app.softn`, `private/serve.config.php`,
+`private/secret.key`, `backend/app/`, `backend/private/`, your edited
+`index.php`/`api.php` paths, and your own `webroot/pwa-icons/`,
+`webroot/apple-touch-icon.png` and `webroot/share.png` if you replaced the
+placeholders (see DEPLOYMENT-SERVE.md, "Installable app and link previews"). A backend packaged for Linux x64 will not run on ARM or Windows; the
 served application itself needs only PHP.
 
 ## Build from source

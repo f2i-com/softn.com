@@ -25,6 +25,8 @@ export const PLACEHOLDERS = [
   '{{DESCRIPTION_TAG}}',
   '{{TITLE}}',
   '{{ICON_TAG}}',
+  '{{THEME_COLOR}}',
+  '{{PWA_TAGS}}',
   '{{BOOT_JSON}}',
   '{{LOADING_TEXT}}',
 ];
@@ -36,10 +38,11 @@ export function shellTemplate(tags) {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="{{THEME}}" />
-    <meta name="theme-color" content="{{BACKGROUND}}" />
+    <meta name="theme-color" content="{{THEME_COLOR}}" />
     {{DESCRIPTION_TAG}}
     <title>{{TITLE}}</title>
     {{ICON_TAG}}
+    {{PWA_TAGS}}
     <style>
       html,
       body {
@@ -142,6 +145,24 @@ return [
     'withhold' => [],
     // How long a browser may keep an entry it fetched.
     'cacheSeconds' => 3600,
+    // The installable app and link previews. true takes the defaults: the
+    // placeholder icons in webroot/pwa-icons/, webroot/apple-touch-icon.png and
+    // webroot/share.png (replace them with your own artwork), the title as the
+    // app name, and a service worker for offline-capable installs. false turns
+    // it all off. Or override some settings:
+    // 'pwa' => [
+    //     'shortName' => 'My app',            // up to 30 characters, shown under the icon
+    //     'themeColor' => '#171821',          // #rrggbb; the browser chrome around the app
+    //     'backgroundColor' => '#171821',     // #rrggbb; the splash screen behind the icon
+    //     'display' => 'standalone',          // standalone, minimal-ui, fullscreen or browser
+    //     'orientation' => 'any',             // any, natural, landscape or portrait
+    //     'icons' => [['src' => 'pwa-icons/icon-512.png', 'sizes' => '512x512', 'type' => 'image/png', 'purpose' => 'any']],
+    //     'appleTouchIcon' => 'apple-touch-icon.png', // or false
+    //     'shareImage' => 'share.png',        // the link-preview picture, or false
+    //     'shareImageWidth' => 1200, 'shareImageHeight' => 630,
+    //     'siteUrl' => 'https://example.com', // the public address of this directory, for previews behind a proxy
+    //     'serviceWorker' => true,
+    // ],
 ];
 `;
 
