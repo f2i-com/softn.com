@@ -146,7 +146,7 @@ function writeIndex(index) {
  * answers a release download with a redirect to its object store, and the
  * object store must not see the token.
  */
-async function download(url, { maxBytes, deadlineMs, attempts = 3 }) {
+async function download(url, { maxBytes, deadlineMs, attempts = 5 }) {
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const controller = new AbortController();
@@ -157,9 +157,13 @@ async function download(url, { maxBytes, deadlineMs, attempts = 3 }) {
       lastError = error;
       // A network failure or a deadline is tried again; an answer that will
       // not change — a 4xx, a source that is not https, an archive larger
-      // than pinned — is not.
+      // than pinned — is not. The pauses double, 2s to 16s, about half a
+      // minute in all: GitHub's release downloads answer 500 for a moment
+      // now and then, and three quick tries used to fail the whole run
+      // inside three seconds of one such moment.
       if (error.retryable === false || attempt === attempts) break;
-      await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
+      console.warn(`retrying ${url} after: ${error.message}`);
+      await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
     } finally {
       clearTimeout(timer);
     }
