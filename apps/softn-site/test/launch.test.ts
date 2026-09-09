@@ -42,6 +42,34 @@ describe('launchApp', () => {
   });
 });
 
+describe('launchApp for a linked app', () => {
+  const outerstead = { slug: 'outerstead', external: { url: 'https://outerstead.com/', host: 'outerstead.com' } };
+
+  it('opens the external address in a new tab, counts it, and leaves this page where it is', () => {
+    const go = vi.fn();
+    const open = vi.fn();
+    const record = vi.fn();
+    launchApp(outerstead, { record, go, open });
+    expect(record).toHaveBeenCalledWith('outerstead');
+    expect(open).toHaveBeenCalledWith('https://outerstead.com/');
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it('falls back to plain navigation when there is no way to open a tab', () => {
+    const go = vi.fn();
+    launchApp(outerstead, { record: vi.fn(), go });
+    expect(go).toHaveBeenCalledWith('https://outerstead.com/');
+  });
+
+  it('still sends a hosted app to the runtime when given as an object', () => {
+    const go = vi.fn();
+    const open = vi.fn();
+    launchApp({ slug: 'notes', external: null }, { record: vi.fn(), go, open });
+    expect(open).not.toHaveBeenCalled();
+    expect(go.mock.calls[0][0]).toMatch(/\/app\/notes(\?|$)/);
+  });
+});
+
 describe('recordRun', () => {
   it('starts a keepalive request and returns without waiting on it', () => {
     let resolveFetch: ((r: Response) => void) | undefined;

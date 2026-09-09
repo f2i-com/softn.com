@@ -274,7 +274,7 @@ function handle(string $handler, array $args, Request $req): Response
         case 'bundle': {
             Seed::ifEmpty();
             $slug = Apps::resolveSlug($args[0]);
-            $row = Apps::row($slug);
+            $row = Apps::requireBundle($slug);
             $v = isset($req->query['v']) ? max(1, (int) $req->query['v']) : null;
             $ver = Apps::version($slug, $v);
             $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
@@ -327,7 +327,7 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'source': {
             $slug = Apps::resolveSlug($args[0]);
-            Apps::row($slug);
+            Apps::requireBundle($slug);
             $v = isset($req->query['v']) ? max(1, (int) $req->query['v']) : null;
             $ver = Apps::version($slug, $v);
             $path = Config::dataDir() . '/apps/' . $slug . '/' . $ver['file'];
@@ -337,6 +337,8 @@ function handle(string $handler, array $args, Request $req): Response
         case 'addVersion': {
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireOwner($req, $slug);
+            // A linked app takes no bundle: remove play_url from its app.json first.
+            Apps::requireBundle($slug);
             // Its own window, wider than publishing's: an owner iterating on
             // one app is not ten new apps an hour, but a stolen key must not
             // be a way to fill a folder to its version limit in a minute.
@@ -352,7 +354,7 @@ function handle(string $handler, array $args, Request $req): Response
             if (($req->field('website') ?? '') !== '') throw new ApiError(400, 'The remix was not accepted.');
             Db::rateLimit('publish', Config::visitorHash($req->ip));
             $parentSlug = Apps::resolveSlug($args[0]);
-            $parent = Apps::row($parentSlug);
+            $parent = Apps::requireBundle($parentSlug);
             $file = $req->bundleFile();
             $copied = false;
             if ($file === null) {

@@ -42,12 +42,40 @@ function PlayGlyph({ size = 12 }: { size?: number }): React.ReactElement {
   );
 }
 
+function ExternalGlyph({ size = 11 }: { size?: number }): React.ReactElement {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M7 17 17 7M9 7h8v8" />
+    </svg>
+  );
+}
+
 /**
  * The one way an app runs from the directory: straight into the runtime,
  * with the count bumped on the way out. The runtime's Close brings the
  * visitor back to the app's page.
+ *
+ * A linked app plays on its own site instead: a real link, in a new tab,
+ * so the directory stays behind it and the browser's own link behaviours
+ * (middle-click, copy address) all do the expected thing.
  */
 function PlayLink({ app, className, children }: { app: AppCardData; className: string; children: React.ReactNode }): React.ReactElement {
+  if (app.external) {
+    return (
+      <a
+        className={`${className} play-external`}
+        href={app.external.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={() => void recordRun(app.slug)}
+        aria-label={`Play ${app.name} on ${app.external.host} (opens in a new tab)`}
+        title={`Opens ${app.external.host} in a new tab`}
+      >
+        {children}
+        <ExternalGlyph />
+      </a>
+    );
+  }
   return (
     <a className={className} href={runtimeAppUrl(app.slug)} onClick={() => void recordRun(app.slug)} aria-label={`Play ${app.name}`}>
       {children}
@@ -110,7 +138,13 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
               ⑂ {formatCount(app.remixes)}
             </span>
           )}
-          {!app.capabilities.includes('net') && (
+          {app.external && (
+            <span className="app-card-stat app-card-linked" title={`Plays at ${app.external.host}, in a new tab`}>
+              <ExternalGlyph />
+              {app.external.host}
+            </span>
+          )}
+          {!app.external && !app.capabilities.includes('net') && (
             <span
               className="app-card-stat app-card-safe"
               title="Makes no network requests of its own; a hosted service it declares, such as server storage, still reaches this site"
@@ -118,7 +152,7 @@ export function AppCard({ app, category }: { app: AppCardData; category?: Catego
               no net
             </span>
           )}
-          {app.execution === 'worker' && (
+          {!app.external && app.execution === 'worker' && (
             <span className="app-card-stat app-card-worker" title="Runs its script off the main thread">
               ⚡
             </span>

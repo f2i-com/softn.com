@@ -62,6 +62,46 @@ You can also provide this minimal `app.json` alongside a new bundle:
 }
 ```
 
+### Link an app hosted elsewhere
+
+A Softn app that lives on its own site (its own domain, a private
+single-app host) can be listed without its bundle. Make a folder with an
+`app.json` that names the address and, ideally, a picture, and no `.softn`:
+
+```text
+data/apps/outerstead/
+  app.json
+  thumb.png          the card and link-preview picture (1200 × 630 works well)
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "app": {
+    "name": "Outerstead",
+    "author": "Lance",
+    "category": "games",
+    "description": "A frontier colony sim. Land, build, keep your people alive.",
+    "tags": ["colony", "survival"],
+    "thumb": "thumb.png",
+    "play_url": "https://outerstead.com/"
+  }
+}
+```
+
+The app appears in the directory with its picture, description, rating,
+comments and share page like any other. Its card carries `external`
+(`{url, host}`) and `urls.run` is the address itself: Play opens it in a new
+tab and counts a launch. There is nothing to run here, download, read or
+remix, so `urls.bundle`, `download`, `studio`, `builder` and `remix` are
+null and `/bundle.softn`, `/source`, `/versions` and `/remix` answer 404.
+`play_url` (or `playUrl`) must be an `http(s)` address of at most 300
+characters; a folder with an invalid one is skipped with the reason in the
+error log, like any invalid `app.json`. A folder with neither a bundle nor a
+`play_url` is still not listed. If a `.softn` is later added to the folder
+the address keeps precedence; remove `play_url` to turn the listing into an
+ordinary hosted app.
+
 Missing fields are filled on discovery. A generated file contains `app`
 (listing fields, counters and hashed edit key), `versions`, `comments`,
 `ratings`, and `runsDaily`. Tags and permissions are JSON arrays/objects,

@@ -2907,3 +2907,20 @@ button {
 .prepublish-error::marker {
   color: var(--coral);
 }
+
+/* Linked apps: Play is a real link that opens the app's own site in a new tab. */
+.play-external svg:last-child {
+  margin-left: 0.15em;
+  opacity: 0.8;
+}
+.app-card-linked {
+  gap: 0.3em;
+}
+.app-card-linked svg {
+  opacity: 0.8;
+}
+.badge-linked {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+}

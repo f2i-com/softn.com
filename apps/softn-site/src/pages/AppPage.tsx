@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ApiError, getApp, getRating, listApps, rate, savedKey, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
+import { ApiError, getApp, getRating, listApps, rate, recordRun, savedKey, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
 import { launchApp } from '../lib/launch';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
 import { runtimeAppUrl } from '../lib/appUrls';
@@ -19,8 +19,32 @@ function PlayGlyph({ size = 14 }: { size?: number }): React.ReactElement {
   );
 }
 
-function Badges({ capabilities, execution, official }: { capabilities: string[]; execution: string; official: boolean }): React.ReactElement {
+function ExternalGlyph({ size = 13 }: { size?: number }): React.ReactElement {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M7 17 17 7M9 7h8v8" />
+    </svg>
+  );
+}
+
+function Badges({ capabilities, execution, official, external }: { capabilities: string[]; execution: string; official: boolean; external: { url: string; host: string } | null }): React.ReactElement {
   const { safe } = capabilitySummary(capabilities);
+  if (external) {
+    // Hosted elsewhere: the sandbox badges would be claims about a page this
+    // directory never sees, so the one honest badge is where it plays.
+    return (
+      <div className="badges" aria-label="Where this app plays">
+        <span className="badge badge-linked" title={`Play opens ${external.url} in a new tab`}>
+          <ExternalGlyph size={12} /> Plays on {external.host}
+        </span>
+        {official && (
+          <span className="badge badge-official" title="One of the demos that ship with the site">
+            SoftN
+          </span>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="badges" aria-label="What this app asks to reach">
       <span className={`badge ${safe ? 'badge-safe' : ''}`}>
@@ -174,7 +198,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
   // someone and the app.
   const play = () => {
     if (!app) return;
-    launchApp(app.slug);
+    launchApp(app);
   };
 
   if (error) {
@@ -221,6 +245,10 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
   const maxBreak = Math.max(1, ...Object.values(breakdown));
   const canStore = app.capabilities.includes('storage');
   const official = app.source === 'seed';
+  const external = app.external;
+  // A linked app has no bundle, so its bundle links are null; the page only
+  // renders them when they exist, and these are what it renders.
+  const remixUrl = app.urls.remix ?? undefined;
 
   return (
     <main className="app-page">
@@ -263,7 +291,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
               <span title={app.createdAt}>published {timeAgo(app.createdAt)}</span>
               {app.version > 1 && <> · updated {timeAgo(app.updatedAt)}</>}
             </p>
-            <Badges capabilities={app.capabilities} execution={app.execution} official={official} />
+            <Badges capabilities={app.capabilities} execution={app.execution} official={official} external={external} />
             <div className="stats">
               <span className="stat">
                 <Stars average={app.rating.average} count={app.rating.count} size={14} showCount={false} />
@@ -274,33 +302,49 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                 <strong>{formatCount(app.runs)}</strong>
                 <span className="stat-label">run{app.runs === 1 ? '' : 's'}</span>
               </span>
-              <span className="stat">
-                <strong>{formatCount(app.remixes)}</strong>
-                <span className="stat-label">remix{app.remixes === 1 ? '' : 'es'}</span>
-              </span>
+              {!external && (
+                <span className="stat">
+                  <strong>{formatCount(app.remixes)}</strong>
+                  <span className="stat-label">remix{app.remixes === 1 ? '' : 'es'}</span>
+                </span>
+              )}
               <span className="stat">
                 <strong>{formatCount(app.comments)}</strong>
                 <span className="stat-label">comment{app.comments === 1 ? '' : 's'}</span>
               </span>
-              <span className="stat">
-                <strong>v{app.version}</strong>
-                <span className="stat-label">{formatBytes(app.size)}</span>
-              </span>
+              {!external && (
+                <span className="stat">
+                  <strong>v{app.version}</strong>
+                  <span className="stat-label">{formatBytes(app.size)}</span>
+                </span>
+              )}
             </div>
             <div className="app-actions">
-              <button type="button" className="cta cta-primary" onClick={play}>
-                <PlayGlyph />
-                Play
-              </button>
-              <a className="cta" href={app.urls.remix}>
-                Remix
-              </a>
-              <button type="button" className="cta" onClick={() => setShowSource((s) => !s)} aria-expanded={showSource} aria-controls="source">
-                {showSource ? 'Hide source' : 'View source'}
-              </button>
-              <a className="cta" href={app.urls.download} download={`${app.slug}.softn`}>
-                Download
-              </a>
+              {external ? (
+                <a className="cta cta-primary play-external" href={external.url} target="_blank" rel="noopener noreferrer" onClick={() => void recordRun(app.slug)}>
+                  <PlayGlyph />
+                  Play
+                  <ExternalGlyph />
+                </a>
+              ) : (
+                <button type="button" className="cta cta-primary" onClick={play}>
+                  <PlayGlyph />
+                  Play
+                </button>
+              )}
+              {!external && (
+                <>
+                  <a className="cta" href={remixUrl}>
+                    Remix
+                  </a>
+                  <button type="button" className="cta" onClick={() => setShowSource((s) => !s)} aria-expanded={showSource} aria-controls="source">
+                    {showSource ? 'Hide source' : 'View source'}
+                  </button>
+                  <a className="cta" href={app.urls.download ?? undefined} download={`${app.slug}.softn`}>
+                    Download
+                  </a>
+                </>
+              )}
               <ShareMenu url={app.urls.page} title={shareTitle} text={shareText} />
               {editable && (
                 <a className="cta cta-edit" href={`/publish?update=${encodeURIComponent(app.slug)}`}>
@@ -308,9 +352,19 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                 </a>
               )}
             </div>
-            <p className="app-edit-links muted">
-              Change it: <a href={app.urls.studio}>Studio</a> (have a model rewrite it) or <a href={app.urls.builder}>Builder</a> (by hand).
-            </p>
+            {external ? (
+              <p className="app-edit-links muted">
+                Plays at{' '}
+                <a href={external.url} target="_blank" rel="noopener noreferrer">
+                  {external.host}
+                </a>
+                , in a new tab. It is hosted there, so there is nothing here to download.
+              </p>
+            ) : (
+              <p className="app-edit-links muted">
+                Change it: <a href={app.urls.studio ?? undefined}>Studio</a> (have a model rewrite it) or <a href={app.urls.builder ?? undefined}>Builder</a> (by hand).
+              </p>
+            )}
           </div>
         </div>
 
@@ -332,7 +386,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
               </div>
             )}
 
-            {showSource && (
+            {!external && showSource && (
               <section className="app-section" id="source">
                 <h2 className="section-title">
                   Source
@@ -347,7 +401,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                   )}
                 </h2>
                 <p className="muted">
-                  Every file in the bundle, as published. Open it in <a href={app.urls.studio}>Studio</a> or <a href={app.urls.builder}>Builder</a>{' '}
+                  Every file in the bundle, as published. Open it in <a href={app.urls.studio ?? undefined}>Studio</a> or <a href={app.urls.builder ?? undefined}>Builder</a>{' '}
                   to change it.
                 </p>
                 <SourceViewer slug={app.slug} version={sourceVersion} main={app.manifest?.main} />
@@ -378,6 +432,19 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
               </div>
             </section>
 
+            {external && (
+              <section className="side-card">
+                <h2 className="side-title">Where it plays</h2>
+                <p className="muted">
+                  On its own site,{' '}
+                  <a href={external.url} target="_blank" rel="noopener noreferrer">
+                    {external.host}
+                  </a>
+                  . The directory lists it and opens it; it does not run it in the zipp sandbox, so it makes no claims about what that page reaches.
+                </p>
+              </section>
+            )}
+            {!external && (
             <section className="side-card">
               <h2 className="side-title">What it asks for</h2>
               <ul className="side-list">
@@ -423,6 +490,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                 </p>
               )}
             </section>
+            )}
 
             {(app.lineage.length > 0 || app.remixList.length > 0) && (
               <section className="side-card">
@@ -455,6 +523,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
               </section>
             )}
 
+            {!external && (
             <section className="side-card">
               <h2 className="side-title">Versions</h2>
               <ul className="side-list">
@@ -485,22 +554,27 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                 </p>
               )}
             </section>
+            )}
 
             <section className="side-card">
-              <h2 className="side-title">{editable ? 'Yours' : 'Yours to update?'}</h2>
-              {editable ? (
+              <h2 className="side-title">{external ? 'Listed from elsewhere' : editable ? 'Yours' : 'Yours to update?'}</h2>
+              {external ? (
+                <p className="muted">
+                  This listing points at a Softn app on its own site. The site administrator keeps it; the app itself is updated where it lives.
+                </p>
+              ) : editable ? (
                 <p className="muted">
                   This browser holds the edit key. <a href={`/publish?update=${encodeURIComponent(app.slug)}`}>Publish a new version</a>, change the listing,
                   replace the screenshot or take it down.
                 </p>
               ) : official ? (
                 <p className="muted">
-                  This one ships with the site. To make it yours, <a href={app.urls.remix}>remix it</a>.
+                  This one ships with the site. To make it yours, <a href={remixUrl}>remix it</a>.
                 </p>
               ) : (
                 <p className="muted">
                   Publishing handed out an edit key. With it, <a href={`/publish?update=${encodeURIComponent(app.slug)}`}>publish a new version</a> or change
-                  the listing. Without it, <a href={app.urls.remix}>remix</a> instead.
+                  the listing. Without it, <a href={remixUrl}>remix</a> instead.
                 </p>
               )}
             </section>

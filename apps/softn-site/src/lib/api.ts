@@ -29,10 +29,25 @@ export interface AppCard {
   rating: { average: number; count: number };
   comments: number;
   parent: { slug: string; name: string } | null;
-  source: 'upload' | 'api' | 'seed' | 'remix';
+  source: 'upload' | 'api' | 'seed' | 'remix' | 'folder';
+  /**
+   * Set when the app lives on its own site: Play opens this address in a new
+   * tab, and there is no bundle here to run, download, read or remix, so the
+   * bundle URLs below are null.
+   */
+  external: { url: string; host: string } | null;
   createdAt: string;
   updatedAt: string;
-  urls: { page: string; run: string; bundle: string; download: string; studio: string; builder: string; remix: string };
+  urls: {
+    page: string;
+    /** The runtime's address for the app, or the external address of a linked app. */
+    run: string;
+    bundle: string | null;
+    download: string | null;
+    studio: string | null;
+    builder: string | null;
+    remix: string | null;
+  };
 }
 
 export interface AppVersion {

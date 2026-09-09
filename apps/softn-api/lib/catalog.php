@@ -61,6 +61,7 @@ final class Catalog
             if (($doc['schemaVersion'] ?? 1) !== 1 || !is_array($doc['app'] ?? null) || ($doc['app']['slug'] ?? $slug) !== $slug)
                 throw new ApiError(503, "Invalid app.json in $slug; the app is not listed until it is repaired.");
             $doc['schemaVersion']=1;
+            if (array_key_exists('playUrl',$doc['app'])) { if (!array_key_exists('play_url',$doc['app'])) $doc['app']['play_url']=$doc['app']['playUrl']; unset($doc['app']['playUrl']); }
             $doc['app']=array_replace(self::defaults($slug),$doc['app']);
             foreach(['versions','comments','ratings','runsDaily'] as $field)if(!array_key_exists($field,$doc))$doc[$field]=[];
             foreach(['thumb','icon'] as $field)if($doc['app'][$field]!==null && (!is_string($doc['app'][$field]) || basename($doc['app'][$field])!==$doc['app'][$field] || str_contains($doc['app'][$field],'\\')))throw new ApiError(503,"Invalid image filename in $slug/app.json.");
@@ -78,6 +79,9 @@ final class Catalog
         $app=$doc['app'];
         foreach(['name','description','author','category','execution','source'] as $field)if(!is_string($app[$field]))$fail();
         foreach(['parent_slug','root_slug','edit_key_hash','primary_color'] as $field)if($app[$field]!==null&&!is_string($app[$field]))$fail();
+        // A linked app: Play opens this address instead of the runtime. Only a
+        // web address will do; anything else is a folder that is not listed.
+        if($app['play_url']!==null && !self::validPlayUrl($app['play_url']))throw new ApiError(503,"Invalid play_url in $slug/app.json: it must be an http(s) address of at most 300 characters.");
         foreach(['runs','launches','remixes','rating_sum','rating_count','comments','size','created_at','updated_at','latest_version'] as $field)if(!is_int($app[$field])||$app[$field]<0)$fail();
         if(!in_array($app['hidden'],[0,1,false,true],true))$fail();
         foreach(['tags','capabilities','storage_policies'] as $field)if(!is_string($app[$field])||!is_array(json_decode($app[$field],true)))$fail();
@@ -86,6 +90,11 @@ final class Catalog
         foreach($doc['comments'] as $c)if(!is_array($c)||!is_int($c['id']??null)||!is_string($c['name']??null)||!is_string($c['body']??null)||!is_string($c['visitor']??null)||!isset($c['created_at'],$c['hidden']))$fail();
         foreach($doc['ratings'] as $r)if(!is_array($r)||!is_string($r['visitor']??null)||!in_array($r['stars']??null,[1,2,3,4,5],true))$fail();
         foreach($doc['runsDaily'] as $r)if(!is_array($r)||!is_int($r['day']??null)||!is_int($r['count']??null)||$r['count']<0)$fail();
+    }
+    public static function validPlayUrl(mixed $url): bool {
+        if(!is_string($url)||$url===''||strlen($url)>300||$url!==trim($url))return false;
+        if(!preg_match('#^https?://[^\s/?\#]+#i',$url)||filter_var($url,FILTER_VALIDATE_URL)===false)return false;
+        return !preg_match('/[\x00-\x20"<>\\\'`]/',$url);
     }
     public static function release(): void {
         if (is_resource(self::$lock)) { flock(self::$lock, LOCK_UN); fclose(self::$lock); }
@@ -126,7 +135,8 @@ final class Catalog
     public static function all(): array {
         self::boot(); $out = [];
         foreach (self::$docs as $slug => $doc) {
-            if (!$doc['versions']) continue;
+            // A doc with no versions is a folder still being filled, unless it names an address to play at.
+            if (!$doc['versions'] && empty($doc['app']['play_url'])) continue;
             $row = $doc['app'];
             $row['remixes'] = count(array_filter(self::$docs, fn($d) => ($d['app']['parent_slug'] ?? null) === $slug));
             $out[$slug] = $row;
@@ -162,7 +172,7 @@ final class Catalog
     public static function categories(): array { self::boot(); return self::readJson(Config::dataDir() . '/categories.json'); }
     public static function saveCategories(array $rows): void { self::boot(); self::writeJson(Config::dataDir() . '/categories.json', $rows); }
     public static function defaults(string $slug): array {
-        return ['slug'=>$slug,'name'=>$slug,'description'=>'','author'=>'Anonymous','category'=>'other','tags'=>'[]','parent_slug'=>null,'root_slug'=>null,'latest_version'=>1,'capabilities'=>'[]','execution'=>'main','storage_policies'=>'{}','thumb'=>null,'icon'=>null,'primary_color'=>null,'edit_key_hash'=>null,'source'=>'folder','runs'=>0,'launches'=>0,'remixes'=>0,'rating_sum'=>0,'rating_count'=>0,'comments'=>0,'size'=>0,'hidden'=>0,'created_at'=>time(),'updated_at'=>time()];
+        return ['slug'=>$slug,'name'=>$slug,'description'=>'','author'=>'Anonymous','category'=>'other','tags'=>'[]','parent_slug'=>null,'root_slug'=>null,'latest_version'=>1,'capabilities'=>'[]','execution'=>'main','storage_policies'=>'{}','thumb'=>null,'icon'=>null,'primary_color'=>null,'edit_key_hash'=>null,'play_url'=>null,'source'=>'folder','runs'=>0,'launches'=>0,'remixes'=>0,'rating_sum'=>0,'rating_count'=>0,'comments'=>0,'size'=>0,'hidden'=>0,'created_at'=>time(),'updated_at'=>time()];
     }
     private static function discover(string $slug): void {
         $dir = self::path($slug); $old = self::$docs[$slug] ?? null;
@@ -211,7 +221,18 @@ final class Catalog
             unset($info);
         }
         krsort($versions); $doc['versions']=array_values($versions);
-        if (!$versions) { unset(self::$docs[$slug]); return; }
+        if (!$versions) {
+            // No bundle. A folder that names a play_url is a linked app: listed
+            // with its picture and description, played on its own site, with
+            // nothing here to run, download, read or remix.
+            if (!$old || empty($doc['app']['play_url'])) { unset(self::$docs[$slug]); return; }
+            $doc['app']['latest_version']=0;$doc['app']['size']=0;$doc['app']['capabilities']='[]';$doc['app']['execution']='main';$doc['app']['storage_policies']='{}';
+            if ($old !== $doc) {
+                try { self::put($slug,$doc); }
+                catch (Throwable $e) { error_log("softn-api: metadata for $slug could not be written: " . $e->getMessage()); self::$docs[$slug] = $doc; }
+            }
+            return;
+        }
         $latest=$doc['versions'][0];$info=$infos[$latest['version']];
         $doc['app']['latest_version']=$latest['version'];$doc['app']['size']=$info['size'];
         $doc['app']['capabilities']=json_encode($info['capabilities']);$doc['app']['execution']=$info['execution'];$doc['app']['storage_policies']=json_encode((object)$info['storagePolicies']);

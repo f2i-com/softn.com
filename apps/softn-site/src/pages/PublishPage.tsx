@@ -886,7 +886,7 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
           <h1 className="page-title">{app.name} ships with the site.</h1>
           <p className="band-sub">
             The demos that ship with the site have no edit key; they are updated with the site. If you want your own version,{' '}
-            <a href={app.urls.remix}>remix it</a> — it will credit where it came from.
+            <a href={app.urls.remix ?? app.urls.page}>remix it</a> — it will credit where it came from.
           </p>
         </div>
       </main>

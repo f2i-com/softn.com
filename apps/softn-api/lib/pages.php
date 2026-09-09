@@ -28,7 +28,8 @@ final class Pages
         $name = (string) $row['name'];
         $title = "$name — SoftN";
         $desc = (string) $row['description'];
-        if ($desc === '') $desc = "$name, a SoftN app. Run it in the browser, read its source, remix it.";
+        $playUrl = Apps::playUrl($row);
+        if ($desc === '') $desc = $playUrl === null ? "$name, a SoftN app. Run it in the browser, read its source, remix it." : "$name, a SoftN app. Play it at " . (parse_url($playUrl, PHP_URL_HOST) ?: 'its own site') . '.';
         $image = "$origin/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
         $url = "$origin/app/$slug";
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
