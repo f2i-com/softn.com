@@ -24,6 +24,12 @@ self.addEventListener('fetch', (event) => {
         if (!res && req.mode === 'navigate') res = await caches.match(new URL('./index.html', self.registration.scope).href, { ignoreSearch: true });
         if (!res) throw err;
       }
+      // A navigation answered with a redirect arrives here opaque, status 0,
+      // and `new Response(body, { status: 0 })` throws — so every redirected
+      // navigation in scope showed a network error. There are no headers to
+      // stamp on an opaque response anyway; the browser follows it, and the
+      // document it lands on comes back through this handler.
+      if (res.status === 0 || res.type === 'opaqueredirect' || res.type === 'opaque') return res;
       const headers = new Headers(res.headers);
       headers.set('Cross-Origin-Opener-Policy', 'same-origin');
       headers.set('Cross-Origin-Embedder-Policy', 'credentialless');

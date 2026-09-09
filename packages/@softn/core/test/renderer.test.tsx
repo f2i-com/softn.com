@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, it, expect, vi } from 'vitest';
 import { parse } from '../src/parser';
 import { renderDocument, ComponentRegistry, evaluateExpression } from '../src/renderer';
@@ -368,5 +369,44 @@ describe('ComponentRegistry', () => {
     expect(registry.has('Button')).toBe(true);
     expect(registry.has('Text')).toBe(true);
     expect(registry.has('Stack')).toBe(true);
+  });
+});
+
+describe('identifiers named after Object.prototype members', () => {
+  // The lookups used `in` on plain objects, so an identifier named
+  // `constructor` fell through every scope to Object.prototype and came back
+  // as `Object` itself — arbitrary code and prototype pollution from a
+  // template. Own keys only now.
+  it('resolves a bare `constructor`, `__proto__` or `toString` to undefined', () => {
+    const context = createTestContext({ state: { count: 1 }, functions: { fmt: () => 'x' } });
+    for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+      const expr = {
+        type: 'Identifier' as const,
+        name,
+        loc: { line: 1, column: 0, start: 0, end: name.length },
+      };
+      expect(evaluateExpression(expr, context)).toBeUndefined();
+    }
+  });
+
+  it('still reads a state variable literally named `toString`', () => {
+    const context = createTestContext({ state: { toString: 'mine' } });
+    const expr = {
+      type: 'Identifier' as const,
+      name: 'toString',
+      loc: { line: 1, column: 0, start: 0, end: 8 },
+    };
+    expect(evaluateExpression(expr, context)).toBe('mine');
+  });
+
+  it('renders `{toString}` from state end to end', () => {
+    // The lexer half of the same bug: `{toString}` used to come back as a
+    // token whose type was the inherited function, and rendered nothing.
+    const doc = parse('<Text>{toString}</Text>');
+    const context = createTestContext({ state: { toString: 'mine' } });
+    const html = renderToStaticMarkup(
+      renderDocument(doc, context, createTestRegistry()) as React.ReactElement
+    );
+    expect(html).toBe('<span>mine</span>');
   });
 });

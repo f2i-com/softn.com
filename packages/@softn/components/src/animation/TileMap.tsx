@@ -96,14 +96,22 @@ function LegacyTileMap({
       return;
     }
 
+    // A load that this effect started but a later one has superseded must not
+    // install its image: with `src` changed A→B→A, B's onload could land
+    // after A's and leave B on the canvas. Nor may it paint after unmount.
+    let cancelled = false;
     const img = new window.Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
+      if (cancelled) return;
       imgRef.current = img;
       loadedSrcRef.current = src;
       render();
     };
     img.src = src;
+    return () => {
+      cancelled = true;
+    };
   }, [src, render]);
 
   // Re-render when layers change

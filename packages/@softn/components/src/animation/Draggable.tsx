@@ -76,6 +76,7 @@ export function Draggable({
       if (activeListenersRef.current) {
         document.removeEventListener('pointermove', activeListenersRef.current.move);
         document.removeEventListener('pointerup', activeListenersRef.current.up);
+        document.removeEventListener('pointercancel', activeListenersRef.current.up);
         activeListenersRef.current = null;
       }
     };
@@ -182,9 +183,13 @@ export function Draggable({
         onDragRef.current?.(constrained);
       };
 
+      // `pointercancel` ends a drag as surely as `pointerup` — the browser
+      // took the pointer for a scroll, a touch was lost — and without it the
+      // document listener and `isDragging` outlived the gesture.
       const handleUp = () => {
         document.removeEventListener('pointermove', handleMove);
         document.removeEventListener('pointerup', handleUp);
+        document.removeEventListener('pointercancel', handleUp);
         activeListenersRef.current = null;
         setIsDragging(false);
         onDragEndRef.current?.(positionRef.current);
@@ -192,6 +197,7 @@ export function Draggable({
 
       document.addEventListener('pointermove', handleMove);
       document.addEventListener('pointerup', handleUp);
+      document.addEventListener('pointercancel', handleUp);
       activeListenersRef.current = { move: handleMove, up: handleUp };
     },
     [disabled, constrainPosition, applyTransform, onDragStart]

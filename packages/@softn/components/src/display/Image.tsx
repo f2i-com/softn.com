@@ -145,7 +145,7 @@ export function Image({
         <div style={{ ...errorStyle, width: '100%', padding: '0 0.25rem', fontSize: '0.75rem' }}>
           Images load once you choose Allow in the permission bar.
         </div>
-      ) : !currentSrc || (hasError && !safeFallbackSrc) ? (
+      ) : !currentSrc || (hasError && (!safeFallbackSrc || currentSrc === safeFallbackSrc)) ? (
         <div style={errorStyle}>
           <svg
             width="24"

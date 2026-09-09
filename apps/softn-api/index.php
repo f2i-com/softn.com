@@ -43,12 +43,6 @@ header('Access-Control-Expose-Headers: ETag, Content-Disposition, Retry-After');
 header('Access-Control-Max-Age: 86400');
 header('X-Content-Type-Options: nosniff');
 
-$req = Request::fromGlobals();
-if ($req->method === 'OPTIONS') {
-    http_response_code(204);
-    exit;
-}
-
 /** @return array{0: string, 1: string[]}|null */
 function match_route(string $method, string $path, array $routes): ?array
 {
@@ -101,6 +95,17 @@ $routes = [
 ];
 
 try {
+    // Reading the request reads the configuration (whether a proxy's
+    // X-Forwarded-For is believed), and that is the first thing to touch
+    // data/: a directory PHP cannot write, or a config.json that is not
+    // JSON, is the documented 503 below rather than a bare fatal with no
+    // JSON and no CORS headers.
+    $req = Request::fromGlobals();
+    if ($req->method === 'OPTIONS') {
+        http_response_code(204);
+        exit;
+    }
+
     // A browser navigation to /app/<slug> lands here through the rewrite in
     // .htaccess; the request path is the page's own.
     $pagePath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
@@ -121,6 +126,21 @@ try {
 } catch (Throwable $e) {
     error_log('softn-api: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
     Response::json(['ok' => false, 'error' => 'The server could not complete that.'], 500)->send();
+}
+
+/**
+ * The slug of a published app that declared storage, for every storage
+ * route alike: the GET routes used to skip the check the POST made, and a
+ * query through them created storage.sqlite in any app's folder.
+ */
+function storage_app(string $given): string
+{
+    $slug = Apps::resolveSlug($given);
+    $caps = json_decode((string) Apps::row($slug)['capabilities'], true) ?: [];
+    if (!in_array('storage', $caps, true)) {
+        throw new ApiError(403, 'This app did not declare storage in its permission.json, so it has no server storage.');
+    }
+    return $slug;
 }
 
 /** @param string[] $args */
@@ -202,7 +222,7 @@ function handle(string $handler, array $args, Request $req): Response
             // The hourly limit is for visitors. The site owner, who has the
             // admin key from data/config.json, fills a fresh directory in one
             // batch — a whole folder of bundles dropped on the publish page.
-            if (!Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) {
+            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) {
                 Db::rateLimit('publish', Config::visitorHash($req->ip));
             }
             $file = $req->bundleFile();
@@ -236,14 +256,14 @@ function handle(string $handler, array $args, Request $req): Response
                 $v = $req->field($f);
                 if ($v !== null && !array_key_exists($f, $fields)) $fields[$f] = $v;
             }
-            if (!Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) unset($fields['hidden']);
+            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) unset($fields['hidden']);
             return Response::json(['ok' => true, 'app' => Apps::patch($slug, $fields)]);
         }
 
         case 'deleteApp': {
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireOwner($req, $slug);
-            if (Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey')) && ($req->query['purge'] ?? '') === '1') {
+            if (Config::isAdmin($req->credential('x-admin-key', 'adminKey')) && ($req->query['purge'] ?? '') === '1') {
                 Apps::remove($slug);
             } else {
                 Apps::patch($slug, ['hidden' => true]);
@@ -317,6 +337,12 @@ function handle(string $handler, array $args, Request $req): Response
         case 'addVersion': {
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireOwner($req, $slug);
+            // Its own window, wider than publishing's: an owner iterating on
+            // one app is not ten new apps an hour, but a stolen key must not
+            // be a way to fill a folder to its version limit in a minute.
+            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) {
+                Db::rateLimit('version', Config::visitorHash($req->ip));
+            }
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent.');
             return Response::json(['ok' => true, 'app' => Apps::addVersion($slug, $file, $req->field('notes'))], 201);
@@ -377,26 +403,19 @@ function handle(string $handler, array $args, Request $req): Response
         }
 
         case 'storage': {
-            $slug = Apps::resolveSlug($args[0]);
-            $row = Apps::row($slug);
-            $caps = json_decode((string) $row['capabilities'], true) ?: [];
-            if (!in_array('storage', $caps, true)) {
-                throw new ApiError(403, 'This app did not declare storage in its permission.json, so it has no server storage.');
-            }
+            $slug = storage_app($args[0]);
             $body = $req->json();
             return Response::json(['ok' => true, 'result' => Storage::run($req, $slug, $body)]);
         }
 
         case 'storageSummary': {
-            $slug = Apps::resolveSlug($args[0]);
-            Apps::row($slug);
+            $slug = storage_app($args[0]);
             return Response::json(['ok' => true, 'storage' => Storage::summary($slug)]);
         }
 
         case 'storageList': {
             // The read shape of the query op, as a GET for curiosity and debugging.
-            $slug = Apps::resolveSlug($args[0]);
-            Apps::row($slug);
+            $slug = storage_app($args[0]);
             $body = ['op' => 'query', 'collection' => $args[1], 'limit' => (int) ($req->query['limit'] ?? 50), 'offset' => (int) ($req->query['offset'] ?? 0)];
             if (isset($req->query['orderBy'])) $body['orderBy'] = [$req->query['orderBy'], $req->query['dir'] ?? 'asc'];
             if (isset($req->query['where'])) {
@@ -407,18 +426,18 @@ function handle(string $handler, array $args, Request $req): Response
         }
 
         case 'adminCategory': {
-            if (!Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) throw new ApiError(403, 'That needs the admin key.');
+            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) throw new ApiError(403, 'That needs the admin key.');
             return Response::json(['ok' => true, 'category' => Categories::update($args[0], $req->json())]);
         }
 
         case 'adminDeleteComment': {
-            if (!Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) throw new ApiError(403, 'That needs the admin key.');
+            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) throw new ApiError(403, 'That needs the admin key.');
             Social::hideComment((int) $args[0]);
             return Response::noContent();
         }
 
         case 'adminStats': {
-            if (!Config::isAdmin($req->header('x-admin-key') ?? $req->field('adminKey'))) throw new ApiError(403, 'That needs the admin key.');
+            if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) throw new ApiError(403, 'That needs the admin key.');
             $rows=Catalog::all();$docs=array_map(fn($a)=>Catalog::doc($a['slug']),$rows);
             return Response::json([
                 'ok' => true,

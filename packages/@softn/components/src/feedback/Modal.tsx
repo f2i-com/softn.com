@@ -7,6 +7,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { lockBodyScroll } from './body-scroll-lock';
 
 export interface ModalProps {
   /** Whether the modal is open */
@@ -56,39 +57,6 @@ const sizeValues: Record<string, string> = {
   xl: '56rem',
   full: '100%',
 };
-
-interface BodyScrollLock {
-  count: number;
-  originalOverflow: string;
-}
-
-// A page may contain more than one modal (or briefly overlap them during a
-// transition). Track locks per body so closing either instance cannot restore
-// scrolling while another dialog still owns a lock.
-const bodyScrollLocks = new WeakMap<HTMLElement, BodyScrollLock>();
-
-function lockBodyScroll(body: HTMLElement): () => void {
-  let lock = bodyScrollLocks.get(body);
-  if (!lock) {
-    lock = { count: 0, originalOverflow: body.style.overflow };
-    bodyScrollLocks.set(body, lock);
-  }
-
-  lock.count += 1;
-  body.style.overflow = 'hidden';
-  let released = false;
-
-  return () => {
-    if (released) return;
-    released = true;
-    lock!.count -= 1;
-
-    if (lock!.count === 0) {
-      body.style.overflow = lock!.originalOverflow;
-      bodyScrollLocks.delete(body);
-    }
-  };
-}
 
 // Spinner component
 const Spinner = ({ size = 24 }: { size?: number }) => (

@@ -61,7 +61,7 @@ export interface DataGridProps<T = any> {
 
 export function DataGrid<T = any>({
   columns,
-  data,
+  data: rawData,
   keyField = 'id' as keyof T,
   height = 400,
   rowHeight = 40,
@@ -84,6 +84,9 @@ export function DataGrid<T = any>({
   className = '',
   style,
 }: DataGridProps<T>) {
+  // A grid is routinely bound to rows that have not arrived: `data.length`
+  // of undefined threw into the error boundary where an empty grid belonged.
+  const data = React.useMemo(() => (Array.isArray(rawData) ? rawData : []), [rawData]);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = React.useState(0);
   const [editingCell, setEditingCell] = React.useState<{

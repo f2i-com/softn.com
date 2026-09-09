@@ -15,6 +15,8 @@ import type {
   BundleFileProvider,
   AIPermissionConfig,
 } from './ai-manager';
+import { describeNetDestination, type NetPermission } from './egress-policy';
+import { isRemoteUrl } from '../renderer/sanitize-html';
 
 /** onnxruntime-web types (subset we use) */
 interface OrtModule {
@@ -58,13 +60,93 @@ export class OnnxManager {
   private nextSessionId = 1;
   private bundleFileProvider: BundleFileProvider | null = null;
   private permissionConfig: AIPermissionConfig | null = null;
+  /** The bundle's `net` declaration, which a model URL is judged against. */
+  private netPermission: NetPermission | undefined;
 
   setBundleFileProvider(provider: BundleFileProvider): void {
     this.bundleFileProvider = provider;
   }
 
-  setPermissionConfig(config: AIPermissionConfig): void {
+  setPermissionConfig(config: AIPermissionConfig, net?: NetPermission): void {
     this.permissionConfig = config;
+    this.netPermission = net;
+  }
+
+  /** The largest model this bundle may load, in bytes. */
+  private maxModelBytes(overrideMB?: number): number {
+    const maxMB = overrideMB ?? this.permissionConfig?.maxModelSizeMB ?? 500;
+    return maxMB * 1024 * 1024;
+  }
+
+  /**
+   * Fetch a model, held to the bundle's size cap.
+   *
+   * The cap is enforced on the way in — Content-Length first, then a running
+   * count — rather than after `arrayBuffer()` has already allocated whatever
+   * the server chose to send. Whether the URL may be reached at all is the
+   * caller's question; see resolveModel.
+   */
+  private async downloadModel(url: string, label: string, maxBytes: number): Promise<ArrayBuffer> {
+    const tooLarge = () =>
+      new Error(`Model ${label} exceeds limit of ${(maxBytes / (1024 * 1024)).toFixed(0)}MB`);
+
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      try {
+        await resp.body?.cancel();
+      } catch {
+        // The HTTP failure is the useful error.
+      }
+      throw new Error(`Failed to fetch model ${label}: ${resp.status} ${resp.statusText}`);
+    }
+
+    const declared = Number(resp.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      try {
+        await resp.body?.cancel();
+      } catch {
+        // The size violation remains the actionable failure.
+      }
+      throw tooLarge();
+    }
+
+    if (!resp.body) {
+      const data = await resp.arrayBuffer();
+      if (data.byteLength > maxBytes) throw tooLarge();
+      return data;
+    }
+
+    const reader = resp.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      let next = await reader.read();
+      while (!next.done) {
+        const { value } = next;
+        if (value) {
+          total += value.byteLength;
+          if (total > maxBytes) {
+            try {
+              await reader.cancel();
+            } catch {
+              // The size violation remains the actionable failure.
+            }
+            throw tooLarge();
+          }
+          chunks.push(value);
+        }
+        next = await reader.read();
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const data = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      data.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return data.buffer;
   }
 
   /** Lazy-load onnxruntime-web */
@@ -112,7 +194,7 @@ export class OnnxManager {
   }
 
   /** Resolve a ModelSource to an ArrayBuffer */
-  private async resolveModel(source: ModelSource): Promise<ArrayBuffer> {
+  private async resolveModel(source: ModelSource, maxBytes: number): Promise<ArrayBuffer> {
     // Permission check: which sources are allowed?
     if (this.permissionConfig?.allowedSources) {
       const allowed = this.permissionConfig.allowedSources;
@@ -138,20 +220,28 @@ export class OnnxManager {
 
     if (source.huggingface) {
       // Download from HuggingFace Hub with IndexedDB caching
-      return this.downloadWithCache(source.huggingface);
+      return this.downloadWithCache(source.huggingface, maxBytes);
     }
 
     if (source.url) {
-      const resp = await fetch(source.url);
-      if (!resp.ok) throw new Error(`Failed to fetch model: ${resp.status} ${resp.statusText}`);
-      return resp.arrayBuffer();
+      // A URL the bundle chose goes through the same `allow_http` /
+      // `allowed_hosts` verdict as `softn.net.fetch`, so a host the bundle
+      // scoped itself away from is not reachable by naming it as a model.
+      // The HuggingFace path above is not judged: its host is fixed here,
+      // and `allowedSources: ["huggingface"]` is the bundle's declaration
+      // of it. A bundle path, blob: or data: URL carries no host.
+      if (isRemoteUrl(source.url)) {
+        const verdict = describeNetDestination(source.url, this.netPermission);
+        if (!verdict.allowed) throw new Error(`Model URL not allowed: ${verdict.reason}`);
+      }
+      return this.downloadModel(source.url, source.url, maxBytes);
     }
 
     throw new Error('ModelSource must specify bundle, huggingface, or url');
   }
 
   /** Download model from HuggingFace with IndexedDB caching */
-  private async downloadWithCache(modelId: string): Promise<ArrayBuffer> {
+  private async downloadWithCache(modelId: string, maxBytes: number): Promise<ArrayBuffer> {
     const cacheKey = `softn-ai-model:${modelId}`;
 
     // Try IndexedDB cache first
@@ -166,16 +256,8 @@ export class OnnxManager {
     // Download from HuggingFace
     const url = `https://huggingface.co/${modelId}/resolve/main/model.onnx`;
     console.log(`[SoftN AI] Downloading model: ${modelId}`);
-    const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`Failed to download model ${modelId}: ${resp.status}`);
-    const data = await resp.arrayBuffer();
-
-    // Size guard
-    const sizeMB = data.byteLength / (1024 * 1024);
-    const maxMB = this.permissionConfig?.maxModelSizeMB ?? 500;
-    if (sizeMB > maxMB) {
-      throw new Error(`Model size ${sizeMB.toFixed(1)}MB exceeds limit of ${maxMB}MB`);
-    }
+    // Capped while downloading — see downloadModel.
+    const data = await this.downloadModel(url, modelId, maxBytes);
 
     // Cache for next time
     try {
@@ -250,7 +332,7 @@ export class OnnxManager {
     // Size guard before download
     const maxMB = options?.maxSizeMB ?? this.permissionConfig?.maxModelSizeMB ?? 500;
 
-    const modelBuffer = await this.resolveModel(source);
+    const modelBuffer = await this.resolveModel(source, this.maxModelBytes(options?.maxSizeMB));
 
     // Check size
     const sizeMB = modelBuffer.byteLength / (1024 * 1024);

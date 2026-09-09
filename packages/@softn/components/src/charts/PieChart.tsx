@@ -6,6 +6,7 @@
  */
 
 import * as React from 'react';
+import { normaliseArray } from './series';
 
 export interface PieDataPoint {
   label: string;
@@ -124,7 +125,7 @@ function describeArc(
 }
 
 export function PieChart({
-  data,
+  data: rawData,
   width = 300,
   height = 300,
   innerRadius = 0,
@@ -138,6 +139,8 @@ export function PieChart({
   className = '',
   style,
 }: PieChartProps) {
+  // Data that has not arrived yet is an empty chart, not a throw.
+  const data = React.useMemo(() => normaliseArray(rawData), [rawData]);
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
   const [tooltip, setTooltip] = React.useState<{ x: number; y: number; label: string; value: number; percent: number; color: string } | null>(null);
 

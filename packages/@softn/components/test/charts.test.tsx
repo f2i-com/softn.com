@@ -11,6 +11,8 @@ import { mount } from './dom';
 import { LineChart } from '../src/charts/LineChart';
 import { BarChart } from '../src/charts/BarChart';
 import { AreaChart } from '../src/charts/AreaChart';
+import { PieChart } from '../src/charts/PieChart';
+import { RadarChart } from '../src/charts/RadarChart';
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -153,5 +155,37 @@ describe('bar chart layouts that were already working', () => {
       .sort((a, b) => a - b);
     expect(heights.length).toBeGreaterThanOrEqual(2);
     expect(heights[heights.length - 1]).toBeGreaterThan(heights[0]);
+  });
+});
+
+describe('a chart whose props have not arrived at all', () => {
+  // Not an empty array: `undefined`, which is what `series={stats}` is for the
+  // render before the fetch lands. `.flatMap` of undefined threw into the
+  // error boundary, so the page showed an error panel in place of an empty
+  // chart for the second the data took.
+  const absent = undefined as unknown as never[];
+
+  it.each([
+    ['LineChart', () => <LineChart series={absent} />],
+    ['AreaChart', () => <AreaChart series={absent} />],
+    ['AreaChart stacked', () => <AreaChart series={absent} stacked />],
+    ['BarChart', () => <BarChart series={absent} />],
+    ['PieChart', () => <PieChart data={absent} />],
+    ['RadarChart', () => <RadarChart series={absent} axes={absent} />],
+  ])('%s renders empty rather than throwing', (_name, render) => {
+    expect(() => mount(render())).not.toThrow();
+  });
+
+  it.each([
+    ['LineChart', () => <LineChart series={[{ name: 'a', data: absent }]} />],
+    ['AreaChart', () => <AreaChart series={[{ name: 'a', data: absent }]} stacked />],
+    ['BarChart', () => <BarChart series={[{ name: 'a', data: absent }]} />],
+    ['RadarChart', () => <RadarChart series={[{ name: 'a', data: absent }]} axes={['x']} />],
+  ])('%s tolerates a series whose data is missing', (_name, render) => {
+    let container: HTMLElement | undefined;
+    expect(() => {
+      container = mount(render()).container;
+    }).not.toThrow();
+    expect(container!.innerHTML).not.toMatch(/NaN|Infinity/);
   });
 });

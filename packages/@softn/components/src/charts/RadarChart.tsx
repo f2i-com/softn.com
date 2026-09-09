@@ -5,6 +5,7 @@
  */
 
 import * as React from 'react';
+import { normaliseArray, normaliseSeries } from './series';
 
 export interface RadarDataPoint {
   axis: string;
@@ -61,8 +62,8 @@ function polygonPoints(
 }
 
 export function RadarChart({
-  series,
-  axes,
+  series: rawSeries,
+  axes: rawAxes,
   maxValue: propMaxValue,
   levels = 5,
   width = 300,
@@ -72,6 +73,9 @@ export function RadarChart({
   className = '',
   style,
 }: RadarChartProps) {
+  // Data that has not arrived yet is an empty chart, not a throw.
+  const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
+  const axes = React.useMemo(() => normaliseArray(rawAxes), [rawAxes]);
   const [hoveredSeries, setHoveredSeries] = React.useState<string | null>(null);
   const [tooltip, setTooltip] = React.useState<{
     x: number;

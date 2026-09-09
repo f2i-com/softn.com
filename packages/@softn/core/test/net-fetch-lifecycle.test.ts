@@ -101,3 +101,59 @@ describe('softn.net.fetch lifecycle', () => {
     runtime.cleanup();
   });
 });
+
+describe('softn.net.fetch request body', () => {
+  // The bridge serialises the options object once. A string body used to be
+  // JSON-encoded a second time on this side, so a form endpoint received
+  // `"a=1"` with the quotes in it.
+  function stubFetch() {
+    const seen: Array<RequestInit | undefined> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        seen.push(init);
+        return {
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          headers: new Headers(),
+          body: null,
+          arrayBuffer: async () => new ArrayBuffer(0),
+        } as unknown as Response;
+      })
+    );
+    return seen;
+  }
+
+  function post(runtime: ReturnType<typeof makeRuntime>, options: Record<string, unknown>) {
+    return (runtime as unknown as NetworkRuntimeInternals).handleNetFetch({
+      id: 1,
+      kind: 'net.fetch',
+      args: ['https://api.test/data', JSON.stringify({ method: 'POST', ...options })],
+    });
+  }
+
+  it('sends a string body as written', async () => {
+    const seen = stubFetch();
+    const runtime = makeRuntime();
+    await post(runtime, { body: 'a=1&b=2' });
+    expect(seen[0]?.body).toBe('a=1&b=2');
+    runtime.cleanup();
+  });
+
+  it('encodes an object body exactly once', async () => {
+    const seen = stubFetch();
+    const runtime = makeRuntime();
+    await post(runtime, { body: { a: 1 } });
+    expect(seen[0]?.body).toBe('{"a":1}');
+    runtime.cleanup();
+  });
+
+  it('sends no body when the script gave none', async () => {
+    const seen = stubFetch();
+    const runtime = makeRuntime();
+    await post(runtime, {});
+    expect(seen[0]?.body).toBeUndefined();
+    runtime.cleanup();
+  });
+});

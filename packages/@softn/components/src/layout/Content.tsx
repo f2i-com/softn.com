@@ -5,6 +5,7 @@
  */
 
 import React from 'react';
+import { useJudgedBackground } from '../utils/egress';
 
 export interface ContentProps {
   /** Content */
@@ -38,13 +39,16 @@ export function Content({
   style,
 }: ContentProps): React.ReactElement {
   const paddingValue = paddingMap[padding] || padding;
+  // A `url()` in `background` is a fetch the renderer's scrub of `style`
+  // never sees; the same policy decides it here.
+  const safeBackground = useJudgedBackground(background);
 
   const containerStyle: React.CSSProperties = {
     flex: 1,
     display: 'flex',
     flexDirection: 'column',
     padding: paddingValue,
-    background,
+    background: safeBackground,
     overflow: 'auto',
     minHeight: 0, // Allow flex shrinking vertically
     minWidth: 0, // Allow flex shrinking horizontally

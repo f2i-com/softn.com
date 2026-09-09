@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import { isSafeUrl } from '@softn/core';
+import { isSafeUrl, markupUrlJudge, sanitizeRichText, useEgressConfig } from '@softn/core';
 
 export interface MarkdownEditorProps {
   /** Current value */
@@ -259,7 +259,17 @@ export function MarkdownEditor({
     [content, onChange]
   );
 
-  const htmlPreview = useMemo(() => markdownToHtml(content), [content]);
+  // What the preview may fetch. `safeLinkTarget` polices the scheme, and
+  // that is all it did: `![x](https://…)` reached the network on first paint
+  // whether or not the bundle had `net`. The generated markup goes through the
+  // same sanitizer RichTextEditor uses, with the same judge, so a remote image
+  // waits on the bundle's permission exactly as an `<img src>` prop does.
+  const egress = useEgressConfig();
+  const judge = useMemo(() => markupUrlJudge(egress), [egress]);
+  const htmlPreview = useMemo(
+    () => sanitizeRichText(markdownToHtml(content), judge),
+    [content, judge]
+  );
 
   const containerStyle: React.CSSProperties = {
     display: 'flex',

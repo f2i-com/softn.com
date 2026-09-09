@@ -159,3 +159,63 @@ describe('softn.qr.decode image lifecycle', () => {
     runtime.cleanup();
   });
 });
+
+describe('softn.qr.decode egress', () => {
+  // The argument goes straight to img.src, so a remote URL is a GET to that
+  // host on the bundle's behalf. `qr` says nothing about the network; the
+  // same gate as softn.net.fetch and softn.audio.play stands in front of it.
+  function decodeUrl(runtime: ReturnType<typeof makeRuntime>, url: string) {
+    return (runtime as unknown as QRRuntimeInternals).handleQrDecode({
+      id: 2,
+      kind: 'qr.decode',
+      args: [url],
+    });
+  }
+
+  it('refuses a remote image when net is not granted', async () => {
+    const detect = installBarcodeDetector();
+    const runtime = makeRuntime();
+    await expect(decodeUrl(runtime, 'https://attacker.test/qr.png')).rejects.toThrow(
+      /Network access not permitted/
+    );
+    await expect(decodeUrl(runtime, '//attacker.test/qr.png')).rejects.toThrow(
+      /Network access not permitted/
+    );
+    expect(detect).not.toHaveBeenCalled();
+    runtime.cleanup();
+  });
+
+  it('holds a remote image to the host allowlist once net is granted', async () => {
+    installBarcodeDetector();
+    const runtime = makeRuntime();
+    (runtime as unknown as QRRuntimeInternals).setPermissionConfig({
+      permissions: { qr: { enabled: true }, net: { enabled: true, allowed_hosts: ['codes.test'] } },
+    });
+    await expect(decodeUrl(runtime, 'https://attacker.test/qr.png')).rejects.toThrow(
+      /Host not allowed/
+    );
+    runtime.cleanup();
+  });
+
+  it('still takes a data: image with qr alone', async () => {
+    installBarcodeDetector();
+    vi.stubGlobal(
+      'Image',
+      class {
+        onload: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        set src(_value: string) {
+          queueMicrotask(() => this.onload?.());
+        }
+        removeAttribute() {}
+      }
+    );
+    const runtime = makeRuntime();
+    // Nothing found in the image: the decode ran, and reported no code.
+    await expect(decode(runtime)).resolves.toEqual({
+      data: null,
+      error: 'QR detection not available',
+    });
+    runtime.cleanup();
+  });
+});

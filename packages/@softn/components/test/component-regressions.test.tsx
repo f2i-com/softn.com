@@ -20,6 +20,11 @@ import { List, ListItem } from '../src/data/List';
 import { Box } from '../src/layout/Box';
 import { Card } from '../src/layout/Card';
 import { Modal } from '../src/feedback/Modal';
+import { Drawer } from '../src/feedback/Drawer';
+import { Text } from '../src/display/Text';
+import { Image } from '../src/display/Image';
+import { DataGrid } from '../src/data/DataGrid';
+import { Draggable } from '../src/animation/Draggable';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -268,5 +273,124 @@ describe('Modal body scroll lock', () => {
 
     mount(<></>);
     expect(document.body.style.overflow).toBe('scroll');
+  });
+});
+
+describe('Text `as`', () => {
+  it('renders only the elements the prop names', () => {
+    // `as` is routinely assigned from a `.ui` expression, and `as="style"`
+    // rendered a live <style> whose text — the `content` prop — was CSS
+    // applied to the whole page.
+    mount(<Text as={'style' as 'span'} content="body { display: none }" />);
+    expect(container.querySelector('style')).toBeNull();
+    expect(container.firstElementChild?.tagName).toBe('SPAN');
+    expect(container.textContent).toBe('body { display: none }');
+  });
+
+  it('still honours a listed element', () => {
+    mount(<Text as="p" content="x" />);
+    expect(container.firstElementChild?.tagName).toBe('P');
+  });
+});
+
+describe('Drawer and Modal sharing the body scroll lock', () => {
+  it('restores scrolling after a modal opened from a drawer, whichever closes first', () => {
+    // The drawer kept its own copy of `overflow` and put it back on close. A
+    // modal opened over it saved `hidden` as the value to restore, so once
+    // both had closed the page could not scroll again.
+    const scene = (drawer: boolean, modal: boolean) => (
+      <>
+        {drawer && (
+          <Drawer open onClose={() => {}}>
+            drawer
+          </Drawer>
+        )}
+        {modal && (
+          <Modal open disableAnimation onClose={() => {}}>
+            modal
+          </Modal>
+        )}
+      </>
+    );
+
+    document.body.style.overflow = 'scroll';
+    mount(scene(true, false));
+    expect(document.body.style.overflow).toBe('hidden');
+    mount(scene(true, true));
+    expect(document.body.style.overflow).toBe('hidden');
+    mount(scene(false, true));
+    expect(document.body.style.overflow).toBe('hidden');
+    mount(scene(false, false));
+    expect(document.body.style.overflow).toBe('scroll');
+  });
+});
+
+describe('DataGrid bound to rows that have not arrived', () => {
+  it('renders its empty state rather than throwing', () => {
+    expect(() =>
+      mount(
+        <DataGrid
+          columns={[{ key: 'name', header: 'Name' }]}
+          data={undefined as unknown as Array<{ name: string }>}
+        />
+      )
+    ).not.toThrow();
+    expect(container.textContent).toContain('No data available');
+  });
+});
+
+describe('Draggable when the browser cancels the pointer', () => {
+  const pointer = (type: string, clientX = 0) => {
+    const event = new MouseEvent(type, { bubbles: true, clientX, clientY: 0 });
+    Object.defineProperty(event, 'pointerId', { value: 1 });
+    return event;
+  };
+
+  it('ends the drag on pointercancel and stops listening', () => {
+    // A `pointercancel` — the browser took the pointer for a scroll, a touch
+    // was lost — never ended the drag, so the document `pointermove` listener
+    // and `isDragging` outlived the gesture.
+    const onDrag = vi.fn();
+    const onDragEnd = vi.fn();
+    mount(
+      <Draggable onDrag={onDrag} onDragEnd={onDragEnd}>
+        <div>handle</div>
+      </Draggable>
+    );
+    const handle = container.firstElementChild as HTMLElement;
+    act(() => {
+      handle.dispatchEvent(pointer('pointerdown'));
+    });
+    expect(handle.style.cursor).toBe('grabbing');
+
+    act(() => {
+      document.dispatchEvent(pointer('pointercancel'));
+    });
+    expect(onDragEnd).toHaveBeenCalledTimes(1);
+    expect(handle.style.cursor).toBe('grab');
+
+    act(() => {
+      document.dispatchEvent(pointer('pointermove', 40));
+    });
+    expect(onDrag).not.toHaveBeenCalled();
+  });
+});
+
+describe('Image whose fallback also fails', () => {
+  it('shows the failure panel rather than a broken image', () => {
+    // The panel was gated on `hasError && !fallbackSrc`, so with a fallback
+    // declared it never showed: the second failure left the broken <img>.
+    mount(<Image src="https://cdn.example/a.png" fallbackSrc="https://cdn.example/b.png" alt="x" />);
+    const img = () => container.querySelector('img');
+    act(() => {
+      img()!.dispatchEvent(new Event('error'));
+    });
+    expect(img()?.getAttribute('src')).toBe('https://cdn.example/b.png');
+
+    act(() => {
+      img()!.dispatchEvent(new Event('error'));
+    });
+    expect(img()).toBeNull();
+    expect(container.textContent).toContain('Failed to load');
   });
 });

@@ -28,7 +28,22 @@ if (preg_match('#^/data(/|$)#', $path)) {
 
 $real = realpath($root . $path);
 $rootReal = realpath($root);
-if ($real !== false && $rootReal !== false && str_starts_with(str_replace('\\', '/', $real), str_replace('\\', '/', $rootReal))) {
+if ($real !== false && $rootReal !== false) {
+    $real = str_replace('\\', '/', $real);
+    $rootReal = rtrim(str_replace('\\', '/', $rootReal), '/');
+}
+// The refusals above ran on the path as sent; realpath() has since folded
+// `.` and `..`, so /./data/config.json arrives here as the data folder
+// itself, and /./api/lib/x.php as a file the API never serves directly.
+// The root is compared with its separator, so a sibling that shares its
+// name as a prefix is not inside it.
+if ($real !== false && $rootReal !== false && (str_starts_with("$real/", "$rootReal/data/") || str_starts_with("$real/", "$rootReal/api/"))) {
+    http_response_code(404);
+    header('Content-Type: text/plain');
+    echo 'Not found';
+    return true;
+}
+if ($real !== false && $rootReal !== false && ($real === $rootReal || str_starts_with($real, "$rootReal/"))) {
     if (is_file($real)) {
         $ext = strtolower(pathinfo($real, PATHINFO_EXTENSION));
         // Every static type the site ships is served from here rather than by

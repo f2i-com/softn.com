@@ -5,6 +5,7 @@
  */
 
 import React, { useEffect, useCallback, useRef } from 'react';
+import { lockBodyScroll } from './body-scroll-lock';
 
 export interface DrawerProps {
   /** Whether the drawer is open */
@@ -63,15 +64,13 @@ export function Drawer({
     return () => document.removeEventListener('keydown', handleEscape);
   }, [open, closeOnEscape, onClose]);
 
-  // Lock body scroll when open
+  // Lock body scroll when open. The lock is the one Modal uses, counted per
+  // body: a drawer that saved `overflow` on its own and put it back on close
+  // fought a modal opened from inside it, and the page was left unscrollable
+  // once both had closed.
   useEffect(() => {
-    if (open) {
-      const originalOverflow = document.body.style.overflow;
-      document.body.style.overflow = 'hidden';
-      return () => {
-        document.body.style.overflow = originalOverflow;
-      };
-    }
+    if (!open) return;
+    return lockBodyScroll(document.body);
   }, [open]);
 
   // Focus trap and restore focus on close

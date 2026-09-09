@@ -5,12 +5,18 @@ Options -Indexes
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
+  # The docs are a route of the API (GET /api/README.md), not the file: as
+  # a file the .md refusal below would answer 403 before the rewrite ran.
+  RewriteRule ^README\.md$ index.php [L]
+  # The library is included by index.php and is never a page of its own.
+  # FilesMatch sees only a file's name, never its directory, so lib/ is
+  # kept out here.
+  RewriteRule ^lib/ - [F,L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteRule ^ index.php [QSA,L]
 </IfModule>
 
-# The library is included by index.php and is never a page of its own.
-<FilesMatch "^(lib/.*|.*\.md)$">
+<FilesMatch "\.md$">
   <IfModule mod_authz_core.c>
     Require all denied
   </IfModule>

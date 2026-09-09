@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { CapabilityProvider, type CapabilityState } from '@softn/core';
 import { mount } from './dom';
 import { MarkdownEditor } from '../src/editors/MarkdownEditor';
 
@@ -68,5 +69,43 @@ describe('images', () => {
   it('reject javascript: sources', () => {
     const img = render('![x](javascript:alert(1))').querySelector('img');
     expect(img!.getAttribute('src')).not.toMatch(/javascript:/i);
+  });
+});
+
+describe('remote images against the bundle permission', () => {
+  // `safeLinkTarget` polices the scheme and nothing else, so a remote image
+  // in the preview was fetched on first paint whether or not the bundle had
+  // `net` — the one route to the network the renderer's URL scrub could not
+  // see, because the markup never passes through a prop.
+  const NO_NET: CapabilityState = { consentPending: false, permissions: {} };
+  const NET: CapabilityState = { consentPending: false, permissions: { net: { enabled: true } } };
+  const markdown = '![x](https://cdn.example/x.png)';
+
+  it('withholds the src while the bundle has no net grant', () => {
+    const { container } = mount(
+      <CapabilityProvider value={NO_NET}>
+        <MarkdownEditor value={markdown} viewMode="preview" />
+      </CapabilityProvider>
+    );
+    expect(container.querySelector('img')).not.toBeNull();
+    expect(container.querySelector('img[src]')).toBeNull();
+  });
+
+  it('lets it through once net is granted', () => {
+    const { container } = mount(
+      <CapabilityProvider value={NET}>
+        <MarkdownEditor value={markdown} viewMode="preview" />
+      </CapabilityProvider>
+    );
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://cdn.example/x.png');
+  });
+
+  it('keeps a bundle-relative image either way', () => {
+    const { container } = mount(
+      <CapabilityProvider value={NO_NET}>
+        <MarkdownEditor value="![x](/logo.png)" viewMode="preview" />
+      </CapabilityProvider>
+    );
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/logo.png');
   });
 });

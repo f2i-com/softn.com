@@ -92,6 +92,11 @@ const letterSpacingValues: Record<string, string> = {
   wide: '0.05em',
 };
 
+// The elements `as` may name. The type says as much, but `as` is routinely
+// assigned from a `.ui` expression, and `as="style"` rendered a live <style>
+// whose text content — the `content` prop — was page-wide CSS.
+const TEXT_TAGS = new Set<string>(['span', 'p', 'div', 'label']);
+
 export function Text({
   content,
   size = 'md',
@@ -113,7 +118,7 @@ export function Text({
   children,
   as = 'span',
 }: TextProps): React.ReactElement {
-  const Tag = as;
+  const Tag: 'span' | 'p' | 'div' | 'label' = TEXT_TAGS.has(as) ? as : 'span';
 
   const computedStyle: React.CSSProperties = {
     fontSize: sizeValues[size] ?? size,

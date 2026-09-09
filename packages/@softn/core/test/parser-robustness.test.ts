@@ -215,3 +215,138 @@ describe('each blocks and imports', () => {
     expect(doc.imports[0].namedImports).toEqual(['A', 'C', 'B']);
   });
 });
+
+describe('optional call arguments', () => {
+  // The `?.(` loop lacked the progress guard the plain-call loop has, so an
+  // argument `parsePrimary` cannot start on pushed a synthetic `undefined`
+  // without consuming anything, forever, until the heap ran out. As above, a
+  // regression here shows up as this test never finishing — the timeout is
+  // a courtesy for the case where it does yield.
+  it(
+    'reports, rather than hangs on, an optional call argument it cannot parse',
+    () => {
+      expect(diagnostics('<div>{fn?.(x => x)}</div>').length).toBeGreaterThan(0);
+      expect(diagnostics('<div>{fn?.(...args)}</div>').length).toBeGreaterThan(0);
+    },
+    5000
+  );
+
+  it('still parses an optional call with supported arguments', () => {
+    const doc = parse('<div>{fn?.(a, b)}</div>');
+    expect(doc.diagnostics ?? []).toEqual([]);
+    const child = (doc.template[0] as { children: { expression: { type: string } }[] }).children[0];
+    expect(child.expression.type).toBe('CallExpression');
+  });
+});
+
+describe('identifiers named after Object.prototype members', () => {
+  // KEYWORDS is a plain object, so `KEYWORDS['toString']` found the inherited
+  // method and the token came back with that function as its type.
+  it('lexes `toString` as an identifier', () => {
+    const types = tokenize('{toString}').map((t) => t.type);
+    expect(types).toEqual([
+      TokenType.EXPR_START,
+      TokenType.IDENTIFIER,
+      TokenType.EXPR_END,
+      TokenType.EOF,
+    ]);
+  });
+
+  it('parses `{toString}` and `{constructor}` as identifier expressions', () => {
+    for (const name of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+      const doc = parse(`<div>{${name}}</div>`);
+      const child = (
+        doc.template[0] as { children: { expression: { type: string; name: string } }[] }
+      ).children[0];
+      expect(child.expression).toMatchObject({ type: 'Identifier', name });
+    }
+  });
+});
+
+describe('keyword tag names', () => {
+  // `slot`, `template`, `data`, `component` lex as keyword tokens. The element
+  // parser only took an IDENTIFIER as the tag, so such an element got an empty
+  // tag, its close tag never matched, and every sibling after it vanished.
+  it('does not lose the siblings after a <slot> element', () => {
+    const doc = parse('<Card><slot name="x"></slot></Card><Text>after</Text>');
+    expect(doc.diagnostics ?? []).toEqual([]);
+    expect(doc.template).toHaveLength(2);
+    expect(doc.template[1]).toMatchObject({ type: 'Element', tag: 'Text' });
+    const card = doc.template[0] as { tag: string; children: unknown[] };
+    expect(card.tag).toBe('Card');
+    // The renderer resolves a Slot node against the content the parent passed.
+    expect(card.children).toHaveLength(1);
+    expect(card.children[0]).toMatchObject({ type: 'Slot', name: 'x' });
+  });
+
+  it('keeps <slot> fallback content and defaults the name', () => {
+    const doc = parse('<Card><slot>fallback</slot></Card>');
+    const card = doc.template[0] as {
+      children: { type: string; name: string; fallback: unknown[] }[];
+    };
+    expect(card.children[0]).toMatchObject({ type: 'Slot', name: 'default' });
+    expect(card.children[0].fallback).toHaveLength(1);
+  });
+
+  it('produces a TemplateSlot for <template slot="…">', () => {
+    const doc = parse(
+      '<Card><template slot="header"><Text>h</Text></template></Card><Text>after</Text>'
+    );
+    expect(doc.diagnostics ?? []).toEqual([]);
+    expect(doc.template).toHaveLength(2);
+    const card = doc.template[0] as {
+      children: { type: string; name: string; children: unknown[] }[];
+    };
+    expect(card.children[0]).toMatchObject({ type: 'TemplateSlot', name: 'header' });
+    expect(card.children[0].children).toHaveLength(1);
+  });
+
+  it('parses other keyword-named elements as plain elements with their tag', () => {
+    const doc = parse('<Card><data>x</data><component>y</component></Card><Text>after</Text>');
+    expect(doc.diagnostics ?? []).toEqual([]);
+    expect(doc.template).toHaveLength(2);
+    const card = doc.template[0] as { children: { type: string; tag: string }[] };
+    expect(card.children.map((c) => [c.type, c.tag])).toEqual([
+      ['Element', 'data'],
+      ['Element', 'component'],
+    ]);
+  });
+});
+
+describe('unclosed tags', () => {
+  // Reaching EOF inside an element used to be silent: the document simply
+  // ended there with fewer nodes and nothing said why.
+  it('reports a tag that is never closed, naming it and where it opened', () => {
+    const doc = parse('<Card>\n  <Text>hi</Text>');
+    expect(doc.diagnostics).toEqual([
+      expect.objectContaining({
+        message: 'Unclosed tag: <Card>',
+        loc: expect.objectContaining({ line: 1, column: 2 }),
+      }),
+    ]);
+    // The recovered shape is unchanged: the Card still holds what it had.
+    expect(doc.template).toHaveLength(1);
+    expect((doc.template[0] as { children: unknown[] }).children).toHaveLength(1);
+  });
+
+  it('reports the element an unterminated `{` or `"` swallowed', () => {
+    expect(diagnostics('<Text>{count</Text><Text>after</Text>')).toEqual(['Unclosed tag: <Text>']);
+    expect(diagnostics('<Text label="oops>hi</Text><Text>after</Text>')).toEqual([
+      'Unclosed tag: <Text>',
+    ]);
+  });
+
+  it('does not pile onto a truncation that was already reported', () => {
+    // The mismatch explains the missing close; repeating it for every
+    // ancestor would only bury it.
+    expect(diagnostics('<Card><Text>hi</Card>')).toEqual([
+      'Mismatched tags: expected </Text>, got </Card>',
+    ]);
+    expect(diagnostics('<Text>{`abc}</Text>')).toEqual(['Unterminated template literal']);
+  });
+
+  it('stays quiet for a document that closes everything', () => {
+    expect(diagnostics('<Card><Text>hi</Text></Card>')).toEqual([]);
+    expect(diagnostics('<Card />')).toEqual([]);
+  });
+});

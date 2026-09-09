@@ -704,3 +704,116 @@ describe('SoftNWithXDB mounting with a saved room', () => {
     expect(getSavedSyncRoom('leaving')).toBeNull();
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// What a delete inside a batched call becomes in the document
+// ═══════════════════════════════════════════════════════════
+
+import * as Y from 'yjs';
+
+describe('deletes made while notifications are suppressed', () => {
+  let xdb: XDBService;
+
+  beforeEach(() => {
+    xdb = new XDBService(createTestStorage(), 'test-tombstone-refresh');
+  });
+
+  it('reach the document as tombstones, not as removals', () => {
+    const adapter = new XDBSyncAdapter(xdb, { room: 'tombstone-room', signaling: [], persist: false });
+    adapter.attachLocal();
+
+    const record = xdb.create('tasks', { title: 'Doomed' });
+    const ymap = adapter.doc.getMap('tasks');
+    expect(ymap.get(record.id)).toMatchObject({ deleted: false });
+
+    // Every VM function call runs between these two, so a db.delete() in
+    // one arrives at the adapter as a refresh.
+    xdb.suppressNotifications();
+    xdb.delete(record.id);
+    xdb.resumeNotifications();
+
+    expect(ymap.get(record.id)).toMatchObject({ id: record.id, deleted: true });
+    adapter.disconnect();
+  });
+
+  it('are not resurrected by a peer that missed the delete', () => {
+    const adapterA = new XDBSyncAdapter(xdb, { room: 'peer-room', signaling: [], persist: false });
+    adapterA.attachLocal();
+    const record = xdb.create('tasks', { title: 'Shared' });
+
+    // Peer B gets the record, then goes offline.
+    const xdbB = new XDBService(createTestStorage(), 'test-tombstone-peer');
+    const adapterB = new XDBSyncAdapter(xdbB, { room: 'peer-room', signaling: [], persist: false });
+    adapterB.attachLocal();
+    Y.applyUpdate(adapterB.doc, Y.encodeStateAsUpdate(adapterA.doc), 'peer');
+    expect(xdbB.getAllRaw('tasks').map((r) => r.id)).toEqual([record.id]);
+
+    // A deletes inside a batched call while B is away.
+    xdb.suppressNotifications();
+    xdb.delete(record.id);
+    xdb.resumeNotifications();
+
+    // B reconnects: both sides exchange state. B's live copy must lose to
+    // A's tombstone, not fill the hole a removal would have left.
+    Y.applyUpdate(adapterA.doc, Y.encodeStateAsUpdate(adapterB.doc), 'peer');
+    Y.applyUpdate(adapterB.doc, Y.encodeStateAsUpdate(adapterA.doc), 'peer');
+
+    expect(adapterA.doc.getMap('tasks').get(record.id)).toMatchObject({ deleted: true });
+    expect(xdb.getAllRaw('tasks').find((r) => r.id === record.id)?.deleted).toBe(true);
+    expect(xdbB.getAllRaw('tasks').find((r) => r.id === record.id)?.deleted).toBe(true);
+
+    adapterA.disconnect();
+    adapterB.disconnect();
+  });
+});
+
+describe('a malformed value from a peer', () => {
+  let xdb: XDBService;
+
+  beforeEach(() => {
+    xdb = new XDBService(createTestStorage(), 'test-malformed-peer');
+  });
+
+  it('is skipped, and the collections after it are still discovered', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const adapter = new XDBSyncAdapter(xdb, { room: 'malformed-room', signaling: [], persist: false });
+    adapter.attachLocal();
+
+    // What a peer wrote: two bad rows and a good one in the first collection,
+    // and a second collection that used to be lost behind the throw.
+    const remote = new Y.Doc();
+    remote.transact(() => {
+      const first = remote.getMap('aaa-first');
+      first.set('nothing', null);
+      first.set('text-data', { id: 'text-data', collection: 'aaa-first', data: 'not an object' });
+      first.set('array-data', { id: 'array-data', collection: 'aaa-first', data: [1, 2] });
+      first.set('fine', {
+        id: 'fine',
+        collection: 'aaa-first',
+        data: { ok: true },
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        deleted: false,
+      });
+      remote.getMap('zzz-second').set('also-fine', {
+        id: 'also-fine',
+        collection: 'zzz-second',
+        data: { ok: true },
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        deleted: false,
+      });
+    });
+
+    expect(() => Y.applyUpdate(adapter.doc, Y.encodeStateAsUpdate(remote), 'peer')).not.toThrow();
+
+    expect(xdb.getAllRaw('aaa-first').map((r) => r.id)).toEqual(['fine']);
+    expect(xdb.getAllRaw('zzz-second').map((r) => r.id)).toEqual(['also-fine']);
+    // Said once for the collection, not once per bad row.
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('aaa-first'))).toHaveLength(1);
+
+    warn.mockRestore();
+    adapter.disconnect();
+    remote.destroy();
+  });
+});

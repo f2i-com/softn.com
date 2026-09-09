@@ -7,6 +7,7 @@
 
 import * as React from 'react';
 import type { DataPoint } from './LineChart';
+import { normaliseSeries } from './series';
 
 export interface AreaChartSeries {
   name: string;
@@ -42,7 +43,7 @@ export interface AreaChartProps {
 const defaultColors = ['#6366f1', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 export function AreaChart({
-  series,
+  series: rawSeries,
   width = 600,
   height = 300,
   padding = { top: 20, right: 20, bottom: 40, left: 50 },
@@ -66,6 +67,8 @@ export function AreaChart({
   className = '',
   style,
 }: AreaChartProps) {
+  // Data that has not arrived yet is an empty chart, not a throw.
+  const series = React.useMemo(() => normaliseSeries(rawSeries), [rawSeries]);
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
   const [hoveredPointIndex, setHoveredPointIndex] = React.useState<number | null>(null);
   const chartId = React.useId();
