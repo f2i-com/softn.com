@@ -35,7 +35,8 @@ try {
  }
 }catch(ApiError $e){fwrite(STDERR,$e->status.':'.$e->getMessage());exit(1);}
 `);
- const args=job=>[worker,root,api,JSON.stringify(job)];
+ // error_log goes to stderr whatever php.ini says, as on a bare CLI, so the skip notices are observable everywhere.
+ const args=job=>['-d','error_log=',worker,root,api,JSON.stringify(job)];
  const run=job=>{const r=spawnSync('php',args(job),{encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout?JSON.parse(r.stdout):null;};
  const start=job=>spawn('php',args(job),{stdio:['ignore','pipe','pipe']});
  const asyncRun=job=>new Promise((resolve,reject)=>{const p=start(job);let out='',err='';p.stdout.on('data',d=>out+=d);p.stderr.on('data',d=>err+=d);p.on('error',reject);p.on('exit',code=>code===0?resolve(out?JSON.parse(out):null):reject(new Error(err)));});
@@ -66,7 +67,8 @@ test('folders are discovered, metadata is editable, cache is disposable, and rem
   assert.deepEqual(listing.apps.map(a=>a.slug),['neighbour'],'a broken folder is skipped, the rest is served');
   assert.match(f.run({op:'skipped'}).oceanview,/Invalid JSON/);
   assert.equal(fs.readFileSync(file,'utf8'),'{broken authoritative metadata','the broken file is preserved');
-  const r=spawnSync('php',f.args({op:'doc',slug:'oceanview'}),{encoding:'utf8'});assert.equal(r.status,1);assert.match(r.stderr,/^404:/);
+  // On the CLI, error_log writes to stderr too, so the skip notice precedes the status line.
+  const r=spawnSync('php',f.args({op:'doc',slug:'oceanview'}),{encoding:'utf8'});assert.equal(r.status,1);assert.match(r.stderr,/(^|\n)404:/);assert.match(r.stderr,/skipping app folder oceanview/);
   const published=f.run({op:'publish',bundle:path.join(f.root,'apps/neighbour/v1.softn'),name:'Oceanview'});
   assert.notEqual(published.app.slug,'oceanview','a skipped folder keeps its slug');
   fs.writeFileSync(file,JSON.stringify(doc));
