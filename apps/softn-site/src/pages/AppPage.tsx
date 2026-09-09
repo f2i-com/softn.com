@@ -298,7 +298,14 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                 <strong>{app.rating.count > 0 ? app.rating.average.toFixed(1) : '–'}</strong>
                 <span className="stat-label">{app.rating.count} rating{app.rating.count === 1 ? '' : 's'}</span>
               </span>
-              <span className="stat" title={`Reported up by the runtime ${app.runs} time${app.runs === 1 ? '' : 's'}; Play pressed here ${app.launches ?? 0} time${app.launches === 1 ? '' : 's'}`}>
+              <span
+                className="stat"
+                title={
+                  external
+                    ? `Play pressed here ${app.runs} time${app.runs === 1 ? '' : 's'}`
+                    : `Reported up by the runtime ${app.runs} time${app.runs === 1 ? '' : 's'}; Play pressed here ${app.launches ?? 0} time${app.launches === 1 ? '' : 's'}`
+                }
+              >
                 <strong>{formatCount(app.runs)}</strong>
                 <span className="stat-label">run{app.runs === 1 ? '' : 's'}</span>
               </span>

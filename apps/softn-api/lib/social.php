@@ -93,7 +93,9 @@ final class Social
     public static function recordRun(Request $req, string $slug, string $stage = 'open'): void {
         Db::rateLimit('run',Config::visitorHash($req->ip));$doc=Catalog::doc($slug);
         if($stage==='launch')$doc['app']['launches']++;
-        else {
+        // A linked app plays on its own site, so no runtime ever reports it up:
+        // the press of Play is the only signal there is, and it is the run.
+        if($stage!=='launch' || !empty($doc['app']['play_url'])) {
             $doc['app']['runs']++;$day=(int)floor(time()/86400);$found=false;
             foreach($doc['runsDaily'] as &$r)if((int)$r['day']===$day){$r['count']++;$found=true;}unset($r);
             if(!$found)$doc['runsDaily'][]=['slug'=>$slug,'day'=>$day,'count'=>1];

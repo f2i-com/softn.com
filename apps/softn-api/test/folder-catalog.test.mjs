@@ -32,6 +32,7 @@ try {
  case 'publish':echo json_encode(Apps::create($job['bundle'],['name'=>$job['name']??'Concurrent']));break;
  case 'skipped':echo json_encode(Catalog::skipped());break;
  case 'card':echo json_encode(Apps::card(Apps::row($job['slug'])));break;
+ case 'launch':Social::recordRun($r,$job['slug'],'launch');break;
  case 'detail':echo json_encode(Apps::detail(Apps::row($job['slug'])));break;
  case 'bundle':Apps::requireBundle($job['slug']);echo json_encode(Apps::version($job['slug']));break;
  case 'lock':Catalog::boot();file_put_contents($argv[1].'/locked','1');sleep(30);break;
@@ -171,8 +172,11 @@ test('a folder with only app.json and a play_url is a linked app: listed, played
   const mtime=fs.statSync(path.join(dir,'app.json')).mtimeMs;f.run({op:'list'});assert.equal(fs.statSync(path.join(dir,'app.json')).mtimeMs,mtime);
   // Play counts like any other app; the detail page has no versions or manifest; the bundle routes have nothing.
   f.run({op:'run',slug:'outerstead',count:3});
+  // Play on the site is a launch; for a linked app it is also the run, since no runtime will ever report one.
+  f.run({op:'launch',slug:'outerstead'});f.run({op:'launch',slug:'hosted'});
   const detail=f.run({op:'detail',slug:'outerstead'});
-  assert.equal(detail.runs,3);assert.deepEqual(detail.versions,[]);assert.equal(detail.manifest,null);assert.deepEqual(detail.external,{url:'https://outerstead.com/',host:'outerstead.com'});
+  assert.equal(detail.runs,4);assert.equal(detail.launches,1);assert.equal(f.run({op:'doc',slug:'outerstead'}).runsDaily.reduce((n,r)=>n+r.count,0),4);
+  const hostedCard=f.run({op:'card',slug:'hosted'});assert.equal(hostedCard.launches,1);assert.equal(hostedCard.runs,0,'a hosted app still waits for the runtime to report the run');assert.deepEqual(detail.versions,[]);assert.equal(detail.manifest,null);assert.deepEqual(detail.external,{url:'https://outerstead.com/',host:'outerstead.com'});
   const r=spawnSync('php',f.args({op:'bundle',slug:'outerstead'}),{encoding:'utf8'});assert.equal(r.status,1);assert.match(r.stderr,/404:This app plays on its own site/);
   assert.equal(f.run({op:'bundle',slug:'hosted'}).version,1);
   // An address that is not http(s) skips the folder with the reason, like any invalid app.json.
