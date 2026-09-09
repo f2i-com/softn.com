@@ -1,12 +1,36 @@
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
-import { SoftNWithXDB, inspectDeclaration, type Capability } from '@softn/core';
+import { SoftNWithXDB, inspectDeclaration, type Capability, type PermissionConfig } from '@softn/core';
 // The theme entry, not the root barrel: the barrel is the eager path, and
 // keeping Scene3D out of this shell would then rest on the bundler
 // tree-shaking it away (docs/COMPONENT_LOADING.md).
 import { ThemeProvider } from '@softn/components/theme';
 import { createImportResolver, withheldPermissions } from '../../softn-web/src/lib/bundleProcessor';
+import type { AssetResolver } from '../../softn-web/src/lib/bundleProcessor';
 import { loadApplication, type LoadedApplication } from './load';
 import { installFavicon } from './favicon';
+/**
+ * What `Application` needs of a loaded app: the slice of `LoadedApplication`
+ * it reads, so a host that produces its app some other way — the PHP-served
+ * runtime in apps/softn-single-php-serve fetches entries instead of an
+ * archive — can render the same shell without pretending to have an archive.
+ */
+export interface RunnableApplication {
+  config: {
+    title: string;
+    theme: 'light' | 'dark';
+    loadingText: string;
+    permissionMode?: 'prompt' | 'preapproved';
+  };
+  declared: PermissionConfig;
+  grantKey: string;
+  appId: string;
+  textFiles: Map<string, string>;
+  execution: 'worker' | 'main';
+  source: string;
+  logicBasePath?: string;
+  preIncludedLogicPaths: string[];
+  assets: AssetResolver;
+}
 const labels: Record<Capability, string> = {
   net: 'Internet access',
   camera: 'Camera',
@@ -27,7 +51,7 @@ export function Loading({ text = 'Loading…' }: { text?: string }) {
     </div>
   );
 }
-function Failure() {
+export function Failure() {
   return (
     <div className="loading" role="alert">
       <h1>Unable to open this application</h1>
@@ -52,7 +76,7 @@ function savedGrant(key: string) {
     return false;
   }
 }
-export function Application({ app }: { app: LoadedApplication }) {
+export function Application({ app }: { app: RunnableApplication }) {
   const requested = inspectDeclaration(app.declared).requested;
   const [answer, setAnswer] = useState<'pending' | 'allow' | 'deny'>(() =>
     app.config.permissionMode === 'preapproved' || !requested.length || savedGrant(app.grantKey) ? 'allow' : 'pending'

@@ -15,6 +15,7 @@ SoftN is a complete system for creating modular, reactive UI applications using 
 - **XDB Database** -- Local-first database with CRDT-based P2P synchronization
 - **Web Runtime** -- Browser-based `.softn` bundle runner with PWA support
 - **Single-app Runtime** -- Configured, unbranded browser shell with a loading spinner and non-blocking permission bar. [Build and deployment guide](docs/SINGLE_APP_RUNTIME.md).
+- **PHP-served Single App** -- The same shell served by PHP from a private archive: the page is rendered on the server and the runtime fetches only the entries it needs, so no `.softn` file is ever on a URL. [Deployment guide](docs/SINGLE_APP_PHP_SERVE.md).
 - **Private native backends** -- Tenant-scoped SQLite transactions, crypto, IANA timezone handling and sanitized photo uploads for server `.logic` apps. [Server API v1 and operator guide](apps/softn-rust/PRIVATE_BACKEND.md).
 - **Desktop Runtime** -- Tauri-based loader for running `.softn` bundles natively
 - **Visual Builder** -- Full IDE for visually creating SoftN applications
@@ -41,6 +42,8 @@ softn.com/
 |   +-- softn-web/             # Web runtime (browser-based bundle runner)
 |   +-- softn-studio/          # AI studio (brief -> blueprint -> app)
 |   +-- softn-builder/         # Visual IDE / builder
+|   +-- softn-single/          # Single-app browser runtime for static hosting
+|   +-- softn-single-php-serve/ # Single-app runtime served by PHP from a private archive
 |   +-- softn-loader/          # Desktop runtime (Tauri)
 |   +-- softn-rust/            # Rust host for `.logic` server routes and XDB sync
 |   +-- softn-api/             # The app directory: PHP + folder JSON, deployed as /api/ beside the site
