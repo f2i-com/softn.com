@@ -17,11 +17,30 @@ function mark(name: string) {
   if (typeof performance !== 'undefined' && typeof performance.mark === 'function')
     performance.mark(name);
 }
-export async function loadApplication(configUrl: string, signal: AbortSignal) {
+/**
+ * Where the configuration comes from. A standalone deployment reads the
+ * `runtime.config.json` beside its entry. A directory serving this shell for
+ * one of its apps writes the configuration into the page instead — one round
+ * trip fewer before the bundle is asked for — and `configUrl` is then the
+ * page's own address, which the bundle and endpoint locations resolve against
+ * and which the grant and the local records are keyed by.
+ */
+export interface ConfigSource {
+  configUrl: string;
+  /** The page's inline configuration, as the JSON text it was written as. */
+  inline?: string;
+}
+export async function loadApplication(from: string | ConfigSource, signal: AbortSignal) {
+  const { configUrl, inline } = typeof from === 'string' ? { configUrl: from } : from;
   const decode = (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-  const config = parseConfig(decode(await fetchBytes(configUrl, signal, 16384)), configUrl);
+  const config = parseConfig(
+    inline !== undefined ? (JSON.parse(inline) as unknown) : decode(await fetchBytes(configUrl, signal, 16384)),
+    configUrl
+  );
   mark('softn:bundle-fetch:start');
-  const bytes = await fetchBytes(config.bundle, signal, 32 * 1024 * 1024);
+  // An inline configuration names a version-addressed bundle with its digest
+  // pinned, so the browser's cache may answer; see fetchBytes.
+  const bytes = await fetchBytes(config.bundle, signal, 32 * 1024 * 1024, inline !== undefined ? 'default' : 'no-store');
   mark('softn:bundle-fetch:end');
   mark('softn:digest:start');
   const hash = await digest(bytes);

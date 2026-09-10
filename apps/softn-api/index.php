@@ -92,6 +92,7 @@ $routes = [
     ['DELETE', '#^/admin/comments/(\d+)$#', 'adminDeleteComment'],
     ['GET', '#^/admin/stats$#', 'adminStats'],
     ['GET', '#^/page/app/([^/]+)$#', 'page'],
+    ['GET', '#^/page/play/([^/]+)$#', 'playPage'],
 ];
 
 try {
@@ -106,11 +107,16 @@ try {
         exit;
     }
 
-    // A browser navigation to /app/<slug> lands here through the rewrite in
-    // .htaccess; the request path is the page's own.
+    // A browser navigation to /app/<slug> or /play/<slug> lands here through
+    // the rewrite in .htaccess; the request path is the page's own.
     $pagePath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
     if (is_string($pagePath) && preg_match('#^/app/([^/]+)/?$#', rawurldecode($pagePath), $pm)) {
         Pages::app($pm[1])->send();
+        exit;
+    }
+    if (is_string($pagePath) && preg_match('#^/play/([^/]+)/?$#', rawurldecode($pagePath), $pm)) {
+        Seed::ifEmpty();
+        Pages::play($pm[1])->send();
         exit;
     }
 
@@ -456,6 +462,10 @@ function handle(string $handler, array $args, Request $req): Response
 
         case 'page':
             return Pages::app($args[0]);
+
+        case 'playPage':
+            Seed::ifEmpty();
+            return Pages::play($args[0]);
     }
     throw new ApiError(404, 'No such route.');
 }

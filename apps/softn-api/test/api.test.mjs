@@ -122,6 +122,17 @@ before(async () => {
   // rest of the configuration around it on first use.
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
   fs.writeFileSync(path.join(root, 'data/config.json'), JSON.stringify({ storage: { maxDatabaseBytes: STORAGE_QUOTA_BYTES } }));
+  // The play shell, as the site build lands it under /play/: the API writes
+  // an app's configuration into this document. A chunk file beside it stands
+  // for the shell's own scripts, which the router must serve as files.
+  fs.mkdirSync(path.join(root, 'play'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'play/index.html'),
+    `<!doctype html><html lang="en"><head><meta charset="utf-8" /><title>Application</title>
+<script type="module" src="/play/assets/index-abc123.js"></script>
+</head><body><div id="root"></div></body></html>`
+  );
+  fs.writeFileSync(path.join(root, 'play/GLTFLoader-abc123.js'), 'export const chunk = 1;\n');
   fs.writeFileSync(
     path.join(root, 'index.html'),
     `<!doctype html><html><head><title>SoftN — a UI language and its runtime</title>
@@ -180,7 +191,10 @@ test('the demos are seeded on first use, into their categories', skip, async () 
   assert.equal(snake.category, 'games');
   assert.equal(snake.author, 'SoftN');
   assert.equal(snake.source, 'seed');
-  assert.ok(snake.urls.run.endsWith('/web/app/snake-game'));
+  assert.equal(snake.urls.run, '/play/snake-game', 'an app plays on its play page');
+  assert.equal(snake.urls.play, '/play/snake-game');
+  assert.equal(snake.urls.runtime, '/web/app/snake-game', 'the full runtime is still addressable');
+  assert.equal(snake.trusted, false, 'nothing is trusted until the operator says so');
   const cats = (await api('GET', '/api/categories')).json.categories;
   assert.ok(cats.find((c) => c.id === 'games' && c.apps >= 1));
   assert.ok(cats.length >= 9);
@@ -624,6 +638,128 @@ test('the share page carries the app into its meta tags', skip, async () => {
   const missing = await fetch(`${base}/app/no-such-app`);
   assert.equal(missing.status, 200);
   assert.match(await missing.text(), /<title>SoftN — a UI language and its runtime<\/title>/, 'an unknown app gets the plain site');
+});
+
+test('the play page is the shell with the app written in; app.json is what makes it trusted', skip, async () => {
+  const detail = (await api('GET', '/api/apps/snake-game')).json.app;
+  const latest = detail.versions[0];
+  const res = await fetch(`${base}/play/snake-game`, { headers: { Accept: 'text/html' } });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /^text\/html/);
+  assert.equal(res.headers.get('cross-origin-opener-policy'), 'same-origin', 'the play page is cross-origin isolated, for worker-mode apps');
+  assert.equal(res.headers.get('cache-control'), 'no-cache', 'the page names the latest version, which a publish moves');
+  const html = await res.text();
+  assert.match(html, /<title>Snake<\/title>/);
+  assert.match(html, /name="softn:app" content="snake-game"/);
+  assert.match(html, /<script type="module" src="\/play\/assets\/index-abc123\.js"><\/script>/, 'the shell is served as built');
+  const config = JSON.parse(html.match(/<script type="application\/json" id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+  assert.deepEqual(config, {
+    version: 1,
+    id: 'snake-game',
+    title: 'Snake',
+    bundle: `/api/apps/snake-game/bundle.softn?v=${latest.version}`,
+    sha256: latest.sha256,
+    loadingText: 'Loading Snake…',
+    theme: 'dark',
+    permissionMode: 'prompt',
+    directory: { runs: '/api/apps/snake-game/runs', storage: '/api/apps/snake-game/storage' },
+  });
+  assert.ok(detail.capabilities.includes('storage'), 'Snake declares storage, so the page names its endpoint');
+  // The bundle the page names is the one the API serves, byte for byte.
+  const bundle = await fetch(base + config.bundle);
+  assert.equal(bundle.status, 200);
+  assert.equal(bundle.headers.get('etag'), `"${config.sha256}"`);
+  assert.equal(bundle.headers.get('cache-control'), 'public, max-age=86400');
+
+  // An app without storage gets no storage endpoint.
+  const notesRes = await fetch(`${base}/play/notes`, { headers: { Accept: 'text/html' } });
+  const notes = (await api('GET', '/api/apps/notes')).json.app;
+  const notesHtml = await notesRes.text();
+  const notesConfig = JSON.parse(notesHtml.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+  assert.equal(notes.capabilities.includes('storage'), 'storage' in notesConfig.directory);
+
+  // The operator's word: "trusted" in the app object of the app's own
+  // app.json, and only the JSON true counts. Written the way an operator
+  // would, with the API stopped between edits — here, between requests.
+  const appJson = path.join(root, 'data/apps/snake-game/app.json');
+  const setTrusted = (value) => {
+    const doc = JSON.parse(fs.readFileSync(appJson, 'utf8'));
+    if (value === undefined) delete doc.app.trusted;
+    else doc.app.trusted = value;
+    fs.writeFileSync(appJson, JSON.stringify(doc, null, 2));
+  };
+  for (const [value, expected] of [
+    [true, true],
+    ['true', false],
+    [1, false],
+    [false, false],
+    [undefined, false],
+    [true, true],
+  ]) {
+    setTrusted(value);
+    const page = await (await fetch(`${base}/play/snake-game`, { headers: { Accept: 'text/html' } })).text();
+    const cfg = JSON.parse(page.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+    assert.equal(cfg.permissionMode, expected ? 'preapproved' : 'prompt', `trusted ${JSON.stringify(value)} → ${cfg.permissionMode}`);
+    assert.equal(cfg.sha256, latest.sha256, 'the pin a preapproved page needs is always there');
+    const card = (await api('GET', '/api/apps/snake-game')).json.app;
+    assert.equal(card.trusted, expected, `the listing says the same for ${JSON.stringify(value)}`);
+  }
+  // The catalogue rewrites app.json on its own (a run count, a comment) and
+  // must carry the setting along rather than drop it.
+  assert.equal((await api('POST', '/api/apps/snake-game/runs')).status, 204);
+  assert.equal(JSON.parse(fs.readFileSync(appJson, 'utf8')).app.trusted, true, 'a rewrite by the API keeps the operator\'s setting');
+  assert.equal((await api('GET', '/api/apps/snake-game')).json.app.trusted, true);
+  setTrusted(undefined);
+  assert.equal((await api('GET', '/api/apps/snake-game')).json.app.trusted, false, 'removing the key removes the trust');
+
+  // A linked app has no page to play here: its play link goes where it plays.
+  fs.mkdirSync(path.join(root, 'data/apps/linked-elsewhere'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'data/apps/linked-elsewhere/app.json'),
+    JSON.stringify({ schemaVersion: 1, app: { slug: 'linked-elsewhere', name: 'Linked Elsewhere', play_url: 'https://elsewhere.test/play' } })
+  );
+  const linked = await fetch(`${base}/play/linked-elsewhere`, { headers: { Accept: 'text/html' }, redirect: 'manual' });
+  assert.equal(linked.status, 302);
+  assert.equal(linked.headers.get('location'), 'https://elsewhere.test/play');
+  const linkedCard = (await api('GET', '/api/apps/linked-elsewhere')).json.app;
+  assert.equal(linkedCard.urls.run, 'https://elsewhere.test/play');
+  assert.equal(linkedCard.urls.play, null);
+  assert.equal(linkedCard.urls.runtime, null);
+  fs.rmSync(path.join(root, 'data/apps/linked-elsewhere'), { recursive: true, force: true });
+
+  // A name that is not a slug still finds the app; a name nobody published is a real 404.
+  const byName = await fetch(`${base}/play/Snake`, { headers: { Accept: 'text/html' } });
+  assert.equal(byName.status, 200);
+  assert.match(await byName.text(), /content="snake-game"/);
+  const missing = await fetch(`${base}/play/no-such-app`, { headers: { Accept: 'text/html' } });
+  assert.equal(missing.status, 404);
+  assert.match(await missing.text(), /No app is published under that name/);
+  // The shell's own files beside the page are files, and the bare directory is nowhere to be.
+  const chunk = await fetch(`${base}/play/GLTFLoader-abc123.js`);
+  assert.equal(chunk.status, 200);
+  assert.match(chunk.headers.get('content-type'), /javascript/);
+  const bare = await fetch(`${base}/play/`, { redirect: 'manual' });
+  assert.equal(bare.status, 302);
+  assert.equal(bare.headers.get('location'), '/apps');
+  // The same page as JSON-free API route, for a client that wants it by path.
+  const viaApi = await fetch(`${base}/api/page/play/snake-game`);
+  assert.equal(viaApi.status, 200);
+  assert.match(await viaApi.text(), /id="softn-runtime-config"/);
+});
+
+test('a name with markup in it cannot break out of the play page', skip, async () => {
+  resetRateLimits();
+  const form = new FormData();
+  form.set('bundle', new Blob([makeBundle('Play <script>alert(1)</script> & co')]), 'x.softn');
+  form.set('name', 'Play <script>alert(1)</script> & co');
+  const { status, json } = await api('POST', '/api/apps', { body: form });
+  assert.equal(status, 201);
+  const html = await (await fetch(`${base}/play/${json.app.slug}`, { headers: { Accept: 'text/html' } })).text();
+  assert.doesNotMatch(html, /<script>alert/);
+  assert.match(html, /<title>Play &lt;script&gt;alert\(1\)&lt;\/script&gt; &amp; co<\/title>/);
+  const cfg = JSON.parse(html.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
+  assert.equal(cfg.title, 'Play <script>alert(1)</script> & co', 'the JSON still says the real name');
+  await api('DELETE', `/api/apps/${json.app.slug}`, { headers: { 'X-Edit-Key': json.editKey } });
 });
 
 /**

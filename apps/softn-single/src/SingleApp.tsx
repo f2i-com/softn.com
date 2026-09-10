@@ -6,7 +6,8 @@ import { SoftNWithXDB, inspectDeclaration, type Capability, type PermissionConfi
 import { ThemeProvider } from '@softn/components/theme';
 import { createImportResolver, withheldPermissions } from '../../softn-web/src/lib/bundleProcessor';
 import type { AssetResolver } from '../../softn-web/src/lib/bundleProcessor';
-import { loadApplication, type LoadedApplication } from './load';
+import { loadApplication, type ConfigSource, type LoadedApplication } from './load';
+import type { DirectoryConfig } from './config';
 import { installFavicon } from './favicon';
 /**
  * What `Application` needs of a loaded app: the slice of `LoadedApplication`
@@ -20,6 +21,8 @@ export interface RunnableApplication {
     theme: 'light' | 'dark';
     loadingText: string;
     permissionMode?: 'prompt' | 'preapproved';
+    /** Set when a directory served the shell: where the run is counted and the app's storage lives. */
+    directory?: DirectoryConfig;
   };
   declared: PermissionConfig;
   grantKey: string;
@@ -76,8 +79,24 @@ function savedGrant(key: string) {
     return false;
   }
 }
+/**
+ * Tell the directory the app is up, once. Best effort and not awaited: a
+ * directory that is down is not a reason the app is not running. The count
+ * is made here, on readiness, so that it means "ran" and not "was fetched".
+ */
+function countRun(url: string) {
+  void fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stage: 'open' }),
+    keepalive: true,
+  }).catch(() => {});
+}
 export function Application({ app }: { app: RunnableApplication }) {
   const requested = inspectDeclaration(app.declared).requested;
+  // Preapproved by the operator: granted from the start, with no bar and
+  // nothing written to storage — the host's setting, not a consent.
   const [answer, setAnswer] = useState<'pending' | 'allow' | 'deny'>(() =>
     app.config.permissionMode === 'preapproved' || !requested.length || savedGrant(app.grantKey) ? 'allow' : 'pending'
   );
@@ -109,6 +128,21 @@ export function Application({ app }: { app: RunnableApplication }) {
     [app, permissions]
   );
   useEffect(() => () => imports.dispose(), [imports]);
+  const counted = useRef(false);
+  const runsUrl = app.config.directory?.runs;
+  const onLoad = useMemo(
+    () =>
+      runsUrl
+        ? () => {
+            // Once per load of the page: a permission grant re-renders the
+            // runtime in place, and that is the same run.
+            if (counted.current) return;
+            counted.current = true;
+            countRun(runsUrl);
+          }
+        : undefined,
+    [runsUrl]
+  );
   function allow() {
     try {
       localStorage.setItem(app.grantKey, 'allowed');
@@ -155,6 +189,8 @@ export function Application({ app }: { app: RunnableApplication }) {
               preIncludedLogicPaths={app.preIncludedLogicPaths}
               executionPreference={app.execution}
               permissionConfig={permissions}
+              storageEndpoint={app.config.directory?.storage}
+              onLoad={onLoad}
               loading={<Loading text={app.config.loadingText} />}
               error={() => <Failure />}
             />
@@ -169,7 +205,7 @@ export function Application({ app }: { app: RunnableApplication }) {
     </ThemeProvider>
   );
 }
-export function SingleApp({ configUrl }: { configUrl: string }) {
+export function SingleApp({ source }: { source: ConfigSource }) {
   const [app, setApp] = useState<LoadedApplication | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -178,7 +214,7 @@ export function SingleApp({ configUrl }: { configUrl: string }) {
     let restoreFavicon: (() => void) | undefined;
     let active = true;
     const timeout = setTimeout(() => controller.abort(), 60000);
-    void loadApplication(configUrl, controller.signal)
+    void loadApplication(source, controller.signal)
       .then((result) => {
         owned = result;
         if (!active) {
@@ -200,7 +236,7 @@ export function SingleApp({ configUrl }: { configUrl: string }) {
       owned?.assets.dispose();
       restoreFavicon?.();
     };
-  }, [configUrl]);
+  }, [source]);
   return (
     <main className="single-app">
       {failed ? <Failure /> : app ? <Application app={app} /> : <Loading />}

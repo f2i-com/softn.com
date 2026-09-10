@@ -70,7 +70,10 @@ final class Seed
         }
 
         $existing=array_values(Catalog::all());
-        foreach($existing as &$r){$v=Apps::version($r['slug']);$r['size']=$v['size'];$r['sha256']=$v['sha256'];}unset($r);
+        // A linked app (play_url, no bundle) has no version to compare and is
+        // never an index entry; asking it for one threw, and one such folder
+        // took every seeded route down with "That version does not exist".
+        foreach($existing as &$r){if(Apps::playUrl($r)!==null){$r['size']=0;$r['sha256']='';continue;}$v=Apps::version($r['slug']);$r['size']=$v['size'];$r['sha256']=$v['sha256'];}unset($r);
 
         $existingMap = [];
         foreach ($existing as $r) {

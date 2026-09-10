@@ -206,7 +206,66 @@ kept.
 | `GET /api/health` | Folder catalogue/cache backend, ZIP support and whether `data/` is writable |
 
 `/app/{slug}` (no `api`) is a share page: the listing rendered as HTML with
-Open Graph tags, for links pasted into chat.
+Open Graph tags, for links pasted into chat. `/play/{slug}` is where the app
+runs; see "Playing an app" below. Both are also reachable as
+`GET /api/page/app/{slug}` and `GET /api/page/play/{slug}`.
+
+## Playing an app
+
+Play on the site goes to `/play/{slug}`. That page is the single-app shell —
+the small runtime `apps/softn-single` builds, which the site build places
+under `/play/` — served by this API with the app's configuration written into
+the document:
+
+```html
+<script type="application/json" id="softn-runtime-config">
+{"version":1,"id":"snake-game","title":"Snake",
+ "bundle":"/api/apps/snake-game/bundle.softn?v=3","sha256":"…",
+ "loadingText":"Loading Snake…","theme":"dark","permissionMode":"prompt",
+ "directory":{"runs":"/api/apps/snake-game/runs","storage":"/api/apps/snake-game/storage"}}
+</script>
+```
+
+It is the same shape a standalone deployment's `runtime.config.json` has,
+so the shell holds it to the same rules: every location is a path on this
+origin, and anything else stops the load. What it buys over the full
+runtime at `/web/app/{slug}`: no launcher, catalogue, tab bar or bundle
+cache in the download, no round trip for a config file, and a bundle named
+by version with its digest pinned — so the browser may keep it for the day
+the API allows and the shell still refuses bytes that are not the ones
+published. The shell counts the run on the `runs` endpoint once the app is
+up, and reaches the app's own database through `storage`, which is named
+only when the app declared that capability. The page carries the app's
+name as its title and `<meta name="softn:app">`; an unpublished or unknown
+name is a real 404. The bare `/play/` redirects to the directory.
+
+An app runs with every capability it declares withheld until the visitor
+allows it on the bar above the app. **Trusting** an app removes that bar:
+its play page is served with `"permissionMode": "preapproved"` — the same
+setting the [PHP single-app host](../../docs/SINGLE_APP_PHP_SERVE.md) has —
+and the shell grants what its `permission.json` declares from the start.
+Trust is the operator's alone to give, and it is given on the server, by
+hand, in the `app` object of the app's own `app.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "app": { "slug": "snake-game", "name": "Snake", "trusted": true, … },
+  …
+}
+```
+
+No route sets that key — publishing, patching and remixing never write it —
+and the catalogue carries it along when it rewrites the file for a run
+count or a comment. Only the JSON `true` counts; `"true"`, `1` or a missing
+key read as untrusted, so a typo fails closed. The listing reports the
+setting as `trusted`, and the app's page on the site says so under "What it
+asks for". Remove the key, or set `false`, to take the trust back. Edit the
+file the way the data README says: with the API stopped, or holding
+`catalog.lock`. A linked app (`play_url`) has no play page here; `/play/{slug}`
+redirects to its address. Keep in mind what the bar was for before trusting
+an app whose author you are not: a trusted app with `net` reaches every host
+its declaration allows, on every visitor's connection, without asking them.
 
 ## Caching a bundle
 
@@ -296,7 +355,8 @@ php -S 127.0.0.1:5500 -t dist apps/softn-api/router.php
 ```
 
 `router.php` stands in for the deployed `.htaccess`: `/api/` goes to PHP,
-`/data/` is refused, `/app/{slug}` renders the share page, and every static
+`/data/` is refused, `/app/{slug}` renders the share page, `/play/{slug}`
+the play page (`dist/play/` must exist: `build:site` puts the shell there), and every static
 file is served with the cross-origin isolation headers the runtime's worker
 mode depends on. New folders under `data/apps/` are discovered automatically.
 The optional demo seeder also refreshes bundles and pictures when its index

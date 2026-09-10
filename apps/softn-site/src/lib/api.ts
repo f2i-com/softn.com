@@ -15,6 +15,12 @@ export interface AppCard {
   /** Storage collection policies by name; `*` is the default for the rest. Empty when none are declared. */
   storagePolicies: Record<string, string>;
   execution: 'main' | 'worker';
+  /**
+   * The site owner has marked the app trusted (an `app.json` beside its
+   * versions on the server): its play page grants what it declares from the
+   * start, with no permission bar.
+   */
+  trusted: boolean;
   version: number;
   size: number;
   primary: string | null;
@@ -40,8 +46,12 @@ export interface AppCard {
   updatedAt: string;
   urls: {
     page: string;
-    /** The runtime's address for the app, or the external address of a linked app. */
+    /** Where the app plays: its play page, or the external address of a linked app. */
     run: string;
+    /** The play page; null for a linked app, as are the rest below. */
+    play: string | null;
+    /** The full runtime, with its launcher and tabs. */
+    runtime: string | null;
     bundle: string | null;
     download: string | null;
     studio: string | null;

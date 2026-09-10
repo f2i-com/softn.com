@@ -41,7 +41,7 @@ function fail(message) {
   process.exit(1);
 }
 
-for (const required of ['index.html', 'web/index.html', 'api/index.php', 'api/router.php', '.htaccess', 'BUILD-INFO.json']) {
+for (const required of ['index.html', 'web/index.html', 'play/index.html', 'api/index.php', 'api/router.php', '.htaccess', 'BUILD-INFO.json']) {
   if (!fs.existsSync(path.join(root, required))) fail(`${root} has no ${required}; is it a built site?`);
 }
 // The default build ships no example bundles and the directory starts empty;
@@ -219,7 +219,30 @@ if (firstSlug) {
     body: (t) => (t.length > 100 && t.startsWith('PK') ? true : 'not a zip'),
   });
   await check('share page', `/app/${firstSlug}`, { type: 'text/html', body: (t) => (t.includes('og:title') ? true : 'no Open Graph tags') });
+  // The play page: the shell with this app's configuration written in, and
+  // isolated, since a worker-mode app runs in this document.
+  const play = await check('play page', `/play/${firstSlug}`, {
+    type: 'text/html',
+    isolated: true,
+    body: (t) => {
+      const m = t.match(/<script type="application\/json" id="softn-runtime-config">(.*?)<\/script>/s);
+      if (!m) return 'no runtime config in the page';
+      const cfg = json(m[1]);
+      if (!cfg || cfg.id !== firstSlug) return `config is for ${cfg?.id}, not ${firstSlug}`;
+      if (!/^\/api\/apps\/[^/]+\/bundle\.softn\?v=\d+$/.test(cfg.bundle ?? '')) return `bundle is ${cfg.bundle}`;
+      if (!/^[a-f0-9]{64}$/.test(cfg.sha256 ?? '')) return 'no digest';
+      if (cfg.permissionMode !== 'prompt') return 'a fresh directory trusts nothing';
+      return true;
+    },
+  });
+  if (play) {
+    const asset = play.match(/(?:src|href)="(\/play\/assets\/[^"]+\.js)"/)?.[1];
+    if (asset) await check('play shell asset', asset, { accept: '*/*', isolated: true, type: 'text/javascript' });
+    else failures.push('play shell asset: the play page references nothing under /play/assets/');
+  }
 }
+await check('play page for an unknown app is a 404', '/play/no-such-app-here', { status: 404, type: 'text/html' });
+await check('the bare play directory goes to the directory', '/play/', { status: 302 });
 await check('api 404 is JSON', '/api/apps/no-such-app-here', {
   accept: 'application/json',
   status: 404,

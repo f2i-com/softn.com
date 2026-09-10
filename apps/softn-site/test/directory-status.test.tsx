@@ -51,7 +51,8 @@ function card(slug: string, overrides: Partial<AppCard> = {}): AppCard {
     external: null,
     createdAt: '2026-09-01T00:00:00Z',
     updatedAt: '2026-09-01T00:00:00Z',
-    urls: { page: `/app/${slug}`, run: '', bundle: '', download: '', studio: '', builder: '', remix: '' },
+    trusted: false,
+    urls: { page: `/app/${slug}`, run: '', play: '', runtime: '', bundle: '', download: '', studio: '', builder: '', remix: '' },
     ...overrides,
   };
 }

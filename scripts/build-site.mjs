@@ -10,6 +10,9 @@
  *   dist/web/        the web runtime
  *   dist/builder/    the visual builder
  *   dist/studio/     the AI studio
+ *   dist/play/       the single-app shell: /play/<slug> is an app's own page,
+ *                    rendered by the API with the app's configuration written
+ *                    in, so the page fetches the bundle and nothing else first
  *   dist/api/        the directory API (PHP), executed by the host, never served
  *   dist/data/       the directory's state; starts out holding only the rules
  *                    that keep it unserved
@@ -52,6 +55,15 @@ const APPS = [
   { workspace: '@softn/builder', dir: 'apps/softn-builder', base: '/builder/', into: 'builder' },
   { workspace: '@softn/studio', dir: 'apps/softn-studio', base: '/studio/', into: 'studio' },
 ];
+
+// The single-app shell, the same build that ships on its own as the
+// single-app hosting archive, here under /play/ for the directory to serve
+// for every app in the catalogue. Not in APPS: it is no single-page app with
+// routes of its own — /play/<slug> is a page the API renders, which the
+// deep-link fallbacks for static hosts cannot stand in for — and the sample
+// bundle and config the standalone build carries are stripped on the way.
+const PLAY = { workspace: '@softn/single', dir: 'apps/softn-single', base: '/play/', into: 'play' };
+const PLAY_STANDALONE_ONLY = ['app.softn', 'runtime.config.json', '.htaccess'];
 
 const APACHE_CONFIG = String.raw`# SoftN static deployment for Apache 2.4+
 # Keep this file beside index.html in the website document root.
@@ -171,6 +183,16 @@ ErrorDocument 404 default
   RewriteCond %{HTTP_ACCEPT} text/html [NC]
   RewriteRule ^app/[^/]+/?$ api/index.php [L]
 
+  # An app's play page: the single-app shell under /play/ with the app's
+  # configuration written in by the API. The shell's own files sit beside
+  # those pages (/play/GLTFLoader-….js is a chunk, not an app), so a request
+  # that names a real file is a file. The bare directory is nothing to look
+  # at; the directory of apps is.
+  RewriteRule ^play/?$ /apps [R=302,L]
+  RewriteCond %{HTTP_ACCEPT} text/html [NC]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteRule ^play/[^/]+/?$ api/index.php [L]
+
   # Canonical app roots keep relative assets and service-worker scopes correct.
   RewriteRule ^(web|builder|studio)$ $1/ [R=308,L,NE]
 
@@ -182,7 +204,7 @@ ErrorDocument 404 default
   # A missing asset is a real 404, never a successful HTML response. This also
   # protects extensionless files requested from known static directories.
   RewriteRule ^(?:assets|demos|softn-files)(?:/|$) - [R=404,L]
-  RewriteRule ^(?:web|builder|studio)/(?:assets|demos)(?:/|$) - [R=404,L]
+  RewriteRule ^(?:web|builder|studio|play)/(?:assets|demos)(?:/|$) - [R=404,L]
   RewriteCond %{REQUEST_URI} /[^/]*\.[^/]+$
   RewriteRule ^ - [R=404,L]
 
@@ -260,6 +282,19 @@ server {
         fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
         include fastcgi_params;
     }
+    # An app's play page: the single-app shell with the app written in by
+    # the API. A real file under /play/ (the shell's own chunks) is a file.
+    location = /play { return 302 /apps; }
+    location = /play/ { return 302 /apps; }
+    location ~ ^/play/[^/]+/?$ {
+        try_files $uri @softn_play;
+    }
+    location @softn_play {
+        if ($softn_html_navigation = 0) { return 404; }
+        fastcgi_pass unix:/run/php/php-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;
+        include fastcgi_params;
+    }
 
     brotli_static on;
     gzip_static on;
@@ -294,7 +329,7 @@ server {
 
     # Missing static files must stay 404s, including extensionless files in
     # asset/catalogue directories and ordinary files with an extension.
-    location ~ ^/(?:assets|demos|softn-files|web/(?:assets|demos)|builder/assets|studio/assets)(?:/|$) {
+    location ~ ^/(?:assets|demos|softn-files|web/(?:assets|demos)|builder/assets|studio/assets|play/assets)(?:/|$) {
         try_files $uri =404;
     }
     location ~* /[^/]*\.[^/]+$ {
@@ -393,6 +428,30 @@ download the ones you want and drop them on the site.
 Publishing from a script: \`POST /api/apps\` with the bundle as a multipart
 field, as the raw body, or as base64 in JSON. \`GET /api\` lists the routes.
 
+## Playing apps, and trusting them
+
+Play on the site goes to \`/play/<slug>\`: the single-app shell under
+\`play/\`, which the API serves with the app's configuration written into the
+page — the bundle's version-addressed URL and digest, and the endpoints the
+app reports to and stores through. The page fetches the bundle and nothing
+else before the app is on screen; the full runtime with its launcher and tabs
+is still at \`/web/app/<slug>\`. Both routes need PHP: on a host without it,
+Play falls to the runtime.
+
+An app runs with every capability it declares withheld until the visitor
+presses Allow on the bar above it. To run one of your own apps without that
+bar, mark it trusted: open the app's \`data/apps/<slug>/app.json\` and add
+\`"trusted": true\` to its \`app\` object —
+
+    "app": { "slug": "snake-game", "name": "Snake", "trusted": true, ... }
+
+— and its play page grants what its \`permission.json\` declares from the
+start, the way a preapproved single-app deployment does. No request can set
+that key, so trust is yours alone to give; remove it, or set \`false\`, to
+take it back. Edit the file with the API stopped, as \`data/README.txt\`
+says. The listing reports it as \`trusted\`, and the app's page on the site
+says so.
+
 ## Apache / cPanel
 
 The included \`.htaccess\` is ready for Apache 2.4. The host must permit
@@ -444,6 +503,7 @@ workers and browser permissions outside localhost.
 
 - \`/\` — landing site
 - \`/web/\` — browser runtime
+- \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
 ${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — the same bundles, clearly separated, as `.softn` downloads\n' : ''}- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
@@ -642,7 +702,7 @@ if (withDemos && demosDirArg === null) run(['run', 'fetch:demos']);
 run(['run', 'build:core']);
 run(['run', 'build:components']);
 
-for (const app of APPS) {
+for (const app of [...APPS, PLAY]) {
   run(['run', 'build', '-w', app.workspace], { VITE_BASE: app.base });
 }
 
@@ -663,6 +723,17 @@ for (const app of APPS) {
   const appDist = path.join(root, app.dir, 'dist');
   requireDir(appDist, `The ${app.workspace} build`);
   copyDir(appDist, path.join(outDir, app.into));
+}
+
+// The play shell, without the sample app and config that make the standalone
+// build runnable on its own: here every page is one the API renders, and a
+// stray /play/app.softn would be a bundle nobody published.
+{
+  const playDist = path.join(root, PLAY.dir, 'dist');
+  requireDir(playDist, `The ${PLAY.workspace} build`);
+  copyDir(playDist, path.join(outDir, PLAY.into));
+  for (const name of PLAY_STANDALONE_ONLY) fs.rmSync(path.join(outDir, PLAY.into, name), { force: true });
+  if (!fs.existsSync(path.join(outDir, PLAY.into, 'index.html'))) throw new Error('The play shell has no index.html');
 }
 
 // With the examples: a second copy of the bundles at the root. The runtime
@@ -883,6 +954,7 @@ if (withDemos) {
 } else {
   console.log('  (no example bundles: the directory starts empty; --with-demos ships them)');
 }
+console.log('  dist/play/      the single-app shell; /play/<slug> is an app\'s play page, rendered by the API');
 console.log('  dist/api/       the directory API (PHP + folder JSON); dist/data/ its state');
 console.log('  dist/.htaccess, nginx.conf.example, DEPLOY.md');
 console.log('  dist/BUILD-INFO.json');
