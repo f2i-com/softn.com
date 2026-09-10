@@ -144,3 +144,14 @@ button:focus-visible {
   opacity: 1;
   color: var(--paper, #f2f0ec);
 }
+/* The mark in the bar, drawn from the tokens: the product bar's own rules,
+   which this shell does not otherwise carry. */
+.softn-mark-ground {
+  fill: var(--ink-3, #1d222a);
+}
+.softn-mark-bracket {
+  stroke: var(--coral, #ff8a4c);
+}
+.softn-mark-dot {
+  fill: var(--mint, #35e0c0);
+}
