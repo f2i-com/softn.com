@@ -9,6 +9,10 @@ import type { AssetResolver } from '../../softn-web/src/lib/bundleProcessor';
 import { loadApplication, type ConfigSource, type LoadedApplication } from './load';
 import type { DirectoryConfig } from './config';
 import { installFavicon } from './favicon';
+// The slim bar the runtime draws over every app, for the pages a directory
+// serves through this shell; drawn from the shared tokens, which come along.
+import { FrameBar } from '../../softn-web/src/components/FrameBar';
+import '@softn/brand/tokens.css';
 /**
  * What `Application` needs of a loaded app: the slice of `LoadedApplication`
  * it reads, so a host that produces its app some other way — the PHP-served
@@ -17,6 +21,8 @@ import { installFavicon } from './favicon';
  */
 export interface RunnableApplication {
   config: {
+    /** The deployment's id; on a directory's play page, the app's slug there. */
+    id?: string;
     title: string;
     theme: 'light' | 'dark';
     loadingText: string;
@@ -24,6 +30,8 @@ export interface RunnableApplication {
     /** Set when a directory served the shell: where the run is counted and the app's storage lives. */
     directory?: DirectoryConfig;
   };
+  /** The bundle's icon as a data URL, when it has one the shell accepted. */
+  icon?: string;
   declared: PermissionConfig;
   grantKey: string;
   appId: string;
@@ -79,6 +87,15 @@ function savedGrant(key: string) {
     return false;
   }
 }
+/** The bar over a directory's play page folds away; remembered per browser, as the runtime remembers its own. */
+const CHROME_KEY = 'softn.play.chromeHidden';
+function savedChromeHidden() {
+  try {
+    return localStorage.getItem(CHROME_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 /**
  * Tell the directory the app is up, once. Best effort and not awaited: a
  * directory that is down is not a reason the app is not running. The count
@@ -109,20 +126,38 @@ export function Application({ app }: { app: RunnableApplication }) {
     () => ({ asset: (value: unknown) => app.assets(String(value ?? '')) }),
     [app]
   );
-  const bar = useRef<HTMLElement>(null);
+  // A directory's play page wears the same slim bar the runtime draws over
+  // every app — the way back to the directory and to the app's page, the
+  // menu, fullscreen, and a fold-away — so an app looks the same wherever it
+  // was opened from. A standalone deployment stays unbranded, as documented.
+  const slug = app.config.id;
+  const framed = Boolean(app.config.directory && slug);
+  const [chromeHidden, setChromeHiddenState] = useState(() => framed && savedChromeHidden());
+  const setChromeHidden = (hidden: boolean) => {
+    try {
+      localStorage.setItem(CHROME_KEY, hidden ? '1' : '0');
+    } catch {
+      /* Remembered for this page only. */
+    }
+    setChromeHiddenState(hidden);
+  };
+  const layout = useRef<HTMLDivElement>(null);
+  // Everything above the app — the frame bar and the permission bar — is
+  // measured together, since the app root is sized under the whole of it.
+  const chrome = useRef<HTMLDivElement>(null);
   const [barHeight, setBarHeight] = useState(0);
   useEffect(() => {
-    if (!bar.current) {
+    if (!chrome.current) {
       setBarHeight(0);
       return;
     }
-    const element = bar.current;
+    const element = chrome.current;
     const measure = () => setBarHeight(element.getBoundingClientRect().height);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [answer]);
+  }, [answer, chromeHidden, framed]);
   const imports = useMemo(
     () => createImportResolver(app.textFiles, permissions),
     [app, permissions]
@@ -154,29 +189,70 @@ export function Application({ app }: { app: RunnableApplication }) {
   return (
     <ThemeProvider defaultDarkMode={app.config.theme === 'dark'}>
       <div
+        ref={layout}
         className="application-layout"
         style={{ '--softn-tab-bar-height': `${barHeight}px` } as React.CSSProperties}
       >
-        {answer === 'pending' && (
-          <section ref={bar} className="permission-bar" aria-labelledby="permission-title">
-            <div className="permission-message">
-              <strong id="permission-title">{app.config.title} requests access</strong>
-              <span>{requested.map((c) => labels[c]).join(' · ')}</span>
-              <details>
-                <summary>Permission details</summary>
-                <p>
-                  Access is disabled until you allow it. Your browser may ask separately for camera
-                  or microphone access.
-                </p>
-                <pre>{JSON.stringify(app.declared.permissions, null, 2)}</pre>
-              </details>
-            </div>
-            <div className="actions">
-              <button onClick={() => setAnswer('deny')}>Not now</button>
-              <button onClick={allow}>Allow</button>
-            </div>
-          </section>
+        {framed && chromeHidden && (
+          <button
+            type="button"
+            className="chrome-peek"
+            onClick={() => setChromeHidden(false)}
+            title="Show the bar"
+          >
+            {app.config.title}
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
         )}
+        <div ref={chrome} className="application-chrome">
+          {framed && !chromeHidden && (
+            <FrameBar
+              tab={{ id: slug!, name: app.config.title, icon: app.icon, directorySlug: slug }}
+              homeLabel="softn.com"
+              homeTitle="Back to the directory. This leaves the app."
+              closeTitle="Stop the app and go back to its page"
+              onHome={() => window.location.assign('/apps')}
+              onClose={() => window.location.assign(`/app/${encodeURIComponent(slug!)}`)}
+              onHide={() => setChromeHidden(true)}
+              fullscreenTarget={layout}
+              onDownload={() =>
+                window.location.assign(`/api/apps/${encodeURIComponent(slug!)}/bundle.softn?download=1`)
+              }
+            />
+          )}
+          {answer === 'pending' && (
+            <section className="permission-bar" aria-labelledby="permission-title">
+              <div className="permission-message">
+                <strong id="permission-title">{app.config.title} requests access</strong>
+                <span>{requested.map((c) => labels[c]).join(' · ')}</span>
+                <details>
+                  <summary>Permission details</summary>
+                  <p>
+                    Access is disabled until you allow it. Your browser may ask separately for
+                    camera or microphone access.
+                  </p>
+                  <pre>{JSON.stringify(app.declared.permissions, null, 2)}</pre>
+                </details>
+              </div>
+              <div className="actions">
+                <button onClick={() => setAnswer('deny')}>Not now</button>
+                <button onClick={allow}>Allow</button>
+              </div>
+            </section>
+          )}
+        </div>
         <div className="application-content">
           <Boundary>
             <SoftNWithXDB

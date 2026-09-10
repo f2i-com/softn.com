@@ -114,3 +114,33 @@ button:focus-visible {
 .wheel {
   flex-shrink: 0;
 }
+.application-chrome {
+  flex-shrink: 0;
+}
+/* The folded bar's corner tab on a directory's play page; the runtime's own. */
+.chrome-peek {
+  position: fixed;
+  top: 0;
+  right: 12px;
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--line, #262c36);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--nav-bg, rgba(16, 19, 23, 0.82));
+  color: var(--dim, #8b94a2);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  opacity: 0.6;
+  backdrop-filter: blur(6px);
+  transition: opacity 160ms ease;
+}
+.chrome-peek:hover,
+.chrome-peek:focus-visible {
+  opacity: 1;
+  color: var(--paper, #f2f0ec);
+}

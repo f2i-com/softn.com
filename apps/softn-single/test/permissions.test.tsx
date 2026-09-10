@@ -32,6 +32,7 @@ vi.mock('@softn/core', async (original) => ({
 vi.mock('@softn/components', () => ({
   ThemeProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
+vi.mock('@softn/brand', () => ({ Mark: () => null }));
 import { Application } from '../src/SingleApp';
 import type { LoadedApplication } from '../src/load';
 const element = document.createElement('div');
@@ -124,4 +125,30 @@ it('a standalone deployment reports to nothing', () => {
   click('App clicks 0');
   expect(request).not.toHaveBeenCalled();
   expect(element.querySelector('[data-app]')?.getAttribute('data-storage')).toBe('');
+});
+it("a directory's play page wears the runtime bar, which folds to a corner tab and comes back", () => {
+  mount({ id: 'example', directory: { runs: 'https://example.test/api/apps/example/runs' } });
+  const bar = element.querySelector('.softn-frame-bar');
+  expect(bar).not.toBeNull();
+  expect(bar?.querySelector('.softn-frame-name')?.textContent).toContain('Example');
+  expect(bar?.querySelector('.softn-frame-home')?.textContent).toContain('softn.com');
+  expect(element.querySelector('.chrome-peek')).toBeNull();
+  // The permission bar sits under it, in the same measured chrome.
+  expect(element.querySelector('.application-chrome .permission-bar')).not.toBeNull();
+  click('Hide bar');
+  expect(element.querySelector('.softn-frame-bar')).toBeNull();
+  expect(element.querySelector('.chrome-peek')).not.toBeNull();
+  expect(localStorage.getItem('softn.play.chromeHidden')).toBe('1');
+  // The app kept running underneath.
+  expect(element.querySelector('[data-app]')).not.toBeNull();
+  click('Example');
+  expect(element.querySelector('.softn-frame-bar')).not.toBeNull();
+  expect(element.querySelector('.chrome-peek')).toBeNull();
+  expect(localStorage.getItem('softn.play.chromeHidden')).toBe('0');
+});
+it('a standalone deployment stays unbranded: no bar, no corner tab', () => {
+  mount();
+  expect(element.querySelector('.softn-frame-bar')).toBeNull();
+  expect(element.querySelector('.chrome-peek')).toBeNull();
+  expect(element.querySelector('.permission-bar')).not.toBeNull();
 });
