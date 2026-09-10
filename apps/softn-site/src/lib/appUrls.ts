@@ -35,10 +35,22 @@ export const ZIPP_URL = 'https://github.com/f2i-com/zipp.org';
 export const XDB_URL = 'https://github.com/f2i-com/xdb.org';
 
 /**
- * Where a published app plays: in the runtime, under the slim bar it draws
- * over every app, with the way back to the app's own page on the site.
- * There is one way to run an app on this site, and this is it.
+ * The play pages: `/play/<slug>` is the single-app shell served by the
+ * directory API with the app's own configuration written in, so the page
+ * fetches the bundle and nothing else before the app is on screen. It is a
+ * PHP route, which `npm run dev` does not have — there is no built shell
+ * behind the dev proxy — so development falls back to the full runtime.
+ * `VITE_PLAY_URL` in `.env.local` points a checkout at one that exists.
+ */
+export const PLAY_URL = resolve(import.meta.env.VITE_PLAY_URL, '', '/play');
+
+/**
+ * Where a published app plays. Its play page where there is one; otherwise
+ * the runtime, under the slim bar it draws over every app, with the way back
+ * to the app's own page on the site. There is one way to run an app on this
+ * site, and this is it.
  */
 export function runtimeAppUrl(slug: string): string {
+  if (PLAY_URL) return `${PLAY_URL}/${encodeURIComponent(slug)}`;
   return `${WEB_URL}/app/${encodeURIComponent(slug)}?back=${encodeURIComponent(`/app/${slug}`)}`;
 }

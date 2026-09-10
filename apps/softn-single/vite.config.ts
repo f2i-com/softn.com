@@ -2,7 +2,10 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
 export default defineConfig({
-  base: './',
+  // Relative by default, so a standalone deployment works from any directory.
+  // The site build sets VITE_BASE to where the shell lands under softn.com
+  // (`/play/`), where the directory serves it for every app in the catalogue.
+  base: process.env.VITE_BASE || './',
   plugins: [react(), coreWorkerAssetPlugin()],
   resolve: { dedupe: ['react', 'react-dom'] },
   build: {

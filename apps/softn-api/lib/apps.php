@@ -89,6 +89,25 @@ final class Apps
         return $row;
     }
 
+    /**
+     * Whether the site owner has vouched for the app: `"trusted": true` in
+     * the `app` object of its `app.json`, beside its versions. The catalogue
+     * carries the field like any other, and no route sets it — publishing,
+     * patching and remixing never write it — so the only way it gets there is
+     * someone with access to the server putting it there. A trusted app's
+     * play page runs it with every capability its permission.json declares
+     * already granted, and shows no permission bar.
+     *
+     * `true` and nothing else: "yes", 1 and "true" are not the operator
+     * saying so, they are a typo, and a typo must fail closed.
+     *
+     * @param array<string, mixed> $row
+     */
+    public static function isTrusted(array $row): bool
+    {
+        return ($row['trusted'] ?? false) === true;
+    }
+
     // ── Presentation ───────────────────────────────────────────────────────
 
     /** @param array<string, mixed> $row @return array<string, mixed> */
@@ -116,6 +135,9 @@ final class Apps
             // object on the wire, so a page can index it without checking.
             'storagePolicies' => (object) Storage::policiesOf($row),
             'execution' => (string) $row['execution'],
+            // The operator's word, from the app's app.json: the play page
+            // runs a trusted app with its declared access granted, no bar.
+            'trusted' => self::isTrusted($row),
             'version' => (int) $row['latest_version'],
             'size' => (int) $row['size'],
             'primary' => $row['primary_color'] ?: null,
@@ -140,7 +162,14 @@ final class Apps
             'updatedAt' => gmdate('c', (int) $row['updated_at']),
             'urls' => [
                 'page' => "/app/$slug",
-                'run' => $playUrl ?? "/web/app/$slug",
+                // Where the app plays: its own page in the single-app shell,
+                // served by this API with the bundle's location, version and
+                // digest written into the document — or, for a linked app,
+                // the address of its own site. The full runtime, with its
+                // launcher and tabs, is still reachable as `runtime`.
+                'run' => $playUrl ?? "/play/$slug",
+                'play' => $external ? null : "/play/$slug",
+                'runtime' => $external ? null : "/web/app/$slug",
                 'bundle' => $external ? null : $bundle,
                 'download' => $external ? null : "$bundle?download=1",
                 'studio' => $external ? null : '/studio/?open=' . rawurlencode($bundle),

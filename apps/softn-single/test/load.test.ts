@@ -128,6 +128,47 @@ it('loads exactly the configured app and composes the source', async () => {
   expect(app.appId).toBe('single:/nested/runtime.config.json:sample');
   app.assets.dispose();
 });
+it('takes an inline configuration from the page and fetches only the bundle, cacheably', async () => {
+  const page = 'https://example.test/play/snake';
+  const calls: Array<[string, RequestInit | undefined]> = [];
+  vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+    calls.push([url, init]);
+    return new Response(bundle());
+  });
+  const app = await loadApplication(
+    {
+      configUrl: page,
+      inline: JSON.stringify({
+        version: 1,
+        id: 'snake',
+        title: 'Snake',
+        bundle: '/api/apps/snake/bundle.softn?v=2',
+        directory: { runs: '/api/apps/snake/runs', storage: '/api/apps/snake/storage' },
+      }),
+    },
+    new AbortController().signal
+  );
+  expect(calls.map(([url]) => url)).toEqual(['https://example.test/api/apps/snake/bundle.softn?v=2']);
+  expect(calls[0][1]).toMatchObject({ cache: 'default', redirect: 'error' });
+  expect(app.config.permissionMode).toBe('prompt');
+  expect(app.config.directory?.storage).toBe('https://example.test/api/apps/snake/storage');
+  expect(app.appId).toBe('single:/play/snake:snake');
+  app.assets.dispose();
+});
+it('refuses an inline configuration that is not valid, rather than falling back to the file', async () => {
+  const request = vi.fn(async () => new Response(bundle()));
+  vi.stubGlobal('fetch', request);
+  await expect(
+    loadApplication({ configUrl: base, inline: '{"version":1' }, new AbortController().signal)
+  ).rejects.toThrow();
+  await expect(
+    loadApplication(
+      { configUrl: base, inline: JSON.stringify({ version: 1, id: 'x', title: 'X', bundle: 'https://other.test/a.softn' }) },
+      new AbortController().signal
+    )
+  ).rejects.toThrow();
+  expect(request).not.toHaveBeenCalled();
+});
 it('rejects invalid permission JSON instead of launching with broad access', async () => {
   vi.stubGlobal(
     'fetch',

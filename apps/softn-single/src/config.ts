@@ -1,4 +1,16 @@
 import { inspectDeclaration, type PermissionConfig } from '@softn/core';
+/**
+ * Where the app came from, when a directory served this shell for it: the
+ * endpoints the runtime reports to and stores through. Both are the same-origin
+ * routes the directory API answers for the app (`/api/apps/<slug>/...`), set by
+ * the server that rendered the page and never by the bundle.
+ */
+export interface DirectoryConfig {
+  /** `POST` here once the app is up, so the directory counts the run. */
+  runs?: string;
+  /** The app's own server-side database, `softn.storage.*` in its scripts. */
+  storage?: string;
+}
 export interface SingleConfig {
   version: 1;
   id: string;
@@ -9,6 +21,7 @@ export interface SingleConfig {
   theme: 'light' | 'dark';
   sha256?: string;
   permissionMode?: 'prompt' | 'preapproved';
+  directory?: DirectoryConfig;
 }
 export function localUrl(value: unknown, base: string): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 2048)
@@ -25,6 +38,18 @@ export function localUrl(value: unknown, base: string): string {
     throw Error('Files must be on the same origin');
   return url.href;
 }
+function parseDirectory(value: unknown, base: string): DirectoryConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw Error('Invalid directory configuration');
+  const d = value as Record<string, unknown>;
+  if (Object.keys(d).some((k) => k !== 'runs' && k !== 'storage'))
+    throw Error('Invalid directory configuration');
+  return {
+    runs: d.runs === undefined ? undefined : localUrl(d.runs, base),
+    storage: d.storage === undefined ? undefined : localUrl(d.storage, base),
+  };
+}
 export function parseConfig(input: unknown, base: string): SingleConfig {
   if (!input || typeof input !== 'object' || Array.isArray(input))
     throw Error('Invalid configuration');
@@ -39,6 +64,7 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     'theme',
     'sha256',
     'permissionMode',
+    'directory',
   ];
   if (
     Object.keys(c).some((k) => !keys.includes(k)) ||
@@ -72,6 +98,7 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     theme: (c.theme as 'light' | 'dark') ?? 'dark',
     sha256: c.sha256 as string | undefined,
     permissionMode: (c.permissionMode as SingleConfig['permissionMode']) ?? 'prompt',
+    directory: parseDirectory(c.directory, base),
   };
 }
 export function parsePermissions(value: unknown): PermissionConfig {
@@ -93,12 +120,17 @@ export function parsePermissions(value: unknown): PermissionConfig {
 export async function fetchBytes(
   url: string,
   signal: AbortSignal,
-  limit: number
+  limit: number,
+  // `no-store` for a file an operator may replace in place under the same
+  // name. A directory hands out version-addressed bundles whose bytes never
+  // change and whose digest the config pins, so those may use the browser's
+  // cache: a second visit inside the server's max-age makes no request at all.
+  cache: RequestCache = 'no-store'
 ): Promise<Uint8Array> {
   const response = await fetch(url, {
     signal,
     credentials: 'same-origin',
-    cache: 'no-store',
+    cache,
     redirect: 'error',
   });
   if (!response.ok) throw Error('Required file could not be loaded');

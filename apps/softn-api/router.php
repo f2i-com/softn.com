@@ -5,9 +5,10 @@
  *   php -S 127.0.0.1:1420 -t dist apps/softn-api/router.php
  *
  * It does what the deployed .htaccess does — /api/ to the API, /data/ to
- * nowhere, an app's share page through the API, real files as they are, and
- * every other navigation to the single-page app that owns it. Production
- * does not use this file; Apache reads the rules from .htaccess.
+ * nowhere, an app's share page and its play page through the API, real files
+ * as they are, and every other navigation to the single-page app that owns
+ * it. Production does not use this file; Apache reads the rules from
+ * .htaccess.
  */
 declare(strict_types=1);
 
@@ -15,8 +16,16 @@ $root = rtrim(str_replace('\\', '/', $_SERVER['DOCUMENT_ROOT'] ?? getcwd()), '/'
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $path = is_string($path) ? rawurldecode($path) : '/';
 
-if (preg_match('#^/api(/|$)#', $path) || preg_match('#^/app/[^/]+/?$#', $path)) {
+// /play/<slug> is a page the API renders — unless it names a real file in
+// the shell's directory, which the shell's own chunks do (/play/GLTFLoader-….js).
+if (preg_match('#^/api(/|$)#', $path) || preg_match('#^/app/[^/]+/?$#', $path)
+    || (preg_match('#^/play/[^/]+/?$#', $path) && !is_file($root . rtrim($path, '/')))) {
     require "$root/api/index.php";
+    return true;
+}
+// The shell's directory itself is nothing to look at: the directory is.
+if (preg_match('#^/play/?$#', $path)) {
+    header('Location: /apps', true, 302);
     return true;
 }
 if (preg_match('#^/data(/|$)#', $path)) {

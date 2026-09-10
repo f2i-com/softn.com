@@ -165,7 +165,7 @@ test('a folder with only app.json and a play_url is a linked app: listed, played
   assert.equal(card.version,0);assert.equal(card.size,0);assert.deepEqual(card.capabilities,[]);
   assert.equal(card.thumbnailKind,'image');assert.equal(card.name,'Outerstead');assert.equal(card.author,'Lance');
   const hosted=listing.apps.find(a=>a.slug==='hosted');
-  assert.equal(hosted.external,null);assert.equal(hosted.urls.run,'/web/app/hosted');assert.equal(hosted.urls.bundle,'/api/apps/hosted/bundle.softn');
+  assert.equal(hosted.external,null);assert.equal(hosted.urls.run,'/play/hosted');assert.equal(hosted.urls.runtime,'/web/app/hosted');assert.equal(card.urls.play,null);assert.equal(card.urls.runtime,null);assert.equal(hosted.urls.bundle,'/api/apps/hosted/bundle.softn');
   // The generated metadata keeps the address under its stored name, and reading it back changes nothing.
   const doc=JSON.parse(fs.readFileSync(path.join(dir,'app.json')));
   assert.equal(doc.app.play_url,'https://outerstead.com/');assert.equal('playUrl' in doc.app,false);assert.equal(doc.app.latest_version,0);

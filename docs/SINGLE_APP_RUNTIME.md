@@ -23,6 +23,12 @@ Replace the sample `app.softn` in the deployed directory and edit `runtime.confi
 
 Optional `permissions` points to a same-origin JSON permission declaration, e.g. `"./permission.json"`. That operator-supplied file is authoritative; without it the runtime uses the bundle's `permission.json`, then its legacy manifest declaration, then no permissions. Invalid declarations stop loading. Optional `sha256` pins the exact bundle bytes. All locations resolve relative to the config file and must be same-origin HTTP(S); redirects, credentials in URLs and URL fragments are refused. The entry always reads its adjacent config. Query parameters, hashes, file drops and messages cannot replace the chosen app.
 
+Optional `directory` names where the app came from when a directory serves this shell for it: `{"runs": "/api/apps/x/runs", "storage": "/api/apps/x/storage"}`, both same-origin, the first `POST`ed to once when the app is up and the second reached by the app's scripts as `softn.storage.*`. A standalone deployment leaves it out.
+
+### Inside softn.com
+
+The site build places this same shell under `/play/`, and the directory API serves `/play/<slug>` for every published app: the shell's `index.html` with the app's configuration written into the document as `<script type="application/json" id="softn-runtime-config">`. When the entry finds that element it reads the configuration from it instead of fetching `runtime.config.json`, resolves locations against the page's own address, and lets the browser cache answer for the bundle — the directory names a version-addressed URL whose bytes never change, with the digest pinned — where a standalone deployment's bundle is always fetched `no-store`, since an operator replaces `app.softn` in place. Everything else is the same: the config keys, the limits, the permission bar, the grant scoped to the page and the bundle digest, the local records keyed by the page path and `id`. An app the site owner has marked trusted in its `app.json` is served with `"permissionMode": "preapproved"`, exactly as below; see `apps/softn-api/README.md`.
+
 The sample bundle is generated only when `public/app.softn` is absent, never committed, and never overwrites your supplied file. For custom builds place your bundle there before building, or replace it after deployment. Config is capped at 16 KiB, sidecar permissions at 64 KiB and the compressed bundle at 32 MiB; the shared core ZIP validator also applies its entry/decompression limits. Fetch startup is bounded to 60 seconds.
 
 ## Permissions and local records

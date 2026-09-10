@@ -485,8 +485,12 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
                 <p className="muted">
                   {/* A declaration is a request. The bundle wrote it; the runtime
                       decides, per capability, after asking, and only where the
-                      device has the thing at all. */}
-                  These are what the bundle declares. The runtime grants each one only when you allow it, on a device that has it.
+                      device has the thing at all — unless the site owner has
+                      vouched for the app, in which case the page says so, since
+                      a visitor who sees no bar should know why. */}
+                  {app.trusted
+                    ? 'These are what the bundle declares. The site owner has marked this app trusted, so it runs with each of them granted from the start, without asking — on a device that has it.'
+                    : 'These are what the bundle declares. The runtime grants each one only when you allow it, on a device that has it.'}
                 </p>
               )}
               {canStore && (

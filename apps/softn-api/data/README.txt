@@ -6,7 +6,9 @@ This private directory holds the app catalogue and app-owned data:
   categories.json           category definitions
   ratelimits.json           expiring request-limit windows
   cache/bundles.json        rebuildable bundle inspection cache
-  apps/<slug>/app.json      listing, versions, plays, comments, ratings and edit hash
+  apps/<slug>/app.json      listing, versions, plays, comments, ratings and edit hash;
+                            "trusted": true in its "app" object, set by hand, makes the
+                            play page grant what the app declares without asking
   apps/<slug>/*.softn       versioned bundles, discovered automatically
   apps/<slug>/icon.*, thumb.*  pictures
   apps/<slug>/storage.sqlite  optional app-owned saved data (not directory metadata)

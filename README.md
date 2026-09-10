@@ -547,6 +547,7 @@ dist/             landing page and app directory
 dist/demos/       the example .softn bundles — only with --with-demos
 dist/softn-files/ the same bundles with a download page — only with --with-demos
 dist/web/         web runtime
+dist/play/        the single-app shell; /play/<slug> is an app's play page, rendered by the API
 dist/builder/     visual builder
 dist/studio/      AI studio
 dist/api/         the directory API (PHP)
@@ -566,7 +567,8 @@ fallback to `dist/404.html`. On another host, apply the equivalent rewrites:
 ```
 
 Two things the host must do beyond rewrites. It runs PHP for `/api/`, the
-directory. And it sends `Cross-Origin-Opener-Policy: same-origin` and
+directory, and for the two pages the API renders, `/app/<slug>` and
+`/play/<slug>`. And it sends `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: credentialless` on **every** response, not
 only documents: the runtime's worker mode (Pocket, WarbleWire) is a dedicated
 worker, and a cross-origin isolated page refuses one whose script arrives
@@ -601,6 +603,14 @@ on the server, reached from a script as `softn.storage.*`. Snake's shared top
 ten and the Notes board are the worked examples. The routes are described in
 [`apps/softn-api/README.md`](apps/softn-api/README.md), and `GET /api` lists
 them.
+
+Play goes to `/play/<slug>`: the single-app shell, served by the API with the
+app's configuration written into the page, so the page fetches the bundle and
+nothing else before the app is on screen. An app runs with what it declares
+withheld until the visitor allows it; the site owner can trust an app by
+setting `"trusted": true` in the `app` object of its `data/apps/<slug>/app.json`
+on the server, and its play page then grants the declaration from the start
+with no bar.
 
 To run the directory locally against a built site (PHP 8.1+ with
 `pdo_sqlite` and `zip`):
