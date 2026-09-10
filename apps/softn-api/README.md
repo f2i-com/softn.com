@@ -235,7 +235,9 @@ by version with its digest pinned — so the browser may keep it for the day
 the API allows and the shell still refuses bytes that are not the ones
 published. The shell counts the run on the `runs` endpoint once the app is
 up, and reaches the app's own database through `storage`, which is named
-only when the app declared that capability. The page carries the app's
+only when the app declared that capability. The page wears the same slim
+bar the runtime draws over every app: the way back to the directory and to
+the app's page, the menu, fullscreen, and a fold-away. It carries the app's
 name as its title and `<meta name="softn:app">`; an unpublished or unknown
 name is a real 404. The bare `/play/` redirects to the directory.
 

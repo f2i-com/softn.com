@@ -21,6 +21,14 @@ interface FrameBarProps {
   fullscreenTarget: React.RefObject<HTMLElement>;
   /** Hands the running app's bundle back as a file. */
   onDownload?: (id: string) => void;
+  /**
+   * What Home is called and does. The runtime's bar goes back to the runtime
+   * with the app still running; the site's play page has no runtime behind
+   * it, so its Home is the directory and Close leaves for the app's page.
+   */
+  homeLabel?: string;
+  homeTitle?: string;
+  closeTitle?: string;
 }
 
 /*
@@ -281,7 +289,17 @@ function AppMenu({ tab, onDownload }: { tab: TabInfo; onDownload?: (id: string) 
   );
 }
 
-export function FrameBar({ tab, onHome, onClose, onHide, fullscreenTarget, onDownload }: FrameBarProps): React.ReactElement {
+export function FrameBar({
+  tab,
+  onHome,
+  onClose,
+  onHide,
+  fullscreenTarget,
+  onDownload,
+  homeLabel = 'runtime',
+  homeTitle = 'Back to the runtime. The app keeps running.',
+  closeTitle = 'Stop the app and go back to the runtime',
+}: FrameBarProps): React.ReactElement {
   const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
@@ -302,9 +320,9 @@ export function FrameBar({ tab, onHome, onClose, onHide, fullscreenTarget, onDow
       <style dangerouslySetInnerHTML={{ __html: frameBarStyles }} />
       <div className="softn-frame-bar">
         <div className="softn-frame-left">
-          <button type="button" className="softn-frame-home" onClick={onHome} title="Back to the runtime. The app keeps running.">
+          <button type="button" className="softn-frame-home" onClick={onHome} title={homeTitle}>
             <Mark size={22} radius={6} title="SoftN" />
-            <small>runtime</small>
+            <small>{homeLabel}</small>
           </button>
           <span className="softn-frame-sep" aria-hidden="true">/</span>
           <span className="softn-frame-name">
@@ -324,7 +342,7 @@ export function FrameBar({ tab, onHome, onClose, onHide, fullscreenTarget, onDow
           <button type="button" className="softn-frame-btn" onClick={toggleFullscreen}>
             {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
           </button>
-          <button type="button" className="softn-frame-btn softn-frame-close" onClick={onClose} aria-label="Stop the app and go back to the runtime">
+          <button type="button" className="softn-frame-btn softn-frame-close" onClick={onClose} aria-label={closeTitle} title={closeTitle}>
             Close
           </button>
         </span>

@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@softn/brand": "*",
     "@softn/components": "*",
     "@softn/core": "*",
     "react": "^18.2.0",
