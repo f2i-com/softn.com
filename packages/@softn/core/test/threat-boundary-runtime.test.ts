@@ -107,20 +107,14 @@ describe('capabilities not declared in permission.json are denied to the running
   });
 
   /**
-   * KNOWN DEFECT, pinned as one. `checkPermission` tests `enabled` for
-   * truthiness, so `"enabled": "true"` and `"enabled": 1` grant the
-   * capability — while `inspectDeclaration`, which the consent bar and the
-   * directory read, reports the same entries as malformed and requests
-   * nothing. A bundle spelling its declaration that way is therefore run
-   * with the microphone and files and no consent bar listing them: the
-   * runtime and the host's description of it disagree, which is the drift
-   * QA-02 is about. The fix is `enabled !== true` in each case of
-   * `checkPermission` (packages/@softn/core/src/runtime/script-runtime.ts);
-   * this block is written with `it.fails` so it turns red — asking to be
-   * flipped to `it` — the moment that lands, and does not hide the defect
-   * behind a green suite meanwhile.
+   * `checkPermission` once tested `enabled` for truthiness, so `"enabled":
+   * "true"` and `"enabled": 1` granted the capability — while
+   * `inspectDeclaration`, which the consent bar and the directory read,
+   * reported the same entries as malformed and requested nothing. A bundle
+   * spelling its declaration that way ran with the microphone and files and
+   * no consent bar listing them. Both now agree: only the boolean is a grant.
    */
-  it.fails('KNOWN DEFECT: `enabled` given as a truthy non-boolean is not a grant', () => {
+  it('`enabled` given as a truthy non-boolean is not a grant', () => {
     const config = { permissions: { mic: { enabled: 'true' }, files: { enabled: 1 } } } as unknown as PermissionConfig;
     expect(inspectDeclaration(config).requested).toEqual([]);
     expect(inspectDeclaration(config).malformed).toEqual(['mic', 'files']);
