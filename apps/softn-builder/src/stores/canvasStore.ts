@@ -3,8 +3,9 @@
  */
 
 import { create } from 'zustand';
-import type { CanvasElement, CanvasState, UIImport } from '../types/builder';
+import type { CanvasBlock, CanvasElement, CanvasState, UIImport } from '../types/builder';
 import { debug } from '../utils/debug';
+import { defaultBlock, isBlockHead, isContinuationType } from '../utils/blocks';
 
 function generateId(): string {
   return `el_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -24,6 +25,28 @@ interface CanvasStore extends CanvasState {
   deleteElement: (id: string) => void;
   moveElement: (id: string, newParentId: string | null, index: number) => void;
   duplicateElement: (id: string) => string | null;
+
+  // Control-flow blocks (utils/blocks.ts). None of these push history; the
+  // caller does, as for every other edit.
+  /**
+   * Put an `#if` or `#each` around the element, in its place: the block
+   * takes the element's slot in the parent and the element becomes the
+   * block's branch. Returns the block's id, or null for the root or for a
+   * continuation branch.
+   */
+  wrapElement: (id: string, kind: 'if' | 'each') => string | null;
+  /**
+   * Add an `#elseif` or `#else` branch to an `#if`, or an `#empty` branch to
+   * an `#each`. An `#elseif` goes before the `#else` if there is one; a second
+   * `#else` or `#empty` is refused. Returns the branch's id, or null.
+   */
+  addBlockBranch: (blockId: string, kind: 'elseif' | 'else' | 'empty') => string | null;
+  /**
+   * Remove an `#if` or `#each` but keep what its main branch holds: the
+   * branch's elements take the block's slot in the parent, and the block's
+   * alternate branches go with the block.
+   */
+  unwrapBlock: (id: string) => void;
 
   // Selection
   selectElement: (id: string, addToSelection?: boolean) => void;
@@ -113,6 +136,10 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
         children: [],
         parentId: parent,
       };
+      // A block dropped from the palette starts with a header to edit; an
+      // element without one would print as a bare keyword the parser rejects.
+      const block = defaultBlock(type);
+      if (block) newElement.block = block;
 
       newElements.set(id, newElement);
 
@@ -278,6 +305,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
           events: el.events ? { ...el.events } : undefined,
           bindings: el.bindings ? { ...el.bindings } : undefined,
           expressionProps: el.expressionProps ? [...el.expressionProps] : undefined,
+          ...(el.block ? { block: { ...el.block } } : {}),
         };
       };
 
@@ -303,6 +331,124 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     });
 
     return newId;
+  },
+
+  wrapElement: (id, kind) => {
+    const state = get();
+    const element = state.elements.get(id);
+    if (!element || !element.parentId || id === state.rootId) return null;
+    // A continuation belongs to its block; wrapped, it would be an #else
+    // inside an #if inside the #if it continues — a chain nothing prints.
+    if (isContinuationType(element.componentType)) return null;
+    const parent = state.elements.get(element.parentId);
+    if (!parent) return null;
+
+    const blockId = generateId();
+    const block: CanvasBlock =
+      kind === 'if' ? { kind: 'if', condition: 'true' } : { kind: 'each', iterable: 'items', itemName: 'item' };
+
+    set((current) => {
+      const newElements = new Map(current.elements);
+      newElements.set(blockId, {
+        id: blockId,
+        componentType: `#${kind}`,
+        props: {},
+        events: {},
+        bindings: {},
+        expressionProps: [],
+        block,
+        children: [id],
+        parentId: parent.id,
+      });
+      newElements.set(parent.id, {
+        ...parent,
+        children: parent.children.map((cid) => (cid === id ? blockId : cid)),
+      });
+      newElements.set(id, { ...element, parentId: blockId });
+      return { elements: newElements, selectedIds: [blockId] };
+    });
+
+    return blockId;
+  },
+
+  addBlockBranch: (blockId, kind) => {
+    const state = get();
+    const head = state.elements.get(blockId);
+    if (!head?.block || !isBlockHead(head)) return null;
+    if ((kind === 'empty') !== (head.block.kind === 'each')) return null;
+
+    const branches = head.children
+      .map((cid) => state.elements.get(cid))
+      .filter((el): el is CanvasElement => el !== undefined && isContinuationType(el.componentType));
+    if (kind !== 'elseif' && branches.some((el) => el.block?.kind === kind)) return null;
+
+    const branchId = generateId();
+    const block: CanvasBlock = kind === 'elseif' ? { kind: 'elseif', condition: 'true' } : { kind };
+
+    set((current) => {
+      const newElements = new Map(current.elements);
+      newElements.set(branchId, {
+        id: branchId,
+        componentType: `#${kind}`,
+        props: {},
+        events: {},
+        bindings: {},
+        expressionProps: [],
+        block,
+        children: [],
+        parentId: blockId,
+      });
+      // An #elseif sits before the #else; any other branch goes last.
+      const children = [...head.children];
+      const elseIndex =
+        kind === 'elseif' ? children.findIndex((cid) => newElements.get(cid)?.block?.kind === 'else') : -1;
+      if (elseIndex === -1) children.push(branchId);
+      else children.splice(elseIndex, 0, branchId);
+      newElements.set(blockId, { ...head, children });
+      return { elements: newElements, selectedIds: [branchId] };
+    });
+
+    return branchId;
+  },
+
+  unwrapBlock: (id) => {
+    const state = get();
+    const head = state.elements.get(id);
+    if (!head?.block || !isBlockHead(head) || !head.parentId) return;
+    const parent = state.elements.get(head.parentId);
+    if (!parent) return;
+
+    set((current) => {
+      const newElements = new Map(current.elements);
+      const kept: string[] = [];
+      const deleteRecursive = (elementId: string) => {
+        const el = newElements.get(elementId);
+        if (!el) return;
+        el.children.forEach(deleteRecursive);
+        newElements.delete(elementId);
+      };
+      for (const cid of head.children) {
+        const child = newElements.get(cid);
+        if (!child) continue;
+        if (isContinuationType(child.componentType)) {
+          deleteRecursive(cid);
+        } else {
+          kept.push(cid);
+          newElements.set(cid, { ...child, parentId: parent.id });
+        }
+      }
+      newElements.delete(id);
+      newElements.set(parent.id, {
+        ...parent,
+        children: parent.children.flatMap((cid) => (cid === id ? kept : [cid])),
+      });
+      return {
+        elements: newElements,
+        selectedIds: current.selectedIds.includes(id)
+          ? kept.slice(0, 1)
+          : current.selectedIds.filter((sid) => newElements.has(sid)),
+      };
+    });
   },
 
   selectElement: (id, addToSelection = false) => {
@@ -387,6 +533,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
           events: el.events ? { ...el.events } : undefined,
           bindings: el.bindings ? { ...el.bindings } : undefined,
           expressionProps: el.expressionProps ? [...el.expressionProps] : undefined,
+          ...(el.block ? { block: { ...el.block } } : {}),
         };
 
         newElements.set(newId, pastedElement);

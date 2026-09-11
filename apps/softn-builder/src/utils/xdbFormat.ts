@@ -29,9 +29,11 @@
  *  - A row deleted in the Data view is dropped from the export rather than
  *    written as a tombstone, because the runtime seeds every listed record as
  *    live: a tombstone written here would come back as a live row.
- *  - There is no "import as new" (re-identify) operation. Re-identification is
- *    a migration with reference rewriting, and nothing in the Builder needs it
- *    yet; it is not offered rather than offered by accident.
+ *  - "Import as new" (re-identify) is a deliberate operation, never a side
+ *    effect: the Data view's "Re-identify records" (utils/reidentify.ts) gives
+ *    every record of one collection a fresh id and timestamps and rewrites
+ *    the references that pointed at the old ids, after confirmation, and can
+ *    be taken back until the next data edit.
  */
 
 import type { SchemaField } from '../types/builder';

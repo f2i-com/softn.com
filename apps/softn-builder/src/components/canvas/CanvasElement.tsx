@@ -10,22 +10,10 @@ import { useFilesStore } from '../../stores/filesStore';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
 import { blockHeaderText } from '../../utils/sourceGenerator';
+import { acceptsChildren, blockDescription, canDropInto } from '../../utils/blocks';
 import { parseStringLiteralVariables } from '../../utils/logicStringLiterals';
 import { TokenIcon } from '../icons/TokenIcon';
 import type { CanvasElement as CanvasElementType } from '../../types/builder';
-
-// Helper to check if dropping is allowed
-function canDropOn(targetType: string, draggedType: string | null): boolean {
-  const targetMeta = getComponentMeta(targetType);
-  if (!targetMeta?.allowChildren) return false;
-
-  // If target has specific childTypes, check if dragged type is allowed
-  if (targetMeta.childTypes && targetMeta.childTypes.length > 0 && draggedType) {
-    return targetMeta.childTypes.includes(draggedType);
-  }
-
-  return true;
-}
 
 // Check if an element is a descendant of another
 function isDescendantOf(
@@ -136,6 +124,35 @@ const styles: Record<string, React.CSSProperties> = {
   content: {
     pointerEvents: 'none' as const,
   },
+  // A block's header strip: the keyword and its expression, set in the
+  // mono face so it reads as the source line it will be written as.
+  blockHeader: {
+    display: 'flex',
+    alignItems: 'baseline',
+    gap: 8,
+    padding: '6px 10px',
+    borderRadius: 6,
+    background: 'var(--mint-glow-soft)',
+    border: '1px solid var(--mint-edge)',
+    fontSize: 12,
+  },
+  blockKeyword: {
+    fontFamily: 'var(--b-mono, monospace)',
+    fontWeight: 600,
+    color: 'var(--coral)',
+    whiteSpace: 'nowrap' as const,
+  },
+  blockExpression: {
+    fontFamily: 'var(--b-mono, monospace)',
+    color: 'var(--paper)',
+    overflowWrap: 'anywhere' as const,
+  },
+  blockHint: {
+    marginLeft: 'auto',
+    color: 'var(--dim)',
+    fontSize: 11,
+    whiteSpace: 'nowrap' as const,
+  },
 };
 
 export const CanvasElement = React.memo(function CanvasElement({
@@ -155,7 +172,11 @@ export const CanvasElement = React.memo(function CanvasElement({
   const setHoveredId = useCanvasStore((s) => s.setHoveredId);
   const setDraggedElementId = useCanvasStore((s) => s.setDraggedElementId);
 
-  const meta = element ? getComponentMeta(element.componentType) : null;
+  // Whether this element has a children area: a registered container, or a
+  // control-flow block, whose branch is its children. Blocks used to be
+  // asked of the registry, which has no entry for them, so a block showed
+  // a notice and its branch was neither drawn nor droppable.
+  const allowsChildren = element ? acceptsChildren(element) : false;
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const assets = useProjectStore((state) => state.assets);
   const projectLogicSource = useProjectStore((state) => state.logicSource);
@@ -208,13 +229,15 @@ export const CanvasElement = React.memo(function CanvasElement({
 
   // Check if this element can accept the current drag (reads from store directly for fresh state)
   const canAcceptDrop = useCallback(() => {
-    if (!meta?.allowChildren || !elementComponentType) return false;
+    if (!allowsChildren || !elementComponentType) return false;
 
     const state = useCanvasStore.getState();
+    const target = state.elements.get(elementId);
+    if (!target) return false;
 
     // Check for palette component
     if (state.draggedType) {
-      return canDropOn(elementComponentType, state.draggedType);
+      return canDropInto(target, state.draggedType);
     }
 
     // Check for canvas element
@@ -227,12 +250,12 @@ export const CanvasElement = React.memo(function CanvasElement({
 
       const draggedElement = state.elements.get(state.draggedElementId);
       if (draggedElement) {
-        return canDropOn(elementComponentType, draggedElement.componentType);
+        return canDropInto(target, draggedElement.componentType);
       }
     }
 
     return false;
-  }, [meta?.allowChildren, elementComponentType, elementId]);
+  }, [allowsChildren, elementComponentType, elementId]);
 
   // Ref for the wrapper div (used for drop position tracking)
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -251,7 +274,6 @@ export const CanvasElement = React.memo(function CanvasElement({
 
       const rect = el.getBoundingClientRect();
       const relativeY = (e.clientY - rect.top) / rect.height;
-      const allowsChildren = meta?.allowChildren ?? false;
 
       const parentElement = state.elements.get(elementParentId);
       if (!parentElement) return;
@@ -304,7 +326,7 @@ export const CanvasElement = React.memo(function CanvasElement({
       el.removeEventListener('mousemove', handleMouseMove);
       el.removeEventListener('mouseleave', handleMouseLeave);
     };
-  }, [elementId, elementParentId, meta?.allowChildren]);
+  }, [elementId, elementParentId, allowsChildren]);
 
   // Mouse-based drag start for moving existing elements
   const handleMouseDown = useCallback(
@@ -546,6 +568,23 @@ export const CanvasElement = React.memo(function CanvasElement({
   // Render component preview
   const renderComponentPreview = () => {
     const { componentType, props } = element;
+
+    // A control-flow block: its header line, with the branch drawn below
+    // as the children area, where elements can be dropped. The expression
+    // is edited in the property panel.
+    if (element.block) {
+      const header = blockHeaderText(element) ?? componentType;
+      const keywordEnd = header.indexOf(' ');
+      const keyword = keywordEnd === -1 ? header : header.slice(0, keywordEnd);
+      const expression = keywordEnd === -1 ? '' : header.slice(keywordEnd + 1);
+      return (
+        <div style={styles.blockHeader} data-block-header={element.block.kind}>
+          <span style={styles.blockKeyword}>{keyword}</span>
+          {expression && <span style={styles.blockExpression}>{expression}</span>}
+          <span style={styles.blockHint}>{blockDescription(element.block)}</span>
+        </div>
+      );
+    }
 
     switch (componentType) {
       case 'Button':
@@ -808,21 +847,10 @@ export const CanvasElement = React.memo(function CanvasElement({
               >
                 <TokenIcon token={componentMeta?.icon} size={12} />
               </span>
-              <strong style={{ fontSize: 12 }}>{blockHeaderText(element) ?? componentType}</strong>
+              <strong style={{ fontSize: 12 }}>{componentType}</strong>
             </div>
             {componentMeta?.description && (
               <span style={{ color: 'var(--dim)', fontSize: 11 }}>{componentMeta.description}</span>
-            )}
-            {element.block && (
-              // A control-flow block. Its branch is kept — and exported —
-              // as its children, but the canvas has no drop zone for a
-              // block, so the branch is edited in the source view.
-              <span style={{ color: 'var(--dim)', fontSize: 11 }} data-block-notice="true">
-                {element.children.length === 1
-                  ? '1 item in this branch'
-                  : `${element.children.length} items in this branch`}
-                {' · '}edit the branch in Source
-              </span>
             )}
           </div>
         );
@@ -853,8 +881,12 @@ export const CanvasElement = React.memo(function CanvasElement({
         tabIndex={onTreeFocusChange ? (focusedElementId === elementId ? 0 : -1) : 0}
         aria-selected={isSelected}
         aria-level={depth + 1}
-        aria-expanded={meta?.allowChildren ? true : undefined}
-        aria-label={`Select ${element.componentType} component`}
+        aria-expanded={allowsChildren ? true : undefined}
+        aria-label={
+          element.block
+            ? `Select ${blockHeaderText(element) ?? element.componentType} block`
+            : `Select ${element.componentType} component`
+        }
         onClick={handleClick}
         onKeyDown={handleKeyDown}
         onFocus={handleFocus}
@@ -874,7 +906,7 @@ export const CanvasElement = React.memo(function CanvasElement({
           {renderComponentPreview()}
         </div>
 
-        {meta?.allowChildren && (
+        {allowsChildren && (
           <div style={childrenStyle} data-children-area="true" role="group">
             {element.children.length > 0 ? (
               element.children.map((childId) => (
@@ -888,7 +920,11 @@ export const CanvasElement = React.memo(function CanvasElement({
               ))
             ) : (
               <div style={styles.childrenEmpty}>
-                {showDropInto ? 'Release to drop here' : 'Drop children here'}
+                {showDropInto
+                  ? 'Release to drop here'
+                  : element.block
+                    ? 'Drop the elements of this branch here'
+                    : 'Drop children here'}
               </div>
             )}
           </div>

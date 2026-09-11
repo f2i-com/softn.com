@@ -4,6 +4,8 @@
 
 import React, { useState } from 'react';
 import { useSchemaStore } from '../../stores/schemaStore';
+import { toast, useNotificationStore } from '../../stores/notificationStore';
+import { describeReidentify } from '../../utils/reidentify';
 import type { EntityDef, SchemaField } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -119,6 +121,26 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: 'var(--dim)',
     fontWeight: 400,
+  },
+  footer: {
+    marginTop: 12,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap' as const,
+  },
+  secondaryBtn: {
+    padding: '6px 12px',
+    background: 'var(--ink)',
+    color: 'var(--dim)',
+    border: '1px solid var(--line)',
+    borderRadius: 4,
+    fontSize: 12,
+    cursor: 'pointer',
+  },
+  footerHint: {
+    fontSize: 11,
+    color: 'var(--dimmer)',
   },
 };
 
@@ -280,7 +302,39 @@ function FieldInput({ field, value, onChange, entities, seedData, recordIdentity
 export function DataEntryPanel() {
   const { entities, seedData, recordIdentity, addSeedRecord, updateSeedRecord, deleteSeedRecord } =
     useSchemaStore();
+  const lastReidentify = useSchemaStore((s) => s.lastReidentify);
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
+
+  // "Import as new": the one deliberate way to give a collection's records
+  // fresh ids (utils/reidentify.ts). Confirmed first, with what will
+  // happen spelled out; taken back in one step from the toast or the
+  // footer until the next data edit.
+  const handleReidentify = (entity: EntityDef) => {
+    const store = useSchemaStore.getState();
+    const message = describeReidentify(entity, store.entities, {
+      seedData: store.seedData,
+      recordIdentity: store.recordIdentity,
+      tombstones: store.tombstones,
+    });
+    if (!window.confirm(message)) return;
+    const outcome = store.reidentifyRecords(entity.id);
+    if (!outcome) return;
+    const remapped = outcome.remapped.map((r) => `${r.rows} in ${r.entityName}`).join(', ');
+    useNotificationStore.getState().addNotification({
+      type: 'success',
+      duration: 8000,
+      message:
+        `${outcome.records} record${outcome.records === 1 ? '' : 's'} of ${entity.name} re-identified` +
+        (remapped ? `; references updated: ${remapped}` : ''),
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          if (useSchemaStore.getState().undoReidentify()) toast.info(`Restored the previous ids of ${entity.name}`);
+          else toast.warning('The data has been edited since; the previous ids are in the last saved recovery copy.');
+        },
+      },
+    });
+  };
 
   // Auto-select first entity if none selected
   React.useEffect(() => {
@@ -389,10 +443,34 @@ export function DataEntryPanel() {
               </div>
             )}
 
-            <div style={{ marginTop: 12 }}>
+            <div style={styles.footer}>
               <button style={styles.addBtn} onClick={() => addSeedRecord(activeEntity.id)}>
                 + Add Record
               </button>
+              {records.length > 0 && (
+                <button
+                  style={styles.secondaryBtn}
+                  onClick={() => handleReidentify(activeEntity)}
+                  title="Give every record of this collection a new id and new timestamps, as if imported into a new app, and update the references that point at them"
+                  data-action="reidentify"
+                >
+                  Re-identify records…
+                </button>
+              )}
+              {lastReidentify?.entityId === activeEntity.id && (
+                <button
+                  style={styles.secondaryBtn}
+                  onClick={() => {
+                    if (useSchemaStore.getState().undoReidentify()) toast.info(`Restored the previous ids of ${activeEntity.name}`);
+                  }}
+                  data-action="undo-reidentify"
+                >
+                  Undo re-identify
+                </button>
+              )}
+              <span style={styles.footerHint}>
+                Records keep the ids they were imported with; re-identify only to seed a new app from this data.
+              </span>
             </div>
           </>
         )}

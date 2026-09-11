@@ -6,6 +6,7 @@ import { create } from 'zustand';
 import type { EntityDef, SchemaField, RelationshipDef } from '../types/builder';
 import { useProjectStore } from './projectStore';
 import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from '../utils/xdbFormat';
+import { reidentifyCollection, type RecordsSnapshot, type ReidentifyOutcome } from '../utils/reidentify';
 
 function generateId(): string {
   return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -55,6 +56,24 @@ interface SchemaStore {
   /** The identities and tombstones read with the seed rows; not an edit. */
   loadRecords: (identity: Map<string, RecordIdentity[]>, tombstones: Map<string, XdbRecordEnvelope[]>) => void;
 
+  /**
+   * "Import as new" for one collection: every record gets a fresh id and
+   * fresh timestamps, and every reference to an old id in any collection's
+   * live rows is rewritten (utils/reidentify.ts). A deliberate migration,
+   * never a side effect of a save; the caller confirms it first. Returns
+   * what was done, or null for an unknown entity.
+   */
+  reidentifyRecords: (entityId: string, now?: string) => ReidentifyOutcome | null;
+  /**
+   * The record state as it stood before the last re-identify, kept until
+   * the next data edit so the operation can be taken back in one step.
+   * The saved recovery record (utils/openProject.ts, captureSession) is
+   * the coarser way back once this is gone.
+   */
+  lastReidentify: { entityId: string; before: RecordsSnapshot } | null;
+  /** Restore the record state from before the last re-identify. False when there is none to restore. */
+  undoReidentify: () => boolean;
+
   // Reset
   reset: () => void;
 }
@@ -90,6 +109,10 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
    */
   const edit: typeof set = (...args) => {
     set(...(args as Parameters<typeof set>));
+    // Any later data edit builds on the re-identified rows; restoring the
+    // state from before would take that edit with it, so the way back is
+    // closed here rather than left to surprise.
+    if (get().lastReidentify) set({ lastReidentify: null });
     useProjectStore.getState().markDirty();
   };
 
@@ -97,6 +120,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   entities: [],
   relationships: [],
   selectedEntityId: null,
+  lastReidentify: null,
   seedData: new Map(),
   recordIdentity: new Map(),
   tombstones: new Map(),
@@ -350,7 +374,32 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   loadRecords: (identity, tombstones) => {
-    set({ recordIdentity: identity, tombstones });
+    set({ recordIdentity: identity, tombstones, lastReidentify: null });
+  },
+
+  reidentifyRecords: (entityId, now) => {
+    const state = get();
+    const before: RecordsSnapshot = {
+      seedData: state.seedData,
+      recordIdentity: state.recordIdentity,
+      tombstones: state.tombstones,
+    };
+    const result = reidentifyCollection(entityId, state.entities, before, now);
+    if (!result) return null;
+    // `set`, then markDirty by hand: `edit` would clear the way back it is
+    // recording. The maps of untouched collections are the same objects as
+    // before, so keeping `before` costs only the re-identified entries.
+    set({ ...result.next, lastReidentify: { entityId, before } });
+    useProjectStore.getState().markDirty();
+    return result.outcome;
+  },
+
+  undoReidentify: () => {
+    const last = get().lastReidentify;
+    if (!last) return false;
+    set({ ...last.before, lastReidentify: null });
+    useProjectStore.getState().markDirty();
+    return true;
   },
 
   reset: () => {
@@ -361,6 +410,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
       seedData: new Map(),
       recordIdentity: new Map(),
       tombstones: new Map(),
+      lastReidentify: null,
     });
   },
   };

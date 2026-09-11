@@ -5,6 +5,7 @@
 import React, { useState, useCallback } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
+import { blockHeaderText } from '../../utils/sourceGenerator';
 import type { CanvasElement } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -121,7 +122,19 @@ function TreeNode({ element, depth }: TreeNodeProps) {
           <span style={{ width: 16 }} />
         )}
 
-        <span style={{ flex: 1, marginLeft: 4 }}>{element.componentType}</span>
+        {/* A block is named by its header line — `#if (open)`, `#each (item in
+            items)` — so the tree reads as the source does; a bare `#if` said
+            nothing about which branch this was. */}
+        <span
+          style={{
+            flex: 1,
+            marginLeft: 4,
+            ...(element.block ? { fontFamily: 'var(--b-mono, monospace)', color: 'var(--coral)' } : {}),
+          }}
+          data-tree-label={element.block ? 'block' : 'component'}
+        >
+          {blockHeaderText(element) ?? element.componentType}
+        </span>
 
         {element.parentId && isHovered && (
           <span

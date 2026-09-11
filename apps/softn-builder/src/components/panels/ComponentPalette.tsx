@@ -10,6 +10,7 @@ import {
 } from '../../utils/componentRegistry';
 import { TokenIcon } from '../icons/TokenIcon';
 import { useCanvasStore } from '../../stores/canvasStore';
+import { blockPalette } from '../../utils/blocks';
 import type { ComponentMeta } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -254,7 +255,7 @@ interface ComponentPaletteProps {
 export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
-    new Set(['Layout', 'Form', 'Display'])
+    new Set(['Control flow', 'Layout', 'Form', 'Display'])
   );
   const componentsByCategory = useMemo(() => getComponentsByCategory(), []);
 
@@ -286,8 +287,12 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
     });
   };
 
+  // The two blocks a creator can start with sit in the palette beside the
+  // components: dragged and dropped the same way, and an element dropped
+  // into one becomes its branch. Their alternate branches (#elseif, #else,
+  // #empty) are added from the block's properties, not from here.
   const filteredComponents = searchQuery
-    ? componentRegistry.filter(
+    ? [...blockPalette, ...componentRegistry].filter(
         (c) =>
           c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
           c.description.toLowerCase().includes(searchQuery.toLowerCase())
@@ -331,20 +336,28 @@ export function ComponentPalette({ onToggleDock }: ComponentPaletteProps) {
             )}
           </div>
         ) : (
-          categoryOrder.map((category) => {
-            const components = componentsByCategory.get(category) || [];
-            if (components.length === 0) return null;
+          <>
+            <CategorySection
+              category="Control flow"
+              components={blockPalette}
+              isExpanded={expandedCategories.has('Control flow')}
+              onToggle={() => toggleCategory('Control flow')}
+            />
+            {categoryOrder.map((category) => {
+              const components = componentsByCategory.get(category) || [];
+              if (components.length === 0) return null;
 
-            return (
-              <CategorySection
-                key={category}
-                category={category}
-                components={components}
-                isExpanded={expandedCategories.has(category)}
-                onToggle={() => toggleCategory(category)}
-              />
-            );
-          })
+              return (
+                <CategorySection
+                  key={category}
+                  category={category}
+                  components={components}
+                  isExpanded={expandedCategories.has(category)}
+                  onToggle={() => toggleCategory(category)}
+                />
+              );
+            })}
+          </>
         )}
       </div>
     </div>
