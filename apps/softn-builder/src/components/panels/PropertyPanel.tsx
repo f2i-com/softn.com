@@ -7,7 +7,9 @@ import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { getComponentMeta } from '../../utils/componentRegistry';
-import type { PropSchema } from '../../types/builder';
+import { blockHeaderText } from '../../utils/sourceGenerator';
+import { blockDescription, isBlockHead } from '../../utils/blocks';
+import type { CanvasBlock, PropSchema } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -201,6 +203,23 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: 'var(--dim)',
     marginBottom: 4,
+  },
+  actionRow: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: 6,
+  },
+  actionBtn: {
+    border: '1px solid var(--line)',
+    background: 'var(--ink)',
+    color: 'var(--paper)',
+    borderRadius: 6,
+    fontSize: 12,
+    padding: '5px 9px',
+    cursor: 'pointer',
+  },
+  actionBtnDanger: {
+    color: '#dc2626',
   },
 };
 
@@ -401,6 +420,70 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
     [selectedElement, push, updateElement]
   );
 
+  // A block's header — its condition, or its loop variables and list — is
+  // edited here as the block's own fields. Blocks are elements of the model
+  // (types/builder.ts, CanvasBlock) and the generator prints what is set,
+  // so an emptied field is dropped from the header rather than printed empty.
+  const handleBlockChange = useCallback(
+    (field: keyof Omit<CanvasBlock, 'kind'>, value: string) => {
+      if (!selectedElement?.block) return;
+      const { elements, rootId } = useCanvasStore.getState();
+      push(elements, rootId);
+      const block: CanvasBlock = { ...selectedElement.block };
+      if (value) block[field] = value;
+      else delete block[field];
+      updateElement(selectedElement.id, { block });
+    },
+    [selectedElement, push, updateElement]
+  );
+
+  const withHistory = useCallback(
+    (action: () => void) => {
+      const { elements, rootId } = useCanvasStore.getState();
+      push(elements, rootId);
+      action();
+    },
+    [push]
+  );
+
+  const wrapSelected = useCallback(
+    (kind: 'if' | 'each') => {
+      if (!selectedElement) return;
+      withHistory(() => useCanvasStore.getState().wrapElement(selectedElement.id, kind));
+    },
+    [selectedElement, withHistory]
+  );
+
+  const addBranch = useCallback(
+    (kind: 'elseif' | 'else' | 'empty') => {
+      if (!selectedElement) return;
+      withHistory(() => useCanvasStore.getState().addBlockBranch(selectedElement.id, kind));
+    },
+    [selectedElement, withHistory]
+  );
+
+  const unwrapSelected = useCallback(() => {
+    if (!selectedElement) return;
+    withHistory(() => useCanvasStore.getState().unwrapBlock(selectedElement.id));
+  }, [selectedElement, withHistory]);
+
+  const removeSelected = useCallback(() => {
+    if (!selectedElement) return;
+    withHistory(() => useCanvasStore.getState().deleteElement(selectedElement.id));
+  }, [selectedElement, withHistory]);
+
+  // Which alternate branches the selected block already has, so a second
+  // #else or #empty is not offered.
+  const existingBranches = useMemo(() => {
+    if (!selectedElement?.block) return new Set<string>();
+    const { elements } = useCanvasStore.getState();
+    return new Set(
+      selectedElement.children
+        .map((cid) => elements.get(cid)?.block?.kind)
+        .filter((kind): kind is CanvasBlock['kind'] => kind !== undefined)
+    );
+  }, [selectedElement]);
+
   const groupedProps = useMemo(() => {
     if (!meta) return null;
 
@@ -531,9 +614,149 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
 
       <div style={styles.content}>
         <div style={styles.componentInfo}>
-          <div style={styles.componentName}>{selectedElement.componentType}</div>
+          <div style={styles.componentName}>
+            {blockHeaderText(selectedElement) ?? selectedElement.componentType}
+          </div>
           {meta && <div style={styles.componentDescription}>{meta.description}</div>}
+          {selectedElement.block && (
+            <div style={styles.componentDescription}>{blockDescription(selectedElement.block)}</div>
+          )}
         </div>
+
+        {selectedElement.block && (
+          <div style={styles.section} data-block-editor={selectedElement.block.kind}>
+            <div style={styles.sectionHeader}>
+              <div style={styles.sectionTitle}>Block</div>
+            </div>
+            <div style={styles.sectionBody}>
+              {(selectedElement.block.kind === 'if' || selectedElement.block.kind === 'elseif') && (
+                <div style={styles.field}>
+                  <label style={styles.label}>condition</label>
+                  <input
+                    type="text"
+                    style={{ ...styles.input, fontFamily: 'monospace' }}
+                    value={selectedElement.block.condition || ''}
+                    onChange={(e) => handleBlockChange('condition', e.target.value)}
+                    placeholder="condition"
+                    data-block-field="condition"
+                  />
+                </div>
+              )}
+              {selectedElement.block.kind === 'each' && (
+                <>
+                  <div style={styles.field}>
+                    <label style={styles.label}>item</label>
+                    <input
+                      type="text"
+                      style={{ ...styles.input, fontFamily: 'monospace' }}
+                      value={selectedElement.block.itemName || ''}
+                      onChange={(e) => handleBlockChange('itemName', e.target.value)}
+                      placeholder="item"
+                      data-block-field="itemName"
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>index (optional)</label>
+                    <input
+                      type="text"
+                      style={{ ...styles.input, fontFamily: 'monospace' }}
+                      value={selectedElement.block.indexName || ''}
+                      onChange={(e) => handleBlockChange('indexName', e.target.value)}
+                      placeholder="i"
+                      data-block-field="indexName"
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>in list</label>
+                    <input
+                      type="text"
+                      style={{ ...styles.input, fontFamily: 'monospace' }}
+                      value={selectedElement.block.iterable || ''}
+                      onChange={(e) => handleBlockChange('iterable', e.target.value)}
+                      placeholder="items"
+                      data-block-field="iterable"
+                    />
+                  </div>
+                  <div style={styles.field}>
+                    <label style={styles.label}>key (optional)</label>
+                    <input
+                      type="text"
+                      style={{ ...styles.input, fontFamily: 'monospace' }}
+                      value={selectedElement.block.keyExpression || ''}
+                      onChange={(e) => handleBlockChange('keyExpression', e.target.value)}
+                      placeholder="item.id"
+                      data-block-field="keyExpression"
+                    />
+                  </div>
+                </>
+              )}
+              <div style={styles.actionRow}>
+                {selectedElement.block.kind === 'if' && (
+                  <>
+                    <button style={styles.actionBtn} onClick={() => addBranch('elseif')} data-block-action="add-elseif">
+                      Add #elseif
+                    </button>
+                    {!existingBranches.has('else') && (
+                      <button style={styles.actionBtn} onClick={() => addBranch('else')} data-block-action="add-else">
+                        Add #else
+                      </button>
+                    )}
+                  </>
+                )}
+                {selectedElement.block.kind === 'each' && !existingBranches.has('empty') && (
+                  <button style={styles.actionBtn} onClick={() => addBranch('empty')} data-block-action="add-empty">
+                    Add #empty
+                  </button>
+                )}
+                {isBlockHead(selectedElement) ? (
+                  <button
+                    style={styles.actionBtn}
+                    onClick={unwrapSelected}
+                    title="Remove the block; the elements of its main branch stay, its other branches go"
+                    data-block-action="unwrap"
+                  >
+                    Unwrap
+                  </button>
+                ) : (
+                  <button
+                    style={{ ...styles.actionBtn, ...styles.actionBtnDanger }}
+                    onClick={removeSelected}
+                    title="Remove this branch and everything in it"
+                    data-block-action="remove-branch"
+                  >
+                    Remove branch
+                  </button>
+                )}
+              </div>
+              <div style={styles.fieldHint}>
+                {isBlockHead(selectedElement)
+                  ? 'Drop elements into the block on the canvas to fill its branch.'
+                  : 'This branch belongs to the block above it.'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!selectedElement.block && selectedElement.parentId && (
+          <div style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <div style={styles.sectionTitle}>Control flow</div>
+            </div>
+            <div style={styles.sectionBody}>
+              <div style={styles.actionRow}>
+                <button style={styles.actionBtn} onClick={() => wrapSelected('if')} data-block-action="wrap-if">
+                  Wrap in #if
+                </button>
+                <button style={styles.actionBtn} onClick={() => wrapSelected('each')} data-block-action="wrap-each">
+                  Wrap in #each
+                </button>
+              </div>
+              <div style={styles.fieldHint}>
+                Puts a block around this element; its condition or list is edited on the block.
+              </div>
+            </div>
+          </div>
+        )}
 
         {groupedProps && (
           <>
@@ -611,6 +834,10 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
           </>
         )}
 
+        {/* Handlers, bindings and inline directives are a component's; a
+            block has none, and its header is the Block section above. */}
+        {!selectedElement.block && (
+        <>
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
             <div style={styles.sectionTitle}>Event Handlers</div>
@@ -709,6 +936,8 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   );

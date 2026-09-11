@@ -5,6 +5,7 @@
 import React, { useState, useCallback } from 'react';
 import { useFilesStore } from '../../stores/filesStore';
 import { useShallow } from 'zustand/react/shallow';
+import { useSourceFidelity } from '../../utils/useSourceFidelity';
 import type { ProjectFileNode } from '../../types/builder';
 import { FileGlyph, type FileGlyphKind } from './fileIcons';
 
@@ -170,6 +171,20 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#f59e0b',
     flexShrink: 0,
   },
+  // The same amber the source view and the canvas use for their
+  // "Source-only" badge, so the three surfaces say one thing.
+  sourceOnlyMark: {
+    fontSize: 9,
+    fontWeight: 600,
+    lineHeight: 1,
+    padding: '2px 4px',
+    borderRadius: 3,
+    background: '#fffbeb',
+    color: '#92400e',
+    border: '1px solid #fde68a',
+    flexShrink: 0,
+    letterSpacing: '0.02em',
+  },
   contextMenu: {
     position: 'fixed',
     background: 'var(--ink-2)',
@@ -260,6 +275,19 @@ function FileNode({
 
   const isRenaming = renamingId === node.id;
 
+  // Which editing mode is safe for a .ui file, shown before it is opened.
+  // The source view and the canvas carry the badge for the ACTIVE file;
+  // here every row carries it, so the creator can see which files the
+  // canvas can write back without opening each one to find out. The
+  // verdict is the store's cached one when it has it, otherwise assessed
+  // lazily by the hook a moment after the source settles; a file with no
+  // source yet (new, unsaved) has nothing to assess and gets no mark.
+  const uiFile = useFilesStore((state) =>
+    node.type === 'file' && node.fileType === 'ui' ? state.uiFiles.get(node.id) : undefined
+  );
+  const { fidelity } = useSourceFidelity(uiFile);
+  const sourceOnly = fidelity !== null && !fidelity.lossless;
+
   const handleClick = useCallback(() => {
     if (node.type === 'folder') {
       setIsExpanded(!isExpanded);
@@ -337,6 +365,16 @@ function FileNode({
           />
         ) : (
           <span style={styles.name}>{node.name}</span>
+        )}
+        {sourceOnly && (
+          <span
+            style={styles.sourceOnlyMark}
+            data-fidelity="source-only"
+            title={`Source-only: the visual editor cannot write this file back.\n${fidelity.reasons.join('\n')}`}
+            aria-label="Source-only file"
+          >
+            source
+          </span>
         )}
         {node.isDirty && <span style={styles.dirtyDot} title="Unsaved changes" />}
       </div>

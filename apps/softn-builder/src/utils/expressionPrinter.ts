@@ -18,8 +18,9 @@
  * This printer parenthesises exactly where the core parser's grammar needs
  * it (its precedence ladder is nullish < or < and < equality < comparison <
  * additive < multiplicative < unary < call/member, every binary level
- * left-associative, the conditional right-associative, an arrow body
- * swallowing everything after `=>`), prints strings and non-identifier keys
+ * left-associative, the conditional right-associative, assignment below
+ * the conditional and right-associative, an arrow body swallowing
+ * everything after `=>`), prints strings and non-identifier keys
  * with JSON escaping the lexer reads back, keeps template literals as
  * template literals, and refuses anything outside the grammar with a typed
  * error instead of an empty string. Printing the printed text's parse again
@@ -54,18 +55,25 @@ export class ExpressionPrintError extends Error {
  */
 enum Prec {
   Arrow = 0,
-  Conditional = 1,
-  Nullish = 2,
-  Or = 3,
-  And = 4,
-  Equality = 5,
-  Comparison = 6,
-  Additive = 7,
-  Multiplicative = 8,
-  Unary = 9,
-  Postfix = 10,
-  Primary = 11,
+  // `x = a ? 1 : 2` assigns the whole conditional; `a = b = 1` groups to
+  // the right. The parser reads it above the conditional (parseAssignment
+  // → parseTernary), so an assignment used as any tighter operand needs
+  // parentheses, and one on the right of another does not.
+  Assignment = 1,
+  Conditional = 2,
+  Nullish = 3,
+  Or = 4,
+  And = 5,
+  Equality = 6,
+  Comparison = 7,
+  Additive = 8,
+  Multiplicative = 9,
+  Unary = 10,
+  Postfix = 11,
+  Primary = 12,
 }
+
+const ASSIGNMENT_OPERATORS = new Set(['=', '+=', '-=', '*=', '/=', '%=', '??=', '||=', '&&=']);
 
 const BINARY_PRECEDENCE: Record<string, Prec> = {
   '??': Prec.Nullish,
@@ -94,6 +102,8 @@ function precedenceOf(expr: Expression): Prec {
   switch (expr.type) {
     case 'ArrowFunctionExpression':
       return Prec.Arrow;
+    case 'AssignmentExpression':
+      return Prec.Assignment;
     case 'ConditionalExpression':
       return Prec.Conditional;
     case 'BinaryExpression': {
@@ -266,6 +276,18 @@ export function printExpression(expr: Expression): string {
       const consequent = printOperand(expr.consequent, Prec.Conditional);
       const alternate = printOperand(expr.alternate, Prec.Conditional);
       return `${test} ? ${consequent} : ${alternate}`;
+    }
+
+    case 'AssignmentExpression': {
+      if (!ASSIGNMENT_OPERATORS.has(expr.operator)) {
+        throw new ExpressionPrintError('AssignmentExpression', `operator ${expr.operator}`);
+      }
+      // The target is read at the conditional level and must be an
+      // identifier or member path; the value is read as another assignment,
+      // so a chain `a = b = 1` prints without parentheses.
+      const left = printOperand(expr.left, Prec.Conditional);
+      const right = printOperand(expr.right, Prec.Assignment);
+      return `${left} ${expr.operator} ${right}`;
     }
 
     case 'ArrowFunctionExpression':

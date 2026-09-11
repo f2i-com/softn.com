@@ -166,12 +166,13 @@ describe('a no-edit round trip', () => {
 
 /**
  * main.ui is not something the visual model can hold: it opens with a
- * comment, and its handler `() => count = count + 1` is an expression the
- * parser stops reading at `count` (assignment is not in the template
- * grammar) with no diagnostic. A visual edit used to regenerate it anyway
- * — the comment gone, the handler written back as `() => count`, a stray
- * `count` attribute added. Now the file is source-only: the edit is
- * refused, the reasons are recorded on the file, and the bytes stay.
+ * comment, which the parser drops before the model sees it. A visual edit
+ * used to regenerate the file anyway, comment gone. Now the file is
+ * source-only: the edit is refused, the reason is recorded on the file,
+ * and the bytes stay. (Its handler `() => count = count + 1` used to be a
+ * second reason — the parser stopped reading it at `count` and wrote
+ * back `() => count` plus a stray `count` attribute — but the parser reads
+ * assignments now, so the handler is whole and is not a reason.)
  */
 describe('a visual edit on a file the visual model cannot write back', () => {
   function mainFile() {
@@ -190,7 +191,7 @@ describe('a visual edit on a file the visual model cannot write back', () => {
     expect(useFilesStore.getState().nodes.get(mainFile().id)?.isDirty).toBe(false);
   });
 
-  it('records why the edit was refused, naming the comment and the truncated handler', async () => {
+  it('records why the edit was refused: the comment, and only the comment', async () => {
     const canvas = useCanvasStore.getState();
     const root = canvas.getElement(canvas.rootId)!;
     canvas.updateElementProps(root.id, { title: 'Edited' });
@@ -200,7 +201,15 @@ describe('a visual edit on a file the visual model cannot write back', () => {
     expect(file.visualEditBlocked).toBeDefined();
     const reasons = file.visualEditBlocked!.join('\n');
     expect(reasons).toMatch(/comment on line 1/);
-    expect(reasons).toMatch(/\{\(\) => count = count \+ 1\} on line \d+ is not fully supported/);
+    // The assignment handler is read whole now; it is no longer a reason.
+    expect(reasons).not.toMatch(/count = count \+ 1/);
+    expect(file.visualEditBlocked).toHaveLength(1);
+  });
+
+  it('holds the assignment handler whole in the visual model', () => {
+    const button = [...mainFile().elements.values()].find((el) => el.componentType === 'Button')!;
+    expect(button.events?.click).toBe('() => count = count + 1');
+    expect(button.props).not.toHaveProperty('count');
   });
 
   it('does not drop the nested blocks or the #empty branch', async () => {

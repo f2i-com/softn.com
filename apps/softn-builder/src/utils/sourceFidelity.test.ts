@@ -130,12 +130,19 @@ describe('what parseSource reports', () => {
     expect(reasons).toEqual([expect.stringMatching(/comment on line 2/)]);
   });
 
-  it('names an expression the parser stops reading part way through', () => {
+  it('calls the documented assignment handler lossless now that the parser reads it whole', () => {
+    // This used to be the truncation case: the parser stopped at `count`.
     const { lossless, reasons } = assessSourceFidelity(
       `<App>\n  <Text @click={() => count = count + 1}>x</Text>\n</App>`
     );
+    expect(reasons).toEqual([]);
+    expect(lossless).toBe(true);
+  });
+
+  it('names an expression the parser rejects', () => {
+    const { lossless, reasons } = assessSourceFidelity(`<App>\n  <Text @click={() => 1 = count}>x</Text>\n</App>`);
     expect(lossless).toBe(false);
-    expect(reasons.join('\n')).toMatch(/\{\(\) => count = count \+ 1\} on line 2 is not fully supported/);
+    expect(reasons.join('\n')).toMatch(/\{\(\) => 1 = count\} on line 2 is not fully supported/);
   });
 
   it('names text that sits between child elements', () => {

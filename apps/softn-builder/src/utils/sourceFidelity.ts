@@ -4,14 +4,17 @@
  *
  * The builder regenerates a file's template from its canvas elements after
  * a visual edit. That model is narrower than the language: the parser
- * drops comments before the model ever sees them, stops reading an
- * expression it does not understand part way through without a diagnostic
- * (`() => count = count + 1` becomes `() => count` plus a stray boolean
- * attribute named `count`), text that sits between child elements has no
- * place in the model, and the header the store splices back together by
- * regular expression knows only some of the blocks a file can have. Until
- * BLD-01 the builder regenerated anyway and every one of those was
- * discarded in silence.
+ * drops comments before the model ever sees them, text that sits between
+ * child elements has no place in the model, and the header the store
+ * splices back together by regular expression knows only some of the
+ * blocks a file can have. Until BLD-01 the builder regenerated anyway and
+ * every one of those was discarded in silence. The parser also used to
+ * stop reading an expression it did not understand part way through with
+ * no diagnostic — `() => count = count + 1` became `() => count` plus a
+ * stray boolean attribute named `count` — which check 2 below was written
+ * to catch; the parser now reads assignments and reports any `{…}` it
+ * cannot read to its closing brace, so that check now fires only on an
+ * expression the parser rejects outright.
  *
  * This module says, for a given source, whether the round trip
  * source → model → source is exact for everything the engine reads — and

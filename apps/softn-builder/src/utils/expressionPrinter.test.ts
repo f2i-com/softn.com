@@ -195,6 +195,25 @@ const fixtures: Array<[string, unknown]> = [
   ['((v) => v.length)(items)', 3],
   ['((v) => -v)(a)', -2],
   ['((v) => (v + a) * b)(c)', 21],
+  // assignment: below the conditional, right-associative, the value comes
+  // back (the fixture context's setState discards the write)
+  ['a = b + c', 8],
+  ['a = b = c', 5],
+  ['a = x ? b : c', 3],
+  ['x ? (a = b) : c', 3],
+  ['(a = b) + c', 8],
+  ['a += b * c', 17],
+  ['a -= 1', 1],
+  ['a *= b', 6],
+  ['a /= a', 1],
+  ['a %= b', 2],
+  ['a ??= b', 2],
+  ['y ||= x', true],
+  ['x &&= y', false],
+  ['user.profile.first = name', 'World'],
+  ['items[0] = a', 2],
+  ['(() => a = a + 1)()', 3],
+  ['((v) => a = v)(c)', 5],
 ];
 
 describe('print → parse → print fixpoint, and engine agreement', () => {
@@ -210,6 +229,18 @@ describe('print → parse → print fixpoint, and engine agreement', () => {
 });
 
 describe('what the printer writes', () => {
+  it('prints the documented one-line handler as written', () => {
+    // Until the parser read assignments, this arrow was read as `() => count`
+    // and the rest fell off; the printer must now write the whole of it.
+    expect(printExpression(exprOf('() => count = count + 1'))).toBe('() => count = count + 1');
+  });
+
+  it('prints an assignment chain without parentheses and a grouped assignment with them', () => {
+    expect(printExpression(exprOf('a = b = 1'))).toBe('a = b = 1');
+    expect(printExpression(exprOf('(a = 1) + 2'))).toBe('(a = 1) + 2');
+    expect(printExpression(exprOf('a = x ? 1 : 2'))).toBe('a = x ? 1 : 2');
+  });
+
   it('quotes object keys that are not identifiers and escapes the strings inside them', () => {
     expect(printExpression(exprOf('{ "my-key": 1, plain: 2, "q\\"uote": 3 }'))).toBe(
       '{ "my-key": 1, plain: 2, "q\\"uote": 3 }'
