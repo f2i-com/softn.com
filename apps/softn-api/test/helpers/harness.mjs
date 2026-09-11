@@ -118,7 +118,21 @@ export async function waitFor(url, ms = 20000) {
   throw new Error(`${url} did not come up`);
 }
 
-/** The ini flags the deployed .user.ini asks for, with a temp directory of the test's own. */
+/**
+ * The ini flags the deployed .user.ini asks for, with a temp directory of
+ * the test's own.
+ *
+ * `display_errors` is off, so a warning never lands in a response. PHP
+ * refuses a POST body past post_max_size before the script runs and, with
+ * display_errors on, prints its warning into the response at that moment —
+ * so the headers are already sent when index.php answers 413, its header()
+ * call throws, and the client sees a 200 with a warning in the body. A
+ * php.ini on the machine decided that before: Windows builds ship one that
+ * keeps warnings off the output, the CI runner's does not, and only the
+ * runner saw the 200. Off, not "stderr": the built-in server does not
+ * honour the stderr value for that early warning. log_errors still sends
+ * every warning to stderr, which the harness captures.
+ */
 export function iniArgs(tmp, ini = {}) {
   const settings = {
     sys_temp_dir: tmp,
@@ -126,6 +140,8 @@ export function iniArgs(tmp, ini = {}) {
     post_max_size: '64M',
     upload_max_filesize: '64M',
     memory_limit: '256M',
+    display_errors: '0',
+    log_errors: '1',
     ...ini,
   };
   const args = [];

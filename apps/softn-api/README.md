@@ -159,6 +159,13 @@ name matches ranked first, rather than SQLite FTS stemming.
 
 ## Limits
 
+`display_errors` must be off wherever the API runs (`api/.user.ini` says so for FPM and
+CGI hosts; mod_php reads `php_flag display_errors off` from `.htaccess`; a `php -S`
+development server takes `-d display_errors=0`). PHP refuses a POST body past
+`post_max_size` before `index.php` runs, and with display_errors on it writes that warning
+into the response first, so the headers are already sent when the API answers 413 and the
+client sees a 200 with a warning in the body instead.
+
 Every request body is read against a limit chosen from the route alone,
 before a byte of it is read, and refused with a `413` that names the limit
 (`{"ok": false, "error": …, "limit": <bytes>}`) the moment it is exceeded —
