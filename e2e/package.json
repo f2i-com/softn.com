@@ -1,0 +1,12 @@
+{
+  "name": "@softn/e2e",
+  "version": "0.0.9",
+  "private": true,
+  "description": "Browser smoke gate for the built softn.com deployment: Studio, Builder, the runtime, the directory and its API under one origin. Deliberately has no `test` script: the root `npm test` runs every workspace's, and this one needs a built site and a browser.",
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test",
+    "e2e:headed": "playwright test --headed",
+    "e2e:report": "playwright show-report"
+  }
+}

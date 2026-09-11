@@ -1,0 +1,4 @@
+# Playwright's output for a run: traces, screenshots and the HTML report. CI
+# uploads them as artifacts; locally they are looked at and thrown away.
+test-results/
+playwright-report/
