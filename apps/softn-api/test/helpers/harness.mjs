@@ -313,12 +313,14 @@ ${script}
  * Run a PHP script that has the API's library loaded against a data
  * directory. `stdin` is what php://input reads on the CLI. The script text
  * runs after the requires; `$argv[1]` is the data directory, then `args`.
- * `server` seeds $_SERVER (REQUEST_METHOD, CONTENT_LENGTH, HTTP_* …).
+ * `server` seeds $_SERVER (REQUEST_METHOD, CONTENT_LENGTH, HTTP_* …); `ini`
+ * adds -d flags (post_max_size, memory_limit …).
  */
-export function runPhp({ dataDir, script, stdin, env = {}, args = [], server = {} }) {
+export function runPhp({ dataDir, script, stdin, env = {}, args = [], server = {}, ini = {} }) {
   const file = workerFile(dataDir, script, server);
+  const flags = Object.entries(ini).flatMap(([k, v]) => ['-d', `${k}=${v}`]);
   try {
-    const r = spawnSync('php', ['-d', 'error_log=', file, dataDir, ...args], {
+    const r = spawnSync('php', ['-d', 'error_log=', ...flags, file, dataDir, ...args], {
       encoding: 'utf8',
       input: stdin,
       env: { ...process.env, ...env },
