@@ -271,13 +271,16 @@ test('a host whose post_max_size is below the envelope is reported, and a body i
     const health = (await small.api('GET', '/api/health')).json;
     assert.equal(health.limits.hostAligned, false);
     assert.equal(health.postMax, '1M');
+    // Both refusals come back before the body has been sent, so they go
+    // through the client that keeps an early reply (see apiEarly).
     const fd = new FormData();
     fd.append('bundle', new Blob([crypto.randomBytes(2 * 1024 * 1024)]), 'big.softn');
-    const dropped = await small.api('POST', '/api/apps', { body: fd, headers: { 'X-Admin-Key': small.adminKey } });
+    const form = await small.encodeForm(fd);
+    const dropped = await small.apiEarly('POST', '/api/apps', { body: form.body, headers: { 'Content-Type': form.contentType, 'X-Admin-Key': small.adminKey } });
     assert.equal(dropped.status, 413, dropped.text);
     assert.match(dropped.json.error, /post_max_size/);
     assert.match(dropped.json.error, /\.user\.ini/);
-    const json = await small.api('POST', '/api/apps', { raw: Buffer.alloc(2 * 1024 * 1024, 0x20), headers: { 'Content-Type': 'application/json', 'X-Admin-Key': small.adminKey } });
+    const json = await small.apiEarly('POST', '/api/apps', { body: Buffer.alloc(2 * 1024 * 1024, 0x20), headers: { 'Content-Type': 'application/json', 'X-Admin-Key': small.adminKey } });
     assert.equal(json.status, 413, json.text);
     assert.match(json.json.error, /post_max_size/);
     // Within the host's limit the route's own limit is the one that answers.

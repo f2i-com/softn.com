@@ -12,6 +12,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -195,7 +196,13 @@ export async function startServer({ config = {}, ini = {}, env = {}, demos = fal
       init.body = JSON.stringify(body);
     }
     if (query) route += (route.includes('?') ? '&' : '?') + query;
-    const res = await fetch(base + route, init);
+    let res;
+    try {
+      res = await fetch(base + route, init);
+    } catch (err) {
+      const cause = err && typeof err === 'object' && 'cause' in err ? err.cause : null;
+      throw new Error(`${method} ${route}: ${err.message}${cause ? ` (${cause.code ?? cause.message ?? String(cause)})` : ''}`);
+    }
     const text = await res.text();
     let json = null;
     try {
@@ -204,6 +211,53 @@ export async function startServer({ config = {}, ini = {}, env = {}, demos = fal
       /* not json */
     }
     return { status: res.status, json, text, headers: res.headers };
+  }
+
+  /**
+   * A request whose reply may arrive before the body has been sent. The
+   * API refuses an oversized body from its declared length, before reading
+   * it, and PHP itself declines to read a multipart body past post_max_size;
+   * either way the 413 is on the wire while the client is still writing,
+   * and the socket closes under the rest of the upload. A browser and curl
+   * take the early reply as the answer it is; Node's fetch reports the
+   * reset as "fetch failed" and drops the reply with it — which is what the
+   * CI runner saw, where the upload took longer than the refusal. This
+   * client keeps whatever reply arrived and ignores a socket error after
+   * it; an error before any reply is reported with its code.
+   */
+  function apiEarly(method, route, { headers = {}, body }) {
+    return new Promise((resolve, reject) => {
+      const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
+      const req = http.request(base + route, { method, headers: { ...headers, 'Content-Length': String(bytes.length) } });
+      let replied = false;
+      req.on('response', (res) => {
+        replied = true;
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          let json = null;
+          try {
+            json = JSON.parse(text);
+          } catch {
+            /* not json */
+          }
+          resolve({ status: res.statusCode, json, text, headers: res.headers });
+        });
+        res.on('error', () => resolve({ status: res.statusCode, json: null, text: Buffer.concat(chunks).toString('utf8'), headers: res.headers }));
+      });
+      req.on('error', (err) => {
+        if (replied) return;
+        reject(new Error(`${method} ${route}: no reply before the connection failed (${err.code ?? err.message})`));
+      });
+      req.end(bytes);
+    });
+  }
+
+  /** A FormData as the bytes and content type a browser would send it with. */
+  async function encodeForm(fd) {
+    const res = new Response(fd);
+    return { body: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get('content-type') };
   }
 
   /** Publish a bundle as the admin, outside the hourly visitor limit. */
@@ -237,7 +291,7 @@ export async function startServer({ config = {}, ini = {}, env = {}, demos = fal
     }
   }
 
-  return { root, base, port, api, publish, stop, adminKey: cfg.adminKey, dataDir: path.join(root, 'data'), tmp, tempFiles, tempEmpty, log };
+  return { root, base, port, api, apiEarly, encodeForm, publish, stop, adminKey: cfg.adminKey, dataDir: path.join(root, 'data'), tmp, tempFiles, tempEmpty, log };
 }
 
 function workerFile(dataDir, script, server) {
