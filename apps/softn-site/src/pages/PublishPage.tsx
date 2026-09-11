@@ -1,11 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ApiError,
   addVersion,
-  exportKeys,
   forgetKey,
   getApp,
-  importKeys,
   publish,
   rememberKey,
   savedKey,
@@ -18,6 +16,7 @@ import {
   type AppCard,
   type AppDetail,
   type Category,
+  type KeyImportResult,
   type KeyStoreResult,
   type Published,
 } from '../lib/api';
@@ -30,16 +29,23 @@ import type { Inspection } from '../lib/inspectBundle';
 import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '../lib/handoff';
 import { bundleFiles, onDroppedBundles, takeDroppedBundles } from '../lib/dropped';
 import { createSelectionController, isSettled, pendingCount, type SelectOptions, type SelectionController, type SelectionItem, type SelectionState } from '../lib/selection';
+import { exportKeyBackup, importKeyBackup } from '../lib/keyBackup';
 
 const AUTHOR_KEY = 'softn.site.author';
 
-/** One bundle of several dropped together, and what became of it. `info` is null only for a file that could not be read at all. */
+/**
+ * One bundle of several dropped together, and what became of it. `info` is
+ * null only for a file that could not be read at all. `reading` is a
+ * skipped row being read again at the visitor's request.
+ */
 interface BatchItem {
   file: File;
   info: Inspection | null;
-  status: 'pending' | 'publishing' | 'done' | 'failed' | 'skipped';
+  status: 'pending' | 'reading' | 'publishing' | 'done' | 'failed' | 'skipped';
   result?: Published;
   error?: string;
+  /** For a skipped row: whether the read failed (worth trying again) or the inspector refused the file (not). */
+  cause?: 'read' | 'inspection';
   /** Whether the edit key could be kept in this browser. */
   kept?: KeyStoreResult;
 }
@@ -115,8 +121,8 @@ function errorText(err: unknown): string {
 }
 
 /** Hand the visitor a file of their keys. A download, not a share URL: the keys never go in an address. */
-function downloadKeyBackup(): void {
-  const blob = new Blob([exportKeys()], { type: 'application/json' });
+async function downloadKeyBackup(passphrase: string): Promise<void> {
+  const blob = new Blob([await exportKeyBackup(passphrase)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -143,39 +149,162 @@ function KeyKeptNotice({ kept }: { kept: KeyStoreResult }): React.ReactElement |
   );
 }
 
-/** A backup file coming back in. Reports what it did, entry by entry; never wipes what is held. */
-function KeyImport({ onImported }: { onImported?: () => void }): React.ReactElement {
+/**
+ * The backup download, with the one choice that decides what the file
+ * exposes. Without a passphrase the file is the keys in plain text, and the
+ * copy under the field says so; with one it is sealed in this browser (see
+ * lib/keyBackup.ts) and opens only with that passphrase, which the site
+ * never sees and cannot recover.
+ */
+export function KeyBackupDownload({ label = 'Download backup' }: { label?: string }): React.ReactElement {
+  const [passphrase, setPassphrase] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const hintId = useId();
+  return (
+    <div className="key-backup">
+      <label className="field">
+        <span className="field-label">Passphrase for the backup file (optional)</span>
+        <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoComplete="new-password" aria-describedby={hintId} />
+        <span className="muted" id={hintId}>
+          {passphrase === ''
+            ? 'Without one, the file holds the keys as plain text: anyone who can read it can update or unpublish these apps. With one, it is encrypted in this browser and opens only with the passphrase.'
+            : 'The file is encrypted with this passphrase and opens only with it. It cannot be recovered or reset, so keep the passphrase somewhere too.'}
+        </span>
+      </label>
+      <button
+        type="button"
+        className="cta"
+        onClick={() => {
+          setError(null);
+          downloadKeyBackup(passphrase).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+        }}
+      >
+        {label}
+      </button>
+      {error && (
+        <p className="form-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** What an import did, in a sentence. */
+function describeImport(result: KeyImportResult): string {
+  const parts: string[] = [];
+  if (result.added.length > 0) parts.push(`${result.added.length} ${result.added.length === 1 ? 'key' : 'keys'} restored`);
+  if (result.unchanged.length > 0) parts.push(`${result.unchanged.length} already here`);
+  if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} kept as they were (the file held a different key for ${result.conflicts.join(', ')})`);
+  if (result.rejected.length > 0) parts.push(`${result.rejected.length} not a key: ${result.rejected.join(', ')}`);
+  if (result.stored === 'blocked') parts.push('this browser did not let the site store them');
+  if (result.stored === 'unreadable') parts.push('the keys already here could not be read, so nothing was changed');
+  return parts.length > 0 ? `${parts.join('; ')}.` : 'The file held no keys.';
+}
+
+/**
+ * A backup file coming back in. Reports what it did, entry by entry; never
+ * wipes what is held. An encrypted file asks for its passphrase first, and
+ * a passphrase that does not open it leaves the keys here as they were.
+ */
+export function KeyImport({ onImported }: { onImported?: () => void }): React.ReactElement {
   const [report, setReport] = useState<string | null>(null);
-  const take = async (file: File | undefined) => {
-    if (!file) return;
-    const result = importKeys(await file.text());
-    const parts: string[] = [];
-    if (result.added.length > 0) parts.push(`${result.added.length} ${result.added.length === 1 ? 'key' : 'keys'} restored`);
-    if (result.unchanged.length > 0) parts.push(`${result.unchanged.length} already here`);
-    if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} kept as they were (the file held a different key for ${result.conflicts.join(', ')})`);
-    if (result.rejected.length > 0) parts.push(`${result.rejected.length} not a key: ${result.rejected.join(', ')}`);
-    if (result.stored === 'blocked') parts.push('this browser did not let the site store them');
-    if (result.stored === 'unreadable') parts.push('the keys already here could not be read, so nothing was changed');
-    setReport(parts.length > 0 ? `${parts.join('; ')}.` : 'The file held no keys.');
+  /** An encrypted file waiting for its passphrase: its text, held until it opens or is given up on. */
+  const [sealed, setSealed] = useState<{ name: string; text: string } | null>(null);
+  const [passphrase, setPassphrase] = useState('');
+  const [refused, setRefused] = useState<string | null>(null);
+  const finish = (result: KeyImportResult) => {
+    setReport(describeImport(result));
     if (result.added.length > 0 && result.stored === 'stored') onImported?.();
   };
+  const take = async (file: File | undefined) => {
+    if (!file) return;
+    setReport(null);
+    setRefused(null);
+    const text = await file.text();
+    const outcome = await importKeyBackup(text);
+    if (outcome.kind === 'needs-passphrase') {
+      setSealed({ name: file.name, text });
+      setPassphrase('');
+      return;
+    }
+    setSealed(null);
+    if (outcome.kind === 'refused') setReport(outcome.message);
+    else finish(outcome.result);
+  };
+  const unlock = async () => {
+    if (!sealed || passphrase === '') return;
+    const outcome = await importKeyBackup(sealed.text, passphrase);
+    if (outcome.kind === 'needs-passphrase') return;
+    if (outcome.kind === 'refused') {
+      setRefused(outcome.message);
+      return;
+    }
+    setSealed(null);
+    setPassphrase('');
+    setRefused(null);
+    finish(outcome.result);
+  };
   return (
-    <label className="field">
-      <span className="field-label">Restore keys from a backup file</span>
-      <input
-        type="file"
-        accept="application/json,.json"
-        onChange={(e) => {
-          void take(e.target.files?.[0]);
-          e.target.value = '';
-        }}
-      />
-      {report && (
-        <span className="muted" role="status">
-          {report}
-        </span>
+    <div className="key-import">
+      <label className="field">
+        <span className="field-label">Restore keys from a backup file</span>
+        <input
+          type="file"
+          accept="application/json,.json"
+          onChange={(e) => {
+            void take(e.target.files?.[0]);
+            e.target.value = '';
+          }}
+        />
+        {report && (
+          <span className="muted" role="status">
+            {report}
+          </span>
+        )}
+      </label>
+      {sealed && (
+        <div className="field">
+          <label className="field">
+            <span className="field-label">{sealed.name} is encrypted. Its passphrase:</span>
+            <input
+              type="password"
+              value={passphrase}
+              onChange={(e) => setPassphrase(e.target.value)}
+              autoComplete="off"
+              aria-invalid={refused ? true : undefined}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void unlock();
+                }
+              }}
+            />
+          </label>
+          {refused && (
+            <p className="form-error" role="alert">
+              {refused}
+            </p>
+          )}
+          <div className="app-actions">
+            <button type="button" className="cta" disabled={passphrase === ''} onClick={() => void unlock()}>
+              Open the backup
+            </button>
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => {
+                setSealed(null);
+                setPassphrase('');
+                setRefused(null);
+              }}
+            >
+              Never mind
+            </button>
+          </div>
+        </div>
       )}
-    </label>
+    </div>
   );
 }
 
@@ -424,6 +553,7 @@ export function YourApps({ lookup }: { lookup?: typeof getApp } = {}): React.Rea
               );
             })}
           </ul>
+          <KeyBackupDownload label="Download a backup of these keys" />
         </>
       )}
     </section>
@@ -534,7 +664,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
   useEffect(() => {
     if (selection.mode !== 'batch' || !isSettled(selection) || batchGeneration.current === selection.generation) return;
     batchGeneration.current = selection.generation;
-    setBatch(selection.items.map((it) => ({ file: it.file, info: it.info, status: it.status === 'ready' ? 'pending' : 'skipped', error: it.error })));
+    setBatch(selection.items.map((it) => ({ file: it.file, info: it.info, status: it.status === 'ready' ? 'pending' : 'skipped', error: it.error, cause: it.cause })));
   }, [selection]);
 
   // Bundles dropped on another page of the site were stashed for this one;
@@ -631,6 +761,22 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
   const setItem = (index: number, patch: Partial<BatchItem>) =>
     setBatch((items) => (items ? items.map((it, i) => (i === index ? { ...it, ...patch } : it)) : items));
 
+  // Read one skipped row again. The controller reads the file and drops
+  // the result if the selection has moved on; this does the same for the
+  // row — a "Start over" (or a new batch) between the click and the read
+  // finishing means the row it was for no longer exists, and the batch
+  // that exists now is not touched. The other rows are never rewritten:
+  // only this index is patched, from the controller's item for it.
+  const retryRow = async (index: number) => {
+    const gen = selector.generation();
+    setItem(index, { status: 'reading', error: undefined, cause: undefined });
+    await selector.retry(index);
+    if (selector.generation() !== gen) return;
+    const it = selector.state().items[index];
+    if (!it || it.status === 'inspecting') return;
+    setItem(index, { info: it.info, status: it.status === 'ready' ? 'pending' : 'skipped', error: it.error, cause: it.cause });
+  };
+
   // In order, one request each, so a refusal names the file it was for. The
   // hourly limit ends the batch with what is left marked, not silently lost.
   const publishBatch = async () => {
@@ -691,9 +837,10 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
 
   if (batch) {
     const ready = batch.filter((b) => b.status === 'pending').length;
+    const reading = batch.filter((b) => b.status === 'reading').length;
     const done = batch.filter((b) => b.status === 'done').length;
     const failed = batch.filter((b) => b.status === 'failed').length;
-    const finished = ready === 0 && !busy;
+    const finished = ready === 0 && reading === 0 && !busy;
     const startOver = () => {
       selector.clear();
       setBatch(null);
@@ -729,7 +876,19 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                       v{item.info.version} · {formatBytes(item.file.size)}
                     </span>
                   )}
-                  {item.status === 'skipped' && <div className="form-error">{item.error}</div>}
+                  {item.status === 'skipped' && (
+                    <div className="form-error">
+                      {item.error}
+                      {item.cause === 'read' && (
+                        <>
+                          {' '}
+                          <button type="button" className="link-btn" disabled={busy} onClick={() => void retryRow(i)}>
+                            Try again
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                   {item.status === 'failed' && (
                     <div className="form-error" role="alert">
                       {item.error}
@@ -750,6 +909,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                 </div>
                 <span className="batch-status">
                   {item.status === 'pending' && 'ready'}
+                  {item.status === 'reading' && 'reading…'}
                   {item.status === 'publishing' && 'publishing…'}
                   {item.status === 'done' && 'live'}
                   {item.status === 'failed' && 'not published'}
@@ -817,15 +977,11 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                 See the directory
               </a>
             )}
-            {finished && done > 0 && (
-              <button type="button" className="cta" onClick={downloadKeyBackup}>
-                Download key backup
-              </button>
-            )}
             <button type="button" className="cta" onClick={startOver}>
               {finished ? 'Publish more' : 'Start over'}
             </button>
           </div>
+          {finished && done > 0 && <KeyBackupDownload label="Download key backup" />}
         </div>
       </main>
     );
@@ -875,10 +1031,8 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                 >
                   {copied ? 'Copied' : 'Copy'}
                 </button>
-                <button type="button" className="cta" onClick={downloadKeyBackup}>
-                  Download backup
-                </button>
               </div>
+              <KeyBackupDownload />
               <p className="muted">
                 Update from here: <a href={`/publish?update=${app.slug}`}>the update page</a>. Or from a script:{' '}
                 <code>curl -F bundle=@app.softn -H &quot;X-Edit-Key: …&quot; {window.location.origin}/api/apps/{app.slug}/versions</code>

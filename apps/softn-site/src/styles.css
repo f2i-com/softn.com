@@ -2930,3 +2930,23 @@ main:focus-visible {
   align-items: center;
   gap: 0.35em;
 }
+
+/* The key backup: the passphrase field and the button it governs, and the
+   passphrase prompt an encrypted backup file opens on the update page. */
+.key-backup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.key-backup .field {
+  flex: 1 1 18rem;
+  margin: 0;
+}
+.key-backup .cta {
+  align-self: flex-end;
+}
+.key-import .app-actions {
+  margin-top: 0.5rem;
+}

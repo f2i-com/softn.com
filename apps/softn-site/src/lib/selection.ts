@@ -56,6 +56,13 @@ export interface SelectionItem {
   status: SelectionStatus;
   /** Why it was rejected: the inspector's first error, or the read failure. */
   error?: string;
+  /**
+   * Whose fault a rejection is. `read`: the bytes never arrived — a
+   * detached drive, a file changed under the picker, a browser refusing the
+   * read — and trying again may well work. `inspection`: the bytes arrived
+   * and the inspector refused them, which no retry changes; the file has to.
+   */
+  cause?: 'read' | 'inspection';
   /** SHA-256 of the bytes, when whoever supplied the file vouched for one (a hand-off). */
   digest?: string;
 }
@@ -154,14 +161,23 @@ export function createSelectionController(deps: SelectionDeps = {}): SelectionCo
     for (const l of listeners) l(state);
   };
 
+  // The read and the inspection fail apart, because the page offers a
+  // retry for one and not the other.
   const inspectOne = async (file: File, digest?: string): Promise<SelectionItem> => {
+    let bytes: ArrayBuffer;
+    try {
+      bytes = await read(file);
+    } catch (err) {
+      return { file, info: null, status: 'rejected', error: err instanceof Error ? err.message : String(err), cause: 'read', digest };
+    }
     let info: Inspection;
     try {
-      info = inspect(new Uint8Array(await read(file)));
+      info = inspect(new Uint8Array(bytes));
     } catch (err) {
-      return { file, info: null, status: 'rejected', error: err instanceof Error ? err.message : String(err), digest };
+      return { file, info: null, status: 'rejected', error: err instanceof Error ? err.message : String(err), cause: 'inspection', digest };
     }
-    return { file, info, status: info.problem ? 'rejected' : 'ready', error: info.problem ?? undefined, digest };
+    if (info.problem) return { file, info, status: 'rejected', error: info.problem, cause: 'inspection', digest };
+    return { file, info, status: 'ready', digest };
   };
 
   // Only applied while `gen` is still the current generation; a result for
@@ -217,7 +233,7 @@ export function createSelectionController(deps: SelectionDeps = {}): SelectionCo
       const gen = generation;
       const current = state.items[index];
       if (!current) return;
-      apply(gen, index, { ...current, info: null, status: 'inspecting', error: undefined });
+      apply(gen, index, { ...current, info: null, status: 'inspecting', error: undefined, cause: undefined });
       apply(gen, index, await inspectOne(current.file, current.digest));
     },
     clear() {
