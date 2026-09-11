@@ -128,9 +128,11 @@ interface FieldInputProps {
   onChange: (value: unknown) => void;
   entities: EntityDef[];
   seedData: Map<string, Record<string, unknown>[]>;
+  /** The id each row is written under (utils/xdbFormat.ts); what a reference points at. */
+  recordIdentity: Map<string, { id: string }[]>;
 }
 
-function FieldInput({ field, value, onChange, entities, seedData }: FieldInputProps) {
+function FieldInput({ field, value, onChange, entities, seedData, recordIdentity }: FieldInputProps) {
   switch (field.type) {
     case 'boolean':
       return (
@@ -201,9 +203,22 @@ function FieldInput({ field, value, onChange, entities, seedData }: FieldInputPr
     case 'reference': {
       const refEntity = entities.find((e) => e.id === field.refEntity);
       const refRecords = refEntity ? seedData.get(refEntity.id) || [] : [];
+      const refIdentity = refEntity ? recordIdentity.get(refEntity.id) || [] : [];
+      // What a reference points at is the record's id — the one the row is
+      // written under and the runtime looks records up by — not a column
+      // that happens to be called `id`. Rows read from a bundle keep that id
+      // across saves, so a reference picked here still resolves after the
+      // app is reopened. A row without identity yet (a session written before
+      // identity was kept) falls back to its `id` column, as before.
+      const choices = refRecords.map((record, idx) => {
+        const id = refIdentity[idx]?.id ?? (typeof record.id === 'string' ? record.id : null);
+        const label = refEntity?.fields.map((f) => f.name).find((name) => name !== 'id' && typeof record[name] === 'string' && record[name]);
+        return id ? { id, text: label ? `${String(record[label])} (${id.slice(0, 8)}…)` : id } : null;
+      });
+      const current = (value as string) || '';
       return (
         <select
-          value={(value as string) || ''}
+          value={current}
           onChange={(e) => onChange(e.target.value)}
           style={styles.select}
         >
@@ -211,13 +226,17 @@ function FieldInput({ field, value, onChange, entities, seedData }: FieldInputPr
               a fallback id, which matches no record anywhere — picking one wrote
               a reference that resolves to nothing, and looked like it had worked. */}
           <option value="">
-            {refRecords.some((r) => r.id)
+            {choices.some((c) => c)
               ? `Select ${refEntity?.name || 'ref'}...`
-              : `${refEntity?.name || 'That collection'} has no rows with an id yet`}
+              : `${refEntity?.name || 'That collection'} has no rows yet`}
           </option>
-          {refRecords.map((record, idx) => (record.id ? (
-            <option key={idx} value={record.id as string}>
-              {String(record.id)}
+          {/* A value that names no row (a record since deleted) is still shown, so it is not silently blanked. */}
+          {current && !choices.some((c) => c?.id === current) && (
+            <option value={current}>{current} (no such record)</option>
+          )}
+          {choices.map((choice, idx) => (choice ? (
+            <option key={idx} value={choice.id}>
+              {choice.text}
             </option>
           ) : null))}
         </select>
@@ -259,7 +278,7 @@ function FieldInput({ field, value, onChange, entities, seedData }: FieldInputPr
 }
 
 export function DataEntryPanel() {
-  const { entities, seedData, addSeedRecord, updateSeedRecord, deleteSeedRecord } =
+  const { entities, seedData, recordIdentity, addSeedRecord, updateSeedRecord, deleteSeedRecord } =
     useSchemaStore();
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
 
@@ -347,6 +366,7 @@ export function DataEntryPanel() {
                             }}
                             entities={entities}
                             seedData={seedData}
+                            recordIdentity={recordIdentity}
                           />
                         </td>
                       ))}

@@ -27,8 +27,24 @@ import { toast } from '../../stores/notificationStore';
 import { buildProjectBundle, bundleFileName, gatherCollections } from '../../utils/buildProjectBundle';
 import type { PermissionDeclaration } from '../../utils/permissions';
 import { destinationLabel, prepareHandoff, type ReadyHandoff } from '../../utils/handoff';
+import {
+  discardQuarantinedSession,
+  exportQuarantinedSession,
+  readQuarantinedSession,
+  type QuarantinedSession,
+} from '../../utils/openProject';
 
 const MAX_ICON_BYTES = 512 * 1024;
+
+/** What Tab moves between inside the dialog. */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableIn(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+    (el) => !el.hidden && el.style.display !== 'none' && el.getAttribute('aria-hidden') !== 'true'
+  );
+}
 
 const styles: Record<string, React.CSSProperties> = {
   overlay: {
@@ -293,7 +309,67 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   /** A bundle staged for the runtime or the publish page, with the link that claims it. */
   const [ready, setReady] = useState<ReadyHandoff | null>(null);
   const [inspection, setInspection] = useState<BundleInspection | null>(null);
+  /** A saved session that would not restore, kept for download (utils/openProject.ts). */
+  const [quarantine, setQuarantine] = useState<QuarantinedSession | null>(null);
   const iconInput = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  /** What had focus when the dialog opened; focus goes back there on close. */
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  // A modal owns focus while it is open: focus moves in when it opens, Tab
+  // wraps inside it, Escape closes it, and focus goes back to the control
+  // that opened it when it closes. The overlay used to be a div with none of
+  // this — Tab left for the toolbar behind it, and closing dropped focus on
+  // the body.
+  // `onClose` is a fresh arrow on every render of the parent; through a ref,
+  // so this effect runs on open and close only and never moves focus out of
+  // the dialog because the parent re-rendered.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!isOpen) return;
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setQuarantine(readQuarantinedSession());
+    const dialog = dialogRef.current;
+    if (dialog) {
+      const first = focusableIn(dialog)[0];
+      (first ?? dialog).focus();
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onCloseRef.current();
+    };
+    // Capture phase, so it runs before the window-level shortcut handler
+    // and stops there: one close per Escape.
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+      const opener = openerRef.current;
+      openerRef.current = null;
+      if (opener && opener.isConnected) opener.focus();
+    };
+  }, [isOpen]);
+
+  const trapTab = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab' || !dialogRef.current) return;
+    const items = focusableIn(dialogRef.current);
+    if (items.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || active === dialogRef.current)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
 
   // The collections the bundle will carry, for a policy row each.
   const collectionNames = useMemo(() => (isOpen ? gatherCollections().map((c) => c.name) : []), [isOpen]);
@@ -422,11 +498,22 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const warns = inspection?.report.filter((l) => l.level === 'warn') ?? [];
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.dialog} onClick={(e) => e.stopPropagation()}>
+    <div style={styles.overlay} onClick={onClose} role="presentation">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="export-dialog-title"
+        tabIndex={-1}
+        style={styles.dialog}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={trapTab}
+      >
         <div style={styles.header}>
-          <span style={styles.title}>Export Bundle</span>
-          <button style={styles.closeButton} onClick={onClose}>
+          <span id="export-dialog-title" style={styles.title}>
+            Export Bundle
+          </span>
+          <button style={styles.closeButton} onClick={onClose} aria-label="Close">
             ×
           </button>
         </div>
@@ -474,18 +561,19 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
               {error && <div style={styles.error}>{error}</div>}
 
               <div style={styles.field}>
-                <label style={styles.label}>App Name</label>
-                <input type="text" style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="My App" />
+                <label style={styles.label} htmlFor="export-app-name">App Name</label>
+                <input id="export-app-name" type="text" style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="My App" />
               </div>
 
               <div style={styles.field}>
-                <label style={styles.label}>Version</label>
-                <input type="text" style={styles.input} value={version} onChange={(e) => setVersion(e.target.value)} placeholder="1.0.0" />
+                <label style={styles.label} htmlFor="export-app-version">Version</label>
+                <input id="export-app-version" type="text" style={styles.input} value={version} onChange={(e) => setVersion(e.target.value)} placeholder="1.0.0" />
               </div>
 
               <div style={styles.field}>
-                <label style={styles.label}>Description</label>
+                <label style={styles.label} htmlFor="export-app-description">Description</label>
                 <textarea
+                  id="export-app-description"
                   style={styles.textarea}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
@@ -583,6 +671,31 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                   );
                 })}
               </div>
+
+              {quarantine && (
+                <div style={styles.section}>
+                  <div style={styles.sectionTitle}>Recovery</div>
+                  <div style={styles.sectionNote}>
+                    A locally saved session from {quarantine.quarantinedAt ? new Date(quarantine.quarantinedAt).toLocaleString() : 'earlier'} could not be
+                    restored ({quarantine.error}). It was kept as it was, not deleted; download it to keep a copy.
+                  </div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="button" style={styles.smallButton} onClick={() => exportQuarantinedSession()}>
+                      Download session…
+                    </button>
+                    <button
+                      type="button"
+                      style={styles.smallButton}
+                      onClick={() => {
+                        discardQuarantinedSession();
+                        setQuarantine(null);
+                      }}
+                    >
+                      Discard
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div style={styles.section}>
                 <div style={styles.sectionTitle}>Before it leaves</div>

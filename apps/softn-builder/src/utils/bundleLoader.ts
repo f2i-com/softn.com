@@ -1,12 +1,27 @@
 /**
  * Bundle Loader - Loads .softn bundles into the builder state
+ *
+ * What comes out is everything the archive held, in two kinds: the parts the
+ * Builder models (UI and logic files, collections and their records, assets,
+ * the icon, the declaration) and, as opaque bytes, everything else — the
+ * manifest as read, `server/` files, files in groups the Builder does not
+ * know, files in no group at all. The second kind used to be dropped on the
+ * floor, so a save rewrote the app without its server and without whatever
+ * a newer manifest had said. It is kept now and written back as it was.
+ *
+ * Files are kept at the archive path they were found at. The loader used to
+ * prepend `ui/`, `logic/` and so on to any declared path that lacked the
+ * folder, which moved files that a legacy manifest named without it; the
+ * fallback lookup still exists for those bundles, but a file found at its
+ * declared path is not moved (see bundleValidator.resolveEntry).
  */
 
 import { debug } from './debug';
-import { parseBundle, BUNDLE_FORMAT_VERSION, type BundleManifest } from './bundleExporter';
+import { parseBundle, type BundleManifest } from './bundleExporter';
 import { parseSource, parseLogicFile } from './sourceParser';
-import { validateBundle as validateBundleIntegrity } from './bundleValidator';
+import { validateBundle as validateBundleIntegrity, resolveEntry, FILE_GROUPS, type FileGroup } from './bundleValidator';
 import { emptyDeclaration, readPermissionJson, type PermissionDeclaration } from './permissions';
+import { identityOf, parseXdb, type RecordIdentity, type XdbRecordEnvelope } from './xdbFormat';
 import type {
   CollectionDef,
   UIFileState,
@@ -18,25 +33,40 @@ import type {
 
 export interface LoadedBundle {
   manifest: BundleManifest;
+  /** The manifest exactly as parsed, for the export to patch rather than rebuild. */
+  rawManifest: Record<string, unknown>;
   uiFiles: Map<string, UIFileState>;
   logicFiles: Map<string, LogicFileState>;
   collections: CollectionDef[];
   entities: EntityDef[];
   seedData: Map<string, Record<string, unknown>[]>;
+  /** The identity of each live seed row, aligned with `seedData`, by entity id. */
+  recordIdentity: Map<string, RecordIdentity[]>;
+  /** Records read with `deleted: true`, verbatim, by entity id. */
+  tombstones: Map<string, XdbRecordEnvelope[]>;
+  /** Where each collection's .xdb was, by collection name. */
+  xdbPaths: Map<string, string>;
   assets: Map<string, Uint8Array>;
+  /**
+   * Validated entries the Builder does not model: `server/` files, files of
+   * unknown groups, files in no group. Written back verbatim; never run.
+   */
+  extraEntries: Map<string, Uint8Array>;
+  /** The archive path of the entry file, and the id of the UI file loaded from it. */
+  mainPath: string;
+  mainFileId: string;
   warnings: string[];
   /** What the bundle's permission.json declares; nothing when it has none. */
   permissions: PermissionDeclaration;
   /** The manifest's icon as a data URL, when the bundle carries it. */
   iconDataUrl: string | null;
+  /** The archive path of the icon, when the manifest named one that exists. */
+  iconPath: string | null;
 }
 
 /** The icon named by a manifest, as a data URL the project store keeps. */
-function readIcon(manifest: BundleManifest, files: Map<string, Uint8Array>): string | null {
-  if (!manifest.icon) return null;
-  const bytes = getFileContent(files, manifest.icon, 'assets');
-  if (!bytes) return null;
-  const ext = manifest.icon.split('.').pop()?.toLowerCase();
+function readIcon(bytes: Uint8Array, path: string): string | null {
+  const ext = path.split('.').pop()?.toLowerCase();
   const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : ext === 'png' ? 'image/png' : null;
   if (!mime) return null;
   let bin = '';
@@ -50,58 +80,10 @@ function generateFileId(): string {
   return `file_${Date.now()}_${fileIdCounter++}`;
 }
 
-/**
- * Normalize a file path to ensure it has the correct folder prefix
- */
-function normalizePath(path: string, type: 'ui' | 'logic' | 'xdb' | 'assets'): string {
-  // Normalize backslashes to forward slashes (cross-platform)
-  let normalized = path.replace(/\\/g, '/');
-  // Remove leading slash if present
-  normalized = normalized.startsWith('/') ? normalized.slice(1) : normalized;
-
-  // Check if already has correct prefix
-  const prefixes: Record<string, string> = {
-    ui: 'ui/',
-    logic: 'logic/',
-    xdb: 'xdb/',
-    assets: 'assets/',
-  };
-
-  const prefix = prefixes[type];
-  if (!normalized.startsWith(prefix)) {
-    normalized = prefix + normalized;
-  }
-
-  return normalized;
-}
-
-/**
- * Try to get file content from files map, checking multiple path variations
- */
-function getFileContent(
-  files: Map<string, Uint8Array>,
-  manifestPath: string,
-  type: 'ui' | 'logic' | 'xdb' | 'assets'
-): Uint8Array | undefined {
-  // Try the path as-is first
-  let content = files.get(manifestPath);
-  if (content) return content;
-
-  // Try with normalized path
-  const normalizedPath = normalizePath(manifestPath, type);
-  content = files.get(normalizedPath);
-  if (content) return content;
-
-  // Try without prefix (for older bundles where manifest has prefix but files don't)
-  const prefixes = ['ui/', 'logic/', 'xdb/', 'assets/'];
-  for (const prefix of prefixes) {
-    if (manifestPath.startsWith(prefix)) {
-      content = files.get(manifestPath.slice(prefix.length));
-      if (content) return content;
-    }
-  }
-
-  return undefined;
+function declaredPaths(manifest: BundleManifest, group: FileGroup): string[] {
+  const groups = (manifest as { files?: Record<string, unknown> }).files;
+  const list = groups && !Array.isArray(groups) && typeof groups === 'object' ? groups[group] : undefined;
+  return Array.isArray(list) ? list.filter((p): p is string => typeof p === 'string') : [];
 }
 
 /**
@@ -111,16 +93,10 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   fileIdCounter = 0;
 
   const { manifest, files } = parseBundle(data);
+  // The manifest as read, before anything here touches the typed view of it.
+  const rawManifest = JSON.parse(JSON.stringify(manifest)) as Record<string, unknown>;
 
-  // Handle format versioning
-  if (!manifest.formatVersion) {
-    manifest.formatVersion = '0.9'; // Legacy bundle without version
-  }
-  if (manifest.formatVersion !== BUNDLE_FORMAT_VERSION) {
-    debug(
-      `[bundleLoader] Bundle format ${manifest.formatVersion}, current ${BUNDLE_FORMAT_VERSION}`
-    );
-  }
+  debug(`[bundleLoader] Bundle format ${manifest.formatVersion ?? '(none, legacy)'}`);
 
   // Validate bundle integrity
   const validation = validateBundleIntegrity(manifest, files);
@@ -137,33 +113,44 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   const collections: CollectionDef[] = [];
   const entities: EntityDef[] = [];
   const seedData = new Map<string, Record<string, unknown>[]>();
+  const recordIdentity = new Map<string, RecordIdentity[]>();
+  const tombstones = new Map<string, XdbRecordEnvelope[]>();
+  const xdbPaths = new Map<string, string>();
   const assets = new Map<string, Uint8Array>();
   const warnings: string[] = [...validation.warnings];
+  /** Every archive path something here has taken; the rest are passthrough. */
+  const consumed = new Set<string>();
 
   const decoder = new TextDecoder();
 
+  const mainEntry = resolveEntry(files, manifest.main, 'ui');
+  if (!mainEntry) throw new Error(`Invalid bundle: entry file "${manifest.main}" is not in the bundle`);
+  let mainFileId: string | null = null;
+
   // Load UI files
-  for (const uiPath of manifest.files.ui || []) {
-    const content = getFileContent(files, uiPath, 'ui');
-    if (!content) {
+  for (const uiPath of declaredPaths(manifest, 'ui')) {
+    const found = resolveEntry(files, uiPath, 'ui');
+    if (!found) {
+      // Validation refuses this; the guard is for a manifest edited in between.
       warnings.push(`UI file not found: ${uiPath}`);
       continue;
     }
+    if (consumed.has(found.path)) continue;
+    consumed.add(found.path);
+    if (found.migrated) warnings.push(`UI file "${uiPath}" was found at "${found.path}"; the export will name it there.`);
 
-    const source = decoder.decode(content);
+    const source = decoder.decode(found.bytes);
     const parsed = parseSource(source);
 
     const fileId = generateFileId();
+    if (found.path === mainEntry.path) mainFileId = fileId;
 
     // Convert parsed imports to UIImport format
     const imports: UIImport[] = parsed.imports || [];
 
-    // Normalize the path to ensure it has the ui/ prefix
-    const normalizedPath = normalizePath(uiPath, 'ui');
-
     uiFiles.set(fileId, {
       id: fileId,
-      path: normalizedPath,
+      path: found.path,
       elements: parsed.elements,
       rootId: parsed.rootId,
       logicSrc: parsed.logicSrc,
@@ -178,26 +165,29 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       }
     }
   }
+  if (!mainFileId) {
+    throw new Error(`Invalid bundle: entry file "${manifest.main}" is not listed in manifest.files.ui`);
+  }
 
   // Load logic files
-  for (const logicPath of manifest.files.logic || []) {
-    const content = getFileContent(files, logicPath, 'logic');
-    if (!content) {
+  for (const logicPath of declaredPaths(manifest, 'logic')) {
+    const found = resolveEntry(files, logicPath, 'logic');
+    if (!found) {
       warnings.push(`Logic file not found: ${logicPath}`);
       continue;
     }
+    if (consumed.has(found.path)) continue;
+    consumed.add(found.path);
+    if (found.migrated) warnings.push(`Logic file "${logicPath}" was found at "${found.path}"; the export will name it there.`);
 
-    const source = decoder.decode(content);
+    const source = decoder.decode(found.bytes);
     const { imports, exports } = parseLogicFile(source);
 
     const fileId = generateFileId();
 
-    // Normalize the path to ensure it has the logic/ prefix
-    const normalizedPath = normalizePath(logicPath, 'logic');
-
     logicFiles.set(fileId, {
       id: fileId,
-      path: normalizedPath,
+      path: found.path,
       content: source,
       imports,
       exports,
@@ -205,19 +195,30 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   }
 
   // Load XDB files
-  debug('[bundleLoader] XDB files in manifest:', manifest.files.xdb || []);
-  for (const xdbPath of manifest.files.xdb || []) {
-    const content = getFileContent(files, xdbPath, 'xdb');
-    if (!content) {
+  debug('[bundleLoader] XDB files in manifest:', declaredPaths(manifest, 'xdb'));
+  for (const xdbPath of declaredPaths(manifest, 'xdb')) {
+    const found = resolveEntry(files, xdbPath, 'xdb');
+    if (!found) {
       warnings.push(`XDB file not found: ${xdbPath}`);
       continue;
     }
+    if (consumed.has(found.path)) continue;
+    consumed.add(found.path);
 
     try {
-      const xdbData = JSON.parse(decoder.decode(content));
-      const collectionName = xdbData.collection;
-      const records = xdbData.records || [];
+      const fallbackName = found.path.replace(/^xdb\//, '').replace(/\.xdb$/, '');
+      const parsed = parseXdb(decoder.decode(found.bytes), fallbackName);
+      const collectionName = parsed.collection;
+      const records = parsed.records;
       debug(`[bundleLoader] Loaded XDB: ${collectionName} with ${records.length} records`);
+      if (parsed.skipped > 0) {
+        warnings.push(`XDB file "${xdbPath}": ${parsed.skipped} record(s) without a usable id or data were skipped, as the runtime skips them.`);
+      }
+      if (xdbPaths.has(collectionName)) {
+        warnings.push(`XDB file "${xdbPath}" repeats collection "${collectionName}"; the first one is kept.`);
+        continue;
+      }
+      xdbPaths.set(collectionName, found.path);
 
       // Prefer the schema the bundle recorded; fall back to sniffing the first
       // seed row only for bundles written before it was recorded at all.
@@ -226,11 +227,11 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       // for everything, select options and references were dropped, and a
       // collection with no rows yet came back with no fields — so a save and
       // reopen silently emptied half the work the Data view exists to do.
-      const declared = (xdbData as { schema?: { alias?: string; fields?: SchemaField[] } }).schema;
+      const declared = parsed.schema;
       let fields: SchemaField[] = [];
-      if (declared && Array.isArray(declared.fields) && declared.fields.length > 0) {
+      if (declared && declared.fields.length > 0) {
         fields = declared.fields;
-      } else if (records.length > 0) {
+      } else if (!declared && records.length > 0) {
         const sampleData = records[0].data || {};
         for (const [key, value] of Object.entries(sampleData)) {
           fields.push({
@@ -252,27 +253,27 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
         position: { x: 100 + entities.length * 300, y: 100 },
       });
 
-      // Store seed data using entity ID as key (to match schemaStore expectations)
-      // Store flat data objects for the Data tab display
-      const flatRecordData = records.map((r: { data: Record<string, unknown> }) => r.data);
+      // Rows for the Data view, and the identity each was read with, in the
+      // same order. Tombstones are kept apart, verbatim.
+      const flatRecordData = records.map((r) => r.data);
       seedData.set(entityId, flatRecordData);
-
-      // Also store full records for Preview (which needs { id, collection, data, ... } structure)
-      // We'll transform this in LivePreview when building initialData
+      recordIdentity.set(entityId, records.map(identityOf));
+      if (parsed.tombstones.length > 0) tombstones.set(entityId, parsed.tombstones);
 
       // Also update collection with seed data
+      const fullRecords = [...records, ...parsed.tombstones] as Record<string, unknown>[];
       const existingCol = collections.find((c) => c.name === collectionName);
       if (existingCol) {
         existingCol.fields = fields;
         existingCol.seedData = flatRecordData;
-        existingCol.fullRecords = records; // Keep full records for preview
+        existingCol.fullRecords = fullRecords; // Keep full records for preview
       } else {
         collections.push({
           name: collectionName,
-          alias: collectionName,
+          alias: declared?.alias || collectionName,
           fields,
           seedData: flatRecordData,
-          fullRecords: records, // Keep full records for preview
+          fullRecords, // Keep full records for preview
         });
       }
     } catch (e) {
@@ -281,24 +282,56 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   }
 
   // Load assets
-  for (const assetPath of manifest.files.assets || []) {
-    const content = getFileContent(files, assetPath, 'assets');
-    if (content) {
-      const normalizedPath = normalizePath(assetPath, 'assets');
-      assets.set(normalizedPath, content);
+  for (const assetPath of declaredPaths(manifest, 'assets')) {
+    const found = resolveEntry(files, assetPath, 'assets');
+    if (!found) continue;
+    if (consumed.has(found.path)) continue;
+    consumed.add(found.path);
+    assets.set(found.path, found.bytes);
+  }
+
+  // The icon, wherever the manifest put it. It is an asset when it is in the
+  // assets group; either way the project keeps it as a data URL too.
+  let iconDataUrl: string | null = null;
+  let iconPath: string | null = null;
+  if (typeof manifest.icon === 'string' && manifest.icon) {
+    const found = resolveEntry(files, manifest.icon, 'assets');
+    if (found) {
+      iconDataUrl = readIcon(found.bytes, found.path);
+      iconPath = found.path;
+      consumed.add(found.path);
+    } else {
+      warnings.push(`Icon "${manifest.icon}" named by the manifest is not in the bundle.`);
     }
   }
 
-  debug('[bundleLoader] Loaded:', uiFiles.size, 'UI files,', logicFiles.size, 'logic files');
+  const permissionEntry = files.get('permission.json');
+  const permissions = permissionEntry ? readPermissionJson(decoder.decode(permissionEntry)) : emptyDeclaration();
+  consumed.add('permission.json');
+  consumed.add('manifest.json');
+
+  // Everything else passes through as it is: server files, files of groups
+  // the Builder does not know, files no group names. Each has already been
+  // through the bounded reader's path and checksum checks. Nothing is run.
+  const extraEntries = new Map<string, Uint8Array>();
+  for (const [path, bytes] of files) {
+    if (consumed.has(path)) continue;
+    if (path.endsWith('/')) continue;
+    extraEntries.set(path, bytes);
+  }
+  for (const group of FILE_GROUPS) {
+    if (group === 'ui' || group === 'logic' || group === 'xdb' || group === 'assets') continue;
+    for (const declared of declaredPaths(manifest, group)) {
+      const found = resolveEntry(files, declared, group);
+      if (found && !extraEntries.has(found.path) && !consumed.has(found.path)) extraEntries.set(found.path, found.bytes);
+    }
+  }
+
+  debug('[bundleLoader] Loaded:', uiFiles.size, 'UI files,', logicFiles.size, 'logic files,', extraEntries.size, 'passthrough entries');
   debug(
     '[bundleLoader] Entities:',
     entities.length,
     entities.map((e) => `${e.name}(${e.id})`)
-  );
-  debug('[bundleLoader] SeedData keys:', Array.from(seedData.keys()));
-  debug(
-    '[bundleLoader] SeedData sizes:',
-    Array.from(seedData.entries()).map(([k, v]) => `${k}: ${v.length} records`)
   );
 
   // Turn the reference names the exporter wrote back into this session's entity
@@ -310,9 +343,6 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   for (const entity of entities) {
     entity.fields = entity.fields.map((field) => {
       if (!field.refEntity) return field;
-      // A name that matches no collection is dropped rather than kept as a
-      // dangling pointer, so the picker reads as "nothing selected" instead of
-      // silently referring to something that is not there.
       return { ...field, refEntity: entityIdByName.get(field.refEntity) };
     });
   }
@@ -321,20 +351,25 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     console.warn('[bundleLoader] Warnings:', warnings);
   }
 
-  const permissionEntry = files.get('permission.json');
-  const permissions = permissionEntry ? readPermissionJson(decoder.decode(permissionEntry)) : emptyDeclaration();
-
   return {
     manifest,
+    rawManifest,
     uiFiles,
     logicFiles,
     collections,
     entities,
     seedData,
+    recordIdentity,
+    tombstones,
+    xdbPaths,
     assets,
+    extraEntries,
+    mainPath: mainEntry.path,
+    mainFileId,
     warnings,
     permissions,
-    iconDataUrl: readIcon(manifest, files),
+    iconDataUrl,
+    iconPath,
   };
 }
 
@@ -358,10 +393,11 @@ function inferFieldType(
 }
 
 /**
- * Prompt user to select a .softn file
+ * Prompt user to select a .softn file. Resolves null when the picker was
+ * closed without a choice; rejects when the chosen file could not be read.
  */
 export async function selectBundleFile(): Promise<Uint8Array | null> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.softn';
@@ -377,8 +413,8 @@ export async function selectBundleFile(): Promise<Uint8Array | null> {
         const arrayBuffer = await file.arrayBuffer();
         resolve(new Uint8Array(arrayBuffer));
       } catch (e) {
-        console.error('Failed to read file:', e);
-        resolve(null);
+        // A file that cannot be read is a failure to report, not a cancel.
+        reject(e instanceof Error ? e : new Error(String(e)));
       }
     };
 

@@ -5,6 +5,7 @@
 import { create } from 'zustand';
 import type { EntityDef, SchemaField, RelationshipDef } from '../types/builder';
 import { useProjectStore } from './projectStore';
+import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from '../utils/xdbFormat';
 
 function generateId(): string {
   return `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -32,6 +33,17 @@ interface SchemaStore {
 
   // Seed data
   seedData: Map<string, Record<string, unknown>[]>;
+  /**
+   * The identity of each live seed row, by entity id, one entry per row in
+   * the same order as `seedData`. The rows are what the Data view edits; this
+   * is what the export writes them back under, so a record read from a bundle
+   * keeps its id and timestamps — see utils/xdbFormat.ts. The two are kept
+   * aligned by every action below; a row without an entry (a session written
+   * before identity was kept) is minted at export.
+   */
+  recordIdentity: Map<string, RecordIdentity[]>;
+  /** Records read with `deleted: true`, by entity id, kept verbatim and written back after the live rows. */
+  tombstones: Map<string, XdbRecordEnvelope[]>;
   setSeedData: (entityId: string, data: Record<string, unknown>[]) => void;
   addSeedRecord: (entityId: string) => void;
   updateSeedRecord: (entityId: string, index: number, data: Record<string, unknown>) => void;
@@ -40,6 +52,8 @@ interface SchemaStore {
   // Bulk load (for opening bundles)
   loadEntities: (entities: EntityDef[]) => void;
   loadSeedData: (data: Map<string, Record<string, unknown>[]>) => void;
+  /** The identities and tombstones read with the seed rows; not an edit. */
+  loadRecords: (identity: Map<string, RecordIdentity[]>, tombstones: Map<string, XdbRecordEnvelope[]>) => void;
 
   // Reset
   reset: () => void;
@@ -84,6 +98,8 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   relationships: [],
   selectedEntityId: null,
   seedData: new Map(),
+  recordIdentity: new Map(),
+  tombstones: new Map(),
 
   addEntity: (position) => {
     const id = generateId();
@@ -125,6 +141,10 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
       // explanation. Both are cleaned up here.
       const seedData = new Map(state.seedData);
       seedData.delete(id);
+      const recordIdentity = new Map(state.recordIdentity);
+      recordIdentity.delete(id);
+      const tombstones = new Map(state.tombstones);
+      tombstones.delete(id);
 
       return {
         entities: state.entities
@@ -143,6 +163,8 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
           (r) => r.sourceEntityId !== id && r.targetEntityId !== id
         ),
         seedData,
+        recordIdentity,
+        tombstones,
         selectedEntityId: state.selectedEntityId === id ? null : state.selectedEntityId,
       };
     });
@@ -229,7 +251,13 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
     edit((state) => {
       const newSeedData = new Map(state.seedData);
       newSeedData.set(entityId, data);
-      return { seedData: newSeedData };
+      // Rows keep the identity at their index; rows beyond the known ones
+      // are new and are identified now, so two exports of them agree.
+      const known = state.recordIdentity.get(entityId) || [];
+      const identity = data.map((row, i) => known[i] ?? freshIdentity(row));
+      const recordIdentity = new Map(state.recordIdentity);
+      recordIdentity.set(entityId, identity);
+      return { seedData: newSeedData, recordIdentity };
     });
   },
 
@@ -272,12 +300,23 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
       const newSeedData = new Map(state.seedData);
       const existing = newSeedData.get(entityId) || [];
       newSeedData.set(entityId, [...existing, record]);
-      return { seedData: newSeedData };
+      // Identified when made, not at export: a new row gets one id and keeps
+      // it through every export and save from here on.
+      const recordIdentity = new Map(state.recordIdentity);
+      const identity = [...(recordIdentity.get(entityId) || [])];
+      while (identity.length < existing.length) identity.push(freshIdentity(existing[identity.length]));
+      identity.push(freshIdentity(record));
+      recordIdentity.set(entityId, identity);
+      return { seedData: newSeedData, recordIdentity };
     });
   },
 
+  // `edit`, not `set`: a row edited or deleted in the Data view is a change
+  // to the project. These two were the exceptions to the rule above, so a
+  // save that overlapped a row edit marked the project clean with the edit
+  // unsaved, and New/Open never asked about it.
   updateSeedRecord: (entityId, index, data) => {
-    set((state) => {
+    edit((state) => {
       const newSeedData = new Map(state.seedData);
       const records = [...(newSeedData.get(entityId) || [])];
       records[index] = data;
@@ -287,12 +326,18 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   deleteSeedRecord: (entityId, index) => {
-    set((state) => {
+    edit((state) => {
       const newSeedData = new Map(state.seedData);
       const records = [...(newSeedData.get(entityId) || [])];
       records.splice(index, 1);
       newSeedData.set(entityId, records);
-      return { seedData: newSeedData };
+      // The identity goes with the row: the export drops the record rather
+      // than writing a tombstone (utils/xdbFormat.ts says why).
+      const recordIdentity = new Map(state.recordIdentity);
+      const identity = [...(recordIdentity.get(entityId) || [])];
+      if (index < identity.length) identity.splice(index, 1);
+      recordIdentity.set(entityId, identity);
+      return { seedData: newSeedData, recordIdentity };
     });
   },
 
@@ -304,12 +349,18 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
     set({ seedData: data });
   },
 
+  loadRecords: (identity, tombstones) => {
+    set({ recordIdentity: identity, tombstones });
+  },
+
   reset: () => {
     set({
       entities: [],
       relationships: [],
       selectedEntityId: null,
       seedData: new Map(),
+      recordIdentity: new Map(),
+      tombstones: new Map(),
     });
   },
   };
