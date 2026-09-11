@@ -271,18 +271,55 @@ test('a host whose post_max_size is below the envelope is reported, and a body i
     const health = (await small.api('GET', '/api/health')).json;
     assert.equal(health.limits.hostAligned, false);
     assert.equal(health.postMax, '1M');
-    // Both refusals come back before the body has been sent, so they go
-    // through the client that keeps an early reply (see apiEarly).
+    // What the API says is pinned through the CLI reader, where the request
+    // reaches the script whatever the host does with the body: a multipart
+    // upload PHP declined to read, and a JSON body, both declared at 2 MB.
+    const refusal = (server, call) => {
+      const r = runPhp({
+        dataDir: small.dataDir,
+        stdin: '',
+        ini: { post_max_size: '1M', upload_max_filesize: '1M' },
+        server: { REQUEST_METHOD: 'POST', REQUEST_URI: '/api/apps', CONTENT_LENGTH: String(2 * 1024 * 1024), REMOTE_ADDR: '127.0.0.1', ...server },
+        script: `
+$r = Request::fromGlobals();
+try { ${call}; echo json_encode(['status' => 200]); }
+catch (ApiError $e) { echo json_encode(['status' => $e->status, 'error' => $e->getMessage(), 'limit' => $e->extra['limit'] ?? null]); }`,
+      });
+      assert.equal(r.status, 0, r.stderr);
+      return JSON.parse(r.stdout);
+    };
+    const dropped = refusal({ CONTENT_TYPE: 'multipart/form-data; boundary=x' }, '$r->bundleFile()');
+    assert.equal(dropped.status, 413, dropped.error);
+    assert.match(dropped.error, /post_max_size/);
+    assert.match(dropped.error, /\.user\.ini/);
+    assert.equal(dropped.limit, 1024 * 1024);
+    const json = refusal({ CONTENT_TYPE: 'application/json' }, '$r->json()');
+    assert.equal(json.status, 413, json.error);
+    assert.match(json.error, /post_max_size/);
+
+    // Over HTTP the reply comes before the body has been sent, so it goes
+    // through the client that keeps an early reply (see apiEarly). Some
+    // builds of the built-in server do not hand such a request to the
+    // script at all and drop the connection with no reply — the CI
+    // runner's does, this machine's may not — which is the server's own
+    // doing, not the API's; a reply, when there is one, must be the 413.
     const fd = new FormData();
     fd.append('bundle', new Blob([crypto.randomBytes(2 * 1024 * 1024)]), 'big.softn');
     const form = await small.encodeForm(fd);
-    const dropped = await small.apiEarly('POST', '/api/apps', { body: form.body, headers: { 'Content-Type': form.contentType, 'X-Admin-Key': small.adminKey } });
-    assert.equal(dropped.status, 413, dropped.text);
-    assert.match(dropped.json.error, /post_max_size/);
-    assert.match(dropped.json.error, /\.user\.ini/);
-    const json = await small.apiEarly('POST', '/api/apps', { body: Buffer.alloc(2 * 1024 * 1024, 0x20), headers: { 'Content-Type': 'application/json', 'X-Admin-Key': small.adminKey } });
-    assert.equal(json.status, 413, json.text);
-    assert.match(json.json.error, /post_max_size/);
+    for (const request of [
+      { body: form.body, headers: { 'Content-Type': form.contentType, 'X-Admin-Key': small.adminKey } },
+      { body: Buffer.alloc(2 * 1024 * 1024, 0x20), headers: { 'Content-Type': 'application/json', 'X-Admin-Key': small.adminKey } },
+    ]) {
+      let reply;
+      try {
+        reply = await small.apiEarly('POST', '/api/apps', request);
+      } catch (err) {
+        assert.match(String(err.message), /no reply before the connection failed/, String(err.message));
+        continue;
+      }
+      assert.equal(reply.status, 413, reply.text);
+      assert.match(reply.json.error, /post_max_size/);
+    }
     // Within the host's limit the route's own limit is the one that answers.
     const fine = await small.publish('Fits The Host');
     assert.equal(fine.app.slug, 'fits-the-host');
