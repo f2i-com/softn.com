@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ApiError,
   addVersion,
@@ -26,21 +26,40 @@ import { formatBytes, formatDate } from '../lib/format';
 import { navigate, type Route } from '../lib/router';
 import { Thumb } from '../components/directory/AppCard';
 import { CategoriesNotice } from '../components/directory/Controls';
-import { inspectBundle, type Inspection } from '../lib/inspectBundle';
+import type { Inspection } from '../lib/inspectBundle';
 import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '../lib/handoff';
 import { bundleFiles, onDroppedBundles, takeDroppedBundles } from '../lib/dropped';
+import { createSelectionController, isSettled, pendingCount, type SelectOptions, type SelectionController, type SelectionItem, type SelectionState } from '../lib/selection';
 
 const AUTHOR_KEY = 'softn.site.author';
 
-/** One bundle of several dropped together, and what became of it. */
+/** One bundle of several dropped together, and what became of it. `info` is null only for a file that could not be read at all. */
 interface BatchItem {
   file: File;
-  info: Inspection;
+  info: Inspection | null;
   status: 'pending' | 'publishing' | 'done' | 'failed' | 'skipped';
   result?: Published;
   error?: string;
   /** Whether the edit key could be kept in this browser. */
   kept?: KeyStoreResult;
+}
+
+/**
+ * The chosen bundle(s) as one versioned object — see lib/selection.ts for
+ * why the File and its inspection are never two states. One controller per
+ * mounted page; React reads its snapshot.
+ */
+function useSelection(): [SelectionState, SelectionController] {
+  const ref = useRef<SelectionController | null>(null);
+  if (!ref.current) ref.current = createSelectionController();
+  const controller = ref.current;
+  const state = useSyncExternalStore(controller.subscribe, controller.state, controller.state);
+  return [state, controller];
+}
+
+/** The one item of a single-file selection, or null while there is none or a batch is chosen. */
+function singleItem(state: SelectionState): SelectionItem | null {
+  return state.mode === 'single' ? state.items[0] : null;
 }
 
 /**
@@ -160,10 +179,12 @@ function KeyImport({ onImported }: { onImported?: () => void }): React.ReactElem
   );
 }
 
-/** A drop target for one .softn or several, with the inspection it triggers. */
-function BundleDrop({ file, info, onFiles }: { file: File | null; info: Inspection | null; onFiles: (files: File[]) => void }): React.ReactElement {
+/** A drop target for one .softn or several, showing the chosen item as far as its inspection has got. */
+function BundleDrop({ item, onFiles }: { item: SelectionItem | null; onFiles: (files: File[]) => void }): React.ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
+  const file = item?.file ?? null;
+  const info = item?.info ?? null;
   return (
     <div
       className={`dropzone ${dragging ? 'over' : ''} ${file ? 'has-file' : ''}`}
@@ -196,23 +217,33 @@ function BundleDrop({ file, info, onFiles }: { file: File | null; info: Inspecti
         accept=".softn,application/zip,application/octet-stream"
         multiple
         hidden
+        aria-label="Bundle files"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           if (files.length > 0) onFiles(files);
         }}
       />
-      {file ? (
+      {file && item ? (
         <div className="dropzone-file">
           {info?.iconDataUrl && <img className="dropzone-icon" src={info.iconDataUrl} alt="" />}
           <div>
             <strong>{file.name}</strong> · {formatBytes(file.size)}
-            {info && !info.problem && (
+            {item.status === 'inspecting' && (
+              <div className="muted" role="status">
+                Reading…
+              </div>
+            )}
+            {item.status === 'ready' && info && (
               <div className="muted">
                 {info.name} v{info.version} · {info.files} files · entry {info.main}
                 {info.execution === 'worker' && ' · off-main-thread'}
               </div>
             )}
-            {info?.problem && <div className="form-error">{info.problem}</div>}
+            {item.status === 'rejected' && (
+              <div className="form-error" role="alert">
+                {item.error}
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -415,8 +446,9 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
   const remixOf = route.query.get('remix') ?? '';
   const [parent, setParent] = useState<AppCard | null>(null);
   const [parentSlug, setParentSlug] = useState(remixOf);
-  const [file, setFile] = useState<File | null>(null);
-  const [info, setInfo] = useState<Inspection | null>(null);
+  const [selection, selector] = useSelection();
+  const single = singleItem(selection);
+  const info = single?.info ?? null;
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [author, setAuthor] = useState(() => {
@@ -461,49 +493,49 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remixOf]);
 
-  const takeFile = useCallback(async (f: File) => {
-    setFile(f);
-    setError(null);
-    setResult(null);
-    const bytes = new Uint8Array(await f.arrayBuffer());
-    const i = inspectBundle(bytes);
-    setInfo(i);
-    if (!i.problem) {
-      setName((n) => n || i.name);
-      setDescription((d) => d || i.description);
-    }
-  }, []);
-
   // One file is the form below; several are a batch, each named and described
   // from its manifest and all filed under one category. A file that is not a
   // bundle is left out; a bundle the directory would refuse is listed as
-  // skipped, with the reason.
+  // skipped, with the reason. The controller owns the reads: the limits are
+  // checked before a byte is read, a few files are inspected at a time, and
+  // a result for a choice the visitor has since replaced is dropped — so the
+  // form's name and the zone's metadata can only ever be this selection's.
   const takeFiles = useCallback(
-    async (files: File[]) => {
+    async (files: File[], options?: SelectOptions) => {
       const bundles = bundleFiles(files);
       if (bundles.length === 0) {
         setError('None of those is a .softn bundle.');
         return;
       }
-      if (bundles.length === 1) {
-        setBatch(null);
-        await takeFile(bundles[0]);
-        return;
-      }
-      setFile(null);
-      setInfo(null);
+      setBatch(null);
       setResult(null);
       setError(null);
-      const items: BatchItem[] = await Promise.all(
-        bundles.map(async (f) => {
-          const info = inspectBundle(new Uint8Array(await f.arrayBuffer()));
-          return { file: f, info, status: info.problem ? 'skipped' : 'pending' } as BatchItem;
-        }),
-      );
-      setBatch(items);
+      const outcome = await selector.select(bundles, options);
+      if (outcome.outcome === 'rejected') {
+        setError(outcome.reason);
+        return;
+      }
+      if (outcome.outcome !== 'settled') return;
+      const chosen = singleItem(selector.state());
+      if (chosen?.status === 'ready' && chosen.info) {
+        const i = chosen.info;
+        setName((n) => n || i.name);
+        setDescription((d) => d || i.description);
+      }
     },
-    [takeFile],
+    [selector],
   );
+
+  // A batch becomes rows to publish once every file has been read. The rows
+  // then belong to the publishing flow — they take on publishing/done/failed —
+  // so they are derived once per selection generation, never re-derived under
+  // a publish in progress.
+  const batchGeneration = useRef(0);
+  useEffect(() => {
+    if (selection.mode !== 'batch' || !isSettled(selection) || batchGeneration.current === selection.generation) return;
+    batchGeneration.current = selection.generation;
+    setBatch(selection.items.map((it) => ({ file: it.file, info: it.info, status: it.status === 'ready' ? 'pending' : 'skipped', error: it.error })));
+  }, [selection]);
 
   // Bundles dropped on another page of the site were stashed for this one;
   // a drop beside the zone while this page is up is stashed the same way.
@@ -518,10 +550,14 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
 
   // Opened by Builder or Studio with a bundle staged for this page: take it
   // as if it had been dropped here. A stale or missing hand-off falls back
-  // to the ordinary upload, with a line saying why.
+  // to the ordinary upload, with a line saying why. The hand-off reserves
+  // its place in the selection before its bytes arrive: if the visitor
+  // chooses a file while the claim is in flight, the hand-off is the older
+  // choice and is discarded, along with its failure message.
   useEffect(() => {
     const { opened, id } = handoffIdFrom();
     if (!opened) return;
+    const ticket = selector.reserve();
     // The address is a one-shot instruction: once acted on, a reload of this
     // page is an ordinary publish page, not a second claim of the same id.
     try {
@@ -533,14 +569,15 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
       /* the address bar stays as it is */
     }
     void takeBundleHandoff(id).then((result) => {
+      if (ticket !== selector.generation()) return;
       if (!result.ok) {
         setError(describeHandoffFailure(result.reason));
         return;
       }
       const handoff = result.handoff;
-      void takeFile(new File([handoff.bytes as BlobPart], `${handoff.name || 'app'}.softn`, { type: 'application/zip' }));
+      void takeFiles([new File([handoff.bytes as BlobPart], `${handoff.name || 'app'}.softn`, { type: 'application/zip' })], { ticket, digest: handoff.digest });
     });
-  }, [takeFile]);
+  }, [selector, takeFiles]);
 
   const takeThumb = async (f: File) => {
     if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) {
@@ -554,7 +591,10 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!file || busy) return;
+    // The file and the metadata the visitor has been looking at are one
+    // item; only a fully inspected one is sent.
+    const chosen = singleItem(selector.state());
+    if (!chosen || chosen.status !== 'ready' || busy) return;
     setBusy(true);
     setError(null);
     try {
@@ -564,7 +604,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
         /* storage blocked */
       }
       const r = await publish({
-        bundle: file,
+        bundle: chosen.file,
         name: name.trim(),
         description: description.trim(),
         author: author.trim(),
@@ -605,7 +645,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
     let stoppedAt: string | null = null;
     for (let i = 0; i < batch.length; i++) {
       const item = batch[i];
-      if (item.status !== 'pending') continue;
+      if (item.status !== 'pending' || !item.info) continue;
       if (stoppedAt) {
         setItem(i, { status: 'failed', error: stoppedAt });
         continue;
@@ -655,6 +695,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
     const failed = batch.filter((b) => b.status === 'failed').length;
     const finished = ready === 0 && !busy;
     const startOver = () => {
+      selector.clear();
       setBatch(null);
       setError(null);
     };
@@ -679,17 +720,21 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
           <ul className="batch-list">
             {batch.map((item, i) => (
               <li key={`${item.file.name}-${i}`} className={`batch-item is-${item.status}`}>
-                {item.info.iconDataUrl ? <img className="dropzone-icon" src={item.info.iconDataUrl} alt="" /> : <span className="dropzone-icon" aria-hidden="true" />}
+                {item.info?.iconDataUrl ? <img className="dropzone-icon" src={item.info.iconDataUrl} alt="" /> : <span className="dropzone-icon" aria-hidden="true" />}
                 <div className="batch-main">
-                  <strong>{item.info.problem ? item.file.name : item.info.name}</strong>
-                  {!item.info.problem && (
+                  <strong>{item.status === 'skipped' || !item.info ? item.file.name : item.info.name}</strong>
+                  {item.status !== 'skipped' && item.info && (
                     <span className="muted">
                       {' '}
                       v{item.info.version} · {formatBytes(item.file.size)}
                     </span>
                   )}
-                  {item.status === 'skipped' && <div className="form-error">{item.info.problem}</div>}
-                  {item.status === 'failed' && <div className="form-error">{item.error}</div>}
+                  {item.status === 'skipped' && <div className="form-error">{item.error}</div>}
+                  {item.status === 'failed' && (
+                    <div className="form-error" role="alert">
+                      {item.error}
+                    </div>
+                  )}
                   {item.status === 'done' && item.result && (
                     <div className="muted">
                       <a href={item.result.app.urls.page}>{window.location.origin + item.result.app.urls.page}</a>
@@ -747,11 +792,17 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
               </label>
               <label className="field">
                 <span className="field-label">Site owner? Your admin key (optional)</span>
-                <input type="password" value={adminKey} onChange={(e) => setAdminKey(e.target.value)} autoComplete="off" placeholder="From data/config.json on the server" />
-                <span className="muted">Visitors may publish ten apps an hour. The admin key is not held to that, so a whole folder goes in at once.</span>
+                <input type="password" value={adminKey} onChange={(e) => setAdminKey(e.target.value)} autoComplete="off" placeholder="From data/config.json on the server" aria-describedby="admin-key-hint" />
+                <span className="muted" id="admin-key-hint">
+                  Visitors may publish ten apps an hour. The admin key is not held to that, so a whole folder goes in at once.
+                </span>
               </label>
               <input type="text" name="website" value={website} onChange={(e) => setWebsite(e.target.value)} className="comment-hp" tabIndex={-1} autoComplete="off" aria-hidden="true" />
-              {error && <p className="form-error">{error}</p>}
+              {error && (
+                <p className="form-error" role="alert">
+                  {error}
+                </p>
+              )}
               <div className="publish-foot">
                 <p className="muted">By publishing you make each bundle public: anyone can run it, read it and remix it.</p>
                 <button type="submit" className="cta cta-primary" disabled={ready === 0 || !category || busy}>
@@ -851,7 +902,12 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
         <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} what="so there is none to choose yet" />
 
         <form className="publish-form" onSubmit={submit}>
-          <BundleDrop file={file} info={info} onFiles={(files) => void takeFiles(files)} />
+          <BundleDrop item={single} onFiles={(files) => void takeFiles(files)} />
+          {selection.mode === 'batch' && !isSettled(selection) && (
+            <p className="muted" role="status">
+              Reading {selection.items.length} bundles… {selection.items.length - pendingCount(selection)} of {selection.items.length} read.
+            </p>
+          )}
           <PrepublishReport info={info} />
           <PrepublishReport info={info} extra={info && !info.problem && !thumb ? ['No screenshot yet: the card will show the icon, or an initial. A screenshot is what most visitors decide on.'] : []} />
 
@@ -927,7 +983,11 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                 <input type="text" value={newCat.description} onChange={(e) => setNewCat({ ...newCat, description: e.target.value })} maxLength={120} placeholder="A line so others file the right apps here" />
               </label>
               <p className="muted">Suggested categories can be used straight away and are marked as suggested until the site owner approves them.</p>
-              {suggestError && <p className="form-error">{suggestError}</p>}
+              {suggestError && (
+                <p className="form-error" role="alert">
+                  {suggestError}
+                </p>
+              )}
               <button type="button" className="cta" onClick={suggest} disabled={newCat.name.trim().length < 2}>
                 Add it
               </button>
@@ -942,12 +1002,15 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
             <input
               type="file"
               accept="image/png,image/jpeg,image/webp,image/gif"
+              aria-describedby="screenshot-hint"
               onChange={(e) => {
                 const f = e.target.files?.[0];
                 if (f) void takeThumb(f);
               }}
             />
-            <span className="muted">Without one, the card shows the bundle&rsquo;s icon. Resized in your browser before upload; 16:10 fills the frame.</span>
+            <span className="muted" id="screenshot-hint">
+              Without one, the card shows the bundle&rsquo;s icon. Resized in your browser before upload; 16:10 fills the frame.
+            </span>
             {thumb && (
               <span className="thumb-preview">
                 <img src={thumb.url} alt="Thumbnail preview" />
@@ -960,13 +1023,17 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
           </label>
           <input type="text" name="website" value={website} onChange={(e) => setWebsite(e.target.value)} className="comment-hp" tabIndex={-1} autoComplete="off" aria-hidden="true" />
 
-          {error && <p className="form-error">{error}</p>}
+          {error && (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          )}
           <div className="publish-foot">
             <p className="muted">
               By publishing you make the bundle public: anyone can run it, read it and remix it. Apache-2.0-style openness is the
               point.
             </p>
-            <button type="submit" className="cta cta-primary" disabled={!file || !!info?.problem || !category || busy}>
+            <button type="submit" className="cta cta-primary" disabled={single?.status !== 'ready' || !category || busy}>
               {busy ? 'Publishing…' : parentSlug ? 'Publish remix' : 'Publish'}
             </button>
           </div>
@@ -1007,8 +1074,8 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
   const [author, setAuthor] = useState('');
   const [category, setCategory] = useState('');
   const [tags, setTags] = useState('');
-  const [file, setFile] = useState<File | null>(null);
-  const [info, setInfo] = useState<Inspection | null>(null);
+  const [selection, selector] = useSelection();
+  const single = singleItem(selection);
   const [notes, setNotes] = useState('');
   const [thumb, setThumb] = useState<{ blob: Blob; url: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -1064,10 +1131,13 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
     }
   };
 
+  // The same versioned selection as the publish form: the file shown and
+  // the file sent are one item, and a slower earlier read cannot overwrite
+  // a later choice.
   const takeFile = async (f: File) => {
-    setFile(f);
     setError(null);
-    setInfo(inspectBundle(new Uint8Array(await f.arrayBuffer())));
+    const outcome = await selector.select([f]);
+    if (outcome.outcome === 'rejected') setError(outcome.reason);
   };
   const takeThumb = async (f: File) => {
     if (!/^image\/(png|jpeg|webp|gif)$/.test(f.type)) {
@@ -1083,7 +1153,7 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
     return (
       <main className="publish">
         <div className="wrap wrap-narrow">
-          <div className="empty">
+          <div className="empty" role="alert">
             <p className="eyebrow">Not here</p>
             <h1 className="page-title">Could not load that app.</h1>
             <p className="muted">{loadError}</p>
@@ -1139,22 +1209,32 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
         <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} what="so the listing cannot be moved to another yet" />
 
         <section className="update-section">
-          <label className="field">
-            <span className="field-label">Edit key</span>
-            <input
-              type="text"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder="40 characters, from when you published"
-              spellCheck={false}
-              autoComplete="off"
-              className={key && !keyOk ? 'invalid' : ''}
-            />
+          {/* Two controls, two labels: a label inside a label gives the key
+              field the checkbox's words as part of its name. */}
+          <div className="field">
+            <label className="field">
+              <span className="field-label">Edit key</span>
+              <input
+                type="text"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                placeholder="40 characters, from when you published"
+                spellCheck={false}
+                autoComplete="off"
+                className={key && !keyOk ? 'invalid' : ''}
+                aria-invalid={key && !keyOk ? true : undefined}
+                aria-describedby={key && !keyOk ? 'edit-key-error' : undefined}
+              />
+            </label>
             <label className="check">
               <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Keep it in this browser
             </label>
-          </label>
-          {key && !keyOk && <p className="form-error">An edit key is 40 hex characters.</p>}
+          </div>
+          {key && !keyOk && (
+            <p className="form-error" id="edit-key-error">
+              An edit key is 40 hex characters.
+            </p>
+          )}
           {refusedSavedKey && (
             <p className="muted">
               The key kept in this browser for this app was refused. If you are sure it is wrong,{' '}
@@ -1177,8 +1257,16 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
           <KeyImport onImported={() => setKey(savedKey(slug) ?? key)} />
         </section>
 
-        {done && <div className="notice notice-ok">{done}</div>}
-        {error && <p className="form-error">{error}</p>}
+        {done && (
+          <div className="notice notice-ok" role="status">
+            {done}
+          </div>
+        )}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
 
         <section className="update-section">
           <h2 className="section-title">The listing</h2>
@@ -1230,7 +1318,7 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
           <h2 className="section-title">
             A new version <span className="section-count">v{app.version + 1}</span>
           </h2>
-          <BundleDrop file={file} info={info} onFiles={(files) => void takeFile(files[0])} />
+          <BundleDrop item={single} onFiles={(files) => void takeFile(files[0])} />
           <label className="field">
             <span className="field-label">What changed</span>
             <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={400} placeholder="Shown under the version on the app page" />
@@ -1238,14 +1326,14 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
           <button
             type="button"
             className="cta cta-primary"
-            disabled={!keyOk || !file || !!info?.problem || busy !== null}
+            disabled={!keyOk || single?.status !== 'ready' || busy !== null}
             onClick={() =>
               withKey('version', async (k) => {
-                if (!file) return;
-                const a = await addVersion(slug, k, file, notes.trim());
+                const chosen = singleItem(selector.state());
+                if (!chosen || chosen.status !== 'ready') return;
+                const a = await addVersion(slug, k, chosen.file, notes.trim());
                 setApp(a);
-                setFile(null);
-                setInfo(null);
+                selector.clear();
                 setNotes('');
                 setDone(`v${a.version} is live. Anyone opening the app now gets it.`);
               })

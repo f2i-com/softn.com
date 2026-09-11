@@ -1,24 +1,26 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Nav } from './components/Nav';
 import { Footer } from './components/Footer';
 import { HomePage } from './pages/HomePage';
 import { DirectoryPage } from './pages/DirectoryPage';
 import { AppPage } from './pages/AppPage';
 import { PublishPage } from './pages/PublishPage';
+import { NotFoundPage } from './pages/NotFoundPage';
 import { DropAnywhere } from './components/DropAnywhere';
-import { useLinkInterception, useRoute } from './lib/router';
+import { selectPage, useLinkInterception, useRoute } from './lib/router';
 import { getCategories, type Category } from './lib/api';
 
 /**
- * Four pages on one bundle. The directory API is asked for the categories
- * once; if that does not answer, every page still renders — and still asks
- * for its apps. The categories are labels on the cards and chips to filter
- * by, not a precondition for the list: an earlier version treated their
- * failure as "the directory is down" and skipped the app-list request on
- * every page, so a taxonomy endpoint could make a working directory look
- * empty. Each request now carries its own status, and categories can be
- * retried in place. No page runs an app: pressing Play hands the visitor to
- * the runtime.
+ * Four pages on one bundle, and a fifth for paths that are none of them.
+ * The directory API is asked for the categories once; if that does not
+ * answer, every page still renders — and still asks for its apps. The
+ * categories are labels on the cards and chips to filter by, not a
+ * precondition for the list: an earlier version treated their failure as
+ * "the directory is down" and skipped the app-list request on every page,
+ * so a taxonomy endpoint could make a working directory look empty. Each
+ * request now carries its own status, and categories can be retried in
+ * place. No page runs an app: pressing Play hands the visitor to the
+ * runtime.
  */
 export default function App(): React.ReactElement {
   const route = useRoute();
@@ -46,30 +48,48 @@ export default function App(): React.ReactElement {
     if (route.path === '/') document.title = 'SoftN — apps that run anywhere, safely';
   }, [route.path]);
 
+  // A change of page puts focus on its main content, so a keyboard or
+  // screen-reader visitor starts where the new page starts instead of on
+  // the body or a link that has gone. Only a change of path counts: a
+  // search, a filter or a retry is the same page with a different query
+  // and a refreshed list, and focus stays where the visitor put it. The
+  // first render is left alone too.
+  const lastPath = useRef(route.path);
+  useEffect(() => {
+    if (lastPath.current === route.path) return;
+    lastPath.current = route.path;
+    const main = document.querySelector<HTMLElement>('main');
+    if (!main) return;
+    if (!main.hasAttribute('tabindex')) main.tabIndex = -1;
+    main.focus({ preventScroll: true });
+  }, [route.path]);
+
+  const selected = selectPage(route.path);
   let page: React.ReactElement;
-  const appMatch = route.path.match(/^\/app\/([^/]+)$/);
-  if (route.path === '/apps') {
-    page = <DirectoryPage route={route} categories={categories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
-  } else if (appMatch) {
-    let slug = appMatch[1];
-    try {
-      slug = decodeURIComponent(slug);
-    } catch {
-      /* a stray percent sign stays as it is */
-    }
-    page = <AppPage slug={slug} categories={categories} route={route} />;
-  } else if (route.path === '/publish') {
-    page = <PublishPage route={route} categories={categories} onCategories={setCategories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
-  } else {
-    page = <HomePage categories={categories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
+  switch (selected.kind) {
+    case 'directory':
+      page = <DirectoryPage route={route} categories={categories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
+      break;
+    case 'app':
+      page = <AppPage slug={selected.slug} categories={categories} route={route} />;
+      break;
+    case 'publish':
+      page = <PublishPage route={route} categories={categories} onCategories={setCategories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
+      break;
+    case 'not-found':
+      page = <NotFoundPage path={route.path} />;
+      break;
+    case 'home':
+      page = <HomePage categories={categories} categoriesError={categoriesError} onRetryCategories={retryCategories} />;
+      break;
   }
 
   return (
     <>
       <Nav />
-      {route.path === '/' ? <main>{page}</main> : page}
+      {selected.kind === 'home' ? <main>{page}</main> : page}
       <Footer />
-      <DropAnywhere onPublishPage={route.path === '/publish'} />
+      <DropAnywhere onPublishPage={selected.kind === 'publish'} />
     </>
   );
 }

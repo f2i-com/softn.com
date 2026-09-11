@@ -51,6 +51,12 @@ button {
   border-radius: 2px;
 }
 
+/* A change of page puts focus on <main> so a keyboard visitor starts at the
+   new content; a ring around the whole page would say nothing useful. */
+main:focus-visible {
+  outline: none;
+}
+
 /* Two exceptions, and the same reason for both: these are scrollers, so the
    browser makes them focusable, and each one sits inside a rounded parent with
    overflow: hidden — .lang around the code sample, .player around the source

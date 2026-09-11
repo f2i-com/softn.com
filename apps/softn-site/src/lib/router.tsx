@@ -55,6 +55,35 @@ export function isOwnedPath(pathname: string): boolean {
   return pathname === '/' || (OWNED.test(pathname) && !FOREIGN.test(pathname));
 }
 
+/** Which page a path is, decided by the same pattern that decides which links are the SPA's to follow. */
+export type Page = { kind: 'home' } | { kind: 'directory' } | { kind: 'app'; slug: string } | { kind: 'publish' } | { kind: 'not-found' };
+
+/**
+ * The page for a path. Anything `OWNED` does not name is not-found — the
+ * app used to fall back to the home page there, so a mistyped or stale
+ * link looked like the front door. The deployed .htaccess still serves
+ * index.html for every path, so this is the only place an unknown one is
+ * told apart.
+ */
+export function selectPage(pathname: string): Page {
+  const path = pathname.replace(/\/+$/, '') || '/';
+  if (path === '/') return { kind: 'home' };
+  if (!isOwnedPath(path)) return { kind: 'not-found' };
+  if (path === '/apps') return { kind: 'directory' };
+  if (path === '/publish') return { kind: 'publish' };
+  const app = path.match(/^\/app\/([^/]+)$/);
+  if (app) {
+    let slug = app[1];
+    try {
+      slug = decodeURIComponent(slug);
+    } catch {
+      /* a stray percent sign stays as it is */
+    }
+    return { kind: 'app', slug };
+  }
+  return { kind: 'not-found' };
+}
+
 /**
  * Clicks on links to the SPA's own pages become navigations without a page
  * load, wherever the link is. Installed once by the app; nothing else needs

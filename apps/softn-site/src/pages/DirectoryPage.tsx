@@ -31,6 +31,18 @@ function asCap(v: string | null): CapabilityFilter | '' {
   return CAP_FILTERS.some((c) => c.id === v) ? (v as CapabilityFilter) : '';
 }
 
+/**
+ * The page number an address asks for: a positive integer, or 1. Anything
+ * else — `abc`, `-3`, `2.5`, `1e3`, a number too large to hold — used to be
+ * handed to `Number()` and, when that gave a finite value, sent to the API
+ * as it was. Bounded above only so the value stays an integer; a page past
+ * the last one is clamped once the reply says how many there are.
+ */
+export function parsePageParam(raw: string | null): number {
+  if (raw === null || !/^[1-9][0-9]{0,8}$/.test(raw)) return 1;
+  return Number(raw);
+}
+
 /*
  * The Apps page: the directory, and nothing in front of it. The featured
  * shelf leads when nobody has narrowed anything; the moment a filter is on,
@@ -58,13 +70,19 @@ export function DirectoryPage({
   const author = route.query.get('author') ?? '';
   const cap = asCap(route.query.get('cap'));
   const sort = route.query.get('sort') ?? (q ? 'relevance' : 'trending');
-  const page = Math.max(1, Number(route.query.get('page') ?? 1) || 1);
+  const rawPage = route.query.get('page');
+  const page = parsePageParam(rawPage);
   const filters: Filters = { q, category, tag, author, cap, sort, page };
   const filtered = Boolean(q || category !== 'all' || tag || author || cap);
 
+  // Three things the listing can be: not loaded yet (no reply so far), a
+  // reply with nothing in it, and a request that failed. They used to share
+  // one look. The last keeps whatever was on screen — the previous list is
+  // more use than a blank — and says so, with a retry.
   const [apps, setApps] = useState<AppCardData[]>([]);
   const [total, setTotal] = useState(0);
   const [pages, setPages] = useState(1);
+  const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [featured, setFeatured] = useState<AppCardData[]>([]);
@@ -74,23 +92,40 @@ export function DirectoryPage({
     document.title = q ? `${q} — apps on SoftN` : author ? `Apps by ${author} — SoftN` : 'Apps — SoftN';
   }, [q, author]);
 
+  // An address that says page=abc, page=0 or page=1 means page 1, and the
+  // address is made to say so — replaced, so back does not return to it.
+  useEffect(() => {
+    if (rawPage !== null && rawPage !== (page > 1 ? String(page) : null)) navigate(buildUrl(filters), true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawPage, page]);
+
   useEffect(() => {
     const ac = new AbortController();
     setLoading(true);
     listApps({ q, category, tag, author, cap, sort: sort === 'relevance' ? undefined : sort, page, perPage: 24 }, ac.signal)
       .then((r) => {
+        // A reply for a request this page has moved past is never painted,
+        // whether or not the request honoured the abort.
+        if (ac.signal.aborted) return;
+        if (page > r.pages && r.pages >= 1) {
+          // Past the last page: ask for the last one instead, in place.
+          navigate(buildUrl({ ...filters, page: r.pages }), true);
+          return;
+        }
         setApps(r.items);
         setTotal(r.total);
-        setPages(r.pages);
+        setPages(Math.max(1, r.pages));
+        setLoaded(true);
         setError(null);
+        setLoading(false);
       })
       .catch((e) => {
-        if (!ac.signal.aborted) setError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (!ac.signal.aborted) setLoading(false);
+        if (ac.signal.aborted) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
       });
     return () => ac.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, category, tag, author, cap, sort, page, attempt]);
 
   // The featured shelf is chosen from the most-played dozen and changes as
@@ -100,8 +135,12 @@ export function DirectoryPage({
     if (!showFeatured) return undefined;
     const ac = new AbortController();
     listApps({ sort: 'runs', perPage: 12 }, ac.signal)
-      .then((r) => setFeatured(pickFeatured(r.items)))
-      .catch(() => setFeatured([]));
+      .then((r) => {
+        if (!ac.signal.aborted) setFeatured(pickFeatured(r.items));
+      })
+      .catch(() => {
+        if (!ac.signal.aborted) setFeatured([]);
+      });
     return () => ac.abort();
   }, [showFeatured]);
 
@@ -121,7 +160,8 @@ export function DirectoryPage({
   else if (tag) heading = <>Tagged #{tag}</>;
   else if (cap) heading = CAP_FILTERS.find((c) => c.id === cap)?.name ?? 'All apps';
 
-  const count = loading && apps.length === 0 ? 'Loading…' : total === 0 ? 'Nothing matches.' : `${total} app${total === 1 ? '' : 's'}${pages > 1 ? `, page ${page} of ${pages}` : ''}`;
+  const count = !loaded ? 'Loading…' : total === 0 ? 'Nothing matches.' : `${total} app${total === 1 ? '' : 's'}${pages > 1 ? `, page ${page} of ${pages}` : ''}`;
+  const empty = loaded && !loading && !error && total === 0;
 
   return (
     <main className="directory">
@@ -173,39 +213,44 @@ export function DirectoryPage({
               <a href={buildUrl({ ...filters, tag: '', page: 1 })}>Clear</a>
             </p>
           )}
-          {error ? (
-            <div className="notice" role="status">
+          {error && (
+            <div className="notice" role="alert">
               <strong>Could not load the apps.</strong> {error}{' '}
+              {apps.length > 0 && 'The list below is the last one that loaded. '}
               <button type="button" className="cta cta-small" onClick={() => setAttempt((n) => n + 1)}>
                 Retry
               </button>
             </div>
-          ) : (
-            <>
-              <AppGrid apps={apps} categories={categories} skeleton={loading ? 8 : 0} loading={loading} />
-              {!loading && total === 0 && (
-                <div className="empty">
-                  <p className="empty-title">No app matches that yet.</p>
-                  <p className="muted">
-                    {filtered
-                      ? 'Try fewer filters, or a different word.'
-                      : 'The directory is empty. Drop .softn files anywhere on this page to publish them, one or a folder at once.'}
-                  </p>
-                  <p className="app-actions">
-                    {filtered && (
-                      <a className="cta" href="/apps">
-                        Clear the filters
-                      </a>
-                    )}
-                    <a className="cta cta-primary" href="/publish">
-                      Publish the first one
-                    </a>
-                  </p>
-                </div>
-              )}
-              <Pagination page={page} pages={pages} hrefFor={(p) => buildUrl({ ...filters, page: p })} onPage={(p) => navigate(buildUrl({ ...filters, page: p }))} />
-            </>
           )}
+          {(!error || apps.length > 0) && <AppGrid apps={apps} categories={categories} skeleton={loading && !error ? 8 : 0} loading={loading && !error} />}
+          {empty && (
+            <div className="empty">
+              <p className="empty-title">No app matches that yet.</p>
+              <p className="muted">
+                {q
+                  ? 'Try a different word, or fewer filters.'
+                  : filtered
+                    ? 'Try fewer filters, or a different word.'
+                    : 'The directory is empty. Drop .softn files anywhere on this page to publish them, one or a folder at once.'}
+              </p>
+              <p className="app-actions">
+                {q && (
+                  <a className="cta" href={buildUrl({ ...filters, q: '', page: 1 })}>
+                    Clear the search
+                  </a>
+                )}
+                {filtered && (
+                  <a className="cta" href="/apps">
+                    Clear the filters
+                  </a>
+                )}
+                <a className="cta cta-primary" href="/publish">
+                  Publish the first one
+                </a>
+              </p>
+            </div>
+          )}
+          {!error && <Pagination page={page} pages={pages} hrefFor={(p) => buildUrl({ ...filters, page: p })} onPage={(p) => navigate(buildUrl({ ...filters, page: p }))} />}
         </section>
       </div>
     </main>
