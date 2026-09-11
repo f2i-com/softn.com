@@ -51,7 +51,7 @@ Legend: **R** = reproduced on HEAD with a focused test before the fix; **P** = p
 - **STU-03** (P1) R. One `ProjectRecord` per project in IndexedDB, typed `SaveResult`, `SaveStatus` indicator with in-memory Export; migration only after read-back (`test/persistence.test.ts`, `projectRecords.test.ts`).
 - **STU-04** (P1) R. Durable ids, id-keyed recent list, remove-from-list vs scoped delete, checkpoint before replace, provider settings outside project records.
 - **SITE-02** (P1) R. `apps/softn-site/src/lib/selection.ts`; generation-guarded selection, admission before read, bounded concurrency (`test/publish-selection.test.tsx`). Per-row retry exists in the module but is not exposed on the page.
-- **QA-01** (P1). `e2e/` Playwright gate, `scripts/serve-topology.mjs`, CI job `e2e` in `.github/workflows/build.yml`. Sensitivity: SHR-02 regressions fail the URL/page-count assertions, SHR-01 the `/publish` href, SITE-01 the key-unchanged assertion.
+- **QA-01** (P1). `e2e/` Playwright gate and `scripts/serve-topology.mjs`, run locally (`npm run e2e`; see e2e/README.md) — CI keeps only the shared Verify job. Sensitivity: SHR-02 regressions fail the URL/page-count assertions, SHR-01 the `/publish` href, SITE-01 the key-unchanged assertion.
 - **QA-02** (P1). Runtime/core matrix (`packages/@softn/core/test/threat-boundary-*.test.ts`, `apps/softn-web/test/appStorageIsolation.test.ts`) and API policy matrix (`apps/softn-api/test/policies.test.mjs`). One real defect found and fixed: the runtime granted a capability for any truthy `enabled` (`b606169`). Deployment headers (COOP/CSP) are checked by `scripts/smoke-site.mjs`, not by unit tests.
 
 ### Wave C / D
@@ -77,8 +77,7 @@ Executed on the final tree: root typecheck clean; `npm test` green in every work
 rebuilt packages, apps and site; `npm run e2e` 12 of 12 in 10.6 s; the cross-browser and
 mobile matrix (`npm run e2e:matrix`: Firefox, WebKit, 390 and 360 px, 200 % zoom) run locally
 with every journey passing (one Firefox run lost a trace file to an overlapping run; the same
-test passed standalone). Not executed: the scheduled matrix workflow on GitHub Actions, the
-10,000-app benchmark, screen readers.
+test passed standalone). Not executed: the 10,000-app benchmark, screen readers.
 
 - **Core parser.** `() => count = count + 1` parsed as `() => count` plus a stray attribute, silently. Assignment expressions are in the grammar, every `{…}` site reports a diagnostic where it cannot reach its closing brace, and the renderer evaluates the assignment through the same path a binding writes.
 - **STU-05.** Timeout and output-cap controls in the AI settings, persisted globally, never in a project record.
@@ -89,11 +88,11 @@ test passed standalone). Not executed: the scheduled matrix workflow on GitHub A
 - **SITE-02.** Per-row Try again for a failed read in a batch. **SITE-03.** Passphrase-sealed key backups (PBKDF2, AES-GCM). **SITE-04.** Unknown paths return a real 404 from the emitted Apache, nginx and redirect rules and the PHP router (verified under php -S; Apache and nginx by regex over the emitted text).
 - **BLD-03.** Blocks render on the canvas with droppable branches, palette entries, wrap/unwrap and alternate branches. **BLD-05.** A confirmed, undoable "Re-identify records" per collection with reference remapping. **UX-02 (Builder).** Source-only marks in the file navigator. The printer handles the new assignment node.
 - **API-03.** The two measured bottlenecks fixed without a storage migration: at 1,000 apps warm list p50 4.1 s → 1.7 s, read 11.8 s → 1.4 s, the whole benchmark 685 s → 162 s (`apps/softn-api/bench/results-2026-09-11.json`); thresholds on `/api/health`; `backup.php` export/verify/restore with tests.
-- **QA-01/PLT-01/UX-01.** Browser matrix and scheduled workflow; parity test through core, Studio and Builder run paths; specs for the not-found page, directory failure state and export-dialog focus. Two defects they found are fixed: the Builder dialog dropped its focus restoration (inert cleared too late), and Studio's preview named a missing permission.json the project had (it now names the declared capabilities it does not grant).
+- **QA-01/PLT-01/UX-01.** Browser matrix (`npm run e2e:matrix`, run locally); parity test through core, Studio and Builder run paths; specs for the not-found page, directory failure state and export-dialog focus. Two defects they found are fixed: the Builder dialog dropped its focus restoration (inert cleared too late), and Studio's preview named a missing permission.json the project had (it now names the declared capabilities it does not grant).
 
 ## Not addressed
 
-- The scheduled GitHub Actions matrix has not been run in CI.
+- The browser gates are local by choice; CI runs only the Verify job.
 - Firefox and WebKit downloads and native file pickers are not exercised (they would block automation).
 - Screen-reader sessions and a 10,000-app catalogue benchmark.
 - Builder's LivePreview helpers are module-private; the parity test mirrors them rather than importing them.
