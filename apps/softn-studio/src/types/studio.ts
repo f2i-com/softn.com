@@ -56,6 +56,29 @@ export interface ChatMessage {
   timestamp: number;
   toolCalls?: ToolCallCard[];
   tokens?: { input: number; output: number };
+  /** The VFS transaction this turn committed, when it committed one; what "Revert this turn" reverts. */
+  transactionId?: string;
+}
+
+/** Why the last agent turn did not finish, in a form the UI can act on. */
+export type AIFailureKind =
+  | 'timeout'
+  | 'cancelled'
+  | 'rate-limited'
+  | 'provider'
+  | 'network'
+  | 'invalid-response'
+  | 'budget'
+  | 'truncated'
+  | 'refused'
+  | 'empty';
+
+export interface AIFailure {
+  kind: AIFailureKind;
+  message: string;
+  /** For a rate limit: how long the provider asked us to wait. */
+  retryAfterMs?: number;
+  at: number;
 }
 
 /** Tool call displayed as card */
@@ -83,6 +106,16 @@ export interface VFSEvent {
   timestamp: number;
   source: 'user' | 'ai';
   previousContent?: string | Uint8Array;
+  /**
+   * The undo unit this event belongs to. Every event has one; a single
+   * edit is a unit of one, an import or an AI turn is a unit of many.
+   * Undo, redo, revert and pruning act on whole units.
+   */
+  transactionId?: string;
+  /** The file as it was before this event — bytes and metadata — for an exact restore. Absent for a create. */
+  previous?: VFSFile;
+  /** On the redo stack only: the file as it was after this event, for an exact redo. Absent for a delete. */
+  after?: VFSFile;
 }
 
 /** Blueprint page */

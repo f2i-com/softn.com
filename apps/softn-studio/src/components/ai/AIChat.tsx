@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useAIStore, useWorkspaceStore } from '../../stores';
+import { useAIStore, useVFSStore, useWorkspaceStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { runAgentTurn, abortAgentTurn } from '../../lib/agentOrchestrator';
 import type { ChatMessage } from '../../types/studio';
@@ -11,9 +11,28 @@ export const AIChat: React.FC = () => {
     activeProviderId, providers, currentStep,
   } = useAIStore();
   const { blueprint } = useWorkspaceStore();
+  // A turn that committed files did so as one VFS transaction under the
+  // message's transactionId. While that transaction is still in the
+  // history, the message offers to revert it — the whole turn, by id, not
+  // "whatever the AI did last".
+  const history = useVFSStore((s) => s.history);
   const [input, setInput] = useState('');
+  const [revertNotice, setRevertNotice] = useState<{ id: string; text: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const revertTurn = (transactionId: string) => {
+    const result = useVFSStore.getState().revertTransaction(transactionId);
+    const ws = useWorkspaceStore.getState();
+    if (!result.ok) {
+      setRevertNotice({ id: transactionId, text: result.reason });
+      ws.addConsoleOutput(`[AI] Revert refused: ${result.reason}`);
+      return;
+    }
+    setRevertNotice({ id: transactionId, text: `Reverted ${result.paths.length} file(s): ${result.paths.join(', ')}` });
+    ws.setDirty(true);
+    ws.addConsoleOutput(`[AI] Reverted turn: ${result.paths.join(', ')}`);
+  };
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -237,6 +256,28 @@ export const AIChat: React.FC = () => {
                       )}
                     </div>
                   ))}
+                </div>
+              )}
+              {msg.role === 'assistant' && msg.transactionId && (
+                <div style={styles.revertRow}>
+                  {history.some((e) => e.transactionId === msg.transactionId) ? (
+                    <button
+                      onClick={() => revertTurn(msg.transactionId!)}
+                      disabled={agentState !== 'idle'}
+                      title="Put back every file this turn changed, as one step"
+                      style={styles.revertBtn}
+                    >
+                      <Icon name="undo" size={12} color="var(--studio-error)" />
+                      Revert this turn
+                    </button>
+                  ) : (
+                    <span style={styles.revertDone}>
+                      {revertNotice?.id === msg.transactionId ? revertNotice.text : 'This turn is no longer in the history.'}
+                    </span>
+                  )}
+                  {revertNotice?.id === msg.transactionId && history.some((e) => e.transactionId === msg.transactionId) && (
+                    <span role="alert" style={styles.revertDone}>{revertNotice.text}</span>
+                  )}
                 </div>
               )}
               {msg.tokens && (
@@ -595,6 +636,31 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'var(--studio-mono)',
     maxHeight: 80,
     overflow: 'auto',
+  },
+  revertRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+  },
+  revertBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 5,
+    padding: '4px 8px',
+    border: '1px solid var(--studio-border)',
+    borderRadius: 6,
+    background: 'transparent',
+    color: 'var(--studio-error)',
+    fontSize: 11,
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+  },
+  revertDone: {
+    fontFamily: 'var(--studio-mono)',
+    fontSize: 10,
+    color: 'var(--studio-text-dim)',
   },
   tokenCount: {
     display: 'block',

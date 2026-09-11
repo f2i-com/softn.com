@@ -1,10 +1,21 @@
 import { create } from 'zustand';
 import type {
   AgentState,
+  AIFailure,
   ChatMessage,
   ProviderConfig,
   ModelProfile,
 } from '../types/studio';
+
+/** How long one provider request may take before Studio gives up on it. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+/**
+ * The output allowance reserved for each request, sent as the provider's
+ * max_tokens. It is also what the budget check reserves before sending: a
+ * reply cannot be longer than this, so a request the remaining budget
+ * cannot cover at this size is refused before it costs anything.
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 interface AIState {
   // BYOK config
@@ -18,8 +29,20 @@ interface AIState {
   iterationsUsed: number;
   maxIterations: number;
   tokensUsed: number;
+  /**
+   * The session's token budget. It is a local guardrail — Studio counts
+   * what providers report and refuses a request the remainder cannot cover
+   * — not a billing cap: the provider bills what it bills, and a reply
+   * whose usage arrives malformed is counted as zero here.
+   */
   tokenBudget: number;
   filesChanged: number;
+  /** Per-request timeout, in milliseconds. */
+  requestTimeoutMs: number;
+  /** Output allowance per request; the provider's max_tokens and the budget reservation. */
+  maxOutputTokens: number;
+  /** Why the last turn did not finish, until the next one starts. */
+  lastFailure: AIFailure | null;
 
   // Chat
   messages: ChatMessage[];
@@ -36,6 +59,9 @@ interface AIState {
   incrementFilesChanged(): void;
   setMaxIterations(max: number): void;
   setTokenBudget(budget: number): void;
+  setRequestTimeoutMs(ms: number): void;
+  setMaxOutputTokens(tokens: number): void;
+  setLastFailure(failure: AIFailure | null): void;
   addMessage(message: ChatMessage): void;
   updateLastMessage(content: string): void;
   clearMessages(): void;
@@ -60,6 +86,9 @@ export const useAIStore = create<AIState>((set) => ({
   tokensUsed: 0,
   tokenBudget: 50000,
   filesChanged: 0,
+  requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
+  maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+  lastFailure: null,
 
   messages: [],
 
@@ -76,10 +105,18 @@ export const useAIStore = create<AIState>((set) => ({
   setAgentState: (state) => set({ agentState: state }),
   setCurrentStep: (step) => set({ currentStep: step }),
   incrementIteration: () => set((s) => ({ iterationsUsed: s.iterationsUsed + 1 })),
-  addTokens: (count) => set((s) => ({ tokensUsed: s.tokensUsed + count })),
+  // A count that is not a finite non-negative number is not counted: the
+  // accounting must never go NaN because a provider sent a malformed field.
+  addTokens: (count) =>
+    set((s) => ({ tokensUsed: s.tokensUsed + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0) })),
   incrementFilesChanged: () => set((s) => ({ filesChanged: s.filesChanged + 1 })),
   setMaxIterations: (max) => set({ maxIterations: Math.max(1, Math.min(100, max)) }),
   setTokenBudget: (budget) => set({ tokenBudget: Math.max(1000, Math.min(1000000, budget)) }),
+  setRequestTimeoutMs: (ms) =>
+    set({ requestTimeoutMs: Number.isFinite(ms) ? Math.max(5_000, Math.min(600_000, Math.floor(ms))) : DEFAULT_REQUEST_TIMEOUT_MS }),
+  setMaxOutputTokens: (tokens) =>
+    set({ maxOutputTokens: Number.isFinite(tokens) ? Math.max(256, Math.min(128_000, Math.floor(tokens))) : DEFAULT_MAX_OUTPUT_TOKENS }),
+  setLastFailure: (failure) => set({ lastFailure: failure }),
   addMessage: (message) =>
     set((s) => {
       const next = [...s.messages, message];
@@ -96,5 +133,5 @@ export const useAIStore = create<AIState>((set) => ({
   resetBudget: () =>
     set({ iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 }),
   resetSession: () =>
-    set({ messages: [], agentState: 'idle', currentStep: '', iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 }),
+    set({ messages: [], agentState: 'idle', currentStep: '', iterationsUsed: 0, tokensUsed: 0, filesChanged: 0, lastFailure: null }),
 }));

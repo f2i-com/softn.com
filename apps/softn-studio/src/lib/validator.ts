@@ -1,6 +1,6 @@
 import { inspectEntries } from '@softn/core';
 import type { ValidationError, VFSFile, Blueprint } from '../types/studio';
-import { normalizeManifestForBundle } from './exportBundle';
+import { planBundle } from './exportBundle';
 
 /**
  * The bundle the project would export, inspected the way the directory and
@@ -10,7 +10,9 @@ import { normalizeManifestForBundle } from './exportBundle';
  *
  * Studio's validator used to look for a manifest `entry` field the runtime
  * never read, and pass an export the directory then refused for having no
- * `main`. Now it asks the one inspector.
+ * `main`. Now it asks the one inspector, and it asks about the exact
+ * entries the export will write — the same plan, so a path the export
+ * refuses or a manifest entry it prunes is reported here first.
  */
 export function validateProject(
   files: Map<string, VFSFile>,
@@ -18,16 +20,8 @@ export function validateProject(
 ): ValidationError[] {
   const errors: ValidationError[] = [];
 
-  // What the archive will hold: every project file except Studio's own, with
-  // the manifest as the export writes it.
-  const entries = new Map<string, Uint8Array>();
-  const encoder = new TextEncoder();
-  for (const [path, file] of files) {
-    if (path.startsWith('builder/')) continue;
-    entries.set(path, typeof file.content === 'string' ? encoder.encode(file.content) : file.content);
-  }
-  const manifest = normalizeManifestForBundle(files);
-  if (manifest !== null) entries.set('manifest.json', encoder.encode(manifest));
+  const { entries, problems } = planBundle(files);
+  errors.push(...problems);
 
   if (entries.size > 0) {
     const inspection = inspectEntries(entries);

@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../src/lib/aiProvider', () => ({
+vi.mock('../src/lib/aiProvider', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/lib/aiProvider')>()),
   sendAIRequest: vi.fn(),
 }));
 
-import { sendAIRequest } from '../src/lib/aiProvider';
+import { AIProviderError, sendAIRequest } from '../src/lib/aiProvider';
 import { abortAgentTurn, buildFileContents, checkWrite, parseAIResponse, runAgentTurn } from '../src/lib/agentOrchestrator';
 import { useAIStore } from '../src/stores/aiStore';
 import { useVFSStore } from '../src/stores/vfsStore';
@@ -12,6 +13,17 @@ import { useWorkspaceStore } from '../src/stores/workspaceStore';
 import type { VFSFile } from '../src/types/studio';
 
 type Response = Awaited<ReturnType<typeof sendAIRequest>>;
+
+/** A finished reply, as the provider adapter reports one. */
+function reply(content: string, status: Response['status'] = 'complete'): Response {
+  return {
+    content,
+    status,
+    stopReason: status === 'truncated' ? 'max_tokens' : 'end_turn',
+    blocks: [{ type: 'text', text: content }],
+    usage: { inputTokens: 1, outputTokens: 1 },
+  };
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -47,7 +59,9 @@ beforeEach(() => {
     currentStep: '',
     iterationsUsed: 0,
     tokensUsed: 0,
+    tokenBudget: 50000,
     filesChanged: 0,
+    lastFailure: null,
   });
   useVFSStore.getState().reset();
   useWorkspaceStore.getState().reset();
@@ -71,10 +85,7 @@ describe('agent turn ownership', () => {
     expect(useAIStore.getState().agentState).toBe('building');
 
     // Simulate a provider that ignores the aborted signal and resolves late.
-    first.resolve({
-      content: '<softn-file path="stale.txt">old project</softn-file>',
-      usage: { inputTokens: 1, outputTokens: 1 },
-    });
+    first.resolve(reply('<softn-file path="stale.txt">old project</softn-file>'));
     await firstRun;
 
     expect(useVFSStore.getState().files.has('stale.txt')).toBe(false);
@@ -86,10 +97,7 @@ describe('agent turn ownership', () => {
     abortAgentTurn();
     expect(secondSignal.aborted).toBe(true);
 
-    second.resolve({
-      content: '<softn-file path="also-stale.txt">cancelled</softn-file>',
-      usage: { inputTokens: 1, outputTokens: 1 },
-    });
+    second.resolve(reply('<softn-file path="also-stale.txt">cancelled</softn-file>'));
     await secondRun;
 
     expect(useVFSStore.getState().files.has('also-stale.txt')).toBe(false);
@@ -178,10 +186,9 @@ describe('a turn against a long file', () => {
 
   it('refuses a whole-file replacement of a file shown truncated, so the tail survives', async () => {
     // A provider that does what a model does with a truncated file: returns the part it saw, edited.
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () => ({
-      content: `Renamed start.\n<softn-file path="logic/app.logic">${LONG.slice(0, 6000).replace('start', 'begin')}</softn-file>`,
-      usage: { inputTokens: 1, outputTokens: 1 },
-    }));
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
+      reply(`Renamed start.\n<softn-file path="logic/app.logic">${LONG.slice(0, 6000).replace('start', 'begin')}</softn-file>`),
+    );
     await runAgentTurn();
     const content = useVFSStore.getState().readFile('logic/app.logic') as string;
     expect(content).toContain('SENTINEL-TAIL-7f3a');
@@ -199,14 +206,14 @@ describe('a turn against a long file', () => {
     vi.mocked(sendAIRequest)
       .mockImplementationOnce(async (_p, req) => {
         systems.push(req.system);
-        return { content: 'Let me see the whole file.\n<softn-read path="logic/app.logic" />', usage: { inputTokens: 1, outputTokens: 1 } };
+        return reply('Let me see the whole file.\n<softn-read path="logic/app.logic" />');
       })
       .mockImplementationOnce(async (_p, req) => {
         systems.push(req.system);
         const handed = req.messages[req.messages.length - 1];
         expect(handed.role).toBe('user');
         expect(handed.content).toContain('SENTINEL-TAIL-7f3a');
-        return { content: `Done.\n<softn-file path="logic/app.logic">${LONG.replace('start', 'begin')}</softn-file>`, usage: { inputTokens: 1, outputTokens: 1 } };
+        return reply(`Done.\n<softn-file path="logic/app.logic">${LONG.replace('start', 'begin')}</softn-file>`);
       });
     await runAgentTurn();
     expect(systems[0]).toContain('TRUNCATED');
@@ -228,17 +235,16 @@ describe('a turn against a long file', () => {
     const run = runAgentTurn();
     // The person edits the short file while the model is thinking.
     useVFSStore.getState().updateFile('ui/main.ui', '<App theme="dark"/>', 'user');
-    pending.resolve({ content: '<softn-file path="ui/main.ui"><App title="from old content"/></softn-file>', usage: { inputTokens: 1, outputTokens: 1 } });
+    pending.resolve(reply('<softn-file path="ui/main.ui"><App title="from old content"/></softn-file>'));
     await run;
     expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="dark"/>');
     expect(lastToolCalls()[0].result).toMatch(/changed while the request was in flight/);
   });
 
   it('still creates a new file and updates a short file it saw whole', async () => {
-    vi.mocked(sendAIRequest).mockImplementationOnce(async () => ({
-      content: '<softn-file path="ui/new.ui"><Text>new</Text></softn-file><softn-file path="ui/main.ui"><App theme="dark"/></softn-file>',
-      usage: { inputTokens: 1, outputTokens: 1 },
-    }));
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
+      reply('<softn-file path="ui/new.ui"><Text>new</Text></softn-file><softn-file path="ui/main.ui"><App theme="dark"/></softn-file>'),
+    );
     await runAgentTurn();
     expect(useVFSStore.getState().readFile('ui/new.ui')).toBe('<Text>new</Text>');
     expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="dark"/>');
@@ -246,9 +252,179 @@ describe('a turn against a long file', () => {
   });
 
   it('stops answering read requests after a bounded number of rounds', async () => {
-    vi.mocked(sendAIRequest).mockImplementation(async () => ({ content: '<softn-read path="logic/app.logic" /><softn-read path="ui/nothere.ui" />', usage: { inputTokens: 1, outputTokens: 1 } }));
+    vi.mocked(sendAIRequest).mockImplementation(async () => reply('<softn-read path="logic/app.logic" /><softn-read path="ui/nothere.ui" />'));
     await runAgentTurn();
     expect(vi.mocked(sendAIRequest).mock.calls.length).toBeLessThanOrEqual(3);
     expect(useAIStore.getState().agentState).toBe('idle');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A reply is applied as one transaction, or not at all.
+//
+// Operations used to go into the VFS one by one as they were parsed, so a
+// reply with one refused or malformed operation left the project half
+// changed, a deletion never marked the project dirty, and there was no unit
+// to undo. Pinned here: a manual edit made after the request began is a
+// conflict that holds the whole batch; one invalid operation holds the whole
+// batch; a deletion-only turn is dirty and reversible; a reply cut off at
+// the output limit is never applied; and a turn's transaction can be reverted
+// by its id.
+// ---------------------------------------------------------------------------
+
+describe('a turn as a transaction', () => {
+  const lastMessage = () => useAIStore.getState().messages.at(-1)!;
+
+  beforeEach(() => {
+    useVFSStore.getState().hydrateFiles([
+      { path: 'ui/main.ui', content: '<App>\n  <Text>one</Text>\n</App>' },
+      { path: 'ui/about.ui', content: '<About/>' },
+      { path: 'logic/app.logic', content: 'let a = 1' },
+      { path: 'assets/logo.png', content: new Uint8Array([1, 2, 3]) },
+    ]);
+  });
+
+  it('reports a manual edit made after the request as a conflict and commits nothing from the batch', async () => {
+    const pending = deferred<Response>();
+    vi.mocked(sendAIRequest).mockReturnValueOnce(pending.promise);
+    const run = runAgentTurn();
+    useVFSStore.getState().updateFile('ui/about.ui', '<About edited="by hand"/>', 'user');
+    const historyBefore = useVFSStore.getState().history.length;
+    pending.resolve(
+      reply(
+        '<softn-file path="ui/main.ui"><App>new</App></softn-file>' +
+          '<softn-file path="ui/about.ui"><About from="old"/></softn-file>' +
+          '<softn-delete path="logic/app.logic" />',
+      ),
+    );
+    await run;
+    const vfs = useVFSStore.getState();
+    expect(vfs.readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
+    expect(vfs.readFile('ui/about.ui')).toBe('<About edited="by hand"/>');
+    expect(vfs.files.has('logic/app.logic')).toBe(true);
+    expect(vfs.history.length).toBe(historyBefore);
+    const calls = lastToolCalls();
+    expect(calls.every((c) => c.status === 'error')).toBe(true);
+    expect(calls.find((c) => c.args.path === 'ui/about.ui')?.result).toMatch(/changed while the request was in flight/);
+    expect(calls.find((c) => c.args.path === 'ui/main.ui')?.result).toMatch(/held back/i);
+    expect(lastMessage().transactionId).toBeUndefined();
+    expect(useWorkspaceStore.getState().isDirty).toBe(false);
+  });
+
+  it('commits nothing when one operation in the batch is invalid', async () => {
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
+      reply(
+        '<softn-file path="ui/main.ui"><App>new</App></softn-file>' +
+          '<softn-file path="../escape.ui"><App/></softn-file>' +
+          '<softn-file path="ui/new.ui"><New/></softn-file>',
+      ),
+    );
+    await runAgentTurn();
+    const vfs = useVFSStore.getState();
+    expect(vfs.readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
+    expect(vfs.files.has('ui/new.ui')).toBe(false);
+    expect(vfs.files.has('../escape.ui')).toBe(false);
+    expect(vfs.history).toEqual([]);
+    const calls = lastToolCalls();
+    expect(calls).toHaveLength(3);
+    expect(calls.find((c) => c.args.path === '../escape.ui')?.result).toMatch(/path/i);
+  });
+
+  it('commits nothing when a reply names one path twice, or deletes and updates the same path', async () => {
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
+      reply('<softn-file path="ui/main.ui"><App>a</App></softn-file><softn-file path="UI\\Main.ui"><App>b</App></softn-file>'),
+    );
+    await runAgentTurn();
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
+    expect(useVFSStore.getState().files.size).toBe(4);
+    expect(lastToolCalls().some((c) => /more than once/i.test(c.result ?? ''))).toBe(true);
+
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
+      reply('<softn-file path="ui/about.ui"><About v="2"/></softn-file><softn-delete path="ui/about.ui" />'),
+    );
+    await runAgentTurn();
+    expect(useVFSStore.getState().readFile('ui/about.ui')).toBe('<About/>');
+    expect(useVFSStore.getState().history).toEqual([]);
+  });
+
+  it('refuses to write private editor state however it is spelled', async () => {
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () => reply('<softn-file path="Builder\\blueprint.json">{}</softn-file>'));
+    await runAgentTurn();
+    expect(useVFSStore.getState().files.size).toBe(4);
+    expect(lastToolCalls()[0].result).toMatch(/private/i);
+  });
+
+  it('a deletion-only turn marks the project dirty and can be reverted', async () => {
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () => reply('Removed it.\n<softn-delete path="assets/logo.png" />'));
+    await runAgentTurn();
+    expect(useVFSStore.getState().files.has('assets/logo.png')).toBe(false);
+    expect(useWorkspaceStore.getState().isDirty).toBe(true);
+    const id = lastMessage().transactionId;
+    expect(id).toBeTruthy();
+    expect(useVFSStore.getState().history.map((e) => e.transactionId)).toEqual([id]);
+    const result = useVFSStore.getState().revertTransaction(id!);
+    expect(result.ok).toBe(true);
+    expect(useVFSStore.getState().readFile('assets/logo.png')).toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it('commits a valid batch as one transaction with a diff summary per file, undone as a unit', async () => {
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
+      reply(
+        '<softn-file path="ui/new.ui"><New/></softn-file>' +
+          '<softn-file path="ui/main.ui"><App>\n  <Text>one</Text>\n  <Text>two</Text>\n</App></softn-file>' +
+          '<softn-delete path="ui/about.ui" />',
+      ),
+    );
+    await runAgentTurn();
+    const vfs = useVFSStore.getState();
+    expect(vfs.files.has('ui/new.ui')).toBe(true);
+    expect(vfs.files.has('ui/about.ui')).toBe(false);
+    const id = lastMessage().transactionId!;
+    expect(vfs.history.map((e) => e.transactionId)).toEqual([id, id, id]);
+    const calls = lastToolCalls();
+    expect(calls.map((c) => [c.tool, c.status])).toEqual([
+      ['createFile', 'success'],
+      ['updateFile', 'success'],
+      ['deleteFile', 'success'],
+    ]);
+    expect(calls[1].result).toMatch(/\+1 .*0 line/);
+    expect(useAIStore.getState().filesChanged).toBe(3);
+    useVFSStore.getState().undoLast();
+    expect(useVFSStore.getState().files.has('ui/new.ui')).toBe(false);
+    expect(useVFSStore.getState().readFile('ui/about.ui')).toBe('<About/>');
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
+  });
+
+  it('never applies a reply that was cut off at the output limit', async () => {
+    vi.mocked(sendAIRequest).mockImplementationOnce(async () => reply('Here.\n<softn-file path="ui/main.ui"><App>complete-looking</App></softn-file>', 'truncated'));
+    await runAgentTurn();
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
+    expect(useVFSStore.getState().history).toEqual([]);
+    expect(lastToolCalls().some((c) => c.status === 'error' && /output limit/i.test(c.result ?? ''))).toBe(true);
+    expect(useAIStore.getState().lastFailure?.kind).toBe('truncated');
+    expect(useAIStore.getState().agentState).toBe('idle');
+  });
+
+  it('refuses to send a request the remaining budget cannot cover', async () => {
+    useAIStore.setState({ tokenBudget: 1000, tokensUsed: 0 });
+    await runAgentTurn();
+    expect(vi.mocked(sendAIRequest)).not.toHaveBeenCalled();
+    expect(lastMessage().content).toMatch(/budget/i);
+    expect(useAIStore.getState().lastFailure?.kind).toBe('budget');
+    expect(useAIStore.getState().agentState).toBe('idle');
+  });
+
+  it('reports a timeout and a rate limit as distinct, recoverable failures', async () => {
+    vi.mocked(sendAIRequest).mockRejectedValueOnce(new AIProviderError('timeout', 'The provider did not answer within 120 s.'));
+    await runAgentTurn();
+    expect(useAIStore.getState().lastFailure?.kind).toBe('timeout');
+    expect(lastMessage().content).toMatch(/did not answer/);
+    useAIStore.setState({ agentState: 'idle' });
+
+    vi.mocked(sendAIRequest).mockRejectedValueOnce(new AIProviderError('rate-limited', 'Rate limited.', { status: 429, retryAfterMs: 7000 }));
+    await runAgentTurn();
+    expect(useAIStore.getState().lastFailure).toMatchObject({ kind: 'rate-limited', retryAfterMs: 7000 });
+    expect(lastMessage().content).toMatch(/7 s/);
+    useAIStore.setState({ agentState: 'idle' });
   });
 });
