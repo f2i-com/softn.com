@@ -8,13 +8,16 @@ import { Inspector } from './components/inspector/Inspector';
 import { BottomDrawer } from './components/layout/BottomDrawer';
 import { StatusBar } from './components/layout/StatusBar';
 import { Icon } from './components/common/Icon';
-import { Dashboard } from './components/layout/Dashboard';
+import { Dashboard, type DashboardOutcome, type RecentEntry } from './components/layout/Dashboard';
 import { BriefWizard } from './components/brief/BriefWizard';
 import { AIChat } from './components/ai/AIChat';
 import { PagesPanel } from './components/panels/PagesPanel';
 import { HistoryPanel } from './components/panels/HistoryPanel';
 import { SettingsPanel } from './components/panels/SettingsPanel';
 import { FilesPanel } from './components/panels/FilesPanel';
+import { MobileProjectMenu } from './components/mobile/MobileProjectMenu';
+import { SaveStatusIndicator } from './components/common/SaveStatus';
+import { exportCurrentProject } from './components/common/ProjectActions';
 import {
   inferBlueprintFromFiles,
   inferBriefFromBlueprint,
@@ -22,16 +25,13 @@ import {
 } from './lib/studioProject';
 import { validateProject } from './lib/validator';
 import { abortAgentTurn } from './lib/agentOrchestrator';
+import { exportAsBundle } from './lib/exportBundle';
 import {
-  loadAISnapshot,
+  listProjectSummaries,
+  loadProjectRecord,
   loadRecentProjects,
-  loadVFSSnapshot,
-  loadWorkspaceSnapshot,
-  saveAISnapshot,
-  saveRecentProject,
-  saveVFSSnapshot,
-  saveWorkspaceSnapshot,
-  decodePersistedVFS,
+  recordFilesAsMap,
+  removeRecentProject,
 } from './lib/persistence';
 import { BlueprintReview } from './components/blueprint/BlueprintReview';
 import {
@@ -40,7 +40,21 @@ import {
   readJsonProject,
   readProjectArchive,
 } from './lib/projectImport';
-import { resetProjectSessionForImport } from './lib/projectSession';
+import {
+  beginNewProjectSession,
+  claimWorkspace,
+  deleteProject,
+  hasProjectContent,
+  openProjectById,
+  openRemoteBundle,
+  ownsWorkspace,
+  readOpenLink,
+  releaseWorkspace,
+  resetProjectSessionForImport,
+  restoreSession,
+  startProjectAutosave,
+  type AutosaveController,
+} from './lib/projectSession';
 
 type View = 'dashboard' | 'brief' | 'editor';
 
@@ -141,8 +155,10 @@ const App: React.FC = () => {
   const { files } = useVFSStore();
   const [isMobile, setIsMobile] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<'chat' | 'canvas' | 'inspector'>('canvas');
-  const [recentProjects, setRecentProjects] = useState(loadRecentProjects());
-  const importGenerationRef = useRef(0);
+  const [recentProjects, setRecentProjects] = useState<RecentEntry[]>([]);
+  const autosaveRef = useRef<AutosaveController | null>(null);
+  /** The `?open=` link read once on first mount; `undefined` until read. */
+  const openLinkRef = useRef<ReturnType<typeof readOpenLink> | undefined>(undefined);
 
   // Responsive detection
   useEffect(() => {
@@ -176,92 +192,88 @@ const App: React.FC = () => {
     };
   }, [themePreview]);
 
-  const handleNewProject = useCallback(() => {
+  /**
+   * The dashboard's list: the recent entries, each marked with whether a
+   * record for it is in project storage, plus the project in memory if it
+   * has content and is not listed yet — it is always reachable from here.
+   * An entry with no record and not in memory is shown as "No saved copy":
+   * the old list kept names whose only copy was overwritten long ago, and
+   * saying so beats pretending.
+   */
+  const refreshRecent = useCallback(async () => {
+    const list = loadRecentProjects();
+    const summaries = await listProjectSummaries();
+    const saved = new Set(summaries.map((summary) => summary.projectId));
+    const ws = useWorkspaceStore.getState();
+    const activeId = ws.projectId && hasProjectContent() ? ws.projectId : null;
+    const entries: RecentEntry[] = list.map((entry) => ({ ...entry, saved: saved.has(entry.id), active: entry.id === activeId }));
+    if (activeId && !entries.some((entry) => entry.id === activeId)) {
+      entries.unshift({
+        id: activeId,
+        name: ws.projectName || 'Untitled app',
+        target: ws.blueprint?.target ?? 'web',
+        lastModified: 'in memory',
+        saved: saved.has(activeId),
+        active: true,
+      });
+    }
+    setRecentProjects(entries);
+  }, []);
+
+  /**
+   * Before the stores are given to another project, write this one. The
+   * record is its own, under its own id, so nothing here can overwrite
+   * another project — but a write that fails leaves the in-memory copy as
+   * the only one, and replacing that silently is what the old single slot
+   * did. So the person is asked, and told that Export bundle keeps it.
+   * Resolves with whether to go on.
+   */
+  const checkpointBeforeReplace = useCallback(async (): Promise<boolean> => {
+    const autosave = autosaveRef.current;
+    if (!autosave || !hasProjectContent()) return true;
+    const result = await autosave.flush();
+    if (result.ok) return true;
+    const name = useWorkspaceStore.getState().projectName || 'The current project';
+    return window.confirm(
+      `${name} could not be saved to this browser: ${result.message}\n\nContinue anyway and leave it unsaved? Press Cancel to go back and use Export bundle first.`,
+    );
+  }, []);
+
+  const handleNewProject = useCallback(async () => {
     // A generation still running would finish against the project that replaces
     // this one and write its files there. agentOrchestrator already treats an
     // AbortError as "stop quietly", so nothing is written and no error is shown.
+    const claim = claimWorkspace();
     abortAgentTurn();
-    importGenerationRef.current += 1;
-    const currentTheme = useWorkspaceStore.getState().themePreview;
-    useWorkspaceStore.getState().reset();
-    useWorkspaceStore.getState().setThemePreview(currentTheme);
-    useVFSStore.getState().reset();
-    useAIStore.getState().resetSession();
+    if (!(await checkpointBeforeReplace())) return;
+    if (!ownsWorkspace(claim.generation)) return;
+    beginNewProjectSession();
     setView('brief');
-  }, []);
-
-  const hydrateFromStorage = useCallback(() => {
-    const workspaceSnapshot = loadWorkspaceSnapshot();
-    const aiSnapshot = loadAISnapshot();
-    const vfsSnapshot = loadVFSSnapshot();
-
-    if (workspaceSnapshot?.projectName) {
-      useWorkspaceStore.setState({
-        projectName: workspaceSnapshot.projectName,
-        projectId: workspaceSnapshot.projectId,
-        brief: workspaceSnapshot.brief ? { ...workspaceSnapshot.brief, referenceImages: [] } : null,
-        blueprint: workspaceSnapshot.blueprint,
-        taskGraph: workspaceSnapshot.taskGraph,
-        blueprintApproved: workspaceSnapshot.blueprintApproved,
-        mode: workspaceSnapshot.mode as never,
-        leftPanel: workspaceSnapshot.leftPanel as never,
-        leftPanelExpanded: workspaceSnapshot.leftPanelExpanded,
-        rightSidebarOpen: workspaceSnapshot.rightSidebarOpen,
-        bottomDrawerOpen: workspaceSnapshot.bottomDrawerOpen,
-        bottomTab: workspaceSnapshot.bottomTab as never,
-        advancedMode: workspaceSnapshot.advancedMode,
-        activePageId: workspaceSnapshot.activePageId,
-        activeFilePath: workspaceSnapshot.activeFilePath,
-        selectedComponentId: workspaceSnapshot.selectedComponentId,
-        devicePreset: workspaceSnapshot.devicePreset as never,
-        zoom: workspaceSnapshot.zoom,
-        themePreview: workspaceSnapshot.themePreview,
-        consoleOutput: workspaceSnapshot.consoleOutput,
-      });
-    }
-
-    if (aiSnapshot) {
-      useAIStore.setState({
-        providers: aiSnapshot.providers,
-        activeProviderId: aiSnapshot.activeProviderId,
-        modelProfile: aiSnapshot.modelProfile,
-        messages: aiSnapshot.messages,
-        iterationsUsed: aiSnapshot.iterationsUsed,
-        maxIterations: aiSnapshot.maxIterations,
-        tokensUsed: aiSnapshot.tokensUsed,
-        tokenBudget: aiSnapshot.tokenBudget,
-        filesChanged: aiSnapshot.filesChanged,
-      });
-    }
-
-    if (vfsSnapshot) {
-      useVFSStore.getState().reset();
-      useVFSStore.getState().hydrateFiles(decodePersistedVFS(vfsSnapshot));
-    }
-
-    return !!workspaceSnapshot?.projectName;
-  }, []);
-
-  useEffect(() => {
-    if (hydrateFromStorage()) {
-      setView('editor');
-    }
-    setIsHydrated(true);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [checkpointBeforeReplace]);
 
   const handleBackToDashboard = useCallback(() => {
     abortAgentTurn();
+    void (autosaveRef.current?.flush() ?? Promise.resolve()).then(() => refreshRecent());
     setView('dashboard');
-  }, []);
+  }, [refreshRecent]);
 
-  const handleImportProject = useCallback(async (file: File) => {
-    const importGeneration = ++importGenerationRef.current;
+  /**
+   * Import a bundle as a new project. `owner` is the workspace generation an
+   * earlier step (the remote open) already claimed; without it this claims
+   * one itself. Ownership is checked after every await and once more right
+   * before the stores are touched, so a result that arrives after something
+   * else took the workspace is dropped, and dropped quietly.
+   */
+  const handleImportProject = useCallback(async (file: File, owner?: number) => {
+    const generation = owner ?? claimWorkspace().generation;
     abortAgentTurn();
     try {
+      if (!(await checkpointBeforeReplace())) return;
+      if (!ownsWorkspace(generation)) return;
       const buffer = await file.arrayBuffer();
       // A second selection (or starting a new project) owns the workspace now.
       // File.arrayBuffer cannot be aborted, so discard the older read here.
-      if (importGenerationRef.current !== importGeneration) return;
+      if (!ownsWorkspace(generation)) return;
       const data = new Uint8Array(buffer);
       const decoder = new TextDecoder();
 
@@ -305,13 +317,12 @@ const App: React.FC = () => {
         }
       }
 
-      // Batch-create all files in a single state update
-      if (batch.length > 0) {
-        // Commit only after the complete import has been decoded and validated,
-        // so any failure above leaves the current project intact.
-        resetProjectSessionForImport();
-        useVFSStore.getState().batchCreateFiles(batch, 'user');
-      }
+      // Commit only after the complete import has been decoded and validated,
+      // so any failure above leaves the current project intact — and only if
+      // nothing took the workspace while the decode ran.
+      if (!ownsWorkspace(generation)) return;
+      resetProjectSessionForImport();
+      useVFSStore.getState().batchCreateFiles(batch, 'user');
 
       const importedProjectName = file.name.replace(/\.(softn|zip|json)$/i, '');
       const importedWorkspace = useWorkspaceStore.getState();
@@ -344,128 +355,93 @@ const App: React.FC = () => {
         content: `Imported \`${file.name}\` and mapped ${inferredBlueprint.pages.length} page(s). Ask me to restyle screens, reorganize flows, improve data bindings, or prepare the bundle for export.`,
         timestamp: Date.now(),
       });
-      const recent = {
-        id: crypto.randomUUID(),
-        name: importedProjectName,
-        target: inferredBlueprint.target,
-        lastModified: new Date().toLocaleString(),
-      };
-      saveRecentProject(recent);
-      setRecentProjects(loadRecentProjects());
       setView('editor');
+      void refreshRecent();
     } catch (err) {
-      if (importGenerationRef.current !== importGeneration) return;
+      if (!ownsWorkspace(generation)) return;
       const msg = err instanceof Error ? err.message : String(err);
       useWorkspaceStore.getState().addConsoleOutput(`Import failed: ${msg}`);
     }
-  }, []);
+  }, [checkpointBeforeReplace, refreshRecent]);
 
-  useEffect(
-    () => () => {
-      importGenerationRef.current += 1;
-      abortAgentTurn();
-    },
-    []
-  );
-
-  // `?open=<bundle url>`: the site's app pages link here with the bundle to
-  // edit. Same-origin .softn URLs only, read once on mount, and taken out of
-  // the address bar so a reload does not import it over edited work.
   const handleImportProjectRef = useRef(handleImportProject);
   handleImportProjectRef.current = handleImportProject;
+
+  /**
+   * Boot, in one sequence so the order is the same every time:
+   *
+   *   1. restoreSession — the settings, then the record the active-project
+   *      pointer names, else the migrated legacy snapshot, else nothing.
+   *   2. then, and only then, the `?open=` link — as a *new* project. It
+   *      never replaces what was restored; that project keeps its own
+   *      record, and the current one is checkpointed before the import
+   *      commits. Anything the person does meanwhile (new project, import,
+   *      open from the list) takes the workspace and the link's result is
+   *      dropped without a message.
+   *
+   * The link is read once and taken out of the address bar so a reload does
+   * not import it over edited work; it is kept in a ref so StrictMode's
+   * second run of this effect still has it. Unmounting releases the
+   * workspace: an open still in flight is aborted and stays silent.
+   */
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const open = params.get('open');
-    if (!open) return;
-    let url: URL;
-    try {
-      url = new URL(open, window.location.origin);
-    } catch {
-      return;
-    }
-    if (url.origin !== window.location.origin || !/\.softn$/i.test(url.pathname)) {
-      useWorkspaceStore.getState().addConsoleOutput('Only a .softn served by this site can be opened from a link.');
-      return;
-    }
-    params.delete('open');
-    const rest = params.toString();
-    window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : ''));
-    void (async () => {
-      try {
-        const resp = await fetch(url.href, { credentials: 'same-origin' });
-        if (!resp.ok) throw new Error(`${url.pathname} responded ${resp.status}`);
-        const bytes = await resp.arrayBuffer();
-        // The directory serves every bundle as bundle.softn; the app's own
-        // name is the path segment before it.
-        const segments = url.pathname.split('/').filter(Boolean);
-        const name = segments.length >= 2 && /^bundle\.softn$/i.test(segments[segments.length - 1]) ? segments[segments.length - 2] : segments[segments.length - 1].replace(/\.softn$/i, '');
-        await handleImportProjectRef.current(new File([bytes], `${decodeURIComponent(name)}.softn`));
-      } catch (e) {
-        useWorkspaceStore.getState().addConsoleOutput(`Could not open ${url.pathname}: ${e instanceof Error ? e.message : String(e)}`);
+    let cancelled = false;
+    if (openLinkRef.current === undefined) {
+      openLinkRef.current = readOpenLink(window.location.search, window.location.origin);
+      if (openLinkRef.current) {
+        const params = new URLSearchParams(window.location.search);
+        params.delete('open');
+        const rest = params.toString();
+        window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : ''));
       }
+    }
+    void (async () => {
+      const outcome = await restoreSession();
+      if (cancelled) return;
+      if (outcome.restored) setView('editor');
+      if (outcome.notice) useWorkspaceStore.getState().addConsoleOutput(outcome.notice);
+      setIsHydrated(true);
+      void refreshRecent();
+      const link = openLinkRef.current;
+      if (!link) return;
+      const log = useWorkspaceStore.getState().addConsoleOutput;
+      if ('error' in link) {
+        log(link.error);
+        return;
+      }
+      await openRemoteBundle(link.url, {
+        importFile: (file, generation) => handleImportProjectRef.current(file, generation),
+        log,
+      });
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+      releaseWorkspace();
+      abortAgentTurn();
+    };
+  }, [refreshRecent]);
 
-  // Persist workspace state whenever it changes (subscription catches all fields)
+  // Save project: one record per project, written after changes settle. The
+  // controller reports through the save status the bars show. Leaving the
+  // page flushes what is pending so the last checkpoint is not lost to the
+  // debounce.
   useEffect(() => {
     if (!isHydrated) return;
-    const unsub = useWorkspaceStore.subscribe(() => {
-      const ws = useWorkspaceStore.getState();
-      const persistedBrief = ws.brief
-        ? (({ referenceImages: _referenceImages, ...rest }) => rest)(ws.brief)
-        : null;
-      saveWorkspaceSnapshot({
-        projectName: ws.projectName,
-        projectId: ws.projectId,
-        brief: persistedBrief,
-        blueprint: ws.blueprint,
-        taskGraph: ws.taskGraph,
-        blueprintApproved: ws.blueprintApproved,
-        mode: ws.mode,
-        leftPanel: ws.leftPanel,
-        leftPanelExpanded: ws.leftPanelExpanded,
-        rightSidebarOpen: ws.rightSidebarOpen,
-        bottomDrawerOpen: ws.bottomDrawerOpen,
-        bottomTab: ws.bottomTab,
-        advancedMode: ws.advancedMode,
-        activePageId: ws.activePageId,
-        activeFilePath: ws.activeFilePath,
-        selectedComponentId: ws.selectedComponentId,
-        devicePreset: ws.devicePreset,
-        zoom: ws.zoom,
-        themePreview: ws.themePreview,
-        consoleOutput: ws.consoleOutput,
-      });
-    });
-    return unsub;
+    const controller = startProjectAutosave();
+    autosaveRef.current = controller;
+    const flush = () => void controller.flush();
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+      controller.stop();
+      if (autosaveRef.current === controller) autosaveRef.current = null;
+    };
   }, [isHydrated]);
-
-  // Persist AI state whenever it changes (messages, tokens, etc.)
-  useEffect(() => {
-    if (!isHydrated) return;
-    const unsub = useAIStore.subscribe(() => {
-      const ai = useAIStore.getState();
-      // Skip saving during active agent turns to avoid excessive writes
-      if (ai.agentState === 'building') return;
-      saveAISnapshot({
-        providers: ai.providers,
-        activeProviderId: ai.activeProviderId,
-        modelProfile: ai.modelProfile,
-        messages: ai.messages,
-        iterationsUsed: ai.iterationsUsed,
-        maxIterations: ai.maxIterations,
-        tokensUsed: ai.tokensUsed,
-        tokenBudget: ai.tokenBudget,
-        filesChanged: ai.filesChanged,
-      });
-    });
-    return unsub;
-  }, [isHydrated]);
-
-  useEffect(() => {
-    if (!isHydrated) return;
-    saveVFSSnapshot(files);
-  }, [isHydrated, files]);
 
   // Run validation when files or blueprint change
   useEffect(() => {
@@ -478,17 +454,48 @@ const App: React.FC = () => {
     }
   }, [isHydrated, files, blueprint]);
 
-  useEffect(() => {
-    if (!isHydrated) return;
-    if (!projectName || !blueprint) return;
-    saveRecentProject({
-      id: useWorkspaceStore.getState().projectId || projectName,
-      name: projectName,
-      target: blueprint.target,
-      lastModified: new Date().toLocaleString(),
-    });
-    setRecentProjects(loadRecentProjects());
-  }, [isHydrated, projectName, blueprint]);
+  // --- Dashboard actions, each about one project id -------------------------
+
+  const handleOpenRecent = useCallback(async (id: string): Promise<DashboardOutcome> => {
+    const ws = useWorkspaceStore.getState();
+    if (ws.projectId === id && hasProjectContent()) {
+      // The copy in memory is the newest there is; nothing to read.
+      setView('editor');
+      return { ok: true };
+    }
+    abortAgentTurn();
+    if (!(await checkpointBeforeReplace())) return { ok: false, message: 'the current project was kept open.' };
+    const outcome = await openProjectById(id);
+    if (outcome.ok) {
+      setView('editor');
+      void refreshRecent();
+    }
+    return outcome;
+  }, [checkpointBeforeReplace, refreshRecent]);
+
+  const handleRemoveRecent = useCallback((id: string) => {
+    removeRecentProject(id);
+    void refreshRecent();
+  }, [refreshRecent]);
+
+  const handleDeleteProject = useCallback(async (id: string): Promise<DashboardOutcome> => {
+    const outcome = await deleteProject(id);
+    void refreshRecent();
+    return outcome;
+  }, [refreshRecent]);
+
+  const handleExportProject = useCallback(async (id: string): Promise<DashboardOutcome> => {
+    const ws = useWorkspaceStore.getState();
+    if (ws.projectId === id && hasProjectContent()) return exportCurrentProject();
+    const record = await loadProjectRecord(id);
+    if (!record) return { ok: false, message: 'there is no saved copy of it in this browser.' };
+    try {
+      exportAsBundle(recordFilesAsMap(record), record.workspace.projectName);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    }
+  }, []);
 
   const renderLeftPanelContent = () => {
     switch (leftPanel) {
@@ -511,6 +518,20 @@ const App: React.FC = () => {
   // way between them.
   const bar = <ProductBar current="studio" />;
 
+  // Nothing is decided until the stored project has been read: showing the
+  // dashboard for a moment and then the editor would be a flash of the
+  // wrong page.
+  if (!isHydrated) {
+    return (
+      <div style={{ ...styles.root, ...getStudioThemeVars(themePreview) }}>
+        {bar}
+        <div style={styles.fill} role="status" aria-live="polite">
+          <span style={styles.booting}>Opening your project…</span>
+        </div>
+      </div>
+    );
+  }
+
   // Dashboard
   if (view === 'dashboard') {
     return (
@@ -520,7 +541,10 @@ const App: React.FC = () => {
           <Dashboard
             onNewProject={handleNewProject}
             onImportProject={handleImportProject}
-            onLoadRecent={() => setView('editor')}
+            onOpenRecent={handleOpenRecent}
+            onRemoveRecent={handleRemoveRecent}
+            onDeleteProject={handleDeleteProject}
+            onExportProject={handleExportProject}
             recentProjects={recentProjects}
           />
         </div>
@@ -547,6 +571,11 @@ const App: React.FC = () => {
   // on a phone a generated blueprint was never put up for approval. The gate it
   // guards stayed shut with no way to open it: the plan could not be approved,
   // could not be sent back for revision, and could not even be read.
+  //
+  // The project menu on the right is the phone's Run, Publish and Export
+  // bundle — the desktop TopBar's actions from the same hook. This header
+  // used to end in a green dot that meant nothing, and a project on a phone
+  // could not leave the device.
   if (isMobile) {
     return (
       <div style={{ ...styles.mobileRoot, ...getStudioThemeVars(themePreview) }}>
@@ -558,13 +587,15 @@ const App: React.FC = () => {
               onClick={handleBackToDashboard}
               style={styles.mobileBackBtn}
               title="Back to home"
+              aria-label="Back to home"
             >
               <Icon name="chevron-left" size={20} />
             </button>
             <span style={styles.mobileProjectName}>{projectName || 'SoftN Studio'}</span>
           </div>
           <div style={styles.mobileTopRight}>
-            <div style={styles.mobileStatusDot} />
+            <SaveStatusIndicator compact />
+            <MobileProjectMenu />
           </div>
         </div>
 
@@ -594,6 +625,7 @@ const App: React.FC = () => {
             <button
               key={tab.id}
               onClick={() => setMobilePanel(tab.id)}
+              aria-pressed={mobilePanel === tab.id}
               style={{
                 ...styles.mobileNavBtn,
                 ...(mobilePanel === tab.id ? styles.mobileNavBtnActive : {}),
@@ -672,6 +704,12 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 0,
     overflow: 'hidden',
   },
+  booting: {
+    margin: 'auto',
+    fontFamily: 'var(--studio-mono)',
+    fontSize: 12,
+    color: 'var(--studio-text-muted)',
+  },
 
   // Mobile
   mobileRoot: {
@@ -724,12 +762,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: 8,
-  },
-  mobileStatusDot: {
-    width: 7,
-    height: 7,
-    borderRadius: '50%',
-    background: 'var(--studio-success)',
+    minWidth: 0,
   },
   mobileContent: {
     flex: 1,

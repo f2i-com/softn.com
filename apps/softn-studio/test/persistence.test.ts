@@ -5,8 +5,33 @@ import {
   loadRecentProjects,
   loadVFSSnapshot,
   loadWorkspaceSnapshot,
+  removeRecentProject,
   saveRecentProject,
 } from '../src/lib/persistence';
+
+/** A complete legacy workspace snapshot, as the old single-slot saver wrote it. */
+const fullWorkspace = {
+  projectName: 'Notes',
+  projectId: 'a',
+  brief: null,
+  blueprint: null,
+  taskGraph: [],
+  blueprintApproved: true,
+  mode: 'design',
+  leftPanel: 'ai',
+  leftPanelExpanded: true,
+  rightSidebarOpen: true,
+  bottomDrawerOpen: false,
+  bottomTab: 'log',
+  advancedMode: false,
+  activePageId: null,
+  activeFilePath: null,
+  selectedComponentId: null,
+  devicePreset: 'desktop',
+  zoom: 100,
+  themePreview: 'dark',
+  consoleOutput: [],
+};
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -33,6 +58,39 @@ describe('Studio persistence', () => {
         lastModified: 'today',
       })
     ).not.toThrow();
+  });
+
+  it('keeps two same-name projects as two recent entries', () => {
+    const data = new Map<string, string>();
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (key: string) => data.get(key) ?? null,
+        setItem: (key: string, value: string) => data.set(key, value),
+        removeItem: (key: string) => data.delete(key),
+      },
+    });
+    saveRecentProject({ id: 'a', name: 'Notes', target: 'web', lastModified: 'today' });
+    saveRecentProject({ id: 'b', name: 'Notes', target: 'web', lastModified: 'today' });
+    expect(loadRecentProjects().map((item) => item.id)).toEqual(['b', 'a']);
+  });
+
+  it('removing a recent entry does not delete a saved snapshot', () => {
+    const data = new Map<string, string>([
+      ['softn.studio.workspace.v1', JSON.stringify(fullWorkspace)],
+      ['softn.studio.vfs.v1', JSON.stringify({ files: [] })],
+    ]);
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (key: string) => data.get(key) ?? null,
+        setItem: (key: string, value: string) => data.set(key, value),
+        removeItem: (key: string) => data.delete(key),
+      },
+    });
+    saveRecentProject({ id: 'a', name: 'Notes', target: 'web', lastModified: 'today' });
+    removeRecentProject('a');
+    expect(loadRecentProjects()).toEqual([]);
+    expect(data.has('softn.studio.workspace.v1')).toBe(true);
+    expect(data.has('softn.studio.vfs.v1')).toBe(true);
   });
 
   it('ignores malformed saved collections instead of trusting their cast', () => {

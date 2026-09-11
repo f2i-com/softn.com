@@ -5,7 +5,9 @@ import {
   assemblePreviewSource,
   buildPreviewXDBState,
   clearPreviewXDBCollections,
+  previewDataKey,
   replacePreviewXDBCollections,
+  shouldReseedPreviewData,
 } from '../src/lib/previewProject';
 
 function textFile(path: string, content: string): VFSFile {
@@ -147,5 +149,44 @@ describe('Studio preview project assembly', () => {
     expect(records.get('tasks')).toEqual([]);
     expect(xdb.suppressNotifications).toHaveBeenCalledTimes(2);
     expect(xdb.resumeNotifications).toHaveBeenCalledTimes(2);
+  });
+});
+
+/**
+ * The preview-data reset policy. The seeding effect used to depend on the
+ * whole file map, so editing a label in a .ui file threw away whatever
+ * records the person had entered into the preview and reseeded from source.
+ * Pinned here: only a change to an .xdb file (content, path, or presence)
+ * changes the key the reseed is driven by; a .ui/.logic/asset edit keeps
+ * the same key, and so keeps the preview's data.
+ */
+describe('Studio preview data reset policy', () => {
+  const xdb = textFile('data/tasks.xdb', JSON.stringify({ collection: 'tasks', records: [{ id: 't1', title: 'One' }] }));
+  const ui = textFile('ui/main.ui', '<Text>One</Text>');
+
+  it('keeps the key when a source file that is not .xdb changes', () => {
+    const before = previewDataKey(new Map([['data/tasks.xdb', xdb], ['ui/main.ui', ui]]));
+    const edited = textFile('ui/main.ui', '<Text>Two</Text>');
+    const after = previewDataKey(new Map([['data/tasks.xdb', xdb], ['ui/main.ui', edited]]));
+    expect(after).toBe(before);
+    expect(shouldReseedPreviewData(before, after)).toBe(false);
+  });
+
+  it('changes the key when an .xdb file is edited, added, renamed or removed', () => {
+    const base = previewDataKey(new Map([['data/tasks.xdb', xdb], ['ui/main.ui', ui]]));
+    const edited = textFile('data/tasks.xdb', JSON.stringify({ collection: 'tasks', records: [] }));
+    expect(previewDataKey(new Map([['data/tasks.xdb', edited], ['ui/main.ui', ui]]))).not.toBe(base);
+    const added = textFile('data/users.xdb', JSON.stringify({ collection: 'users', records: [] }));
+    expect(previewDataKey(new Map([['data/tasks.xdb', xdb], ['data/users.xdb', added], ['ui/main.ui', ui]]))).not.toBe(base);
+    expect(previewDataKey(new Map([['data/todo.xdb', xdb], ['ui/main.ui', ui]]))).not.toBe(base);
+    const removed = previewDataKey(new Map([['ui/main.ui', ui]]));
+    expect(removed).not.toBe(base);
+    expect(shouldReseedPreviewData(base, removed)).toBe(true);
+  });
+
+  it('is stable across file-map ordering', () => {
+    const a = previewDataKey(new Map([['data/tasks.xdb', xdb], ['ui/main.ui', ui]]));
+    const b = previewDataKey(new Map([['ui/main.ui', ui], ['data/tasks.xdb', xdb]]));
+    expect(a).toBe(b);
   });
 });
