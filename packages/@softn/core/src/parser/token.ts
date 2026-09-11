@@ -91,6 +91,14 @@ export enum TokenType {
   NULLISH_ASSIGN = 'NULLISH_ASSIGN', // ??=
   OR_ASSIGN = 'OR_ASSIGN', // ||=
   AND_ASSIGN = 'AND_ASSIGN', // &&=
+  // Compound arithmetic assignment. These were lexed as an operator followed
+  // by EQUALS, which no expression rule consumed, so `count += 1` in a handler
+  // stopped at `count` (see parseAssignment in parser.ts).
+  PLUS_ASSIGN = 'PLUS_ASSIGN', // +=
+  MINUS_ASSIGN = 'MINUS_ASSIGN', // -=
+  ASTERISK_ASSIGN = 'ASTERISK_ASSIGN', // *=
+  SLASH_ASSIGN = 'SLASH_ASSIGN', // /=
+  PERCENT_ASSIGN = 'PERCENT_ASSIGN', // %=
   ARROW = 'ARROW', // =>
   DOLLAR = 'DOLLAR', // $ (for $:)
   SEMICOLON = 'SEMICOLON', // ;

@@ -306,6 +306,7 @@ export type Expression =
   | MemberExpression
   | CallExpression
   | ConditionalExpression
+  | AssignmentExpression
   | ArrowFunctionExpression
   | ObjectExpression
   | ArrayExpression
@@ -365,6 +366,26 @@ export interface ConditionalExpression {
   alternate: Expression;
   loc: SourceLocation;
 }
+
+/**
+ * `target = value` and the compound forms — the body of a one-line handler
+ * such as `@click={() => count = count + 1}`, which the language reference
+ * documents. The parser had no such node, so an arrow body stopped at the
+ * target and the rest of the attribute was read as further attributes.
+ *
+ * `left` is an Identifier or a MemberExpression; the parser reports any
+ * other target as a diagnostic. Right-associative: `a = b = 1` is
+ * `a = (b = 1)`.
+ */
+export interface AssignmentExpression {
+  type: 'AssignmentExpression';
+  operator: AssignmentOperator;
+  left: Expression;
+  right: Expression;
+  loc: SourceLocation;
+}
+
+export type AssignmentOperator = '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '??=' | '||=' | '&&=';
 
 export interface ArrowFunctionExpression {
   type: 'ArrowFunctionExpression';

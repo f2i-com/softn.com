@@ -247,6 +247,11 @@ export class Lexer {
             this.position
           );
         }
+        if (this.peekChar() === '=') {
+          this.readChar();
+          this.readChar();
+          return createToken(TokenType.SLASH_ASSIGN, '/=', startLine, startColumn, startPos, this.position);
+        }
         this.readChar();
         return createToken(TokenType.SLASH, '/', startLine, startColumn, startPos, this.position);
 
@@ -400,15 +405,33 @@ export class Lexer {
           this.position
         );
 
+      // The arithmetic operators, and their compound assignments. `+=` used to
+      // come out as PLUS then EQUALS; no expression rule takes an EQUALS, so
+      // `count += 1` in a handler ended at `count` (see parseAssignment).
       case '+':
+        if (this.peekChar() === '=') {
+          this.readChar();
+          this.readChar();
+          return createToken(TokenType.PLUS_ASSIGN, '+=', startLine, startColumn, startPos, this.position);
+        }
         this.readChar();
         return createToken(TokenType.PLUS, '+', startLine, startColumn, startPos, this.position);
 
       case '-':
+        if (this.peekChar() === '=') {
+          this.readChar();
+          this.readChar();
+          return createToken(TokenType.MINUS_ASSIGN, '-=', startLine, startColumn, startPos, this.position);
+        }
         this.readChar();
         return createToken(TokenType.MINUS, '-', startLine, startColumn, startPos, this.position);
 
       case '*':
+        if (this.peekChar() === '=') {
+          this.readChar();
+          this.readChar();
+          return createToken(TokenType.ASTERISK_ASSIGN, '*=', startLine, startColumn, startPos, this.position);
+        }
         this.readChar();
         return createToken(
           TokenType.ASTERISK,
@@ -420,6 +443,11 @@ export class Lexer {
         );
 
       case '%':
+        if (this.peekChar() === '=') {
+          this.readChar();
+          this.readChar();
+          return createToken(TokenType.PERCENT_ASSIGN, '%=', startLine, startColumn, startPos, this.position);
+        }
         this.readChar();
         return createToken(TokenType.PERCENT, '%', startLine, startColumn, startPos, this.position);
 
