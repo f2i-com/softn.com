@@ -1,14 +1,22 @@
-import { sendAIRequest } from './aiProvider';
+import { AIProviderError, sendAIRequest, type AIResponse } from './aiProvider';
 import { useAIStore } from '../stores/aiStore';
 import { useWorkspaceStore } from '../stores/workspaceStore';
 import { useVFSStore } from '../stores/vfsStore';
-import type { ChatMessage, ToolCallCard, VFSFile } from '../types/studio';
+import type { AIFailure, ChatMessage, ToolCallCard, VFSFile } from '../types/studio';
+import { buildChangeset, describeDiff, diffSummary, toStoreRecords, type SuppliedFiles, type TurnBase } from './changeset';
+import { isPrivatePath, resolveProjectPath } from './paths';
+
+// The write checks live with the changeset that uses them; they are still
+// reachable from here, where they were first written.
+export { checkWrite, describeRefusal } from './changeset';
+export type { SuppliedFile, SuppliedFiles, TurnBase, WriteRefusal } from './changeset';
 
 // ---------------------------------------------------------------------------
 // File‑block parsing
 // ---------------------------------------------------------------------------
 
 interface FileOp {
+  /** The path as the reply wrote it; the changeset resolves and judges it. */
   path: string;
   content: string;
 }
@@ -29,19 +37,6 @@ export interface ParsedResponse {
   reads: ReadOp[];
 }
 
-/** Sanitize a VFS path: normalize separators, strip leading slash, reject traversal. */
-function sanitizePath(raw: string): string | null {
-  // Normalize backslashes and collapse multiple slashes
-  let p = raw.replace(/\\/g, '/').replace(/\/+/g, '/');
-  // Strip leading slash
-  if (p.startsWith('/')) p = p.slice(1);
-  // Reject directory traversal
-  if (p.includes('..') || p.startsWith('.')) return null;
-  // Reject empty paths
-  if (p.length === 0) return null;
-  return p;
-}
-
 /**
  * Parse AI response text for file operation blocks.
  *
@@ -49,6 +44,11 @@ function sanitizePath(raw: string): string | null {
  *   <softn-file path="pages/home.html">…content…</softn-file>
  *   <softn-delete path="old/file.html" />
  *   <softn-read path="logic/app.logic" />
+ *
+ * File and delete paths are kept as written: a path that is not a project
+ * path is a refused record on the changeset, reported by name, not a block
+ * that silently vanished. Read paths are resolved here, since a read is
+ * answered from the VFS or not at all.
  */
 export function parseAIResponse(raw: string): ParsedResponse {
   const files: FileOp[] = [];
@@ -59,7 +59,7 @@ export function parseAIResponse(raw: string): ParsedResponse {
   const fileRegex = /<softn-file\s+path="([^"]+)">([\s\S]*?)<\/softn-file>/g;
   let match: RegExpExecArray | null;
   while ((match = fileRegex.exec(raw)) !== null) {
-    const path = sanitizePath(match[1]);
+    const path = match[1].trim();
     if (!path) continue;
     const content = match[2].replace(/^\n/, '').replace(/\n$/, '');
     if (content.length === 0) continue; // skip empty files
@@ -69,7 +69,7 @@ export function parseAIResponse(raw: string): ParsedResponse {
   // Extract delete directives
   const deleteRegex = /<softn-delete\s+path="([^"]+)"\s*\/>/g;
   while ((match = deleteRegex.exec(raw)) !== null) {
-    const path = sanitizePath(match[1]);
+    const path = match[1].trim();
     if (!path) continue;
     deletes.push({ path });
   }
@@ -77,8 +77,9 @@ export function parseAIResponse(raw: string): ParsedResponse {
   // Extract read requests
   const readRegex = /<softn-read\s+path="([^"]+)"\s*\/>/g;
   while ((match = readRegex.exec(raw)) !== null) {
-    const path = sanitizePath(match[1]);
-    if (!path) continue;
+    const verdict = resolveProjectPath(match[1].trim());
+    if (!verdict.ok || verdict.private) continue;
+    const path = verdict.path;
     if (!reads.some((r) => r.path === path)) reads.push({ path });
   }
 
@@ -100,31 +101,11 @@ export function parseAIResponse(raw: string): ParsedResponse {
 // ---------------------------------------------------------------------------
 
 function buildFileTree(files: Map<string, VFSFile>): string {
-  const paths = Array.from(files.keys()).sort();
+  // Private editor state is not the model's to see or to write.
+  const paths = Array.from(files.keys()).filter((p) => !isPrivatePath(p)).sort();
   if (paths.length === 0) return '(no files yet)';
   return paths.map((p) => `  ${p}`).join('\n');
 }
-
-/**
- * What the model was shown of one file, and the version it was shown at.
- *
- * A reply replaces files whole, so a file the model saw only the head of
- * cannot be replaced from that reply without losing its tail: the record
- * of what was supplied is what lets the apply step refuse that. The
- * version is what lets it notice the file changed under the request.
- */
-export interface SuppliedFile {
-  path: string;
-  /** Whether the whole content was in the prompt. */
-  complete: boolean;
-  /** The VFS version at the time it was supplied. */
-  version: number;
-  /** Characters shown, of the total. */
-  shown: number;
-  total: number;
-}
-
-export type SuppliedFiles = Map<string, SuppliedFile>;
 
 export const MAX_CHARS_PER_FILE = 6000;
 export const CONTEXT_CHAR_BUDGET = 80000;
@@ -151,7 +132,7 @@ export function buildFileContents(
   for (const [path, file] of files) {
     if (typeof file.content !== 'string') continue;
     // Skip builder/ internals — the AI can see the blueprint directly
-    if (path.startsWith('builder/')) continue;
+    if (isPrivatePath(path)) continue;
 
     const total = file.content.length;
     // A file asked for whole is whole, whatever the caps; that is the point of asking.
@@ -182,12 +163,18 @@ export function buildSystemPrompt(complete: ReadonlySet<string> = new Set()): st
   return buildSystemPromptWithRecord(complete).system;
 }
 
-/** The system prompt and the exact record of which files it supplies, and how much of each. */
-export function buildSystemPromptWithRecord(complete: ReadonlySet<string> = new Set()): { system: string; supplied: SuppliedFiles } {
+/**
+ * The system prompt, the exact record of which files it supplies and how
+ * much of each, and the version of every project file at this moment — the
+ * base any operation in the reply is judged against.
+ */
+export function buildSystemPromptWithRecord(complete: ReadonlySet<string> = new Set()): { system: string } & TurnBase {
   const ws = useWorkspaceStore.getState();
   const vfs = useVFSStore.getState();
   const files = vfs.files;
   const contents = buildFileContents(files, MAX_CHARS_PER_FILE, CONTEXT_CHAR_BUDGET, complete);
+  const versions = new Map<string, number>();
+  for (const [path, file] of files) versions.set(path, file.version);
 
   const briefSection = ws.brief
     ? `## Current Brief
@@ -625,7 +612,7 @@ ${buildFileTree(files)}
 ## Current File Contents
 ${contents.text}
 `;
-  return { system, supplied: contents.supplied };
+  return { system, supplied: contents.supplied, versions };
 }
 
 // ---------------------------------------------------------------------------
@@ -634,53 +621,14 @@ ${contents.text}
 
 interface ActiveAgentTurn {
   controller: AbortController;
+  /** The transaction id every commit of this turn is recorded under. */
+  id: string;
 }
 
 let activeAgentTurn: ActiveAgentTurn | null = null;
 
 /** How many times one turn may answer a `<softn-read>` before it has to stop asking. */
 export const MAX_READ_ROUNDS = 3;
-
-/**
- * Why a file block may not be written. `partial` is the STU-01 case: the
- * model saw a truncated file, or none of it, and a whole-file reply would
- * erase what it did not see. `stale` is the file having changed since it
- * was supplied — a manual edit while the request was in flight — which a
- * replacement built on the old content would overwrite.
- */
-export type WriteRefusal =
-  | { kind: 'partial'; shown: number; total: number }
-  | { kind: 'unseen' }
-  | { kind: 'stale'; suppliedVersion: number; currentVersion: number };
-
-/**
- * Whether a whole-file write of `path` may be applied given what the model
- * was supplied and what the VFS holds now. A new file is always allowed:
- * there is nothing to erase.
- */
-export function checkWrite(path: string, supplied: SuppliedFiles, current: VFSFile | undefined): WriteRefusal | null {
-  if (!current) return null;
-  const record = supplied.get(path);
-  if (!record) {
-    // Exists, but the model was never shown it: a binary, a file past the
-    // budget, or one created since the prompt was built.
-    return { kind: 'unseen' };
-  }
-  if (!record.complete) return { kind: 'partial', shown: record.shown, total: record.total };
-  if (current.version !== record.version) return { kind: 'stale', suppliedVersion: record.version, currentVersion: current.version };
-  return null;
-}
-
-export function describeRefusal(path: string, refusal: WriteRefusal): string {
-  switch (refusal.kind) {
-    case 'partial':
-      return `Refused: ${path} was shown truncated (${refusal.shown} of ${refusal.total} characters), so this reply would have erased the rest of it. Nothing was written. Ask for the file whole, or ask for a smaller change.`;
-    case 'unseen':
-      return `Refused: ${path} exists but was not shown to the model, so this reply could not have preserved its content. Nothing was written.`;
-    case 'stale':
-      return `Refused: ${path} changed while the request was in flight (v${refusal.suppliedVersion} → v${refusal.currentVersion}), so this reply was built on old content. Nothing was written; ask again.`;
-  }
-}
 
 export function abortAgentTurn(): void {
   const turn = activeAgentTurn;
@@ -690,85 +638,140 @@ export function abortAgentTurn(): void {
   useAIStore.getState().setCurrentStep('');
 }
 
+/** A rough token count for the budget check: four characters per token, rounded up. */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+type AIStoreState = ReturnType<typeof useAIStore.getState>;
+type WorkspaceState = ReturnType<typeof useWorkspaceStore.getState>;
+
 /**
- * Write what a reply asks for, refusing what it cannot safely ask for. A
- * whole-file block for a file the model saw truncated, never saw, or that
- * changed since it was supplied is refused and reported; the rest goes in.
+ * Stage a reply's operations, judge them, and commit them as one VFS
+ * transaction under the turn's id — or, if any record is refused, commit
+ * nothing and report every record's verdict, so the person can see what
+ * was held back and why. Nothing is written by halves.
  */
-function applyFileOperations(
+function applyChangeset(
   parsed: ParsedResponse,
-  supplied: SuppliedFiles,
-  ai: ReturnType<typeof useAIStore.getState>,
-  ws: ReturnType<typeof useWorkspaceStore.getState>,
-): { toolCalls: ToolCallCard[]; written: string[] } {
+  base: TurnBase,
+  turnId: string,
+  ai: AIStoreState,
+  ws: WorkspaceState,
+): { toolCalls: ToolCallCard[]; committed: string[]; deleted: string[] } {
   const toolCalls: ToolCallCard[] = [];
-  const written: string[] = [];
+  if (parsed.files.length === 0 && parsed.deletes.length === 0) return { toolCalls, committed: [], deleted: [] };
 
-  for (const fileOp of parsed.files) {
-    // Re-read VFS state each iteration so we see files created by earlier iterations
-    const currentVfs = useVFSStore.getState();
-    const current = currentVfs.files.get(fileOp.path);
-    const existing = current !== undefined;
-    const tool = existing ? 'updateFile' : 'createFile';
-    const refusal = checkWrite(fileOp.path, supplied, current);
-    if (refusal) {
-      const result = describeRefusal(fileOp.path, refusal);
-      toolCalls.push({ tool, args: { path: fileOp.path }, result, status: 'error' });
+  const vfs = useVFSStore.getState();
+  const changeset = buildChangeset(turnId, parsed, base, vfs.files);
+  const toolFor = (op: 'create' | 'update' | 'delete') => (op === 'delete' ? 'deleteFile' : op === 'update' ? 'updateFile' : 'createFile');
+  const argsFor = (record: (typeof changeset.records)[number]) => ({
+    path: record.path,
+    requestedPath: record.requestedPath,
+    op: record.op,
+    baseVersion: record.baseVersion,
+  });
+
+  if (!changeset.ok) {
+    const refused = changeset.records.filter((r) => !r.verdict.ok).length;
+    for (const record of changeset.records) {
+      const result = record.verdict.ok
+        ? `Held back: this operation was valid, but ${refused === 1 ? 'another operation' : `${refused} other operations`} in the same reply ${refused === 1 ? 'was' : 'were'} refused, and a reply is applied whole or not at all. Nothing was written.`
+        : record.verdict.reason;
+      toolCalls.push({ tool: toolFor(record.op), args: argsFor(record), result, status: 'error' });
       ws.addConsoleOutput(`[AI] ${result}`);
-      continue;
     }
-    try {
-      if (existing) {
-        currentVfs.updateFile(fileOp.path, fileOp.content, 'ai');
-      } else {
-        currentVfs.createFile(fileOp.path, fileOp.content, 'ai');
-      }
-      ai.incrementFilesChanged();
-      written.push(fileOp.path);
-      toolCalls.push({
-        tool,
-        args: { path: fileOp.path },
-        result: `${existing ? 'Updated' : 'Created'} ${fileOp.path} (${fileOp.content.length} chars)`,
-        status: 'success',
-      });
-      ws.addConsoleOutput(`[AI] ${existing ? 'Updated' : 'Created'} ${fileOp.path}`);
-    } catch (err) {
-      toolCalls.push({ tool, args: { path: fileOp.path }, result: `Failed: ${err}`, status: 'error' });
-      ws.addConsoleOutput(`[AI] Error writing ${fileOp.path}: ${err}`);
-    }
+    return { toolCalls, committed: [], deleted: [] };
   }
 
-  for (const del of parsed.deletes) {
-    const current = useVFSStore.getState().files.get(del.path);
-    // A deletion is as whole-file as a replacement: a file that changed
-    // since it was supplied is not deleted on the strength of old content.
-    const record = supplied.get(del.path);
-    if (current && record && current.version !== record.version) {
-      const result = describeRefusal(del.path, { kind: 'stale', suppliedVersion: record.version, currentVersion: current.version });
-      toolCalls.push({ tool: 'deleteFile', args: { path: del.path }, result, status: 'error' });
-      ws.addConsoleOutput(`[AI] ${result}`);
-      continue;
-    }
-    try {
-      useVFSStore.getState().deleteFile(del.path, 'ai');
-      toolCalls.push({
-        tool: 'deleteFile',
-        args: { path: del.path },
-        result: `Deleted ${del.path}`,
-        status: 'success',
-      });
-      ws.addConsoleOutput(`[AI] Deleted ${del.path}`);
-    } catch (err) {
-      toolCalls.push({
-        tool: 'deleteFile',
-        args: { path: del.path },
-        result: `Failed: ${err}`,
-        status: 'error',
-      });
-    }
+  // Before-images for the cards, read before the commit.
+  const before = new Map(changeset.records.map((r) => [r.path, vfs.files.get(r.path)?.content ?? null]));
+  try {
+    vfs.applyTransaction(toStoreRecords(changeset), 'ai', changeset.id);
+  } catch (err) {
+    // The store's own check disagreed with the changeset's; it wrote nothing.
+    const result = `Failed: ${err instanceof Error ? err.message : String(err)}. Nothing was written.`;
+    for (const record of changeset.records) toolCalls.push({ tool: toolFor(record.op), args: argsFor(record), result, status: 'error' });
+    ws.addConsoleOutput(`[AI] ${result}`);
+    return { toolCalls, committed: [], deleted: [] };
   }
 
-  return { toolCalls, written };
+  const committed: string[] = [];
+  const deleted: string[] = [];
+  for (const record of changeset.records) {
+    ai.incrementFilesChanged();
+    if (record.op === 'delete') {
+      deleted.push(record.path);
+      const summary = describeDiff(diffSummary(before.get(record.path), null));
+      toolCalls.push({ tool: 'deleteFile', args: argsFor(record), result: `Deleted ${record.path} (${summary})`, status: 'success' });
+      ws.addConsoleOutput(`[AI] Deleted ${record.path}`);
+      continue;
+    }
+    committed.push(record.path);
+    const summary = describeDiff(diffSummary(before.get(record.path), record.content ?? ''));
+    const verb = record.op === 'update' ? 'Updated' : 'Created';
+    toolCalls.push({
+      tool: toolFor(record.op),
+      args: argsFor(record),
+      result: `${verb} ${record.path} (${summary}, ${record.content?.length ?? 0} chars)`,
+      status: 'success',
+    });
+    ws.addConsoleOutput(`[AI] ${verb} ${record.path}`);
+  }
+  return { toolCalls, committed, deleted };
+}
+
+/**
+ * A reply that is not complete is not applied, whatever it contains: a
+ * reply cut at the output limit ends wherever the limit fell, and the last
+ * file block in it may be any fraction of a file that looks whole.
+ */
+function describeIncomplete(response: AIResponse, parsed: ParsedResponse, maxOutputTokens: number): { failure: AIFailure; card: ToolCallCard | null } {
+  const paths = [...parsed.files.map((f) => f.path), ...parsed.deletes.map((d) => d.path)];
+  const at = Date.now();
+  switch (response.status) {
+    case 'truncated': {
+      const message = `The reply was cut off at the output limit (${maxOutputTokens.toLocaleString()} tokens) before it finished${paths.length > 0 ? `, so its ${paths.length} file operation(s) may be incomplete` : ''}. Nothing was written. Ask for a smaller change, or split the work across turns.`;
+      return {
+        failure: { kind: 'truncated', message, at },
+        card: paths.length > 0 ? { tool: 'changeset', args: { paths, stopReason: response.stopReason }, result: `Not applied: ${message}`, status: 'error' } : null,
+      };
+    }
+    case 'refused':
+      return { failure: { kind: 'refused', message: 'The model declined this request. Nothing was written.', at }, card: null };
+    case 'empty':
+    default:
+      return { failure: { kind: 'empty', message: 'The provider returned no text. Nothing was written.', at }, card: null };
+  }
+}
+
+/** A thrown request failure as something the person can act on. */
+function describeFailure(err: unknown): AIFailure {
+  const at = Date.now();
+  if (err instanceof AIProviderError) {
+    switch (err.kind) {
+      case 'timeout':
+        return { kind: 'timeout', message: `${err.message} Nothing was changed. Try again; a slower provider may need a longer request timeout.`, at };
+      case 'rate-limited':
+        return {
+          kind: 'rate-limited',
+          message: `${err.message} Nothing was changed.${err.retryAfterMs !== undefined ? ` Try again in ${Math.ceil(err.retryAfterMs / 1000)} s.` : ' Try again in a moment.'}`,
+          retryAfterMs: err.retryAfterMs,
+          at,
+        };
+      case 'network':
+        return { kind: 'network', message: `${err.message} Nothing was changed. Check the connection and the provider URL in Settings.`, at };
+      case 'invalid-response':
+        return { kind: 'invalid-response', message: `${err.message}. Nothing was changed.`, at };
+      case 'cancelled':
+        return { kind: 'cancelled', message: err.message, at };
+      case 'http':
+      default:
+        return { kind: 'provider', message: `${err.message}\n\nCheck your API key and provider settings.`, at };
+    }
+  }
+  const text = err instanceof Error ? err.message : String(err);
+  return { kind: 'provider', message: `Error: ${text}\n\nCheck your API key and provider settings.`, at };
 }
 
 export async function runAgentTurn(): Promise<void> {
@@ -812,6 +815,7 @@ export async function runAgentTurn(): Promise<void> {
   }
 
   // Set agent state
+  ai.setLastFailure(null);
   ai.setAgentState('building');
   ai.setCurrentStep('Generating response...');
   ai.incrementIteration();
@@ -826,7 +830,7 @@ export async function runAgentTurn(): Promise<void> {
     timestamp: m.timestamp,
   }));
 
-  const turn: ActiveAgentTurn = { controller: new AbortController() };
+  const turn: ActiveAgentTurn = { controller: new AbortController(), id: crypto.randomUUID() };
   activeAgentTurn = turn;
 
   try {
@@ -834,7 +838,8 @@ export async function runAgentTurn(): Promise<void> {
     const toolCalls: ToolCallCard[] = [];
     const texts: string[] = [];
     let usage = { input: 0, output: 0 };
-    let writtenPaths: string[] = [];
+    let committedCount = 0;
+    let firstWritten: string | null = null;
     let rawFallback = '';
 
     // Files the model has asked to see whole. Each round rebuilds the prompt
@@ -843,12 +848,34 @@ export async function runAgentTurn(): Promise<void> {
     const conversation = [...recentMessages];
 
     for (let round = 0; ; round++) {
-      const { system, supplied } = buildSystemPromptWithRecord(complete);
+      const base = buildSystemPromptWithRecord(complete);
+
+      // Reserve the reply before sending. The budget is a local guardrail:
+      // it counts what providers report, and refuses a request that the
+      // remainder cannot cover at the size a reply may reach. It is not a
+      // billing cap — the provider bills what it bills.
+      const settings = useAIStore.getState();
+      const estimatedInput = estimateTokens(base.system) + conversation.reduce((n, m) => n + estimateTokens(m.content), 0);
+      const reserved = settings.maxOutputTokens;
+      const remaining = settings.tokenBudget - settings.tokensUsed;
+      if (estimatedInput + reserved > remaining) {
+        const message =
+          `Not sent: this request needs roughly ${(estimatedInput + reserved).toLocaleString()} tokens (about ${estimatedInput.toLocaleString()} in, up to ${reserved.toLocaleString()} reserved for the reply), and ${Math.max(0, remaining).toLocaleString()} of the ${settings.tokenBudget.toLocaleString()}-token session budget remain. ` +
+          'The budget is a local guardrail, not a billing cap: raise or reset it in Settings.' +
+          (round > 0 ? ' The files the model asked for could not be supplied.' : '');
+        ai.setLastFailure({ kind: 'budget', message, at: Date.now() });
+        texts.push(message);
+        ws.addConsoleOutput(`[AI] ${message}`);
+        break;
+      }
+
       const response = await sendAIRequest(provider, {
         messages: conversation,
-        system,
+        system: base.system,
         signal: turn.controller.signal,
         modelOverride: builderModel,
+        timeoutMs: settings.requestTimeoutMs,
+        maxOutputTokens: settings.maxOutputTokens,
       });
 
       // A provider or test double is not required to honour AbortSignal. The
@@ -865,9 +892,22 @@ export async function runAgentTurn(): Promise<void> {
       const parsed = parseAIResponse(response.content);
       if (parsed.text) texts.push(parsed.text);
 
-      const applied = applyFileOperations(parsed, supplied, ai, ws);
+      // Only a complete reply is applied. A truncated one is reported and the
+      // turn stops here: its file blocks are not trusted, and a read round on
+      // top of a cut reply would be built on the same cut.
+      if (response.status !== 'complete') {
+        const { failure, card } = describeIncomplete(response, parsed, settings.maxOutputTokens);
+        if (card) toolCalls.push(card);
+        ai.setLastFailure(failure);
+        if (!parsed.text) texts.push(failure.message);
+        ws.addConsoleOutput(`[AI] ${failure.message}`);
+        break;
+      }
+
+      const applied = applyChangeset(parsed, base, turn.id, ai, ws);
       toolCalls.push(...applied.toolCalls);
-      writtenPaths = [...writtenPaths, ...applied.written];
+      committedCount += applied.committed.length + applied.deleted.length;
+      if (firstWritten === null && applied.committed.length > 0) firstWritten = applied.committed[0];
 
       // The model asked to see files whole. Answer with them and go again,
       // a bounded number of times; a reply that only asks is not the end of
@@ -902,9 +942,9 @@ export async function runAgentTurn(): Promise<void> {
       });
     }
 
-    // If files were changed, auto-navigate to the first changed file
-    if (writtenPaths.length > 0) {
-      ws.setActiveFilePath(writtenPaths[0]);
+    // Anything committed — a deletion as much as a write — is unsaved work.
+    if (committedCount > 0) {
+      if (firstWritten !== null) ws.setActiveFilePath(firstWritten);
       ws.setDirty(true);
       if (ws.mode === 'describe') {
         ws.setMode('design');
@@ -916,10 +956,11 @@ export async function runAgentTurn(): Promise<void> {
     const assistantMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'assistant',
-      content: text || (writtenPaths.length > 0 ? `Updated ${writtenPaths.length} file(s).` : rawFallback),
+      content: text || (committedCount > 0 ? `Changed ${committedCount} file(s).` : rawFallback),
       timestamp: Date.now(),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       tokens: usage,
+      transactionId: committedCount > 0 ? turn.id : undefined,
     };
     ai.addMessage(assistantMsg);
     ai.setAgentState('idle');
@@ -928,11 +969,12 @@ export async function runAgentTurn(): Promise<void> {
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     const superseded = activeAgentTurn !== turn;
+    const cancelled = err instanceof AIProviderError && err.kind === 'cancelled';
 
     // Don't let a cancelled turn overwrite the state of the turn that
     // replaced it. Fetch implementations differ in the exact AbortError text,
     // so the signal/ownership checks are authoritative.
-    if (turn.controller.signal.aborted || superseded || /abort/i.test(errorMessage)) {
+    if (turn.controller.signal.aborted || superseded || cancelled || /abort/i.test(errorMessage)) {
       if (!superseded) {
         ai.setAgentState('idle');
         ai.setCurrentStep('');
@@ -940,15 +982,17 @@ export async function runAgentTurn(): Promise<void> {
       return;
     }
 
+    const failure = describeFailure(err);
     ai.setAgentState('error');
     ai.setCurrentStep('');
+    ai.setLastFailure(failure);
     ai.addMessage({
       id: crypto.randomUUID(),
       role: 'assistant',
-      content: `Error: ${errorMessage}\n\nCheck your API key and provider settings.`,
+      content: failure.message,
       timestamp: Date.now(),
     });
-    ws.addConsoleOutput(`[AI] Error: ${errorMessage}`);
+    ws.addConsoleOutput(`[AI] ${failure.kind}: ${errorMessage}`);
 
     // Auto-recover to idle after error (only if still in error state)
     setTimeout(() => {

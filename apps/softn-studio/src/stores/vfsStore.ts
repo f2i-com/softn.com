@@ -1,22 +1,54 @@
 import { create } from 'zustand';
 import type { VFSFile, VFSEvent } from '../types/studio';
+import { findAlias, resolveProjectPath } from '../lib/paths';
+
+/**
+ * A record in a transaction: one file, one operation. A create must not
+ * find the path; an update or delete must. The store checks every record
+ * before it touches anything, so a transaction is all or nothing.
+ */
+export interface VFSChangeRecord {
+  op: 'create' | 'update' | 'delete';
+  path: string;
+  content?: string | Uint8Array;
+}
+
+export type RevertResult = { ok: true; paths: string[] } | { ok: false; reason: string };
 
 interface VFSState {
   files: Map<string, VFSFile>;
   history: VFSEvent[];
+  /** Undone units, most recent last, each event carrying its after-image so redo is exact. */
   undoStack: VFSEvent[];
 
+  /** Create a file. Throws if the path exists: an overwrite is an update, and is recorded as one. */
   createFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
+  /** Create many files as one undo unit — an import is one thing that happened, not hundreds. */
   batchCreateFiles(entries: Array<{ path: string; content: string | Uint8Array }>, source?: 'user' | 'ai'): void;
   /** Restore a saved project without recording it as work the user just did. */
   hydrateFiles(entries: Array<{ path: string; content: string | Uint8Array }>): void;
+  /** Replace a file's content. Throws if the path does not exist: there is no before-image to keep. */
   updateFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
   patchFile(path: string, search: string, replace: string, source?: 'user' | 'ai'): boolean;
   deleteFile(path: string, source?: 'user' | 'ai'): void;
+  /**
+   * Apply records as one unit under one id: every record is checked first,
+   * and an invalid one means nothing is written. Returns the id.
+   */
+  applyTransaction(records: VFSChangeRecord[], source?: 'user' | 'ai', transactionId?: string): string;
+  /**
+   * Put back what one transaction changed, wherever it sits in the history,
+   * provided nothing later touched the same files. Not redoable.
+   */
+  revertTransaction(transactionId: string): RevertResult;
   readFile(path: string): string | Uint8Array | null;
   listFiles(prefix?: string): string[];
   getSnapshot(): Map<string, VFSFile>;
+  /** Undo the most recent unit, whole. */
   undoLast(): void;
+  /** Redo the most recently undone unit, whole. Unavailable once a new edit follows an undo. */
+  redoLast(): void;
+  /** Undo every trailing unit an AI turn made, stopping at the first unit that was not. */
   revertAIChanges(): void;
   reset(): void;
 }
@@ -36,14 +68,121 @@ function mimeFor(path: string): string {
   return map[ext] ?? 'application/octet-stream';
 }
 
-const MAX_HISTORY = 200;
+export const MAX_HISTORY = 200;
 
-function capHistory(history: VFSEvent[]): VFSEvent[] {
-  return history.length > MAX_HISTORY ? history.slice(-MAX_HISTORY) : history;
+/**
+ * Trim history to the cap by dropping whole units from the oldest end. A
+ * unit is never cut in the middle: an undo that put back half an AI turn
+ * would be worse than no undo. If the newest unit is itself larger than the
+ * cap it stays whole and the cap is exceeded for as long as it is the only
+ * unit left.
+ */
+function pruneHistory(history: VFSEvent[]): VFSEvent[] {
+  let start = 0;
+  while (history.length - start > MAX_HISTORY) {
+    const end = unitEnd(history, start);
+    if (end >= history.length) break;
+    start = end;
+  }
+  return start === 0 ? history : history.slice(start);
 }
 
-function snapshotContent(content: VFSFile['content'] | undefined): VFSFile['content'] | undefined {
+/** The index one past the unit that begins at `start`. */
+function unitEnd(events: VFSEvent[], start: number): number {
+  const id = events[start].transactionId;
+  let end = start + 1;
+  if (id === undefined) return end;
+  while (end < events.length && events[end].transactionId === id) end++;
+  return end;
+}
+
+/** The index where the unit that ends at the tail of `events` begins. */
+function unitStart(events: VFSEvent[]): number {
+  const id = events[events.length - 1].transactionId;
+  let start = events.length - 1;
+  if (id === undefined) return start;
+  while (start > 0 && events[start - 1].transactionId === id) start--;
+  return start;
+}
+
+function snapshotContent(content: VFSFile['content']): VFSFile['content'] {
   return content instanceof Uint8Array ? content.slice() : content;
+}
+
+/** A copy of a file that shares no buffer with the store or the caller. */
+function snapshotFile(file: VFSFile): VFSFile {
+  return { ...file, content: snapshotContent(file.content) };
+}
+
+function newTransactionId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/** Apply the inverse of one event to `files`. */
+function undoEvent(files: Map<string, VFSFile>, event: VFSEvent): void {
+  if (event.type === 'create') {
+    files.delete(event.path);
+  } else if (event.previous) {
+    files.set(event.path, snapshotFile(event.previous));
+  } else if (event.type === 'delete' && event.previousContent !== undefined) {
+    // An event recorded before before-images carried metadata.
+    files.set(event.path, {
+      path: event.path,
+      content: snapshotContent(event.previousContent),
+      mimeType: mimeFor(event.path),
+      lastModified: Date.now(),
+      lastModifiedBy: 'user',
+      version: 1,
+    });
+  } else if (event.previousContent !== undefined) {
+    const existing = files.get(event.path);
+    if (existing) files.set(event.path, { ...existing, content: snapshotContent(event.previousContent) });
+  }
+}
+
+/**
+ * Undo the unit at the tail of `history`, in place on `files`. Returns the
+ * unit's events with their after-images, in original order, for the redo
+ * stack.
+ */
+function undoTailUnit(files: Map<string, VFSFile>, history: VFSEvent[]): VFSEvent[] {
+  const start = unitStart(history);
+  const unit = history.splice(start);
+  const undone: VFSEvent[] = unit.map((event) => {
+    const current = files.get(event.path);
+    return current ? { ...event, after: snapshotFile(current) } : { ...event, after: undefined };
+  });
+  for (let i = unit.length - 1; i >= 0; i--) undoEvent(files, unit[i]);
+  return undone;
+}
+
+/**
+ * Validate records against `files` without touching them; the message names
+ * the first problem. A create must be a canonical project path that is not
+ * another spelling of a file already there: the store is the last place a
+ * path is checked before it exists, so it checks.
+ */
+function checkRecords(files: Map<string, VFSFile>, records: VFSChangeRecord[]): void {
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (seen.has(record.path)) throw new Error(`Transaction names ${record.path} more than once`);
+    seen.add(record.path);
+    const exists = files.has(record.path);
+    if (record.op === 'create') {
+      if (exists) throw new Error(`createFile: ${record.path} already exists`);
+      if (record.content === undefined) throw new Error(`createFile: ${record.path} has no content`);
+      const verdict = resolveProjectPath(record.path);
+      if (!verdict.ok) throw new Error(`createFile: ${JSON.stringify(record.path)} is not a project path: ${verdict.reason}`);
+      if (verdict.path !== record.path) throw new Error(`createFile: ${JSON.stringify(record.path)} is not canonical; use ${verdict.path}`);
+      const alias = findAlias(record.path, files.keys()) ?? findAlias(record.path, seen);
+      if (alias !== null) throw new Error(`createFile: ${record.path} is the same file as ${alias} on a case-insensitive disk`);
+    } else if (record.op === 'update') {
+      if (!exists) throw new Error(`updateFile: no such file ${record.path}`);
+      if (record.content === undefined) throw new Error(`updateFile: ${record.path} has no content`);
+    } else if (!exists) {
+      throw new Error(`deleteFile: no such file ${record.path}`);
+    }
+  }
 }
 
 export const useVFSStore = create<VFSState>((set, get) => ({
@@ -52,20 +191,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
   undoStack: [],
 
   createFile(path, content, source = 'user') {
-    set((s) => {
-      const files = new Map(s.files);
-      const file: VFSFile = {
-        path,
-        content,
-        mimeType: mimeFor(path),
-        lastModified: Date.now(),
-        lastModifiedBy: source,
-        version: 1,
-      };
-      files.set(path, file);
-      const event: VFSEvent = { type: 'create', path, timestamp: Date.now(), source };
-      return { files, history: capHistory([...s.history, event]) };
-    });
+    get().applyTransaction([{ op: 'create', path, content }], source);
   },
 
   hydrateFiles(entries) {
@@ -94,48 +220,14 @@ export const useVFSStore = create<VFSState>((set, get) => ({
   },
 
   batchCreateFiles(entries, source = 'user') {
-    set((s) => {
-      const files = new Map(s.files);
-      const events: VFSEvent[] = [...s.history];
-      const now = Date.now();
-      for (const { path, content } of entries) {
-        files.set(path, {
-          path,
-          content,
-          mimeType: mimeFor(path),
-          lastModified: now,
-          lastModifiedBy: source,
-          version: 1,
-        });
-        events.push({ type: 'create', path, timestamp: now, source });
-      }
-      return { files, history: capHistory(events) };
-    });
+    get().applyTransaction(
+      entries.map(({ path, content }) => ({ op: 'create' as const, path, content })),
+      source,
+    );
   },
 
   updateFile(path, content, source = 'user') {
-    set((s) => {
-      const files = new Map(s.files);
-      const existing = files.get(path);
-      const prev = existing?.content;
-      const file: VFSFile = {
-        path,
-        content,
-        mimeType: mimeFor(path),
-        lastModified: Date.now(),
-        lastModifiedBy: source,
-        version: (existing?.version ?? 0) + 1,
-      };
-      files.set(path, file);
-      const event: VFSEvent = {
-        type: 'update',
-        path,
-        timestamp: Date.now(),
-        source,
-        previousContent: snapshotContent(prev),
-      };
-      return { files, history: capHistory([...s.history, event]) };
-    });
+    get().applyTransaction([{ op: 'update', path, content }], source);
   },
 
   patchFile(path, search, replace, source = 'user') {
@@ -149,20 +241,88 @@ export const useVFSStore = create<VFSState>((set, get) => ({
   },
 
   deleteFile(path, source = 'user') {
+    // Deleting what is not there is nothing happening, and records nothing.
+    if (!get().files.has(path)) return;
+    get().applyTransaction([{ op: 'delete', path }], source);
+  },
+
+  applyTransaction(records, source = 'user', transactionId) {
+    const id = transactionId ?? newTransactionId();
+    checkRecords(get().files, records);
     set((s) => {
       const files = new Map(s.files);
-      const existing = files.get(path);
-      if (!existing) return s;
-      files.delete(path);
-      const event: VFSEvent = {
-        type: 'delete',
-        path,
-        timestamp: Date.now(),
-        source,
-        previousContent: snapshotContent(existing.content),
-      };
-      return { files, history: capHistory([...s.history, event]) };
+      const now = Date.now();
+      const events: VFSEvent[] = [];
+      for (const record of records) {
+        const existing = files.get(record.path);
+        if (record.op === 'delete') {
+          files.delete(record.path);
+          events.push({
+            type: 'delete',
+            path: record.path,
+            timestamp: now,
+            source,
+            transactionId: id,
+            previous: snapshotFile(existing!),
+            previousContent: snapshotContent(existing!.content),
+          });
+          continue;
+        }
+        const content = record.content!;
+        files.set(record.path, {
+          path: record.path,
+          content,
+          mimeType: mimeFor(record.path),
+          lastModified: now,
+          lastModifiedBy: source,
+          version: (existing?.version ?? 0) + 1,
+        });
+        events.push(
+          record.op === 'create'
+            ? { type: 'create', path: record.path, timestamp: now, source, transactionId: id }
+            : {
+                type: 'update',
+                path: record.path,
+                timestamp: now,
+                source,
+                transactionId: id,
+                previous: snapshotFile(existing!),
+                previousContent: snapshotContent(existing!.content),
+              },
+        );
+      }
+      // A new edit after an undo makes the undone future unreachable: the
+      // files it would restore are not the files that are there now.
+      return { files, history: pruneHistory([...s.history, ...events]), undoStack: [] };
     });
+    return id;
+  },
+
+  revertTransaction(transactionId) {
+    const s = get();
+    const indices = s.history.map((e, i) => (e.transactionId === transactionId ? i : -1)).filter((i) => i >= 0);
+    if (indices.length === 0) {
+      return { ok: false, reason: 'This turn is no longer in the history: it was undone already, or the history was trimmed past it.' };
+    }
+    const paths = new Set(indices.map((i) => s.history[i].path));
+    const first = indices[0];
+    const inTurn = new Set(indices);
+    for (let i = first + 1; i < s.history.length; i++) {
+      if (inTurn.has(i)) continue;
+      const later = s.history[i];
+      if (paths.has(later.path)) {
+        return { ok: false, reason: `${later.path} was edited after this turn. Undo that edit first, or revert by hand.` };
+      }
+    }
+    set((state) => {
+      const files = new Map(state.files);
+      for (let k = indices.length - 1; k >= 0; k--) undoEvent(files, state.history[indices[k]]);
+      const history = state.history.filter((_, i) => !inTurn.has(i));
+      // The units after this one still restore correctly (they touch other
+      // files), but the undone future no longer describes these files.
+      return { files, history, undoStack: [] };
+    });
+    return { ok: true, paths: [...paths] };
   },
 
   readFile(path) {
@@ -182,67 +342,42 @@ export const useVFSStore = create<VFSState>((set, get) => ({
   undoLast() {
     set((s) => {
       if (s.history.length === 0) return s;
-      const last = s.history[s.history.length - 1];
       const files = new Map(s.files);
-      if (last.type === 'create') {
-        files.delete(last.path);
-      } else if (last.type === 'delete' && last.previousContent !== undefined) {
-        // Re-create the deleted file
-        files.set(last.path, {
-          path: last.path,
-          content: last.previousContent,
-          mimeType: mimeFor(last.path),
-          lastModified: Date.now(),
-          lastModifiedBy: 'user',
-          version: 1,
-        });
-      } else if (last.previousContent !== undefined) {
-        const existing = files.get(last.path);
-        if (existing) {
-          files.set(last.path, { ...existing, content: last.previousContent });
-        }
+      const history = [...s.history];
+      const undone = undoTailUnit(files, history);
+      return { files, history, undoStack: [...s.undoStack, ...undone] };
+    });
+  },
+
+  redoLast() {
+    set((s) => {
+      if (s.undoStack.length === 0) return s;
+      const files = new Map(s.files);
+      const undoStack = [...s.undoStack];
+      const unit = undoStack.splice(unitStart(undoStack));
+      const redone: VFSEvent[] = [];
+      for (const event of unit) {
+        if (event.after) files.set(event.path, snapshotFile(event.after));
+        else files.delete(event.path);
+        const { after: _after, ...rest } = event;
+        redone.push(rest);
       }
-      return {
-        files,
-        history: s.history.slice(0, -1),
-        undoStack: [...s.undoStack, last],
-      };
+      return { files, history: pruneHistory([...s.history, ...redone]), undoStack };
     });
   },
 
   revertAIChanges() {
     set((s) => {
       const files = new Map(s.files);
-      const remaining: VFSEvent[] = [];
-      // Walk backwards, undo all consecutive AI events
-      const reversed = [...s.history].reverse();
-      let undoing = true;
-      for (const ev of reversed) {
-        if (undoing && ev.source === 'ai') {
-          if (ev.type === 'create') {
-            files.delete(ev.path);
-          } else if (ev.type === 'delete' && ev.previousContent !== undefined) {
-            // Re-create the deleted file
-            files.set(ev.path, {
-              path: ev.path,
-              content: ev.previousContent,
-              mimeType: mimeFor(ev.path),
-              lastModified: Date.now(),
-              lastModifiedBy: 'user',
-              version: 1,
-            });
-          } else if (ev.previousContent !== undefined) {
-            const existing = files.get(ev.path);
-            if (existing) {
-              files.set(ev.path, { ...existing, content: ev.previousContent });
-            }
-          }
-        } else {
-          undoing = false;
-          remaining.unshift(ev);
-        }
+      const history = [...s.history];
+      const undone: VFSEvent[] = [];
+      // Most recent unit undone first, so the redo stack's tail is the unit
+      // to redo first: the oldest one undone here.
+      while (history.length > 0 && history[history.length - 1].source === 'ai') {
+        undone.push(...undoTailUnit(files, history));
       }
-      return { files, history: remaining };
+      if (undone.length === 0) return s;
+      return { files, history, undoStack: [...s.undoStack, ...undone] };
     });
   },
 

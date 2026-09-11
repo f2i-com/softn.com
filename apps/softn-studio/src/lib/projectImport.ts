@@ -1,4 +1,5 @@
 import { readBundleEntries } from '@softn/core';
+import { canonicalKey, normalizeProjectPath } from './paths';
 
 export interface ProjectImportEntry {
   path: string;
@@ -26,7 +27,7 @@ export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
   for (const [rawPath, content] of readBundleEntries(data)) {
     const path = normalizeProjectPath(rawPath);
     if (!path) throw new Error(`Archive contains an unsafe project path: ${rawPath}`);
-    const canonicalPath = path.toLowerCase();
+    const canonicalPath = canonicalKey(path);
     if (canonicalPaths.has(canonicalPath)) {
       throw new Error(`Archive contains colliding project paths: ${rawPath}`);
     }
@@ -39,25 +40,10 @@ export function readProjectArchive(data: Uint8Array): ProjectImportEntry[] {
   return entries;
 }
 
-/** Return a canonical bundle-relative path, or null for an escape/alias. */
-export function normalizeProjectPath(value: string): string | null {
-  const path = value.replace(/\\/g, '/');
-  if (
-    !path ||
-    path.startsWith('/') ||
-    path.includes('\0') ||
-    path.includes('//') ||
-    /^[a-zA-Z]:/.test(path)
-  ) {
-    return null;
-  }
-
-  const segments = path.split('/');
-  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) {
-    return null;
-  }
-  return segments.join('/');
-}
+// The path contract lives in ./paths so that import, the changeset check,
+// validation and export cannot drift apart again; it is re-exported here
+// because the rest of Studio learned to import it from this module.
+export { normalizeProjectPath };
 
 /**
  * Resolve an import from one project file to another without allowing it to
@@ -123,7 +109,7 @@ export function readJsonProject(text: string): ProjectImportEntry[] {
     // Backslash and case aliases are distinct JSON keys but become the same
     // project path on at least one supported platform. Reject the project
     // instead of silently allowing the later entry to overwrite the first.
-    const canonicalPath = path.toLowerCase();
+    const canonicalPath = canonicalKey(path);
     if (canonicalPaths.has(canonicalPath)) return [];
     canonicalPaths.add(canonicalPath);
     entries.push({ path, content });
