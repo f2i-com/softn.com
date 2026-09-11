@@ -156,11 +156,22 @@ describe('the import control on the update page', () => {
     delete (File.prototype as unknown as { text?: unknown }).text;
   });
 
-  async function settle(): Promise<void> {
-    for (let i = 0; i < 8; i++) {
+  /**
+   * Let the component finish what a file or a click started. A sealed
+   * backup is opened with a real key derivation — 310,000 PBKDF2 rounds —
+   * whose time is the machine's, not the event loop's: eight turns of the
+   * loop were enough here and not on the CI runner. So this waits for what
+   * the test is about to assert, up to a generous ceiling, and only then
+   * returns; without a condition it settles a few turns as before.
+   */
+  async function settle(until?: () => boolean, timeoutMs = 15000): Promise<void> {
+    const started = Date.now();
+    for (let i = 0; ; i++) {
       await act(async () => {
-        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, until ? 25 : 0));
       });
+      if (until ? until() : i >= 7) return;
+      if (Date.now() - started > timeoutMs) throw new Error('settle: the condition did not become true in time');
     }
   }
 
@@ -190,7 +201,7 @@ describe('the import control on the update page', () => {
     });
 
     give(sealed);
-    await settle();
+    await settle(() => container.textContent?.includes('is encrypted') ?? false);
     expect(container.textContent).toContain('softn-edit-keys.json is encrypted');
     const passphrase = container.querySelector<HTMLInputElement>('input[type="password"]')!;
     const open = [...container.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Open the backup')!;
@@ -199,7 +210,7 @@ describe('the import control on the update page', () => {
     type(passphrase, 'nope');
     expect(open.disabled).toBe(false);
     act(() => open.click());
-    await settle();
+    await settle(() => container.querySelector('[role="alert"]') !== null);
     expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/passphrase/);
     expect(localStorage.getItem(KEYS)).toBe(before);
     expect(onImported).not.toHaveBeenCalled();
@@ -208,7 +219,7 @@ describe('the import control on the update page', () => {
 
     type(passphrase, PASS);
     act(() => open.click());
-    await settle();
+    await settle(() => container.querySelector('[role="status"]') !== null);
     expect(container.querySelector('input[type="password"]')).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toContain('1 key restored');
     expect(savedKeys()).toEqual({ other: KEY_B, notes: KEY_A });
@@ -220,7 +231,7 @@ describe('the import control on the update page', () => {
       root.render(<KeyImport />);
     });
     give(new File([JSON.stringify({ format: 'softn-edit-keys', version: 1, keys: { notes: KEY_A } })], 'keys.json'));
-    await settle();
+    await settle(() => container.querySelector('[role="status"]') !== null);
     expect(container.querySelector('input[type="password"]')).toBeNull();
     expect(container.querySelector('[role="status"]')?.textContent).toContain('1 key restored');
     expect(savedKeys()).toEqual({ notes: KEY_A });
