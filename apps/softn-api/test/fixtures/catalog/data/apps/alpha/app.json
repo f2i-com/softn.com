@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "app": {
+    "slug": "alpha",
+    "name": "Alpha Harbour",
+    "description": "",
+    "author": "Ada",
+    "category": "games",
+    "tags": [
+      "city",
+      "harbour"
+    ],
+    "parent_slug": null,
+    "root_slug": null,
+    "latest_version": 2,
+    "capabilities": [],
+    "execution": "main",
+    "storage_policies": {},
+    "thumb": null,
+    "icon": null,
+    "primary_color": "#3366cc",
+    "edit_key_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "play_url": null,
+    "source": "folder",
+    "runs": 40,
+    "launches": 12,
+    "remixes": 0,
+    "rating_sum": 13,
+    "rating_count": 3,
+    "comments": 1,
+    "size": 521,
+    "hidden": 0,
+    "created_at": 1735689600,
+    "updated_at": 1735776000
+  },
+  "versions": [
+    {
+      "slug": "alpha",
+      "version": 2,
+      "file": "v2.softn",
+      "size": 521,
+      "sha256": "d81037e3304a94b2e274f61421997238d942081dc2e22a382eeffb9c8085a1be",
+      "manifest_version": "1.1.0",
+      "notes": "Tides.",
+      "created_at": 1735776000
+    },
+    {
+      "slug": "alpha",
+      "version": 1,
+      "file": "v1.softn",
+      "size": 510,
+      "sha256": "276d36faae34295e81bbac4f3ce1b73104da8e3fd1edf47f37103d542c5f6c6c",
+      "manifest_version": "1.0.0",
+      "notes": "",
+      "created_at": 1735689600
+    }
+  ],
+  "comments": [
+    {
+      "id": 1,
+      "slug": "alpha",
+      "name": "Bea",
+      "body": "Lovely.",
+      "visitor": "v1",
+      "hidden": 0,
+      "created_at": 1735689700
+    },
+    {
+      "id": 2,
+      "slug": "alpha",
+      "name": "Spam",
+      "body": "hidden",
+      "visitor": "v2",
+      "hidden": 1,
+      "created_at": 1735689800
+    }
+  ],
+  "ratings": [
+    {
+      "visitor": "v1",
+      "stars": 5,
+      "created_at": 1735689600
+    },
+    {
+      "visitor": "v2",
+      "stars": 4,
+      "created_at": 1735689600
+    },
+    {
+      "visitor": "v3",
+      "stars": 4,
+      "created_at": 1735689600
+    }
+  ],
+  "runsDaily": [
+    {
+      "day": 20089,
+      "count": 40
+    }
+  ]
+}

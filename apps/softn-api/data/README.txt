@@ -17,8 +17,12 @@ This private directory holds the app catalogue and app-owned data:
 
 Copy a named app folder into apps/ to add it. Use v1.softn, v2.softn, etc.
 JSON is generated on first discovery; see ../README.md for a minimal app.json.
-For concurrent updates, use the API. Manual JSON edits and consistent backups
-must also hold catalog.lock or be made while API requests are stopped.
+For concurrent updates, use the API. Manual JSON edits must hold catalog.lock
+or be made while API requests are stopped. For a backup, use
+`php ../api/backup.php export <file.tar|file.zip>`: it takes the lock, folds
+each storage.sqlite's WAL in, and writes a verified archive with an inventory;
+`restore <archive> --into <dir>` verifies it and rebuilds the cache. See the
+API README, "Backup and restore".
 
 PHP must be able to write here. The web server must never serve this folder:
 .htaccess and the site's rules refuse it. Keep keys and private metadata safe.

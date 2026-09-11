@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "app": {
+    "slug": "delta",
+    "name": "Delta Elsewhere",
+    "description": "Plays on its own site.",
+    "author": "Dee",
+    "category": "other",
+    "tags": [
+      "linked"
+    ],
+    "parent_slug": null,
+    "root_slug": null,
+    "latest_version": 0,
+    "capabilities": [],
+    "execution": "main",
+    "storage_policies": {},
+    "thumb": null,
+    "icon": null,
+    "primary_color": null,
+    "edit_key_hash": null,
+    "play_url": "https://delta.example/",
+    "source": "folder",
+    "runs": 0,
+    "launches": 0,
+    "remixes": 0,
+    "rating_sum": 0,
+    "rating_count": 0,
+    "comments": 0,
+    "size": 0,
+    "hidden": 0,
+    "created_at": 1735700400,
+    "updated_at": 1735700400
+  },
+  "versions": [],
+  "comments": [],
+  "ratings": [],
+  "runsDaily": []
+}

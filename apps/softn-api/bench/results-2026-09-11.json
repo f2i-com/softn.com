@@ -1,0 +1,766 @@
+{
+  "title": "Catalogue benchmark, 2026-09-11 (audit API-03, round 2)",
+  "method": "scripts/bench/catalog-bench.mjs --sizes 100,1000 --time-budget 1800: disposable catalogues of N synthetic apps under the system temp directory, 4 php -S workers (separate processes contending for the catalogue flock), 8 requests in flight; phases list and read (200 requests each), publish and update (50 each), mixed (200: half list, three tenths read, one tenth run count, one tenth patch). \"before\" measured a copy of apps/softn-api as of commit 7f1ea46 (--api <copy>), 16:17-16:29 local; \"after\" the working tree with the round-2 repair (change-based bundle-cache revalidation with a bounded periodic sweep; the slug-keyed catalogue built once per request and handed to every card), 18:47-18:51 local. No other catalogue benchmark ran during either (tasklist checked). Latency is measured by the client around fetch; lock wait, lock hold, boot, rebuild and commit are the API's own Server-Timing. The 10,000-app size was not run: the session was closed before the capped run started.",
+  "caveats": [
+    "The \"before\" JSON the script wrote was overwritten by another agent's benchmark that used the same scratch file name; \"before\" here is parsed from the run's printed table (the same numbers, without the per-phase max lock/hold columns), which is why its shape is slightly narrower than \"after\".",
+    "Another agent's Studio micro-benchmark (vitest bench, single process) finished at 18:46:22, seconds before the \"after\" run began; the first seconds of its 100-app build may have overlapped that tail. The 1,000-app \"after\" phases ran alone.",
+    "A clean sequential rerun of both was started at 18:52 and stopped at 18:54 at the coordinator's request; its completed part (100 apps, all phases, \"before\") is included as cleanRerunBefore and agrees with \"before\" within noise (list p50 156 vs 160 ms).",
+    "Both runs used the same fixtures, ports, worker count and machine; other agents' editors and unit-test runs in the same session were the only other load."
+  ],
+  "machine": {
+    "platform": "win32 10.0.26200",
+    "arch": "x64",
+    "cpu": "AMD Ryzen 9 9950X3D 16-Core Processor",
+    "cores": 32,
+    "memoryGB": 190,
+    "node": "v24.12.0",
+    "php": "8.4.15",
+    "workers": 4,
+    "concurrency": 8
+  },
+  "settings": {
+    "requests": 200,
+    "sizes": [
+      100,
+      1000
+    ],
+    "timeBudgetS": 1800
+  },
+  "before": {
+    "label": "before",
+    "results": [
+      {
+        "apps": 100,
+        "phases": [
+          {
+            "phase": "list",
+            "requests": 200,
+            "errors": 0,
+            "rps": 47.4,
+            "latencyMs": {
+              "p50": 159.9,
+              "p95": 214.8,
+              "max": 237.6
+            },
+            "lockWaitMs": {
+              "p50": 61.3,
+              "p95": 67.1
+            },
+            "lockHoldMs": {
+              "p50": 20.7,
+              "p95": 22.9
+            },
+            "bootMs": {
+              "p50": 17
+            },
+            "rebuild": {
+              "bundles": 100,
+              "ms": 9.4
+            },
+            "commit": {
+              "msP50": 2.8
+            }
+          },
+          {
+            "phase": "read",
+            "requests": 200,
+            "errors": 0,
+            "rps": 36.9,
+            "latencyMs": {
+              "p50": 214.4,
+              "p95": 246.5,
+              "max": 270.4
+            },
+            "lockWaitMs": {
+              "p50": 79.1,
+              "p95": 87.4
+            },
+            "lockHoldMs": {
+              "p50": 26.7,
+              "p95": 29
+            },
+            "bootMs": {
+              "p50": 17.3
+            },
+            "rebuild": {
+              "bundles": 100,
+              "ms": 9
+            },
+            "commit": {
+              "msP50": 3.9
+            }
+          },
+          {
+            "phase": "publish",
+            "requests": 50,
+            "errors": 0,
+            "rps": 21.1,
+            "latencyMs": {
+              "p50": 359.9,
+              "p95": 462.8,
+              "max": 493
+            },
+            "lockWaitMs": {
+              "p50": 129.7,
+              "p95": 160.7
+            },
+            "lockHoldMs": {
+              "p50": 47.5,
+              "p95": 56.7
+            },
+            "bootMs": {
+              "p50": 32.3
+            },
+            "rebuild": {
+              "bundles": 49,
+              "ms": 8.9
+            },
+            "commit": {
+              "msP50": 5.5
+            }
+          },
+          {
+            "phase": "update",
+            "requests": 50,
+            "errors": 0,
+            "rps": 14.3,
+            "latencyMs": {
+              "p50": 494.4,
+              "p95": 776.1,
+              "max": 782.3
+            },
+            "lockWaitMs": {
+              "p50": 207.5,
+              "p95": 215.1
+            },
+            "lockHoldMs": {
+              "p50": 70.1,
+              "p95": 75.3
+            },
+            "bootMs": {
+              "p50": 33.7
+            },
+            "rebuild": {
+              "bundles": 133,
+              "ms": 13.4
+            },
+            "commit": {
+              "msP50": 6.2
+            }
+          },
+          {
+            "phase": "mixed",
+            "requests": 200,
+            "errors": 0,
+            "rps": 22.5,
+            "latencyMs": {
+              "p50": 353.8,
+              "p95": 382,
+              "max": 400
+            },
+            "lockWaitMs": {
+              "p50": 127.9,
+              "p95": 156.6
+            },
+            "lockHoldMs": {
+              "p50": 45.3,
+              "p95": 57.7
+            },
+            "bootMs": {
+              "p50": 26.6
+            },
+            "rebuild": {
+              "bundles": 279,
+              "ms": 26.1
+            },
+            "commit": {
+              "msP50": 3.5
+            }
+          }
+        ],
+        "notes": [],
+        "cold": {
+          "latencyMs": 1112.2,
+          "bootMs": 1101.3,
+          "rebuildBundles": 100,
+          "rebuildMs": 358,
+          "commitMs": 287.5,
+          "status": 200
+        },
+        "disk": {
+          "dataMB": 0.4,
+          "files": 306,
+          "bytesPerApp": 3742,
+          "cacheKB": 87
+        },
+        "elapsedS": 26.1,
+        "warm": {
+          "latencyMs": 24.4,
+          "bootMs": 17.6
+        }
+      },
+      {
+        "apps": 1000,
+        "phases": [
+          {
+            "phase": "list",
+            "requests": 200,
+            "errors": 0,
+            "rps": 1.9,
+            "latencyMs": {
+              "p50": 4143,
+              "p95": 4358.5,
+              "max": 4526.9
+            },
+            "lockWaitMs": {
+              "p50": 1548.2,
+              "p95": 1675.5
+            },
+            "lockHoldMs": {
+              "p50": 526.8,
+              "p95": 603.3
+            },
+            "bootMs": {
+              "p50": 218.2
+            },
+            "rebuild": {
+              "bundles": 20908,
+              "ms": 2118.5
+            },
+            "commit": {
+              "msP50": 4.6
+            }
+          },
+          {
+            "phase": "read",
+            "requests": 200,
+            "errors": 0,
+            "rps": 0.7,
+            "latencyMs": {
+              "p50": 11783,
+              "p95": 16710.7,
+              "max": 16940.4
+            },
+            "lockWaitMs": {
+              "p50": 4403.6,
+              "p95": 4686.6
+            },
+            "lockHoldMs": {
+              "p50": 1443.1,
+              "p95": 1626.6
+            },
+            "bootMs": {
+              "p50": 336.6
+            },
+            "rebuild": {
+              "bundles": 49687,
+              "ms": 6918
+            },
+            "commit": {
+              "msP50": 5.6
+            }
+          },
+          {
+            "phase": "publish",
+            "requests": 50,
+            "errors": 0,
+            "rps": 1.2,
+            "latencyMs": {
+              "p50": 6612.6,
+              "p95": 8561.4,
+              "max": 8677.4
+            },
+            "lockWaitMs": {
+              "p50": 2511.5,
+              "p95": 2601.4
+            },
+            "lockHoldMs": {
+              "p50": 845,
+              "p95": 875.6
+            },
+            "bootMs": {
+              "p50": 222.9
+            },
+            "rebuild": {
+              "bundles": 8422,
+              "ms": 779.5
+            },
+            "commit": {
+              "msP50": 7
+            }
+          },
+          {
+            "phase": "update",
+            "requests": 50,
+            "errors": 0,
+            "rps": 0.7,
+            "latencyMs": {
+              "p50": 12120.5,
+              "p95": 12219.4,
+              "max": 12275.2
+            },
+            "lockWaitMs": {
+              "p50": 4549.3,
+              "p95": 4609.5
+            },
+            "lockHoldMs": {
+              "p50": 1519.6,
+              "p95": 1564.4
+            },
+            "bootMs": {
+              "p50": 238.1
+            },
+            "rebuild": {
+              "bundles": 13617,
+              "ms": 1221.8
+            },
+            "commit": {
+              "msP50": 7.8
+            }
+          },
+          {
+            "phase": "mixed",
+            "requests": 200,
+            "errors": 0,
+            "rps": 1.2,
+            "latencyMs": {
+              "p50": 6843.4,
+              "p95": 8036.6,
+              "max": 8125.9
+            },
+            "lockWaitMs": {
+              "p50": 2613.4,
+              "p95": 3582.3
+            },
+            "lockHoldMs": {
+              "p50": 599.6,
+              "p95": 1487.9
+            },
+            "bootMs": {
+              "p50": 206.5
+            },
+            "rebuild": {
+              "bundles": 35209,
+              "ms": 2954.1
+            },
+            "commit": {
+              "msP50": 5.5
+            }
+          }
+        ],
+        "notes": [],
+        "cold": {
+          "latencyMs": 11253.4,
+          "bootMs": 10930.8,
+          "rebuildBundles": 1000,
+          "rebuildMs": 3666.8,
+          "commitMs": 2874.2,
+          "status": 200
+        },
+        "disk": {
+          "dataMB": 2.5,
+          "files": 2106,
+          "bytesPerApp": 2582,
+          "cacheKB": 610
+        },
+        "elapsedS": 685.4,
+        "warm": {
+          "latencyMs": 560,
+          "bootMs": 237.4
+        }
+      }
+    ]
+  },
+  "after": {
+    "label": "after",
+    "generatedAt": "2026-09-11T08:51:16.629Z",
+    "results": [
+      {
+        "apps": 100,
+        "phases": [
+          {
+            "phase": "list",
+            "requests": 200,
+            "errors": 0,
+            "rps": 51,
+            "latencyMs": {
+              "p50": 154.9,
+              "p95": 185.9,
+              "max": 207.6
+            },
+            "lockWaitMs": {
+              "p50": 57,
+              "p95": 66.3,
+              "max": 76.8
+            },
+            "lockHoldMs": {
+              "p50": 19,
+              "p95": 23.6,
+              "max": 30.8
+            },
+            "bootMs": {
+              "p50": 18.2,
+              "p95": 22.7
+            },
+            "rebuild": {
+              "bundles": 0,
+              "ms": 0
+            },
+            "commit": {
+              "files": 0,
+              "msP50": null
+            }
+          },
+          {
+            "phase": "read",
+            "requests": 200,
+            "errors": 0,
+            "rps": 40.1,
+            "latencyMs": {
+              "p50": 198.7,
+              "p95": 261.1,
+              "max": 292.1
+            },
+            "lockWaitMs": {
+              "p50": 73.9,
+              "p95": 85.3,
+              "max": 94.6
+            },
+            "lockHoldMs": {
+              "p50": 25.2,
+              "p95": 29.8,
+              "max": 36.4
+            },
+            "bootMs": {
+              "p50": 24.7,
+              "p95": 29.2
+            },
+            "rebuild": {
+              "bundles": 0,
+              "ms": 0
+            },
+            "commit": {
+              "files": 0,
+              "msP50": null
+            }
+          },
+          {
+            "phase": "publish",
+            "requests": 50,
+            "errors": 0,
+            "rps": 20.5,
+            "latencyMs": {
+              "p50": 371.3,
+              "p95": 501.8,
+              "max": 517
+            },
+            "lockWaitMs": {
+              "p50": 133.4,
+              "p95": 166.5,
+              "max": 170.2
+            },
+            "lockHoldMs": {
+              "p50": 48.3,
+              "p95": 57.8,
+              "max": 77.1
+            },
+            "bootMs": {
+              "p50": 41.8,
+              "p95": 52.2
+            },
+            "rebuild": {
+              "bundles": 49,
+              "ms": 10.5
+            },
+            "commit": {
+              "files": 100,
+              "msP50": 6.6
+            }
+          },
+          {
+            "phase": "update",
+            "requests": 50,
+            "errors": 0,
+            "rps": 18.4,
+            "latencyMs": {
+              "p50": 431.7,
+              "p95": 483,
+              "max": 487.5
+            },
+            "lockWaitMs": {
+              "p50": 160.1,
+              "p95": 182.5,
+              "max": 185.3
+            },
+            "lockHoldMs": {
+              "p50": 53.4,
+              "p95": 63.7,
+              "max": 69.6
+            },
+            "bootMs": {
+              "p50": 47,
+              "p95": 52.8
+            },
+            "rebuild": {
+              "bundles": 1,
+              "ms": 0.2
+            },
+            "commit": {
+              "files": 51,
+              "msP50": 4
+            }
+          },
+          {
+            "phase": "mixed",
+            "requests": 200,
+            "errors": 0,
+            "rps": 28,
+            "latencyMs": {
+              "p50": 282.3,
+              "p95": 360.7,
+              "max": 405.1
+            },
+            "lockWaitMs": {
+              "p50": 102,
+              "p95": 137.1,
+              "max": 169.9
+            },
+            "lockHoldMs": {
+              "p50": 34.8,
+              "p95": 49,
+              "max": 66.2
+            },
+            "bootMs": {
+              "p50": 32,
+              "p95": 46.4
+            },
+            "rebuild": {
+              "bundles": 0,
+              "ms": 0
+            },
+            "commit": {
+              "files": 60,
+              "msP50": 7.5
+            }
+          }
+        ],
+        "notes": [],
+        "cold": {
+          "latencyMs": 1223.7,
+          "bootMs": 1215.5,
+          "rebuildBundles": 100,
+          "rebuildMs": 401.3,
+          "commitFiles": 101,
+          "commitMs": 312.3,
+          "status": 200
+        },
+        "warm": {
+          "latencyMs": 21.2,
+          "bootMs": 17.2
+        },
+        "disk": {
+          "dataBytes": 374169,
+          "files": 306,
+          "cacheBytes": 89033,
+          "bytesPerApp": 3742
+        },
+        "elapsedS": 23
+      },
+      {
+        "apps": 1000,
+        "phases": [
+          {
+            "phase": "list",
+            "requests": 200,
+            "errors": 0,
+            "rps": 4.6,
+            "latencyMs": {
+              "p50": 1704.6,
+              "p95": 2279.6,
+              "max": 2406.6
+            },
+            "lockWaitMs": {
+              "p50": 674.3,
+              "p95": 802.5,
+              "max": 829.3
+            },
+            "lockHoldMs": {
+              "p50": 220.6,
+              "p95": 271,
+              "max": 288.9
+            },
+            "bootMs": {
+              "p50": 211.8,
+              "p95": 260
+            },
+            "rebuild": {
+              "bundles": 0,
+              "ms": 0
+            },
+            "commit": {
+              "files": 0,
+              "msP50": null
+            }
+          },
+          {
+            "phase": "read",
+            "requests": 200,
+            "errors": 0,
+            "rps": 5.7,
+            "latencyMs": {
+              "p50": 1382.6,
+              "p95": 1620.6,
+              "max": 1686
+            },
+            "lockWaitMs": {
+              "p50": 515.1,
+              "p95": 564.4,
+              "max": 594.3
+            },
+            "lockHoldMs": {
+              "p50": 171.9,
+              "p95": 192.6,
+              "max": 229.3
+            },
+            "bootMs": {
+              "p50": 170.4,
+              "p95": 190.5
+            },
+            "rebuild": {
+              "bundles": 0,
+              "ms": 0
+            },
+            "commit": {
+              "files": 0,
+              "msP50": null
+            }
+          },
+          {
+            "phase": "publish",
+            "requests": 50,
+            "errors": 0,
+            "rps": 3.7,
+            "latencyMs": {
+              "p50": 1932.6,
+              "p95": 2842.9,
+              "max": 3420.1
+            },
+            "lockWaitMs": {
+              "p50": 766.1,
+              "p95": 1159.6,
+              "max": 1353
+            },
+            "lockHoldMs": {
+              "p50": 259.8,
+              "p95": 346.1,
+              "max": 542
+            },
+            "bootMs": {
+              "p50": 251.5,
+              "p95": 337.9
+            },
+            "rebuild": {
+              "bundles": 49,
+              "ms": 9.2
+            },
+            "commit": {
+              "files": 100,
+              "msP50": 7.5
+            }
+          },
+          {
+            "phase": "update",
+            "requests": 50,
+            "errors": 0,
+            "rps": 4,
+            "latencyMs": {
+              "p50": 1990.6,
+              "p95": 2289.7,
+              "max": 2444.1
+            },
+            "lockWaitMs": {
+              "p50": 749.9,
+              "p95": 827.1,
+              "max": 881.8
+            },
+            "lockHoldMs": {
+              "p50": 248,
+              "p95": 296.7,
+              "max": 303.7
+            },
+            "bootMs": {
+              "p50": 240.2,
+              "p95": 288.9
+            },
+            "rebuild": {
+              "bundles": 1,
+              "ms": 0.2
+            },
+            "commit": {
+              "files": 51,
+              "msP50": 4.1
+            }
+          },
+          {
+            "phase": "mixed",
+            "requests": 200,
+            "errors": 0,
+            "rps": 4.6,
+            "latencyMs": {
+              "p50": 1693.3,
+              "p95": 2177.3,
+              "max": 2456.2
+            },
+            "lockWaitMs": {
+              "p50": 618.8,
+              "p95": 823,
+              "max": 1138.8
+            },
+            "lockHoldMs": {
+              "p50": 201.8,
+              "p95": 302.1,
+              "max": 492.6
+            },
+            "bootMs": {
+              "p50": 193.3,
+              "p95": 292.1
+            },
+            "rebuild": {
+              "bundles": 0,
+              "ms": 0
+            },
+            "commit": {
+              "files": 60,
+              "msP50": 7.1
+            }
+          }
+        ],
+        "notes": [],
+        "cold": {
+          "latencyMs": 11129.9,
+          "bootMs": 11108,
+          "rebuildBundles": 1000,
+          "rebuildMs": 3863.8,
+          "commitFiles": 1001,
+          "commitMs": 2700.7,
+          "status": 200
+        },
+        "warm": {
+          "latencyMs": 271.5,
+          "bootMs": 253.5
+        },
+        "disk": {
+          "dataBytes": 2581882,
+          "files": 2106,
+          "cacheBytes": 624633,
+          "bytesPerApp": 2582
+        },
+        "elapsedS": 161.9
+      }
+    ]
+  },
+  "cleanRerunBefore": {
+    "label": "before (clean rerun, stopped after the 100-app size)",
+    "results": []
+  }
+}

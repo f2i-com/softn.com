@@ -110,8 +110,13 @@ final class Apps
 
     // ── Presentation ───────────────────────────────────────────────────────
 
-    /** @param array<string, mixed> $row @return array<string, mixed> */
-    public static function card(array $row): array
+    /**
+     * @param array<string, mixed> $row
+     * @param array<string, array<string, mixed>>|null $rows the catalogue by slug, when the caller
+     *   already has it (a listing hands the same map to every card); Catalog::all() otherwise
+     * @return array<string, mixed>
+     */
+    public static function card(array $row, ?array $rows = null): array
     {
         $slug = (string) $row['slug'];
         $bundle = "/api/apps/$slug/bundle.softn";
@@ -120,7 +125,7 @@ final class Apps
         $count = (int) $row['rating_count'];
         $parent = null;
         if (!empty($row['parent_slug'])) {
-            $pr = Catalog::all()[$row['parent_slug']] ?? null;
+            $pr = ($rows ?? Catalog::all())[$row['parent_slug']] ?? null;
             if ($pr) $parent = ['slug' => $pr['slug'], 'name' => $pr['name']];
         }
         return [
@@ -184,7 +189,8 @@ final class Apps
     {
         $slug = (string) $row['slug'];
         $doc=Catalog::doc($slug);
-        $card = self::card($row);
+        $rows=Catalog::all();
+        $card = self::card($row, $rows);
         $versions = [];
         usort($doc['versions'],fn($a,$b)=>$b['version']<=>$a['version']);
         foreach ($doc['versions'] as $r) {
@@ -200,7 +206,7 @@ final class Apps
         }
         $breakdown = [1=>0,2=>0,3=>0,4=>0,5=>0];
         foreach ($doc['ratings'] as $r) $breakdown[(int)$r['stars']]++;
-        $kids=array_values(array_filter(Catalog::all(),fn($r)=>$r['parent_slug']===$slug && !$r['hidden']));
+        $kids=array_values(array_filter($rows,fn($r)=>$r['parent_slug']===$slug && !$r['hidden']));
         usort($kids,fn($a,$b)=>$b['created_at']<=>$a['created_at']);
         $remixes=[];
         foreach (array_slice($kids,0,12) as $r) $remixes[]=['slug'=>$r['slug'],'name'=>$r['name'],'author'=>$r['author'],'createdAt'=>gmdate('c',(int)$r['created_at'])];
@@ -208,7 +214,7 @@ final class Apps
         $cur = $row['parent_slug'] ?? null;
         $hops = 0;
         while (is_string($cur) && $cur !== '' && $hops++ < 8) {
-            $pr = Catalog::all()[$cur] ?? null;
+            $pr = $rows[$cur] ?? null;
             if (!$pr) break;
             $lineage[] = ['slug' => $pr['slug'], 'name' => $pr['name'], 'author' => $pr['author']];
             $cur = $pr['parent_slug'];
@@ -255,8 +261,8 @@ final class Apps
         $search=Text::clean($q['q']??'',80);$category=Text::clean($q['category']??'',40);$tag=strtolower(Text::clean($q['tag']??'',24));$author=Text::clean($q['author']??'',40);$cap=Text::clean($q['cap']??'',16);
         $sort=in_array($q['sort']??'',self::SORTS,true)?$q['sort']:($search!==''?'relevance':'trending');
         $perPage=max(1,min(48,(int)($q['perPage']??24)));$page=max(1,min(500,(int)($q['page']??1)));
-        $rows=[];$since=time()-7*86400;
-        foreach (Catalog::all() as $r) {
+        $rows=[];$since=time()-7*86400;$all=Catalog::all();
+        foreach ($all as $r) {
             if ($r['hidden'] || ($category!=='' && $category!=='all' && $r['category']!==$category)) continue;
             $tags=json_decode($r['tags'],true)?:[];$caps=json_decode($r['capabilities'],true)?:[];
             if ($tag!=='' && !in_array($tag,$tags,true)) continue;
@@ -279,7 +285,7 @@ final class Apps
             return strcmp($a['slug'],$b['slug']);
         });
         $total=count($rows);
-        return ['apps'=>array_map([self::class,'card'],array_slice($rows,($page-1)*$perPage,$perPage)),'page'=>$page,'perPage'=>$perPage,'total'=>$total,'pages'=>max(1,(int)ceil($total/$perPage)),'sort'=>$sort,'query'=>$search,'category'=>$category];
+        return ['apps'=>array_map(fn($r)=>self::card($r,$all),array_slice($rows,($page-1)*$perPage,$perPage)),'page'=>$page,'perPage'=>$perPage,'total'=>$total,'pages'=>max(1,(int)ceil($total/$perPage)),'sort'=>$sort,'query'=>$search,'category'=>$category];
     }
 
     // ── Publishing ─────────────────────────────────────────────────────────

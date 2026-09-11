@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "app": {
+    "slug": "epsilon",
+    "name": "Epsilon Notes",
+    "description": "",
+    "author": "Eve",
+    "category": "productivity",
+    "tags": [
+      "notes"
+    ],
+    "parent_slug": null,
+    "root_slug": null,
+    "latest_version": 1,
+    "capabilities": [
+      "net",
+      "storage"
+    ],
+    "execution": "main",
+    "storage_policies": {
+      "notes": "owner-write",
+      "*": "public"
+    },
+    "thumb": null,
+    "icon": null,
+    "primary_color": null,
+    "edit_key_hash": null,
+    "play_url": null,
+    "source": "folder",
+    "runs": 7,
+    "launches": 0,
+    "remixes": 0,
+    "rating_sum": 3,
+    "rating_count": 1,
+    "comments": 0,
+    "size": 695,
+    "hidden": 0,
+    "created_at": 1735704000,
+    "updated_at": 1735704000
+  },
+  "versions": [
+    {
+      "slug": "epsilon",
+      "version": 1,
+      "file": "v1.softn",
+      "size": 695,
+      "sha256": "a139710279fcfa9ff8e88b9e4248ad5d0ec5dc4c61f0d69a104b36171eb6e0fb",
+      "manifest_version": "1.0.0",
+      "notes": "",
+      "created_at": 1735704000
+    }
+  ],
+  "comments": [],
+  "ratings": [
+    {
+      "visitor": "v9",
+      "stars": 3,
+      "created_at": 1735689600
+    }
+  ],
+  "runsDaily": []
+}

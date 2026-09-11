@@ -139,9 +139,19 @@ comment histories also increase the size of an app's JSON rewrite. This does
 not promise power-loss durability of filesystem directory entries.
 
 Folder entries and app.json are reread for each request. The derived bundle
-cache avoids reopening ZIPs on every request, refreshes when file stats
-change, and revalidates at least every five seconds while requests arrive.
-A same-size replacement preserving timestamps may take up to five seconds.
+cache (`cache/bundles.json`) avoids reopening ZIPs: a bundle is inspected
+when it is first met and again only when its size, mtime or ctime changes,
+which every write the API makes (a temp sibling renamed into place) does.
+A bundle that has not changed is never re-read for time alone. The safety
+net for a replacement made by hand with its size and timestamps intact is a
+periodic sweep: a bundle whose last inspection is older than
+`cacheSweepSeconds` (default 600) is read again, at most `cacheSweepBatch`
+(default 200) bundles per request, so a large catalogue spreads the sweep
+over requests instead of holding the lock for all of it. (Until the
+2026-09-11 round-2 repair the cache re-inspected every bundle whose stamp
+was five seconds old; under load, where every request waited longer than
+that for the lock, that meant every bundle on every request — 20,908
+inspections during 200 list requests at 1,000 apps.)
 Deleting or corrupting `cache/bundles.json` rebuilds it without losing any
 plays, comments, ratings or ownership. Search/filter/sort use PHP over the
 current metadata snapshot; search is case-insensitive word matching, with
@@ -257,8 +267,10 @@ committed. `test/catalog-recovery.test.mjs` does exactly that.
 The catalogue measures itself. `GET /api/health` carries a `timings` block
 for its own request — `lockWaitMs` (time to acquire the catalogue lock),
 `lockHoldMs`, `bootMs` (reading every folder), `rebuild` (bundles the cache
-had to inspect again, count and ms), `commit` (metadata files written,
-count and ms) and `apps` (folders loaded). With `"debugTimings": true` in
+had to inspect again: `count` and `ms`, and `swept`, how many of them the
+periodic sweep asked for rather than a change), `commit` (metadata files
+written, count and ms), `apps` (folders loaded) and `thresholds` (see
+"Thresholds" below). With `"debugTimings": true` in
 `data/config.json` every response carries the same numbers as a
 `Server-Timing` header (`lock;dur=…, hold;dur=…, boot;dur=…,
 rebuild;dur=…;desc="N bundles", commit;dur=…;desc="N files", apps;desc="N"`),
@@ -268,14 +280,89 @@ are not secret, but they are noise to every other client.
 `node scripts/bench/catalog-bench.mjs --sizes 100,1000` builds disposable
 catalogues of that many synthetic apps under the system temp directory,
 starts several `php -S` workers over each (separate processes, so the lock
-is contended for real), runs concurrent list, read, publish and update
-load, and prints p50/p95 latency, lock wait and hold, cache rebuild time
-and disk usage as a table and as JSON. Its results, and the thresholds
-proposed from them, are recorded in the audit repair report rather than
-here; the numbers depend on the machine. Note what the design implies
-before reading them: every request re-reads every `app.json` under the
-lock, so per-request cost grows with the catalogue, and a cold cache
+is contended for real), runs concurrent list, read, publish, update and
+mixed load, and prints p50/p95 latency, lock wait and hold, cache rebuild
+time and disk usage as a table and as JSON. `--api <dir>` measures a copy
+of another revision, which is how a before/after pair is made without
+touching the working tree; `--label` names the run in the JSON. The runs
+behind the thresholds below are in `bench/results-2026-09-11.json`
+(before and after the round-2 repair, 100 and 1,000 apps, with the machine
+they ran on); the numbers depend on the machine. Note what the design
+implies before reading them: every request re-reads every `app.json` under
+the lock, so per-request cost grows with the catalogue, and a cold cache
 inspects every bundle once.
+
+### Thresholds
+
+`timings.thresholds` on `/api/health` names what a request should stay
+under, so an operator's probe can compare its own request's numbers with
+them. There is no alerting here: the probe decides what to do. The values
+come from the 1,000-app "after" run in `bench/results-2026-09-11.json`
+(Ryzen 9 9950X3D, Windows 11, PHP 8.4.15, four `php -S` workers, eight
+requests in flight):
+
+| Threshold | Default | Where it comes from |
+|---|---|---|
+| `lockWaitMsP95` | 1000 | Lock wait p95 at 1,000 apps under that load was 564–827 ms in the read phases and 1,160 ms in publish (which also inspects the upload). A probe waiting longer than a second is behind a queue the design cannot drain: every request re-reads every `app.json` under the lock. |
+| `lockHoldMsP95` | 350 | Lock hold p95 at 1,000 apps was 193–346 ms, almost all of it the boot (reading every folder, p50 170–250 ms). A hold past this on a warm catalogue means a rebuild, a sweep batch, a slow disk, or more apps than the design is sized for. |
+| `warmRebuildCount` | 0 | On a warm catalogue no bundle is inspected: `rebuild.count` is 0 unless a bundle changed or the periodic sweep ran (`rebuild.swept` says which). A probe seeing rebuilds on every request is the round-1 defect back. |
+
+Override any of them in `data/config.json`:
+
+```json
+{ "timingThresholds": { "lockWaitMsP95": 2000, "lockHoldMsP95": 600, "warmRebuildCount": 0 } }
+```
+
+The scale envelope these runs show: the per-request boot is ~0.2 ms per
+app on that machine (17 ms at 100 apps, ~250 ms at 1,000), and because
+requests serialise on the lock, throughput at 1,000 apps is about 4–6
+requests per second whatever the worker count. Up to a few hundred apps the
+catalogue is not the bottleneck; at 1,000 it serves, with latencies of one
+to two seconds under eight concurrent clients; beyond that the design's
+next cost is the per-request read of every `app.json`, which only a
+persisted index would remove. The 10,000-app size was not run in this
+round.
+
+## Backup and restore
+
+`backup.php` makes a backup a product operation rather than a file copy:
+
+```bash
+php apps/softn-api/backup.php export  /backups/softn-2026-09-11.tar   # or .zip
+php apps/softn-api/backup.php verify  /backups/softn-2026-09-11.tar
+php apps/softn-api/backup.php restore /backups/softn-2026-09-11.tar --into /srv/site/data
+```
+
+The data directory is `SOFTN_DATA_DIR`, else `data/` beside `api/`; `--data`
+names another for an export. Export takes the catalogue lock — the same
+`flock` every request takes, so requests wait while the snapshot is made
+and nothing is half-committed in it — checkpoints each app's
+`storage.sqlite` so its WAL is folded into the main file, and writes every
+metadata file, bundle, picture and database into the archive. It leaves out
+what is not data: `catalog.lock`, `config.lock`, the rebuildable
+`cache/`, the temp siblings a killed writer leaves (`.json-…`,
+`.upload-…`), retired folders and SQLite's `-shm`. Inside the archive,
+`softn-backup.json` lists every file with its size and SHA-256, every app
+with its versions' files and digests, and a digest of that list. Export
+reads its own archive back and verifies it before reporting success.
+
+`verify` checks an archive against its manifest and refuses it on the first
+difference: a file missing or added, a byte out of place, a manifest edited.
+`restore` verifies first and writes nothing on failure; then it extracts
+into a staging folder beside the destination, hashes what landed, takes the
+destination's catalogue lock and moves the files in. The destination must
+be absent or empty (`catalog.lock`, `config.lock` and `README.txt` do not
+count); `--force` replaces what is there. The restored folder is booted
+once, which rebuilds the bundle cache, and the inventory the catalogue then
+lists is compared with the one the archive promised — every slug, every
+version's file and digest — so "restored" means "serves the same apps".
+Exit codes: 0 done, 1 usage or I/O failure, 2 refused (verification, or a
+destination that is not empty), 3 restored but the inventory differs.
+
+The archive holds `config.json` — the admin key and the visitor-hash salt
+— and every edit-key hash: keep it as private as `data/` itself. A restore
+into a running installation needs the API's workers to be on the same
+`SOFTN_DATA_DIR`; they pick up the restored catalogue on their next request.
 
 ## Existing SQLite installations
 
@@ -511,6 +598,11 @@ temp-file cleanup, a body larger than `memory_limit`); `proxy.test.mjs`
 the trusted-proxy resolver and the rate-limit identity behind it;
 `policies.test.mjs` the storage policy matrix under concurrent writers and
 the edit key's confinement to the publish reply; `catalog-recovery.test.mjs`
-the timings and a writer killed mid-commit. Each starts servers of its own
-under the system temp directory, with the ini values `.user.ini` asks for,
-and removes them.
+the timings and a writer killed mid-commit; `catalog-warm.test.mjs` that a
+warm catalogue inspects no bundle, that a change re-inspects only its own,
+that the sweep is bounded, and that listing, cards and details answer
+exactly as they did before the round-2 repair (`test/fixtures/catalog`,
+whose `make.mjs` regenerates `expected.json` from a known-good revision);
+`backup.test.mjs` export, verify and restore, tampered archives and the
+`--force` rule. Each starts servers of its own under the system temp
+directory, with the ini values `.user.ini` asks for, and removes them.
