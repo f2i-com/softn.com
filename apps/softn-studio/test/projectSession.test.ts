@@ -265,6 +265,34 @@ describe('autosave', () => {
     expect(JSON.stringify(save.mock.calls[0][0])).not.toContain('secret');
     autosave.stop();
   });
+
+  it('the per-request timeout and output cap survive a reload through the settings key, not the record', async () => {
+    const save = vi.fn(async (_record: ProjectRecord): Promise<SaveResult> => ({ ok: true }));
+    beginNewProjectSession();
+    useWorkspaceStore.getState().setProjectName('Notes');
+    useVFSStore.getState().createFile('ui/main.ui', '<Text>One</Text>');
+    const autosave = startProjectAutosave({ save, debounceMs: 10 });
+    useAIStore.getState().setRequestTimeoutMs(45_000);
+    useAIStore.getState().setMaxOutputTokens(8_192);
+    expect(loadGlobalSettings()).toMatchObject({ requestTimeoutMs: 45_000, maxOutputTokens: 8_192 });
+    await autosave.flush();
+    const written = JSON.stringify(save.mock.calls.at(-1)?.[0]);
+    expect(written).not.toContain('requestTimeoutMs');
+    expect(written).not.toContain('maxOutputTokens');
+    autosave.stop();
+
+    // A reload: the store is back at its defaults until the settings are applied.
+    useAIStore.setState({ requestTimeoutMs: 120_000, maxOutputTokens: 16_384, providers: [], activeProviderId: null });
+    await restoreSession();
+    expect(useAIStore.getState().requestTimeoutMs).toBe(45_000);
+    expect(useAIStore.getState().maxOutputTokens).toBe(8_192);
+
+    // A value outside the bounds, written by hand or by an older Studio, lands clamped.
+    storage.data.set('softn.studio.settings.v1', JSON.stringify({ ...loadGlobalSettings(), requestTimeoutMs: 1, maxOutputTokens: 10_000_000 }));
+    await restoreSession();
+    expect(useAIStore.getState().requestTimeoutMs).toBe(5_000);
+    expect(useAIStore.getState().maxOutputTokens).toBe(128_000);
+  });
 });
 
 describe('reopening projects by id', () => {

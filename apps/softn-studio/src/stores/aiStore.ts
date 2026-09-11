@@ -16,6 +16,16 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
  * cannot cover at this size is refused before it costs anything.
  */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
+/** The bounds the setters clamp to; the settings panel shows the same numbers. */
+export const REQUEST_TIMEOUT_BOUNDS_MS = { min: 5_000, max: 600_000 } as const;
+/**
+ * The output cap's bounds. The upper bound is the largest max_tokens the
+ * providers Studio talks to accept today (Anthropic's current models take
+ * up to 128k output tokens; OpenAI-compatible endpoints vary and reject a
+ * value they cannot honour with a 4xx the adapter reports). Every request
+ * reserves this many tokens from the session budget before it is sent.
+ */
+export const MAX_OUTPUT_TOKENS_BOUNDS = { min: 256, max: 128_000 } as const;
 
 interface AIState {
   // BYOK config
@@ -113,9 +123,9 @@ export const useAIStore = create<AIState>((set) => ({
   setMaxIterations: (max) => set({ maxIterations: Math.max(1, Math.min(100, max)) }),
   setTokenBudget: (budget) => set({ tokenBudget: Math.max(1000, Math.min(1000000, budget)) }),
   setRequestTimeoutMs: (ms) =>
-    set({ requestTimeoutMs: Number.isFinite(ms) ? Math.max(5_000, Math.min(600_000, Math.floor(ms))) : DEFAULT_REQUEST_TIMEOUT_MS }),
+    set({ requestTimeoutMs: Number.isFinite(ms) ? Math.max(REQUEST_TIMEOUT_BOUNDS_MS.min, Math.min(REQUEST_TIMEOUT_BOUNDS_MS.max, Math.floor(ms))) : DEFAULT_REQUEST_TIMEOUT_MS }),
   setMaxOutputTokens: (tokens) =>
-    set({ maxOutputTokens: Number.isFinite(tokens) ? Math.max(256, Math.min(128_000, Math.floor(tokens))) : DEFAULT_MAX_OUTPUT_TOKENS }),
+    set({ maxOutputTokens: Number.isFinite(tokens) ? Math.max(MAX_OUTPUT_TOKENS_BOUNDS.min, Math.min(MAX_OUTPUT_TOKENS_BOUNDS.max, Math.floor(tokens))) : DEFAULT_MAX_OUTPUT_TOKENS }),
   setLastFailure: (failure) => set({ lastFailure: failure }),
   addMessage: (message) =>
     set((s) => {

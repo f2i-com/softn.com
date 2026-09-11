@@ -241,6 +241,34 @@ describe('a turn against a long file', () => {
     expect(lastToolCalls()[0].result).toMatch(/changed while the request was in flight/);
   });
 
+  it('refuses a reply built on a file that was deleted and re-created while the request was in flight', async () => {
+    // STU-06 known gap: a re-created file restarted at version 1, the same
+    // number the reply was built on, so the stale check passed and the
+    // reply replaced content the model had never seen.
+    const pending = deferred<Response>();
+    vi.mocked(sendAIRequest).mockReturnValueOnce(pending.promise);
+    const run = runAgentTurn();
+    useVFSStore.getState().deleteFile('ui/main.ui', 'user');
+    useVFSStore.getState().createFile('ui/main.ui', '<App theme="recreated"/>', 'user');
+    pending.resolve(reply('<softn-file path="ui/main.ui"><App title="from the deleted content"/></softn-file>'));
+    await run;
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="recreated"/>');
+    expect(lastToolCalls()[0].status).toBe('error');
+    expect(lastToolCalls()[0].result).toMatch(/changed while the request was in flight/);
+  });
+
+  it('refuses a deletion built on a version the re-created file no longer has', async () => {
+    const pending = deferred<Response>();
+    vi.mocked(sendAIRequest).mockReturnValueOnce(pending.promise);
+    const run = runAgentTurn();
+    useVFSStore.getState().deleteFile('ui/main.ui', 'user');
+    useVFSStore.getState().createFile('ui/main.ui', '<App theme="recreated"/>', 'user');
+    pending.resolve(reply('<softn-delete path="ui/main.ui" />'));
+    await run;
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App theme="recreated"/>');
+    expect(lastToolCalls()[0].status).toBe('error');
+  });
+
   it('still creates a new file and updates a short file it saw whole', async () => {
     vi.mocked(sendAIRequest).mockImplementationOnce(async () =>
       reply('<softn-file path="ui/new.ui"><Text>new</Text></softn-file><softn-file path="ui/main.ui"><App theme="dark"/></softn-file>'),

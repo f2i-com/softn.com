@@ -146,13 +146,25 @@ export interface ProjectSummary {
   fileCount: number;
 }
 
-/** The person's own settings: provider keys and budgets. Never in a record. */
+/**
+ * The person's own settings: provider keys and budgets. Never in a record.
+ *
+ * The per-request timeout and output cap are optional in the stored shape
+ * because settings written before they existed do not have them; a missing
+ * one leaves the store's default in place. A present one must be a
+ * positive integer or the whole key is treated as unreadable, the same as
+ * any other malformed field.
+ */
 export interface GlobalSettings {
   providers: ProviderConfig[];
   activeProviderId: string | null;
   modelProfile: ModelProfile;
   maxIterations: number;
   tokenBudget: number;
+  /** Per-request timeout, in milliseconds. */
+  requestTimeoutMs?: number;
+  /** Output allowance per request: the provider's max_tokens and the budget reservation. */
+  maxOutputTokens?: number;
 }
 
 const WORKSPACE_MODES = new Set(['describe', 'structure', 'design', 'data', 'logic', 'test']);
@@ -318,6 +330,10 @@ function isMessageTokens(value: unknown): boolean {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isOptionalPositiveInteger(value: unknown): value is number | undefined {
+  return value === undefined || (typeof value === 'number' && Number.isInteger(value) && value > 0);
 }
 
 export function isPersistedWorkspace(parsed: unknown): parsed is PersistedWorkspace {
@@ -586,7 +602,9 @@ export function loadGlobalSettings(): GlobalSettings | null {
       !isNullableString(parsed.activeProviderId) ||
       !isModelProfile(parsed.modelProfile) ||
       !isNonNegativeInteger(parsed.maxIterations) ||
-      !isNonNegativeInteger(parsed.tokenBudget)
+      !isNonNegativeInteger(parsed.tokenBudget) ||
+      !isOptionalPositiveInteger(parsed.requestTimeoutMs) ||
+      !isOptionalPositiveInteger(parsed.maxOutputTokens)
     ) {
       return null;
     }
