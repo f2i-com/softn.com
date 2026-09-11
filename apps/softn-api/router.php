@@ -6,9 +6,10 @@
  *
  * It does what the deployed .htaccess does — /api/ to the API, /data/ to
  * nowhere, an app's share page and its play page through the API, real files
- * as they are, and every other navigation to the single-page app that owns
- * it. Production does not use this file; Apache reads the rules from
- * .htaccess.
+ * as they are, every navigation inside /web/, /builder/ and /studio/ to the
+ * shell that owns it, the site's own pages to the site, and any other path
+ * to the site with a 404 status. Production does not use this file; Apache
+ * reads the rules from .htaccess.
  */
 declare(strict_types=1);
 
@@ -114,6 +115,15 @@ if (preg_match('#\.[a-z0-9]+$#i', $path)) {
     header('Content-Type: text/plain');
     echo 'Not found';
     return true;
+}
+// The site's own pages — the front door, the directory, an app's page and
+// the publish form, a trailing slash allowed — are the single-page app at
+// 200. Any other path is a 404 with the site as its body, so the visitor
+// sees its not-found page and the response says not found: the same
+// arrangement as the deployed .htaccess (ErrorDocument 404 /index.html)
+// and nginx config (error_page 404 /index.html).
+if (!preg_match('#^/(?:apps|app/[^/]+|publish)?/?$#', $path)) {
+    http_response_code(404);
 }
 header('Content-Type: text/html; charset=utf-8');
 header('Cross-Origin-Opener-Policy: same-origin');

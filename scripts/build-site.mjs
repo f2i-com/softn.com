@@ -70,7 +70,11 @@ const APACHE_CONFIG = String.raw`# SoftN static deployment for Apache 2.4+
 
 DirectoryIndex index.html
 Options -Indexes
-ErrorDocument 404 default
+# A 404 carries the site as its body: the site renders its not-found page for
+# a path it has no page for, and the status is what a crawler, a link checker
+# and a browser's history act on. The rewrite rules at the end decide which
+# paths are the site's own and send the rest here.
+ErrorDocument 404 /index.html
 
 <IfModule mod_negotiation.c>
   Options -MultiViews
@@ -179,7 +183,8 @@ ErrorDocument 404 default
 
   # An app's page, when a browser asks for it, comes through the API so the
   # <meta> tags carry the app's own name and picture: a link pasted into a
-  # chat unfurls as the app, not as the site. Every other page is the SPA.
+  # chat unfurls as the app, not as the site. The site's other pages are the
+  # SPA, at the end.
   RewriteCond %{HTTP_ACCEPT} text/html [NC]
   RewriteRule ^app/[^/]+/?$ api/index.php [L]
 
@@ -219,8 +224,16 @@ ErrorDocument 404 default
   RewriteCond %{HTTP_ACCEPT} text/html [NC]
   RewriteRule ^studio(?:/.*)?$ studio/index.html [END]
 
+  # The site's own pages, and only those: the front door, the directory, an
+  # app's page and the publish form, with or without a trailing slash (the
+  # query is not part of the match). Every other path is a 404 — with the
+  # site as its body, per the ErrorDocument above, so the visitor sees the
+  # not-found page and the response says not found. Until this rule named
+  # the pages, every unknown path was a 200 that only looked like one.
   RewriteCond %{HTTP_ACCEPT} text/html [NC]
-  RewriteRule ^ index.html [END]
+  RewriteRule ^(?:apps|app/[^/]+|publish)?/?$ index.html [END]
+
+  RewriteRule ^ - [R=404,L]
 </IfModule>
 `;
 
@@ -230,6 +243,14 @@ const NGINX_CONFIG = String.raw`# Install this file in nginx's http context (for
 map $http_accept $softn_html_navigation {
     default      0;
     ~*text/html  1;
+}
+
+# The site's own pages: the front door, the directory, an app's page and the
+# publish form, with or without a trailing slash ($uri carries no query).
+# Anything else the site has no page for, and answers 404.
+map $uri $softn_site_page {
+    default                             0;
+    ~^/(?:apps|app/[^/]+|publish)?/?$   1;
 }
 
 map "$sent_http_content_type|$uri" $softn_cache_control {
@@ -261,6 +282,11 @@ server {
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header Cache-Control $softn_cache_control;
+
+    # A 404 carries the site as its body, which renders its not-found page;
+    # the status stays 404 (no "=" here), which is what crawlers and link
+    # checkers act on.
+    error_page 404 /index.html;
 
     # Serve the .br/.gz twins the build wrote in preference to compressing per
     # request: brotli at build quality is far too slow to run live, and it is
@@ -355,6 +381,7 @@ server {
     }
     location @softn_site {
         if ($softn_html_navigation = 0) { return 404; }
+        if ($softn_site_page = 0) { return 404; }
         try_files /index.html =404;
     }
 }
@@ -512,9 +539,12 @@ ${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/s
 uncommitted changes, and the Zipp revision/hash used by the browser runtime.
 
 After upload, open each app and refresh a deep link. A request for a nonexistent
-asset such as \`/web/assets/missing.js\` must return 404, not an HTML page. Some
-demo networking or AI features may need their separately configured service or
-provider, but the website and browser apps themselves are static.
+asset such as \`/web/assets/missing.js\` must return 404, not an HTML page. A
+path the site has no page for, such as \`/nothing-here\`, must answer 404 too —
+with the site's own not-found page as the body; only \`/\`, \`/apps\`,
+\`/app/<slug>\` and \`/publish\` are the site's pages. Some demo networking or AI
+features may need their separately configured service or provider, but the
+website and browser apps themselves are static.
 `;
 
 function run(args, env) {
@@ -806,7 +836,7 @@ function writeDeepLinkFallbacks() {
 
   fs.writeFileSync(
     path.join(outDir, '_redirects'),
-    `${apps.map((a) => `/${a}/*  /${a}/index.html  200`).join('\n')}\n/api/*  /api/index.php  200\n/*  /index.html  200\n`,
+    `${apps.map((a) => `/${a}/*  /${a}/index.html  200`).join('\n')}\n/api/*  /api/index.php  200\n/apps  /index.html  200\n/app/:slug  /index.html  200\n/publish  /index.html  200\n/*  /index.html  404\n`,
   );
 
   // GitHub Pages hands this file the original URL, so it forwards the path to

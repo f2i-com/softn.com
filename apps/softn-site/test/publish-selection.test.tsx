@@ -370,4 +370,85 @@ describe('the publish page', () => {
     expect(container.querySelector('.dropzone')?.textContent).toContain('chosen.softn');
     expect(nameField().value).toBe('Chosen');
   });
+
+  // The batch view's per-row retry. The controller had retry() from the
+  // start; the page never offered it, so a row whose read failed — a
+  // drive that detached, a file the browser refused for a moment — could
+  // only be fixed by starting the whole batch over.
+  it('offers Try again only for a row whose read failed, and retries that row alone', async () => {
+    mount();
+    const files = [bundleFile('One'), new File([strToU8('not a zip', true) as BlobPart], 'two.softn'), bundleFile('Three'), bundleFile('Four')];
+    pick(files);
+    await settle();
+    await act(() => reads.finish(files[0]));
+    await act(() => reads.finish(files[1]));
+    await act(async () => {
+      reads.fail(files[2], new Error('The file could not be read.'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(() => reads.finish(files[3]));
+    await settle();
+
+    const rows = () => [...container.querySelectorAll('.batch-item')];
+    const retryIn = (row: Element) => [...row.querySelectorAll('button')].find((b) => b.textContent === 'Try again');
+    expect(rows().map((r) => r.querySelector('.batch-status')?.textContent)).toEqual(['ready', 'skipped', 'skipped', 'ready']);
+    // The inspector's refusal is the file's fault: no retry. The failed read gets one.
+    expect(retryIn(rows()[1])).toBeUndefined();
+    expect(retryIn(rows()[2])).toBeDefined();
+    const untouched = [rows()[0].textContent, rows()[1].textContent, rows()[3].textContent];
+
+    act(() => retryIn(rows()[2])!.click());
+    await settle();
+    expect(rows()[2].querySelector('.batch-status')?.textContent).toBe('reading…');
+    expect([rows()[0].textContent, rows()[1].textContent, rows()[3].textContent]).toEqual(untouched);
+    expect(reads.started.filter((f) => f === files[2]).length).toBe(2);
+
+    await act(() => reads.finish(files[2]));
+    await settle();
+    expect(rows().map((r) => r.querySelector('.batch-status')?.textContent)).toEqual(['ready', 'skipped', 'ready', 'ready']);
+    expect(rows()[2].textContent).toContain('Three');
+    expect([rows()[0].textContent, rows()[1].textContent, rows()[3].textContent]).toEqual(untouched);
+    expect(submitButton().textContent).toContain('Publish 3 apps');
+  });
+
+  it('drops a retry that lands after Start over, leaving the next batch alone', async () => {
+    mount();
+    const files = [bundleFile('One'), bundleFile('Two')];
+    pick(files);
+    await settle();
+    await act(() => reads.finish(files[0]));
+    await act(async () => {
+      reads.fail(files[1], new Error('The file could not be read.'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await settle();
+    const retry = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Try again')!;
+    act(() => retry.click());
+    await settle();
+    expect(container.querySelector('.batch-item:nth-child(2) .batch-status')?.textContent).toBe('reading…');
+
+    const startOver = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Start over')!;
+    act(() => startOver.click());
+    await settle();
+    expect(container.querySelector('.batch-list')).toBeNull();
+
+    // A new batch, still being read, when the old retry's bytes arrive.
+    const next = [bundleFile('Three'), bundleFile('Four')];
+    pick(next);
+    await settle();
+    await act(() => reads.finish(files[1]));
+    await settle();
+    expect(container.textContent).toContain('Reading 2 bundles');
+    expect(container.querySelector('.batch-list')).toBeNull();
+    expect(container.textContent).not.toContain('Two');
+
+    await act(() => reads.finish(next[0]));
+    await act(() => reads.finish(next[1]));
+    await settle();
+    const rows = [...container.querySelectorAll('.batch-item')];
+    expect(rows.map((r) => r.querySelector('strong')?.textContent)).toEqual(['Three', 'Four']);
+    expect(rows.map((r) => r.querySelector('.batch-status')?.textContent)).toEqual(['ready', 'ready']);
+  });
 });

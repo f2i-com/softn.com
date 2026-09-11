@@ -339,7 +339,9 @@ export function forgetKey(slug: string): KeyStoreResult {
 
 /**
  * A backup of every key, as JSON to keep somewhere safer than one browser's
- * storage. Only the publishing keys: nothing else this origin stores.
+ * storage. Only the publishing keys: nothing else this origin stores. Plain
+ * text — lib/keyBackup.ts seals it under a passphrase when the visitor
+ * gives one.
  */
 export function exportKeys(): string {
   return JSON.stringify({ format: 'softn-edit-keys', version: 1, keys: savedKeys() }, null, 2);
@@ -355,6 +357,8 @@ export interface KeyImportResult {
   /** Entries the file holds that are not an app slug with an edit key. */
   rejected: string[];
   stored: KeyStoreResult;
+  /** The file is a sealed (version 2) backup: nothing was read from it. lib/keyBackup.ts opens those. */
+  encrypted?: true;
 }
 
 /**
@@ -370,6 +374,13 @@ export function importKeys(text: string, replace = false): KeyImportResult {
     parsed = JSON.parse(text);
   } catch {
     result.rejected.push('(the file is not JSON)');
+    return result;
+  }
+  // A sealed backup is a key map only once it is opened; its fields are not
+  // slugs, and reading them as such would report the file as junk.
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as { encrypted?: unknown }).encrypted === true) {
+    result.encrypted = true;
+    result.rejected.push('(the file is encrypted: it needs its passphrase)');
     return result;
   }
   const source =
