@@ -26,7 +26,7 @@ import {
   restoreSession,
   startProjectAutosave,
 } from '../src/lib/projectSession';
-import { loadActiveProjectId, loadGlobalSettings, loadProjectRecord, loadRecentProjects, saveGlobalSettings, type SaveResult } from '../src/lib/persistence';
+import { loadActiveProjectId, loadGlobalSettings, loadProjectRecord, loadRecentProjects, saveGlobalSettings, type ProjectRecord, type SaveResult } from '../src/lib/persistence';
 import { buildBundle } from '../src/lib/exportBundle';
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../src/stores';
 
@@ -124,7 +124,7 @@ describe('project import session reset', () => {
 
 describe('autosave', () => {
   it('writes once per revision and skips a revision it has already written', async () => {
-    const save = vi.fn(async (): Promise<SaveResult> => ({ ok: true }));
+    const save = vi.fn(async (_record: ProjectRecord): Promise<SaveResult> => ({ ok: true }));
     const id = beginNewProjectSession();
     useWorkspaceStore.getState().setProjectName('Notes');
     useVFSStore.getState().createFile('ui/main.ui', '<Text>One</Text>');
@@ -151,7 +151,7 @@ describe('autosave', () => {
 
   it('saves on its own after changes settle, and never without a project', async () => {
     vi.useFakeTimers();
-    const save = vi.fn(async (): Promise<SaveResult> => ({ ok: true }));
+    const save = vi.fn(async (_record: ProjectRecord): Promise<SaveResult> => ({ ok: true }));
     const autosave = startProjectAutosave({ save, debounceMs: 50, maxWaitMs: 200, now: () => Date.now() });
 
     // No project id yet: a store change is not a save.
@@ -169,7 +169,7 @@ describe('autosave', () => {
   });
 
   it('reports a failed save and leaves the project in memory and exportable', async () => {
-    const save = vi.fn(async (): Promise<SaveResult> => ({ ok: false, reason: 'quota', message: 'full' }));
+    const save = vi.fn(async (_record: ProjectRecord): Promise<SaveResult> => ({ ok: false, reason: 'quota', message: 'full' }));
     beginNewProjectSession();
     useWorkspaceStore.getState().setProjectName('Notes');
     useVFSStore.getState().createFile('ui/main.ui', '<Text>Keep me</Text>');
@@ -205,7 +205,7 @@ describe('autosave', () => {
   });
 
   it('does not count validation errors, the dirty flag or the theme as a change to save', async () => {
-    const save = vi.fn(async (): Promise<SaveResult> => ({ ok: true }));
+    const save = vi.fn(async (_record: ProjectRecord): Promise<SaveResult> => ({ ok: true }));
     beginNewProjectSession();
     useWorkspaceStore.getState().setProjectName('Notes');
     const autosave = startProjectAutosave({ save, debounceMs: 10 });
@@ -255,7 +255,7 @@ describe('autosave', () => {
   });
 
   it('writes provider settings to their own key and never into the record', async () => {
-    const save = vi.fn(async (): Promise<SaveResult> => ({ ok: true }));
+    const save = vi.fn(async (_record: ProjectRecord): Promise<SaveResult> => ({ ok: true }));
     beginNewProjectSession();
     useWorkspaceStore.getState().setProjectName('Notes');
     const autosave = startProjectAutosave({ save, debounceMs: 10 });

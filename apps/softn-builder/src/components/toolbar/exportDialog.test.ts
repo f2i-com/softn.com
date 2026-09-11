@@ -17,10 +17,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { ExportDialog } from './ExportDialog';
 import { useProjectStore } from '../../stores/projectStore';
 
-declare global {
-  // eslint-disable-next-line no-var
-  var IS_REACT_ACT_ENVIRONMENT: boolean;
-}
+(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLDivElement;
 let trigger: HTMLButtonElement;
@@ -39,7 +36,6 @@ function key(target: Element, key: string, shiftKey = false): KeyboardEvent {
 }
 
 beforeEach(() => {
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   useProjectStore.getState().reset();
   trigger = document.createElement('button');
   trigger.textContent = 'Export';
