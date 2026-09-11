@@ -91,3 +91,16 @@ describe('StablePreviewSurface', () => {
     focusOrigin.remove();
   });
 });
+
+describe('declaredCapabilities', () => {
+  // The preview grants nothing, and used to say nothing: a declared
+  // capability failed with a message about a missing permission.json the
+  // project did have. The note names what is declared and where to run it.
+  it('names only the capabilities a permission.json turns on', async () => {
+    const { declaredCapabilities } = await import('../src/components/canvas/VisualCanvas');
+    expect(declaredCapabilities(JSON.stringify({ permissions: { storage: { enabled: true }, net: { enabled: false }, mic: { enabled: 'true' } } }))).toEqual(['storage']);
+    expect(declaredCapabilities(undefined)).toEqual([]);
+    expect(declaredCapabilities('{not json')).toEqual([]);
+    expect(declaredCapabilities(new Uint8Array([1]))).toEqual([]);
+  });
+});

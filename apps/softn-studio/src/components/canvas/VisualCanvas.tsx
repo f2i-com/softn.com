@@ -631,8 +631,23 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     }
 
     if (isSoftNUIFile && softNSource && PreviewComponent) {
+      // The preview grants nothing: a call to the network, storage or a
+      // device fails here whatever permission.json declares, because there
+      // is no consent bar to grant it and a design preview is not the place
+      // to reach out from. That used to be silent — the failure named a
+      // missing permission.json the project did have — so the declared
+      // capabilities are named here, with where to run them for real.
+      const declared = declaredCapabilities(files.get('permission.json')?.content);
+      const capabilityNote =
+        declared.length > 0 ? (
+          <div role="note" style={styles.capabilityNote}>
+            Preview grants no capabilities: {declared.join(', ')} {declared.length === 1 ? 'is' : 'are'} declared in permission.json, but calls to{' '}
+            {declared.length === 1 ? 'it' : 'them'} fail here. Use Run to open the bundle in the runtime, where they can be allowed.
+          </div>
+        ) : null;
       return ThemeProviderComponent ? (
         <div style={styles.rendererWrap}>
+          {capabilityNote}
           <ThemeProviderComponent defaultDarkMode={themePreview === 'dark'} followSystem={false}>
             <PreviewComponent
               source={softNSource}
@@ -647,6 +662,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
         </div>
       ) : (
         <div style={styles.rendererWrap}>
+          {capabilityNote}
           <PreviewComponent
             source={softNSource}
             functions={rendererFunctions}
@@ -825,6 +841,21 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
   );
 };
 
+/** The capabilities a permission.json turns on, by name; nothing for a file that is missing or not JSON. */
+export function declaredCapabilities(content: string | Uint8Array | undefined): string[] {
+  if (typeof content !== 'string') return [];
+  try {
+    const parsed = JSON.parse(content) as { permissions?: Record<string, { enabled?: unknown } | undefined> } | null;
+    const permissions = parsed && typeof parsed === 'object' ? parsed.permissions : undefined;
+    if (!permissions || typeof permissions !== 'object') return [];
+    return Object.keys(permissions)
+      .filter((name) => permissions[name]?.enabled === true)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 const styles: Record<string, React.CSSProperties> = {
   container: {
     flex: 1,
@@ -886,6 +917,14 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     overflow: 'hidden',
     background: 'var(--studio-bg-elevated)',
+  },
+  capabilityNote: {
+    padding: '6px 10px',
+    fontSize: 12,
+    lineHeight: 1.4,
+    color: 'var(--studio-text-muted)',
+    background: 'var(--studio-panel)',
+    borderBottom: '1px solid var(--studio-border)',
   },
   rendererWrap: {
     width: '100%',

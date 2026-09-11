@@ -2,7 +2,7 @@
  * SoftN Builder - Main Application
  */
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
 import { ProductBar } from '@softn/brand';
 import { Toolbar } from './components/toolbar/Toolbar';
 import { NarrowScreenNotice } from './components/NarrowScreenNotice';
@@ -596,7 +596,11 @@ function App() {
   // The page behind the export dialog is inert while it is open: `inert`
   // removes it from Tab order and the accessibility tree where supported,
   // aria-hidden covers the rest. The dialog itself is a sibling, outside.
-  useEffect(() => {
+  // A layout effect, not a passive one: the dialog's cleanup refocuses the
+  // button that opened it, and React runs that cleanup before a passive
+  // effect here would have cleared `inert` — so the focus request landed on
+  // an element still inside an inert subtree and was dropped on the body.
+  useLayoutEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
     shell.toggleAttribute('inert', showExportDialog);
