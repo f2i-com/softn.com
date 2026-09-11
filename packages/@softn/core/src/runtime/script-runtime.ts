@@ -2215,47 +2215,51 @@ export class SoftNScriptRuntime {
           `Choose Allow in the permission bar at the top of the app to grant it.`
       );
     }
-    // Permission config IS set — deny by default for any capability not explicitly enabled.
+    // Permission config IS set — deny by default for any capability not
+    // explicitly enabled. Explicitly means the boolean true: a declaration
+    // spelt "enabled": "true" or 1 is what inspectDeclaration reports as
+    // malformed and the consent bar requests nothing for, so a truthiness
+    // check here ran the app with a capability nobody was asked about.
     const perms = this.permissionConfig.permissions;
     switch (capability) {
       case 'net':
-        if (!perms.net?.enabled)
+        if (perms.net?.enabled !== true)
           throw new Error('Network access not permitted. Add net.enabled to permission.json');
         break;
       case 'camera':
-        if (!perms.camera?.enabled)
+        if (perms.camera?.enabled !== true)
           throw new Error('Camera access not permitted. Add camera.enabled to permission.json');
         break;
       case 'mic':
-        if (!perms.mic?.enabled)
+        if (perms.mic?.enabled !== true)
           throw new Error('Microphone access not permitted. Add mic.enabled to permission.json');
         break;
       case 'files':
-        if (!perms.files?.enabled)
+        if (perms.files?.enabled !== true)
           throw new Error('File access not permitted. Add files.enabled to permission.json');
         break;
       case 'qr':
-        if (!perms.qr?.enabled)
+        if (perms.qr?.enabled !== true)
           throw new Error('QR access not permitted. Add qr.enabled to permission.json');
         break;
       case 'ai':
-        if (!perms.ai?.enabled)
+        if (perms.ai?.enabled !== true)
           throw new Error('AI access not permitted. Add ai.enabled to permission.json');
         break;
       case 'gpu':
-        if (!perms.gpu?.enabled)
+        if (perms.gpu?.enabled !== true)
           throw new Error('GPU compute access not permitted. Add gpu.enabled to permission.json');
         break;
       case 'sync':
-        if (!perms.sync?.enabled)
+        if (perms.sync?.enabled !== true)
           throw new Error('Sync not permitted. Add sync.enabled to permission.json');
         break;
       case 'storage':
-        if (!perms.storage?.enabled)
+        if (perms.storage?.enabled !== true)
           throw new Error('Server storage not permitted. Add storage.enabled to permission.json');
         break;
       case 'accel':
-        if (!perms.accel?.enabled)
+        if (perms.accel?.enabled !== true)
           throw new Error('Host acceleration not permitted. Add accel.enabled to permission.json');
         break;
       default:
