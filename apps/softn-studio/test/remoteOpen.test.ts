@@ -28,7 +28,7 @@ function deferred<T>() {
 }
 
 function response(bytes: Uint8Array): Response {
-  return new Response(bytes, { status: 200 });
+  return new Response(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, { status: 200 });
 }
 
 const url = new URL('http://studio.test/apps/notes/bundle.softn');

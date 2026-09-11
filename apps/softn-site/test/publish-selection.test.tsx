@@ -270,7 +270,7 @@ describe('the publish page', () => {
   function mount(search = ''): void {
     window.history.replaceState({}, '', `/publish${search}`);
     act(() => {
-      root.render(<PublishPage route={{ path: '/publish', query: new URLSearchParams(search) }} categories={[{ id: 'games', name: 'Games', emoji: '', description: '', apps: 1, suggested: false }]} onCategories={() => {}} categoriesError={null} onRetryCategories={() => {}} />);
+      root.render(<PublishPage route={{ path: '/publish', query: new URLSearchParams(search) }} categories={[{ id: 'games', name: 'Games', emoji: '', description: '', apps: 1, suggested: false, status: 'approved' }]} onCategories={() => {}} categoriesError={null} onRetryCategories={() => {}} />);
     });
   }
 
