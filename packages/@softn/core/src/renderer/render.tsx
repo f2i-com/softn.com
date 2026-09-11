@@ -1632,7 +1632,9 @@ export function evaluateExpression(
           const b = right as number;
           value =
             expr.operator === '+='
-              ? (current as string | number) + (right as string | number)
+              ? typeof current === 'string' || typeof right === 'string'
+                ? String(current) + String(right)
+                : a + b
               : expr.operator === '-='
                 ? a - b
                 : expr.operator === '*='
