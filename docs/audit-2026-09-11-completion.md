@@ -1,7 +1,7 @@
 # Audit 2026-09-11 — completion record
 
 Reference: `SoftN-Audit-AI-Dev-Handoff-2026-09-11` (34 items), audited at commit `b9d291f`.
-Repairs: thirteen commits `b135b63..6669d82` on `main`, 2026-09-11.
+Repairs: thirteen commits `b135b63..6669d82` on `main`, 2026-09-11; follow-ups `4081e08..4633f07` the same day (see the round-two section at the end).
 
 This record distinguishes what was executed from what was not. "Executed" means run on this
 machine (Windows 11, Node 24.12, PHP 8.4.15, Chromium via Playwright 1.63) on the final tree.
@@ -70,8 +70,30 @@ Legend: **R** = reproduced on HEAD with a focused test before the fix; **P** = p
 - **API-02** (P2) R. `trustedProxies` list with right-to-left chain walk; boolean kept as deprecated alias (`test/proxy.test.mjs`).
 - **API-03** (P2) P. Lock/boot/rebuild/commit timings on `/api/health`; killed-writer recovery test; `scripts/bench/catalog-bench.mjs` run at 100 and 1,000 apps (10,000 not run). The numbers put the current design's envelope at a few hundred apps; the two costs to fix first are the 5-second cache revalidation and per-card catalogue reads. Not changed here: the audit asked for measurement, not migration. The 100-app phase ran with a second benchmark accidentally contending; rerun before quoting.
 
+## Round two (follow-ups, commits 4081e08..4633f07)
+
+Executed on the final tree: root typecheck clean; `npm test` green in every workspace
+(core 899, builder 300, studio 191, web 174, site 75, api 74, components 38 files, others);
+rebuilt packages, apps and site; `npm run e2e` 12 of 12 in 10.6 s; the cross-browser and
+mobile matrix (`npm run e2e:matrix`: Firefox, WebKit, 390 and 360 px, 200 % zoom) run locally
+with every journey passing (one Firefox run lost a trace file to an overlapping run; the same
+test passed standalone). Not executed: the scheduled matrix workflow on GitHub Actions, the
+10,000-app benchmark, screen readers.
+
+- **Core parser.** `() => count = count + 1` parsed as `() => count` plus a stray attribute, silently. Assignment expressions are in the grammar, every `{…}` site reports a diagnostic where it cannot reach its closing brace, and the renderer evaluates the assignment through the same path a binding writes.
+- **STU-05.** Timeout and output-cap controls in the AI settings, persisted globally, never in a project record.
+- **STU-06.** Versions never repeat within a session (a floor per path), so a deleted and re-created file cannot pass a stale check.
+- **History panel** groups events into undo units with a per-unit revert.
+- **PLT-02 (Studio).** Deterministic benchmark with committed results (`apps/softn-studio/bench/results-2026-09-11.json`); nothing on the medium fixture near the 50 ms threshold, so no optimisation was applied.
+- **UX-02 (Studio).** An "Open an example" card on an empty dashboard imports a bundled project that validates, runs and exports.
+- **SITE-02.** Per-row Try again for a failed read in a batch. **SITE-03.** Passphrase-sealed key backups (PBKDF2, AES-GCM). **SITE-04.** Unknown paths return a real 404 from the emitted Apache, nginx and redirect rules and the PHP router (verified under php -S; Apache and nginx by regex over the emitted text).
+- **BLD-03.** Blocks render on the canvas with droppable branches, palette entries, wrap/unwrap and alternate branches. **BLD-05.** A confirmed, undoable "Re-identify records" per collection with reference remapping. **UX-02 (Builder).** Source-only marks in the file navigator. The printer handles the new assignment node.
+- **API-03.** The two measured bottlenecks fixed without a storage migration: at 1,000 apps warm list p50 4.1 s → 1.7 s, read 11.8 s → 1.4 s, the whole benchmark 685 s → 162 s (`apps/softn-api/bench/results-2026-09-11.json`); thresholds on `/api/health`; `backup.php` export/verify/restore with tests.
+- **QA-01/PLT-01/UX-01.** Browser matrix and scheduled workflow; parity test through core, Studio and Builder run paths; specs for the not-found page, directory failure state and export-dialog focus. Two defects they found are fixed: the Builder dialog dropped its focus restoration (inert cleared too late), and Studio's preview named a missing permission.json the project had (it now names the declared capabilities it does not grant).
+
 ## Not addressed
 
-- QA-02 backup-restore as a product capability (API-03 acceptance item).
-- Firefox/WebKit and mobile-width browser runs (scheduled/release matrix).
-- A Studio settings control for the new provider timeout and output cap.
+- The scheduled GitHub Actions matrix has not been run in CI.
+- Firefox and WebKit downloads and native file pickers are not exercised (they would block automation).
+- Screen-reader sessions and a 10,000-app catalogue benchmark.
+- Builder's LivePreview helpers are module-private; the parity test mirrors them rather than importing them.
