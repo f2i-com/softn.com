@@ -6,7 +6,8 @@
   "license": "Apache-2.0",
   "workspaces": [
     "packages/@softn/*",
-    "apps/*"
+    "apps/*",
+    "e2e"
   ],
   "scripts": {
     "build": "npm run build:packages && npm run build:apps",
@@ -38,6 +39,8 @@
     "fetch:demos": "node scripts/fetch-demos.mjs",
     "screenshot:demos": "node scripts/fetch-demos.mjs && node scripts/screenshot-demos.mjs",
     "bench": "node scripts/bench/measure.mjs",
+    "e2e": "playwright test -c e2e/playwright.config.ts",
+    "e2e:install": "playwright install chromium",
     "pretest": "node scripts/fetch-demos.mjs",
     "test": "node --test scripts/fetch-demos.test.mjs scripts/package-site.test.mjs scripts/core-worker-assets.test.mjs && npm run test --workspaces --if-present",
     "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",
@@ -51,6 +54,7 @@
   },
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.88",
+    "@playwright/test": "^1.63.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^8.57.0",
