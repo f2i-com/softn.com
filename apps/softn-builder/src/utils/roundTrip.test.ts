@@ -164,22 +164,83 @@ describe('a no-edit round trip', () => {
   });
 });
 
-describe('a real visual edit', () => {
-  it('regenerates the edited file, marks it dirty, and leaves the other files alone', async () => {
+/**
+ * main.ui is not something the visual model can hold: it opens with a
+ * comment, and its handler `() => count = count + 1` is an expression the
+ * parser stops reading at `count` (assignment is not in the template
+ * grammar) with no diagnostic. A visual edit used to regenerate it anyway
+ * — the comment gone, the handler written back as `() => count`, a stray
+ * `count` attribute added. Now the file is source-only: the edit is
+ * refused, the reasons are recorded on the file, and the bytes stay.
+ */
+describe('a visual edit on a file the visual model cannot write back', () => {
+  function mainFile() {
+    return [...useFilesStore.getState().uiFiles.values()].find((f) => f.path === 'ui/main.ui')!;
+  }
+
+  it('keeps every entry byte-for-byte and does not mark the file dirty', async () => {
     const canvas = useCanvasStore.getState();
     const root = canvas.getElement(canvas.rootId)!;
     canvas.updateElementProps(root.id, { title: 'Edited' });
     const out = await exported();
-    const main = decode(out.get('ui/main.ui')!);
-    expect(main).not.toBe(MAIN_UI);
-    expect(main).toContain('Edited');
-    // The header blocks the regenerator keeps.
-    expect(main).toContain('<logic src="../logic/main.logic" />');
-    expect(main).toContain('rebeccapurple');
-    // Files that were not edited are untouched.
+    expect(decode(out.get('ui/main.ui')!)).toBe(MAIN_UI);
     expect(decode(out.get('ui/components/Header.ui')!)).toBe(HEADER_UI);
     expect(decode(out.get('logic/main.logic')!)).toBe(MAIN_LOGIC);
-    const mainFile = [...useFilesStore.getState().uiFiles.values()].find((f) => f.path === 'ui/main.ui')!;
-    expect(useFilesStore.getState().nodes.get(mainFile.id)?.isDirty).toBe(true);
+    expect(mainFile().originalSource).toBe(MAIN_UI);
+    expect(useFilesStore.getState().nodes.get(mainFile().id)?.isDirty).toBe(false);
+  });
+
+  it('records why the edit was refused, naming the comment and the truncated handler', async () => {
+    const canvas = useCanvasStore.getState();
+    const root = canvas.getElement(canvas.rootId)!;
+    canvas.updateElementProps(root.id, { title: 'Edited' });
+    await exported();
+    const file = mainFile();
+    expect(file.sourceFidelity?.lossless).toBe(false);
+    expect(file.visualEditBlocked).toBeDefined();
+    const reasons = file.visualEditBlocked!.join('\n');
+    expect(reasons).toMatch(/comment on line 1/);
+    expect(reasons).toMatch(/\{\(\) => count = count \+ 1\} on line \d+ is not fully supported/);
+  });
+
+  it('does not drop the nested blocks or the #empty branch', async () => {
+    const canvas = useCanvasStore.getState();
+    const root = canvas.getElement(canvas.rootId)!;
+    canvas.updateElementProps(root.id, { title: 'Edited' });
+    const main = decode((await exported()).get('ui/main.ui')!);
+    expect(main).toContain('#if (outer)');
+    expect(main).toContain('#if (inner)');
+    expect(main).toContain('#each (tag in task.data.tags)');
+    expect(main).toContain('#empty');
+    expect(main).toContain('// The entry file.');
+  });
+});
+
+/**
+ * Header.ui the visual model does hold — a component declaration the
+ * regenerator now carries across, one element, one interpolation — so a
+ * visual edit there is written back, with the header intact.
+ */
+describe('a visual edit on a file the visual model can write back', () => {
+  it('regenerates that file, marks it dirty, and leaves the other files alone', async () => {
+    const files = useFilesStore.getState();
+    const header = [...files.uiFiles.values()].find((f) => f.path === 'ui/components/Header.ui')!;
+    const edited = new Map([...header.elements].map(([id, el]) => [id, { ...el, props: { ...el.props } }]));
+    const heading = [...edited.values()].find((el) => el.componentType === 'Heading')!;
+    heading.props.level = 2;
+    files.updateUIFile(header.id, edited, header.rootId);
+
+    const out = await exported();
+    const headerOut = decode(out.get('ui/components/Header.ui')!);
+    expect(headerOut).not.toBe(HEADER_UI);
+    expect(headerOut).toContain('<component name="Header">');
+    expect(headerOut).toContain('<prop name="title" propType="number" />');
+    expect(headerOut).toContain('<Heading level={2}>{title}</Heading>');
+    expect(decode(out.get('ui/main.ui')!)).toBe(MAIN_UI);
+    expect(decode(out.get('logic/main.logic')!)).toBe(MAIN_LOGIC);
+    const after = useFilesStore.getState().uiFiles.get(header.id)!;
+    expect(after.visualEditBlocked).toBeUndefined();
+    expect(after.sourceFidelity?.lossless).toBe(true);
+    expect(useFilesStore.getState().nodes.get(header.id)?.isDirty).toBe(true);
   });
 });

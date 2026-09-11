@@ -5,6 +5,8 @@
 import React, { useCallback, useState, useEffect, useMemo } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
+import { useFilesStore } from '../../stores/filesStore';
+import { useSourceFidelity, summariseReasons } from '../../utils/useSourceFidelity';
 import { CanvasElement } from './CanvasElement';
 import { DragLayer } from './DragLayer';
 
@@ -53,6 +55,14 @@ const styles: Record<string, React.CSSProperties> = {
   dropActive: {
     background: '#e8f4ff',
   },
+  sourceOnlyNotice: {
+    padding: '6px 16px',
+    fontSize: 12,
+    lineHeight: 1.4,
+    background: '#fffbeb',
+    color: '#92400e',
+    borderBottom: '1px solid #fde68a',
+  },
 };
 
 export function Canvas() {
@@ -66,6 +76,13 @@ export function Canvas() {
   const draggedType = useCanvasStore((s) => s.draggedType);
   const deselectAll = useCanvasStore((s) => s.deselectAll);
   const setDraggedType = useCanvasStore((s) => s.setDraggedType);
+
+  // Whether the file this canvas shows can be written back from it. When it
+  // cannot, the store keeps the source and refuses the edit; the creator is
+  // told here rather than finding out at export.
+  const activeFile = useFilesStore((s) => (s.activeFileId ? s.uiFiles.get(s.activeFileId) : undefined));
+  const { fidelity, blocked } = useSourceFidelity(activeFile);
+  const sourceOnly = fidelity !== null && !fidelity.lossless;
 
   // Fallback drop handler for the canvas background (appends to root)
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
@@ -284,6 +301,13 @@ export function Canvas() {
 
   return (
     <div style={styles.container}>
+      {(sourceOnly || blocked) && (
+        <div style={styles.sourceOnlyNotice} role="status" data-fidelity="source-only">
+          {blocked
+            ? `Not written back: this file has constructs the visual editor cannot write (${summariseReasons(blocked)}). Edit its source instead.`
+            : `Source-only file: it has constructs the visual editor cannot write back (${summariseReasons(fidelity!.reasons)}). Canvas edits will not be saved; edit its source instead.`}
+        </div>
+      )}
       <div style={styles.canvasWrapper}>
         <div
           style={{
