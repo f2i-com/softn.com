@@ -293,15 +293,30 @@ export const SettingsPanel: React.FC = () => {
           </>
         )}
 
+        {/* The General tab said "coming soon" twice and offered nothing. What
+            it says now is what is true today: where the theme is set, what the
+            words in the bar mean, and what the keyboard does. */}
         {settingsTab === 'general' && (
           <>
             <div style={styles.fieldGroup}>
               <label style={styles.label}>Theme</label>
-              <p style={styles.emptyHint}>Theme settings coming soon</p>
+              <p style={styles.emptyHint}>
+                Studio follows the light/dark switch in the bar at the top of the page, shared with the rest of SoftN. There is no separate Studio theme.
+              </p>
             </div>
             <div style={styles.fieldGroup}>
-              <label style={styles.label}>Keyboard Shortcuts</label>
-              <p style={styles.emptyHint}>Shortcut configuration coming soon</p>
+              <label style={styles.label}>Saving and the bar</label>
+              <p style={styles.emptyHint}>
+                <strong>Save project</strong> happens on its own after each change, to this browser only; the bar shows Saved, Saving or Not saved. Browser storage is not a backup.
+                <br />
+                <strong>Preview</strong> is the canvas. <strong>Run</strong> opens the bundle in the SoftN runtime. <strong>Export bundle</strong> downloads a .softn file. <strong>Publish</strong> sends the bundle to the directory’s publish page.
+              </p>
+            </div>
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Keyboard</label>
+              <p style={styles.emptyHint}>
+                Shortcuts are fixed: Escape closes the expanded preview and the project menu; Tab, Enter and Space work on every control. There is nothing to configure here.
+              </p>
             </div>
           </>
         )}

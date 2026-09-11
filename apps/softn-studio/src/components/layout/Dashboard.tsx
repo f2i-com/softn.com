@@ -1,20 +1,33 @@
 import React, { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import { Icon } from '../common/Icon';
-import { useWorkspaceStore, useVFSStore, useAIStore } from '../../stores';
-import { removeRecentProject, loadRecentProjects, loadWorkspaceSnapshot } from '../../lib/persistence';
+import { useWorkspaceStore } from '../../stores';
 
-interface RecentProject {
+/** A recent-list entry with what the dashboard knows about its copy. */
+export interface RecentEntry {
   id: string;
   name: string;
   target: string;
   lastModified: string;
+  /** A record for this id exists in project storage. */
+  saved: boolean;
+  /** This is the project currently in memory, saved or not. */
+  active: boolean;
 }
+
+export type DashboardOutcome = { ok: true } | { ok: false; message: string };
 
 interface DashboardProps {
   onNewProject: (templateId?: string) => void;
   onImportProject?: (file: File) => void;
-  onLoadRecent?: () => void;
-  recentProjects?: RecentProject[];
+  /** Open a recent project by id. The in-memory project opens without a read. */
+  onOpenRecent?: (id: string) => Promise<DashboardOutcome>;
+  /** Take an entry off the list. Nothing else is touched. */
+  onRemoveRecent?: (id: string) => void;
+  /** Delete a project's saved copy. Explicit, scoped to that id, and offered an export first. */
+  onDeleteProject?: (id: string) => Promise<DashboardOutcome>;
+  /** Download a saved project as a .softn without opening it. */
+  onExportProject?: (id: string) => Promise<DashboardOutcome>;
+  recentProjects?: RecentEntry[];
 }
 
 type ThemeMode = 'dark' | 'light';
@@ -54,17 +67,62 @@ function getTheme(theme: ThemeMode) {
     accent: 'var(--studio-accent)',
     accentSoft: 'var(--studio-accent-soft)',
     accentGlow: 'var(--studio-accent-soft)',
+    error: 'var(--studio-error)',
     ...shadows,
   };
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProject, onLoadRecent, recentProjects: initialRecent = [] }) => {
+/**
+ * Focus has to be visible on the recent-project controls, and inline styles
+ * cannot express :focus-visible. One stylesheet, scoped by class, is the
+ * least that does it.
+ */
+const FOCUS_CSS = `
+.studio-recent-open:focus-visible,
+.studio-recent-btn:focus-visible {
+  outline: 2px solid var(--studio-accent);
+  outline-offset: 2px;
+}
+.studio-recent-btn:hover,
+.studio-recent-btn:focus-visible {
+  opacity: 1 !important;
+}
+`;
+
+/**
+ * Recent projects are a list of real buttons.
+ *
+ * Each row was a `div` with an `onClick`: no role, no tab stop, nothing
+ * for Enter or Space to activate, and its remove control was invisible
+ * until hovered, which a keyboard never does. The row that opens is now a
+ * `button` — the browser gives it activation on Enter and Space — and
+ * "remove from list", "export a copy" and "delete" are separate labelled
+ * buttons beside it, always visible enough to find. Removal and deletion
+ * mean different things and say so: removing takes the entry off this
+ * list; deleting takes the saved copy out of this browser, asks first, and
+ * offers an export before it does. An entry with no saved copy says "No
+ * saved copy" rather than pretending: the old list kept names of projects
+ * whose only copy was overwritten long ago.
+ *
+ * Failures of the async actions land in a live region so they are read
+ * out, not just painted.
+ */
+export const Dashboard: React.FC<DashboardProps> = ({
+  onNewProject,
+  onImportProject,
+  onOpenRecent,
+  onRemoveRecent,
+  onDeleteProject,
+  onExportProject,
+  recentProjects = [],
+}) => {
   const { themePreview } = useWorkspaceStore();
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
-  const [recentProjects, setRecentProjects] = useState(initialRecent);
-  const [savedProjectName, setSavedProjectName] = useState<string | null>(() => loadWorkspaceSnapshot()?.projectName ?? null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const theme = useMemo(() => getTheme(themePreview as ThemeMode), [themePreview]);
@@ -88,26 +146,51 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
     if (file) handleFile(file);
   }, [handleFile]);
 
-  const handleRemoveRecent = useCallback((id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    // Check if the removed project is the currently loaded one before wiping stores
-    const currentName = savedProjectName;
-    const removedProject = recentProjects.find((p) => p.id === id);
-    removeRecentProject(id);
-    setRecentProjects(loadRecentProjects());
-    setSavedProjectName(loadWorkspaceSnapshot()?.projectName ?? null);
-    // Only reset stores if the removed project matches the current workspace
-    if (removedProject && (removedProject.name === currentName || id === useWorkspaceStore.getState().projectId)) {
-      useWorkspaceStore.getState().reset();
-      useVFSStore.getState().reset();
-      useAIStore.getState().resetSession();
+  const handleOpen = useCallback(async (project: RecentEntry) => {
+    if (!onOpenRecent || busyId) return;
+    setNotice(null);
+    setBusyId(project.id);
+    try {
+      const outcome = await onOpenRecent(project.id);
+      if (!outcome.ok) setNotice({ kind: 'error', text: `Could not open ${project.name}: ${outcome.message}` });
+    } catch (err) {
+      setNotice({ kind: 'error', text: `Could not open ${project.name}: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setBusyId(null);
     }
-  }, [savedProjectName, recentProjects]);
+  }, [onOpenRecent, busyId]);
+
+  const handleExport = useCallback(async (project: RecentEntry) => {
+    if (!onExportProject) return;
+    setNotice(null);
+    try {
+      const outcome = await onExportProject(project.id);
+      setNotice(outcome.ok ? { kind: 'info', text: `Exported ${project.name} as a .softn bundle.` } : { kind: 'error', text: `Could not export ${project.name}: ${outcome.message}` });
+    } catch (err) {
+      setNotice({ kind: 'error', text: `Could not export ${project.name}: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }, [onExportProject]);
+
+  const handleDelete = useCallback(async (project: RecentEntry) => {
+    if (!onDeleteProject) return;
+    setNotice(null);
+    setBusyId(project.id);
+    try {
+      const outcome = await onDeleteProject(project.id);
+      setNotice(outcome.ok ? { kind: 'info', text: `Deleted ${project.name} from this browser.` } : { kind: 'error', text: `Could not delete ${project.name}: ${outcome.message}` });
+    } catch (err) {
+      setNotice({ kind: 'error', text: `Could not delete ${project.name}: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setBusyId(null);
+      setConfirmingId(null);
+    }
+  }, [onDeleteProject]);
 
   const m = isMobile; // shorthand
 
   return (
     <div style={{ ...s.root, background: theme.pageBg, color: theme.text }}>
+      <style>{FOCUS_CSS}</style>
       <div style={s.scroll}>
         <div style={{ ...s.page, padding: m ? '20px 16px 32px' : '40px 28px 60px' }}>
 
@@ -130,6 +213,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
               onClick={() => onNewProject()}
               onMouseEnter={() => setHoveredCard('new')}
               onMouseLeave={() => setHoveredCard(null)}
+              className="studio-recent-open"
               style={{
                 ...s.actionCard,
                 flex: m ? 'none' : 1,
@@ -159,6 +243,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
               onDrop={handleDrop}
               onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
               onDragLeave={() => setIsDragOver(false)}
+              className="studio-recent-open"
               style={{
                 ...s.actionCard,
                 flex: m ? 'none' : 1,
@@ -179,59 +264,133 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
             </button>
           </div>
 
+          {/* Announcements for the async actions below: read out, not just painted. */}
+          <div aria-live="polite" role={notice?.kind === 'error' ? 'alert' : 'status'} style={{ minHeight: notice ? undefined : 0 }}>
+            {notice && (
+              <p style={{ ...s.notice, color: notice.kind === 'error' ? theme.error : theme.textSecondary, borderColor: notice.kind === 'error' ? theme.error : theme.border }}>
+                {notice.text}
+              </p>
+            )}
+          </div>
+
           {/* Recent Projects */}
           {recentProjects.length > 0 && (
             <div style={{ marginBottom: m ? 20 : 32 }}>
-              <h2 style={{ ...s.sectionTitle, color: theme.textSecondary, fontSize: m ? 12 : 13, marginBottom: m ? 10 : 12 }}>
+              <h2 id="studio-recent-heading" style={{ ...s.sectionTitle, color: theme.textSecondary, fontSize: m ? 12 : 13, marginBottom: m ? 10 : 12 }}>
                 Recent projects
               </h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <ul aria-labelledby="studio-recent-heading" style={s.list}>
                 {recentProjects.map((project) => {
-                  const isLoadable = project.name === savedProjectName;
+                  const openable = project.saved || project.active;
                   const isHovered = hoveredCard === project.id;
+                  const isBusy = busyId === project.id;
+                  const badge = project.active && !project.saved ? 'Open · not saved' : project.saved ? 'Open' : 'No saved copy';
+                  const badgeTitle = project.active && !project.saved
+                    ? 'This project is in memory but has not been saved to this browser. Open it and export a bundle to keep it.'
+                    : project.saved
+                      ? 'A saved copy is in this browser.'
+                      : 'This entry is only a name: no saved copy of it is in this browser.';
                   return (
-                    <div
-                      key={project.id}
-                      onClick={isLoadable ? () => onLoadRecent?.() : undefined}
-                      onMouseEnter={() => setHoveredCard(project.id)}
-                      onMouseLeave={() => setHoveredCard(null)}
-                      style={{
-                        ...s.projectRow,
-                        cursor: isLoadable ? 'pointer' : 'default',
-                        background: isHovered && isLoadable ? theme.cardBgHover : theme.cardBg,
-                        borderColor: isHovered && isLoadable ? theme.accent : theme.border,
-                        boxShadow: isHovered && isLoadable ? theme.shadowHover : theme.shadow,
-                        opacity: isLoadable ? 1 : 0.5,
-                        padding: m ? '12px 14px' : '14px 18px',
-                      }}
-                    >
-                      <div style={{ ...s.projectIcon, background: theme.accentSoft }}>
-                        <Icon name="layout" size={16} color={theme.accent} />
-                      </div>
-                      <div style={s.projectInfo}>
-                        <span style={{ ...s.projectName, color: theme.text }}>{project.name}</span>
-                        <span style={{ ...s.projectMeta, color: theme.textDim, fontSize: m ? 11 : 12 }}>
-                          {project.target} · {project.lastModified}
-                        </span>
-                      </div>
-                      {isLoadable && (
-                        <span style={{ ...s.openBadge, background: theme.accentSoft, color: theme.accent }}>Open</span>
-                      )}
-                      <button
-                        onClick={(e) => handleRemoveRecent(project.id, e)}
+                    <li key={project.id} style={s.listItem}>
+                      <div
+                        onMouseEnter={() => setHoveredCard(project.id)}
+                        onMouseLeave={() => setHoveredCard(null)}
                         style={{
-                          ...s.removeBtn,
-                          color: theme.textDim,
-                          opacity: isHovered || m ? 0.7 : 0,
+                          ...s.projectRow,
+                          background: isHovered && openable ? theme.cardBgHover : theme.cardBg,
+                          borderColor: isHovered && openable ? theme.accent : theme.border,
+                          boxShadow: isHovered && openable ? theme.shadowHover : theme.shadow,
+                          opacity: openable ? 1 : 0.6,
+                          padding: m ? '8px 8px 8px 14px' : '8px 10px 8px 18px',
                         }}
-                        title="Remove"
                       >
-                        <Icon name="x" size={14} />
-                      </button>
-                    </div>
+                        <button
+                          type="button"
+                          className="studio-recent-open"
+                          aria-disabled={openable && !isBusy ? undefined : true}
+                          aria-busy={isBusy || undefined}
+                          aria-label={`Open ${project.name}`}
+                          title={badgeTitle}
+                          onClick={() => {
+                            if (openable && !isBusy) void handleOpen(project);
+                          }}
+                          style={{ ...s.openBtn, cursor: openable ? 'pointer' : 'default' }}
+                        >
+                          <div style={{ ...s.projectIcon, background: theme.accentSoft }}>
+                            <Icon name="layout" size={16} color={theme.accent} />
+                          </div>
+                          <div style={s.projectInfo}>
+                            <span style={{ ...s.projectName, color: theme.text }}>{project.name}</span>
+                            <span style={{ ...s.projectMeta, color: theme.textDim, fontSize: m ? 11 : 12 }}>
+                              {project.target} · {project.lastModified}
+                            </span>
+                          </div>
+                          <span style={{ ...s.openBadge, background: openable ? theme.accentSoft : theme.surfaceBg, color: openable ? theme.accent : theme.textDim }}>
+                            {isBusy ? 'Opening…' : badge}
+                          </span>
+                        </button>
+                        <div style={s.rowActions}>
+                          {project.saved && onExportProject && (
+                            <button
+                              type="button"
+                              className="studio-recent-btn"
+                              onClick={() => void handleExport(project)}
+                              style={{ ...s.removeBtn, color: theme.textDim }}
+                              aria-label={`Export ${project.name} as a bundle`}
+                              title="Export bundle"
+                            >
+                              <Icon name="export" size={14} />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="studio-recent-btn"
+                            onClick={() => onRemoveRecent?.(project.id)}
+                            style={{ ...s.removeBtn, color: theme.textDim }}
+                            aria-label={`Remove ${project.name} from the recent list`}
+                            title="Remove from list (keeps the saved copy)"
+                          >
+                            <Icon name="x" size={14} />
+                          </button>
+                          {project.saved && onDeleteProject && (
+                            <button
+                              type="button"
+                              className="studio-recent-btn"
+                              onClick={() => setConfirmingId(confirmingId === project.id ? null : project.id)}
+                              aria-expanded={confirmingId === project.id}
+                              style={{ ...s.removeBtn, color: theme.textDim }}
+                              aria-label={`Delete ${project.name} from this browser`}
+                              title="Delete project…"
+                            >
+                              <Icon name="trash" size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {confirmingId === project.id && (
+                        <div role="group" aria-label={`Delete ${project.name}`} style={{ ...s.confirm, borderColor: theme.error }}>
+                          <p style={{ ...s.confirmText, color: theme.text }}>
+                            Delete the saved copy of <strong>{project.name}</strong> from this browser? This cannot be undone. Export a bundle first if you want to keep it.
+                          </p>
+                          <div style={s.confirmActions}>
+                            {onExportProject && (
+                              <button type="button" className="studio-recent-btn" onClick={() => void handleExport(project)} style={{ ...s.confirmBtn, borderColor: theme.accent, color: theme.text }}>
+                                Export bundle first
+                              </button>
+                            )}
+                            <button type="button" className="studio-recent-btn" onClick={() => void handleDelete(project)} disabled={isBusy} style={{ ...s.confirmBtn, background: theme.error, borderColor: theme.error, color: '#fff' }}>
+                              Delete project
+                            </button>
+                            <button type="button" className="studio-recent-btn" onClick={() => setConfirmingId(null)} style={{ ...s.confirmBtn, borderColor: theme.border, color: theme.textSecondary }}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </li>
                   );
                 })}
-              </div>
+              </ul>
             </div>
           )}
 
@@ -249,7 +408,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNewProject, onImportProj
                 {[
                   { step: '01', title: 'Describe', desc: 'Tell AI what you want to build' },
                   { step: '02', title: 'Preview', desc: 'See the result live in the canvas' },
-                  { step: '03', title: 'Export', desc: 'Download your app as a .softn bundle' },
+                  { step: '03', title: 'Export bundle', desc: 'Download your app as a .softn file, then Run or Publish it' },
                 ].map((item, i) => (
                   <div
                     key={item.step}
@@ -310,45 +469,6 @@ const s: Record<string, React.CSSProperties> = {
     margin: 'auto',
   },
 
-  // Header
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  headerLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-  },
-  logo: {
-    flexShrink: 0,
-    overflow: 'hidden',
-  },
-  logoImg: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover' as const,
-    display: 'block',
-  },
-  logoLabel: {
-    fontWeight: 700,
-    letterSpacing: '-0.01em',
-  },
-  themeBtn: {
-    width: 36,
-    height: 36,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderStyle: 'solid',
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    transition: 'all 0.15s',
-  },
-
   // Hero
   heroTitle: {
     fontFamily: 'var(--studio-display)',
@@ -404,6 +524,16 @@ const s: Record<string, React.CSSProperties> = {
     lineHeight: 1.4,
   },
 
+  notice: {
+    margin: '0 0 16px',
+    padding: '10px 14px',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+
   // Section
   sectionTitle: {
     margin: 0,
@@ -413,17 +543,44 @@ const s: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase' as const,
     letterSpacing: '0.16em',
   },
+  list: {
+    listStyle: 'none',
+    margin: 0,
+    padding: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  listItem: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
 
   // Project rows
   projectRow: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
     borderRadius: 14,
     borderWidth: 1,
     borderStyle: 'solid',
     transition: 'all 0.15s',
     position: 'relative',
+  },
+  openBtn: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    padding: '6px 4px',
+    border: 'none',
+    background: 'transparent',
+    color: 'inherit',
+    fontFamily: 'inherit',
+    textAlign: 'left' as const,
+    borderRadius: 10,
   },
   projectIcon: {
     width: 34,
@@ -460,10 +617,17 @@ const s: Record<string, React.CSSProperties> = {
     padding: '4px 10px',
     borderRadius: 999,
     flexShrink: 0,
+    whiteSpace: 'nowrap',
+  },
+  rowActions: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 2,
+    flexShrink: 0,
   },
   removeBtn: {
-    width: 28,
-    height: 28,
+    width: 32,
+    height: 32,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -474,6 +638,38 @@ const s: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
     transition: 'opacity 0.15s',
     flexShrink: 0,
+    opacity: 0.6,
+  },
+  confirm: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    padding: '12px 14px',
+    background: 'var(--studio-surface)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+  },
+  confirmText: {
+    margin: 0,
+    fontSize: 13,
+    lineHeight: 1.5,
+  },
+  confirmActions: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  confirmBtn: {
+    padding: '7px 12px',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: 'solid',
+    background: 'transparent',
+    fontFamily: 'inherit',
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: 'pointer',
   },
 
   // Steps

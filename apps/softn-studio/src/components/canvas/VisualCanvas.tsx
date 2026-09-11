@@ -9,6 +9,7 @@ import {
   assemblePreviewSource,
   buildPreviewXDBState,
   clearPreviewXDBCollections,
+  previewDataKey,
   replacePreviewXDBCollections,
 } from '../../lib/previewProject';
 
@@ -336,7 +337,21 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     return next;
   }, [files]);
 
-  const previewXDBState = useMemo(() => buildPreviewXDBState(files), [files]);
+  // The preview-data reset policy (see previewDataKey in lib/previewProject.ts):
+  // the disposable XDB collections are reseeded from source only when an .xdb
+  // file changes — its content, its path or its presence — or when the person
+  // presses "Reset preview data". This memo used to depend on the whole file
+  // map, so a one-character edit to a .ui file threw away every record typed
+  // into the preview. `files` is read here on purpose without being a
+  // dependency: the key already changes for exactly the edits that should
+  // reseed, and `previewDataResets` counts the explicit resets.
+  const previewDataKeyValue = useMemo(() => previewDataKey(files), [files]);
+  const [previewDataResets, setPreviewDataResets] = useState(0);
+  const previewXDBState = useMemo(
+    () => buildPreviewXDBState(files),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [previewDataKeyValue, previewDataResets]
+  );
   const initialData = previewXDBState.initialData;
 
   useEffect(() => {
@@ -524,6 +539,11 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
         break;
       case 'newtab':
         setIsExpandedPreview(true);
+        break;
+      case 'resetdata':
+        // Reseed the preview's collections from the .xdb files as they are
+        // now; the person asked for it, which is the only other time it happens.
+        setPreviewDataResets((n) => n + 1);
         break;
     }
   }, []);
@@ -781,7 +801,8 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
         <div style={styles.toolbar}>
           {[
             { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },
-            { id: 'newtab', icon: 'maximize' as const, label: 'Open in new tab' },
+            { id: 'resetdata', icon: 'database' as const, label: 'Reset preview data (reseed from the .xdb files)' },
+            { id: 'newtab', icon: 'maximize' as const, label: 'Expand preview' },
           ].map((tool) => (
             <button
               key={tool.id}
