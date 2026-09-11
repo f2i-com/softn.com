@@ -27,6 +27,7 @@ import {
   EventNode,
   BindingNode,
   Expression,
+  AssignmentOperator,
   PropValue,
   TopLevelElement,
   ParseDiagnostic,
@@ -50,6 +51,45 @@ import {
   MismatchedTagError,
   InvalidCollectionError,
 } from './errors';
+
+/** The tokens that begin an assignment's right-hand side, by operator. */
+const ASSIGNMENT_OPERATORS: ReadonlyMap<TokenType, AssignmentOperator> = new Map([
+  [TokenType.EQUALS, '='],
+  [TokenType.PLUS_ASSIGN, '+='],
+  [TokenType.MINUS_ASSIGN, '-='],
+  [TokenType.ASTERISK_ASSIGN, '*='],
+  [TokenType.SLASH_ASSIGN, '/='],
+  [TokenType.PERCENT_ASSIGN, '%='],
+  [TokenType.NULLISH_ASSIGN, '??='],
+  [TokenType.OR_ASSIGN, '||='],
+  [TokenType.AND_ASSIGN, '&&='],
+]);
+
+/** A short name for what an expression is, for a diagnostic about it. */
+function describeExpression(expr: Expression): string {
+  switch (expr.type) {
+    case 'Literal':
+      return `the literal ${expr.raw}`;
+    case 'CallExpression':
+      return 'a call';
+    case 'BinaryExpression':
+      return `a "${expr.operator}" expression`;
+    case 'UnaryExpression':
+      return `a "${expr.operator}" expression`;
+    case 'ConditionalExpression':
+      return 'a conditional';
+    case 'ArrowFunctionExpression':
+      return 'an arrow function';
+    case 'ObjectExpression':
+      return 'an object literal';
+    case 'ArrayExpression':
+      return 'an array literal';
+    case 'TemplateLiteral':
+      return 'a template literal';
+    default:
+      return `a ${expr.type}`;
+  }
+}
 
 export class Parser {
   private lexer: Lexer;
@@ -617,9 +657,7 @@ export class Parser {
             // filter={{ completed: false }}
             this.nextToken();
             filter = this.parseExpression();
-            if (this.curTokenIs(TokenType.EXPR_END)) {
-              this.nextToken();
-            }
+            this.closeExpression();
           } else if (attrName === 'limit') {
             // limit={10} or limit=10
             if (this.curTokenIs(TokenType.EXPR_START)) {
@@ -780,9 +818,7 @@ export class Parser {
             if (this.curTokenIs(TokenType.EXPR_START)) {
               this.nextToken();
               element.conditionalIf = this.parseExpression();
-              if (this.curTokenIs(TokenType.EXPR_END)) {
-                this.nextToken();
-              }
+              this.closeExpression();
             }
           }
         } else if (attrName === 'each') {
@@ -793,9 +829,7 @@ export class Parser {
             if (this.curTokenIs(TokenType.EXPR_START)) {
               this.nextToken();
               eachIterable = this.parseExpression();
-              if (this.curTokenIs(TokenType.EXPR_END)) {
-                this.nextToken();
-              }
+              this.closeExpression();
             }
           }
         } else if (attrName === 'as') {
@@ -1009,9 +1043,7 @@ export class Parser {
         this.nextToken();
         const expr = this.parseExpression();
         value = { type: 'expression', value: expr };
-        if (this.curTokenIs(TokenType.EXPR_END)) {
-          this.nextToken();
-        }
+        this.closeExpression();
       } else if (this.curTokenIs(TokenType.IDENTIFIER)) {
         // Bare identifier shorthand: prop=value (treated as static string)
         value = { type: 'static', value: this.curToken.literal };
@@ -1063,9 +1095,7 @@ export class Parser {
       // Standard syntax: @click={handler}
       this.nextToken();
       handler = this.parseExpression();
-      if (this.curTokenIs(TokenType.EXPR_END)) {
-        this.nextToken();
-      }
+      this.closeExpression();
     } else if (this.curTokenIs(TokenType.IDENTIFIER)) {
       // Shorthand syntax: @click=handleClick (bare identifier)
       handler = createIdentifier(this.curToken.literal, this.currentLoc());
@@ -1096,10 +1126,7 @@ export class Parser {
     this.expectToken(TokenType.EXPR_START);
 
     const expression = this.parseExpression();
-
-    if (this.curTokenIs(TokenType.EXPR_END)) {
-      this.nextToken();
-    }
+    this.closeExpression();
 
     return { type: 'Binding', name, expression, loc };
   }
@@ -1373,10 +1400,7 @@ export class Parser {
     this.expectToken(TokenType.EXPR_START);
 
     const expression = this.parseExpression();
-
-    if (this.curTokenIs(TokenType.EXPR_END)) {
-      this.nextToken();
-    }
+    this.closeExpression();
 
     return { type: 'Expression', expression, loc };
   }
@@ -1385,7 +1409,43 @@ export class Parser {
    * Parse an expression (simplified expression parser)
    */
   private parseExpression(): Expression {
-    return this.parseTernary();
+    return this.parseAssignment();
+  }
+
+  /**
+   * Assignment sits above the conditional, as in JavaScript: `x = a ? 1 : 2`
+   * assigns the whole conditional, and `a = b = 1` groups to the right.
+   *
+   * There was no such rule. The documented one-line handler
+   * `@click={() => count = count + 1}` therefore parsed as the arrow
+   * `() => count`; the element's attribute loop then skipped the `=`, took
+   * `count` as a boolean attribute and dropped `+ 1 }` token by token, and
+   * the document said nothing about it — the button rendered and did
+   * nothing when pressed. Every `{…}` now either reads to its `}` or is
+   * reported (see closeExpression), and the assignment forms are read.
+   *
+   * Only an identifier or a member path can be assigned to. Anything else is
+   * reported as a diagnostic rather than thrown, so the element it sits on
+   * survives and the author is pointed at the target, not at the tag.
+   */
+  private parseAssignment(): Expression {
+    const left = this.parseTernary();
+    const operator = ASSIGNMENT_OPERATORS.get(this.curToken.type);
+    if (operator === undefined) {
+      return left;
+    }
+
+    const loc = left.loc;
+    if (left.type !== 'Identifier' && left.type !== 'MemberExpression') {
+      this.diagnostics.push({
+        message: `Invalid assignment target: cannot assign to ${describeExpression(left)}`,
+        severity: 'error',
+        loc,
+      });
+    }
+    this.nextToken(); // consume the operator
+    const right = this.parseAssignment();
+    return { type: 'AssignmentExpression', operator, left, right, loc };
   }
 
   private parseTernary(): Expression {
@@ -1922,6 +1982,57 @@ export class Parser {
   }
 
   /**
+   * Consume the `}` that ends an attribute value, a handler, a binding, an
+   * inline `if=` / `each=` or an interpolation — or say why it cannot.
+   *
+   * Every one of those sites used to read `if (EXPR_END) nextToken()` and
+   * otherwise carry on. So when the expression rules stopped before the
+   * brace, whatever remained was handed back to the surrounding loop: on an
+   * element, the tokens turned into boolean attributes or were skipped one
+   * by one; between children, they were skipped. `<Text v={a b}>` gave
+   * `v={a}` plus an attribute `b`, and the document said nothing — the
+   * Builder detected the loss by re-parsing every `{…}` on its own.
+   *
+   * Now the unread tail is a diagnostic at the first token the parser could
+   * not place, and it is skipped as a whole up to the brace that closes this
+   * expression (nested braces — an object literal in the tail — are kept
+   * balanced). What was read stays on the node, so a preview still has
+   * something to show; what was not is named, not silently made into
+   * attributes.
+   */
+  private closeExpression(): void {
+    if (this.curTokenIs(TokenType.EXPR_END)) {
+      this.nextToken();
+      return;
+    }
+    if (this.curTokenIs(TokenType.EOF)) {
+      // A missing `}` is the unclosed tag's diagnostic, not this one's.
+      return;
+    }
+    const at = this.curToken;
+    this.diagnostics.push({
+      message:
+        `Unexpected token "${at.literal}" (${at.type}) in expression: ` +
+        'the rest of the expression up to its closing "}" is not supported here and was not read',
+      severity: 'error',
+      loc: this.currentLoc(),
+    });
+    let depth = 0;
+    while (!this.curTokenIs(TokenType.EOF)) {
+      if (this.curTokenIs(TokenType.EXPR_START)) {
+        depth++;
+      } else if (this.curTokenIs(TokenType.EXPR_END)) {
+        if (depth === 0) {
+          this.nextToken();
+          return;
+        }
+        depth--;
+      }
+      this.nextToken();
+    }
+  }
+
+  /**
    * Fail a list loop that consumed nothing this pass.
    *
    * Loops that only advance on the tokens they expect spin forever on anything
@@ -2004,4 +2115,6 @@ export function parse(source: string): SoftNDocument {
  * the new ones. Nothing in this file reads it; it is the parser's promise to
  * its callers about the output, not the input.
  */
-export const PARSER_VERSION = 1;
+// 2: AssignmentExpression nodes, and a diagnostic for any `{…}` the parser
+//    could not read to its closing brace (which previously became attributes).
+export const PARSER_VERSION = 2;

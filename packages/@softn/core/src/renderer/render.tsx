@@ -1589,6 +1589,63 @@ export function evaluateExpression(
       return test ? evalExpr(expr.consequent) : evalExpr(expr.alternate);
     }
 
+    case 'AssignmentExpression': {
+      // `count = count + 1` in a handler: the parser reads it whole now, and
+      // the write goes through the same setState a `:value` binding uses, at
+      // the same resolved path — so `todos[i].done = true` inside an #each
+      // writes the row, not a key called "i". A target that is not a state
+      // path (a call, a literal) is a parse-time diagnostic; here it is
+      // reported once and the assignment is a no-op rather than a throw that
+      // would take the whole handler down.
+      const path = getExpressionPath(expr.left, context);
+      if (!path) {
+        if (isDevelopment) console.error('[SoftN] Cannot assign to this expression; the left side must be a name or a property path.');
+        return undefined;
+      }
+      const right = evalExpr(expr.right);
+      let value: unknown;
+      switch (expr.operator) {
+        case '=':
+          value = right;
+          break;
+        case '??=': {
+          const current = evalExpr(expr.left);
+          if (current !== null && current !== undefined) return current;
+          value = right;
+          break;
+        }
+        case '||=': {
+          const current = evalExpr(expr.left);
+          if (current) return current;
+          value = right;
+          break;
+        }
+        case '&&=': {
+          const current = evalExpr(expr.left);
+          if (!current) return current;
+          value = right;
+          break;
+        }
+        default: {
+          const current = evalExpr(expr.left);
+          const a = current as number;
+          const b = right as number;
+          value =
+            expr.operator === '+='
+              ? (current as string | number) + (right as string | number)
+              : expr.operator === '-='
+                ? a - b
+                : expr.operator === '*='
+                  ? a * b
+                  : expr.operator === '/='
+                    ? a / b
+                    : a % b;
+        }
+      }
+      context.setState(path, value);
+      return value;
+    }
+
     case 'ArrowFunctionExpression': {
       return (...args: unknown[]) => {
         const fnContext: SoftNRenderContext = {
