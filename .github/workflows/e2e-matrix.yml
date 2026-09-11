@@ -1,0 +1,94 @@
+name: Browser matrix
+
+# The broader browser and layout matrix the audit's TEST_PLAN.md §1 asks
+# for, on a schedule and on demand — not on every push. The per-commit gate
+# (build.yml → e2e, Chromium only) stays fast and blocks merges; this runs
+# the same desktop journeys in Firefox and WebKit, Studio's phone layout at
+# 390 and 360 px with touch and reduced motion, and the desktop editors at
+# 200 % zoom (see e2e/playwright.config.ts for the projects). A failure here
+# is a scheduled failure to look at, never a blocked merge: the engines
+# differ in what they offer (no File System Access API outside Chromium, so
+# saves are downloads; WebKit's downloads go through a sheet the automation
+# cannot see) and the specs assert only the portable parts.
+#
+# Everything is built the same way the gate builds it: the packages, then
+# the site with the example bundles, served as one origin by
+# scripts/serve-topology.mjs through PHP with a disposable data directory.
+on:
+  schedule:
+    # Monday 05:00 UTC, before the working week in every timezone the
+    # project ships to.
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      projects:
+        description: Playwright projects to run, space-separated (empty runs the whole matrix)
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  matrix:
+    name: Firefox, WebKit, phone and zoom
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The example bundles: the directory seeds itself from them and the
+      # journeys open one in Studio and Builder.
+      - name: Fetch the demo bundles
+        run: npm run fetch:demos
+
+      # All three engines: Chromium for the phone and zoom projects, the
+      # other two for the desktop journeys. `--with-deps` installs the
+      # system libraries WebKit and Firefox need on the runner.
+      - name: Install the browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      # The apps import @softn/core and @softn/components from dist/, and
+      # build:site assembles everything the topology server serves.
+      - name: Build packages
+        run: npm run build:packages
+
+      - name: Build the site with the example bundles
+        run: SOFTN_WITH_DEMOS=1 npm run build:site
+
+      # The same HTTP-level check the gate and the release run, so a routing
+      # or header regression is named here rather than as a browser timeout.
+      - name: Smoke-test the built site
+        run: node scripts/smoke-site.mjs --root dist
+
+      # Every project by default; a dispatch can name a subset
+      # (for example `firefox webkit`) to look at one engine.
+      - name: Run the matrix
+        run: |
+          if [ -n "${{ inputs.projects }}" ]; then
+            args=""
+            for p in ${{ inputs.projects }}; do args="$args --project=$p"; done
+            npx playwright test -c e2e/playwright.config.ts $args
+          else
+            npm run e2e:matrix
+          fi
+        env:
+          CI: true
+
+      - name: Upload traces, screenshots and console logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: softn-e2e-matrix-results
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
