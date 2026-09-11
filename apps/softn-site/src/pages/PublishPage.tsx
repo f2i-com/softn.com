@@ -2,12 +2,15 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ApiError,
   addVersion,
+  exportKeys,
   forgetKey,
   getApp,
+  importKeys,
   publish,
   rememberKey,
   savedKey,
   savedKeys,
+  savedKeysUnreadable,
   setThumbnail,
   suggestCategory,
   unpublish,
@@ -15,6 +18,7 @@ import {
   type AppCard,
   type AppDetail,
   type Category,
+  type KeyStoreResult,
   type Published,
 } from '../lib/api';
 import { copyText } from '../lib/share';
@@ -35,6 +39,8 @@ interface BatchItem {
   status: 'pending' | 'publishing' | 'done' | 'failed' | 'skipped';
   result?: Published;
   error?: string;
+  /** Whether the edit key could be kept in this browser. */
+  kept?: KeyStoreResult;
 }
 
 /**
@@ -87,6 +93,71 @@ async function fitImage(file: File): Promise<Blob> {
 function errorText(err: unknown): string {
   if (err instanceof ApiError && err.retryAfter) return `${err.message} Try again in about ${Math.ceil(err.retryAfter / 60)} minutes.`;
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Hand the visitor a file of their keys. A download, not a share URL: the keys never go in an address. */
+function downloadKeyBackup(): void {
+  const blob = new Blob([exportKeys()], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `softn-edit-keys-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * What to say about a key after trying to keep it. 'stored' is the quiet
+ * case; the other two are the ones the visitor has to act on now, because
+ * this page is the last time the key is shown.
+ */
+function KeyKeptNotice({ kept }: { kept: KeyStoreResult }): React.ReactElement | null {
+  if (kept === 'stored') return null;
+  return (
+    <p className="form-error" role="alert">
+      {kept === 'blocked'
+        ? 'This browser did not let the site keep the key. It is not stored anywhere else: copy it now, or download the backup, before leaving this page.'
+        : 'The keys already kept in this browser could not be read, so this one was not added to them. Copy it now, or download the backup, before leaving this page.'}
+    </p>
+  );
+}
+
+/** A backup file coming back in. Reports what it did, entry by entry; never wipes what is held. */
+function KeyImport({ onImported }: { onImported?: () => void }): React.ReactElement {
+  const [report, setReport] = useState<string | null>(null);
+  const take = async (file: File | undefined) => {
+    if (!file) return;
+    const result = importKeys(await file.text());
+    const parts: string[] = [];
+    if (result.added.length > 0) parts.push(`${result.added.length} ${result.added.length === 1 ? 'key' : 'keys'} restored`);
+    if (result.unchanged.length > 0) parts.push(`${result.unchanged.length} already here`);
+    if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} kept as they were (the file held a different key for ${result.conflicts.join(', ')})`);
+    if (result.rejected.length > 0) parts.push(`${result.rejected.length} not a key: ${result.rejected.join(', ')}`);
+    if (result.stored === 'blocked') parts.push('this browser did not let the site store them');
+    if (result.stored === 'unreadable') parts.push('the keys already here could not be read, so nothing was changed');
+    setReport(parts.length > 0 ? `${parts.join('; ')}.` : 'The file held no keys.');
+    if (result.added.length > 0 && result.stored === 'stored') onImported?.();
+  };
+  return (
+    <label className="field">
+      <span className="field-label">Restore keys from a backup file</span>
+      <input
+        type="file"
+        accept="application/json,.json"
+        onChange={(e) => {
+          void take(e.target.files?.[0]);
+          e.target.value = '';
+        }}
+      />
+      {report && (
+        <span className="muted" role="status">
+          {report}
+        </span>
+      )}
+    </label>
+  );
 }
 
 /** A drop target for one .softn or several, with the inspection it triggers. */
@@ -157,55 +228,172 @@ function BundleDrop({ file, info, onFiles }: { file: File | null; info: Inspecti
   );
 }
 
-/** The apps this browser holds edit keys for. */
-function YourApps(): React.ReactElement | null {
-  const [apps, setApps] = useState<AppCard[] | null>(null);
-  const keys = savedKeys();
+/**
+ * One app this browser holds a key for, as the lookup found it. `missing`
+ * is the directory saying 404 — the app is gone or was never here;
+ * `unavailable` is everything else: a network failure, a 429, a 500, an
+ * answer that was not JSON. The two are kept apart because only the first
+ * says anything about the app, and neither says anything about the key.
+ */
+export type OwnedApp =
+  | { slug: string; state: 'loaded'; app: AppDetail }
+  | { slug: string; state: 'missing'; error: string }
+  | { slug: string; state: 'unavailable'; error: string };
+
+/** Look every slug up, classifying each outcome. Never throws, never forgets. */
+export async function lookupOwnedApps(slugs: string[], signal?: AbortSignal, lookup: typeof getApp = getApp): Promise<OwnedApp[]> {
+  return Promise.all(
+    slugs.map(async (slug): Promise<OwnedApp> => {
+      try {
+        return { slug, state: 'loaded', app: await lookup(slug, signal) };
+      } catch (err) {
+        const error = errorText(err);
+        if (err instanceof ApiError && err.status === 404) return { slug, state: 'missing', error };
+        return { slug, state: 'unavailable', error };
+      }
+    }),
+  );
+}
+
+/**
+ * The apps this browser holds edit keys for.
+ *
+ * This is a read-only listing, and it treats the keys that way. An earlier
+ * version turned every failed lookup into "not found" and forgot the key
+ * for every slug the lookups did not return — so a 500, a rate limit or a
+ * dropped connection while the page loaded deleted the only proof of
+ * ownership of every app in the list, silently. Now a lookup that fails
+ * keeps its row, says why and offers a retry; a confirmed 404 keeps its
+ * row too, with the key it holds and a button to forget it on purpose.
+ */
+export function YourApps({ lookup }: { lookup?: typeof getApp } = {}): React.ReactElement | null {
+  const [apps, setApps] = useState<OwnedApp[] | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [keys, setKeys] = useState<Record<string, string>>(() => savedKeys());
+  const [confirmForget, setConfirmForget] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const unreadable = savedKeysUnreadable();
   const slugs = Object.keys(keys);
+  const slugList = slugs.join(',');
   useEffect(() => {
     if (slugs.length === 0) return undefined;
     const ac = new AbortController();
-    Promise.all(slugs.map((s) => getApp(s, ac.signal).catch(() => null)))
-      .then((list) => {
-        if (ac.signal.aborted) return;
-        const found = list.filter((a): a is AppDetail => a !== null);
-        // A key for an app that no longer exists is not worth keeping.
-        for (const s of slugs) if (!found.some((a) => a.slug === s)) forgetKey(s);
-        setApps(found);
-      })
-      .catch(() => setApps([]));
+    setApps(null);
+    void lookupOwnedApps(slugs, ac.signal, lookup).then((list) => {
+      if (ac.signal.aborted) return;
+      setApps(list);
+    });
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slugs.join(',')]);
+  }, [slugList, attempt]);
+
+  if (unreadable) {
+    return (
+      <section className="yours">
+        <h2 className="section-title">Your apps</h2>
+        <p className="form-error">
+          The edit keys kept in this browser could not be read. Nothing here will touch them; if you have a backup, import it on the update page of the app it is for.
+        </p>
+      </section>
+    );
+  }
   if (slugs.length === 0) return null;
+
+  const forget = (slug: string) => {
+    const result = forgetKey(slug);
+    setConfirmForget(null);
+    if (result === 'stored') {
+      setNotice(`The key for ${slug} is forgotten. It is not shown again; if you kept a copy, the update page still takes it.`);
+      setKeys(savedKeys());
+    } else setNotice(`The key for ${slug} could not be removed: this browser is not letting the site change its storage.`);
+  };
+
+  const failed = apps?.filter((a) => a.state === 'unavailable').length ?? 0;
   return (
     <section className="yours">
       <h2 className="section-title">
         Your apps <span className="section-count">edit keys kept in this browser</span>
       </h2>
+      {notice && (
+        <p className="muted" role="status">
+          {notice}
+        </p>
+      )}
       {apps === null ? (
         <p className="muted">Checking…</p>
       ) : (
-        <ul className="yours-list">
-          {apps.map((a) => (
-            <li key={a.slug} className="yours-item">
-              <a className="yours-thumb" href={a.urls.page} aria-label={a.name}>
-                <Thumb app={a} />
-              </a>
-              <div className="yours-body">
-                <a className="yours-name" href={a.urls.page}>
-                  {a.name}
-                </a>
-                <span className="muted">
-                  v{a.version} · {a.runs} runs · updated {formatDate(a.updatedAt)}
-                </span>
-              </div>
-              <a className="cta" href={`/publish?update=${encodeURIComponent(a.slug)}`}>
-                Update
-              </a>
-            </li>
-          ))}
-        </ul>
+        <>
+          {failed > 0 && (
+            <p className="form-error" role="status">
+              {failed === 1 ? 'One app could not be checked' : `${failed} apps could not be checked`} just now. The keys are kept.{' '}
+              <button type="button" className="link-btn" onClick={() => setAttempt((n) => n + 1)}>
+                Try again
+              </button>
+            </p>
+          )}
+          <ul className="yours-list">
+            {apps.map((entry) => {
+              const key = keys[entry.slug];
+              if (entry.state === 'loaded') {
+                const a = entry.app;
+                return (
+                  <li key={a.slug} className="yours-item">
+                    <a className="yours-thumb" href={a.urls.page} aria-label={a.name}>
+                      <Thumb app={a} />
+                    </a>
+                    <div className="yours-body">
+                      <a className="yours-name" href={a.urls.page}>
+                        {a.name}
+                      </a>
+                      <span className="muted">
+                        v{a.version} · {a.runs} runs · updated {formatDate(a.updatedAt)}
+                      </span>
+                    </div>
+                    <a className="cta" href={`/publish?update=${encodeURIComponent(a.slug)}`}>
+                      Update
+                    </a>
+                  </li>
+                );
+              }
+              return (
+                <li key={entry.slug} className={`yours-item is-${entry.state}`}>
+                  <span className="yours-thumb" aria-hidden="true" />
+                  <div className="yours-body">
+                    <span className="yours-name">{entry.slug}</span>
+                    <span className="muted">
+                      {entry.state === 'missing' ? 'Not in the directory any more: it was unpublished or removed.' : `Could not be checked: ${entry.error}`}
+                    </span>
+                    {confirmForget === entry.slug ? (
+                      <span className="muted">
+                        Forget its key? It cannot be recovered from this browser afterwards.{' '}
+                        <button type="button" className="link-btn" onClick={() => forget(entry.slug)}>
+                          Yes, forget it
+                        </button>{' '}
+                        <button type="button" className="link-btn" onClick={() => setConfirmForget(null)}>
+                          Keep it
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="muted">
+                        Key <code className="batch-key">{key}</code>{' '}
+                        {entry.state === 'missing' && (
+                          <button type="button" className="link-btn" onClick={() => setConfirmForget(entry.slug)}>
+                            Forget this key
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {entry.state === 'unavailable' && (
+                    <a className="cta" href={`/publish?update=${encodeURIComponent(entry.slug)}`}>
+                      Update
+                    </a>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
     </section>
   );
@@ -249,6 +437,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Published | null>(null);
+  const [keyKept, setKeyKept] = useState<KeyStoreResult>('stored');
   const [copied, setCopied] = useState(false);
   const [batch, setBatch] = useState<BatchItem[] | null>(null);
   const [adminKey, setAdminKey] = useState('');
@@ -374,7 +563,10 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
         thumbnail: thumb?.blob ?? null,
         website,
       });
-      if (r.editKey) rememberKey(r.app.slug, r.editKey);
+      // Publishing succeeded whatever happens to the key here: the two are
+      // reported apart, and a key storage could not keep is the visitor's to
+      // copy before leaving.
+      setKeyKept(r.editKey ? rememberKey(r.app.slug, r.editKey) : 'stored');
       setResult(r);
       window.scrollTo({ top: 0 });
     } catch (err) {
@@ -418,8 +610,8 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
           adminKey: adminKey || undefined,
           website,
         });
-        if (r.editKey) rememberKey(r.app.slug, r.editKey);
-        setItem(i, { status: 'done', result: r });
+        const kept = r.editKey ? rememberKey(r.app.slug, r.editKey) : 'stored';
+        setItem(i, { status: 'done', result: r, kept });
       } catch (err) {
         const text = errorText(err);
         setItem(i, { status: 'failed', error: text });
@@ -467,7 +659,9 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
             {finished
               ? failed > 0
                 ? `${failed} ${failed === 1 ? 'was' : 'were'} not published; each row says why.`
-                : 'Each one has its own page and its own edit key, kept in this browser.'
+                : batch.some((b) => b.kept && b.kept !== 'stored')
+                  ? 'Each one has its own page and its own edit key. This browser would not keep the keys: copy them from the rows, or download the backup, before leaving.'
+                  : 'Each one has its own page and its own edit key, kept in this browser.'
               : 'Each is named and described from its manifest. They all go under the category you pick; you can change any listing afterwards with its edit key.'}
           </p>
           <ul className="batch-list">
@@ -491,6 +685,7 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                         <>
                           {' '}
                           · edit key <code className="batch-key">{item.result.editKey}</code>
+                          {item.kept && item.kept !== 'stored' && <strong className="form-error"> — not kept in this browser; copy it now</strong>}
                         </>
                       )}
                     </div>
@@ -559,6 +754,11 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                 See the directory
               </a>
             )}
+            {finished && done > 0 && (
+              <button type="button" className="cta" onClick={downloadKeyBackup}>
+                Download key backup
+              </button>
+            )}
             <button type="button" className="cta" onClick={startOver}>
               {finished ? 'Publish more' : 'Start over'}
             </button>
@@ -594,9 +794,12 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
               <h2 className="side-title">Your edit key</h2>
               <p>
                 This is the only way to update the listing or publish a new version — there are no accounts, so nothing else
-                proves the app is yours. It has been kept in this browser, and it is not shown again after this page, so copy it
-                somewhere safe too.
+                proves the app is yours.{' '}
+                {keyKept === 'stored'
+                  ? 'It has been kept in this browser, and it is not shown again after this page, so copy it somewhere safe too: browser storage is not a backup.'
+                  : 'It is not shown again after this page.'}
               </p>
+              <KeyKeptNotice kept={keyKept} />
               <div className="keybox-row">
                 <code className="keybox-key">{result.editKey}</code>
                 <button
@@ -608,6 +811,9 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
                   }}
                 >
                   {copied ? 'Copied' : 'Copy'}
+                </button>
+                <button type="button" className="cta" onClick={downloadKeyBackup}>
+                  Download backup
                 </button>
               </div>
               <p className="muted">
@@ -797,6 +1003,8 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  /** The saved key was refused: offer to forget it, rather than doing so unasked. */
+  const [refusedSavedKey, setRefusedSavedKey] = useState(false);
 
   useEffect(() => {
     document.title = `Update ${slug} — SoftN`;
@@ -825,11 +1033,19 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
     setDone(null);
     try {
       await fn(key.trim());
-      if (remember) rememberKey(slug, key.trim());
+      if (remember) {
+        const kept = rememberKey(slug, key.trim());
+        if (kept !== 'stored') setDone((d) => `${d ?? ''} The key could not be kept in this browser; keep your own copy.`.trim());
+      }
+      setRefusedSavedKey(false);
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-        forgetKey(slug);
+        // The key was refused this once. That is not proof the saved one is
+        // wrong — a server misconfiguration answers the same way — and the
+        // saved one is the only copy this browser has. Say so; the forgetting
+        // is the visitor's to do.
         setError('That edit key does not open this app.');
+        setRefusedSavedKey(key.trim() === (savedKey(slug) ?? ''));
       } else setError(errorText(err));
     } finally {
       setBusy(null);
@@ -927,6 +1143,26 @@ function UpdatePage({ slug, categories, categoriesError, onRetryCategories }: { 
             </label>
           </label>
           {key && !keyOk && <p className="form-error">An edit key is 40 hex characters.</p>}
+          {refusedSavedKey && (
+            <p className="muted">
+              The key kept in this browser for this app was refused. If you are sure it is wrong,{' '}
+              <button
+                type="button"
+                className="link-btn"
+                onClick={() => {
+                  if (forgetKey(slug) === 'stored') {
+                    setKey('');
+                    setRefusedSavedKey(false);
+                    setDone('The saved key is forgotten.');
+                  }
+                }}
+              >
+                forget it
+              </button>
+              ; otherwise leave it, in case the directory was the problem.
+            </p>
+          )}
+          <KeyImport onImported={() => setKey(savedKey(slug) ?? key)} />
         </section>
 
         {done && <div className="notice notice-ok">{done}</div>}
