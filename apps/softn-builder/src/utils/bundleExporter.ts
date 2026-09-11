@@ -1,5 +1,18 @@
 /**
  * Bundle Exporter - Creates .softn ZIP bundles
+ *
+ * The manifest is the one the bundle came with, patched, not a new one. The
+ * export used to rebuild it from six fields: the entry file was chosen by
+ * searching the UI paths for "main.ui" (so an app whose entry was `app.ui`
+ * and which also had a `not-main.ui` was exported pointing at the wrong
+ * file), the window was reset to 1200×800, `config.execution` and every
+ * field the Builder did not know were dropped, and the `server` group went
+ * with the server files. Now the retained manifest is copied and only what
+ * the Builder edits is written over it: name, version, description, theme
+ * mode, icon, and the four file groups it rebuilds. `main` is the declared
+ * entry, followed through a rename by file id, never guessed.
+ *
+ * Every .xdb entry is written by utils/xdbFormat.ts, for both export paths.
  */
 
 import { zipSync, strToU8 } from 'fflate';
@@ -14,6 +27,7 @@ import type {
 import { generateSource } from './sourceGenerator';
 import { debug } from './debug';
 import { buildPermissionJson, type PermissionDeclaration } from './permissions';
+import { envelopeFor, serializeXdb, type XdbRecordEnvelope } from './xdbFormat';
 
 export const BUNDLE_FORMAT_VERSION = '1.0';
 
@@ -29,6 +43,8 @@ export interface BundleManifest {
     logic: string[];
     xdb: string[];
     assets: string[];
+    /** Server-side logic; the Builder carries these through, it does not edit them. */
+    server?: string[];
   };
   config: {
     window: {
@@ -42,66 +58,191 @@ export interface BundleManifest {
   };
 }
 
-export interface BundleOptions {
+/** What an opened bundle carried that the export writes back rather than rebuilds. */
+export interface RetainedExportSource {
+  /** The manifest as read, or null for a project made in the Builder. */
+  manifest: Record<string, unknown> | null;
+  /** Validated entries the Builder does not model, written back verbatim. */
+  extraEntries: Map<string, Uint8Array>;
+  /** Where the icon was, when the bundle had one. */
+  iconPath: string | null;
+  /** Where each collection's .xdb was, by collection name. */
+  xdbPaths: Map<string, string>;
+}
+
+interface SharedOptions {
   name: string;
   version: string;
   description: string;
   themeMode: 'light' | 'dark' | 'system';
-  elements: Map<string, CanvasElement>;
-  rootId: string;
-  logicSource: string;
   collections: CollectionDef[];
+  /**
+   * The records each collection is written with, by collection name. A
+   * collection without an entry is written from its `seedData` with fresh
+   * identity, which is right only for a collection that never had any.
+   */
+  records?: Map<string, XdbRecordEnvelope[]>;
   assets: AssetFile[];
   icon?: Uint8Array;
   /** Where the icon goes in the archive; `assets/icon.png` when not said. */
   iconPath?: string;
   /** What the app declares it needs; nothing declared writes no permission.json. */
   permissions?: PermissionDeclaration;
+  /** What the opened bundle carried; absent for a project made here. */
+  source?: RetainedExportSource;
 }
 
-export interface MultiBundleOptions {
-  name: string;
-  version: string;
-  description: string;
-  themeMode: 'light' | 'dark' | 'system';
+export interface BundleOptions extends SharedOptions {
+  elements: Map<string, CanvasElement>;
+  rootId: string;
+  logicSource: string;
+  /** The entry file's path; `ui/main.ui` when not said. */
+  main?: string;
+}
+
+export interface MultiBundleOptions extends SharedOptions {
   uiFiles: Map<string, UIFileState>;
   logicFiles: Map<string, LogicFileState>;
-  collections: CollectionDef[];
-  assets: AssetFile[];
-  icon?: Uint8Array;
-  iconPath?: string;
-  permissions?: PermissionDeclaration;
+  /**
+   * The entry file's path: the declared entry followed through renames, or
+   * `ui/main.ui` for a project made here — the caller knows which. When not
+   * said, `ui/main.ui` if the project has it, else the only UI file if there
+   * is one; never a search of the names. A path that is not a UI file of
+   * the project is refused rather than replaced.
+   */
+  main?: string;
+}
+
+/** The entry file when the caller did not say: the conventional one, or the only one. */
+function defaultMain(uiPaths: string[]): string {
+  if (uiPaths.includes('ui/main.ui')) return 'ui/main.ui';
+  if (uiPaths.length === 1) return uiPaths[0];
+  throw new Error('The project has no ui/main.ui to be its entry file. Create one, or name one main.ui.');
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stripSlash(path: string): string {
+  return path.startsWith('/') ? path.slice(1) : path;
+}
+
+/** Where a collection's .xdb goes: where it was, or `xdb/<name>.xdb`. */
+function xdbPathFor(name: string, source?: RetainedExportSource): string {
+  return source?.xdbPaths.get(name) ?? `xdb/${name}.xdb`;
+}
+
+/**
+ * The manifest to write: the retained one with the Builder's edits over it,
+ * or a fresh one for a project that never had a manifest. Whatever the
+ * retained manifest carried that the Builder does not edit — window and
+ * runtime settings, `files.server`, fields from a newer format — is kept
+ * exactly, in its place.
+ */
+function composeManifest(
+  options: SharedOptions,
+  groups: { ui: string[]; logic: string[]; xdb: string[]; assets: string[] },
+  main: string,
+  iconPath: string | null
+): Record<string, unknown> {
+  const retained = options.source?.manifest;
+  const manifest: Record<string, unknown> = retained
+    ? (JSON.parse(JSON.stringify(retained)) as Record<string, unknown>)
+    : { formatVersion: BUNDLE_FORMAT_VERSION };
+
+  manifest.name = options.name;
+  manifest.version = options.version;
+  manifest.description = options.description;
+  manifest.main = main;
+  if (iconPath) manifest.icon = iconPath;
+  else delete manifest.icon;
+
+  const files = isObject(manifest.files) ? { ...manifest.files } : {};
+  files.ui = groups.ui;
+  files.logic = groups.logic;
+  files.xdb = groups.xdb;
+  files.assets = groups.assets;
+  manifest.files = files;
+
+  const config = isObject(manifest.config) ? { ...manifest.config } : {};
+  const previousName = typeof retained?.name === 'string' ? retained.name : null;
+  const window = isObject(config.window) ? { ...config.window } : { title: options.name, width: 1200, height: 800 };
+  // The window title tracked the app's name when it was the same; a title
+  // set to something else is a setting the Builder has no control for.
+  if (previousName !== null && window.title === previousName) window.title = options.name;
+  config.window = window;
+  config.theme = { ...(isObject(config.theme) ? config.theme : {}), mode: options.themeMode };
+  manifest.config = config;
+
+  return manifest;
 }
 
 /**
  * The archive entries every export shares: the declaration, the icon at its
- * own path, and the assets. The icon is listed among the assets once.
+ * own path, the assets, the .xdb entries and the passthrough entries. The
+ * icon is listed among the assets once. Returns the assets group.
  */
 function addSharedEntries(
   files: Record<string, Uint8Array>,
-  manifest: BundleManifest,
-  options: { assets: AssetFile[]; icon?: Uint8Array; iconPath?: string; permissions?: PermissionDeclaration }
-): void {
+  options: SharedOptions
+): { assets: string[]; xdb: string[]; iconPath: string | null } {
+  const assets: string[] = [];
   for (const asset of options.assets) {
-    files[`assets/${asset.name}`] = asset.data;
+    const path = `assets/${asset.name}`;
+    files[path] = asset.data;
+    assets.push(path);
   }
+
+  let iconPath: string | null = null;
   if (options.icon) {
-    const iconPath = options.iconPath || 'assets/icon.png';
-    manifest.icon = iconPath;
+    iconPath = options.iconPath || 'assets/icon.png';
     files[iconPath] = options.icon;
-    if (!manifest.files.assets.includes(iconPath)) manifest.files.assets.push(iconPath);
+    // Listed among the assets when it lives there, once.
+    if (iconPath.startsWith('assets/') && !assets.includes(iconPath)) assets.push(iconPath);
   }
+
   const permission = options.permissions ? buildPermissionJson(options.permissions) : null;
   if (permission) files['permission.json'] = strToU8(permission);
+
+  // Generate XDB entries, one serializer for both export paths.
+  const xdb: string[] = [];
+  for (const col of options.collections) {
+    const path = xdbPathFor(col.name, options.source);
+    const records = options.records?.get(col.name) ?? (col.seedData || []).map((data) => envelopeFor(col.name, data, undefined));
+    files[path] = strToU8(
+      serializeXdb({
+        name: col.name,
+        schema: { alias: col.alias ?? col.name, fields: col.fields ?? [] },
+        records,
+      })
+    );
+    xdb.push(path);
+  }
+
+  // What the Builder does not model goes back as it came, unless the Builder
+  // now has a file of its own at that path.
+  for (const [path, bytes] of options.source?.extraEntries ?? []) {
+    if (path in files) continue;
+    files[path] = bytes;
+  }
+
+  return { assets, xdb, iconPath };
 }
 
 /** Whether the project carries a `logic/main.logic` for the entry file to link. */
 function hasMainLogic(logicFiles: Map<string, { path: string }>): boolean {
   for (const [, file] of logicFiles) {
-    const path = file.path.startsWith('/') ? file.path.slice(1) : file.path;
-    if (path === 'logic/main.logic') return true;
+    if (stripSlash(file.path) === 'logic/main.logic') return true;
   }
   return false;
+}
+
+function zip(files: Record<string, Uint8Array>, options: SharedOptions): Uint8Array {
+  return zipSync(files, {
+    level: 6,
+    comment: `SoftN Bundle - ${options.name} v${options.version}`,
+  });
 }
 
 /**
@@ -109,34 +250,8 @@ function hasMainLogic(logicFiles: Map<string, { path: string }>): boolean {
  */
 export async function exportBundle(options: BundleOptions): Promise<Uint8Array> {
   const files: Record<string, Uint8Array> = {};
-
-  // Generate manifest.json
-  const manifest: BundleManifest = {
-    formatVersion: BUNDLE_FORMAT_VERSION,
-    name: options.name,
-    version: options.version,
-    description: options.description,
-    main: 'ui/main.ui',
-    files: {
-      ui: ['ui/main.ui'],
-      logic: options.logicSource.trim() ? ['logic/main.logic'] : [],
-      xdb: options.collections.map((c) => `xdb/${c.name}.xdb`),
-      assets: options.assets.map((a) => `assets/${a.name}`),
-    },
-    config: {
-      window: {
-        title: options.name,
-        width: 1200,
-        height: 800,
-      },
-      theme: {
-        mode: options.themeMode,
-      },
-    },
-  };
-
-  addSharedEntries(files, manifest, options);
-  files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2));
+  const main = options.main ?? 'ui/main.ui';
+  const hasLogic = options.logicSource.trim().length > 0;
 
   // Generate main.ui from canvas
   const uiSource = generateSource(
@@ -148,51 +263,23 @@ export async function exportBundle(options: BundleOptions): Promise<Uint8Array> 
   // Link that separate file. The loader inlines logic solely by rewriting a
   // `<logic src>` tag, so without one the bundle carries its logic and never
   // runs it — bindings read undefined and handlers do nothing.
-  files['ui/main.ui'] = strToU8(
-    options.logicSource.trim() ? `<logic src="../logic/main.logic" />\n${uiSource}` : uiSource
-  );
+  files[main] = strToU8(hasLogic ? `<logic src="../logic/main.logic" />\n${uiSource}` : uiSource);
 
   // Generate logic file
-  if (options.logicSource.trim()) {
+  if (hasLogic) {
     files['logic/main.logic'] = strToU8(options.logicSource);
   }
 
-  // Generate XDB seed files
-  for (const col of options.collections) {
-    const xdbFile = {
-      collection: col.name,
-      // The schema itself, written down rather than left to be guessed.
-      //
-      // A .softn had nowhere to record what a collection's fields ARE, so
-      // reopening a project rebuilt them by sniffing the first seed row: a
-      // collection with no rows yet came back with no fields at all, every
-      // field became optional, select options and references were gone, and
-      // the alias was replaced by the collection name. The runtime ignores
-      // anything it does not know, so this costs nothing to add and is what
-      // makes save-and-reopen lossless.
-      schema: {
-        alias: col.alias ?? col.name,
-        fields: col.fields ?? [],
-      },
-      records: col.seedData.map((data, i) => ({
-        id: `seed-${i}`,
-        collection: col.name,
-        data,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        deleted: false,
-      })),
-    };
-    files[`xdb/${col.name}.xdb`] = strToU8(JSON.stringify(xdbFile, null, 2));
-  }
+  const shared = addSharedEntries(files, options);
+  const manifest = composeManifest(
+    options,
+    { ui: [main], logic: hasLogic ? ['logic/main.logic'] : [], xdb: shared.xdb, assets: shared.assets },
+    main,
+    shared.iconPath
+  );
+  files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2));
 
-  // Create ZIP
-  const zipped = zipSync(files, {
-    level: 6,
-    comment: `SoftN Bundle - ${options.name} v${options.version}`,
-  });
-
-  return zipped;
+  return zip(files, options);
 }
 
 /**
@@ -208,7 +295,7 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
 
   // Add UI files
   for (const [, uiFile] of options.uiFiles) {
-    const path = uiFile.path.startsWith('/') ? uiFile.path.slice(1) : uiFile.path;
+    const path = stripSlash(uiFile.path);
     uiPaths.push(path);
 
     // Use originalSource if available, otherwise generate from elements
@@ -230,9 +317,16 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
     debug('[exportMultiFileBundle] Added UI file:', path, 'length:', source.length);
   }
 
+  const main = options.main !== undefined ? stripSlash(options.main) : defaultMain(uiPaths);
+  if (!uiPaths.includes(main)) {
+    throw new Error(
+      `The entry file "${main}" is not a UI file of this project (it has ${uiPaths.join(', ') || 'none'}). Restore it, or open the project's manifest to change main.`
+    );
+  }
+
   // Add logic files
   for (const [, logicFile] of options.logicFiles) {
-    const path = logicFile.path.startsWith('/') ? logicFile.path.slice(1) : logicFile.path;
+    const path = stripSlash(logicFile.path);
     logicPaths.push(path);
     files[path] = strToU8(logicFile.content);
     debug(
@@ -243,59 +337,18 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
     );
   }
 
-  // Generate manifest.json
-  const manifest: BundleManifest = {
-    formatVersion: BUNDLE_FORMAT_VERSION,
-    name: options.name,
-    version: options.version,
-    description: options.description,
-    main: uiPaths.find((p) => p.includes('main.ui')) || uiPaths[0] || 'ui/main.ui',
-    files: {
-      ui: uiPaths,
-      logic: logicPaths,
-      xdb: options.collections.map((c) => `xdb/${c.name}.xdb`),
-      assets: options.assets.map((a) => `assets/${a.name}`),
-    },
-    config: {
-      window: {
-        title: options.name,
-        width: 1200,
-        height: 800,
-      },
-      theme: {
-        mode: options.themeMode,
-      },
-    },
-  };
-
-  addSharedEntries(files, manifest, options);
+  const shared = addSharedEntries(files, options);
+  const manifest = composeManifest(
+    options,
+    { ui: uiPaths, logic: logicPaths, xdb: shared.xdb, assets: shared.assets },
+    main,
+    shared.iconPath
+  );
   files['manifest.json'] = strToU8(JSON.stringify(manifest, null, 2));
-
-  // Generate XDB seed files
-  for (const col of options.collections) {
-    const xdbFile = {
-      collection: col.name,
-      records: (col.seedData || []).map((data, i) => ({
-        id: `seed-${i}`,
-        collection: col.name,
-        data,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        deleted: false,
-      })),
-    };
-    files[`xdb/${col.name}.xdb`] = strToU8(JSON.stringify(xdbFile, null, 2));
-  }
 
   debug('[exportMultiFileBundle] Creating bundle with', Object.keys(files).length, 'files');
 
-  // Create ZIP
-  const zipped = zipSync(files, {
-    level: 6,
-    comment: `SoftN Bundle - ${options.name} v${options.version}`,
-  });
-
-  return zipped;
+  return zip(files, options);
 }
 
 /**
@@ -337,9 +390,17 @@ export function parseBundle(data: Uint8Array): {
     throw new Error('Invalid bundle: missing manifest.json');
   }
 
-  const manifest = JSON.parse(new TextDecoder().decode(manifestData)) as BundleManifest;
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(new TextDecoder().decode(manifestData));
+  } catch (e) {
+    throw new Error(`Invalid bundle: manifest.json is not valid JSON (${e instanceof Error ? e.message : String(e)})`);
+  }
+  if (!isObject(manifest)) {
+    throw new Error('Invalid bundle: manifest.json is not a JSON object');
+  }
 
-  return { manifest, files };
+  return { manifest: manifest as unknown as BundleManifest, files };
 }
 
 /**

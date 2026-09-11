@@ -1,10 +1,60 @@
 /**
  * Project Store - Manages project metadata, logic source, collections, and assets
+ *
+ * Also the project's identity and revision, and what was read from the
+ * bundle that the Builder does not model.
+ *
+ * Identity and revision: a save used to await the file write and then mark
+ * the project clean, whatever had happened in between. An edit made while
+ * the write was pending was marked clean without ever reaching a file, and
+ * a save begun on one project could mark clean the project opened after it.
+ * Every change that dirties the project now also advances `revision`, and a
+ * save marks clean only the (projectId, revision) it captured before it
+ * built anything — see utils/saveProject.ts.
+ *
+ * Retained source: the export rebuilt a manifest from six fields and threw
+ * the rest away — the declared entry file (replaced by a filename search for
+ * "main.ui"), window and runtime settings, forward-compatible fields, the
+ * `server` group and every archive entry the Builder had no model for. The
+ * manifest as read and the entries the Builder does not model are kept here
+ * and written back on export; the export patches only what the Builder
+ * edits. Nothing is executed or granted from the retained entries: they are
+ * opaque bytes, validated by the same bounded reader as everything else.
  */
 
 import { create } from 'zustand';
 import type { CollectionDef, AssetFile } from '../types/builder';
 import { emptyDeclaration, type PermissionDeclaration } from '../utils/permissions';
+
+/** Everything an opened bundle carried that the Builder keeps opaque. */
+export interface RetainedSource {
+  /** The manifest.json as parsed from the bundle, untouched. Null for a project made here. */
+  manifest: Record<string, unknown> | null;
+  /** Validated archive entries the Builder does not model, path → bytes, written back verbatim. */
+  extraEntries: Map<string, Uint8Array>;
+  /** The files-store id of the declared entry file, so a rename follows it; null when unknown. */
+  mainFileId: string | null;
+  /** Where each collection's .xdb was in the archive, by collection name. */
+  xdbPaths: Map<string, string>;
+  /** Where the icon was in the archive, when the manifest named one. */
+  iconPath: string | null;
+}
+
+export function emptyRetainedSource(): RetainedSource {
+  return { manifest: null, extraEntries: new Map(), mainFileId: null, xdbPaths: new Map(), iconPath: null };
+}
+
+let projectCounter = 0;
+
+/** A project id: unique per workspace, never reused within a page's life. */
+export function newProjectId(): string {
+  projectCounter += 1;
+  const random =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+  return `project_${projectCounter}_${random}`;
+}
 
 interface ProjectStore {
   // Project metadata
@@ -33,6 +83,20 @@ interface ProjectStore {
   isDirty: boolean;
   filePath: string | null;
 
+  /** Which workspace this is. Changes whenever the workspace is replaced. */
+  projectId: string;
+  /** Advances on every change that dirties the project. */
+  revision: number;
+  /**
+   * Advances whenever the workspace is replaced: new project, open, restore.
+   * A remote open captures it before fetching and refuses to commit if it
+   * has moved, whether or not the fetch honoured its abort signal.
+   */
+  workspaceGeneration: number;
+
+  /** What the opened bundle carried that the Builder does not model. */
+  source: RetainedSource;
+
   // Actions - Metadata
   setName: (name: string) => void;
   setVersion: (version: string) => void;
@@ -58,6 +122,15 @@ interface ProjectStore {
   setFilePath: (path: string | null) => void;
   markDirty: () => void;
   markClean: () => void;
+  /**
+   * Mark clean only if the project is still the one, at the revision, that
+   * was saved. Returns whether it was.
+   */
+  markCleanIf: (projectId: string, revision: number) => boolean;
+  /** Keep what an opened bundle carried, without treating it as an edit. */
+  setSource: (source: RetainedSource) => void;
+  /** A new workspace: new id, revision 0, generation advanced. Not an edit. */
+  newWorkspace: () => void;
   reset: () => void;
 
   // Serialization
@@ -76,14 +149,7 @@ export interface SerializedProject {
   collections: CollectionDef[];
 }
 
-export const useProjectStore = create<ProjectStore>((set, get) => ({
-  name: 'Untitled App',
-  version: '1.0.0',
-  description: '',
-  icon: null,
-  themeMode: 'light',
-  permissions: emptyDeclaration(),
-  logicSource: `// SoftN logic — JavaScript, run in a sandboxed VM
+const DEFAULT_LOGIC = `// SoftN logic — JavaScript, run in a sandboxed VM
 // Define your state, computed values, and functions
 
 let count = 0
@@ -95,38 +161,56 @@ function increment() {
 function decrement() {
   count--
 }
-`,
+`;
+
+/** The part of every edit that marks the project dirty and advances its revision. */
+function touch(state: { revision: number }): { isDirty: true; revision: number } {
+  return { isDirty: true, revision: state.revision + 1 };
+}
+
+export const useProjectStore = create<ProjectStore>((set, get) => ({
+  name: 'Untitled App',
+  version: '1.0.0',
+  description: '',
+  icon: null,
+  themeMode: 'light',
+  permissions: emptyDeclaration(),
+  logicSource: DEFAULT_LOGIC,
   collections: [],
   assets: [],
   isDirty: false,
   filePath: null,
+  projectId: newProjectId(),
+  revision: 0,
+  workspaceGeneration: 0,
+  source: emptyRetainedSource(),
 
   setName: (name) => {
-    set({ name, isDirty: true });
+    set((state) => ({ name, ...touch(state) }));
   },
 
   setVersion: (version) => {
-    set({ version, isDirty: true });
+    set((state) => ({ version, ...touch(state) }));
   },
 
   setDescription: (description) => {
-    set({ description, isDirty: true });
+    set((state) => ({ description, ...touch(state) }));
   },
 
   setIcon: (icon) => {
-    set({ icon, isDirty: true });
+    set((state) => ({ icon, ...touch(state) }));
   },
 
   setPermissions: (permissions) => {
-    set({ permissions, isDirty: true });
+    set((state) => ({ permissions, ...touch(state) }));
   },
 
   setThemeMode: (mode) => {
-    set({ themeMode: mode, isDirty: true });
+    set((state) => ({ themeMode: mode, ...touch(state) }));
   },
 
   setLogicSource: (source) => {
-    set({ logicSource: source, isDirty: true });
+    set((state) => ({ logicSource: source, ...touch(state) }));
   },
 
   addCollection: (name) => {
@@ -150,7 +234,7 @@ function decrement() {
           seedData: [],
         },
       ],
-      isDirty: true,
+      ...touch(state),
     }));
   },
 
@@ -160,32 +244,32 @@ function decrement() {
       if (index >= 0 && index < newCollections.length) {
         newCollections[index] = { ...newCollections[index], ...updates };
       }
-      return { collections: newCollections, isDirty: true };
+      return { collections: newCollections, ...touch(state) };
     });
   },
 
   deleteCollection: (index) => {
     set((state) => ({
       collections: state.collections.filter((_, i) => i !== index),
-      isDirty: true,
+      ...touch(state),
     }));
   },
 
   addAsset: (asset) => {
     set((state) => ({
       assets: [...state.assets.filter((a) => a.name !== asset.name), asset],
-      isDirty: true,
+      ...touch(state),
     }));
   },
 
   setAssets: (assets) => {
-    set({ assets: [...assets], isDirty: true });
+    set((state) => ({ assets: [...assets], ...touch(state) }));
   },
 
   deleteAsset: (name) => {
     set((state) => ({
       assets: state.assets.filter((a) => a.name !== name),
-      isDirty: true,
+      ...touch(state),
     }));
   },
 
@@ -194,39 +278,52 @@ function decrement() {
   },
 
   markDirty: () => {
-    set({ isDirty: true });
+    set((state) => touch(state));
   },
 
   markClean: () => {
     set({ isDirty: false });
   },
 
+  markCleanIf: (projectId, revision) => {
+    const state = get();
+    if (state.projectId !== projectId || state.revision !== revision) return false;
+    set({ isDirty: false });
+    return true;
+  },
+
+  setSource: (source) => {
+    set({ source });
+  },
+
+  newWorkspace: () => {
+    set((state) => ({
+      projectId: newProjectId(),
+      revision: 0,
+      workspaceGeneration: state.workspaceGeneration + 1,
+      isDirty: false,
+      filePath: null,
+    }));
+  },
+
   reset: () => {
-    set({
+    set((state) => ({
       name: 'Untitled App',
       version: '1.0.0',
       description: '',
       icon: null,
       themeMode: 'light',
       permissions: emptyDeclaration(),
-      logicSource: `// SoftN logic — JavaScript, run in a sandboxed VM
-// Define your state, computed values, and functions
-
-let count = 0
-
-function increment() {
-  count++
-}
-
-function decrement() {
-  count--
-}
-`,
+      logicSource: DEFAULT_LOGIC,
       collections: [],
       assets: [],
       isDirty: false,
       filePath: null,
-    });
+      projectId: newProjectId(),
+      revision: 0,
+      workspaceGeneration: state.workspaceGeneration + 1,
+      source: emptyRetainedSource(),
+    }));
   },
 
   toJSON: () => {

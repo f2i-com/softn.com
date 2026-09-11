@@ -24,26 +24,25 @@ import { useProjectStore } from './stores/projectStore';
 import { useHistoryStore } from './stores/historyStore';
 import { useSchemaStore } from './stores/schemaStore';
 import { useFilesStore } from './stores/filesStore';
-import { encodeAsset, decodeAsset, type SerializedAssetFile } from './utils/sessionAssets';
-import type {
-  AssetFile,
-  CanvasElement as CanvasElementType,
-  EntityDef,
-  LogicFileState,
-  ProjectFileNode,
-  RelationshipDef,
-  UIFileState,
-} from './types/builder';
-import type { SerializedProject } from './stores/projectStore';
-import { openBundleFile, loadBundle, type LoadedBundle } from './utils/bundleLoader';
-import { saveBundleToFile } from './utils/bundleExporter';
-import { buildProjectBundle, bundleFileName } from './utils/buildProjectBundle';
+import { openBundleFile } from './utils/bundleLoader';
+import {
+  commitProjectSnapshot,
+  openRemoteBundle,
+  prepareProjectSnapshot,
+  prepareSessionSnapshot,
+  quarantineSession,
+  startupAction,
+  SESSION_STORAGE_KEY,
+  type ProjectSnapshot,
+  type ViewMode,
+} from './utils/openProject';
+import { saveProject } from './utils/saveProject';
 import { STUDIO_URL, RUNTIME_URL } from './utils/siteUrls';
 import { ToastContainer } from './components/feedback/ToastContainer';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
 import { debug } from './utils/debug';
-import { readLocalStorage, removeLocalStorage } from './utils/safeStorage';
+import { readLocalStorage } from './utils/safeStorage';
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -288,9 +287,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
-type ViewMode = 'design' | 'preview' | 'code' | 'data';
-const SESSION_STORAGE_KEY = 'softn.builder.session.v1';
-
 function mimeTypeFromPath(path: string): string {
   const ext = path.toLowerCase().split('.').pop() || '';
   if (ext === 'png') return 'image/png';
@@ -305,48 +301,6 @@ function mimeTypeFromPath(path: string): string {
 function isPreviewableImage(path: string): boolean {
   return /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(path);
 }
-
-interface SerializedUIFile extends Omit<UIFileState, 'elements'> {
-  elements: [string, CanvasElementType][];
-}
-
-interface BuilderSession {
-  savedAt: string;
-  view: ViewMode | 'logic';
-  project: SerializedProject;
-  canvas: {
-    elements: [string, CanvasElementType][];
-    rootId: string;
-    imports: UIFileState['imports'];
-  };
-  schema: {
-    entities: EntityDef[];
-    relationships: RelationshipDef[];
-    seedData: [string, Record<string, unknown>[]][];
-    selectedEntityId: string | null;
-  };
-  files: {
-    nodes: [string, ProjectFileNode][];
-    rootFolders: string[];
-    uiFiles: [string, SerializedUIFile][];
-    logicFiles: [string, LogicFileState][];
-    /**
-     * Assets, base64-encoded.
-     *
-     * These were omitted entirely, so restoring a session brought back a
-     * project whose every `asset('logo.png')` resolved to nothing — images
-     * and sounds silently gone, with the file tree still listing them.
-     *
-     * Base64 rather than the raw `Uint8Array`: JSON.stringify turns a byte
-     * array into `{"0":80,"1":75,…}`, roughly seven bytes of text per byte of
-     * asset, which would push almost any project past the storage quota.
-     */
-    assetFiles?: [string, SerializedAssetFile][];
-    activeFileId: string | null;
-    openTabs: string[];
-  };
-}
-
 
 /** True while the window is too narrow for the builder's panel layout. */
 function useNarrowScreen(minWidth = 900): boolean {
@@ -372,6 +326,14 @@ function App() {
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
 
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
+  /**
+   * The remote open in flight, if any. Aborted by every action that replaces
+   * the workspace, and on unmount; the generation check in openRemoteBundle
+   * is what holds even when a fetch ignores the signal.
+   */
+  const remoteOpenRef = useRef<AbortController | null>(null);
+  /** The part of the page that goes inert behind the export dialog. */
+  const shellRef = useRef<HTMLDivElement | null>(null);
 
   const resetCanvas = useCanvasStore((state) => state.reset);
   const loadCanvasState = useCanvasStore((state) => state.loadState);
@@ -380,14 +342,9 @@ function App() {
   const setProjectVersion = useProjectStore((state) => state.setVersion);
   const setProjectDescription = useProjectStore((state) => state.setDescription);
   const setThemeMode = useProjectStore((state) => state.setThemeMode);
-  const setLogicSource = useProjectStore((state) => state.setLogicSource);
-  const setAssets = useProjectStore((state) => state.setAssets);
   const clearHistory = useHistoryStore((state) => state.clear);
   const resetSchema = useSchemaStore((state) => state.reset);
-  const loadSchemaEntities = useSchemaStore((state) => state.loadEntities);
-  const loadSeedData = useSchemaStore((state) => state.loadSeedData);
   const resetFiles = useFilesStore((state) => state.reset);
-  const loadFromBundle = useFilesStore((state) => state.loadFromBundle);
   const updateUIFile = useFilesStore((state) => state.updateUIFile);
   const selectedCount = useCanvasStore((state) => state.selectedIds.length);
   const elementCount = useCanvasStore((state) => state.elements.size);
@@ -460,6 +417,7 @@ function App() {
 
   const handleCreateNewProject = useCallback((config: NewProjectConfig) => {
     fileHandleRef.current = null;
+    remoteOpenRef.current?.abort();
     resetCanvas();
     resetProject();
     clearHistory();
@@ -504,332 +462,147 @@ function App() {
   }, []);
 
   /**
-   * Put a loaded bundle on the canvas, replacing whatever is there. The file
-   * picker and a `?open=` link both end here; asking about unsaved work is
-   * the caller's, since a fresh page has none.
+   * Put a validated candidate in the workspace, replacing whatever is there.
+   * The file picker, a `?open=` link and the session restore all end here.
+   * Asking about unsaved work is the caller's. Everything the candidate
+   * needs was decoded and checked before this is called (utils/openProject.ts);
+   * the commit itself puts every store back if any step fails.
    */
-  const applyLoadedBundle = useCallback(async (bundle: LoadedBundle) => {
-    try {
-      // Reset everything first (including saved file handle)
-      fileHandleRef.current = null;
-      resetCanvas();
-      resetProject();
-      clearHistory();
-      resetSchema();
-      resetFiles();
+  const applySnapshot = useCallback((snapshot: ProjectSnapshot) => {
+    remoteOpenRef.current?.abort();
+    fileHandleRef.current = null;
+    commitProjectSnapshot(snapshot);
+    setView(snapshot.view);
 
-      // Load project metadata from manifest
-      setProjectName(bundle.manifest.name);
-      setProjectVersion(bundle.manifest.version);
-      setProjectDescription(bundle.manifest.description || '');
-      setThemeMode(bundle.manifest.config?.theme?.mode || 'light');
-      // What the bundle declared and the icon it carried come back with it,
-      // so a save writes them out again rather than dropping them.
-      useProjectStore.getState().setPermissions(bundle.permissions);
-      useProjectStore.getState().setIcon(bundle.iconDataUrl);
-
-      const loadedAssets: AssetFile[] = Array.from(bundle.assets.entries()).map(
-        ([path, bytes]) => ({
-          name: path.replace(/^assets\//, ''),
-          type: mimeTypeFromPath(path),
-          data: bytes,
-        })
-      );
-      setAssets(loadedAssets);
-
-      const assetFilesMap = new Map<string, AssetFile>();
-      for (const asset of loadedAssets) {
-        assetFilesMap.set(`assets/${asset.name}`, asset);
-      }
-
-      // Load files into filesStore
-      loadFromBundle(bundle.uiFiles, bundle.logicFiles, assetFilesMap);
-
-      // Load main UI file into canvas
-      // Check both normalized path and manifest.main (which might have old-style path)
-      const mainUIFile = Array.from(bundle.uiFiles.values()).find(
-        (f) => f.path === 'ui/main.ui' || f.path === bundle.manifest.main
-      );
-
-      debug('[App] Looking for main UI file:', {
-        manifestMain: bundle.manifest.main,
-        uiFilePaths: Array.from(bundle.uiFiles.values()).map((f) => f.path),
-        mainUIFileFound: !!mainUIFile,
-        mainUIFileElements: mainUIFile?.elements?.size,
-        mainUIFileRootId: mainUIFile?.rootId,
-      });
-
-      if (mainUIFile) {
-        // Ensure the App component's theme prop matches the project themeMode
-        const loadedTheme = bundle.manifest.config?.theme?.mode || 'light';
-        const elements = new Map(mainUIFile.elements);
-        const rootElement = elements.get(mainUIFile.rootId);
-
-        debug('[App] Main UI file elements:', {
-          elementsSize: elements.size,
-          rootId: mainUIFile.rootId,
-          rootElement: rootElement,
-          allElementIds: Array.from(elements.keys()),
-        });
-
-        if (rootElement && rootElement.componentType === 'App' && rootElement.props.theme !== loadedTheme) {
-          elements.set(mainUIFile.rootId, {
-            ...rootElement,
-            props: { ...rootElement.props, theme: loadedTheme },
-          });
-          // The file store must hold the same tree the canvas is given, or
-          // the first flush reads the theme it put there as an edit and
-          // rewrites the file's source. This is the copy on open, not an
-          // edit; the file stays clean and its original bytes stay.
-          useFilesStore.getState().syncUIFileElements(mainUIFile.id, elements, mainUIFile.rootId);
-        }
-        loadCanvasState(elements, mainUIFile.rootId, mainUIFile.imports || []);
-      } else {
-        console.error('[App] Main UI file not found!');
-      }
-
-      // Load main logic file
-      const mainLogicFile = Array.from(bundle.logicFiles.values()).find(
-        (f) => f.path === 'logic/main.logic'
-      );
-      if (mainLogicFile) {
-        setLogicSource(mainLogicFile.content);
-      }
-
-      // Load schema entities and seed data
-      debug(
-        '[App] Bundle entities:',
-        bundle.entities.length,
-        bundle.entities.map((e) => e.name)
-      );
-      debug('[App] Bundle seedData keys:', Array.from(bundle.seedData.keys()));
-      debug(
-        '[App] Bundle seedData sizes:',
-        Array.from(bundle.seedData.entries()).map(([k, v]) => `${k}: ${v.length}`)
-      );
-
-      if (bundle.entities.length > 0) {
-        loadSchemaEntities(bundle.entities);
-        debug('[App] Loaded entities into schemaStore');
-      }
-      if (bundle.seedData.size > 0) {
-        loadSeedData(bundle.seedData);
-        debug('[App] Loaded seedData into schemaStore');
-      }
-
-      // Mark as clean since we just loaded
-      useProjectStore.getState().markClean();
-
-      // Show any bundle loading warnings
-      if (bundle.warnings.length > 0) {
-        console.warn('[App] Bundle loaded with warnings:', bundle.warnings);
-        toast.warning(`Bundle loaded with ${bundle.warnings.length} warning(s)`);
-      }
-
-      toast.success(`Opened: ${bundle.manifest.name} v${bundle.manifest.version}`);
-      debug(`[App] Opened: ${bundle.manifest.name} v${bundle.manifest.version}`);
-    } catch (e) {
-      console.error(`[App] Failed to open file:`, e);
-      toast.error(`Failed to open file: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    if (snapshot.warnings.length > 0) {
+      console.warn('[App] Opened with warnings:', snapshot.warnings);
+      toast.warning(`Opened with ${snapshot.warnings.length} warning(s)`);
     }
-  }, [
-    resetCanvas,
-    resetProject,
-    clearHistory,
-    resetSchema,
-    resetFiles,
-    setProjectName,
-    setProjectVersion,
-    setProjectDescription,
-    setThemeMode,
-    setLogicSource,
-    setAssets,
-    loadFromBundle,
-    loadCanvasState,
-    loadSchemaEntities,
-    loadSeedData,
-  ]);
+    toast.success(snapshot.origin === 'session' ? 'Restored previous local session' : `Opened: ${snapshot.label}`);
+    debug(`[App] Opened: ${snapshot.label}`);
+  }, []);
 
   const handleOpen = useCallback(async () => {
-    const bundle = await openBundleFile();
-    if (!bundle) return;
-    if (useProjectStore.getState().isDirty) {
-      if (!window.confirm('Open a new project? Unsaved changes will be lost.')) return;
-    }
-    await applyLoadedBundle(bundle);
-  }, [applyLoadedBundle]);
-
-  // `?open=<bundle url>`: the site's app pages link here with the bundle to
-  // edit. Same-origin .softn URLs only — the value comes from the address bar
-  // and is not ours to trust — read once, on mount, and taken out of the
-  // address bar so a reload does not open it a second time over edited work.
-  const applyLoadedBundleRef = useRef(applyLoadedBundle);
-  applyLoadedBundleRef.current = applyLoadedBundle;
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const open = params.get('open');
-    if (!open) return;
-    let url: URL;
     try {
-      url = new URL(open, window.location.origin);
-    } catch {
+      // The picker first, then the question: a cancelled picker asks nothing.
+      const bundle = await openBundleFile();
+      if (!bundle) return;
+      // Decoded and checked before the question, so a bundle that cannot be
+      // opened never costs the current project a confirmation.
+      const snapshot = prepareProjectSnapshot(bundle);
+      if (useProjectStore.getState().isDirty) {
+        if (!window.confirm('Open a new project? Unsaved changes will be lost.')) return;
+      }
+      applySnapshot(snapshot);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return;
+      console.error('[App] Failed to open file:', e);
+      toast.error(`Failed to open file: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    }
+  }, [applySnapshot]);
+
+  /**
+   * What the page does first: a `?open=` link, or the offer to restore the
+   * last locally saved session. One decision, made once, in
+   * utils/openProject.ts (startupAction): the link wins, and the session
+   * stays stored for a plain launch.
+   *
+   * The remote open is bound to the workspace generation it started in and
+   * aborted by anything that replaces the workspace, so a slow response
+   * cannot land on a project opened or edited in the meantime.
+   */
+  const applySnapshotRef = useRef(applySnapshot);
+  applySnapshotRef.current = applySnapshot;
+  useEffect(() => {
+    const action = startupAction(window.location, window.history, readLocalStorage(SESSION_STORAGE_KEY));
+    if (action.kind === 'nothing') return;
+    if (action.kind === 'refused-link') {
+      toast.error(action.message);
       return;
     }
-    if (url.origin !== window.location.origin || !/\.softn$/i.test(url.pathname)) {
-      toast.error('Only a .softn served by this site can be opened from a link.');
-      return;
-    }
-    params.delete('open');
-    const rest = params.toString();
-    window.history.replaceState({}, '', window.location.pathname + (rest ? `?${rest}` : ''));
-    void (async () => {
+
+    if (action.kind === 'restore-prompt') {
+      let snapshot: ProjectSnapshot;
       try {
-        const resp = await fetch(url.href, { credentials: 'same-origin' });
-        if (!resp.ok) throw new Error(`${url.pathname} responded ${resp.status}`);
-        const bundle = await loadBundle(new Uint8Array(await resp.arrayBuffer()));
-        await applyLoadedBundleRef.current(bundle);
+        snapshot = prepareSessionSnapshot(action.raw);
       } catch (e) {
+        // Kept, with the reason, not deleted: it may be the only copy.
+        console.error('[App] The saved session could not be restored; quarantined:', e);
+        quarantineSession(action.raw, e);
+        toast.error('The saved session could not be restored. It was kept; download it from Export → Recovery.');
+        return;
+      }
+      if (!window.confirm('Restore the last locally saved builder session?')) return;
+      try {
+        applySnapshotRef.current(snapshot);
+      } catch (e) {
+        console.error('[App] Failed to restore session:', e);
+        quarantineSession(action.raw, e);
+        toast.error(`Could not restore the session: ${e instanceof Error ? e.message : String(e)}. It was kept; download it from Export → Recovery.`);
+      }
+      return;
+    }
+
+    const controller = new AbortController();
+    remoteOpenRef.current = controller;
+    const { url } = action;
+    void openRemoteBundle(url, controller.signal).then((outcome) => {
+      if (remoteOpenRef.current === controller) remoteOpenRef.current = null;
+      if (outcome.kind === 'opened') {
+        fileHandleRef.current = null;
+        setView(outcome.snapshot.view);
+        if (outcome.snapshot.warnings.length > 0) toast.warning(`Opened with ${outcome.snapshot.warnings.length} warning(s)`);
+        toast.success(`Opened: ${outcome.snapshot.label}`);
+      } else if (outcome.kind === 'failed') {
+        const e = outcome.error;
         toast.error(`Could not open ${url.pathname}: ${e instanceof Error ? e.message : String(e)}`);
       }
-    })();
+      // superseded: quiet — the workspace moved on; declined: the person said no.
+    });
+    return () => controller.abort();
   }, []);
 
   const handleSave = useCallback(async () => {
-    try {
-      const projectState = useProjectStore.getState();
-      const canvasState = useCanvasStore.getState();
-      const schemaState = useSchemaStore.getState();
-      // The bundle as the export dialog and the pre-flight check build it:
-      // canvas flushed, collections gathered, declaration and icon included.
-      const bundleData = await buildProjectBundle();
-      const updatedFilesState = useFilesStore.getState();
-
-      const handle = await saveBundleToFile(bundleData, bundleFileName(projectState.name).replace(/\.softn$/, ''), fileHandleRef.current);
-      fileHandleRef.current = handle;
-
-      // 5. Also save session to localStorage for session restore
-      const session: BuilderSession = {
-        savedAt: new Date().toISOString(),
-        view,
-        project: projectState.toJSON(),
-        canvas: {
-          elements: Array.from(canvasState.elements.entries()),
-          rootId: canvasState.rootId,
-          imports: canvasState.imports || [],
-        },
-        schema: {
-          entities: schemaState.entities,
-          relationships: schemaState.relationships,
-          seedData: Array.from(schemaState.seedData.entries()),
-          selectedEntityId: schemaState.selectedEntityId,
-        },
-        files: {
-          nodes: Array.from(updatedFilesState.nodes.entries()),
-          rootFolders: updatedFilesState.rootFolders,
-          uiFiles: Array.from(updatedFilesState.uiFiles.entries()).map(([id, file]) => [
-            id,
-            {
-              ...file,
-              elements: Array.from(file.elements.entries()),
-            },
-          ]),
-          logicFiles: Array.from(updatedFilesState.logicFiles.entries()),
-          assetFiles: Array.from(updatedFilesState.assetFiles.entries()).map(
-            ([id, asset]) => [id, encodeAsset(asset)] as [string, SerializedAssetFile]
-          ),
-          activeFileId: updatedFilesState.activeFileId,
-          openTabs: updatedFilesState.openTabs,
-        },
-      };
-      // 6. Mark clean and toast.
-      //
-      // Before the session write, and with that write guarded separately: the
-      // bundle is already on disk by this point, so a failure here is not a
-      // failed save. The session payload embeds every UI file's elements,
-      // every logic file, the icon data URL and all seed data, so a project
-      // over the ~5 MB quota threw QuotaExceededError into the catch below —
-      // reporting "Save failed" for a bundle that had saved perfectly, and
-      // skipping markClean() so the project stayed dirty.
-      projectState.markClean();
-      toast.success(handle ? `Saved: ${handle.name}` : 'Bundle downloaded');
-      debug('[App] Bundle saved to file');
-
-      try {
-        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-      } catch (sessionError) {
-        // Session restore is a convenience; losing it does not affect the file
-        // the user just wrote.
-        console.warn('[App] Could not store session for restore:', sessionError);
-      }
-    } catch (e) {
-      // User cancelling the file picker throws an AbortError — ignore silently
-      if (e instanceof DOMException && e.name === 'AbortError') return;
-      console.error('[App] Failed to save:', e);
-      toast.error(`Save failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
+    const outcome = await saveProject({ view, existingHandle: fileHandleRef.current });
+    if (outcome.kind === 'cancelled') return;
+    if (outcome.kind === 'failed') {
+      console.error('[App] Failed to save:', outcome.error);
+      toast.error(`Save failed: ${outcome.error instanceof Error ? outcome.error.message : 'Unknown error'}`);
+      return;
     }
+    // The handle is this project's; a project opened meanwhile must not
+    // inherit it and overwrite the file with its own next save.
+    if (!outcome.projectChanged) fileHandleRef.current = outcome.handle;
+    const where = outcome.handle ? `Saved: ${outcome.handle.name}` : 'Bundle downloaded';
+    if (outcome.projectChanged) {
+      toast.warning(`${where} — the project that was open when the save began, not this one.`);
+    } else if (outcome.stale) {
+      toast.warning(`${where} — an earlier revision. Edits made during the save are not in it; save again.`);
+    } else {
+      toast.success(where);
+    }
+    if (!outcome.sessionStored && !outcome.projectChanged) {
+      // The file is written; only the local recovery copy is missing.
+      console.warn('[App] Could not store session for restore:', outcome.sessionError);
+      toast.info('The local recovery copy could not be stored (storage full or blocked); the file itself was saved.');
+    }
+    debug('[App] Bundle saved to file');
   }, [view]);
 
   const handleExport = useCallback(() => {
     setShowExportDialog(true);
   }, []);
 
+  // The page behind the export dialog is inert while it is open: `inert`
+  // removes it from Tab order and the accessibility tree where supported,
+  // aria-hidden covers the rest. The dialog itself is a sibling, outside.
   useEffect(() => {
-    const raw = readLocalStorage(SESSION_STORAGE_KEY);
-    if (!raw) return;
-
-    try {
-      const session = JSON.parse(raw) as BuilderSession;
-      if (!session?.canvas || !session?.files || !session?.project) return;
-
-      const shouldRestore = window.confirm('Restore the last locally saved builder session?');
-      if (!shouldRestore) return;
-
-      resetCanvas();
-      resetProject();
-      clearHistory();
-      resetSchema();
-      resetFiles();
-
-      useProjectStore.getState().fromJSON(session.project);
-
-      const restoredCanvasElements = new Map<string, CanvasElementType>(session.canvas.elements);
-      loadCanvasState(restoredCanvasElements, session.canvas.rootId, session.canvas.imports || []);
-
-      useSchemaStore.setState({
-        entities: session.schema.entities || [],
-        relationships: session.schema.relationships || [],
-        selectedEntityId: session.schema.selectedEntityId || session.schema.entities?.[0]?.id || null,
-        seedData: new Map(session.schema.seedData || []),
-      });
-
-      const restoredUIFiles = new Map<string, UIFileState>(
-        (session.files.uiFiles || []).map(([id, file]) => [
-          id,
-          { ...file, elements: new Map<string, CanvasElementType>(file.elements) },
-        ])
-      );
-
-      useFilesStore.setState({
-        nodes: new Map(session.files.nodes || []),
-        rootFolders: session.files.rootFolders || [],
-        uiFiles: restoredUIFiles,
-        logicFiles: new Map(session.files.logicFiles || []),
-        // Sessions written before assets were persisted have no entry here.
-        assetFiles: new Map(
-          (session.files.assetFiles || []).map(([id, asset]) => [id, decodeAsset(asset)])
-        ),
-        activeFileId: session.files.activeFileId || null,
-        openTabs: session.files.openTabs || [],
-      });
-
-      setView(session.view === 'logic' ? 'design' : (session.view || 'design'));
-      toast.success('Restored previous local session');
-      debug('[App] Restored session from localStorage');
-    } catch (e) {
-      console.error('[App] Failed to restore session:', e);
-      removeLocalStorage(SESSION_STORAGE_KEY);
-    }
-  }, [clearHistory, loadCanvasState, resetCanvas, resetFiles, resetProject, resetSchema]);
+    const shell = shellRef.current;
+    if (!shell) return;
+    shell.toggleAttribute('inert', showExportDialog);
+    if (showExportDialog) shell.setAttribute('aria-hidden', 'true');
+    else shell.removeAttribute('aria-hidden');
+  }, [showExportDialog]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -844,10 +617,10 @@ function App() {
         return;
       }
 
-      // Escape to close dialogs
+      // Escape to close dialogs. The export dialog handles its own Escape
+      // (it owns focus while open), so it is not closed twice from here.
       if (e.key === 'Escape') {
         setShowShortcuts(false);
-        setShowExportDialog(false);
         return;
       }
 
@@ -1112,31 +885,35 @@ function App() {
 
   return (
     <div style={styles.app}>
-      {/* The same bar as the site, the runtime and Studio: the way between them. */}
-      <ProductBar current="builder" />
-      <Toolbar
-        view={view}
-        onViewChange={setView}
-        onSave={handleSave}
-        onNew={handleNew}
-        onOpen={handleOpen}
-        onShortcuts={() => setShowShortcuts(true)}
-        onExport={handleExport}
-        activeFileType={activeFileType}
-      />
+      {/* Everything behind the export dialog goes inert while it is open, so
+          Tab and a screen reader cannot reach the page under it. */}
+      <div ref={shellRef} style={styles.app}>
+        {/* The same bar as the site, the runtime and Studio: the way between them. */}
+        <ProductBar current="builder" />
+        <Toolbar
+          view={view}
+          onViewChange={setView}
+          onSave={handleSave}
+          onNew={handleNew}
+          onOpen={handleOpen}
+          onShortcuts={() => setShowShortcuts(true)}
+          onExport={handleExport}
+          activeFileType={activeFileType}
+        />
 
-      {renderMainContent()}
+        {renderMainContent()}
 
-      <div style={styles.statusBar}>
-        <span>
-          View: <span style={styles.statusStrong}>{view}</span>
-        </span>
-        <span>
-          Elements: <span style={styles.statusStrong}>{elementCount}</span>
-        </span>
-        <span>
-          Selected: <span style={styles.statusStrong}>{selectedCount}</span>
-        </span>
+        <div style={styles.statusBar}>
+          <span>
+            View: <span style={styles.statusStrong}>{view}</span>
+          </span>
+          <span>
+            Elements: <span style={styles.statusStrong}>{elementCount}</span>
+          </span>
+          <span>
+            Selected: <span style={styles.statusStrong}>{selectedCount}</span>
+          </span>
+        </div>
       </div>
 
       <ExportDialog isOpen={showExportDialog} onClose={() => setShowExportDialog(false)} />
