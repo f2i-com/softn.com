@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "app": {
+    "slug": "beta-lantern",
+    "name": "Beta Lantern",
+    "description": "",
+    "author": "Ben",
+    "category": "games",
+    "tags": [
+      "city"
+    ],
+    "parent_slug": "alpha",
+    "root_slug": "alpha",
+    "latest_version": 1,
+    "capabilities": [],
+    "execution": "main",
+    "storage_policies": {},
+    "thumb": null,
+    "icon": null,
+    "primary_color": null,
+    "edit_key_hash": null,
+    "play_url": null,
+    "source": "folder",
+    "runs": 3,
+    "launches": 0,
+    "remixes": 0,
+    "rating_sum": 0,
+    "rating_count": 0,
+    "comments": 0,
+    "size": 507,
+    "hidden": 0,
+    "created_at": 1735693200,
+    "updated_at": 1735693200
+  },
+  "versions": [
+    {
+      "slug": "beta-lantern",
+      "version": 1,
+      "file": "v1.softn",
+      "size": 507,
+      "sha256": "1513cab1fbde06366a49a37da07da1f159d76ac42edf845c6ba1fd1c545547d5",
+      "manifest_version": "1.0.0",
+      "notes": "",
+      "created_at": 1735693200
+    }
+  ],
+  "comments": [],
+  "ratings": [],
+  "runsDaily": []
+}

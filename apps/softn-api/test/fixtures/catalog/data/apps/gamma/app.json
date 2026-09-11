@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "app": {
+    "slug": "gamma",
+    "name": "Gamma Hidden",
+    "description": "",
+    "author": "Ada",
+    "category": "tools",
+    "tags": [],
+    "parent_slug": null,
+    "root_slug": null,
+    "latest_version": 1,
+    "capabilities": [],
+    "execution": "main",
+    "storage_policies": {},
+    "thumb": null,
+    "icon": null,
+    "primary_color": null,
+    "edit_key_hash": null,
+    "play_url": null,
+    "source": "folder",
+    "runs": 0,
+    "launches": 0,
+    "remixes": 0,
+    "rating_sum": 0,
+    "rating_count": 0,
+    "comments": 0,
+    "size": 497,
+    "hidden": 1,
+    "created_at": 1735696800,
+    "updated_at": 1735696800
+  },
+  "versions": [
+    {
+      "slug": "gamma",
+      "version": 1,
+      "file": "v1.softn",
+      "size": 497,
+      "sha256": "c710044f6fefa626d84c4a01c87b6a8ff5f2ac22487210195661841e59fdcd74",
+      "manifest_version": "1.0.0",
+      "notes": "",
+      "created_at": 1735696800
+    }
+  ],
+  "comments": [],
+  "ratings": [],
+  "runsDaily": []
+}

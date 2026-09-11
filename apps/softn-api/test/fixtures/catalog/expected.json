@@ -1,0 +1,2673 @@
+{
+  "list": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      },
+      {
+        "slug": "epsilon",
+        "name": "Epsilon Notes",
+        "description": "",
+        "author": "Eve",
+        "category": "productivity",
+        "tags": [
+          "notes"
+        ],
+        "capabilities": [
+          "net",
+          "storage"
+        ],
+        "storagePolicies": {
+          "notes": "owner-write",
+          "*": "public"
+        },
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 695,
+        "primary": null,
+        "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 7,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 3,
+          "count": 1
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T04:00:00+00:00",
+        "updatedAt": "2025-01-01T04:00:00+00:00",
+        "urls": {
+          "page": "/app/epsilon",
+          "run": "/play/epsilon",
+          "play": "/play/epsilon",
+          "runtime": "/web/app/epsilon",
+          "bundle": "/api/apps/epsilon/bundle.softn",
+          "download": "/api/apps/epsilon/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "remix": "/publish?remix=epsilon"
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      },
+      {
+        "slug": "delta",
+        "name": "Delta Elsewhere",
+        "description": "Plays on its own site.",
+        "author": "Dee",
+        "category": "other",
+        "tags": [
+          "linked"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 0,
+        "size": 0,
+        "primary": null,
+        "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 0,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": {
+          "url": "https://delta.example/",
+          "host": "delta.example"
+        },
+        "createdAt": "2025-01-01T03:00:00+00:00",
+        "updatedAt": "2025-01-01T03:00:00+00:00",
+        "urls": {
+          "page": "/app/delta",
+          "run": "https://delta.example/",
+          "play": null,
+          "runtime": null,
+          "bundle": null,
+          "download": null,
+          "studio": null,
+          "builder": null,
+          "remix": null
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 4,
+    "pages": 1,
+    "sort": "trending",
+    "query": "",
+    "category": ""
+  },
+  "listName": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      },
+      {
+        "slug": "delta",
+        "name": "Delta Elsewhere",
+        "description": "Plays on its own site.",
+        "author": "Dee",
+        "category": "other",
+        "tags": [
+          "linked"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 0,
+        "size": 0,
+        "primary": null,
+        "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 0,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": {
+          "url": "https://delta.example/",
+          "host": "delta.example"
+        },
+        "createdAt": "2025-01-01T03:00:00+00:00",
+        "updatedAt": "2025-01-01T03:00:00+00:00",
+        "urls": {
+          "page": "/app/delta",
+          "run": "https://delta.example/",
+          "play": null,
+          "runtime": null,
+          "bundle": null,
+          "download": null,
+          "studio": null,
+          "builder": null,
+          "remix": null
+        }
+      },
+      {
+        "slug": "epsilon",
+        "name": "Epsilon Notes",
+        "description": "",
+        "author": "Eve",
+        "category": "productivity",
+        "tags": [
+          "notes"
+        ],
+        "capabilities": [
+          "net",
+          "storage"
+        ],
+        "storagePolicies": {
+          "notes": "owner-write",
+          "*": "public"
+        },
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 695,
+        "primary": null,
+        "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 7,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 3,
+          "count": 1
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T04:00:00+00:00",
+        "updatedAt": "2025-01-01T04:00:00+00:00",
+        "urls": {
+          "page": "/app/epsilon",
+          "run": "/play/epsilon",
+          "play": "/play/epsilon",
+          "runtime": "/web/app/epsilon",
+          "bundle": "/api/apps/epsilon/bundle.softn",
+          "download": "/api/apps/epsilon/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "remix": "/publish?remix=epsilon"
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 48,
+    "total": 4,
+    "pages": 1,
+    "sort": "name",
+    "query": "",
+    "category": ""
+  },
+  "listNewest": {
+    "apps": [
+      {
+        "slug": "epsilon",
+        "name": "Epsilon Notes",
+        "description": "",
+        "author": "Eve",
+        "category": "productivity",
+        "tags": [
+          "notes"
+        ],
+        "capabilities": [
+          "net",
+          "storage"
+        ],
+        "storagePolicies": {
+          "notes": "owner-write",
+          "*": "public"
+        },
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 695,
+        "primary": null,
+        "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 7,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 3,
+          "count": 1
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T04:00:00+00:00",
+        "updatedAt": "2025-01-01T04:00:00+00:00",
+        "urls": {
+          "page": "/app/epsilon",
+          "run": "/play/epsilon",
+          "play": "/play/epsilon",
+          "runtime": "/web/app/epsilon",
+          "bundle": "/api/apps/epsilon/bundle.softn",
+          "download": "/api/apps/epsilon/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "remix": "/publish?remix=epsilon"
+        }
+      },
+      {
+        "slug": "delta",
+        "name": "Delta Elsewhere",
+        "description": "Plays on its own site.",
+        "author": "Dee",
+        "category": "other",
+        "tags": [
+          "linked"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 0,
+        "size": 0,
+        "primary": null,
+        "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 0,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": {
+          "url": "https://delta.example/",
+          "host": "delta.example"
+        },
+        "createdAt": "2025-01-01T03:00:00+00:00",
+        "updatedAt": "2025-01-01T03:00:00+00:00",
+        "urls": {
+          "page": "/app/delta",
+          "run": "https://delta.example/",
+          "play": null,
+          "runtime": null,
+          "bundle": null,
+          "download": null,
+          "studio": null,
+          "builder": null,
+          "remix": null
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      },
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 4,
+    "pages": 1,
+    "sort": "newest",
+    "query": "",
+    "category": ""
+  },
+  "listTop": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      },
+      {
+        "slug": "epsilon",
+        "name": "Epsilon Notes",
+        "description": "",
+        "author": "Eve",
+        "category": "productivity",
+        "tags": [
+          "notes"
+        ],
+        "capabilities": [
+          "net",
+          "storage"
+        ],
+        "storagePolicies": {
+          "notes": "owner-write",
+          "*": "public"
+        },
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 695,
+        "primary": null,
+        "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 7,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 3,
+          "count": 1
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T04:00:00+00:00",
+        "updatedAt": "2025-01-01T04:00:00+00:00",
+        "urls": {
+          "page": "/app/epsilon",
+          "run": "/play/epsilon",
+          "play": "/play/epsilon",
+          "runtime": "/web/app/epsilon",
+          "bundle": "/api/apps/epsilon/bundle.softn",
+          "download": "/api/apps/epsilon/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "remix": "/publish?remix=epsilon"
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      },
+      {
+        "slug": "delta",
+        "name": "Delta Elsewhere",
+        "description": "Plays on its own site.",
+        "author": "Dee",
+        "category": "other",
+        "tags": [
+          "linked"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 0,
+        "size": 0,
+        "primary": null,
+        "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 0,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": {
+          "url": "https://delta.example/",
+          "host": "delta.example"
+        },
+        "createdAt": "2025-01-01T03:00:00+00:00",
+        "updatedAt": "2025-01-01T03:00:00+00:00",
+        "urls": {
+          "page": "/app/delta",
+          "run": "https://delta.example/",
+          "play": null,
+          "runtime": null,
+          "bundle": null,
+          "download": null,
+          "studio": null,
+          "builder": null,
+          "remix": null
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 4,
+    "pages": 1,
+    "sort": "top",
+    "query": "",
+    "category": ""
+  },
+  "listRemixed": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      },
+      {
+        "slug": "epsilon",
+        "name": "Epsilon Notes",
+        "description": "",
+        "author": "Eve",
+        "category": "productivity",
+        "tags": [
+          "notes"
+        ],
+        "capabilities": [
+          "net",
+          "storage"
+        ],
+        "storagePolicies": {
+          "notes": "owner-write",
+          "*": "public"
+        },
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 695,
+        "primary": null,
+        "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 7,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 3,
+          "count": 1
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T04:00:00+00:00",
+        "updatedAt": "2025-01-01T04:00:00+00:00",
+        "urls": {
+          "page": "/app/epsilon",
+          "run": "/play/epsilon",
+          "play": "/play/epsilon",
+          "runtime": "/web/app/epsilon",
+          "bundle": "/api/apps/epsilon/bundle.softn",
+          "download": "/api/apps/epsilon/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "remix": "/publish?remix=epsilon"
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      },
+      {
+        "slug": "delta",
+        "name": "Delta Elsewhere",
+        "description": "Plays on its own site.",
+        "author": "Dee",
+        "category": "other",
+        "tags": [
+          "linked"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 0,
+        "size": 0,
+        "primary": null,
+        "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 0,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": {
+          "url": "https://delta.example/",
+          "host": "delta.example"
+        },
+        "createdAt": "2025-01-01T03:00:00+00:00",
+        "updatedAt": "2025-01-01T03:00:00+00:00",
+        "urls": {
+          "page": "/app/delta",
+          "run": "https://delta.example/",
+          "play": null,
+          "runtime": null,
+          "bundle": null,
+          "download": null,
+          "studio": null,
+          "builder": null,
+          "remix": null
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 4,
+    "pages": 1,
+    "sort": "remixed",
+    "query": "",
+    "category": ""
+  },
+  "listRuns": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      },
+      {
+        "slug": "epsilon",
+        "name": "Epsilon Notes",
+        "description": "",
+        "author": "Eve",
+        "category": "productivity",
+        "tags": [
+          "notes"
+        ],
+        "capabilities": [
+          "net",
+          "storage"
+        ],
+        "storagePolicies": {
+          "notes": "owner-write",
+          "*": "public"
+        },
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 695,
+        "primary": null,
+        "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 7,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 3,
+          "count": 1
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T04:00:00+00:00",
+        "updatedAt": "2025-01-01T04:00:00+00:00",
+        "urls": {
+          "page": "/app/epsilon",
+          "run": "/play/epsilon",
+          "play": "/play/epsilon",
+          "runtime": "/web/app/epsilon",
+          "bundle": "/api/apps/epsilon/bundle.softn",
+          "download": "/api/apps/epsilon/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "remix": "/publish?remix=epsilon"
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      },
+      {
+        "slug": "delta",
+        "name": "Delta Elsewhere",
+        "description": "Plays on its own site.",
+        "author": "Dee",
+        "category": "other",
+        "tags": [
+          "linked"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 0,
+        "size": 0,
+        "primary": null,
+        "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 0,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": {
+          "url": "https://delta.example/",
+          "host": "delta.example"
+        },
+        "createdAt": "2025-01-01T03:00:00+00:00",
+        "updatedAt": "2025-01-01T03:00:00+00:00",
+        "urls": {
+          "page": "/app/delta",
+          "run": "https://delta.example/",
+          "play": null,
+          "runtime": null,
+          "bundle": null,
+          "download": null,
+          "studio": null,
+          "builder": null,
+          "remix": null
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 4,
+    "pages": 1,
+    "sort": "runs",
+    "query": "",
+    "category": ""
+  },
+  "search": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 1,
+    "pages": 1,
+    "sort": "relevance",
+    "query": "harbour",
+    "category": ""
+  },
+  "searchTwoWords": {
+    "apps": [],
+    "page": 1,
+    "perPage": 24,
+    "total": 0,
+    "pages": 1,
+    "sort": "relevance",
+    "query": "city story",
+    "category": ""
+  },
+  "category": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 2,
+    "pages": 1,
+    "sort": "trending",
+    "query": "",
+    "category": "games"
+  },
+  "tag": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 2,
+    "pages": 1,
+    "sort": "trending",
+    "query": "",
+    "category": ""
+  },
+  "author": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 1,
+    "pages": 1,
+    "sort": "trending",
+    "query": "",
+    "category": ""
+  },
+  "capStorage": {
+    "apps": [
+      {
+        "slug": "epsilon",
+        "name": "Epsilon Notes",
+        "description": "",
+        "author": "Eve",
+        "category": "productivity",
+        "tags": [
+          "notes"
+        ],
+        "capabilities": [
+          "net",
+          "storage"
+        ],
+        "storagePolicies": {
+          "notes": "owner-write",
+          "*": "public"
+        },
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 695,
+        "primary": null,
+        "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 7,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 3,
+          "count": 1
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T04:00:00+00:00",
+        "updatedAt": "2025-01-01T04:00:00+00:00",
+        "urls": {
+          "page": "/app/epsilon",
+          "run": "/play/epsilon",
+          "play": "/play/epsilon",
+          "runtime": "/web/app/epsilon",
+          "bundle": "/api/apps/epsilon/bundle.softn",
+          "download": "/api/apps/epsilon/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "remix": "/publish?remix=epsilon"
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 1,
+    "pages": 1,
+    "sort": "trending",
+    "query": "",
+    "category": ""
+  },
+  "capNone": {
+    "apps": [
+      {
+        "slug": "alpha",
+        "name": "Alpha Harbour",
+        "description": "",
+        "author": "Ada",
+        "category": "games",
+        "tags": [
+          "city",
+          "harbour"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 2,
+        "size": 521,
+        "primary": "#3366cc",
+        "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 40,
+        "launches": 12,
+        "remixes": 1,
+        "rating": {
+          "average": 4.33,
+          "count": 3
+        },
+        "comments": 1,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T00:00:00+00:00",
+        "updatedAt": "2025-01-02T00:00:00+00:00",
+        "urls": {
+          "page": "/app/alpha",
+          "run": "/play/alpha",
+          "play": "/play/alpha",
+          "runtime": "/web/app/alpha",
+          "bundle": "/api/apps/alpha/bundle.softn",
+          "download": "/api/apps/alpha/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+          "remix": "/publish?remix=alpha"
+        }
+      },
+      {
+        "slug": "beta-lantern",
+        "name": "Beta Lantern",
+        "description": "",
+        "author": "Ben",
+        "category": "games",
+        "tags": [
+          "city"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 507,
+        "primary": null,
+        "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 3,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": {
+          "slug": "alpha",
+          "name": "Alpha Harbour"
+        },
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T01:00:00+00:00",
+        "updatedAt": "2025-01-01T01:00:00+00:00",
+        "urls": {
+          "page": "/app/beta-lantern",
+          "run": "/play/beta-lantern",
+          "play": "/play/beta-lantern",
+          "runtime": "/web/app/beta-lantern",
+          "bundle": "/api/apps/beta-lantern/bundle.softn",
+          "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+          "remix": "/publish?remix=beta-lantern"
+        }
+      },
+      {
+        "slug": "delta",
+        "name": "Delta Elsewhere",
+        "description": "Plays on its own site.",
+        "author": "Dee",
+        "category": "other",
+        "tags": [
+          "linked"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 0,
+        "size": 0,
+        "primary": null,
+        "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 0,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": {
+          "url": "https://delta.example/",
+          "host": "delta.example"
+        },
+        "createdAt": "2025-01-01T03:00:00+00:00",
+        "updatedAt": "2025-01-01T03:00:00+00:00",
+        "urls": {
+          "page": "/app/delta",
+          "run": "https://delta.example/",
+          "play": null,
+          "runtime": null,
+          "bundle": null,
+          "download": null,
+          "studio": null,
+          "builder": null,
+          "remix": null
+        }
+      }
+    ],
+    "page": 1,
+    "perPage": 24,
+    "total": 3,
+    "pages": 1,
+    "sort": "trending",
+    "query": "",
+    "category": ""
+  },
+  "page2": {
+    "apps": [
+      {
+        "slug": "delta",
+        "name": "Delta Elsewhere",
+        "description": "Plays on its own site.",
+        "author": "Dee",
+        "category": "other",
+        "tags": [
+          "linked"
+        ],
+        "capabilities": [],
+        "storagePolicies": {},
+        "execution": "main",
+        "trusted": false,
+        "version": 0,
+        "size": 0,
+        "primary": null,
+        "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 0,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 0,
+          "count": 0
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": {
+          "url": "https://delta.example/",
+          "host": "delta.example"
+        },
+        "createdAt": "2025-01-01T03:00:00+00:00",
+        "updatedAt": "2025-01-01T03:00:00+00:00",
+        "urls": {
+          "page": "/app/delta",
+          "run": "https://delta.example/",
+          "play": null,
+          "runtime": null,
+          "bundle": null,
+          "download": null,
+          "studio": null,
+          "builder": null,
+          "remix": null
+        }
+      },
+      {
+        "slug": "epsilon",
+        "name": "Epsilon Notes",
+        "description": "",
+        "author": "Eve",
+        "category": "productivity",
+        "tags": [
+          "notes"
+        ],
+        "capabilities": [
+          "net",
+          "storage"
+        ],
+        "storagePolicies": {
+          "notes": "owner-write",
+          "*": "public"
+        },
+        "execution": "main",
+        "trusted": false,
+        "version": 1,
+        "size": 695,
+        "primary": null,
+        "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+        "thumbnailKind": "placeholder",
+        "icon": null,
+        "runs": 7,
+        "launches": 0,
+        "remixes": 0,
+        "rating": {
+          "average": 3,
+          "count": 1
+        },
+        "comments": 0,
+        "parent": null,
+        "source": "folder",
+        "external": null,
+        "createdAt": "2025-01-01T04:00:00+00:00",
+        "updatedAt": "2025-01-01T04:00:00+00:00",
+        "urls": {
+          "page": "/app/epsilon",
+          "run": "/play/epsilon",
+          "play": "/play/epsilon",
+          "runtime": "/web/app/epsilon",
+          "bundle": "/api/apps/epsilon/bundle.softn",
+          "download": "/api/apps/epsilon/bundle.softn?download=1",
+          "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+          "remix": "/publish?remix=epsilon"
+        }
+      }
+    ],
+    "page": 2,
+    "perPage": 2,
+    "total": 4,
+    "pages": 2,
+    "sort": "name",
+    "query": "",
+    "category": ""
+  },
+  "card": {
+    "alpha": {
+      "slug": "alpha",
+      "name": "Alpha Harbour",
+      "description": "",
+      "author": "Ada",
+      "category": "games",
+      "tags": [
+        "city",
+        "harbour"
+      ],
+      "capabilities": [],
+      "storagePolicies": {},
+      "execution": "main",
+      "trusted": false,
+      "version": 2,
+      "size": 521,
+      "primary": "#3366cc",
+      "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 40,
+      "launches": 12,
+      "remixes": 1,
+      "rating": {
+        "average": 4.33,
+        "count": 3
+      },
+      "comments": 1,
+      "parent": null,
+      "source": "folder",
+      "external": null,
+      "createdAt": "2025-01-01T00:00:00+00:00",
+      "updatedAt": "2025-01-02T00:00:00+00:00",
+      "urls": {
+        "page": "/app/alpha",
+        "run": "/play/alpha",
+        "play": "/play/alpha",
+        "runtime": "/web/app/alpha",
+        "bundle": "/api/apps/alpha/bundle.softn",
+        "download": "/api/apps/alpha/bundle.softn?download=1",
+        "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+        "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+        "remix": "/publish?remix=alpha"
+      }
+    },
+    "beta-lantern": {
+      "slug": "beta-lantern",
+      "name": "Beta Lantern",
+      "description": "",
+      "author": "Ben",
+      "category": "games",
+      "tags": [
+        "city"
+      ],
+      "capabilities": [],
+      "storagePolicies": {},
+      "execution": "main",
+      "trusted": false,
+      "version": 1,
+      "size": 507,
+      "primary": null,
+      "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 3,
+      "launches": 0,
+      "remixes": 0,
+      "rating": {
+        "average": 0,
+        "count": 0
+      },
+      "comments": 0,
+      "parent": {
+        "slug": "alpha",
+        "name": "Alpha Harbour"
+      },
+      "source": "folder",
+      "external": null,
+      "createdAt": "2025-01-01T01:00:00+00:00",
+      "updatedAt": "2025-01-01T01:00:00+00:00",
+      "urls": {
+        "page": "/app/beta-lantern",
+        "run": "/play/beta-lantern",
+        "play": "/play/beta-lantern",
+        "runtime": "/web/app/beta-lantern",
+        "bundle": "/api/apps/beta-lantern/bundle.softn",
+        "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+        "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+        "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+        "remix": "/publish?remix=beta-lantern"
+      }
+    },
+    "delta": {
+      "slug": "delta",
+      "name": "Delta Elsewhere",
+      "description": "Plays on its own site.",
+      "author": "Dee",
+      "category": "other",
+      "tags": [
+        "linked"
+      ],
+      "capabilities": [],
+      "storagePolicies": {},
+      "execution": "main",
+      "trusted": false,
+      "version": 0,
+      "size": 0,
+      "primary": null,
+      "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 0,
+      "launches": 0,
+      "remixes": 0,
+      "rating": {
+        "average": 0,
+        "count": 0
+      },
+      "comments": 0,
+      "parent": null,
+      "source": "folder",
+      "external": {
+        "url": "https://delta.example/",
+        "host": "delta.example"
+      },
+      "createdAt": "2025-01-01T03:00:00+00:00",
+      "updatedAt": "2025-01-01T03:00:00+00:00",
+      "urls": {
+        "page": "/app/delta",
+        "run": "https://delta.example/",
+        "play": null,
+        "runtime": null,
+        "bundle": null,
+        "download": null,
+        "studio": null,
+        "builder": null,
+        "remix": null
+      }
+    },
+    "epsilon": {
+      "slug": "epsilon",
+      "name": "Epsilon Notes",
+      "description": "",
+      "author": "Eve",
+      "category": "productivity",
+      "tags": [
+        "notes"
+      ],
+      "capabilities": [
+        "net",
+        "storage"
+      ],
+      "storagePolicies": {
+        "notes": "owner-write",
+        "*": "public"
+      },
+      "execution": "main",
+      "trusted": false,
+      "version": 1,
+      "size": 695,
+      "primary": null,
+      "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 7,
+      "launches": 0,
+      "remixes": 0,
+      "rating": {
+        "average": 3,
+        "count": 1
+      },
+      "comments": 0,
+      "parent": null,
+      "source": "folder",
+      "external": null,
+      "createdAt": "2025-01-01T04:00:00+00:00",
+      "updatedAt": "2025-01-01T04:00:00+00:00",
+      "urls": {
+        "page": "/app/epsilon",
+        "run": "/play/epsilon",
+        "play": "/play/epsilon",
+        "runtime": "/web/app/epsilon",
+        "bundle": "/api/apps/epsilon/bundle.softn",
+        "download": "/api/apps/epsilon/bundle.softn?download=1",
+        "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+        "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+        "remix": "/publish?remix=epsilon"
+      }
+    },
+    "gamma": {
+      "slug": "gamma",
+      "name": "Gamma Hidden",
+      "description": "",
+      "author": "Ada",
+      "category": "tools",
+      "tags": [],
+      "capabilities": [],
+      "storagePolicies": {},
+      "execution": "main",
+      "trusted": false,
+      "version": 1,
+      "size": 497,
+      "primary": null,
+      "thumbnail": "/api/apps/gamma/thumbnail?v=1735696800",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 0,
+      "launches": 0,
+      "remixes": 0,
+      "rating": {
+        "average": 0,
+        "count": 0
+      },
+      "comments": 0,
+      "parent": null,
+      "source": "folder",
+      "external": null,
+      "createdAt": "2025-01-01T02:00:00+00:00",
+      "updatedAt": "2025-01-01T02:00:00+00:00",
+      "urls": {
+        "page": "/app/gamma",
+        "run": "/play/gamma",
+        "play": "/play/gamma",
+        "runtime": "/web/app/gamma",
+        "bundle": "/api/apps/gamma/bundle.softn",
+        "download": "/api/apps/gamma/bundle.softn?download=1",
+        "studio": "/studio/?open=%2Fapi%2Fapps%2Fgamma%2Fbundle.softn",
+        "builder": "/builder/?open=%2Fapi%2Fapps%2Fgamma%2Fbundle.softn",
+        "remix": "/publish?remix=gamma"
+      }
+    }
+  },
+  "detail": {
+    "alpha": {
+      "slug": "alpha",
+      "name": "Alpha Harbour",
+      "description": "",
+      "author": "Ada",
+      "category": "games",
+      "tags": [
+        "city",
+        "harbour"
+      ],
+      "capabilities": [],
+      "storagePolicies": {},
+      "execution": "main",
+      "trusted": false,
+      "version": 2,
+      "size": 521,
+      "primary": "#3366cc",
+      "thumbnail": "/api/apps/alpha/thumbnail?v=1735776000",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 40,
+      "launches": 12,
+      "remixes": 1,
+      "rating": {
+        "average": 4.33,
+        "count": 3
+      },
+      "comments": 1,
+      "parent": null,
+      "source": "folder",
+      "external": null,
+      "createdAt": "2025-01-01T00:00:00+00:00",
+      "updatedAt": "2025-01-02T00:00:00+00:00",
+      "urls": {
+        "page": "/app/alpha",
+        "run": "/play/alpha",
+        "play": "/play/alpha",
+        "runtime": "/web/app/alpha",
+        "bundle": "/api/apps/alpha/bundle.softn",
+        "download": "/api/apps/alpha/bundle.softn?download=1",
+        "studio": "/studio/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+        "builder": "/builder/?open=%2Fapi%2Fapps%2Falpha%2Fbundle.softn",
+        "remix": "/publish?remix=alpha"
+      },
+      "versions": [
+        {
+          "version": 2,
+          "manifestVersion": "1.1.0",
+          "size": 521,
+          "sha256": "d81037e3304a94b2e274f61421997238d942081dc2e22a382eeffb9c8085a1be",
+          "notes": "Tides.",
+          "createdAt": "2025-01-02T00:00:00+00:00",
+          "bundle": "/api/apps/alpha/bundle.softn?v=2"
+        },
+        {
+          "version": 1,
+          "manifestVersion": "1.0.0",
+          "size": 510,
+          "sha256": "276d36faae34295e81bbac4f3ce1b73104da8e3fd1edf47f37103d542c5f6c6c",
+          "notes": "",
+          "createdAt": "2025-01-01T00:00:00+00:00",
+          "bundle": "/api/apps/alpha/bundle.softn?v=1"
+        }
+      ],
+      "ratingBreakdown": {
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 2,
+        "5": 1
+      },
+      "remixList": [
+        {
+          "slug": "beta-lantern",
+          "name": "Beta Lantern",
+          "author": "Ben",
+          "createdAt": "2025-01-01T01:00:00+00:00"
+        }
+      ],
+      "lineage": [],
+      "storage": {
+        "collections": 0,
+        "records": 0,
+        "keys": 0,
+        "bytes": 0,
+        "diskBytes": 0
+      },
+      "manifest": {
+        "main": "ui/main.ui",
+        "version": "1.1.0",
+        "files": {
+          "ui": 1,
+          "logic": 1
+        }
+      }
+    },
+    "beta-lantern": {
+      "slug": "beta-lantern",
+      "name": "Beta Lantern",
+      "description": "",
+      "author": "Ben",
+      "category": "games",
+      "tags": [
+        "city"
+      ],
+      "capabilities": [],
+      "storagePolicies": {},
+      "execution": "main",
+      "trusted": false,
+      "version": 1,
+      "size": 507,
+      "primary": null,
+      "thumbnail": "/api/apps/beta-lantern/thumbnail?v=1735693200",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 3,
+      "launches": 0,
+      "remixes": 0,
+      "rating": {
+        "average": 0,
+        "count": 0
+      },
+      "comments": 0,
+      "parent": {
+        "slug": "alpha",
+        "name": "Alpha Harbour"
+      },
+      "source": "folder",
+      "external": null,
+      "createdAt": "2025-01-01T01:00:00+00:00",
+      "updatedAt": "2025-01-01T01:00:00+00:00",
+      "urls": {
+        "page": "/app/beta-lantern",
+        "run": "/play/beta-lantern",
+        "play": "/play/beta-lantern",
+        "runtime": "/web/app/beta-lantern",
+        "bundle": "/api/apps/beta-lantern/bundle.softn",
+        "download": "/api/apps/beta-lantern/bundle.softn?download=1",
+        "studio": "/studio/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+        "builder": "/builder/?open=%2Fapi%2Fapps%2Fbeta-lantern%2Fbundle.softn",
+        "remix": "/publish?remix=beta-lantern"
+      },
+      "versions": [
+        {
+          "version": 1,
+          "manifestVersion": "1.0.0",
+          "size": 507,
+          "sha256": "1513cab1fbde06366a49a37da07da1f159d76ac42edf845c6ba1fd1c545547d5",
+          "notes": "",
+          "createdAt": "2025-01-01T01:00:00+00:00",
+          "bundle": "/api/apps/beta-lantern/bundle.softn?v=1"
+        }
+      ],
+      "ratingBreakdown": {
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+      },
+      "remixList": [],
+      "lineage": [
+        {
+          "slug": "alpha",
+          "name": "Alpha Harbour",
+          "author": "Ada"
+        }
+      ],
+      "storage": {
+        "collections": 0,
+        "records": 0,
+        "keys": 0,
+        "bytes": 0,
+        "diskBytes": 0
+      },
+      "manifest": {
+        "main": "ui/main.ui",
+        "version": "1.0.0",
+        "files": {
+          "ui": 1,
+          "logic": 1
+        }
+      }
+    },
+    "delta": {
+      "slug": "delta",
+      "name": "Delta Elsewhere",
+      "description": "Plays on its own site.",
+      "author": "Dee",
+      "category": "other",
+      "tags": [
+        "linked"
+      ],
+      "capabilities": [],
+      "storagePolicies": {},
+      "execution": "main",
+      "trusted": false,
+      "version": 0,
+      "size": 0,
+      "primary": null,
+      "thumbnail": "/api/apps/delta/thumbnail?v=1735700400",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 0,
+      "launches": 0,
+      "remixes": 0,
+      "rating": {
+        "average": 0,
+        "count": 0
+      },
+      "comments": 0,
+      "parent": null,
+      "source": "folder",
+      "external": {
+        "url": "https://delta.example/",
+        "host": "delta.example"
+      },
+      "createdAt": "2025-01-01T03:00:00+00:00",
+      "updatedAt": "2025-01-01T03:00:00+00:00",
+      "urls": {
+        "page": "/app/delta",
+        "run": "https://delta.example/",
+        "play": null,
+        "runtime": null,
+        "bundle": null,
+        "download": null,
+        "studio": null,
+        "builder": null,
+        "remix": null
+      },
+      "versions": [],
+      "ratingBreakdown": {
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+      },
+      "remixList": [],
+      "lineage": [],
+      "storage": {
+        "collections": 0,
+        "records": 0,
+        "keys": 0,
+        "bytes": 0,
+        "diskBytes": 0
+      },
+      "manifest": null
+    },
+    "epsilon": {
+      "slug": "epsilon",
+      "name": "Epsilon Notes",
+      "description": "",
+      "author": "Eve",
+      "category": "productivity",
+      "tags": [
+        "notes"
+      ],
+      "capabilities": [
+        "net",
+        "storage"
+      ],
+      "storagePolicies": {
+        "notes": "owner-write",
+        "*": "public"
+      },
+      "execution": "main",
+      "trusted": false,
+      "version": 1,
+      "size": 695,
+      "primary": null,
+      "thumbnail": "/api/apps/epsilon/thumbnail?v=1735704000",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 7,
+      "launches": 0,
+      "remixes": 0,
+      "rating": {
+        "average": 3,
+        "count": 1
+      },
+      "comments": 0,
+      "parent": null,
+      "source": "folder",
+      "external": null,
+      "createdAt": "2025-01-01T04:00:00+00:00",
+      "updatedAt": "2025-01-01T04:00:00+00:00",
+      "urls": {
+        "page": "/app/epsilon",
+        "run": "/play/epsilon",
+        "play": "/play/epsilon",
+        "runtime": "/web/app/epsilon",
+        "bundle": "/api/apps/epsilon/bundle.softn",
+        "download": "/api/apps/epsilon/bundle.softn?download=1",
+        "studio": "/studio/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+        "builder": "/builder/?open=%2Fapi%2Fapps%2Fepsilon%2Fbundle.softn",
+        "remix": "/publish?remix=epsilon"
+      },
+      "versions": [
+        {
+          "version": 1,
+          "manifestVersion": "1.0.0",
+          "size": 695,
+          "sha256": "a139710279fcfa9ff8e88b9e4248ad5d0ec5dc4c61f0d69a104b36171eb6e0fb",
+          "notes": "",
+          "createdAt": "2025-01-01T04:00:00+00:00",
+          "bundle": "/api/apps/epsilon/bundle.softn?v=1"
+        }
+      ],
+      "ratingBreakdown": {
+        "1": 0,
+        "2": 0,
+        "3": 1,
+        "4": 0,
+        "5": 0
+      },
+      "remixList": [],
+      "lineage": [],
+      "storage": {
+        "collections": 0,
+        "records": 0,
+        "keys": 0,
+        "bytes": 0,
+        "diskBytes": 0
+      },
+      "manifest": {
+        "main": "ui/main.ui",
+        "version": "1.0.0",
+        "files": {
+          "ui": 1,
+          "logic": 1
+        }
+      }
+    },
+    "gamma": {
+      "slug": "gamma",
+      "name": "Gamma Hidden",
+      "description": "",
+      "author": "Ada",
+      "category": "tools",
+      "tags": [],
+      "capabilities": [],
+      "storagePolicies": {},
+      "execution": "main",
+      "trusted": false,
+      "version": 1,
+      "size": 497,
+      "primary": null,
+      "thumbnail": "/api/apps/gamma/thumbnail?v=1735696800",
+      "thumbnailKind": "placeholder",
+      "icon": null,
+      "runs": 0,
+      "launches": 0,
+      "remixes": 0,
+      "rating": {
+        "average": 0,
+        "count": 0
+      },
+      "comments": 0,
+      "parent": null,
+      "source": "folder",
+      "external": null,
+      "createdAt": "2025-01-01T02:00:00+00:00",
+      "updatedAt": "2025-01-01T02:00:00+00:00",
+      "urls": {
+        "page": "/app/gamma",
+        "run": "/play/gamma",
+        "play": "/play/gamma",
+        "runtime": "/web/app/gamma",
+        "bundle": "/api/apps/gamma/bundle.softn",
+        "download": "/api/apps/gamma/bundle.softn?download=1",
+        "studio": "/studio/?open=%2Fapi%2Fapps%2Fgamma%2Fbundle.softn",
+        "builder": "/builder/?open=%2Fapi%2Fapps%2Fgamma%2Fbundle.softn",
+        "remix": "/publish?remix=gamma"
+      },
+      "versions": [
+        {
+          "version": 1,
+          "manifestVersion": "1.0.0",
+          "size": 497,
+          "sha256": "c710044f6fefa626d84c4a01c87b6a8ff5f2ac22487210195661841e59fdcd74",
+          "notes": "",
+          "createdAt": "2025-01-01T02:00:00+00:00",
+          "bundle": "/api/apps/gamma/bundle.softn?v=1"
+        }
+      ],
+      "ratingBreakdown": {
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0
+      },
+      "remixList": [],
+      "lineage": [],
+      "storage": {
+        "collections": 0,
+        "records": 0,
+        "keys": 0,
+        "bytes": 0,
+        "diskBytes": 0
+      },
+      "manifest": {
+        "main": "ui/main.ui",
+        "version": "1.0.0",
+        "files": {
+          "ui": 1,
+          "logic": 1
+        }
+      }
+    }
+  },
+  "all": {
+    "alpha": {
+      "slug": "alpha",
+      "name": "Alpha Harbour",
+      "description": "",
+      "author": "Ada",
+      "category": "games",
+      "tags": "[\"city\",\"harbour\"]",
+      "parent_slug": null,
+      "root_slug": null,
+      "latest_version": 2,
+      "capabilities": "[]",
+      "execution": "main",
+      "storage_policies": "{}",
+      "thumb": null,
+      "icon": null,
+      "primary_color": "#3366cc",
+      "edit_key_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "play_url": null,
+      "source": "folder",
+      "runs": 40,
+      "launches": 12,
+      "remixes": 1,
+      "rating_sum": 13,
+      "rating_count": 3,
+      "comments": 1,
+      "size": 521,
+      "hidden": 0,
+      "created_at": 1735689600,
+      "updated_at": 1735776000
+    },
+    "beta-lantern": {
+      "slug": "beta-lantern",
+      "name": "Beta Lantern",
+      "description": "",
+      "author": "Ben",
+      "category": "games",
+      "tags": "[\"city\"]",
+      "parent_slug": "alpha",
+      "root_slug": "alpha",
+      "latest_version": 1,
+      "capabilities": "[]",
+      "execution": "main",
+      "storage_policies": "{}",
+      "thumb": null,
+      "icon": null,
+      "primary_color": null,
+      "edit_key_hash": null,
+      "play_url": null,
+      "source": "folder",
+      "runs": 3,
+      "launches": 0,
+      "remixes": 0,
+      "rating_sum": 0,
+      "rating_count": 0,
+      "comments": 0,
+      "size": 507,
+      "hidden": 0,
+      "created_at": 1735693200,
+      "updated_at": 1735693200
+    },
+    "delta": {
+      "slug": "delta",
+      "name": "Delta Elsewhere",
+      "description": "Plays on its own site.",
+      "author": "Dee",
+      "category": "other",
+      "tags": "[\"linked\"]",
+      "parent_slug": null,
+      "root_slug": null,
+      "latest_version": 0,
+      "capabilities": "[]",
+      "execution": "main",
+      "storage_policies": "{}",
+      "thumb": null,
+      "icon": null,
+      "primary_color": null,
+      "edit_key_hash": null,
+      "play_url": "https://delta.example/",
+      "source": "folder",
+      "runs": 0,
+      "launches": 0,
+      "remixes": 0,
+      "rating_sum": 0,
+      "rating_count": 0,
+      "comments": 0,
+      "size": 0,
+      "hidden": 0,
+      "created_at": 1735700400,
+      "updated_at": 1735700400
+    },
+    "epsilon": {
+      "slug": "epsilon",
+      "name": "Epsilon Notes",
+      "description": "",
+      "author": "Eve",
+      "category": "productivity",
+      "tags": "[\"notes\"]",
+      "parent_slug": null,
+      "root_slug": null,
+      "latest_version": 1,
+      "capabilities": "[\"net\",\"storage\"]",
+      "execution": "main",
+      "storage_policies": "{\"notes\":\"owner-write\",\"*\":\"public\"}",
+      "thumb": null,
+      "icon": null,
+      "primary_color": null,
+      "edit_key_hash": null,
+      "play_url": null,
+      "source": "folder",
+      "runs": 7,
+      "launches": 0,
+      "remixes": 0,
+      "rating_sum": 3,
+      "rating_count": 1,
+      "comments": 0,
+      "size": 695,
+      "hidden": 0,
+      "created_at": 1735704000,
+      "updated_at": 1735704000
+    },
+    "gamma": {
+      "slug": "gamma",
+      "name": "Gamma Hidden",
+      "description": "",
+      "author": "Ada",
+      "category": "tools",
+      "tags": "[]",
+      "parent_slug": null,
+      "root_slug": null,
+      "latest_version": 1,
+      "capabilities": "[]",
+      "execution": "main",
+      "storage_policies": "{}",
+      "thumb": null,
+      "icon": null,
+      "primary_color": null,
+      "edit_key_hash": null,
+      "play_url": null,
+      "source": "folder",
+      "runs": 0,
+      "launches": 0,
+      "remixes": 0,
+      "rating_sum": 0,
+      "rating_count": 0,
+      "comments": 0,
+      "size": 497,
+      "hidden": 1,
+      "created_at": 1735696800,
+      "updated_at": 1735696800
+    }
+  },
+  "resolve": [
+    "alpha",
+    "beta-lantern"
+  ],
+  "version": [
+    {
+      "slug": "alpha",
+      "version": 2,
+      "file": "v2.softn",
+      "size": 521,
+      "sha256": "d81037e3304a94b2e274f61421997238d942081dc2e22a382eeffb9c8085a1be",
+      "manifest_version": "1.1.0",
+      "notes": "Tides.",
+      "created_at": 1735776000
+    },
+    {
+      "slug": "alpha",
+      "version": 1,
+      "file": "v1.softn",
+      "size": 510,
+      "sha256": "276d36faae34295e81bbac4f3ce1b73104da8e3fd1edf47f37103d542c5f6c6c",
+      "manifest_version": "1.0.0",
+      "notes": "",
+      "created_at": 1735689600
+    }
+  ]
+}

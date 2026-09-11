@@ -27,6 +27,30 @@ final class Timings
     public static function acquired(): void { self::$acquired = hrtime(true); }
     public static function released(): void { if (self::$acquired !== null) { self::add('hold', self::$acquired); self::$acquired = null; } }
     public static function apps(int $n): void { self::$apps = $n; }
+    /** One more bundle re-read by the periodic sweep rather than by a change. */
+    public static function swept(): void { self::$swept++; }
+    private static int $swept = 0;
+    /**
+     * What a request should stay under on a healthy host, from the 1,000-app
+     * benchmark after the round-2 fix (apps/softn-api/bench/results-2026-09-11.json;
+     * the README's "Thresholds" section says how they were chosen). A probe
+     * compares its own request's `lockWaitMs`, `lockHoldMs` and
+     * `rebuild.count` against these; the numbers describe that machine, and
+     * an operator on a slower host should measure and set their own with
+     * `timingThresholds` in data/config.json. No alerting lives here.
+     */
+    public const THRESHOLDS = ['lockWaitMsP95' => 1000.0, 'lockHoldMsP95' => 350.0, 'warmRebuildCount' => 0];
+    /** @return array<string, float|int> */
+    public static function thresholds(): array {
+        $out = self::THRESHOLDS;
+        try {
+            $set = Config::get('timingThresholds', null);
+            if (is_array($set)) foreach ($out as $k => $v) if (isset($set[$k]) && is_numeric($set[$k])) $out[$k] = is_int($v) ? (int) $set[$k] : (float) $set[$k];
+        } catch (Throwable) {
+            // The configuration's trouble is reported by the route; the defaults stand.
+        }
+        return $out;
+    }
     private static function ms(string $name): float { return round(self::$t[$name]['ms'] ?? 0.0, 3); }
     private static function n(string $name): int { return self::$t[$name]['n'] ?? 0; }
     /** The lock hold so far: what was released plus, if it is held now, since when. */
@@ -38,9 +62,10 @@ final class Timings
     public static function snapshot(): array {
         return [
             'lockWaitMs' => self::ms('lock'), 'lockHoldMs' => self::holdMs(), 'bootMs' => self::ms('boot'),
-            'rebuild' => ['count' => self::n('rebuild'), 'ms' => self::ms('rebuild')],
+            'rebuild' => ['count' => self::n('rebuild'), 'ms' => self::ms('rebuild'), 'swept' => self::$swept],
             'commit' => ['count' => self::n('commit'), 'ms' => self::ms('commit')],
             'apps' => self::$apps,
+            'thresholds' => self::thresholds(),
         ];
     }
     /** The same as a Server-Timing header value (W3C Server Timing). */
@@ -61,6 +86,20 @@ final class Catalog
     private static array $docs = [];
     private static array $cache = [];
     private static bool $cacheDirty = false;
+    /** all()'s answer for this request, built once; put() and remove() drop it. */
+    private static ?array $rows = null;
+    /**
+     * How many bundles the periodic sweep may still re-read in this request.
+     * The safety net for a bundle replaced with its size and timestamps
+     * intact (which the API's own writes never do): a bundle whose last
+     * inspection is older than `cacheSweepSeconds` (600) is read again, at
+     * most `cacheSweepBatch` (200) of them per request, so a large catalogue
+     * spreads its sweep over requests instead of holding the lock for all
+     * of it. Before this, every bundle whose stamp was five seconds old was
+     * re-read, which under load meant all of them on every request.
+     */
+    private static int $sweepBudget = 0;
+    private static int $sweepSeconds = 600;
     /** slug => why the folder was skipped this boot; its files are untouched. */
     private static array $skipped = [];
 
@@ -88,6 +127,8 @@ final class Catalog
             try { self::migrateLegacy(); }
             catch (Throwable $e) { error_log('softn-api: legacy import did not complete and will retry on the next request: ' . $e->getMessage()); }
             self::$cache = self::readJson("$root/cache/bundles.json", true);
+            self::$sweepSeconds = max(1, (int) Config::get('cacheSweepSeconds', 600));
+            self::$sweepBudget = max(0, (int) Config::get('cacheSweepBatch', 200));
             foreach (scandir("$root/apps") ?: [] as $slug) {
                 if (!self::validSlug($slug) || is_link("$root/apps/$slug") || !is_dir("$root/apps/$slug")) continue;
                 // One folder's trouble is that folder's alone: a malformed or
@@ -156,7 +197,7 @@ final class Catalog
     }
     public static function release(): void {
         if (is_resource(self::$lock)) { flock(self::$lock, LOCK_UN); fclose(self::$lock); Timings::released(); }
-        self::$lock = null; self::$ready=false; self::$docs=[]; self::$cache=[]; self::$cacheDirty=false; self::$skipped=[];
+        self::$lock = null; self::$ready=false; self::$docs=[]; self::$cache=[]; self::$cacheDirty=false; self::$skipped=[]; self::$rows=null;
     }
     public static function readJson(string $path, bool $cache = false): array {
         if (is_link($path)) throw new ApiError(503, 'JSON metadata must not be a symlink.');
@@ -191,16 +232,28 @@ final class Catalog
             if (!rename($tmp, $path)) throw new ApiError(503, 'Cannot replace metadata.');
         } finally { if (is_file($tmp)) @unlink($tmp); Timings::add('commit', $committing); }
     }
+    /**
+     * Every listable app's row, keyed by slug, with its remix count. Built
+     * once per request: the listing asked for it again for every card with
+     * a parent and for every row lookup, and each build counted remixes
+     * with a pass over every document per row, which at 1,000 apps was the
+     * larger part of a list request. A write through put() or remove()
+     * discards it, so a row read after a commit is the committed one.
+     */
     public static function all(): array {
-        self::boot(); $out = [];
+        self::boot();
+        if (self::$rows !== null) return self::$rows;
+        $remixes = [];
+        foreach (self::$docs as $doc) { $p = $doc['app']['parent_slug'] ?? null; if (is_string($p)) $remixes[$p] = ($remixes[$p] ?? 0) + 1; }
+        $out = [];
         foreach (self::$docs as $slug => $doc) {
             // A doc with no versions is a folder still being filled, unless it names an address to play at.
             if (!$doc['versions'] && empty($doc['app']['play_url'])) continue;
             $row = $doc['app'];
-            $row['remixes'] = count(array_filter(self::$docs, fn($d) => ($d['app']['parent_slug'] ?? null) === $slug));
+            $row['remixes'] = $remixes[$slug] ?? 0;
             $out[$slug] = $row;
         }
-        return $out;
+        return self::$rows = $out;
     }
     public static function doc(string $slug): array {
         self::boot();
@@ -213,13 +266,13 @@ final class Catalog
         $disk = $doc;
         foreach (['tags','capabilities','storage_policies'] as $field) if (is_string($disk['app'][$field] ?? null)) $disk['app'][$field] = $field==='storage_policies'?(object)(json_decode($disk['app'][$field],true)?:[]):(json_decode($disk['app'][$field],true)?:[]);
         self::writeJson(self::path($slug) . '/app.json', $disk);
-        self::$docs[$slug] = $doc;
+        self::$docs[$slug] = $doc; self::$rows = null;
     }
     public static function patch(string $slug, array $fields): void { $d = self::doc($slug); $d['app'] = array_replace($d['app'], $fields); self::put($slug, $d); }
     public static function remove(string $slug): void {
         self::doc($slug);
         self::retire($slug);
-        unset(self::$docs[$slug]);
+        unset(self::$docs[$slug]); self::$rows = null;
     }
     /** Atomically retire the entire directory, listed or not; recovery never rediscovers it. */
     public static function retire(string $slug): void {
@@ -248,7 +301,13 @@ final class Catalog
             $cached = self::$cache[$key] ?? null;
             // The icon is only needed the first time a folder is met, so it is only cached then; an entry without one is re-read if the need arises.
             if(!is_array($cached) || !is_array($cached['info']??null) || array_diff(['author','name','version','description','capabilities','storagePolicies','execution','size','sha256'],array_keys($cached['info'])) || (!$old && !array_key_exists('icon',$cached['info'])))$cached=null;
-            if (!$cached || ($cached['stat'] ?? []) !== $fingerprint || time() - ($cached['checked'] ?? 0) >= 5) {
+            // Changed on disk, or unknown: read it. Otherwise it is read again
+            // only by the sweep, when its stamp is old and the request still
+            // has sweep budget; an unchanged bundle is never re-read for time alone.
+            $changed = !$cached || ($cached['stat'] ?? []) !== $fingerprint;
+            $sweep = !$changed && self::$sweepBudget > 0 && time() - ($cached['checked'] ?? 0) >= self::$sweepSeconds;
+            if ($changed || $sweep) {
+                if ($sweep) { self::$sweepBudget--; Timings::swept(); }
                 // Any failure to read one bundle skips that bundle, not the
                 // app and not the directory: a truncated upload, a zip the
                 // extension refuses, a manifest that is not JSON.

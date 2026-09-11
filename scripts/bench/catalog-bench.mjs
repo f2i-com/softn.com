@@ -23,7 +23,10 @@
  * (JSON file; default under the system temp directory), --time-budget
  * (seconds per size, default 600: a size whose build and phases would run
  * past it is stopped and reported as such), --keep (leave the catalogue
- * on disk), --port (first port, default 5700).
+ * on disk), --port (first port, default 5700), --api (the API directory to
+ * measure, default apps/softn-api: a copy of an earlier revision gives the
+ * "before" of a before/after comparison without touching the working tree),
+ * --label (a name written into the JSON beside the machine details).
  *
  * Nothing here touches a real data directory or the live site. Needs php
  * on PATH with zip; uses fflate from the repository's node_modules.
@@ -37,11 +40,12 @@ import { createRequire } from 'node:module';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
-const apiDir = path.join(repo, 'apps/softn-api');
 const require = createRequire(import.meta.url);
 const { zipSync, strToU8 } = require('fflate');
 
 const args = parseArgs(process.argv.slice(2));
+const apiDir = args.api ? path.resolve(String(args.api)) : path.join(repo, 'apps/softn-api');
+const LABEL = args.label ? String(args.label) : null;
 const SIZES = (args.sizes || '100,1000,10000').split(',').map((n) => parseInt(n, 10)).filter((n) => n > 0);
 const WORKERS = parseInt(args.workers || '4', 10);
 const CONCURRENCY = parseInt(args.concurrency || '8', 10);
@@ -394,6 +398,6 @@ for (const r of results) {
   if (r.disk) console.log(`${r.apps} apps: data/ is ${(r.disk.dataBytes / 1024 / 1024).toFixed(1)} MB in ${r.disk.files} files (${r.disk.bytesPerApp} bytes per app); cache/bundles.json ${(r.disk.cacheBytes / 1024).toFixed(0)} KB; ${r.elapsedS} s for the size`);
   for (const n of r.notes) console.log(`${r.apps} apps: ${n}`);
 }
-const report = { generatedAt: new Date().toISOString(), machine, settings: { requests: REQUESTS, sizes: SIZES, timeBudgetS: BUDGET_S }, results };
+const report = { generatedAt: new Date().toISOString(), label: LABEL, api: apiDir, machine, settings: { requests: REQUESTS, sizes: SIZES, timeBudgetS: BUDGET_S }, results };
 fs.writeFileSync(OUT, JSON.stringify(report, null, 2));
 console.log(`\nJSON written to ${OUT}`);
