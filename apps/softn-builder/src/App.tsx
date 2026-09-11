@@ -572,11 +572,16 @@ function App() {
           allElementIds: Array.from(elements.keys()),
         });
 
-        if (rootElement && rootElement.componentType === 'App') {
+        if (rootElement && rootElement.componentType === 'App' && rootElement.props.theme !== loadedTheme) {
           elements.set(mainUIFile.rootId, {
             ...rootElement,
             props: { ...rootElement.props, theme: loadedTheme },
           });
+          // The file store must hold the same tree the canvas is given, or
+          // the first flush reads the theme it put there as an edit and
+          // rewrites the file's source. This is the copy on open, not an
+          // edit; the file stays clean and its original bytes stay.
+          useFilesStore.getState().syncUIFileElements(mainUIFile.id, elements, mainUIFile.rootId);
         }
         loadCanvasState(elements, mainUIFile.rootId, mainUIFile.imports || []);
       } else {

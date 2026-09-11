@@ -14,6 +14,7 @@ import type {
 } from '../types/builder';
 import { debug } from '../utils/debug';
 import { generateSource } from '../utils/sourceGenerator';
+import { elementsEqual } from '../utils/elementsEqual';
 
 function generateId(): string {
   return `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -188,7 +189,18 @@ interface FilesStore {
   getUIFile: (id: string) => UIFileState | undefined;
   getLogicFile: (id: string) => LogicFileState | undefined;
   getAssetFile: (id: string) => AssetFile | undefined;
+  /**
+   * Take the canvas's elements as this file's. A tree equal to the one the
+   * file already holds is a flush, not an edit: nothing is regenerated,
+   * nothing is marked dirty, and the original source stays as it was.
+   */
   updateUIFile: (id: string, elements: Map<string, CanvasElement>, rootId: string) => void;
+  /**
+   * Set the elements the canvas was given for this file without treating
+   * it as an edit — for the copy the app makes on open, so the first flush
+   * compares equal to it and the file's original source is left alone.
+   */
+  syncUIFileElements: (id: string, elements: Map<string, CanvasElement>, rootId: string) => void;
   updateUIFileImports: (id: string, imports: UIImport[]) => void;
   updateUIFileLogicSrc: (id: string, logicSrc: string | undefined) => void;
   updateUIFileSource: (id: string, source: string) => void;
@@ -787,10 +799,28 @@ function decrement() {
     return get().assetFiles.get(id);
   },
 
+  syncUIFileElements: (id, elements, rootId) => {
+    set((state) => {
+      const file = state.uiFiles.get(id);
+      if (!file) return state;
+      const newUIFiles = new Map(state.uiFiles);
+      newUIFiles.set(id, { ...file, elements, rootId });
+      return { uiFiles: newUIFiles };
+    });
+  },
+
   updateUIFile: (id, elements, rootId) => {
     set((state) => {
       const file = state.uiFiles.get(id);
       if (!file) return state;
+
+      // A flush of an unchanged canvas is not an edit. Every save, export,
+      // pre-flight check and tab switch flushes; before this check each one
+      // regenerated the file's source from the visual model, so a bundle
+      // opened and never touched came out rewritten — comments dropped,
+      // grouped expressions flattened, nested blocks collapsed. The original
+      // bytes stay authoritative until the tree actually differs.
+      if (file.rootId === rootId && elementsEqual(file.elements, elements)) return state;
 
       // Only regenerate originalSource when the file already had one (loaded
       // from a bundle or set via SourceView).  For files that never had
