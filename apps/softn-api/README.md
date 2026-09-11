@@ -11,7 +11,7 @@ takes a zip upload.
 
 - PHP 8.1 or newer with `zip` and `mbstring`; `pdo_sqlite` is needed only for legacy migration and apps that use server-side storage
 - A writable `data/` directory beside `api/` (the build creates it; `GET /api/health` reports whether it is writable)
-- Upload limits large enough for a bundle; `api/.user.ini` asks for 64 MB on PHP-FPM and CGI hosts
+- Upload limits large enough for a bundle; `api/.user.ini` asks for 64 MB on PHP-FPM and CGI hosts, and `GET /api/health` says whether the host agreed (see "Limits")
 
 ## Add an app by copying a folder
 
@@ -146,6 +146,136 @@ Deleting or corrupting `cache/bundles.json` rebuilds it without losing any
 plays, comments, ratings or ownership. Search/filter/sort use PHP over the
 current metadata snapshot; search is case-insensitive word matching, with
 name matches ranked first, rather than SQLite FTS stemming.
+
+## Limits
+
+Every request body is read against a limit chosen from the route alone,
+before a byte of it is read, and refused with a `413` that names the limit
+(`{"ok": false, "error": …, "limit": <bytes>}`) the moment it is exceeded —
+the rest of an oversized body is never read into memory. The limits are in
+`data/config.json`; how each route gets one is `Limits` in `lib/http.php`.
+
+| Setting | Default | What it bounds |
+|---|---|---|
+| `maxJsonBytes` | 256 KB | The body of every route that carries no file: comments, ratings, storage operations, `PATCH`, category suggestions |
+| `maxBundleBytes` | 32 MB | A bundle, however it arrives: a multipart file, a raw body, or the decoded `bundleBase64` |
+| `maxThumbnailBytes` | 2 MB | An image, the same three ways |
+| `maxThumbnailSide` | 8192 | The longest side an image may declare, in pixels |
+| `maxThumbnailPixels` | 16,000,000 | The most pixels (width × height) an image may declare |
+
+From those, two envelopes: the JSON body of a route that takes a bundle
+(`POST /api/apps`, `/versions`, `/remix`) may be as large as the bundle and
+a thumbnail in base64 plus `maxJsonBytes` — 45.6 MB at the defaults — and
+the JSON body of `POST …/thumbnail` the image in base64 plus `maxJsonBytes`.
+`GET /api/health` reports all of these under `limits`.
+
+How the checks fall:
+
+- A `Content-Length` past the route's limit is refused before anything is
+  read. The bytes are counted as they arrive regardless, in 64 KB pieces,
+  and the read stops one byte past the limit — so a body with no declared
+  length (chunked) is bounded the same way, and a declared length that does
+  not match what arrived is a `400`.
+- A raw bundle body is spooled to a temporary file piece by piece, never
+  held whole in memory. A `bundleBase64` field is refused from its encoded
+  length (what it *would* decode to) before it is decoded. A multipart file
+  is refused by its size on disk.
+- An image is sniffed for its type, then its header is read for the size
+  it declares (`getimagesize`, a few bytes) and refused with a `422` past
+  the side or pixel budget — before anything would decode it. The API
+  decodes no image itself; the budget is for the browsers that will show
+  it and for any resizing added later.
+- Temporary files the request made for itself are removed when the request
+  ends, however it ended; a multipart upload's file PHP removes itself.
+
+**Align the host.** PHP reads a POST body only up to its own
+`post_max_size` and a multipart file up to `upload_max_filesize`; a web
+server in front (nginx `client_max_body_size`, Apache `LimitRequestBody`)
+may cut earlier still. Each must be at least the bundle envelope, or an
+upload the API would take arrives empty and fails as "no bundle was sent".
+`api/.user.ini` sets 64 MB for PHP-FPM and CGI hosts; a mod_php host reads
+`php_value post_max_size 64M` and `php_value upload_max_filesize 64M` from
+`.htaccess` instead, and a host that allows neither takes them in `php.ini`.
+`GET /api/health` reports `uploadMax`, `postMax`, `memoryLimit` and
+`limits.hostAligned`, which is `true` when the PHP values cover the
+envelope. When they do not, the API answers a body between the two limits
+with a `413` that says which PHP setting to raise, rather than a misleading
+`400`. `memory_limit` should stay at the 256 MB `.user.ini` asks for: a
+base64 bundle at the limit is decoded from a JSON array that already holds
+the encoded text, and the two together are a little over twice
+`maxBundleBytes`.
+
+A `data/config.json` written by an earlier version carries the old
+`maxJsonBytes` of 48 MB, since the file is written once with every default;
+lower it to `262144` by hand. The bundle and thumbnail routes never
+depended on it.
+
+## Trusted proxies
+
+The visitor's address keys the rate limits and one-rating-per-person, so
+who may assert it matters. `trustedProxies` in `data/config.json` lists the
+peers allowed to: addresses or CIDR ranges, IPv4 and IPv6 alike
+(`["10.0.0.5", "10.1.0.0/16", "2001:db8::/32"]`). Empty — the default —
+trusts nobody, and every request is the address it connected from.
+
+When the connecting peer (`REMOTE_ADDR`) is in the list, `X-Forwarded-For`
+is walked from the right: each entry that is itself a trusted proxy is a
+hop and is skipped, and the first entry that is not one is the client. A
+client behind the edge therefore cannot choose its identity — whatever it
+prepends sits to the left of the entry the edge appended, and the walk
+stops there — and a client that reaches the host directly cannot either,
+since its header is not read. A malformed entry met on the walk, an empty
+or missing header, or a chain longer than sixteen trusted hops resolves to
+the peer's own address; a chain of nothing but trusted proxies resolves to
+its leftmost. An IPv4 address carried inside IPv6 (`::ffff:10.0.0.5`) is
+matched as the IPv4 it is; a port after an entry is dropped. A malformed
+range in the list is ignored and logged nowhere: it neither opens the
+policy nor closes the rest of it.
+
+`trustProxy: true`, the older switch, still works and means "trust the
+peer this request came in on, whoever it is" — the rightmost entry is
+then the client, as before. It is only safe on a host that nothing but its
+own edge can reach, which is a property of the network, not of this file;
+it is kept as a compatibility alias and is deprecated in favour of naming
+the edge in `trustedProxies`. `GET /api/health` reports how many trusted
+ranges are configured and whether the alias is on (`proxy`), and not the
+addresses. Nothing logs a forwarded chain or a key.
+
+## Timings, atomic commits and the benchmark
+
+Every metadata file — each app's `app.json`, `categories.json`,
+`ratelimits.json`, `sequences.json`, the bundle cache — is committed by
+writing a complete temporary sibling in the same directory, flushing and
+syncing it, and renaming it over the live file; a bundle is copied the same
+way. A reader never opens a partial file: the rename is atomic, and every
+reader takes the catalogue lock before reading, so it is held until the
+writer that holds it has committed or died. A writer killed mid-commit
+leaves its temporary sibling (`.json-…`, `.upload-…`) beside an intact live
+file; the catalogue ignores them, and the next request serves what was
+committed. `test/catalog-recovery.test.mjs` does exactly that.
+
+The catalogue measures itself. `GET /api/health` carries a `timings` block
+for its own request — `lockWaitMs` (time to acquire the catalogue lock),
+`lockHoldMs`, `bootMs` (reading every folder), `rebuild` (bundles the cache
+had to inspect again, count and ms), `commit` (metadata files written,
+count and ms) and `apps` (folders loaded). With `"debugTimings": true` in
+`data/config.json` every response carries the same numbers as a
+`Server-Timing` header (`lock;dur=…, hold;dur=…, boot;dur=…,
+rebuild;dur=…;desc="N bundles", commit;dur=…;desc="N files", apps;desc="N"`),
+which is what the benchmark reads. Leave it off in production: the numbers
+are not secret, but they are noise to every other client.
+
+`node scripts/bench/catalog-bench.mjs --sizes 100,1000` builds disposable
+catalogues of that many synthetic apps under the system temp directory,
+starts several `php -S` workers over each (separate processes, so the lock
+is contended for real), runs concurrent list, read, publish and update
+load, and prints p50/p95 latency, lock wait and hold, cache rebuild time
+and disk usage as a table and as JSON. Its results, and the thresholds
+proposed from them, are recorded in the audit repair report rather than
+here; the numbers depend on the machine. Note what the design implies
+before reading them: every request re-reads every `app.json` under the
+lock, so per-request cost grows with the catalogue, and a cold cache
+inspects every bundle once.
 
 ## Existing SQLite installations
 
@@ -375,4 +505,12 @@ The suite starts its own `php -S` on a temporary root and exercises
 publishing, versions, the edit key, comments, ratings, remixes, storage and
 the share page. A separate suite starts independent PHP processes to test
 concurrent plays/comments/ratings/version uploads, lock-holder termination,
-folder/cache changes and SQLite migration.
+folder/cache changes and SQLite migration. `admission.test.mjs` drives the
+body limits (chunked, lying `Content-Length`, base64 and image budgets,
+temp-file cleanup, a body larger than `memory_limit`); `proxy.test.mjs`
+the trusted-proxy resolver and the rate-limit identity behind it;
+`policies.test.mjs` the storage policy matrix under concurrent writers and
+the edit key's confinement to the publish reply; `catalog-recovery.test.mjs`
+the timings and a writer killed mid-commit. Each starts servers of its own
+under the system temp directory, with the ini values `.user.ini` asks for,
+and removes them.
