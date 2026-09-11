@@ -9,6 +9,7 @@ import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { SelectionBox } from './SelectionBox';
 import { getComponentMeta } from '../../utils/componentRegistry';
+import { blockHeaderText } from '../../utils/sourceGenerator';
 import { parseStringLiteralVariables } from '../../utils/logicStringLiterals';
 import { TokenIcon } from '../icons/TokenIcon';
 import type { CanvasElement as CanvasElementType } from '../../types/builder';
@@ -807,10 +808,21 @@ export const CanvasElement = React.memo(function CanvasElement({
               >
                 <TokenIcon token={componentMeta?.icon} size={12} />
               </span>
-              <strong style={{ fontSize: 12 }}>{componentType}</strong>
+              <strong style={{ fontSize: 12 }}>{blockHeaderText(element) ?? componentType}</strong>
             </div>
             {componentMeta?.description && (
               <span style={{ color: 'var(--dim)', fontSize: 11 }}>{componentMeta.description}</span>
+            )}
+            {element.block && (
+              // A control-flow block. Its branch is kept — and exported —
+              // as its children, but the canvas has no drop zone for a
+              // block, so the branch is edited in the source view.
+              <span style={{ color: 'var(--dim)', fontSize: 11 }} data-block-notice="true">
+                {element.children.length === 1
+                  ? '1 item in this branch'
+                  : `${element.children.length} items in this branch`}
+                {' · '}edit the branch in Source
+              </span>
             )}
           </div>
         );

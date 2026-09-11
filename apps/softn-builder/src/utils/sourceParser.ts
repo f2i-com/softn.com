@@ -1,24 +1,47 @@
 /**
  * Source Parser - Parses SoftN .ui source code into canvas elements
+ *
+ * The visual model is narrower than the language, and this is where the
+ * two meet. Expressions become text through the canonical printer
+ * (expressionPrinter.ts), so grouping and escapes survive; `#if` / `#each`
+ * blocks become block elements (see CanvasBlock) rather than being
+ * flattened into inline attributes; and the result carries a `fidelity`
+ * verdict (sourceFidelity.ts) saying whether the model can write the file
+ * back without loss — when it cannot, the store keeps the source
+ * authoritative and the editor works on the source alone.
  */
 
-import type { CanvasElement, CollectionDef, UIImport } from '../types/builder';
+import type {
+  CanvasBlock,
+  CanvasElement,
+  CollectionDef,
+  SourceFidelity,
+  UIImport,
+} from '../types/builder';
+import { BLOCK_COMPONENT_TYPES } from '../types/builder';
 import { debug } from './debug';
 import { parse as parseSoftN } from '@softn/core';
 import type {
   TemplateNode as AstTemplateNode,
   Expression as AstExpression,
   ElementNode as AstElementNode,
+  IfBlock as AstIfBlock,
+  EachBlock as AstEachBlock,
   PropValue as AstPropValue,
+  SoftNDocument,
 } from '@softn/core';
+import { printExpressionSafe } from './expressionPrinter';
+import { computeFidelity, hasSingleAppRoot } from './sourceFidelity';
 
-interface ParseResult {
+export interface ParseResult {
   elements: Map<string, CanvasElement>;
   rootId: string;
   logicSource: string;
   logicSrc?: string; // External logic file reference
   collections: CollectionDef[];
   imports: UIImport[];
+  /** Whether the elements can be written back without losing what the source holds. */
+  fidelity: SourceFidelity;
 }
 
 interface ParsedNode {
@@ -29,6 +52,7 @@ interface ParsedNode {
   conditionalIf?: string;
   loopEach?: string;
   loopAs?: string;
+  block?: CanvasBlock;
   expressionProps: string[];
   children: (ParsedNode | string)[];
   isSelfClosing: boolean;
@@ -36,8 +60,27 @@ interface ParsedNode {
 
 let idCounter = 0;
 
+/**
+ * Reasons gathered while the AST is turned into elements — an expression
+ * the printer refused, text the tree has no place for. Reset per parse.
+ */
+let conversionReasons: string[] = [];
+
 function generateId(): string {
   return `elem_${Date.now()}_${idCounter++}`;
+}
+
+/** Whether `componentType` names a control-flow block rather than a component. */
+export function isBlockComponentType(componentType: string): boolean {
+  return (BLOCK_COMPONENT_TYPES as readonly string[]).includes(componentType);
+}
+
+/**
+ * The fidelity verdict for a source on its own — what the store asks for
+ * before it regenerates a file whose loader did not record one.
+ */
+export function assessSourceFidelity(source: string): SourceFidelity {
+  return parseSource(source).fidelity;
 }
 
 /**
@@ -45,6 +88,7 @@ function generateId(): string {
  */
 export function parseSource(source: string): ParseResult {
   idCounter = 0;
+  conversionReasons = [];
 
   debug('[sourceParser] Parsing source:', source.substring(0, 500));
 
@@ -53,6 +97,7 @@ export function parseSource(source: string): ParseResult {
   let logicSrc: string | undefined;
   const collections: CollectionDef[] = [];
   const imports: UIImport[] = [];
+  let doc: SoftNDocument | null = null;
 
   // Check for external logic file reference: logicSrc="./file.logic" or <logic src="./file.logic" />
   const logicSrcMatch = source.match(/logicSrc=["']([^"']+)["']/);
@@ -68,7 +113,7 @@ export function parseSource(source: string): ParseResult {
 
   // Use the canonical SoftN parser first so all supported .ui syntax is detectable.
   try {
-    const doc = parseSoftN(source);
+    doc = parseSoftN(source);
 
     if (doc.logic?.code) {
       logicSource = doc.logic.code.trim();
@@ -101,18 +146,18 @@ export function parseSource(source: string): ParseResult {
     const astRoots = flattenTemplateNodesToElements(doc.template || []);
 
     if (astRoots.length > 0) {
-      const rootNode =
-        astRoots.length === 1 && astRoots[0].type === 'App'
-          ? astRoots[0]
-          : {
-              type: 'App',
-              props: { theme: 'light' },
-              events: {},
-              bindings: {},
-              expressionProps: [],
-              children: astRoots,
-              isSelfClosing: false,
-            };
+      const syntheticRoot = !hasSingleAppRoot(doc);
+      const rootNode: ParsedNode = syntheticRoot
+        ? {
+            type: 'App',
+            props: { theme: 'light' },
+            events: {},
+            bindings: {},
+            expressionProps: [],
+            children: astRoots,
+            isSelfClosing: false,
+          }
+        : astRoots[0];
 
       const rootId = buildElementTree(rootNode, null, elements);
 
@@ -123,11 +168,32 @@ export function parseSource(source: string): ParseResult {
         logicSrc,
         collections,
         imports: dedupeImports(imports),
+        fidelity: computeFidelity({
+          source,
+          doc,
+          elements,
+          rootId,
+          syntheticRoot,
+          conversionReasons,
+        }),
       };
     }
   } catch (err) {
     debug('[sourceParser] Core parser failed, using legacy parser fallback:', err);
+    doc = null;
   }
+
+  // Everything below is the legacy regular-expression reader, used only
+  // when the core parser throws. Nothing it produces is trusted to write
+  // the file back.
+  const legacyFidelity: SourceFidelity = {
+    lossless: false,
+    reasons: [
+      doc
+        ? 'the file has no template the visual model can hold'
+        : 'the SoftN parser could not read this file (the legacy reader was used)',
+    ],
+  };
 
   // Fallback legacy import extraction
   const importRegex = /import\s*\{\s*([^}]+)\s*\}\s*from\s*["']([^"']+)["']/g;
@@ -225,6 +291,7 @@ export function parseSource(source: string): ParseResult {
       logicSrc,
       collections,
       imports: dedupeImports(imports),
+      fidelity: legacyFidelity,
     };
   }
 
@@ -245,6 +312,7 @@ export function parseSource(source: string): ParseResult {
     logicSrc,
     collections,
     imports: dedupeImports(imports),
+    fidelity: legacyFidelity,
   };
 }
 
@@ -291,44 +359,18 @@ function astNodeToChildren(node: AstTemplateNode): (ParsedNode | string)[] {
       const parsed = astElementToParsedNode(node);
       return [parsed];
     }
-    case 'Text': {
-      const text = node.content?.trim();
-      return text ? [text] : [];
-    }
+    case 'Text':
+      // As the lexer gives it: internal runs already collapsed, one leading
+      // or trailing space kept. Segments are concatenated as they were, so
+      // `{a}.{b}` stays `{a}.{b}` rather than `{a} . {b}`; whitespace-only
+      // text is layout and is dropped where segments are gathered.
+      return node.content ? [node.content] : [];
     case 'Expression':
       return [`{${expressionToString(node.expression)}}`];
-    case 'IfBlock': {
-      const condition = expressionToString(node.condition);
-      const consequent = node.consequent.flatMap((n) => astNodeToChildren(n));
-      const conditionedConsequent = consequent.map((item) =>
-        applyDirectiveToChild(item, { conditionalIf: condition })
-      );
-
-      const alternateNodes: (ParsedNode | string)[] = [];
-      if (node.alternate) {
-        if (Array.isArray(node.alternate)) {
-          alternateNodes.push(...node.alternate.flatMap((n) => astNodeToChildren(n)));
-        } else {
-          alternateNodes.push(...astNodeToChildren(node.alternate));
-        }
-      }
-      const conditionedAlternate = alternateNodes.map((item) =>
-        applyDirectiveToChild(item, { conditionalIf: `!(${condition})` })
-      );
-
-      return [...conditionedConsequent, ...conditionedAlternate];
-    }
-    case 'EachBlock': {
-      const iterable = expressionToString(node.iterable);
-      const as = node.indexName ? `${node.itemName}, ${node.indexName}` : node.itemName;
-      const body = node.body.flatMap((n) => astNodeToChildren(n));
-      return body.map((item) =>
-        applyDirectiveToChild(item, {
-          loopEach: iterable,
-          loopAs: as,
-        })
-      );
-    }
+    case 'IfBlock':
+      return [ifBlockToParsedNode(node)];
+    case 'EachBlock':
+      return [eachBlockToParsedNode(node)];
     case 'Slot': {
       const slotNode: ParsedNode = {
         type: 'Slot',
@@ -373,38 +415,68 @@ function createTextElement(text: string): ParsedNode {
   };
 }
 
-function applyDirectiveToChild(
-  item: ParsedNode | string,
-  directives: { conditionalIf?: string; loopEach?: string; loopAs?: string }
-): ParsedNode | string {
-  if (typeof item === 'string') {
-    const wrapped = createTextElement(item);
-    if (directives.conditionalIf) wrapped.conditionalIf = directives.conditionalIf;
-    if (directives.loopEach) wrapped.loopEach = directives.loopEach;
-    if (directives.loopAs) wrapped.loopAs = directives.loopAs;
-    return wrapped;
-  }
-
-  const cloned: ParsedNode = {
-    ...item,
-    props: { ...item.props },
-    events: { ...item.events },
-    bindings: { ...item.bindings },
-    expressionProps: [...item.expressionProps],
-    children: [...item.children],
+/**
+ * A control-flow block as a node of the tree: the keyword is its type, the
+ * header its `block`, the branch its children.
+ *
+ * Blocks used to be flattened into `if=` / `each=` attributes on the
+ * branch's elements, set only where the element had none of its own. That
+ * let an inner `#if` displace the outer one (the inner condition rendered
+ * through a false outer guard), dropped one level of two nested `#each`
+ * loops together with its variable, and lost `#empty` and `#elseif`
+ * branches altogether. Keeping the block as a node keeps its scope.
+ */
+function blockNode(
+  type: CanvasBlock['kind'],
+  block: CanvasBlock,
+  children: AstTemplateNode[]
+): ParsedNode {
+  return {
+    type: `#${type}`,
+    props: {},
+    events: {},
+    bindings: {},
+    block,
+    expressionProps: [],
+    children: children.flatMap((n) => astNodeToChildren(n)),
+    isSelfClosing: false,
   };
+}
 
-  if (directives.conditionalIf && !cloned.conditionalIf) {
-    cloned.conditionalIf = directives.conditionalIf;
-  }
-  if (directives.loopEach && !cloned.loopEach) {
-    cloned.loopEach = directives.loopEach;
-  }
-  if (directives.loopAs && !cloned.loopAs) {
-    cloned.loopAs = directives.loopAs;
+function ifBlockToParsedNode(node: AstIfBlock): ParsedNode {
+  const head = blockNode('if', { kind: 'if', condition: expressionToString(node.condition) }, node.consequent);
+
+  // `#elseif` chains nest in the AST (each alternate is another IfBlock);
+  // they are flattened into sibling branches at the end of the block.
+  let alternate = node.alternate;
+  while (alternate) {
+    if (Array.isArray(alternate)) {
+      head.children.push(blockNode('else', { kind: 'else' }, alternate));
+      break;
+    }
+    head.children.push(
+      blockNode('elseif', { kind: 'elseif', condition: expressionToString(alternate.condition) }, alternate.consequent)
+    );
+    alternate = alternate.alternate;
   }
 
-  return cloned;
+  return head;
+}
+
+function eachBlockToParsedNode(node: AstEachBlock): ParsedNode {
+  const block: CanvasBlock = {
+    kind: 'each',
+    iterable: expressionToString(node.iterable),
+    itemName: node.itemName,
+  };
+  if (node.indexName) block.indexName = node.indexName;
+  if (node.keyExpression) block.keyExpression = expressionToString(node.keyExpression);
+
+  const head = blockNode('each', block, node.body);
+  if (node.emptyFallback) {
+    head.children.push(blockNode('empty', { kind: 'empty' }, node.emptyFallback));
+  }
+  return head;
 }
 
 function astElementToParsedNode(node: AstElementNode): ParsedNode {
@@ -466,53 +538,16 @@ function astPropValueToBuilderValue(value: AstPropValue): { value: unknown; isEx
   }
 }
 
+/**
+ * An expression as the text the visual model keeps. Precedence-aware, so
+ * grouping survives; a node the printer refuses is recorded as a reason the
+ * file is not lossless and printed as the parser's own placeholder, never
+ * as an empty attribute.
+ */
 function expressionToString(expr: AstExpression): string {
-  switch (expr.type) {
-    case 'Identifier':
-      return expr.name;
-    case 'Literal':
-      return expr.raw ?? JSON.stringify(expr.value);
-    case 'BinaryExpression':
-      return `${expressionToString(expr.left)} ${expr.operator} ${expressionToString(expr.right)}`;
-    case 'UnaryExpression':
-      return `${expr.operator}${expressionToString(expr.argument)}`;
-    case 'MemberExpression':
-      return expr.computed
-        ? `${expressionToString(expr.object)}[${expressionToString(expr.property)}]`
-        : `${expressionToString(expr.object)}.${expressionToString(expr.property)}`;
-    case 'CallExpression':
-      return `${expressionToString(expr.callee)}(${expr.arguments.map((a) => expressionToString(a)).join(', ')})`;
-    case 'ConditionalExpression':
-      return `${expressionToString(expr.test)} ? ${expressionToString(expr.consequent)} : ${expressionToString(expr.alternate)}`;
-    case 'ArrowFunctionExpression': {
-      const params =
-        expr.params.length === 1 ? expr.params[0] : `(${expr.params.join(', ')})`;
-      const body = typeof expr.body === 'string' ? expr.body : expressionToString(expr.body);
-      return `${expr.async ? 'async ' : ''}${params} => ${body}`;
-    }
-    case 'ObjectExpression':
-      return `{ ${expr.properties
-        .map((p) =>
-          p.shorthand ? p.key : `${p.key}: ${expressionToString(p.value)}`
-        )
-        .join(', ')} }`;
-    case 'ArrayExpression':
-      return `[${expr.elements.map((e) => expressionToString(e)).join(', ')}]`;
-    case 'SpreadElement':
-      return `...${expressionToString(expr.argument)}`;
-    case 'TemplateLiteral': {
-      const segments: string[] = [];
-      for (let i = 0; i < expr.quasis.length; i++) {
-        segments.push(expr.quasis[i].value.raw.replace(/`/g, '\\`'));
-        if (i < expr.expressions.length) {
-          segments.push(`\${${expressionToString(expr.expressions[i])}}`);
-        }
-      }
-      return `\`${segments.join('')}\``;
-    }
-    default:
-      return '';
-  }
+  const printed = printExpressionSafe(expr);
+  conversionReasons.push(...printed.diagnostics);
+  return printed.text;
 }
 
 /**
@@ -924,10 +959,7 @@ function buildElementTree(
 
   for (const child of node.children) {
     if (typeof child === 'string') {
-      const normalized = child.trim();
-      if (normalized) {
-        textSegments.push(normalized);
-      }
+      textSegments.push(child);
     } else {
       const childId = buildElementTree(child, id, elements);
       childIds.push(childId);
@@ -936,8 +968,16 @@ function buildElementTree(
 
   // Build props
   const props: Record<string, unknown> = { ...node.props };
-  if (textSegments.length > 0 && childIds.length === 0) {
-    props.children = textSegments.join(' ');
+  const text = textSegments.join('').trim();
+  if (text && childIds.length === 0) {
+    props.children = text;
+  } else if (text) {
+    // Text between child elements has no place in the model; it would be
+    // dropped on regeneration, so the file is not lossless.
+    const shown = text.length > 40 ? `${text.slice(0, 37)}…` : text;
+    conversionReasons.push(
+      `the text ${JSON.stringify(shown)} sits between child elements of <${node.type}> (the visual model has no place for it)`
+    );
   }
 
   const element: CanvasElement = {
@@ -954,6 +994,9 @@ function buildElementTree(
   }
   if (Object.keys(node.bindings).length > 0) {
     element.bindings = { ...node.bindings };
+  }
+  if (node.block) {
+    element.block = { ...node.block };
   }
   if (node.conditionalIf) {
     element.conditionalIf = node.conditionalIf;

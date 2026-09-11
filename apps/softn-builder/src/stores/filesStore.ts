@@ -15,6 +15,9 @@ import type {
 import { debug } from '../utils/debug';
 import { generateSource } from '../utils/sourceGenerator';
 import { elementsEqual } from '../utils/elementsEqual';
+import { assessSourceFidelity } from '../utils/sourceParser';
+import { hasSingleAppRoot } from '../utils/sourceFidelity';
+import { parse as parseSoftN } from '@softn/core';
 
 function generateId(): string {
   return `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -153,6 +156,31 @@ function repointLogicReferences(
   }
 
   return updated;
+}
+
+/**
+ * Whether the file's template is a single `<App>` element, so the root the
+ * canvas holds is the author's and not the wrapper parseSource adds around
+ * several roots. Asked of the parser rather than a regular expression: a
+ * file whose first root is `<App>` but which has a second root beside it
+ * also got the wrapper, and writing `<App>` around both would nest them.
+ */
+function hadSingleAppRoot(source: string): boolean {
+  try {
+    return hasSingleAppRoot(parseSoftN(source));
+  } catch {
+    const template = source
+      .replace(/<data>[\s\S]*?<\/data>/gi, '')
+      .replace(/<logic>[\s\S]*?<\/logic>/gi, '')
+      .replace(/<logic\s+[^>]*\/>/gi, '')
+      .replace(/<import\s+[^>]+\/>/gi, '')
+      .replace(/<style>[\s\S]*?<\/style>/gi, '')
+      .replace(/<component\b[^>]*>[\s\S]*?<\/component>/gi, '')
+      .replace(/^\/\/.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .trim();
+    return /^<App[\s>]/i.test(template);
+  }
 }
 
 interface FilesStore {
@@ -831,20 +859,31 @@ function decrement() {
       // styles) from the original source and only replace the template
       // portion with the newly generated template from the canvas.
       let nextOriginalSource = file.originalSource;
+      let sourceFidelity = file.sourceFidelity;
       if (nextOriginalSource !== undefined) {
+        // The visual model is narrower than the language. Before the file
+        // is regenerated from it, ask whether that loses anything the
+        // source holds — a comment, an expression the parser stops reading
+        // part way through, text between child elements, a header block
+        // the splice below does not carry. If it does, the original bytes
+        // stay authoritative and the edit is recorded as blocked, with the
+        // reasons, so the editor can say this file is edited as source.
+        // Regenerating anyway is exactly the silent loss BLD-01 forbids.
+        sourceFidelity ??= assessSourceFidelity(nextOriginalSource);
+        if (!sourceFidelity.lossless) {
+          const blockedFiles = new Map(state.uiFiles);
+          blockedFiles.set(id, {
+            ...file,
+            sourceFidelity,
+            visualEditBlocked: [...sourceFidelity.reasons],
+          });
+          return { uiFiles: blockedFiles };
+        }
+
         // Detect whether the original source had an <App> root element.
         // If not (e.g. Header.ui, Dashboard.ui), the parser added a
         // synthetic App wrapper which we must NOT persist back.
-        const originalTemplate = nextOriginalSource
-          .replace(/<data>[\s\S]*?<\/data>/gi, '')
-          .replace(/<logic>[\s\S]*?<\/logic>/gi, '')
-          .replace(/<logic\s+[^>]*\/>/gi, '')
-          .replace(/<import\s+[^>]+\/>/gi, '')
-          .replace(/<style>[\s\S]*?<\/style>/gi, '')
-          .replace(/^\/\/.*$/gm, '')
-          .replace(/\/\*[\s\S]*?\*\//g, '')
-          .trim();
-        const originalHadAppRoot = /^<App[\s>]/i.test(originalTemplate);
+        const originalHadAppRoot = hadSingleAppRoot(nextOriginalSource);
 
         // Generate template-only from the canvas elements
         const generatedTemplate = generateSource(elements, rootId, '', [], {
@@ -853,6 +892,14 @@ function decrement() {
 
         // Extract non-template header blocks from the current originalSource
         const headerBlocks: string[] = [];
+
+        // Component declaration: <component name="…">…</component>
+        const componentBlocks = Array.from(
+          nextOriginalSource.matchAll(/<component\b[^>]*>[\s\S]*?<\/component>|<component\b[^>]*\/>/gi)
+        ).map((m) => m[0]);
+        for (const block of componentBlocks) {
+          headerBlocks.push(block);
+        }
 
         // Logic: <logic src="..." /> (external reference)
         const logicSrcBlock = nextOriginalSource.match(
@@ -911,6 +958,8 @@ function decrement() {
         elements,
         rootId,
         ...(nextOriginalSource !== undefined ? { originalSource: nextOriginalSource } : {}),
+        ...(sourceFidelity !== undefined ? { sourceFidelity } : {}),
+        visualEditBlocked: undefined,
       });
 
       // Mark as dirty
@@ -954,7 +1003,14 @@ function decrement() {
       if (!file) return state;
 
       const newUIFiles = new Map(state.uiFiles);
-      newUIFiles.set(id, { ...file, originalSource: source });
+      // New source, new fidelity: it is computed again on the next visual
+      // edit, and a previously refused edit no longer describes this text.
+      newUIFiles.set(id, {
+        ...file,
+        originalSource: source,
+        sourceFidelity: undefined,
+        visualEditBlocked: undefined,
+      });
 
       // Mark as dirty
       const newNodes = new Map(state.nodes);

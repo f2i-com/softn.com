@@ -87,6 +87,83 @@ export function generateSource(
   return lines.join('\n');
 }
 
+/** Whether the element is a control-flow block rather than a component. */
+function isBlock(element: CanvasElement): boolean {
+  return element.block !== undefined && element.componentType.startsWith('#');
+}
+
+/** Whether the element is a branch that continues its parent block. */
+function isContinuation(element: CanvasElement): boolean {
+  return (
+    isBlock(element) &&
+    (element.block!.kind === 'elseif' || element.block!.kind === 'else' || element.block!.kind === 'empty')
+  );
+}
+
+/**
+ * The header line of a block as the canvas shows it — `#if (cond)`,
+ * `#each (item, i in list)` — or null for an element that is not a block.
+ */
+export function blockHeaderText(element: CanvasElement): string | null {
+  return isBlock(element) ? blockHeader(element) : null;
+}
+
+/** The header line of a block: `#if (cond)`, `#each (item, i in list) key={k}`, `#else`… */
+function blockHeader(element: CanvasElement): string {
+  const block = element.block!;
+  switch (block.kind) {
+    case 'if':
+      return `#if (${block.condition ?? ''})`;
+    case 'elseif':
+      return `#elseif (${block.condition ?? ''})`;
+    case 'else':
+      return '#else';
+    case 'each': {
+      const vars = block.indexName ? `${block.itemName}, ${block.indexName}` : block.itemName ?? '';
+      const head = `#each (${vars} in ${block.iterable ?? ''})`;
+      return block.keyExpression ? `${head} key={${block.keyExpression}}` : head;
+    }
+    case 'empty':
+      return '#empty';
+  }
+}
+
+/**
+ * Print a control-flow block. Its branch is its children; an `#elseif`,
+ * `#else` or `#empty` child is a continuation printed at the block's own
+ * indent, its branch one level in. `#end` closes an `#if` or `#each`; a
+ * continuation printed on its own (moved out of its block) gets none.
+ */
+function generateBlock(
+  element: CanvasElement,
+  elements: Map<string, CanvasElement>,
+  depth: number,
+  options: GeneratorOptions
+): string[] {
+  const lines: string[] = [];
+  const indent = options.indent!.repeat(depth);
+  lines.push(`${indent}${blockHeader(element)}`);
+
+  if (typeof element.props.children === 'string' && element.children.length === 0) {
+    lines.push(`${indent}${options.indent}${escapeText(element.props.children)}`);
+  }
+
+  for (const childId of element.children) {
+    const child = elements.get(childId);
+    if (!child) continue;
+    if (isContinuation(child)) {
+      lines.push(...generateBlock(child, elements, depth, options));
+    } else {
+      lines.push(...generateElement(child, elements, depth + 1, options));
+    }
+  }
+
+  if (!isContinuation(element)) {
+    lines.push(`${indent}#end`);
+  }
+  return lines;
+}
+
 /**
  * Generate source for a single element and its children
  */
@@ -96,6 +173,10 @@ function generateElement(
   depth: number,
   options: GeneratorOptions
 ): string[] {
+  if (isBlock(element)) {
+    return generateBlock(element, elements, depth, options);
+  }
+
   const lines: string[] = [];
   const indent = options.indent!.repeat(depth);
   const meta = getComponentMeta(element.componentType);
@@ -105,17 +186,18 @@ function generateElement(
   const hasChildren = element.children.length > 0 || typeof element.props.children === 'string';
 
   if (hasChildren) {
-    // Opening tag
-    if (attrs.length > 0) {
-      lines.push(`${indent}<${element.componentType} ${attrs}>`);
-    } else {
-      lines.push(`${indent}<${element.componentType}>`);
+    const open = attrs.length > 0 ? `<${element.componentType} ${attrs}>` : `<${element.componentType}>`;
+    const close = `</${element.componentType}>`;
+
+    // Text-only content is written inline, `<Text>Hello</Text>`: on a line
+    // of its own the lexer keeps one leading and one trailing space of the
+    // indentation as part of the text, and the engine renders them.
+    if (typeof element.props.children === 'string' && element.children.length === 0) {
+      lines.push(`${indent}${open}${escapeText(element.props.children)}${close}`);
+      return lines;
     }
 
-    // Text children
-    if (typeof element.props.children === 'string' && element.children.length === 0) {
-      lines.push(`${indent}${options.indent}${escapeText(element.props.children as string)}`);
-    }
+    lines.push(`${indent}${open}`);
 
     // Child elements
     for (const childId of element.children) {
@@ -127,7 +209,7 @@ function generateElement(
     }
 
     // Closing tag
-    lines.push(`${indent}</${element.componentType}>`);
+    lines.push(`${indent}${close}`);
   } else {
     // Self-closing tag
     if (attrs.length > 0) {
@@ -220,10 +302,35 @@ function generateAttributes(
 }
 
 /**
- * Escape text content
+ * Escape text content — outside `{…}` interpolations only. Text is one
+ * string in the model, expressions included, and `{items.length > 0}`
+ * used to come back as `{items.length &gt; 0}`, which the expression lexer
+ * does not decode: the comparison became an error.
  */
 function escapeText(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let out = '';
+  let depth = 0;
+  let plain = '';
+  const flush = () => {
+    out += plain.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    plain = '';
+  };
+  for (const ch of text) {
+    if (ch === '{') {
+      if (depth === 0) flush();
+      depth++;
+      out += ch;
+    } else if (ch === '}' && depth > 0) {
+      depth--;
+      out += ch;
+    } else if (depth > 0) {
+      out += ch;
+    } else {
+      plain += ch;
+    }
+  }
+  flush();
+  return out;
 }
 
 /**
