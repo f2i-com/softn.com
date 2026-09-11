@@ -1,10 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import { Mark } from '../common/Mark';
-import { buildBundle, exportAsBundle } from '../../lib/exportBundle';
-import { RUNTIME_URL, SITE_URL } from '../../lib/siteUrls';
-import { stageBundleHandoff, handoffUrl } from '@softn/core';
+import { HandoffReady } from '../common/HandoffReady';
+import { exportAsBundle } from '../../lib/exportBundle';
+import { prepareHandoff, type HandoffDestination, type ReadyHandoff } from '../../lib/handoff';
 
 interface TopBarProps {
   onBackToDashboard?: () => void;
@@ -18,30 +18,36 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
   // bundle the directory would refuse, so the two buttons that send it on
   // wait until it is fixed. Export stays: a file on disk can be looked at.
   const refused = errors.some((e) => e.level === 'error' && e.type === 'bundle-refused');
+  const [preparing, setPreparing] = useState<HandoffDestination | null>(null);
+  const [ready, setReady] = useState<ReadyHandoff | null>(null);
 
   /**
-   * Stage the bundle for the runtime or the publish page and open it. Both
-   * are pages of this origin in a deployment; in development they are other
-   * ports, and the page opens without the bundle and says so.
+   * Stage the bundle for the runtime or the publish page, then offer the
+   * link. The editor stays where it is: the opening is the person's own
+   * click on that link, in a new tab or — if they choose — this one. See
+   * lib/handoff.ts for why it is not a window.open here.
    */
-  const handOff = async (to: 'runtime' | 'publish') => {
-    if (!hasFiles) return;
+  const handOff = async (to: HandoffDestination) => {
+    if (!hasFiles || preparing) return;
     const log = useWorkspaceStore.getState().addConsoleOutput;
+    setReady(null);
+    setPreparing(to);
     try {
-      const bytes = buildBundle(files);
-      const staged = await stageBundleHandoff(bytes, projectName || 'app', 'studio');
-      if (!staged) {
-        log('This browser could not hold the bundle for the next page. Export it and open the file there instead.');
+      const outcome = await prepareHandoff(to, files, projectName);
+      if (!outcome.ok) {
+        log(outcome.message);
         return;
       }
-      const target = handoffUrl(to === 'runtime' ? RUNTIME_URL : SITE_URL, to);
-      const opened = window.open(target, '_blank', 'noopener');
-      if (!opened) window.location.assign(target);
-      log(to === 'runtime' ? 'Opened the bundle in the runtime.' : 'Handed the bundle to the publish page.');
+      setReady(outcome.ready);
+      log(to === 'runtime' ? 'The bundle is staged for the runtime. Open it from the link in the bar.' : 'The bundle is staged for the publish page. Open it from the link in the bar.');
     } catch (err: unknown) {
       log(`Hand-off failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPreparing(null);
     }
   };
+
+  const busyTitle = (to: HandoffDestination, idle: string) => (preparing === to ? 'Preparing the bundle…' : refused ? 'Fix what the validator found first' : hasFiles ? idle : 'No files');
 
   return (
     <div style={styles.bar}>
@@ -63,21 +69,23 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
             other SoftN app; a second one here would be a second opinion. */}
         <button
           onClick={() => void handOff('runtime')}
-          disabled={!hasFiles || refused}
+          disabled={!hasFiles || refused || preparing !== null}
+          aria-busy={preparing === 'runtime'}
           style={{ ...styles.exportBtn, opacity: hasFiles && !refused ? 1 : 0.4, cursor: hasFiles && !refused ? 'pointer' : 'not-allowed' }}
-          title={refused ? 'Fix what the validator found first' : hasFiles ? 'Open the bundle in the SoftN runtime' : 'No files to run'}
+          title={busyTitle('runtime', 'Stage the bundle for the SoftN runtime')}
         >
           <Icon name="play" size={16} />
-          <span>Run</span>
+          <span>{preparing === 'runtime' ? 'Preparing…' : 'Run'}</span>
         </button>
         <button
           onClick={() => void handOff('publish')}
-          disabled={!hasFiles || refused}
+          disabled={!hasFiles || refused || preparing !== null}
+          aria-busy={preparing === 'publish'}
           style={{ ...styles.exportBtn, opacity: hasFiles && !refused ? 1 : 0.4, cursor: hasFiles && !refused ? 'pointer' : 'not-allowed' }}
-          title={refused ? 'Fix what the validator found first' : hasFiles ? 'Hand the bundle to the directory’s publish page' : 'No files to publish'}
+          title={busyTitle('publish', 'Stage the bundle for the directory’s publish page')}
         >
           <Icon name="upload" size={16} />
-          <span>Publish</span>
+          <span>{preparing === 'publish' ? 'Preparing…' : 'Publish'}</span>
         </button>
         <button
           onClick={() => {
@@ -98,12 +106,18 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
           <span>Export</span>
         </button>
       </div>
+      {ready && (
+        <div style={styles.readyDock}>
+          <HandoffReady ready={ready} onDone={() => setReady(null)} />
+        </div>
+      )}
     </div>
   );
 };
 
 const styles: Record<string, React.CSSProperties> = {
   bar: {
+    position: 'relative',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -113,6 +127,16 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--studio-bg-elevated)',
     borderBottom: '1px solid var(--studio-border)',
     flexShrink: 0,
+  },
+  // The ready link hangs under the bar's right end, over the panels, so the
+  // bar keeps its height and the link is next to the button that made it.
+  readyDock: {
+    position: 'absolute',
+    top: '100%',
+    right: 14,
+    marginTop: 6,
+    zIndex: 20,
+    maxWidth: 'min(520px, calc(100vw - 28px))',
   },
   left: {
     display: 'flex',

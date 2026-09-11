@@ -13,7 +13,7 @@ import { FrameBar } from './components/FrameBar';
 import { ProductBar } from '@softn/brand';
 import type { ConsentRequest } from './components/PermissionBar';
 import type { PermissionConfig } from '@softn/core';
-import { takeBundleHandoff } from '@softn/core';
+import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn/core';
 
 const appShellStyles = `
   @keyframes softn-shell-fade-in {
@@ -280,6 +280,10 @@ function readEntry(): {
   // trust with a scheme or a second slash.
   const backTo = sameOriginPath(params.get('back'));
   const openValue = params.get('open');
+  if (openValue === 'handoff') {
+    const { id } = handoffIdFrom(window.location.search, 'runtime');
+    return { openValue: id ? `handoff:${id}` : 'handoff', appName: null, page: null, embedded, backTo };
+  }
   if (openValue) return { openValue, appName: null, page: null, embedded, backTo };
   return { openValue: null, ...parseAppUrl(), embedded, backTo };
 }
@@ -1013,14 +1017,18 @@ function App(): React.ReactElement {
       // IndexedDB rather than fetched. Taking it removes it; a reload finds
       // nothing and says so, rather than reopening a bundle the editor has
       // since changed.
-      if (value === 'handoff') {
-        return takeBundleHandoff().then((handoff) => {
-          if (!handoff) {
-            setError(new Error('Nothing was handed to the runtime. Open the bundle from Builder or Studio again, or choose the file.'));
+      if (value.startsWith('handoff')) {
+        // The id rides in the value as `handoff:<id>`, put there by readEntry
+        // before the address bar is rewritten; the record it names was staged
+        // for the runtime and no other page, and is claimed exactly once.
+        const id = value.includes(':') ? value.slice(value.indexOf(':') + 1) : null;
+        return takeBundleHandoff(id, 'runtime').then((result) => {
+          if (!result.ok) {
+            setError(new Error(describeHandoffFailure(result.reason, 'runtime')));
             setActiveTabId(null);
             return null;
           }
-          return processBundleData(handoff.bytes, `${handoff.name || 'app'}.softn`);
+          return processBundleData(result.handoff.bytes, `${result.handoff.name || 'app'}.softn`);
         });
       }
 

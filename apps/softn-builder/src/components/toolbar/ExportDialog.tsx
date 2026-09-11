@@ -18,8 +18,6 @@ import {
   STORAGE_POLICIES,
   STORAGE_POLICY_INFO,
   inspectBundle,
-  stageBundleHandoff,
-  handoffUrl,
   type BundleInspection,
   type Capability,
   type StoragePolicy,
@@ -28,7 +26,7 @@ import { useProjectStore } from '../../stores/projectStore';
 import { toast } from '../../stores/notificationStore';
 import { buildProjectBundle, bundleFileName, gatherCollections } from '../../utils/buildProjectBundle';
 import type { PermissionDeclaration } from '../../utils/permissions';
-import { RUNTIME_URL, SITE_URL } from '../../utils/siteUrls';
+import { destinationLabel, prepareHandoff, type ReadyHandoff } from '../../utils/handoff';
 
 const MAX_ICON_BYTES = 512 * 1024;
 
@@ -292,6 +290,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   const [busy, setBusy] = useState<null | 'export' | 'run' | 'publish'>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  /** A bundle staged for the runtime or the publish page, with the link that claims it. */
+  const [ready, setReady] = useState<ReadyHandoff | null>(null);
   const [inspection, setInspection] = useState<BundleInspection | null>(null);
   const iconInput = useRef<HTMLInputElement>(null);
 
@@ -358,6 +358,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
     if (!isOpen) {
       setError(null);
       setDone(null);
+      setReady(null);
       setBusy(null);
     }
   }, [isOpen]);
@@ -389,21 +390,17 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         }
 
         // The runtime and the directory are pages of this origin; the bundle
-        // is staged for whichever opens next. In development they are other
-        // ports and share nothing, so the page opens without it and says so.
-        const staged = await stageBundleHandoff(bytes, name, 'builder');
-        if (!staged) {
-          setError('This browser could not hold the bundle for the next page. Export it and open the file there instead.');
+        // is staged under an id addressed to the one chosen, and the dialog
+        // then offers the link. Opening it is the person's click, so it is
+        // never popup-blocked and never navigates the editor by mistake — see
+        // utils/handoff.ts. In development the pages can be other origins;
+        // that is reported instead of opening a page that finds nothing.
+        const outcome = await prepareHandoff(what === 'run' ? 'runtime' : 'publish', bytes, name);
+        if (!outcome.ok) {
+          setError(outcome.message);
           return;
         }
-        const target = what === 'run' ? handoffUrl(RUNTIME_URL, 'runtime') : handoffUrl(SITE_URL, 'publish');
-        const opened = window.open(target, '_blank', 'noopener');
-        if (!opened) window.location.assign(target);
-        setDone(what === 'run' ? 'Opened in the runtime.' : 'Handed to the publish page.');
-        setTimeout(() => {
-          setDone(null);
-          onClose();
-        }, 1500);
+        setReady(outcome.ready);
       } catch (err) {
         console.error('[ExportDialog] failed:', err);
         const msg = err instanceof Error ? err.message : 'Export failed';
@@ -435,7 +432,34 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         </div>
 
         <div style={styles.content}>
-          {done ? (
+          {ready ? (
+            <div style={styles.success} role="status" aria-live="polite">
+              <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
+              <div style={{ fontSize: 16, fontWeight: 500, color: 'var(--paper)' }}>
+                {ready.name} is ready for {destinationLabel(ready.to)}.
+              </div>
+              <div style={{ ...styles.capSummary, marginTop: 8 }}>Builder stays open. The link is good for ten minutes and can be taken once.</div>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginTop: 20, flexWrap: 'wrap' }}>
+                <a
+                  href={ready.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ ...styles.button, ...styles.exportButton, textDecoration: 'none' }}
+                  onClick={() => {
+                    setTimeout(() => {
+                      setReady(null);
+                      onClose();
+                    }, 0);
+                  }}
+                >
+                  {ready.to === 'runtime' ? 'Open in the runtime' : 'Open the publish page'} ↗
+                </a>
+                <a href={ready.url} style={{ ...styles.button, ...styles.secondaryButton, textDecoration: 'none' }} title="Leave Builder and open it in this tab">
+                  Open here instead
+                </a>
+              </div>
+            </div>
+          ) : done ? (
             <div style={styles.success}>
               <div style={{ fontSize: 48, marginBottom: 16 }}>✓</div>
               <div style={{ fontSize: 16, fontWeight: 500 }}>{done}</div>
@@ -443,7 +467,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
           ) : busy ? (
             <div style={styles.progress}>
               <div style={{ fontSize: 24, marginBottom: 16 }}>⏳</div>
-              <div>Creating bundle...</div>
+              <div>{busy === 'export' ? 'Creating bundle...' : `Staging the bundle for ${busy === 'run' ? 'the runtime' : 'the publish page'}...`}</div>
             </div>
           ) : (
             <>
@@ -591,7 +615,14 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
           )}
         </div>
 
-        {!done && !busy && (
+        {ready && (
+          <div style={styles.footer}>
+            <button style={{ ...styles.button, ...styles.cancelButton }} onClick={() => setReady(null)}>
+              Back
+            </button>
+          </div>
+        )}
+        {!done && !busy && !ready && (
           <div style={styles.footer}>
             <button style={{ ...styles.button, ...styles.cancelButton }} onClick={onClose}>
               Cancel
@@ -600,15 +631,15 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
               style={{ ...styles.button, ...styles.secondaryButton, ...(refused ? styles.buttonDisabled : {}) }}
               onClick={() => void run('run')}
               disabled={refused}
-              title={refused ? 'Fix what the check found first' : 'Open the bundle in the SoftN runtime'}
+              title={refused ? 'Fix what the check found first' : 'Stage the bundle for the SoftN runtime'}
             >
-              Open in runtime
+              Open in runtime…
             </button>
             <button
               style={{ ...styles.button, ...styles.secondaryButton, ...(refused ? styles.buttonDisabled : {}) }}
               onClick={() => void run('publish')}
               disabled={refused}
-              title={refused ? 'Fix what the check found first' : 'Hand the bundle to the directory’s publish page'}
+              title={refused ? 'Fix what the check found first' : 'Stage the bundle for the directory’s publish page'}
             >
               Publish…
             </button>

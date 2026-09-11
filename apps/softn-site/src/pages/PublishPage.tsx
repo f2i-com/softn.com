@@ -27,7 +27,7 @@ import { navigate, type Route } from '../lib/router';
 import { Thumb } from '../components/directory/AppCard';
 import { CategoriesNotice } from '../components/directory/Controls';
 import { inspectBundle, type Inspection } from '../lib/inspectBundle';
-import { openedForHandoff, takeBundleHandoff } from '../lib/handoff';
+import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '../lib/handoff';
 import { bundleFiles, onDroppedBundles, takeDroppedBundles } from '../lib/dropped';
 
 const AUTHOR_KEY = 'softn.site.author';
@@ -520,12 +520,24 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
   // as if it had been dropped here. A stale or missing hand-off falls back
   // to the ordinary upload, with a line saying why.
   useEffect(() => {
-    if (!openedForHandoff()) return;
-    void takeBundleHandoff().then((handoff) => {
-      if (!handoff) {
-        setError('Nothing was handed over from Builder or Studio. Choose the bundle file instead.');
+    const { opened, id } = handoffIdFrom();
+    if (!opened) return;
+    // The address is a one-shot instruction: once acted on, a reload of this
+    // page is an ordinary publish page, not a second claim of the same id.
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('from');
+      url.searchParams.delete('handoff');
+      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+    } catch {
+      /* the address bar stays as it is */
+    }
+    void takeBundleHandoff(id).then((result) => {
+      if (!result.ok) {
+        setError(describeHandoffFailure(result.reason));
         return;
       }
+      const handoff = result.handoff;
       void takeFile(new File([handoff.bytes as BlobPart], `${handoff.name || 'app'}.softn`, { type: 'application/zip' }));
     });
   }, [takeFile]);
