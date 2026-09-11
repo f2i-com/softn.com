@@ -1,6 +1,58 @@
 <?php
 declare(strict_types=1);
 
+/**
+ * What the catalogue spends its time on, for this request: the wait for
+ * the lock, how long it was held, the boot that reads every folder, the
+ * bundles the cache had to inspect again, and the metadata files committed.
+ * /api/health reports its own request's numbers; with `debugTimings` in the
+ * configuration every response carries them as a Server-Timing header,
+ * which is what scripts/bench/catalog-bench.mjs reads. Milliseconds from
+ * hrtime, so a benchmark can add them up without reading the code. This is
+ * measurement, not policy: nothing here changes what the catalogue does.
+ */
+final class Timings
+{
+    /** @var array<string, array{ms: float, n: int}> */
+    private static array $t = [];
+    private static ?int $acquired = null;
+    private static int $apps = 0;
+
+    /** Record the time since `$startNs` (from hrtime) under `$name`, and one more occurrence. */
+    public static function add(string $name, int $startNs): void {
+        $e = self::$t[$name] ?? ['ms' => 0.0, 'n' => 0];
+        $e['ms'] += (hrtime(true) - $startNs) / 1e6; $e['n']++;
+        self::$t[$name] = $e;
+    }
+    public static function acquired(): void { self::$acquired = hrtime(true); }
+    public static function released(): void { if (self::$acquired !== null) { self::add('hold', self::$acquired); self::$acquired = null; } }
+    public static function apps(int $n): void { self::$apps = $n; }
+    private static function ms(string $name): float { return round(self::$t[$name]['ms'] ?? 0.0, 3); }
+    private static function n(string $name): int { return self::$t[$name]['n'] ?? 0; }
+    /** The lock hold so far: what was released plus, if it is held now, since when. */
+    private static function holdMs(): float {
+        $now = self::$acquired === null ? 0.0 : (hrtime(true) - self::$acquired) / 1e6;
+        return round((self::$t['hold']['ms'] ?? 0.0) + $now, 3);
+    }
+    /** @return array<string, mixed> */
+    public static function snapshot(): array {
+        return [
+            'lockWaitMs' => self::ms('lock'), 'lockHoldMs' => self::holdMs(), 'bootMs' => self::ms('boot'),
+            'rebuild' => ['count' => self::n('rebuild'), 'ms' => self::ms('rebuild')],
+            'commit' => ['count' => self::n('commit'), 'ms' => self::ms('commit')],
+            'apps' => self::$apps,
+        ];
+    }
+    /** The same as a Server-Timing header value (W3C Server Timing). */
+    public static function header(): string {
+        $s = self::snapshot();
+        $plural = static fn(int $n, string $w): string => "$n $w" . ($n === 1 ? '' : 's');
+        return sprintf('lock;dur=%.3f, hold;dur=%.3f, boot;dur=%.3f, rebuild;dur=%.3f;desc="%s", commit;dur=%.3f;desc="%s", apps;desc="%d"',
+            $s['lockWaitMs'], $s['lockHoldMs'], $s['bootMs'], $s['rebuild']['ms'], $plural($s['rebuild']['count'], 'bundle'),
+            $s['commit']['ms'], $plural($s['commit']['count'], 'file'), $s['apps']);
+    }
+}
+
 /** Folder catalogue. JSON is authoritative; the bundle cache can be deleted. */
 final class Catalog
 {
@@ -24,10 +76,13 @@ final class Catalog
     public static function boot(): void {
         if (self::$ready) return;
         $root = Config::dataDir();
+        $waiting = hrtime(true);
         self::$lock = fopen("$root/catalog.lock", 'c');
         if (!self::$lock || !flock(self::$lock, LOCK_EX)) throw new ApiError(503, 'The directory is busy.');
+        Timings::add('lock', $waiting); Timings::acquired();
         self::$ready = true;
         register_shutdown_function([self::class, 'release']);
+        $booting = hrtime(true);
         try {
             if (!is_dir("$root/apps") && !mkdir("$root/apps", 0775, true)) throw new ApiError(503, 'Cannot create apps folder.');
             try { self::migrateLegacy(); }
@@ -49,9 +104,12 @@ final class Catalog
             }
             foreach(array_keys(self::$cache) as $key)if(!is_file("$root/apps/$key")){unset(self::$cache[$key]);self::$cacheDirty=true;}
             if (self::$cacheDirty) {try {self::writeJson("$root/cache/bundles.json", self::$cache);}catch(Throwable $e){error_log('softn-api: bundle cache could not be written');}}
+            Timings::apps(count(self::$docs) + count(self::$skipped));
         } catch (Throwable $e) {
             self::release();
             throw $e;
+        } finally {
+            Timings::add('boot', $booting);
         }
     }
     private static function load(string $slug): void {
@@ -97,7 +155,7 @@ final class Catalog
         return !preg_match('/[\x00-\x20"<>\\\'`]/',$url);
     }
     public static function release(): void {
-        if (is_resource(self::$lock)) { flock(self::$lock, LOCK_UN); fclose(self::$lock); }
+        if (is_resource(self::$lock)) { flock(self::$lock, LOCK_UN); fclose(self::$lock); Timings::released(); }
         self::$lock = null; self::$ready=false; self::$docs=[]; self::$cache=[]; self::$cacheDirty=false; self::$skipped=[];
     }
     public static function readJson(string $path, bool $cache = false): array {
@@ -120,6 +178,7 @@ final class Catalog
         $bytes = json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
         $tmp = tempnam($dir, '.json-');
         if ($tmp === false) throw new ApiError(503, 'Cannot stage metadata.');
+        $committing = hrtime(true);
         try {
             $f = fopen($tmp, 'wb');
             if (!$f) throw new ApiError(503, 'Cannot write metadata.');
@@ -130,7 +189,7 @@ final class Catalog
                 if (function_exists('fsync') && !fsync($f)) throw new ApiError(503, 'Cannot sync metadata.');
             } finally { fclose($f); }
             if (!rename($tmp, $path)) throw new ApiError(503, 'Cannot replace metadata.');
-        } finally { if (is_file($tmp)) @unlink($tmp); }
+        } finally { if (is_file($tmp)) @unlink($tmp); Timings::add('commit', $committing); }
     }
     public static function all(): array {
         self::boot(); $out = [];
@@ -193,8 +252,10 @@ final class Catalog
                 // Any failure to read one bundle skips that bundle, not the
                 // app and not the directory: a truncated upload, a zip the
                 // extension refuses, a manifest that is not JSON.
+                $inspecting = hrtime(true);
                 try { $full = Bundle::inspect($path); }
-                catch (Throwable $e) { error_log("softn-api: invalid bundle in $slug/$file: " . $e->getMessage()); if (isset(self::$cache[$key])) { unset(self::$cache[$key]); self::$cacheDirty = true; } continue; }
+                catch (Throwable $e) { Timings::add('rebuild', $inspecting); error_log("softn-api: invalid bundle in $slug/$file: " . $e->getMessage()); if (isset(self::$cache[$key])) { unset(self::$cache[$key]); self::$cacheDirty = true; } continue; }
+                Timings::add('rebuild', $inspecting);
                 // Only what this function reads is cached. The whole manifest
                 // (and every icon) went in once, and cache/bundles.json is
                 // read back on every request, for every bundle.

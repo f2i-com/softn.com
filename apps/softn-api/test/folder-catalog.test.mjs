@@ -53,7 +53,7 @@ test('folders are discovered, metadata is editable, cache is disposable, and rem
   assert.equal(f.run({op:'list'}).apps[0].name,'Oceanview');
   const file=path.join(f.root,'apps/oceanview/app.json');
   const initialTime=fs.statSync(file).mtimeMs;f.run({op:'list'});assert.equal(fs.statSync(file).mtimeMs,initialTime,'unchanged requests do not rewrite app.json');
-  let doc=JSON.parse(fs.readFileSync(file));
+  const doc=JSON.parse(fs.readFileSync(file));
   doc.app.category='games';doc.app.tags=['city'];doc.app.runs=41;fs.writeFileSync(file,JSON.stringify(doc));
   assert.equal(f.run({op:'list'}).apps[0].runs,41);
   assert.equal(f.run({op:'list'}).apps[0].category,'games');

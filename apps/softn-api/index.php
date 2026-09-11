@@ -125,13 +125,33 @@ try {
     [$handler, $args] = $matched;
     $response = handle($handler, $args, $req);
     Catalog::release();
+    server_timing();
     $response->send();
 } catch (ApiError $e) {
+    // Released here as well, so the hold the header reports is the hold
+    // that ended, not one the shutdown would end after the reply is gone.
+    Catalog::release();
+    server_timing();
     Response::json(['ok' => false, 'error' => $e->getMessage()] + $e->extra, $e->status,
         isset($e->extra['retryAfter']) ? ['Retry-After' => (string) $e->extra['retryAfter']] : [])->send();
 } catch (Throwable $e) {
     error_log('softn-api: ' . $e->getMessage() . ' at ' . $e->getFile() . ':' . $e->getLine());
     Response::json(['ok' => false, 'error' => 'The server could not complete that.'], 500)->send();
+}
+
+/**
+ * The catalogue's timings for this request as a Server-Timing header, when
+ * the configuration asks for them (`debugTimings`). A configuration that
+ * cannot be read is the 503 the caller is already sending; it is not
+ * worth a second failure here.
+ */
+function server_timing(): void
+{
+    try {
+        if (Config::get('debugTimings', false) === true) header('Server-Timing: ' . Timings::header());
+    } catch (Throwable) {
+        // The reply in flight says what went wrong with the configuration.
+    }
 }
 
 /**
@@ -194,6 +214,7 @@ function handle(string $handler, array $args, Request $req): Response
             } catch (ApiError $e) {
                 return Response::json(['ok' => false, 'error' => $e->getMessage(), 'php' => PHP_VERSION], 503);
             }
+            $trusted = Config::get('trustedProxies', []);
             return Response::json([
                 'ok' => $writable,
                 'php' => PHP_VERSION,
@@ -205,6 +226,15 @@ function handle(string $handler, array $args, Request $req): Response
                 'dataWritable' => $writable,
                 'uploadMax' => ini_get('upload_max_filesize'),
                 'postMax' => ini_get('post_max_size'),
+                'memoryLimit' => ini_get('memory_limit'),
+                // The API's own request limits, and whether the host's
+                // post_max_size and upload_max_filesize cover them.
+                'limits' => Limits::describe(),
+                // How many proxies are trusted and whether the old boolean
+                // is in force — not which addresses: this route is public.
+                'proxy' => ['trustedProxies' => is_array($trusted) ? count(Net::ranges($trusted)) : 0, 'legacyTrustProxy' => Config::get('trustProxy', false) === true],
+                // This request's own catalogue timings: the boot above.
+                'timings' => Timings::snapshot(),
             ]);
         }
 

@@ -41,11 +41,27 @@ final class Config
                 // admin key is what the site owner presents to moderate.
                 'salt' => bin2hex(random_bytes(16)),
                 'adminKey' => bin2hex(random_bytes(20)),
+                // Who may say where a request came from: the addresses and
+                // CIDR ranges (IPv4 and IPv6) of the proxies in front of this
+                // host, whose X-Forwarded-For is believed. Empty trusts nobody.
+                // `trustProxy: true` is the older switch and means the peer
+                // this request came in on, whoever it is; see README.
+                'trustedProxies' => [],
                 'trustProxy' => false,
                 'siteName' => 'SoftN',
+                // The request limits, in bytes; how each route gets one is
+                // Limits in http.php and the Limits section of the README.
+                // A config.json written by an earlier version carries the old
+                // 48 MB maxJsonBytes; lower it to this by hand.
                 'maxBundleBytes' => 32 * 1024 * 1024,
                 'maxThumbnailBytes' => 2 * 1024 * 1024,
-                'maxJsonBytes' => 48 * 1024 * 1024,
+                'maxThumbnailSide' => 8192,
+                'maxThumbnailPixels' => 16 * 1000 * 1000,
+                'maxJsonBytes' => 256 * 1024,
+                // A Server-Timing header on every response with the catalogue's
+                // lock wait and hold, boot, cache rebuild and commit times —
+                // what scripts/bench/catalog-bench.mjs reads. Off unless asked.
+                'debugTimings' => false,
                 'maxVersionsPerApp' => 50,
                 'storage' => [
                     'maxCollections' => 32,
