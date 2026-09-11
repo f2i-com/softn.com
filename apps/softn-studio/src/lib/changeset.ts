@@ -30,7 +30,11 @@ export interface SuppliedFile {
   path: string;
   /** Whether the whole content was in the prompt. */
   complete: boolean;
-  /** The VFS version at the time it was supplied. */
+  /**
+   * The VFS version at the time it was supplied. The store never gives a
+   * path the same version twice in a session — not after a delete and a
+   * re-create, not after an undo — so equal versions mean equal content.
+   */
   version: number;
   /** Characters shown, of the total. */
   shown: number;

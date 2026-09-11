@@ -27,6 +27,8 @@ interface DashboardProps {
   onDeleteProject?: (id: string) => Promise<DashboardOutcome>;
   /** Download a saved project as a .softn without opening it. */
   onExportProject?: (id: string) => Promise<DashboardOutcome>;
+  /** Open the bundled example project. Offered when there is nothing recent to open. */
+  onOpenExample?: () => void;
   recentProjects?: RecentEntry[];
 }
 
@@ -114,6 +116,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onRemoveRecent,
   onDeleteProject,
   onExportProject,
+  onOpenExample,
   recentProjects = [],
 }) => {
   const { themePreview } = useWorkspaceStore();
@@ -263,6 +266,42 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Icon name="chevron-right" size={16} color={theme.textDim} />
             </button>
           </div>
+
+          {/* A first visit has no key and no bundle, so neither card above
+              ends in an app. The example does: a complete project, opened
+              as a copy, that runs and exports as it is. It is offered only
+              while there is nothing recent, and says it is an example. */}
+          {recentProjects.length === 0 && onOpenExample && (
+            <div style={{ marginBottom: m ? 28 : 40 }}>
+              <button
+                type="button"
+                onClick={onOpenExample}
+                onMouseEnter={() => setHoveredCard('example')}
+                onMouseLeave={() => setHoveredCard(null)}
+                className="studio-recent-open"
+                aria-label="Open an example project"
+                style={{
+                  ...s.actionCard,
+                  width: '100%',
+                  background: hoveredCard === 'example' ? theme.cardBgHover : theme.cardBg,
+                  borderColor: hoveredCard === 'example' ? theme.borderHover : theme.border,
+                  boxShadow: hoveredCard === 'example' ? theme.shadowHover : theme.shadow,
+                  padding: m ? '14px 16px' : '16px 22px',
+                }}
+              >
+                <div style={{ ...s.actionIcon, background: theme.accentSoft }}>
+                  <Icon name="layout" size={20} color={theme.accent} />
+                </div>
+                <div style={s.actionText}>
+                  <span style={{ ...s.actionTitle, color: theme.text }}>Open an example</span>
+                  <span style={{ ...s.actionDesc, color: theme.textSecondary }}>
+                    No key or bundle needed. A small complete app — a reading list — opens as a copy you can change, run and export.
+                  </span>
+                </div>
+                <span style={{ ...s.openBadge, background: theme.accentSoft, color: theme.accent }}>Example</span>
+              </button>
+            </div>
+          )}
 
           {/* Announcements for the async actions below: read out, not just painted. */}
           <div aria-live="polite" role={notice?.kind === 'error' ? 'alert' : 'status'} style={{ minHeight: notice ? undefined : 0 }}>

@@ -253,3 +253,44 @@ describe('imports and transactions are single undo units', () => {
     expect(store().history).toHaveLength(1);
   });
 });
+
+/**
+ * A file's version must never repeat within a session, even across a
+ * delete and a re-create. It used to: the version was `existing + 1`, and
+ * a deleted file has no `existing`, so a re-created file started at v1
+ * again — the same number an AI reply built on the original v1 carried,
+ * which let the stale check pass and the reply overwrite content the
+ * model never saw. The store now remembers the highest version each path
+ * has held and never hands out a lower one, and neither undo nor redo can
+ * pull the floor back down.
+ */
+describe('versions never repeat within a session', () => {
+  it('a file deleted and re-created continues from its last version', () => {
+    store().createFile('ui/a.ui', 'one');
+    const first = store().files.get('ui/a.ui')!.version;
+    store().deleteFile('ui/a.ui');
+    store().createFile('ui/a.ui', 'two');
+    expect(store().files.get('ui/a.ui')!.version).toBeGreaterThan(first);
+  });
+
+  it('an edit after an undo does not reuse the version the undone edit had', () => {
+    store().createFile('ui/a.ui', 'one');
+    store().updateFile('ui/a.ui', 'two');
+    const undone = store().files.get('ui/a.ui')!.version;
+    store().undoLast();
+    store().updateFile('ui/a.ui', 'three');
+    expect(store().files.get('ui/a.ui')!.version).toBeGreaterThan(undone);
+  });
+
+  it('a transaction that deletes and a later one that re-creates do not share a version', () => {
+    store().applyTransaction([{ op: 'create', path: 'ui/a.ui', content: 'one' }], 'ai', 't1');
+    const first = store().files.get('ui/a.ui')!.version;
+    store().applyTransaction([{ op: 'delete', path: 'ui/a.ui' }], 'user', 't2');
+    store().applyTransaction([{ op: 'create', path: 'ui/a.ui', content: 'two' }], 'user', 't3');
+    expect(store().files.get('ui/a.ui')!.version).toBeGreaterThan(first);
+    // Undoing the re-create and redoing it restores its own version, still above the first.
+    store().undoLast();
+    store().redoLast();
+    expect(store().files.get('ui/a.ui')!.version).toBeGreaterThan(first);
+  });
+});

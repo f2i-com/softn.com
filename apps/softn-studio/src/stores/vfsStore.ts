@@ -20,6 +20,17 @@ interface VFSState {
   history: VFSEvent[];
   /** Undone units, most recent last, each event carrying its after-image so redo is exact. */
   undoStack: VFSEvent[];
+  /**
+   * The highest version each path has held in this session, kept across a
+   * delete. A version is what an AI reply is checked against: the reply
+   * carries the version it was built on, and the write is refused when the
+   * file's version differs. A re-created file used to start at v1 again —
+   * the number a reply built on the original v1 carried — so the check
+   * passed and the reply replaced content the model had never seen. The
+   * floor makes every version a path is given higher than any it has had,
+   * and neither undo nor redo lowers it.
+   */
+  versionFloor: Map<string, number>;
 
   /** Create a file. Throws if the path exists: an overwrite is an update, and is recorded as one. */
   createFile(path: string, content: string | Uint8Array, source?: 'user' | 'ai'): void;
@@ -114,12 +125,19 @@ function snapshotFile(file: VFSFile): VFSFile {
   return { ...file, content: snapshotContent(file.content) };
 }
 
+/** The next version for `path`: above what it has now and above anything it has had. The floor is raised in place. */
+function nextVersion(floor: Map<string, number>, path: string, existing: VFSFile | undefined): number {
+  const version = Math.max(existing?.version ?? 0, floor.get(path) ?? 0) + 1;
+  floor.set(path, version);
+  return version;
+}
+
 function newTransactionId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `t-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 /** Apply the inverse of one event to `files`. */
-function undoEvent(files: Map<string, VFSFile>, event: VFSEvent): void {
+function undoEvent(files: Map<string, VFSFile>, event: VFSEvent, floor: Map<string, number>): void {
   if (event.type === 'create') {
     files.delete(event.path);
   } else if (event.previous) {
@@ -132,7 +150,7 @@ function undoEvent(files: Map<string, VFSFile>, event: VFSEvent): void {
       mimeType: mimeFor(event.path),
       lastModified: Date.now(),
       lastModifiedBy: 'user',
-      version: 1,
+      version: nextVersion(floor, event.path, undefined),
     });
   } else if (event.previousContent !== undefined) {
     const existing = files.get(event.path);
@@ -145,14 +163,14 @@ function undoEvent(files: Map<string, VFSFile>, event: VFSEvent): void {
  * unit's events with their after-images, in original order, for the redo
  * stack.
  */
-function undoTailUnit(files: Map<string, VFSFile>, history: VFSEvent[]): VFSEvent[] {
+function undoTailUnit(files: Map<string, VFSFile>, history: VFSEvent[], floor: Map<string, number>): VFSEvent[] {
   const start = unitStart(history);
   const unit = history.splice(start);
   const undone: VFSEvent[] = unit.map((event) => {
     const current = files.get(event.path);
     return current ? { ...event, after: snapshotFile(current) } : { ...event, after: undefined };
   });
-  for (let i = unit.length - 1; i >= 0; i--) undoEvent(files, unit[i]);
+  for (let i = unit.length - 1; i >= 0; i--) undoEvent(files, unit[i], floor);
   return undone;
 }
 
@@ -189,6 +207,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
   files: new Map(),
   history: [],
   undoStack: [],
+  versionFloor: new Map(),
 
   createFile(path, content, source = 'user') {
     get().applyTransaction([{ op: 'create', path, content }], source);
@@ -202,8 +221,9 @@ export const useVFSStore = create<VFSState>((set, get) => ({
     // it, file by file, with the project having existed a moment earlier and no
     // way back. The files are placed; the history starts empty, because nothing
     // has happened yet in this session.
-    set(() => {
+    set((s) => {
       const files = new Map<string, VFSFile>();
+      const versionFloor = new Map(s.versionFloor);
       const now = Date.now();
       for (const { path, content } of entries) {
         files.set(path, {
@@ -212,10 +232,10 @@ export const useVFSStore = create<VFSState>((set, get) => ({
           mimeType: mimeFor(path),
           lastModified: now,
           lastModifiedBy: 'user',
-          version: 1,
+          version: nextVersion(versionFloor, path, undefined),
         });
       }
-      return { files, history: [], undoStack: [] };
+      return { files, history: [], undoStack: [], versionFloor };
     });
   },
 
@@ -251,6 +271,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
     checkRecords(get().files, records);
     set((s) => {
       const files = new Map(s.files);
+      const versionFloor = new Map(s.versionFloor);
       const now = Date.now();
       const events: VFSEvent[] = [];
       for (const record of records) {
@@ -275,7 +296,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
           mimeType: mimeFor(record.path),
           lastModified: now,
           lastModifiedBy: source,
-          version: (existing?.version ?? 0) + 1,
+          version: nextVersion(versionFloor, record.path, existing),
         });
         events.push(
           record.op === 'create'
@@ -293,7 +314,7 @@ export const useVFSStore = create<VFSState>((set, get) => ({
       }
       // A new edit after an undo makes the undone future unreachable: the
       // files it would restore are not the files that are there now.
-      return { files, history: pruneHistory([...s.history, ...events]), undoStack: [] };
+      return { files, history: pruneHistory([...s.history, ...events]), undoStack: [], versionFloor };
     });
     return id;
   },
@@ -316,11 +337,12 @@ export const useVFSStore = create<VFSState>((set, get) => ({
     }
     set((state) => {
       const files = new Map(state.files);
-      for (let k = indices.length - 1; k >= 0; k--) undoEvent(files, state.history[indices[k]]);
+      const versionFloor = new Map(state.versionFloor);
+      for (let k = indices.length - 1; k >= 0; k--) undoEvent(files, state.history[indices[k]], versionFloor);
       const history = state.history.filter((_, i) => !inTurn.has(i));
       // The units after this one still restore correctly (they touch other
       // files), but the undone future no longer describes these files.
-      return { files, history, undoStack: [] };
+      return { files, history, undoStack: [], versionFloor };
     });
     return { ok: true, paths: [...paths] };
   },
@@ -344,8 +366,9 @@ export const useVFSStore = create<VFSState>((set, get) => ({
       if (s.history.length === 0) return s;
       const files = new Map(s.files);
       const history = [...s.history];
-      const undone = undoTailUnit(files, history);
-      return { files, history, undoStack: [...s.undoStack, ...undone] };
+      const versionFloor = new Map(s.versionFloor);
+      const undone = undoTailUnit(files, history, versionFloor);
+      return { files, history, undoStack: [...s.undoStack, ...undone], versionFloor };
     });
   },
 
@@ -370,18 +393,21 @@ export const useVFSStore = create<VFSState>((set, get) => ({
     set((s) => {
       const files = new Map(s.files);
       const history = [...s.history];
+      const versionFloor = new Map(s.versionFloor);
       const undone: VFSEvent[] = [];
       // Most recent unit undone first, so the redo stack's tail is the unit
       // to redo first: the oldest one undone here.
       while (history.length > 0 && history[history.length - 1].source === 'ai') {
-        undone.push(...undoTailUnit(files, history));
+        undone.push(...undoTailUnit(files, history, versionFloor));
       }
       if (undone.length === 0) return s;
-      return { files, history, undoStack: [...s.undoStack, ...undone] };
+      return { files, history, undoStack: [...s.undoStack, ...undone], versionFloor };
     });
   },
 
   reset() {
-    set({ files: new Map(), history: [], undoStack: [] });
+    // A reset is a project going away, and with it every version its files
+    // had; the floor starts again for whatever is placed next.
+    set({ files: new Map(), history: [], undoStack: [], versionFloor: new Map() });
   },
 }));

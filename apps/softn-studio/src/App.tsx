@@ -24,6 +24,7 @@ import {
   generateTaskGraph,
 } from './lib/studioProject';
 import { validateProject } from './lib/validator';
+import { openExampleInStores } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
 import { exportAsBundle } from './lib/exportBundle';
 import {
@@ -250,6 +251,21 @@ const App: React.FC = () => {
     beginNewProjectSession();
     setView('brief');
   }, [checkpointBeforeReplace]);
+
+  /**
+   * Open the bundled example as a new project: the same ownership and
+   * checkpoint steps as an import, without the decode, since the files
+   * are already here.
+   */
+  const handleOpenExample = useCallback(async () => {
+    const claim = claimWorkspace();
+    abortAgentTurn();
+    if (!(await checkpointBeforeReplace())) return;
+    if (!ownsWorkspace(claim.generation)) return;
+    openExampleInStores();
+    setView('editor');
+    void refreshRecent();
+  }, [checkpointBeforeReplace, refreshRecent]);
 
   const handleBackToDashboard = useCallback(() => {
     abortAgentTurn();
@@ -545,6 +561,7 @@ const App: React.FC = () => {
             onRemoveRecent={handleRemoveRecent}
             onDeleteProject={handleDeleteProject}
             onExportProject={handleExportProject}
+            onOpenExample={() => void handleOpenExample()}
             recentProjects={recentProjects}
           />
         </div>

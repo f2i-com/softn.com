@@ -291,6 +291,11 @@ function applyGlobalSettings(): void {
     maxIterations: settings.maxIterations,
     tokenBudget: settings.tokenBudget,
   });
+  // Through the setters, so a value written by an older Studio with wider
+  // bounds lands clamped rather than as written. Absent means the default.
+  const ai = useAIStore.getState();
+  if (settings.requestTimeoutMs !== undefined) ai.setRequestTimeoutMs(settings.requestTimeoutMs);
+  if (settings.maxOutputTokens !== undefined) ai.setMaxOutputTokens(settings.maxOutputTokens);
 }
 
 /** The AI store's settings part to its own key. Returns the write's result. */
@@ -302,6 +307,8 @@ export function persistGlobalSettings(): SaveResult {
     modelProfile: ai.modelProfile,
     maxIterations: ai.maxIterations,
     tokenBudget: ai.tokenBudget,
+    requestTimeoutMs: ai.requestTimeoutMs,
+    maxOutputTokens: ai.maxOutputTokens,
   });
 }
 
@@ -447,7 +454,9 @@ export function startProjectAutosave(options: AutosaveOptions = {}): AutosaveCon
         state.activeProviderId !== previous.activeProviderId ||
         state.modelProfile !== previous.modelProfile ||
         state.maxIterations !== previous.maxIterations ||
-        state.tokenBudget !== previous.tokenBudget
+        state.tokenBudget !== previous.tokenBudget ||
+        state.requestTimeoutMs !== previous.requestTimeoutMs ||
+        state.maxOutputTokens !== previous.maxOutputTokens
       ) {
         const written = persistGlobalSettings();
         if (!written.ok) {

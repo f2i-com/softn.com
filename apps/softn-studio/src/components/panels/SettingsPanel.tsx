@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAIStore } from '../../stores';
+import { MAX_OUTPUT_TOKENS_BOUNDS, REQUEST_TIMEOUT_BOUNDS_MS } from '../../stores/aiStore';
 import { Icon } from '../common/Icon';
 import type { ProviderType } from '../../types/studio';
 
@@ -9,6 +10,7 @@ export const SettingsPanel: React.FC = () => {
     activeProviderId, setActiveProvider,
     modelProfile, updateModelProfile,
     maxIterations, tokenBudget, setMaxIterations, setTokenBudget,
+    requestTimeoutMs, setRequestTimeoutMs, maxOutputTokens, setMaxOutputTokens,
     iterationsUsed, tokensUsed, resetBudget,
   } = useAIStore();
   const [showAddProvider, setShowAddProvider] = useState(false);
@@ -288,6 +290,54 @@ export const SettingsPanel: React.FC = () => {
                   </button>
                 </div>
               </div>
+              <p style={styles.fieldHint}>
+                The token budget is a guardrail, not a billing cap: Studio counts what the provider reports and refuses a request the remainder cannot cover. The provider bills what it bills.
+              </p>
+            </div>
+
+            {/* Per-request limits. These existed in the store (STU-05) with no
+                way to set them; the timeout is shown in seconds because that is
+                how a person thinks about waiting. Both are kept in the settings
+                key with the providers, never in a project. */}
+            <div style={styles.fieldGroup}>
+              <label style={styles.label}>Per-request limits</label>
+              <div style={styles.modelGrid}>
+                <div style={styles.modelRow}>
+                  <div style={styles.modelInfo}>
+                    <label htmlFor="studio-request-timeout" style={styles.modelRoleName}>Request timeout</label>
+                    <span style={styles.modelRoleHint}>Seconds to wait for one reply ({REQUEST_TIMEOUT_BOUNDS_MS.min / 1000}–{REQUEST_TIMEOUT_BOUNDS_MS.max / 1000})</span>
+                  </div>
+                  <input
+                    id="studio-request-timeout"
+                    style={styles.modelInput}
+                    type="number"
+                    min={REQUEST_TIMEOUT_BOUNDS_MS.min / 1000}
+                    max={REQUEST_TIMEOUT_BOUNDS_MS.max / 1000}
+                    step={5}
+                    value={Math.round(requestTimeoutMs / 1000)}
+                    onChange={(e) => setRequestTimeoutMs(Number(e.target.value) * 1000)}
+                  />
+                </div>
+                <div style={styles.modelRow}>
+                  <div style={styles.modelInfo}>
+                    <label htmlFor="studio-max-output-tokens" style={styles.modelRoleName}>Max output tokens</label>
+                    <span style={styles.modelRoleHint}>Per reply ({MAX_OUTPUT_TOKENS_BOUNDS.min.toLocaleString()}–{MAX_OUTPUT_TOKENS_BOUNDS.max.toLocaleString()})</span>
+                  </div>
+                  <input
+                    id="studio-max-output-tokens"
+                    style={styles.modelInput}
+                    type="number"
+                    min={MAX_OUTPUT_TOKENS_BOUNDS.min}
+                    max={MAX_OUTPUT_TOKENS_BOUNDS.max}
+                    step={1024}
+                    value={maxOutputTokens}
+                    onChange={(e) => setMaxOutputTokens(Number(e.target.value))}
+                  />
+                </div>
+              </div>
+              <p style={styles.fieldHint}>
+                Max output tokens is sent to the provider as its output cap and is reserved from the session budget before each request: a request is refused when the remaining budget is below this number, and a reply that hits the cap is reported as truncated and not applied. Set it above what a whole file needs, and no higher than the model allows.
+              </p>
             </div>
 
           </>

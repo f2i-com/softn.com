@@ -206,6 +206,36 @@ describe('project records', () => {
     expect(raw).not.toContain('providers');
   });
 
+  it('the request timeout and output cap round-trip in the settings key and are excluded from every record', async () => {
+    // STU-05 caveat: the store had requestTimeoutMs and maxOutputTokens with
+    // no control and no persistence, so a reload put them back to defaults.
+    saveGlobalSettings({ ...settings, requestTimeoutMs: 45_000, maxOutputTokens: 8_192 });
+    const loaded = loadGlobalSettings();
+    expect(loaded?.requestTimeoutMs).toBe(45_000);
+    expect(loaded?.maxOutputTokens).toBe(8_192);
+
+    await saveProjectRecord(record('a', 'Notes', 1, 'one'));
+    const raw = JSON.stringify(idb.records(STUDIO_DB, PROJECTS_STORE).get('a'));
+    expect(raw).not.toContain('requestTimeoutMs');
+    expect(raw).not.toContain('maxOutputTokens');
+    const stored = await loadProjectRecord('a');
+    expect(stored && 'requestTimeoutMs' in stored).toBe(false);
+    expect(stored && 'requestTimeoutMs' in stored.session).toBe(false);
+  });
+
+  it('settings written before the per-request limits existed still load, and a malformed limit does not', () => {
+    saveGlobalSettings(settings);
+    const loaded = loadGlobalSettings();
+    expect(loaded?.providers).toHaveLength(1);
+    expect(loaded?.requestTimeoutMs).toBeUndefined();
+    expect(loaded?.maxOutputTokens).toBeUndefined();
+
+    storage.data.set('softn.studio.settings.v1', JSON.stringify({ ...settings, requestTimeoutMs: '30s' }));
+    expect(loadGlobalSettings()).toBeNull();
+    storage.data.set('softn.studio.settings.v1', JSON.stringify({ ...settings, maxOutputTokens: 0 }));
+    expect(loadGlobalSettings()).toBeNull();
+  });
+
   it('reports quota on the small localStorage writes instead of dropping the result', () => {
     storage = memoryStorage({ failWrite: () => true });
     (globalThis as unknown as { window: unknown }).window = { localStorage: storage };
