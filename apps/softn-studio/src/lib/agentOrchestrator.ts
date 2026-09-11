@@ -17,10 +17,16 @@ interface DeleteOp {
   path: string;
 }
 
-interface ParsedResponse {
+interface ReadOp {
+  path: string;
+}
+
+export interface ParsedResponse {
   text: string;
   files: FileOp[];
   deletes: DeleteOp[];
+  /** Files the model asks to see in full before it edits them. */
+  reads: ReadOp[];
 }
 
 /** Sanitize a VFS path: normalize separators, strip leading slash, reject traversal. */
@@ -42,10 +48,12 @@ function sanitizePath(raw: string): string | null {
  * Supported formats:
  *   <softn-file path="pages/home.html">…content…</softn-file>
  *   <softn-delete path="old/file.html" />
+ *   <softn-read path="logic/app.logic" />
  */
 export function parseAIResponse(raw: string): ParsedResponse {
   const files: FileOp[] = [];
   const deletes: DeleteOp[] = [];
+  const reads: ReadOp[] = [];
 
   // Extract file blocks
   const fileRegex = /<softn-file\s+path="([^"]+)">([\s\S]*?)<\/softn-file>/g;
@@ -66,16 +74,25 @@ export function parseAIResponse(raw: string): ParsedResponse {
     deletes.push({ path });
   }
 
+  // Extract read requests
+  const readRegex = /<softn-read\s+path="([^"]+)"\s*\/>/g;
+  while ((match = readRegex.exec(raw)) !== null) {
+    const path = sanitizePath(match[1]);
+    if (!path) continue;
+    if (!reads.some((r) => r.path === path)) reads.push({ path });
+  }
+
   // Build the user-facing text by stripping the blocks
   let text = raw
     .replace(fileRegex, '')
     .replace(deleteRegex, '')
+    .replace(readRegex, '')
     .trim();
 
   // Clean up excessive blank lines left after stripping
   text = text.replace(/\n{3,}/g, '\n\n');
 
-  return { text, files, deletes };
+  return { text, files, deletes, reads };
 }
 
 // ---------------------------------------------------------------------------
@@ -88,31 +105,89 @@ function buildFileTree(files: Map<string, VFSFile>): string {
   return paths.map((p) => `  ${p}`).join('\n');
 }
 
-function buildFileContents(files: Map<string, VFSFile>, maxPerFile: number = 6000): string {
+/**
+ * What the model was shown of one file, and the version it was shown at.
+ *
+ * A reply replaces files whole, so a file the model saw only the head of
+ * cannot be replaced from that reply without losing its tail: the record
+ * of what was supplied is what lets the apply step refuse that. The
+ * version is what lets it notice the file changed under the request.
+ */
+export interface SuppliedFile {
+  path: string;
+  /** Whether the whole content was in the prompt. */
+  complete: boolean;
+  /** The VFS version at the time it was supplied. */
+  version: number;
+  /** Characters shown, of the total. */
+  shown: number;
+  total: number;
+}
+
+export type SuppliedFiles = Map<string, SuppliedFile>;
+
+export const MAX_CHARS_PER_FILE = 6000;
+export const CONTEXT_CHAR_BUDGET = 80000;
+
+/**
+ * The project's text files for the prompt, within a per-file and an overall
+ * character budget, and an exact record of what went in. A file over the
+ * per-file cap is shown truncated and labelled so; one past the overall
+ * budget is listed by name and size but not shown. The limits are not
+ * relaxed here: a file the model needs whole is asked for with
+ * `<softn-read>`, and supplied complete in the next round.
+ */
+export function buildFileContents(
+  files: Map<string, VFSFile>,
+  maxPerFile: number = MAX_CHARS_PER_FILE,
+  budget: number = CONTEXT_CHAR_BUDGET,
+  complete: ReadonlySet<string> = new Set(),
+): { text: string; supplied: SuppliedFiles } {
   const parts: string[] = [];
+  const supplied: SuppliedFiles = new Map();
+  const notShown: string[] = [];
   let totalLen = 0;
-  const budget = 80000; // rough character budget for context
 
   for (const [path, file] of files) {
-    if (totalLen > budget) break;
     if (typeof file.content !== 'string') continue;
     // Skip builder/ internals — the AI can see the blueprint directly
     if (path.startsWith('builder/')) continue;
 
-    const content = file.content.length > maxPerFile
-      ? file.content.slice(0, maxPerFile) + '\n... (truncated)'
-      : file.content;
-    parts.push(`--- ${path} ---\n${content}`);
+    const total = file.content.length;
+    // A file asked for whole is whole, whatever the caps; that is the point of asking.
+    const wantWhole = complete.has(path);
+    if (!wantWhole && totalLen > budget) {
+      notShown.push(`${path} (${total} characters)`);
+      continue;
+    }
+    const isComplete = wantWhole || total <= maxPerFile;
+    const shown = isComplete ? total : maxPerFile;
+    const content = isComplete ? file.content : file.content.slice(0, maxPerFile);
+    const label = isComplete
+      ? `--- ${path} (complete, ${total} characters) ---`
+      : `--- ${path} (TRUNCATED: first ${maxPerFile} of ${total} characters; not editable as a whole — request it with <softn-read path="${path}" />) ---`;
+    parts.push(`${label}\n${content}${isComplete ? '' : '\n... (truncated)'}`);
+    supplied.set(path, { path, complete: isComplete, version: file.version, shown, total });
     totalLen += content.length;
   }
 
-  return parts.length > 0 ? parts.join('\n\n') : '(no text files)';
+  if (notShown.length > 0) {
+    parts.push(`--- Files not shown (over the context budget; request one with <softn-read path="…" />) ---\n${notShown.join('\n')}`);
+  }
+
+  return { text: parts.length > 0 ? parts.join('\n\n') : '(no text files)', supplied };
 }
 
-export function buildSystemPrompt(): string {
+export function buildSystemPrompt(complete: ReadonlySet<string> = new Set()): string {
+  return buildSystemPromptWithRecord(complete).system;
+}
+
+/** The system prompt and the exact record of which files it supplies, and how much of each. */
+export function buildSystemPromptWithRecord(complete: ReadonlySet<string> = new Set()): { system: string; supplied: SuppliedFiles } {
   const ws = useWorkspaceStore.getState();
   const vfs = useVFSStore.getState();
   const files = vfs.files;
+  const contents = buildFileContents(files, MAX_CHARS_PER_FILE, CONTEXT_CHAR_BUDGET, complete);
 
   const briefSection = ws.brief
     ? `## Current Brief
@@ -134,7 +209,7 @@ export function buildSystemPrompt(): string {
 - Style: ${ws.blueprint.style}`
     : '';
 
-  return `You are the SoftN Studio AI — a code-generation assistant embedded in a visual app builder.
+  const system = `You are the SoftN Studio AI — a code-generation assistant embedded in a visual app builder.
 
 Your job is to create, edit, and improve files in the user's virtual file system (VFS). The user describes what they want in natural language, and you respond with explanations and file blocks.
 
@@ -160,6 +235,12 @@ Wrap file content in \`<softn-file>\` blocks. Every block creates or overwrites 
 Include multiple file blocks in one response when needed. To delete a file:
 
 <softn-delete path="old/page.html" />
+
+A file block replaces the whole file, so only write one for a file you have seen **complete**. A file shown TRUNCATED, or listed as not shown, cannot be replaced from what you have: ask for it first and it is supplied whole in the next message —
+
+<softn-read path="logic/app.logic" />
+
+A file block for a truncated or unseen file is refused and nothing is written.
 
 ---
 
@@ -542,8 +623,9 @@ ${blueprintSection}
 ${buildFileTree(files)}
 
 ## Current File Contents
-${buildFileContents(files)}
+${contents.text}
 `;
+  return { system, supplied: contents.supplied };
 }
 
 // ---------------------------------------------------------------------------
@@ -556,12 +638,137 @@ interface ActiveAgentTurn {
 
 let activeAgentTurn: ActiveAgentTurn | null = null;
 
+/** How many times one turn may answer a `<softn-read>` before it has to stop asking. */
+export const MAX_READ_ROUNDS = 3;
+
+/**
+ * Why a file block may not be written. `partial` is the STU-01 case: the
+ * model saw a truncated file, or none of it, and a whole-file reply would
+ * erase what it did not see. `stale` is the file having changed since it
+ * was supplied — a manual edit while the request was in flight — which a
+ * replacement built on the old content would overwrite.
+ */
+export type WriteRefusal =
+  | { kind: 'partial'; shown: number; total: number }
+  | { kind: 'unseen' }
+  | { kind: 'stale'; suppliedVersion: number; currentVersion: number };
+
+/**
+ * Whether a whole-file write of `path` may be applied given what the model
+ * was supplied and what the VFS holds now. A new file is always allowed:
+ * there is nothing to erase.
+ */
+export function checkWrite(path: string, supplied: SuppliedFiles, current: VFSFile | undefined): WriteRefusal | null {
+  if (!current) return null;
+  const record = supplied.get(path);
+  if (!record) {
+    // Exists, but the model was never shown it: a binary, a file past the
+    // budget, or one created since the prompt was built.
+    return { kind: 'unseen' };
+  }
+  if (!record.complete) return { kind: 'partial', shown: record.shown, total: record.total };
+  if (current.version !== record.version) return { kind: 'stale', suppliedVersion: record.version, currentVersion: current.version };
+  return null;
+}
+
+export function describeRefusal(path: string, refusal: WriteRefusal): string {
+  switch (refusal.kind) {
+    case 'partial':
+      return `Refused: ${path} was shown truncated (${refusal.shown} of ${refusal.total} characters), so this reply would have erased the rest of it. Nothing was written. Ask for the file whole, or ask for a smaller change.`;
+    case 'unseen':
+      return `Refused: ${path} exists but was not shown to the model, so this reply could not have preserved its content. Nothing was written.`;
+    case 'stale':
+      return `Refused: ${path} changed while the request was in flight (v${refusal.suppliedVersion} → v${refusal.currentVersion}), so this reply was built on old content. Nothing was written; ask again.`;
+  }
+}
+
 export function abortAgentTurn(): void {
   const turn = activeAgentTurn;
   activeAgentTurn = null;
   turn?.controller.abort();
   useAIStore.getState().setAgentState('idle');
   useAIStore.getState().setCurrentStep('');
+}
+
+/**
+ * Write what a reply asks for, refusing what it cannot safely ask for. A
+ * whole-file block for a file the model saw truncated, never saw, or that
+ * changed since it was supplied is refused and reported; the rest goes in.
+ */
+function applyFileOperations(
+  parsed: ParsedResponse,
+  supplied: SuppliedFiles,
+  ai: ReturnType<typeof useAIStore.getState>,
+  ws: ReturnType<typeof useWorkspaceStore.getState>,
+): { toolCalls: ToolCallCard[]; written: string[] } {
+  const toolCalls: ToolCallCard[] = [];
+  const written: string[] = [];
+
+  for (const fileOp of parsed.files) {
+    // Re-read VFS state each iteration so we see files created by earlier iterations
+    const currentVfs = useVFSStore.getState();
+    const current = currentVfs.files.get(fileOp.path);
+    const existing = current !== undefined;
+    const tool = existing ? 'updateFile' : 'createFile';
+    const refusal = checkWrite(fileOp.path, supplied, current);
+    if (refusal) {
+      const result = describeRefusal(fileOp.path, refusal);
+      toolCalls.push({ tool, args: { path: fileOp.path }, result, status: 'error' });
+      ws.addConsoleOutput(`[AI] ${result}`);
+      continue;
+    }
+    try {
+      if (existing) {
+        currentVfs.updateFile(fileOp.path, fileOp.content, 'ai');
+      } else {
+        currentVfs.createFile(fileOp.path, fileOp.content, 'ai');
+      }
+      ai.incrementFilesChanged();
+      written.push(fileOp.path);
+      toolCalls.push({
+        tool,
+        args: { path: fileOp.path },
+        result: `${existing ? 'Updated' : 'Created'} ${fileOp.path} (${fileOp.content.length} chars)`,
+        status: 'success',
+      });
+      ws.addConsoleOutput(`[AI] ${existing ? 'Updated' : 'Created'} ${fileOp.path}`);
+    } catch (err) {
+      toolCalls.push({ tool, args: { path: fileOp.path }, result: `Failed: ${err}`, status: 'error' });
+      ws.addConsoleOutput(`[AI] Error writing ${fileOp.path}: ${err}`);
+    }
+  }
+
+  for (const del of parsed.deletes) {
+    const current = useVFSStore.getState().files.get(del.path);
+    // A deletion is as whole-file as a replacement: a file that changed
+    // since it was supplied is not deleted on the strength of old content.
+    const record = supplied.get(del.path);
+    if (current && record && current.version !== record.version) {
+      const result = describeRefusal(del.path, { kind: 'stale', suppliedVersion: record.version, currentVersion: current.version });
+      toolCalls.push({ tool: 'deleteFile', args: { path: del.path }, result, status: 'error' });
+      ws.addConsoleOutput(`[AI] ${result}`);
+      continue;
+    }
+    try {
+      useVFSStore.getState().deleteFile(del.path, 'ai');
+      toolCalls.push({
+        tool: 'deleteFile',
+        args: { path: del.path },
+        result: `Deleted ${del.path}`,
+        status: 'success',
+      });
+      ws.addConsoleOutput(`[AI] Deleted ${del.path}`);
+    } catch (err) {
+      toolCalls.push({
+        tool: 'deleteFile',
+        args: { path: del.path },
+        result: `Failed: ${err}`,
+        status: 'error',
+      });
+    }
+  }
+
+  return { toolCalls, written };
 }
 
 export async function runAgentTurn(): Promise<void> {
@@ -623,82 +830,81 @@ export async function runAgentTurn(): Promise<void> {
   activeAgentTurn = turn;
 
   try {
-    const system = buildSystemPrompt();
     const builderModel = ai.modelProfile.builder || undefined;
-    const response = await sendAIRequest(provider, {
-      messages: recentMessages,
-      system,
-      signal: turn.controller.signal,
-      modelOverride: builderModel,
-    });
-
-    // A provider or test double is not required to honour AbortSignal. The
-    // response still belongs to the project/turn that initiated it, so never
-    // apply it after that turn has been cancelled or replaced.
-    if (activeAgentTurn !== turn || turn.controller.signal.aborted) return;
-
-    // Track tokens
-    ai.addTokens(response.usage.inputTokens + response.usage.outputTokens);
-
-    // Parse the response for file operations
-    const parsed = parseAIResponse(response.content);
-
-    // Apply file operations
     const toolCalls: ToolCallCard[] = [];
+    const texts: string[] = [];
+    let usage = { input: 0, output: 0 };
+    let writtenPaths: string[] = [];
+    let rawFallback = '';
 
-    for (const fileOp of parsed.files) {
-      // Re-read VFS state each iteration so we see files created by earlier iterations
-      const currentVfs = useVFSStore.getState();
-      const existing = currentVfs.files.has(fileOp.path);
-      try {
-        if (existing) {
-          currentVfs.updateFile(fileOp.path, fileOp.content, 'ai');
-        } else {
-          currentVfs.createFile(fileOp.path, fileOp.content, 'ai');
+    // Files the model has asked to see whole. Each round rebuilds the prompt
+    // with those supplied complete, so the record of what it saw is exact.
+    const complete = new Set<string>();
+    const conversation = [...recentMessages];
+
+    for (let round = 0; ; round++) {
+      const { system, supplied } = buildSystemPromptWithRecord(complete);
+      const response = await sendAIRequest(provider, {
+        messages: conversation,
+        system,
+        signal: turn.controller.signal,
+        modelOverride: builderModel,
+      });
+
+      // A provider or test double is not required to honour AbortSignal. The
+      // response still belongs to the project/turn that initiated it, so never
+      // apply it after that turn has been cancelled or replaced.
+      if (activeAgentTurn !== turn || turn.controller.signal.aborted) return;
+
+      // Track tokens
+      ai.addTokens(response.usage.inputTokens + response.usage.outputTokens);
+      usage = { input: usage.input + response.usage.inputTokens, output: usage.output + response.usage.outputTokens };
+      rawFallback = response.content;
+
+      // Parse the response for file operations
+      const parsed = parseAIResponse(response.content);
+      if (parsed.text) texts.push(parsed.text);
+
+      const applied = applyFileOperations(parsed, supplied, ai, ws);
+      toolCalls.push(...applied.toolCalls);
+      writtenPaths = [...writtenPaths, ...applied.written];
+
+      // The model asked to see files whole. Answer with them and go again,
+      // a bounded number of times; a reply that only asks is not the end of
+      // the turn, and a reply that asks after writing gets its answer too.
+      const wanted = parsed.reads.map((r) => r.path).filter((p) => !complete.has(p));
+      if (wanted.length === 0 || round >= MAX_READ_ROUNDS - 1) {
+        if (wanted.length > 0) {
+          toolCalls.push({ tool: 'readFile', args: { paths: wanted }, result: `Not supplied: this turn has already answered ${MAX_READ_ROUNDS} read requests. Ask again in a new message.`, status: 'error' });
         }
-        ai.incrementFilesChanged();
-        toolCalls.push({
-          tool: existing ? 'updateFile' : 'createFile',
-          args: { path: fileOp.path },
-          result: `${existing ? 'Updated' : 'Created'} ${fileOp.path} (${fileOp.content.length} chars)`,
-          status: 'success',
-        });
-        ws.addConsoleOutput(`[AI] ${existing ? 'Updated' : 'Created'} ${fileOp.path}`);
-      } catch (err) {
-        toolCalls.push({
-          tool: existing ? 'updateFile' : 'createFile',
-          args: { path: fileOp.path },
-          result: `Failed: ${err}`,
-          status: 'error',
-        });
-        ws.addConsoleOutput(`[AI] Error writing ${fileOp.path}: ${err}`);
+        break;
       }
-    }
-
-    for (const del of parsed.deletes) {
-      try {
-        useVFSStore.getState().deleteFile(del.path, 'ai');
-        toolCalls.push({
-          tool: 'deleteFile',
-          args: { path: del.path },
-          result: `Deleted ${del.path}`,
-          status: 'success',
-        });
-        ws.addConsoleOutput(`[AI] Deleted ${del.path}`);
-      } catch (err) {
-        toolCalls.push({
-          tool: 'deleteFile',
-          args: { path: del.path },
-          result: `Failed: ${err}`,
-          status: 'error',
-        });
+      const vfsNow = useVFSStore.getState().files;
+      const answers: string[] = [];
+      for (const path of wanted) {
+        const file = vfsNow.get(path);
+        if (!file || typeof file.content !== 'string') {
+          answers.push(`--- ${path} ---\n(no such text file)`);
+          toolCalls.push({ tool: 'readFile', args: { path }, result: `No such text file: ${path}`, status: 'error' });
+          continue;
+        }
+        complete.add(path);
+        answers.push(`--- ${path} (complete, ${file.content.length} characters) ---\n${file.content}`);
+        toolCalls.push({ tool: 'readFile', args: { path }, result: `Supplied ${path} whole (${file.content.length} chars)`, status: 'success' });
       }
+      ai.setCurrentStep(`Reading ${wanted.join(', ')}…`);
+      conversation.push({ id: crypto.randomUUID(), role: 'assistant', content: response.content, timestamp: Date.now() });
+      conversation.push({
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: `Here are the files you asked for, complete. They are also in the system prompt now, marked complete. Continue with the original request.\n\n${answers.join('\n\n')}`,
+        timestamp: Date.now(),
+      });
     }
 
     // If files were changed, auto-navigate to the first changed file
-    if (parsed.files.length > 0) {
-      const firstPath = parsed.files[0].path;
-      ws.setActiveFilePath(firstPath);
+    if (writtenPaths.length > 0) {
+      ws.setActiveFilePath(writtenPaths[0]);
       ws.setDirty(true);
       if (ws.mode === 'describe') {
         ws.setMode('design');
@@ -706,13 +912,14 @@ export async function runAgentTurn(): Promise<void> {
     }
 
     // Add the AI response message
+    const text = texts.join('\n\n');
     const assistantMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'assistant',
-      content: parsed.text || (parsed.files.length > 0 ? `Updated ${parsed.files.length} file(s).` : response.content),
+      content: text || (writtenPaths.length > 0 ? `Updated ${writtenPaths.length} file(s).` : rawFallback),
       timestamp: Date.now(),
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      tokens: { input: response.usage.inputTokens, output: response.usage.outputTokens },
+      tokens: usage,
     };
     ai.addMessage(assistantMsg);
     ai.setAgentState('idle');
