@@ -1,0 +1,148 @@
+<logic src="../logic/main.logic" />
+<style>
+.desk { max-width:1280px; margin:auto; padding:clamp(20px,4vw,44px); color:var(--color-text); font:15px/1.6 system-ui,sans-serif; }
+.desk * { box-sizing:border-box; }
+.desk h1 { font-size:clamp(30px,5vw,46px); line-height:1.12; letter-spacing:-.045em; margin:12px 0; }
+.desk h2 { font-size:24px; line-height:1.3; margin:4px 0; }
+.desk p { color:var(--color-text-muted); }
+.desk header { padding-bottom:24px; border-bottom:1px solid var(--color-border); }
+.desk header p { max-width:600px; margin-bottom:0; }
+.eyebrow { color:var(--color-text-muted); font-size:11px; font-weight:750; letter-spacing:.14em; text-transform:uppercase; }
+.toolbar { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin:24px 0; }
+.desk button { min-height:44px; border:1px solid var(--color-border); background:var(--color-surface); color:var(--color-text); border-radius:12px; padding:10px 16px; font:600 14px system-ui; cursor:pointer; }
+.desk button:disabled { opacity:.5; cursor:default; }
+.desk button:focus-visible,.desk input:focus-visible { outline:3px solid #818cf8; outline-offset:3px; }
+.tabs { display:flex; flex-wrap:wrap; gap:8px; margin:24px 0 32px; }
+.desk .active { color:white; background:#4f46e5; border-color:#4f46e5; }
+.searchbar { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+.search { display:flex; flex:1; gap:8px; min-width:min(100%,300px); }
+.desk input { width:100%; min-width:0; padding:12px 16px; min-height:48px; font:16px system-ui; border:1px solid var(--color-border); border-radius:12px; background:var(--color-surface); color:var(--color-text); }
+.search-note { font-size:12px; margin:8px 0 18px; }
+.section-description { margin:0 0 18px; max-width:650px; font-size:14px; }
+.records { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr)); gap:16px; align-items:start; }
+.record-card { min-width:0; border:1px solid var(--color-border); border-radius:18px; background:var(--color-surface); overflow:hidden; }
+.record-card.is-selected { border-color:#818cf8; }
+.desk .record { display:flex; flex-direction:column; align-items:flex-start; text-align:left; gap:12px; width:100%; min-width:0; padding:22px; border:0; border-radius:17px; background:transparent; }
+.desk .record:hover { background:var(--color-background); }
+.desk .record:focus-visible { outline-offset:-4px; }
+.record-top { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px; width:100%; }
+.record strong { font-size:18px; line-height:1.35; overflow-wrap:anywhere; }
+.record span { font-weight:400; overflow-wrap:anywhere; white-space:pre-wrap; }
+.record .excerpt { display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.record small { color:var(--color-text-muted); font-weight:400; overflow-wrap:anywhere; }
+.record .record-footer { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; width:100%; border-top:1px solid var(--color-border); padding-top:12px; margin-top:2px; }
+.record .detail-action { color:var(--color-text); font-weight:600; }
+.badge { display:inline-block; padding:4px 9px; border-radius:8px; background:var(--color-background); font-size:12px; line-height:1.5; }
+.badge.attention { background:#fef3c7; color:#78350f; }
+.badge.complete { background:#d1fae5; color:#065f46; }
+.notice { border-left:3px solid #818cf8; padding:12px 16px; background:var(--color-surface); border-radius:0 12px 12px 0; font-size:13px; }
+.detail { padding:0 22px 22px; border-top:1px solid var(--color-border); }
+.detail h3 { font-size:13px; margin:20px 0 16px; }
+.detail dl { display:grid; gap:16px; margin:0; }
+.detail dt { font-size:12px; color:var(--color-text-muted); text-transform:capitalize; }
+.detail dd { margin:4px 0 0; overflow-wrap:anywhere; white-space:pre-wrap; }
+.status { font-size:12px; margin:18px 0; }
+.empty { padding:32px 24px; border:1px dashed var(--color-border); border-radius:16px; text-align:center; }
+.empty strong { display:block; font-size:17px; }
+.empty p { max-width:520px; margin:8px auto 0; }
+.pagination { padding-top:20px; border-top:1px solid var(--color-border); }
+.pagination span { font-size:13px; color:var(--color-text-muted); }
+@media (max-width:600px) {
+  .desk { padding:20px 16px 28px; }
+  .tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:20px 0 28px; }
+  .tabs button { padding:10px 8px; }
+  .toolbar { margin:20px 0; }
+  .desk .record { padding:18px; }
+  .searchbar > button { width:100%; }
+  .pagination { gap:8px; }
+  .pagination button { padding:10px 12px; }
+}
+</style>
+<main className="desk">
+<header><span className="eyebrow">Aokie / Front desk</span><h1>Every conversation, connected.</h1><p>{workspace.name} · Calls, appointments and follow-ups in one place.</p></header>
+<nav className="tabs" aria-label="Front desk sections">
+#each (section in sections)
+<button className={active.id === section.id ? "active" : ""} aria-pressed={active.id === section.id} disabled={busy} @click={() => choose(section)}>{section.name}</button>
+#end
+</nav>
+<div className="toolbar"><div><span className="eyebrow">Your activity</span><h2>{active.name}</h2></div><button disabled={busy} @click={refresh}>{busy ? "Refreshing…" : "Refresh"}</button></div>
+#if (active.alias === "calls")
+<p className="section-description">Review incoming and outgoing calls, then check Transcripts for what was said.</p>
+#end
+#if (active.alias === "transcript-turns")
+<p className="section-description">Both sides of each conversation, including interruptions. Search a call ID to find its turns on this page.</p>
+#end
+#if (active.alias === "follow-up-tasks")
+<p className="section-description">Keep track of callback requests, messages and the next step for each caller.</p>
+#end
+#if (active.alias === "hardware-events")
+<p className="section-description">Connection and device events saved by your workflow. Open a record for the full details.</p>
+#end
+#if (active.alias === "appointments")
+<p className="notice">Requests are saved for review. Only appointments marked confirmed have been confirmed by your booking workflow.</p>
+#end
+#if (active.alias === "sms-messages")
+<p className="notice">Incoming texts and outgoing replies share this history. AI drafts need approval in the Messages tool. Sent means the phone accepted the message; it is not a delivery receipt.</p>
+#end
+#if (active.id)
+<div className="searchbar"><div className="search"><input aria-label="Search this page" placeholder="Search this page…" :bind={query} @input={filterRecords} disabled={busy} />
+#if (query)
+<button @click={clearSearch} disabled={busy}>Clear</button>
+#end
+</div>
+#if (!active.hidden)
+<button @click={openForm}>{toolLabel()}</button>
+#end
+</div>
+<p className="search-note">Search covers the records on this page. Use Previous and Next to browse older activity.</p>
+#end
+<p role="status" className="status">{message}</p>
+#if (busy)
+<div className="empty" aria-busy="true"><strong>Loading your activity…</strong><p>Fetching the latest records you can access.</p></div>
+#else
+#if (failed)
+<div className="empty"><strong>Activity could not be loaded</strong><p>Try Refresh to reconnect and load this section again.</p></div>
+#else
+<div className="records">
+#each (record in shown)
+<article className={selected && selected.id === record.id ? "record-card is-selected" : "record-card"}>
+<button className="record" aria-expanded={selected && selected.id === record.id ? true : false} @click={() => showRecord(record)}>
+<span className="record-top"><strong>{titleFor(record)}</strong><span className={"badge " + toneFor(record)}>{statusFor(record)}</span></span>
+#if (record.answers.delivery === "interrupted")
+<span className="badge">Interrupted · spoken portion saved</span>
+#end
+#if (hasOverlap(record))
+<span className="badge">Spoke during Aokie's reply</span>
+#end
+#if (active.alias === "sms-messages" && record.answers.direction)
+<small>{record.answers.direction === "inbound" ? "Incoming message" : "Outgoing message"}</small>
+#end
+<small>{dateFor(record)}</small>
+<span className="excerpt">{record.answers.service || record.answers.summary || record.answers.text || record.answers.body || record.answers.message || record.answers.notes || "Open this record to see its details."}</span>
+<span className="record-footer"><small>{record.answers.caller_phone || record.answers.phone || record.answers.call_id || "Saved activity"}</small><small className="detail-action">{selected && selected.id === record.id ? "Hide details −" : "View details +"}</small></span>
+</button>
+#if (selected && selected.id === record.id)
+<section className="detail" aria-label="Record details"><h3>Record details</h3><dl>
+#each (field in record.details)
+<div><dt>{field.label}</dt><dd>{field.value === "" || field.value === null ? "—" : field.value}</dd></div>
+#end
+</dl></section>
+#end
+</article>
+#end
+</div>
+#if (shown.length === 0 && active.id)
+<div className="empty">
+#if (query.trim())
+<strong>No matches on this page</strong><p>Try a different search or clear it to see all records on this page.</p>
+#else
+<strong>{"No " + active.name.toLowerCase() + " yet"}</strong><p>New activity appears here after its workflow saves it. Refresh after a call or message to check for updates.</p>
+#end
+</div>
+#end
+#if (count > 0)
+<div className="toolbar pagination"><button @click={pageBack} disabled={offset === 0}>Previous</button><span>{(query.trim() ? shown.length + " matches · " : "") + (offset + 1) + "–" + (offset + records.length) + " of " + count}</span><button @click={pageNext} disabled={offset + 12 >= count}>Next</button></div>
+#end
+#end
+#end
+</main>

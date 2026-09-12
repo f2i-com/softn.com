@@ -56,6 +56,7 @@ export interface WorkerRuntimeOptions {
   externalFunctions?: Record<string, (...args: unknown[]) => unknown>;
   /** Where `softn.storage.*` sends its operations; see ScriptRuntimeOptions. */
   storageEndpoint?: string;
+  backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
   /**
    * Called once if the worker is terminated for missing its hard deadline —
    * see `HARD_DEADLINE_MS`. The runtime is dead after this; every function
@@ -258,7 +259,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       appId,
       importResolver,
       logicBasePath,
-      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint },
+      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall },
       options?.bundleFileProvider,
       options?.externalFunctions
     );

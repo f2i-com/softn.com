@@ -1,0 +1,79 @@
+<logic src="../logic/main.logic" />
+<style>
+.workspace { max-width:1200px; margin:auto; padding:clamp(20px,4vw,48px); color:var(--color-text); font:15px/1.6 system-ui,sans-serif; }
+.workspace * { box-sizing:border-box; }
+.workspace h1 { font-size:clamp(28px,5vw,46px); line-height:1.12; letter-spacing:-.045em; margin:12px 0 16px; overflow-wrap:anywhere; }
+.workspace h2 { font-size:20px; margin:0; }
+.eyebrow { color:var(--color-text); opacity:.8; font-size:11px; font-weight:750; letter-spacing:.14em; text-transform:uppercase; }
+.intro { max-width:60ch; color:var(--color-text-muted); }
+.workspace button { min-height:44px; font:600 14px system-ui,sans-serif; padding:10px 16px; border:1px solid var(--color-border); border-radius:10px; background:var(--color-surface); color:var(--color-text); cursor:pointer; }
+.workspace button:focus-visible, .workspace input:focus-visible { outline:3px solid #818cf8; outline-offset:3px; }
+.workspace button:disabled { opacity:.5; cursor:wait; }
+.toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin:28px 0 20px; }
+.search { width:min(100%,360px); border:1px solid var(--color-border); border-radius:12px; background:var(--color-surface); color:var(--color-text); font:16px system-ui,sans-serif; min-height:48px; padding:12px 16px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:16px; }
+.card { padding:24px; border:1px solid var(--color-border); border-radius:18px; background:var(--color-surface); min-width:0; }
+.card p { color:var(--color-text-muted); font-size:13px; margin:8px 0 20px; }
+.card h2 { overflow-wrap:anywhere; }
+.card.is-selected { border-color:#818cf8; box-shadow:0 0 0 1px #818cf8; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; }
+.workspace .primary { background:#4f46e5; color:white; border-color:#4f46e5; }
+.status { font-size:13px; color:var(--color-text-muted); margin:20px 0; }
+.records { margin-top:28px; padding:24px; border:1px solid var(--color-border); border-radius:18px; }
+.record { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; border-top:1px solid var(--color-border); padding:16px 0; overflow-wrap:anywhere; }
+.record small { color:var(--color-text-muted); }
+.aokie { margin:28px 0; padding:24px; border-radius:18px; background:var(--color-surface); border:1px solid #38bdf8; }
+.aokie p { margin:8px 0 0; color:var(--color-text-muted); }
+.empty { padding:24px; border:1px dashed var(--color-border); border-radius:14px; }
+@media(max-width:520px) { .card,.records,.aokie { padding:20px; } .actions button { flex:1; } }
+</style>
+<main className="workspace">
+  <span className="eyebrow">Your connected workspace</span>
+  <h1>{workspace.name}</h1>
+  <p className="intro">Your forms, records and tools, together. Pick up where you left off or start something new.</p>
+  #if (workspace.aokie)
+    <section className="aokie" aria-label="Aokie receptionist">
+      <span className="eyebrow">Aokie / Front desk</span>
+      <h2>A clearer view of every conversation.</h2>
+      <p>Open Calls to work with your receptionist, Device Setup to connect OAIY, or Calls and Messages to follow up.</p>
+    </section>
+  #end
+  <div className="toolbar">
+    <h2>Your forms and tools</h2>
+    <button @click={refresh} disabled={busy}>{busy ? "Refreshing…" : "Refresh workspace"}</button>
+  </div>
+  <label htmlFor="workspace-search" className="eyebrow">Find a form or tool</label>
+  <div className="toolbar"><input id="workspace-search" className="search" placeholder="Search your workspace" :bind={query} @input={filterForms} /></div>
+  <p role="status" className="status">{message}</p>
+  <div className="grid">
+    #each (form in forms)
+      <article className={selected === form.id ? "card is-selected" : "card"}>
+        <span className="eyebrow">{form.tool ? "Workspace tool" : "Connected form"}</span>
+        <h2>{form.name}</h2>
+        <p>{form.description || "Open this form or explore its recent records."}</p>
+        <div className="actions">
+          #if (!form.hidden)
+            <button className="primary" @click={() => openForm(form)}>{form.tool ? "Open tool" : "Open form"}</button>
+          #end
+          #if (form.canRead)
+            <button @click={() => inspect(form)}>Recent records</button>
+          #end
+        </div>
+      </article>
+    #end
+  </div>
+  #if (forms.length === 0)
+    <p className="empty">No matching forms. Try a different search or add forms in App Studio.</p>
+  #end
+  #if (selected)
+    <section className="records" aria-label="Recent records">
+      <div className="toolbar"><h2>Recent records</h2><span>{count} available</span></div>
+      #each (record in records)
+        <article className="record"><strong>{record.title}</strong><small>{record.date}</small></article>
+      #end
+      #if (records.length === 0)
+        <p>No records to show yet.</p>
+      #end
+    </section>
+  #end
+</main>

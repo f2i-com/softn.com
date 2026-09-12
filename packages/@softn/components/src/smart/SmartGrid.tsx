@@ -31,6 +31,8 @@ export interface SmartGridProps<T = Record<string, unknown>> {
   data: T[];
   /** Comma-separated column names, or auto-detect if not provided */
   columns?: string;
+  /** Display labels keyed by stable field name. */
+  columnLabels?: Record<string, string>;
   /** Enable search (new: searchable, legacy: search) */
   searchable?: boolean;
   search?: boolean;
@@ -226,6 +228,7 @@ const ChevronRight = () => (
 export function SmartGrid<T extends Record<string, unknown>>({
   data,
   columns: columnsProp,
+  columnLabels,
   // New prop names with backward compatibility
   searchable,
   search = false,
@@ -285,7 +288,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
         const sampleValue = safeData[0] ? getFieldValue(safeData[0], key) : undefined;
         return {
           key,
-          label: humanize(key),
+          label: columnLabels?.[key] ?? humanize(key),
           type: detectType(sampleValue),
         };
       });
@@ -307,10 +310,10 @@ export function SmartGrid<T extends Record<string, unknown>>({
       .filter((key) => !hideColumns.includes(key))
       .map((key) => ({
         key,
-        label: humanize(key),
+        label: columnLabels?.[key] ?? humanize(key),
         type: detectType(getFieldValue(firstRow, key)),
       }));
-  }, [columnsProp, safeData, hideColumns]);
+  }, [columnsProp, columnLabels, safeData, hideColumns]);
 
   // Filter data by search
   const filteredData = useMemo(() => {

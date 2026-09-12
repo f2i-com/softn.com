@@ -1,19 +1,10 @@
 name: Build SoftN
 
-# The checks run on every push to main and every pull request against it: the
-# engine this used to have to compile from a separate repository now lives at
-# packages/@softn/core/wasm-zipp/, committed, so there is nothing to fetch and
-# no reason for a merge to skip typecheck, lint and the test suites. The steps
-# themselves are in verify.yml, shared with the release workflow. The
-# desktop builds are the exception — six platform runners per push is a cost
-# a typo does not justify — and stay behind the manual trigger, which still
-# runs everything.
+# Automatic push/PR CI is temporarily paused while checks are run locally.
+# Run this workflow manually to execute the existing verification and builds.
+# The shared verification steps remain in verify.yml for manual builds and releases.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always

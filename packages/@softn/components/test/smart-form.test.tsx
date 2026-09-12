@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mount, type } from './dom';
+import { mount, type, click } from './dom';
 import { SmartForm } from '../src/smart/SmartForm';
 
 beforeEach(() => {
@@ -77,5 +77,27 @@ describe('data arriving after the first render', () => {
   it('renders without a data prop at all', () => {
     const { container } = mount(<SmartForm fields={FIELDS} />);
     expect(valuesOf(container)).toEqual(['', '']);
+  });
+});
+
+
+describe('accessible field controls', () => {
+  it('associates labels and validation messages uniquely across forms', () => {
+    const fields = [{ name: 'email', label: 'Email address', type: 'email' as const, required: true, helpText: 'Use a work address' }];
+    const a = mount(<SmartForm fields={fields} />);
+    const b = mount(<SmartForm fields={fields} />);
+    const input = a.container.querySelector('input')!;
+    expect(input.id).not.toBe(b.container.querySelector('input')!.id);
+    expect(a.container.querySelector('label')!.htmlFor).toBe(input.id);
+    expect(document.getElementById(input.getAttribute('aria-describedby')!)!.textContent).toBe('Use a work address');
+    click(a.container.querySelector('button[type="submit"]'));
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(document.getElementById(input.getAttribute('aria-describedby')!)!.textContent).toBe('This field is required');
+    a.unmount(); b.unmount();
+  });
+  it('uses the field label for a checkbox', () => {
+    const form = mount(<SmartForm fields={[{ name: 'consent', type: 'checkbox', label: 'Contact me' }]} />);
+    expect(form.container.querySelector('label')!.textContent).toBe('Contact me');
+    form.unmount();
   });
 });
