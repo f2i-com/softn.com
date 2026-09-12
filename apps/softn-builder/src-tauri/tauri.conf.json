@@ -1,19 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "SoftN Builder",
+  "productName": "Softn Builder",
   "version": "0.0.9",
   "identifier": "com.softn.builder",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1422",
+    "beforeDevCommand": "npm run dev -- --port 1432",
+    "devUrl": "http://localhost:1432",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist-desktop"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "SoftN Builder",
+        "title": "Softn Builder",
         "width": 1400,
         "height": 900,
         "resizable": true,
@@ -25,6 +25,7 @@
       }
     ],
     "security": {
+      "dangerousDisableAssetCspModification": ["style-src"],
       "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob: ipc: http://ipc.localhost; worker-src 'self' blob:"
     }
   },
@@ -38,15 +39,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "fileAssociations": [
-      {
-        "ext": ["softnproj"],
-        "name": "SoftN Project",
-        "description": "SoftN Builder Project",
-        "role": "Editor",
-        "mimeType": "application/x-softn-project"
-      }
     ]
+  },
+  "plugins": {
+    "shell": { "open": "https://(softn\\.com(/[^\\s]*)?|github\\.com/f2i-com/softn\\.com)" }
   }
 }

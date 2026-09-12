@@ -86,6 +86,7 @@ export default defineConfig({
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {
+    outDir: isTauri ? 'dist-desktop' : 'dist',
     // Tauri ships a known webview with each platform, so that build compiles
     // straight for the engine it will run on. The web build names no target and
     // takes Vite's default baseline instead: raising it drops Safari 15.0-15.3,

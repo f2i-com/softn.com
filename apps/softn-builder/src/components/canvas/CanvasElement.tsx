@@ -852,6 +852,11 @@ export const CanvasElement = React.memo(function CanvasElement({
             {componentMeta?.description && (
               <span style={{ color: 'var(--dim)', fontSize: 11 }}>{componentMeta.description}</span>
             )}
+            {element.children.length === 0 && typeof props.children === 'string' && (
+              <span data-canvas-leaf-text="true" style={{ overflowWrap: 'anywhere', fontSize: 13 }}>
+                {props.children}
+              </span>
+            )}
           </div>
         );
       }

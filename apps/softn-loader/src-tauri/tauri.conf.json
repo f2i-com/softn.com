@@ -5,7 +5,7 @@
   "identifier": "com.softn.runtime",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1421",
+    "devUrl": "http://localhost:1431",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
@@ -13,10 +13,10 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "SoftN",
+        "title": "Softn — Desktop runtime",
         "width": 1200,
         "height": 800,
-        "backgroundColor": "#0c0a09",
+        "backgroundColor": "#101317",
         "resizable": true,
         "fullscreen": false,
         "minWidth": 800,
@@ -26,6 +26,7 @@
       }
     ],
     "security": {
+      "dangerousDisableAssetCspModification": ["style-src"],
       "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self' blob: ipc: http://ipc.localhost wss:; worker-src 'self' blob:"
     }
   },

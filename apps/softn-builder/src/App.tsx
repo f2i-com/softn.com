@@ -35,7 +35,8 @@ import {
   type ViewMode,
 } from './utils/openProject';
 import { saveProject } from './utils/saveProject';
-import { STUDIO_URL, RUNTIME_URL } from './utils/siteUrls';
+import { STUDIO_URL, RUNTIME_URL, PRODUCT_URLS } from './utils/siteUrls';
+import { isDesktop, openCompanionUrl, type BundleFileHandle } from './utils/desktop';
 import { ToastContainer } from './components/feedback/ToastContainer';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
@@ -331,7 +332,7 @@ function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showNewProjectDialog, setShowNewProjectDialog] = useState(false);
 
-  const fileHandleRef = useRef<FileSystemFileHandle | null>(null);
+  const fileHandleRef = useRef<BundleFileHandle | null>(null);
   /**
    * The remote open in flight, if any. Aborted by every action that replaces
    * the workspace, and on unmount; the generation check in openRemoteBundle
@@ -502,6 +503,7 @@ function App() {
         if (!window.confirm('Open a new project? Unsaved changes will be lost.')) return;
       }
       applySnapshot(snapshot);
+      fileHandleRef.current = bundle.sourceHandle ?? null;
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return;
       console.error('[App] Failed to open file:', e);
@@ -875,7 +877,9 @@ function App() {
           Tab and a screen reader cannot reach the page under it. */}
       <div ref={shellRef} style={styles.app}>
         {/* The same bar as the site, the runtime and Studio: the way between them. */}
-        <ProductBar current="builder" />
+        <ProductBar current="builder" urls={PRODUCT_URLS} onNavigate={isDesktop() ? (href) => {
+          void openCompanionUrl(href).catch(() => toast.error('Could not open the Softn website.'));
+        } : undefined} />
         <Toolbar
           view={view}
           onViewChange={changeView}

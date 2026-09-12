@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Builder desktop dialogs and access to files selected by the user",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-destroy",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-ask",
+    "fs:allow-stat",
+    "fs:allow-read-file",
+    "fs:allow-write-file",
+    "shell:allow-open"
+  ]
+}

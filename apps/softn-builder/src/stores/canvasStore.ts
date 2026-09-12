@@ -86,7 +86,7 @@ const initialElements = new Map<string, CanvasElement>([
     {
       id: initialRootId,
       componentType: 'App',
-      props: { theme: 'light' },
+      props: { theme: 'system' },
       children: [],
       parentId: null,
     },

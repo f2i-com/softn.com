@@ -4,6 +4,7 @@
  */
 
 import type { ComponentMeta, ComponentCategory } from '../types/builder';
+import { getNativeHtmlMeta } from './nativeHtmlMetadata';
 
 // Helper to create component metadata
 function comp(
@@ -26,9 +27,9 @@ export const componentRegistry: ComponentMeta[] = [
     'Layout',
     'layout',
     'Root application container with theme support',
-    { theme: 'light' },
+    { theme: 'system' },
     [
-      { name: 'theme', type: 'select', options: ['light', 'dark', 'system'], default: 'light' },
+      { name: 'theme', type: 'select', options: ['light', 'dark', 'system'], default: 'system' },
       { name: 'className', type: 'string' },
     ],
     true
@@ -1783,7 +1784,7 @@ export function getComponentsByCategory(): Map<string, ComponentMeta[]> {
 
 // Get component metadata by name
 export function getComponentMeta(name: string): ComponentMeta | undefined {
-  return componentRegistry.find((c) => c.name === name);
+  return componentRegistry.find((c) => c.name === name) ?? getNativeHtmlMeta(name);
 }
 
 // Get all component names

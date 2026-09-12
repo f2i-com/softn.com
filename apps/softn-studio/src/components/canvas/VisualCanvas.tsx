@@ -5,6 +5,7 @@ import { resolveActivePreviewPath, resolveManifest } from '../../lib/studioProje
 import { getXDB, type SoftNRendererProps } from '@softn/core';
 import type { ThemeProviderProps } from '@softn/components';
 import { normalizeProjectPath } from '../../lib/projectImport';
+import { createPreviewAssetResolver } from '../../lib/previewAssets';
 import {
   assemblePreviewSource,
   buildPreviewXDBState,
@@ -57,14 +58,6 @@ function stripComments(source: string): string {
   return out.replace(/\n\s*\n\s*\n/g, '\n\n').trim();
 }
 
-function normalizeAssetPath(path: string): string {
-  return path
-    .replace(/\\/g, '/')
-    .replace(/^\.?\//, '')
-    .replace(/^\//, '')
-    .toLowerCase();
-}
-
 function rewriteAssetReferences(source: string, resolveAsset: (path: string) => string): string {
   return source.replace(
     /(["'])(assets\/[^"']+|\.\.\/assets\/[^"']+|\.\/assets\/[^"']+)(\1)/g,
@@ -72,22 +65,6 @@ function rewriteAssetReferences(source: string, resolveAsset: (path: string) => 
       return `${quote}${resolveAsset(assetPath)}${quote}`;
     }
   );
-}
-
-function fileContentToDataUrl(file: { mimeType?: string; content: string | Uint8Array }): string {
-  if (typeof file.content === 'string') {
-    if (file.mimeType === 'image/svg+xml') {
-      return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(file.content)}`;
-    }
-    return `data:${file.mimeType || 'text/plain'};charset=utf-8,${encodeURIComponent(file.content)}`;
-  }
-
-  const bytes = new Uint8Array(file.content);
-  let binary = '';
-  for (let index = 0; index < bytes.length; index += 1) {
-    binary += String.fromCharCode(bytes[index]);
-  }
-  return `data:${file.mimeType || 'application/octet-stream'};base64,${btoa(binary)}`;
 }
 
 interface VisualCanvasProps {
@@ -401,27 +378,9 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     []
   );
 
-  const resolveAssetUrl = useCallback(
-    (assetPath: string) => {
-      if (assetPath.startsWith('data:') || assetPath.startsWith('blob:')) return assetPath;
-
-      const candidates = [
-        normalizeAssetPath(assetPath),
-        normalizeAssetPath(`assets/${assetPath}`),
-        normalizeAssetPath(assetPath.replace(/^\.\.\//, '')),
-        normalizeAssetPath(assetPath.replace(/^\.\//, '')),
-      ];
-
-      for (const [path, file] of files.entries()) {
-        if (!path.startsWith('assets/')) continue;
-        if (candidates.includes(normalizeAssetPath(path))) {
-          return fileContentToDataUrl(file);
-        }
-      }
-
-      return assetPath;
-    },
-    [files]
+  const resolveAssetUrl = useMemo(
+    () => createPreviewAssetResolver(files, activeVFSFile ?? 'ui/main.ui'),
+    [files, activeVFSFile]
   );
 
   const rendererFunctions = useMemo<Record<string, (...args: unknown[]) => unknown>>(
@@ -449,11 +408,16 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     if (!isSoftNUIFile || !activeVFSFile || !previewFileContent) {
       return { source: null as string | null, preIncludedLogicPaths: [] as string[] };
     }
+    const groups = resolveManifest(files)?.files as Record<string, unknown> | undefined;
+    const declaredLogicPaths = Array.isArray(groups?.logic)
+      ? groups.logic.filter((path): path is string => typeof path === 'string')
+      : [];
     const assembled = assemblePreviewSource(
       activeVFSFile,
       previewFileContent,
       previewUIFiles,
-      previewLogicFiles
+      previewLogicFiles,
+      declaredLogicPaths
     );
     let source = assembled.source;
     source = rewriteAssetReferences(source, resolveAssetUrl);
@@ -466,6 +430,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     previewLogicFiles,
     previewUIFiles,
     resolveAssetUrl,
+    files,
   ]);
 
   // Blob URLs are resources, not render calculations. Creating them in
@@ -674,8 +639,9 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       return ThemeProviderComponent ? (
         <div style={styles.rendererWrap}>
           {capabilityNote}
-          <ThemeProviderComponent defaultDarkMode={themePreview === 'dark'} followSystem={false}>
+          <ThemeProviderComponent darkMode={themePreview === 'dark'} followSystem={false}>
             <PreviewComponent
+              key={refreshKey}
               source={softNSource}
               functions={rendererFunctions}
               initialData={initialData}
@@ -690,6 +656,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
         <div style={styles.rendererWrap}>
           {capabilityNote}
           <PreviewComponent
+            key={refreshKey}
             source={softNSource}
             functions={rendererFunctions}
             initialData={initialData}
@@ -839,8 +806,8 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
       </div>
 
       {/* Canvas toolbar (hidden on mobile) */}
-      {!isMobile && (
-        <div style={styles.toolbar}>
+      {!isMobile && !isExpandedPreview && (
+        <div style={styles.toolbar} role="toolbar" aria-label="Preview controls">
           {[
             { id: 'refresh', icon: 'refresh' as const, label: 'Refresh preview' },
             { id: 'resetdata', icon: 'database' as const, label: 'Reset preview data (reseed from the .xdb files)' },
@@ -1241,10 +1208,9 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--studio-text)',
   },
   toolbar: {
-    position: 'absolute',
-    bottom: 16,
-    left: '50%',
-    transform: 'translateX(-50%)',
+    alignSelf: 'center',
+    flexShrink: 0,
+    margin: '0 0 12px',
     display: 'flex',
     gap: 4,
     padding: 6,

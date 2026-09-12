@@ -149,6 +149,8 @@ export interface CollectionDef {
 
 // Asset file
 export interface AssetFile {
+  /** Original archive path; app assets need not live under assets/. */
+  bundlePath?: string;
   name: string;
   type: string;
   data: Uint8Array;

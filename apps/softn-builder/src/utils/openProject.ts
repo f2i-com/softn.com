@@ -187,12 +187,13 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
   const themeMode = bundle.manifest.config?.theme?.mode || 'light';
 
   const assets: AssetFile[] = Array.from(bundle.assets.entries()).map(([path, bytes]) => ({
+    bundlePath: path,
     name: path.replace(/^assets\//, ''),
     type: mimeTypeFromPath(path),
     data: bytes,
   }));
   const assetFiles = new Map<string, AssetFile>();
-  for (const asset of assets) assetFiles.set(`assets/${asset.name}`, asset);
+  for (const asset of assets) assetFiles.set(asset.bundlePath!, asset);
 
   const mainUIFile = bundle.uiFiles.get(bundle.mainFileId);
   if (!mainUIFile) {
@@ -599,14 +600,20 @@ export function discardQuarantinedSession(): void {
 }
 
 /** The quarantined payload as a file the person can keep. */
-export function exportQuarantinedSession(): boolean {
+export async function exportQuarantinedSession(): Promise<boolean> {
   const record = readQuarantinedSession();
   if (!record) return false;
+  const name = `softn-builder-session-${record.quarantinedAt.replace(/[:.]/g, '-') || 'quarantined'}.json`;
+  const { isDesktop, saveDesktopFile } = await import('./desktop');
+  if (isDesktop()) {
+    await saveDesktopFile(new TextEncoder().encode(record.payload), name);
+    return true;
+  }
   const blob = new Blob([record.payload], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `softn-builder-session-${record.quarantinedAt.replace(/[:.]/g, '-') || 'quarantined'}.json`;
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

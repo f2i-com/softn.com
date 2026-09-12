@@ -81,7 +81,7 @@ export default defineConfig({
   plugins: [react(), coreWorkerAssetPlugin()],
   clearScreen: false,
   server: {
-    port: 1421,
+    port: 1431,
     strictPort: true,
   },
   envPrefix: ['VITE_', 'TAURI_'],

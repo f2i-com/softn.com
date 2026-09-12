@@ -5,15 +5,19 @@
  * Double-click any .softn file to open it with this app.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { registerAllBuiltins, ThemeProvider } from '@softn/components';
 import {
   SoftNWithXDB,
   readBundleEntries,
   classifyAsset,
   type PermissionConfig,
+  type AppAssetResolver,
 } from '@softn/core';
-import { Spinner, Box, Text, Card, Stack, Button } from '@softn/components';
+import { Spinner } from '@softn/components';
+import { DesktopShell, DesktopWelcome } from './DesktopShell';
+import { createBundleAssetResolver } from './bundleAssets';
+import { isSoftnPath, resolveServerConfig, type BundleServerConfig } from './runtimeConfig';
 import { createBundleImportResolver } from './remoteImport';
 import { computeBundleAppId, loadBundleXDBData, processBundleSource } from './bundleRuntime';
 
@@ -28,37 +32,6 @@ const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
 
 // Platform detection
 const isMobile = typeof __ANDROID__ !== 'undefined' && __ANDROID__;
-
-/**
- * The loader's chrome, in softn.com's palette.
- *
- * This app used to wear stone-and-blue — a warm near-black under a bright blue
- * gradient logo — which belonged to nothing else in the project. What the user
- * sees before a bundle opens is the whole product's first impression on the
- * desktop, so it uses the same ground, the same two accents and the same faces
- * as the landing page: coral marks the language, mint marks the machine.
- *
- * These are the loader's own chrome only. Once a bundle is open the app inside
- * it paints itself, and nothing here reaches into it.
- */
-const LOADER = {
-  bg: '#101317',
-  panel: '#161a20',
-  inset: '#1d222a',
-  border: '#262c36',
-  text: '#f2f0ec',
-  muted: '#8b94a2',
-  dim: '#838c9a',
-  coral: '#ff8a4c',
-  coralGlow: 'rgba(255,138,76,0.16)',
-  mint: '#35e0c0',
-  // Lifted off the card rather than cut into it — the same value Studio's Mark
-  // uses. A tile darker than the surface it sits on reads as a hole.
-  markTile: '#1d222a',
-  display: "'Bricolage Grotesque Variable', 'Bricolage Grotesque', system-ui, sans-serif",
-  body: "'IBM Plex Sans', system-ui, -apple-system, sans-serif",
-  mono: "'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
-} as const;
 
 // Types for bundle content
 interface BundleManifest {
@@ -86,11 +59,7 @@ interface BundleManifest {
     mobile?: {
       orientation?: 'portrait' | 'landscape' | 'auto';
     };
-    server?: {
-      url?: string;
-      auth_token?: string;
-      collections?: string[];
-    };
+    server?: BundleServerConfig;
   };
   permissions?: import('@softn/core').AppPermissions;
 }
@@ -169,6 +138,13 @@ async function setWindowIconFromBundle(
 
 function App(): React.ReactElement {
   const [bundlePath, setBundlePath] = useState<string | null>(null);
+  const [openRevision, setOpenRevision] = useState(0);
+  const selectionRevision = useRef(0);
+  const selectBundle = useCallback((path: string) => {
+    selectionRevision.current += 1;
+    setBundlePath(path);
+    setOpenRevision((revision) => revision + 1);
+  }, []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [mainSource, setMainSource] = useState<string>('');
@@ -181,9 +157,8 @@ function App(): React.ReactElement {
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
   const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
   const [permissionConfig, setPermissionConfig] = useState<PermissionConfig | null>(null);
-  const [assetResolver, setAssetResolver] = useState<
-    ((path: string) => string | null) | undefined
-  >();
+  const [assetResolver, setAssetResolver] = useState<AppAssetResolver>();
+  const [serverConfig, setServerConfig] = useState(() => resolveServerConfig());
 
   // Open a file picker to choose a .softn file
   const openFilePicker = async () => {
@@ -195,10 +170,10 @@ function App(): React.ReactElement {
         multiple: false,
       });
       if (selected) {
-        setBundlePath(selected as string);
+        selectBundle(selected as string);
       }
     } catch (err) {
-      console.error('Failed to open file picker:', err);
+      setError(new Error(`Unable to open the file picker: ${err instanceof Error ? err.message : String(err)}`));
     }
   };
 
@@ -207,6 +182,7 @@ function App(): React.ReactElement {
     if (!isTauri || isMobile) return;
 
     let unlisten: (() => void) | undefined;
+    let listening = true;
 
     async function setupDragDrop() {
       try {
@@ -215,22 +191,24 @@ function App(): React.ReactElement {
 
         unlisten = await webview.onDragDropEvent(
           (event: { payload: { type: string; paths?: string[] } }) => {
-            if (event.payload.type === 'hover') {
+            if (!listening) return;
+            if (event.payload.type === 'enter' || event.payload.type === 'over') {
               setIsDragOver(true);
             } else if (event.payload.type === 'drop') {
               setIsDragOver(false);
               const paths = event.payload.paths || [];
-              const softnFile = paths.find((p: string) => p.endsWith('.softn'));
+              const softnFile = paths.find(isSoftnPath);
               if (softnFile) {
-                setBundlePath(softnFile);
+                selectBundle(softnFile);
               } else if (paths.length > 0) {
                 setError(new Error('Please drop a .softn file'));
               }
-            } else if (event.payload.type === 'cancel') {
+            } else if (event.payload.type === 'leave') {
               setIsDragOver(false);
             }
           }
         );
+        if (!listening) unlisten();
       } catch (err) {
         console.error('Failed to set up drag-drop listener:', err);
       }
@@ -239,9 +217,10 @@ function App(): React.ReactElement {
     setupDragDrop();
 
     return () => {
+      listening = false;
       if (unlisten) unlisten();
     };
-  }, []);
+  }, [selectBundle]);
 
   // Check for opened file on mount
   useEffect(() => {
@@ -250,6 +229,7 @@ function App(): React.ReactElement {
     let unlistenIntentFile: (() => void) | null = null;
 
     async function checkForOpenedFile() {
+      const revision = selectionRevision.current;
       if (!isTauri) {
         setLoading(false);
         return;
@@ -259,10 +239,12 @@ function App(): React.ReactElement {
         // @ts-expect-error - Tauri invoke
         const openedFile = await window.__TAURI__?.core?.invoke('get_opened_file');
         if (!active) return;
-        if (openedFile && typeof openedFile === 'string' && openedFile.endsWith('.softn')) {
-          setBundlePath(openedFile);
-        } else {
-          setLoading(false);
+        if (revision === selectionRevision.current) {
+          if (openedFile && typeof openedFile === 'string' && isSoftnPath(openedFile)) {
+            selectBundle(openedFile);
+          } else {
+            setLoading(false);
+          }
         }
 
         // Listen for file-opened events (desktop: single-instance, CLI)
@@ -271,8 +253,8 @@ function App(): React.ReactElement {
           'file-opened',
           (event: { payload: { path: string } }) => {
             if (!active) return;
-            if (event.payload?.path?.endsWith('.softn')) {
-              setBundlePath(event.payload.path);
+            if (event.payload?.path && isSoftnPath(event.payload.path)) {
+              selectBundle(event.payload.path);
             }
           }
         );
@@ -292,9 +274,9 @@ function App(): React.ReactElement {
             (event: { payload: { filename: string } }) => {
               if (!active) return;
               const filename = event.payload?.filename;
-              if (filename && filename.endsWith('.softn')) {
+              if (filename && isSoftnPath(filename)) {
                 // Use special prefix so loadBundle knows to use read_cached_bundle
-                setBundlePath(`__intent__:${filename}`);
+                selectBundle(`__intent__:${filename}`);
               }
             }
           );
@@ -309,7 +291,7 @@ function App(): React.ReactElement {
       } catch (err) {
         if (!active) return;
         console.error('Error checking for opened file:', err);
-        setLoading(false);
+        if (revision === selectionRevision.current) setLoading(false);
       }
     }
 
@@ -320,16 +302,15 @@ function App(): React.ReactElement {
       if (unlistenFileOpened) unlistenFileOpened();
       if (unlistenIntentFile) unlistenIntentFile();
     };
-  }, []);
+  }, [selectBundle]);
 
   // Load bundle when path is set
   useEffect(() => {
     if (!bundlePath) return;
 
     let active = true;
-    const objectUrls: string[] = [];
+    let loadedAssets: AppAssetResolver | undefined;
     const remoteControllers = new Set<AbortController>();
-    let publishedAssetResolver: ((path: string) => string | null) | undefined;
 
     const cleanup = () => {
       for (const controller of remoteControllers) controller.abort();
@@ -339,17 +320,7 @@ function App(): React.ReactElement {
       } catch {
         // Orientation lock is not available everywhere.
       }
-      for (const url of objectUrls.splice(0)) {
-        try {
-          URL.revokeObjectURL(url);
-        } catch {
-          // Ignore revoke failures.
-        }
-      }
-      if (publishedAssetResolver && typeof window !== 'undefined') {
-        const globals = window as unknown as Record<string, unknown>;
-        if (globals.__softnAsset === publishedAssetResolver) delete globals.__softnAsset;
-      }
+      loadedAssets?.dispose?.();
     };
 
     async function loadBundle() {
@@ -411,6 +382,7 @@ function App(): React.ReactElement {
         }
 
         const parsedManifest: BundleManifest = JSON.parse(manifestContent);
+        const resolvedServerConfig = resolveServerConfig(parsedManifest.config?.server);
         setManifest(parsedManifest);
 
         // Lock screen orientation if configured (mobile only)
@@ -454,65 +426,33 @@ function App(): React.ReactElement {
           },
         });
 
-        const normalizeAssetPath = (path: string): string =>
-          path.replace(/\\/g, '/').replace(/^\.\/+/, '');
-        const assetUrlCache = new Map<string, string>();
-        const resolveAsset = (path: string): string | null => {
-          if (!active) return null;
-          if (!path) return null;
-          if (
-            path.startsWith('blob:') ||
-            path.startsWith('data:') ||
-            path.startsWith('http://') ||
-            path.startsWith('https://')
-          ) {
-            return path;
-          }
-          const normalized = normalizeAssetPath(path);
-          if (assetUrlCache.has(normalized)) return assetUrlCache.get(normalized)!;
-          const bin = binaryFiles.get(normalized);
-          // .gltf and .obj are text formats, so readZip lands them in
-          // textFiles; a model is an asset wherever its bytes live.
-          const text = bin ? undefined : textFiles.get(normalized);
-          if (!bin && text === undefined) return null;
-          // The registry answers application/octet-stream for unknown
-          // extensions, which is the fallback the map here used.
-          const mime = classifyAsset(normalized).mime;
-          const blob = bin
-            ? new Blob([bin as unknown as BlobPart], { type: mime })
-            : new Blob([text as string], { type: mime });
-          const url = URL.createObjectURL(blob);
-          assetUrlCache.set(normalized, url);
-          objectUrls.push(url);
-          return url;
-        };
-
-        if (!active) return;
-        setImportResolver(() => resolver);
-        setAssetResolver(() => resolveAsset);
-        publishedAssetResolver = resolveAsset;
-        if (typeof window !== 'undefined') {
-          (window as unknown as Record<string, unknown>).__softnAsset = resolveAsset;
-        }
-        setRuntimeAppId(resolvedAppId);
-        setLogicBasePath(logicBasePath);
-        setPreIncludedLogicPaths(preIncludedLogicPaths);
-        setMainSource(source);
-        setLoading(false);
-
+        loadedAssets = createBundleAssetResolver(binaryFiles, textFiles);
+        if (!active) { cleanup(); return; }
         // Update window title (desktop only)
         if (!isMobile && (parsedManifest.config?.window?.title || parsedManifest.name)) {
           try {
             const windowModule = await import('@tauri-apps/api/window');
             if (!active) return;
             const appWindow = windowModule.getCurrentWindow();
-            await appWindow.setTitle(parsedManifest.config?.window?.title || parsedManifest.name);
+            await appWindow.setTitle(`Opening ${parsedManifest.config?.window?.title || parsedManifest.name} — Softn`);
           } catch {
             // Window API not available
           }
         }
+        if (!active) return;
+        setImportResolver(() => resolver);
+        setAssetResolver(() => loadedAssets);
+        setServerConfig(resolvedServerConfig);
+        setRuntimeAppId(resolvedAppId);
+        setLogicBasePath(logicBasePath);
+        setPreIncludedLogicPaths(preIncludedLogicPaths);
+        setMainSource(source);
+        setLoading(false);
+
+
       } catch (err) {
         if (!active) return;
+        cleanup();
         setError(err instanceof Error ? err : new Error(String(err)));
         setLoading(false);
         setAssetResolver(undefined);
@@ -527,270 +467,52 @@ function App(): React.ReactElement {
       active = false;
       cleanup();
     };
-  }, [bundlePath]);
+  }, [bundlePath, openRevision]);
 
-  // Show welcome screen when no file is opened
-  if (!bundlePath && !loading) {
-    return (
-      <ThemeProvider followSystem>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            height: '100vh',
-            width: '100vw',
-            // softn.com's ground, not the stone-and-blue this app used to wear.
-            background: LOADER.bg,
-            fontFamily: LOADER.body,
-            padding: '2rem',
-            transition: 'background 0.2s ease',
-          }}
-        >
-          <Card
-            style={{
-              maxWidth: '460px',
-              width: '100%',
-              padding: '2.75rem 2.5rem',
-              background: LOADER.panel,
-              // Coral on drag, because a drop target is the language accepting a
-              // file, not a status light. Mint is reserved for things running.
-              border: isDragOver ? `2px dashed ${LOADER.coral}` : `1px solid ${LOADER.border}`,
-              borderRadius: '18px',
-              textAlign: 'center',
-              boxShadow: isDragOver
-                ? `0 24px 60px ${LOADER.coralGlow}`
-                : '0 20px 48px rgba(0,0,0,0.34)',
-              transition: 'border 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease',
-              transform: isDragOver ? 'scale(1.015)' : 'scale(1)',
-            }}
-          >
-            <Stack direction="vertical" gap="lg" style={{ alignItems: 'center' }}>
-              {/* The SoftN mark, drawn from the same 32-unit grid as the site
-                  favicon and the icons: coral brackets because they are the
-                  language, a mint dot because it is the thing that runs. */}
-              <svg
-                width="72"
-                height="72"
-                viewBox="0 0 32 32"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                role="img"
-                aria-label="SoftN"
-              >
-                <rect width="32" height="32" rx="7" fill={LOADER.markTile} />
-                <path
-                  d="M9 11.5 5.5 16 9 20.5"
-                  fill="none"
-                  stroke={LOADER.coral}
-                  strokeWidth="2.4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M23 11.5 26.5 16 23 20.5"
-                  fill="none"
-                  stroke={LOADER.coral}
-                  strokeWidth="2.4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <circle cx="16" cy="16" r="2.8" fill={LOADER.mint} />
-              </svg>
-              <Stack direction="vertical" gap="sm" style={{ alignItems: 'center' }}>
-                <Text
-                  style={{
-                    fontFamily: LOADER.display,
-                    fontSize: '2rem',
-                    fontWeight: 600,
-                    letterSpacing: '-0.03em',
-                    color: LOADER.text,
-                  }}
-                >
-                  SoftN
-                </Text>
-                <Text
-                  style={{
-                    fontFamily: LOADER.mono,
-                    fontSize: '0.6875rem',
-                    letterSpacing: '0.14em',
-                    textTransform: 'uppercase',
-                    color: LOADER.dim,
-                  }}
-                >
-                  Application Runtime
-                </Text>
-              </Stack>
-              <Text
-                style={{
-                  color: isDragOver ? LOADER.coral : LOADER.muted,
-                  fontSize: '0.9375rem',
-                  lineHeight: 1.65,
-                  transition: 'color 0.2s ease',
-                }}
-              >
-                {isDragOver
-                  ? 'Drop your .softn file here!'
-                  : isMobile
-                    ? 'Tap the button below to open a .softn file.'
-                    : 'Open a .softn file to get started, or drag and drop one onto this window.'}
-              </Text>
-              {(isTauri || isMobile) && (
-                <Button
-                  variant="primary"
-                  onClick={openFilePicker}
-                  style={{
-                    marginTop: '0.25rem',
-                    padding: '0.75rem 1.75rem',
-                    fontSize: '0.9375rem',
-                    fontWeight: 600,
-                    fontFamily: LOADER.body,
-                    // Paper on ink, the same primary the landing page uses: the
-                    // one thing to press should not be another shade of the card.
-                    background: LOADER.text,
-                    color: LOADER.bg,
-                    border: 'none',
-                    borderRadius: '10px',
-                    // Comfortable for a finger on the Android build, where this
-                    // button is the only way in.
-                    minHeight: 44,
-                  }}
-                >
-                  Open a .softn file
-                </Button>
-              )}
-              <Box
-                style={{
-                  marginTop: '0.25rem',
-                  padding: '0.875rem 1rem',
-                  background: LOADER.inset,
-                  border: `1px solid ${LOADER.border}`,
-                  borderRadius: '10px',
-                  width: '100%',
-                }}
-              >
-                <Text style={{ color: LOADER.dim, fontSize: '0.8125rem', lineHeight: 1.55 }}>
-                  A <span style={{ fontFamily: LOADER.mono, color: LOADER.coral }}>.softn</span>{' '}
-                  file is one self-contained app — its interface, its logic and its data in a single
-                  bundle.
-                </Text>
-              </Box>
-            </Stack>
-          </Card>
-        </div>
-      </ThemeProvider>
-    );
-  }
+  const goHome = () => {
+    selectionRevision.current += 1;
+    setBundlePath(null);
+    setLoading(false);
+    setError(null);
+    setManifest(null);
+    setMainSource('');
+    setRuntimeAppId(null);
+    setAssetResolver(undefined);
+    setImportResolver(undefined);
+    if (isTauri && !isMobile) {
+      void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle('Softn — Desktop runtime')).catch(() => {});
+    }
+  };
 
-  // Show loading state
-  if (loading) {
-    return (
-      <ThemeProvider followSystem>
-        <Box
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            height: '100vh',
-            width: '100vw',
-            flexDirection: 'column',
-            gap: '1rem',
-            background: '#0c0a09',
-          }}
-        >
-          <Spinner size="lg" />
-          <Text color="white">Loading {bundlePath?.split(/[/\\]/).pop() || 'application'}...</Text>
-        </Box>
-      </ThemeProvider>
-    );
-  }
-
-  // Show error state
-  if (error) {
-    return (
-      <ThemeProvider followSystem>
-        <Box style={{ padding: '2rem', background: '#0c0a09', height: '100vh', width: '100vw' }}>
-          <Card
-            style={{
-              padding: '2rem',
-              background: '#1c1917',
-              border: '1px solid #ef4444',
-              borderRadius: '12px',
-            }}
-          >
-            <Stack direction="vertical" gap="md">
-              <Text style={{ color: '#ef4444', fontWeight: 'bold', fontSize: '1.25rem' }}>
-                Failed to load application
-              </Text>
-              <Text style={{ color: '#fafaf9' }}>{error.message}</Text>
-              <Text style={{ color: '#78716c', fontSize: '0.875rem' }}>Path: {bundlePath}</Text>
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setBundlePath(null);
-                  setError(null);
-                }}
-                style={{ marginTop: '1rem' }}
-              >
-                Back to Home
-              </Button>
-            </Stack>
-          </Card>
-        </Box>
-      </ThemeProvider>
-    );
-  }
-
-  // Render the SoftN application
-  // Let SoftNWithXDB handle all state, function execution, and data block processing
-  return (
-    <ThemeProvider followSystem>
-      <Box style={{ height: '100vh', width: '100vw', background: '#0c0a09' }}>
+  return <DesktopShell appName={bundlePath ? _manifest?.name : undefined} onHome={goHome} onOpen={openFilePicker} canOpen={isTauri || isMobile}>
+    {!bundlePath && !loading ? <DesktopWelcome onOpen={openFilePicker} canOpen={isTauri || isMobile} dragging={isDragOver} error={error} />
+      : loading ? <div className="desktop-state" role="status"><Spinner size="lg" /><p>Opening {bundlePath?.split(/[/\\]/).pop() || 'your app'}…</p></div>
+      : error ? <div className="desktop-state" role="alert"><h1>We couldn’t open this app</h1><p className="desktop-error">{error.message}</p><p>{bundlePath}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>
+      : <ThemeProvider followHost followSystem>
         <SoftNWithXDB
+          key={runtimeAppId ?? undefined}
           source={mainSource}
           scriptExecutionMode="main"
           resumeSavedSyncRoom={false}
           appId={runtimeAppId ?? undefined}
           permissions={_manifest?.permissions}
           importResolver={importResolver}
+          assetResolver={assetResolver}
           logicBasePath={logicBasePath}
           preIncludedLogicPaths={preIncludedLogicPaths}
           permissionConfig={permissionConfig ?? undefined}
-          serverUrl={_manifest?.config?.server?.url}
-          serverToken={_manifest?.config?.server?.auth_token}
-          serverCollections={_manifest?.config?.server?.collections}
-          functions={{
-            asset: (path: unknown) => {
-              if (typeof path !== 'string' || !assetResolver) return '';
-              return assetResolver(path) || '';
-            },
+          {...serverConfig}
+          onLoad={() => {
+            if (isTauri && !isMobile) {
+              void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${_manifest?.config?.window?.title || _manifest?.name || 'App'} — Softn`)).catch(() => {});
+            }
           }}
-          loading={
-            <Box
-              style={{
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                height: '100vh',
-                width: '100vw',
-              }}
-            >
-              <Spinner size="lg" />
-            </Box>
-          }
-          error={(err) => (
-            <Box style={{ padding: '2rem' }}>
-              <Card
-                style={{ padding: '1.5rem', background: '#1c1917', border: '1px solid #ef4444' }}
-              >
-                <Text style={{ color: '#ef4444' }}>Render Error: {err.message}</Text>
-              </Card>
-            </Box>
-          )}
+          functions={{ asset: (path: unknown) => typeof path === 'string' ? assetResolver?.(path) || '' : '' }}
+          loading={<div className="desktop-state" role="status"><Spinner size="lg" /><p>Starting your app…</p></div>}
+          error={(err) => <div className="desktop-state" role="alert"><h1>The app encountered a problem</h1><p className="desktop-error">{err.message}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>}
         />
-      </Box>
-    </ThemeProvider>
-  );
+      </ThemeProvider>}
+  </DesktopShell>;
 }
 
 export default App;

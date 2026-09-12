@@ -21,6 +21,10 @@ export interface ThemeProviderProps {
   theme?: Theme;
   /** Default to dark mode */
   defaultDarkMode?: boolean;
+  /** Controlled appearance, used by editor previews without restarting the app. */
+  darkMode?: boolean;
+  /** Follow the host document's data-theme, including its live theme switch. */
+  followHost?: boolean;
   /** Follow system preference */
   followSystem?: boolean;
   /** Children */
@@ -218,10 +222,16 @@ const globalStyles = `
 export function ThemeProvider({
   theme: initialTheme,
   defaultDarkMode = false,
+  darkMode,
+  followHost = false,
   followSystem = false,
   children,
 }: ThemeProviderProps): React.ReactElement {
-  const [isDark, setIsDark] = useState(() => {
+  const readDarkMode = useCallback(() => {
+    if (followHost && typeof document !== 'undefined') {
+      const hostTheme = document.documentElement.getAttribute('data-theme');
+      if (hostTheme === 'dark' || hostTheme === 'light') return hostTheme === 'dark';
+    }
     // Check localStorage first for user's explicit preference
     if (typeof window !== 'undefined') {
       try {
@@ -235,20 +245,32 @@ export function ThemeProvider({
       return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? defaultDarkMode;
     }
     return defaultDarkMode;
-  });
+  }, [followHost, followSystem, defaultDarkMode]);
+  const [preferredDark, setIsDark] = useState(readDarkMode);
+  const isDark = darkMode ?? preferredDark;
 
   const [customTheme, setCustomTheme] = useState<Theme | null>(initialTheme ?? null);
 
-  // Listen for system preference changes
+  // A host's explicit choice wins over the OS. Observe it instead of remounting
+  // the renderer, which would discard app state and unfinished form input.
   useEffect(() => {
-    if (!followSystem || typeof window === 'undefined') return;
-
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e: MediaQueryListEvent) => setIsDark(e.matches);
-
-    mediaQuery.addEventListener('change', handler);
-    return () => mediaQuery.removeEventListener('change', handler);
-  }, [followSystem]);
+    if (darkMode !== undefined || typeof window === 'undefined') return;
+    const update = () => setIsDark(readDarkMode());
+    const observer = followHost ? new MutationObserver(update) : null;
+    observer?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    const mediaQuery = followSystem ? window.matchMedia?.('(prefers-color-scheme: dark)') : null;
+    mediaQuery?.addEventListener('change', update);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'softn-theme-preference' || event.key === null) update();
+    };
+    window.addEventListener('storage', onStorage);
+    update();
+    return () => {
+      observer?.disconnect();
+      mediaQuery?.removeEventListener('change', update);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [darkMode, followHost, followSystem, readDarkMode]);
 
   const theme = useMemo(() => {
     if (customTheme) return customTheme;

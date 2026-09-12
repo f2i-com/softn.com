@@ -28,13 +28,18 @@ struct FileOpenedEvent {
     path: String,
 }
 
+fn is_softn_path(path: &str) -> bool {
+    std::path::Path::new(path).extension().and_then(|e| e.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("softn"))
+}
+
 /// Read a .softn bundle file from disk (binary ZIP format)
 #[tauri::command]
 fn read_softn_bundle(path: String) -> Result<Vec<u8>, String> {
     let path = PathBuf::from(&path);
 
     // Ensure it's a .softn file
-    if path.extension().and_then(|e| e.to_str()) != Some("softn") {
+    if !is_softn_path(&path.to_string_lossy()) {
         return Err("Only .softn files can be read".to_string());
     }
 
@@ -63,7 +68,7 @@ fn read_cached_bundle(app: tauri::AppHandle, filename: String) -> Result<Vec<u8>
     let cache_dir = app.path().app_cache_dir()
         .map_err(|e| format!("Failed to get cache dir: {}", e))?;
     let path = cache_dir.join(&filename);
-    if path.extension().and_then(|e| e.to_str()) != Some("softn") {
+    if !is_softn_path(&path.to_string_lossy()) {
         return Err("Only .softn files can be read".to_string());
     }
     fs::read(&path).map_err(|e| format!("Failed to read cached file: {}", e))
@@ -115,7 +120,7 @@ pub fn run() {
             // When another instance tries to open, check for file argument
             if argv.len() > 1 {
                 let file_path = &argv[1];
-                if file_path.ends_with(".softn") {
+                if is_softn_path(file_path) {
                     // Store the opened file path
                     if let Some(state) = app.try_state::<OpenedFile>() {
                         if let Ok(mut guard) = state.path.lock() {
@@ -207,7 +212,7 @@ pub fn run() {
                     Ok(matches) => {
                         if let Some(file_arg) = matches.args.get("file") {
                             if let serde_json::Value::String(path) = &file_arg.value {
-                                if path.ends_with(".softn") {
+                                if is_softn_path(path) {
                                     // Store the opened file path
                                     let opened_file: State<'_, OpenedFile> = app.state();
                                     if let Ok(mut guard) = opened_file.path.lock() {

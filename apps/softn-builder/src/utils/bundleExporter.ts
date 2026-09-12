@@ -160,7 +160,10 @@ function composeManifest(
 
   const files = isObject(manifest.files) ? { ...manifest.files } : {};
   files.ui = groups.ui;
-  files.logic = groups.logic;
+  // Helper initialization order is meaningful; a store rebuild/rename must
+  // not reorder still-declared helpers. Newly created files follow them.
+  const declaredLogic = Array.isArray(files.logic) ? files.logic.filter((path): path is string => typeof path === 'string' && groups.logic.includes(path)) : [];
+  files.logic = [...new Set([...declaredLogic, ...groups.logic])];
   files.xdb = groups.xdb;
   files.assets = groups.assets;
   manifest.files = files;
@@ -189,7 +192,10 @@ function addSharedEntries(
 ): { assets: string[]; xdb: string[]; iconPath: string | null } {
   const assets: string[] = [];
   for (const asset of options.assets) {
-    const path = `assets/${asset.name}`;
+    const path = asset.bundlePath || `assets/${asset.name}`;
+    if (path.startsWith('/') || path.includes('\\') || path.split('/').includes('..') || /^[A-Za-z]:/.test(path)) {
+      throw new Error(`Invalid asset path: ${path}`);
+    }
     files[path] = asset.data;
     assets.push(path);
   }
@@ -413,8 +419,14 @@ export function parseBundle(data: Uint8Array): {
 export async function saveBundleToFile(
   bundleData: Uint8Array,
   suggestedName: string,
-  existingHandle?: FileSystemFileHandle | null,
-): Promise<FileSystemFileHandle | null> {
+  existingHandle?: import('./desktop').BundleFileHandle | null,
+): Promise<import('./desktop').BundleFileHandle | null> {
+  const { isDesktop, saveDesktopFile } = await import('./desktop');
+  if (isDesktop()) {
+    return saveDesktopFile(bundleData, `${suggestedName}.softn`,
+      existingHandle?.kind === 'desktop-file' ? existingHandle : undefined);
+  }
+  if (existingHandle?.kind === 'desktop-file') throw new Error('Open this file again before saving it in the browser.');
   const blob = new Blob([new Uint8Array(bundleData)], { type: 'application/zip' });
 
   // If we have an existing handle, write directly (re-save)

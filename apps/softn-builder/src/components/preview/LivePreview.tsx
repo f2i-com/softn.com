@@ -11,7 +11,8 @@ import { generateSource } from '../../utils/sourceGenerator';
 import { useSchemaStore } from '../../stores/schemaStore';
 import { debug } from '../../utils/debug';
 import { buildPermissionJson } from '../../utils/permissions';
-import type { CollectionDef, LogicFileState, UIFileState } from '../../types/builder';
+import type { CollectionDef, UIFileState } from '../../types/builder';
+import { composePreviewBundle } from '../../utils/previewBundle';
 import type { PermissionConfig } from '@softn/core';
 import { envelopeFor } from '../../utils/xdbFormat';
 import type { PreviewRuntimeProps } from './PreviewRuntime';
@@ -159,167 +160,6 @@ const deviceDimensions: Record<DevicePreset, { width: number; height: number }> 
 const WARN_ELEMENTS_THRESHOLD = 500;
 const WARN_SOURCE_LENGTH_THRESHOLD = 100000;
 
-/**
- * Resolve UI component imports and inline them into the source.
- * Replaces <import X from="./path.ui" /> and <X /> with the actual component content.
- */
-function resolveUIImports(
-  source: string,
-  uiFilePath: string,
-  uiFiles: Map<string, UIFileState>,
-  resolveFileSource: (file: UIFileState) => string,
-  depth: number = 0
-): string {
-  if (depth > 8) {
-    return source;
-  }
-
-  // Parse all import statements: <import ComponentName from="./path.ui" />
-  const importRegex = /<import\s+(?:\{\s*([^}]+)\s*\}|(\w+))\s+from=["']([^"']+)["']\s*\/>/g;
-  const imports: { name: string; sourcePath: string }[] = [];
-
-  let match;
-  while ((match = importRegex.exec(source)) !== null) {
-    const namesStr = match[1] || match[2];
-    const importPath = match[3];
-    const names = namesStr.split(',').map((n: string) => n.trim());
-    for (const name of names) {
-      if (name) {
-        imports.push({ name, sourcePath: importPath });
-      }
-    }
-  }
-
-  if (imports.length > 0) {
-    debug(
-      '[LivePreview] Resolving UI imports:',
-      imports.map((i) => `${i.name} from ${i.sourcePath}`)
-    );
-  }
-
-  // Remove import statements from source
-  let result = source.replace(/<import\s+[^>]+\/>/g, '');
-
-  // For each import, find the UI file and inline its content
-  for (const imp of imports) {
-    const resolvedPath = resolveRelativePath(uiFilePath, imp.sourcePath);
-    debug('[LivePreview] Looking for UI file:', resolvedPath);
-
-    // Find the UI file
-    let componentSource: string | null = null;
-    let componentFilePath = '';
-    const matchedFile = findUiFileForImport(uiFiles, uiFilePath, imp.sourcePath, imp.name);
-    if (matchedFile) {
-      componentFilePath = matchedFile.path;
-      componentSource = resolveFileSource(matchedFile);
-      debug('[LivePreview] Found UI file:', matchedFile.path);
-    }
-
-    if (componentSource) {
-      // Resolve nested imports relative to the imported component file.
-      const resolvedComponentSource = resolveUIImports(
-        componentSource,
-        componentFilePath || uiFilePath,
-        uiFiles,
-        resolveFileSource,
-        depth + 1
-      );
-
-      // Extract just the template content from the component (remove imports, logic refs, data blocks, comments)
-      const templateContent = resolvedComponentSource
-        .replace(/<data>[\s\S]*?<\/data>/g, '')
-        .replace(/<logic>[\s\S]*?<\/logic>/g, '')
-        .replace(/<logic\s+[^>]*\/>/g, '')
-        .replace(/<import\s+[^>]+\/>/g, '')
-        .trim();
-
-      // Replace self-closing usage: <ComponentName /> or <ComponentName attr="val" />
-      const selfClosingRegex = new RegExp(`<${imp.name}(\\s+[^>]*)?\\/\\s*>`, 'g');
-      result = result.replace(selfClosingRegex, () => {
-        return templateContent;
-      });
-
-      // Replace paired usage: <ComponentName>...</ComponentName>
-      const pairedRegex = new RegExp(`<${imp.name}(\\s+[^>]*)?>([\\s\\S]*?)<\\/${imp.name}>`, 'g');
-      result = result.replace(pairedRegex, () => {
-        return templateContent;
-      });
-    } else {
-      console.warn('[LivePreview] UI file not found for import:', imp.name, 'from', imp.sourcePath);
-    }
-  }
-
-  // Fallback: if unresolved uppercase component tags remain, try matching by file basename.
-  const unresolvedNames = Array.from(result.matchAll(/<([A-Z][A-Za-z0-9_]*)\b/g)).map((m) => m[1]);
-  const syntheticImports: { name: string; sourcePath: string }[] = [];
-  for (const name of unresolvedNames) {
-    for (const [, file] of uiFiles) {
-      const base = file.path.split('/').pop() || '';
-      if (base.toLowerCase() === `${name.toLowerCase()}.ui`) {
-        if (!syntheticImports.some((imp) => imp.name === name && imp.sourcePath === file.path)) {
-          syntheticImports.push({ name, sourcePath: file.path });
-        }
-        break;
-      }
-    }
-  }
-
-  if (syntheticImports.length > 0) {
-    const syntheticBlock = syntheticImports
-      .map((imp) => `<import ${imp.name} from="${imp.sourcePath}" />`)
-      .join('\n');
-    return resolveUIImports(
-      `${syntheticBlock}\n\n${result}`,
-      uiFilePath,
-      uiFiles,
-      resolveFileSource,
-      depth + 1
-    );
-  }
-
-  // Final fallback: inline by matching unresolved component tag names to ui file basenames.
-  // This handles cases where import metadata is stale/missing in builder state.
-  const unresolvedAfterFallback = Array.from(
-    result.matchAll(/<([A-Z][A-Za-z0-9_]*)\b/g)
-  ).map((m) => m[1]);
-  if (unresolvedAfterFallback.length > 0) {
-    let changed = false;
-    for (const componentName of unresolvedAfterFallback) {
-      const matchedFile = findUiFileForImport(uiFiles, uiFilePath, `${componentName}.ui`, componentName);
-      if (!matchedFile) continue;
-
-      const resolvedComponentSource = resolveUIImports(
-        resolveFileSource(matchedFile),
-        matchedFile.path,
-        uiFiles,
-        resolveFileSource,
-        depth + 1
-      );
-      const templateContent = resolvedComponentSource
-        .replace(/<data>[\s\S]*?<\/data>/g, '')
-        .replace(/<logic>[\s\S]*?<\/logic>/g, '')
-        .replace(/<logic\s+[^>]*\/>/g, '')
-        .replace(/<import\s+[^>]+\/>/g, '')
-        .trim();
-
-      const selfClosingRegex = new RegExp(`<${componentName}(\\s+[^>]*)?\\/\\s*>`, 'g');
-      const pairedRegex = new RegExp(`<${componentName}(\\s+[^>]*)?>([\\s\\S]*?)<\\/${componentName}>`, 'g');
-      const before = result;
-      result = result.replace(selfClosingRegex, templateContent);
-      result = result.replace(pairedRegex, templateContent);
-      if (before !== result) {
-        changed = true;
-      }
-    }
-
-    if (changed) {
-      return resolveUIImports(result, uiFilePath, uiFiles, resolveFileSource, depth + 1);
-    }
-  }
-
-  return result;
-}
-
 function extractFirstBlock(source: string, regex: RegExp): string | null {
   const m = source.match(regex);
   return m ? m[0].trim() : null;
@@ -384,72 +224,6 @@ function mergeGeneratedTemplateIntoSource(
 }
 
 /**
- * Resolve external logic file references and inline them into the source.
- * Replaces <logic src="./path.logic" /> with <logic>...content...</logic>
- */
-function resolveExternalLogic(
-  source: string,
-  uiFilePath: string,
-  logicFiles: Map<string, LogicFileState>
-): string {
-  // Match <logic src="..." /> or <logic src='...' />
-  const logicSrcRegex = /<logic\s+src=["']([^"']+)["']\s*\/>/g;
-
-  return source.replace(logicSrcRegex, (_match, srcPath: string) => {
-    debug('[LivePreview] Resolving external logic:', srcPath, 'from:', uiFilePath);
-
-    // Try multiple path resolution strategies
-    const pathsToTry: string[] = [];
-
-    // 1. Resolve relative path from UI file location
-    const resolvedPath = resolveRelativePath(uiFilePath, srcPath);
-    pathsToTry.push(resolvedPath);
-    pathsToTry.push(resolvedPath.replace(/^\//, ''));
-
-    // 2. If UI is in ui/ folder and references ./file.logic, also try logic/ folder
-    if (uiFilePath.startsWith('ui/') && srcPath.startsWith('./')) {
-      const filename = srcPath.slice(2); // Remove ./
-      pathsToTry.push(`logic/${filename}`);
-    }
-
-    // 3. Try the path as-is (without ./)
-    if (srcPath.startsWith('./')) {
-      pathsToTry.push(srcPath.slice(2));
-    }
-
-    debug('[LivePreview] Trying paths:', pathsToTry);
-
-    // Find the logic file by trying all possible paths
-    let logicContent: string | null = null;
-    for (const [, logicFile] of logicFiles) {
-      debug('[LivePreview] Checking logic file:', logicFile.path);
-      for (const tryPath of pathsToTry) {
-        if (logicFile.path === tryPath) {
-          logicContent = logicFile.content;
-          debug(
-            '[LivePreview] Found logic file:',
-            logicFile.path,
-            'content length:',
-            logicContent.length
-          );
-          break;
-        }
-      }
-      if (logicContent) break;
-    }
-
-    if (logicContent) {
-      // Return inline logic block
-      return `<logic>\n${logicContent}\n</logic>`;
-    } else {
-      console.warn('[LivePreview] Logic file not found. Tried paths:', pathsToTry);
-      // Return empty logic block to avoid parse errors
-      return `<logic>\n// Logic file not found: ${srcPath}\n</logic>`;
-    }
-  });
-}
-
-/**
  * Resolve a relative path from a source file path
  */
 function resolveRelativePath(fromPath: string, relativePath: string): string {
@@ -469,51 +243,6 @@ function resolveRelativePath(fromPath: string, relativePath: string): string {
   }
 
   return dir.join('/');
-}
-
-function normalizeUiPath(path: string): string {
-  return path
-    .replace(/\\/g, '/')
-    .replace(/^\.?\//, '')
-    .replace(/\/+/g, '/')
-    .replace(/\/$/, '')
-    .toLowerCase();
-}
-
-function findUiFileForImport(
-  uiFiles: Map<string, UIFileState>,
-  fromUiPath: string,
-  importPath: string,
-  importName: string
-): UIFileState | undefined {
-  const resolved = resolveRelativePath(fromUiPath, importPath);
-  const normalizedCandidates = new Set<string>([
-    normalizeUiPath(importPath),
-    normalizeUiPath(resolved),
-    normalizeUiPath(importPath.replace(/^\.\//, '')),
-    normalizeUiPath(resolved.replace(/^\//, '')),
-  ]);
-
-  if (importPath.startsWith('./') && fromUiPath.startsWith('ui/')) {
-    normalizedCandidates.add(normalizeUiPath(`ui/${importPath.slice(2)}`));
-  }
-
-  for (const [, file] of uiFiles) {
-    const fileNorm = normalizeUiPath(file.path);
-    if (normalizedCandidates.has(fileNorm)) {
-      return file;
-    }
-  }
-
-  const expectedFileName = `${importName.toLowerCase()}.ui`;
-  for (const [, file] of uiFiles) {
-    const base = (file.path.split('/').pop() || '').toLowerCase();
-    if (base === expectedFileName) {
-      return file;
-    }
-  }
-
-  return undefined;
 }
 
 interface DeviceViewportProps {
@@ -626,7 +355,7 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
 
 export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: DevicePreset }) {
   const { elements, rootId } = useCanvasStore();
-  const { projectId, logicSource, collections: projectCollections, themeMode, permissions } = useProjectStore();
+  const { projectId, logicSource, collections: projectCollections, themeMode, permissions, source: retainedSource, assets: projectAssets } = useProjectStore();
   // The preview runs under the project's own declaration, as the runtime
   // will: a call the app has not declared fails here too, not first in the
   // runtime after export.
@@ -635,7 +364,12 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
     return json ? (JSON.parse(json) as PermissionConfig) : undefined;
   }, [permissions]);
   const { entities, seedData, recordIdentity } = useSchemaStore();
-  const { activeFileId, uiFiles, logicFiles, nodes } = useFilesStore();
+  const { activeFileId, uiFiles, logicFiles, assetFiles, nodes } = useFilesStore();
+  const previewAssets = useMemo(() => new Map(
+    retainedSource.manifest !== null || assetFiles.size > 0
+      ? [...assetFiles.entries()].map(([id, asset]) => [nodes.get(id)?.path ?? asset.bundlePath ?? asset.name, asset] as const)
+      : projectAssets.map((asset) => [asset.bundlePath ?? `assets/${asset.name}`, asset] as const)
+  ), [retainedSource.manifest, assetFiles, nodes, projectAssets]);
   const [device, setDevice] = useState<DevicePreset>(initialDevice);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -643,7 +377,7 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   const [PreviewComponent, setPreviewComponent] = useState<React.ComponentType<PreviewRuntimeProps> | null>(null);
   const [previewRecordsFor, setPreviewRecordsFor] = useState<typeof import('./PreviewRuntime').previewRecordsFor | null>(null);
   const [ThemeProviderComponent, setThemeProviderComponent] = useState<React.ComponentType<{
-    defaultDarkMode?: boolean;
+    darkMode?: boolean;
     followSystem?: boolean;
     children: React.ReactNode;
   }> | null>(null);
@@ -697,12 +431,16 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
   // Get source - prioritize ui/main.ui for stable preview behavior.
   // IMPORTANT: useMemo must be a pure computation — no setState calls.
   // Errors and info are returned as part of the result and synced via useEffect.
-  const previewState = useMemo(() => {
+  const previewState = useMemo<{
+    source: string; activeFilePath: string; info: string | null; error: string | null;
+    composition?: ReturnType<typeof composePreviewBundle>;
+  }>(() => {
     let rawSource = '';
     let activeFilePath = '';
     let info: string | null = null;
     let errorMsg: string | null = null;
-    const mainUIFile = Array.from(uiFiles.values()).find((file) => file.path === 'ui/main.ui');
+    const mainUIFile = (retainedSource.mainFileId ? uiFiles.get(retainedSource.mainFileId) : undefined)
+      ?? Array.from(uiFiles.values()).find((file) => file.path === retainedSource.manifest?.main || file.path === 'ui/main.ui');
     const activeNode = activeFileId ? nodes.get(activeFileId) : null;
     const activeUIFile =
       activeFileId && activeNode?.type === 'file' && activeNode.fileType === 'ui'
@@ -836,23 +574,17 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
       }
     }
 
-    // Resolve external logic file references
-    if (rawSource && logicFiles.size > 0) {
-      debug(
-        '[LivePreview] Resolving external logic files, logicFiles count:',
-        logicFiles.size
-      );
-      rawSource = resolveExternalLogic(rawSource, activeFilePath, logicFiles);
+    try {
+      const mainPath = activeFilePath || 'ui/main.ui';
+      const files = new Map([...uiFiles.values()].map((file) => [file.path, resolveImportedFileSource(file)]));
+      for (const file of logicFiles.values()) files.set(file.path, file.content);
+      files.set(mainPath, rawSource);
+      const composition = composePreviewBundle(files, mainPath, retainedSource.manifest);
+      return { source: composition.source, activeFilePath, info, error: null, composition };
+    } catch (err) {
+      return { source: '', activeFilePath, info, error: err instanceof Error ? err.message : 'Could not prepare the preview.' };
     }
-
-    // Resolve UI component imports (inline imported components)
-    if (rawSource && uiFiles.size > 0) {
-      debug('[LivePreview] Resolving UI imports, uiFiles count:', uiFiles.size);
-      rawSource = resolveUIImports(rawSource, activeFilePath, uiFiles, resolveImportedFileSource);
-    }
-
-    return { source: rawSource, activeFilePath, info, error: null as string | null };
-  }, [elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes]);
+  }, [elements, rootId, logicSource, collections, activeFileId, uiFiles, logicFiles, nodes, retainedSource]);
   const source = previewState.source;
 
   // Sync error and info from the pure useMemo result into component state.
@@ -1041,6 +773,10 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
             error={errorFallback}
             projectId={projectId}
             records={previewRecords}
+            assets={previewAssets}
+            importResolver={previewState.composition?.importResolver}
+            logicBasePath={previewState.composition?.logicBasePath}
+            preIncludedLogicPaths={previewState.composition?.preIncludedLogicPaths}
             permissionConfig={previewPermissionConfig}
             onLoad={(doc: unknown) => {
               debug('[LivePreview] SoftNRenderer onLoad - document parsed:', doc);
@@ -1058,7 +794,7 @@ export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: Dev
           <DeviceViewport width={dimensions.width} height={dimensions.height}>
             <PreviewErrorBoundary fallback={renderError}>
               <ThemeProviderComponent
-                defaultDarkMode={isDarkMode}
+                darkMode={themeMode === 'system' ? undefined : isDarkMode}
                 followSystem={themeMode === 'system'}
               >
                 {preview}

@@ -12,6 +12,15 @@ project's exported seed records. Edit seeds in Builder's Data view to ship them.
 The interface lives in `ui/main.ui`; validation and record operations live in
 `logic/main.logic`. The `tasks` collection has `title`, `lane` and `done` fields.
 The layout adapts to a phone, and all task controls have accessible labels.
+Fieldnotes follows its host's light or dark appearance, with matching inputs,
+task states and dashboard cards. The interface scrolls within the app window
+on smaller screens. Its colors are grouped as `--fn-*` tokens in `ui/main.ui`;
+the dark palette applies under `.softn-theme-dark`.
+In Builder, select the `h1` element in Design and change **Text Content** in
+Properties to customize the heading. Preview and the exported bundle keep the
+change, along with the app's styling, task actions and collection. Text next to
+child elements uses its own `span` so Builder can preserve the complete layout
+when regenerating the interface after a visual edit.
 
 After editing the source, rebuild the public bundle from the repository root:
 
@@ -29,6 +38,7 @@ With the development stack running on port 1420 and Playwright installed, run:
 ```sh
 node examples/fieldnotes/check.mjs
 node examples/fieldnotes/check.mjs --capture
+node examples/fieldnotes/check-theme.mjs --capture
 ```
 
 `BUILDER_URL` and `RUNTIME_URL` override the local app addresses.
@@ -36,8 +46,13 @@ node examples/fieldnotes/check.mjs --capture
 The check uses disposable browser storage and serves this exact bundle to the
 running apps. It verifies validation, creating and completing tasks, filtering,
 runtime persistence after reload, isolated preview edits, Data edits reaching
-preview, source/schema preservation on export and mobile overflow. Save uses
+preview, source/schema preservation on export, a real visual heading edit,
+the edited export running with working task actions, and mobile overflow. Save uses
 the browser-download fallback; this check does not operate a native file picker.
+The theme check uses the actual runtime toggle, verifies that unfinished input
+survives changing appearance, checks text contrast and native input colors in
+both palettes, and uses wheel scrolling to reach the final content on a phone
+viewport. Its optional screenshots go to `ecosystem-audit` outside this repo.
 
 The homepage embeds this same bundle as a live, interactive app. Its runtime
 entry (`/web/?preview=fieldnotes`) uses a temporary, memory-only database; adding

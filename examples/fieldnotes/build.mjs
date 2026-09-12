@@ -11,7 +11,7 @@ const tasks = [
   ['Find a little inspiration', 'Design', true],
 ];
 const files = {
-  'manifest.json': JSON.stringify({ id: 'softn-fieldnotes-example', name: 'Fieldnotes', version: '1.0.0', description: 'A small working example: form → collection → dashboard.', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: ['logic/main.logic'], xdb: ['xdb/tasks.xdb'], assets: [] }, config: { theme: 'light' } }),
+  'manifest.json': JSON.stringify({ id: 'softn-fieldnotes-example', name: 'Fieldnotes', version: '1.0.0', description: 'A small working example: form → collection → dashboard.', main: 'ui/main.ui', files: { ui: ['ui/main.ui'], logic: ['logic/main.logic'], xdb: ['xdb/tasks.xdb'], assets: [] }, config: { theme: { mode: 'system' } } }),
   'permission.json': JSON.stringify({ permissions: {} }),
   'ui/main.ui': await readFile(new URL('ui/main.ui', root), 'utf8'),
   'logic/main.logic': await readFile(new URL('logic/main.logic', root), 'utf8'),

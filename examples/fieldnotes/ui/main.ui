@@ -1,69 +1,140 @@
 <logic src="../logic/main.logic" />
 <data><collection name="tasks" as="tasks" /></data>
 <style>
-.fn { background:#f6f5f1; color:#242820; min-height:100vh; font:15px/1.5 system-ui,sans-serif; }
+.fn {
+  --fn-bg: #f6f5f1;
+  --fn-surface: #fffefa;
+  --fn-ink: #242820;
+  --fn-muted: #69725f;
+  --fn-subtle: #6b735f;
+  --fn-nav: #596145;
+  --fn-selected-ink: #394525;
+  --fn-selected: #e7ebdb;
+  --fn-stat: #e9ecd9;
+  --fn-line: #dfdfd6;
+  --fn-line-soft: #e8e8df;
+  --fn-input-line: #b9c2ad;
+  --fn-input: #ffffff;
+  --fn-tag-line: #d7d9c7;
+  --fn-tag: #f7f8ef;
+  --fn-tag-ink: #62664f;
+  --fn-logo: #656543;
+  --fn-on-logo: #ffffff;
+  --fn-accent-line: #d6dcc0;
+  --fn-filter: #f0f0e9;
+  --fn-accent-ink: #4e6140;
+  --fn-accent: #556744;
+  --fn-on-accent: #ffffff;
+  --fn-note: #edebf6;
+  --fn-note-line: #e1ddef;
+  --fn-note-ink: #615278;
+  --fn-note-muted: #6b607e;
+  --fn-status: #657454;
+  --fn-dot: #8c9c6c;
+  --fn-error: #a12e35;
+  --fn-focus: #8072bd;
+  --fn-shadow: #24282014;
+  color-scheme: light;
+}
+.softn-theme-dark .fn {
+  --fn-bg: #172019;
+  --fn-surface: #202a21;
+  --fn-ink: #edf0e7;
+  --fn-muted: #aebba4;
+  --fn-subtle: #9dab91;
+  --fn-nav: #bdc9b3;
+  --fn-selected-ink: #e0edce;
+  --fn-selected: #35432d;
+  --fn-stat: #303e29;
+  --fn-line: #3b4939;
+  --fn-line-soft: #323f31;
+  --fn-input-line: #58684e;
+  --fn-input: #18221a;
+  --fn-tag-line: #526046;
+  --fn-tag: #2d3828;
+  --fn-tag-ink: #c6d5b2;
+  --fn-logo: #52633d;
+  --fn-on-logo: #ffffff;
+  --fn-accent-line: #546942;
+  --fn-filter: #18211a;
+  --fn-accent-ink: #d0e2b9;
+  --fn-accent: #c0d99c;
+  --fn-on-accent: #21311a;
+  --fn-note: #302b40;
+  --fn-note-line: #514663;
+  --fn-note-ink: #e2d0ff;
+  --fn-note-muted: #c8b9dc;
+  --fn-status: #c4d7ac;
+  --fn-dot: #bed59a;
+  --fn-error: #ffadb1;
+  --fn-focus: #bfb0f2;
+  --fn-shadow: #00000038;
+  color-scheme: dark;
+}
+.fn { background:var(--fn-bg); color:var(--fn-ink); min-height:100%; font:15px/1.5 system-ui,sans-serif; }
 .fn * { box-sizing:border-box; }
 .fn button,.fn input,.fn select { font:inherit; }
 .fn button { cursor:pointer; }
-.fn button:focus-visible,.fn input:focus-visible,.fn select:focus-visible { outline:3px solid #b3adf6; outline-offset:3px; }
-.fn-top { display:flex; justify-content:space-between; gap:18px; align-items:center; padding:21px 36px; border-bottom:1px solid #dfdfd6; background:#fffefa; }
+.fn button:focus-visible,.fn input:focus-visible,.fn select:focus-visible { outline:3px solid var(--fn-focus); outline-offset:3px; }
+.fn-top { display:flex; justify-content:space-between; gap:18px; align-items:center; padding:21px 36px; border-bottom:1px solid var(--fn-line); background:var(--fn-surface); }
 .fn-brand { display:flex; align-items:center; gap:11px; font-size:20px; font-weight:750; letter-spacing:-.7px; }
-.fn-logo { display:grid; place-items:center; width:34px; height:34px; color:#fff; background:#656543; border-radius:10px; font:italic 26px Georgia,serif; }
-.fn-tag { color:#62664f; font-size:12px; border:1px solid #d7d9c7; border-radius:100px; padding:6px 12px; background:#f7f8ef; }
+.fn-logo { display:grid; place-items:center; width:34px; height:34px; color:var(--fn-on-logo); background:var(--fn-logo); border-radius:10px; font:italic 26px Georgia,serif; }
+.fn-tag { color:var(--fn-tag-ink); font-size:12px; border:1px solid var(--fn-tag-line); border-radius:100px; padding:6px 12px; background:var(--fn-tag); }
 .fn-shell { display:grid; grid-template-columns:174px minmax(0,1fr); max-width:1440px; margin:auto; }
-.fn-side { padding:30px 18px; border-right:1px solid #dfdfd6; }
-.fn-label { color:#727968; font-size:10px; font-weight:750; text-transform:uppercase; letter-spacing:1.8px; }
+.fn-side { padding:30px 18px; border-right:1px solid var(--fn-line); }
+.fn-label { color:var(--fn-muted); font-size:10px; font-weight:750; text-transform:uppercase; letter-spacing:1.8px; }
 .fn-side p { margin:0 12px 13px; }
-.fn-nav { display:flex; width:100%; align-items:center; gap:10px; padding:12px; border:0; border-radius:9px; color:#596145; background:transparent; text-align:left; margin-bottom:5px; }
-.fn-nav.selected { background:#e7ebdb; color:#394525; font-weight:700; }
-.fn-side-note { padding:18px 12px; margin-top:32px; font-size:12px; line-height:1.7; color:#727968; border-top:1px solid #dfdfd6; }
+.fn-nav { display:flex; width:100%; align-items:center; gap:10px; padding:12px; border:0; border-radius:9px; color:var(--fn-nav); background:transparent; text-align:left; margin-bottom:5px; }
+.fn-nav.selected { background:var(--fn-selected); color:var(--fn-selected-ink); font-weight:700; }
+.fn-side-note { padding:18px 12px; margin-top:32px; font-size:12px; line-height:1.7; color:var(--fn-muted); border-top:1px solid var(--fn-line); }
 .fn-main { min-width:0; padding:32px 36px; }
 .fn-intro { display:flex; justify-content:space-between; align-items:end; gap:24px; margin-bottom:25px; }
 .fn h1 { font:normal clamp(28px,4vw,42px)/1.1 Georgia,serif; letter-spacing:-1.3px; margin:9px 0 10px; }
-.fn-intro p { margin:0; color:#727968; max-width:550px; }
-.fn-date { color:#727968; font-size:12px; white-space:nowrap; }
+.fn-intro p { margin:0; color:var(--fn-muted); max-width:550px; }
+.fn-date { color:var(--fn-muted); font-size:12px; white-space:nowrap; }
 .fn-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-bottom:25px; }
-.fn-stat { padding:18px 20px; border:1px solid #dfdfd6; border-radius:13px; background:#fffefa; }
+.fn-stat { padding:18px 20px; border:1px solid var(--fn-line); border-radius:13px; background:var(--fn-surface); }
 .fn-stat strong { font:normal 36px/1.1 Georgia,serif; display:block; margin:7px 0 3px; }
-.fn-stat span { color:#727968; font-size:12px; }
-.fn-stat.highlight { background:#e9ecd9; border-color:#d6dcc0; }
+.fn-stat span { color:var(--fn-muted); font-size:12px; }
+.fn-stat.highlight { background:var(--fn-stat); border-color:var(--fn-accent-line); }
 .fn-columns { display:grid; grid-template-columns:minmax(0,1fr) 285px; gap:21px; align-items:start; }
-.fn-card { min-width:0; border:1px solid #dfdfd6; border-radius:13px; background:#fffefa; overflow:hidden; }
-.fn-card-head { padding:18px 20px; border-bottom:1px solid #e8e8df; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.fn-card { min-width:0; border:1px solid var(--fn-line); border-radius:13px; background:var(--fn-surface); overflow:hidden; }
+.fn-card-head { padding:18px 20px; border-bottom:1px solid var(--fn-line-soft); display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .fn h2 { font-size:16px; margin:0; letter-spacing:-.3px; }
-.fn-filter { display:flex; gap:4px; padding:3px; background:#f0f0e9; border-radius:8px; }
-.fn-filter button { border:0; background:transparent; color:#6b725f; font-size:11px; min-height:32px; padding:5px 9px; border-radius:5px; }
-.fn-filter button.selected { background:#fff; color:#242820; box-shadow:0 1px 4px #24282014; }
-.fn-task { display:flex; gap:12px; align-items:center; padding:18px 20px; border-bottom:1px solid #eeeee7; }
+.fn-filter { display:flex; gap:4px; padding:3px; background:var(--fn-filter); border-radius:8px; }
+.fn-filter button { border:0; background:transparent; color:var(--fn-muted); font-size:11px; min-height:32px; padding:5px 9px; border-radius:5px; }
+.fn-filter button.selected { background:var(--fn-input); color:var(--fn-ink); box-shadow:0 1px 4px var(--fn-shadow); }
+.fn-task { display:flex; gap:12px; align-items:center; padding:18px 20px; border-bottom:1px solid var(--fn-line-soft); }
 .fn-task:last-child { border:0; }
-.fn-toggle { display:grid; place-items:center; flex-shrink:0; width:32px; height:32px; border:1px solid #cdd2bf; border-radius:50%; background:#fff; color:#4e6140; }
-.fn-toggle.done { background:#e7ecd9; border-color:#d4dfc3; }
+.fn-toggle { display:grid; place-items:center; flex-shrink:0; width:32px; height:32px; border:1px solid var(--fn-input-line); border-radius:50%; background:var(--fn-input); color:var(--fn-accent-ink); }
+.fn-toggle.done { background:var(--fn-selected); border-color:var(--fn-accent-line); }
 .fn-task-title { font-size:13px; font-weight:650; overflow-wrap:anywhere; }
-.fn-task-title.done { color:#818575; text-decoration:line-through; }
+.fn-task-title.done { color:var(--fn-subtle); text-decoration:line-through; }
 .fn-task-copy { flex:1; min-width:0; }
-.fn-task-copy p { margin:3px 0 0; font-size:11px; color:#878b7c; }
-.fn-lane { font-size:10px; color:#65664a; border:1px solid #e1e1d3; padding:3px 7px; border-radius:5px; white-space:nowrap; background:#fafaf4; }
-.fn-empty { padding:32px 20px; color:#727968; font-size:13px; text-align:center; }
+.fn-task-copy p { margin:3px 0 0; font-size:11px; color:var(--fn-muted); }
+.fn-lane { font-size:10px; color:var(--fn-tag-ink); border:1px solid var(--fn-tag-line); padding:3px 7px; border-radius:5px; white-space:nowrap; background:var(--fn-tag); }
+.fn-empty { padding:32px 20px; color:var(--fn-muted); font-size:13px; text-align:center; }
 .fn-form { padding:20px; }
-.fn-form p { margin:7px 0 18px; font-size:12px; color:#727968; }
+.fn-form p { margin:7px 0 18px; font-size:12px; color:var(--fn-muted); }
 .fn-form label { display:block; font-size:12px; font-weight:650; margin:14px 0 6px; }
-.fn-form input,.fn-form select { width:100%; min-width:0; min-height:44px; border:1px solid #d9ddce; border-radius:8px; padding:10px 12px; color:#313c29; background:#fff; font-size:14px; }
-.fn-add { width:100%; min-height:44px; border:0; border-radius:8px; background:#556744; color:#fff; font-weight:650; margin-top:18px; }
-.fn-flow { margin-top:17px; padding:20px; background:#edebf6; border:1px solid #e1ddef; border-radius:13px; }
-.fn-flow h3 { color:#615278; font-size:12px; margin:0 0 9px; }
-.fn-flow p { color:#716783; font-size:12px; margin:0; line-height:1.7; }
-.fn-flow-path { font-size:10px; color:#675685; padding-top:14px; letter-spacing:.4px; }
-.fn-status { display:flex; align-items:center; gap:8px; color:#657454; font-size:12px; margin-top:18px; }
-.fn-status-dot { width:6px; height:6px; background:#8c9c6c; border-radius:50%; flex-shrink:0; }
-.fn-error { color:#a12e35 !important; margin:10px 0 0 !important; }
+.fn-form input,.fn-form select { width:100%; min-width:0; min-height:44px; border:1px solid var(--fn-input-line); border-radius:8px; padding:10px 12px; color:var(--fn-ink); background:var(--fn-input); font-size:14px; }
+.fn-form input::placeholder { color:var(--fn-muted); opacity:1; }
+.fn-add { width:100%; min-height:44px; border:0; border-radius:8px; background:var(--fn-accent); color:var(--fn-on-accent); font-weight:650; margin-top:18px; }
+.fn-flow { margin-top:17px; padding:20px; background:var(--fn-note); border:1px solid var(--fn-note-line); border-radius:13px; }
+.fn-flow h3 { color:var(--fn-note-ink); font-size:12px; margin:0 0 9px; }
+.fn-flow p { color:var(--fn-note-muted); font-size:12px; margin:0; line-height:1.7; }
+.fn-flow-path { font-size:10px; color:var(--fn-note-ink); padding-top:14px; letter-spacing:.4px; }
+.fn-status { display:flex; align-items:center; gap:8px; color:var(--fn-status); font-size:12px; margin-top:18px; }
+.fn-status-dot { width:6px; height:6px; background:var(--fn-dot); border-radius:50%; flex-shrink:0; }
+.fn-error { color:var(--fn-error) !important; margin:10px 0 0 !important; }
 @media(max-width:1000px) { .fn-side { display:none; }.fn-shell { display:block; }.fn-main { padding:24px; }.fn-top { padding:18px 24px; } }
 @media(max-width:680px) { .fn-columns { grid-template-columns:1fr; }.fn-main { padding:22px 16px; }.fn-top { padding:16px; }.fn-intro { display:block; }.fn-date { display:none; }.fn-stats { gap:8px; }.fn-stat { padding:14px 12px; }.fn-stat strong { font-size:30px; }.fn-card-head { flex-wrap:wrap; }.fn-task { padding:16px; }.fn-tag { font-size:10px; }.fn-toggle { width:40px; height:40px; }.fn-filter button { min-height:40px; }.fn-form input,.fn-form select { font-size:16px; } }
 </style>
-<App theme="light" style={{padding:0}}>
+<App style={{padding:0, overflow:"auto"}}>
 <div className="fn">
-  <header className="fn-top"><div className="fn-brand"><span className="fn-logo">f</span>Fieldnotes</div><span className="fn-tag">A working SoftN example</span></header>
+  <header className="fn-top"><div className="fn-brand"><span className="fn-logo">f</span><span>Fieldnotes</span></div><span className="fn-tag">A working SoftN example</span></header>
   <div className="fn-shell">
-    <aside className="fn-side"><p className="fn-label">Your workspace</p><button className={filter === "all" ? "fn-nav selected" : "fn-nav"} @click={showTasks("all")}>◈ Overview</button><button className={filter === "active" ? "fn-nav selected" : "fn-nav"} @click={showTasks("active")}>◷ In progress</button><button className={filter === "done" ? "fn-nav selected" : "fn-nav"} @click={showTasks("done")}>✓ Completed</button><div className="fn-side-note">Small steps.<br />Clear progress.<br />Room to make it yours.</div></aside>
+    <aside className="fn-side"><p className="fn-label">Your workspace</p><button className={filter === "all" ? "fn-nav selected" : "fn-nav"} @click={showTasks("all")}>◈ Overview</button><button className={filter === "active" ? "fn-nav selected" : "fn-nav"} @click={showTasks("active")}>◷ In progress</button><button className={filter === "done" ? "fn-nav selected" : "fn-nav"} @click={showTasks("done")}>✓ Completed</button><div className="fn-side-note"><span>Small steps.</span><br /><span>Clear progress.</span><br /><span>Room to make it yours.</span></div></aside>
     <main className="fn-main">
       <div className="fn-intro"><div><div className="fn-label">A little clarity for your day</div><h1>Make space for what matters.</h1><p>Add a task. Save a record. See the dashboard update.</p></div><span className="fn-date">Your next idea starts here ↗</span></div>
       <div className="fn-stats"><div className="fn-stat highlight"><div className="fn-label">In progress</div><strong aria-label="Active tasks">{activeCount}</strong><span>One step at a time</span></div><div className="fn-stat"><div className="fn-label">Completed</div><strong aria-label="Completed tasks">{doneCount}</strong><span>A little momentum</span></div><div className="fn-stat"><div className="fn-label">All tasks</div><strong aria-label="Total tasks">{totalCount}</strong><span>Ideas with a place to go</span></div></div>
@@ -77,7 +148,7 @@
         </section>
         <aside><section className="fn-card fn-form"><h2>A new starting point</h2><p>Give your next step a name.</p><label htmlFor="fn-title">Task name</label><input id="fn-title" placeholder="What would you like to do?" maxLength={100} :bind={title} /><label htmlFor="fn-lane">Focus</label><select id="fn-lane" :bind={lane}><option value="Design">Design</option><option value="Build">Build</option><option value="Review">Review</option></select><button className="fn-add" @click={addTask}>＋ Add task</button>#if (error)<p className="fn-error" role="alert">{error}</p>#end</section><section className="fn-flow"><h3>Try the whole flow</h3><p>This form writes a task to the app's collection. Complete a task and watch the totals change.</p><div className="fn-flow-path">FORM → RECORD → DASHBOARD</div></section></aside>
       </div>
-      <p className="fn-status" role="status"><span className="fn-status-dot"></span>{message}</p>
+      <p className="fn-status" role="status"><span className="fn-status-dot"></span><span>{message}</span></p>
     </main>
   </div>
 </div>

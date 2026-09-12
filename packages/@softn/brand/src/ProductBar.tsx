@@ -42,6 +42,8 @@ export interface ProductBarProps {
   /** Which product this bar sits on, so it can be marked. */
   current: Product | null;
   urls?: Partial<ProductUrls>;
+  /** Desktop hosts open companion pages in the system browser. */
+  onNavigate?: (href: string) => void;
   /** Stick to the top while the page scrolls. The tool apps do not scroll. */
   sticky?: boolean;
   /** Controls that belong to this product, placed before the theme switch. */
@@ -56,25 +58,30 @@ export interface ProductBarProps {
  * geometry: the same inset from the window's edge on every surface, so the
  * mark never moves between pages.
  */
-export function ProductBar({ current, urls, sticky = false, children }: ProductBarProps): React.ReactElement {
+export function ProductBar({ current, urls, onNavigate, sticky = false, children }: ProductBarProps): React.ReactElement {
   const href: ProductUrls = { ...DEFAULT_URLS, ...urls };
+  const navigate = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (!onNavigate) return;
+    event.preventDefault();
+    if (event.currentTarget.getAttribute('aria-current') !== 'page') onNavigate(event.currentTarget.href);
+  };
   return (
     <nav className="softn-bar" data-sticky={sticky ? 'true' : 'false'} aria-label="SoftN">
       <div className="softn-bar-inner">
-        <a className="softn-bar-mark" href={href.home} aria-current={current === 'home' ? 'page' : undefined}>
+        <a className="softn-bar-mark" href={href.home} onClick={navigate} aria-current={current === 'home' ? 'page' : undefined}>
           <Mark size={22} radius={6} />
           softn
         </a>
         <div className="softn-bar-links">
           {PRODUCTS.map((p) => (
-            <a key={p.id} href={href[p.id]} aria-current={current === p.id ? 'page' : undefined}>
+            <a key={p.id} href={href[p.id]} onClick={navigate} aria-current={current === p.id ? 'page' : undefined}>
               {p.label}
             </a>
           ))}
         </div>
         {children && <div className="softn-bar-extra">{children}</div>}
         <ThemeToggle />
-        <a className="softn-bar-repo" href={href.repo} target="_blank" rel="noreferrer">
+        <a className="softn-bar-repo" href={href.repo} onClick={navigate} target="_blank" rel="noreferrer">
           GitHub
         </a>
       </div>

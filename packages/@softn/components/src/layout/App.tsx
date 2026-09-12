@@ -6,11 +6,12 @@
  */
 
 import React from 'react';
+import { useTheme } from '../theme/ThemeProvider';
 
 export interface AppProps {
   /** App content */
   children?: React.ReactNode;
-  /** Theme name to apply */
+  /** Inherit the runtime/preview appearance by default; light/dark opt out. */
   theme?: 'light' | 'dark' | string;
   /** Additional CSS class */
   className?: string;
@@ -182,8 +183,11 @@ const globalStyles = `
   }
 `;
 
-export function App({ children, theme = 'light', className, style }: AppProps): React.ReactElement {
-  const themeVars = theme === 'light' ? lightThemeVars : darkThemeVars;
+export function App({ children, theme = 'system', className, style }: AppProps): React.ReactElement {
+  const { isDarkMode } = useTheme();
+  const resolvedTheme = theme === 'light' || theme === 'dark' ? theme : isDarkMode ? 'dark' : 'light';
+  const themeVars = resolvedTheme === 'light' ? lightThemeVars : darkThemeVars;
+  const customThemeClass = !['system', 'light', 'dark'].includes(theme) ? `softn-theme-${theme}` : '';
 
   const containerStyle: React.CSSProperties = {
     height: 'calc(100vh - var(--softn-tab-bar-height, 0px))',
@@ -191,6 +195,7 @@ export function App({ children, theme = 'light', className, style }: AppProps): 
     overflow: 'hidden',
     background: 'var(--color-bg)',
     color: 'var(--color-text)',
+    colorScheme: resolvedTheme,
     fontFamily:
       '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
     lineHeight: 1.5,
@@ -200,8 +205,8 @@ export function App({ children, theme = 'light', className, style }: AppProps): 
 
   return (
     <>
-      <style>{`.softn-theme-${theme} { ${themeVars} } ${globalStyles}`}</style>
-      <div className={`softn-app softn-theme-${theme} ${className || ''}`} style={containerStyle}>
+      <style>{`.softn-theme-${resolvedTheme} { ${themeVars} } ${globalStyles}`}</style>
+      <div className={`softn-app softn-theme-${resolvedTheme} ${customThemeClass} ${className || ''}`} data-theme={customThemeClass ? theme : resolvedTheme} style={containerStyle}>
         {children}
       </div>
     </>
