@@ -1,7 +1,8 @@
 import React, { useCallback, useRef, useState } from 'react';
 
 interface DropZoneProps {
-  onFile: (data: Uint8Array, fileName: string) => void;
+  onFile: (file: File) => void | Promise<void>;
+  onError: (error: Error) => void;
   children: React.ReactNode;
 }
 
@@ -36,7 +37,9 @@ const dropZoneStyles = `
     animation: softn-drop-fade-in 250ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
   .softn-drop-card {
-    padding: 2.5rem 3.5rem;
+    box-sizing: border-box;
+    max-width: calc(100% - 2rem);
+    padding: clamp(1.5rem, 5vw, 2.5rem) clamp(1.25rem, 6vw, 3.5rem);
     border-radius: 20px;
     border: 2px dashed var(--mint-edge);
     background: var(--ink-2);
@@ -58,13 +61,24 @@ const dropZoneStyles = `
     margin: 0 auto 1.25rem;
     animation: softn-drop-icon-float 2s ease-in-out infinite 400ms;
   }
+  @media (prefers-reduced-motion: reduce) {
+    .softn-drop-overlay, .softn-drop-card, .softn-drop-icon { animation: none; }
+  }
 `;
+
+function containsFiles(event: React.DragEvent): boolean {
+  return Array.from(event.dataTransfer.types).includes('Files') || event.dataTransfer.files.length > 0;
+}
+
+function handledByApp(event: React.DragEvent): boolean {
+  return event.defaultPrevented || (event.target instanceof HTMLInputElement && event.target.type === 'file');
+}
 
 /**
  * Full-page drag-and-drop overlay for .softn files.
  * Wraps its children and shows a visual overlay when dragging.
  */
-export function DropZone({ onFile, children }: DropZoneProps): React.ReactElement {
+export function DropZone({ onFile, onError, children }: DropZoneProps): React.ReactElement {
   const [isDragOver, setIsDragOver] = useState(false);
   // dragenter and dragleave fire as a pair for every element the pointer crosses,
   // so moving over a child fires leave-then-enter and a naive boolean flickers.
@@ -76,6 +90,7 @@ export function DropZone({ onFile, children }: DropZoneProps): React.ReactElemen
   const depth = useRef(0);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
+    if (!containsFiles(e) || handledByApp(e)) return;
     e.preventDefault();
     e.stopPropagation();
     depth.current += 1;
@@ -83,11 +98,13 @@ export function DropZone({ onFile, children }: DropZoneProps): React.ReactElemen
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!containsFiles(e) || handledByApp(e)) return;
     e.preventDefault();
     e.stopPropagation();
   }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!containsFiles(e) || handledByApp(e)) return;
     e.preventDefault();
     e.stopPropagation();
     depth.current = Math.max(0, depth.current - 1);
@@ -96,24 +113,23 @@ export function DropZone({ onFile, children }: DropZoneProps): React.ReactElemen
 
   const handleDrop = useCallback(
     async (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
+      if (!containsFiles(e)) return;
       depth.current = 0;
       setIsDragOver(false);
+      if (handledByApp(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
 
       const files = Array.from(e.dataTransfer.files);
-      const softnFile = files.find((f) => f.name.endsWith('.softn'));
+      const softnFile = files.find((f) => /\.softn$/i.test(f.name));
 
       if (softnFile) {
-        try {
-          const buffer = await softnFile.arrayBuffer();
-          onFile(new Uint8Array(buffer), softnFile.name);
-        } catch (err) {
-          console.error('[SoftN Web] Failed to read dropped file:', err);
-        }
+        await onFile(softnFile);
+      } else if (files.length > 0) {
+        onError(new Error('Drop a .softn app file here, or use Open file to choose one.'));
       }
     },
-    [onFile]
+    [onFile, onError]
   );
 
   return (
@@ -127,7 +143,7 @@ export function DropZone({ onFile, children }: DropZoneProps): React.ReactElemen
       <style dangerouslySetInnerHTML={{ __html: dropZoneStyles }} />
       {children}
       {isDragOver && (
-        <div className="softn-drop-overlay">
+        <div className="softn-drop-overlay" role="status">
           <div className="softn-drop-card">
             <div className="softn-drop-icon">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--mint)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">

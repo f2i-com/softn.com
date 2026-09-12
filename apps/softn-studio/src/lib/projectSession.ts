@@ -264,6 +264,8 @@ export function applyProjectRecord(record: ProjectRecord): void {
     });
     useAIStore.setState({
       messages: record.session.messages,
+      draftMessage: '',
+      lastFailure: null,
       iterationsUsed: record.session.iterationsUsed,
       tokensUsed: record.session.tokensUsed,
       filesChanged: record.session.filesChanged,
@@ -555,12 +557,16 @@ export async function restoreSession(now = Date.now()): Promise<RestoreOutcome> 
 export type OpenOutcome = { ok: true } | { ok: false; message: string };
 
 /**
- * Open a saved project by id. The caller checkpoints the current project
- * first; this one only reads the record and, if the workspace was not
- * taken by something else meanwhile, applies it.
+ * Claim the workspace before checkpointing the current project. A slow save
+ * must not let an older Open click replace a newer import or new project.
  */
-export async function openProjectById(projectId: string): Promise<OpenOutcome> {
+export async function openProjectById(projectId: string, checkpoint?: () => Promise<boolean>): Promise<OpenOutcome> {
   const claim = claimWorkspace();
+  if (checkpoint) {
+    const proceed = await checkpoint();
+    if (!ownsWorkspace(claim.generation)) return { ok: false, message: 'Superseded by a later action.' };
+    if (!proceed) return { ok: false, message: 'The current project was kept open.' };
+  }
   const record = await loadProjectRecord(projectId);
   if (!ownsWorkspace(claim.generation)) return { ok: false, message: 'Superseded by a later action.' };
   if (!record) return { ok: false, message: 'There is no saved copy of that project in this browser.' };

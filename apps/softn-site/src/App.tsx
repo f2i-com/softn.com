@@ -45,8 +45,24 @@ export default function App(): React.ReactElement {
   }, [categoriesAttempt]);
 
   useEffect(() => {
-    if (route.path === '/') document.title = 'SoftN — apps that run anywhere, safely';
+    if (route.path === '/') document.title = 'Softn — create, refine and run your own apps';
   }, [route.path]);
+
+  // pushState does not perform native fragment scrolling. Wait until the
+  // destination page is mounted, then resolve the ID without a CSS selector.
+  useEffect(() => {
+    if (!route.hash) return;
+    let id: string;
+    try { id = decodeURIComponent(route.hash.slice(1)); } catch { return; }
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById(id);
+      if (!target) return;
+      if (!target.hasAttribute('tabindex')) target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+      target.scrollIntoView({ block: 'start' });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [route.path, route.hash]);
 
   // A change of page puts focus on its main content, so a keyboard or
   // screen-reader visitor starts where the new page starts instead of on

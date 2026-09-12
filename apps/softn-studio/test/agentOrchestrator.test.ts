@@ -68,6 +68,21 @@ beforeEach(() => {
 });
 
 describe('agent turn ownership', () => {
+  it('never falls back to a different provider after the selected one is removed', async () => {
+    useAIStore.setState({ activeProviderId: null });
+    await runAgentTurn();
+    expect(sendAIRequest).not.toHaveBeenCalled();
+    expect(useAIStore.getState().messages.at(-1)?.content).toMatch(/Select an AI provider/);
+    expect(useAIStore.getState().iterationsUsed).toBe(0);
+  });
+
+  it('reports a provider failure mentioning abort when the user did not cancel', async () => {
+    vi.mocked(sendAIRequest).mockRejectedValueOnce(new AIProviderError('http', 'Upstream transaction aborted', { status: 500 }));
+    await runAgentTurn();
+    expect(useAIStore.getState().lastFailure?.kind).toBe('provider');
+    expect(useAIStore.getState().messages.at(-1)?.content).toContain('Upstream transaction aborted');
+  });
+
   it('does not let an aborted response write into or clear a replacement turn', async () => {
     const first = deferred<Response>();
     const second = deferred<Response>();
@@ -454,5 +469,41 @@ describe('a turn as a transaction', () => {
     expect(useAIStore.getState().lastFailure).toMatchObject({ kind: 'rate-limited', retryAfterMs: 7000 });
     expect(lastMessage().content).toMatch(/7 s/);
     useAIStore.setState({ agentState: 'idle' });
+  });
+
+  it('retains the transaction, usage, and undo card when a follow-up request fails', async () => {
+    vi.mocked(sendAIRequest)
+      .mockResolvedValueOnce(reply('Updated the page. <softn-file path="ui/main.ui"><App>new</App></softn-file><softn-read path="logic/app.logic" />'))
+      .mockRejectedValueOnce(new AIProviderError('timeout', 'Reply timed out.'));
+    await runAgentTurn();
+    const message = lastMessage();
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>new</App>');
+    expect(useWorkspaceStore.getState().isDirty).toBe(true);
+    expect(message.content).toContain('Earlier changes');
+    expect(message.content).not.toContain('Nothing was changed');
+    expect(message.toolCalls?.some((card) => card.tool === 'updateFile' && card.status === 'success')).toBe(true);
+    expect(message.tokens).toEqual({ input: 1, output: 1 });
+    expect(useAIStore.getState().messages.filter((entry) => entry.role === 'assistant')).toHaveLength(1);
+    expect(useVFSStore.getState().revertTransaction(message.transactionId!).ok).toBe(true);
+    expect(useVFSStore.getState().readFile('ui/main.ui')).toBe('<App>\n  <Text>one</Text>\n</App>');
+  });
+
+  it('records completed edits before Stop, without letting a late reply change them', async () => {
+    const later = deferred<Response>();
+    vi.mocked(sendAIRequest)
+      .mockResolvedValueOnce(reply('Updated the page. <softn-file path="ui/main.ui"><App>new</App></softn-file><softn-read path="logic/app.logic" />'))
+      .mockReturnValueOnce(later.promise);
+    const run = runAgentTurn();
+    await Promise.resolve();
+    expect(sendAIRequest).toHaveBeenCalledTimes(2);
+    expect(useWorkspaceStore.getState().isDirty).toBe(true);
+    const transactionId = lastMessage().transactionId;
+    expect(transactionId).toBeTruthy();
+    abortAgentTurn();
+    later.resolve(reply('<softn-file path="logic/app.logic">let a = 999</softn-file>'));
+    await run;
+    expect(useVFSStore.getState().readFile('logic/app.logic')).toBe('let a = 1');
+    expect(lastMessage().transactionId).toBe(transactionId);
+    expect(useVFSStore.getState().revertTransaction(transactionId!).ok).toBe(true);
   });
 });

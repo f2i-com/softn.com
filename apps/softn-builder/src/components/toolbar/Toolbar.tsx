@@ -130,6 +130,7 @@ interface ToolbarProps {
   view: 'design' | 'preview' | 'code' | 'data';
   onViewChange: (view: 'design' | 'preview' | 'code' | 'data') => void;
   onSave: () => void;
+  isSaving?: boolean;
   onNew: () => void;
   onOpen: () => void;
   onShortcuts: () => void;
@@ -149,6 +150,7 @@ export function Toolbar({
   view,
   onViewChange,
   onSave,
+  isSaving = false,
   onNew,
   onOpen,
   onShortcuts,
@@ -218,7 +220,7 @@ export function Toolbar({
       <div style={styles.spacer} />
 
       {getVisibleTabs(activeFileType).length > 1 && (
-        <div style={styles.viewToggle}>
+        <div style={styles.viewToggle} role="group" aria-label="Workspace view">
           {getVisibleTabs(activeFileType).map((v) => (
             <button
               key={v}
@@ -226,6 +228,7 @@ export function Toolbar({
                 ...styles.viewButton,
                 ...(view === v ? styles.viewButtonActive : {}),
               }}
+              aria-pressed={view === v}
               onClick={() => onViewChange(v)}
             >
               {v.charAt(0).toUpperCase() + v.slice(1)}
@@ -244,8 +247,8 @@ export function Toolbar({
         <IconOpen /> Open
       </button>
 
-      <button style={styles.button} onClick={onSave} title="Save Project (Ctrl+S)">
-        <IconSave /> Save
+      <button style={{ ...styles.button, ...(isSaving ? styles.buttonDisabled : {}) }} onClick={onSave} disabled={isSaving} aria-busy={isSaving} title="Save Project (Ctrl+S)">
+        <IconSave /> {isSaving ? 'Saving...' : 'Save'}
       </button>
 
       {/* Export had no control anywhere in the app. Its only route was

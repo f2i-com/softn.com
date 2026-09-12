@@ -7,6 +7,9 @@ import { Language } from '../components/Language';
 import { Pipeline } from '../components/Pipeline';
 import { ComponentIndex } from '../components/ComponentIndex';
 import { Reveal } from '../components/Reveal';
+import { WorkspacePreview } from '../components/WorkspacePreview';
+import { ExampleWalkthrough } from '../components/ExampleWalkthrough';
+import { BUILDER_HREF, STUDIO_HREF } from '../lib/appUrls';
 
 const LISTS: Array<{ id: string; name: string }> = [
   { id: 'trending', name: 'Trending' },
@@ -60,12 +63,10 @@ function Arrow(): React.ReactElement {
 }
 
 /**
- * The hero is the apps: a headline over the directory's featured shelf, as
- * pictures. Then the directory itself, then how the loop works, then the
- * tools and the language.
+ * Start with the creation workflow and real product screenshots. The live
+ * directory follows the tools, independently of whether it has any apps yet.
  *
- * Nothing on this page runs an app. The pictures are the screenshots the
- * directory keeps, and an app's bundle is only fetched when someone presses
+ * Nothing on this page runs an app. An app's bundle is only fetched when someone presses
  * Play, which opens it in the runtime — so a visit here downloads the site,
  * not the apps.
  *
@@ -139,32 +140,48 @@ export function HomePage({
 
   return (
     <>
-      <header className="hero hero-dir" id="top">
-        <div className="wrap hero-inner">
+      <header className="hero hero-create" id="top">
+        <div className="wrap hero-inner hero-create-grid">
           <div className="hero-copy">
+            <p className="eyebrow rise">Create it. Keep it. Make it yours.</p>
             <h1 className="hero-title rise" style={{ animationDelay: '60ms' }}>
-              Open an app.
+              Your idea.
               <br />
-              Read it.
+              A working app.
               <br />
-              Make it yours.
+              <em>Yours to change.</em>
             </h1>
             <p className="hero-lede rise" style={{ animationDelay: '140ms' }}>
-              Every app here is one <code>.softn</code> file — its interface, its logic and its assets — running in a
-              sandboxed engine in your browser. Games, tools, an x86 emulator, an image editor. Nothing to install and no
-              account to make.
+              Describe what you need with your own AI, or build it by hand. Edit the interface, connect your data and
+              run it in your browser. Take the source with you in one <code>.softn</code> file.
             </p>
             <div className="hero-cta rise" style={{ animationDelay: '220ms' }}>
-              <a className="cta cta-primary" href="/apps">
-                Browse {total !== null ? `${total} ` : ''}apps
+              <a className="cta cta-primary" href={STUDIO_HREF}>
+                Create with AI
                 <Arrow />
               </a>
-              <a className="cta" href="/publish">
-                Publish yours
+              <a className="cta" href="/apps">
+                Explore apps
                 <Arrow />
               </a>
             </div>
+            <p className="hero-alternative">Prefer a canvas and code? <a href={BUILDER_HREF}>Open Builder <span aria-hidden="true">↗</span></a></p>
+            <ul className="hero-facts" aria-label="Getting started">
+              <li>No account to start</li>
+              <li>Your model, your choice</li>
+              <li>Download the source</li>
+            </ul>
+            <p className="hero-provider-note">Studio uses the AI provider you connect. Your provider’s usage charges may apply.</p>
           </div>
+          <div className="rise hero-workspace" style={{ animationDelay: '180ms' }}><WorkspacePreview /></div>
+        </div>
+      </header>
+
+      <ExampleWalkthrough />
+      <Doors />
+
+      <section className="band band-featured" id="directory">
+        <div className="wrap">
           {(featured === null || featured.length >= 3) && (
             <div className="hero-shelf rise" style={{ animationDelay: '260ms' }}>
               {featured === null ? <FeaturedSkeleton /> : <Featured apps={featured} categories={categories} heading={null} />}
@@ -176,11 +193,6 @@ export function HomePage({
               )}
             </div>
           )}
-        </div>
-      </header>
-
-      <section className="band band-featured" id="directory">
-        <div className="wrap">
           <div className="band-head band-head-row">
             <div>
               <p className="eyebrow">The directory</p>
@@ -217,8 +229,8 @@ export function HomePage({
             <div className="notice" role="status">
               {total === 0 ? (
                 <>
-                  <strong>The directory is empty.</strong> Drop <code>.softn</code> files anywhere on this page to publish them — one, or a
-                  folder at once — or <a href="/publish">open the publish page</a>.
+                  <strong>The directory is empty.</strong> Create the first app in <a href={STUDIO_HREF}>Studio</a> or{' '}
+                  <a href={BUILDER_HREF}>Builder</a>, then <a href="/publish">publish your .softn file</a> to share it here.
                 </>
               ) : (
                 'Nothing in this list yet.'
@@ -278,7 +290,6 @@ export function HomePage({
         </div>
       </Reveal>
 
-      <Doors />
       <Language />
       <Pipeline />
       <ComponentIndex />

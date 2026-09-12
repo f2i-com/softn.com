@@ -13,6 +13,8 @@ import { debug } from '../../utils/debug';
 import { buildPermissionJson } from '../../utils/permissions';
 import type { CollectionDef, LogicFileState, UIFileState } from '../../types/builder';
 import type { PermissionConfig } from '@softn/core';
+import { envelopeFor } from '../../utils/xdbFormat';
+import type { PreviewRuntimeProps } from './PreviewRuntime';
 
 // Error boundary to catch rendering errors in the preview
 interface ErrorBoundaryProps {
@@ -60,7 +62,9 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    background: '#fff',
+    background: 'var(--ink-2)',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   title: {
     fontWeight: 600,
@@ -73,7 +77,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 8,
   },
   deviceButton: {
-    padding: '4px 8px',
+    padding: '6px 10px',
+    minHeight: 36,
     background: 'transparent',
     border: '1px solid var(--line-soft)',
     borderRadius: 4,
@@ -83,7 +88,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   deviceButtonActive: {
     background: 'var(--coral)',
-    borderColor: 'var(--coral)',
+    border: '1px solid var(--coral)',
     color: '#fff',
   },
   previewWrapper: {
@@ -153,23 +158,6 @@ const deviceDimensions: Record<DevicePreset, { width: number; height: number }> 
 // Threshold for warning (very large UIs)
 const WARN_ELEMENTS_THRESHOLD = 500;
 const WARN_SOURCE_LENGTH_THRESHOLD = 100000;
-
-/**
- * Strip comments from source before passing to SoftNRenderer
- * The parser may not handle top-level comments correctly
- */
-function stripComments(source: string): string {
-  return (
-    source
-      // Remove single-line comments (// ...) but not inside strings
-      .replace(/^\/\/.*$/gm, '')
-      // Remove multi-line comments (/* ... */)
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      // Clean up extra blank lines
-      .replace(/\n\s*\n\s*\n/g, '\n\n')
-      .trim()
-  );
-}
 
 /**
  * Resolve UI component imports and inline them into the source.
@@ -636,9 +624,9 @@ function DeviceViewport({ width, height, children }: DeviceViewportProps) {
   );
 }
 
-export function LivePreview() {
+export function LivePreview({ initialDevice = 'desktop' }: { initialDevice?: DevicePreset }) {
   const { elements, rootId } = useCanvasStore();
-  const { logicSource, collections: projectCollections, themeMode, permissions } = useProjectStore();
+  const { projectId, logicSource, collections: projectCollections, themeMode, permissions } = useProjectStore();
   // The preview runs under the project's own declaration, as the runtime
   // will: a call the app has not declared fails here too, not first in the
   // runtime after export.
@@ -646,22 +634,14 @@ export function LivePreview() {
     const json = buildPermissionJson(permissions);
     return json ? (JSON.parse(json) as PermissionConfig) : undefined;
   }, [permissions]);
-  const { entities, seedData } = useSchemaStore();
+  const { entities, seedData, recordIdentity } = useSchemaStore();
   const { activeFileId, uiFiles, logicFiles, nodes } = useFilesStore();
-  const [device, setDevice] = useState<DevicePreset>('desktop');
+  const [device, setDevice] = useState<DevicePreset>(initialDevice);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [forceRender, setForceRender] = useState(false);
-  const [PreviewComponent, setPreviewComponent] = useState<React.ComponentType<{
-    source: string;
-    loading?: React.ReactNode;
-    error?: React.ReactNode | ((error: Error) => React.ReactNode);
-    initialData?: Record<string, unknown[]>;
-    initialState?: Record<string, unknown>;
-    permissionConfig?: PermissionConfig;
-    onLoad?: (doc: unknown) => void;
-    onError?: (err: Error) => void;
-  }> | null>(null);
+  const [PreviewComponent, setPreviewComponent] = useState<React.ComponentType<PreviewRuntimeProps> | null>(null);
+  const [previewRecordsFor, setPreviewRecordsFor] = useState<typeof import('./PreviewRuntime').previewRecordsFor | null>(null);
   const [ThemeProviderComponent, setThemeProviderComponent] = useState<React.ComponentType<{
     defaultDarkMode?: boolean;
     followSystem?: boolean;
@@ -694,9 +674,8 @@ export function LivePreview() {
 
     const schemaCollections: CollectionDef[] = entities.map((entity) => {
       const entitySeedData = seedData.get(entity.id) || [];
-      // Check if projectCollections has fullRecords for this entity
-      const projectCol = projectCollections.find((c) => c.name === entity.name);
-      const fullRecords = projectCol?.fullRecords;
+      // Current editable rows win over the original imported snapshot.
+      const fullRecords = entitySeedData.map((data, index) => envelopeFor(entity.name, data, recordIdentity.get(entity.id)?.[index]));
 
       debug(
         `[LivePreview] Entity "${entity.name}" (id=${entity.id}): ${entitySeedData.length} records, fullRecords: ${fullRecords?.length || 0}`
@@ -706,13 +685,14 @@ export function LivePreview() {
         alias: entity.alias,
         fields: entity.fields,
         seedData: entitySeedData,
-        fullRecords: fullRecords, // Preserve fullRecords from projectCollections
+        fullRecords, // Current Data edits with their stable imported identities
       };
     });
     const schemaNames = new Set(schemaCollections.map((c) => c.name));
     const manualCollections = projectCollections.filter((c) => !schemaNames.has(c.name));
     return [...schemaCollections, ...manualCollections];
-  }, [entities, seedData, projectCollections]);
+  }, [entities, seedData, recordIdentity, projectCollections]);
+  const previewRecords = useMemo(() => previewRecordsFor?.(collections) ?? {}, [previewRecordsFor, collections]);
 
   // Get source - prioritize ui/main.ui for stable preview behavior.
   // IMPORTANT: useMemo must be a pure computation — no setState calls.
@@ -762,7 +742,7 @@ export function LivePreview() {
     };
 
     const resolveImportedFileSource = (file: UIFileState): string => {
-      if (file.originalSource?.trim()) {
+      if (file.originalSource !== undefined) {
         return file.originalSource;
       }
       // For files without originalSource, generate from canvas elements.
@@ -774,10 +754,15 @@ export function LivePreview() {
       return mergeGeneratedTemplateIntoSource(file.originalSource, generated);
     };
 
-    // If the file being previewed is actively open in design, always merge the
-    // live canvas template into the source so canvas edits are reflected
-    // immediately — even for files with imports like ui/main.ui.
-    if (primaryUIFile && activeUIFile && primaryUIFile.id === activeUIFile.id) {
+    // Authored source is authoritative, including constructs the canvas cannot
+    // represent. The view switch flushes accepted canvas edits before preview.
+    // Rebuilding a source-only file here loses mixed text and can show stale code.
+    if (primaryUIFile?.originalSource !== undefined) {
+      rawSource = primaryUIFile.originalSource;
+      activeFilePath = primaryUIFile.path;
+      if (!rawSource.trim()) return { source: '', activeFilePath, info: 'This UI file is empty. Add source in Code view to preview it.', error: null };
+    }
+    if (primaryUIFile && activeUIFile && primaryUIFile.id === activeUIFile.id && primaryUIFile.originalSource === undefined) {
       try {
         const fileLogicSource = resolveLinkedLogicSource();
         const generatedSource = generateSource(elements, rootId, fileLogicSource, collections);
@@ -882,19 +867,10 @@ export function LivePreview() {
     const loadRenderer = async () => {
       setIsLoading(true);
       try {
-        // Try to import @softn/core renderer
-        const core = await import('@softn/core');
-        debug('[LivePreview] Loaded @softn/core:', Object.keys(core));
-        // Use SoftNRenderer directly (not SoftNWithXDB) to avoid IndexedDB issues
-        // The builder preview doesn't need persistent storage
+        const preview = await import('./PreviewRuntime');
         if (!active) return;
-        if (core.SoftNRenderer) {
-          debug('[LivePreview] Using SoftNRenderer (no XDB for preview)');
-          setPreviewComponent(() => core.SoftNRenderer);
-        } else if (core.SoftNWithXDB) {
-          debug('[LivePreview] Falling back to SoftNWithXDB');
-          setPreviewComponent(() => core.SoftNWithXDB);
-        }
+        setPreviewComponent(() => preview.PreviewRuntime);
+        setPreviewRecordsFor(() => preview.previewRecordsFor);
       } catch (e) {
         // If import fails, show placeholder
         console.error('[LivePreview] Failed to load @softn/core:', e);
@@ -1035,8 +1011,9 @@ export function LivePreview() {
     }
 
     if (PreviewComponent && shouldRender) {
-      // Strip comments from source before rendering - parser may not handle top-level comments
-      const cleanSource = stripComments(source);
+      // The canonical parser handles comments. Regex removal also removes
+      // comment-looking text inside strings, changing the running program.
+      const cleanSource = source;
       debug(
         '[LivePreview] Rendering PreviewComponent with source length:',
         cleanSource.length
@@ -1056,50 +1033,14 @@ export function LivePreview() {
         </div>
       );
 
-      // Build initialData from collections with their seed data
-      // Use fullRecords if available (preserves { id, collection, data, ... } structure)
-      // Otherwise transform flat seedData into full record structure for the renderer
-      const mockInitialData: Record<string, unknown[]> = {};
-      for (const col of collections) {
-        const key = col.alias || col.name;
-
-        if (col.fullRecords && col.fullRecords.length > 0) {
-          // Use full records directly (already has { id, collection, data, ... } structure)
-          mockInitialData[key] = col.fullRecords;
-          debug(
-            `[LivePreview] initialData["${key}"]: ${mockInitialData[key].length} records (using fullRecords)`
-          );
-        } else if (col.seedData && col.seedData.length > 0) {
-          // Transform flat data into full record structure
-          mockInitialData[key] = col.seedData.map((data, index) => ({
-            id: `preview_${col.name}_${index}`,
-            collection: col.name,
-            data: data,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }));
-          debug(
-            `[LivePreview] initialData["${key}"]: ${mockInitialData[key].length} records (transformed from seedData)`
-          );
-        } else {
-          mockInitialData[key] = [];
-          debug(`[LivePreview] initialData["${key}"]: 0 records`);
-        }
-      }
-      debug(
-        '[LivePreview] Providing initialData for collections:',
-        Object.keys(mockInitialData),
-        'Total records:',
-        Object.values(mockInitialData).reduce((sum, arr) => sum + arr.length, 0)
-      );
-
       const preview = (
         <PreviewErrorBoundary fallback={renderError}>
           <PreviewComponent
             source={cleanSource}
             loading={loadingFallback}
             error={errorFallback}
-            initialData={mockInitialData}
+            projectId={projectId}
+            records={previewRecords}
             permissionConfig={previewPermissionConfig}
             onLoad={(doc: unknown) => {
               debug('[LivePreview] SoftNRenderer onLoad - document parsed:', doc);
@@ -1164,10 +1105,12 @@ export function LivePreview() {
     <div style={styles.container}>
       <div style={styles.header}>
         <span style={styles.title}>Live Preview</span>
-        <div style={styles.controls}>
+        <div style={styles.controls} role="group" aria-label="Preview device">
           {(['desktop', 'tablet', 'mobile'] as DevicePreset[]).map((d) => (
             <button
               key={d}
+              type="button"
+              aria-pressed={device === d}
               style={{
                 ...styles.deviceButton,
                 ...(device === d ? styles.deviceButtonActive : {}),
@@ -1180,6 +1123,7 @@ export function LivePreview() {
         </div>
       </div>
       {sourceInfo && <div style={styles.infoBanner}>{sourceInfo}</div>}
+      {collections.length > 0 && <div style={{ ...styles.infoBanner, color: 'var(--dim)' }}>Try your app here. Preview data resets when you leave; edit saved records in Data.</div>}
 
       <div style={styles.previewWrapper}>
         <div

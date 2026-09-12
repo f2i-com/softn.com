@@ -40,6 +40,7 @@ import {
   normalizeProjectPath,
   readJsonProject,
   readProjectArchive,
+  readProjectFile,
 } from './lib/projectImport';
 import {
   beginNewProjectSession,
@@ -280,17 +281,16 @@ const App: React.FC = () => {
    * before the stores are touched, so a result that arrives after something
    * else took the workspace is dropped, and dropped quietly.
    */
-  const handleImportProject = useCallback(async (file: File, owner?: number) => {
+  const handleImportProject = useCallback(async (file: File, owner?: number): Promise<DashboardOutcome> => {
     const generation = owner ?? claimWorkspace().generation;
     abortAgentTurn();
     try {
-      if (!(await checkpointBeforeReplace())) return;
-      if (!ownsWorkspace(generation)) return;
-      const buffer = await file.arrayBuffer();
+      if (!(await checkpointBeforeReplace())) return { ok: false, message: 'The current project was kept open.' };
+      if (!ownsWorkspace(generation)) return { ok: true };
+      const data = await readProjectFile(file);
       // A second selection (or starting a new project) owns the workspace now.
       // File.arrayBuffer cannot be aborted, so discard the older read here.
-      if (!ownsWorkspace(generation)) return;
-      const data = new Uint8Array(buffer);
+      if (!ownsWorkspace(generation)) return { ok: true };
       const decoder = new TextDecoder();
 
       const batch: Array<{ path: string; content: string | Uint8Array }> = [];
@@ -336,7 +336,7 @@ const App: React.FC = () => {
       // Commit only after the complete import has been decoded and validated,
       // so any failure above leaves the current project intact — and only if
       // nothing took the workspace while the decode ran.
-      if (!ownsWorkspace(generation)) return;
+      if (!ownsWorkspace(generation)) return { ok: true };
       resetProjectSessionForImport();
       useVFSStore.getState().batchCreateFiles(batch, 'user');
 
@@ -373,10 +373,12 @@ const App: React.FC = () => {
       });
       setView('editor');
       void refreshRecent();
+      return { ok: true };
     } catch (err) {
-      if (!ownsWorkspace(generation)) return;
+      if (!ownsWorkspace(generation)) return { ok: true };
       const msg = err instanceof Error ? err.message : String(err);
       useWorkspaceStore.getState().addConsoleOutput(`Import failed: ${msg}`);
+      return { ok: false, message: msg };
     }
   }, [checkpointBeforeReplace, refreshRecent]);
 
@@ -426,7 +428,10 @@ const App: React.FC = () => {
         return;
       }
       await openRemoteBundle(link.url, {
-        importFile: (file, generation) => handleImportProjectRef.current(file, generation),
+        importFile: async (file, generation) => {
+          const outcome = await handleImportProjectRef.current(file, generation);
+          if (!outcome.ok) throw new Error(outcome.message);
+        },
         log,
       });
     })();
@@ -476,12 +481,12 @@ const App: React.FC = () => {
     const ws = useWorkspaceStore.getState();
     if (ws.projectId === id && hasProjectContent()) {
       // The copy in memory is the newest there is; nothing to read.
+      claimWorkspace();
       setView('editor');
       return { ok: true };
     }
     abortAgentTurn();
-    if (!(await checkpointBeforeReplace())) return { ok: false, message: 'the current project was kept open.' };
-    const outcome = await openProjectById(id);
+    const outcome = await openProjectById(id, checkpointBeforeReplace);
     if (outcome.ok) {
       setView('editor');
       void refreshRecent();
@@ -619,7 +624,7 @@ const App: React.FC = () => {
         <div style={styles.mobileContent}>
           {mobilePanel === 'chat' && (
             <div style={styles.mobilePanel}>
-              <AIChat />
+              <AIChat onOpenSettings={() => setMobilePanel('inspector')} />
             </div>
           )}
           {mobilePanel === 'canvas' && (

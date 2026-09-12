@@ -1782,6 +1782,7 @@ export function useDataBlock(
   const [error, setError] = useState<Error | null>(null);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastDataSignatureRef = useRef('');
+  const readGenerationRef = useRef(0);
 
   // Extract collection declarations from document
   const collectionDefs = useMemo(() => {
@@ -1918,31 +1919,45 @@ export function useDataBlock(
     [xdb]
   );
 
-  // Refresh function exposed to callers — uses a ref to always
-  // access the latest collectionDefs without stale closures.
-  const collectionDefsRef = useRef(collectionDefs);
-  collectionDefsRef.current = collectionDefs;
-
-  const refresh = useCallback(() => {
+  // Initial, manual and subscription reads share one ordering boundary. Source
+  // identity alone cannot stop a slow earlier read of the SAME collection from
+  // replacing a newer result (or restoring an obsolete error/loading state).
+  const readCollections = useCallback((defs: typeof collectionDefs, initial = false) => {
     const sourceToken = dataSourceToken;
-    if (activeDataSourceTokenRef.current !== sourceToken) return;
-    const defs = collectionDefsRef.current;
-    if (defs.length === 0) return;
+    if (activeDataSourceTokenRef.current !== sourceToken || defs.length === 0) return;
+    const generation = ++readGenerationRef.current;
+    const isCurrentRead = () =>
+      activeDataSourceTokenRef.current === sourceToken &&
+      readGenerationRef.current === generation;
+    if (initial) setLoading(true);
     doFetch(defs)
       .then((data) => {
-        if (activeDataSourceTokenRef.current !== sourceToken || !data) return;
+        if (!isCurrentRead() || !data) return;
         const signature = buildDataSignature(data);
         if (signature !== lastDataSignatureRef.current) {
           lastDataSignatureRef.current = signature;
           setCollections(data);
         }
+        // Recovery is meaningful even when the records themselves did not change.
+        setError(null);
       })
       .catch((err) => {
-        if (activeDataSourceTokenRef.current !== sourceToken) return;
+        if (!isCurrentRead()) return;
         console.error('[useDataBlock] Error fetching collections:', err);
         setError(err instanceof Error ? err : new Error(String(err)));
+      })
+      .finally(() => {
+        if (isCurrentRead()) setLoading(false);
       });
   }, [doFetch, buildDataSignature, dataSourceToken]);
+
+  // Public refresh uses the latest definitions without changing identity on
+  // ordinary renders. The reader still verifies its committed source token.
+  const collectionDefsRef = useRef(collectionDefs);
+  collectionDefsRef.current = collectionDefs;
+  const refresh = useCallback(() => {
+    readCollections(collectionDefsRef.current);
+  }, [readCollections]);
 
   // Initial fetch + subscribe to changes.
   // Runs when collectionDefs or xdb changes.
@@ -1952,25 +1967,7 @@ export function useDataBlock(
     const isCurrentSource = () => !cancelled && activeDataSourceTokenRef.current === sourceToken;
 
     if (collectionDefs.length > 0) {
-      setLoading(true);
-      doFetch(collectionDefs)
-        .then((data) => {
-          if (!isCurrentSource() || !data) return;
-          const signature = buildDataSignature(data);
-          if (signature !== lastDataSignatureRef.current) {
-            lastDataSignatureRef.current = signature;
-            setCollections(data);
-          }
-          setError(null);
-        })
-        .catch((err) => {
-          if (!isCurrentSource()) return;
-          console.error('[useDataBlock] Error fetching collections:', err);
-          setError(err instanceof Error ? err : new Error(String(err)));
-        })
-        .finally(() => {
-          if (isCurrentSource()) setLoading(false);
-        });
+      readCollections(collectionDefs, true);
     } else {
       setLoading(false);
     }
@@ -1987,19 +1984,7 @@ export function useDataBlock(
         refreshTimerRef.current = setTimeout(() => {
           refreshTimerRef.current = null;
           if (isCurrentSource()) {
-            doFetch(collectionDefs)
-              .then((data) => {
-                if (!isCurrentSource() || !data) return;
-                const signature = buildDataSignature(data);
-                if (signature !== lastDataSignatureRef.current) {
-                  lastDataSignatureRef.current = signature;
-                  setCollections(data);
-                }
-              })
-              .catch((err) => {
-                if (!isCurrentSource()) return;
-                console.error('[useDataBlock] Error refreshing collections:', err);
-              });
+            readCollections(collectionDefs);
           }
         }, 120);
       });
@@ -2014,7 +1999,7 @@ export function useDataBlock(
       }
       unsubscribes.forEach((unsub) => unsub());
     };
-  }, [xdb, collectionDefs, doFetch, buildDataSignature, dataSourceToken]);
+  }, [xdb, collectionDefs, readCollections, dataSourceToken]);
 
   return {
     data: collections,

@@ -52,10 +52,10 @@ const desktop = { width: 1280, height: 800 };
  * plus the cheap UX checks. Phone and zoom specs are matched by name below
  * and never run in a desktop project.
  */
-const desktopSpecs = /\/(studio-handoff|builder-handoff|site-publish-keys|directory-navigation|site-not-found|builder-export-dialog|browser-capabilities)\.spec\.ts$/;
+const desktopSpecs = /\/(studio-handoff|builder-handoff|site-publish-keys|directory-navigation|site-not-found|builder-export-dialog|browser-capabilities|site-workspace|runtime-directory)\.spec\.ts$/;
 
-/** The specs that only make sense at a phone width: Studio's mobile editor. */
-const mobileSpecs = /\/studio-mobile\.spec\.ts$/;
+/** Studio's phone editor plus the landing page and runnable teaching example. */
+const mobileSpecs = /\/(studio-mobile|site-workspace|runtime-directory)\.spec\.ts$/;
 
 /**
  * 200 % zoom, as a browser does it: the CSS viewport halves and the device
@@ -148,7 +148,7 @@ export default defineConfig({
     // clear of the chat composer.
     {
       name: 'zoom-200',
-      testMatch: /\/(studio-handoff|studio-zoom)\.spec\.ts$/,
+      testMatch: /\/(studio-handoff|studio-zoom|site-workspace|runtime-directory)\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'], ...zoom200 },
     },
   ],

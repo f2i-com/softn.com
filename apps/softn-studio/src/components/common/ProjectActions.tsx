@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { exportAsBundle } from '../../lib/exportBundle';
 import { prepareHandoff, type HandoffDestination, type ReadyHandoff } from '../../lib/handoff';
@@ -28,6 +28,7 @@ export interface ProjectActions {
   refused: boolean;
   preparing: HandoffDestination | null;
   ready: ReadyHandoff | null;
+  error: string | null;
   canRun: boolean;
   canPublish: boolean;
   canExport: boolean;
@@ -35,6 +36,7 @@ export interface ProjectActions {
   publish(): void;
   exportBundle(): void;
   dismissReady(): void;
+  dismissError(): void;
   /** The title for a Run/Publish control in its current state. */
   describe(to: HandoffDestination, idle: string): string;
 }
@@ -57,13 +59,36 @@ export function exportCurrentProject(): { ok: true } | { ok: false; message: str
 }
 
 export function useProjectActions(): ProjectActions {
-  const { projectName, errors } = useWorkspaceStore();
+  const { projectId, projectName, errors } = useWorkspaceStore();
   const { files } = useVFSStore();
   const hasFiles = files.size > 0;
   const refused = errors.some((e) => e.level === 'error' && e.type === 'bundle-refused');
   const problemCount = errors.filter((e) => e.level === 'error').length;
-  const [preparing, setPreparing] = useState<HandoffDestination | null>(null);
-  const [ready, setReady] = useState<ReadyHandoff | null>(null);
+  const scope = useMemo(() => ({ projectId, projectName, files }), [projectId, projectName, files]);
+  const activeScope = useRef<typeof scope | null>(scope);
+  const pending = useRef<object | null>(null);
+  const [state, setState] = useState<{
+    scope: typeof scope;
+    preparing: HandoffDestination | null;
+    ready: ReadyHandoff | null;
+    error: string | null;
+  }>({ scope, preparing: null, ready: null, error: null });
+
+  // A staged bundle belongs to the exact files/name it was built from. Reset
+  // before paint so an edit never leaves a clickable link to an older copy.
+  useLayoutEffect(() => {
+    activeScope.current = scope;
+    pending.current = null;
+    setState({ scope, preparing: null, ready: null, error: null });
+    return () => {
+      activeScope.current = null;
+      pending.current = null;
+    };
+  }, [scope]);
+
+  const { preparing, ready, error } = state.scope === scope
+    ? state
+    : { preparing: null, ready: null, error: null };
 
   /**
    * Stage the bundle for the runtime or the publish page, then offer the
@@ -73,25 +98,37 @@ export function useProjectActions(): ProjectActions {
    */
   const handOff = useCallback(
     async (to: HandoffDestination) => {
-      if (!hasFiles || refused || preparing) return;
+      if (!hasFiles || refused || pending.current || activeScope.current !== scope) return;
+      const request = {};
+      pending.current = request;
+      const isCurrent = () => {
+        const workspace = useWorkspaceStore.getState();
+        return pending.current === request && activeScope.current === scope
+          && workspace.projectId === scope.projectId && workspace.projectName === scope.projectName
+          && useVFSStore.getState().files === scope.files;
+      };
       const log = useWorkspaceStore.getState().addConsoleOutput;
-      setReady(null);
-      setPreparing(to);
+      setState({ scope, preparing: to, ready: null, error: null });
       try {
         const outcome = await prepareHandoff(to, files, projectName);
+        if (!isCurrent()) return;
         if (!outcome.ok) {
+          setState({ scope, preparing: null, ready: null, error: outcome.message });
           log(outcome.message);
           return;
         }
-        setReady(outcome.ready);
+        setState({ scope, preparing: null, ready: outcome.ready, error: null });
         log(to === 'runtime' ? 'The bundle is staged for the runtime. Open it from the link in the bar.' : 'The bundle is staged for the publish page. Open it from the link in the bar.');
       } catch (err: unknown) {
-        log(`Hand-off failed: ${err instanceof Error ? err.message : String(err)}`);
+        if (!isCurrent()) return;
+        const message = `Could not prepare the bundle: ${err instanceof Error ? err.message : String(err)}`;
+        setState({ scope, preparing: null, ready: null, error: message });
+        log(message);
       } finally {
-        setPreparing(null);
+        if (pending.current === request) pending.current = null;
       }
     },
-    [files, hasFiles, preparing, projectName, refused],
+    [files, hasFiles, projectName, refused, scope],
   );
 
   const describe = useCallback(
@@ -107,13 +144,18 @@ export function useProjectActions(): ProjectActions {
     refused,
     preparing,
     ready,
+    error,
     canRun: hasFiles && !refused && preparing === null,
     canPublish: hasFiles && !refused && preparing === null,
     canExport: hasFiles,
     run: () => void handOff('runtime'),
     publish: () => void handOff('publish'),
-    exportBundle: () => void exportCurrentProject(),
-    dismissReady: () => setReady(null),
+    exportBundle: () => {
+      const outcome = exportCurrentProject();
+      setState((current) => ({ ...current, error: outcome.ok ? null : `Could not export the bundle: ${outcome.message}` }));
+    },
+    dismissReady: () => setState((current) => ({ ...current, ready: null })),
+    dismissError: () => setState((current) => ({ ...current, error: null })),
     describe,
   };
 }

@@ -38,6 +38,101 @@ function makeBundle(): SoftNBundle {
 }
 
 describe('SoftNBundleRenderer lifecycle', () => {
+  it('does not seed records when a runtime is disposed while desktop hydration is pending', async () => {
+    const appId = 'DisposedHydrationSeed';
+    const xdb = getXDB(appId);
+    const originalReady = xdb.isReady;
+    let finishHydration!: () => void;
+    xdb.isReady = new Promise<void>((resolve) => {
+      finishHydration = resolve;
+    });
+    const bundle = makeBundle();
+    bundle.xdbData.set('seed.xdb', {
+      collection: 'items',
+      records: [
+        {
+          id: 'seed',
+          data: { label: 'late' },
+          created_at: '2026-08-04T00:00:00.000Z',
+          updated_at: '2026-08-04T00:00:00.000Z',
+        },
+      ],
+    });
+    const runtime = createBundleRuntime(bundle, { appId });
+    try {
+      const loading = runtime.initializeXDB();
+      runtime.dispose();
+      finishHydration();
+      await loading;
+      expect(xdb.getAll('items')).toEqual([]);
+      expect(runtime.getAssetUrl('pixel.png')).toBe('');
+      expect(() => runtime.render()).toThrow(/disposed/i);
+    } finally {
+      xdb.isReady = originalReady;
+      runtime.dispose();
+      xdb.clear('items');
+    }
+  });
+
+  it.each(['bundle', 'appId'] as const)(
+    'resets local state when its %s changes',
+    async (change) => {
+      const first = makeBundle();
+      first.files.set('main.ui', {
+        path: 'main.ui',
+        type: 'ui',
+        content: '<div>{label}</div>',
+        size: 18,
+      });
+      const second = { ...first, files: new Map(first.files) };
+      const container = document.createElement('div');
+      const root = createRoot(container);
+      try {
+        await act(async () =>
+          root.render(
+            <SoftNBundleRenderer
+              bundle={first}
+              appId="bundle-state-a"
+              initialState={{ label: 'Private A' }}
+            />
+          )
+        );
+        expect(container.textContent).toBe('Private A');
+        await act(async () =>
+          root.render(
+            <SoftNBundleRenderer
+              bundle={change === 'bundle' ? second : first}
+              appId={change === 'appId' ? 'bundle-state-b' : 'bundle-state-a'}
+              initialState={{ label: 'Fresh B' }}
+            />
+          )
+        );
+        expect(container.textContent).toBe('Fresh B');
+      } finally {
+        act(() => root.unmount());
+      }
+    }
+  );
+
+  it('encodes every text asset as UTF-8, including Latin-1 characters', () => {
+    const bundle = makeBundle();
+    const source = '<svg xmlns="http://www.w3.org/2000/svg"><text>Café £</text></svg>';
+    bundle.files.set('label.svg', {
+      path: 'label.svg',
+      type: 'asset',
+      content: source,
+      size: source.length,
+    });
+    const runtime = createBundleRuntime(bundle);
+    try {
+      const dataUrl = runtime.getAssetUrl('label.svg');
+      const bytes = Uint8Array.from(atob(dataUrl.split(',')[1]), (char) => char.charCodeAt(0));
+      expect(new TextDecoder('utf-8', { fatal: true }).decode(bytes)).toBe(source);
+    } finally {
+      runtime.dispose();
+    }
+  });
+
   it('restores the previous window asset resolver as runtimes are disposed', () => {
     const hostResolver = vi.fn(() => 'host-asset');
     const assetWindow = window as typeof window & {

@@ -93,6 +93,11 @@ export interface XDBStorage {
   removeItem(key: string): void;
 }
 
+export interface XDBServiceOptions {
+  /** Use the supplied/browser storage even when a native Tauri bridge exists. */
+  backend?: 'auto' | 'storage';
+}
+
 // ============================================================================
 // XDB Service Class
 // ============================================================================
@@ -142,7 +147,7 @@ export class XDBService {
   public isReady: Promise<void>;
   private _resolveReady!: () => void;
 
-  constructor(storage?: XDBStorage, prefix = 'xdb', appId?: string) {
+  constructor(storage?: XDBStorage, prefix = 'xdb', appId?: string, options: XDBServiceOptions = {}) {
     try {
       this.storage = storage || (typeof localStorage !== 'undefined' ? localStorage : createMemoryStorage());
     } catch {
@@ -153,7 +158,7 @@ export class XDBService {
     this.appId = appId;
     this.listeners = new Map();
     this.globalListeners = new Set();
-    this.useTauri = isTauri();
+    this.useTauri = options.backend !== 'storage' && isTauri();
 
     this.isReady = new Promise(resolve => {
       this._resolveReady = resolve;
@@ -247,13 +252,17 @@ export class XDBService {
   }
 
   /**
-   * Cleanup Tauri event listeners
+   * Release event listeners when the service's owner is finished with it.
    */
   destroy(): void {
     for (const unlisten of this.tauriUnlisteners) {
       unlisten();
     }
     this.tauriUnlisteners = [];
+    this.listeners.clear();
+    this.globalListeners.clear();
+    this.mutationListeners.clear();
+    this._batchDirty.clear();
   }
 
   // --------------------------------------------------------------------------
@@ -514,6 +523,7 @@ export class XDBService {
       }));
       this.getOrCreateCollection(collection).set(record.id, record);
       this.emit({ type: 'create', collection, record });
+      this.notifyMutation('create', collection, record.id, record.data);
       return record;
     }
 
@@ -783,6 +793,7 @@ export class XDBService {
         }));
         this.getOrCreateCollection(record.collection).set(record.id, record);
         this.emit({ type: 'update', collection: record.collection, record });
+        this.notifyMutation('update', record.collection, record.id, record.data);
         return record;
       } catch (err) {
         console.error('[XDB] Failed to update record:', err);
@@ -818,11 +829,27 @@ export class XDBService {
       };
       coll.set(record.id, updatedRecord);
       this.emit({ type: 'update', collection, record: updatedRecord });
+      this.notifyMutation('update', collection, record.id, updatedRecord.data);
+
+      // A scoped edit is still a local mutation: persist it just like update(),
+      // while keeping the optimistic cache change in the requested collection.
+      tauriInvoke<XDBRecord>('update_record', this.tauriArgs({
+        payload: { id: record.id, data },
+      })).then((serverRecord) => {
+        if (serverRecord.collection !== collection || serverRecord.id !== record.id) return;
+        // A newer edit/deletion wins even if the older request finishes last.
+        if (coll.get(record.id) === updatedRecord) {
+          coll.set(record.id, serverRecord);
+          this.emit({ type: 'update', collection, record: serverRecord });
+        }
+      }).catch((err) => {
+        console.error('[XDB] Failed to persist collection update in Tauri:', err);
+      });
       return updatedRecord;
     }
 
     const records = this.getAllCollectionData(collection);
-    const index = records.findIndex((r) => r.id === id);
+    const index = records.findIndex((r) => r.id === id && !r.deleted);
 
     if (index === -1) return null;
 
@@ -837,6 +864,7 @@ export class XDBService {
     this.setCollectionData(collection, records);
 
     this.emit({ type: 'update', collection, record: updatedRecord });
+    this.notifyMutation('update', collection, id, updatedRecord.data);
 
     return updatedRecord;
   }
@@ -925,6 +953,7 @@ export class XDBService {
             const deleted = { ...record, deleted: true, updated_at: new Date().toISOString() };
             coll.set(id, deleted);
             this.emit({ type: 'delete', collection, record: deleted });
+            this.notifyMutation('delete', collection, id);
             break;
           }
         }
@@ -944,16 +973,21 @@ export class XDBService {
   deleteFromCollection(collection: string, id: string): boolean {
     if (this.useTauri) {
       const coll = this.memoryStore.get(collection);
-      const record = coll?.get(id);
+      const resolvedId = this.optimisticIdMap.get(id) || id;
+      const record = coll?.get(id) ?? coll?.get(resolvedId);
       if (!record || record.deleted) return false;
       const deleted = { ...record, deleted: true, updated_at: new Date().toISOString() };
-      coll!.set(id, deleted);
+      coll!.set(record.id, deleted);
       this.emit({ type: 'delete', collection, record: deleted });
+      this.notifyMutation('delete', collection, record.id);
+      tauriInvoke<boolean>('delete_record', this.tauriArgs({ id: record.id })).catch((err) => {
+        console.error('[XDB] Failed to persist collection deletion in Tauri:', err);
+      });
       return true;
     }
 
     const records = this.getAllCollectionData(collection);
-    const index = records.findIndex((r) => r.id === id);
+    const index = records.findIndex((r) => r.id === id && !r.deleted);
 
     if (index === -1) return false;
 
@@ -964,6 +998,7 @@ export class XDBService {
     this.setCollectionData(collection, records);
 
     this.emit({ type: 'delete', collection, record });
+    this.notifyMutation('delete', collection, id);
 
     return true;
   }
@@ -1534,6 +1569,51 @@ export function getSyncStatuses(): { connected: boolean; peers: number; room: st
 // Per-app XDB instances
 const xdbInstances = new Map<string, XDBService>();
 
+const EPHEMERAL_XDB_PREFIX = '__softn_preview__';
+let ephemeralXDBSequence = 0;
+
+export interface EphemeralXDBScope {
+  /** Pass to the renderer so scripts, data blocks and components share this store. */
+  appId: string;
+  xdb: XDBService;
+  /** Call after unmounting the preview. Idempotent; discards its data and registry entry. */
+  dispose: () => void;
+}
+
+/**
+ * Create a registered, memory-only database for an editor preview. Seed `xdb`
+ * before mounting the renderer, then use this appId for the preview's lifetime.
+ * It never hydrates or writes native SQLite, even inside the desktop Builder.
+ */
+export function createEphemeralXDBScope(): EphemeralXDBScope {
+  let appId: string;
+  do {
+    appId = `${EPHEMERAL_XDB_PREFIX}${Date.now().toString(36)}_${++ephemeralXDBSequence}`;
+  } while (xdbInstances.has(appId));
+
+  const values = new Map<string, string>();
+  let disposed = false;
+  const storage: XDBStorage = {
+    getItem: (key) => disposed ? null : values.get(key) ?? null,
+    setItem: (key, value) => { if (!disposed) values.set(key, value); },
+    removeItem: (key) => { values.delete(key); },
+  };
+  const xdb = new XDBService(storage, `xdb:${appId}`, appId, { backend: 'storage' });
+  xdbInstances.set(appId, xdb);
+
+  return {
+    appId,
+    xdb,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      if (xdbInstances.get(appId) === xdb) xdbInstances.delete(appId);
+      xdb.destroy();
+      values.clear();
+    },
+  };
+}
+
 /**
  * A module-level pointer that once named the running app.
  *
@@ -1581,6 +1661,11 @@ export function getXDB(appId?: string): XDBService {
   const key = resolved || '_default';
   let instance = xdbInstances.get(key);
   if (!instance) {
+    // A late callback from a closed preview must never create a persistent
+    // database merely because its ephemeral registry entry was released.
+    if (key.startsWith(EPHEMERAL_XDB_PREFIX)) {
+      throw new Error('The preview database scope has been disposed.');
+    }
     if (resolved) migrateLegacyKeys(resolved);
     instance = new XDBService(undefined, prefixFor(resolved), resolved);
     xdbInstances.set(key, instance);
@@ -1838,6 +1923,7 @@ export function useRecord(
   const fetchRecord = useCallback(() => {
     if (!recordId) {
       setRecord(null);
+      setError(null);
       setLoading(false);
       return;
     }
@@ -1860,7 +1946,7 @@ export function useRecord(
 
     // Subscribe to changes
     const unsubscribe = xdb.subscribe(collectionName, (event) => {
-      if (event.record?.id === recordId) {
+      if (event.type === 'refresh' || event.type === 'sync' || event.record?.id === recordId) {
         fetchRecord();
       }
     });

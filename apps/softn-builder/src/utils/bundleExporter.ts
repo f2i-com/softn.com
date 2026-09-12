@@ -300,7 +300,7 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
 
     // Use originalSource if available, otherwise generate from elements
     let source: string;
-    if (uiFile.originalSource) {
+    if (uiFile.originalSource !== undefined) {
       source = uiFile.originalSource;
     } else {
       source = generateSource(uiFile.elements, uiFile.rootId, '', options.collections);

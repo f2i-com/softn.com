@@ -18,6 +18,7 @@ export const SettingsPanel: React.FC = () => {
   const [newApiKey, setNewApiKey] = useState('');
   const [newBaseUrl, setNewBaseUrl] = useState('');
   const [newModelId, setNewModelId] = useState('');
+  const [providerError, setProviderError] = useState('');
   const [settingsTab, setSettingsTab] = useState<'ai' | 'general'>('ai');
 
   const defaultModels: Record<ProviderType, string> = {
@@ -32,20 +33,40 @@ export const SettingsPanel: React.FC = () => {
   };
 
   const handleAddProvider = () => {
-    if (!newApiKey.trim() && newProviderType !== 'custom') return;
+    const apiKey = newApiKey.trim();
+    const baseUrl = newBaseUrl.trim();
+    const modelId = newModelId.trim();
+    if (!apiKey && newProviderType !== 'custom') {
+      setProviderError('Enter an API key, or choose Custom / Local AI for a server without a key.');
+      return;
+    }
+    if (newProviderType === 'custom' && !modelId) {
+      setProviderError('Enter the model name loaded by your local server or custom provider.');
+      return;
+    }
+    if (baseUrl) {
+      try {
+        const endpoint = new URL(baseUrl);
+        if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.hash) throw new Error();
+      } catch {
+        setProviderError('Enter a full HTTP or HTTPS endpoint without a username, password, or fragment.');
+        return;
+      }
+    }
+    setProviderError('');
     const id = crypto.randomUUID();
     const names: Record<ProviderType, string> = {
       anthropic: 'Anthropic',
       openai: 'OpenAI',
-      custom: newBaseUrl ? (() => { try { return new URL(newBaseUrl).hostname; } catch { return 'Custom AI'; } })() : 'Local AI',
+      custom: baseUrl ? new URL(baseUrl).hostname : 'Local AI',
     };
     addProvider({
       id,
       type: newProviderType,
       name: names[newProviderType],
-      apiKey: newApiKey,
-      baseUrl: newBaseUrl || undefined,
-      modelId: newModelId || undefined,
+      apiKey,
+      baseUrl: baseUrl || undefined,
+      modelId: modelId || undefined,
     });
     setActiveProvider(id);
     setNewApiKey('');
@@ -55,11 +76,15 @@ export const SettingsPanel: React.FC = () => {
   };
 
   return (
-    <div style={styles.container}>
+    <div className="studio-settings" style={styles.container}>
+      <style>{`.studio-settings :is(input, select, button):focus-visible { outline: 2px solid var(--studio-accent) !important; outline-offset: 3px; }
+        .studio-settings :is(input, select) { box-sizing: border-box; }
+        @media (max-width: 767px) { .studio-settings :is(input, select) { font-size: 16px !important; } }`}</style>
       {/* Tab header */}
       <div style={styles.tabs}>
         <button
           onClick={() => setSettingsTab('ai')}
+          aria-pressed={settingsTab === 'ai'}
           style={{ ...styles.tab, ...(settingsTab === 'ai' ? styles.tabActive : {}) }}
         >
           <Icon name="ai" size={14} />
@@ -67,6 +92,7 @@ export const SettingsPanel: React.FC = () => {
         </button>
         <button
           onClick={() => setSettingsTab('general')}
+          aria-pressed={settingsTab === 'general'}
           style={{ ...styles.tab, ...(settingsTab === 'general' ? styles.tabActive : {}) }}
         >
           <Icon name="settings" size={14} />
@@ -77,6 +103,13 @@ export const SettingsPanel: React.FC = () => {
       <div style={styles.content}>
         {settingsTab === 'ai' && (
           <>
+            <div style={styles.setupIntro}>
+              <Icon name="ai" size={22} color="var(--studio-accent)" />
+              <div>
+                <h2 style={styles.setupTitle}>Your AI, your workspace</h2>
+                <p style={styles.emptyHint}>Choose a provider, set its model, then return to AI Chat. Projects and API keys stay in this browser; generation sends your project context to your chosen provider.</p>
+              </div>
+            </div>
             {/* API Providers */}
               <div style={styles.fieldGroup}>
                 <label style={styles.label}>API Providers</label>
@@ -85,7 +118,7 @@ export const SettingsPanel: React.FC = () => {
                   <div style={styles.emptyProviders}>
                     <Icon name="key" size={20} color="var(--studio-text-dim)" />
                     <p style={styles.emptyText}>No providers configured</p>
-                    <p style={styles.emptyHint}>Add your API key to start generating</p>
+                    <p style={styles.emptyHint}>Connect a provider or a local model to start generating</p>
                   </div>
                 )}
 
@@ -99,6 +132,8 @@ export const SettingsPanel: React.FC = () => {
                   >
                     <button
                       onClick={() => setActiveProvider(p.id)}
+                      aria-label={`Use ${p.name}${p.modelId ? ` (${p.modelId})` : ''}`}
+                      aria-pressed={activeProviderId === p.id}
                       style={styles.providerInfo}
                     >
                       <div style={{
@@ -111,13 +146,14 @@ export const SettingsPanel: React.FC = () => {
                           {p.modelId && <span style={styles.providerModel}> · {p.modelId}</span>}
                         </div>
                         <div style={styles.providerKey}>
-                          {p.apiKey ? `${p.apiKey.slice(0, 7)}...${p.apiKey.slice(-4)}` : 'No key'}
+                          {p.apiKey ? 'API key saved' : 'No key required'}
                           {p.baseUrl && <span> · {p.baseUrl.replace(/^https?:\/\//, '').split('/')[0]}</span>}
                         </div>
                       </div>
                     </button>
                     <button
                       onClick={() => removeProvider(p.id)}
+                      aria-label={`Remove ${p.name}${p.modelId ? ` (${p.modelId})` : ''}`}
                       style={styles.removeBtn}
                     >
                       <Icon name="trash" size={14} color="var(--studio-text-dim)" />
@@ -126,15 +162,18 @@ export const SettingsPanel: React.FC = () => {
                 ))}
 
                 {showAddProvider ? (
-                  <div style={styles.addForm}>
+                  <form style={styles.addForm} noValidate onSubmit={(e) => { e.preventDefault(); handleAddProvider(); }}>
                     <div style={styles.addFormField}>
-                      <label style={styles.fieldLabel}>Provider preset</label>
+                      <label htmlFor="studio-provider-preset" style={styles.fieldLabel}>Provider preset</label>
                       <select
+                        id="studio-provider-preset"
                         style={styles.select}
                         value={newProviderType}
                         onChange={(e) => {
                           const t = e.target.value as ProviderType;
                           setNewProviderType(t);
+                          setNewApiKey('');
+                          setProviderError('');
                           setNewModelId('');
                           setNewBaseUrl('');
                         }}
@@ -146,10 +185,12 @@ export const SettingsPanel: React.FC = () => {
                     </div>
 
                     <div style={styles.addFormField}>
-                      <label style={styles.fieldLabel}>
+                      <label htmlFor="studio-provider-key" style={styles.fieldLabel}>
                         API Key {newProviderType === 'custom' && <span style={{ fontWeight: 400, color: 'var(--studio-text-dim)' }}>(optional for local)</span>}
                       </label>
                       <input
+                        id="studio-provider-key"
+                        autoComplete="off"
                         style={styles.input}
                         type="password"
                         value={newApiKey}
@@ -159,8 +200,9 @@ export const SettingsPanel: React.FC = () => {
                     </div>
 
                     <div style={styles.addFormField}>
-                      <label style={styles.fieldLabel}>Model name</label>
+                      <label htmlFor="studio-provider-model" style={styles.fieldLabel}>Model name</label>
                       <input
+                        id="studio-provider-model"
                         style={styles.input}
                         value={newModelId}
                         onChange={(e) => setNewModelId(e.target.value)}
@@ -176,17 +218,19 @@ export const SettingsPanel: React.FC = () => {
                     </div>
 
                     <div style={styles.addFormField}>
-                      <label style={styles.fieldLabel}>
+                      <label htmlFor="studio-provider-endpoint" style={styles.fieldLabel}>
                         Endpoint URL <span style={{ fontWeight: 400, color: 'var(--studio-text-dim)' }}>(optional override)</span>
                       </label>
                       <input
+                        id="studio-provider-endpoint"
+                        type="url"
                         style={styles.input}
                         value={newBaseUrl}
                         onChange={(e) => setNewBaseUrl(e.target.value)}
                         placeholder={defaultEndpoints[newProviderType]}
                       />
                       <span style={styles.fieldHint}>
-                        Leave blank to use the default. Set a custom URL for proxies, OpenRouter, Ollama, LM Studio, etc.
+                        Use the full completion endpoint, including /v1/chat/completions for compatible servers. Leave blank for the preset above. The server must allow requests from this browser.
                       </span>
                     </div>
 
@@ -195,15 +239,17 @@ export const SettingsPanel: React.FC = () => {
                       Keys are stored in your browser only. Never sent to SoftN servers.
                     </p>
 
+                    {providerError && <p role="alert" style={{ ...styles.fieldHint, color: 'var(--studio-error)', marginBottom: 10 }}>{providerError}</p>}
+
                     <div style={styles.addFormActions}>
-                      <button onClick={() => setShowAddProvider(false)} style={styles.cancelBtn}>
+                      <button type="button" onClick={() => { setShowAddProvider(false); setNewApiKey(''); setProviderError(''); }} style={styles.cancelBtn}>
                         Cancel
                       </button>
-                      <button onClick={handleAddProvider} style={styles.saveBtn}>
+                      <button type="submit" style={styles.saveBtn}>
                         Save Provider
                       </button>
                     </div>
-                  </div>
+                  </form>
                 ) : (
                   <button
                     onClick={() => setShowAddProvider(true)}
@@ -218,29 +264,15 @@ export const SettingsPanel: React.FC = () => {
             {/* Model profile */}
             {providers.length > 0 && (
               <div style={styles.fieldGroup}>
-                <label style={styles.label}>Model Assignments</label>
-                <p style={styles.emptyHint}>Assign models to each AI agent role</p>
-                <div style={styles.modelGrid}>
-                  {([
-                    { role: 'architect' as const, label: 'Architect', hint: 'Plans app structure' },
-                    { role: 'builder' as const, label: 'Builder', hint: 'Generates code' },
-                    { role: 'repair' as const, label: 'Repair', hint: 'Fixes errors' },
-                    { role: 'vision' as const, label: 'Vision', hint: 'Reads screenshots' },
-                  ]).map((m) => (
-                    <div key={m.role} style={styles.modelRow}>
-                      <div style={styles.modelInfo}>
-                        <span style={styles.modelRoleName}>{m.label}</span>
-                        <span style={styles.modelRoleHint}>{m.hint}</span>
-                      </div>
-                      <input
-                        style={styles.modelInput}
-                        value={modelProfile[m.role]}
-                        onChange={(e) => updateModelProfile({ [m.role]: e.target.value })}
-                        placeholder="claude-sonnet-4-6"
-                      />
-                    </div>
-                  ))}
-                </div>
+                <label htmlFor="studio-generation-model" style={styles.label}>Generation model override</label>
+                <input
+                  id="studio-generation-model"
+                  style={styles.input}
+                  value={modelProfile.builder}
+                  onChange={(e) => updateModelProfile({ builder: e.target.value.trim() })}
+                  placeholder={providers.find((p) => p.id === activeProviderId)?.modelId || 'Use the provider’s default model'}
+                />
+                <p style={styles.fieldHint}>Optional. All generation requests use this model on the selected provider. Leave blank to use the model saved with that provider. Update or clear this override when switching providers.</p>
               </div>
             )}
 
@@ -381,6 +413,22 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: 'column',
     flex: 1,
     minHeight: 0,
+    minWidth: 0,
+  },
+  setupIntro: {
+    display: 'flex',
+    gap: 10,
+    padding: '16px 12px',
+    marginBottom: 20,
+    border: '1px solid var(--studio-border)',
+    borderRadius: 10,
+    background: 'var(--studio-accent-soft)',
+  },
+  setupTitle: {
+    margin: '0 0 6px',
+    fontSize: 15,
+    fontWeight: 600,
+    color: 'var(--studio-text)',
   },
   tabs: {
     display: 'flex',
@@ -471,6 +519,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   providerInfo: {
     flex: 1,
+    minWidth: 0,
     display: 'flex',
     alignItems: 'center',
     gap: 8,
@@ -488,6 +537,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   providerName: {
+    overflowWrap: 'anywhere',
     fontSize: 12,
     fontWeight: 600,
     color: 'var(--studio-text)',
@@ -499,13 +549,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'var(--studio-mono)',
   },
   providerKey: {
+    overflowWrap: 'anywhere',
     fontSize: 10,
     color: 'var(--studio-text-dim)',
     fontFamily: 'var(--studio-mono)',
   },
   removeBtn: {
-    width: 28,
-    height: 28,
+    width: 40,
+    height: 40,
+    flexShrink: 0,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -544,6 +596,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%',
+    minHeight: 40,
     padding: '8px 10px',
     background: 'var(--studio-surface)',
     border: '1px solid var(--studio-border)',
@@ -555,6 +608,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   select: {
     width: '100%',
+    minHeight: 40,
     padding: '8px 10px',
     background: 'var(--studio-bg-elevated)',
     border: '1px solid var(--studio-border)',
@@ -586,6 +640,7 @@ const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'flex-end',
   },
   cancelBtn: {
+    minHeight: 40,
     padding: '6px 12px',
     border: '1px solid var(--studio-border)',
     borderRadius: 6,
@@ -596,6 +651,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'inherit',
   },
   saveBtn: {
+    minHeight: 40,
     padding: '6px 12px',
     border: 'none',
     borderRadius: 6,

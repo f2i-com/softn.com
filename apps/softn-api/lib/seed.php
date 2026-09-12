@@ -51,7 +51,7 @@ final class Seed
         // fetched bundles or a built dist/ instead — a built site tested
         // inside the checkout must not pick up the developer's bundles.
         $demos = $from ?? dirname(__DIR__, 2) . '/demos';
-        if ($from === null && !is_dir($demos) && basename(dirname(__DIR__, 2)) === 'softn-api') {
+        if ($from === null && !is_dir($demos) && basename(dirname(__DIR__)) === 'softn-api') {
             $candidate = dirname(__DIR__, 3) . '/apps/softn-web/public/demos';
             if (is_dir($candidate)) $demos = $candidate;
             else {

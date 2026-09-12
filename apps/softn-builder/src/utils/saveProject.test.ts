@@ -17,7 +17,7 @@
  * distinct outcomes.
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readBundleEntries } from '@softn/core';
 import { saveProject, resetPersistedRevisions, type SaveOutcome } from './saveProject';
 import { SESSION_STORAGE_KEY, commitProjectSnapshot, prepareProjectSnapshot } from './openProject';
@@ -75,11 +75,39 @@ beforeEach(() => {
   useProjectStore.getState().reset();
   useSchemaStore.getState().reset();
   useFilesStore.getState().reset();
+  const file = useFilesStore.getState().uiFiles.get('main_ui')!;
+  useCanvasStore.getState().loadState(file.elements, file.rootId);
   useProjectStore.getState().setName('Project A');
   useProjectStore.getState().markClean();
 });
 
 describe('a save with a paused file write', () => {
+  it.each(['source', 'secondary logic', 'canvas'] as const)('keeps %s edits made during a pending save unsaved', async (kind) => {
+    const { deferred, writeFile } = pausedWrite();
+    const file = kind === 'secondary logic' ? useFilesStore.getState().createFile('logic', 'extra.logic', 'logic') : 'main_ui';
+    useProjectStore.getState().markClean();
+    const saving = saveProject({ view: 'design', existingHandle: null, writeFile, storage: memoryStorage() });
+    await settle();
+    if (kind === 'source') useFilesStore.getState().updateUIFileSource(file, '<App><Text>Later</Text></App>');
+    else if (kind === 'secondary logic') useFilesStore.getState().updateLogicFile(file, 'let later = true;');
+    else useCanvasStore.getState().addElement('Text', useCanvasStore.getState().rootId);
+    deferred.resolve(null);
+    const outcome = await saving;
+    expect(outcome).toMatchObject({ kind: 'saved', stale: true, projectChanged: false });
+    expect(useProjectStore.getState().isDirty).toBe(true);
+  });
+  it.each(['capture', 'build'] as const)('reports a synchronous %s failure and preserves unsaved work', async (step) => {
+    useProjectStore.getState().setDescription('must not disappear');
+    const writeFile = vi.fn(async () => null);
+    const error = new Error(`Invalid ${step} state`);
+    const outcome = await saveProject({ view: 'code', existingHandle: null, writeFile,
+      [step]: () => { throw error; },
+    });
+    expect(outcome).toEqual({ kind: 'failed', error });
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(useProjectStore.getState().isDirty).toBe(true);
+    expect(useProjectStore.getState().description).toBe('must not disappear');
+  });
   it('leaves edits made during the write dirty, and says so', async () => {
     const project = useProjectStore.getState();
     project.setDescription('first');

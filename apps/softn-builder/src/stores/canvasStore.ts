@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { useProjectStore } from './projectStore';
 import type { CanvasBlock, CanvasElement, CanvasState, UIImport } from '../types/builder';
 import { debug } from '../utils/debug';
 import { defaultBlock, isBlockHead, isContinuationType } from '../utils/blocks';
@@ -92,7 +93,13 @@ const initialElements = new Map<string, CanvasElement>([
   ],
 ]);
 
-export const useCanvasStore = create<CanvasStore>((set, get) => ({
+export const useCanvasStore = create<CanvasStore>((set, get) => {
+  const edit: typeof set = (...args) => {
+    const before = get();
+    set(...(args as Parameters<typeof set>));
+    if (get() !== before) useProjectStore.getState().markDirty();
+  };
+  return ({
   elements: new Map(initialElements),
   rootId: initialRootId,
   selectedIds: [],
@@ -122,7 +129,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const id = generateId();
     const parent = parentId || get().rootId;
 
-    set((state) => {
+    edit((state) => {
       const newElements = new Map(state.elements);
 
       // Create new element
@@ -162,7 +169,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   updateElement: (id, updates) => {
-    set((state) => {
+    edit((state) => {
       const element = state.elements.get(id);
       if (!element) return state;
 
@@ -173,7 +180,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   updateElementProps: (id, props) => {
-    set((state) => {
+    edit((state) => {
       const element = state.elements.get(id);
       if (!element) return state;
 
@@ -190,7 +197,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const state = get();
     if (id === state.rootId) return; // Cannot delete root
 
-    set((state) => {
+    edit((state) => {
       const element = state.elements.get(id);
       if (!element) return state;
 
@@ -225,7 +232,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
   },
 
   moveElement: (id, newParentId, index) => {
-    set((state) => {
+    edit((state) => {
       const element = state.elements.get(id);
       if (!element) return state;
       if (id === state.rootId) return state; // Cannot move root
@@ -280,7 +287,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
 
     const newId = generateId();
 
-    set((state) => {
+    edit((state) => {
       const newElements = new Map(state.elements);
 
       // Deep clone the element and its children
@@ -347,7 +354,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const block: CanvasBlock =
       kind === 'if' ? { kind: 'if', condition: 'true' } : { kind: 'each', iterable: 'items', itemName: 'item' };
 
-    set((current) => {
+    edit((current) => {
       const newElements = new Map(current.elements);
       newElements.set(blockId, {
         id: blockId,
@@ -385,7 +392,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const branchId = generateId();
     const block: CanvasBlock = kind === 'elseif' ? { kind: 'elseif', condition: 'true' } : { kind };
 
-    set((current) => {
+    edit((current) => {
       const newElements = new Map(current.elements);
       newElements.set(branchId, {
         id: branchId,
@@ -418,7 +425,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const parent = state.elements.get(head.parentId);
     if (!parent) return;
 
-    set((current) => {
+    edit((current) => {
       const newElements = new Map(current.elements);
       const kept: string[] = [];
       const deleteRecursive = (elementId: string) => {
@@ -506,7 +513,7 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     const targetParentId = parentId || state.rootId;
     const newIds: string[] = [];
 
-    set((currentState) => {
+    edit((currentState) => {
       const newElements = new Map(currentState.elements);
 
       // Deep clone function to recursively clone element and children
@@ -631,4 +638,5 @@ export const useCanvasStore = create<CanvasStore>((set, get) => ({
     if (!element || !element.parentId) return undefined;
     return get().elements.get(element.parentId);
   },
-}));
+});
+});

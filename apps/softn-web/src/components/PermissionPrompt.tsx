@@ -455,7 +455,7 @@ export function PermissionPrompt({ appName, appIcon, permissions, onAllow, onClo
             style={{
               padding: '0.5rem 1.25rem',
               background: '#f2f0ec',
-              color: '#ffffff',
+              color: '#101317',
               border: '1px solid #333b47',
               borderRadius: '8px',
               cursor: 'pointer',

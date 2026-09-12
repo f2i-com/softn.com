@@ -2,7 +2,7 @@
  * SourceView - Editable .ui source view with live preview sync
  */
 
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useCallback } from 'react';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
@@ -79,33 +79,23 @@ const styles: Record<string, React.CSSProperties> = {
 export function SourceView() {
   const { elements, rootId } = useCanvasStore();
   const { logicSource, collections } = useProjectStore();
-  const { activeFileId, uiFiles, updateUIFileSource } = useFilesStore();
-  const [localSource, setLocalSource] = useState<string>('');
-  const [isDirty, setIsDirty] = useState(false);
+  const { activeFileId, uiFiles, nodes, updateUIFileSource } = useFilesStore();
+  const isDirty = activeFileId ? nodes.get(activeFileId)?.isDirty : false;
 
   // Get the initial source - prefer original source from loaded bundle
   const initialSource = useMemo(() => {
     if (activeFileId) {
       const activeFile = uiFiles.get(activeFileId);
-      if (activeFile?.originalSource) {
+      if (activeFile?.originalSource !== undefined) {
         return activeFile.originalSource;
       }
     }
     return generateSource(elements, rootId, logicSource, collections);
   }, [elements, rootId, logicSource, collections, activeFileId, uiFiles]);
 
-  // Sync local source when file changes or initial source updates
-  useEffect(() => {
-    setLocalSource(initialSource);
-    setIsDirty(false);
-  }, [initialSource]);
-
   // Handle source changes from the editor
   const handleSourceChange = useCallback(
     (newSource: string) => {
-      setLocalSource(newSource);
-      setIsDirty(true);
-
       // Update the store immediately for live preview
       if (activeFileId) {
         updateUIFileSource(activeFileId, newSource);
@@ -157,7 +147,7 @@ export function SourceView() {
       )}
       <div style={styles.editorWrapper}>
         <CodeEditor
-          value={localSource}
+          value={initialSource}
           onChange={handleSourceChange}
           language="xml"
           readOnly={false}

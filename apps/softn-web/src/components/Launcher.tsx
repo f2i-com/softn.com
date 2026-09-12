@@ -1,6 +1,7 @@
 import React, { useCallback, useRef } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
 import { groupByApp, hasStoredData, isOfflineReady, type CachedApp } from '../lib/appCache';
+import { DirectoryShelf } from './DirectoryShelf';
 
 /*
  * The runtime's home: open a file, or come back to an app you had open. The
@@ -344,6 +345,30 @@ const launcherStyles = `
     animation: softn-launcher-fade-up 400ms var(--ease) 60ms both;
   }
   .softn-launcher-empty strong { color: var(--paper); font-weight: 500; }
+  .softn-explore { padding-top: 2rem; border-top: 1px solid var(--line-soft); }
+  .softn-explore .softn-launcher-section-head { flex-wrap: wrap; }
+  .softn-explore .softn-launcher-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); }
+  .softn-explore-description { color: var(--dim); font-size: 0.8125rem; margin-top: 0.35rem; }
+  .softn-explore-link { color: var(--paper); font-size: 0.8125rem; text-decoration: underline; text-underline-offset: 3px; }
+  .softn-explore-message { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; padding: 1.25rem; border: 1px solid var(--line); border-radius: 12px; font-size: 0.875rem; background: var(--ink-2); }
+  .softn-explore-message > div { flex: 1; min-width: min(100%, 220px); }
+  .softn-explore-message p { color: var(--dim); margin: 0.35rem 0 0; line-height: 1.5; }
+  .softn-explore-card { min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: 12px; overflow: hidden; background: var(--ink-2); }
+  .softn-explore-picture { display: grid; place-items: center; position: relative; height: 150px; overflow: hidden; background: var(--ink-3); border-bottom: 1px solid var(--line-soft); text-decoration: none; }
+  .softn-explore-picture span { font-family: var(--display); font-size: 3rem; color: var(--dimmer); }
+  .softn-explore-picture img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .softn-explore-card-body { display: flex; flex: 1; flex-direction: column; padding: 1rem; }
+  .softn-explore-card h3 { font-size: 0.9375rem; margin: 0; overflow-wrap: anywhere; }
+  .softn-explore-card h3 a { color: var(--paper); text-decoration: none; }
+  .softn-explore-card-body > p { color: var(--dim); font-size: 0.8125rem; line-height: 1.5; margin: 0.5rem 0 1rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .softn-explore-card-actions { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .softn-explore-primary, .softn-explore-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; min-height: 40px; padding: 0.5rem 0.875rem; border-radius: 8px; font: inherit; font-size: 0.8125rem; font-weight: 500; text-decoration: none; cursor: pointer; }
+  .softn-explore-primary { background: var(--paper); color: var(--ink); border: 1px solid var(--paper); }
+  .softn-explore-secondary { background: transparent; color: var(--paper); border: 1px solid var(--line-strong); }
+  .softn-explore-create { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 1rem; padding: 1rem 0; }
+  .softn-explore-create > div { flex: 1; min-width: min(100%, 240px); display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.875rem; }
+  .softn-explore-create span { color: var(--dim); font-size: 0.8125rem; }
+  .softn-explore a:focus-visible, .softn-explore button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
   @media (max-width: 640px) {
     .softn-launcher-grid { grid-template-columns: 1fr; }
     .softn-launcher-hint { display: none; }
@@ -369,8 +394,10 @@ interface LauncherProps {
   running?: RunningApp[];
   onResume?: (id: string) => void;
   onStop?: (id: string) => void;
-  onOpenFile: (data: Uint8Array, fileName: string) => void;
+  onOpenFile: (file: File) => void | Promise<void>;
   onOpenCached: (app: CachedApp) => void;
+  /** Open a directory bundle without leaving this runtime's running apps. */
+  onOpenUrl?: (url: string) => void;
   onRemove: (id: string) => void;
   /** Save this build's records as a file. */
   onExportData: (app: CachedApp) => void;
@@ -464,6 +491,7 @@ export function Launcher({
   onStop,
   onOpenFile,
   onOpenCached,
+  onOpenUrl,
   onRemove,
   onAdoptData,
   onExportData,
@@ -477,12 +505,10 @@ export function Launcher({
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const buffer = await file.arrayBuffer();
-        onOpenFile(new Uint8Array(buffer), file.name);
-      } catch (err) {
-        console.error('[SoftN] Failed to read file:', err);
+        await onOpenFile(file);
+      } finally {
+        if (fileInputRef.current) fileInputRef.current.value = '';
       }
-      if (fileInputRef.current) fileInputRef.current.value = '';
     },
     [onOpenFile]
   );
@@ -518,10 +544,10 @@ export function Launcher({
         <div className="softn-launcher-inner">
           <div className="softn-launcher-head">
             <div>
-              <h1 className="softn-launcher-title">Run an app</h1>
+              <h1 className="softn-launcher-title">Your app workspace</h1>
               <p className="softn-launcher-sub">
-                Open a <code>.softn</code> file from your machine, or pick up one you had open. Apps run here in a sandbox
-                and keep their data in this browser. Looking for something to run? <a href={directoryHref}>Browse the directory</a>.
+                Pick up a saved app, discover something from the directory, or open a <code>.softn</code> file.
+                Your apps keep their data in this browser.
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem', flexWrap: 'wrap' }}>
@@ -736,12 +762,11 @@ export function Launcher({
             </section>
           ) : (
             <div className="softn-launcher-empty">
-              <strong>Nothing open yet.</strong> Open a <strong>.softn</strong> file, drop one anywhere on this page, or pick
-              one from <a href={directoryHref}>the directory</a>. An app is one file — its interface, its logic and its
-              assets — and it runs here without installing anything.
+              <strong>Your library starts here.</strong> Apps you open appear here so you can return to them.
+              Open a <strong>.softn</strong> file or choose an app from <a href={directoryHref}>the directory</a>.
             </div>
           )}
-
+          {onOpenUrl && <DirectoryShelf onOpen={onOpenUrl} />}
         </div>
       </div>
     </>

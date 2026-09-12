@@ -146,7 +146,8 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
   // project opened from a bundle always takes the multi-file path, whatever
   // its count, because that is the path that keeps original source and the
   // declared entry.
-  const hasMultipleFiles = filesState.uiFiles.size + filesState.logicFiles.size > 1 || retained.manifest !== null;
+  const hasMultipleFiles = filesState.uiFiles.size + filesState.logicFiles.size > 1 || retained.manifest !== null
+    || [...filesState.uiFiles.values()].some((file) => file.originalSource !== undefined);
 
   const common = {
     name: projectState.name,

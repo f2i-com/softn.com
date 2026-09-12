@@ -783,12 +783,14 @@ export async function runAgentTurn(): Promise<void> {
   const ws = useWorkspaceStore.getState();
 
   // Resolve provider
-  const provider = ai.providers.find((p) => p.id === ai.activeProviderId) ?? ai.providers[0];
+  const provider = ai.providers.find((p) => p.id === ai.activeProviderId);
   if (!provider) {
     ai.addMessage({
       id: crypto.randomUUID(),
       role: 'assistant',
-      content: 'No AI provider configured. Open Settings to add your API key.',
+      content: ai.providers.length > 0
+        ? 'Select an AI provider in Settings before generating.'
+        : 'No AI provider configured. Open Settings to connect a provider or local model.',
       timestamp: Date.now(),
     });
     return;
@@ -833,14 +835,33 @@ export async function runAgentTurn(): Promise<void> {
   const turn: ActiveAgentTurn = { controller: new AbortController(), id: crypto.randomUUID() };
   activeAgentTurn = turn;
 
+  const toolCalls: ToolCallCard[] = [];
+  const texts: string[] = [];
+  let usage = { input: 0, output: 0 };
+  let committedCount = 0;
+  let rawFallback = '';
+  const assistantId = crypto.randomUUID();
+  // Save each completed round before another request can fail or be stopped.
+  // The chat's undo card and project checkpoint must travel with the edits.
+  const recordProgress = () => {
+    const message: ChatMessage = {
+      id: assistantId,
+      role: 'assistant',
+      content: texts.join('\n\n') || (committedCount > 0 ? `Changed ${committedCount} file(s).` : rawFallback),
+      timestamp: Date.now(),
+      toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
+      tokens: { ...usage },
+      transactionId: committedCount > 0 ? turn.id : undefined,
+    };
+    if (useAIStore.getState().messages.some((entry) => entry.id === assistantId)) {
+      useAIStore.setState((state) => ({ messages: state.messages.map((entry) => entry.id === assistantId ? message : entry) }));
+    } else {
+      ai.addMessage(message);
+    }
+  };
+
   try {
-    const builderModel = ai.modelProfile.builder || undefined;
-    const toolCalls: ToolCallCard[] = [];
-    const texts: string[] = [];
-    let usage = { input: 0, output: 0 };
-    let committedCount = 0;
-    let firstWritten: string | null = null;
-    let rawFallback = '';
+    const builderModel = ai.modelProfile.builder.trim() || undefined;
 
     // Files the model has asked to see whole. Each round rebuilds the prompt
     // with those supplied complete, so the record of what it saw is exact.
@@ -906,8 +927,12 @@ export async function runAgentTurn(): Promise<void> {
 
       const applied = applyChangeset(parsed, base, turn.id, ai, ws);
       toolCalls.push(...applied.toolCalls);
+      if (committedCount === 0 && applied.committed.length > 0) ws.setActiveFilePath(applied.committed[0]);
       committedCount += applied.committed.length + applied.deleted.length;
-      if (firstWritten === null && applied.committed.length > 0) firstWritten = applied.committed[0];
+      if (committedCount > 0) {
+        ws.setDirty(true);
+        if (useWorkspaceStore.getState().mode === 'describe') ws.setMode('design');
+      }
 
       // The model asked to see files whole. Answer with them and go again,
       // a bounded number of times; a reply that only asks is not the end of
@@ -940,29 +965,10 @@ export async function runAgentTurn(): Promise<void> {
         content: `Here are the files you asked for, complete. They are also in the system prompt now, marked complete. Continue with the original request.\n\n${answers.join('\n\n')}`,
         timestamp: Date.now(),
       });
+      recordProgress();
     }
 
-    // Anything committed — a deletion as much as a write — is unsaved work.
-    if (committedCount > 0) {
-      if (firstWritten !== null) ws.setActiveFilePath(firstWritten);
-      ws.setDirty(true);
-      if (ws.mode === 'describe') {
-        ws.setMode('design');
-      }
-    }
-
-    // Add the AI response message
-    const text = texts.join('\n\n');
-    const assistantMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: text || (committedCount > 0 ? `Changed ${committedCount} file(s).` : rawFallback),
-      timestamp: Date.now(),
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      tokens: usage,
-      transactionId: committedCount > 0 ? turn.id : undefined,
-    };
-    ai.addMessage(assistantMsg);
+    recordProgress();
     ai.setAgentState('idle');
     ai.setCurrentStep('');
 
@@ -974,7 +980,7 @@ export async function runAgentTurn(): Promise<void> {
     // Don't let a cancelled turn overwrite the state of the turn that
     // replaced it. Fetch implementations differ in the exact AbortError text,
     // so the signal/ownership checks are authoritative.
-    if (turn.controller.signal.aborted || superseded || cancelled || /abort/i.test(errorMessage)) {
+    if (turn.controller.signal.aborted || superseded || cancelled) {
       if (!superseded) {
         ai.setAgentState('idle');
         ai.setCurrentStep('');
@@ -983,20 +989,20 @@ export async function runAgentTurn(): Promise<void> {
     }
 
     const failure = describeFailure(err);
+    if (committedCount > 0) {
+      failure.message = failure.message.replace('Nothing was changed. ', '') +
+        ` Earlier changes (${committedCount} file operation(s)) remain applied. Use Revert this turn to undo them.`;
+    }
     ai.setAgentState('error');
     ai.setCurrentStep('');
     ai.setLastFailure(failure);
-    ai.addMessage({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: failure.message,
-      timestamp: Date.now(),
-    });
+    texts.push(failure.message);
+    recordProgress();
     ws.addConsoleOutput(`[AI] ${failure.kind}: ${errorMessage}`);
 
     // Auto-recover to idle after error (only if still in error state)
     setTimeout(() => {
-      if (useAIStore.getState().agentState === 'error') {
+      if (useAIStore.getState().agentState === 'error' && useAIStore.getState().lastFailure === failure) {
         useAIStore.getState().setAgentState('idle');
       }
     }, 2000);

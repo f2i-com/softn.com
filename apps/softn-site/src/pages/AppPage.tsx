@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ApiError, getApp, getRating, listApps, rate, recordRun, savedKey, type AppCard as AppCardData, type AppDetail, type Category, type Rating } from '../lib/api';
 import { launchApp } from '../lib/launch';
 import { capabilitySummary, formatBytes, formatCount, formatDate, timeAgo } from '../lib/format';
@@ -96,11 +96,11 @@ function Related({ app, categories }: { app: AppDetail; categories: Category[] }
   useEffect(() => {
     const ac = new AbortController();
     listApps({ category: app.category, sort: 'trending', perPage: 9 }, ac.signal)
-      .then((r) => setSame(r.items.filter((a) => a.slug !== app.slug).slice(0, 4)))
-      .catch(() => setSame([]));
+      .then((r) => { if (!ac.signal.aborted) setSame(r.items.filter((a) => a.slug !== app.slug).slice(0, 4)); })
+      .catch(() => { if (!ac.signal.aborted) setSame([]); });
     listApps({ author: app.author, sort: 'newest', perPage: 9 }, ac.signal)
-      .then((r) => setByAuthor(r.items.filter((a) => a.slug !== app.slug).slice(0, 4)))
-      .catch(() => setByAuthor([]));
+      .then((r) => { if (!ac.signal.aborted) setByAuthor(r.items.filter((a) => a.slug !== app.slug).slice(0, 4)); })
+      .catch(() => { if (!ac.signal.aborted) setByAuthor([]); });
     return () => ac.abort();
   }, [app.slug, app.category, app.author]);
   const category = categories.find((c) => c.id === app.category);
@@ -133,12 +133,23 @@ function Related({ app, categories }: { app: AppDetail; categories: Category[] }
   );
 }
 
-export function AppPage({ slug, categories, route }: { slug: string; categories: Category[]; route: Route }): React.ReactElement {
+type AppPageProps = { slug: string; categories: Category[]; route: Route };
+
+export function AppPage(props: AppPageProps): React.ReactElement {
+  // Ratings, pending submissions and selected source versions belong to one
+  // listing. A route change must not reuse them for the next app.
+  return <AppPageContent key={props.slug} {...props} />;
+}
+
+function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactElement {
   const [app, setApp] = useState<AppDetail | null>(null);
   const [error, setError] = useState<{ status: number; message: string } | null>(null);
   const [rating, setRating] = useState<Rating | null>(null);
   const [rateBusy, setRateBusy] = useState(false);
   const [rateError, setRateError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const ratingRevision = useRef(0);
+  const ratingPending = useRef(false);
   // Where an app plays: in the runtime, one page over, under the same slim
   // bar the runtime draws over every app. A `?play=1` link from before the
   // page had its own popup goes straight there. The app page stays the place
@@ -160,6 +171,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
     setSourceVersion(undefined);
     getApp(slug, ac.signal)
       .then((a) => {
+        if (ac.signal.aborted) return;
         setApp(a);
         document.title = `${a.name} — SoftN`;
         // A link opened by its manifest name lands on the slug.
@@ -169,26 +181,30 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
         if (ac.signal.aborted) return;
         setError({ status: e instanceof ApiError ? e.status : 0, message: e instanceof Error ? e.message : String(e) });
       });
+    const readRevision = ratingRevision.current;
     getRating(slug, ac.signal)
-      .then(setRating)
+      .then((r) => { if (!ac.signal.aborted && ratingRevision.current === readRevision) setRating(r); })
       .catch(() => {
         /* ratings are optional */
       });
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
+  }, [slug, attempt]);
 
   const onRate = async (stars: number) => {
-    if (!app) return;
+    if (!app || ratingPending.current) return;
+    ratingPending.current = true;
     setRateBusy(true);
     setRateError(null);
     try {
       const r = await rate(app.slug, stars);
+      ratingRevision.current += 1;
       setRating(r);
-      setApp({ ...app, rating: { average: r.average, count: r.count } });
+      setApp((current) => current ? { ...current, rating: { average: r.average, count: r.count } } : current);
     } catch (e) {
       setRateError(e instanceof Error ? e.message : String(e));
     } finally {
+      ratingPending.current = false;
       setRateBusy(false);
     }
   };
@@ -210,6 +226,7 @@ export function AppPage({ slug, categories, route }: { slug: string; categories:
             <h1 className="page-title">{error.status === 404 ? 'No app is published under that name.' : 'Could not load this app.'}</h1>
             <p className="muted">{error.message}</p>
             <p>
+              {error.status !== 404 && <button type="button" className="cta cta-primary" onClick={() => setAttempt((n) => n + 1)}>Retry loading app</button>}{' '}
               <a className="cta cta-primary" href="/apps">
                 Browse the directory
               </a>

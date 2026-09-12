@@ -2,6 +2,7 @@ import React from 'react';
 import { Icon } from '../common/Icon';
 import { Mark } from '../common/Mark';
 import { HandoffReady } from '../common/HandoffReady';
+import { ProjectActionError } from '../common/ProjectActionError';
 import { SaveStatusIndicator } from '../common/SaveStatus';
 import { useProjectActions } from '../common/ProjectActions';
 
@@ -76,9 +77,10 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
           <span>Export bundle</span>
         </button>
       </div>
-      {ready && (
+      {(ready || actions.error) && (
         <div style={styles.readyDock}>
-          <HandoffReady ready={ready} onDone={actions.dismissReady} />
+          {actions.error ? <ProjectActionError message={actions.error} onDismiss={actions.dismissError} />
+            : ready && <HandoffReady ready={ready} onDone={actions.dismissReady} />}
         </div>
       )}
     </div>

@@ -24,6 +24,7 @@
  */
 
 import { useProjectStore } from '../stores/projectStore';
+import { useFilesStore } from '../stores/filesStore';
 import { saveBundleToFile } from './bundleExporter';
 import { buildProjectBundle, bundleFileName, flushCanvasToActiveFile } from './buildProjectBundle';
 import { captureSession, SESSION_STORAGE_KEY, type BuilderSession, type ViewMode } from './openProject';
@@ -65,10 +66,21 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
 
   // The flush may be an edit (it marks the file dirty when the canvas moved),
   // so it comes before the revision is read.
-  flushCanvasToActiveFile();
-  const { projectId, revision, name } = useProjectStore.getState();
-  const session = capture(deps.view);
-  const bundlePromise = build();
+  let projectId: string;
+  let revision: number;
+  let name: string;
+  let session: BuilderSession;
+  let bundlePromise: Promise<Uint8Array>;
+  try {
+    flushCanvasToActiveFile();
+    ({ projectId, revision, name } = useProjectStore.getState());
+    session = capture(deps.view);
+    bundlePromise = build();
+  } catch (error) {
+    // Invalid or unserializable project state is a reported save failure,
+    // just like a failed file write; it must not escape the UI handler.
+    return { kind: 'failed', error };
+  }
 
   let bytes: Uint8Array;
   let handle: FileSystemFileHandle | null;
@@ -83,6 +95,12 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   }
 
   const cleaned = useProjectStore.getState().markCleanIf(projectId, revision);
+  if (cleaned) {
+    const files = useFilesStore.getState();
+    for (const [id, node] of files.nodes) {
+      if (node.type === 'file' && node.isDirty) files.markFileDirty(id, false);
+    }
+  }
   const projectChanged = useProjectStore.getState().projectId !== projectId;
 
   // The recovery record: of the revision on disk, for that project only, and

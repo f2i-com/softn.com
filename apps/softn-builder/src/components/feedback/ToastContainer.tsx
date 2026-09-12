@@ -99,6 +99,8 @@ export function ToastContainer() {
           <div
             key={notif.id}
             style={{ ...toastStyle, ...typeStyles[notif.type] }}
+            role={notif.type === 'error' ? 'alert' : 'status'}
+            aria-atomic="true"
           >
             <span>{typeIcons[notif.type]}</span>
             <span style={{ flex: 1 }}>{notif.message}</span>
@@ -117,6 +119,7 @@ export function ToastContainer() {
               style={closeButtonStyle}
               onClick={() => removeNotification(notif.id)}
               title="Dismiss"
+              aria-label={`Dismiss ${notif.type} notification`}
             >
               {'\u00D7'}
             </button>

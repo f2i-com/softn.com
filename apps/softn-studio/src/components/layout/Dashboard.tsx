@@ -18,7 +18,7 @@ export type DashboardOutcome = { ok: true } | { ok: false; message: string };
 
 interface DashboardProps {
   onNewProject: (templateId?: string) => void;
-  onImportProject?: (file: File) => void;
+  onImportProject?: (file: File) => Promise<DashboardOutcome>;
   /** Open a recent project by id. The in-memory project opens without a read. */
   onOpenRecent?: (id: string) => Promise<DashboardOutcome>;
   /** Take an entry off the list. Nothing else is touched. */
@@ -127,6 +127,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importRequest = useRef(0);
+  const [importing, setImporting] = useState(false);
 
   const theme = useMemo(() => getTheme(themePreview as ThemeMode), [themePreview]);
 
@@ -137,9 +139,27 @@ export const Dashboard: React.FC<DashboardProps> = ({
     return () => window.removeEventListener('resize', check);
   }, []);
 
-  const handleFile = useCallback((file: File) => {
-    if (!file.name.endsWith('.softn') && !file.name.endsWith('.zip') && !file.name.endsWith('.json')) return;
-    onImportProject?.(file);
+  useEffect(() => () => { importRequest.current++; }, []);
+
+  const handleFile = useCallback(async (file: File) => {
+    if (!/\.(softn|zip|json)$/i.test(file.name)) {
+      setNotice({ kind: 'error', text: 'Choose a .softn bundle, .zip archive or .json project file.' });
+      return;
+    }
+    if (!onImportProject) return;
+    const request = ++importRequest.current;
+    setImporting(true);
+    setNotice({ kind: 'info', text: `Opening ${file.name}…` });
+    try {
+      const outcome = await onImportProject(file);
+      if (request !== importRequest.current) return;
+      setNotice(outcome.ok ? null : { kind: 'error', text: `Could not import ${file.name}: ${outcome.message}` });
+    } catch (err) {
+      if (request !== importRequest.current) return;
+      setNotice({ kind: 'error', text: `Could not import ${file.name}: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      if (request === importRequest.current) setImporting(false);
+    }
   }, [onImportProject]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -210,6 +230,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </p>
           </div>
 
+          <div aria-live="polite" role={notice?.kind === 'error' ? 'alert' : 'status'} style={{ minHeight: notice ? undefined : 0 }}>
+            {notice && (
+              <p style={{ ...s.notice, color: notice.kind === 'error' ? theme.error : theme.textSecondary, borderColor: notice.kind === 'error' ? theme.error : theme.border }}>
+                {notice.text}
+              </p>
+            )}
+          </div>
+
           {/* Action Cards */}
           <div style={{ ...s.actions, flexDirection: m ? 'column' : 'row', gap: m ? 10 : 14, marginBottom: m ? 28 : 40 }}>
             <button
@@ -241,6 +269,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
             <button
               onClick={() => fileInputRef.current?.click()}
+              aria-busy={importing || undefined}
               onMouseEnter={() => setHoveredCard('import')}
               onMouseLeave={() => setHoveredCard(null)}
               onDrop={handleDrop}
@@ -260,8 +289,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <Icon name="upload" size={20} color={theme.accent} />
               </div>
               <div style={s.actionText}>
-                <span style={{ ...s.actionTitle, color: theme.text }}>Import bundle</span>
-                <span style={{ ...s.actionDesc, color: theme.textSecondary }}>{m ? 'Open a .softn file' : 'Open a .softn, .zip or .json file'}</span>
+                <span style={{ ...s.actionTitle, color: theme.text }}>{importing ? 'Opening project…' : 'Import bundle'}</span>
+                <span style={{ ...s.actionDesc, color: theme.textSecondary }}>Open a .softn, .zip or .json file</span>
               </div>
               <Icon name="chevron-right" size={16} color={theme.textDim} />
             </button>
@@ -302,15 +331,6 @@ export const Dashboard: React.FC<DashboardProps> = ({
               </button>
             </div>
           )}
-
-          {/* Announcements for the async actions below: read out, not just painted. */}
-          <div aria-live="polite" role={notice?.kind === 'error' ? 'alert' : 'status'} style={{ minHeight: notice ? undefined : 0 }}>
-            {notice && (
-              <p style={{ ...s.notice, color: notice.kind === 'error' ? theme.error : theme.textSecondary, borderColor: notice.kind === 'error' ? theme.error : theme.border }}>
-                {notice.text}
-              </p>
-            )}
-          </div>
 
           {/* Recent Projects */}
           {recentProjects.length > 0 && (
@@ -571,6 +591,7 @@ const s: Record<string, React.CSSProperties> = {
     borderStyle: 'solid',
     fontSize: 13,
     lineHeight: 1.5,
+    overflowWrap: 'anywhere',
   },
 
   // Section

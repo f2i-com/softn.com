@@ -1062,7 +1062,6 @@ function NewAppPage({ route, categories, onCategories, categoriesError, onRetryC
               Reading {selection.items.length} bundles… {selection.items.length - pendingCount(selection)} of {selection.items.length} read.
             </p>
           )}
-          <PrepublishReport info={info} />
           <PrepublishReport info={info} extra={info && !info.problem && !thumb ? ['No screenshot yet: the card will show the icon, or an initial. A screenshot is what most visitors decide on.'] : []} />
 
           {info && !info.problem && (

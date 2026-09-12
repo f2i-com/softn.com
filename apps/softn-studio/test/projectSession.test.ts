@@ -17,6 +17,7 @@ import { installFakeIndexedDB, type FakeIndexedDB } from '../../../packages/@sof
 import {
   applyProjectRecord,
   beginNewProjectSession,
+  claimWorkspace,
   collectProjectRecord,
   currentRevision,
   deleteProject,
@@ -296,6 +297,29 @@ describe('autosave', () => {
 });
 
 describe('reopening projects by id', () => {
+  it('does not let a recent-project click overtake a new project while its checkpoint is pending', async () => {
+    const a = await makeProject('Alpha', '<Text>A</Text>');
+    await makeProject('Beta', '<Text>B</Text>');
+    let resume!: (proceed: boolean) => void;
+    const checkpoint = new Promise<boolean>((resolve) => { resume = resolve; });
+    const opening = openProjectById(a, () => checkpoint);
+    claimWorkspace();
+    const newer = beginNewProjectSession();
+    useWorkspaceStore.getState().setProjectName('Newer project');
+    resume(true);
+    expect(await opening).toEqual({ ok: false, message: 'Superseded by a later action.' });
+    expect(useWorkspaceStore.getState().projectId).toBe(newer);
+    expect(useWorkspaceStore.getState().projectName).toBe('Newer project');
+  });
+
+  it('keeps the in-memory project when its checkpoint is declined', async () => {
+    const a = await makeProject('Alpha', '<Text>A</Text>');
+    const b = await makeProject('Beta', '<Text>B</Text>');
+    expect(await openProjectById(a, async () => false)).toEqual({ ok: false, message: 'The current project was kept open.' });
+    expect(useWorkspaceStore.getState().projectId).toBe(b);
+    expect(useVFSStore.getState().files.get('ui/main.ui')?.content).toBe('<Text>B</Text>');
+  });
+
   async function makeProject(name: string, content: string): Promise<string> {
     const id = beginNewProjectSession();
     useWorkspaceStore.getState().setProjectName(name);

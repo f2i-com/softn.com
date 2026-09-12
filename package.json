@@ -45,6 +45,7 @@
     "e2e:install:matrix": "playwright install chromium firefox webkit",
     "pretest": "node scripts/fetch-demos.mjs",
     "test": "node --test scripts/fetch-demos.test.mjs scripts/package-site.test.mjs scripts/core-worker-assets.test.mjs && npm run test --workspaces --if-present",
+    "test:dev-cache": "node --test scripts/dev-service-worker.test.mjs",
     "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",
     "lint:errors": "eslint . --ext .ts,.tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",

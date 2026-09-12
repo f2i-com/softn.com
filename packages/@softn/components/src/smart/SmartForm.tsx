@@ -8,7 +8,7 @@
  * <SmartForm fields="name, email:email, role:select" submit={handleSave} />
  */
 
-import React, { useState, useCallback, useMemo, useId } from 'react';
+import React, { useState, useCallback, useMemo, useId, useRef, useLayoutEffect } from 'react';
 import { useAppXDB } from '@softn/core';
 
 export interface FieldConfig {
@@ -122,8 +122,9 @@ function parseFields(fieldsStr: string): FieldConfig[] {
 
 // Built-in validators
 const validators: Record<string, (value: unknown, config: FieldConfig) => string | null> = {
-  required: (value) => {
+  required: (value, config) => {
     if (
+      (config.type === 'checkbox' && value !== true) ||
       value === null ||
       value === undefined ||
       value === '' ||
@@ -265,6 +266,20 @@ export function SmartForm({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const submitInFlight = useRef(false);
+  const submitScope = useMemo(
+    () => ({ xdb, collection, recordId, mode }),
+    [xdb, collection, recordId, mode]
+  );
+  const activeSubmitScope = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    activeSubmitScope.current = submitScope;
+    submitInFlight.current = false;
+    setIsSubmitting(false);
+    setSubmitError(null);
+    return () => { activeSubmitScope.current = null; };
+  }, [submitScope]);
 
   // Validate single field
   const validateField = useCallback(
@@ -361,26 +376,42 @@ export function SmartForm({
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
+      if (disabled || loading || submitInFlight.current || activeSubmitScope.current !== submitScope) return;
       if (!validateAll()) return;
 
+      // Guard synchronously: two submit events can arrive before React commits
+      // the disabled button state. Each save belongs to this record/app scope.
+      submitInFlight.current = true;
+      const isCurrentSubmission = () => activeSubmitScope.current === submitScope;
       setIsSubmitting(true);
+      setSubmitError(null);
       try {
         // If collection is specified, use XDB for persistence
         if (collection) {
           let savedRecord;
           if (mode === 'edit' && recordId) {
-            // Update existing record
-            savedRecord = xdb.update(recordId, formData);
+            // Imported IDs can repeat across collections. Verify the requested
+            // collection before using the desktop's global-ID write endpoint.
+            if (!xdb.get(collection, recordId)) {
+              throw new Error(`Record not found in ${collection}. Reload the form before saving.`);
+            }
+            savedRecord = xdb.isP2PAvailable()
+              ? await xdb.updateAsync(recordId, formData)
+              : xdb.updateInCollection(collection, recordId, formData);
+            if (!savedRecord) throw new Error('The record could not be saved. Please try again.');
           } else {
-            // Create new record
-            savedRecord = xdb.create(collection, formData);
+            // Desktop writes must be acknowledged before reporting success.
+            savedRecord = xdb.isP2PAvailable()
+              ? await xdb.createAsync(collection, formData)
+              : xdb.create(collection, formData);
           }
 
+          if (!isCurrentSubmission()) return;
           // Call onSaved callback if provided
           onSaved?.(savedRecord);
 
           // Also call onSubmit if provided (for additional handling)
-          if (onSubmit) {
+          if (onSubmit && isCurrentSubmission()) {
             await onSubmit(formData);
           }
         } else if (onSubmit) {
@@ -389,11 +420,17 @@ export function SmartForm({
         }
       } catch (err) {
         console.error('[SmartForm] Submit error:', err);
+        if (isCurrentSubmission()) {
+          setSubmitError(err instanceof Error ? err.message : 'The form could not be saved. Please try again.');
+        }
       } finally {
-        setIsSubmitting(false);
+        if (isCurrentSubmission()) {
+          submitInFlight.current = false;
+          setIsSubmitting(false);
+        }
       }
     },
-    [formData, onSubmit, validateAll, collection, mode, recordId, onSaved, xdb]
+    [formData, onSubmit, validateAll, collection, mode, recordId, onSaved, xdb, disabled, loading, submitScope]
   );
 
   // Styles
@@ -499,7 +536,7 @@ export function SmartForm({
   const renderField = (field: FieldConfig) => {
     const value = formData[field.name];
     const hasError = touched[field.name] && errors[field.name];
-    const isDisabled = disabled || field.disabled || isSubmitting;
+    const isDisabled = disabled || loading || field.disabled || isSubmitting;
     const currentInputStyle = hasError ? inputErrorStyle : inputStyle;
     const accessibility = {
       id: `${formId}-${field.name}`,
@@ -643,6 +680,9 @@ export function SmartForm({
           </div>
         ))}
 
+        {submitError && (
+          <div role="alert" style={{ ...errorStyle, gridColumn: '1 / -1' }}>{submitError}</div>
+        )}
         <div style={buttonGroupStyle}>
           {showCancel && onCancel && (
             <button type="button" onClick={onCancel} style={secondaryButtonStyle}>

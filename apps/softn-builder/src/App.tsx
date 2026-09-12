@@ -31,8 +31,6 @@ import {
   prepareProjectSnapshot,
   prepareSessionSnapshot,
   quarantineSession,
-  startupAction,
-  SESSION_STORAGE_KEY,
   type ProjectSnapshot,
   type ViewMode,
 } from './utils/openProject';
@@ -42,7 +40,11 @@ import { ToastContainer } from './components/feedback/ToastContainer';
 import { PwaUpdater } from './components/feedback/PwaUpdater';
 import { toast } from './stores/notificationStore';
 import { debug } from './utils/debug';
-import { readLocalStorage } from './utils/safeStorage';
+import { useProjectStartup } from './hooks/useProjectStartup';
+import { useUnsavedChanges } from './hooks/useUnsavedChanges';
+import { useExclusiveAction } from './hooks/useExclusiveAction';
+import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
+import { flushCanvasToActiveFile } from './utils/buildProjectBundle';
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -315,7 +317,11 @@ function useNarrowScreen(minWidth = 900): boolean {
 }
 
 function App() {
+  useUnsavedChanges();
   const isNarrow = useNarrowScreen();
+  const [narrowPreview, setNarrowPreview] = useState(false);
+  const projectName = useProjectStore((state) => state.name);
+  const projectDirty = useProjectStore((state) => state.isDirty);
   const [view, setView] = useState<ViewMode>('design');
   const [dockFiles, setDockFiles] = useState(true);
   const [dockComponents, setDockComponents] = useState(true);
@@ -437,7 +443,9 @@ function App() {
 
     applyStarterTemplate(config.template);
 
-    useProjectStore.getState().markClean();
+    // The new project has not been saved anywhere yet, including its name,
+    // chosen template and theme. Keep navigation/New/Open guards active.
+    useProjectStore.getState().markDirty();
     setShowNewProjectDialog(false);
     toast.success(`Created new app: ${config.name}`);
   }, [
@@ -513,8 +521,7 @@ function App() {
    */
   const applySnapshotRef = useRef(applySnapshot);
   applySnapshotRef.current = applySnapshot;
-  useEffect(() => {
-    const action = startupAction(window.location, window.history, readLocalStorage(SESSION_STORAGE_KEY));
+  useProjectStartup((action) => {
     if (action.kind === 'nothing') return;
     if (action.kind === 'refused-link') {
       toast.error(action.message);
@@ -560,9 +567,9 @@ function App() {
       // superseded: quiet — the workspace moved on; declined: the person said no.
     });
     return () => controller.abort();
-  }, []);
+  });
 
-  const handleSave = useCallback(async () => {
+  const saveCurrentProject = useCallback(async () => {
     const outcome = await saveProject({ view, existingHandle: fileHandleRef.current });
     if (outcome.kind === 'cancelled') return;
     if (outcome.kind === 'failed') {
@@ -589,11 +596,18 @@ function App() {
     debug('[App] Bundle saved to file');
   }, [view]);
 
+  const { run: handleSave, isPending: isSaving } = useExclusiveAction(saveCurrentProject);
+  const changeView = useCallback((next: ViewMode) => {
+    flushCanvasToActiveFile();
+    setView(next);
+  }, []);
+  const modalOpen = showExportDialog || showNewProjectDialog || showShortcuts;
+
   const handleExport = useCallback(() => {
     setShowExportDialog(true);
   }, []);
 
-  // The page behind the export dialog is inert while it is open: `inert`
+  // The page behind an open dialog is inert while it is open: `inert`
   // removes it from Tab order and the accessibility tree where supported,
   // aria-hidden covers the rest. The dialog itself is a sibling, outside.
   // A layout effect, not a passive one: the dialog's cleanup refocuses the
@@ -603,61 +617,16 @@ function App() {
   useLayoutEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
-    shell.toggleAttribute('inert', showExportDialog);
-    if (showExportDialog) shell.setAttribute('aria-hidden', 'true');
+    shell.toggleAttribute('inert', modalOpen);
+    if (modalOpen) shell.setAttribute('aria-hidden', 'true');
     else shell.removeAttribute('aria-hidden');
-  }, [showExportDialog]);
+  }, [modalOpen, isNarrow]);
 
-  // Global keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
-
-      // ? key to show shortcuts (only when not in input)
-      if (e.key === '?' && !isInput) {
-        e.preventDefault();
-        setShowShortcuts(true);
-        return;
-      }
-
-      // Escape to close dialogs. The export dialog handles its own Escape
-      // (it owns focus while open), so it is not closed twice from here.
-      if (e.key === 'Escape') {
-        setShowShortcuts(false);
-        return;
-      }
-
-      if (isInput) {
-        return;
-      }
-
-      // Ctrl/Cmd shortcuts
-      if (e.ctrlKey || e.metaKey) {
-        // View switching: Ctrl+1-5
-        if (e.key === '1') { e.preventDefault(); setView('design'); return; }
-        if (e.key === '2') { e.preventDefault(); setView('data'); return; }
-        if (e.key === '3') { e.preventDefault(); setView('preview'); return; }
-        if (e.key === '4') { e.preventDefault(); setView('code'); return; }
-
-        // File operations.
-        //
-        // Compared lower-cased, because `e.key` carries the shifted character:
-        // with Shift down it is "E", never "e", so `e.key === 'e' && e.shiftKey`
-        // was a condition that could not be satisfied and Ctrl+Shift+E — the
-        // only route to Export anywhere in the app — never fired once. The same
-        // trap catches the other three whenever Caps Lock is on.
-        const key = e.key.toLowerCase();
-        if (key === 'n' && !e.shiftKey) { e.preventDefault(); handleNew(); return; }
-        if (key === 'o' && !e.shiftKey) { e.preventDefault(); handleOpen(); return; }
-        if (key === 's' && !e.shiftKey) { e.preventDefault(); handleSave(); return; }
-        if (key === 'e' && e.shiftKey) { e.preventDefault(); handleExport(); return; }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleNew, handleOpen, handleSave, handleExport]);
+  useWorkspaceShortcuts({
+    blocked: modalOpen, narrow: isNarrow, save: handleSave, open: handleOpen,
+    create: handleNew, export: handleExport, shortcuts: () => setShowShortcuts(true),
+    changeView,
+  });
 
   // Sync active file with canvas when file selection changes
   const activeFileId = useFilesStore((state) => state.activeFileId);
@@ -884,20 +853,34 @@ function App() {
   // Below this the four panels stop fitting and the canvas is unusable with a
   // finger. Measured, not guessed: at 768px the toolbar alone overflows by 130px.
   if (isNarrow) {
-    return <NarrowScreenNotice studioUrl={STUDIO_URL} runtimeUrl={RUNTIME_URL} />;
+    return <>
+      {narrowPreview ? <div style={{ ...styles.app, height: '100dvh' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, gap: 12, borderBottom: '1px solid var(--line-soft)' }}>
+          <button style={{ ...styles.collapsedLogicBtn, minHeight: 44 }} onClick={() => setNarrowPreview(false)}>Back to workspace</button>
+          <span style={{ fontSize: 13, overflowWrap: 'anywhere' }}>{projectName}{projectDirty ? ' *' : ''}</span>
+          <button style={{ ...styles.collapsedLogicBtn, minHeight: 44 }} onClick={handleSave} disabled={isSaving} aria-busy={isSaving}>{isSaving ? 'Saving...' : 'Save app'}</button>
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}><LivePreview initialDevice="mobile" /></div>
+      </div> : <NarrowScreenNotice studioUrl={STUDIO_URL} runtimeUrl={RUNTIME_URL}
+        projectName={projectName} isDirty={projectDirty} isSaving={isSaving} onOpen={handleOpen} onSave={handleSave}
+        onPreview={() => { flushCanvasToActiveFile(); setNarrowPreview(true); }} />}
+      <ToastContainer />
+      <PwaUpdater />
+    </>;
   }
 
   return (
     <div style={styles.app}>
-      {/* Everything behind the export dialog goes inert while it is open, so
+      {/* Everything behind a dialog goes inert while it is open, so
           Tab and a screen reader cannot reach the page under it. */}
       <div ref={shellRef} style={styles.app}>
         {/* The same bar as the site, the runtime and Studio: the way between them. */}
         <ProductBar current="builder" />
         <Toolbar
           view={view}
-          onViewChange={setView}
+          onViewChange={changeView}
           onSave={handleSave}
+          isSaving={isSaving}
           onNew={handleNew}
           onOpen={handleOpen}
           onShortcuts={() => setShowShortcuts(true)}

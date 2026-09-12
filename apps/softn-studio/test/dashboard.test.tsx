@@ -49,6 +49,44 @@ describe('Dashboard recent projects', () => {
     });
   }
 
+  function selectFile(name: string) {
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['test'], name)] });
+    act(() => input.dispatchEvent(new Event('change', { bubbles: true })));
+  }
+
+  it('accepts uppercase bundle extensions and announces a failed import beside the actions', async () => {
+    const onImportProject = vi.fn(async () => ({ ok: false as const, message: 'The archive checksum is invalid.' }));
+    mount({ onImportProject });
+    selectFile('Notes.SOFTN');
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Opening Notes.SOFTN');
+    await flush();
+    expect(onImportProject).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Could not import Notes.SOFTN: The archive checksum is invalid.');
+    expect(container.querySelector('[aria-busy="true"]')).toBeNull();
+  });
+
+  it('explains unsupported files without invoking the importer', async () => {
+    const onImportProject = vi.fn(async () => ({ ok: true as const }));
+    mount({ onImportProject });
+    selectFile('photo.png');
+    await flush();
+    expect(onImportProject).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Choose a .softn bundle, .zip archive or .json project file');
+  });
+
+  it('reports unexpected import errors and allows the same file to be retried', async () => {
+    const onImportProject = vi.fn().mockRejectedValueOnce(new Error('File no longer available.')).mockResolvedValueOnce({ ok: true });
+    mount({ onImportProject });
+    selectFile('Notes.softn');
+    await flush();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('File no longer available');
+    selectFile('Notes.softn');
+    await flush();
+    expect(onImportProject).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it('opens a project from a focused row button', async () => {
     const onOpenRecent = vi.fn(async () => ({ ok: true as const }));
     mount({ onOpenRecent });
