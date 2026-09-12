@@ -1,120 +1,137 @@
+<div align="center">
+
 # SoftN
 
-**A dynamic, AI-friendly UI language and runtime for building applications -- desktop and web.**
+### Build an app. Keep the source. Run it your way.
 
-SoftN is a complete system for creating modular, reactive UI applications using a custom Domain-Specific Language (DSL). It includes a visual builder, desktop runtime, web runtime, 90 built-in components, a sandboxed scripting engine, and a local-first P2P database -- all designed for rapid application development and AI code generation. softn.com itself is an app directory: anyone can publish a `.softn` bundle, and every app plays in the browser from its own page.
+A UI language, visual builder and runtime for editable apps on the web and desktop.
 
----
+[Explore apps](https://softn.com) · [Get started](#get-started) · [FormLogic integration](#connect-to-formlogic) · [Documentation](#documentation)
 
-## Key Features
+</div>
 
-- **AI-Friendly DSL** -- Clean, consistent `.ui` syntax optimized for AI code generation
-- **90 Built-in Components** -- Comprehensive library across 12 categories including 3D, charts, and animation
-- **Smart Components** -- Auto-configured, data-driven components with search, sort, pagination, and CRUD
-- **zipp Engine** -- Sandboxed JavaScript engine written in Rust, running in WebAssembly (no `eval`, no `new Function`)
-- **XDB Database** -- Local-first database with CRDT-based P2P synchronization
-- **Web Runtime** -- Browser-based `.softn` bundle runner with PWA support
-- **Single-app Runtime** -- Configured, unbranded browser shell with a loading spinner and non-blocking permission bar. [Build and deployment guide](docs/SINGLE_APP_RUNTIME.md).
-- **PHP-served Single App** -- The same shell served by PHP from a private archive: the page is rendered on the server and the runtime fetches only the entries it needs, so no `.softn` file is ever on a URL. Ships alone or with the optional PHP/WASM backend. [Deployment guide](docs/SINGLE_APP_PHP_SERVE.md).
-- **Private native backends** -- Tenant-scoped SQLite transactions, crypto, IANA timezone handling and sanitized photo uploads for server `.logic` apps. [Server API v1 and operator guide](apps/softn-rust/PRIVATE_BACKEND.md).
-- **Desktop Runtime** -- Tauri-based loader for running `.softn` bundles natively
-- **Visual Builder** -- Full IDE for visually creating SoftN applications
-- **Bundle System** -- Portable `.softn` files (ZIP archives) for distribution
-- **App Directory** -- softn.com lists, plays, rates and remixes published bundles, and gives each app its own server-side storage
-- **Theme System** -- Built-in light/dark theme support with CSS custom properties
-- **3D Support** -- Three.js integration with Scene3D component (GLTF, OBJ, FBX, STL), plus instanced batches, pointer lock and camera-attached objects for first-person games
-- **Sound** -- `softn.audio` for scripts, `AudioStream` for generated waveforms, `Microphone` for capture
-- **Animation** -- Built-in animation components (draggable, sortable, typewriter, marquee)
+![SoftN Builder running the Glamour Studio sample app, with its dashboard, appointments and navigation](docs/readme-assets/builder-preview.jpg)
 
----
+_The actual SoftN Builder, running the checked-in Glamour Studio example with fictional records. [Screenshot details](docs/readme-assets/README.md)._
 
-## Repository Structure
+SoftN brings the interface, logic and data model together in a portable `.softn` app. Build visually, edit the source, or use your own AI provider in Studio. Open the result in the browser, run it on the desktop, publish it to the app directory, or connect it to FormLogic for a hosted backend.
 
-```
-softn.com/
-+-- packages/
-|   +-- @softn/
-|       +-- core/              # Core engine (parser, renderer, runtime)
-|       +-- components/        # Built-in component library (90 components)
-|       +-- vite-plugin/       # Vite plugin for .softn files
-+-- apps/
-|   +-- softn-site/            # softn.com landing page
-|   +-- softn-web/             # Web runtime (browser-based bundle runner)
-|   +-- softn-studio/          # AI studio (brief -> blueprint -> app)
-|   +-- softn-builder/         # Visual IDE / builder
-|   +-- softn-single/          # Single-app browser runtime for static hosting
-|   +-- softn-single-php-serve/ # Single-app runtime served by PHP from a private archive
-|   +-- softn-loader/          # Desktop runtime (Tauri)
-|   +-- softn-rust/            # Rust host for `.logic` server routes and XDB sync
-|   +-- softn-api/             # The app directory: PHP + folder JSON, deployed as /api/ beside the site
-+-- scripts/                   # dev-all, site assembly, release packaging, demo fetching and screenshots
-+-- .github/workflows/         # CI/CD
-```
+The project is actively developed. The examples and runtime are usable today; host support and permission boundaries are documented below so you can choose the right deployment.
 
-### Related Repositories
+## What you can build
 
-| Repository | Description |
-|-----------|-------------|
-| [zipp.org](https://github.com/f2i-com/zipp.org) | zipp -- the JavaScript engine `.logic` runs on (Rust to WebAssembly) |
-| [xdb.org](https://github.com/f2i-com/xdb.org) | XDB database (Tauri/Rust -- SQLite + libp2p + Y-CRDT) |
-| [softn-Examples](https://github.com/f2i-com/softn-Examples) | The example applications: every demo in the directory as source, released as `.softn` archives that this repository fetches |
-| [softn-TheNightWindow](https://github.com/f2i-com/softn-TheNightWindow) | The Night Window, a SoftN game in its own repository with the same source-and-release shape |
+| Capability                | What it gives you                                                                                                                                                              |
+| :------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Interfaces that adapt** | 90 built-in components, themes, forms, tables, charts, dashboards and layouts for different screen sizes.                                                                      |
+| **An editable workspace** | A visual builder, schema editor, source editor and live desktop, tablet and mobile previews. Files the canvas cannot safely rewrite remain editable in Code view.              |
+| **AI-assisted creation**  | Studio turns a brief into an app using your configured OpenAI, Anthropic or custom provider. You can also write `.ui` and `.logic` directly.                                   |
+| **Logic and data**        | JavaScript-compatible `.logic` runs in the zipp Rust/WASM engine. XDB provides app-scoped local records, with synchronization and native storage where the host supports them. |
+| **Portable apps**         | A `.softn` bundle carries the editable interface, client logic, data seeds and assets. Reopen it, customize it and export it again.                                            |
+| **More than CRUD**        | Audio, microphone input, animation and Three.js scenes are available through components and explicitly granted capabilities.                                                   |
 
----
+## From an idea to an app
 
-## Technology Stack
+1. **Start with a brief or a bundle.** Use Studio with your own AI provider, create a project in Builder, or open an existing `.softn` app.
+2. **Shape the experience.** Edit pages, navigation, `.logic` behavior and the data model. Keep complex source intact in Code view.
+3. **Try the whole flow.** Preview at desktop, tablet and mobile sizes, and use sample records to exercise forms and dashboards.
+4. **Export and choose a host.** Run the bundle locally, publish it in the directory, deploy a single app, or host it through FormLogic.
 
-| Layer | Technology |
-|-------|-----------|
-| UI Rendering | React 18/19 |
-| Language | TypeScript 5.3+ |
-| Desktop Framework | Tauri 2.0+ |
-| Scripting Engine | zipp (NaN-boxed register VM with inline caches, Rust compiled to WebAssembly) |
-| Database (Web) | IndexedDB + Yjs + y-webrtc |
-| Database (Desktop) | SQLite + Y-CRDT + libp2p |
-| Build Tooling | Vite 5+ / tsup |
-| State Management | React Context + Zustand (builder) |
-| 3D Graphics | Three.js |
-| App Directory | PHP 8.1 + folder discovery and JSON metadata |
+![SoftN Builder schema editor showing clients, staff, services, appointments and fictional seed records](docs/readme-assets/builder-data.jpg)
 
----
+_The same app in Data view: collections, field types and seed records are part of the workspace._
 
-## Quick Start
+<table>
+<tr>
+<td width="65%" valign="top">
+<h3>One app, different screen sizes</h3>
+<p>The preview runs the actual app. Switch viewport sizes to check navigation, forms and content before you share it.</p>
+<p>This is the same Glamour Studio example at a mobile viewport, including its compact header and bottom navigation. Its records are fictional, and the capture is taken directly from the running preview.</p>
+<p>Responsive behavior still belongs to the app's layout: test your own pages and interactions at the sizes you intend to support.</p>
+</td>
+<td width="35%" align="center">
+<img src="docs/readme-assets/app-mobile.jpg" width="280" alt="Glamour Studio sample app in the real mobile preview, with dashboard cards and bottom navigation" />
+</td>
+</tr>
+</table>
+
+## Get started
+
+Use **Node.js 20.19+ on the 20.x line, or 22.12+**, and npm. The browser apps use the checked-in WASM runtime; Rust is only needed for native hosts or rebuilding that engine.
 
 ```bash
-# Clone the repository
 git clone https://github.com/f2i-com/softn.com.git
 cd softn.com
-
-# Install exactly the versions package-lock.json pins
 npm ci
-
-# Build the packages the apps import, in dependency order
 npm run build:packages
-
-# Start the landing page, the runtime, the builder and the studio together
 npm run dev
 ```
 
-Everything is available from one development origin, matching production:
+Open the origin printed by the launcher, normally `http://localhost:1420`:
 
-| URL | App |
-|-----|-----|
-| `http://localhost:1420/` | Landing page — start here |
-| `http://localhost:1420/web/` | Web runtime |
-| `http://localhost:1420/builder/` | Visual builder |
-| `http://localhost:1420/studio/` | AI studio |
-| `http://localhost:1420/demos/` | Shared `.softn` bundles |
+| Path        | Start here to…                                           |
+| :---------- | :------------------------------------------------------- |
+| `/`         | Browse the app directory and examples.                   |
+| `/builder/` | Create or reopen an app, edit its schema and preview it. |
+| `/studio/`  | Configure your AI provider and turn a brief into an app. |
+| `/web/`     | Open and run a `.softn` bundle in the browser.           |
 
-The three app servers still run privately so each keeps fast Vite HMR, but the
-site proxies their path and WebSocket traffic through port 1420. If that port is
-taken, `npm run dev` prints the one replacement origin to use. To run a single
-app directly instead, use `npm run dev:site`, `dev:web`, `dev:builder` or
-`dev:studio`.
+The launcher proxies the browser apps through one origin and picks alternate ports when needed. It also starts the directory API when PHP is available on `PATH`; install PHP to exercise directory accounts, publishing and server storage locally. Demo fetching needs network access. To work on Builder alone, use `npm run dev:builder` after the package build.
 
-The directory API is PHP and is not part of `npm run dev`; [The app directory](#the-app-directory) below explains how to run it against a built site.
+For a first project, open Builder, choose **New**, add a layout and components, then use **Preview** and **Export**. Use **Open** to bring an exported app back into the editor. For examples as source, see [softn-Examples](https://github.com/f2i-com/softn-Examples) and the [Glamour Studio fixture](apps/softn-builder/src/utils/__fixtures__/GlamourStudio) pictured above.
 
----
+## Connect to FormLogic
+
+SoftN supplies the editable app and runtime. [FormLogic](https://formlogic.com) supplies the hosted workspace: forms, records, backend actions and app databases. There are two distinct integration paths:
+
+| Path                               | How it works                                                                                                                                                                                                                                                    |
+| :--------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Download a form or app starter** | The canonical [FormLogic adapter](packages/@softn/core/src/integrations/formlogic.ts) converts supported form schemas into an editable `.softn` bundle. It starts with local XDB data and `sync: false`. Responses, credentials and access grants are excluded. |
+| **Run a connected workspace**      | The [FormLogic host](apps/formlogic-host/src/main.tsx) renders app source inside an isolated iframe. Client `.logic` calls named backend actions through `softn.backend.call`; the parent owns authentication and applies the selected app's permissions.       |
+
+Use the editable [FormLogic workspace](examples/formlogic-workspace) and [Aokie workspace](examples/aokie-workspace) as examples of connected dashboards. Aokie's app brings calls, appointments, messages, follow-ups and transcripts into one interface; its communication services run through the host integration.
+
+For an app with custom backend `.logic` and SQLite, configure those server resources in the hosting platform and expose the actions the client needs. Keep private scripts, credentials and databases on the server. Downloading the client bundle does not copy a live backend or grant access to it.
+
+The [starter conversion guide](docs/FORMLOGIC_INTEGRATION.md) explains schema mapping and export boundaries. The host source and workspace examples above show the connected runtime; [private backend deployment](apps/softn-rust/PRIVATE_BACKEND.md) covers SoftN's own server host.
+
+## Choose where it runs
+
+| Destination                 | Guide                                                                                                                                   |
+| :-------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------- |
+| **Browser or desktop**      | Open a bundle in [SoftN Web](apps/softn-web) or the [Tauri loader](apps/softn-loader).                                                  |
+| **App directory**           | Publish a bundle with its own page, browser player and server storage. See the [directory guide](apps/softn-api/README.md).             |
+| **Your own website**        | Deploy the app in an unbranded [single-app runtime](docs/SINGLE_APP_RUNTIME.md).                                                        |
+| **Private PHP deployment**  | Serve a single app from a private archive using the [PHP deployment guide](docs/SINGLE_APP_PHP_SERVE.md).                               |
+| **Server logic and SQLite** | Use the [Rust private backend](apps/softn-rust/PRIVATE_BACKEND.md) or [PHP backend packaging](apps/softn-php/SINGLE_APP_DEPLOYMENT.md). |
+| **FormLogic**               | Use the connected host and named backend actions described above.                                                                       |
+
+A typical client bundle contains:
+
+```text
+my-app.softn
+├── manifest.json       # App identity, entry point and metadata
+├── permission.json     # Capabilities requested from the runtime
+├── ui/                 # Pages and reusable components
+├── logic/              # Client behavior
+├── xdb/                # Optional collection seeds
+└── assets/             # Images, styles and other app assets
+```
+
+Capabilities such as network, microphone and synchronization require support and permission from the host. An app's bundle is editable source; include only material you intend to distribute in client downloads.
+
+## Documentation
+
+| Topic                   | Read next                                                                                                                                                      |
+| :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language and components | Expand the reference below for `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                   |
+| Loading and composition | [Bundle loading](docs/BUNDLE_LOADING.md) · [Component loading](docs/COMPONENT_LOADING.md) · [Reopening local apps](docs/LOCAL_APP_REOPEN.md)                   |
+| Hosting                 | [Single-app runtime](docs/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/SINGLE_APP_PHP_SERVE.md) · [Private backend](apps/softn-rust/PRIVATE_BACKEND.md) |
+| FormLogic               | [Starter adapter](docs/FORMLOGIC_INTEGRATION.md) · [Connected host](apps/formlogic-host/src/main.tsx) · [Workspace examples](examples)                         |
+| Local speech            | [Local speech guide](docs/LOCAL_SPEECH.md)                                                                                                                     |
+| Development             | [Setup, tests and key source paths](#development)                                                                                                              |
+
+<details>
+<summary><strong>Language, components, runtime and deployment reference</strong></summary>
 
 ## Architecture Overview
 
@@ -217,20 +234,20 @@ which is enough for a hold-to-press control.
 
 ## Component Library (90 Components)
 
-| Category | Count | Components |
-|----------|-------|-----------|
-| Layout | 15 | `App`, `Box`, `Stack`, `Grid`, `Card`, `Container`, `Center`, `Layout`, `Header`, `Content`, `Section`, `Sidebar`, `Split`, `Spacer`, `Divider` |
-| Form | 12 | `Button`, `Input`, `TextArea`, `Select`, `Checkbox`, `Radio`, `Switch`, `Form`, `Slider`, `DatePicker`, `ColorPicker`, `FileChooser` |
-| Display | 9 | `Text`, `Heading`, `Badge`, `Tag`, `Avatar`, `Progress`, `Spinner`, `Image`, `Icon` |
-| Feedback | 6 | `Alert`, `Modal`, `Toast`, `Drawer`, `Popover`, `EmptyState` |
-| Data | 6 | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination` |
-| Navigation | 4 | `Tabs`, `Breadcrumb`, `Menu`, `NavItem` |
-| Utility | 12 | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `PixelCanvas`, `QRCode`, `QRReader`, `Camera`, `Microphone`, `AudioStream`, `DPad` |
-| Charts | 6 | `LineChart`, `BarChart`, `PieChart`, `AreaChart`, `RadarChart`, `GaugeChart` |
-| Animation | 9 | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList`, `PanView`, `Sprite`, `TileMap` |
-| Editors | 3 | `CodeEditor`, `MarkdownEditor`, `RichTextEditor` |
-| 3D | 1 | `Scene3D` (Three.js with GLTF, OBJ, FBX, STL) |
-| Smart | 7 | `SmartGrid`, `SmartView`, `SmartForm`, `SmartCards`, `SmartList`, `SmartTimeline`, `SmartStats` |
+| Category   | Count | Components                                                                                                                                      |
+| ---------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Layout     | 15    | `App`, `Box`, `Stack`, `Grid`, `Card`, `Container`, `Center`, `Layout`, `Header`, `Content`, `Section`, `Sidebar`, `Split`, `Spacer`, `Divider` |
+| Form       | 12    | `Button`, `Input`, `TextArea`, `Select`, `Checkbox`, `Radio`, `Switch`, `Form`, `Slider`, `DatePicker`, `ColorPicker`, `FileChooser`            |
+| Display    | 9     | `Text`, `Heading`, `Badge`, `Tag`, `Avatar`, `Progress`, `Spinner`, `Image`, `Icon`                                                             |
+| Feedback   | 6     | `Alert`, `Modal`, `Toast`, `Drawer`, `Popover`, `EmptyState`                                                                                    |
+| Data       | 6     | `List`, `ListItem`, `Table`, `DataGrid`, `TreeView`, `Pagination`                                                                               |
+| Navigation | 4     | `Tabs`, `Breadcrumb`, `Menu`, `NavItem`                                                                                                         |
+| Utility    | 12    | `Accordion`, `Collapse`, `Tooltip`, `Loop`, `PixelGrid`, `PixelCanvas`, `QRCode`, `QRReader`, `Camera`, `Microphone`, `AudioStream`, `DPad`     |
+| Charts     | 6     | `LineChart`, `BarChart`, `PieChart`, `AreaChart`, `RadarChart`, `GaugeChart`                                                                    |
+| Animation  | 9     | `AnimatedBox`, `AnimatedNumber`, `Marquee`, `Typewriter`, `Draggable`, `SortableList`, `PanView`, `Sprite`, `TileMap`                           |
+| Editors    | 3     | `CodeEditor`, `MarkdownEditor`, `RichTextEditor`                                                                                                |
+| 3D         | 1     | `Scene3D` (Three.js with GLTF, OBJ, FBX, STL)                                                                                                   |
+| Smart      | 7     | `SmartGrid`, `SmartView`, `SmartForm`, `SmartCards`, `SmartList`, `SmartTimeline`, `SmartStats`                                                 |
 
 ---
 
@@ -282,9 +299,7 @@ declares, so an app that ships without one can run but cannot reach the host:
 { "permissions": { "net": { "enabled": true, "allowed_hosts": ["api.example.com"] } } }
 ```
 
-An app's identity is a digest of its bundle, not the name in its manifest — two
-bundles calling themselves the same thing are two apps, with separate databases
-and separate grants.
+Storage identity and permission grants are host-specific. The general bundle loader isolates bundles by digest; configured single-app and FormLogic hosts supply their own deployment identity. A manifest name alone does not grant access to another app's records. See the [single-app identity rules](docs/SINGLE_APP_RUNTIME.md#permissions-and-local-records).
 
 ---
 
@@ -319,15 +334,15 @@ npm run build:zipp-wasm -w @softn/core   # needs rustup + wasm-pack
 The engine is selected in one place -- `packages/@softn/core/src/runtime/vm-adapter.ts`.
 
 ```javascript
-let clients = []
+let clients = [];
 
 function _init() {
-  clients = db.query("clients")
+  clients = db.query('clients');
 }
 
 function addClient(name, email) {
-  db.create("clients", { name: name, email: email })
-  clients = db.query("clients")
+  db.create('clients', { name: name, email: email });
+  clients = db.query('clients');
 }
 ```
 
@@ -338,11 +353,11 @@ function addClient(name, email) {
 Local-first, reactive database with P2P synchronization. Source: [xdb.org](https://github.com/f2i-com/xdb.org).
 
 ```javascript
-let client = db.create("clients", { name: "John", email: "john@example.com" })
-let allClients = db.query("clients")
-db.update(client.id, { phone: "555-1234" })
-db.delete(client.id)
-await db.startSync("my-room-name")
+let client = db.create('clients', { name: 'John', email: 'john@example.com' });
+let allClients = db.query('clients');
+db.update(client.id, { phone: '555-1234' });
+db.delete(client.id);
+await db.startSync('my-room-name');
 ```
 
 All CRUD operations are **synchronous** (XDB caches everything in memory).
@@ -355,13 +370,13 @@ All CRUD operations are **synchronous** (XDB caches everything in memory).
 bundle, the same way `asset()` resolves them for a template.
 
 ```javascript
-softn.audio.play("assets/pickup.wav")
-softn.audio.play("assets/theme.mp3", { volume: 0.4, loop: true }, function (r) {
-  themeHandle = r.handle
-})
-softn.audio.setVolume(0.5)      // scales what is playing now, and what comes next
-softn.audio.stop(themeHandle)
-softn.audio.stopAll()
+softn.audio.play('assets/pickup.wav');
+softn.audio.play('assets/theme.mp3', { volume: 0.4, loop: true }, function (r) {
+  themeHandle = r.handle;
+});
+softn.audio.setVolume(0.5); // scales what is playing now, and what comes next
+softn.audio.stop(themeHandle);
+softn.audio.stopAll();
 ```
 
 No capability is declared for it: a template can already write
@@ -407,9 +422,9 @@ And `softn.mic.*` records without anything visible:
 
 ```javascript
 softn.mic.record({ seconds: 5, sampleRate: 48000 }, function (r) {
-  if (r.recorded) softn.audio.play(r.dataUrl)
-})
-softn.mic.stop()          // end it early; the record callback still fires
+  if (r.recorded) softn.audio.play(r.dataUrl);
+});
+softn.mic.stop(); // end it early; the record callback still fires
 ```
 
 Both hand back **uncompressed 16-bit WAV** as a `data:` URL, not MediaRecorder's
@@ -466,7 +481,7 @@ whole multiple that fits and centres it, so every source pixel is the same size
 lets the factor go fractional, which is right when filling the frame matters
 more than exact geometry.
 
-`<AudioStream>` is the output side of `softn.audio`. That API plays *files*;
+`<AudioStream>` is the output side of `softn.audio`. That API plays _files_;
 this one plays a waveform a script is still generating, which `.logic` cannot do
 by itself — it has no `AudioContext`, no `AudioWorklet` and no `Blob`.
 
@@ -519,14 +534,14 @@ them shows the engine's debug readout.
 
 ## Applications
 
-| App | Description |
-|-----|-------------|
-| **softn-site** | The softn.com landing page and app directory: browse, search and filter apps, play them in a popup, publish and update your own |
-| **softn-web** | Browser-based `.softn` runtime with multi-tab, URL routing and `?open=` deep links. Installable PWA |
-| **softn-studio** | Brief to blueprint to app, against whichever model provider you configure. Installable PWA |
-| **softn-builder** | Visual IDE with drag-and-drop editor, live preview, bundle export. Installable PWA |
-| **softn-loader** | Tauri desktop runtime with `.softn` file association and XDB/SQLite |
-| **softn-api** | The directory behind softn.com: PHP and folder-based JSON, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes and per-app storage |
+| App               | Description                                                                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **softn-site**    | The softn.com landing page and app directory: browse, search and filter apps, play them in a popup, publish and update your own                                             |
+| **softn-web**     | Browser-based `.softn` runtime with multi-tab, URL routing and `?open=` deep links. Installable PWA                                                                         |
+| **softn-studio**  | Brief to blueprint to app, against whichever model provider you configure. Installable PWA                                                                                  |
+| **softn-builder** | Visual IDE with drag-and-drop editor, live preview, bundle export. Installable PWA                                                                                          |
+| **softn-loader**  | Tauri desktop runtime with `.softn` file association and XDB/SQLite                                                                                                         |
+| **softn-api**     | The directory behind softn.com: PHP and folder-based JSON, deployed as `/api/` beside the static site. Publishing, versions, comments, ratings, remixes and per-app storage |
 
 The three browser apps are installable PWAs: each ships a web app manifest and a
 service worker that precaches the runtime, the component library and the
@@ -655,37 +670,37 @@ Each is a worked example of some part of the runtime.
 
 **Games**
 
-| Demo | Description |
-|------|-------------|
-| **Blockscape** | A first-person voxel sandbox: a 64×64×40 island meshed into `Scene3D` `instanced` batches, pointer-locked camera, gravity, swimming, flight, a day-night cycle, and a world that saves itself |
-| **DeadHours** | A first-person zombie shooter: waves through the gates of a fenced yard at night, a pistol, a shotgun, a camera-attached torch, headshots, pickups and a shared leaderboard |
-| **MazeEscape3D** | A first-person maze carved fresh every game, with a minimap that fills in as you explore and a best time that sticks |
-| **PromptlyUnemployed** | A first-person narrative tragicomedy, fully voiced: laid off by an avatar, home by dinner, a business by midnight |
-| **TexasHoldem** | Multiplayer poker over peer-to-peer sync, with bots for a table of one |
-| **SnakeGame** | The classic on a `PixelGrid`, with a shared top ten in the app's own server storage |
-| **Twenty48** | The sliding-tile classic with swipes, undo, a best score and a game that resumes |
-| **Blockfall** | Falling blocks in a 10×20 `PixelGrid` well: seven pieces, wall kicks, a ghost piece, hold, preview and levels |
+| Demo                   | Description                                                                                                                                                                                   |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Blockscape**         | A first-person voxel sandbox: a 64×64×40 island meshed into `Scene3D` `instanced` batches, pointer-locked camera, gravity, swimming, flight, a day-night cycle, and a world that saves itself |
+| **DeadHours**          | A first-person zombie shooter: waves through the gates of a fenced yard at night, a pistol, a shotgun, a camera-attached torch, headshots, pickups and a shared leaderboard                   |
+| **MazeEscape3D**       | A first-person maze carved fresh every game, with a minimap that fills in as you explore and a best time that sticks                                                                          |
+| **PromptlyUnemployed** | A first-person narrative tragicomedy, fully voiced: laid off by an avatar, home by dinner, a business by midnight                                                                             |
+| **TexasHoldem**        | Multiplayer poker over peer-to-peer sync, with bots for a table of one                                                                                                                        |
+| **SnakeGame**          | The classic on a `PixelGrid`, with a shared top ten in the app's own server storage                                                                                                           |
+| **Twenty48**           | The sliding-tile classic with swipes, undo, a best score and a game that resumes                                                                                                              |
+| **Blockfall**          | Falling blocks in a 10×20 `PixelGrid` well: seven pieces, wall kicks, a ghost piece, hold, preview and levels                                                                                 |
 
 **Apps**
 
-| Demo | Description |
-|------|-------------|
-| **TheOffice** | Six characters who talk to each other through a small language model running on the device, on the GPU when there is one and the CPU when there is not |
-| **AIChat** | A private chat with a model that downloads once and then never leaves the browser |
-| **WarbleWire** | The QXW acoustic transport: text becomes synthetic birdsong and is decoded back, over the air through `Microphone` |
-| **Pocket** | An 8-bit handheld console emulator. The CPU, PPU, APU, timer and MBC1/2/3/5 mappers are all `.logic`; `PixelCanvas` is the screen and `AudioStream` is the speaker. Runs commercial cartridges at 60fps with sound, save states and battery-backed saves |
-| **SoftDOS** | An x86 PC: a 386 integer CPU with a trace compiler, VGA text and Mode X with the graphics controller, an 8042 keyboard, PIT, 8259s, a mouse driver, an AdLib (OPL2 FM synthesizer, rendered on the host through `accel`), a Sound Blaster with 8237 DMA and its interrupt, the PC speaker, and a DOS kernel with a writable drive and DPMI host, all `.logic`, mixed into `AudioStream`. Drop a game's files or its zip on drive C and run it; DOOM plays at its 35 Hz cap with music and effects (a DEFAULT.CFG with sound on is put on the drive if it has none), Jill of the Jungle and other real-mode games as they were |
+| Demo           | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **TheOffice**  | Six characters who talk to each other through a small language model running on the device, on the GPU when there is one and the CPU when there is not                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **AIChat**     | A private chat with a model that downloads once and then never leaves the browser                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **WarbleWire** | The QXW acoustic transport: text becomes synthetic birdsong and is decoded back, over the air through `Microphone`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Pocket**     | An 8-bit handheld console emulator. The CPU, PPU, APU, timer and MBC1/2/3/5 mappers are all `.logic`; `PixelCanvas` is the screen and `AudioStream` is the speaker. Runs commercial cartridges at 60fps with sound, save states and battery-backed saves                                                                                                                                                                                                                                                                                                                                                                      |
+| **SoftDOS**    | An x86 PC: a 386 integer CPU with a trace compiler, VGA text and Mode X with the graphics controller, an 8042 keyboard, PIT, 8259s, a mouse driver, an AdLib (OPL2 FM synthesizer, rendered on the host through `accel`), a Sound Blaster with 8237 DMA and its interrupt, the PC speaker, and a DOS kernel with a writable drive and DPMI host, all `.logic`, mixed into `AudioStream`. Drop a game's files or its zip on drive C and run it; DOOM plays at its 35 Hz cap with music and effects (a DEFAULT.CFG with sound on is put on the drive if it has none), Jill of the Jungle and other real-mode games as they were |
 
 **Examples** (the directory's Examples category)
 
-| Demo | Description |
-|------|-------------|
-| **GlamourStudio** | A salon's front desk on `SmartGrid` and `SmartForm`, syncing between devices |
-| **DeviceKit** | What a sandboxed app may ask for, one page per permission: network, camera, files, QR codes |
-| **Showcase** | Every chart, animation and interactive component the runtime ships |
-| **Notes** | A shared notes board in the app's server-side storage |
-| **ThreeDemo** | Shapes drifting over a floor in `Scene3D`: look around, pick one, add more |
-| **GPUDemo** | Vector maths in two compute shaders through the WebGPU bridge |
+| Demo              | Description                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------- |
+| **GlamourStudio** | A salon's front desk on `SmartGrid` and `SmartForm`, syncing between devices                |
+| **DeviceKit**     | What a sandboxed app may ask for, one page per permission: network, camera, files, QR codes |
+| **Showcase**      | Every chart, animation and interactive component the runtime ships                          |
+| **Notes**         | A shared notes board in the app's server-side storage                                       |
+| **ThreeDemo**     | Shapes drifting over a floor in `Scene3D`: look around, pick one, add more                  |
+| **GPUDemo**       | Vector maths in two compute shaders through the WebGPU bridge                               |
 
 A new demo is added to `index.json` by hand (id, file, name, description and
 primary colour) once a release of softn-Examples publishes it, then pinned with
@@ -707,10 +722,10 @@ code reads and writes the same bytes the script does:
 
 ```js
 // Inside a .logic script that declared "accel": { "enabled": true }.
-let outer = accel.compile(["RAM", "ST"], "return function(ST,h){ST[0]=RAM[h]*2;return 1;};");
-let fn = accel.make(outer, "RAM=g:MY_RAM,ST=g:MY_STATE");   // views of two typed-array globals
-accel.state("MY_STATE");                                     // the array run() passes first
-accel.run(fn, 5);                                            // MY_STATE[0] = MY_RAM[5] * 2
+let outer = accel.compile(['RAM', 'ST'], 'return function(ST,h){ST[0]=RAM[h]*2;return 1;};');
+let fn = accel.make(outer, 'RAM=g:MY_RAM,ST=g:MY_STATE'); // views of two typed-array globals
+accel.state('MY_STATE'); // the array run() passes first
+accel.run(fn, 5); // MY_STATE[0] = MY_RAM[5] * 2
 ```
 
 `compile(params, body)` validates and compiles, answering an id or throwing;
@@ -736,22 +751,24 @@ its own 35 fps cap. The host side is `packages/@softn/core/src/runtime/accel-hos
 
 ## Security Model
 
-| Layer | Protection |
-|-------|-----------|
-| VM Sandboxing | zipp WASM VM -- no `eval()`, no `new Function()`, no host access |
-| Host acceleration | Only with the `accel` capability, only for source that fits a closed arithmetic language, only over views of the script's own pinned typed arrays |
-| Instruction Limits | **Server only.** `softn-server` builds zipp with `instrument`, giving it a step budget and an abort flag. The browser adapter has no budget: a runaway loop wedges the tab it runs in |
-| Bridge Isolation | `window` and `navigator` are controlled bridge objects |
-| localStorage | App-scoped prefix `softn:{appId}:` prevents cross-app leakage |
-| ZIP Extraction | Rejects `../`, absolute paths, null bytes, Windows drive letters |
+| Layer             | Protection                                                                                                                                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| VM Sandboxing     | zipp WASM VM -- no `eval()`, no `new Function()`, no host access                                                                                                                                                               |
+| Host acceleration | Only with the `accel` capability, only for source that fits a closed arithmetic language, only over views of the script's own pinned typed arrays                                                                              |
+| Execution Limits  | Host-dependent: the worker runtime enforces deadlines and can terminate a runaway worker; `softn-server` uses instrumented step budgets and an abort flag. Main-thread embedding does not have the worker termination boundary |
+| Bridge Isolation  | `window` and `navigator` are controlled bridge objects                                                                                                                                                                         |
+| localStorage      | App-scoped prefix `softn:{appId}:` separates record keys; host origin isolation remains a separate boundary                                                                                                                    |
+| ZIP Extraction    | Rejects `../`, absolute paths, null bytes, Windows drive letters                                                                                                                                                               |
 
 ---
+
+</details>
 
 ## Development
 
 ### Prerequisites
 
-- Node.js 20.19+ (Vite 8's floor)
+- Node.js 20.19+ on the 20.x line, or 22.12+ (see `package.json` engines)
 - npm
 - Rust + Cargo (for Tauri apps and WASM compilation)
 
@@ -805,6 +822,8 @@ cargo test --manifest-path apps/softn-rust/Cargo.toml
 
 ### Testing
 
+Automatic push/PR CI is temporarily paused. Run the relevant checks locally, or start the [Build SoftN workflow](.github/workflows/build.yml) manually. Tagged releases still use the shared verification workflow.
+
 ```bash
 npm test                      # every workspace: core, components, web, api (the demo bundles are fetched first)
 npm test -w @softn/core       # one of them
@@ -816,21 +835,21 @@ the fetched demo bundles; `npm test` fetches them first.
 
 ### Key File Paths
 
-| File | Purpose |
-|------|---------|
-| `packages/@softn/core/src/parser/` | Lexer and AST parser |
-| `packages/@softn/core/src/renderer/` | AST to React renderer and component registry |
-| `packages/@softn/core/src/runtime/script-runtime.ts` | Script runtime (state sync, bridges, host calls) |
-| `packages/@softn/core/src/runtime/vm-adapter.ts` | Which engine `.logic` runs on |
-| `packages/@softn/core/src/runtime/xdb.ts` | XDB database service |
-| `packages/@softn/core/src/bundle/bundle.ts` | ZIP bundle reader |
-| `packages/@softn/core/src/loader/SoftNRenderer.tsx` | Main renderer component |
-| `packages/@softn/components/src/registry.ts` | Built-in component registration |
-| `packages/@softn/components/src/threed/Scene3D.tsx` | The 3D scene: instancing, pointer lock, attached objects |
-| `apps/softn-api/index.php` | The directory API's routes |
-| `scripts/build-site.mjs` | Assembles `dist/` and writes `.htaccess`, `nginx.conf.example` and `DEPLOY.md` |
-| `scripts/fetch-demos.mjs` | Fetches and verifies the demo bundles from the softn-Examples release `public/demos/index.json` pins |
-| `scripts/softn-apps/` | Every app from every release in `repos.json`, photographed, as one folder a site loads: `npm run apps:build`, then `build:site -- --demos-dir`, an upload beside `api/` as `demos/`, or `apps:publish` (its README explains) |
+| File                                                 | Purpose                                                                                                                                                                                                                      |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/@softn/core/src/parser/`                   | Lexer and AST parser                                                                                                                                                                                                         |
+| `packages/@softn/core/src/renderer/`                 | AST to React renderer and component registry                                                                                                                                                                                 |
+| `packages/@softn/core/src/runtime/script-runtime.ts` | Script runtime (state sync, bridges, host calls)                                                                                                                                                                             |
+| `packages/@softn/core/src/runtime/vm-adapter.ts`     | Which engine `.logic` runs on                                                                                                                                                                                                |
+| `packages/@softn/core/src/runtime/xdb.ts`            | XDB database service                                                                                                                                                                                                         |
+| `packages/@softn/core/src/bundle/bundle.ts`          | ZIP bundle reader                                                                                                                                                                                                            |
+| `packages/@softn/core/src/loader/SoftNRenderer.tsx`  | Main renderer component                                                                                                                                                                                                      |
+| `packages/@softn/components/src/registry.ts`         | Built-in component registration                                                                                                                                                                                              |
+| `packages/@softn/components/src/threed/Scene3D.tsx`  | The 3D scene: instancing, pointer lock, attached objects                                                                                                                                                                     |
+| `apps/softn-api/index.php`                           | The directory API's routes                                                                                                                                                                                                   |
+| `scripts/build-site.mjs`                             | Assembles `dist/` and writes `.htaccess`, `nginx.conf.example` and `DEPLOY.md`                                                                                                                                               |
+| `scripts/fetch-demos.mjs`                            | Fetches and verifies the demo bundles from the softn-Examples release `public/demos/index.json` pins                                                                                                                         |
+| `scripts/softn-apps/`                                | Every app from every release in `repos.json`, photographed, as one folder a site loads: `npm run apps:build`, then `build:site -- --demos-dir`, an upload beside `api/` as `demos/`, or `apps:publish` (its README explains) |
 
 ---
 
