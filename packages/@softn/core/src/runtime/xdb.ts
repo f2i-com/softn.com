@@ -143,8 +143,12 @@ export class XDBService {
   private _resolveReady!: () => void;
 
   constructor(storage?: XDBStorage, prefix = 'xdb', appId?: string) {
-    this.storage =
-      storage || (typeof localStorage !== 'undefined' ? localStorage : createMemoryStorage());
+    try {
+      this.storage = storage || (typeof localStorage !== 'undefined' ? localStorage : createMemoryStorage());
+    } catch {
+      // Accessing the property itself throws in an opaque-origin sandbox.
+      this.storage = storage || createMemoryStorage();
+    }
     this.prefix = prefix;
     this.appId = appId;
     this.listeners = new Map();
@@ -1595,24 +1599,28 @@ export function getXDB(appId?: string): XDBService {
  * subsequent writes private.
  */
 function migrateLegacyKeys(appId: string): void {
-  if (typeof localStorage === 'undefined') return;
+  let storage: Storage;
+  try {
+    if (typeof localStorage === 'undefined') return;
+    storage = localStorage;
+  } catch { return; }
 
   const legacy: Array<[string, string]> = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
     // Only bare `xdb:<collection>` keys — anything with a second colon is
     // already namespaced and belongs to some app.
     if (!key || !key.startsWith('xdb:') || key.indexOf(':', 4) !== -1) continue;
-    const value = localStorage.getItem(key);
+    const value = storage.getItem(key);
     if (value) legacy.push([key.slice(4), value]);
   }
   if (legacy.length === 0) return;
 
   for (const [collection, value] of legacy) {
     const target = `xdb:${appId}:${collection}`;
-    if (localStorage.getItem(target) === null) {
+    if (storage.getItem(target) === null) {
       try {
-        localStorage.setItem(target, value);
+        storage.setItem(target, value);
       } catch {
         // Out of quota. Better to start this app empty than to fail its load.
         break;

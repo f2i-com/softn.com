@@ -292,6 +292,8 @@ export interface SoftNRendererProps {
    * from a file, which then has no server storage.
    */
   storageEndpoint?: string;
+  /** Calls only the backend selected by the trusted host. */
+  backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
 
   /**
    * The bundle's parsed `permission.json`, forwarded to the script runtime so
@@ -574,6 +576,7 @@ export function SoftNRenderer({
   preIncludedLogicPaths,
   executionPreference,
   storageEndpoint,
+  backendCall,
   permissionConfig,
   scriptExecutionMode = 'worker',
   resumeSavedSyncRoom = false,
@@ -1031,6 +1034,7 @@ export function SoftNRenderer({
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
+                backendCall,
                 observedStateNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
@@ -1069,6 +1073,7 @@ export function SoftNRenderer({
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
+                backendCall,
                 bundleFileProvider,
                 externalFunctions: runtimeFunctions,
                 // A worker that missed its hard deadline has been terminated;
@@ -1097,6 +1102,7 @@ export function SoftNRenderer({
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
+                backendCall,
                 observedStateNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
@@ -1129,6 +1135,7 @@ export function SoftNRenderer({
                 preIncludedLogicPaths: runtimePreIncludedLogicPaths,
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
+                backendCall,
                 observedStateNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
@@ -1318,6 +1325,7 @@ export function SoftNRenderer({
     resumeSavedSyncRoom,
     runtimePermissionConfig,
     storageEndpoint,
+    backendCall,
     runtimePermissions,
     runtimePreIncludedLogicPaths,
     runtimeFunctions,

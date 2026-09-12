@@ -11,6 +11,11 @@
  */
 export const SOFTN_BRIDGE_PREAMBLE = `
 let softn = {
+  backend: {
+    call: function(action, input, callback) {
+      host.call("backend.call", [action, JSON.stringify(input || {})], callback || function(){});
+    }
+  },
   net: {
     fetch: function(url, options, callback) {
       host.call("net.fetch", [url, typeof options === "object" ? JSON.stringify(options) : "{}"], callback);

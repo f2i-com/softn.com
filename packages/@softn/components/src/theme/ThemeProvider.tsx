@@ -224,9 +224,11 @@ export function ThemeProvider({
   const [isDark, setIsDark] = useState(() => {
     // Check localStorage first for user's explicit preference
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('softn-theme-preference');
-      if (stored === 'dark') return true;
-      if (stored === 'light') return false;
+      try {
+        const stored = localStorage.getItem('softn-theme-preference');
+        if (stored === 'dark') return true;
+        if (stored === 'light') return false;
+      } catch { /* Sandboxed frames use the host's default theme. */ }
     }
     // Fall back to system preference
     if (followSystem && typeof window !== 'undefined') {

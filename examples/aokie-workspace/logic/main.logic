@@ -1,0 +1,113 @@
+let workspace = {name:"Aokie", forms:[]};
+let sections = [];
+let active = {id:"", name:"Calls", hidden:false};
+let records = [];
+let shown = [];
+let selected = null;
+let query = "";
+let offset = 0;
+let count = 0;
+let busy = false;
+let message = "Connecting to your front desk…";
+let failed = false;
+let version = 0;
+function readable(value) {
+  const text = String(value || "").replace(/_/g, " ");
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
+}
+function toolLabel() {
+  const labels = {calls:"Open call controls",appointments:"Manage appointments","sms-messages":"Manage messages","follow-up-tasks":"Manage follow-ups","transcript-turns":"View full transcripts","hardware-events":"Open device logs"};
+  return labels[active.alias] || "Open " + active.name.toLowerCase();
+}
+function titleFor(record) {
+  const answers = record.answers;
+  if (active.alias === "calls") {
+    return answers.caller_name || answers.caller_phone || answers.phone || (answers.direction === "outbound" ? "Outgoing call" : "Incoming call");
+  }
+  if (active.alias === "transcript-turns") {
+    const speakers = {aokie:"Aokie",bot:"Aokie",caller:"Caller",operator:"Operator",system:"System"};
+    return speakers[answers.speaker] || "Conversation turn";
+  }
+  return answers.caller_name || answers.service || answers.event_name || answers.phone || record.title || "Saved record";
+}
+function dateFor(record) {
+  const answers = record.answers;
+  const value = String(answers.date || answers.timestamp || answers.started_at || answers.occurred_at || record.date || "");
+  const date = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}:\d{2}))?/);
+  if (!date) return value || "Date unavailable";
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const month = months[Number(date[2]) - 1];
+  if (!month) return value;
+  const time = answers.time || date[4] || "";
+  const offsetZone = value.match(/([+-]\d{2}:\d{2})$/);
+  const zone = value.endsWith("Z") ? " UTC" : (offsetZone ? " UTC" + offsetZone[1] : "");
+  return Number(date[3]) + " " + month + " " + date[1] + (time ? " · " + time + zone : "");
+}
+function statusFor(record) {
+  const answers = record.answers;
+  if (answers.approval_status === "pending_approval") return "Needs approval";
+  const labels = {in_progress:"In progress",needs_human:"Needs attention",sms_queued:"Text queued",sms_sent:"Text sent",missed:"Missed call",no_answer:"No answer"};
+  const status = answers.status || answers.severity || answers.source;
+  return labels[status] || readable(status) || "Saved";
+}
+function toneFor(record) {
+  const answers = record.answers;
+  if (answers.approval_status === "pending_approval" || answers.status === "missed" || answers.status === "failed" || answers.severity === "error") return "attention";
+  if (answers.status === "confirmed" || answers.status === "completed" || answers.status === "done" || answers.status === "sent") return "complete";
+  return "neutral";
+}
+function hasOverlap(record) {
+  const overlap = record.answers.overlapped;
+  return overlap === true || overlap === "yes" || (Array.isArray(overlap) && overlap.includes("yes"));
+}
+function filterRecords() {
+  const term = query.trim().toLowerCase();
+  shown = records.filter(function(row) { return (titleFor(row) + " " + statusFor(row) + " " + JSON.stringify(row.answers)).toLowerCase().includes(term); });
+  if (selected && !shown.find(function(row) { return row.id === selected.id; })) selected = null;
+}
+function loadRecords() {
+  if (!active.id) return;
+  version = version + 1;
+  const current = version;
+  busy = true; failed = false; selected = null; records = []; shown = []; count = 0;
+  message = "Loading " + active.name.toLowerCase() + "…";
+  softn.backend.call("workspaceRecords", {formId:active.id,offset:offset}, function(response) {
+    if (current !== version) return;
+    busy = false;
+    if (response.error) { failed = true; message = response.error; return; }
+    records = response.result.records || [];
+    count = response.result.count || 0;
+    if (offset > 0 && offset >= count) { offset = Math.max(0, Math.ceil(count / 12) * 12 - 12); loadRecords(); return; }
+    filterRecords();
+    message = "Updated just now. Refresh to see new activity.";
+  });
+}
+function choose(section) { if (busy || active.id === section.id) return; active = section; offset = 0; query = ""; loadRecords(); }
+function pageNext() { if (busy || offset + 12 >= count) return; offset = offset + 12; selected = null; loadRecords(); }
+function pageBack() { if (busy || offset === 0) return; offset = Math.max(0, offset - 12); selected = null; loadRecords(); }
+function clearSearch() { query = ""; filterRecords(); }
+function openForm() {
+  softn.backend.call("workspaceOpen", {formId:active.id}, function(response) { if (response.error) message = response.error; });
+}
+function refresh() {
+  if (busy) return;
+  busy = true; failed = false;
+  message = "Connecting to your front desk…";
+  softn.backend.call("workspaceInfo", {}, function(response) {
+    busy = false;
+    if (response.error) { failed = true; records = []; shown = []; count = 0; selected = null; message = response.error; return; }
+    workspace = response.result;
+    const labels = {calls:"Calls",appointments:"Appointments","sms-messages":"Messages","transcript-turns":"Transcripts","hardware-events":"Device logs","follow-up-tasks":"Follow-ups"};
+    const order = ["calls","appointments","sms-messages","transcript-turns","follow-up-tasks","hardware-events"];
+    sections = order.map(function(alias) { return workspace.forms.find(function(form) { return form.alias === alias && form.canRead; }); }).filter(function(form) { return !!form; }).map(function(form) { return {id:form.id,name:labels[form.alias],alias:form.alias,hidden:form.hidden}; });
+    if (sections.length === 0) { records = []; shown = []; count = 0; selected = null; active = {id:"",name:"Front desk"}; message = "No receptionist records are available to your account. Add Aokie forms in App Studio or ask the app owner for access."; return; }
+    const existing = sections.find(function(section) { return section.id === active.id; });
+    if (!existing) { offset = 0; query = ""; }
+    active = existing || sections[0];
+    loadRecords();
+  });
+}
+function _init() { refresh(); }
+
+function showRecord(record) { selected = selected && selected.id === record.id ? null : record; }
+function closeRecord() { selected = null; }

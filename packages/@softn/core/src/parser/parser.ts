@@ -1000,8 +1000,21 @@ export class Parser {
   private parseProp(): PropNode {
     const loc = this.currentLoc();
     let name = this.curToken.literal;
-    const nameEnd = this.curToken.end;
+    let nameEnd = this.curToken.end;
     this.nextToken();
+
+    // Hyphens are part of attribute names, but remain subtraction inside
+    // expressions. Join only adjacent name segments here, not in the lexer.
+    while (
+      this.curTokenIs(TokenType.MINUS) && this.curToken.start === nameEnd &&
+      this.peekToken.start === this.curToken.end &&
+      /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(this.peekToken.literal)
+    ) {
+      this.nextToken();
+      name += `-${this.curToken.literal}`;
+      nameEnd = this.curToken.end;
+      this.nextToken();
+    }
 
     // A namespaced attribute — `class:active={cond}` — is ONE name.
     //
@@ -2069,6 +2082,7 @@ export class Parser {
    */
   private isAttributeKeyword(): boolean {
     const attributeKeywords = [
+      TokenType.COLLECTION, // collection="records" - SmartForm persistence
       TokenType.DATA, // data={...}
       TokenType.STYLE, // style="..."
       TokenType.SLOT, // slot="..."
@@ -2117,4 +2131,6 @@ export function parse(source: string): SoftNDocument {
  */
 // 2: AssignmentExpression nodes, and a diagnostic for any `{…}` the parser
 //    could not read to its closing brace (which previously became attributes).
-export const PARSER_VERSION = 2;
+// 3: Preserve collection attributes on components (SmartForm persistence).
+// 4: Preserve hyphenated attributes, including aria-* and data-*.
+export const PARSER_VERSION = 4;

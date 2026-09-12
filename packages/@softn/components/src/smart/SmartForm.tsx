@@ -8,7 +8,7 @@
  * <SmartForm fields="name, email:email, role:select" submit={handleSave} />
  */
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useId } from 'react';
 import { useAppXDB } from '@softn/core';
 
 export interface FieldConfig {
@@ -213,6 +213,7 @@ export function SmartForm({
   onSaved,
   mode: modeProp,
 }: SmartFormProps): React.ReactElement {
+  const formId = useId();
   // Determine mode from recordId if not specified
   const mode = modeProp || (recordId ? 'edit' : 'create');
   // The store of the app this form is in, taken at render time. The submit
@@ -500,11 +501,19 @@ export function SmartForm({
     const hasError = touched[field.name] && errors[field.name];
     const isDisabled = disabled || field.disabled || isSubmitting;
     const currentInputStyle = hasError ? inputErrorStyle : inputStyle;
+    const accessibility = {
+      id: `${formId}-${field.name}`,
+      name: field.name,
+      'aria-required': !!field.required,
+      'aria-invalid': !!hasError,
+      'aria-describedby': hasError ? `${formId}-${field.name}-error` : field.helpText ? `${formId}-${field.name}-help` : undefined,
+    };
 
     switch (field.type) {
       case 'textarea':
         return (
           <textarea
+            {...accessibility}
             value={String(value ?? '')}
             onChange={(e) => handleChange(field.name, e.target.value)}
             onBlur={() => handleBlur(field)}
@@ -521,6 +530,7 @@ export function SmartForm({
         );
         return (
           <select
+            {...accessibility}
             value={String(value ?? '')}
             onChange={(e) => handleChange(field.name, e.target.value)}
             onBlur={() => handleBlur(field)}
@@ -543,6 +553,7 @@ export function SmartForm({
             style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}
           >
             <input
+            {...accessibility}
               type="checkbox"
               checked={Boolean(value)}
               onChange={(e) => handleChange(field.name, e.target.checked)}
@@ -555,7 +566,7 @@ export function SmartForm({
               }}
             />
             <span style={{ fontSize: '0.875rem', color: 'var(--color-gray-300, #d4d4d8)' }}>
-              {value ? 'Yes' : 'No'}
+              {field.label || humanize(field.name)}
             </span>
           </label>
         );
@@ -563,6 +574,7 @@ export function SmartForm({
       default:
         return (
           <input
+            {...accessibility}
             type={field.type || 'text'}
             value={String(value ?? '')}
             onChange={(e) =>
@@ -612,7 +624,7 @@ export function SmartForm({
         {fields.map((field) => (
           <div key={field.name} style={fieldWrapperStyle}>
             {field.type !== 'checkbox' && (
-              <label style={labelStyle}>
+              <label htmlFor={`${formId}-${field.name}`} style={labelStyle}>
                 {field.label || humanize(field.name)}
                 {field.required && (
                   <span style={{ color: 'var(--color-error-500, #ef4444)' }}> *</span>
@@ -622,10 +634,10 @@ export function SmartForm({
             <div style={{ flex: 1 }}>
               {renderField(field)}
               {touched[field.name] && errors[field.name] && (
-                <div style={errorStyle}>{errors[field.name]}</div>
+                <div id={`${formId}-${field.name}-error`} role="alert" style={errorStyle}>{errors[field.name]}</div>
               )}
               {field.helpText && !errors[field.name] && (
-                <div style={helpTextStyle}>{field.helpText}</div>
+                <div id={`${formId}-${field.name}-help`} style={helpTextStyle}>{field.helpText}</div>
               )}
             </div>
           </div>
@@ -637,7 +649,7 @@ export function SmartForm({
               {cancelText}
             </button>
           )}
-          <button type="submit" disabled={disabled || isSubmitting} style={primaryButtonStyle}>
+          <button type="submit" disabled={disabled || loading || isSubmitting} style={primaryButtonStyle}>
             {(loading || isSubmitting) && <Spinner />}
             {submitText}
           </button>

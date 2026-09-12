@@ -1,0 +1,44 @@
+let workspace = {name:"Your workspace", forms:[]};
+let forms = [];
+let query = "";
+let selected = "";
+let records = [];
+let count = 0;
+let busy = false;
+let message = "Connecting to your workspace…";
+let requestVersion = 0;
+function filterForms() {
+  forms = workspace.forms.filter(function(form) { return form.name.toLowerCase().includes(query.toLowerCase()); });
+}
+function refresh() {
+  if (busy) return;
+  busy = true;
+  softn.backend.call("workspaceInfo", {}, function(response) {
+    busy = false;
+    if (response.error) { message = response.error; return; }
+    workspace = response.result;
+    filterForms();
+    message = "Connected to FormLogic. Your existing forms and permissions apply.";
+  });
+}
+function inspect(form) {
+  selected = form.id;
+  records = [];
+  count = 0;
+  requestVersion = requestVersion + 1;
+  const version = requestVersion;
+  message = "Loading recent records…";
+  softn.backend.call("workspaceRecords", {formId:form.id}, function(response) {
+    if (version !== requestVersion) return;
+    if (response.error) { message = response.error; return; }
+    records = response.result.records;
+    count = response.result.count;
+    message = "Showing up to 12 recent records you can access.";
+  });
+}
+function openForm(form) {
+  softn.backend.call("workspaceOpen", {formId:form.id}, function(response) {
+    if (response.error) message = response.error;
+  });
+}
+function _init() { refresh(); }

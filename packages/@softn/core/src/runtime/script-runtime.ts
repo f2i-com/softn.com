@@ -180,6 +180,8 @@ export interface ScriptRuntimeOptions {
    * from a file, which then has no server storage and is told so.
    */
   storageEndpoint?: string;
+  /** Host-owned action bridge. No URLs or credentials are exposed to app scripts. */
+  backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
   /**
    * The visitor identity sent with storage requests, for collections whose
    * policy records who added a record. Absent, the runtime uses the token
@@ -531,6 +533,7 @@ export class SoftNScriptRuntime {
   private stateVarFingerprints: number[] | null = null;
   /** Identifiers the document can resolve; null means "assume all of them". */
   private observedStateNames: ReadonlySet<string> | null = null;
+  private backendCall?: ScriptRuntimeOptions['backendCall'];
   private storageEndpoint: string | null = null;
   private visitorToken: string | null | undefined = undefined;
   /** State variables held back from syncing, for diagnostics only. */
@@ -699,6 +702,7 @@ export class SoftNScriptRuntime {
     this.runtimeMode = options?.mode || 'main';
     this.observedStateNames = options?.observedStateNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
+    this.backendCall = options?.backendCall;
     this.visitorToken = options?.storageVisitorToken;
     this.onPersistenceFailure = options?.onPersistenceFailure ?? null;
     this.externalFunctions = externalFunctions ?? null;
@@ -2077,6 +2081,20 @@ export class SoftNScriptRuntime {
 
   private async executeHostCall(call: PendingHostCall): Promise<unknown> {
     switch (call.kind) {
+      case 'backend.call': {
+        if (!this.backendCall) return { error: 'This app has no connected backend.' };
+        const [action, raw] = call.args;
+        if (!/^[a-z][a-zA-Z0-9_-]{0,63}$/.test(action) || (raw?.length ?? 0) > 32768) {
+          return { error: 'Invalid backend request.' };
+        }
+        try {
+          const input: unknown = JSON.parse(raw || '{}');
+          if (!input || typeof input !== 'object' || Array.isArray(input)) return { error: 'Backend input must be an object.' };
+          return await this.backendCall(action, input as Record<string, unknown>);
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : 'Backend request failed.' };
+        }
+      }
       case 'net.fetch':
         return this.handleNetFetch(call);
       case 'qr.encode':

@@ -93,3 +93,6 @@ export function getDefaultEngine(): SoftNEngine {
   }
   return defaultEngine;
 }
+
+export { createFormlogicProject } from './integrations/formlogic';
+export type { FormlogicField, FormlogicSchema, FormlogicProjectInput, FormlogicProject } from './integrations/formlogic';
