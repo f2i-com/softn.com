@@ -2,7 +2,7 @@
  * EntityEditor - Panel for editing entity (collection) details
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { useSchemaStore } from '../../stores/schemaStore';
 import type { EntityDef, SchemaField, FieldType } from '../../types/builder';
 
@@ -155,11 +155,59 @@ const fieldTypes: FieldType[] = [
   'reference',
 ];
 
+/** Commit a complete name so intermediate typing cannot move or overwrite data. */
+function SchemaNameInput({ value, label, placeholder, disabled, onCommit }: {
+  value: string;
+  label: string;
+  placeholder?: string;
+  disabled?: boolean;
+  onCommit: (value: string) => string | null;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [error, setError] = useState<string | null>(null);
+  const errorId = useId();
+  useEffect(() => { setDraft(value); setError(null); }, [value]);
+  const commit = () => {
+    const next = draft.trim();
+    if (next === value) { setDraft(value); return; }
+    const failure = onCommit(next);
+    setError(failure);
+    // Invalid text never becomes a pending, unsaved schema: restore the old
+    // name and explain why it could not be applied.
+    setDraft(failure ? value : next);
+  };
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <input
+        type="text"
+        value={draft}
+        aria-label={label}
+        aria-describedby={error ? errorId : undefined}
+        aria-invalid={!!error}
+        data-schema-name="true"
+        onChange={event => { setDraft(event.target.value); setError(null); }}
+        onBlur={commit}
+        onKeyDown={event => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
+          if (event.key === 'Escape') {
+            event.preventDefault(); event.stopPropagation(); setDraft(value); setError(null);
+          }
+        }}
+        style={{ ...styles.input, borderColor: error ? '#ef4444' : undefined }}
+        placeholder={placeholder}
+        disabled={disabled}
+      />
+      {error && <div id={errorId} role="alert" style={{ fontSize: 12, color: '#ef4444', marginTop: 6 }}>{error}</div>}
+    </div>
+  );
+}
+
 interface FieldEditorProps {
   field: SchemaField;
   entityId: string;
   entities: EntityDef[];
-  onUpdate: (updates: Partial<SchemaField>) => void;
+  onUpdate: (updates: Partial<SchemaField>) => string | null;
   onDelete: () => void;
   isIdField: boolean;
 }
@@ -189,16 +237,16 @@ function FieldEditor({
       </div>
 
       <div style={styles.fieldRow}>
-        <input
-          type="text"
+        <SchemaNameInput
           value={field.name}
-          onChange={(e) => onUpdate({ name: e.target.value })}
-          style={{ ...styles.input, flex: 1 }}
+          label={`Field name: ${field.name}`}
+          onCommit={name => onUpdate({ name })}
           placeholder="Field name"
           disabled={isIdField}
         />
         <select
           value={field.type}
+          aria-label={`Type for ${field.name}`}
           onChange={(e) => onUpdate({ type: e.target.value as FieldType })}
           style={styles.select}
           disabled={isIdField}
@@ -294,7 +342,7 @@ export function EntityEditor() {
     <div style={styles.container}>
       <div style={styles.header}>
         <span>Edit Entity</span>
-        <button style={styles.closeBtn} onClick={() => selectEntity(null)}>
+        <button style={styles.closeBtn} onClick={() => selectEntity(null)} aria-label="Close entity editor">
           ×
         </button>
       </div>
@@ -304,26 +352,29 @@ export function EntityEditor() {
           <div style={styles.sectionTitle}>Basic Info</div>
 
           <div style={styles.formGroup}>
-            <label style={styles.label}>Name</label>
-            <input
-              type="text"
+            <div style={styles.label}>Name</div>
+            <SchemaNameInput
+              key={`${entity.id}:name`}
               value={entity.name}
-              onChange={(e) => updateEntity(entity.id, { name: e.target.value })}
-              style={styles.input}
+              label="Collection name"
+              onCommit={name => updateEntity(entity.id, { name })}
               placeholder="Entity name"
             />
           </div>
 
           <div style={styles.formGroup}>
-            <label style={styles.label}>Alias (for code)</label>
-            <input
-              type="text"
+            <div style={styles.label}>Alias (for code)</div>
+            <SchemaNameInput
+              key={`${entity.id}:alias`}
               value={entity.alias}
-              onChange={(e) => updateEntity(entity.id, { alias: e.target.value })}
-              style={styles.input}
+              label="Alias (for code)"
+              onCommit={alias => updateEntity(entity.id, { alias })}
               placeholder="entity_alias"
             />
           </div>
+          <p style={{ fontSize: 12, color: 'var(--dim)', margin: 0, lineHeight: 1.5 }}>
+            Press Enter or leave a name to apply it. Escape cancels. Renaming does not update references in your code.
+          </p>
         </div>
 
         <div style={styles.section}>
@@ -334,7 +385,7 @@ export function EntityEditor() {
               protected — the duplicate stays editable so it can be fixed. */}
           {entity.fields.map((field) => (
             <FieldEditor
-              key={field.id}
+              key={`${entity.id}:${field.id}`}
               field={field}
               entityId={entity.id}
               entities={entities}
@@ -348,7 +399,7 @@ export function EntityEditor() {
               // field was then stuck — a second field called "id" that could not
               // be renamed back, retyped, or deleted, because its delete button
               // is hidden too. The only way out was deleting the whole entity.
-              isIdField={field.id === keyFieldId}
+              isIdField={keyFieldId !== undefined && field.id === keyFieldId}
             />
           ))}
 

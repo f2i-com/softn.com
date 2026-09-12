@@ -264,3 +264,101 @@ describe('back and forward', () => {
     expect(container.textContent).not.toContain('Snake');
   });
 });
+
+describe('search sorting and filter recovery', () => {
+  function chooseSort(value: string): void {
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Sort apps"]')!;
+    act(() => {
+      select.value = value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+  }
+
+  it('keeps Trending during a search, including page and category links', async () => {
+    getCategories.mockResolvedValue([{ id: 'games', name: 'Games', emoji: '', apps: 3 }]);
+    listApps.mockResolvedValue(reply([card('snake')], 1, 3));
+    mountApp('/apps?q=snake');
+    await settle();
+    chooseSort('trending');
+    await settle();
+    expect(window.location.search).toBe('?q=snake&sort=trending');
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Sort apps"]')?.value).toBe('trending');
+    expect(listApps.mock.lastCall?.[0]).toMatchObject({ q: 'snake', sort: 'trending' });
+    expect(container.querySelector('a.page-next')?.getAttribute('href')).toBe('/apps?q=snake&sort=trending&page=2');
+    const games = [...container.querySelectorAll<HTMLAnchorElement>('a.pill')].find((node) => node.textContent === 'Games · 3')!;
+    expect(games.getAttribute('href')).toBe('/apps?q=snake&category=games&sort=trending');
+    act(() => games.click());
+    await settle();
+    expect(listApps.mock.lastCall?.[0]).toMatchObject({ category: 'games', sort: 'trending' });
+    chooseSort('relevance');
+    await settle();
+    expect(window.location.search).toBe('?q=snake&category=games');
+    expect(listApps.mock.lastCall?.[0].sort).toBeUndefined();
+  });
+
+  it.each([
+    ['/apps?sort=unknown', 'trending', ''],
+    ['/apps?sort=relevance', 'trending', ''],
+    ['/apps?q=snake&sort=unknown', 'relevance', '?q=snake'],
+  ])('recovers an unsupported sort at %s without a history entry', async (url, sort, query) => {
+    listApps.mockResolvedValue(reply([]));
+    const push = vi.spyOn(window.history, 'pushState');
+    mountApp(url);
+    await settle();
+    expect(window.location.search).toBe(query);
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Sort apps"]')?.value).toBe(sort);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('shows every active filter and removes only the chosen one while resetting pagination', async () => {
+    listApps.mockResolvedValue(reply([card('notes')], 2, 3));
+    mountApp('/apps?q=notes&category=games&author=Sam&tag=team&cap=nonet&sort=newest&page=2');
+    await settle();
+    const active = container.querySelector('[aria-label="Active filters"]')!;
+    expect(active.querySelectorAll('a[aria-label^="Remove "]')).toHaveLength(5);
+    const removeAuthor = active.querySelector<HTMLAnchorElement>('a[aria-label="Remove Author: Sam"]')!;
+    act(() => removeAuthor.click());
+    await settle();
+    expect(window.location.search).toBe('?q=notes&category=games&tag=team&cap=nonet&sort=newest');
+    expect(listApps.mock.lastCall?.[0]).toMatchObject({ q: 'notes', category: 'games', tag: 'team', cap: 'nonet', author: '', sort: 'newest', page: 1 });
+    const clearAll = container.querySelector<HTMLAnchorElement>('a.directory-clear-filters')!;
+    act(() => clearAll.click());
+    await settle();
+    expect(window.location.search).toBe('?sort=newest');
+    expect(container.querySelector('[aria-label="Active filters"]')).toBeNull();
+    // Choosing a sort should immediately lead with its results, not the featured shelf.
+    expect(listApps.mock.calls.some(([params]) => params.sort === 'runs')).toBe(false);
+  });
+
+  it('marks a retry in progress and keeps the last results visibly busy', async () => {
+    listApps.mockResolvedValueOnce(reply([card('snake')]));
+    mountDirectory('?q=snake');
+    await settle();
+    listApps.mockRejectedValueOnce(new Error('offline'));
+    mountDirectory('?q=notes');
+    await settle();
+    let finish!: (value: ReturnType<typeof reply>) => void;
+    listApps.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const retry = container.querySelector<HTMLButtonElement>('[role="alert"] button')!;
+    act(() => retry.click());
+    expect(retry.disabled).toBe(true);
+    expect(retry.textContent).toBe('Retrying…');
+    expect(container.querySelector('.app-grid')?.getAttribute('aria-busy')).toBe('true');
+    await act(async () => { finish(reply([card('notes')])); });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('.app-grid')?.getAttribute('aria-busy')).toBe('false');
+    expect(container.textContent).toContain('Notes');
+  });
+
+  it('offers the same sort-preserving clear action when no apps match', async () => {
+    listApps.mockResolvedValue(reply([]));
+    mountApp('/apps?q=missing&sort=newest');
+    await settle();
+    expect(container.querySelector('.directory-clear-filters')?.getAttribute('href')).toBe('/apps?sort=newest');
+    const clear = [...container.querySelectorAll<HTMLAnchorElement>('.empty a')].find((link) => link.textContent === 'Clear the filters')!;
+    expect(clear.getAttribute('href')).toBe('/apps?sort=newest');
+    act(() => clear.click());
+    await settle();
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Sort apps"]')?.value).toBe('newest');
+  });
+});

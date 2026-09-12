@@ -80,9 +80,12 @@ describe('remote open ownership', () => {
     const opening = openRemoteBundle(url, { fetch: fetchStub as unknown as typeof fetch, importFile, log });
     claimWorkspace();
     // Resolves anyway: the stub never looked at the signal.
-    gate.resolve(response(new Uint8Array([1, 2, 3])));
+    const lateResponse = response(new Uint8Array([1, 2, 3]));
+    const cancel = vi.spyOn(lateResponse.body!, 'cancel');
+    gate.resolve(lateResponse);
     await opening;
 
+    expect(cancel).toHaveBeenCalledOnce();
     expect(importFile).not.toHaveBeenCalled();
     expect(log).not.toHaveBeenCalled();
   });
@@ -135,10 +138,58 @@ describe('the open link', () => {
     expect(readOpenLink('?open=http://elsewhere.test/x.softn', origin)).toMatchObject({ error: expect.stringMatching(/this site/) });
     expect(readOpenLink('?open=/apps/notes/bundle.zip', origin)).toMatchObject({ error: expect.stringMatching(/\.softn/) });
     expect(readOpenLink('?open=%', origin)).toMatchObject({ error: expect.any(String) });
+    expect(readOpenLink('?open=blob:http://studio.test/a.softn', origin)).toMatchObject({ error: expect.any(String) });
+    expect(readOpenLink('?open=http://user:secret@studio.test/a.softn', origin)).toMatchObject({ error: expect.any(String) });
   });
 
   it('names the bundle after its app segment', () => {
     expect(bundleNameFromUrl(new URL('http://s.test/apps/my%20app/bundle.softn'))).toBe('my app');
     expect(bundleNameFromUrl(new URL('http://s.test/files/todo.softn'))).toBe('todo');
+  });
+});
+
+describe('remote redirect boundaries', () => {
+  it('allows a same-origin download redirect without requiring a .softn extension on the final endpoint', async () => {
+    const result = response(new Uint8Array([80, 75, 3, 4]));
+    Object.defineProperty(result, 'url', { value: 'http://studio.test/api/apps/notes/download' });
+    const fetchStub = vi.fn(async () => result);
+    const importFile = vi.fn(async () => {});
+    const log = vi.fn();
+    await openRemoteBundle(url, { fetch: fetchStub as typeof fetch, importFile, log });
+    expect(fetchStub).toHaveBeenCalledWith(url.href, expect.objectContaining({ mode: 'same-origin', credentials: 'same-origin' }));
+    expect(importFile).toHaveBeenCalledOnce();
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('rejects an off-origin final response before reading its body', async () => {
+    const result = response(new Uint8Array([80, 75, 3, 4]));
+    Object.defineProperty(result, 'url', { value: 'https://elsewhere.test/bundle.softn' });
+    const read = vi.spyOn(result.body!, 'getReader');
+    const cancel = vi.spyOn(result.body!, 'cancel');
+    const importFile = vi.fn(async () => {});
+    const log = vi.fn();
+    await openRemoteBundle(url, { fetch: vi.fn(async () => result) as typeof fetch, importFile, log });
+    expect(read).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(importFile).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('redirected away from this site'));
+  });
+
+  it('does not import or report a download superseded during its body stream', async () => {
+    const cancel = vi.fn();
+    const result = new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([80, 75])); },
+      cancel,
+    }));
+    const importFile = vi.fn(async () => {});
+    const log = vi.fn();
+    const opening = openRemoteBundle(url, { fetch: vi.fn(async () => result) as typeof fetch, importFile, log });
+    await Promise.resolve();
+    await Promise.resolve();
+    claimWorkspace();
+    await opening;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(importFile).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
   });
 });

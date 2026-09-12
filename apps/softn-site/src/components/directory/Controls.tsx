@@ -106,6 +106,7 @@ export function CategoryChips({
       onClick={
         onSelect
           ? (e) => {
+              if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
               e.preventDefault();
               onSelect(id);
             }
@@ -179,6 +180,7 @@ export function Pagination({ page, pages, hrefFor, onPage }: { page: number; pag
       onClick={
         onPage
           ? (e) => {
+              if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
               e.preventDefault();
               onPage(p);
             }

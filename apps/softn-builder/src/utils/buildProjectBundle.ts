@@ -21,6 +21,7 @@ import { exportBundle, exportMultiFileBundle, type RetainedExportSource } from '
 import { envelopeFor, type XdbRecordEnvelope } from './xdbFormat';
 import { debug } from './debug';
 import type { CollectionDef } from '../types/builder';
+import { withBuilderSchema } from './builderSchemaMetadata';
 
 /** Bytes and path for a project icon stored as a data URL, or nothing. */
 export function decodeIconDataUrl(icon: string | null): { bytes: Uint8Array; path: string } | null {
@@ -58,7 +59,22 @@ export function gatherCollections(): CollectionDef[] {
   }));
   const schemaNames = new Set(schemaCollections.map((c) => c.name));
   const manual = projectState.collections.filter((c) => !schemaNames.has(c.name));
-  return [...schemaCollections, ...manual];
+  const collections = [...schemaCollections, ...manual];
+  // Sessions saved by older editors may already have duplicate names. Refuse
+  // to write two collections to one archive path, or two fields to one key.
+  const names = new Set<string>();
+  for (const collection of collections) {
+    if (!collection.name.trim()) throw new Error('Give every collection a name before saving.');
+    if (names.has(collection.name)) throw new Error(`Two collections are named "${collection.name}". Rename one in Data before saving.`);
+    names.add(collection.name);
+    const fields = new Set<string>();
+    for (const field of collection.fields ?? []) {
+      if (!field.name.trim()) throw new Error(`Give every field in "${collection.name}" a name before saving.`);
+      if (fields.has(field.name)) throw new Error(`Collection "${collection.name}" has two fields named "${field.name}". Rename one in Data before saving.`);
+      fields.add(field.name);
+    }
+  }
+  return collections;
 }
 
 /**
@@ -127,8 +143,9 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
   const records = gatherRecords();
   const icon = decodeIconDataUrl(projectState.icon);
   const retained = projectState.source;
+  const schemaState = useSchemaStore.getState();
   const source: RetainedExportSource = {
-    manifest: retained.manifest,
+    manifest: withBuilderSchema(retained.manifest, schemaState.entities, schemaState.relationships),
     extraEntries: retained.extraEntries,
     iconPath: retained.iconPath,
     xdbPaths: retained.xdbPaths,

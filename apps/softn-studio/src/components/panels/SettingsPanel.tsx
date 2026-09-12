@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useAIStore } from '../../stores';
-import { MAX_OUTPUT_TOKENS_BOUNDS, REQUEST_TIMEOUT_BOUNDS_MS } from '../../stores/aiStore';
+import { MAX_ITERATIONS_BOUNDS, TOKEN_BUDGET_BOUNDS, MAX_OUTPUT_TOKENS_BOUNDS, REQUEST_TIMEOUT_BOUNDS_MS } from '../../stores/aiStore';
 import { Icon } from '../common/Icon';
+import { IntegerLimitInput } from '../common/IntegerLimitInput';
 import type { ProviderType } from '../../types/studio';
 
 export const SettingsPanel: React.FC = () => {
@@ -282,31 +283,31 @@ export const SettingsPanel: React.FC = () => {
               <div style={styles.modelGrid}>
                 <div style={styles.modelRow}>
                   <div style={styles.modelInfo}>
-                    <span style={styles.modelRoleName}>Max iterations</span>
-                    <span style={styles.modelRoleHint}>Per generation cycle</span>
+                    <label htmlFor="studio-max-iterations" style={styles.modelRoleName}>Max iterations</label>
+                    <span style={styles.modelRoleHint}>Generation turns per session</span>
                   </div>
-                  <input
+                  <IntegerLimitInput
+                    id="studio-max-iterations"
                     style={styles.modelInput}
-                    type="number"
-                    min={1}
-                    max={100}
+                    min={MAX_ITERATIONS_BOUNDS.min}
+                    max={MAX_ITERATIONS_BOUNDS.max}
                     value={maxIterations}
-                    onChange={(e) => setMaxIterations(Number(e.target.value) || 15)}
+                    onCommit={setMaxIterations}
                   />
                 </div>
                 <div style={styles.modelRow}>
                   <div style={styles.modelInfo}>
-                    <span style={styles.modelRoleName}>Token budget</span>
+                    <label htmlFor="studio-token-budget" style={styles.modelRoleName}>Token budget</label>
                     <span style={styles.modelRoleHint}>Max tokens per session</span>
                   </div>
-                  <input
+                  <IntegerLimitInput
+                    id="studio-token-budget"
                     style={styles.modelInput}
-                    type="number"
-                    min={1000}
-                    max={1000000}
+                    min={TOKEN_BUDGET_BOUNDS.min}
+                    max={TOKEN_BUDGET_BOUNDS.max}
                     step={10000}
                     value={tokenBudget}
-                    onChange={(e) => setTokenBudget(Number(e.target.value) || 50000)}
+                    onCommit={setTokenBudget}
                   />
                 </div>
                 <div style={styles.modelRow}>
@@ -323,6 +324,7 @@ export const SettingsPanel: React.FC = () => {
                 </div>
               </div>
               <p style={styles.fieldHint}>
+                Changes apply when you leave a limit field or press Enter. Escape cancels an unfinished edit.{' '}
                 The token budget is a guardrail, not a billing cap: Studio counts what the provider reports and refuses a request the remainder cannot cover. The provider bills what it bills.
               </p>
             </div>
@@ -339,15 +341,14 @@ export const SettingsPanel: React.FC = () => {
                     <label htmlFor="studio-request-timeout" style={styles.modelRoleName}>Request timeout</label>
                     <span style={styles.modelRoleHint}>Seconds to wait for one reply ({REQUEST_TIMEOUT_BOUNDS_MS.min / 1000}–{REQUEST_TIMEOUT_BOUNDS_MS.max / 1000})</span>
                   </div>
-                  <input
+                  <IntegerLimitInput
                     id="studio-request-timeout"
                     style={styles.modelInput}
-                    type="number"
                     min={REQUEST_TIMEOUT_BOUNDS_MS.min / 1000}
                     max={REQUEST_TIMEOUT_BOUNDS_MS.max / 1000}
                     step={5}
                     value={Math.round(requestTimeoutMs / 1000)}
-                    onChange={(e) => setRequestTimeoutMs(Number(e.target.value) * 1000)}
+                    onCommit={(seconds) => setRequestTimeoutMs(seconds * 1000)}
                   />
                 </div>
                 <div style={styles.modelRow}>
@@ -355,15 +356,14 @@ export const SettingsPanel: React.FC = () => {
                     <label htmlFor="studio-max-output-tokens" style={styles.modelRoleName}>Max output tokens</label>
                     <span style={styles.modelRoleHint}>Per reply ({MAX_OUTPUT_TOKENS_BOUNDS.min.toLocaleString()}–{MAX_OUTPUT_TOKENS_BOUNDS.max.toLocaleString()})</span>
                   </div>
-                  <input
+                  <IntegerLimitInput
                     id="studio-max-output-tokens"
                     style={styles.modelInput}
-                    type="number"
                     min={MAX_OUTPUT_TOKENS_BOUNDS.min}
                     max={MAX_OUTPUT_TOKENS_BOUNDS.max}
                     step={1024}
                     value={maxOutputTokens}
-                    onChange={(e) => setMaxOutputTokens(Number(e.target.value))}
+                    onCommit={setMaxOutputTokens}
                   />
                 </div>
               </div>

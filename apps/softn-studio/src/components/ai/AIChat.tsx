@@ -56,6 +56,9 @@ export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettin
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Enter also commits an IME candidate. Safari can report composition as
+    // finished on that keydown but still marks it with the IME key code.
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();

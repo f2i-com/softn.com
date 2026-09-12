@@ -601,14 +601,16 @@ export function loadGlobalSettings(): GlobalSettings | null {
       !parsed.providers.every(isProvider) ||
       !isNullableString(parsed.activeProviderId) ||
       !isModelProfile(parsed.modelProfile) ||
-      !isNonNegativeInteger(parsed.maxIterations) ||
-      !isNonNegativeInteger(parsed.tokenBudget) ||
+      typeof parsed.maxIterations !== 'number' || !Number.isFinite(parsed.maxIterations) || parsed.maxIterations < 0 ||
+      typeof parsed.tokenBudget !== 'number' || !Number.isFinite(parsed.tokenBudget) || parsed.tokenBudget < 0 ||
       !isOptionalPositiveInteger(parsed.requestTimeoutMs) ||
       !isOptionalPositiveInteger(parsed.maxOutputTokens)
     ) {
       return null;
     }
-    return parsed as unknown as GlobalSettings;
+    // Older limit inputs persisted decimals. Keep the valid providers and
+    // normalize those counts instead of discarding every setting on reload.
+    return { ...parsed, maxIterations: Math.floor(parsed.maxIterations), tokenBudget: Math.floor(parsed.tokenBudget) } as unknown as GlobalSettings;
   } catch {
     return null;
   }

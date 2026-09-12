@@ -75,6 +75,17 @@ it('does not act behind an open dialog', () => {
   expect(actions.save).not.toHaveBeenCalled(); expect(actions.changeView).not.toHaveBeenCalled(); expect(actions.shortcuts).not.toHaveBeenCalled();
 });
 
+it('leaves panel-mounted modal drafts in control without invoking workspace or browser file actions', () => {
+  const actions = shortcutHarness();
+  host.setAttribute('role', 'dialog'); host.setAttribute('aria-modal', 'true');
+  const input = host.querySelector('textarea')!;
+  expect(press('s', { ctrlKey: true }, input).defaultPrevented).toBe(true);
+  expect(press('o', { metaKey: true }, input).defaultPrevented).toBe(true);
+  press('e', { ctrlKey: true, shiftKey: true }, input); press('?', {}, host);
+  expect(actions.save).not.toHaveBeenCalled(); expect(actions.open).not.toHaveBeenCalled();
+  expect(actions.export).not.toHaveBeenCalled(); expect(actions.shortcuts).not.toHaveBeenCalled();
+});
+
 it('keeps phone Save/Open keys available without opening hidden desktop panels', () => {
   const actions = shortcutHarness({ narrow: true });
   press('s', { ctrlKey: true }); press('o', { ctrlKey: true }); press('n', { ctrlKey: true }); press('3', { ctrlKey: true });

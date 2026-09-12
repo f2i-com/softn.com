@@ -18,6 +18,8 @@
 
 import { debug } from './debug';
 import { MAX_ZIP_INPUT_BYTES } from '@softn/core';
+import { ensureFieldIds } from './schemaFields';
+import { readBuilderSchema } from './builderSchemaMetadata';
 import { parseBundle, type BundleManifest } from './bundleExporter';
 import { parseSource, parseLogicFile } from './sourceParser';
 import { validateBundle as validateBundleIntegrity, resolveEntry, FILE_GROUPS, type FileGroup } from './bundleValidator';
@@ -30,6 +32,7 @@ import type {
   UIImport,
   EntityDef,
   SchemaField,
+  RelationshipDef,
 } from '../types/builder';
 
 export interface LoadedBundle {
@@ -40,6 +43,7 @@ export interface LoadedBundle {
   logicFiles: Map<string, LogicFileState>;
   collections: CollectionDef[];
   entities: EntityDef[];
+  relationships: RelationshipDef[];
   seedData: Map<string, Record<string, unknown>[]>;
   /** The identity of each live seed row, aligned with `seedData`, by entity id. */
   recordIdentity: Map<string, RecordIdentity[]>;
@@ -231,7 +235,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
       const declared = parsed.schema;
       let fields: SchemaField[] = [];
       if (declared && declared.fields.length > 0) {
-        fields = declared.fields;
+        fields = ensureFieldIds(declared.fields);
       } else if (!declared && records.length > 0) {
         const sampleData = records[0].data || {};
         for (const [key, value] of Object.entries(sampleData)) {
@@ -352,13 +356,16 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     console.warn('[bundleLoader] Warnings:', warnings);
   }
 
+  const diagram = readBuilderSchema(rawManifest, entities);
+
   return {
     manifest,
     rawManifest,
     uiFiles,
     logicFiles,
     collections,
-    entities,
+    entities: diagram.entities,
+    relationships: diagram.relationships,
     seedData,
     recordIdentity,
     tombstones,
