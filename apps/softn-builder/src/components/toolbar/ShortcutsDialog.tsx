@@ -2,7 +2,8 @@
  * ShortcutsDialog - Displays keyboard shortcuts
  */
 
-import React from 'react';
+import React, { useId } from 'react';
+import { useModalFocus } from '../../hooks/useModalFocus';
 
 const styles: Record<string, React.CSSProperties> = {
   overlay: {
@@ -163,14 +164,16 @@ function ShortcutKeys({ keys }: { keys: string[][] }) {
 }
 
 export function ShortcutsDialog({ isOpen, onClose }: ShortcutsDialogProps) {
+  const dialogRef = useModalFocus(isOpen, onClose);
+  const titleId = useId();
   if (!isOpen) return null;
 
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.dialog} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
-          <span style={styles.title}>Keyboard Shortcuts</span>
-          <button style={styles.closeButton} onClick={onClose}>
+          <span id={titleId} style={styles.title}>Keyboard Shortcuts</span>
+          <button type="button" aria-label="Close keyboard shortcuts" style={styles.closeButton} onClick={onClose}>
             {'\u00D7'}
           </button>
         </div>

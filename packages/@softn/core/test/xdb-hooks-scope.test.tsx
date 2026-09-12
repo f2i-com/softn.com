@@ -118,6 +118,24 @@ describe('useCollection', () => {
 });
 
 describe('useRecord', () => {
+  it('follows bulk edits and collection clears as well as single-record events', async () => {
+    const xdb = getXDB('hooks-a');
+    xdb.writeRecord('items', record('same-id', 'before'));
+    await mount(
+      <AppScopeProvider value={scopeFor('hooks-a')}>
+        <One id="same-id" />
+      </AppScopeProvider>
+    );
+    await act(async () => {
+      xdb.suppressNotifications();
+      xdb.updateInCollection('items', 'same-id', { label: 'after batch' });
+      xdb.resumeNotifications();
+    });
+    expect(container.querySelector('.one')?.textContent).toBe('after batch');
+    await act(async () => xdb.clear('items'));
+    expect(container.querySelector('.one')?.textContent).toBe('none');
+  });
+
   it('reads the store of the app it is rendered in, and follows it', async () => {
     // The same id in both stores, so a wrong store shows as a wrong label
     // rather than as nothing.

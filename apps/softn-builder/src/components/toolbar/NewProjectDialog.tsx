@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
+import { useModalFocus } from '../../hooks/useModalFocus';
 
 export type StarterTemplate = 'blank' | 'landing' | 'dashboard';
 
@@ -34,6 +35,9 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: '0 24px 52px rgba(15, 23, 42, 0.28)',
     border: '1px solid var(--line-soft)',
     overflow: 'hidden',
+    maxHeight: '90dvh',
+    display: 'flex',
+    flexDirection: 'column',
   },
   header: {
     padding: '16px 20px',
@@ -54,9 +58,12 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1,
     color: 'var(--dim)',
     cursor: 'pointer',
+    minWidth: 40, minHeight: 40,
   },
   body: {
     padding: 20,
+    overflowY: 'auto',
+    minHeight: 0,
     display: 'grid',
     gap: 14,
   },
@@ -84,6 +91,7 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--line)',
     fontSize: 14,
     resize: 'vertical',
+    maxHeight: 180,
   },
   row: {
     display: 'grid',
@@ -100,7 +108,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   templates: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
     gap: 10,
   },
   templateCard: {
@@ -161,6 +169,8 @@ const templateDescriptions: Record<StarterTemplate, string> = {
 };
 
 export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialogProps) {
+  const dialogRef = useModalFocus(isOpen, onClose, 'input');
+  const fieldId = useId();
   const [name, setName] = useState('Untitled App');
   const [description, setDescription] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('light');
@@ -187,18 +197,20 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
 
   return (
     <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.dialog} onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} style={styles.dialog} role="dialog" aria-modal="true" aria-labelledby={`${fieldId}-title`} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
         <div style={styles.header}>
-          <span style={styles.title}>Create New App</span>
+          <span id={`${fieldId}-title`} style={styles.title}>Create New App</span>
           <button style={styles.closeButton} onClick={onClose} aria-label="Close new app dialog">
             ×
           </button>
         </div>
 
+        <form style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }} onSubmit={(event) => { event.preventDefault(); handleCreate(); }}>
         <div style={styles.body}>
           <div>
-            <label style={styles.label}>App Name</label>
+            <label style={styles.label} htmlFor={`${fieldId}-name`}>App Name</label>
             <input
+              id={`${fieldId}-name`}
               style={styles.input}
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -207,8 +219,9 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
           </div>
 
           <div>
-            <label style={styles.label}>Description</label>
+            <label style={styles.label} htmlFor={`${fieldId}-description`}>Description</label>
             <textarea
+              id={`${fieldId}-description`}
               style={styles.textarea}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -218,8 +231,9 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
 
           <div style={styles.row}>
             <div>
-              <label style={styles.label}>Theme</label>
+              <label style={styles.label} htmlFor={`${fieldId}-theme`}>Theme</label>
               <select
+                id={`${fieldId}-theme`}
                 style={styles.select}
                 value={theme}
                 onChange={(e) => setTheme(e.target.value as 'light' | 'dark' | 'system')}
@@ -232,8 +246,8 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
           </div>
 
           <div>
-            <label style={styles.label}>Starter Template</label>
-            <div style={styles.templates}>
+            <span id={`${fieldId}-templates`} style={styles.label}>Starter Template</span>
+            <div style={styles.templates} role="group" aria-labelledby={`${fieldId}-templates`}>
               {(['blank', 'landing', 'dashboard'] as StarterTemplate[]).map((key) => {
                 const active = template === key;
                 return (
@@ -245,6 +259,7 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
                       ...(active ? styles.templateCardActive : {}),
                       textAlign: 'left',
                     }}
+                    aria-pressed={active}
                     onClick={() => setTemplate(key)}
                   >
                     <div style={styles.templateTitle}>
@@ -259,13 +274,14 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
         </div>
 
         <div style={styles.footer}>
-          <button style={{ ...styles.button, ...styles.cancel }} onClick={onClose}>
+          <button type="button" style={{ ...styles.button, ...styles.cancel }} onClick={onClose}>
             Cancel
           </button>
-          <button style={{ ...styles.button, ...styles.create }} onClick={handleCreate}>
+          <button type="submit" style={{ ...styles.button, ...styles.create }}>
             Create App
           </button>
         </div>
+        </form>
       </div>
     </div>
   );

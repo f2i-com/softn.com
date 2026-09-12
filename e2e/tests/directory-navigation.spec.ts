@@ -12,6 +12,29 @@ import { expect, test } from '@playwright/test';
 import { watchConsole } from '../helpers/console';
 import { SEARCH_DEMO } from '../helpers/demo';
 
+test('cross-page section links reach the section and source stays readable on a phone', async ({ page }) => {
+  await page.goto('/apps');
+  await page.locator('footer a[href="/#language"]').click();
+  const language = page.locator('#language');
+  await expect(language).toBeFocused();
+  await expect.poll(() => language.evaluate((element) => Math.round(element.getBoundingClientRect().top))).toBeLessThan(100);
+
+  await page.goto(`/apps?q=${SEARCH_DEMO.query}`);
+  await page.locator('a.app-card-name', { hasText: SEARCH_DEMO.cardName }).first().click();
+  await page.getByRole('button', { name: 'View source', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Wrap lines', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.source-current strong')).not.toBeEmpty();
+  await page.setViewportSize({ width: 360, height: 780 });
+  const files = page.getByLabel('File to read', { exact: true });
+  await expect(files).toBeVisible();
+  const options = await files.locator('option').evaluateAll((nodes) => nodes.map((node) => (node as HTMLOptionElement).value));
+  const script = options.find((name) => name.endsWith('.logic')) ?? options[options.length - 1];
+  await files.selectOption(script);
+  await expect(page.locator('.source-current strong')).toHaveText(script);
+  await expect(page.getByRole('region', { name: `Source of ${script}`, exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 test('search filters survive back and forward', async ({ page }, testInfo) => {
   const log = watchConsole(page, testInfo);
   await page.goto('/apps');

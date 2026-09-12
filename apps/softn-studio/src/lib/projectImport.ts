@@ -1,4 +1,4 @@
-import { readBundleEntries } from '@softn/core';
+import { MAX_ZIP_INPUT_BYTES, readBundleEntries } from '@softn/core';
 import { canonicalKey, normalizeProjectPath } from './paths';
 
 export interface ProjectImportEntry {
@@ -7,6 +7,18 @@ export interface ProjectImportEntry {
 }
 
 const TEXT_FILE = /\.(ui|logic|json|xdb|md|txt|html|css|js|ts|tsx|jsx|svg|xml|yaml|yml|toml)$/i;
+
+/** Reject an oversized local file before allocating its bytes. */
+export async function readProjectFile(file: Pick<File, 'name' | 'size' | 'arrayBuffer'>): Promise<Uint8Array> {
+  if (file.size > MAX_ZIP_INPUT_BYTES) {
+    throw new Error(`Choose a project file smaller than ${MAX_ZIP_INPUT_BYTES / 1024 / 1024} MB.`);
+  }
+  try {
+    return new Uint8Array(await file.arrayBuffer());
+  } catch {
+    throw new Error(`Could not read ${file.name}. Check that the file is still available, then choose it again.`);
+  }
+}
 
 /** Whether bytes begin with one of the valid ZIP record signatures. */
 export function hasZipSignature(data: Uint8Array): boolean {

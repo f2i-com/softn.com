@@ -1,4 +1,5 @@
 import { reopenBundle } from './lib/reopenBundle';
+import { useLocalBundleFile } from './lib/useLocalBundleFile';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 // From the minimal and theme entries, not the root barrel: the barrel is the
@@ -37,6 +38,7 @@ const appShellStyles = `
     display: flex;
     flex-direction: column;
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     background: var(--ink);
     color: var(--paper);
@@ -144,7 +146,7 @@ import {
   recordPermissionGrant,
   type CachedApp,
 } from './lib/appCache';
-import { displayNameFor, findPlaceholder, findRunningTab, findTabForUrlName } from './lib/tabIdentity';
+import { displayNameFor, findCachedAppTab, findPlaceholder, findRunningTab, findTabForUrlName } from './lib/tabIdentity';
 import { previousBuildFor, type PreviousBuild } from './lib/consentDiff';
 import { parseAppPath, buildAppPath, publicPath } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl } from './lib/remoteBundle';
@@ -1140,6 +1142,15 @@ function App(): React.ReactElement {
     [processBundleData, discardPlaceholder]
   );
 
+  // Home keeps apps mounted. Restoring/deleting their storage while they are
+  // running would leave stale in-memory records that can overwrite the change.
+  const canChangeAppData = useCallback((app: CachedApp): boolean => {
+    if (!findCachedAppTab(openTabsRef.current, app)) return true;
+    setError(new Error(`Stop “${app.name}” in Running apps before changing or removing its saved data. Returning Home keeps the app running.`));
+    setActiveTabId(null);
+    return false;
+  }, []);
+
   /** Handle opening a cached app */
   /**
    * Carry one build's records into another, then open it.
@@ -1152,6 +1163,7 @@ function App(): React.ReactElement {
   const handleAdoptData = useCallback(
     (from: CachedApp, to: CachedApp) => {
       if (!from.origin || !to.origin) return;
+      if (!canChangeAppData(to)) return;
       const result = copyAppData(from.origin, to.origin);
       if (!result.ok) {
         // Whole or not at all: the destination is as it was, and the user
@@ -1174,7 +1186,7 @@ function App(): React.ReactElement {
     },
     // handleOpenCached is defined below; referenced lazily inside the callback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [canChangeAppData]
   );
 
   const handleOpenCached = useCallback(
@@ -1185,9 +1197,7 @@ function App(): React.ReactElement {
       // card just re-focused the first one's tab. The user pressed a card for
       // one app and was shown a different app, with nothing to say so. Name is
       // kept only as a fallback for records cached before origins existed.
-      const existingTab = openTabsRef.current.find((t) =>
-        app.origin && t.appId ? t.appId === app.origin : t.name === app.name
-      );
+      const existingTab = findCachedAppTab(openTabsRef.current, app);
       if (existingTab) {
         setActiveTabId(existingTab.id);
         return;
@@ -1232,6 +1242,7 @@ function App(): React.ReactElement {
    * There is no path here by which a bad file becomes an empty app.
    */
   const handleImportData = useCallback(async (app: CachedApp, file: File) => {
+    if (!canChangeAppData(app)) return;
     let text: string;
     try {
       text = await file.text();
@@ -1246,6 +1257,8 @@ function App(): React.ReactElement {
       setActiveTabId(null);
       return;
     }
+    // Reading a file can take time; the app may have opened in the meantime.
+    if (!canChangeAppData(app)) return;
     const n = snapshotEntryCount(read.snapshot);
     let allowDifferentApp = false;
     if (read.snapshot.app.origin !== app.origin) {
@@ -1266,13 +1279,15 @@ function App(): React.ReactElement {
     }
     setNotice(`Imported ${result.copied} stored ${result.copied === 1 ? 'record' : 'records'} into "${app.name}" v${app.version} from ${file.name}.`);
     setApps(await getCachedApps());
-  }, []);
+  }, [canChangeAppData]);
 
   /** Handle removing a cached app */
   const handleRemove = useCallback(async (id: string) => {
     // Take the build's saved records with it. Leaving them behind meant every
     // removal orphaned data that nothing could reach or clear again.
     const going = await getCachedApp(id);
+    if (!going || !canChangeAppData(going)) return;
+    if (!window.confirm(`Remove “${going.name}” v${going.version} and its saved data from this browser? Export its data first if you want to keep a backup.`)) return;
     const dropped = removeAppData(going?.origin);
     await removeCachedApp(id);
     if (dropped > 0) {
@@ -1280,7 +1295,7 @@ function App(): React.ReactElement {
     }
     const updatedApps = await getCachedApps();
     setApps(updatedApps);
-  }, []);
+  }, [canChangeAppData]);
 
   /**
    * Hand the running app's bundle back as a file. What is downloaded is the
@@ -1362,22 +1377,19 @@ function App(): React.ReactElement {
   }, []);
 
   /** File input change handler */
+  const openLocalFile = useLocalBundleFile(handleOpenFile, setError);
   const handleFileInputChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
       try {
-        const buffer = await file.arrayBuffer();
-        handleOpenFile(new Uint8Array(buffer), file.name);
-      } catch (err) {
-        console.error('[SoftN Web] Failed to read file:', err);
-        setError(err instanceof Error ? err : new Error('Failed to read file'));
+        await openLocalFile(file);
       } finally {
         // Always reset so same file can be re-selected
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     },
-    [handleOpenFile]
+    [openLocalFile]
   );
 
   /**
@@ -1568,7 +1580,7 @@ function App(): React.ReactElement {
   const activeTab = isHome ? null : openTabs.find((t) => t.id === activeTabId) ?? null;
 
   return (
-    <DropZone onFile={handleOpenFile}>
+    <DropZone onFile={openLocalFile} onError={setError}>
       <style dangerouslySetInnerHTML={{ __html: appShellStyles }} />
       {/* Hidden file input for the + button */}
       <input
@@ -1644,6 +1656,7 @@ function App(): React.ReactElement {
             <ThemeProvider followSystem>
               <div
                 className="softn-shell-error"
+                role="alert"
                 style={{
                   position: 'absolute',
                   inset: 0,
@@ -1692,7 +1705,7 @@ function App(): React.ReactElement {
                       fontSize: '1.0625rem',
                       letterSpacing: '-0.02em',
                     }}>
-                      Failed to load application
+                      Unable to complete this action
                     </div>
                   </div>
                   <div style={{
@@ -1757,8 +1770,9 @@ function App(): React.ReactElement {
               running={openTabs.map((t) => ({ id: t.id, name: displayNameFor(t, openTabs), icon: t.icon }))}
               onResume={(id) => handleSelectTab(id)}
               onStop={(id) => handleCloseTab(id, true)}
-              onOpenFile={handleOpenFile}
+              onOpenFile={openLocalFile}
               onOpenCached={handleOpenCached}
+              onOpenUrl={(url) => { void openFromUrl(url); }}
               onRemove={handleRemove}
               onAdoptData={handleAdoptData}
               onExportData={handleExportData}

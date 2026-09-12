@@ -173,4 +173,45 @@ describe('failures are distinct and recoverable', () => {
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     expect((await failure(sendAIRequest(openai, request))).kind).toBe('network');
   });
+
+  // A real fetch resolves on headers, but its body can keep streaming.
+  // Model that separately: aborting fetch must still stop the body reader.
+  function delayedBody(status = 200) {
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Response(new ReadableStream({
+      start(stream) {
+        stream.enqueue(new TextEncoder().encode(status === 200 ? '{"choices":' : 'provider error'));
+        init.signal!.addEventListener('abort', () => stream.error(new DOMException('Aborted', 'AbortError')), { once: true });
+      },
+    }), { status }));
+  }
+
+  it.each([200, 429, 500])('times out while reading a stalled %s response body', async (status) => {
+    delayedBody(status);
+    expect((await failure(sendAIRequest(openai, { ...request, timeoutMs: 20 }))).kind).toBe('timeout');
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  it('keeps Stop connected after response headers arrive', async () => {
+    delayedBody();
+    const controller = new AbortController();
+    const pending = failure(sendAIRequest(openai, { ...request, signal: controller.signal }));
+    await Promise.resolve(); // fetch has returned its headers; body is still pending
+    controller.abort();
+    expect((await pending).kind).toBe('cancelled');
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+  });
+
+  it('does not send a request when the caller has already cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    expect((await failure(sendAIRequest(openai, { ...request, signal: controller.signal }))).kind).toBe('cancelled');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a dropped body connection as a network failure, not invalid JSON', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({
+      start(stream) { stream.error(new TypeError('Connection reset')); },
+    })));
+    expect((await failure(sendAIRequest(openai, request))).kind).toBe('network');
+  });
 });

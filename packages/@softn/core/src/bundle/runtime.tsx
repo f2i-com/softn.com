@@ -112,6 +112,7 @@ export function createBundleRuntime(
   // Object URLs for assets
   const assetUrls = new Map<string, string>();
   const windowAssetResolver: WindowAssetResolver = (path) => getAssetUrl(path);
+  let disposed = false;
 
   /**
    * Get a file from the bundle
@@ -126,6 +127,7 @@ export function createBundleRuntime(
    * Get an asset URL (creates object URL for binary assets)
    */
   function getAssetUrl(path: string): string {
+    if (disposed) return '';
     const normalizedPath = normalizePath(path);
 
     // Check cache
@@ -154,16 +156,14 @@ export function createBundleRuntime(
 
     // For text content, create a data URL
     const mimeType = getMimeType(normalizedPath);
-    let base64: string;
-    try {
-      base64 = btoa(content as string);
-    } catch {
-      // btoa fails on non-Latin1 chars; encode via TextEncoder + Uint8Array
-      const bytes = new TextEncoder().encode(content as string);
-      let binary = '';
-      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-      base64 = btoa(binary);
+    // btoa accepts Latin-1 characters without throwing, but their byte values
+    // are not UTF-8. Always encode text first, including accented SVG labels.
+    const bytes = new TextEncoder().encode(content as string);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
     }
+    const base64 = btoa(binary);
     const dataUrl = `data:${mimeType};base64,${base64}`;
     assetUrls.set(normalizedPath, dataUrl);
     return dataUrl;
@@ -278,15 +278,16 @@ export function createBundleRuntime(
    * Initialize XDB with bundled data
    */
   async function initializeXDB(signal?: AbortSignal): Promise<void> {
+    if (disposed || signal?.aborted) return;
     const xdb = getXDB(options.appId);
     // Desktop XDB hydrates from SQLite asynchronously. Seeding before it is
     // ready can mistake a persisted tombstone for a missing row and upsert the
     // bundled live copy over it.
     await xdb.isReady;
-    if (signal?.aborted) return;
+    if (disposed || signal?.aborted) return;
 
     for (const [, data] of bundle.xdbData) {
-      if (signal?.aborted) return;
+      if (disposed || signal?.aborted) return;
       seedXDBBundleData(xdb, data);
     }
   }
@@ -295,6 +296,7 @@ export function createBundleRuntime(
    * Render the main entry point
    */
   function render(contextOverrides: Partial<SoftNRenderContext> = {}): React.ReactNode {
+    if (disposed) throw new Error('Bundle runtime has been disposed');
     const mainPath = bundle.manifest.main;
     const doc = parseUI(mainPath);
     registerWindowAssetResolver(windowAssetResolver);
@@ -329,6 +331,8 @@ export function createBundleRuntime(
    * Dispose of all resources: revoke blob URLs, clear caches
    */
   function dispose(): void {
+    if (disposed) return;
+    disposed = true;
     unregisterWindowAssetResolver(windowAssetResolver);
     for (const [, url] of assetUrls) {
       // Only revoke blob: URLs (not data: URLs)
@@ -387,7 +391,22 @@ export interface SoftNBundleRendererProps {
 /**
  * React component that loads and renders a .softn bundle
  */
-export function SoftNBundleRenderer({
+export function SoftNBundleRenderer(props: SoftNBundleRendererProps): React.ReactElement | null {
+  const { data, url, filePath, bundle, appId } = props;
+  const source = useMemo(
+    () => ({ data, url, filePath, bundle, appId }),
+    [data, url, filePath, bundle, appId]
+  );
+  const [instance, setInstance] = useState({ source, generation: 0 });
+  if (instance.source !== source) {
+    // Reset before rendering children: changing an app/source must not carry
+    // local input state or mounted component effects into the next app scope.
+    setInstance({ source, generation: instance.generation + 1 });
+  }
+  return <BundleRendererInstance key={instance.generation} {...props} />;
+}
+
+function BundleRendererInstance({
   data,
   url,
   filePath,

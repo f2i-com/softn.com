@@ -66,10 +66,6 @@ const frameBarStyles = `
     border: none;
     border-radius: 7px;
     flex-shrink: 0;
-  }
-  .softn-frame-home svg {
-    /* The mark is never the thing that gives way when the bar is crowded. */
-    flex-shrink: 0;
     background: transparent;
     color: var(--paper);
     font: inherit;
@@ -78,6 +74,7 @@ const frameBarStyles = `
     min-width: 0;
     transition: background 160ms var(--ease);
   }
+  .softn-frame-home svg { flex-shrink: 0; }
   .softn-frame-home:hover { background: var(--ink-3); }
   .softn-frame-home:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
   .softn-frame-home small {
@@ -97,6 +94,7 @@ const frameBarStyles = `
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .softn-frame-name-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .softn-frame-icon {
     width: 18px; height: 18px;
     border-radius: 5px;
@@ -150,6 +148,7 @@ const frameBarStyles = `
     color: var(--dim); font: inherit; font-size: 1rem; letter-spacing: 0.08em; cursor: pointer;
   }
   .softn-frame-menu-btn:hover, .softn-frame-menu-btn[aria-expanded="true"] { color: var(--paper); border-color: var(--dimmer); }
+  .softn-frame-menu-btn:focus-visible, .softn-frame-menu-item:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
   .softn-frame-menu-list {
     position: absolute;
     top: calc(100% + 4px);
@@ -175,7 +174,9 @@ const frameBarStyles = `
   .softn-frame-menu-item:hover { background: var(--ink-3); }
   .softn-frame-menu-note { color: var(--dim); font-size: 0.75rem; padding: 6px 10px 8px; line-height: 1.4; }
   .softn-frame-menu-note a { color: var(--paper); text-decoration: underline; text-underline-offset: 2px; }
+  .softn-frame-menu-note input { width: 100%; margin-top: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--paper); background: var(--ink); font: inherit; }
   .softn-frame-menu-sep { height: 1px; background: var(--line-soft); margin: 4px 6px; }
+  .softn-frame-mobile-icon { display: none; }
 
   @media (max-width: 640px) {
     .softn-frame-bar { padding: 0.3rem var(--gutter); gap: 0.4rem; }
@@ -183,7 +184,15 @@ const frameBarStyles = `
     .softn-frame-hide-label, .softn-frame-home small { display: none; }
   }
   @media (pointer: coarse) {
-    .softn-frame-btn, .softn-frame-menu-btn, .softn-frame-home { min-height: 36px; }
+    .softn-frame-btn, .softn-frame-menu-btn, .softn-frame-home { min-height: 40px; min-width: 40px; }
+    .softn-frame-menu-item { min-height: 44px; }
+  }
+  @media (max-width: 480px) {
+    .softn-frame-bar { padding: 0.2rem 0.65rem; }
+    .softn-frame-btn { min-width: 36px; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+    .softn-frame-mobile-label { display: none; }
+    .softn-frame-mobile-icon { display: inline-flex; }
+    .softn-frame-actions { gap: 0.25rem; }
   }
 `;
 
@@ -196,20 +205,42 @@ const frameBarStyles = `
 function AppMenu({ tab, onDownload }: { tab: TabInfo; onDownload?: (id: string) => void }): React.ReactElement {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copyAttempt = useRef(0);
+
+  useEffect(() => () => {
+    copyAttempt.current++;
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+  }, []);
 
   useEffect(() => {
-    if (!open) return undefined;
-    const onDoc = (e: MouseEvent) => {
+    if (!open) {
+      copyAttempt.current++;
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      setCopied(false);
+      setCopyFailed(false);
+      return undefined;
+    }
+    ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    const onDoc = (e: Event) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
     };
     document.addEventListener('mousedown', onDoc);
+    document.addEventListener('focusin', onDoc);
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('focusin', onDoc);
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
@@ -220,32 +251,56 @@ function AppMenu({ tab, onDownload }: { tab: TabInfo; onDownload?: (id: string) 
 
   const copy = async () => {
     if (!share) return;
+    const attempt = ++copyAttempt.current;
+    setCopyFailed(false);
     try {
       await navigator.clipboard.writeText(share);
+      if (attempt !== copyAttempt.current) return;
       setCopied(true);
-      setTimeout(() => {
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => {
         setCopied(false);
         setOpen(false);
+        triggerRef.current?.focus();
       }, 900);
     } catch {
-      setOpen(false);
+      if (attempt === copyAttempt.current) setCopyFailed(true);
     }
+  };
+
+  const navigateMenu = (event: React.KeyboardEvent) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const items = [...(ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [])];
+    if (!items.length) return;
+    event.preventDefault();
+    const current = items.indexOf(document.activeElement as HTMLElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+      : event.key === 'ArrowDown' ? (current + 1) % items.length : (current - 1 + items.length) % items.length;
+    items[next].focus();
   };
 
   return (
     <div className="softn-frame-menu" ref={ref}>
       <button
+        ref={triggerRef}
+        type="button"
         className="softn-frame-menu-btn"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`More for ${tab.name}`}
         title={`More for ${tab.name}`}
         onClick={() => setOpen((o) => !o)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
       >
         ⋯
       </button>
       {open && (
-        <div className="softn-frame-menu-list" role="menu">
+        <div className="softn-frame-menu-list" role="menu" aria-label={`Actions for ${tab.name}`} onKeyDown={navigateMenu}>
           {onDownload && (
             <button
               role="menuitem"
@@ -276,10 +331,13 @@ function AppMenu({ tab, onDownload }: { tab: TabInfo; onDownload?: (id: string) 
               <button role="menuitem" className="softn-frame-menu-item" onClick={copy}>
                 {copied ? 'Copied' : 'Copy share link'}
               </button>
+              {copyFailed && <div className="softn-frame-menu-note" role="status">Could not copy automatically. Select and copy this link:
+                <input aria-label="Share link" readOnly value={share ?? ''} onFocus={(event) => event.currentTarget.select()} />
+              </div>}
             </>
           ) : (
             <div className="softn-frame-menu-note">
-              This app was opened from a file. <a href="/publish">Publish it</a> to share it, remix it or edit it
+              This app was opened from a file. <a href="/publish" role="menuitem">Publish it</a> to share it, remix it or edit it
               online.
             </div>
           )}
@@ -301,6 +359,7 @@ export function FrameBar({
   closeTitle = 'Stop the app and go back to the runtime',
 }: FrameBarProps): React.ReactElement {
   const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenError, setFullscreenError] = useState<string | null>(null);
 
   useEffect(() => {
     const onFs = () => setFullscreen(document.fullscreenElement === fullscreenTarget.current);
@@ -308,11 +367,18 @@ export function FrameBar({
     return () => document.removeEventListener('fullscreenchange', onFs);
   }, [fullscreenTarget]);
 
-  const toggleFullscreen = useCallback(() => {
+  const toggleFullscreen = useCallback(async () => {
     const el = fullscreenTarget.current;
     if (!el) return;
-    if (document.fullscreenElement !== el) void el.requestFullscreen?.();
-    else void document.exitFullscreen?.();
+    setFullscreenError(null);
+    try {
+      if (document.fullscreenElement !== el) {
+        if (!el.requestFullscreen) throw new Error('Fullscreen is unavailable');
+        await el.requestFullscreen();
+      } else await document.exitFullscreen?.();
+    } catch {
+      setFullscreenError('Fullscreen is unavailable. Hide the bar for more room.');
+    }
   }, [fullscreenTarget]);
 
   return (
@@ -320,7 +386,7 @@ export function FrameBar({
       <style dangerouslySetInnerHTML={{ __html: frameBarStyles }} />
       <div className="softn-frame-bar">
         <div className="softn-frame-left">
-          <button type="button" className="softn-frame-home" onClick={onHome} title={homeTitle}>
+          <button type="button" className="softn-frame-home" onClick={onHome} title={homeTitle} aria-label={homeTitle}>
             <Mark size={22} radius={6} title="SoftN" />
             <small>{homeLabel}</small>
           </button>
@@ -331,22 +397,25 @@ export function FrameBar({
             ) : (
               <span className="softn-frame-icon-letter" aria-hidden="true">{tab.name.charAt(0).toUpperCase()}</span>
             )}
-            {tab.name}
+            <span className="softn-frame-name-label" title={tab.name}>{tab.name}</span>
           </span>
         </div>
         <span className="softn-frame-actions">
-          <AppMenu tab={tab} onDownload={onDownload} />
-          <button type="button" className="softn-frame-btn" onClick={onHide} title="Hide this bar and give the app the whole screen">
-            Hide <span className="softn-frame-hide-label">bar</span>
+          <AppMenu key={tab.id} tab={tab} onDownload={onDownload} />
+          <button type="button" className="softn-frame-btn" onClick={onHide} aria-label="Hide the app bar" title="Hide this bar and give the app the whole screen">
+            <span className="softn-frame-mobile-label">Hide <span className="softn-frame-hide-label">bar</span></span><span className="softn-frame-mobile-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m6 15 6-6 6 6" /></svg></span>
           </button>
-          <button type="button" className="softn-frame-btn" onClick={toggleFullscreen}>
-            {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          <button type="button" className="softn-frame-btn" onClick={() => { void toggleFullscreen(); }} aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+            <span className="softn-frame-mobile-label">{fullscreen ? 'Exit fullscreen' : 'Fullscreen'}</span><span className="softn-frame-mobile-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d={fullscreen ? 'M9 3v6H3m12-6v6h6M3 15h6v6m12-6h-6v6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6'} /></svg></span>
           </button>
           <button type="button" className="softn-frame-btn softn-frame-close" onClick={onClose} aria-label={closeTitle} title={closeTitle}>
-            Close
+            <span className="softn-frame-mobile-label">Close</span><span className="softn-frame-mobile-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m6 6 12 12M6 18 18 6" /></svg></span>
           </button>
         </span>
       </div>
+      {fullscreenError && <div className="softn-frame-menu-note" role="status" style={{ position: 'absolute', top: '3rem', right: '0.75rem', maxWidth: 'min(320px, calc(100vw - 24px))', zIndex: 60, background: 'var(--ink-2)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+        {fullscreenError} <button type="button" className="softn-frame-btn" onClick={() => setFullscreenError(null)} aria-label="Dismiss fullscreen message">×</button>
+      </div>}
     </>
   );
 }

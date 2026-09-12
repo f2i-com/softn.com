@@ -2,11 +2,13 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { coreWorkerAssetPlugin } from '../../scripts/core-worker-assets.mjs';
+import { retireServiceWorkersPlugin } from '../../scripts/dev-service-worker.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
 export default defineConfig({
   plugins: [
+    retireServiceWorkersPlugin(),
     react(),
     coreWorkerAssetPlugin(),
     VitePWA({

@@ -156,6 +156,51 @@ describe('XDB Service (Tauri mode)', () => {
     expect(records[0].data.title).toBe('A');
   });
 
+  it('persists collection-scoped edits and deletes to the desktop backend', async () => {
+    backend.set('tasks', [makeRecord('scoped-record', 'tasks', { title: 'before' })]);
+    const xdb = new XDBService(undefined, 'scoped-write', 'scoped-write-app');
+    await xdb.isReady;
+    const onMutation = vi.fn();
+    const unsubscribe = xdb.onMutation(onMutation);
+    try {
+      expect(xdb.updateInCollection('tasks', 'scoped-record', { title: 'after' })?.data.title).toBe(
+        'after'
+      );
+      await flushPromises();
+      expect(backend.get('tasks')?.[0].data.title).toBe('after');
+      expect(xdb.deleteFromCollection('tasks', 'scoped-record')).toBe(true);
+      await flushPromises();
+      expect(backend.get('tasks')?.[0].deleted).toBe(true);
+      expect(onMutation.mock.calls.map(([event]) => event.type)).toEqual(['update', 'delete']);
+      expect(
+        invokeMock.mock.calls
+          .filter(([command]: [string]) => ['update_record', 'delete_record'].includes(command))
+          .every(([, args]: [string, Record<string, unknown>]) => args.appId === 'scoped-write-app')
+      ).toBe(true);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it('notifies server sync after acknowledged desktop creates, edits and deletes', async () => {
+    const xdb = new XDBService(undefined, 'acknowledged-write', 'acknowledged-write-app');
+    await xdb.isReady;
+    const onMutation = vi.fn();
+    const unsubscribe = xdb.onMutation(onMutation);
+    try {
+      const record = await xdb.createAsync('tasks', { title: 'before' });
+      await xdb.updateAsync(record.id, { title: 'after' });
+      await xdb.deleteAsync(record.id);
+      expect(onMutation.mock.calls.map(([event]) => event.type)).toEqual([
+        'create',
+        'update',
+        'delete',
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it('rehydrates collection on sync event', async () => {
     backend.set('tasks', [makeRecord('1', 'tasks', { title: 'A' })]);
     const xdb = new XDBService(undefined, 'test-xdb');

@@ -1,0 +1,65 @@
+let title = "";
+let lane = "Design";
+let filter = "all";
+let rows = [];
+let shown = [];
+let activeCount = 0;
+let doneCount = 0;
+let totalCount = 0;
+let message = "Your sample workspace is ready. Try adding a task.";
+let error = "";
+
+function refresh() {
+  rows = db.query("tasks");
+  activeCount = 0;
+  doneCount = 0;
+  shown = [];
+  for (let i = 0; i < rows.length; i = i + 1) {
+    let record = rows[i];
+    if (record.data.done) doneCount = doneCount + 1;
+    else activeCount = activeCount + 1;
+    if (filter === "all" || (filter === "active" && !record.data.done) || (filter === "done" && record.data.done)) {
+      shown.push(record);
+    }
+  }
+  totalCount = rows.length;
+}
+
+function addTask() {
+  const clean = String(title || "").trim();
+  if (!clean) {
+    error = "Give your task a name first.";
+    return;
+  }
+  if (clean.length > 100) {
+    error = "Keep the task name under 100 characters.";
+    return;
+  }
+  db.create("tasks", { title: clean, lane: lane, done: false });
+  title = "";
+  error = "";
+  filter = "all";
+  refresh();
+  message = "Task saved to the collection. Your dashboard is up to date.";
+}
+
+function toggleTask(id) {
+  for (let i = 0; i < rows.length; i = i + 1) {
+    if (rows[i].id === id) {
+      const next = !rows[i].data.done;
+      db.update(id, { done: next });
+      message = next ? "Task completed. Your totals have updated." : "Task reopened. Back on your list.";
+      break;
+    }
+  }
+  refresh();
+}
+
+function showTasks(value) {
+  filter = value;
+  refresh();
+}
+
+function _init() {
+  refresh();
+}

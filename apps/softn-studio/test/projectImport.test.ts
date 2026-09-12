@@ -1,14 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { MAX_ZIP_INPUT_BYTES } from '@softn/core';
 import { strToU8, zipSync } from 'fflate';
 import {
   hasZipSignature,
   normalizeProjectPath,
   readJsonProject,
   readProjectArchive,
+  readProjectFile,
   resolveProjectRelativePath,
 } from '../src/lib/projectImport';
 
 describe('project import', () => {
+  it('rejects an oversized local file before reading or allocating its bytes', async () => {
+    const arrayBuffer = vi.fn();
+    await expect(readProjectFile({ name: 'large.softn', size: MAX_ZIP_INPUT_BYTES + 1, arrayBuffer })).rejects.toThrow('smaller than 200 MB');
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('explains a local file read failure and accepts an available file', async () => {
+    await expect(readProjectFile({ name: 'missing.softn', size: 10, arrayBuffer: async () => { throw new Error('NotReadableError'); } })).rejects.toThrow('Check that the file is still available');
+    const bytes = new Uint8Array([1, 2, 3]);
+    await expect(readProjectFile({ name: 'notes.SOFTN', size: bytes.length, arrayBuffer: async () => bytes.buffer })).resolves.toEqual(bytes);
+  });
+
   it('recognizes normal and empty ZIP records without treating arbitrary data as an archive', () => {
     expect(hasZipSignature(zipSync({ 'hello.txt': strToU8('hello') }))).toBe(true);
     expect(hasZipSignature(zipSync({}))).toBe(true);

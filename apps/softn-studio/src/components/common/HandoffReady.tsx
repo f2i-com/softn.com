@@ -41,7 +41,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '8px 12px',
     borderRadius: 10,
     border: '1px solid var(--studio-accent)',
-    background: 'var(--studio-panel)',
+    background: 'var(--studio-panel-strong)',
     color: 'var(--studio-text)',
     fontSize: 12,
     boxShadow: '0 8px 24px rgba(0,0,0,0.18)',

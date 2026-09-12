@@ -174,74 +174,80 @@ export async function sendAIRequest(
     else request.signal.addEventListener('abort', onCallerAbort, { once: true });
   }
 
-  let resp: Response;
   try {
-    resp = await fetch(url, {
+    // Cancellation also covers downloading the body, not just receiving
+    // headers. Local models often send headers long before their reply.
+    controller.signal.throwIfAborted();
+    const resp = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+
+    if (!resp.ok) {
+      const text = (await resp.text()).slice(0, 500);
+      controller.signal.throwIfAborted();
+      if (resp.status === 429) {
+        const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'));
+        throw new AIProviderError(
+          'rate-limited',
+          `The provider is rate-limiting requests${retryAfterMs !== undefined ? `; it asked for a wait of ${Math.ceil(retryAfterMs / 1000)} s` : ''}. ${text}`.trim(),
+          { status: 429, retryAfterMs },
+        );
+      }
+      throw new AIProviderError('http', `AI request failed (${resp.status}): ${text}`, { status: resp.status });
+    }
+
+    const responseText = await resp.text();
+    controller.signal.throwIfAborted();
+    let data: unknown;
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      throw new AIProviderError('invalid-response', 'AI response was not valid JSON');
+    }
+    if (!isRecord(data)) throw new AIProviderError('invalid-response', 'AI response was not an object');
+
+    if (isAnthropicFormat) {
+      // Every text block counts, not only the first: a reply may carry a
+      // non-text block first and its text after it. stop_reason is the
+      // provider's word on whether the reply is whole: `max_tokens` means it
+      // was cut at the output limit, `refusal` that the model declined.
+      const { text, blocks } = readBlocks(data.content);
+      const stopReason = typeof data.stop_reason === 'string' ? data.stop_reason : null;
+      const usage = isRecord(data.usage) ? data.usage : {};
+      return {
+        content: text,
+        status: statusFor(stopReason, text, { truncated: ['max_tokens'], refused: ['refusal'] }),
+        stopReason,
+        blocks,
+        usage: { inputTokens: sanitizeCount(usage.input_tokens), outputTokens: sanitizeCount(usage.output_tokens) },
+      };
+    }
+
+    const choice = Array.isArray(data.choices) && isRecord(data.choices[0]) ? data.choices[0] : {};
+    const message = isRecord(choice.message) ? choice.message : {};
+    const { text, blocks } = readBlocks(message.content);
+    const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : null;
+    const refused = typeof message.refusal === 'string' && message.refusal.length > 0;
+    const usage = isRecord(data.usage) ? data.usage : {};
+    return {
+      content: text,
+      status: refused ? 'refused' : statusFor(finishReason, text, { truncated: ['length'], refused: ['content_filter'] }),
+      stopReason: finishReason,
+      blocks,
+      usage: { inputTokens: sanitizeCount(usage.prompt_tokens), outputTokens: sanitizeCount(usage.completion_tokens) },
+    };
   } catch (err) {
     if (request.signal?.aborted) throw new AIProviderError('cancelled', 'The request was cancelled.');
-    if (timedOut) throw new AIProviderError('timeout', `The provider did not answer within ${Math.round(timeoutMs / 1000)} s.`);
-    throw new AIProviderError('network', `The provider could not be reached: ${err instanceof Error ? err.message : String(err)}`);
+    if (timedOut) throw new AIProviderError('timeout', `The provider did not finish its reply within ${Math.round(timeoutMs / 1000)} s.`);
+    if (err instanceof AIProviderError) throw err;
+    throw new AIProviderError('network', `The provider connection failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {
     clearTimeout(timer);
     request.signal?.removeEventListener('abort', onCallerAbort);
   }
-
-  if (!resp.ok) {
-    const text = (await resp.text().catch(() => '')).slice(0, 500);
-    if (resp.status === 429) {
-      const retryAfterMs = parseRetryAfter(resp.headers.get('retry-after'));
-      throw new AIProviderError(
-        'rate-limited',
-        `The provider is rate-limiting requests${retryAfterMs !== undefined ? `; it asked for a wait of ${Math.ceil(retryAfterMs / 1000)} s` : ''}. ${text}`.trim(),
-        { status: 429, retryAfterMs },
-      );
-    }
-    throw new AIProviderError('http', `AI request failed (${resp.status}): ${text}`, { status: resp.status });
-  }
-
-  let data: unknown;
-  try {
-    data = await resp.json();
-  } catch {
-    throw new AIProviderError('invalid-response', 'AI response was not valid JSON');
-  }
-  if (!isRecord(data)) throw new AIProviderError('invalid-response', 'AI response was not an object');
-
-  if (isAnthropicFormat) {
-    // Every text block counts, not only the first: a reply may carry a
-    // non-text block first and its text after it. stop_reason is the
-    // provider's word on whether the reply is whole: `max_tokens` means it
-    // was cut at the output limit, `refusal` that the model declined.
-    const { text, blocks } = readBlocks(data.content);
-    const stopReason = typeof data.stop_reason === 'string' ? data.stop_reason : null;
-    const usage = isRecord(data.usage) ? data.usage : {};
-    return {
-      content: text,
-      status: statusFor(stopReason, text, { truncated: ['max_tokens'], refused: ['refusal'] }),
-      stopReason,
-      blocks,
-      usage: { inputTokens: sanitizeCount(usage.input_tokens), outputTokens: sanitizeCount(usage.output_tokens) },
-    };
-  }
-
-  const choice = Array.isArray(data.choices) && isRecord(data.choices[0]) ? data.choices[0] : {};
-  const message = isRecord(choice.message) ? choice.message : {};
-  const { text, blocks } = readBlocks(message.content);
-  const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : null;
-  const refused = typeof message.refusal === 'string' && message.refusal.length > 0;
-  const usage = isRecord(data.usage) ? data.usage : {};
-  return {
-    content: text,
-    status: refused ? 'refused' : statusFor(finishReason, text, { truncated: ['length'], refused: ['content_filter'] }),
-    stopReason: finishReason,
-    blocks,
-    usage: { inputTokens: sanitizeCount(usage.prompt_tokens), outputTokens: sanitizeCount(usage.completion_tokens) },
-  };
 }
 
 function statusFor(stop: string | null, text: string, reasons: { truncated: string[]; refused: string[] }): AICompletionStatus {

@@ -56,6 +56,27 @@ afterEach(() => {
 });
 
 describe('focus on navigation', () => {
+  it('resolves a cross-page fragment after the destination renders', async () => {
+    const frames: FrameRequestCallback[] = [];
+    const scroll = vi.fn();
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.push(callback); return frames.length; });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    const original = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    try {
+      act(() => navigate('/apps'));
+      await settle();
+      act(() => navigate('/#language'));
+      await settle();
+      act(() => frames.forEach((callback) => callback(0)));
+      expect(document.activeElement?.id).toBe('language');
+      expect(scroll).toHaveBeenCalledWith({ block: 'start' });
+    } finally {
+      HTMLElement.prototype.scrollIntoView = original;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('moves to the main content when the path changes', async () => {
     await settle();
     expect(document.activeElement).toBe(document.body);

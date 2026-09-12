@@ -22,10 +22,10 @@ const stroke = {
 const DOORS: Door[] = [
   {
     name: 'Studio',
-    copy: 'Describe the app you want, review the blueprint it proposes, then edit what comes back. Bring your own model key — it runs against whichever provider you configure.',
+    copy: 'Describe your idea, review a plan and let your chosen AI write the app. Inspect the files, preview each change and undo edits as you go.',
     href: STUDIO_HREF,
     action: 'Open Studio',
-    badge: 'Installable',
+    badge: 'Your AI',
     glyph: (
       <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
         <circle cx="5" cy="6" r="2.6" {...stroke} />
@@ -37,10 +37,10 @@ const DOORS: Door[] = [
   },
   {
     name: 'Builder',
-    copy: 'Drag components onto a canvas, draw the data schema, watch it render as you go, and export a .softn bundle. Monaco is right there for the parts you would rather type.',
+    copy: 'Arrange components, shape your data collections and test the result at different screen sizes. Switch to code when you want finer control.',
     href: BUILDER_HREF,
     action: 'Open Builder',
-    badge: 'Installable',
+    badge: 'Visual + code',
     glyph: (
       <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
         <rect x="3.5" y="4.5" width="19" height="14" rx="2" {...stroke} />
@@ -52,10 +52,10 @@ const DOORS: Door[] = [
   },
   {
     name: 'Web runtime',
-    copy: 'Drop a .softn file on it and the app runs — tabs, real URLs, per-app permission prompts, and everything cached so it opens again with the network off.',
+    copy: 'Open a .softn file, review its permissions and start using it. Keep apps in your library, export their saved data and see which are ready to open offline.',
     href: WEB_HREF,
     action: 'Open the runtime',
-    badge: 'Installable',
+    badge: 'Your library',
     glyph: (
       <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
         <rect x="3" y="4.5" width="20" height="17" rx="2.4" {...stroke} />
@@ -79,11 +79,11 @@ export function Doors(): React.ReactElement {
     <Reveal as="section" className="band" id="apps">
       <div className="wrap">
         <div className="band-head">
-          <span className="eyebrow">Three ways in</span>
-          <h2 className="band-title">Nothing to install, unless you want to.</h2>
+          <span className="eyebrow">A connected workspace</span>
+          <h2 className="band-title">Create, refine, run.</h2>
           <p className="band-sub">
-            All three are ordinary web apps. Each one also installs to your dock or Start menu and keeps working with
-            the network off, because the engine, the components and your projects are already on the machine.
+            Start in Studio, refine in Builder and open in the runtime. Your <code>.softn</code> bundle carries the
+            project’s interface, logic and assets between them. All three open directly in your browser.
           </p>
         </div>
 

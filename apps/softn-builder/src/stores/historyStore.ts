@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { useProjectStore } from './projectStore';
 import type { CanvasElement, HistoryEntry } from '../types/builder';
 
 interface HistoryStore {
@@ -75,6 +76,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       future: [current, ...state.future],
     }));
 
+    useProjectStore.getState().markDirty();
     return previous;
   },
 
@@ -89,6 +91,7 @@ export const useHistoryStore = create<HistoryStore>((set, get) => ({
       future: state.future.slice(1),
     }));
 
+    useProjectStore.getState().markDirty();
     return next;
   },
 

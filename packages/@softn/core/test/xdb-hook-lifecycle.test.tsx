@@ -23,9 +23,13 @@ function DataProbe({
   appId: string;
   onRefresh?: (refresh: () => void) => void;
 }) {
-  const { data, refresh } = useDataBlock(document, appId);
+  const { data, refresh, error, loading } = useDataBlock(document, appId);
   onRefresh?.(refresh);
-  return <span>{String(data.items?.[0]?.data.label ?? '')}</span>;
+  return (
+    <span data-error={error?.message ?? ''} data-loading={String(loading)}>
+      {String(data.items?.[0]?.data.label ?? '')}
+    </span>
+  );
 }
 
 function record(label: string): XDBRecord {
@@ -63,6 +67,95 @@ afterEach(() => {
 });
 
 describe('useDataBlock lifecycle', () => {
+  it.each(['initial', 'manual', 'subscription'] as const)(
+    'does not let an older %s read replace a completed manual refresh',
+    async (origin) => {
+      const appId = `HookOrderedRefresh-${origin}`;
+      const xdb = getXDB(appId);
+      const stale = deferred<XDBRecord[]>();
+      vi.spyOn(xdb, 'isP2PAvailable').mockReturnValue(true);
+      const reads = vi.spyOn(xdb, 'getAllAsync');
+      if (origin !== 'initial') reads.mockResolvedValueOnce([record('Before')]);
+      reads.mockReturnValueOnce(stale.promise).mockResolvedValueOnce([record('Newest')]);
+      let notify = () => {};
+      vi.spyOn(xdb, 'subscribe').mockImplementation((_name, callback) => {
+        notify = () => callback({ type: 'refresh', collection: 'items', records: [] });
+        return () => {};
+      });
+      let refresh = () => {};
+      const container = document.createElement('div');
+      const root = createRoot(container);
+      try {
+        await act(async () => {
+          root.render(
+            <DataProbe
+              document={documentWithData}
+              appId={appId}
+              onRefresh={(next) => {
+                refresh = next;
+              }}
+            />
+          );
+        });
+        if (origin === 'manual') await act(async () => refresh());
+        if (origin === 'subscription') {
+          vi.useFakeTimers();
+          await act(async () => {
+            notify();
+            await vi.advanceTimersByTimeAsync(120);
+          });
+          vi.useRealTimers();
+        }
+        await act(async () => refresh());
+        expect(container.textContent).toBe('Newest');
+        expect(container.querySelector('span')?.dataset.loading).toBe('false');
+        await act(async () => {
+          stale.resolve([record('Stale')]);
+          await stale.promise;
+        });
+        expect(container.textContent).toBe('Newest');
+        expect(container.querySelector('span')?.dataset.error).toBe('');
+      } finally {
+        vi.useRealTimers();
+        act(() => root.unmount());
+      }
+    }
+  );
+
+  it('clears a failed read after a successful refresh even when records are unchanged', async () => {
+    const appId = 'HookRefreshRecovery';
+    const xdb = getXDB(appId);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(xdb, 'isP2PAvailable').mockReturnValue(true);
+    vi.spyOn(xdb, 'getAllAsync')
+      .mockResolvedValueOnce([record('Current')])
+      .mockRejectedValueOnce(new Error('Temporary connection failure'))
+      .mockResolvedValueOnce([record('Current')]);
+    let refresh = () => {};
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      await act(async () =>
+        root.render(
+          <DataProbe
+            document={documentWithData}
+            appId={appId}
+            onRefresh={(next) => {
+              refresh = next;
+            }}
+          />
+        )
+      );
+      await act(async () => refresh());
+      expect(container.querySelector('span')?.dataset.error).toBe('Temporary connection failure');
+      await act(async () => refresh());
+      expect(container.textContent).toBe('Current');
+      expect(container.querySelector('span')?.dataset.error).toBe('');
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
   it('ignores an initial fetch that resolves after its app namespace is replaced', async () => {
     const appA = getXDB('HookInitialLifecycleA');
     const appB = getXDB('HookInitialLifecycleB');

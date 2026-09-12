@@ -177,7 +177,7 @@ describe('?open= pointing at bytes that are not a bundle', () => {
 
     const card = container.querySelector('.softn-shell-error');
     expect(card).not.toBeNull();
-    expect(card?.textContent).toContain('Failed to load application');
+    expect(card?.textContent).toContain('Unable to complete this action');
   });
 
   it('goes back to a URL a reload can act on', async () => {

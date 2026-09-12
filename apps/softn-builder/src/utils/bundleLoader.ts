@@ -17,6 +17,7 @@
  */
 
 import { debug } from './debug';
+import { MAX_ZIP_INPUT_BYTES } from '@softn/core';
 import { parseBundle, type BundleManifest } from './bundleExporter';
 import { parseSource, parseLogicFile } from './sourceParser';
 import { validateBundle as validateBundleIntegrity, resolveEntry, FILE_GROUPS, type FileGroup } from './bundleValidator';
@@ -410,6 +411,7 @@ export async function selectBundleFile(): Promise<Uint8Array | null> {
       }
 
       try {
+        if (file.size > MAX_ZIP_INPUT_BYTES) throw new Error('This bundle is too large. The maximum file size is 200 MB.');
         const arrayBuffer = await file.arrayBuffer();
         resolve(new Uint8Array(arrayBuffer));
       } catch (e) {

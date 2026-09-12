@@ -3,6 +3,7 @@
  */
 
 import { create } from 'zustand';
+import { useProjectStore } from './projectStore';
 import type {
   ProjectFileNode,
   UIFileState,
@@ -15,7 +16,7 @@ import type {
 import { debug } from '../utils/debug';
 import { generateSource } from '../utils/sourceGenerator';
 import { elementsEqual } from '../utils/elementsEqual';
-import { assessSourceFidelity } from '../utils/sourceParser';
+import { assessSourceFidelity, parseSource } from '../utils/sourceParser';
 import { hasSingleAppRoot } from '../utils/sourceFidelity';
 import { parse as parseSoftN } from '@softn/core';
 
@@ -312,7 +313,13 @@ function createInitialNodes(): Map<string, ProjectFileNode> {
   return nodes;
 }
 
-export const useFilesStore = create<FilesStore>((set, get) => ({
+export const useFilesStore = create<FilesStore>((set, get) => {
+  const edit: typeof set = (...args) => {
+    const before = get();
+    set(...(args as Parameters<typeof set>));
+    if (get() !== before) useProjectStore.getState().markDirty();
+  };
+  return ({
   nodes: createInitialNodes(),
   rootFolders: ['folder_ui', 'folder_logic', 'folder_assets'],
 
@@ -350,7 +357,7 @@ function decrement() {
     const id = generateId();
     const fullPath = parentPath ? `${parentPath}/${name}` : name;
 
-    set((state) => {
+    edit((state) => {
       const newNodes = new Map(state.nodes);
 
       // Find parent folder
@@ -390,7 +397,7 @@ function decrement() {
   },
 
   deleteFolder: (id) => {
-    set((state) => {
+    edit((state) => {
       const node = state.nodes.get(id);
       if (!node || node.type !== 'folder') return state;
 
@@ -454,7 +461,7 @@ function decrement() {
   },
 
   renameFolder: (id, newName) => {
-    set((state) => {
+    edit((state) => {
       const node = state.nodes.get(id);
       if (!node || node.type !== 'folder') return state;
 
@@ -536,7 +543,7 @@ function decrement() {
     const id = generateId();
     const fullPath = parentPath ? `${parentPath}/${name}` : name;
 
-    set((state) => {
+    edit((state) => {
       const newNodes = new Map(state.nodes);
       const newUIFiles = new Map(state.uiFiles);
       const newLogicFiles = new Map(state.logicFiles);
@@ -592,7 +599,7 @@ function decrement() {
   },
 
   deleteFile: (id) => {
-    set((state) => {
+    edit((state) => {
       const node = state.nodes.get(id);
       if (!node || node.type !== 'file') return state;
 
@@ -647,7 +654,7 @@ function decrement() {
   },
 
   renameFile: (id, newName) => {
-    set((state) => {
+    edit((state) => {
       const node = state.nodes.get(id);
       if (!node || node.type !== 'file') return state;
 
@@ -696,7 +703,7 @@ function decrement() {
   },
 
   moveFile: (id, newParentPath) => {
-    set((state) => {
+    edit((state) => {
       const node = state.nodes.get(id);
       if (!node || node.type !== 'file') return state;
 
@@ -969,12 +976,13 @@ function decrement() {
         newNodes.set(id, { ...node, isDirty: true });
       }
 
+      useProjectStore.getState().markDirty();
       return { uiFiles: newUIFiles, nodes: newNodes };
     });
   },
 
   updateUIFileImports: (id, imports) => {
-    set((state) => {
+    edit((state) => {
       const file = state.uiFiles.get(id);
       if (!file) return state;
 
@@ -986,7 +994,7 @@ function decrement() {
   },
 
   updateUIFileLogicSrc: (id, logicSrc) => {
-    set((state) => {
+    edit((state) => {
       const file = state.uiFiles.get(id);
       if (!file) return state;
 
@@ -998,9 +1006,10 @@ function decrement() {
   },
 
   updateUIFileSource: (id, source) => {
-    set((state) => {
+    edit((state) => {
       const file = state.uiFiles.get(id);
-      if (!file) return state;
+      if (!file || file.originalSource === source) return state;
+      const parsed = parseSource(source);
 
       const newUIFiles = new Map(state.uiFiles);
       // New source, new fidelity: it is computed again on the next visual
@@ -1009,6 +1018,10 @@ function decrement() {
         ...file,
         originalSource: source,
         sourceFidelity: undefined,
+        elements: parsed.elements,
+        rootId: parsed.rootId,
+        imports: parsed.imports,
+        logicSrc: parsed.logicSrc,
         visualEditBlocked: undefined,
       });
 
@@ -1024,7 +1037,7 @@ function decrement() {
   },
 
   updateLogicFile: (id, content) => {
-    set((state) => {
+    edit((state) => {
       const file = state.logicFiles.get(id);
       if (!file) return state;
 
@@ -1049,7 +1062,7 @@ function decrement() {
   },
 
   updateLogicFileImports: (id, imports) => {
-    set((state) => {
+    edit((state) => {
       const file = state.logicFiles.get(id);
       if (!file) return state;
 
@@ -1307,7 +1320,8 @@ function decrement() {
       openTabs: mainFileId ? [mainFileId] : [],
     });
   },
-}));
+});
+});
 
 // Helper function to parse imports from logic code
 function parseLogicImports(content: string): LogicImport[] {

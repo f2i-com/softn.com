@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Icon } from '../common/Icon';
 import { HandoffReady } from '../common/HandoffReady';
+import { ProjectActionError } from '../common/ProjectActionError';
 import { SaveStatusIndicator } from '../common/SaveStatus';
 import { useProjectActions } from '../common/ProjectActions';
 
@@ -113,9 +114,10 @@ export function MobileProjectMenu(): React.ReactElement {
           {item('Export bundle', 'export', actions.canExport, actions.canExport ? 'Download the project as a .softn file' : 'No files to export', actions.exportBundle)}
         </div>
       )}
-      {actions.ready && (
+      {(actions.ready || actions.error) && (
         <div style={styles.readyDock}>
-          <HandoffReady ready={actions.ready} onDone={actions.dismissReady} compact />
+          {actions.error ? <ProjectActionError message={actions.error} onDismiss={actions.dismissError} />
+            : actions.ready && <HandoffReady ready={actions.ready} onDone={actions.dismissReady} compact />}
         </div>
       )}
     </div>

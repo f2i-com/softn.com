@@ -30,6 +30,13 @@ export function findRunningTab<T extends TabLike>(tabs: readonly T[], origin: st
   return tabs.find((t) => Boolean(t.source) && t.appId === origin);
 }
 
+/** Match old cache entries by name only when an identity is unavailable. */
+export function findCachedAppTab<T extends TabLike>(
+  tabs: readonly T[], app: { origin?: string; name: string },
+): T | undefined {
+  return tabs.find((tab) => app.origin && tab.appId ? tab.appId === app.origin : tab.name === app.name);
+}
+
 /** The placeholder this load was given, if it is still there and still empty. */
 export function findPlaceholder<T extends TabLike>(tabs: readonly T[], placeholderId: string | undefined): T | undefined {
   if (!placeholderId) return undefined;

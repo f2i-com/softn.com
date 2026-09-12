@@ -13,13 +13,14 @@ import React, { useEffect, useState } from 'react';
 export interface Route {
   path: string;
   query: URLSearchParams;
+  hash?: string;
 }
 
 const OWNED = /^\/(?:apps|app\/[^/]+|publish)\/?$/;
 const FOREIGN = /^\/(?:web|studio|builder|api|demos|softn-files)(?:\/|$)/;
 
 function read(): Route {
-  return { path: window.location.pathname.replace(/\/+$/, '') || '/', query: new URLSearchParams(window.location.search) };
+  return { path: window.location.pathname.replace(/\/+$/, '') || '/', query: new URLSearchParams(window.location.search), hash: window.location.hash };
 }
 
 const listeners = new Set<() => void>();
@@ -42,9 +43,11 @@ export function useRoute(): Route {
     const update = () => setRoute(read());
     listeners.add(update);
     window.addEventListener('popstate', update);
+    window.addEventListener('hashchange', update);
     return () => {
       listeners.delete(update);
       window.removeEventListener('popstate', update);
+      window.removeEventListener('hashchange', update);
     };
   }, []);
   return route;

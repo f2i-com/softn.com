@@ -8,10 +8,22 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { displayNameFor, findPlaceholder, findRunningTab, findTabForUrlName, type TabLike } from '../src/lib/tabIdentity';
+import { displayNameFor, findCachedAppTab, findPlaceholder, findRunningTab, findTabForUrlName, type TabLike } from '../src/lib/tabIdentity';
 
 const running = (id: string, name: string, appId: string, version?: string): TabLike => ({ id, name, appId, source: '<App/>', version });
 const placeholder = (id: string, name: string): TabLike => ({ id, name, source: '' });
+
+describe('cached app ownership for data changes', () => {
+  it('identifies running builds without blocking unrelated same-name apps', () => {
+    const tabs = [running('t1', 'Notes', 'digest-a')];
+    expect(findCachedAppTab(tabs, { origin: 'digest-a', name: 'Renamed' })?.id).toBe('t1');
+    expect(findCachedAppTab(tabs, { origin: 'digest-b', name: 'Notes' })).toBeUndefined();
+  });
+  it('also protects legacy entries and pending placeholders', () => {
+    expect(findCachedAppTab([running('t1', 'Notes', 'digest-a')], { name: 'Notes' })?.id).toBe('t1');
+    expect(findCachedAppTab([placeholder('p', 'Notes')], { origin: 'digest-a', name: 'Notes' })?.id).toBe('p');
+  });
+});
 
 describe('findRunningTab', () => {
   it('finds the tab running these exact bytes and not a same-name one', () => {

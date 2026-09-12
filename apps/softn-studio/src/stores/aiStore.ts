@@ -56,6 +56,8 @@ interface AIState {
 
   // Chat
   messages: ChatMessage[];
+  /** Unsaved composition survives switching panels, but belongs to this project only. */
+  draftMessage: string;
 
   // Actions
   addProvider(provider: ProviderConfig): void;
@@ -73,6 +75,7 @@ interface AIState {
   setMaxOutputTokens(tokens: number): void;
   setLastFailure(failure: AIFailure | null): void;
   addMessage(message: ChatMessage): void;
+  setDraftMessage(message: string): void;
   updateLastMessage(content: string): void;
   clearMessages(): void;
   resetBudget(): void;
@@ -101,6 +104,7 @@ export const useAIStore = create<AIState>((set) => ({
   lastFailure: null,
 
   messages: [],
+  draftMessage: '',
 
   addProvider: (provider) =>
     set((s) => ({ providers: [...s.providers, provider] })),
@@ -132,6 +136,7 @@ export const useAIStore = create<AIState>((set) => ({
       const next = [...s.messages, message];
       return { messages: next.length > 200 ? next.slice(-200) : next };
     }),
+  setDraftMessage: (draftMessage) => set({ draftMessage }),
   updateLastMessage: (content) =>
     set((s) => {
       if (s.messages.length === 0) return s;
@@ -143,5 +148,5 @@ export const useAIStore = create<AIState>((set) => ({
   resetBudget: () =>
     set({ iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 }),
   resetSession: () =>
-    set({ messages: [], agentState: 'idle', currentStep: '', iterationsUsed: 0, tokensUsed: 0, filesChanged: 0, lastFailure: null }),
+    set({ messages: [], draftMessage: '', agentState: 'idle', currentStep: '', iterationsUsed: 0, tokensUsed: 0, filesChanged: 0, lastFailure: null }),
 }));

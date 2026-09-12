@@ -84,6 +84,29 @@ afterEach(() => {
 });
 
 describe('XDBServerSync', () => {
+  it('pushes collection-scoped edits and deletes with the original record identity', () => {
+    const record = xdb.create('notes', { text: 'before' });
+    const sync = new XDBServerSync(xdb, { wsUrl: 'wss://sync.example.test/sync', appVersion: '1' });
+    sync.connect();
+    const socket = FakeSocket.made[0];
+    try {
+      socket.open();
+      authOk(socket);
+      socket.receive({ type: 'sync_state', collection: 'notes', records: [] });
+      xdb.updateInCollection('notes', record.id, { text: 'after' });
+      xdb.deleteFromCollection('notes', record.id);
+      const operations = socket
+        .ofType('sync_push')
+        .flatMap((push) => push.ops as Array<Record<string, unknown>>);
+      expect(operations.map((op) => op.operation)).toEqual(['update', 'delete']);
+      expect(operations.every((op) => op.collection === 'notes' && op.recordId === record.id)).toBe(
+        true
+      );
+    } finally {
+      sync.disconnect();
+    }
+  });
+
   it('refuses a plaintext socket whatever the case of the scheme', () => {
     const sync = new XDBServerSync(xdb, { wsUrl: 'WS://sync.example.test/sync', appVersion: '1' });
     const errors: string[] = [];

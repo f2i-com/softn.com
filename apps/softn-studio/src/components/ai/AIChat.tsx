@@ -4,11 +4,12 @@ import { Icon } from '../common/Icon';
 import { runAgentTurn, abortAgentTurn } from '../../lib/agentOrchestrator';
 import type { ChatMessage } from '../../types/studio';
 
-export const AIChat: React.FC = () => {
+export const AIChat: React.FC<{ onOpenSettings?: () => void }> = ({ onOpenSettings }) => {
   const {
     messages, agentState, addMessage,
     tokensUsed, iterationsUsed, maxIterations,
     activeProviderId, providers, currentStep,
+    draftMessage: input, setDraftMessage: setInput,
   } = useAIStore();
   const { blueprint } = useWorkspaceStore();
   // A turn that committed files did so as one VFS transaction under the
@@ -16,7 +17,6 @@ export const AIChat: React.FC = () => {
   // history, the message offers to revert it — the whole turn, by id, not
   // "whatever the AI did last".
   const history = useVFSStore((s) => s.history);
-  const [input, setInput] = useState('');
   const [revertNotice, setRevertNotice] = useState<{ id: string; text: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -43,6 +43,7 @@ export const AIChat: React.FC = () => {
   const handleSend = () => {
     const text = input.trim();
     if (!text || agentState !== 'idle') return;
+    if (!hasProvider) { openSettings(); return; }
     const msg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -64,9 +65,11 @@ export const AIChat: React.FC = () => {
   const provider = providers.find((p) => p.id === activeProviderId);
   const { brief, setLeftPanel } = useWorkspaceStore();
   const hasProvider = !!provider;
+  const openSettings = () => onOpenSettings ? onOpenSettings() : setLeftPanel('settings');
 
   const sendSuggestedPrompt = (text: string) => {
     if (agentState !== 'idle') return;
+    if (!hasProvider) { setInput(text); openSettings(); return; }
     const msg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -89,7 +92,7 @@ export const AIChat: React.FC = () => {
           </span>
           {!hasProvider && (
             <button
-              onClick={() => setLeftPanel('settings')}
+              onClick={openSettings}
               style={styles.setupLink}
             >
               Set up
@@ -112,14 +115,14 @@ export const AIChat: React.FC = () => {
       {/* No provider banner */}
       {!hasProvider && messages.length === 0 && (
         <button
-          onClick={() => setLeftPanel('settings')}
+          onClick={openSettings}
           style={styles.setupBanner}
         >
           <Icon name="key" size={18} color="var(--studio-warning)" />
           <div style={styles.setupBannerText}>
             <span style={styles.setupBannerTitle}>Configure AI to get started</span>
             <span style={styles.setupBannerDesc}>
-              Add your API key in Settings to get started
+              Connect a provider or local model in Settings
             </span>
           </div>
           <Icon name="chevron-right" size={16} color="var(--studio-text-dim)" />
@@ -313,6 +316,7 @@ export const AIChat: React.FC = () => {
       {/* Input */}
       <div style={styles.inputArea}>
         <textarea
+          aria-label="Message to AI"
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}

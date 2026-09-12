@@ -70,12 +70,15 @@ Open the origin printed by the launcher, normally `http://localhost:1420`:
 
 | Path        | Start here to…                                           |
 | :---------- | :------------------------------------------------------- |
-| `/`         | Browse the app directory and examples.                   |
+| `/`         | Learn the workflow and try the editable Fieldnotes app.  |
+| `/apps`     | Search and browse the full app directory.                |
 | `/builder/` | Create or reopen an app, edit its schema and preview it. |
 | `/studio/`  | Configure your AI provider and turn a brief into an app. |
-| `/web/`     | Open and run a `.softn` bundle in the browser.           |
+| `/web/`     | Open bundles, explore directory apps and return to your saved library. |
 
-The launcher proxies the browser apps through one origin and picks alternate ports when needed. It also starts the directory API when PHP is available on `PATH`; install PHP to exercise directory accounts, publishing and server storage locally. Demo fetching needs network access. To work on Builder alone, use `npm run dev:builder` after the package build.
+The launcher proxies the browser apps through one origin and picks alternate ports when needed. It also starts the directory API when PHP is available on `PATH`; install PHP to exercise directory browsing, publishing and server storage locally. Fetched examples appear in both the directory and Runtime when demo seeding is enabled. Demo fetching needs network access. To work on Builder alone, use `npm run dev:builder` after the package build.
+
+Runtime keeps apps running when you return to its workspace, so you can browse the directory and open another app without losing an unfinished form. Use **Home** to switch apps, or **Close** to stop the current one. Apps you open are kept in this browser's library; offline readiness is shown for each saved app.
 
 For a first project, open Builder, choose **New**, add a layout and components, then use **Preview** and **Export**. Use **Open** to bring an exported app back into the editor. For examples as source, see [softn-Examples](https://github.com/f2i-com/softn-Examples) and the [Glamour Studio fixture](apps/softn-builder/src/utils/__fixtures__/GlamourStudio) pictured above.
 

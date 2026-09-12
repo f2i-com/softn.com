@@ -632,7 +632,7 @@ export function startupAction(location: Location, history: History, storedSessio
   if (open !== null) {
     params.delete('open');
     const rest = params.toString();
-    history.replaceState({}, '', location.pathname + (rest ? `?${rest}` : ''));
+    history.replaceState(history.state, '', location.pathname + (rest ? `?${rest}` : '') + (location.hash || ''));
     let url: URL | null = null;
     try {
       url = new URL(open, location.origin);

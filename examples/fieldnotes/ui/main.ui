@@ -1,0 +1,84 @@
+<logic src="../logic/main.logic" />
+<data><collection name="tasks" as="tasks" /></data>
+<style>
+.fn { background:#f6f5f1; color:#242820; min-height:100vh; font:15px/1.5 system-ui,sans-serif; }
+.fn * { box-sizing:border-box; }
+.fn button,.fn input,.fn select { font:inherit; }
+.fn button { cursor:pointer; }
+.fn button:focus-visible,.fn input:focus-visible,.fn select:focus-visible { outline:3px solid #b3adf6; outline-offset:3px; }
+.fn-top { display:flex; justify-content:space-between; gap:18px; align-items:center; padding:21px 36px; border-bottom:1px solid #dfdfd6; background:#fffefa; }
+.fn-brand { display:flex; align-items:center; gap:11px; font-size:20px; font-weight:750; letter-spacing:-.7px; }
+.fn-logo { display:grid; place-items:center; width:34px; height:34px; color:#fff; background:#656543; border-radius:10px; font:italic 26px Georgia,serif; }
+.fn-tag { color:#62664f; font-size:12px; border:1px solid #d7d9c7; border-radius:100px; padding:6px 12px; background:#f7f8ef; }
+.fn-shell { display:grid; grid-template-columns:174px minmax(0,1fr); max-width:1440px; margin:auto; }
+.fn-side { padding:30px 18px; border-right:1px solid #dfdfd6; }
+.fn-label { color:#727968; font-size:10px; font-weight:750; text-transform:uppercase; letter-spacing:1.8px; }
+.fn-side p { margin:0 12px 13px; }
+.fn-nav { display:flex; width:100%; align-items:center; gap:10px; padding:12px; border:0; border-radius:9px; color:#596145; background:transparent; text-align:left; margin-bottom:5px; }
+.fn-nav.selected { background:#e7ebdb; color:#394525; font-weight:700; }
+.fn-side-note { padding:18px 12px; margin-top:32px; font-size:12px; line-height:1.7; color:#727968; border-top:1px solid #dfdfd6; }
+.fn-main { min-width:0; padding:32px 36px; }
+.fn-intro { display:flex; justify-content:space-between; align-items:end; gap:24px; margin-bottom:25px; }
+.fn h1 { font:normal clamp(28px,4vw,42px)/1.1 Georgia,serif; letter-spacing:-1.3px; margin:9px 0 10px; }
+.fn-intro p { margin:0; color:#727968; max-width:550px; }
+.fn-date { color:#727968; font-size:12px; white-space:nowrap; }
+.fn-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-bottom:25px; }
+.fn-stat { padding:18px 20px; border:1px solid #dfdfd6; border-radius:13px; background:#fffefa; }
+.fn-stat strong { font:normal 36px/1.1 Georgia,serif; display:block; margin:7px 0 3px; }
+.fn-stat span { color:#727968; font-size:12px; }
+.fn-stat.highlight { background:#e9ecd9; border-color:#d6dcc0; }
+.fn-columns { display:grid; grid-template-columns:minmax(0,1fr) 285px; gap:21px; align-items:start; }
+.fn-card { min-width:0; border:1px solid #dfdfd6; border-radius:13px; background:#fffefa; overflow:hidden; }
+.fn-card-head { padding:18px 20px; border-bottom:1px solid #e8e8df; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.fn h2 { font-size:16px; margin:0; letter-spacing:-.3px; }
+.fn-filter { display:flex; gap:4px; padding:3px; background:#f0f0e9; border-radius:8px; }
+.fn-filter button { border:0; background:transparent; color:#6b725f; font-size:11px; min-height:32px; padding:5px 9px; border-radius:5px; }
+.fn-filter button.selected { background:#fff; color:#242820; box-shadow:0 1px 4px #24282014; }
+.fn-task { display:flex; gap:12px; align-items:center; padding:18px 20px; border-bottom:1px solid #eeeee7; }
+.fn-task:last-child { border:0; }
+.fn-toggle { display:grid; place-items:center; flex-shrink:0; width:32px; height:32px; border:1px solid #cdd2bf; border-radius:50%; background:#fff; color:#4e6140; }
+.fn-toggle.done { background:#e7ecd9; border-color:#d4dfc3; }
+.fn-task-title { font-size:13px; font-weight:650; overflow-wrap:anywhere; }
+.fn-task-title.done { color:#818575; text-decoration:line-through; }
+.fn-task-copy { flex:1; min-width:0; }
+.fn-task-copy p { margin:3px 0 0; font-size:11px; color:#878b7c; }
+.fn-lane { font-size:10px; color:#65664a; border:1px solid #e1e1d3; padding:3px 7px; border-radius:5px; white-space:nowrap; background:#fafaf4; }
+.fn-empty { padding:32px 20px; color:#727968; font-size:13px; text-align:center; }
+.fn-form { padding:20px; }
+.fn-form p { margin:7px 0 18px; font-size:12px; color:#727968; }
+.fn-form label { display:block; font-size:12px; font-weight:650; margin:14px 0 6px; }
+.fn-form input,.fn-form select { width:100%; min-width:0; min-height:44px; border:1px solid #d9ddce; border-radius:8px; padding:10px 12px; color:#313c29; background:#fff; font-size:14px; }
+.fn-add { width:100%; min-height:44px; border:0; border-radius:8px; background:#556744; color:#fff; font-weight:650; margin-top:18px; }
+.fn-flow { margin-top:17px; padding:20px; background:#edebf6; border:1px solid #e1ddef; border-radius:13px; }
+.fn-flow h3 { color:#615278; font-size:12px; margin:0 0 9px; }
+.fn-flow p { color:#716783; font-size:12px; margin:0; line-height:1.7; }
+.fn-flow-path { font-size:10px; color:#675685; padding-top:14px; letter-spacing:.4px; }
+.fn-status { display:flex; align-items:center; gap:8px; color:#657454; font-size:12px; margin-top:18px; }
+.fn-status-dot { width:6px; height:6px; background:#8c9c6c; border-radius:50%; flex-shrink:0; }
+.fn-error { color:#a12e35 !important; margin:10px 0 0 !important; }
+@media(max-width:1000px) { .fn-side { display:none; }.fn-shell { display:block; }.fn-main { padding:24px; }.fn-top { padding:18px 24px; } }
+@media(max-width:680px) { .fn-columns { grid-template-columns:1fr; }.fn-main { padding:22px 16px; }.fn-top { padding:16px; }.fn-intro { display:block; }.fn-date { display:none; }.fn-stats { gap:8px; }.fn-stat { padding:14px 12px; }.fn-stat strong { font-size:30px; }.fn-card-head { flex-wrap:wrap; }.fn-task { padding:16px; }.fn-tag { font-size:10px; }.fn-toggle { width:40px; height:40px; }.fn-filter button { min-height:40px; }.fn-form input,.fn-form select { font-size:16px; } }
+</style>
+<App theme="light" style={{padding:0}}>
+<div className="fn">
+  <header className="fn-top"><div className="fn-brand"><span className="fn-logo">f</span>Fieldnotes</div><span className="fn-tag">A working SoftN example</span></header>
+  <div className="fn-shell">
+    <aside className="fn-side"><p className="fn-label">Your workspace</p><button className={filter === "all" ? "fn-nav selected" : "fn-nav"} @click={showTasks("all")}>◈ Overview</button><button className={filter === "active" ? "fn-nav selected" : "fn-nav"} @click={showTasks("active")}>◷ In progress</button><button className={filter === "done" ? "fn-nav selected" : "fn-nav"} @click={showTasks("done")}>✓ Completed</button><div className="fn-side-note">Small steps.<br />Clear progress.<br />Room to make it yours.</div></aside>
+    <main className="fn-main">
+      <div className="fn-intro"><div><div className="fn-label">A little clarity for your day</div><h1>Make space for what matters.</h1><p>Add a task. Save a record. See the dashboard update.</p></div><span className="fn-date">Your next idea starts here ↗</span></div>
+      <div className="fn-stats"><div className="fn-stat highlight"><div className="fn-label">In progress</div><strong aria-label="Active tasks">{activeCount}</strong><span>One step at a time</span></div><div className="fn-stat"><div className="fn-label">Completed</div><strong aria-label="Completed tasks">{doneCount}</strong><span>A little momentum</span></div><div className="fn-stat"><div className="fn-label">All tasks</div><strong aria-label="Total tasks">{totalCount}</strong><span>Ideas with a place to go</span></div></div>
+      <div className="fn-columns">
+        <section className="fn-card"><div className="fn-card-head"><h2>Your next steps</h2><div className="fn-filter" role="group" aria-label="Filter tasks"><button className={filter === "all" ? "selected" : ""} aria-pressed={filter === "all"} @click={showTasks("all")}>All</button><button className={filter === "active" ? "selected" : ""} aria-pressed={filter === "active"} @click={showTasks("active")}>Active</button><button className={filter === "done" ? "selected" : ""} aria-pressed={filter === "done"} @click={showTasks("done")}>Done</button></div></div>
+          #each (task in shown) key={task.id}
+          <article className="fn-task"><button className={task.data.done ? "fn-toggle done" : "fn-toggle"} aria-label={(task.data.done ? "Reopen " : "Complete ") + task.data.title} @click={toggleTask(task.id)}>{task.data.done ? "✓" : ""}</button><div className="fn-task-copy"><div className={task.data.done ? "fn-task-title done" : "fn-task-title"}>{task.data.title}</div><p>{task.data.done ? "A step forward" : "Ready when you are"}</p></div><span className="fn-lane">{task.data.lane}</span></article>
+          #empty
+          <div className="fn-empty">No tasks in this view. Add an idea or try another filter.</div>
+          #end
+        </section>
+        <aside><section className="fn-card fn-form"><h2>A new starting point</h2><p>Give your next step a name.</p><label htmlFor="fn-title">Task name</label><input id="fn-title" placeholder="What would you like to do?" maxLength={100} :bind={title} /><label htmlFor="fn-lane">Focus</label><select id="fn-lane" :bind={lane}><option value="Design">Design</option><option value="Build">Build</option><option value="Review">Review</option></select><button className="fn-add" @click={addTask}>＋ Add task</button>#if (error)<p className="fn-error" role="alert">{error}</p>#end</section><section className="fn-flow"><h3>Try the whole flow</h3><p>This form writes a task to the app's collection. Complete a task and watch the totals change.</p><div className="fn-flow-path">FORM → RECORD → DASHBOARD</div></section></aside>
+      </div>
+      <p className="fn-status" role="status"><span className="fn-status-dot"></span>{message}</p>
+    </main>
+  </div>
+</div>
+</App>
