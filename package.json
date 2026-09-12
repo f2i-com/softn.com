@@ -72,7 +72,7 @@
     "prettier": "^3.2.0",
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
@@ -81,8 +81,14 @@
     "@huggingface/transformers": "^4.0.0-next.5"
   },
   "overrides": {
-    "adm-zip": "^0.6.0",
-    "sharp": "^0.35.3",
-    "esbuild": "^0.28.1"
+    "adm-zip": "^0.6.1",
+    "sharp": "^0.35.4",
+    "esbuild": "^0.28.1",
+    "@huggingface/transformers": {
+      "sharp": "^0.35.4",
+      "onnxruntime-node": {
+        "adm-zip": "^0.6.1"
+      }
+    }
   }
 }

@@ -58,3 +58,6 @@ apps/softn-single/public/app.softn
 
 # Python bytecode from the verification scripts
 __pycache__/
+
+# Standalone regression tests of the vendored compatibility backport.
+vendor/glib/Cargo.lock

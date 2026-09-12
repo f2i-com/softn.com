@@ -230,9 +230,11 @@ test('an app has a detail, a bundle, a thumbnail and readable source', skip, asy
   assert.ok(Buffer.from(bytes).equals(onDisk), 'the bundle is byte for byte the file');
   const dl = await fetch(`${base}/api/apps/snake-game/bundle.softn?download=1`);
   assert.match(dl.headers.get('content-disposition') || '', /snake-game\.softn/);
+  assert.ok(Buffer.from(await dl.arrayBuffer()).equals(onDisk));
   const thumb = await fetch(`${base}/api/apps/snake-game/thumbnail`);
   assert.equal(thumb.status, 200);
   assert.match(thumb.headers.get('content-type') || '', /^image\//);
+  assert.ok((await thumb.arrayBuffer()).byteLength > 0);
   const src = (await api('GET', '/api/apps/snake-game/source')).json;
   assert.ok(src.files.some((f) => f.path === 'ui/main.ui' && typeof f.text === 'string' && f.text.length > 10));
   assert.ok(src.files.some((f) => f.path === 'manifest.json'));
@@ -670,11 +672,14 @@ test('the play page is the shell with the app written in; app.json is what makes
   assert.equal(bundle.status, 200);
   assert.equal(bundle.headers.get('etag'), `"${config.sha256}"`);
   assert.equal(bundle.headers.get('cache-control'), 'public, max-age=86400');
+  assert.ok(Buffer.from(await bundle.arrayBuffer()).equals(
+    fs.readFileSync(path.join(root, 'demos/SnakeGame.softn'))
+  ), 'the play page bundle matches the installed app');
 
   // An app without storage gets no storage endpoint.
   const notesRes = await fetch(`${base}/play/notes`, { headers: { Accept: 'text/html' } });
-  const notes = (await api('GET', '/api/apps/notes')).json.app;
   const notesHtml = await notesRes.text();
+  const notes = (await api('GET', '/api/apps/notes')).json.app;
   const notesConfig = JSON.parse(notesHtml.match(/id="softn-runtime-config">(.*?)<\/script>/s)[1]);
   assert.equal(notes.capabilities.includes('storage'), 'storage' in notesConfig.directory);
 
