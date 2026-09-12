@@ -15,6 +15,7 @@
 
 import { handoffUrl, sameOriginTarget, stageBundleHandoff, type HandoffDestination } from '@softn/core';
 import { RUNTIME_URL, SITE_URL } from './siteUrls';
+import { isDesktop } from './desktop';
 
 export type { HandoffDestination } from '@softn/core';
 
@@ -42,6 +43,9 @@ export async function prepareHandoff(
   deps: { stage?: typeof stageBundleHandoff; sameOrigin?: (target: string) => boolean } = {},
 ): Promise<HandoffOutcome> {
   const base = handoffBase(to);
+  if (isDesktop()) {
+    return { ok: false, message: `Save your app with Export .softn, then open that file in ${destinationLabel(to)}. Your desktop files stay on this device until you choose to import or publish them.` };
+  }
   if (!(deps.sameOrigin ?? sameOriginTarget)(base)) {
     const label = destinationLabel(to);
     return {

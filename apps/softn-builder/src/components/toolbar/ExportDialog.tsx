@@ -27,6 +27,7 @@ import { toast } from '../../stores/notificationStore';
 import { buildProjectBundle, bundleFileName, gatherCollections } from '../../utils/buildProjectBundle';
 import type { PermissionDeclaration } from '../../utils/permissions';
 import { destinationLabel, prepareHandoff, type ReadyHandoff } from '../../utils/handoff';
+import { isDesktop, saveDesktopFile } from '../../utils/desktop';
 import {
   discardQuarantinedSession,
   exportQuarantinedSession,
@@ -458,15 +459,19 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         const bytes = await buildProjectBundle();
 
         if (what === 'export') {
-          const blob = new Blob([new Uint8Array(bytes)], { type: 'application/zip' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = bundleFileName(name);
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
+          if (isDesktop()) {
+            await saveDesktopFile(bytes, bundleFileName(name));
+          } else {
+            const blob = new Blob([new Uint8Array(bytes)], { type: 'application/zip' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = bundleFileName(name);
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }
           setDone('Bundle exported.');
           toast.success('Bundle exported');
           setTimeout(() => {
@@ -489,6 +494,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
         }
         setReady(outcome.ready);
       } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
         console.error('[ExportDialog] failed:', err);
         const msg = err instanceof Error ? err.message : 'Export failed';
         setError(msg);
@@ -692,7 +698,11 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                     restored ({quarantine.error}). It was kept as it was, not deleted; download it to keep a copy.
                   </div>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button type="button" style={styles.smallButton} onClick={() => exportQuarantinedSession()}>
+                    <button type="button" style={styles.smallButton} onClick={() => {
+                      void exportQuarantinedSession().catch((err: unknown) => {
+                        if (!(err instanceof Error && err.name === 'AbortError')) toast.error('Could not save the recovery file. It is still stored here.');
+                      });
+                    }}>
                       Download session…
                     </button>
                     <button

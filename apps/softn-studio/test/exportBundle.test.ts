@@ -12,6 +12,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { unzipSync } from 'fflate';
+import { composeBundleSource } from '@softn/core';
 import { buildBundle, normalizeManifest, normalizeManifestForBundle, planBundle } from '../src/lib/exportBundle';
 import { validateProject } from '../src/lib/validator';
 import type { VFSFile } from '../src/types/studio';
@@ -87,6 +88,26 @@ describe('the export and paths it cannot write', () => {
 });
 
 describe('the manifest and a server group', () => {
+  it('keeps declared helper execution order after import and export while including new files', () => {
+    const vfs = toVfs([
+      { path: 'manifest.json', content: manifestWith({ logic: ['logic/z-base.logic', 'logic/a-derived.logic', 'logic/main.logic', 'logic/z-base.logic', 'logic/deleted.logic'] }) },
+      { path: 'ui/main.ui', content: '<logic src="../logic/main.logic" /><Text>{answer}</Text>' },
+      { path: 'logic/z-base.logic', content: 'let base = 40;' },
+      { path: 'logic/a-derived.logic', content: 'let derived = base + 2;' },
+      { path: 'logic/main.logic', content: 'let answer = derived;' },
+      { path: 'logic/new-helper.logic', content: 'let extra = true;' },
+    ]);
+    const archive = unzipSync(buildBundle(vfs, 0));
+    const textFiles = new Map(Object.entries(archive).map(([path, bytes]) => [path, new TextDecoder().decode(bytes)]));
+    const manifest = JSON.parse(textFiles.get('manifest.json')!);
+    expect(manifest.files.logic).toEqual(['logic/z-base.logic', 'logic/a-derived.logic', 'logic/main.logic', 'logic/new-helper.logic']);
+    const source = composeBundleSource(textFiles, manifest.main, manifest.files.logic).source;
+    expect(source.indexOf('let base')).toBeLessThan(source.indexOf('let derived'));
+    expect(source.indexOf('let derived')).toBeLessThan(source.indexOf('let answer'));
+    expect(source.match(/let base/g)).toHaveLength(1);
+    expect(source).toContain('let extra = true;');
+  });
+
   const base = [
     { path: 'ui/main.ui', content: '<App></App>' },
     { path: 'logic/app.logic', content: 'let x = 1' },

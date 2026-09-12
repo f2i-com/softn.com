@@ -13,6 +13,7 @@
 import type { AssetFile } from '../types/builder';
 
 export interface SerializedAssetFile {
+  bundlePath?: string;
   name: string;
   type: string;
   /** Base64 of the asset's bytes. */
@@ -27,12 +28,12 @@ export function encodeAsset(asset: AssetFile): SerializedAssetFile {
   for (let i = 0; i < asset.data.length; i += CHUNK) {
     binary += String.fromCharCode(...asset.data.subarray(i, i + CHUNK));
   }
-  return { name: asset.name, type: asset.type, data: btoa(binary) };
+  return { ...(asset.bundlePath ? { bundlePath: asset.bundlePath } : {}), name: asset.name, type: asset.type, data: btoa(binary) };
 }
 
 export function decodeAsset(asset: SerializedAssetFile): AssetFile {
   const binary = atob(asset.data);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return { name: asset.name, type: asset.type, data: bytes };
+  return { ...(asset.bundlePath ? { bundlePath: asset.bundlePath } : {}), name: asset.name, type: asset.type, data: bytes };
 }

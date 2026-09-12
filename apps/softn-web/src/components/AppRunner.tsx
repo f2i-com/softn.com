@@ -334,7 +334,7 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
         }}
       >
         <style dangerouslySetInnerHTML={{ __html: appRunnerStyles }} />
-        <ThemeProvider followSystem>
+        <ThemeProvider followHost followSystem>
           <Box
             className="softn-runner-loading"
             style={{
@@ -389,7 +389,7 @@ export function AppRunner({ source, appName, appId, active, initialPage, permiss
         />
       )}
       <RunnerErrorBoundary>
-        <ThemeProvider followSystem>
+        <ThemeProvider followHost followSystem>
           <SoftNWithXDB
             source={source}
             initialState={initialState}

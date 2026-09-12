@@ -22,6 +22,48 @@ function textFile(path: string, content: string): VFSFile {
 }
 
 describe('Studio preview project assembly', () => {
+  it('preloads declared helpers once before components and entry code, as the runtime does', () => {
+    const main = '<logic src="../logic/main.logic" /><import Card from="./Card.ui" /><Card />';
+    const uiFiles = new Map([
+      ['ui/main.ui', main],
+      ['ui/Card.ui', '<logic src="../logic/card.logic" /><Text>{heading}</Text>'],
+    ]);
+    const logicFiles = new Map([
+      ['logic/main.logic', 'let heading = helperLabel + cardLabel;'],
+      ['logic/helpers.logic', 'import "./shared.logic";\nlet helperLabel = "From helper";'],
+      ['logic/card.logic', 'let cardLabel = helperLabel + " card";'],
+      ['logic/shared.logic', 'let shared = true;'],
+      ['server/api.logic', 'let serverOnly = true;'],
+    ]);
+    const result = assemblePreviewSource('ui/main.ui', main, uiFiles, logicFiles,
+      ['logic/helpers.logic', 'logic/card.logic', 'logic/main.logic', 'logic/helpers.logic']);
+    expect(result.source.indexOf('let helperLabel')).toBeLessThan(result.source.indexOf('let cardLabel'));
+    expect(result.source.indexOf('let cardLabel')).toBeLessThan(result.source.indexOf('let heading'));
+    expect(result.source.match(/let helperLabel/g)).toHaveLength(1);
+    expect(result.source.match(/let cardLabel/g)).toHaveLength(1);
+    expect(result.source).toContain('import "logic/shared.logic";');
+    expect(result.source).not.toContain('serverOnly');
+    expect(new Set(result.preIncludedLogicPaths)).toEqual(new Set(['logic/main.logic', 'logic/card.logic', 'logic/helpers.logic']));
+  });
+
+  it('does not execute manifest helpers for an inline-only app or absent paths', () => {
+    const inline = '<logic>let heading = "Inline";</logic><Text>{heading}</Text>';
+    const result = assemblePreviewSource('ui/main.ui', inline, new Map(),
+      new Map([['logic/helpers.logic', 'let unused = true;']]), ['logic/helpers.logic', '../missing.logic']);
+    expect(result.source).not.toContain('unused');
+    expect(result.source).toContain('let heading = "Inline";');
+  });
+
+  it('runs the component entry after helpers when the main UI has no logic', () => {
+    const main = '<import Card from="./Card.ui" /><Card />';
+    const result = assemblePreviewSource('ui/main.ui', main,
+      new Map([['ui/Card.ui', '<logic src="../logic/card.logic" /><Text>{cardLabel}</Text>']]),
+      new Map([['logic/card.logic', 'let cardLabel = helperLabel;'], ['logic/helpers.logic', 'let helperLabel = "Ready";']]),
+      ['logic/card.logic', 'logic/helpers.logic']);
+    expect(result.source.indexOf('let helperLabel')).toBeLessThan(result.source.indexOf('let cardLabel'));
+    expect(result.source.match(/let cardLabel/g)).toHaveLength(1);
+  });
+
   it("keeps imported components' inline and external logic with safe owner-relative paths", () => {
     const uiFiles = new Map([
       [

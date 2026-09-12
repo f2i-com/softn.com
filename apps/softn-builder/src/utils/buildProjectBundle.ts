@@ -173,7 +173,9 @@ export async function buildProjectBundle(): Promise<Uint8Array> {
     themeMode: projectState.themeMode,
     collections,
     records,
-    assets: projectState.assets,
+    assets: retained.manifest !== null || filesState.assetFiles.size > 0
+      ? [...filesState.assetFiles.entries()].map(([id, asset]) => ({ ...asset, bundlePath: filesState.nodes.get(id)?.path ?? asset.bundlePath }))
+      : projectState.assets,
     permissions: projectState.permissions,
     icon: icon?.bytes,
     iconPath,

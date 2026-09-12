@@ -28,13 +28,14 @@ import { useFilesStore } from '../stores/filesStore';
 import { saveBundleToFile } from './bundleExporter';
 import { buildProjectBundle, bundleFileName, flushCanvasToActiveFile } from './buildProjectBundle';
 import { captureSession, SESSION_STORAGE_KEY, type BuilderSession, type ViewMode } from './openProject';
+import type { BundleFileHandle } from './desktop';
 
 export type SaveOutcome =
   | {
       kind: 'saved';
       projectId: string;
       revision: number;
-      handle: FileSystemFileHandle | null;
+      handle: BundleFileHandle | null;
       /** True when the project moved on during the write: the file holds an earlier revision. */
       stale: boolean;
       /** True when the project itself was replaced during the write. */
@@ -49,7 +50,7 @@ export type SaveOutcome =
 export interface SaveDeps {
   /** The current view, kept in the recovery record. */
   view: ViewMode;
-  existingHandle: FileSystemFileHandle | null;
+  existingHandle: BundleFileHandle | null;
   writeFile?: typeof saveBundleToFile;
   storage?: Pick<Storage, 'setItem'>;
   build?: () => Promise<Uint8Array>;
@@ -83,7 +84,7 @@ export async function saveProject(deps: SaveDeps): Promise<SaveOutcome> {
   }
 
   let bytes: Uint8Array;
-  let handle: FileSystemFileHandle | null;
+  let handle: BundleFileHandle | null;
   try {
     bytes = await bundlePromise;
     handle = await writeFile(bytes, bundleFileName(name).replace(/\.softn$/, ''), deps.existingHandle);

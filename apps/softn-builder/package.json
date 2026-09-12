@@ -5,13 +5,15 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
+    "generate-native-icons": "node ../../scripts/generate-native-icons.mjs",
     "dev": "vite",
     "check:components": "node ./scripts/check-component-registry.mjs",
     "generate-icons": "node ../../scripts/generate-icons.mjs --ground #0c0a09",
     "build": "npm run check:components && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:desktop": "playwright test --config playwright.desktop.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/bricolage-grotesque": "^5.3.0",

@@ -150,7 +150,7 @@ export function parseSource(source: string): ParseResult {
       const rootNode: ParsedNode = syntheticRoot
         ? {
             type: 'App',
-            props: { theme: 'light' },
+            props: {},
             events: {},
             bindings: {},
             expressionProps: [],
@@ -300,7 +300,7 @@ export function parseSource(source: string): ParseResult {
   elements.set(rootId, {
     id: rootId,
     componentType: 'App',
-    props: { theme: 'light' },
+    props: {},
     children: [],
     parentId: null,
   });

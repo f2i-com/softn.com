@@ -36,6 +36,8 @@ import type {
 } from '../types/builder';
 
 export interface LoadedBundle {
+  /** A dialog-granted native file, retained only until this workspace closes. */
+  sourceHandle?: import('./desktop').DesktopFileHandle;
   manifest: BundleManifest;
   /** The manifest exactly as parsed, for the export to patch rather than rebuild. */
   rawManifest: Record<string, unknown>;
@@ -405,6 +407,8 @@ function inferFieldType(
  * closed without a choice; rejects when the chosen file could not be read.
  */
 export async function selectBundleFile(): Promise<Uint8Array | null> {
+  const { isDesktop, selectDesktopBundle } = await import('./desktop');
+  if (isDesktop()) return selectDesktopBundle(MAX_ZIP_INPUT_BYTES);
   return new Promise((resolve, reject) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -439,11 +443,15 @@ export async function selectBundleFile(): Promise<Uint8Array | null> {
  * Load a bundle file and return parsed result
  */
 export async function openBundleFile(): Promise<LoadedBundle | null> {
-  const data = await selectBundleFile();
+  const { isDesktop, selectDesktopBundleFile } = await import('./desktop');
+  const selected = isDesktop() ? await selectDesktopBundleFile(MAX_ZIP_INPUT_BYTES) : null;
+  const data = isDesktop() ? selected?.bytes : await selectBundleFile();
   if (!data) return null;
 
   try {
-    return await loadBundle(data);
+    const bundle = await loadBundle(data);
+    if (selected) bundle.sourceHandle = selected.handle;
+    return bundle;
   } catch (e) {
     console.error('Failed to load bundle:', e);
     throw new Error(`Failed to load bundle: ${e instanceof Error ? e.message : 'Unknown error'}`);

@@ -1649,7 +1649,7 @@ function App(): React.ReactElement {
         <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
           {/* Loading indicator (for non-URL opens that don't have skeleton tabs) */}
           {loadingTabId && (
-            <ThemeProvider followSystem>
+            <ThemeProvider followHost followSystem>
               <Box
                 className="softn-shell-loading"
                 style={{
@@ -1672,7 +1672,7 @@ function App(): React.ReactElement {
 
           {/* Error state */}
           {error && !loadingTabId && (
-            <ThemeProvider followSystem>
+            <ThemeProvider followHost followSystem>
               <div
                 className="softn-shell-error"
                 role="alert"

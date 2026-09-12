@@ -803,7 +803,10 @@ npm run dev:studio    # AI studio      1423
 npm run dev:desktop
 
 # Builder in its Tauri shell (requires Rust)
-cd apps/softn-builder && npm run tauri dev
+npm run dev:desktop:builder
+
+# Build current Windows desktop executables, without installers
+npm run build:desktop
 
 # The app directory, against a built site (requires PHP)
 npm run build:site && php -S 127.0.0.1:5500 -t dist apps/softn-api/router.php
@@ -813,6 +816,10 @@ Rust is needed for the two Tauri shells, for `softn-server` (the host that runs 
 bundle's `server/` routes and backs XDB sync), and for recompiling the scripting
 engine. The four browser apps — the landing page, the runtime, the builder and
 Studio — need Node alone.
+
+The desktop runtime and Builder use ports 1431 and 1432, separately from the
+unified website. See [desktop apps and the shared bundle workflow](docs/DESKTOP_APPS.md)
+for native file dialogs, app transfers, saved-data behavior and manual checks.
 
 The native loader and server use local path dependencies so they can be developed
 alongside zipp and XDB. Clone those repositories as siblings of this checkout

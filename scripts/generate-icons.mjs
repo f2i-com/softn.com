@@ -16,10 +16,10 @@
  * palette long after the web runtime's copy had been rewritten to draw the mark,
  * so the two apps installed under logos from different products.
  *
- * The geometry lives here rather than in each favicon.svg, and this script
- * writes that SVG too. A comment saying "geometry copied from favicon.svg" is
+ * The geometry lives in brand-mark.mjs rather than in each favicon.svg, and
+ * this script writes that SVG too. "Geometry copied from favicon.svg" is
  * only true until someone edits one of them; generating both from one source
- * makes drifting apart impossible rather than merely discouraged.
+ * keeps web and native generation aligned.
  *
  * PNG and not SVG for the manifest: Chrome on Android accepts neither an SVG
  * install icon nor an SVG maskable one, so a manifest offering only vectors is
@@ -29,6 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
+import { GRID, CORAL, MINT, CORNER, STROKE, DOT_R, BRACKETS, markSvg } from './brand-mark.mjs';
 
 // fileURLToPath, not URL.pathname: the pathname keeps percent-encoding, so a
 // checkout under a directory with a space could not find its own node_modules.
@@ -37,29 +38,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 // The mark, on the 32x32 grid it is authored on. Coral brackets because they
 // are the language, a mint dot because it is the thing that runs — the same
 // rule the landing page and Studio's drawn Mark follow.
-const GRID = 32;
 const groundFlag = process.argv.indexOf('--ground');
 const GROUND = groundFlag !== -1 ? process.argv[groundFlag + 1] : '#101317';
 if (!/^#[0-9a-fA-F]{6}$/.test(GROUND)) throw new Error(`--ground must be #rrggbb, got ${GROUND}`);
-const CORAL = '#FF8A4C';
-const MINT = '#35E0C0';
-const CORNER = 7; // grid units
-const STROKE = 2.4;
-const DOT_R = 2.8;
-const BRACKETS = [
-  [[9, 11.5], [5.5, 16], [9, 20.5]],
-  [[23, 11.5], [26.5, 16], [23, 20.5]],
-];
-
-const SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${GRID} ${GRID}">
-  <rect width="${GRID}" height="${GRID}" rx="${CORNER}" fill="${GROUND}"/>
-${BRACKETS.map(
-  ([a, b, c]) =>
-    `  <path d="M${a[0]} ${a[1]} ${b[0]} ${b[1]} ${c[0]} ${c[1]}" fill="none" stroke="${CORAL}" stroke-width="${STROKE}" stroke-linecap="round" stroke-linejoin="round"/>`,
-).join('\n')}
-  <circle cx="${GRID / 2}" cy="${GRID / 2}" r="${DOT_R}" fill="${MINT}"/>
-</svg>
-`;
+const SVG = markSvg(GROUND);
 
 /** Draw the glyph — brackets and dot, no tile — inset by a fraction of the canvas. */
 function drawGlyph(ctx, size, inset) {

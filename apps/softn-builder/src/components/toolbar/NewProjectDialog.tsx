@@ -173,14 +173,14 @@ export function NewProjectDialog({ isOpen, onClose, onCreate }: NewProjectDialog
   const fieldId = useId();
   const [name, setName] = useState('Untitled App');
   const [description, setDescription] = useState('');
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('light');
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [template, setTemplate] = useState<StarterTemplate>('blank');
 
   useEffect(() => {
     if (!isOpen) return;
     setName('Untitled App');
     setDescription('');
-    setTheme('light');
+    setTheme('system');
     setTemplate('blank');
   }, [isOpen]);
 

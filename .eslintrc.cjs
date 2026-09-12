@@ -14,6 +14,7 @@ module.exports = {
   ],
   ignorePatterns: [
     'dist',
+    'dist-desktop',
     'node_modules',
     '*.config.js',
     '*.config.ts',

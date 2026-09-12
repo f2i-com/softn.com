@@ -33,7 +33,7 @@ function createEmptyUIFile(id: string, path: string): UIFileState {
       {
         id: rootId,
         componentType: 'App',
-        props: { theme: 'light' },
+        props: { theme: 'system' },
         children: [],
         parentId: null,
       },
@@ -1286,6 +1286,7 @@ function decrement() {
       }
 
       loadedAssets.set(fileId, {
+        bundlePath: assetPath,
         name: assetPath,
         type: asset.type,
         data: asset.data,

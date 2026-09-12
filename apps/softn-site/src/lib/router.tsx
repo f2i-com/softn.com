@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useSyncExternalStore } from 'react';
 
 /**
  * The site's routes, on the history API and nothing else.
@@ -19,11 +19,21 @@ export interface Route {
 const OWNED = /^\/(?:apps|app\/[^/]+|publish)\/?$/;
 const FOREIGN = /^\/(?:web|studio|builder|api|demos|softn-files)(?:\/|$)/;
 
-function read(): Route {
-  return { path: window.location.pathname.replace(/\/+$/, '') || '/', query: new URLSearchParams(window.location.search), hash: window.location.hash };
+const listeners = new Set<() => void>();
+
+function subscribe(update: () => void): () => void {
+  listeners.add(update);
+  window.addEventListener('popstate', update);
+  window.addEventListener('hashchange', update);
+  return () => {
+    listeners.delete(update);
+    window.removeEventListener('popstate', update);
+    window.removeEventListener('hashchange', update);
+  };
 }
 
-const listeners = new Set<() => void>();
+const currentUrl = () => window.location.href;
+const serverUrl = () => '/';
 
 export function navigate(to: string, replace = false): void {
   const url = new URL(to, window.location.origin);
@@ -38,19 +48,14 @@ export function navigate(to: string, replace = false): void {
 }
 
 export function useRoute(): Route {
-  const [route, setRoute] = useState<Route>(() => (typeof window === 'undefined' ? { path: '/', query: new URLSearchParams() } : read()));
-  useEffect(() => {
-    const update = () => setRoute(read());
-    listeners.add(update);
-    window.addEventListener('popstate', update);
-    window.addEventListener('hashchange', update);
-    return () => {
-      listeners.delete(update);
-      window.removeEventListener('popstate', update);
-      window.removeEventListener('hashchange', update);
-    };
-  }, []);
-  return route;
+  // React rechecks the snapshot when it subscribes. A fast control change
+  // between first paint and that subscription must not leave the UI showing
+  // an old route while the address has already moved on.
+  const href = useSyncExternalStore(subscribe, currentUrl, serverUrl);
+  return useMemo(() => {
+    const url = new URL(href, 'https://softn.invalid');
+    return { path: url.pathname.replace(/\/+$/, '') || '/', query: new URLSearchParams(url.search), hash: url.hash };
+  }, [href]);
 }
 
 /** Whether a same-origin path is one of this SPA's own pages. */

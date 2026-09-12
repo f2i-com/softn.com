@@ -18,7 +18,10 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 1100
 await context.addInitScript(() => { delete window.showSaveFilePicker; });
 const page = await context.newPage();
 const errors = [];
-page.on('pageerror', error => errors.push(error.message));
+page.on('pageerror', error => {
+  errors.push(error.message);
+  console.error('Browser page error:', { message: error.message, stack: error.stack, url: page.url() });
+});
 await page.route(url => url.pathname === '/__fieldnotes_example.softn', route => route.fulfill({ body: bytes, contentType: 'application/zip' }));
 const openUrl = base => `${base}?open=${encodeURIComponent('/__fieldnotes_example.softn')}`;
 const count = (frame, label) => frame.getByLabel(label, { exact: true }).innerText();
@@ -27,10 +30,18 @@ const screenshot = async name => {
   await mkdir(assets, { recursive: true });
   await page.screenshot({ path: fileURLToPath(new URL(name, assets)), animations: 'disabled' });
 };
+const saveBundle = async () => {
+  const downloadEvent = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const stream = await (await downloadEvent).createReadStream();
+  const chunks = []; for await (const chunk of stream) chunks.push(chunk);
+  return new Uint8Array(Buffer.concat(chunks));
+};
 
 try {
   await page.goto(openUrl(builderUrl));
   await page.getByText('Fieldnotes', { exact: true }).first().waitFor();
+  assert.equal(await page.locator('[data-fidelity="source-only"]').count(), 0);
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
   const preview = page.frameLocator('iframe');
   await preview.getByRole('button', { name: 'Complete Sketch the welcome screen' }).waitFor();
@@ -57,24 +68,36 @@ try {
   await page.getByRole('button', { name: 'Data', exact: true }).click();
   await firstTitle.fill('Sketch the welcome screen');
   await firstTitle.blur();
-  const downloadEvent = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  const stream = await (await downloadEvent).createReadStream();
-  const chunks = []; for await (const chunk of stream) chunks.push(chunk);
-  const exported = unzipSync(new Uint8Array(Buffer.concat(chunks)));
+  const exported = unzipSync(await saveBundle());
   for (const path of ['ui/main.ui', 'logic/main.logic']) assert.equal(strFromU8(exported[path]), strFromU8(sourceEntries[path]));
   const taskFile = JSON.parse(strFromU8(exported['xdb/tasks.xdb']));
   assert.equal(taskFile.records.length, 5);
   assert.equal(taskFile.records[0].id, 'fieldnotes-task-1');
   assert.equal(taskFile.records[0].data.title, 'Sketch the welcome screen');
   assert.equal(taskFile.schema.fields.length, 3);
+
+  // An app advertised as editable must support a real inspector edit, not
+  // merely load into the canvas while silently discarding that edit on save.
+  await page.getByRole('button', { name: 'Design', exact: true }).click();
+  await page.getByRole('treeitem', { name: 'Select h1 component', exact: true }).click();
+  await page.getByLabel('Text Content', { exact: true }).fill('Make room for your next idea.');
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await preview.getByRole('heading', { name: 'Make room for your next idea.', exact: true }).waitFor();
+  const visuallyEditedBundle = await saveBundle();
+  const editedEntries = unzipSync(visuallyEditedBundle);
+  assert.ok(strFromU8(editedEntries['ui/main.ui']).includes('Make room for your next idea.'));
+  assert.equal(strFromU8(editedEntries['logic/main.logic']), strFromU8(sourceEntries['logic/main.logic']));
+  assert.deepEqual(JSON.parse(strFromU8(editedEntries['xdb/tasks.xdb'])), taskFile);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: 'Preview app', exact: true }).click();
   await preview.getByRole('button', { name: 'Complete Sketch the welcome screen' }).waitFor();
   for (const frame of page.frames()) assert.ok(await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
 
-  // A distinct runtime session persists its own records through reload.
-  await page.goto(openUrl(runtimeUrl));
+  // Run the visually edited export, not just the original demo. Its records
+  // and task actions must remain functional after Builder regenerates its UI.
+  await page.route(url => url.pathname === '/__fieldnotes_edited.softn', route => route.fulfill({ body: Buffer.from(visuallyEditedBundle), contentType: 'application/zip' }));
+  await page.goto(`${runtimeUrl}?open=${encodeURIComponent('/__fieldnotes_edited.softn')}`);
+  await page.getByRole('heading', { name: 'Make room for your next idea.', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Complete Sketch the welcome screen' }).waitFor();
   await page.getByRole('button', { name: 'Add task' }).click();
   assert.equal(await page.getByRole('alert').innerText(), 'Give your task a name first.');
@@ -91,7 +114,12 @@ try {
   assert.equal(await page.getByText('Try the complete flow', { exact: true }).count(), 0);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   assert.deepEqual(errors, []);
-  console.log('Fieldnotes passed: seed data, isolated interactive preview, Data edits, source/schema export, mobile, validation, create/complete/filter and persisted runtime reload.');
+  console.log('Fieldnotes passed: seed data, isolated interactive preview, Data edits, source/schema export, visual heading edit, edited bundle runtime, mobile, validation, create/complete/filter and persisted runtime reload.');
+} catch (error) {
+  console.error('Page at failure:', page.url());
+  console.error('Visible page:', await page.locator('body').innerText().catch(() => '(unavailable)'));
+  console.error('Browser errors:', errors);
+  throw error;
 } finally {
   await browser.close();
 }

@@ -121,16 +121,30 @@ function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected
   }
   if (typeof out.version !== 'string' || !out.version.trim()) out.version = '1.0.0';
 
-  const paths = [...collected.entries.keys()].filter((p) => p !== 'manifest.json' && p !== 'permission.json');
-  const group = (test: (p: string) => boolean) => paths.filter(test).sort();
-  const ui = group((p) => /\.ui$/i.test(p));
-  const logic = group((p) => /\.logic$/i.test(p) && !p.startsWith('server/'));
-  const server = group((p) => p.startsWith('server/') && /\.logic$/i.test(p));
-  const xdb = group((p) => /\.xdb$/i.test(p));
-  const known = new Set([...ui, ...logic, ...server, ...xdb]);
-  const assets = group((p) => !known.has(p));
-
   const declared = out.files && typeof out.files === 'object' && !Array.isArray(out.files) ? (out.files as Record<string, unknown>) : {};
+  const paths = [...collected.entries.keys()].filter((p) => p !== 'manifest.json' && p !== 'permission.json');
+  const group = (name: string, test: (p: string) => boolean) => {
+    const remaining = new Map(paths.filter(test).sort().map((path) => [path.toLowerCase(), path]));
+    const ordered: string[] = [];
+    // Helper logic executes in manifest order. Sorting existing declarations
+    // can run an initializer before the helper it depends on after an export.
+    // Keep each surviving entry's order, then append newly authored files.
+    if (Array.isArray(declared[name])) for (const member of declared[name]) {
+      const verdict = typeof member === 'string' ? resolveProjectPath(member) : null;
+      const path = verdict?.ok ? remaining.get(verdict.key) : undefined;
+      if (path === undefined || !verdict?.ok) continue;
+      ordered.push(path);
+      remaining.delete(verdict.key);
+    }
+    return [...ordered, ...remaining.values()];
+  };
+  const ui = group('ui', (p) => /\.ui$/i.test(p));
+  const logic = group('logic', (p) => /\.logic$/i.test(p) && !p.startsWith('server/'));
+  const server = group('server', (p) => p.startsWith('server/') && /\.logic$/i.test(p));
+  const xdb = group('xdb', (p) => /\.xdb$/i.test(p));
+  const known = new Set([...ui, ...logic, ...server, ...xdb]);
+  const assets = group('assets', (p) => !known.has(p));
+
   const groups: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(declared)) {
     if (MANAGED_GROUPS.has(name)) continue;

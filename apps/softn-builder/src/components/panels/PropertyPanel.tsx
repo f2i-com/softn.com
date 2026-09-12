@@ -7,6 +7,7 @@ import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { getComponentMeta } from '../../utils/componentRegistry';
+import { nativeElementMeta } from '../../utils/nativeHtmlMetadata';
 import { blockHeaderText } from '../../utils/sourceGenerator';
 import { blockDescription, isBlockHead } from '../../utils/blocks';
 import type { CanvasBlock, PropSchema } from '../../types/builder';
@@ -224,6 +225,7 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 interface PropEditorProps {
+  id: string;
   propDef: PropSchema;
   value: unknown;
   onChange: (value: unknown) => void;
@@ -233,11 +235,12 @@ interface PropertyPanelProps {
   onToggleDock?: () => void;
 }
 
-function PropEditor({ propDef, value, onChange }: PropEditorProps) {
+function PropEditor({ id, propDef, value, onChange }: PropEditorProps) {
   switch (propDef.type) {
     case 'string':
       return (
         <input
+          id={id}
           type="text"
           style={styles.input}
           value={(value as string) || ''}
@@ -249,6 +252,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
     case 'number':
       return (
         <input
+          id={id}
           type="number"
           style={styles.input}
           value={(value as number) ?? ''}
@@ -260,6 +264,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
       return (
         <div style={styles.checkbox}>
           <input
+            id={id}
             type="checkbox"
             style={styles.checkboxInput}
             checked={Boolean(value)}
@@ -272,6 +277,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
     case 'select':
       return (
         <select
+          id={id}
           style={styles.select}
           value={(value as string) || ''}
           onChange={(e) => onChange(e.target.value)}
@@ -289,6 +295,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
       return (
         <div style={styles.colorRow}>
           <input
+            id={id}
             type="color"
             style={styles.colorInput}
             value={(value as string) || '#000000'}
@@ -307,6 +314,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
     case 'expression':
       return (
         <input
+          id={id}
           type="text"
           style={{ ...styles.input, fontFamily: 'monospace' }}
           value={(value as string) || ''}
@@ -318,6 +326,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
     case 'json':
       return (
         <textarea
+          id={id}
           style={styles.textarea}
           value={typeof value === 'object' ? JSON.stringify(value, null, 2) : (value as string) || ''}
           onChange={(e) => {
@@ -335,6 +344,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
       return (
         <div>
           <input
+            id={id}
             type="text"
             style={{ ...styles.input, fontFamily: 'monospace' }}
             value={(value as string) || ''}
@@ -351,6 +361,7 @@ function PropEditor({ propDef, value, onChange }: PropEditorProps) {
     default:
       return (
         <input
+          id={id}
           type="text"
           style={styles.input}
           value={String(value || '')}
@@ -372,7 +383,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
 
   const meta = useMemo(() => {
-    if (selectedElement) return getComponentMeta(selectedElement.componentType);
+    if (selectedElement) return nativeElementMeta(selectedElement) ?? getComponentMeta(selectedElement.componentType);
     return null;
   }, [selectedElement]);
 
@@ -557,8 +568,9 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
 
       return (
         <div key={prop.name} style={styles.field}>
-          <label style={styles.label}>{prop.name === 'children' ? 'Text Content' : prop.name}</label>
+          <label htmlFor={`property-${selectedElement.id}-${prop.name}`} style={styles.label}>{prop.name === 'children' ? 'Text Content' : prop.name}</label>
           <PropEditor
+            id={`property-${selectedElement.id}-${prop.name}`}
             propDef={prop}
             value={selectedElement.props[prop.name]}
             onChange={(value) => handlePropChange(prop.name, value)}

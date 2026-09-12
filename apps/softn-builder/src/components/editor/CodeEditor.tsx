@@ -91,6 +91,11 @@ export function CodeEditor({
       options={{
         readOnly,
         domReadOnly: readOnly,
+        // Monaco's word highlighter leaves its delayed lookup promise uncaught
+        // when a model is disposed during a workspace/view switch. Avoid that
+        // background lookup in these temporary editors; syntax highlighting,
+        // selection highlighting and language completions remain available.
+        occurrencesHighlight: 'off',
       }}
       loading={
         <div
