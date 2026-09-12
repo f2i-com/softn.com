@@ -10,9 +10,9 @@ A UI language, visual builder and runtime for editable apps on the web and deskt
 
 </div>
 
-![SoftN Builder running the Glamour Studio sample app, with its dashboard, appointments and navigation](docs/readme-assets/builder-preview.jpg)
+![Fieldnotes running inside the real SoftN Builder, with a task dashboard, editable form and live preview](docs/readme-assets/builder-preview.jpg)
 
-_The actual SoftN Builder, running the checked-in Glamour Studio example with fictional records. [Screenshot details](docs/readme-assets/README.md)._
+_Meet **Fieldnotes**: a working app whose form, logic running on ZIPP and XDB records update one dashboard. This is the actual Builder preview. [Read the source](examples/fieldnotes) · [Get the .softn bundle](apps/softn-site/public/examples/Fieldnotes.softn) · [Screenshot details](docs/readme-assets/README.md)._
 
 SoftN brings the interface, logic and data model together in a portable `.softn` app. Build visually, edit the source, or use your own AI provider in Studio. Open the result in the browser, run it on the desktop, publish it to the app directory, or connect it to FormLogic for a hosted backend.
 
@@ -29,6 +29,25 @@ The project is actively developed. The examples and runtime are usable today; ho
 | **Portable apps**         | A `.softn` bundle carries the editable interface, client logic, data seeds and assets. Reopen it, customize it and export it again.                                            |
 | **More than CRUD**        | Audio, microphone input, animation and Three.js scenes are available through components and explicitly granted capabilities.                                                   |
 
+## See an app powered by ZIPP
+
+Fieldnotes is a small task planner you can use, inspect and change. Add a task,
+mark it complete and watch the list and totals update. Its `.logic` executes on
+[ZIPP](https://github.com/f2i-com/zipp.org); SoftN renders the interface and connects
+the script to XDB. No AI provider or account is needed to try it.
+
+| Follow the action | Open the source |
+| :---------------- | :-------------- |
+| **Enter a task.** The form binds its inputs and calls `addTask()` when you press the button. | [Interface and bindings](examples/fieldnotes/ui/main.ui) |
+| **Run the logic.** ZIPP executes validation, creates the task record and refreshes the dashboard; `toggleTask()` updates completion. | [The app's .logic file](examples/fieldnotes/logic/main.logic) |
+| **Keep the data.** The bundle supplies the collection schema and five sample tasks. Runtime saves your new records locally. | [Schema, seeds and bundle builder](examples/fieldnotes/build.mjs) |
+
+Open the same bundle in Studio, Builder or Runtime. Change a heading visually,
+edit the logic, switch themes or export the result as your own app. Builder's
+preview has its own test records; use Data view to edit the seeds you ship.
+
+**[Explore Fieldnotes](examples/fieldnotes/README.md)** · **[Run it locally](#get-started)** · **[Explore games, emulators and more](#demos)**
+
 ## From an idea to an app
 
 1. **Start with a brief or a bundle.** Use Studio with your own AI provider, create a project in Builder, or open an existing `.softn` app.
@@ -36,23 +55,38 @@ The project is actively developed. The examples and runtime are usable today; ho
 3. **Try the whole flow.** Preview at desktop, tablet and mobile sizes, and use sample records to exercise forms and dashboards.
 4. **Export and choose a host.** Run the bundle locally, publish it in the directory, deploy a single app, or host it through FormLogic.
 
-![SoftN Builder schema editor showing clients, staff, services, appointments and fictional seed records](docs/readme-assets/builder-data.jpg)
+<details>
+<summary><strong>Inspect the collection behind the form</strong></summary>
 
-_The same app in Data view: collections, field types and seed records are part of the workspace._
+![SoftN Builder Data view showing Fieldnotes task fields and sample records](docs/readme-assets/builder-data.jpg)
+
+_The same Fieldnotes app in Data view: the `tasks` collection, its field types and the five sample records carried by the bundle._
+
+</details>
 
 <table>
 <tr>
 <td width="65%" valign="top">
 <h3>One app, different screen sizes</h3>
 <p>The preview runs the actual app. Switch viewport sizes to check navigation, forms and content before you share it.</p>
-<p>This is the same Glamour Studio example at a mobile viewport, including its compact header and bottom navigation. Its records are fictional, and the capture is taken directly from the running preview.</p>
+<p>This is Fieldnotes running at a phone-sized viewport in dark mode. Its dashboard, filters and task form adapt to the available width, and the page scrolls to the rest of the workspace.</p>
+<p>The runtime theme switch updates the app without clearing unfinished input. The same source provides both the warm light palette above and the dark palette shown here.</p>
 <p>Responsive behavior still belongs to the app's layout: test your own pages and interactions at the sizes you intend to support.</p>
 </td>
 <td width="35%" align="center">
-<img src="docs/readme-assets/app-mobile.jpg" width="280" alt="Glamour Studio sample app in the real mobile preview, with dashboard cards and bottom navigation" />
+<img src="docs/readme-assets/app-mobile.jpg" width="280" alt="Fieldnotes running on a phone-sized screen in dark mode, with its task dashboard and responsive navigation" />
 </td>
 </tr>
 </table>
+
+<details>
+<summary><strong>See the full app in dark mode</strong></summary>
+
+![The same Fieldnotes app running in SoftN Runtime with its dark palette, task list and form](docs/readme-assets/app-dark.jpg)
+
+_A direct screenshot of the running app. Its colours and responsive layout live in the editable `.ui` source._
+
+</details>
 
 ## Get started
 
@@ -80,7 +114,7 @@ The launcher proxies the browser apps through one origin and picks alternate por
 
 Runtime keeps apps running when you return to its workspace, so you can browse the directory and open another app without losing an unfinished form. Use **Home** to switch apps, or **Close** to stop the current one. Apps you open are kept in this browser's library; offline readiness is shown for each saved app.
 
-For a first project, open Builder, choose **New**, add a layout and components, then use **Preview** and **Export**. Use **Open** to bring an exported app back into the editor. For examples as source, see [softn-Examples](https://github.com/f2i-com/softn-Examples) and the [Glamour Studio fixture](apps/softn-builder/src/utils/__fixtures__/GlamourStudio) pictured above.
+For a first project, open the homepage's **Fieldnotes** example in Builder, select its heading and change **Text Content**, then use **Preview** and **Export**. Use **Open** to bring your exported app back into Studio, Builder or Runtime. Or choose **New** in Builder to start from a blank app. The [Fieldnotes source](examples/fieldnotes) is included in this repository; [softn-Examples](https://github.com/f2i-com/softn-Examples) contains the wider demo catalogue.
 
 ## Connect to FormLogic
 
@@ -655,11 +689,14 @@ catalogues migrate automatically; see the API README before upgrading.
 
 ### Demos
 
-The demos are the example applications in
+The included [Fieldnotes teaching app](examples/fieldnotes) is the working example
+shown above. Its editable source and `.softn` bundle are checked into this repository.
+
+The downloadable demo catalogue comes from the example applications in
 [softn-Examples](https://github.com/f2i-com/softn-Examples): every bundle the
 directory lists, as source, with the packer, the validator and the tests. That
 repository's `Release` workflow packs them and publishes the archives, and this
-one carries no copies. `apps/softn-web/public/demos/index.json` pins a release
+repository fetches those release bundles when needed. `apps/softn-web/public/demos/index.json` pins a release
 by download URL, size and SHA-256 for each bundle, and `npm run fetch:demos`
 downloads whatever is missing or stale and refuses an archive that does not
 verify. `dev`, `dev:web`, `build:site --with-demos`, `screenshot:demos` and `test` fetch
@@ -699,7 +736,6 @@ Each is a worked example of some part of the runtime.
 
 | Demo              | Description                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------- |
-| **GlamourStudio** | A salon's front desk on `SmartGrid` and `SmartForm`, syncing between devices                |
 | **DeviceKit**     | What a sandboxed app may ask for, one page per permission: network, camera, files, QR codes |
 | **Showcase**      | Every chart, animation and interactive component the runtime ships                          |
 | **Notes**         | A shared notes board in the app's server-side storage                                       |
