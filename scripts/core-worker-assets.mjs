@@ -16,9 +16,13 @@ function inside(root, candidate) {
   return candidate.startsWith(root + path.sep);
 }
 
-function copyDirectory(source, destination) {
+function copyDirectory(source, destination, skipRuntimeMirror = false) {
   fs.mkdirSync(destination, { recursive: true });
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    // Core keeps an adjacent mirror for consumers loading dist directly. The
+    // browser app is already copying that tree to assets/core-runtime, so a
+    // second nested copy only duplicates engines, speech assets and chunks.
+    if (skipRuntimeMirror && entry.name === 'core-runtime') continue;
     const from = path.join(source, entry.name);
     const to = path.join(destination, entry.name);
     if (entry.isDirectory()) copyDirectory(from, to);
@@ -62,7 +66,7 @@ export function coreWorkerAssetPlugin({ coreDistRoot = defaultCoreRoot } = {}) {
       const destination = options.dir || outputRoot;
       if (!destination) throw new Error('Core runtime assets need a Vite output directory');
       if (!fs.existsSync(sourceRoot)) throw new Error('Build @softn/core before building runtime consumers');
-      copyDirectory(sourceRoot, path.join(destination, 'assets', 'core-runtime'));
+      copyDirectory(sourceRoot, path.join(destination, 'assets', 'core-runtime'), true);
     },
   };
 }

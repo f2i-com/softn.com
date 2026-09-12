@@ -17,9 +17,9 @@
  *   in `.logic` still reaches devtools and the buffer cannot grow unbounded.
  */
 
-import initWasm, { Engine, accelGuestCall, zipp_install_panic_hook } from '../../wasm-zipp/zipp_wasm.js';
+import { Engine, accelGuestCall } from '../../wasm-zipp/zipp_wasm.js';
 import { createAccelHost } from './accel-host';
-import { retryableSingleFlight } from './retryable-single-flight';
+import { ensureZippWasm } from './zipp-wasm-loader';
 
 import type { DBNamespace } from './script-runtime';
 import { sanitizeArgs } from './vm-args';
@@ -31,26 +31,9 @@ import { sanitizeArgs } from './vm-args';
 /** The instantiated module's exports; `memory` backs the accel bridge's views. */
 let wasmExports: { memory: WebAssembly.Memory } | null = null;
 
-/**
- * One instantiation per page, shared by every engine — but not one *attempt*.
- * The first promise used to be kept whether it settled or failed, so a fetch
- * of the binary that failed once (offline for a moment, a dropped connection)
- * was the answer every later app got for the rest of the page. A failed
- * attempt is forgotten; the next engine to start tries again.
- */
-const ensureWasm = retryableSingleFlight<void>(async () => {
-  try {
-    const exports = await initWasm();
-    wasmExports = exports as unknown as { memory: WebAssembly.Memory };
-    // Without this a Rust panic inside the engine surfaces as a bare
-    // `unreachable` trap with no message or stack — undiagnosable from
-    // devtools. With it, panics reach console.error intact.
-    zipp_install_panic_hook();
-  } catch (error) {
-    wasmExports = null;
-    throw error;
-  }
-});
+async function ensureWasm(): Promise<void> {
+  wasmExports = await ensureZippWasm();
+}
 
 // ============================================================================
 // Bridge preamble

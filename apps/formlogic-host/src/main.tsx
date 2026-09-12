@@ -1,8 +1,9 @@
 import React, { Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SoftNWithXDB, composeBundleSource } from '@softn/core';
+import { SoftNWithXDB, composeBundleSource, configureZippWasmSource } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
+import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
 // authentication and accepts only named action calls for the selected app.
@@ -45,6 +46,11 @@ window.addEventListener('message', event => {
     item.resolve(event.data.result);
   };
   try {
+    const engineBytes = event.data.zippWasm;
+    if (!(engineBytes instanceof ArrayBuffer) || engineBytes.byteLength < 8 || engineBytes.byteLength > 32 * 1024 * 1024) {
+      throw new Error('The parent must supply the matching ZIPP engine bytes');
+    }
+    configureZippWasmSource(engineBytes);
     const files = new Map<string, string>(Object.entries(event.data.client));
     const manifest = JSON.parse(files.get('manifest.json') || '{}');
     const composed = composeBundleSource(files, manifest.main, manifest.files?.logic || []);
@@ -60,4 +66,4 @@ window.addEventListener('message', event => {
     port.postMessage({ type: 'error' });
   }
 });
-parent.postMessage({ type: 'formlogic:ready' }, '*');
+parent.postMessage({ type: 'formlogic:ready', zipp: { version: zippSource.version, sha256: zippSource.sha256 } }, '*');

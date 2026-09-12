@@ -363,13 +363,29 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
   never in a text field and never for a Ctrl chord or the system modifier
 
 The compiled engine is committed at `packages/@softn/core/wasm-zipp/`, so building SoftN needs no
-Rust toolchain. To pick up a new engine revision from a `zipp.org` checkout beside this repo:
+Rust toolchain. The current browser engine is **ZIPP v0.0.17**. Its exact commit, release archive
+and SHA-256 checksums are recorded in [SOURCE.json](packages/@softn/core/wasm-zipp/SOURCE.json).
+Import an official release with the checksum-verifying vendor script, then rebuild the packages
+and whichever apps you ship:
+
+```bash
+npm run vendor:zipp-release -w @softn/core -- v0.0.17
+npm run build:packages
+npm test -w @softn/core
+```
+
+For an intentional development build from a sibling `zipp.org` checkout:
 
 ```bash
 npm run build:zipp-wasm -w @softn/core   # needs rustup + wasm-pack
 ```
 
 The engine is selected in one place -- `packages/@softn/core/src/runtime/vm-adapter.ts`.
+
+Hosts that already use the same engine can call `configureZippWasmSource(bytes)` before SoftN
+initializes. FormLogic uses this to download and verify the binary once, then send copies to
+its expression worker and hosted SoftN apps. Each worker or app keeps its own instance, memory
+and permissions. See the [FormLogic host integration](apps/formlogic-host/README.md).
 
 ```javascript
 let clients = [];
