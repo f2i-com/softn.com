@@ -3201,6 +3201,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "self_cell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813"
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4552,13 +4558,14 @@ dependencies = [
 
 [[package]]
 name = "zipp-vm"
-version = "0.0.15"
+version = "0.0.16"
 dependencies = [
  "dynasm",
  "dynasmrt",
  "num-bigint",
  "num-traits",
  "rustc-hash",
+ "self_cell",
  "unicode-id-start",
  "unicode-normalization",
  "zipp-regress",
