@@ -8,6 +8,7 @@ import '@softn/brand/fonts';
 import '@softn/brand/tokens.css';
 import '@softn/brand/bar.css';
 import App from './App';
+import { FieldnotesPreview } from './components/FieldnotesPreview';
 
 // The minimal set now, every other built-in by loader: a document that never
 // names Scene3D never fetches Three.js, and one that names it on its first
@@ -17,6 +18,6 @@ registerRuntimeComponents();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    {new URLSearchParams(window.location.search).get('preview') === 'fieldnotes' ? <FieldnotesPreview /> : <App />}
   </React.StrictMode>
 );

@@ -39,9 +39,17 @@ runtime persistence after reload, isolated preview edits, Data edits reaching
 preview, source/schema preservation on export and mobile overflow. Save uses
 the browser-download fallback; this check does not operate a native file picker.
 
-The landing page images `workspace-preview.png` and `workspace-data.png` in
-`apps/softn-site/src/assets` are actual Builder screenshots of this example,
-captured at 1440 × 1100 CSS pixels (2160 × 1650 image pixels). Their five tasks
-are the fictional records in `build.mjs`, with no account or personal data.
+The homepage embeds this same bundle as a live, interactive app. Its runtime
+entry (`/web/?preview=fieldnotes`) uses a temporary, memory-only database; adding
+or completing tasks there never changes the visitor's saved Fieldnotes tasks.
+Switching the homepage tabs keeps those demo edits, while reloading resets them.
+The separate **Open in runtime** button opens the full app with normal local
+storage. The embedded app shows a scaled desktop view on wide screens and its
+responsive phone layout in narrow cards.
+
+The **Data collections** tab uses `workspace-data.png`, an actual Builder
+screenshot in `apps/softn-site/src/assets`, captured at 1440 × 1100 CSS pixels
+(2160 × 1650 image pixels). Its five tasks are the fictional records in
+`build.mjs`, with no account or personal data.
 
 License: Apache-2.0, as in the repository's LICENSE and NOTICE.
