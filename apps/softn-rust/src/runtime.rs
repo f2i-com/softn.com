@@ -1087,6 +1087,24 @@ fn host_to_json(val: &HostValue, depth: usize) -> Result<serde_json::Value, Stri
             if s.len() > MAX_STRING_VALUE_LEN { return Err("Handler string result exceeds host limit".into()); }
             serde_json::Value::String(s.clone())
         },
+        HostValue::Utf16(units) => {
+            // ZIPP preserves lone surrogates exactly in this variant. JSON's
+            // Rust string representation cannot, so reject malformed text
+            // rather than silently substituting U+FFFD or double-escaping it.
+            // Bound decoded UTF-8 bytes as well as input units before copying.
+            if units.len() > MAX_STRING_VALUE_LEN {
+                return Err("Handler string result exceeds host limit".into());
+            }
+            let mut text = String::with_capacity(units.len());
+            for decoded in char::decode_utf16(units.iter().copied()) {
+                let character = decoded.map_err(|_| "Handler string result contains an unpaired UTF-16 surrogate")?;
+                if text.len() + character.len_utf8() > MAX_STRING_VALUE_LEN {
+                    return Err("Handler string result exceeds host limit".into());
+                }
+                text.push(character);
+            }
+            serde_json::Value::String(text)
+        },
         HostValue::Array(items) => {
             let mut vals = Vec::with_capacity(items.len());
             for v in items {
@@ -1115,6 +1133,44 @@ fn number_to_json(n: f64) -> serde_json::Value {
         serde_json::Value::from(n as i64)
     } else {
         serde_json::Number::from_f64(n).map_or(serde_json::Value::Null, serde_json::Value::Number)
+    }
+}
+
+#[cfg(test)]
+mod host_json_tests {
+    use super::*;
+
+    #[test]
+    fn utf16_json_preserves_pairs_nul_and_nested_text() {
+        let value = HostValue::Object(vec![("body".into(), HostValue::Array(vec![
+            HostValue::Utf16(vec![0x61, 0, 0xD83D, 0xDE00, 0x6F22]),
+        ]))]);
+        assert_eq!(host_to_json(&value, 0).unwrap(), serde_json::json!({
+            "body": ["a\0\u{1F600}\u{6F22}"]
+        }));
+    }
+
+    #[test]
+    fn utf16_json_reports_a_guest_lone_surrogate_without_replacing_it() {
+        let mut state = compile_script(r"var result = ['\ud800'];").unwrap();
+        state.run_init().unwrap();
+        let slot = state.symbols().into_iter().find(|symbol| symbol.name == "result").unwrap().index;
+        let result = state.get_slot(slot);
+        assert_eq!(result, HostValue::Array(vec![HostValue::Utf16(vec![0xD800])]));
+        assert!(host_to_json(&result, 0).unwrap_err().contains("unpaired UTF-16 surrogate"));
+        assert!(host_to_json(&HostValue::Utf16(vec![0xDC00]), 0).is_err());
+    }
+
+    #[test]
+    fn utf16_json_enforces_the_decoded_byte_limit() {
+        let at_limit = HostValue::Utf16(vec![0x61; MAX_STRING_VALUE_LEN]);
+        assert_eq!(host_to_json(&at_limit, 0).unwrap().as_str().unwrap().len(), MAX_STRING_VALUE_LEN);
+        let too_many_units = HostValue::Utf16(vec![0x61; MAX_STRING_VALUE_LEN + 1]);
+        assert!(host_to_json(&too_many_units, 0).unwrap_err().contains("exceeds host limit"));
+        // One code unit becomes three UTF-8 bytes; checking only unit count
+        // would admit this string despite the existing 2 MiB response bound.
+        let too_many_bytes = HostValue::Utf16(vec![0x20AC; MAX_STRING_VALUE_LEN / 3 + 1]);
+        assert!(host_to_json(&too_many_bytes, 0).unwrap_err().contains("exceeds host limit"));
     }
 }
 
