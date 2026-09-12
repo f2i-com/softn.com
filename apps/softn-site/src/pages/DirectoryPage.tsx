@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { listApps, type AppCard as AppCardData, type CapabilityFilter, type Category } from '../lib/api';
 import { navigate, type Route } from '../lib/router';
 import { AppGrid, Featured, pickFeatured } from '../components/directory/AppCard';
-import { CAP_FILTERS, CapabilityChips, CategoriesNotice, CategoryChips, Pagination, SearchBox, SortSelect } from '../components/directory/Controls';
+import { CAP_FILTERS, SORTS, CapabilityChips, CategoriesNotice, CategoryChips, Pagination, SearchBox, SortSelect } from '../components/directory/Controls';
 
 interface Filters {
   q: string;
@@ -14,6 +14,11 @@ interface Filters {
   page: number;
 }
 
+function selectedSort(raw: string | null | undefined, q: string): string {
+  if (raw === 'relevance' && q) return raw;
+  return SORTS.some((sort) => sort.id === raw) ? raw! : q ? 'relevance' : 'trending';
+}
+
 function buildUrl(f: Partial<Filters>): string {
   const qs = new URLSearchParams();
   if (f.q) qs.set('q', f.q);
@@ -21,7 +26,10 @@ function buildUrl(f: Partial<Filters>): string {
   if (f.tag) qs.set('tag', f.tag);
   if (f.author) qs.set('author', f.author);
   if (f.cap) qs.set('cap', f.cap);
-  if (f.sort && f.sort !== 'trending' && f.sort !== 'relevance') qs.set('sort', f.sort);
+  // Searching defaults to relevance; browsing defaults to trending. Only
+  // omit the applicable default, or Trending silently becomes Best match.
+  const sort = selectedSort(f.sort, f.q ?? '');
+  if (sort !== (f.q ? 'relevance' : 'trending')) qs.set('sort', sort);
   if (f.page && f.page > 1) qs.set('page', String(f.page));
   const s = qs.toString();
   return s ? `/apps?${s}` : '/apps';
@@ -69,7 +77,8 @@ export function DirectoryPage({
   const tag = route.query.get('tag') ?? '';
   const author = route.query.get('author') ?? '';
   const cap = asCap(route.query.get('cap'));
-  const sort = route.query.get('sort') ?? (q ? 'relevance' : 'trending');
+  const rawSort = route.query.get('sort');
+  const sort = selectedSort(rawSort, q);
   const rawPage = route.query.get('page');
   const page = parsePageParam(rawPage);
   const filters: Filters = { q, category, tag, author, cap, sort, page };
@@ -95,9 +104,9 @@ export function DirectoryPage({
   // An address that says page=abc, page=0 or page=1 means page 1, and the
   // address is made to say so — replaced, so back does not return to it.
   useEffect(() => {
-    if (rawPage !== null && rawPage !== (page > 1 ? String(page) : null)) navigate(buildUrl(filters), true);
+    if ((rawPage !== null && rawPage !== (page > 1 ? String(page) : null)) || (rawSort !== null && rawSort !== sort)) navigate(buildUrl(filters), true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawPage, page]);
+  }, [rawPage, page, rawSort, sort]);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -130,7 +139,7 @@ export function DirectoryPage({
 
   // The featured shelf is chosen from the most-played dozen and changes as
   // the directory does. It only appears on the unfiltered front page.
-  const showFeatured = !filtered && page === 1;
+  const showFeatured = !filtered && page === 1 && sort === 'trending';
   useEffect(() => {
     if (!showFeatured) return undefined;
     const ac = new AbortController();
@@ -160,8 +169,15 @@ export function DirectoryPage({
   else if (tag) heading = <>Tagged #{tag}</>;
   else if (cap) heading = CAP_FILTERS.find((c) => c.id === cap)?.name ?? 'All apps';
 
-  const count = !loaded ? 'Loading…' : total === 0 ? 'Nothing matches.' : `${total} app${total === 1 ? '' : 's'}${pages > 1 ? `, page ${page} of ${pages}` : ''}`;
+  const count = loading ? (loaded ? 'Updating results…' : 'Loading…') : total === 0 ? 'Nothing matches.' : `${total} app${total === 1 ? '' : 's'}${pages > 1 ? `, page ${page} of ${pages}` : ''}`;
   const empty = loaded && !loading && !error && total === 0;
+  const activeFilters = [
+    ...(q ? [{ label: `Search: ${q}`, clear: { q: '' } }] : []),
+    ...(category !== 'all' ? [{ label: `Category: ${current?.name ?? category}`, clear: { category: 'all' } }] : []),
+    ...(tag ? [{ label: `Tag: #${tag}`, clear: { tag: '' } }] : []),
+    ...(author ? [{ label: `Author: ${author}`, clear: { author: '' } }] : []),
+    ...(cap ? [{ label: CAP_FILTERS.find((item) => item.id === cap)!.name, clear: { cap: '' as const } }] : []),
+  ];
 
   return (
     <main className="directory">
@@ -202,27 +218,44 @@ export function DirectoryPage({
           </div>
           <div className="directory-filters">
             {categories.length > 0 && (
-              <CategoryChips categories={categories} selected={category} hrefFor={(id) => buildUrl({ ...filters, page: 1, category: id })} onSelect={(id) => go({ category: id })} />
+              <>
+                <div className="directory-categories-desktop">
+                  <CategoryChips categories={categories} selected={category} hrefFor={(id) => buildUrl({ ...filters, page: 1, category: id })} onSelect={(id) => go({ category: id })} />
+                </div>
+                <label className="sort directory-categories-mobile">
+                  <span className="sort-label">Category</span>
+                  <select aria-label="Filter apps by category" value={category} onChange={(event) => go({ category: event.target.value })}>
+                    <option value="all">All categories</option>
+                    {category !== 'all' && !current && <option value={category}>{category}</option>}
+                    {categories.map((item) => <option key={item.id} value={item.id}>{item.name}{item.apps ? ` · ${item.apps}` : ''}</option>)}
+                  </select>
+                </label>
+              </>
             )}
             <CapabilityChips selected={cap} onSelect={(id) => go({ cap: id })} />
           </div>
           <CategoriesNotice error={categoriesError} onRetry={onRetryCategories} />
-          {tag && (
-            <p className="muted">
-              Showing apps tagged <strong>#{tag}</strong>.{' '}
-              <a href={buildUrl({ ...filters, tag: '', page: 1 })}>Clear</a>
-            </p>
+          {filtered && (
+            <div className="directory-active-filters" role="group" aria-label="Active filters">
+              <span className="directory-filter-label">Filtered by</span>
+              {activeFilters.map((filter) => (
+                <a key={filter.label} className="pill directory-filter-remove" href={buildUrl({ ...filters, ...filter.clear, page: 1 })} aria-label={`Remove ${filter.label}`}>
+                  <span>{filter.label}</span><span aria-hidden="true">×</span>
+                </a>
+              ))}
+              <a className="directory-clear-filters" href={buildUrl({ sort })}>Clear all</a>
+            </div>
           )}
           {error && (
             <div className="notice" role="alert">
               <strong>Could not load the apps.</strong> {error}{' '}
               {apps.length > 0 && 'The list below is the last one that loaded. '}
-              <button type="button" className="cta cta-small" onClick={() => setAttempt((n) => n + 1)}>
-                Retry
+              <button type="button" className="cta cta-small" disabled={loading} onClick={() => setAttempt((n) => n + 1)}>
+                {loading ? 'Retrying…' : 'Retry'}
               </button>
             </div>
           )}
-          {(!error || apps.length > 0) && <AppGrid apps={apps} categories={categories} skeleton={loading && !error ? 8 : 0} loading={loading && !error} />}
+          {(!error || apps.length > 0) && <AppGrid apps={apps} categories={categories} skeleton={loading && !error ? 8 : 0} loading={loading} />}
           {empty && (
             <div className="empty">
               <p className="empty-title">No app matches that yet.</p>
@@ -240,17 +273,17 @@ export function DirectoryPage({
                   </a>
                 )}
                 {filtered && (
-                  <a className="cta" href="/apps">
+                  <a className="cta" href={buildUrl({ sort })}>
                     Clear the filters
                   </a>
                 )}
                 <a className="cta cta-primary" href="/publish">
-                  Publish the first one
+                  {filtered ? 'Publish an app' : 'Publish the first one'}
                 </a>
               </p>
             </div>
           )}
-          {!error && <Pagination page={page} pages={pages} hrefFor={(p) => buildUrl({ ...filters, page: p })} onPage={(p) => navigate(buildUrl({ ...filters, page: p }))} />}
+          {!error && !loading && <Pagination page={page} pages={pages} hrefFor={(p) => buildUrl({ ...filters, page: p })} onPage={(p) => navigate(buildUrl({ ...filters, page: p }))} />}
         </section>
       </div>
     </main>

@@ -226,6 +226,8 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     useState<React.ComponentType<SoftNRendererProps> | null>(null);
   const [ThemeProviderComponent, setThemeProviderComponent] =
     useState<React.ComponentType<ThemeProviderProps> | null>(null);
+  const [rendererError, setRendererError] = useState<string | null>(null);
+  const [rendererRetry, setRendererRetry] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
   const seededPreviewRef = useRef<{
     xdb: ReturnType<typeof getXDB>;
@@ -297,21 +299,17 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     const loadRenderer = async () => {
       try {
         const components = await import('@softn/components');
+        if (!mounted) return;
         if (components.registerAllBuiltins) {
           components.registerAllBuiltins();
         }
-        if (mounted && components.ThemeProvider) {
-          setThemeProviderComponent(() => components.ThemeProvider);
-        }
-      } catch {
-        if (mounted) setThemeProviderComponent(null);
-      }
-
-      try {
         const core = await import('@softn/core');
-        if (mounted && core.SoftNRenderer) setPreviewComponent(() => core.SoftNRenderer);
-      } catch {
-        if (mounted) setPreviewComponent(null);
+        if (!mounted) return;
+        if (!core.SoftNRenderer) throw new Error('The preview renderer is unavailable.');
+        setThemeProviderComponent(() => components.ThemeProvider ?? null);
+        setPreviewComponent(() => core.SoftNRenderer);
+      } catch (error) {
+        if (mounted) setRendererError(error instanceof Error ? error.message : 'The preview renderer could not load.');
       }
     };
 
@@ -319,7 +317,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [rendererRetry]);
 
   const previewUIFiles = useMemo(() => {
     const next = new Map<string, string>();
@@ -625,6 +623,34 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
             <span style={{ fontSize: 13, color: 'var(--studio-text-dim)', marginTop: 8 }}>
               {files.size} file{files.size !== 1 ? 's' : ''} loaded — select a file to preview
             </span>
+          </div>
+        </div>
+      );
+    }
+
+    if (isSoftNUIFile && !PreviewComponent) {
+      return (
+        <div style={{ ...styles.previewContent, background: 'var(--studio-bg)' }}>
+          <div style={{ ...styles.previewPlaceholder, padding: 24, minWidth: 0, maxWidth: '100%' }} role={rendererError ? 'alert' : 'status'} aria-busy={!rendererError}>
+            <Icon name="eye" size={24} color="var(--studio-text-dim)" />
+            <p style={{ fontSize: 14, color: 'var(--studio-text-muted)' }}>
+              {rendererError ? 'Preview could not start.' : 'Preparing preview…'}
+            </p>
+            {rendererError && (
+              <>
+                <p style={{ fontSize: 12, color: 'var(--studio-text-dim)', overflowWrap: 'anywhere' }}>{rendererError}</p>
+                <button
+                  style={{ padding: '8px 14px', borderRadius: 8, border: '1px solid var(--studio-border-strong)', background: 'var(--studio-bg-elevated)', color: 'var(--studio-text)', fontSize: 13, cursor: 'pointer' }}
+                  onClick={() => { setRendererError(null); setRendererRetry((value) => value + 1); }}
+                >
+                  Retry preview
+                </button>
+                <details style={{ width: '100%', minWidth: 0, marginTop: 16, color: 'var(--studio-text-muted)', fontSize: 12 }}>
+                  <summary style={{ cursor: 'pointer' }}>View source</summary>
+                  <pre style={styles.filePreview}>{previewFileContent}</pre>
+                </details>
+              </>
+            )}
           </div>
         </div>
       );

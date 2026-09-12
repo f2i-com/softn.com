@@ -301,6 +301,8 @@ interface OpenTab {
    * a skeleton tab, which has no bundle yet.
    */
   appId?: string;
+  /** The exact running bundle stays downloadable even when browser caching fails. */
+  bundleData?: Uint8Array;
   /** The manifest's version, to tell two open tabs with one name apart. */
   version?: string;
   source: string; // empty string = skeleton tab (loading)
@@ -423,10 +425,18 @@ function App(): React.ReactElement {
   openTabsRef.current = openTabs;
   const activeTabIdRef = useRef(activeTabId);
   activeTabIdRef.current = activeTabId;
+  // Selection belongs to the last user navigation, including requests still
+  // reading the cache before they have a placeholder or a real tab.
+  const navigationRevisionRef = useRef(0);
+  const claimNavigation = useCallback(() => {
+    const revision = ++navigationRevisionRef.current;
+    return () => revision === navigationRevisionRef.current;
+  }, []);
 
   // URL routing state
   const tabPagesRef = useRef<Record<string, string>>({}); // tabId → current page
-  const urlReadyRef = useRef(false); // true after initial URL parsing
+  const [urlReady, setUrlReady] = useState(false);
+  const replaceNextUrlRef = useRef(true); // canonicalize the initial entry without adding history
   const skipNextUrlPushRef = useRef(false); // skip URL push after popstate
   // The address the page was opened at is a one-shot instruction, and acting on
   // it twice opens the bundle twice. StrictMode invokes every mount effect
@@ -477,11 +487,17 @@ function App(): React.ReactElement {
     };
   }, []);
 
-  // An embedded frame keeps ?embed=1 through every rewrite, so a frame that
-  // reloads itself does not sprout a tab bar inside somebody else's page.
+  // Keep validated entry context through rewrites and reloads. The one-shot
+  // open/handoff parameters are removed, but Close must still know its way back.
   const entryUrl = useCallback(
-    (path: string) => (embedded ? `${path}?embed=1` : path),
-    [embedded]
+    (path: string) => {
+      const params = new URLSearchParams();
+      if (embedded) params.set('embed', '1');
+      if (backTo) params.set('back', backTo);
+      const query = params.toString();
+      return query ? `${path}?${query}` : path;
+    },
+    [embedded, backTo]
   );
 
   // Load cached apps on mount. An import of app data that the browser cut
@@ -602,7 +618,8 @@ function App(): React.ReactElement {
       cachedAppId?: string,
       initialPage?: string,
       directorySlug?: string,
-      placeholderId?: string
+      placeholderId?: string,
+      isForeground: () => boolean = () => true,
     ): Promise<string | null> => {
       // The placeholder tab this call adopted, once it has adopted one.
       //
@@ -611,6 +628,7 @@ function App(): React.ReactElement {
       // before then is the caller's, which is why the two places that create a
       // placeholder retire it themselves.
       let skeletonTabId: string | null = null;
+      let loadingOwner: string | null = null;
 
       // The first-screen warm-up this open started, so a failure after it
       // began stops it rather than leaving a worker inflating for a tab that
@@ -642,7 +660,7 @@ function App(): React.ReactElement {
         placeholderId !== undefined && !openTabsRef.current.some((t) => t.id === placeholderId);
 
       try {
-        setError(null);
+        if (isForeground()) setError(null);
 
         // Indexes the archive and reads its text; binaries are read when an
         // asset() asks for them, or by the warm-up below.
@@ -695,7 +713,7 @@ function App(): React.ReactElement {
         // bundles called Notes, are two tabs, and the bar tells them apart.
         const running = findRunningTab(openTabsRef.current, appOrigin);
         if (running) {
-          setActiveTabId(running.id);
+          if (isForeground() && (!placeholderId || activeTabIdRef.current === placeholderId)) setActiveTabId(running.id);
           // The placeholder this load was given has nothing left to become,
           // and would otherwise sit in the tab bar loading forever.
           if (placeholderId) setOpenTabs((prev) => prev.filter((t) => t.id !== placeholderId));
@@ -709,9 +727,10 @@ function App(): React.ReactElement {
         const tabId = existingTab?.id || crypto.randomUUID();
         if (existingTab) skeletonTabId = existingTab.id;
 
-        if (!existingTab) {
+        if (!existingTab && isForeground()) {
           // Fresh open (not from URL) — show loading overlay
           setLoadingTabId(tabId);
+          loadingOwner = tabId;
           setLoadingFileName(appName);
           setActiveTabId(null); // Show loading on Home
         }
@@ -945,6 +964,7 @@ function App(): React.ReactElement {
           id: tabId,
           name: appName,
           appId: appOrigin,
+          bundleData: data,
           version: typeof manifest.version === 'string' ? manifest.version : undefined,
           source,
           icon: icon || undefined,
@@ -973,9 +993,10 @@ function App(): React.ReactElement {
           }
           return [...prev, newTab];
         });
-        setActiveTabId(tabId);
-        setLoadingTabId(null);
-        setLoadingFileName('');
+        // Home or another app may have been selected while this download was
+        // being prepared. Finish its tab in the background without stealing focus.
+        if (isForeground() && (!placeholderId || activeTabIdRef.current === placeholderId)) setActiveTabId(tabId);
+        if (loadingOwner) setLoadingTabId((current) => current === loadingOwner ? null : current);
 
         // Make the app openable without a network, in the background. It is
         // on screen already; nothing waits on this, and the outcome is a word
@@ -988,12 +1009,11 @@ function App(): React.ReactElement {
       } catch (err) {
         warmup?.abort();
         console.error('[SoftN Web] Failed to load bundle:', err);
-        setError(err instanceof Error ? err : new Error(String(err)));
-        setLoadingTabId(null);
-        setLoadingFileName('');
+        if (isForeground()) setError(err instanceof Error ? err : new Error(String(err)));
+        if (loadingOwner) setLoadingTabId((current) => current === loadingOwner ? null : current);
         if (skeletonTabId) {
           setOpenTabs((prev) => prev.filter((t) => t.id !== skeletonTabId));
-          setActiveTabId(null);
+          setActiveTabId((current) => current === skeletonTabId ? null : current);
         }
         return null;
       }
@@ -1004,9 +1024,9 @@ function App(): React.ReactElement {
   /** Handle file from picker or drag-drop */
   const handleOpenFile = useCallback(
     (data: Uint8Array, fileName: string) => {
-      processBundleData(data, fileName);
+      void processBundleData(data, fileName, undefined, undefined, undefined, undefined, claimNavigation());
     },
-    [processBundleData]
+    [processBundleData, claimNavigation]
   );
 
   /**
@@ -1014,7 +1034,7 @@ function App(): React.ReactElement {
    * demo card on the launcher clicks.
    */
   const openFromUrl = useCallback(
-    (value: string): Promise<string | null> => {
+    (value: string, isForeground: () => boolean = () => true, initialPage?: string): Promise<string | null> => {
       // A bundle handed over by Builder or Studio on this origin, staged in
       // IndexedDB rather than fetched. Taking it removes it; a reload finds
       // nothing and says so, rather than reopening a bundle the editor has
@@ -1026,11 +1046,13 @@ function App(): React.ReactElement {
         const id = value.includes(':') ? value.slice(value.indexOf(':') + 1) : null;
         return takeBundleHandoff(id, 'runtime').then((result) => {
           if (!result.ok) {
-            setError(new Error(describeHandoffFailure(result.reason, 'runtime')));
-            setActiveTabId(null);
+            if (isForeground()) {
+              setError(new Error(describeHandoffFailure(result.reason, 'runtime')));
+              setActiveTabId(null);
+            }
             return null;
           }
-          return processBundleData(result.handoff.bytes, `${result.handoff.name || 'app'}.softn`);
+          return processBundleData(result.handoff.bytes, `${result.handoff.name || 'app'}.softn`, undefined, initialPage, undefined, undefined, isForeground);
         });
       }
 
@@ -1040,8 +1062,10 @@ function App(): React.ReactElement {
       } catch (err) {
         // Nothing has been fetched and no tab exists yet, so a rejected value is
         // only ever the error card.
-        setError(err instanceof Error ? err : new Error(String(err)));
-        setActiveTabId(null);
+        if (isForeground()) {
+          setError(err instanceof Error ? err : new Error(String(err)));
+          setActiveTabId(null);
+        }
         return Promise.resolve(null);
       }
 
@@ -1057,7 +1081,7 @@ function App(): React.ReactElement {
         (t) => t.source && (directorySlug ? t.directorySlug === directorySlug : t.bundleUrl === url.href)
       );
       if (loadedTab) {
-        setActiveTabId(loadedTab.id);
+        if (isForeground()) setActiveTabId(loadedTab.id);
         return Promise.resolve(loadedTab.name);
       }
 
@@ -1073,9 +1097,9 @@ function App(): React.ReactElement {
         // up in the tab bar instead of leaving the window blank until it lands.
         // processBundleData adopts it once the real name is known.
         const skeletonTabId = crypto.randomUUID();
-        setError(null);
+        if (isForeground()) setError(null);
         setOpenTabs((prev) => [...prev, { id: skeletonTabId, name: displayName, source: '' }]);
-        setActiveTabId(skeletonTabId);
+        if (isForeground()) setActiveTabId(skeletonTabId);
 
         // The placeholder is the download's lease. Closing the tab aborts it —
         // a large bundle used to keep downloading after its tab was gone, and
@@ -1091,7 +1115,7 @@ function App(): React.ReactElement {
           // An abort is the user closing the tab, not a failure to report.
           if (controller.signal.aborted) return null;
           console.error('[SoftN Web] Failed to fetch bundle:', err);
-          setError(err instanceof Error ? err : new Error(String(err)));
+          if (isForeground()) setError(err instanceof Error ? err : new Error(String(err)));
           discardPlaceholder(skeletonTabId);
           return null;
         } finally {
@@ -1109,7 +1133,7 @@ function App(): React.ReactElement {
         // opened the bundle, in which case the tab it adopted is the running app.
         let opened: string | null = null;
         try {
-          opened = await processBundleData(data, `${displayName}.softn`, undefined, undefined, directorySlug, skeletonTabId);
+          opened = await processBundleData(data, `${displayName}.softn`, undefined, initialPage, directorySlug, skeletonTabId, isForeground);
           if (opened) {
             setOpenTabs((prev) => prev.map((t) => (t.id === skeletonTabId && t.source ? { ...t, bundleUrl: url.href } : t)));
           }
@@ -1122,7 +1146,7 @@ function App(): React.ReactElement {
           // of it is a surprise — surfacing it here keeps the promise this
           // function returns resolved, which the ?open= caller relies on.
           console.error('[SoftN Web] Failed to open bundle:', err);
-          setError(err instanceof Error ? err : new Error(String(err)));
+          if (isForeground()) setError(err instanceof Error ? err : new Error(String(err)));
           return null;
         } finally {
           if (opened === null) discardPlaceholder(skeletonTabId);
@@ -1191,6 +1215,7 @@ function App(): React.ReactElement {
 
   const handleOpenCached = useCallback(
     (app: CachedApp) => {
+      const isForeground = claimNavigation();
       // By identity, not by label. Two cached apps can legitimately share a
       // name — that is precisely what content-addressed identity allows, and
       // the launcher lists both — so matching on name meant clicking the second
@@ -1202,9 +1227,9 @@ function App(): React.ReactElement {
         setActiveTabId(existingTab.id);
         return;
       }
-      processBundleData(app.bundleData, `${app.name}.softn`, app.id, undefined, app.directorySlug);
+      void processBundleData(app.bundleData, `${app.name}.softn`, app.id, undefined, app.directorySlug, undefined, isForeground);
     },
-    [processBundleData]
+    [processBundleData, claimNavigation]
   );
 
   /** One line on Home about something that went right; the error card is for what did not. */
@@ -1305,22 +1330,25 @@ function App(): React.ReactElement {
   const handleDownloadTab = useCallback(async (tabId: string) => {
     const tab = openTabsRef.current.find((t) => t.id === tabId);
     if (!tab || !tab.appId) return;
-    const cached = await getCachedAppByOrigin(tab.appId);
-    if (!cached) return;
-    const blob = new Blob([cached.bundleData as BlobPart], { type: 'application/octet-stream' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${(tab.directorySlug || tab.name).replace(/[\\/:*?"<>|]+/g, '-')}.softn`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    try {
+      const bytes = tab.bundleData ?? (await getCachedAppByOrigin(tab.appId))?.bundleData;
+      if (!bytes) throw new Error('The bundle is no longer available. Open the original file and try again.');
+      const blob = new Blob([bytes as BlobPart], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${(tab.directorySlug || tab.name).replace(/[\\/:*?"<>|]+/g, '-')}.softn`;
+      document.body.appendChild(a);
+      try { a.click(); } finally { a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10_000); }
+    } catch (err) {
+      setError(new Error(`Could not download the bundle: ${err instanceof Error ? err.message : String(err)}`));
+    }
   }, []);
 
   /** Close a tab */
   const handleCloseTab = useCallback(
     (tabId: string, andGoHome = false) => {
+      if (activeTabIdRef.current === tabId) claimNavigation();
       // Clean up page tracking
       delete tabPagesRef.current[tabId];
 
@@ -1367,14 +1395,15 @@ function App(): React.ReactElement {
         return next;
       });
     },
-    []
+    [claimNavigation]
   );
 
   /** Select a tab */
   const handleSelectTab = useCallback((id: string | null) => {
+    claimNavigation();
     setActiveTabId(id);
     setError(null);
-  }, []);
+  }, [claimNavigation]);
 
   /** File input change handler */
   const openLocalFile = useLocalBundleFile(handleOpenFile, setError);
@@ -1453,6 +1482,7 @@ function App(): React.ReactElement {
   useEffect(() => {
     if (entryHandledRef.current) return;
     entryHandledRef.current = true;
+    const isForeground = claimNavigation();
 
     if (urlInit.openValue) {
       // ?open= is a one-shot instruction: once it has been acted on the URL
@@ -1460,10 +1490,9 @@ function App(): React.ReactElement {
       // out of the cache instead of downloading it a second time — and a value
       // that was rejected does not sit in the address bar reproducing the same
       // error on every refresh.
-      openFromUrl(urlInit.openValue).then((appName) => {
-        window.history.replaceState({}, '', entryUrl(buildAppUrl(appName)));
-        urlReadyRef.current = true;
-      });
+      // Canonicalize from committed selection state, not this older request's
+      // result: the user may have returned Home or selected another tab by now.
+      openFromUrl(urlInit.openValue, isForeground).then(() => setUrlReady(true));
       return;
     }
 
@@ -1473,57 +1502,42 @@ function App(): React.ReactElement {
       // Development checkouts can also resolve their bundled demo catalogue.
       if (urlTabId) discardPlaceholder(urlTabId);
       const wanted = urlInit.appName;
-      const fromApi = (): Promise<string | null> =>
-        openFromUrl(`/api/apps/${encodeURIComponent(wanted)}/bundle.softn`);
+      const fromApi = (cached?: CachedApp | null): Promise<string | null> =>
+        openFromUrl(`/api/apps/${encodeURIComponent(cached?.directorySlug || wanted)}/bundle.softn`, isForeground, urlInit.page || undefined);
       const fromCatalogue = async (): Promise<string | null> => {
         const demoUrl = await demoBundleUrlFor(wanted);
-        return demoUrl ? openFromUrl(demoUrl) : null;
+        return demoUrl ? openFromUrl(demoUrl, isForeground, urlInit.page || undefined) : null;
       };
-      const fromRemote = () => import.meta.env.DEV
-        ? fromCatalogue().then((opened) => opened ?? fromApi())
-        : fromApi();
+      // A saved directory slug is authoritative. Display names can change,
+      // contain spaces or collide with a bundled development example.
+      const fromRemote = (cached?: CachedApp | null) => cached?.directorySlug || !import.meta.env.DEV
+        ? fromApi(cached)
+        : fromCatalogue().then((opened) => opened ?? fromApi());
       const attempt = reopenBundle(
         () => getCachedAppByName(wanted),
-        (cached) => processBundleData(cached.bundleData, `${cached.name}.softn`, cached.id, urlInit.page || undefined),
+        (cached) => processBundleData(cached.bundleData, `${cached.name}.softn`, cached.id, urlInit.page || undefined, undefined, undefined, isForeground),
         fromRemote,
       );
-      attempt.then((appName) => {
-        if (appName) {
-          window.history.replaceState({}, '', entryUrl(buildAppUrl(appName, urlInit.page)));
-          urlReadyRef.current = true;
-        } else {
+      attempt.then(async (appName) => {
+        if (!appName) {
           // If server fetch failed (e.g. offline), fall back to cached version
-          getCachedAppByName(urlInit.appName!).then((cachedApp) => {
-            if (cachedApp) {
-              processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined, cachedApp.directorySlug)
-                .then((cachedOpened) => {
-                  if (cachedOpened) {
-                    window.history.replaceState({}, '', entryUrl(buildAppUrl(cachedOpened, urlInit.page)));
-                  } else {
-                    setOpenTabs([]);
-                    setActiveTabId(null);
-                    window.history.replaceState({}, '', entryUrl(buildAppUrl(null)));
-                  }
-                });
-            } else {
-              setOpenTabs([]);
-              setActiveTabId(null);
-              window.history.replaceState({}, '', entryUrl(buildAppUrl(null)));
-            }
-            urlReadyRef.current = true;
-          });
+          const cachedApp = await getCachedAppByName(urlInit.appName!);
+          if (cachedApp) {
+            await processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined, cachedApp.directorySlug, undefined, isForeground);
+          }
         }
+        setUrlReady(true);
       });
     } else {
-      urlReadyRef.current = true;
+      setUrlReady(true);
     }
-  }, [processBundleData, openFromUrl, entryUrl, urlInit, urlTabId, discardPlaceholder]);
+  }, [processBundleData, openFromUrl, entryUrl, urlInit, urlTabId, discardPlaceholder, claimNavigation]);
 
   // ── URL Routing: Sync activeTabId → URL ──────────────────────
 
   useEffect(() => {
-    if (!urlReadyRef.current) return;
-    if (skipNextUrlPushRef.current) {
+    if (!urlReady) return;
+    if (skipNextUrlPushRef.current && !replaceNextUrlRef.current) {
       skipNextUrlPushRef.current = false;
       return;
     }
@@ -1532,21 +1546,25 @@ function App(): React.ReactElement {
     if (activeTabId) {
       const tab = openTabs.find((t) => t.id === activeTabId);
       if (tab) {
-        const page = tabPagesRef.current[activeTabId];
+        const page = tabPagesRef.current[activeTabId] ?? tab.initialPage;
         url = buildAppUrl(tab.name, page);
       }
     }
 
     const next = entryUrl(url);
     if (currentUrl() !== next) {
-      window.history.pushState({}, '', next);
+      if (replaceNextUrlRef.current) window.history.replaceState({}, '', next);
+      else window.history.pushState({}, '', next);
     }
-  }, [activeTabId, openTabs, entryUrl]);
+    replaceNextUrlRef.current = false;
+    skipNextUrlPushRef.current = false;
+  }, [activeTabId, openTabs, entryUrl, urlReady]);
 
   // ── URL Routing: Browser back/forward ────────────────────────
 
   useEffect(() => {
     const handlePopState = () => {
+      claimNavigation();
       const { appName } = parseAppUrl();
       skipNextUrlPushRef.current = true;
 
@@ -1567,7 +1585,7 @@ function App(): React.ReactElement {
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [claimNavigation]);
 
   // Refresh cached apps when returning to Home
   useEffect(() => {
@@ -1614,6 +1632,7 @@ function App(): React.ReactElement {
           <FrameBar
             tab={{ id: activeTab.id, name: activeTab.name, icon: activeTab.icon, directorySlug: activeTab.directorySlug }}
             onHome={() => handleSelectTab(null)}
+            closeTitle={backTo ? 'Stop the app and return to the page that opened it' : undefined}
             onClose={() => {
               handleCloseTab(activeTab.id, true);
               // Opened from an app's page on the site: Close is the way back
@@ -1724,6 +1743,7 @@ function App(): React.ReactElement {
                   <button
                     className="softn-shell-error-btn"
                     onClick={() => {
+                      claimNavigation();
                       setError(null);
                       setActiveTabId(null);
                     }}
@@ -1772,7 +1792,7 @@ function App(): React.ReactElement {
               onStop={(id) => handleCloseTab(id, true)}
               onOpenFile={openLocalFile}
               onOpenCached={handleOpenCached}
-              onOpenUrl={(url) => { void openFromUrl(url); }}
+              onOpenUrl={(url) => { void openFromUrl(url, claimNavigation()); }}
               onRemove={handleRemove}
               onAdoptData={handleAdoptData}
               onExportData={handleExportData}

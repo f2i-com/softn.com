@@ -1,5 +1,15 @@
 import { useEffect, useRef } from 'react';
 
+const nonEditingInputTypes = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+
+function editsTextOrSelection(target: Element): boolean {
+  if (target instanceof HTMLSelectElement) return !target.disabled;
+  if (target instanceof HTMLTextAreaElement) return !target.disabled && !target.readOnly;
+  if (target instanceof HTMLInputElement) return !target.disabled && !target.readOnly && !nonEditingInputTypes.has(target.type);
+  const contentEditable = target.closest('[contenteditable]')?.getAttribute('contenteditable')?.toLowerCase();
+  return contentEditable !== undefined && contentEditable !== 'false';
+}
+
 /** Give a modal keyboard ownership and return focus to its opener on close. */
 export function useModalFocus(isOpen: boolean, onClose: () => void, initialSelector?: string) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -9,7 +19,10 @@ export function useModalFocus(isOpen: boolean, onClose: () => void, initialSelec
     if (!isOpen) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // React Flow edges are focusable SVG elements, while toolbar/list
+    // openers are HTML. Both must get their keyboard position back.
+    const active = document.activeElement;
+    const opener = active instanceof HTMLElement || active instanceof SVGElement ? active : null;
     const items = () => Array.from(dialog.querySelectorAll<HTMLElement>(
       'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], [tabindex="0"]'
     )).filter(item => !item.closest('[hidden], [inert]') && getComputedStyle(item).display !== 'none');
@@ -17,7 +30,15 @@ export function useModalFocus(isOpen: boolean, onClose: () => void, initialSelec
     initial.focus();
     if (initial instanceof HTMLInputElement) initial.select();
     const keyDown = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      if (event.isComposing || event.keyCode === 229) return;
+      if ((event.key === 'Backspace' || event.key === 'Delete') && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        const target = event.target instanceof Element ? event.target : null;
+        if (target && dialog.contains(target) && !editsTextOrSelection(target)) {
+          // WebKit can treat Backspace on a button as browser Back. It must
+          // also never reach the canvas's document-level deletion listener.
+          event.preventDefault(); event.stopPropagation(); return;
+        }
+      }
       if (event.key === 'Escape') {
         event.preventDefault(); event.stopPropagation(); closeRef.current();
       } else if (event.key === 'Tab') {

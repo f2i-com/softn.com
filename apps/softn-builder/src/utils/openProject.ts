@@ -32,8 +32,10 @@ import { useCanvasStore } from '../stores/canvasStore';
 import { useProjectStore, emptyRetainedSource, type RetainedSource, type SerializedProject } from '../stores/projectStore';
 import { useHistoryStore } from '../stores/historyStore';
 import { useSchemaStore } from '../stores/schemaStore';
+import { ensureFieldIds } from './schemaFields';
 import { useFilesStore } from '../stores/filesStore';
 import { loadBundle, type LoadedBundle } from './bundleLoader';
+import { inferRelationships, validRelationships } from './schemaRelationships';
 import { encodeAsset, decodeAsset, type SerializedAssetFile } from './sessionAssets';
 import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from './xdbFormat';
 import { readLocalStorage, removeLocalStorage } from './safeStorage';
@@ -253,7 +255,7 @@ export function prepareProjectSnapshot(bundle: LoadedBundle): ProjectSnapshot {
     canvas: { elements, rootId: mainUIFile.rootId, imports: mainUIFile.imports || [] },
     schema: {
       entities: bundle.entities,
-      relationships: [],
+      relationships: bundle.relationships ?? inferRelationships(bundle.entities),
       seedData: bundle.seedData,
       recordIdentity: bundle.recordIdentity,
       tombstones: bundle.tombstones,
@@ -343,7 +345,9 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
   }
   const nodes = new Map<string, ProjectFileNode>(pairs<ProjectFileNode>(s.files.nodes, 'files.nodes'));
 
-  const entities = Array.isArray(s.schema.entities) ? (s.schema.entities as EntityDef[]) : [];
+  const entities = Array.isArray(s.schema.entities)
+    ? (s.schema.entities as EntityDef[]).map(entity => ({ ...entity, fields: ensureFieldIds(entity.fields) }))
+    : [];
   const seedData = new Map<string, Record<string, unknown>[]>(pairs<Record<string, unknown>[]>(s.schema.seedData, 'schema.seedData'));
   for (const [entityId, rows] of seedData) {
     if (!Array.isArray(rows)) throw new Error(`seed rows of ${entityId} in the saved session are not a list`);
@@ -390,7 +394,7 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
     canvas: { elements, rootId: s.canvas.rootId, imports: Array.isArray(s.canvas.imports) ? s.canvas.imports : [] },
     schema: {
       entities,
-      relationships: Array.isArray(s.schema.relationships) ? (s.schema.relationships as RelationshipDef[]) : [],
+      relationships: Array.isArray(s.schema.relationships) ? validRelationships(entities, s.schema.relationships as RelationshipDef[]) : inferRelationships(entities),
       seedData,
       recordIdentity,
       tombstones,

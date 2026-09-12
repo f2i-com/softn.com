@@ -236,6 +236,11 @@ describe('project records', () => {
     expect(loadGlobalSettings()).toBeNull();
   });
 
+  it('recovers providers saved by the old inputs with fractional session limits', () => {
+    saveGlobalSettings({ ...settings, maxIterations: 12.7, tokenBudget: 25_000.9 });
+    expect(loadGlobalSettings()).toMatchObject({ providers: settings.providers, activeProviderId: 'p1', maxIterations: 12, tokenBudget: 25_000 });
+  });
+
   it('reports quota on the small localStorage writes instead of dropping the result', () => {
     storage = memoryStorage({ failWrite: () => true });
     (globalThis as unknown as { window: unknown }).window = { localStorage: storage };

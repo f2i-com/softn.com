@@ -132,8 +132,11 @@ export interface RelationshipDef {
   sourceEntityId: string;
   sourceFieldId: string;
   targetEntityId: string;
-  type: 'one-to-one' | 'one-to-many' | 'many-to-many';
+  type: 'one-to-one' | 'one-to-many' | 'many-to-one' | 'many-to-many';
 }
+
+/** An empty sourceFieldId is a diagram-only link unless a new field is requested. */
+export type RelationshipDraft = Omit<RelationshipDef, 'id'> & { newFieldName?: string };
 
 // XDB collection definition (updated)
 export interface CollectionDef {

@@ -10,6 +10,8 @@ it('refreshes directory apps and unknown names remotely', async () => {
   await reopenBundle(async()=>({directorySlug:'public-app'}),local,remote);
   await reopenBundle(async()=>undefined,local,remote);
   expect(remote).toHaveBeenCalledTimes(2);expect(local).not.toHaveBeenCalled();
+  expect(remote).toHaveBeenNthCalledWith(1, { directorySlug: 'public-app' });
+  expect(remote).toHaveBeenNthCalledWith(2, undefined);
 });
 it('can still fetch when cache access fails', async () => {
   expect(await reopenBundle(async()=>{throw Error('cache unavailable')},async()=>null,async()=> 'Public app')).toBe('Public app');

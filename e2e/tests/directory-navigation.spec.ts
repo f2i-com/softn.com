@@ -72,3 +72,34 @@ test('search filters survive back and forward', async ({ page }, testInfo) => {
   await log.attach('directory');
   expect(log.uncaught).toEqual([]);
 });
+
+test('search sort and removable filters survive reloads at phone width', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  await page.goto(`/apps?q=${SEARCH_DEMO.query}`);
+  const sort = page.getByRole('combobox', { name: 'Sort apps' });
+  await sort.selectOption('trending');
+  await expect(page).toHaveURL(new RegExp(`q=${SEARCH_DEMO.query}&sort=trending$`));
+  await expect(sort).toHaveValue('trending');
+  await page.getByRole('combobox', { name: 'Filter apps by category' }).selectOption('games');
+  const active = page.getByRole('group', { name: 'Active filters' });
+  await expect(active.getByRole('link', { name: 'Remove Category: Games', exact: true })).toBeVisible();
+  await page.reload();
+  await expect(sort).toHaveValue('trending');
+  await expect(page.locator('a.app-card-name', { hasText: SEARCH_DEMO.cardName })).toBeVisible();
+  await active.getByRole('link', { name: `Remove Search: ${SEARCH_DEMO.query}`, exact: true }).click();
+  await expect(page).toHaveURL(/\/apps\?category=games$/);
+  await expect(sort).toHaveValue('trending');
+  await expect(page.getByRole('searchbox', { name: 'Search apps' })).toHaveValue('');
+  await active.getByRole('link', { name: 'Clear all', exact: true }).click();
+  await expect(page).toHaveURL(/\/apps$/);
+  await expect(active).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 320, height: 740 });
+  const search = page.getByRole('searchbox', { name: 'Search apps' });
+  await search.fill('a-long-search-term-that-must-not-push-the-search-button-off-the-screen');
+  await search.press('Enter');
+  await expect(page.getByText('No app matches that yet.', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const searchButton = await page.getByRole('button', { name: 'Search', exact: true }).boundingBox();
+  expect(searchButton!.x + searchButton!.width).toBeLessThanOrEqual(320);
+});

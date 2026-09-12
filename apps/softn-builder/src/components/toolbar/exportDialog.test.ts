@@ -16,6 +16,8 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { ExportDialog } from './ExportDialog';
 import { useProjectStore } from '../../stores/projectStore';
+import { useSchemaStore } from '../../stores/schemaStore';
+import * as bundle from '../../utils/buildProjectBundle';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -37,6 +39,7 @@ function key(target: Element, key: string, shiftKey = false): KeyboardEvent {
 
 beforeEach(() => {
   useProjectStore.getState().reset();
+  useSchemaStore.getState().reset();
   trigger = document.createElement('button');
   trigger.textContent = 'Export';
   document.body.appendChild(trigger);
@@ -51,6 +54,7 @@ afterEach(() => {
   container.remove();
   trigger.remove();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('the export dialog', () => {
@@ -113,5 +117,36 @@ describe('the export dialog', () => {
     render(false, () => {});
     expect(container.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it('shows invalid collection data without crashing or offering a broken export', () => {
+    vi.spyOn(bundle, 'gatherCollections').mockImplementation(() => {
+      throw new Error('Collection "tasks" contains duplicate field "title".');
+    });
+    render(true, () => {});
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('duplicate field "title"');
+    for (const label of ['Open in runtime…', 'Publish…', 'Export .softn']) {
+      expect(Array.from(container.querySelectorAll('button')).find((button) => button.textContent?.trim() === label)?.disabled).toBe(true);
+    }
+    expect(container.textContent).not.toContain('Checking…');
+  });
+
+  it('reports failed preflight checks and retries when the project details change', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const build = vi.spyOn(bundle, 'buildProjectBundle').mockRejectedValueOnce(new Error('The entry file is missing.'));
+    render(true, () => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('The entry file is missing.');
+    expect(container.textContent).not.toContain('Checking…');
+
+    act(() => useProjectStore.getState().setName('Recovered app'));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain('Checking…');
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(build).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).not.toContain('Checking…');
   });
 });

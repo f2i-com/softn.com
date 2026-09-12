@@ -309,6 +309,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   /** A bundle staged for the runtime or the publish page, with the link that claims it. */
   const [ready, setReady] = useState<ReadyHandoff | null>(null);
   const [inspection, setInspection] = useState<BundleInspection | null>(null);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
   /** A saved session that would not restore, kept for download (utils/openProject.ts). */
   const [quarantine, setQuarantine] = useState<QuarantinedSession | null>(null);
   const iconInput = useRef<HTMLInputElement>(null);
@@ -372,7 +373,14 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   };
 
   // The collections the bundle will carry, for a policy row each.
-  const collectionNames = useMemo(() => (isOpen ? gatherCollections().map((c) => c.name) : []), [isOpen]);
+  const collections = useMemo(() => {
+    try {
+      return { names: isOpen ? gatherCollections().map((c) => c.name) : [], error: null };
+    } catch (cause) {
+      return { names: [], error: cause instanceof Error ? cause.message : 'Could not read the collections.' };
+    }
+  }, [isOpen]);
+  const collectionNames = collections.names;
 
   const update = useCallback(
     (patch: Partial<PermissionDeclaration>) => setPermissions({ ...permissions, ...patch }),
@@ -413,6 +421,9 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
   // Re-run as the fields change, a moment after the last keystroke.
   useEffect(() => {
     if (!isOpen) return;
+    setInspection(null);
+    setPreflightError(null);
+    if (collections.error) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       buildProjectBundle()
@@ -420,7 +431,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
           if (!cancelled) setInspection(inspectBundle(bytes));
         })
         .catch((e) => {
-          if (!cancelled) setInspection(null);
+          if (!cancelled) setPreflightError(e instanceof Error ? e.message : 'Could not check the bundle.');
           console.warn('[ExportDialog] pre-flight failed:', e);
         });
     }, 250);
@@ -428,7 +439,7 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [isOpen, name, version, description, icon, permissions]);
+  }, [isOpen, name, version, description, icon, permissions, collections.error]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -493,7 +504,8 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
 
   const hasNet = permissions.capabilities.includes('net');
   const hasStorage = permissions.capabilities.includes('storage');
-  const refused = inspection?.problem != null;
+  const bundleProblem = collections.error ?? preflightError;
+  const refused = inspection?.problem != null || bundleProblem != null;
   const errors = inspection?.report.filter((l) => l.level === 'error') ?? [];
   const warns = inspection?.report.filter((l) => l.level === 'warn') ?? [];
 
@@ -701,7 +713,9 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
                 <div style={styles.sectionTitle}>Before it leaves</div>
                 <div style={styles.sectionNote}>The bundle as the directory and the runtime will read it.</div>
                 <div style={styles.report}>
-                  {!inspection ? (
+                  {bundleProblem ? (
+                    <span role="alert" style={styles.reportError}>{bundleProblem}</span>
+                  ) : !inspection ? (
                     <span style={styles.capSummary}>Checking…</span>
                   ) : (
                     <>
@@ -756,7 +770,12 @@ export function ExportDialog({ isOpen, onClose }: ExportDialogProps) {
             >
               Publish…
             </button>
-            <button style={{ ...styles.button, ...styles.exportButton }} onClick={() => void run('export')}>
+            <button
+              style={{ ...styles.button, ...styles.exportButton, ...(bundleProblem ? styles.buttonDisabled : {}) }}
+              onClick={() => void run('export')}
+              disabled={bundleProblem != null}
+              title={bundleProblem ? 'Fix what the check found first' : undefined}
+            >
               Export .softn
             </button>
           </div>

@@ -3,8 +3,10 @@
  */
 
 import { create } from 'zustand';
-import type { EntityDef, SchemaField, RelationshipDef } from '../types/builder';
+import type { EntityDef, SchemaField, RelationshipDef, RelationshipDraft } from '../types/builder';
+import { inferRelationships, prepareRelationship, validRelationships } from '../utils/schemaRelationships';
 import { useProjectStore } from './projectStore';
+import { ensureFieldIds } from '../utils/schemaFields';
 import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from '../utils/xdbFormat';
 import { reidentifyCollection, type RecordsSnapshot, type ReidentifyOutcome } from '../utils/reidentify';
 
@@ -19,17 +21,18 @@ interface SchemaStore {
 
   // Entity actions
   addEntity: (position: { x: number; y: number }) => string;
-  updateEntity: (id: string, updates: Partial<Omit<EntityDef, 'id'>>) => void;
+  updateEntity: (id: string, updates: Partial<Omit<EntityDef, 'id'>>) => string | null;
   deleteEntity: (id: string) => void;
   selectEntity: (id: string | null) => void;
 
   // Field actions
   addField: (entityId: string) => void;
-  updateField: (entityId: string, fieldId: string, updates: Partial<SchemaField>) => void;
+  updateField: (entityId: string, fieldId: string, updates: Partial<SchemaField>) => string | null;
   deleteField: (entityId: string, fieldId: string) => void;
 
   // Relationship actions
-  addRelationship: (relationship: Omit<RelationshipDef, 'id'>) => void;
+  addRelationship: (relationship: RelationshipDraft) => string | null;
+  updateRelationship: (id: string, relationship: RelationshipDraft) => string | null;
   deleteRelationship: (id: string) => void;
 
   // Seed data
@@ -152,12 +155,34 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   updateEntity: (id, updates) => {
-    edit((state) => ({
-      entities: state.entities.map((e) => (e.id === id ? { ...e, ...updates } : e)),
-    }));
+    const entity = get().entities.find(e => e.id === id);
+    if (!entity) return 'This collection is no longer available.';
+    if (updates.name !== undefined) {
+      const name = updates.name.trim();
+      if (!name) return 'Enter a collection name.';
+      if (name !== entity.name && get().entities.some(e => e.id !== id && e.name === name)) {
+        return `A collection named "${name}" already exists.`;
+      }
+      updates = { ...updates, name };
+    }
+    if (updates.alias !== undefined) {
+      const alias = updates.alias.trim();
+      if (!alias) return 'Enter an alias.';
+      if (alias !== entity.alias && get().entities.some(e => e.id !== id && e.alias === alias)) {
+        return `The alias "${alias}" is already in use.`;
+      }
+      updates = { ...updates, alias };
+    }
+    if (Object.entries(updates).every(([key, value]) => entity[key as keyof EntityDef] === value)) return null;
+    edit((state) => {
+      const entities = state.entities.map((e) => (e.id === id ? { ...e, ...updates } : e));
+      return { entities, relationships: validRelationships(entities, state.relationships) };
+    });
+    return null;
   },
 
   deleteEntity: (id) => {
+    if (!get().entities.some(entity => entity.id === id)) return;
     edit((state) => {
       // Its seed rows went with it, and any field elsewhere pointing at it was
       // left pointing at nothing — a reference to a collection that no longer
@@ -199,6 +224,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   addField: (entityId) => {
+    if (!get().entities.some(entity => entity.id === entityId)) return;
     edit((state) => ({
       entities: state.entities.map((e) =>
         // Seed rows are keyed by field NAME, so two fields called newField are
@@ -210,6 +236,28 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   updateField: (entityId, fieldId, updates) => {
+    const current = get();
+    const entity = current.entities.find(e => e.id === entityId);
+    const field = entity?.fields.find(f => f.id === fieldId);
+    if (!entity || !field) return 'This field is no longer available.';
+    if (updates.name !== undefined) {
+      const name = updates.name.trim();
+      if (!name) return 'Enter a field name.';
+      if (name !== field.name) {
+        if (entity.fields.some(f => f.id !== fieldId && f.name === name)) {
+          return `A field named "${name}" already exists.`;
+        }
+        if (current.seedData.get(entityId)?.some(row => Object.prototype.hasOwnProperty.call(row, name))) {
+          return `Records already contain "${name}". Choose another name to keep those values.`;
+        }
+      }
+      updates = { ...updates, name };
+    }
+    if (updates.type !== undefined && updates.type !== 'reference') updates = { ...updates, refEntity: undefined };
+    if (updates.refEntity && !current.entities.some(item => item.id === updates.refEntity)) {
+      return 'Choose an available reference collection.';
+    }
+    if (Object.entries(updates).every(([key, value]) => field[key as keyof SchemaField] === value)) return null;
     edit((state) => {
       const entity = state.entities.find((e) => e.id === entityId);
       const previousName = entity?.fields.find((f) => f.id === fieldId)?.name;
@@ -218,6 +266,15 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
           ? { ...e, fields: e.fields.map((f) => (f.id === fieldId ? { ...f, ...updates } : f)) }
           : e
       );
+      let relationships = validRelationships(entities, state.relationships);
+      const nextField = entities.find(item => item.id === entityId)?.fields.find(item => item.id === fieldId);
+      // Reference settings in the field editor should be visible immediately.
+      // An unrelated rename must not resurrect an edge the user removed.
+      if (nextField && (nextField.type !== field.type || nextField.refEntity !== field.refEntity)
+        && !relationships.some(item => item.sourceEntityId === entityId && item.sourceFieldId === fieldId)) {
+        const inferred = inferRelationships(entities).find(item => item.sourceEntityId === entityId && item.sourceFieldId === fieldId);
+        if (inferred) relationships = [...relationships, { ...inferred, id: generateId() }];
+      }
 
       // Carry the seed values over when a field is renamed. Rows are keyed by
       // the field's NAME, so a rename used to leave every value behind on the
@@ -227,11 +284,11 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
       // was still there and unreachable.
       const nextName = updates.name;
       if (previousName === undefined || typeof nextName !== 'string' || nextName === previousName) {
-        return { entities };
+        return { entities, relationships };
       }
 
       const rows = state.seedData.get(entityId);
-      if (!rows) return { entities };
+      if (!rows) return { entities, relationships };
 
       const seedData = new Map(state.seedData);
       seedData.set(
@@ -242,11 +299,13 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
           return { ...rest, [nextName]: carried };
         })
       );
-      return { entities, seedData };
+      return { entities, relationships, seedData };
     });
+    return null;
   },
 
   deleteField: (entityId, fieldId) => {
+    if (!get().entities.find(entity => entity.id === entityId)?.fields.some(field => field.id === fieldId)) return;
     edit((state) => ({
       entities: state.entities.map((e) =>
         e.id === entityId ? { ...e, fields: e.fields.filter((f) => f.id !== fieldId) } : e
@@ -259,13 +318,26 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   addRelationship: (relationship) => {
-    const id = generateId();
-    edit((state) => ({
-      relationships: [...state.relationships, { ...relationship, id }],
-    }));
+    const state = get();
+    const prepared = prepareRelationship(state.entities, state.relationships, relationship, generateId(), generateId, state.seedData);
+    if ('error' in prepared) return prepared.error;
+    edit({ entities: prepared.entities, relationships: [...state.relationships, prepared.relationship] });
+    return null;
+  },
+
+  updateRelationship: (id, relationship) => {
+    const state = get();
+    const existing = state.relationships.find(item => item.id === id);
+    if (!existing) return 'This relationship is no longer available.';
+    const prepared = prepareRelationship(state.entities, state.relationships, relationship, id, generateId, state.seedData);
+    if ('error' in prepared) return prepared.error;
+    if (prepared.entities === state.entities && Object.entries(prepared.relationship).every(([key, value]) => existing[key as keyof RelationshipDef] === value)) return null;
+    edit({ entities: prepared.entities, relationships: state.relationships.map(item => item.id === id ? prepared.relationship : item) });
+    return null;
   },
 
   deleteRelationship: (id) => {
+    if (!get().relationships.some(relationship => relationship.id === id)) return;
     edit((state) => ({
       relationships: state.relationships.filter((r) => r.id !== id),
     }));
@@ -366,7 +438,7 @@ export const useSchemaStore = create<SchemaStore>((set, get) => {
   },
 
   loadEntities: (entities) => {
-    set({ entities, selectedEntityId: entities[0]?.id || null });
+    set({ entities: entities.map(entity => ({ ...entity, fields: ensureFieldIds(entity.fields) })), selectedEntityId: entities[0]?.id || null });
   },
 
   loadSeedData: (data) => {

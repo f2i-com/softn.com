@@ -1,4 +1,5 @@
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
+import { readRemoteBundle } from './remoteBundle';
 import {
   clearLegacySnapshots,
   deleteProjectRecord,
@@ -290,12 +291,12 @@ function applyGlobalSettings(): void {
     providers: settings.providers,
     activeProviderId: settings.activeProviderId,
     modelProfile: settings.modelProfile,
-    maxIterations: settings.maxIterations,
-    tokenBudget: settings.tokenBudget,
   });
   // Through the setters, so a value written by an older Studio with wider
   // bounds lands clamped rather than as written. Absent means the default.
   const ai = useAIStore.getState();
+  ai.setMaxIterations(settings.maxIterations);
+  ai.setTokenBudget(settings.tokenBudget);
   if (settings.requestTimeoutMs !== undefined) ai.setRequestTimeoutMs(settings.requestTimeoutMs);
   if (settings.maxOutputTokens !== undefined) ai.setMaxOutputTokens(settings.maxOutputTokens);
 }
@@ -608,7 +609,7 @@ export function readOpenLink(search: string, origin: string): { url: URL } | { e
   } catch {
     return { error: 'The open link is not a valid address.' };
   }
-  if (url.origin !== origin || !/\.softn$/i.test(url.pathname)) {
+  if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.origin !== origin || !/\.softn$/i.test(url.pathname)) {
     return { error: 'Only a .softn served by this site can be opened from a link.' };
   }
   return { url };
@@ -649,10 +650,22 @@ export async function openRemoteBundle(url: URL, deps: RemoteOpenDeps): Promise<
   const claim = claimWorkspace();
   const doFetch = deps.fetch ?? fetch;
   try {
-    const resp = await doFetch(url.href, { credentials: 'same-origin', signal: claim.signal });
-    if (!ownsWorkspace(claim.generation)) return;
-    if (!resp.ok) throw new Error(`${url.pathname} responded ${resp.status}`);
-    const bytes = await resp.arrayBuffer();
+    const resp = await doFetch(url.href, { credentials: 'same-origin', mode: 'same-origin', signal: claim.signal });
+    if (!ownsWorkspace(claim.generation)) {
+      void resp.body?.cancel().catch(() => {});
+      return;
+    }
+    if (!resp.ok) {
+      void resp.body?.cancel().catch(() => {});
+      throw new Error(`${url.pathname} responded ${resp.status}`);
+    }
+    // Directory endpoints may redirect within this site, including to a path
+    // without an extension. The response must still belong to this origin.
+    if (resp.url && new URL(resp.url).origin !== url.origin) {
+      void resp.body?.cancel().catch(() => {});
+      throw new Error('The app download redirected away from this site.');
+    }
+    const bytes = await readRemoteBundle(resp, claim.signal);
     if (!ownsWorkspace(claim.generation)) return;
     await deps.importFile(new File([bytes], `${bundleNameFromUrl(url)}.softn`), claim.generation);
   } catch (error) {

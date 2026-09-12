@@ -22,6 +22,14 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
       const target = event.target instanceof HTMLElement ? event.target : null;
       const isInput = !!target?.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]');
       const key = event.key.toLowerCase();
+      // Feature dialogs mounted inside a workspace panel do not participate
+      // in App's top-level modal state. Their draft still owns the keyboard.
+      if (target?.closest('[role="dialog"][aria-modal="true"]')) {
+        if ((event.ctrlKey || event.metaKey) && ((!event.shiftKey && ['s', 'o', 'n'].includes(key)) || (event.shiftKey && key === 'e'))) {
+          event.preventDefault(); event.stopPropagation();
+        }
+        return;
+      }
       if (event.ctrlKey || event.metaKey) {
         // Save and Open belong to the workspace, including while typing in Monaco.
         // Capture phase prevents the browser's Save Page dialog taking the keystroke.
@@ -31,7 +39,12 @@ export function useWorkspaceShortcuts(actions: WorkspaceShortcutActions) {
           : !current.narrow && event.shiftKey && key === 'e' ? current.export : null;
         if (fileAction) {
           event.preventDefault(); event.stopPropagation();
-          if (!event.repeat) fileAction();
+          if (!event.repeat) {
+            // Schema names commit on blur. A keyboard save/export must see
+            // the same completed name as a click on the toolbar does.
+            if (target?.matches('[data-schema-name]')) target.blur();
+            fileAction();
+          }
           return;
         }
         if (isInput || current.narrow || event.shiftKey) return;

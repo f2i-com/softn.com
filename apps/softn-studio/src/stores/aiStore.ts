@@ -9,6 +9,10 @@ import type {
 
 /** How long one provider request may take before Studio gives up on it. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+export const DEFAULT_MAX_ITERATIONS = 15;
+export const DEFAULT_TOKEN_BUDGET = 50_000;
+export const MAX_ITERATIONS_BOUNDS = { min: 1, max: 100 } as const;
+export const TOKEN_BUDGET_BOUNDS = { min: 1_000, max: 1_000_000 } as const;
 /**
  * The output allowance reserved for each request, sent as the provider's
  * max_tokens. It is also what the budget check reserves before sending: a
@@ -95,9 +99,9 @@ export const useAIStore = create<AIState>((set) => ({
   agentState: 'idle',
   currentStep: '',
   iterationsUsed: 0,
-  maxIterations: 15,
+  maxIterations: DEFAULT_MAX_ITERATIONS,
   tokensUsed: 0,
-  tokenBudget: 50000,
+  tokenBudget: DEFAULT_TOKEN_BUDGET,
   filesChanged: 0,
   requestTimeoutMs: DEFAULT_REQUEST_TIMEOUT_MS,
   maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
@@ -124,8 +128,8 @@ export const useAIStore = create<AIState>((set) => ({
   addTokens: (count) =>
     set((s) => ({ tokensUsed: s.tokensUsed + (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0) })),
   incrementFilesChanged: () => set((s) => ({ filesChanged: s.filesChanged + 1 })),
-  setMaxIterations: (max) => set({ maxIterations: Math.max(1, Math.min(100, max)) }),
-  setTokenBudget: (budget) => set({ tokenBudget: Math.max(1000, Math.min(1000000, budget)) }),
+  setMaxIterations: (max) => set({ maxIterations: Number.isFinite(max) ? Math.max(MAX_ITERATIONS_BOUNDS.min, Math.min(MAX_ITERATIONS_BOUNDS.max, Math.floor(max))) : DEFAULT_MAX_ITERATIONS }),
+  setTokenBudget: (budget) => set({ tokenBudget: Number.isFinite(budget) ? Math.max(TOKEN_BUDGET_BOUNDS.min, Math.min(TOKEN_BUDGET_BOUNDS.max, Math.floor(budget))) : DEFAULT_TOKEN_BUDGET }),
   setRequestTimeoutMs: (ms) =>
     set({ requestTimeoutMs: Number.isFinite(ms) ? Math.max(REQUEST_TIMEOUT_BOUNDS_MS.min, Math.min(REQUEST_TIMEOUT_BOUNDS_MS.max, Math.floor(ms))) : DEFAULT_REQUEST_TIMEOUT_MS }),
   setMaxOutputTokens: (tokens) =>

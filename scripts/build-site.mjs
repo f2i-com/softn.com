@@ -28,9 +28,9 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import zlib from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { precompressTree } from './precompress-assets.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'dist');
@@ -893,66 +893,11 @@ function writeDeepLinkFallbacks() {
  * segment, and any twin that fails to beat 95% of the original is discarded
  * rather than shipped as dead weight the server has to stat.
  */
-const COMPRESSIBLE = new Set([
-  '.html', '.js', '.mjs', '.css', '.json', '.webmanifest',
-  '.wasm', '.svg', '.map', '.txt', '.md', '.xml', '.ui', '.logic',
-]);
-const MIN_COMPRESS_BYTES = 1024;
-
-function precompressTree(dir, stats) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      // PHP is executed, not served, and the data directory is the API's own.
-      if (dir === outDir && (entry.name === 'api' || entry.name === 'data')) continue;
-      precompressTree(full, stats);
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    if (!COMPRESSIBLE.has(path.extname(entry.name).toLowerCase())) continue;
-
-    const source = fs.readFileSync(full);
-    if (source.length < MIN_COMPRESS_BYTES) continue;
-
-    const brotli = zlib.brotliCompressSync(source, {
-      params: {
-        [zlib.constants.BROTLI_PARAM_QUALITY]: 11,
-        [zlib.constants.BROTLI_PARAM_SIZE_HINT]: source.length,
-      },
-    });
-    const gzip = zlib.gzipSync(source, { level: 9 });
-
-    stats.scanned += 1;
-    stats.raw += source.length;
-    if (brotli.length < source.length * 0.95) {
-      fs.writeFileSync(full + '.br', brotli);
-      stats.brotli += brotli.length;
-      stats.written += 1;
-    } else {
-      stats.brotli += source.length;
-    }
-    if (gzip.length < source.length * 0.95) {
-      fs.writeFileSync(full + '.gz', gzip);
-      stats.gzip += gzip.length;
-      stats.written += 1;
-    } else {
-      stats.gzip += source.length;
-    }
-  }
-  return stats;
-}
-
 function precompressAssets() {
-  const stats = precompressTree(outDir, {
-    scanned: 0,
-    written: 0,
-    raw: 0,
-    gzip: 0,
-    brotli: 0,
-  });
+  const stats = precompressTree(outDir);
   const mb = (n) => (n / 1024 / 1024).toFixed(2) + 'MB';
   console.log(
-    `\nPrecompressed ${stats.scanned} files (${stats.written} twins written)\n` +
+    `\nPrecompressed ${stats.scanned} files (${stats.written} twins written; ${stats.reused} identical files reused)\n` +
       `  raw ${mb(stats.raw)}  ->  gzip ${mb(stats.gzip)}  ->  brotli ${mb(stats.brotli)}`
   );
   return stats;

@@ -303,7 +303,9 @@ export function DataEntryPanel() {
   const { entities, seedData, recordIdentity, addSeedRecord, updateSeedRecord, deleteSeedRecord } =
     useSchemaStore();
   const lastReidentify = useSchemaStore((s) => s.lastReidentify);
-  const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
+  // Render the first collection immediately so the table has its final
+  // height before the schema diagram measures its available viewport.
+  const [activeEntityId, setActiveEntityId] = useState<string | null>(() => entities[0]?.id ?? null);
 
   // "Import as new": the one deliberate way to give a collection's records
   // fresh ids (utils/reidentify.ts). Confirmed first, with what will

@@ -127,6 +127,7 @@ Capabilities such as network, microphone and synchronization require support and
 | Topic                   | Read next                                                                                                                                                      |
 | :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Language and components | Expand the reference below for `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                   |
+| Data modeling           | [Builder collections, ER relationships and record references](docs/BUILDER_DATA.md)                                                                         |
 | Loading and composition | [Bundle loading](docs/BUNDLE_LOADING.md) · [Component loading](docs/COMPONENT_LOADING.md) · [Reopening local apps](docs/LOCAL_APP_REOPEN.md)                   |
 | Hosting                 | [Single-app runtime](docs/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/SINGLE_APP_PHP_SERVE.md) · [Private backend](apps/softn-rust/PRIVATE_BACKEND.md) |
 | FormLogic               | [Starter adapter](docs/FORMLOGIC_INTEGRATION.md) · [Connected host](apps/formlogic-host/src/main.tsx) · [Workspace examples](examples)                         |
