@@ -21,3 +21,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# GTK 3 requires glib 0.18; this vendor backports RUSTSEC-2024-0429.
+[patch.crates-io]
+glib = { path = "../../../vendor/glib" }

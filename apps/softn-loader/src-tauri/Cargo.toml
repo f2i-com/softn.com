@@ -30,3 +30,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-cli = "2"
+
+# GTK 3 requires glib 0.18; this vendor backports RUSTSEC-2024-0429.
+[patch.crates-io]
+glib = { path = "../../../vendor/glib" }
