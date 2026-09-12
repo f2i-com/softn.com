@@ -1,14 +1,14 @@
 {
   "repository": "https://github.com/f2i-com/zipp.org",
-  "revision": "e6e0f65dd402f1bf75b9675d7acd904cb239c5a3",
-  "version": "0.0.15",
-  "release": "v0.0.15",
-  "releaseUrl": "https://github.com/f2i-com/zipp.org/releases/tag/v0.0.15",
-  "bundle": "zipp-wasm-0.0.15-web.zip",
-  "bundleSha256": "e421f720e524c1db9f9d703c68dccda1eb40cb5d2923abaa3a15d9762a140279",
+  "revision": "127477bd667eaf264a403ebd41c617b857574de2",
+  "version": "0.0.17",
+  "release": "v0.0.17",
+  "releaseUrl": "https://github.com/f2i-com/zipp.org/releases/tag/v0.0.17",
+  "bundle": "zipp-wasm-0.0.17-web.zip",
+  "bundleSha256": "3584e3800a8d11e48090a730903c36cc974140dbaa17d9f4ce331269e1eb1b59",
   "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
   "wasmBindgen": "0.2.126",
   "license": "Apache-2.0",
   "artifact": "zipp_wasm_bg.wasm",
-  "sha256": "2b6e9bc8434c359f029b00abd32836dd1f7ddf60c0566cbfc7a4cf0fec90d96a"
+  "sha256": "399eea81dfe972d983988d09e56495793535d2d048fa1ea58fe24f795ec06be8"
 }

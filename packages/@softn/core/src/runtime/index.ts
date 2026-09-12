@@ -20,4 +20,5 @@ export * from './event-coalescer';
 export { buildSyncCacheKey } from './sync-cache-key';
 export { bindSyncOptions } from './host-bound-sync-options';
 export { retryableSingleFlight } from './retryable-single-flight';
+export { configureZippWasmSource } from './zipp-wasm-loader';
 export { preloadSyncRuntime } from './xdb-sync-preload';

@@ -87,3 +87,16 @@ test('production refuses missing core assets instead of shipping a broken capabi
   const plugin = coreWorkerAssetPlugin({ coreDistRoot: path.join(temp, 'missing') });
   assert.throws(() => plugin.writeBundle({ dir: path.join(temp, 'output') }), /Build @softn\/core/);
 });
+
+test('production omits the core dist mirror while retaining the worker dependency tree', t => {
+  const { temp, core, files } = fixture(t);
+  fs.mkdirSync(path.join(core, 'core-runtime', 'runtime'), { recursive: true });
+  fs.writeFileSync(path.join(core, 'core-runtime', 'runtime', 'unused-copy.js'), 'duplicate');
+  const output = path.join(temp, 'hosted-runtime');
+  coreWorkerAssetPlugin({ coreDistRoot: core }).writeBundle({ dir: output });
+  const destination = path.join(output, 'assets', 'core-runtime');
+  assert.equal(fs.existsSync(path.join(destination, 'core-runtime')), false);
+  for (const [relative, bytes] of Object.entries(files)) {
+    assert.deepEqual(fs.readFileSync(path.join(destination, relative)), bytes);
+  }
+});
