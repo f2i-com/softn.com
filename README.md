@@ -363,22 +363,25 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
   never in a text field and never for a Ctrl chord or the system modifier
 
 The compiled engine is committed at `packages/@softn/core/wasm-zipp/`, so building SoftN needs no
-Rust toolchain. The current browser engine is **ZIPP v0.0.17**. Its exact commit, release archive
-and SHA-256 checksums are recorded in [SOURCE.json](packages/@softn/core/wasm-zipp/SOURCE.json).
-Import an official release with the checksum-verifying vendor script, then rebuild the packages
+Rust toolchain. The current browser engine is **ZIPP v0.0.18**, built locally with JavaScript
+and experimental Python support. Its exact source commit, toolchain and SHA-256 checksum are
+recorded in [SOURCE.json](packages/@softn/core/wasm-zipp/SOURCE.json). Existing `.logic` screens
+continue to use JavaScript. See [language support](docs/ZIPP_LANGUAGES.md) for the Python host API
+and its current integration limits.
+
+To reproduce the combined artifact from a clean sibling `zipp.org` checkout, rebuild the packages
 and whichever apps you ship:
 
 ```bash
-npm run vendor:zipp-release -w @softn/core -- v0.0.17
+npm run build:zipp-wasm -w @softn/core
 npm run build:packages
 npm test -w @softn/core
 ```
 
-For an intentional development build from a sibling `zipp.org` checkout:
-
-```bash
-npm run build:zipp-wasm -w @softn/core   # needs rustup + wasm-pack
-```
+The local build needs Rust with the `wasm32-unknown-unknown` target, wasm-bindgen 0.2.126
+and wasm-opt. It builds both languages by default; set `ZIPP_VARIANT=javascript` for a smaller
+JavaScript-only artifact. `vendor:zipp-release` remains available for importing the default
+JavaScript-only archive from a published release.
 
 The engine is selected in one place -- `packages/@softn/core/src/runtime/vm-adapter.ts`.
 

@@ -92,8 +92,8 @@ export class Engine {
      * per-drain request or byte allowance is used up), or, for a single
      * request too large to cross even on its own, rejected: it is removed and its
      * callback is invoked with a `RangeError`, so no callback is left
-     * pending for a request the host will never see. A host that wants an
-     * empty queue keeps draining until this returns an empty array.
+     * pending for a request the host will never see. Use the status-bearing
+     * form below when completion must be distinguished from a bounded pass.
      *
      * Until the 11 September 2026 audit's ZIPP-02 the guest helper emptied
      * the queue before its return value crossed the converter, so a
@@ -123,12 +123,25 @@ export class Engine {
      * [`MAX_HOST_CALL_DRAIN_WORK_BYTES`] string bytes attempted across them,
      * counted monotonically — a failed attempt's work is not rolled back
      * with its representation budget. Whatever remains waits for the next
-     * drain; a host that wants an empty queue keeps draining until this
-     * returns an empty array with nothing deferred.
+     * drain. This legacy array form cannot signal that distinction;
+     * `drainPendingHostCallsStatus` can.
      * @returns {any}
      */
     drainPendingHostCalls() {
         const ret = wasm.engine_drainPendingHostCalls(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Status-bearing form of `drainPendingHostCalls`. `hasMore` is true
+     * when a ceiling or recoverable interruption stopped this pass; callers
+     * can schedule another pass even when no deliverable request crossed.
+     * @returns {any}
+     */
+    drainPendingHostCallsStatus() {
+        const ret = wasm.engine_drainPendingHostCallsStatus(this.__wbg_ptr);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -260,6 +273,27 @@ export class Engine {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Initialize a multi-file Python project. `files` is a plain object
+     * mapping module names (the `.py` file stems) to their source; `entry`
+     * names the module whose top level runs. Modules import one another by
+     * name, and the built-in `ui` module; nothing else can be imported. The
+     * same limits and lifecycle as `initSource(..., "python")` apply, with the
+     * initial-source ceiling charged against the total of every file.
+     * @param {any} files
+     * @param {string} entry
+     * @param {any} argv
+     * @returns {any}
+     */
+    initPythonProject(files, entry, argv) {
+        const ptr0 = passStringToWasm0(entry, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_initPythonProject(this.__wbg_ptr, files, ptr0, len0, argv);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Compile `source` behind the preamble, run its top level, and return the
      * symbol map as `{ name: { index, scope } }`.
      *
@@ -272,6 +306,27 @@ export class Engine {
         const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.engine_initScript(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * [`Self::init_script`] with an explicit source language: `"javascript"`
+     * (identical to `initScript`) or `"python"` (the experimental subset
+     * frontend; requires the `python` Cargo feature). A Python state has no
+     * preamble, exposes no global slots, and rejects the JS-only
+     * global/call/eval methods.
+     * @param {string} source
+     * @param {string} language
+     * @returns {any}
+     */
+    initSource(source, language) {
+        const ptr0 = passStringToWasm0(source, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(language, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_initSource(this.__wbg_ptr, ptr0, len0, ptr1, len1);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -331,6 +386,39 @@ export class Engine {
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
+    }
+    /**
+     * Call a function defined at the top level of a Python project's entry
+     * module, with `args` an array of host values (integers, strings,
+     * booleans, null, arrays), and return its result as host data. This is
+     * the Python state's counterpart of `callFunction`: the playground's
+     * frame loop drives `update`/`draw`/`on_click`/`on_key` through it.
+     * @param {string} name
+     * @param {any} args
+     * @returns {any}
+     */
+    pythonCall(name, args) {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_pythonCall(this.__wbg_ptr, ptr0, len0, args);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Whether the Python entry module defines a top-level function `name`.
+     * @param {string} name
+     * @returns {boolean}
+     */
+    pythonHas(name) {
+        const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_pythonHas(this.__wbg_ptr, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
     }
     /**
      * Restore this engine's instruction budget.
@@ -557,6 +645,20 @@ export class Engine {
         }
     }
     /**
+     * Replace the input snapshot the `ui` module reads (`mouse`, `clicked`,
+     * `key`, `button`, `width`, `height`): a JSON object such as
+     * `{"mx":10,"my":20,"down":false,"clicked":false,"keys":{"ArrowUp":true},"w":640,"h":480}`.
+     * @param {string} json
+     */
+    setPythonInput(json) {
+        const ptr0 = passStringToWasm0(json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_setPythonInput(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
      * Replace the exact allowlist for synchronous guest-to-host operations.
      * The list is fixed before initialization so guest execution cannot race
      * or influence a later authority upgrade. Unknown operation names reject
@@ -570,7 +672,7 @@ export class Engine {
         }
     }
     /**
-     * Drain every console line produced so far, in order, as
+     * Drain a bounded prefix of the console lines produced so far, in order, as
      * `[{ stream: "stdout" | "stderr", text }]`. Draining here empties the
      * same buffers `takeOutput` drains.
      * @returns {any}
@@ -583,7 +685,42 @@ export class Engine {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * Drain every console line produced so far — `log`/`info`/`debug` and
+     * The console entries a failed initialization produced before its
+     * error (a program's own output ahead of the raise, a test report
+     * ahead of its non-zero exit), in `takeConsole`'s tagged form. The one
+     * method that answers on a disposed engine; it drains, and an engine
+     * that initialized returns an empty array.
+     * @returns {any}
+     */
+    takeFailedConsole() {
+        const ret = wasm.engine_takeFailedConsole(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Drain the program's pending host requests: an array of
+     * `{id, kind, payload}` records, each a piece of work the program asked
+     * its embedder to do (`kind` `"gpu.execute"` carries a compute graph as
+     * `payload`). Answer one with
+     * `pythonCall("__zipp_py_deliver", [id, reply])`, where `reply` is
+     * `{ok: true, value}` or `{ok: false, error: {code, message}}`; the
+     * program's callback for that request then runs inside that call. A
+     * request never delivered is simply dropped with the engine. The
+     * queue is empty afterwards.
+     * @returns {any}
+     */
+    takeHostRequests() {
+        const ret = wasm.engine_takeHostRequests(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Drain a bounded prefix of the console lines produced so far —
+     * `log`/`info`/`debug` and
      * `warn`/`error` alike — in the order they were written. (The two
      * streams used to be concatenated, stdout first, so interleaved
      * messages lost their order: the 11 September 2026 audit's ZIPP-14.)
@@ -592,6 +729,20 @@ export class Engine {
      */
     takeOutput() {
         const ret = wasm.engine_takeOutput(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Drain the `ui` module's command buffer: an array of commands, each an
+     * array whose first element names the operation (`canvas`, `clear`,
+     * `rect`, `circle`, `line`, `text`, `font`, `button`) followed by its
+     * arguments. The buffer is empty afterwards.
+     * @returns {any}
+     */
+    takeUi() {
+        const ret = wasm.engine_takeUi(this.__wbg_ptr);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -801,11 +952,11 @@ function __wbg_get_imports() {
             const ret = arg0.has(arg1);
             return ret;
         },
-        __wbg_isArray_44afe9a8d228c157: function() { return handleError(function (arg0) {
+        __wbg_isArray_ed0a78fabccbf569: function() { return handleError(function (arg0) {
             const ret = Array.isArray(arg0);
             return ret;
         }, arguments); },
-        __wbg_keys_ab4ef4664cf24e2b: function() { return handleError(function (arg0) {
+        __wbg_keys_90b2ed4cf34a1b20: function() { return handleError(function (arg0) {
             const ret = Object.keys(arg0);
             return ret;
         }, arguments); },

@@ -314,6 +314,9 @@ if (actualZippHash !== zipp.sha256.toLowerCase()) {
 const zippKey = `zipp-wasm@${zipp.revision}`;
 const zippLicense = path.join(ROOT, 'LICENSE');
 const zippLicenseFile = addText(zippKey, zippLicense, false);
+const zippThirdParty = path.join(path.dirname(ZIPP_SOURCE_FILE), 'THIRD_PARTY_LICENSES.txt');
+const zippLicenseFiles = [zippLicenseFile];
+if (fs.existsSync(zippThirdParty)) zippLicenseFiles.push(addText(zippKey, zippThirdParty, false));
 const vendored = [
   {
     name: 'zipp-wasm',
@@ -322,7 +325,7 @@ const vendored = [
     license: zipp.license,
     artifact: relative(zippArtifact),
     sha256: actualZippHash,
-    licenseFiles: [zippLicenseFile],
+    licenseFiles: zippLicenseFiles,
   },
 ];
 
