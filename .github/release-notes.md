@@ -1,13 +1,11 @@
 ## SoftN RELEASE_TAG
 
-### What's new in 0.0.9
+### What's new in 0.0.10
 
-- Privately served single app: `softn-single-php-serve` hosts one `.softn` from PHP without ever putting the archive on a URL. The page is rendered on the server, the runtime fetches the app's text once and each asset on demand behind a signed viewer cookie, and browser navigations, cross-site fetches and withheld entries are refused. Delivery control, not copy protection: a browser still receives what it executes.
-- `softn-private-single-php-linux-x64`: that host together with the optional Apache/PHP backend (bundled Linux x64 Node, SQLite and ZIPP WASM) in one archive, with a merged `.htaccess` that routes `/api/…`.
-- A whole-project review, with fixes across the engine, components, browser hosts, the app directory and the scripts: CSS-escape and `background`/Markdown/SmartCards egress bypasses closed, `softn.qr.decode` held to the `net` gate, scripts can no longer overwrite host globals, deletes inside VM functions no longer resurrect on offline peers, a parser hang and prototype-chain identifier lookups fixed, unclosed tags diagnosed, server sync keeps offline writes, AI downloads bounded and judged, the COI service worker no longer breaks redirected navigations, an open redirect in `?back=` closed, and an oversized manifest can no longer take the whole directory down.
-- The app directory skips a broken app folder and serves the rest, keeping the folder's files and slug untouched; the demo fetch retries a transient GitHub error patiently.
-- `softn.sandbox.run` executes a script in a fresh, bridge-less ZIPP guest inside a worker with source, instruction and time bounds; `files.readZipText` reads a small text-only ZIP a user chose; TileMap gains a viewport-clipped mode that allocates pixels only for the visible window.
-- The native Rust host remains available under `apps/softn-rust`; its executable is still `softn-server`.
+- Locally built ZIPP 0.0.18 with JavaScript and experimental Python support, recorded source provenance and matching runtime checksums. Existing reactive `.logic` screens continue to use JavaScript; Python is available through the engine host API.
+- FormLogic-integrated Builder and Studio sessions, shared runtime loading, hosted draft review, and AI generation safeguards.
+- Native SQLite record events for FormLogic automations, portable form modules, and improved hosted database editing guidance.
+- Additional runtime lifecycle and language regression checks, plus updated build instructions and third-party notices.
 
 The backend download targets Linux x86-64 with Apache/PHP and process execution enabled. It is a generic, unconfigured distribution: install your own public and private app bundles and preserve existing configuration, keys and databases when upgrading. Native XDB synchronization remains a Rust-host feature.
 

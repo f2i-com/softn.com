@@ -12,7 +12,7 @@ describe('vendored JavaScript and Python engine', () => {
     expect(profile.version).toBe(source.version);
     expect(profile.languages).toEqual(['javascript', 'python']);
     expect(profile.features).toContain('safe-sandbox');
-    expect(createHash('sha256').update(readFileSync('wasm-zipp/zipp_wasm_bg.wasm')).digest('hex')).toBe(source.sha256);
+    expect(createHash('sha256').update(new Uint8Array(readFileSync('wasm-zipp/zipp_wasm_bg.wasm'))).digest('hex')).toBe(source.sha256);
   });
 
   it('keeps JavaScript reactive state separate from a Python program in the same WASM', async () => {
