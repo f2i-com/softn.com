@@ -44,6 +44,7 @@ export default defineConfig({
     // and the glue uses `new URL('<name>_bg.wasm', import.meta.url)`, so the
     // .wasm file must sit next to the chunk.
     cpSync('wasm-zipp/zipp_wasm_bg.wasm', 'dist/zipp_wasm_bg.wasm');
+    if (existsSync('wasm-zipp/THIRD_PARTY_LICENSES.txt')) cpSync('wasm-zipp/THIRD_PARTY_LICENSES.txt', 'dist/zipp-licenses.txt');
     console.log('[tsup] Copied the zipp engine to dist/');
     execFileSync(process.execPath,['scripts/build-speech-worker.mjs'],{stdio:'inherit'});
     // Mirror dist/ into dist/core-runtime/ so static worker URL resolution (./core-runtime/runtime/script-worker.js) succeeds on disk

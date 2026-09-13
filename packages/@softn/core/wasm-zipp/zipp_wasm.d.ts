@@ -42,8 +42,8 @@ export class Engine {
      * per-drain request or byte allowance is used up), or, for a single
      * request too large to cross even on its own, rejected: it is removed and its
      * callback is invoked with a `RangeError`, so no callback is left
-     * pending for a request the host will never see. A host that wants an
-     * empty queue keeps draining until this returns an empty array.
+     * pending for a request the host will never see. Use the status-bearing
+     * form below when completion must be distinguished from a bounded pass.
      *
      * Until the 11 September 2026 audit's ZIPP-02 the guest helper emptied
      * the queue before its return value crossed the converter, so a
@@ -73,10 +73,16 @@ export class Engine {
      * [`MAX_HOST_CALL_DRAIN_WORK_BYTES`] string bytes attempted across them,
      * counted monotonically — a failed attempt's work is not rolled back
      * with its representation budget. Whatever remains waits for the next
-     * drain; a host that wants an empty queue keeps draining until this
-     * returns an empty array with nothing deferred.
+     * drain. This legacy array form cannot signal that distinction;
+     * `drainPendingHostCallsStatus` can.
      */
     drainPendingHostCalls(): any;
+    /**
+     * Status-bearing form of `drainPendingHostCalls`. `hasMore` is true
+     * when a ceiling or recoverable interruption stopped this pass; callers
+     * can schedule another pass even when no deliverable request crossed.
+     */
+    drainPendingHostCallsStatus(): any;
     /**
      * Evaluate `expr` in the script's global context and return its value
      * as a JSON PROJECTION: the result is passed through the guest's
@@ -152,6 +158,15 @@ export class Engine {
      */
     getGlobalsFingerprint(indices: any): any;
     /**
+     * Initialize a multi-file Python project. `files` is a plain object
+     * mapping module names (the `.py` file stems) to their source; `entry`
+     * names the module whose top level runs. Modules import one another by
+     * name, and the built-in `ui` module; nothing else can be imported. The
+     * same limits and lifecycle as `initSource(..., "python")` apply, with the
+     * initial-source ceiling charged against the total of every file.
+     */
+    initPythonProject(files: any, entry: string, argv: any): any;
+    /**
      * Compile `source` behind the preamble, run its top level, and return the
      * symbol map as `{ name: { index, scope } }`.
      *
@@ -159,6 +174,14 @@ export class Engine {
      * `_init`) commonly reads `localStorage` or queries `db`.
      */
     initScript(source: string): any;
+    /**
+     * [`Self::init_script`] with an explicit source language: `"javascript"`
+     * (identical to `initScript`) or `"python"` (the experimental subset
+     * frontend; requires the `python` Cargo feature). A Python state has no
+     * preamble, exposes no global slots, and rejects the JS-only
+     * global/call/eval methods.
+     */
+    initSource(source: string, language: string): any;
     /**
      * The engine's own classification of the last error a method of this
      * instance threw:
@@ -184,6 +207,18 @@ export class Engine {
      * Run pending microtasks without calling into the script.
      */
     pump(): void;
+    /**
+     * Call a function defined at the top level of a Python project's entry
+     * module, with `args` an array of host values (integers, strings,
+     * booleans, null, arrays), and return its result as host data. This is
+     * the Python state's counterpart of `callFunction`: the playground's
+     * frame loop drives `update`/`draw`/`on_click`/`on_key` through it.
+     */
+    pythonCall(name: string, args: any): any;
+    /**
+     * Whether the Python entry module defines a top-level function `name`.
+     */
+    pythonHas(name: string): boolean;
     /**
      * Restore this engine's instruction budget.
      *
@@ -342,6 +377,12 @@ export class Engine {
      */
     setLocalStorageBridge(bridge: any): void;
     /**
+     * Replace the input snapshot the `ui` module reads (`mouse`, `clicked`,
+     * `key`, `button`, `width`, `height`): a JSON object such as
+     * `{"mx":10,"my":20,"down":false,"clicked":false,"keys":{"ArrowUp":true},"w":640,"h":480}`.
+     */
+    setPythonInput(json: string): void;
+    /**
      * Replace the exact allowlist for synchronous guest-to-host operations.
      * The list is fixed before initialization so guest execution cannot race
      * or influence a later authority upgrade. Unknown operation names reject
@@ -349,19 +390,47 @@ export class Engine {
      */
     setSyncHostCapabilities(operations: any): void;
     /**
-     * Drain every console line produced so far, in order, as
+     * Drain a bounded prefix of the console lines produced so far, in order, as
      * `[{ stream: "stdout" | "stderr", text }]`. Draining here empties the
      * same buffers `takeOutput` drains.
      */
     takeConsole(): any;
     /**
-     * Drain every console line produced so far — `log`/`info`/`debug` and
+     * The console entries a failed initialization produced before its
+     * error (a program's own output ahead of the raise, a test report
+     * ahead of its non-zero exit), in `takeConsole`'s tagged form. The one
+     * method that answers on a disposed engine; it drains, and an engine
+     * that initialized returns an empty array.
+     */
+    takeFailedConsole(): any;
+    /**
+     * Drain the program's pending host requests: an array of
+     * `{id, kind, payload}` records, each a piece of work the program asked
+     * its embedder to do (`kind` `"gpu.execute"` carries a compute graph as
+     * `payload`). Answer one with
+     * `pythonCall("__zipp_py_deliver", [id, reply])`, where `reply` is
+     * `{ok: true, value}` or `{ok: false, error: {code, message}}`; the
+     * program's callback for that request then runs inside that call. A
+     * request never delivered is simply dropped with the engine. The
+     * queue is empty afterwards.
+     */
+    takeHostRequests(): any;
+    /**
+     * Drain a bounded prefix of the console lines produced so far —
+     * `log`/`info`/`debug` and
      * `warn`/`error` alike — in the order they were written. (The two
      * streams used to be concatenated, stdout first, so interleaved
      * messages lost their order: the 11 September 2026 audit's ZIPP-14.)
      * `takeConsole` returns the same lines tagged with their stream.
      */
     takeOutput(): any;
+    /**
+     * Drain the `ui` module's command buffer: an array of commands, each an
+     * array whose first element names the operation (`canvas`, `clear`,
+     * `rect`, `circle`, `line`, `text`, `font`, `button`) followed by its
+     * arguments. The buffer is empty afterwards.
+     */
+    takeUi(): any;
     /**
      * Whether this engine has been torn down — by `dispose()`, by a
      * resource ceiling, or by a failed initialization. The TRUSTED terminal
@@ -444,17 +513,22 @@ export interface InitOutput {
     readonly engine_dispose: (a: number) => void;
     readonly engine_disposed: (a: number) => number;
     readonly engine_drainPendingHostCalls: (a: number) => [number, number, number];
+    readonly engine_drainPendingHostCallsStatus: (a: number) => [number, number, number];
     readonly engine_evalInContext: (a: number, b: number, c: number) => [number, number, number];
     readonly engine_evalInContextRich: (a: number, b: number, c: number) => [number, number, number];
     readonly engine_getEventListenerTypes: (a: number) => [number, number, number];
     readonly engine_getGlobalByIndex: (a: number, b: number) => [number, number, number];
     readonly engine_getGlobalsBatch: (a: number, b: any) => [number, number, number];
     readonly engine_getGlobalsFingerprint: (a: number, b: any) => [number, number, number];
+    readonly engine_initPythonProject: (a: number, b: any, c: number, d: number, e: any) => [number, number, number];
     readonly engine_initScript: (a: number, b: number, c: number) => [number, number, number];
+    readonly engine_initSource: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly engine_lastErrorKind: (a: number) => [number, number];
     readonly engine_new: () => number;
     readonly engine_preambleLines: (a: number) => number;
     readonly engine_pump: (a: number) => [number, number];
+    readonly engine_pythonCall: (a: number, b: number, c: number, d: any) => [number, number, number];
+    readonly engine_pythonHas: (a: number, b: number, c: number) => [number, number, number];
     readonly engine_renewInstructionBudget: (a: number) => number;
     readonly engine_resolveHostCallback: (a: number, b: number, c: any) => [number, number, number];
     readonly engine_resourceUsage: (a: number) => [number, number, number];
@@ -466,9 +540,13 @@ export interface InitOutput {
     readonly engine_setGlobalsBatch: (a: number, b: any, c: any) => [number, number];
     readonly engine_setInstructionBudget: (a: number, b: number) => number;
     readonly engine_setLocalStorageBridge: (a: number, b: any) => [number, number];
+    readonly engine_setPythonInput: (a: number, b: number, c: number) => [number, number];
     readonly engine_setSyncHostCapabilities: (a: number, b: any) => [number, number];
     readonly engine_takeConsole: (a: number) => [number, number, number];
+    readonly engine_takeFailedConsole: (a: number) => [number, number, number];
+    readonly engine_takeHostRequests: (a: number) => [number, number, number];
     readonly engine_takeOutput: (a: number) => [number, number, number];
+    readonly engine_takeUi: (a: number) => [number, number, number];
     readonly zippInstanceUsage: () => [number, number, number];
     readonly zippProfile: () => [number, number];
     readonly zipp_install_panic_hook: () => void;

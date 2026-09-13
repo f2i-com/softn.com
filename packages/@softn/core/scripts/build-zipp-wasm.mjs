@@ -32,6 +32,8 @@ const ZIPP = resolve(CORE, process.env.ZIPP_REPO ?? '../../../../zipp.org');
 // ZIPP_OUT builds somewhere else, to test a recipe change without touching
 // the vendored engine.
 const OUT = process.env.ZIPP_OUT ? resolve(process.env.ZIPP_OUT) : join(CORE, 'wasm-zipp');
+const variant = process.env.ZIPP_VARIANT ?? 'all';
+if (!['all', 'javascript'].includes(variant)) throw new Error('ZIPP_VARIANT must be all or javascript.');
 
 if (!existsSync(join(ZIPP, 'crates/zipp-wasm/Cargo.toml'))) {
   console.error(`No zipp-wasm crate at ${ZIPP}. Set ZIPP_REPO to a zipp.org checkout.`);
@@ -68,7 +70,7 @@ console.log(`Building zipp-wasm from ${ZIPP} ...`);
 // assumes — check-wasm-memory below is what catches that.
 run(
   'cargo',
-  ['build', '--locked', '--release', '--target', 'wasm32-unknown-unknown'],
+  ['build', '--locked', '--release', '--target', 'wasm32-unknown-unknown', ...(variant === 'all' ? ['--features', 'python'] : [])],
   WASM,
 );
 
@@ -111,6 +113,13 @@ rmSync(join(PKG, 'zipp_wasm_bg.stripped.wasm'));
 run('node', ['tests/node/check-wasm-memory.cjs', join(PKG, 'zipp_wasm_bg.wasm')], WASM);
 
 mkdirSync(OUT, { recursive: true });
+writeFileSync(join(OUT, 'THIRD_PARTY_LICENSES.txt'), [
+  'ZIPP engine: Apache-2.0. See the source repository for its complete notices.',
+  ...(variant === 'all' ? [
+    'RustPython parser (MIT):\n' + readFileSync(join(ZIPP, 'crates/rustpython-parser-fork/LICENSE'), 'utf8'),
+    'Unicode data:\n' + readFileSync(join(ZIPP, 'LICENSE-UNICODE'), 'utf8'),
+  ] : []),
+].join('\n\n').trimEnd() + '\n');
 for (const f of ['zipp_wasm.js', 'zipp_wasm.d.ts', 'zipp_wasm_bg.wasm', 'zipp_wasm_bg.wasm.d.ts']) {
   copyFileSync(join(PKG, f), join(OUT, f));
 }
@@ -122,6 +131,12 @@ writeFileSync(
     {
       repository: 'https://github.com/f2i-com/zipp.org',
       revision,
+      version: readFileSync(join(WASM, 'Cargo.toml'), 'utf8').match(/^version\s*=\s*"([^"]+)"/m)[1],
+      build: 'local',
+      variant,
+      languages: variant === 'all' ? ['javascript', 'python'] : ['javascript'],
+      rustc: execFileSync('rustc', ['--version'], { encoding: 'utf8' }).trim(),
+      wasmBindgen: execFileSync('wasm-bindgen', ['--version'], { encoding: 'utf8' }).trim().replace(/^wasm-bindgen\s+/, ''),
       license: 'Apache-2.0',
       artifact: 'zipp_wasm_bg.wasm',
       sha256,
