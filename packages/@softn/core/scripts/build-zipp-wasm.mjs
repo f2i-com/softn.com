@@ -113,6 +113,7 @@ rmSync(join(PKG, 'zipp_wasm_bg.stripped.wasm'));
 run('node', ['tests/node/check-wasm-memory.cjs', join(PKG, 'zipp_wasm_bg.wasm')], WASM);
 
 mkdirSync(OUT, { recursive: true });
+copyFileSync(join(ZIPP, 'LICENSE-APACHE'), join(OUT, 'LICENSE-APACHE'));
 writeFileSync(join(OUT, 'THIRD_PARTY_LICENSES.txt'), [
   'ZIPP engine: Apache-2.0. See the source repository for its complete notices.',
   ...(variant === 'all' ? [

@@ -25,6 +25,25 @@ async function download(url,file,digest) {
   if(sha(bytes)!==digest)throw Error('Dependency checksum mismatch');
   writeFileSync(file,bytes);return bytes;
 }
+/** Package local-build provenance without assuming an upstream release ZIP exists. */
+export async function prepareZippNotices(wasmDir, notices) {
+  const source=JSON.parse(readFileSync(join(wasmDir,'SOURCE.json'),'utf8'));
+  if(source.artifact!=='zipp_wasm_bg.wasm'||!source.sha256||sha(readFileSync(join(wasmDir,source.artifact)))!==source.sha256)throw Error('Vendored WASM provenance mismatch');
+  let license;
+  if(existsSync(join(wasmDir,'LICENSE-APACHE'))) {
+    license=readFileSync(join(wasmDir,'LICENSE-APACHE'));
+  } else {
+    if(!source.release||!source.bundle||!source.bundleSha256)throw Error('Local ZIPP build is missing LICENSE-APACHE; rebuild the vendored engine.');
+    const upstream=await download(source.repository+'/releases/download/'+source.release+'/'+source.bundle,join(cache,source.bundle),source.bundleSha256);
+    const files=unzipSync(upstream),name=Object.keys(files).find(n=>n.endsWith('/LICENSE-APACHE'));
+    if(!name)throw Error('Upstream WASM license missing');
+    license=files[name];
+  }
+  mkdirSync(notices,{recursive:true});
+  writeFileSync(join(notices,'ZIPP-LICENSE-APACHE'),license);
+  copyFileSync(join(wasmDir,'SOURCE.json'),join(notices,'ZIPP-SOURCE.json'));
+  if(existsSync(join(wasmDir,'THIRD_PARTY_LICENSES.txt')))copyFileSync(join(wasmDir,'THIRD_PARTY_LICENSES.txt'),join(notices,'ZIPP-THIRD-PARTY-LICENSES.txt'));
+}
 /** @returns {Promise<{nodeDir:string,wasmDir:string,notices:string,websocketDir:string,version:string}>} */
 export async function prepareBackendInputs() {
   mkdirSync(cache,{recursive:true});
@@ -39,14 +58,8 @@ export async function prepareBackendInputs() {
   await download('https://registry.npmjs.org/ws/-/ws-'+wsVersion+'.tgz',join(cache,wsArchive),wsHash);
   execFileSync('tar',['-xf','../'+wsArchive],{cwd:wsDir});
   const wasmDir=join(root,'packages/@softn/core/wasm-zipp');
-  const source=JSON.parse(readFileSync(join(wasmDir,'SOURCE.json'),'utf8'));
-  if(sha(readFileSync(join(wasmDir,source.artifact)))!==source.sha256)throw Error('Vendored WASM provenance mismatch');
-  const upstream=await download(source.repository+'/releases/download/'+source.release+'/'+source.bundle,join(cache,source.bundle),source.bundleSha256);
-  const files=unzipSync(upstream),license=Object.keys(files).find(n=>n.endsWith('/LICENSE-APACHE'));
-  if(!license)throw Error('Upstream WASM license missing');
-  const notices=join(cache,'notices');mkdirSync(notices,{recursive:true});
-  writeFileSync(join(notices,'ZIPP-LICENSE-APACHE'),files[license]);
-  copyFileSync(join(wasmDir,'SOURCE.json'),join(notices,'ZIPP-SOURCE.json'));
+  const notices=join(cache,'notices');
+  await prepareZippNotices(wasmDir,notices);
   writeFileSync(join(notices,'NODE-SOURCE.json'),JSON.stringify({version:nodeVersion,url:'https://nodejs.org/dist/v'+nodeVersion+'/'+nodeName+'.tar.xz',sha256:nodeHash},null,2));
   writeFileSync(join(notices,'WS-SOURCE.json'),JSON.stringify({version:wsVersion,url:'https://registry.npmjs.org/ws/-/ws-'+wsVersion+'.tgz',sha256:wsHash,license:'MIT'},null,2));
   const version=JSON.parse(readFileSync(join(root,'package.json'),'utf8')).version;
