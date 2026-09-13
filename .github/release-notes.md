@@ -1,10 +1,11 @@
 ## SoftN RELEASE_TAG
 
-### What's new in 0.0.11
+### What's new in 0.0.12
 
 - Locally built ZIPP 0.0.18 with JavaScript and experimental Python support, recorded source provenance and matching runtime checksums. Existing reactive `.logic` screens continue to use JavaScript; Python is available through the engine host API.
 - FormLogic-integrated Builder and Studio sessions, shared runtime loading, hosted draft review, and AI generation safeguards.
 - Native SQLite record events for FormLogic automations, portable form modules, and improved hosted database editing guidance.
+- Release packaging now includes locally built ZIPP provenance and Apache/Python notices without requiring an upstream release archive.
 - Additional runtime lifecycle and language regression checks, plus updated build instructions and third-party notices.
 
 The backend download targets Linux x86-64 with Apache/PHP and process execution enabled. It is a generic, unconfigured distribution: install your own public and private app bundles and preserve existing configuration, keys and databases when upgrading. Native XDB synchronization remains a Rust-host feature.
