@@ -845,6 +845,14 @@ function App() {
         );
 
       case 'data':
+        if (isHostedEditor()) return (
+          <section style={{ padding: 'clamp(24px, 5vw, 56px)', maxWidth: 760, margin: '0 auto', lineHeight: 1.7 }} aria-label="FormLogic app data">
+            <h1 style={{ fontSize: 24, marginBottom: 12 }}>Your app data lives in FormLogic</h1>
+            <p>Use the app’s Data &amp; forms section to browse records. For native apps, open Native app hosting → Backend to change SQLite tables with a numbered migration.</p>
+            <p style={{ marginTop: 12 }}>Builder’s standalone database designer creates local XDB collections. Those are separate from your hosted database, so edit the hosted schema in FormLogic.</p>
+            <button type="button" onClick={() => requestHostedSave()} style={{ ...styles.collapsedLogicBtn, minHeight: 44, marginTop: 24 }}>Review draft in FormLogic</button>
+          </section>
+        );
         return (
           <div style={styles.main}>
             <div style={{ flex: 1 }}>
