@@ -1,5 +1,5 @@
 /** Private editor session with the same-origin FormLogic parent. No account credentials cross it. */
-export const isHostedEditor = () => window.parent !== window && new URLSearchParams(location.search).get('formlogicEditor') === '1';
+export const isHostedEditor = () => typeof window !== 'undefined' && window.parent !== window && new URLSearchParams(window.location.search).get('formlogicEditor') === '1';
 let currentPort: MessagePort | null = null;
 const hostRequests = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
 export function requestHostedAI(messages: { role: string; content: string }[], signal?: AbortSignal): Promise<string> {

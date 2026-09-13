@@ -1,6 +1,6 @@
 ## SoftN RELEASE_TAG
 
-### What's new in 0.0.10
+### What's new in 0.0.11
 
 - Locally built ZIPP 0.0.18 with JavaScript and experimental Python support, recorded source provenance and matching runtime checksums. Existing reactive `.logic` screens continue to use JavaScript; Python is available through the engine host API.
 - FormLogic-integrated Builder and Studio sessions, shared runtime loading, hosted draft review, and AI generation safeguards.
