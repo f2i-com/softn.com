@@ -741,7 +741,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief }) => {
             label={selectedSurfaceLabel}
             frameStyle={
               isMobile
-                ? { borderRadius: 0, border: 'none', boxShadow: 'none', width: '100%' }
+                ? { borderRadius: 0, border: 'none', boxShadow: 'none', width: '100%', transition: 'none' }
                 : { width: Math.min(previewWidth * scale, previewWidth), maxWidth: '100%' }
             }
             onClose={() => setIsExpandedPreview(false)}
@@ -905,6 +905,7 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--studio-bg-elevated)',
   },
   previewContentHost: {
+    minWidth: 0,
     flex: 1,
     minHeight: 0,
     display: 'flex',
@@ -920,6 +921,8 @@ const styles: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid var(--studio-border)',
   },
   rendererWrap: {
+    minWidth: 0,
+    position: 'relative',
     width: '100%',
     flex: 1,
     minHeight: 0,

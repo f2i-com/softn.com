@@ -1,0 +1,6 @@
+{
+  "nativeProtocol": 1,
+  "recordEvents": 1,
+  "minimumNode": "24.19.0",
+  "description": "Shared operator runtime with per-app roots, declaration validation and trusted host context."
+}

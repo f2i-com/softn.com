@@ -12,10 +12,40 @@ describe('FormLogic schema handoff', () => {
     expect((parse(project.files['ui/main.ui']).diagnostics ?? [])).toEqual([]);
     const parsed = parse('<SmartForm collection="contacts" fields="name" />');
     expect(parsed.template[0]).toMatchObject({ props: expect.arrayContaining([{ type: 'Prop', name: 'collection', value: { type: 'static', value: 'contacts' }, loc: expect.any(Object) }]) });
-    expect(parse(project.files['ui/main.ui']).data?.collections).toMatchObject([{ as: 'records0', name: 'fl_636f6e7461637473' }]);
+    expect(parse(project.files['ui/main.ui']).data?.collections).toMatchObject([{ as: 'records_636f6e7461637473', name: 'fl_636f6e7461637473' }]);
     expect(project.formCount).toBe(1);
     expect(project.fieldCount).toBe(2);
     expect(JSON.parse(project.files['formlogic.connection.json']).collections[0].fieldIds).toEqual(['name', 'email']);
+  });
+  it('exports an unnamed empty form as an editable screen without invented inputs', () => {
+    const project = createFormlogicProject({ ...input, sourceKind: 'form', forms: [{ id: 'empty', title: 'Untitled Form', fields: [] }] });
+    const manifest = JSON.parse(project.files['manifest.json']);
+    const source = composeBundleSource(new Map(Object.entries(project.files)), manifest.main, manifest.files.logic).source;
+    expect(project.formCount).toBe(1);
+    expect(project.fieldCount).toBe(0);
+    expect(source).toContain('Untitled Form');
+    expect(source).not.toContain('<SmartForm');
+    expect(parse(source).diagnostics ?? []).toEqual([]);
+  });
+  it('assembles reusable form modules with separate data and no duplicate logic', () => {
+    const forms = [...input.forms, { id: 'bookings', title: 'Appointments', fields: [{ id: 'name', type: 'short_text', label: 'Guest name' }] }];
+    const project = createFormlogicProject({ ...input, forms });
+    const manifest = JSON.parse(project.files['manifest.json']);
+    const modules = JSON.parse(project.files['formlogic.modules.json']).modules;
+    const source = composeBundleSource(new Map(Object.entries(project.files)), manifest.main, manifest.files.logic).source;
+    expect(parse(source).diagnostics ?? []).toEqual([]);
+    expect(project.formCount).toBe(2);
+    expect(project.fieldCount).toBe(3);
+    expect(source).toContain('aria-pressed={activeForm === 1}');
+    expect(new Set(modules.map((module: { records: string }) => module.records)).size).toBe(2);
+    for (const module of modules) {
+      expect(manifest.files.ui).toContain(module.ui);
+      expect(manifest.files.logic).toContain(module.logic);
+      expect(source.split(project.files[module.logic])).toHaveLength(2);
+      const single = createFormlogicProject({ ...input, sourceKind: 'form', forms: forms.filter(form => form.id === module.formId) });
+      expect(single.files[module.ui]).toBe(project.files[module.ui]);
+      expect(single.files[module.logic]).toBe(project.files[module.logic]);
+    }
   });
   it('does not export private schemas, records, tokens or executable source', () => {
     const value = createFormlogicProject({ ...input, app: { ...input.app, token: 'do-not-copy', customScreen: { js: 'secretCode()' } },

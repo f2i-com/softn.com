@@ -1,3 +1,4 @@
+import { isHostedEditor, requestHostedSave } from '../../../../shared/hostedEditor';
 import React, { useSyncExternalStore } from 'react';
 import { Icon } from './Icon';
 import { getSaveStatus, subscribeSaveStatus, type SaveStatus } from '../../lib/projectSession';
@@ -38,6 +39,7 @@ export function describeSaveStatus(status: SaveStatus): { label: string; detail:
 export function SaveStatusIndicator({ compact = false }: { compact?: boolean }): React.ReactElement {
   const status = useSaveStatus();
   const { label, detail, tone } = describeSaveStatus(status);
+  if (isHostedEditor()) return <button type="button" onClick={requestHostedSave} style={styles.box} title="Return this draft to FormLogic to review and publish">FormLogic draft</button>;
   const failed = status.state === 'failed';
   return (
     <div

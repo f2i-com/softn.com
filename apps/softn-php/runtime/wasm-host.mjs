@@ -23,12 +23,30 @@ softn.time.format=function(t,z){return __softnCall('time.format',[t,z]);};
 softn.time.age=function(d,z){return __softnCall('time.age',[d,z]);};
 `;
 
-export function createWasmHost(db,{key,cryptoDomains,development=false,source,steps=5_000_000,capabilities=[],appConfig={}}={}) {
+function initialize() {
   if(!initialized){
     initSync({module:readFileSync(new URL('./wasm/zipp_wasm_bg.wasm',import.meta.url))});
     if(!JSON.parse(zippProfile()).features.includes('safe-sandbox'))throw new Error('Sandbox profile missing');
     initialized=true;
   }
+}
+
+/** Compile declarations before a deployment's migrations touch its database. */
+export function validateWasmSource(source, appConfig = {}, development = false, routes = []) {
+  initialize();
+  const engine = new Engine();
+  try {
+    engine.setInstructionBudget(5_000_000);
+    // No host bridge: validation cannot perform database, filesystem or network IO.
+    engine.initScript(SHIM+'\nsoftn.config='+JSON.stringify({...appConfig,development})+';\n'+source);
+    for (const route of routes) {
+      if (!/^[$A-Z_a-z][$\w]*$/.test(route.handler) || engine.evalInContext('typeof '+route.handler+' === "function"') !== true) throw new Error('Missing route handler');
+    }
+  } finally { engine.free(); }
+}
+
+export function createWasmHost(db,{key,cryptoDomains,development=false,source,steps=5_000_000,capabilities=[],appConfig={},authorizeRecordEvent=()=>false}={}) {
+  initialize();
   const now=()=>Math.floor(Date.now()/1000);
   const services={crypto:createCrypto(key,cryptoDomains),time:{now,parseZoned,format:formatZoned,
     age:(birth,zone='UTC')=>{
@@ -39,7 +57,8 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
     }}};
   const tables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '\\_%' ESCAPE '\\'").all().map(r=>r.name));
   const functions=new Set(['count','coalesce','min','max','sum','avg','lower','upper','length','substr','replace','abs']);
-  function authorize(action,a,b,database) {
+  function authorize(action,a,b,database,source) {
+    if(authorizeRecordEvent(action,a,b,database,source))return constants.SQLITE_OK;
     if(database&&database!=='main')return constants.SQLITE_DENY;
     if(action===constants.SQLITE_SELECT)return constants.SQLITE_OK;
     if(action===constants.SQLITE_FUNCTION)return functions.has(String(b).toLowerCase())?constants.SQLITE_OK:constants.SQLITE_DENY;

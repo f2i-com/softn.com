@@ -1,3 +1,4 @@
+import { requestHostedSave } from '../../../../shared/hostedEditor';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { exportAsBundle } from '../../lib/exportBundle';
@@ -98,6 +99,7 @@ export function useProjectActions(): ProjectActions {
    */
   const handOff = useCallback(
     async (to: HandoffDestination) => {
+      if (requestHostedSave()) return;
       if (!hasFiles || refused || pending.current || activeScope.current !== scope) return;
       const request = {};
       pending.current = request;

@@ -75,31 +75,49 @@ export function createFormlogicProject(input: FormlogicProjectInput): FormlogicP
         ...(type === 'number' && Number.isFinite(field.properties?.max) ? { max: field.properties!.max } : {}),
       }];
     });
-    if (!fields.length) { warnings.push(`${form.title}: no supported input fields to export.`); return []; }
+    if (!fields.length && form.fields.length) { warnings.push(`${form.title}: no supported input fields to export.`); return []; }
     return [{ sourceFormId: form.id, collection: `fl_${token(form.id)}`, title: form.title, fields }];
   });
   if (!collections.length) throw new Error('No exportable forms. Add a plain form with supported fields first.');
-  const logic = 'let activeForm = 0;\n' + collections.map((form, index) => `let fields${index} = ${literal(form.fields)};`).join('\n');
-  const data = collections.map((form, index) => `  <collection name="${form.collection}" as="records${index}" />`).join('\n');
+  // Stable names keep a form's code identical in standalone and multi-form apps.
+  // The source composer combines component logic into one scope.
+  const modules = collections.map(form => ({
+    ...form, component: `Form${token(form.sourceFormId)}`,
+    ui: `ui/forms/${token(form.sourceFormId)}.ui`, logic: `logic/forms/${token(form.sourceFormId)}.logic`,
+    fieldsName: `fields_${token(form.sourceFormId)}`, recordsName: `records_${token(form.sourceFormId)}`,
+  }));
+  const moduleFiles: Record<string, string> = {};
+  for (const form of modules) {
+    moduleFiles[form.logic] = `let ${form.fieldsName} = ${literal(form.fields)};`;
+    moduleFiles[form.ui] = `<logic src="../../${form.logic}" />
+<Box style={{minWidth:"0"}}>
+  <Heading level={2} style={{marginBottom:"20px",overflowWrap:"anywhere"}}>{${literal(form.title)}}</Heading>
+${form.fields.length ? `  #if (${form.fieldsName})
+  <SmartForm collection="${form.collection}" fields={${form.fieldsName}} submitText="Add record" />
+  #end
+  <Heading level={3} style={{marginTop:"28px",marginBottom:"12px"}}>Saved records</Heading>
+  <Box style={{overflowX:"auto",maxWidth:"100%"}}><SmartGrid data={${form.recordsName}} columns={${literal(form.fields.map(field => field.name).join(","))}} columnLabels={${literal(Object.fromEntries(form.fields.map(field => [field.name, field.label])))}} searchable sortable pageable pageSize={10} /></Box>` : `  <Text>Add fields to this screen in the app editor to start collecting records.</Text>`}
+</Box>`;
+  }
+  const logic = 'let activeForm = 0;';
+  const data = modules.map(form => `  <collection name="${form.collection}" as="${form.recordsName}" />`).join('\n');
+  const imports = modules.map(form => `<import ${form.component} from="./forms/${token(form.sourceFormId)}.ui" />`).join('\n');
   const navigation = collections.length > 1 ? `<nav className="fl-navigation" aria-label="Forms">${collections.map((form, index) => `<button type="button" aria-pressed={activeForm === ${index}} @click={() => activeForm = ${index}} title={${literal(form.title)}}>{${literal(form.title)}}</button>`).join('\n')}</nav>` : '';
-  const screens = collections.map((form, index) => `
+  const screens = modules.map((form, index) => `
     <Box className="fl-section" style={{borderRadius:"16px",display:activeForm === ${index} ? "block" : "none"}}>
-      <Heading level={2} style={{marginBottom:"20px",overflowWrap:"anywhere"}}>{${literal(form.title)}}</Heading>
-      #if (fields${index})
-      <SmartForm collection="${form.collection}" fields={fields${index}} submitText="Add record" />
-      #end
-      <Heading level={3} style={{marginTop:"28px",marginBottom:"12px"}}>Saved records</Heading>
-      <Box style={{overflowX:"auto",maxWidth:"100%"}}><SmartGrid data={records${index}} columns={${literal(form.fields.map(field => field.name).join(","))}} columnLabels={${literal(Object.fromEntries(form.fields.map(field => [field.name, field.label])))}} searchable sortable pageable pageSize={10} /></Box>
+      <${form.component} />
     </Box>`).join('\n');
   const manifest = { id: `formlogic_${token(origin.origin + '/' + (input.sourceKind ?? 'app') + '/' + input.app.id)}`, name: input.app.name,
     description: input.app.description ?? '', version: '1.0.0', main: 'ui/main.ui',
-    files: { ui: ['ui/main.ui'], logic: ['logic/main.logic'], xdb: [], assets: [] },
+    files: { ui: ['ui/main.ui', ...modules.map(form => form.ui)], logic: ['logic/main.logic', ...modules.map(form => form.logic)], xdb: [], assets: [] },
     config: { theme: { mode: 'system' } } };
   const files = {
+    ...moduleFiles,
     'manifest.json': json(manifest),
     'permission.json': json({ permissions: {} }),
     'logic/main.logic': logic,
-    'ui/main.ui': `<logic src="../logic/main.logic" />
+    'ui/main.ui': `${imports}
+<logic src="../logic/main.logic" />
 <data>\n${data}\n</data>
 <style>
 .fl-workspace { width:100%; max-width:1120px; margin:auto; padding:clamp(12px,4vw,40px); padding-bottom:max(24px,env(safe-area-inset-bottom)); box-sizing:border-box; }
@@ -121,7 +139,8 @@ ${screens}
 </Box></App>`,
     'formlogic.connection.json': json({ schema: 'formlogic.softn/v1', source: { origin: origin.origin, kind: input.sourceKind ?? 'app', ...(input.sourceKind === 'form' ? { formId: input.app.id } : { appId: input.app.id }) },
       storage: 'local-xdb', sync: false, collections: collections.map(form => ({ formId: form.sourceFormId, collection: form.collection, fieldIds: form.fields.map(field => field.name) })) }),
-    'README.md': `# ${input.app.name} — SoftN starter\n\nOpen this .softn file in the SoftN builder or web runtime. The generated SmartForm and SmartGrid screens use isolated local XDB storage (localStorage in the browser; SQLite in the desktop host).\n\nNo existing FormLogic responses, account credentials, encrypted forms, automations or role grants are included. This is an independent starter, not a live mirror. Source form identities are recorded in formlogic.connection.json for an explicit future bridge.\n\nFor shared server SQLite, deploy a separate private server API v1 bundle with per-app registration, migrations and authorization. See softn.com/docs/SINGLE_APP_PHP_SERVE.md and apps/softn-rust/PRIVATE_BACKEND.md in the source repository. Do not put private server code, tokens or databases in this client archive.\n\n## Conversion notes\n${warnings.length ? warnings.map(w => '- ' + w).join('\n') : 'Supported input fields were converted. Review validation and access requirements before publishing.'}\n`,
+    'formlogic.modules.json': json({ version: 1, modules: modules.map(form => ({ formId: form.sourceFormId, component: form.component, ui: form.ui, logic: form.logic, collection: form.collection, records: form.recordsName })) }),
+    'README.md': `# ${input.app.name} — SoftN starter\n\nOpen this .softn file in the SoftN builder or web runtime. The generated SmartForm and SmartGrid screens use isolated local XDB storage (localStorage in the browser; SQLite in the desktop host).\n\nNo existing FormLogic responses, account credentials, encrypted forms, automations or role grants are included. This is an independent starter, not a live mirror. Source form identities are recorded in formlogic.connection.json for an explicit future bridge.\n\nFor shared server SQLite, deploy a separate private server API v1 bundle with per-app registration, migrations and authorization. See softn.com/docs/SINGLE_APP_PHP_SERVE.md and apps/softn-rust/PRIVATE_BACKEND.md in the source repository. Do not put private server code, tokens or databases in this client archive.\n\n## Editable form modules\nEach form has its own ui/forms/<identity>.ui screen and logic/forms/<identity>.logic field definitions. The main screen imports these modules, declares their collections, and provides navigation. A blank form is a real empty screen; no sample fields are added.\n\n## Combine forms into one app\nIn FormLogic, add your forms to an app, open App Studio, and choose Create app project. Select the forms to include and download one .softn project with navigation between them.\n\nTo reuse a customised module in another SoftN app, copy its UI and logic files without renaming them, add both paths to manifest.json, then import its component in your main UI. Add its collection and records alias to the main data block; formlogic.modules.json lists the exact names. Render the component wherever you want it. Keep existing customised files when an identical form identity is already present. Re-exporting from FormLogic generates a fresh copy and does not merge changes made in the external editor.\n\n## Conversion notes\n${warnings.length ? warnings.map(w => '- ' + w).join('\n') : 'Supported input fields were converted. Review validation and access requirements before publishing.'}\n`,
   };
   if (JSON.stringify(files).length > 2_000_000) throw new Error('The generated starter exceeds 2 MB. Export fewer fields.');
   return { files, warnings, formCount: collections.length, fieldCount: collections.reduce((sum, form) => sum + form.fields.length, 0) };

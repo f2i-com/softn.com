@@ -24,7 +24,7 @@ export default defineConfig({
       // updates, so the PWA exists only for the web build. Disabling the plugin
       // rather than dropping it keeps `virtual:pwa-register/react` resolvable,
       // which the Tauri build still has to compile.
-      disable: isTauri,
+      disable: isTauri || env.VITE_FORMLOGIC_EDITOR === '1',
       // 'prompt' is what makes PwaUpdater's toast reachable: under 'autoUpdate'
       // the generated client only reloads on `activated` and never calls
       // onNeedRefresh, so a worker update would throw away the canvas mid-edit.

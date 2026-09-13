@@ -2,12 +2,16 @@ import {DatabaseSync} from 'node:sqlite';
 import {workerData} from 'node:worker_threads';
 import {readFileSync,lstatSync,realpathSync,chmodSync} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {fileURLToPath} from 'node:url';
-import {join,dirname} from 'node:path';
-import {createWasmHost} from './wasm-host.mjs';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+import {join,dirname,relative,isAbsolute} from 'node:path';
+import {createWasmHost,validateWasmSource} from './wasm-host.mjs';
 import {applyMigration} from './migrations.mjs';
+import {configureRecordEvents} from './record-events.mjs';
 import {invokeWithHook} from './request-hook.mjs';
-const root=dirname(fileURLToPath(import.meta.url));
+// The operator may select an isolated app installation while sharing the trusted
+// runtime and WASM. This value is never taken from guest code or request JSON.
+const root=realpathSync(process.env.SOFTN_BACKEND_ROOT || dirname(fileURLToPath(import.meta.url)));
+const contained=(parent,child)=>{const path=relative(parent,child);return path!==''&&!isAbsolute(path)&&path!=='..'&&!path.startsWith('..'+(process.platform==='win32'?'\\':'/'));};
 let db;
 // Static diagnostic labels identify the failed check without exposing values,
 // paths, SQL, provider responses, or exception messages to clients.
@@ -18,10 +22,10 @@ try {
   if(!/^[a-f0-9]{64}$/.test(config.keyHex)||typeof config.development!=='boolean')throw new Error('Invalid configuration');
   startupStage='bundle_directory';
   const bundle=realpathSync(join(root,'app'));
-  if(lstatSync(join(root,'app')).isSymbolicLink()||!bundle.startsWith(realpathSync(root)+'/'))throw new Error('Invalid bundle directory');
+  if(lstatSync(join(root,'app')).isSymbolicLink()||!contained(root,bundle))throw new Error('Invalid bundle directory');
   const inside=relative=>{
     if(typeof relative!=='string'||relative.startsWith('/')||relative.includes('\\')||relative.split('/').some(s=>s==='..'||s==='.'))throw new Error('Invalid bundle path');
-    const file=realpathSync(join(bundle,relative));if(!file.startsWith(bundle+'/'))throw new Error('Bundle path escaped');return file;
+    const file=realpathSync(join(bundle,relative));if(!contained(bundle,file))throw new Error('Bundle path escaped');return file;
   };
   startupStage='manifest_read';
   const manifest=JSON.parse(readFileSync(inside('manifest.json'),'utf8'));
@@ -39,9 +43,11 @@ try {
   if(routes.some(r=>r.upload!==undefined&&(r.upload!=='photo'||!required.capabilities.includes('photos')||r.method!=='POST')))throw new Error('Unsupported upload capability');
   if(new Set(routes.map(r=>r.method+' '+r.path)).size!==routes.length)throw new Error('Duplicate route');
   if(routes.some(r=>r.poll!==undefined&&(typeof r.poll!=='boolean'||r.poll&&(r.method!=='GET'||r.transaction!=='read'))))throw new Error('Invalid polling route');
+  startupStage='application_source';
+  validateWasmSource(readFileSync(inside(manifest.server.entry),'utf8'),manifest.config?.app||{},config.development,routes);
   startupStage='data_directory';
   const data=realpathSync(join(root,'private/data'));
-  if(lstatSync(join(root,'private/data')).isSymbolicLink()||!data.startsWith(realpathSync(join(root,'private'))+'/'))throw new Error('Invalid data path');
+  if(lstatSync(join(root,'private/data')).isSymbolicLink()||!contained(realpathSync(join(root,'private')),data))throw new Error('Invalid data path');
   startupStage='request_input';
   const input=workerData;if(typeof input!=='string'||Buffer.byteLength(input)>6_000_000)throw new Error('Input limit');
   const request=JSON.parse(input);
@@ -71,8 +77,11 @@ try {
     db.exec('COMMIT');
     if(count>120){process.stdout.write(JSON.stringify({status:429,body:{error:'Too many requests.'}}));process.exit(0);}
   } catch(e){try{db.exec('ROLLBACK');}catch{}throw e;}
+  startupStage='record_events';
+  const recordSubscriptions=config.enableHostContext===true?JSON.parse(process.env.SOFTN_RECORD_EVENTS||'[]'):[];
+  const authorizeRecordEvent=configureRecordEvents(db,recordSubscriptions);
   startupStage='wasm_initialization';
-  const host=createWasmHost(db,{key:Buffer.from(config.keyHex,'hex'),cryptoDomains:config.cryptoDomains,development:config.development,capabilities:required.capabilities,appConfig:manifest.config?.app||{},source:readFileSync(inside(manifest.server.entry),'utf8')});
+  const host=createWasmHost(db,{authorizeRecordEvent,key:Buffer.from(config.keyHex,'hex'),cryptoDomains:config.cryptoDomains,development:config.development,capabilities:required.capabilities,appConfig:manifest.config?.app||{},source:readFileSync(inside(manifest.server.entry),'utf8')});
   let result;
   const route=routes.find(r=>r.path===request.path&&r.method===request.method);
   if(request.path==='/api/meta'&&request.method==='GET')result={status:200,body:{development:config.development,photos:required.capabilities.includes('photos')&&request.photos===true,version:manifest.version,runtime:'zipp-wasm-on-demand',appId:manifest.id}};
@@ -81,12 +90,13 @@ try {
     if(!required.capabilities.includes('trusted-client-ip'))delete request.client_ip;
     if(route.upload!=='photo')delete request.upload;
     startupStage='request_integration';
-    result=await invokeWithHook({request,route,host,config,db,loadHook:()=>import('./operator/request.mjs')});
+    const hostContext=config.enableHostContext===true?JSON.parse(process.env.SOFTN_HOST_CONTEXT||'{}'):{};
+    result=await invokeWithHook({request,route,host,config,db,hostContext,loadHook:()=>import(pathToFileURL(join(root,'operator/request.mjs')).href)});
   }
   // Optional operator-installed adapter, never selected by a request or bundle.
   // This is trusted host code, not part of the WASM guest's authority.
   if(config.enableAfterRequestHook===true) {
-    try {const hook=await import('./operator/after-request.mjs');await hook.afterRequest({db,crypto:host.crypto,config});}catch{ /* Adapter owns durable retries. */ }
+    try {const hook=await import(pathToFileURL(join(root,'operator/after-request.mjs')).href);await hook.afterRequest({db,crypto:host.crypto,config});}catch{ /* Adapter owns durable retries. */ }
   }
   process.stdout.write(JSON.stringify(result));
 } catch {

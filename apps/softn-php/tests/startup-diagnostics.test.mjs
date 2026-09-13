@@ -11,6 +11,7 @@ test('startup failures expose only static labels and normal startup still succee
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   cpSync(input,root,{recursive:true});
   cpSync(new URL('../runtime/request-worker.mjs',import.meta.url),join(root,'request-worker.mjs'));
+  cpSync(new URL('../runtime/record-events.mjs',import.meta.url),join(root,'record-events.mjs'));
   const file=join(root,'private/config.json'),original=readFileSync(file,'utf8'),config=JSON.parse(original);
   const run=()=>{
     const r=spawnSync(join(root,'bin/node'),[join(root,'runner.mjs')],{input:JSON.stringify({path:'/api/meta',method:'GET',client_ip:'127.0.0.1'}),encoding:'utf8',timeout:25000});
