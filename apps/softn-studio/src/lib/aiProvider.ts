@@ -1,3 +1,4 @@
+import { isHostedEditor, requestHostedAI } from '../../../shared/hostedEditor';
 import type { ProviderConfig, ChatMessage } from '../types/studio';
 
 export interface AIRequest {
@@ -113,6 +114,14 @@ export async function sendAIRequest(
   provider: ProviderConfig,
   request: AIRequest,
 ): Promise<AIResponse> {
+  if (isHostedEditor() && provider.id === 'formlogic') {
+    try {
+      const content = await requestHostedAI([{ role: 'system', content: request.system }, ...request.messages.map(({ role, content }) => ({ role, content }))], request.signal);
+      return { content, status: content.trim() ? 'complete' : 'empty', stopReason: null, blocks: [{ type: 'text', text: content }], usage: { inputTokens: 0, outputTokens: 0 } };
+    } catch (error) {
+      throw new AIProviderError(request.signal?.aborted ? 'cancelled' : 'network', error instanceof Error ? error.message : 'FormLogic AI request failed.');
+    }
+  }
   const { type, apiKey, baseUrl, modelId } = provider;
   const model = request.modelOverride || modelId || DEFAULT_MODELS[type] || 'default';
   const maxTokens = request.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;

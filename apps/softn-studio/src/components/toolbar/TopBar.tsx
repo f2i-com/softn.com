@@ -1,3 +1,4 @@
+import { isHostedEditor } from '../../../../shared/hostedEditor';
 import React from 'react';
 import { Icon } from '../common/Icon';
 import { Mark } from '../common/Mark';
@@ -28,14 +29,14 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
   return (
     <div style={styles.bar}>
       <div style={styles.left}>
-        <button onClick={onBackToDashboard} style={styles.homeBtn} title="Back to home">
+        {!isHostedEditor() && <button onClick={onBackToDashboard} style={styles.homeBtn} title="Back to home">
           {/* The mark keeps its size when the bar gets tight; a bare <svg> in a
               flex row is shrinkable and squashes before the label wraps. */}
           <span style={styles.logo}><Mark size={26} radius={8} /></span>
           <span>Home</span>
-        </button>
+        </button>}
         <div style={styles.projectMeta}>
-          <span style={styles.projectEyebrow}>SoftN Studio</span>
+          <span style={styles.projectEyebrow}>{isHostedEditor() ? 'AI Studio' : 'SoftN Studio'}</span>
           <span style={styles.projectName}>{projectName || 'Untitled app'}</span>
         </div>
       </div>
@@ -47,7 +48,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
         <SaveStatusIndicator />
         {/* The theme switch is in the product bar above, shared with every
             other SoftN app; a second one here would be a second opinion. */}
-        <button
+        {!isHostedEditor() && <button
           onClick={actions.run}
           disabled={!actions.canRun}
           aria-busy={preparing === 'runtime'}
@@ -55,17 +56,17 @@ export const TopBar: React.FC<TopBarProps> = ({ onBackToDashboard }) => {
           title={actions.describe('runtime', 'Run: stage the bundle for the SoftN runtime')}
         >
           <Icon name="play" size={16} />
-          <span>{preparing === 'runtime' ? 'Preparing…' : 'Run'}</span>
-        </button>
+          <span>{preparing === 'runtime' ? 'Preparing…' : isHostedEditor() ? 'Return draft' : 'Run'}</span>
+        </button>}
         <button
           onClick={actions.publish}
           disabled={!actions.canPublish}
           aria-busy={preparing === 'publish'}
           style={goStyle(hasFiles && !refused)}
-          title={actions.describe('publish', 'Publish: stage the bundle for the directory’s publish page')}
+          title={actions.describe('publish', isHostedEditor() ? 'Return your changes to FormLogic for review' : 'Publish: stage the bundle for the directory’s publish page')}
         >
           <Icon name="upload" size={16} />
-          <span>{preparing === 'publish' ? 'Preparing…' : 'Publish'}</span>
+          <span>{preparing === 'publish' ? 'Preparing…' : isHostedEditor() ? 'Review changes' : 'Publish'}</span>
         </button>
         <button
           onClick={actions.exportBundle}

@@ -26,7 +26,8 @@ import {
 import { validateProject } from './lib/validator';
 import { openExampleInStores } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
-import { exportAsBundle } from './lib/exportBundle';
+import { exportAsBundle, buildBundle } from './lib/exportBundle';
+import { connectHostedEditor, isHostedEditor } from '../../shared/hostedEditor';
 import {
   listProjectSummaries,
   loadProjectRecord,
@@ -384,6 +385,14 @@ const App: React.FC = () => {
 
   const handleImportProjectRef = useRef(handleImportProject);
   handleImportProjectRef.current = handleImportProject;
+  useEffect(() => connectHostedEditor({
+    open: async (bytes, name) => {
+      const result = await handleImportProjectRef.current(new File([new Uint8Array(bytes)], `${name}.softn`, { type: 'application/zip' }));
+      if (!result.ok) throw new Error(result.message);
+      useAIStore.setState({ providers: [{ id: 'formlogic', type: 'custom', name: 'FormLogic AI', apiKey: '', modelId: 'FormLogic default' }], activeProviderId: 'formlogic', modelProfile: { architect: 'FormLogic default', builder: 'FormLogic default', repair: 'FormLogic default', vision: 'FormLogic default' } });
+    },
+    export: () => buildBundle(useVFSStore.getState().getSnapshot()),
+  }), []);
 
   /**
    * Boot, in one sequence so the order is the same every time:
@@ -404,6 +413,7 @@ const App: React.FC = () => {
    */
   useEffect(() => {
     let cancelled = false;
+    if (isHostedEditor()) { setIsHydrated(true); return () => { releaseWorkspace(); abortAgentTurn(); }; }
     if (openLinkRef.current === undefined) {
       openLinkRef.current = readOpenLink(window.location.search, window.location.origin);
       if (openLinkRef.current) {
@@ -447,7 +457,7 @@ const App: React.FC = () => {
   // page flushes what is pending so the last checkpoint is not lost to the
   // debounce.
   useEffect(() => {
-    if (!isHydrated) return;
+    if (!isHydrated || isHostedEditor()) return;
     const controller = startProjectAutosave();
     autosaveRef.current = controller;
     const flush = () => void controller.flush();
@@ -537,7 +547,7 @@ const App: React.FC = () => {
 
   // The same bar as the site, the runtime and Builder, over every view: the
   // way between them.
-  const bar = <ProductBar current="studio" />;
+  const bar = isHostedEditor() ? null : <ProductBar current="studio" />;
 
   // Nothing is decided until the stored project has been read: showing the
   // dashboard for a moment and then the editor would be a flash of the
@@ -605,14 +615,14 @@ const App: React.FC = () => {
         {/* Compact mobile top bar */}
         <div style={styles.mobileTopBar}>
           <div style={styles.mobileTopLeft}>
-            <button
+            {!isHostedEditor() && <button
               onClick={handleBackToDashboard}
               style={styles.mobileBackBtn}
               title="Back to home"
               aria-label="Back to home"
             >
               <Icon name="chevron-left" size={20} />
-            </button>
+            </button>}
             <span style={styles.mobileProjectName}>{projectName || 'SoftN Studio'}</span>
           </div>
           <div style={styles.mobileTopRight}>

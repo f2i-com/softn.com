@@ -12,6 +12,7 @@ export default defineConfig({
     react(),
     coreWorkerAssetPlugin(),
     VitePWA({
+      disable: env.VITE_FORMLOGIC_EDITOR === '1',
       registerType: 'autoUpdate',
       // PWAPrompt registers the worker itself, so the plugin must not also
       // inject a registration script. Turning it off additionally keeps

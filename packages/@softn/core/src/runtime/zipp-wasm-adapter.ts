@@ -745,9 +745,15 @@ export class ZippWasmAdapter {
     this._disposed = true;
     this._initialized = false;
     try {
-      this.wasm.free();
+      try {
+        // Explicit teardown records the dynamic definitions retained by the
+        // shared WASM instance. free() alone drops the VM but skips that account.
+        this.wasm.dispose();
+      } finally {
+        this.wasm.free();
+      }
     } catch {
-      // Already freed — nothing to release.
+      // Cleanup must remain safe after a prior teardown or a WASM trap.
     }
   }
 }

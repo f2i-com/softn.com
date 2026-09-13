@@ -24,7 +24,7 @@ import { useProjectStore } from './stores/projectStore';
 import { useHistoryStore } from './stores/historyStore';
 import { useSchemaStore } from './stores/schemaStore';
 import { useFilesStore } from './stores/filesStore';
-import { openBundleFile } from './utils/bundleLoader';
+import { openBundleFile, loadBundle } from './utils/bundleLoader';
 import {
   commitProjectSnapshot,
   openRemoteBundle,
@@ -45,7 +45,8 @@ import { useProjectStartup } from './hooks/useProjectStartup';
 import { useUnsavedChanges } from './hooks/useUnsavedChanges';
 import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
-import { flushCanvasToActiveFile } from './utils/buildProjectBundle';
+import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
+import { connectHostedEditor, isHostedEditor, requestHostedSave } from '../../shared/hostedEditor';
 
 const styles: Record<string, React.CSSProperties> = {
   app: {
@@ -523,6 +524,10 @@ function App() {
    */
   const applySnapshotRef = useRef(applySnapshot);
   applySnapshotRef.current = applySnapshot;
+  useEffect(() => connectHostedEditor({
+    open: async bytes => applySnapshotRef.current(prepareProjectSnapshot(await loadBundle(bytes))),
+    export: buildProjectBundle,
+  }), []);
   useProjectStartup((action) => {
     if (action.kind === 'nothing') return;
     if (action.kind === 'refused-link') {
@@ -572,6 +577,7 @@ function App() {
   });
 
   const saveCurrentProject = useCallback(async () => {
+    if (requestHostedSave()) return;
     const outcome = await saveProject({ view, existingHandle: fileHandleRef.current });
     if (outcome.kind === 'cancelled') return;
     if (outcome.kind === 'failed') {
@@ -877,9 +883,9 @@ function App() {
           Tab and a screen reader cannot reach the page under it. */}
       <div ref={shellRef} style={styles.app}>
         {/* The same bar as the site, the runtime and Studio: the way between them. */}
-        <ProductBar current="builder" urls={PRODUCT_URLS} onNavigate={isDesktop() ? (href) => {
+        {!isHostedEditor() && <ProductBar current="builder" urls={PRODUCT_URLS} onNavigate={isDesktop() ? (href) => {
           void openCompanionUrl(href).catch(() => toast.error('Could not open the Softn website.'));
-        } : undefined} />
+        } : undefined} />}
         <Toolbar
           view={view}
           onViewChange={changeView}

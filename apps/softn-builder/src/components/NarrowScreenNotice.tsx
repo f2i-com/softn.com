@@ -1,3 +1,4 @@
+import { isHostedEditor } from '../../../shared/hostedEditor';
 import React from 'react';
 
 /** Keep the document reachable on a phone while full editing uses the wider layout. */
@@ -25,11 +26,11 @@ export function NarrowScreenNotice({ studioUrl, runtimeUrl, projectName, isDirty
             <button type="button" onClick={onOpen} style={s.action}>Open app</button>
           </div>
         </div>
-        <p style={s.copy}>Use Studio to create with AI, or open an exported app in the runtime:</p>
-        <div style={s.actions}>
+        <p style={s.copy}>{isHostedEditor() ? "Review changes to return to FormLogic, then choose Open AI Studio to keep editing on your phone." : "Use Studio to create with AI, or open an exported app in the runtime:"}</p>
+        {!isHostedEditor() && <div style={s.actions}>
           <a href={studioUrl} style={{ ...s.action, ...s.primary }}>Open Studio</a>
           <a href={runtimeUrl} style={s.action}>Open the runtime</a>
-        </div>
+        </div>}
       </div>
     </div>
   );
