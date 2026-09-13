@@ -391,7 +391,10 @@ const App: React.FC = () => {
       if (!result.ok) throw new Error(result.message);
       useAIStore.setState({ providers: [{ id: 'formlogic', type: 'custom', name: 'FormLogic AI', apiKey: '', modelId: 'FormLogic default' }], activeProviderId: 'formlogic', modelProfile: { architect: 'FormLogic default', builder: 'FormLogic default', repair: 'FormLogic default', vision: 'FormLogic default' } });
     },
-    export: () => buildBundle(useVFSStore.getState().getSnapshot()),
+    export: () => {
+      if (useAIStore.getState().agentState === 'building') throw new Error('Wait for the AI to finish, or stop generating before reviewing changes.');
+      return buildBundle(useVFSStore.getState().getSnapshot());
+    },
   }), []);
 
   /**
