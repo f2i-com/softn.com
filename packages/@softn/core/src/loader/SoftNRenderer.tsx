@@ -1091,6 +1091,17 @@ export function SoftNRenderer({
           } else if (effectiveMode === 'worker') {
             // Same as hybrid: use main-thread VM for all calls. The WASM engine
             // is fast enough to run everything on the main thread without blocking UI.
+            //
+            // Lifetime boundary (audit ZP-01): the main thread has NO wall-clock
+            // supervisor. The instruction budget is the only interruption, so a
+            // native call that never returns wedges the tab, and the shared WASM
+            // instance lives for the page (dynamic definitions it retains are
+            // reclaimed only by a reload). Hosts that must run untrusted or
+            // long-running code choose forceWorker, where the Worker is
+            // terminated on the hard deadline and recycled on app switch.
+            if (typeof console !== 'undefined') {
+              console.warn('[SoftN] scriptExecutionMode="worker" without forceWorker runs scripts on the main thread: no wall-clock interruption and no instance recycling. Set forceWorker for untrusted or long-running code.');
+            }
             const mainRuntime = createScriptRuntime(
               formLogicContext,
               runtimePermissions,
