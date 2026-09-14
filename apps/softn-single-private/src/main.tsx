@@ -1,9 +1,9 @@
 import { createRoot } from 'react-dom/client';
 import { registerRuntimeComponents } from '@softn/components/lazy';
-import { Failure } from '../../softn-single/src/SingleApp';
+import { Failure } from '@softn/single-shell';
 import { readBoot } from './boot';
 import { ServedApp } from './ServedApp';
-import '../../softn-single/src/style.css';
+import '@softn/single-shell/style.css';
 // The same registration as softn-single: the minimal set eagerly, every other
 // built-in as a loader the registry runs when a document first needs it.
 registerRuntimeComponents();

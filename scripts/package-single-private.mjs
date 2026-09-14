@@ -1,15 +1,16 @@
-// release/softn-single-php-serve-vVERSION.zip: the built webroot/ and
-// private/ of apps/softn-single-php-serve with the licences, the third-party
-// inventory and the deployment guide beside them. Every entry is verified
-// against its input bytes before the archive is written.
+// release/softn-app-private-vVERSION.zip: the built webroot/ and
+// private/ of apps/softn-single-private with the licences, the third-party
+// inventory, the deployment guide and the plain-language README.md beside
+// them. Written and verified through scripts/lib/archive.mjs like every
+// release archive.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { zipSync, unzipSync } from 'fflate';
+import { FRONT_DOOR, startHere } from './release-explainers.mjs';
+import { writeArchive } from './lib/archive.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const dist = path.join(root, 'apps/softn-single-php-serve/dist');
+const dist = path.join(root, 'apps/softn-single-private/dist');
 for (const name of [
   'webroot/index.php',
   'webroot/softn-serve.php',
@@ -28,7 +29,10 @@ execFileSync(
 );
 for (const name of ['LICENSE', 'NOTICE'])
   fs.copyFileSync(path.join(root, name), path.join(dist, name));
-fs.copyFileSync(path.join(root, 'docs/engineering/SINGLE_APP_PHP_SERVE.md'), path.join(dist, 'DEPLOYMENT.md'));
+fs.copyFileSync(path.join(root, 'docs/engineering/SINGLE_APP_PRIVATE.md'), path.join(dist, 'DEPLOYMENT.md'));
+const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+// The plain-language explainer, first thing in the archive; DEPLOYMENT.md is the detailed guide it points to.
+fs.writeFileSync(path.join(dist, FRONT_DOOR), startHere('private', { tag: 'v' + version }));
 const entries = {};
 function collect(dir, relative = '') {
   for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -43,21 +47,8 @@ function collect(dir, relative = '') {
   }
 }
 collect(dist);
-const bytes = zipSync(entries, { level: 9 });
-const decoded = unzipSync(bytes);
-for (const [name, data] of Object.entries(entries))
-  if (!Buffer.from(decoded[name]).equals(data)) throw Error('Archive verification failed: ' + name);
-const output = path.join(
-  root,
-  'release',
-  'softn-single-php-serve-v' +
-    JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version +
-    '.zip'
-);
-fs.mkdirSync(path.dirname(output), { recursive: true });
-fs.writeFileSync(output, bytes);
-const sha = createHash('sha256').update(bytes).digest('hex');
-fs.writeFileSync(output + '.sha256', sha + '  ' + path.basename(output) + '\n');
+const output = path.join(root, 'release', 'softn-app-private-v' + version + '.zip');
+const result = writeArchive(entries, output);
 console.log(
-  output + '\n' + bytes.length + ' bytes; ' + Object.keys(entries).length + ' files; SHA-256 ' + sha
+  output + '\n' + result.size + ' bytes; ' + result.entries.length + ' files; SHA-256 ' + result.sha256
 );

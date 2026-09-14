@@ -36,6 +36,12 @@ ini_set('memory_limit', '256M');
 set_time_limit(60);
 header('X-Content-Type-Options: nosniff');
 header('Referrer-Policy: strict-origin-when-cross-origin');
+// The same cross-origin isolation softn.com sends (SharedArrayBuffer for the
+// CPU language-model provider); credentialless keeps cross-origin images and
+// model files working. Set here as well as in .htaccess so a host that reads
+// no .htaccess (nginx, the PHP development server) serves the app the same.
+header('Cross-Origin-Opener-Policy: same-origin');
+header('Cross-Origin-Embedder-Policy: credentialless');
 
 const SOFTN_COOKIE = 'softn_viewer';
 /** Mirrors the per-entry bound of the core archive reader. */

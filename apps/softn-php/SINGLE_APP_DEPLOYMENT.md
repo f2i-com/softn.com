@@ -9,7 +9,7 @@ Upload the contents of webroot/ into your public website folder. Replace app.sof
 and runtime.config.json with your own public app and configuration. You can omit
 api.php and the entire backend/ folder if your app needs no server. No PHP or Node
 process is used by the browser-only counter example. For a smaller download use
-softn-single-vVERSION.zip, the separate static-only distribution.
+softn-app-static-vVERSION.zip, the separate static-only distribution.
 
 ## Enable a private application backend
 

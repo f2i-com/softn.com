@@ -1,6 +1,6 @@
 # Single-app PHP host: serving an application without publishing its archive
 
-`apps/softn-single-php-serve` hosts one `.softn` application from a PHP web
+`apps/softn-single-private` hosts one `.softn` application from a PHP web
 server. The archive stays in a private directory the web server never
 serves. Visitors receive a page rendered by PHP, then the runtime fetches
 what the application needs to run — its UI and logic text in one request,
@@ -22,6 +22,12 @@ What differs is delivery.
 | `index.php?entry=PATH`   | One binary entry with its MIME type, an ETag, a private cache policy and byte ranges, so `<video>` and `<audio>` can seek.                                                     |
 | `index.php?icon`         | The manifest icon, for the favicon.                                                                                                                                           |
 | `index.php?manifest`     | The web app manifest for installation, built from the deployment settings; no cookie needed.                                                                                  |
+
+Every page and asset the shell serves carries `Cross-Origin-Opener-Policy:
+same-origin` and `Cross-Origin-Embedder-Policy: credentialless`, set by
+`softn-serve.php` itself and repeated in both `.htaccess` variants, so the
+app is as cross-origin isolated here as on softn.com (`SharedArrayBuffer`
+for the CPU language-model provider). Nothing to configure on nginx.
 
 The manifest is never sent raw: `config.server`, with any token in it, and
 every field the runtime does not read are dropped. Entries listed under
@@ -59,16 +65,16 @@ rules target; other servers need the equivalent (index.php as the directory
 index, `.wasm` as `application/wasm`, `.mjs` as JavaScript, and nothing under
 `private/` reachable).
 
-From the repository, with the CI toolchain (Node 20.19+ with npm 10):
+From the repository, with the CI toolchain (Node 24.19+ with npm 10):
 
 ```
 npm ci
 npm run build:packages
-npm run build -w @softn/single-php-serve
-npm run package:single-php-serve
+npm run build -w @softn/single-private
+npm run package:single-private
 ```
 
-`release/softn-single-php-serve-vVERSION.zip` holds two folders:
+`release/softn-app-private-vVERSION.zip` holds two folders:
 
 - `webroot/` — `index.php`, `softn-serve.php`, `.htaccess` and the runtime's
   `assets/`. Upload its **contents** to the public directory the application
@@ -136,18 +142,19 @@ The service worker caches only the runtime's hashed `assets/`, the icons and the
 ## With the optional backend
 
 `npm run package:private-single-php` produces
-`release/softn-private-single-php-linux-x64-vVERSION.zip`: the same `webroot/`
+`release/softn-app-private-with-backend-linux-x64-vVERSION.zip`: the same `webroot/`
 and `private/` with `api.php` and a `.htaccess` that also routes `/api/...`,
 plus the `backend/` folder of the static variant's backend archive (bundled
 Linux x64 Node, SQLite and ZIPP WASM). The application is served privately
-with or without the backend; enabling it follows the included START-HERE.md,
-which is [apps/softn-single-php-serve/PRIVATE_DEPLOYMENT.md](../apps/softn-single-php-serve/PRIVATE_DEPLOYMENT.md).
+with or without the backend; enabling it follows the included DEPLOYMENT.md,
+which is [apps/softn-single-private/PRIVATE_DEPLOYMENT.md](../apps/softn-single-private/PRIVATE_DEPLOYMENT.md)
+(README.md beside it is the short explainer every release archive carries).
 CI verifies that archive with the backend checks and an Apache smoke test
 that also loads the served page, the pack and the refusals.
 
 ## Local preview
 
-`npm run preview -w @softn/single-php-serve` serves `dist/webroot` with PHP's
+`npm run preview -w @softn/single-private` serves `dist/webroot` with PHP's
 built-in server on port 1456 (`PORT` and `PHP` override). `npm run dev`
 builds first. Under the built-in server `.htaccess` is not read, so it stands
 in for Apache's PHP handling only; the host itself answers 404 for any path
@@ -155,7 +162,7 @@ that is not its own, which is why `/app.softn` is not found there either.
 
 ## Tests
 
-`npm test -w @softn/single-php-serve` covers the boot configuration, the
+`npm test -w @softn/single-private` covers the boot configuration, the
 asset resolver's same-origin URLs and `pathOf`, the pack parser and loader,
 the shell template, and the equality of the PHP extension table with
 `@softn/core`'s registry. With `php` on PATH it also starts the built-in

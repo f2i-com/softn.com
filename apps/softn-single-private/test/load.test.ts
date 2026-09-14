@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-vi.mock('../../softn-web/src/lib/bundleProcessor', async (importOriginal) => ({
+vi.mock('@softn/web/src/lib/bundleProcessor', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   loadXDBData: vi.fn(async () => {}),
 }));

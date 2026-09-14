@@ -1,12 +1,11 @@
+import { normalizeManifest } from '@softn/core';
 import {
-  processBundle,
-  loadXDBData,
-  extractPermissions,
+  assembleApplication,
+  fetchBytes,
+  localUrl,
   type BundleManifest,
-} from '../../softn-web/src/lib/bundleProcessor';
-import { ManifestError, normalizeManifest } from '@softn/core';
-import { digest, fetchBytes, localUrl, parsePermissions } from '../../softn-single/src/config';
-import type { RunnableApplication } from '../../softn-single/src/SingleApp';
+  type RunnableApplication,
+} from '@softn/single-shell';
 import { createServedAssetResolver } from './assets';
 
 /**
@@ -113,13 +112,13 @@ export function parsePack(input: unknown): SourcePack {
 }
 
 /**
- * Load the app the endpoint serves. The steps are those of
- * apps/softn-single/src/load.ts with the archive replaced by the pack: the
- * same composer, the same XDB seeding, the same permission precedence
+ * Load the app the endpoint serves. The steps are those of the shell's
+ * archive loader with the archive replaced by the pack — the same
+ * `assembleApplication`: composer, XDB seeding, permission precedence
  * (operator sidecar, then the bundle's permission.json, then its legacy
- * manifest declaration, then nothing) and the same consent key shape, so a
- * visitor's grant is scoped to this endpoint, these exact bundle bytes and
- * this declaration.
+ * manifest declaration, then nothing) and consent key shape, so a visitor's
+ * grant is scoped to this endpoint, these exact bundle bytes and this
+ * declaration.
  */
 export async function loadServedApplication(
   endpoint: string,
@@ -131,29 +130,16 @@ export async function loadServedApplication(
   const bytes = await fetchBytes(url.href + '?source', signal, MAX_PACK_BYTES);
   const pack = parsePack(JSON.parse(new TextDecoder().decode(bytes)));
   const textFiles = new Map(Object.entries(pack.text));
-  let raw: BundleManifest;
-  try {
-    raw = normalizeManifest<BundleManifest>(pack.manifest, (path) => textFiles.has(path));
-  } catch (e) {
-    throw Error(`Invalid application manifest: ${e instanceof ManifestError ? e.message : String(e)}`);
-  }
-
-  const declared =
-    pack.declared !== null
-      ? parsePermissions(pack.declared)
-      : textFiles.has('permission.json')
-        ? parsePermissions(JSON.parse(textFiles.get('permission.json')!))
-        : parsePermissions(extractPermissions(textFiles, raw) ?? { permissions: {} });
-
-  const source = processBundle(textFiles, raw);
-  const appId = 'served:' + url.pathname + ':' + pack.id;
-  await loadXDBData(textFiles, raw, appId);
-  signal.throwIfAborted();
-  const grantKey =
-    'single-grant:' +
-    (await digest(new TextEncoder().encode(url.href + pack.digest + JSON.stringify(declared))));
-  signal.throwIfAborted();
-  const execution: 'worker' | 'main' = raw.config?.execution === 'worker' ? 'worker' : 'main';
+  const { raw: _manifest, ...app } = await assembleApplication({
+    textFiles,
+    // Shape was checked in parsePack; this is the read that decides whether
+    // it can run, the same one the archive loader makes.
+    readManifest: () => normalizeManifest<BundleManifest>(pack.manifest, (path) => textFiles.has(path)),
+    sidecar: pack.declared !== null ? () => Promise.resolve(pack.declared) : undefined,
+    appId: 'served:' + url.pathname + ':' + pack.id,
+    grantScope: url.href + pack.digest,
+    signal,
+  });
   const assets = createServedAssetResolver(
     url.pathname,
     new Set(Object.keys(pack.entries)),
@@ -166,12 +152,7 @@ export async function loadServedApplication(
       loadingText: pack.loadingText,
       permissionMode: pack.permissionMode,
     },
-    declared,
-    grantKey,
-    appId,
-    textFiles,
-    execution,
-    ...source,
+    ...app,
     assets,
     pack,
   };

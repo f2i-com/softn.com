@@ -123,7 +123,7 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     root = mkdtempSync(join(tmpdir(), 'softn-serve-'));
     mkdirSync(join(root, 'webroot'));
     mkdirSync(join(root, 'private'));
-    const pub = fileURLToPath(new URL('../public/', import.meta.url));
+    const pub = fileURLToPath(new URL('../php/', import.meta.url));
     for (const name of ['index.php', 'softn-serve.php'])
       cpSync(join(pub, name), join(root, 'webroot', name));
     writeFileSync(join(root, 'private/app.softn'), bundle);

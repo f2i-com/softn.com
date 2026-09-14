@@ -14,6 +14,11 @@ const built = path.join(webroot, 'index.html');
 if (!fs.existsSync(built)) throw Error('Run vite build first.');
 fs.mkdirSync(priv, { recursive: true });
 
+// The PHP host itself. It lives in php/, not public/, so the folder says
+// what it is; the build copies it into the webroot beside the assets.
+for (const name of ['index.php', 'softn-serve.php'])
+  fs.copyFileSync(path.join(app, 'php', name), path.join(webroot, name));
+
 fs.writeFileSync(
   path.join(priv, 'shell.html'),
   shellTemplate(assetTags(fs.readFileSync(built, 'utf8')))
@@ -29,5 +34,5 @@ if (!fs.existsSync(path.join(priv, 'serve.config.php')))
   fs.writeFileSync(path.join(priv, 'serve.config.php'), sampleConfig);
 for (const name of ['index.php', 'softn-serve.php', '.htaccess'])
   if (!fs.existsSync(path.join(webroot, name)))
-    throw Error('Missing ' + name + ' in dist/webroot; check public/.');
+    throw Error('Missing ' + name + ' in dist/webroot; check php/ and public/.');
 console.log('dist/webroot and dist/private assembled');

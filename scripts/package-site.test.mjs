@@ -17,7 +17,8 @@ test('hosting ZIP deflates valid raw WASM, preserves compressed twins and restor
   try {
     const scripts=path.join(root,'scripts'),dist=path.join(root,'dist');
     fs.mkdirSync(scripts);fs.mkdirSync(path.join(dist,'data'),{recursive:true});
-    fs.copyFileSync(new URL('./package-site.mjs',import.meta.url),path.join(scripts,'package-site.mjs'));
+    fs.mkdirSync(path.join(scripts,'lib'));
+    for(const name of ['package-site.mjs','release-packages.mjs','release-explainers.mjs','lib/archive.mjs'])fs.copyFileSync(new URL('./'+name,import.meta.url),path.join(scripts,name));
     const payload=Buffer.concat([Buffer.from([7]),Buffer.from('fixture'),Buffer.alloc(65536)]);
     const wasm=Buffer.concat([Buffer.from([0,97,115,109,1,0,0,0,0]),leb(payload.length),payload]);
     assert.doesNotThrow(()=>new WebAssembly.Module(wasm));
@@ -34,6 +35,9 @@ test('hosting ZIP deflates valid raw WASM, preserves compressed twins and restor
     for(const [name,bytes] of Object.entries(files))fs.writeFileSync(path.join(dist,name),bytes);
     const out=path.join(root,'release');
     execFileSync(process.execPath,[path.join(scripts,'package-site.mjs'),'--tag','v0.0.0-test','--out',out],{stdio:'pipe'});
+    // The packager writes the explainer into dist/ before packaging; the archive must carry it too.
+    files['README.md']=fs.readFileSync(path.join(dist,'README.md'));
+    assert.ok(files['README.md'].toString().startsWith('# Start here: The complete softn.com website'));
     const zip=fs.readFileSync(path.join(out,fs.readdirSync(out).find(name=>name.endsWith('.zip'))));
     const entries=new Map();let offset=0;
     while(zip.readUInt32LE(offset)===0x04034b50){
@@ -150,4 +154,50 @@ test('the PHP router and the static-host redirects apply the same allowlist', ()
   const redirects = buildSource.slice(buildSource.indexOf("path.join(outDir, '_redirects')"));
   assert.ok(redirects.includes('/apps  /index.html  200\\n/app/:slug  /index.html  200\\n/publish  /index.html  200\\n/*  /index.html  404\\n'), 'the _redirects rules');
   assert.ok(!buildSource.includes('/*  /index.html  200'), 'no catch-all 200 is left');
+});
+
+/**
+ * Audit 2026-09-15 server L6: the directory's own files are never served.
+ * The API's `.htaccess` (`RewriteRule ^lib/ - [F,L]`, the `.md` refusal)
+ * and `data/.htaccess` (deny all) only take effect under `AllowOverride
+ * All`; on the site both hosts refuse the same paths by construction, and
+ * this pins that: every `/api/...` request is the one PHP script (a request
+ * for `/api/lib/x.php`, `/api/backup.php` or `/api/README.md` never reaches
+ * a file), `/data/` is a 404, and the two CLI helpers refuse to run over
+ * HTTP even when the directory is served on its own.
+ */
+const apiHtaccess = fs.readFileSync(new URL('../apps/softn-api/.htaccess', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const dataHtaccess = fs.readFileSync(new URL('../apps/softn-api/data/.htaccess', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const PRIVATE_PATHS = ['api/lib/apps.php', 'api/lib/', 'api/data/config.json', 'api/backup.php', 'api/seed-folder.php', 'api/README.md', 'api/test/api.test.mjs'];
+
+test("the API directory's own files are never served by either host", () => {
+  const apache = rawBlock('APACHE_CONFIG');
+  // Apache: /api/... is rewritten to the script before any file rule runs.
+  const rules = apache.split('\n').map(line => line.trim()).filter(line => line.startsWith('RewriteRule '));
+  const at = rules.indexOf('RewriteRule ^api(?:/.*)?$ api/index.php [QSA,L]');
+  assert.ok(at >= 0, 'the API rewrite');
+  // Only the precompressed-twin rules come before it, and those rewrite a
+  // URI to its own .br/.gz file when that file exists, never to another path.
+  for (const earlier of rules.slice(0, at)) assert.match(earlier, /^RewriteRule \^\(\.\*\)\$ \$1\.(?:br|gz) \[QSA,L\]$/, `before the API rule: ${earlier}`);
+  const api = new RegExp(rules[at].split(' ')[1]);
+  for (const path of PRIVATE_PATHS) assert.ok(api.test(path), `Apache hands "${path}" to the API script`);
+  assert.ok(apache.includes('RewriteRule ^data(?:/|$) - [R=404,L]'));
+  // The directory on its own: lib/ is forbidden, .md refused, data/ denied.
+  assert.ok(apiHtaccess.includes('RewriteRule ^lib/ - [F,L]'));
+  assert.match(apiHtaccess, /<FilesMatch "\\\.md\$">\n\s*<IfModule mod_authz_core\.c>\n\s*Require all denied/);
+  assert.match(dataHtaccess, /<IfModule mod_authz_core\.c>\n\s*Require all denied/);
+  // nginx: the /api location names the script, whatever the URI, and /data/ is gone.
+  const nginx = rawBlock('NGINX_CONFIG');
+  const location = nginx.match(/location ~ \^\/api\(\/\|\$\) \{([\s\S]*?)\n\s*\}/);
+  assert.ok(location, 'the /api location');
+  assert.ok(location[1].includes('fastcgi_param SCRIPT_FILENAME $document_root/api/index.php;'));
+  assert.ok(!/try_files|alias|root /.test(location[1]), 'the /api location serves no file');
+  const nginxApi = /^\/api(\/|$)/;
+  for (const path of PRIVATE_PATHS) assert.ok(nginxApi.test(`/${path}`), `nginx hands "/${path}" to the API script`);
+  assert.ok(nginx.includes('location /data/ { return 404; }'));
+  // The CLI helpers refuse HTTP themselves.
+  for (const helper of ['backup.php', 'seed-folder.php']) {
+    const source = fs.readFileSync(new URL(`../apps/softn-api/${helper}`, import.meta.url), 'utf8');
+    assert.match(source, /PHP_SAPI !== 'cli'/, `${helper} refuses to run over HTTP`);
+  }
 });

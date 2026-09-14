@@ -10,6 +10,7 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {unzipSync} from 'fflate';
+import {startHere} from './release-explainers.mjs';
 export const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const cache=join(root,'.cache/single-backend');
 const sha=b=>createHash('sha256').update(b).digest('hex');
@@ -43,6 +44,13 @@ export async function prepareZippNotices(wasmDir, notices) {
   writeFileSync(join(notices,'ZIPP-LICENSE-APACHE'),license);
   copyFileSync(join(wasmDir,'SOURCE.json'),join(notices,'ZIPP-SOURCE.json'));
   if(existsSync(join(wasmDir,'THIRD_PARTY_LICENSES.txt')))copyFileSync(join(wasmDir,'THIRD_PARTY_LICENSES.txt'),join(notices,'ZIPP-THIRD-PARTY-LICENSES.txt'));
+}
+/** The README.md for a backend archive, written where packagePhp can read it. */
+export function explainerFile(id,version) {
+  mkdirSync(cache,{recursive:true});
+  const file=join(cache,'README-'+id+'.md');
+  writeFileSync(file,startHere(id,{tag:'v'+version}));
+  return file;
 }
 /** @returns {Promise<{nodeDir:string,wasmDir:string,notices:string,websocketDir:string,version:string}>} */
 export async function prepareBackendInputs() {

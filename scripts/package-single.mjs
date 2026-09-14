@@ -1,9 +1,14 @@
+// release/softn-app-static-vVERSION.zip: the built apps/softn-single/dist with the
+// licences, the third-party inventory, the deployment guide and the
+// plain-language README.md beside them. Written and verified through
+// scripts/lib/archive.mjs like every release archive. `--with-backend` also
+// packages the variant with the PHP/WASM server backend.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { zipSync, unzipSync } from 'fflate';
+import { FRONT_DOOR, startHere } from './release-explainers.mjs';
+import { writeArchive } from './lib/archive.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(root, 'apps/softn-single/dist');
 for (const name of ['index.html', 'runtime.config.json'])
@@ -16,6 +21,9 @@ execFileSync(
 for (const name of ['LICENSE', 'NOTICE'])
   fs.copyFileSync(path.join(root, name), path.join(dist, name));
 fs.copyFileSync(path.join(root, 'docs/engineering/SINGLE_APP_RUNTIME.md'), path.join(dist, 'DEPLOYMENT.md'));
+const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+// The plain-language explainer, first thing in the archive; DEPLOYMENT.md is the detailed guide it points to.
+fs.writeFileSync(path.join(dist, FRONT_DOOR), startHere('single', { tag: 'v' + version }));
 const entries = {};
 function collect(dir, relative = '') {
   for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -28,22 +36,9 @@ function collect(dir, relative = '') {
   }
 }
 collect(dist);
-const bytes = zipSync(entries, { level: 9 });
-const decoded = unzipSync(bytes);
-for (const [name, data] of Object.entries(entries))
-  if (!Buffer.from(decoded[name]).equals(data)) throw Error('Archive verification failed: ' + name);
-const output = path.join(
-  root,
-  'release',
-  'softn-single-v' +
-    JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version +
-    '.zip'
-);
-fs.mkdirSync(path.dirname(output), { recursive: true });
-fs.writeFileSync(output, bytes);
-const sha = createHash('sha256').update(bytes).digest('hex');
-fs.writeFileSync(output + '.sha256', sha + '  ' + path.basename(output) + '\n');
+const output = path.join(root, 'release', 'softn-app-static-v' + version + '.zip');
+const result = writeArchive(entries, output);
 console.log(
-  output + '\n' + bytes.length + ' bytes; ' + Object.keys(entries).length + ' files; SHA-256 ' + sha
+  output + '\n' + result.size + ' bytes; ' + result.entries.length + ' files; SHA-256 ' + result.sha256
 );
 if(process.argv.includes('--with-backend'))execFileSync(process.execPath,[path.join(root,'scripts/package-single-backend.mjs')],{cwd:root,stdio:'inherit'});

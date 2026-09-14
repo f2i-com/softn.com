@@ -28,9 +28,12 @@
     "package:site": "node scripts/package-site.mjs",
     "build:single": "npm run build:packages && npm run build -w @softn/single",
     "package:single": "node scripts/package-single.mjs",
-    "build:single-php-serve": "npm run build:packages && npm run build -w @softn/single-php-serve",
-    "package:single-php-serve": "node scripts/package-single-php-serve.mjs",
+    "build:single-private": "npm run build:packages && npm run build -w @softn/single-private",
+    "build:single-php-serve": "npm run build:single-private",
+    "package:single-private": "node scripts/package-single-private.mjs",
+    "package:single-php-serve": "npm run package:single-private",
     "package:private-single-php": "node scripts/package-private-single-php.mjs",
+    "release:explainers": "node scripts/release-explainers.mjs",
     "licenses:site": "node scripts/generate-third-party-notices.mjs",
     "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "preview:site": "npm run build:site && node scripts/serve-site.mjs",
@@ -51,7 +54,7 @@
     "e2e:install": "playwright install chromium",
     "e2e:install:matrix": "playwright install chromium firefox webkit",
     "pretest": "node scripts/fetch-demos.mjs",
-    "test": "node --test docs/tests/*.test.mjs scripts/fetch-demos.test.mjs scripts/package-site.test.mjs scripts/core-worker-assets.test.mjs scripts/precompress-assets.test.mjs scripts/brand-mark.test.mjs scripts/single-backend-inputs.test.mjs && npm run test --workspaces --if-present",
+    "test": "node --test docs/tests/*.test.mjs scripts/fetch-demos.test.mjs scripts/package-site.test.mjs scripts/release-explainers.test.mjs scripts/lib/archive.test.mjs scripts/core-worker-assets.test.mjs scripts/precompress-assets.test.mjs scripts/brand-mark.test.mjs scripts/single-backend-inputs.test.mjs && npm run test --workspaces --if-present",
     "test:desktop": "npm run test:desktop -w @softn/builder",
     "test:dev-cache": "node --test scripts/dev-service-worker.test.mjs",
     "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 100",
@@ -79,7 +82,7 @@
     "vitest": "^4.1.11"
   },
   "engines": {
-    "node": "^20.19.0 || >=22.12.0"
+    "node": ">=24.19.0"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.0.0-next.5"
