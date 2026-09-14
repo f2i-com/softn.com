@@ -579,7 +579,7 @@
             },
             {
               "type": "paragraph",
-              "text": "Open the origin printed by the launcher. The documented default is http://localhost:1420, but the launcher can choose other ports. Treat its output as the source of truth rather than assuming a fixed port."
+              "text": "Open the origin printed by the launcher. The documented default is http://localhost:1420 but the launcher can choose other ports. Treat its output as the source of truth rather than assuming a fixed port."
             }
           ]
         },
@@ -1344,6 +1344,10 @@
                   "description": "The images, styles and other distributable assets the app needs."
                 }
               ]
+            },
+            {
+              "type": "paragraph",
+              "text": "manifest.json needs a name and a main entry (the path of the interface file that opens first); everything else is optional. A files section listing the ui, logic, xdb and asset entries is conventional and what the editors write, but a bundle without it opens in every host, and the entry file need not be listed. permission.json is optional too: absent, the app asks for nothing."
             }
           ]
         },
@@ -2080,7 +2084,48 @@
             },
             {
               "type": "paragraph",
-              "text": "Create and query name a collection. Update and delete use a record identifier in the documented examples. Do not invent a SQL query language or assume that a record’s field shape matches a plain application object without checking the current API."
+              "text": "Create and query name a collection. Update and delete take a record id. The rest of the db surface:"
+            },
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": "db.get(collection, id)",
+                  "description": "One record, or null when it does not exist."
+                },
+                {
+                  "term": "db.query(collection, filter?)",
+                  "description": "The records of a collection, optionally matching the given field values."
+                },
+                {
+                  "term": "db.create(collection, data)",
+                  "description": "Adds a record and returns it with its id."
+                },
+                {
+                  "term": "db.update(id, patch)",
+                  "description": "Merges the patch into the record and returns the result."
+                },
+                {
+                  "term": "db.delete(id)",
+                  "description": "Marks the record deleted so sync peers learn about it."
+                },
+                {
+                  "term": "db.hardDelete(collection, id)",
+                  "description": "Removes the record outright, without a tombstone."
+                },
+                {
+                  "term": "db.prune(collection, maxRecords)",
+                  "description": "Keeps the newest maxRecords records and returns how many were removed."
+                },
+                {
+                  "term": "db.clearCollection(collection)",
+                  "description": "Removes every record of the collection."
+                },
+                {
+                  "term": "db.startSync(room, options?) / db.stopSync(room?) / db.getSyncStatus(room?)",
+                  "description": "Optional peer synchronisation; see below."
+                }
+              ]
             },
             {
               "type": "paragraph",
@@ -2666,7 +2711,52 @@
             },
             {
               "type": "paragraph",
-              "text": "The README describes gated capabilities including networking, camera, microphone, filesystem, AI, GPU, synchronization, server storage and host acceleration. A bundle without the relevant declarations can still run ordinary UI and logic, but cannot assume access to those host operations."
+              "text": "The runtime knows ten capabilities. Each is off until the bundle declares it and the visitor or host grants it."
+            },
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": "net",
+                  "description": "Network: may call the internet, limited to allowed_hosts; the runtime asks first."
+                },
+                {
+                  "term": "camera",
+                  "description": "May take pictures, with the visitor’s permission."
+                },
+                {
+                  "term": "mic",
+                  "description": "May record audio, with the visitor’s permission."
+                },
+                {
+                  "term": "files",
+                  "description": "May read files the visitor chooses and save files it makes."
+                },
+                {
+                  "term": "qr",
+                  "description": "Scans QR codes with the camera."
+                },
+                {
+                  "term": "ai",
+                  "description": "Downloads and runs a model in the browser."
+                },
+                {
+                  "term": "gpu",
+                  "description": "Uses the graphics card for compute."
+                },
+                {
+                  "term": "sync",
+                  "description": "Replicates data to the visitor’s other devices and to peers."
+                },
+                {
+                  "term": "storage",
+                  "description": "Server storage: keeps records in the app’s own database on the hosting site, shared with everyone running the app unless a collection’s policy says otherwise."
+                },
+                {
+                  "term": "accel",
+                  "description": "Host acceleration: runs the numeric code it generates on the browser’s own engine, bound to its own data."
+                }
+              ]
             }
           ]
         },
@@ -3023,7 +3113,7 @@
                 },
                 {
                   "label": "SoftN language integration notes",
-                  "href": "https://github.com/f2i-com/softn.com/blob/main/docs/ZIPP_LANGUAGES.md",
+                  "href": "https://github.com/f2i-com/softn.com/blob/main/docs/engineering/ZIPP_LANGUAGES.md",
                   "description": "Linked by the SoftN README; its full contents could not be fetched during preparation."
                 }
               ]
@@ -3199,7 +3289,7 @@
       "id": "single-app-runtime",
       "slug": "single-app-runtime",
       "title": "Host one app on its own website",
-      "summary": "Use the dedicated single-app route while keeping bundle identity, static files and private services understandable.",
+      "summary": "Ship one SoftN app on its own website: build the unbranded runtime, point runtime.config.json at your bundle, choose how permissions are granted, and keep the identity that your visitors’ records depend on.",
       "kind": "guide",
       "audience": [
         "app creators",
@@ -3208,7 +3298,7 @@
       "groupId": "hosting",
       "seo": {
         "title": "Host one app on its own website | SoftN Docs",
-        "description": "Host a SoftN app on its own website with the single-app runtime. Understand the build route, deployment identity, assets and private backend boundaries."
+        "description": "Host a SoftN app on its own website with the single-app runtime: the build and package commands, every runtime.config.json field, permission modes, record identity and the three archive variants."
       },
       "updatedAt": "2026-09-15",
       "sourceIds": [
@@ -3223,37 +3313,126 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The README describes an unbranded single-app runtime for deploying a SoftN app on its own website. This is the route for making one app the experience, rather than asking visitors to begin in a general-purpose app library."
+              "text": "The single-app runtime (apps/softn-single) is a separate entry point that uses the real renderer, component registry, ZIPP sandbox and XDB, and nothing else: no launcher, catalogue, editor, account bar, bundle cache or download controls. Its loader is a spinner, its title comes from configuration, and the shell carries no product branding. Your app’s own interface renders unchanged."
             },
             {
               "type": "paragraph",
-              "text": "The app remains a SoftN client. Its editable interface and logic are still distinct from any private service it calls. A custom domain does not change which material is delivered to the browser."
+              "text": "The app remains a SoftN client. Its editable interface and logic are still distinct from any private service it calls, and a custom domain does not change what is delivered to the browser."
             }
           ]
         },
         {
           "id": "build-route",
-          "title": "Start with the documented build route",
+          "title": "Build and package",
           "blocks": [
             {
               "type": "code",
               "language": "sh",
-              "code": "npm ci\nnpm run build:single",
-              "caption": "The root build:single script builds the shared packages and the @softn/single workspace."
+              "code": "npm ci\nnpm run build:single\nnpm run package:single",
+              "caption": "Builds the shared packages and the @softn/single workspace, then writes release/softn-app-static-<version>.zip. Add `-- --with-backend` to also produce the Apache/PHP backend variant."
             },
             {
               "type": "paragraph",
-              "text": "The root package also provides package:single. Its arguments and app-selection configuration belong to the deployment guide. Do not infer a filename, environment variable or command-line flag from a different host’s instructions."
+              "text": "Upload the contents of the archive to an HTTPS web directory, at the root or in a subdirectory, keeping the adjacent assets paths intact. PHP, the directory API and a service worker are not required. Serve .wasm as application/wasm and .mjs as JavaScript; the included Apache file sets those types and disables directory listing. Other servers need the equivalent MIME settings."
+            },
+            {
+              "type": "paragraph",
+              "text": "Every release archive starts with a README.md that says what the package is and how to deploy it, and carries the detailed guide beside it."
             },
             {
               "type": "links",
               "items": [
                 {
                   "label": "Single-app runtime guide",
-                  "href": "https://github.com/f2i-com/softn.com/blob/main/docs/SINGLE_APP_RUNTIME.md",
-                  "description": "The repository guide linked by the README. Its full contents need review before deployment."
+                  "href": "https://github.com/f2i-com/softn.com/blob/main/docs/engineering/SINGLE_APP_RUNTIME.md",
+                  "description": "The repository guide: limits, the preapproved permission mode, the directory-served variant and validation notes."
                 }
               ]
+            }
+          ]
+        },
+        {
+          "id": "configure",
+          "title": "Point the runtime at your app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Replace the sample app.softn in the deployed directory and edit runtime.config.json next to it. The entry always reads its adjacent configuration: query parameters, hashes, file drops and messages cannot replace the chosen app."
+            },
+            {
+              "type": "code",
+              "language": "json",
+              "code": "{\n  \"version\": 1,\n  \"id\": \"my-application\",\n  \"title\": \"My application\",\n  \"bundle\": \"./app.softn\",\n  \"loadingText\": \"Loading…\",\n  \"theme\": \"dark\"\n}",
+              "caption": "A minimal runtime.config.json."
+            },
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": "version",
+                  "description": "The configuration format; always 1."
+                },
+                {
+                  "term": "id",
+                  "description": "The deployment’s stable identity. Local records are keyed by the configuration file’s path plus this value, so keep it the same across updates of the same app and use a different one for a different app."
+                },
+                {
+                  "term": "title",
+                  "description": "The document title shown by the browser."
+                },
+                {
+                  "term": "bundle",
+                  "description": "Where the .softn file is, relative to the configuration file. It must be same-origin HTTP(S); redirects, credentials in URLs and fragments are refused."
+                },
+                {
+                  "term": "loadingText",
+                  "description": "The text shown with the spinner while the app loads."
+                },
+                {
+                  "term": "theme",
+                  "description": "The initial theme, light or dark."
+                },
+                {
+                  "term": "permissions",
+                  "description": "Optional path to a same-origin JSON permission declaration, for example ./permission.json. When present it is authoritative; otherwise the runtime uses the bundle’s permission.json, then its legacy manifest declaration, then no permissions. An invalid declaration stops loading."
+                },
+                {
+                  "term": "sha256",
+                  "description": "Optional pin of the exact bundle bytes. Required for the preapproved permission mode."
+                },
+                {
+                  "term": "permissionMode",
+                  "description": "\"prompt\" (the default) loads the app with capabilities withheld and shows an unbranded permission bar; \"preapproved\" enables the declared capabilities immediately for a trusted app and needs a valid sha256 pin."
+                },
+                {
+                  "term": "directory",
+                  "description": "Only when a directory serves this shell for a published app: the same-origin runs and storage endpoints. A standalone deployment leaves it out."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "Limits: the configuration is capped at 16 KiB, a sidecar permission declaration at 64 KiB and the compressed bundle at 32 MiB; the shared bundle validator also applies its entry and decompression limits, and startup fetches are bounded to 60 seconds."
+            }
+          ]
+        },
+        {
+          "id": "permissions",
+          "title": "How visitors grant access",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "In prompt mode the app is interactive straight away while a compact bar above it lists the requested access, with expandable details, Allow and Not now. The bar takes its own space rather than covering the app. Dismissing it leaves access disabled and keeps a Review permissions control available without restarting. Allowing updates the runtime’s permission configuration; scripts may reinitialise so startup features can retry."
+            },
+            {
+              "type": "paragraph",
+              "text": "Consent is scoped to the configuration location, the exact bundle digest and the full permission declaration: changing the app or its host restrictions asks again. Browser camera and microphone prompts stay independent, and the runtime cannot bypass the browser’s own file selection."
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "Preapproved is a deployment decision",
+              "text": "Setting \"permissionMode\": \"preapproved\" belongs in runtime.config.json, not in the app manifest. It preserves declared host and file scope restrictions, writes no visitor consent record and requires the sha256 pin, so a swapped bundle is not silently trusted."
             }
           ]
         },
@@ -3263,25 +3442,36 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The README distinguishes configured single-app identity from the digest-based identity used by the general bundle loader. That matters when an updated bundle should still see the intended records and permission state."
+              "text": "The general bundle loader isolates apps by digest; this runtime keys local records by the configuration path plus id, not by the app’s display name. Keep those stable and an updated bundle still sees its records; bundle seeding never overwrites existing records."
             },
             {
               "type": "paragraph",
-              "text": "Test an update using disposable records before changing a live deployment. Confirm whether the new version opens the same data context and how schema or seed changes affect an existing user. Do not treat the visible app name as a guaranteed migration key."
+              "text": "Test an update with disposable records before changing a live deployment. Confirm the new version opens the same data and check how schema or seed changes affect an existing user. Manifest-defined server synchronisation is not enabled automatically by this host."
             }
           ]
         },
         {
-          "id": "assets",
-          "title": "Check the served app, not only the build",
+          "id": "variants",
+          "title": "Three ways to ship one app",
           "blocks": [
             {
-              "type": "paragraph",
-              "text": "After staging the output, open the actual deployed path and verify every needed asset. Missing bundles, incorrect base paths, stale caches and mismatched engine files can look like application failures."
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Static: softn-app-static-<version>.zip. HTML, the engine and your bundle on any HTTPS host.",
+                "Static with a private backend: softn-app-static-with-backend-linux-x64-<version>.zip adds a backend/ folder with bundled Linux x64 Node, SQLite and the ZIPP engine behind Apache/PHP, enabled by the operator.",
+                "Served privately: softn-app-private-<version>.zip keeps the .softn in a private directory and serves the page and each entry from PHP, so the archive is never on a URL; softn-app-private-with-backend-linux-x64-<version>.zip is that variant with the backend."
+              ]
             },
             {
-              "type": "paragraph",
-              "text": "For WebAssembly hosts, the engine glue and binary belong to the same artifact. Avoid deploying one without its matching counterpart. Check the actual bundled SoftN engine rather than substituting an upstream artifact based only on its version label."
+              "type": "links",
+              "items": [
+                {
+                  "label": "PHP-served single app guide",
+                  "href": "https://github.com/f2i-com/softn.com/blob/main/docs/engineering/SINGLE_APP_PRIVATE.md",
+                  "description": "What is served from where, the viewer cookie, and the operator settings."
+                }
+              ]
             }
           ]
         },
@@ -3291,13 +3481,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "A single-app site can be the client for private backend operations, but credentials and a server database should remain in the server deployment. Delivering UI to a browser does not make its source confidential."
-            },
-            {
-              "type": "callout",
-              "tone": "note",
-              "title": "This is a deployment overview",
-              "text": "The source fetch for the detailed single-app guide failed during preparation. This page deliberately avoids claiming exact configuration fields or packaging flags. Review that guide in your checkout before publishing."
+              "text": "A single-app site can be the client for private backend operations, but credentials and a server database stay in the server deployment. Delivering an interface to a browser does not make its source confidential: a browser must receive the app’s bytes to run them, and no extension, encryption with a browser-held key or hidden branding changes that. For access-controlled delivery, put the whole deployment behind server-side authentication."
             }
           ]
         },
@@ -3309,11 +3493,12 @@
               "type": "list",
               "ordered": false,
               "items": [
-                "Open the deployed app in a fresh browser context.",
+                "Open the deployed app in a fresh browser context, at the exact path visitors will use.",
                 "Verify assets, engine files and the first-run seed experience.",
                 "Test a returning user with existing records.",
                 "Check denied capabilities and unavailable backend responses.",
-                "Keep a known-working release and a recovery path."
+                "Keep a known-working release and a recovery path.",
+                "Preserve LICENSE, NOTICE, the third-party inventory and the speech notices in the deployed directory."
               ]
             }
           ]

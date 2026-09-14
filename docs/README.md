@@ -74,7 +74,7 @@ should update the `review` and `sources` entries as that is done.
 | --- | --- |
 | `engineering/BUNDLE_LOADING.md`, `COMPONENT_LOADING.md`, `LOCAL_APP_REOPEN.md` | How bundles and components are loaded and reopened |
 | `engineering/BUILDER_DATA.md` | Builder collections, relationships and record references |
-| `engineering/SINGLE_APP_RUNTIME.md`, `SINGLE_APP_PHP_SERVE.md` | Hosting one app on its own, static or PHP-served (copied into those archives as `DEPLOYMENT.md`) |
+| `engineering/SINGLE_APP_RUNTIME.md`, `SINGLE_APP_PRIVATE.md` | Hosting one app on its own, static or PHP-served (copied into those archives as `DEPLOYMENT.md`) |
 | `engineering/DESKTOP_APPS.md` | The Tauri desktop apps and the shared bundle workflow |
 | `engineering/FORMLOGIC_INTEGRATION.md` | The FormLogic starter adapter |
 | `engineering/LOCAL_SPEECH.md`, `SCENE3D_*.md`, `ZIPP_LANGUAGES.md`, `zipp-memory-lifecycle.md`, `PERFORMANCE_MEASUREMENT.md` | Subsystem notes |

@@ -81,7 +81,7 @@ served application itself needs only PHP.
 
 ## Build from source
 
-`npm run build -w @softn/single-php-serve` then
+`npm run build -w @softn/single-private` then
 `npm run package:private-single-php`. Backend packaging uses checksum-pinned
 official Node binaries and the repository's vendored WASM with verified
 provenance. Licences and checksums accompany the archive.

@@ -6,7 +6,7 @@ After loading, the site favicon uses the bundled image at `manifest.icon`, inclu
 
 ## Build and deploy
 
-Use the repository's CI toolchain (Node 20.19+ with npm 10). Run `npm ci`, `npm run build:single`, then `npm run package:single`. Upload the **contents** of `release/softn-single-v0.0.9.zip` to an HTTPS web directory, at the root or in a subdirectory. PHP, the directory API and a service worker are not required. Keep the adjacent `assets` paths intact. Serve `.wasm` as `application/wasm` and `.mjs` as JavaScript; the included Apache file sets those types and disables directory listing. Other servers need equivalent MIME settings. Development: `npm run dev -w @softn/single`; production preview: `npm run preview -w @softn/single`.
+Use the repository's CI toolchain (Node 24.19+ with npm 10). Run `npm ci`, `npm run build:single`, then `npm run package:single`. Upload the **contents** of `release/softn-app-static-v0.0.9.zip` to an HTTPS web directory, at the root or in a subdirectory. PHP, the directory API and a service worker are not required. Keep the adjacent `assets` paths intact. Serve `.wasm` as `application/wasm` and `.mjs` as JavaScript; the included Apache file sets those types and disables directory listing. Other servers need equivalent MIME settings. Development: `npm run dev -w @softn/single`; production preview: `npm run preview -w @softn/single`.
 
 Replace the sample `app.softn` in the deployed directory and edit `runtime.config.json`:
 
@@ -24,6 +24,17 @@ Replace the sample `app.softn` in the deployed directory and edit `runtime.confi
 Optional `permissions` points to a same-origin JSON permission declaration, e.g. `"./permission.json"`. That operator-supplied file is authoritative; without it the runtime uses the bundle's `permission.json`, then its legacy manifest declaration, then no permissions. Invalid declarations stop loading. Optional `sha256` pins the exact bundle bytes. All locations resolve relative to the config file and must be same-origin HTTP(S); redirects, credentials in URLs and URL fragments are refused. The entry always reads its adjacent config. Query parameters, hashes, file drops and messages cannot replace the chosen app.
 
 Optional `directory` names where the app came from when a directory serves this shell for it: `{"runs": "/api/apps/x/runs", "storage": "/api/apps/x/storage"}`, both same-origin, the first `POST`ed to once when the app is up and the second reached by the app's scripts as `softn.storage.*`. A standalone deployment leaves it out.
+
+The shipped `.htaccess` sends `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless`, the same cross-origin
+isolation softn.com sends for `/play/<app>`. It gives the page
+`SharedArrayBuffer`, which the CPU language-model provider uses to run on
+every core rather than one; `credentialless` keeps images and model files
+from other origins working without CORP headers. A host that reads no
+`.htaccess` (nginx) must add the two headers itself, or an app that uses
+that provider runs slower self-hosted than on the site. Cross-origin
+`<iframe>` embeds inside an app need the framed page to send a COEP of its
+own, exactly as on the site.
 
 ### Inside softn.com
 
@@ -54,15 +65,16 @@ The new workspace has regression coverage for configuration, bounded loading, pe
 ## Optional Apache/PHP backend
 
 `npm run package:single -- --with-backend` produces both the static-only ZIP and
-`softn-single-php-linux-x64-vVERSION.zip`. CI builds and tests both, and tag releases
+`softn-app-static-with-backend-linux-x64-vVERSION.zip`. CI builds and tests both, and tag releases
 attach both alongside the website archive. The backend variant contains `webroot/`
 and a separate private `backend/` with bundled Linux x64 Node, SQLite and ZIPP WASM.
 The example client works without configuring a backend. Enable server support only
-when your app needs it; follow the included START-HERE.md and
+when your app needs it; follow the included README.md (the short explainer
+every release archive carries) and DEPLOYMENT.md, which is the
 [PHP deployment guide](../apps/softn-php/SINGLE_APP_DEPLOYMENT.md).
 
 PHP/WASM is the Apache hosting option; the Rust server remains available for its
-additional native capabilities. A third option, [the PHP-served single app](SINGLE_APP_PHP_SERVE.md),
+additional native capabilities. A third option, [the PHP-served single app](SINGLE_APP_PRIVATE.md),
 keeps the archive in a private directory and serves the page and its entries from PHP
 instead of putting `app.softn` on a URL. No private applications or provider credentials are
 included. The standalone browser archive remains available without any server files.

@@ -11,7 +11,7 @@ import { ASSET_CLASSIFICATIONS } from '@softn/core';
  */
 function phpTable(): Record<string, { mime: string; kind: string }> {
   const source = readFileSync(
-    fileURLToPath(new URL('../public/softn-serve.php', import.meta.url)),
+    fileURLToPath(new URL('../php/softn-serve.php', import.meta.url)),
     'utf8'
   );
   const block = source.match(/const SOFTN_ENTRY_TYPES = \[([\s\S]*?)\n\];/);

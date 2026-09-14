@@ -16,8 +16,8 @@
  *   - `chromium` is the per-commit gate (`npm run e2e`): every desktop spec,
  *     one browser, fast and steady on every push.
  *   - The rest are the matrix the audit's TEST_PLAN.md §1 asks for on a
- *     schedule or a release (`npm run e2e:matrix`, .github/workflows/
- *     e2e-matrix.yml): the same desktop specs in Firefox and WebKit, Studio's
+ *     schedule or a release (`npm run e2e:matrix`, run by hand; no workflow
+ *     schedules it yet): the same desktop specs in Firefox and WebKit, Studio's
  *     phone layout at 390 and 360 px with touch and reduced motion, and the
  *     desktop editors at 200 % zoom. The gate never waits on these — a
  *     WebKit download or a phone-only regression is a scheduled failure,

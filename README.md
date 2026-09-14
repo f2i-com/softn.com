@@ -90,7 +90,7 @@ _A direct screenshot of the running app. Its colours and responsive layout live 
 
 ## Get started
 
-Use **Node.js 20.19+ on the 20.x line, or 22.12+**, and npm. The browser apps use the checked-in WASM runtime; Rust is only needed for native hosts or rebuilding that engine.
+Use **Node.js 24.19 or newer** (see `engines` in `package.json`), and npm. The browser apps use the checked-in WASM runtime; Rust is only needed for native hosts or rebuilding that engine.
 
 ```bash
 git clone https://github.com/f2i-com/softn.com.git
@@ -138,7 +138,7 @@ The [starter conversion guide](docs/engineering/FORMLOGIC_INTEGRATION.md) explai
 | **Browser or desktop**      | Open a bundle in [SoftN Web](apps/softn-web) or the [Tauri loader](apps/softn-loader).                                                  |
 | **App directory**           | Publish a bundle with its own page, browser player and server storage. See the [directory guide](apps/softn-api/README.md).             |
 | **Your own website**        | Deploy the app in an unbranded [single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md).                                                        |
-| **Private PHP deployment**  | Serve a single app from a private archive using the [PHP deployment guide](docs/engineering/SINGLE_APP_PHP_SERVE.md).                               |
+| **Private PHP deployment**  | Serve a single app from a private archive using the [PHP deployment guide](docs/engineering/SINGLE_APP_PRIVATE.md).                               |
 | **Server logic and SQLite** | Use the [Rust private backend](apps/softn-rust/PRIVATE_BACKEND.md) or [PHP backend packaging](apps/softn-php/SINGLE_APP_DEPLOYMENT.md). |
 | **FormLogic**               | Use the connected host and named backend actions described above.                                                                       |
 
@@ -164,7 +164,7 @@ Capabilities such as network, microphone and synchronization require support and
 | Language and components | Expand the reference below for `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                   |
 | Data modeling           | [Builder collections, ER relationships and record references](docs/engineering/BUILDER_DATA.md)                                                                         |
 | Loading and composition | [Bundle loading](docs/engineering/BUNDLE_LOADING.md) · [Component loading](docs/engineering/COMPONENT_LOADING.md) · [Reopening local apps](docs/engineering/LOCAL_APP_REOPEN.md)                   |
-| Hosting                 | [Single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/engineering/SINGLE_APP_PHP_SERVE.md) · [Private backend](apps/softn-rust/PRIVATE_BACKEND.md) |
+| Hosting                 | [Single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/engineering/SINGLE_APP_PRIVATE.md) · [Private backend](apps/softn-rust/PRIVATE_BACKEND.md) |
 | FormLogic               | [Starter adapter](docs/engineering/FORMLOGIC_INTEGRATION.md) · [Connected host](apps/formlogic-host/src/main.tsx) · [Workspace examples](examples)                         |
 | Local speech            | [Local speech guide](docs/engineering/LOCAL_SPEECH.md)                                                                                                                     |
 | Development             | [Setup, tests and key source paths](#development)                                                                                                              |
@@ -649,7 +649,7 @@ without the embedder policy. The generated `.htaccess` and
 `nginx.conf.example` do both; `DEPLOY.md` in `dist/` walks through the rest,
 and `GET /api/health` reports what the server found.
 
-Pushing a `v*` tag builds the site in CI and attaches `softn-com-<tag>.zip`
+Pushing a `v*` tag builds the site in CI and attaches `softn-website-<tag>-zipp-<engine>.zip`
 to the GitHub release. `npm run package:site -- --tag vX.Y.Z` makes the same
 archive locally.
 
@@ -828,7 +828,7 @@ its own 35 fps cap. The host side is `packages/@softn/core/src/runtime/accel-hos
 
 ### Prerequisites
 
-- Node.js 20.19+ on the 20.x line, or 22.12+ (see `package.json` engines)
+- Node.js 24.19 or newer (see `package.json` engines; the PHP host's bundled runtime needs the same)
 - npm
 - Rust + Cargo (for Tauri apps and WASM compilation)
 
@@ -842,6 +842,11 @@ npm run build      # packages in dependency order, then every app
 `npm run clean` removes build output and stale Vite caches. To remove `node_modules`
 as well, use `npm run clean -- --deps` — the bare `--` is what stops npm from eating
 the flag before the script sees it.
+
+What each folder is: [`apps/README.md`](apps/README.md) explains every app and
+what it ships as; [`packages/README.md`](packages/README.md) the packages they
+are built from; [`scripts/release-packages.mjs`](scripts/release-packages.mjs)
+the five release archives, in the words of the `README.md` each carries.
 
 ### Running Apps
 

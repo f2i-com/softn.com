@@ -34,7 +34,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       # `npm ci` installs exactly what package-lock.json pins and fails loudly if
@@ -94,3 +94,36 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Test the private backend host
         run: cargo test --manifest-path apps/softn-rust/Cargo.toml
+
+  # The desktop loader's Rust side, against the pinned XDB checkout the
+  # release matrix builds with (.github/scripts/checkout-xdb.sh), so a change
+  # that breaks its Tauri commands or the XDB path dependency is seen on
+  # every push rather than on the next dispatched six-runner build. A check,
+  # not a build: it compiles every crate without linking or bundling.
+  loader:
+    name: Check the desktop loader (Rust)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Checkout pinned xdb.org dependency
+        run: bash .github/scripts/checkout-xdb.sh
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            apps/softn-loader/src-tauri/target/
+          key: loader-check-${{ hashFiles('apps/softn-loader/src-tauri/Cargo.lock') }}
+          restore-keys: loader-check-
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Check the loader
+        run: cargo check --manifest-path apps/softn-loader/src-tauri/Cargo.toml --locked

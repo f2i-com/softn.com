@@ -28,7 +28,7 @@ const DEPLOYED_WORKSPACES = [
   'apps/softn-builder',
   'apps/softn-studio',
   'apps/softn-single',
-  'apps/softn-single-php-serve',
+  'apps/softn-single-private',
 ];
 
 // Workbox is a build dependency, but these packages become the service-worker

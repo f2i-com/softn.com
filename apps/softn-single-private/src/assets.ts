@@ -1,5 +1,5 @@
 import { classifyAsset } from '@softn/core';
-import type { AssetResolver } from '../../softn-web/src/lib/bundleProcessor';
+import type { AssetResolver } from '@softn/single-shell';
 
 /**
  * The URL the host serves one bundle entry under.

@@ -12,7 +12,7 @@ root=Path(tempfile.mkdtemp(prefix='softn-backend-package-'))
 with zipfile.ZipFile(args.archive) as z:
     names=z.namelist()
     expected=['webroot/index.php','webroot/softn-serve.php','webroot/api.php','webroot/.htaccess','private/app.softn','private/serve.config.php','private/shell.html','private/.htaccess','DEPLOYMENT-SERVE.md'] if args.private else ['webroot/index.html','webroot/app.softn','webroot/runtime.config.json']
-    for name in expected+['backend/bin/node','backend/runner.mjs','backend/wasm/zipp_wasm_bg.wasm','START-HERE.md']:
+    for name in expected+['backend/bin/node','backend/runner.mjs','backend/wasm/zipp_wasm_bg.wasm','README.md','DEPLOYMENT.md','README-RUNTIME.md']:
         assert name in names,name
     if args.private:
         assert not any(n in ['webroot/index.html','webroot/app.softn','webroot/runtime.config.json','private/secret.key','private/digest.cache'] for n in names)
