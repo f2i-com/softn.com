@@ -5,7 +5,7 @@ set -euo pipefail
 # build and release workflows can never drift apart; update this one value when
 # deliberately adopting a newer XDB commit.
 XDB_REPOSITORY="https://github.com/f2i-com/xdb.org.git"
-XDB_COMMIT="c3499113c09a120179775483f0e40cf07c45e2b3"
+XDB_COMMIT="fd7bb9576b1bb3a851ee6ce784d8fab39798e2f5"
 XDB_DESTINATION="${GITHUB_WORKSPACE:?GITHUB_WORKSPACE must be set}/../xdb.org"
 
 if [[ -e "$XDB_DESTINATION" ]]; then
