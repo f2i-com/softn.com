@@ -13,6 +13,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,7 +104,28 @@ export function pngDeclaring(width, height) {
   ]);
 }
 
-let nextPort = 5900 + Math.floor(Math.random() * 2000);
+/**
+ * A port the kernel says is free right now. The test files run in parallel
+ * (one process each), and a per-process counter seeded at random used to
+ * hand two of them the same port often enough to matter: PHP's built-in
+ * server fails to bind, exits at once, and the harness — polling
+ * /api/health — found the OTHER file's server on that port and ran its
+ * tests against it (a rate-limit test then saw 201 where it expected 429,
+ * on the runner, with two cores' worth of files interleaved). Asking the
+ * kernel narrows the window; `startServer` closes it by watching the PHP
+ * process: a server that exits before its health check answered never
+ * counts as up, and a fresh port is tried.
+ */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
 
 export async function waitFor(url, ms = 20000) {
   const until = Date.now() + ms;
@@ -176,15 +198,31 @@ export function makeRoot({ config = {}, demos = false, prefix = 'softn-api-' } =
  */
 export async function startServer({ config = {}, ini = {}, env = {}, demos = false, prefix = 'softn-api-' } = {}) {
   const { root, tmp } = makeRoot({ config, demos, prefix });
-  const port = nextPort++;
-  const base = `http://127.0.0.1:${port}`;
-  const args = ['-S', `127.0.0.1:${port}`, ...iniArgs(tmp, ini), '-t', root, path.join(root, 'api/router.php')];
-  const server = spawn('php', args, { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...env } });
   const log = [];
-  server.stderr.on('data', (d) => {
-    for (const line of String(d).split('\n')) if (/PHP (Warning|Fatal|Parse|Notice)|softn-api:/.test(line)) log.push(line);
-  });
-  await waitFor(`${base}/api/health`);
+  let server;
+  let port;
+  let base;
+  // Bind, and prove the server that answered is this one: a PHP process
+  // that lost the port exits within milliseconds with "Failed to listen",
+  // so a health reply that arrives while our process is already gone came
+  // from somebody else's server.
+  for (let attempt = 1; ; attempt++) {
+    port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    const args = ['-S', `127.0.0.1:${port}`, ...iniArgs(tmp, ini), '-t', root, path.join(root, 'api/router.php')];
+    server = spawn('php', args, { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, ...env } });
+    let bindFailure = '';
+    server.stderr.on('data', (d) => {
+      for (const line of String(d).split('\n')) {
+        if (/PHP (Warning|Fatal|Parse|Notice)|softn-api:/.test(line)) log.push(line);
+        if (/Failed to listen|Address already in use/i.test(line)) bindFailure = line.trim();
+      }
+    });
+    const exited = new Promise((resolve) => server.once('exit', (code) => resolve(code ?? -1)));
+    const outcome = await Promise.race([waitFor(`${base}/api/health`).then(() => 'up'), exited.then((code) => `exited ${code}`)]);
+    if (outcome === 'up' && server.exitCode === null) break;
+    if (attempt >= 5) throw new Error(`php -S could not bind after ${attempt} attempts (${bindFailure || outcome})`);
+  }
   const cfg = JSON.parse(fs.readFileSync(path.join(root, 'data/config.json'), 'utf8'));
 
   async function api(method, route, { body, headers = {}, raw, query } = {}) {
