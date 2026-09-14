@@ -1861,6 +1861,12 @@ export class XDBService {
    * the previous value in place; because several keys are not a transaction,
    * a failure on a later collection restores the earlier ones to their prior
    * contents and the error says exactly what state remains (R2-SN-02).
+   * Every previous value is READ and every replacement PREPARED before the
+   * first write (R3-SN-03), so a read or preparation failure changes nothing
+   * at all, and the only failures that can occur mid-sequence are writes,
+   * which the rollback below covers. This is an in-memory undo, not a
+   * journal: the product does not promise atomicity across a crash between
+   * two collection writes, and the error text says what remains.
    * Native: the cache is updated optimistically and ONE transaction carries
    * every batch; on failure the cache is reloaded from disk (audit SN-01).
    */
@@ -1869,11 +1875,28 @@ export class XDBService {
     const imported = plans.reduce((n, plan) => n + plan.accepted, 0);
 
     if (!this.useTauri) {
-      const written: Array<{ collection: string; previous: string | null }> = [];
+      // Phase 1: read and prepare everything. Nothing is written yet, so a
+      // failure here (an unreadable key, a corrupt previous value) leaves
+      // every collection exactly as it was.
+      const prepared: Array<{ collection: string; previous: string | null; records: XDBRecord[] }> = [];
       for (const plan of plans) {
-        const key = this.collectionKey(plan.collection);
-        const previous = this.storage.getItem(key);
-        const records = XDBService.mergePlan(this.getAllCollectionData(plan.collection), plan);
+        try {
+          const previous = this.storage.getItem(this.collectionKey(plan.collection));
+          const records = XDBService.mergePlan(this.getAllCollectionData(plan.collection), plan);
+          prepared.push({ collection: plan.collection, previous, records });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new XDBStorageError(
+            error instanceof XDBStorageError ? error.kind : 'corrupt',
+            `Import refused at "${plan.collection}" while reading its current contents (${message}); nothing was changed.`,
+            plan.collection
+          );
+        }
+      }
+      // Phase 2: write, with the earlier collections restored on a later failure.
+      const written: Array<{ collection: string; previous: string | null }> = [];
+      for (const plan of prepared) {
+        const { previous, records } = plan;
         try {
           this.setCollectionData(plan.collection, records);
         } catch (error) {

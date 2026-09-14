@@ -13,10 +13,12 @@ const ids = (xdb: XDBService, collection: string) => xdb.getAll(collection).map(
 function storageWith(initial: Record<string, string> = {}) {
   const store = new Map(Object.entries(initial));
   const failing = new Set<string>();
+  const unreadable = new Set<string>();
   return {
     store,
     failWritesTo: (key: string) => failing.add(key),
-    getItem: (key: string) => store.get(key) ?? null,
+    failReadsOf: (key: string) => unreadable.add(key),
+    getItem: (key: string) => { if (unreadable.has(key)) throw new Error('storage read failed'); return store.get(key) ?? null; },
     setItem: (key: string, value: string) => { if (failing.has(key)) throw new DOMException('QuotaExceededError', 'QuotaExceededError'); store.set(key, value); },
     removeItem: (key: string) => { store.delete(key); },
   };
@@ -76,6 +78,23 @@ describe('restore ordering (browser backend)', () => {
     expect(String((error as Error).message)).toMatch(/restored to their previous contents: notes/);
     expect(storage.store.get('xdb:notes')).toBe(JSON.stringify([rec('n1', 'notes', 'old')]));
     expect(storage.store.has('xdb:tasks')).toBe(false);
+    expect(ids(xdb, 'notes')).toEqual(['n1']);
+  });
+
+  it('R3-SN-03: a read failure on a LATER collection changes nothing, because every read precedes the first write', () => {
+    const storage = storageWith({ 'xdb:notes': JSON.stringify([rec('n1', 'notes', 'old')]), 'xdb:tasks': JSON.stringify([rec('t0', 'tasks', 'old')]) });
+    const xdb = new XDBService(storage, 'xdb');
+    // Reads succeeded at construction; the failure appears only when the import reads the key.
+    storage.failReadsOf('xdb:tasks');
+    let error: unknown;
+    try {
+      xdb.import({ version: 1, exportedAt: '', collections: { notes: [rec('n2', 'notes', 'new')], tasks: [rec('t1', 'tasks', 'x')] } }, { merge: false });
+    } catch (e) { error = e; }
+    expect(error).toBeInstanceOf(XDBStorageError);
+    expect(String((error as Error).message)).toMatch(/refused at "tasks" while reading/);
+    expect(String((error as Error).message)).toMatch(/nothing was changed/);
+    expect(storage.store.get('xdb:notes')).toBe(JSON.stringify([rec('n1', 'notes', 'old')]));
+    expect(storage.store.get('xdb:tasks')).toBe(JSON.stringify([rec('t0', 'tasks', 'old')]));
     expect(ids(xdb, 'notes')).toEqual(['n1']);
   });
 

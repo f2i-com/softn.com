@@ -25,6 +25,16 @@
  *
  * The registry lives in the runtime's own storage (`localStorage` of the
  * loader webview), separate from any app's records.
+ *
+ * Truthfulness rules (R3-SN-01 / R3-SN-02):
+ *  - A storage read that FAILS is `unavailable`, never an empty registry.
+ *  - A record whose identity-critical fields are invalid (data id, bundle
+ *    mapping, pending-upgrade or recovery metadata) is kept as DAMAGED
+ *    material, never silently dropped; the registry refuses ordinary saves
+ *    until the person explicitly discards the damaged copy.
+ *  - An installation with a pending upgrade is gated for EVERY package that
+ *    maps to it, not only for the new digest: old code must not run against
+ *    data whose upgrade was interrupted until the person resolves it.
  */
 
 export const REGISTRY_KEY = 'softn-loader:installations';
@@ -74,26 +84,55 @@ export interface InstallationRecord {
   recoveryRequired?: { backup: string; reason: string; at: string };
 }
 
+/** A stored record whose identity-critical fields could not be trusted (R3-SN-02). */
+export interface DamagedRecord {
+  /** The key the record was stored under */
+  dataId: string;
+  reason: string;
+  /** The stored value, untouched, for recovery */
+  raw: unknown;
+  /** Whatever bundle digests the raw record names, so those packages can be gated */
+  bundleIds: string[];
+}
+
 export interface InstallationRegistry {
   version: typeof REGISTRY_VERSION;
   installations: Record<string, InstallationRecord>;
   /**
-   * Present when the stored registry could not be read (R2-SN-03). The raw
-   * bytes were quarantined under `quarantineKey`; unknown packages are NOT
-   * opened as new (that would look like the only mapping vanished) and the
+   * Present when the stored registry, or part of it, could not be trusted
+   * (R2-SN-03, R3-SN-02). The raw bytes were quarantined under
+   * `quarantineKey`; `records` lists the individual records that failed
+   * validation (the valid ones are still in `installations`). Unknown
+   * packages are NOT opened as new (that would look like the only mapping
+   * vanished), packages named by a damaged record are gated, and the
    * registry is not overwritten until the person discards the damaged copy.
    */
-  damaged?: { quarantineKey: string | null; reason: string };
+  damaged?: { quarantineKey: string | null; reason: string; records: DamagedRecord[] };
+  /**
+   * Present when the backing storage could not be READ at all (R3-SN-02).
+   * Nothing is known: no package can be matched, and nothing may be saved,
+   * because the write would replace records that could not be inspected.
+   */
+  unavailable?: { reason: string };
 }
 
 export type IdentityResolution =
   | { kind: 'known'; dataId: string; record: InstallationRecord }
   | { kind: 'new'; dataId: string }
   | { kind: 'choose'; bundleId: string; name: string; candidates: InstallationRecord[] }
-  /** The registry is damaged: nothing can be decided about an unknown package until it is resolved. */
+  /** The registry is damaged: nothing can be decided about this package until it is resolved. */
   | { kind: 'registry-damaged'; quarantineKey: string | null; reason: string }
+  /** The registry could not be read at all: nothing can be decided about any package. */
+  | { kind: 'registry-unavailable'; reason: string }
   /** This digest is an approved upgrade still waiting for its first successful start. */
   | { kind: 'pending-upgrade'; dataId: string; record: InstallationRecord; pending: PendingUpgrade }
+  /**
+   * This digest is mapped to an installation whose upgrade to ANOTHER digest
+   * was started and never finished (R3-SN-01). The data may already be
+   * changed by the newer package; the person must roll back or finish the
+   * upgrade before this older package runs against it.
+   */
+  | { kind: 'upgrade-unresolved'; dataId: string; record: InstallationRecord; pending: PendingUpgrade }
   /** The installation is in an explicit recovery-only state. */
   | { kind: 'recovery-required'; dataId: string; record: InstallationRecord };
 
@@ -110,25 +149,86 @@ export function emptyRegistry(): InstallationRegistry {
   return { version: REGISTRY_VERSION, installations: {} };
 }
 
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+function stringOrDefault(value: unknown, fallback: string): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
 /**
- * A damaged registry is QUARANTINED, not replaced (R2-SN-03): its raw bytes
- * are copied to a recovery key, the returned registry is marked `damaged`,
- * saveRegistry refuses to overwrite it, and resolveInstallation refuses to
- * treat unknown packages as new until the person discards the damaged copy.
+ * Validate one stored record. Identity-critical fields (data id, bundle
+ * mapping, pending upgrade, recovery marker) must be exactly right; display
+ * fields (name, version, timestamps, ledger) are normalised leniently.
+ */
+export function validateRecord(dataId: string, record: unknown): { ok: true; record: InstallationRecord } | { ok: false; reason: string; bundleIds: string[] } {
+  const named = (value: unknown): string[] => {
+    const ids = (value as { bundleIds?: unknown } | null)?.bundleIds;
+    return Array.isArray(ids) ? ids.filter(isString) : [];
+  };
+  if (!record || typeof record !== 'object') return { ok: false, reason: 'not an object', bundleIds: [] };
+  const r = record as Record<string, unknown>;
+  if (r.dataId !== dataId) return { ok: false, reason: `data identity "${String(r.dataId)}" does not match its key "${dataId}"`, bundleIds: named(r) };
+  if (!Array.isArray(r.bundleIds) || !r.bundleIds.every(isString)) return { ok: false, reason: 'bundle mapping is not a list of digests', bundleIds: named(r) };
+  let pendingUpgrade: PendingUpgrade | undefined;
+  if (r.pendingUpgrade !== undefined && r.pendingUpgrade !== null) {
+    const p = r.pendingUpgrade as Record<string, unknown> | null;
+    if (!p || typeof p !== 'object' || !isString(p.to) || !isString(p.backup) || p.backup === '' || !(p.from === null || isString(p.from))) {
+      return { ok: false, reason: 'pending upgrade metadata is invalid', bundleIds: named(r) };
+    }
+    pendingUpgrade = { from: p.from as string | null, to: p.to, backup: p.backup, at: stringOrDefault(p.at, new Date(0).toISOString()), version: isString(p.version) ? p.version : undefined, name: isString(p.name) ? p.name : undefined };
+  }
+  let recoveryRequired: InstallationRecord['recoveryRequired'];
+  if (r.recoveryRequired !== undefined && r.recoveryRequired !== null) {
+    const m = r.recoveryRequired as Record<string, unknown> | null;
+    if (!m || typeof m !== 'object' || !isString(m.backup) || !isString(m.reason)) {
+      return { ok: false, reason: 'recovery marker is invalid', bundleIds: named(r) };
+    }
+    recoveryRequired = { backup: m.backup, reason: m.reason, at: stringOrDefault(m.at, new Date(0).toISOString()) };
+  }
+  return {
+    ok: true,
+    record: {
+      dataId,
+      name: stringOrDefault(r.name, ''),
+      bundleIds: r.bundleIds as string[],
+      version: isString(r.version) ? r.version : undefined,
+      createdAt: stringOrDefault(r.createdAt, new Date(0).toISOString()),
+      updatedAt: stringOrDefault(r.updatedAt, new Date(0).toISOString()),
+      ledger: Array.isArray(r.ledger) ? r.ledger.filter((e): e is InstallationLedgerEntry => !!e && typeof e === 'object' && typeof (e as InstallationLedgerEntry).to === 'string') : [],
+      pendingUpgrade,
+      recoveryRequired,
+    },
+  };
+}
+
+/**
+ * Read the registry. A failed read is `unavailable`; a registry that cannot
+ * be parsed, or any record that fails validation, is QUARANTINED and marked
+ * `damaged` (R2-SN-03, R3-SN-02): the raw bytes are copied to a recovery
+ * key, valid records still load, saveRegistry refuses to overwrite the
+ * stored copy, and resolveInstallation gates every package the damage could
+ * concern until the person discards the damaged copy.
  */
 export function loadRegistry(storage: RegistryStorage): InstallationRegistry {
   let raw: string | null;
   try {
     raw = storage.getItem(REGISTRY_KEY);
-  } catch {
-    return emptyRegistry();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(`[SoftN Loader] The installation registry could not be read (${reason}); nothing is known about installed apps`);
+    return { ...emptyRegistry(), unavailable: { reason } };
   }
   if (!raw) return emptyRegistry();
-  const damaged = (reason: string): InstallationRegistry => {
+  const quarantine = (): string | null => {
     let quarantineKey: string | null = `${REGISTRY_KEY}.corrupt.${Date.now().toString(36)}`;
     try { storage.setItem(quarantineKey, raw as string); } catch { quarantineKey = null; }
+    return quarantineKey;
+  };
+  const damaged = (reason: string, records: DamagedRecord[] = []): InstallationRegistry => {
     console.error(`[SoftN Loader] The installation registry is unreadable (${reason}); quarantined and left in place`);
-    return { ...emptyRegistry(), damaged: { quarantineKey, reason } };
+    return { ...emptyRegistry(), damaged: { quarantineKey: quarantine(), reason, records } };
   };
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -139,19 +239,16 @@ export function loadRegistry(storage: RegistryStorage): InstallationRegistry {
       return damaged('unknown shape');
     }
     const registry = emptyRegistry();
+    const invalid: DamagedRecord[] = [];
     for (const [dataId, record] of Object.entries((parsed as InstallationRegistry).installations)) {
-      if (!record || typeof record !== 'object' || record.dataId !== dataId || !Array.isArray(record.bundleIds)) continue;
-      registry.installations[dataId] = {
-        dataId,
-        name: typeof record.name === 'string' ? record.name : '',
-        bundleIds: record.bundleIds.filter((id): id is string => typeof id === 'string'),
-        version: typeof record.version === 'string' ? record.version : undefined,
-        createdAt: typeof record.createdAt === 'string' ? record.createdAt : new Date(0).toISOString(),
-        updatedAt: typeof record.updatedAt === 'string' ? record.updatedAt : new Date(0).toISOString(),
-        ledger: Array.isArray(record.ledger) ? record.ledger.filter((e): e is InstallationLedgerEntry => !!e && typeof e === 'object' && typeof (e as InstallationLedgerEntry).to === 'string') : [],
-        pendingUpgrade: record.pendingUpgrade && typeof record.pendingUpgrade === 'object' && typeof record.pendingUpgrade.to === 'string' && typeof record.pendingUpgrade.backup === 'string' ? record.pendingUpgrade : undefined,
-        recoveryRequired: record.recoveryRequired && typeof record.recoveryRequired === 'object' && typeof record.recoveryRequired.backup === 'string' ? record.recoveryRequired : undefined,
-      };
+      const checked = validateRecord(dataId, record);
+      if (checked.ok) registry.installations[dataId] = checked.record;
+      else invalid.push({ dataId, reason: checked.reason, raw: record, bundleIds: checked.bundleIds });
+    }
+    if (invalid.length > 0) {
+      const reason = `${invalid.length} installation record${invalid.length === 1 ? '' : 's'} invalid: ${invalid.map(r => `${r.dataId} (${r.reason})`).join('; ')}`;
+      console.error(`[SoftN Loader] ${reason}; the stored registry was quarantined and left in place`);
+      registry.damaged = { quarantineKey: quarantine(), reason, records: invalid };
     }
     return registry;
   } catch (error) {
@@ -161,16 +258,22 @@ export function loadRegistry(storage: RegistryStorage): InstallationRegistry {
 
 /**
  * Persist the registry. Returns false (and writes nothing) when the write
- * fails or when the stored copy is damaged and the caller did not explicitly
- * acknowledge discarding it (the quarantined bytes are kept either way).
+ * fails, when the stored copy could not be read (nothing may replace records
+ * that were never inspected), or when the stored copy is damaged and the
+ * caller did not explicitly acknowledge discarding it (the quarantined bytes
+ * are kept either way; an acknowledged save keeps only the valid records).
  */
 export function saveRegistry(storage: RegistryStorage, registry: InstallationRegistry, options: { acknowledgeDamage?: boolean } = {}): boolean {
+  if (registry.unavailable) {
+    console.error('[SoftN Loader] Refusing to overwrite an installation registry that could not be read');
+    return false;
+  }
   if (registry.damaged && !options.acknowledgeDamage) {
     console.error('[SoftN Loader] Refusing to overwrite a damaged installation registry without acknowledgement');
     return false;
   }
   try {
-    const { damaged: _damaged, ...clean } = registry;
+    const { damaged: _damaged, unavailable: _unavailable, ...clean } = registry;
     storage.setItem(REGISTRY_KEY, JSON.stringify(clean));
     delete registry.damaged;
     return true;
@@ -188,6 +291,7 @@ export function findByBundle(registry: InstallationRegistry, bundleId: string): 
  * Decide, WITHOUT side effects, what opening this bundle means for data.
  */
 export function resolveInstallation(registry: InstallationRegistry, bundleId: string, manifestName: string | undefined): IdentityResolution {
+  if (registry.unavailable) return { kind: 'registry-unavailable', reason: registry.unavailable.reason };
   const pending = Object.values(registry.installations).find(record => record.pendingUpgrade?.to === bundleId);
   if (pending?.pendingUpgrade) {
     if (pending.recoveryRequired) return { kind: 'recovery-required', dataId: pending.dataId, record: pending };
@@ -196,6 +300,10 @@ export function resolveInstallation(registry: InstallationRegistry, bundleId: st
   const known = findByBundle(registry, bundleId);
   if (known) {
     if (known.recoveryRequired) return { kind: 'recovery-required', dataId: known.dataId, record: known };
+    // The installation is mid-upgrade to a different package (R3-SN-01):
+    // this older package must not run against data the newer one may have
+    // changed until the person rolls back or finishes the upgrade.
+    if (known.pendingUpgrade) return { kind: 'upgrade-unresolved', dataId: known.dataId, record: known, pending: known.pendingUpgrade };
     return { kind: 'known', dataId: known.dataId, record: known };
   }
   if (registry.damaged) return { kind: 'registry-damaged', quarantineKey: registry.damaged.quarantineKey, reason: registry.damaged.reason };
@@ -251,8 +359,9 @@ export function approveUpgrade(
  * Stage an approved upgrade (R2-SN-03). Requires a verified backup path; the
  * digest is NOT mapped yet — `completeUpgrade` maps it once the new package
  * started successfully, `rollbackUpgrade` drops it after the data snapshot
- * was restored. Until then reopening the previous package still reaches the
- * same data (its digest stays mapped).
+ * was restored. Until then every package mapped to the installation is
+ * gated (`upgrade-unresolved`), because the new package may already have
+ * changed the data.
  */
 export function beginUpgrade(
   registry: InstallationRegistry,
@@ -268,6 +377,22 @@ export function beginUpgrade(
   if (record.pendingUpgrade && record.pendingUpgrade.to !== bundleId) throw new Error('Another upgrade of this installation is still pending; resolve it first.');
   record.pendingUpgrade = { from: record.bundleIds[record.bundleIds.length - 1] ?? null, to: bundleId, backup: details.backup, at: now.toISOString(), version: details.version, name: details.manifestName };
   return record;
+}
+
+/**
+ * The operation a running session is finishing or undoing. Completion and
+ * rollback are bound to it: a pending record for a DIFFERENT digest or backup
+ * belongs to another operation and is never finished or undone by mistake.
+ */
+export interface UpgradeOperation {
+  dataId: string;
+  bundleId: string;
+  backup: string;
+}
+
+/** Whether the installation's pending record is exactly this operation. */
+export function pendingMatches(record: InstallationRecord | undefined, operation: UpgradeOperation): record is InstallationRecord & { pendingUpgrade: PendingUpgrade } {
+  return !!record?.pendingUpgrade && record.pendingUpgrade.to === operation.bundleId && record.pendingUpgrade.backup === operation.backup;
 }
 
 /** The new package started: map its digest and record the ledger entry. */

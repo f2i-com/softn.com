@@ -98,13 +98,22 @@ describe('installation identity', () => {
     expect(saveRegistry(damaged, loadedDamaged, { acknowledgeDamage: true })).toBe(true);
     expect(loadRegistry(damaged)).toEqual(emptyRegistry());
 
-    const wrongShape = storage({ [REGISTRY_KEY]: JSON.stringify({ version: 1, installations: { [v1]: { dataId: 'other', bundleIds: [v1] }, [v2]: { dataId: v2, bundleIds: 'nope' }, [impostor]: { dataId: impostor, bundleIds: [impostor, 5] } } }) });
+    // R3-SN-02: identity-critical damage in individual records is kept as damaged
+    // material (never dropped), gates the packages it names, and blocks ordinary saves.
+    const wrongShapeRaw = JSON.stringify({ version: 1, installations: { [v1]: { dataId: 'other', bundleIds: [v1] }, [v2]: { dataId: v2, bundleIds: 'nope' }, [impostor]: { dataId: impostor, bundleIds: [impostor, 5] } } });
+    const wrongShape = storage({ [REGISTRY_KEY]: wrongShapeRaw });
     const loaded = loadRegistry(wrongShape);
-    expect(Object.keys(loaded.installations)).toEqual([impostor]);
-    expect(loaded.installations[impostor].bundleIds).toEqual([impostor]);
+    expect(Object.keys(loaded.installations)).toEqual([]);
+    expect(loaded.damaged?.records.map(r => r.dataId)).toEqual([v1, v2, impostor]);
+    expect(loaded.damaged?.records[0].bundleIds).toEqual([v1]);
+    expect(resolveInstallation(loaded, v1, 'Fieldnotes').kind).toBe('registry-damaged');
+    expect(saveRegistry(wrongShape, loaded)).toBe(false);
+    expect(wrongShape.store.get(REGISTRY_KEY)).toBe(wrongShapeRaw);
 
+    // A read that fails is UNAVAILABLE, not empty: nothing is known and nothing may be saved.
     const throwing = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
-    expect(loadRegistry(throwing)).toEqual(emptyRegistry());
+    expect(loadRegistry(throwing)).toEqual({ ...emptyRegistry(), unavailable: { reason: 'denied' } });
+    expect(resolveInstallation(loadRegistry(throwing), v1, 'Fieldnotes')).toEqual({ kind: 'registry-unavailable', reason: 'denied' });
     expect(saveRegistry(throwing, registry)).toBe(false);
     errors.mockRestore();
   });
@@ -119,7 +128,8 @@ describe('installation identity', () => {
     // Staged, not mapped: the new digest resolves as pending, the old one still works.
     expect(registry.installations[v1].bundleIds).toEqual([v1]);
     expect(resolveInstallation(registry, v2, 'Fieldnotes')).toMatchObject({ kind: 'pending-upgrade', dataId: v1 });
-    expect(resolveInstallation(registry, v1, 'Fieldnotes')).toMatchObject({ kind: 'known', dataId: v1 });
+    // R3-SN-01: the OLD package is gated too while the installation's upgrade is unresolved.
+    expect(resolveInstallation(registry, v1, 'Fieldnotes')).toMatchObject({ kind: 'upgrade-unresolved', dataId: v1, pending: { to: v2 } });
     expect(() => beginUpgrade(registry, impostor, v1, { backup: '/x' })).toThrow(/still pending/);
     // The staging survives a save/load round trip (it is what a restart resumes from).
     const store = storage();
