@@ -140,8 +140,9 @@ workflows, e2e, the Tauri side, the docs kit, the examples) was acted on.
 Still open: Builder-side generation of its component registry from the
 manifest; a package home for the web runtime modules the single shell
 imports (`bundleProcessor`, `zipWarmup`, `FrameBar`); desktop code
-signing; renaming `apps/softn-php` (a FormLogic touchpoint, needs a
-coordinated pin bump); the historical `If-None-Match` item.
+signing; the historical `If-None-Match` item. (`apps/softn-php` and
+`apps/softn-rust` were since renamed `apps/softn-host-php` and
+`apps/softn-host-rust`, with the FormLogic scripts following.)
 
 ## Deferred at the first pass (for the record)
 

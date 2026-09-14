@@ -129,7 +129,7 @@ Use the editable [FormLogic workspace](examples/formlogic-workspace) and [Aokie 
 
 For an app with custom backend `.logic` and SQLite, configure those server resources in the hosting platform and expose the actions the client needs. Keep private scripts, credentials and databases on the server. Downloading the client bundle does not copy a live backend or grant access to it.
 
-The [starter conversion guide](docs/engineering/FORMLOGIC_INTEGRATION.md) explains schema mapping and export boundaries. The host source and workspace examples above show the connected runtime; [private backend deployment](apps/softn-rust/PRIVATE_BACKEND.md) covers SoftN's own server host.
+The [starter conversion guide](docs/engineering/FORMLOGIC_INTEGRATION.md) explains schema mapping and export boundaries. The host source and workspace examples above show the connected runtime; [private backend deployment](apps/softn-host-rust/PRIVATE_BACKEND.md) covers SoftN's own server host.
 
 ## Choose where it runs
 
@@ -139,7 +139,7 @@ The [starter conversion guide](docs/engineering/FORMLOGIC_INTEGRATION.md) explai
 | **App directory**           | Publish a bundle with its own page, browser player and server storage. See the [directory guide](apps/softn-api/README.md).             |
 | **Your own website**        | Deploy the app in an unbranded [single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md).                                                        |
 | **Private PHP deployment**  | Serve a single app from a private archive using the [PHP deployment guide](docs/engineering/SINGLE_APP_PRIVATE.md).                               |
-| **Server logic and SQLite** | Use the [Rust private backend](apps/softn-rust/PRIVATE_BACKEND.md) or [PHP backend packaging](apps/softn-php/SINGLE_APP_DEPLOYMENT.md). |
+| **Server logic and SQLite** | Use the [Rust private backend](apps/softn-host-rust/PRIVATE_BACKEND.md) or [PHP backend packaging](apps/softn-host-php/SINGLE_APP_DEPLOYMENT.md). |
 | **FormLogic**               | Use the connected host and named backend actions described above.                                                                       |
 
 A typical client bundle contains:
@@ -164,7 +164,7 @@ Capabilities such as network, microphone and synchronization require support and
 | Language and components | Expand the reference below for `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                   |
 | Data modeling           | [Builder collections, ER relationships and record references](docs/engineering/BUILDER_DATA.md)                                                                         |
 | Loading and composition | [Bundle loading](docs/engineering/BUNDLE_LOADING.md) · [Component loading](docs/engineering/COMPONENT_LOADING.md) · [Reopening local apps](docs/engineering/LOCAL_APP_REOPEN.md)                   |
-| Hosting                 | [Single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/engineering/SINGLE_APP_PRIVATE.md) · [Private backend](apps/softn-rust/PRIVATE_BACKEND.md) |
+| Hosting                 | [Single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/engineering/SINGLE_APP_PRIVATE.md) · [Private backend](apps/softn-host-rust/PRIVATE_BACKEND.md) |
 | FormLogic               | [Starter adapter](docs/engineering/FORMLOGIC_INTEGRATION.md) · [Connected host](apps/formlogic-host/src/main.tsx) · [Workspace examples](examples)                         |
 | Local speech            | [Local speech guide](docs/engineering/LOCAL_SPEECH.md)                                                                                                                     |
 | Development             | [Setup, tests and key source paths](#development)                                                                                                              |
@@ -889,7 +889,7 @@ before running their Cargo commands:
 ```bash
 git clone https://github.com/f2i-com/zipp.org.git ../zipp.org
 git clone https://github.com/f2i-com/xdb.org.git ../xdb.org
-cargo test --manifest-path apps/softn-rust/Cargo.toml
+cargo test --manifest-path apps/softn-host-rust/Cargo.toml
 ```
 
 ### Testing

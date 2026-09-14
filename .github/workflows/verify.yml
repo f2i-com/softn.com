@@ -89,11 +89,23 @@ jobs:
         run: npm test
 
       # The private backend host is Rust and lives outside the npm
-      # workspaces; nothing else runs its tests.
+      # workspaces; nothing else runs its tests. It depends on XDB by sibling
+      # path (../../../xdb.org), so the pinned checkout comes first.
+      - name: Checkout pinned xdb.org dependency
+        run: bash .github/scripts/checkout-xdb.sh
       - name: Rust toolchain for the private backend host
         uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo for the private backend host
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            apps/softn-host-rust/target/
+          key: host-rust-${{ runner.os }}-${{ hashFiles('apps/softn-host-rust/Cargo.lock') }}
       - name: Test the private backend host
-        run: cargo test --manifest-path apps/softn-rust/Cargo.toml
+        run: cargo test --manifest-path apps/softn-host-rust/Cargo.toml
 
   # The desktop loader's Rust side, against the pinned XDB checkout the
   # release matrix builds with (.github/scripts/checkout-xdb.sh), so a change

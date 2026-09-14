@@ -3640,7 +3640,7 @@
               "items": [
                 {
                   "label": "Rust private backend guide",
-                  "href": "https://github.com/f2i-com/softn.com/blob/main/apps/softn-rust/PRIVATE_BACKEND.md",
+                  "href": "https://github.com/f2i-com/softn.com/blob/main/apps/softn-host-rust/PRIVATE_BACKEND.md",
                   "description": "The private-backend guide linked in the README; inspect the current checkout for exact setup."
                 },
                 {

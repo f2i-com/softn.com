@@ -27,6 +27,11 @@ section here. Write the section before tagging. Headings are the tag
   (`@softn/single-private`), with its PHP in `php/` rather than `public/`;
   `npm run build:single-php-serve` and `package:single-php-serve` still work
   as aliases for one release. The guide is `docs/engineering/SINGLE_APP_PRIVATE.md`.
+- The two backend hosts are named for what they are: `apps/softn-php` is now
+  `apps/softn-host-php` (`@softn/host-php`; its `runtime/` files are unchanged
+  byte for byte, so FormLogic's vendored copy still matches) and
+  `apps/softn-rust` is `apps/softn-host-rust` (the crate and binary stay
+  `softn-server`).
 
 ## v0.0.12
 

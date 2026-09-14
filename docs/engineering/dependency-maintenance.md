@@ -8,7 +8,7 @@ npm test
 npm run build:site
 npm run licenses:check
 npm audit
-cargo test --locked --manifest-path apps/softn-rust/Cargo.toml
+cargo test --locked --manifest-path apps/softn-host-rust/Cargo.toml
 cargo check --locked --manifest-path apps/softn-loader/src-tauri/Cargo.toml
 cargo check --locked --manifest-path apps/softn-builder/src-tauri/Cargo.toml
 ```

@@ -124,14 +124,14 @@ test('every package script ships README.md first and the guide the explainer nam
     assert.equal(packageById(id).guide, 'DEPLOYMENT.md');
   }
   // The two backend archives: packagePhp puts the guide under DEPLOYMENT.md and the explainer under README.md.
-  const php = read('apps/softn-php/package.mjs');
+  const php = read('apps/softn-host-php/package.mjs');
   assert.ok(php.includes("explainer?'DEPLOYMENT.md':'START-HERE.md'"));
   assert.ok(php.includes("add('README.md',explainer)"));
   assert.ok(read('scripts/package-single-backend.mjs').includes("explainerFile('single-backend'"));
   assert.ok(read('scripts/package-private-single-php.mjs').includes("explainerFile('private-backend'"));
   assert.ok(read('scripts/test-single-backend.py').includes("'README.md','DEPLOYMENT.md'"), 'the backend archive check asserts the front door and the guide');
   // All four archive writers go through the one shared writer.
-  for (const script of ['scripts/package-site.mjs', 'scripts/package-single.mjs', 'scripts/package-single-private.mjs', 'apps/softn-php/package.mjs']) {
+  for (const script of ['scripts/package-site.mjs', 'scripts/package-single.mjs', 'scripts/package-single-private.mjs', 'apps/softn-host-php/package.mjs']) {
     assert.ok(read(script).includes('writeArchive('), `${script} uses scripts/lib/archive.mjs`);
     assert.ok(!/(?<!un)zipSync\(/.test(read(script)), `${script} no longer has its own zip writer`);
   }
