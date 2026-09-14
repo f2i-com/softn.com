@@ -276,9 +276,9 @@ jobs:
       - name: Verify the optional backend distribution
         run: |
           python3 scripts/test-single-backend.py --archive "$(ls release/softn-app-static-with-backend-linux-x64-v*.zip)"
-          python3 apps/softn-php/tests/apache-smoke.py --archive "$(ls release/softn-app-static-with-backend-linux-x64-v*.zip)"
+          python3 apps/softn-host-php/tests/apache-smoke.py --archive "$(ls release/softn-app-static-with-backend-linux-x64-v*.zip)"
           python3 scripts/test-single-backend.py --private --archive "$(ls release/softn-app-private-with-backend-linux-x64-v*.zip)"
-          python3 apps/softn-php/tests/apache-smoke.py --private --archive "$(ls release/softn-app-private-with-backend-linux-x64-v*.zip)"
+          python3 apps/softn-host-php/tests/apache-smoke.py --private --archive "$(ls release/softn-app-private-with-backend-linux-x64-v*.zip)"
 
       - name: Keep the archive with the workflow run
         uses: actions/upload-artifact@v4

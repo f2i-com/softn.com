@@ -9,7 +9,7 @@ Linux x86-64, glibc 2.28+, PHP 8.1+, enabled proc_open/proc_get_status/proc_term
 Low-level template archives contain no application. The optional-backend single-app distribution includes the public counter example, but no private server bundle. Install the expanded private bundle at backend/app/, place the public .softn at webroot/app.softn, and supply a matching runtime.config.json before setup. Prefer the packager to generate the client hash and validate separation automatically:
 
 ```
-node apps/softn-php/package.mjs --runtime <compiled-single-runtime> --bundle <expanded-private-bundle> --client <public.softn> --node-dir <node-linux-x64> --wasm-dir <zipp-web-artifacts> --notices <native-notices> --out <hosting.zip>
+node apps/softn-host-php/package.mjs --runtime <compiled-single-runtime> --bundle <expanded-private-bundle> --client <public.softn> --node-dir <node-linux-x64> --wasm-dir <zipp-web-artifacts> --notices <native-notices> --out <hosting.zip>
 ```
 
 Use `--template` without --bundle/--client to produce a reusable runtime archive. Build tools are needed only on the packaging machine. Hosts receive compiled assets and a bundled executable.
@@ -23,7 +23,7 @@ documented in [LIVE_UPDATES.md](LIVE_UPDATES.md). The single-app CI distribution
 includes both; polling requires no persistent service. The static-only ZIP remains
 available without backend files.
 
-- manifest.server.entry selects the private .logic source; manifest.server.routes selects handler functions, with the route schema the Rust host reads (`apps/softn-rust/PRIVATE_BACKEND.md`): `method`, `path`, `handler`, optional `transaction` (`read` or `write`; unset or `none` means `read` for a GET and `write` otherwise), optional `authorization` (`application` or `anonymous`; unset means `application`), optional `maxBodySize`. A route this host cannot serve — a path outside `/api/` (Apache routes only those to api.php), a method other than GET/POST/PUT/DELETE, or `authorization: "hosttoken"` (this host holds no token; such a route answers 401) — is set aside and listed under `unservedRoutes` by `GET /api/meta`, and the rest of the app runs. No route parameters or wildcards yet.
+- manifest.server.entry selects the private .logic source; manifest.server.routes selects handler functions, with the route schema the Rust host reads (`apps/softn-host-rust/PRIVATE_BACKEND.md`): `method`, `path`, `handler`, optional `transaction` (`read` or `write`; unset or `none` means `read` for a GET and `write` otherwise), optional `authorization` (`application` or `anonymous`; unset means `application`), optional `maxBodySize`. A route this host cannot serve — a path outside `/api/` (Apache routes only those to api.php), a method other than GET/POST/PUT/DELETE, or `authorization: "hosttoken"` (this host holds no token; such a route answers 401) — is set aside and listed under `unservedRoutes` by `GET /api/meta`, and the rest of the app runs. No route parameters or wildcards yet.
 - Request bodies are JSON, limited to the route's `maxBodySize`, else `config.server.maxBodySize`, else 256 KB; a declared value is honoured up to 2 MB (a `photo` upload route up to 5.6 MB). The Rust host reads the same fields with a 2 MB default.
 - Requires server API v1. Implemented capabilities: sql, crypto, time, trusted-client-ip, transaction-scope, photos. Requested capabilities must also be granted in private/config.json. Unsupported capabilities and enabled XDB sync fail closed; apps requiring db/XDB sync, arbitrary HTTP/FS, native modules or persistent callbacks are not compatible with this first adapter.
 - The app owns authentication/authorization for `application` routes. PHP only forwards trusted HTTP metadata; client-controlled forwarded-IP headers are ignored. Configure Apache mod_remoteip for an actual trusted upstream proxy if needed.
@@ -49,8 +49,8 @@ This is a tested preview, not an independent security audit or a claim of compat
 Use a fresh extracted package's backend for the WASM/SQLite unit tests:
 
 ```
-SOFTN_PHP_TEST_BACKEND=/path/to/extracted/backend node --test apps/softn-php/tests/runtime.test.mjs
-python3 apps/softn-php/tests/apache-smoke.py --archive /path/to/template.zip
+SOFTN_PHP_TEST_BACKEND=/path/to/extracted/backend node --test apps/softn-host-php/tests/runtime.test.mjs
+python3 apps/softn-host-php/tests/apache-smoke.py --archive /path/to/template.zip
 ```
 
 The integration test targets Debian/Ubuntu Apache module paths and php-cgi, runs an isolated local instance on port 8811, installs a separate counter app, checks bearer forwarding and persistent data, and exercises process-slot/output/deadline limits. It stops its Apache process and leaves its temporary extraction/logs for inspection. It does not change an existing Apache site.

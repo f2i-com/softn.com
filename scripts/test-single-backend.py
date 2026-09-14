@@ -30,5 +30,5 @@ b=root/'backend';app=b/'app';app.mkdir()
 (app/'main.logic').write_text('function increment(){softn.sql.execute("UPDATE counter SET value=value+1",[]);return {status:200,body:softn.sql.first("SELECT value FROM counter",[])};}')
 subprocess.run(['php',str(b/'setup.php')],check=True)
 tests=['runtime.test.mjs','request-hook.test.mjs','package.test.mjs','startup-diagnostics.test.mjs','websocket.test.mjs']
-subprocess.run([str(b/'bin/node'),'--test',*[str(repo/'apps/softn-php/tests'/t) for t in tests]],env={**os.environ,'SOFTN_PHP_TEST_BACKEND':str(b)},check=True)
+subprocess.run([str(b/'bin/node'),'--test',*[str(repo/'apps/softn-host-php/tests'/t) for t in tests]],env={**os.environ,'SOFTN_PHP_TEST_BACKEND':str(b)},check=True)
 print('Optional backend archive verified:',root,flush=True)

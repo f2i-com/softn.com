@@ -71,7 +71,7 @@ and a separate private `backend/` with bundled Linux x64 Node, SQLite and ZIPP W
 The example client works without configuring a backend. Enable server support only
 when your app needs it; follow the included README.md (the short explainer
 every release archive carries) and DEPLOYMENT.md, which is the
-[PHP deployment guide](../apps/softn-php/SINGLE_APP_DEPLOYMENT.md).
+[PHP deployment guide](../apps/softn-host-php/SINGLE_APP_DEPLOYMENT.md).
 
 PHP/WASM is the Apache hosting option; the Rust server remains available for its
 additional native capabilities. A third option, [the PHP-served single app](SINGLE_APP_PRIVATE.md),

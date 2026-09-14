@@ -28,7 +28,7 @@ FormLogic keeps a vendored copy with license and SHA-256 provenance. After chang
 
 The intended next step is a scoped FormLogic host SDK for authenticated form operations, followed by revisioned hosting and optional private SQLite entities. Preserve original form/field IDs, reuse server validation and idempotency, and keep customized UI files separate from regenerated form components. Existing forms should retain their current runtime until field and permission parity is verified.
 
-Private SQLite deployment is documented in [PRIVATE_BACKEND.md](../apps/softn-rust/PRIVATE_BACKEND.md) and [SINGLE_APP_DEPLOYMENT.md](../apps/softn-php/SINGLE_APP_DEPLOYMENT.md). Downloadable client artifacts must remain separate from registered server bundles, operator keys and databases.
+Private SQLite deployment is documented in [PRIVATE_BACKEND.md](../apps/softn-host-rust/PRIVATE_BACKEND.md) and [SINGLE_APP_DEPLOYMENT.md](../apps/softn-host-php/SINGLE_APP_DEPLOYMENT.md). Downloadable client artifacts must remain separate from registered server bundles, operator keys and databases.
 
 ## Mobile project navigation
 

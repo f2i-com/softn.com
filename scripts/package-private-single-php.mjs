@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {packagePhp} from '../apps/softn-php/package.mjs';
+import {packagePhp} from '../apps/softn-host-php/package.mjs';
 import {prepareBackendInputs,explainerFile,root} from './single-backend-inputs.mjs';
 const app=join(root,'apps/softn-single-private');
 const dist=join(app,'dist');

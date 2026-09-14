@@ -1,5 +1,5 @@
 {
-  "name": "@softn/php-host",
+  "name": "@softn/host-php",
   "version": "0.0.12",
   "private": true,
   "description": "The PHP front and bundled Node worker that host a single app's backend on demand",
