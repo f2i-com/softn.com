@@ -5,6 +5,7 @@
  */
 
 import * as React from 'react';
+import { chartColor } from '../theme/chart-palette';
 
 export interface GaugeThreshold {
   value: number;
@@ -26,7 +27,8 @@ export interface GaugeChartProps {
   style?: React.CSSProperties;
 }
 
-const DEFAULT_COLOR = '#6366f1';
+// The theme's first series colour, as the other charts use it.
+const DEFAULT_COLOR = chartColor(0);
 
 /**
  * Returns the total arc angle in degrees for each variant.

@@ -45,6 +45,25 @@ interface WorkerXDBRecord {
 let tempIdCounter = 0;
 
 /**
+ * The id a worker-created record carries until the main thread has stored
+ * it. A real UUID where the worker has one to give (every browser worker
+ * does): the main thread's store keeps that id, so a script that puts the id
+ * of one record into another (`{ taskId: db.create(...).id }`) persists a
+ * reference that resolves, and the id it holds is the id everyone else sees.
+ * Without `crypto.randomUUID` the old placeholder is used and mapped to the
+ * stored id on the main thread as before.
+ */
+export function workerRecordId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return `_wk_${++tempIdCounter}`;
+}
+
+/** Whether an id is a placeholder the main thread must map to a stored id. */
+export function isWorkerPlaceholderId(id: string): boolean {
+  return id.startsWith('_wk_');
+}
+
+/**
  * In-memory DB bridge backed by a snapshot from the main thread.
  * Supports read operations from the snapshot and queues write operations
  * as mutations to be applied on the main thread.
@@ -125,7 +144,7 @@ export class SnapshotDBBridge {
   }
 
   create(collection: string, data: Record<string, unknown>): WorkerXDBRecord {
-    const tempId = `_wk_${++tempIdCounter}`;
+    const tempId = workerRecordId();
     const now = new Date().toISOString();
     const record: WorkerXDBRecord = {
       id: tempId,

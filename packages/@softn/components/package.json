@@ -67,7 +67,9 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "generate:manifest": "node scripts/generate-manifest.mjs",
+    "generate:hex-baseline": "node scripts/hex-literal-baseline.mjs"
   },
   "dependencies": {
     "@rc-component/qrcode": "^1.1.1",

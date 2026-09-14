@@ -1,10 +1,9 @@
-import { defineConfig } from 'vitest/config';
+import { defineWorkspaceTest } from '../../../vitest.base.mjs';
 
-export default defineConfig({
+export default defineWorkspaceTest({
   test: {
     environment: 'jsdom',
     globals: true,
-    include: ['test/**/*.test.{ts,tsx}'],
     setupFiles: ['./test/setup.ts'],
   },
   esbuild: {

@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useDynamicSoftN } from '../src/loader/useDynamicSoftN';
+import { DYNAMIC_SOFTN_UNAVAILABLE, useDynamicSoftN } from '../src/loader/useDynamicSoftN';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -231,5 +231,21 @@ describe('useDynamicSoftN file watching', () => {
       await Promise.all([read.promise, registration.promise]);
       await Promise.resolve();
     });
+  });
+});
+
+describe('useDynamicSoftN on a host without its commands (deprecated)', () => {
+  it("reports that the host provides no file loading instead of Tauri's command-not-found", async () => {
+    const invoke = vi.fn((command: string) => Promise.reject(new Error(`Command ${command} not found`)));
+    (window as typeof window & { __TAURI__?: unknown }).__TAURI__ = { core: { invoke } };
+    await act(async () => {
+      root.render(<Probe filePath="/apps/a.ui" />);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(output().dataset.loading).toBe('false');
+    expect(output().dataset.error).toBe(DYNAMIC_SOFTN_UNAVAILABLE);
+    expect(output().dataset.error).toMatch(/deprecated/);
   });
 });

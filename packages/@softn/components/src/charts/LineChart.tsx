@@ -7,6 +7,7 @@
 
 import * as React from 'react';
 import { normaliseSeries } from './series';
+import { chartPalette } from '../theme/chart-palette';
 
 export interface DataPoint {
   x: number | string;
@@ -46,7 +47,9 @@ export interface LineChartProps {
   style?: React.CSSProperties;
 }
 
-const defaultColors = ['#6366f1', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
+// The theme's series colours (custom properties with the light values as
+// fallbacks), so a dark theme is not drawn in a light palette.
+const defaultColors = chartPalette();
 
 export function LineChart({
   series: rawSeries,

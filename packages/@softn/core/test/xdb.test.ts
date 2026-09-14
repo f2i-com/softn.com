@@ -36,6 +36,19 @@ describe('XDB Service', () => {
       expect(record.updated_at).toBeDefined();
     });
 
+    it('keeps a caller-chosen id when it is free, and generates one when it is not', () => {
+      const chosen = xdb.create('tasks', { title: 'chosen' }, { id: 'given-id' });
+      expect(chosen.id).toBe('given-id');
+      expect(xdb.get('tasks', 'given-id')?.data.title).toBe('chosen');
+      const clash = xdb.create('tasks', { title: 'clash' }, { id: 'given-id' });
+      expect(clash.id).not.toBe('given-id');
+      expect(xdb.get('tasks', 'given-id')?.data.title).toBe('chosen');
+      // A tombstoned id is not reused either.
+      xdb.delete('given-id');
+      expect(xdb.create('tasks', { title: 'later' }, { id: 'given-id' }).id).not.toBe('given-id');
+      expect(xdb.create('tasks', { title: 'blank' }, { id: '' }).id).not.toBe('');
+    });
+
     it('should get a record by ID', () => {
       const created = xdb.create('tasks', { title: 'Test task' });
       const retrieved = xdb.get('tasks', created.id);
