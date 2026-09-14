@@ -288,38 +288,18 @@ interface AudioOutcome {
 
 
 /**
- * Optional WASM-based host bridge detector. Set by the WASM adapter when loaded.
- * Uses the Rust lexer for proper lexical analysis instead of regex.
- */
-let _wasmDetectHostBridges: ((code: string) => string[]) | null = null;
-
-/** Register the WASM-based detectHostBridges function (called by WasmFormLogicAdapter). */
-export function setWasmDetectHostBridges(fn: (code: string) => string[]): void {
-  _wasmDetectHostBridges = fn;
-}
-
-/**
  * Fast compatibility check used for worker-mode migration gating.
  * Scripts that rely on synchronous host bridges are currently main-thread only.
  *
- * Uses the WASM lexer (detectHostBridges) when available for robust token-level
- * analysis that correctly handles comments, strings, template literals, and regex.
- * Falls back to regex-based stripping when WASM is not loaded.
+ * Strips comments and string literals before matching, so a bridge name
+ * inside a string or a comment is not mistaken for a use. (The retired
+ * FormLogic VM once offered a lexer-based detector here; the ZIPP engine has
+ * no such hook and this is the only implementation.)
  */
 export function detectWorkerIncompatibilities(code: string): string[] {
   if (!code) return [];
 
-  // Try WASM lexer first — proper lexical analysis, no false positives from
-  // regex edge cases (regex literals, nested template strings, etc.)
-  if (_wasmDetectHostBridges) {
-    try {
-      return _wasmDetectHostBridges(code);
-    } catch {
-      // WASM call failed — fall through to regex fallback
-    }
-  }
-
-  // Regex fallback: strip comments and string literals to prevent false positives.
+  // Strip comments and string literals to prevent false positives.
   const stripped = code
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/[^\n\r]*/g, '')

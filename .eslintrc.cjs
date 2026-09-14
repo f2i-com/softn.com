@@ -21,9 +21,7 @@ module.exports = {
     'target',
     // wasm-bindgen output — generated, and its own eslint-disable header
     // trips `reportUnusedDisableDirectives`.
-    'packages/@softn/core/wasm/**',
     'packages/@softn/core/wasm-zipp/**',
-    'packages/@softn/core/src/runtime/wasm/**',
   ],
   parser: '@typescript-eslint/parser',
   parserOptions: {

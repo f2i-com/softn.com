@@ -1,0 +1,22 @@
+{
+  "name": "@softn/bundle-format",
+  "version": "0.0.12",
+  "private": true,
+  "description": "The .softn bundle contract every SoftN surface shares: the archive reader, the inspector, permission declarations and the page-to-page hand-off. No engine, no React.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./zip": "./src/zip.ts",
+    "./inspect": "./src/inspect.ts",
+    "./handoff": "./src/handoff.ts",
+    "./capabilities": "./src/capabilities.ts",
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}

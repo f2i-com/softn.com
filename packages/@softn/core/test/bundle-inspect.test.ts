@@ -41,6 +41,14 @@ describe('inspectBundle', () => {
     expect(errors(r)).toEqual([]);
   });
 
+  it('refuses an archive carrying an entry that could only be an escape', () => {
+    // The archive reader drops such entries so a runtime opens the rest; the
+    // inspector (the publish gate) refuses the bundle and names the entry.
+    const r = inspectBundle(bundle({ ...good, '../escape.txt': 'x' }));
+    expect(r.problem).toMatch(/unsafe path: \.\.\/escape\.txt/);
+    expect(r.name).toBe('Notes');
+  });
+
   it('refuses what is not an archive, has no manifest, or has no entry', () => {
     expect(inspectBundle(ascii('not a zip')).problem).toMatch(/not a \.softn bundle/);
     expect(inspectBundle(bundle({ 'ui/main.ui': '<App/>' })).problem).toMatch(/no manifest\.json/);
