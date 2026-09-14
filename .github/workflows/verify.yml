@@ -89,10 +89,13 @@ jobs:
         run: npm test
 
       # The private backend host is Rust and lives outside the npm
-      # workspaces; nothing else runs its tests. It depends on XDB by sibling
-      # path (../../../xdb.org), so the pinned checkout comes first.
+      # workspaces; nothing else runs its tests. It depends on XDB and on the
+      # ZIPP VM crate by sibling path (../../../xdb.org, ../../../zipp.org),
+      # so both pinned checkouts come first.
       - name: Checkout pinned xdb.org dependency
         run: bash .github/scripts/checkout-xdb.sh
+      - name: Checkout pinned zipp.org dependency
+        run: bash .github/scripts/checkout-zipp.sh
       - name: Rust toolchain for the private backend host
         uses: dtolnay/rust-toolchain@stable
       - name: Cache Cargo for the private backend host
