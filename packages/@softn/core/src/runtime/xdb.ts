@@ -110,7 +110,14 @@ export interface XDBServiceOptions {
 //   failed       native hydration failed as a whole (retryable)
 
 export type XDBStorageState = 'loading' | 'ready' | 'degraded' | 'memory-only' | 'failed';
-export type XDBStorageIssueKind = 'inaccessible' | 'corrupt' | 'quota' | 'hydration-failed' | 'migration-incomplete';
+export type XDBStorageIssueKind =
+  | 'inaccessible'
+  | 'corrupt'
+  | 'quota'
+  | 'hydration-failed'
+  | 'migration-incomplete'
+  /** A native (SQLite) write the synchronous API had already answered for was refused; the in-memory record and the database disagree. */
+  | 'write-failed';
 
 export interface XDBStorageIssue {
   kind: XDBStorageIssueKind;
@@ -496,6 +503,34 @@ export class XDBService {
     this.noteIssue(issue);
   }
 
+  /**
+   * A native write the synchronous API had already answered for came back
+   * refused (core audit 2.4). The API's result shapes are unchanged — the
+   * caller got its optimistic record — so the disagreement between memory
+   * and SQLite is reported where the host can see it: the console, as before,
+   * and the storage status, which the host's notice bar watches. The next
+   * acknowledged write to the same collection clears it.
+   */
+  private nativeWriteFailed(operation: string, collection: string | undefined, err: unknown): void {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`[XDB] Failed to ${operation} in the native database:`, err);
+    this.noteIssue({
+      kind: 'write-failed',
+      collection,
+      message: collection
+        ? `A change to "${collection}" could not be saved to the native database (${reason}). What you see may not be what is stored; retry the change or export your data.`
+        : `A change could not be saved to the native database (${reason}). What you see may not be what is stored; retry the change or export your data.`,
+    });
+  }
+
+  /** A native write landed: a refusal noted for its collection no longer describes the store. */
+  private nativeWriteLanded(collection: string | undefined): void {
+    if (!this.issues.some(i => i.kind === 'write-failed' && i.collection === collection)) return;
+    this.issues = this.issues.filter(i => !(i.kind === 'write-failed' && i.collection === collection));
+    if (this.storageState === 'degraded' && this.corrupt.size === 0 && this.issues.length === 0) this.storageState = 'ready';
+    this.notifyStatus();
+  }
+
   /** Whether the collection's stored bytes are readable (false = quarantined). */
   isCollectionReadable(collection: string): boolean {
     return !this.corrupt.has(collection);
@@ -808,14 +843,17 @@ export class XDBService {
       const coll = this.getOrCreateCollection(collection);
       coll.set(optimisticRecord.id, optimisticRecord);
       this.pendingCreateIds.add(optimisticRecord.id);
-      this.notifyMutation('create', collection, optimisticRecord.id, data);
 
-      // Create in backend asynchronously
+      // Create in backend asynchronously. Server sync is told once SQLite has
+      // the record and under the id SQLite gave it: announced on the optimistic
+      // id, a record that the native write then refused was pushed to the
+      // server under an id that exists nowhere.
       this.native<XDBRecord>('create_record', {
         payload: { collection, data },
       })
         .then((serverRecord) => {
           this.pendingCreateIds.delete(optimisticRecord.id);
+          this.nativeWriteLanded(collection);
           const c = this.getOrCreateCollection(collection);
           const currentOptimistic = c.get(optimisticRecord.id);
           c.delete(optimisticRecord.id);
@@ -833,17 +871,18 @@ export class XDBService {
             // Push merged data to server so it's persisted
             this.native('update_record', {
               payload: { id: serverRecord.id, data: mergedData },
-            }).catch(() => {});
+            }).catch((err) => this.nativeWriteFailed('update a record', collection, err));
           } else {
             mergedRecord = serverRecord;
           }
 
           c.set(serverRecord.id, mergedRecord);
           this.emit({ type: 'create', collection, record: mergedRecord });
+          this.notifyMutation('create', collection, mergedRecord.id, mergedRecord.data);
         })
         .catch((err) => {
           this.pendingCreateIds.delete(optimisticRecord.id);
-          console.error('[XDB] Failed to create record, rolling back:', err);
+          this.nativeWriteFailed('create a record', collection, err);
           // Rollback: remove optimistic record from cache
           const c = this.memoryStore.get(collection);
           if (c) c.delete(optimisticRecord.id);
@@ -1079,11 +1118,17 @@ export class XDBService {
       // Resolve optimistic ID → server ID if the create callback has already fired
       const resolvedId = this.optimisticIdMap.get(id) || id;
 
+      // The collection of the record this touched, for the failure report,
+      // and whether its own create was still in flight when this was sent:
+      // by the time SQLite answers, the create may have landed.
+      let touched: string | undefined;
+      const racingCreate = this.pendingCreateIds.has(id);
       // Async update via Tauri - fire and forget
       this.native<XDBRecord>('update_record', {
         payload: { id: resolvedId, data },
       })
         .then((serverRecord) => {
+          this.nativeWriteLanded(serverRecord.collection);
           // Only apply server response if no newer local changes exist
           const c = this.getOrCreateCollection(serverRecord.collection);
           const current = c.get(serverRecord.id);
@@ -1092,9 +1137,12 @@ export class XDBService {
             this.emit({ type: 'update', collection: serverRecord.collection, record: serverRecord });
           }
         })
-        .catch(() => {
-          // Expected when: optimistic ID not yet resolved, record deleted, or stale callback.
-          // Local in-memory state is authoritative; backend will catch up via create callback re-sync.
+        .catch((err) => {
+          // Expected while the record's own create has not been acknowledged
+          // (the create callback re-sends the merged data) and for a record
+          // that is gone; a refusal for a record that exists is a failure.
+          if (racingCreate || touched === undefined) return;
+          this.nativeWriteFailed('update a record', touched, err);
         });
 
       // Return optimistic result — try both the original and resolved IDs
@@ -1102,6 +1150,7 @@ export class XDBService {
         let record = coll.get(id);
         if (!record && id !== resolvedId) record = coll.get(resolvedId);
         if (record && !record.deleted) {
+          touched = collection;
           const updatedRecord: XDBRecord = {
             ...record,
             data: { ...record.data, ...data },
@@ -1240,9 +1289,14 @@ export class XDBService {
       // Resolve optimistic ID → server ID
       const resolvedId = this.optimisticIdMap.get(id) || id;
 
+      // The collection of the record this touched, for the failure report,
+      // and whether its own create was still in flight when this was sent.
+      let touched: string | undefined;
+      const racingCreate = this.pendingCreateIds.has(id);
       // Async delete via Tauri - fire and forget
       this.native<boolean>('delete_record', { id: resolvedId })
         .then(() => {
+          this.nativeWriteLanded(touched);
           for (const [collection, coll] of this.memoryStore) {
             const record = coll.get(resolvedId);
             if (record) {
@@ -1253,8 +1307,11 @@ export class XDBService {
           // Clean up ID mapping
           if (id !== resolvedId) this.optimisticIdMap.delete(id);
         })
-        .catch(() => {
-          // Expected when record was already deleted or ID is stale. Local state is authoritative.
+        .catch((err) => {
+          // Expected when the record was already gone or its create has not
+          // been acknowledged; a refusal for a record that exists is a failure.
+          if (racingCreate || touched === undefined) return;
+          this.nativeWriteFailed('delete a record', touched, err);
         });
 
       // Optimistically update in-memory cache — try both original and resolved IDs
@@ -1263,6 +1320,7 @@ export class XDBService {
         if (!lookupId) continue;
         const record = coll.get(lookupId);
         if (record && !record.deleted) {
+          touched = collection;
           const deletedRecord = {
             ...record,
             deleted: true,
@@ -1376,11 +1434,9 @@ export class XDBService {
       if (!record) return false;
       coll!.delete(id);
 
-      if (this.useTauri) {
-        this.native<boolean>('delete_record', { id }).catch((err) => {
-          console.error('[XDB] Failed to hard delete record in Tauri:', err);
-        });
-      }
+      this.native<boolean>('delete_record', { id })
+        .then(() => this.nativeWriteLanded(collection))
+        .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
 
       this.emit({ type: 'delete', collection, record });
       return true;
@@ -1395,12 +1451,6 @@ export class XDBService {
     records.splice(index, 1);
     this.setCollectionData(collection, records);
 
-    // Persist to Tauri backend (soft delete — hard delete not supported at backend level)
-    if (this.useTauri) {
-      this.native<boolean>('delete_record', { id }).catch((err) => {
-        console.error('[XDB] Failed to hard delete record in Tauri:', err);
-      });
-    }
 
     this.emit({ type: 'delete', collection, record });
 
@@ -1425,9 +1475,9 @@ export class XDBService {
       const coll = this.getOrCreateCollection(collection);
       const isUpdate = coll.has(record.id);
       coll.set(record.id, record);
-      this.native<XDBRecord>('upsert_record', { record }).catch((err) => {
-        console.error('[XDB] Failed to upsert record in Tauri:', err);
-      });
+      this.native<XDBRecord>('upsert_record', { record })
+        .then(() => this.nativeWriteLanded(collection))
+        .catch((err) => this.nativeWriteFailed('save a record', collection, err));
       this.emit({ type: isUpdate ? 'update' : 'create', collection, record });
       return;
     }
@@ -1452,9 +1502,9 @@ export class XDBService {
         coll!.delete(id);
         this.emit({ type: 'delete', collection, record: removed });
       }
-      this.native<boolean>('delete_record', { id }).catch((err) => {
-        console.error('[XDB] Failed to delete record in Tauri:', err);
-      });
+      this.native<boolean>('delete_record', { id })
+        .then(() => this.nativeWriteLanded(collection))
+        .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
       return;
     }
     const records = this.getAllCollectionData(collection);
@@ -1598,9 +1648,9 @@ export class XDBService {
       this.knownCollections.delete(collection);
       this.emit({ type: 'refresh', collection, records: [] });
       // Persist to SQLite backend
-      this.native<boolean>('clear_collection', { collection }).catch((err) => {
-        console.error('[XDB] Failed to clear collection in Tauri:', err);
-      });
+      this.native<boolean>('clear_collection', { collection })
+        .then(() => this.nativeWriteLanded(collection))
+        .catch((err) => this.nativeWriteFailed('clear a collection', collection, err));
       return;
     }
     this.storage.removeItem(this.collectionKey(collection));

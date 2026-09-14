@@ -447,6 +447,16 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
             if (realId !== m.id) this.tempIdMap.delete(m.id);
             break;
           }
+          case 'prune':
+            // The namespace's own rule, on the real records: what the worker
+            // removed from its snapshot is what goes here.
+            this.dbNamespace.prune(m.collection, m.maxRecords);
+            if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
+            break;
+          case 'clearCollection':
+            this.dbNamespace.clearCollection(m.collection);
+            if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
+            break;
           case 'startSync':
             // Same gate, same key derivation and same host-bound identity as
             // a script running on the main thread — see the constructor.

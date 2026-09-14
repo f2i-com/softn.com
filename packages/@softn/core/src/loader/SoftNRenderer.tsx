@@ -25,8 +25,6 @@ import {
   createPersistentXDBModule,
   createMockNavModule,
   createConsoleModule,
-  getSyncModuleCache,
-  setSyncModuleCache,
   type ScriptContext,
   type ScriptRuntimeHandle,
   type ScriptRuntimeMode,
@@ -40,8 +38,8 @@ import {
 import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
 import { CapabilityProvider, type CapabilityState } from './consent-gate';
 import { AppScopeProvider, type AppAssetResolver, type AppScope } from './app-scope';
-import { bindSyncOptions } from '../runtime/host-bound-sync-options';
-import { describeHostAllowlist, filterSignalingUrls } from '../runtime/egress-policy';
+import { createSyncControls, type SyncControls } from '../runtime/db-sync-controls';
+import { describeHostAllowlist } from '../runtime/egress-policy';
 import { getXDB, type XDBService } from '../runtime/xdb';
 import { readSavedSyncRoom } from '../runtime/xdb-sync-key';
 import { builtinHelpers } from '../runtime/helpers';
@@ -2021,6 +2019,16 @@ export function useDataBlock(
   };
 }
 
+/** The sync controls in the `(...args) => unknown` shape every helper here has. */
+function wrapSyncControls(controls: SyncControls): Record<string, (...args: unknown[]) => unknown> {
+  return {
+    startSync: (...args: unknown[]) => controls.startSync(args[0] as string, args[1] as Record<string, unknown> | undefined),
+    stopSync: (...args: unknown[]) => controls.stopSync(args[0] as string | undefined),
+    getSyncStatus: (...args: unknown[]) => controls.getSyncStatus(args[0] as string | undefined),
+    getSavedSyncRoom: () => controls.getSavedSyncRoom(),
+  };
+}
+
 /**
  * XDB helper functions to expose in the render context
  * These are synchronous wrappers that work with the XDB service
@@ -2113,88 +2121,32 @@ export function createXDBHelpers(
       return xdb.sync();
     },
 
-    startSync: (...args: unknown[]) => {
-      // `sync` has always been in the capability switch, and nothing ever called
-      // checkPermission('sync') — so peer-to-peer replication of the app's whole
-      // database started without the user being asked, in a runtime that asks
-      // before it will so much as read a file. Gated here rather than in the
-      // script runtime because sync is reached through the renderer's xdb
-      // helpers, not the host-call path.
-      if (!permissionConfig?.permissions?.sync?.enabled) {
-        // The third gate onto sync, and the last one still speaking to the
-        // author. checkPermission and createDBNamespace.startSync both tell a
-        // user who has not pressed Allow yet what to press; this one told them
-        // to edit a file inside the bundle, which they cannot open and whose
-        // author already wrote the line it asks for.
-        if (permissionConfig?.consentPending) {
+    // The sync methods are one implementation shared with the script runtime's
+    // db namespace (db-sync-controls.ts): same gate, same host-bound options,
+    // same signalling rules, same wire scope and key. `sync` is gated here
+    // rather than through checkPermission because these helpers are reached
+    // from the renderer, not the host-call path; the callers here can catch,
+    // so a refusal throws, and it speaks to the user who has not pressed Allow
+    // rather than telling them to edit a file inside the bundle.
+    ...wrapSyncControls(
+      createSyncControls({
+        appId,
+        getPermissionConfig: () => permissionConfig ?? null,
+        syncEncryptionKeyHex,
+        refuse: (reason) => {
+          if (reason === 'pending') {
+            throw new Error(
+              'Sync not permitted yet: this app has asked to use your other devices and you ' +
+                'have not allowed it. Choose Allow in the permission bar at the top of the app.'
+            );
+          }
           throw new Error(
-            'Sync not permitted yet: this app has asked to use your other devices and you ' +
-              'have not allowed it. Choose Allow in the permission bar at the top of the app.'
+            'Sync not permitted: declare { "permissions": { "sync": { "enabled": true } } } ' +
+              "in the bundle's permission.json so the user can approve it."
           );
-        }
-        throw new Error(
-          'Sync not permitted: declare { "permissions": { "sync": { "enabled": true } } } ' +
-            "in the bundle's permission.json so the user can approve it."
-        );
-      }
-      const room = args[0] as string;
-      const options = args[1] as Record<string, unknown> | undefined;
-      // The host's identity and the room the script named go on last: options
-      // may request behaviour, never say which app they are.
-      const syncOpts = bindSyncOptions(room, options, appId);
-      // A signalling server the script chose is a host it reaches: the same
-      // `net` rules as a fetch. Refused ones fall back to the host's defaults.
-      if (syncOpts.signaling !== undefined) {
-        const { allowed, refused } = filterSignalingUrls(syncOpts.signaling, permissionConfig);
-        for (const { url, reason } of refused) console.error(`[XDB Sync] Signalling server refused: ${url} — ${reason}`);
-        if (allowed.length > 0) syncOpts.signaling = allowed;
-        else delete syncOpts.signaling;
-      }
-      // Two apps that both chose "lobby" are in two rooms on the wire — see
-      // createDBNamespace.startSync, which makes the same decision.
-      syncOpts.roomScope = permissionConfig.app?.id || appId || undefined;
-      const isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;
-      if (isShared) {
-        syncOpts.password = 'softn-shared:' + room;
-        delete syncOpts.encryptionKey;
-      } else if (syncEncryptionKeyHex && !syncOpts.encryptionKey) {
-        syncOpts.encryptionKey = syncEncryptionKeyHex;
-      }
-      delete syncOpts.noEncrypt;
-      delete syncOpts.sharedRoom;
-      import('../runtime/xdb-sync')
-        .then((mod) => {
-          setSyncModuleCache(mod);
-          mod.startSync(syncOpts as unknown as import('../runtime/xdb-sync').XDBSyncOptions);
-        })
-        .catch((err) => {
-          console.error('[XDB Sync] Failed to start sync:', err);
-        });
-    },
-
-    stopSync: (...args: unknown[]) => {
-      const room = args[0] as string | undefined;
-      import('../runtime/xdb-sync')
-        .then(({ stopSync }) => {
-          stopSync(room, appId);
-        })
-        .catch((err) => {
-          console.error('[XDB Sync] Failed to stop sync:', err);
-        });
-    },
-
-    getSyncStatus: (...args: unknown[]) => {
-      const room = args[0] as string | undefined;
-      const cached = getSyncModuleCache();
-      if (cached) {
-        // This app's adapter, not whichever app happens to be in that room.
-        const adapter = cached.getSyncAdapter(room, appId);
-        return adapter ? adapter.getStatus() : { connected: false, peers: 0, room: '', peerId: '' };
-      }
-      return { connected: false, peers: 0, room: '', peerId: '' };
-    },
-
-    getSavedSyncRoom: () => readSavedSyncRoom(appId),
+        },
+      })
+    ),
 
     getDbPath: () => {
       return xdb.getDbPath();
@@ -2378,18 +2330,12 @@ export function SoftNWithXDB({
     syncResumedAppRef.current = appKey;
     try {
       const savedRoom = readSavedSyncRoom(props.appId);
-      if (savedRoom) {
-        // Check if this is a shared/multiplayer room (set by wallet App Sync).
-        // Shared rooms must NOT use per-user encryption keys, otherwise different
-        // users would join different signaling rooms and never discover each other.
-        const sharedKey = props.appId ? `xdb-sync-shared:${props.appId}` : null;
-        const isShared = sharedKey ? localStorage.getItem(sharedKey) === 'true' : false;
-        if (isShared) {
-          xdbHelpers.startSync(savedRoom, { sharedRoom: true });
-        } else {
-          xdbHelpers.startSync(savedRoom);
-        }
-      }
+      // Whether the saved room is a shared one (a host set it up on the app's
+      // behalf, or the app started it shared) is the sync controls' decision,
+      // made from the same flags for every path — see sync-room-security.ts.
+      // A shared room must not take the per-user key, or different users
+      // would join different signalling rooms and never discover each other.
+      if (savedRoom) xdbHelpers.startSync(savedRoom);
     } catch {
       // localStorage may be unavailable in restricted contexts
     }

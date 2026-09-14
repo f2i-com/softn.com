@@ -114,7 +114,13 @@ ${form.fields.length ? `  #if (${form.fieldsName})
   const files = {
     ...moduleFiles,
     'manifest.json': json(manifest),
-    'permission.json': json({ permissions: {} }),
+    // No capability is asked for. The bundle's identity goes here as well as
+    // in manifest.json: sync rooms are scoped by permission.json's `app.id`
+    // (see sync-room-security.ts), so two exports of one FormLogic app — with
+    // different bytes, so different host digests — meet in the same room
+    // once a user grants sync. Bundles exported before this carried only
+    // `manifest.id`, which nothing scopes by, and keep their per-export scope.
+    'permission.json': json({ permissions: {}, app: { id: manifest.id, name: manifest.name, version: manifest.version } }),
     'logic/main.logic': logic,
     'ui/main.ui': `${imports}
 <logic src="../logic/main.logic" />

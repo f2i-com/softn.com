@@ -79,11 +79,17 @@ export interface AppConfig {
     mode?: 'light' | 'dark' | 'system';
   };
 
-  /** XDB configuration */
+  /**
+   * @deprecated Accepted and ignored. No runtime or host has ever read these
+   * keys: collections exist from their first record, and sync starts from
+   * `db.startSync` (gated by the `sync` capability in permission.json) or the
+   * host's saved-room resume. Left in the type so a manifest that carries
+   * them keeps validating exactly as before.
+   */
   xdb?: {
-    /** Whether to sync with peers */
+    /** @deprecated Never read; declare `sync` in permission.json and call `db.startSync`. */
     sync?: boolean;
-    /** Collections to auto-create */
+    /** @deprecated Never read; a collection exists once a record is written to it. */
     collections?: string[];
   };
 
