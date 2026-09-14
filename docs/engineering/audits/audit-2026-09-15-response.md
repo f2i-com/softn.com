@@ -84,7 +84,66 @@ the reasoning is in the code.
 - M4: the manifest check runs inside `prepare-hosted-runtime`.
 - L3: one protocol constant set (`softn/protocol.json`) on both PHP and TS.
 
-## Deferred, with reasons
+## Second pass, same day
+
+The deferred list above was worked through, and a sixth audit
+(`audit-2026-09-15-remaining.md`: components, brand, vite plugin, scripts,
+workflows, e2e, the Tauri side, the docs kit, the examples) was acted on.
+
+- Server: Rust `--trusted-proxy=<peers>` with a CIDR list (bare flag keeps
+  the old meaning); COOP/COEP sent by the static and private single-app
+  hosts exactly as the site sends them, with tests reading the site's
+  Apache config; L1/L5 documented in the API README; L6 pinned by a
+  packaging test. M6 stays: answering `If-None-Match` without running the
+  handler needs a data-version signal from the vendored runtime protocol.
+- FormLogic host: a bounded call queue (4 in flight, 32 waiting) replaces
+  the "please wait" error, `messageerror` is handled, and the error message
+  carries a reason (extra field only).
+- Core: a delete or update racing an in-flight native create is applied
+  after the create lands and never resurrects the record; worker-mode
+  creates use real UUIDs handed to the store; `xdb.ts` is split into
+  types/service/registry/hooks/native-transport modules with every export
+  unchanged; `useDynamicSoftN` is deprecated with a clear error because no
+  desktop app registers its commands.
+- Components: a generated `component-manifest.json` with a staleness test;
+  chart palettes read `--color-chart-1..6` from the theme; a hex-literal
+  ratchet test (no new file with literals, no file may grow).
+- Apps: `@softn/single-shell` holds the single-app shell both variants use
+  (the PHP-served variant no longer imports Single's `src`); unused exports
+  removed after a repo-wide reference check; `@softn/test-utils` for the
+  fake IndexedDB helper; a root `vitest.base.mjs`; dependency ranges
+  aligned.
+- Desktop: the loader reads only bundles the person opened (CLI, the
+  native picker, a drop onto the window), backs up and restores its
+  database through two wrappers so the page never names a path, caps the
+  window icon at 1 MiB / 1024 px, and both desktop crates keep the web
+  inspector out of release builds. XDB re-exports its network state type
+  for the wrapper (pin bumped).
+- Docs: the single-app runtime guide rewritten from the engineering guide
+  (every `runtime.config.json` field), the two moved-guide links fixed, all
+  ten capabilities and the whole `db` surface documented, a test that every
+  repository link names a file in the checkout.
+- Release: `apps/README.md` and `packages/README.md` explain every folder;
+  one `scripts/release-packages.mjs` describes the five archives and
+  generates each archive's `README.md`, the `RELEASE-GUIDE.md` attached to
+  the release and the release notes from `CHANGELOG.md` (a tag without a
+  section fails before anything is built); one shared zip writer
+  (`scripts/lib/archive.mjs`); CI now runs verify on push and pull request,
+  checks the loader's Rust crate, uses Node 24, and runs the Playwright
+  journeys on release.
+- Renamed: `apps/softn-single-php-serve` → `apps/softn-single-private`
+  with its PHP under `php/`; the archives are `softn-website`,
+  `softn-app-static`, `softn-app-static-with-backend-linux-x64`,
+  `softn-app-private`, `softn-app-private-with-backend-linux-x64`, each
+  explainer naming the previous name once.
+
+Still open: Builder-side generation of its component registry from the
+manifest; a package home for the web runtime modules the single shell
+imports (`bundleProcessor`, `zipWarmup`, `FrameBar`); desktop code
+signing; renaming `apps/softn-php` (a FormLogic touchpoint, needs a
+coordinated pin bump); the historical `If-None-Match` item.
+
+## Deferred at the first pass (for the record)
 
 - Server M6 `If-None-Match` before taking a slot: needs a server-side
   response cache; the ETag is the hash of the authenticated handler's
