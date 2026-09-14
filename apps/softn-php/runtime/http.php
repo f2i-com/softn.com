@@ -30,8 +30,14 @@ $routes=$manifest['server']['routes']??[];
 $route=null;foreach($routes as $r)if(($r['path']??null)===$path&&($r['method']??null)===$method){$route=$r;break;}
 if($route===null && !($path==='/api/meta'&&$method==='GET'))reply(404,['error'=>'Endpoint not found.']);
 $upload=($route['upload']??null)==='photo' && $method==='POST';
-$limit=min($upload?5600100:32768,(int)($route['maxBodySize']??$manifest['config']['server']['maxBodySize']??PHP_INT_MAX));
-if($limit<0)reply(503,['error'=>'Invalid body limit configuration.']);
+// The body a route may carry: the route's own maxBodySize, else the app's
+// config.server.maxBodySize, else 256 KB — the order the Rust host applies,
+// whose own default is 2 MB. A declared value is honoured up to that 2 MB
+// here (a photo route up to 5.6 MB, as before), so one manifest means the
+// same on both hosts.
+$declared=$route['maxBodySize']??$manifest['config']['server']['maxBodySize']??null;
+if($declared!==null){$declared=(int)$declared;if($declared<0)reply(503,['error'=>'Invalid body limit configuration.']);}
+$limit=$declared===null?($upload?5600100:262144):min($upload?5600100:2*1024*1024,$declared);
 if ((int)($_SERVER['CONTENT_LENGTH']??0)>$limit) reply(413,['error'=>'Request too large.']);
 $raw=file_get_contents('php://input',false,null,0,$limit+1);
 if ($raw===false || strlen($raw)>$limit) reply(413,['error'=>'Request too large.']);
@@ -43,8 +49,12 @@ $backend=realpath($backend);
 if (!$backend || !is_file($backend.'/private/config.json') || !is_executable($backend.'/bin/node')) reply(503,['error'=>'Run the private backend setup first.']);
 $public=realpath($_SERVER['DOCUMENT_ROOT']??__DIR__);
 if ($public && ($backend===$public || str_starts_with($backend,$public.'/'))) reply(503,['error'=>'The backend must be outside the public document root.']);
+// How many requests may run at once, each a Node process: config.server.workers
+// in the manifest, four when unset, at most sixteen on this host. A slot file
+// setup did not make is made here.
+$workers=(int)($manifest['config']['server']['workers']??4);$workers=max(1,min(16,$workers));
 $slot=null;
-for($i=0;$i<4;$i++) {
+for($i=0;$i<$workers;$i++) {
     $candidate=fopen($backend.'/private/slot-'.$i.'.lock','c');
     if($candidate && flock($candidate,LOCK_EX|LOCK_NB)){$slot=$candidate;break;}
     if($candidate)fclose($candidate);

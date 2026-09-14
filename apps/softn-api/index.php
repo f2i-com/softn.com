@@ -29,19 +29,51 @@ set_error_handler(static function (int $no, string $str, string $file, int $line
 
 // The API is read from the site's own origin, from the runtime under /web/,
 // and by scripts publishing from anywhere; nothing here relies on a cookie,
-// so an open origin costs nothing.
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, HEAD, POST, PATCH, DELETE, OPTIONS');
-// If-None-Match is not CORS-safelisted: without it here a page on another
-// origin revalidating a bundle is refused at the preflight and downloads the
-// archive every time.
-header('Access-Control-Allow-Headers: Content-Type, If-None-Match, X-Edit-Key, X-Admin-Key, X-Visitor-Token');
-// The same page sees only the safelisted response headers unless the rest are
-// exposed: the ETag it revalidates with, the filename a download carries, the
-// wait a rate limit names.
-header('Access-Control-Expose-Headers: ETag, Content-Disposition, Retry-After');
-header('Access-Control-Max-Age: 86400');
+// so an open origin costs nothing on the routes anyone may call. The routes
+// that take an edit key or the admin key answer only the site's own origin
+// and the ones config.json lists (Cors in lib/http.php): a page elsewhere
+// gets a 403 from them, at the preflight or at the request. Apps never call
+// those routes across origins, so nothing published changes.
+cors_headers();
 header('X-Content-Type-Options: nosniff');
+
+/**
+ * The CORS headers for this request, before anything else is decided: they
+ * must be on a reply that Request::fromGlobals cannot produce (a data
+ * directory PHP cannot use), so the path is read from the request line here
+ * the way fromGlobals reads it. A restricted route asked for from an origin
+ * that may not use it is refused here, with the reason.
+ */
+function cors_headers(): void
+{
+    $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+    $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+    $path = is_string($path) ? rawurldecode($path) : '/';
+    $path = '/' . trim(preg_replace('#^/api(?=/|$)#', '', $path) ?? $path, '/');
+    // A preflight is about the method it asks for, not about OPTIONS.
+    $asked = $method === 'OPTIONS' ? strtoupper($_SERVER['HTTP_ACCESS_CONTROL_REQUEST_METHOD'] ?? 'GET') : $method;
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
+    if (!Cors::restricted($asked, $path)) {
+        header('Access-Control-Allow-Origin: *');
+    } elseif (is_string($origin)) {
+        header('Vary: Origin');
+        if (!Cors::allowed($origin, Cors::requestOrigin())) {
+            Response::json(['ok' => false, 'error' => 'This route answers the site\'s own origin only. List another in allowedOrigins in data/config.json.'], 403)->send();
+            exit;
+        }
+        header('Access-Control-Allow-Origin: ' . $origin);
+    }
+    header('Access-Control-Allow-Methods: GET, HEAD, POST, PATCH, DELETE, OPTIONS');
+    // If-None-Match is not CORS-safelisted: without it here a page on another
+    // origin revalidating a bundle is refused at the preflight and downloads the
+    // archive every time.
+    header('Access-Control-Allow-Headers: Content-Type, If-None-Match, X-Edit-Key, X-Admin-Key, X-Visitor-Token');
+    // The same page sees only the safelisted response headers unless the rest are
+    // exposed: the ETag it revalidates with, the filename a download carries, the
+    // wait a rate limit names.
+    header('Access-Control-Expose-Headers: ETag, Content-Disposition, Retry-After');
+    header('Access-Control-Max-Age: 86400');
+}
 
 /** @return array{0: string, 1: string[]}|null */
 function match_route(string $method, string $path, array $routes): ?array
@@ -215,8 +247,21 @@ function handle(string $handler, array $args, Request $req): Response
                 return Response::json(['ok' => false, 'error' => $e->getMessage(), 'php' => PHP_VERSION], 503);
             }
             $trusted = Config::get('trustedProxies', []);
+            $siteOrigin = Pages::origin();
+            // What an operator should know before the site is public. The
+            // site works without either; what it cannot do is said here.
+            $warnings = [];
+            if ($siteOrigin === null) {
+                $warnings[] = 'siteOrigin is not set in data/config.json: share pages carry no canonical address or og:url, and only this host\'s own pages may use the owner routes, until it is.';
+            }
+            $forwardedUntrusted = isset($_SERVER['HTTP_X_FORWARDED_FOR']) && count(is_array($trusted) ? Net::ranges($trusted) : []) === 0 && Config::get('trustProxy', false) !== true;
+            if ($forwardedUntrusted) {
+                $warnings[] = 'This request carried X-Forwarded-For but no proxy is trusted, so every visitor behind the proxy shares one address for rate limits and ratings. List the proxy in trustedProxies (see README, Trusted proxies).';
+            }
             return Response::json([
                 'ok' => $writable,
+                'siteOrigin' => $siteOrigin,
+                'warnings' => $warnings,
                 'php' => PHP_VERSION,
                 'sqlite' => $sqlite,
                 'fts5' => false,
@@ -232,7 +277,7 @@ function handle(string $handler, array $args, Request $req): Response
                 'limits' => Limits::describe(),
                 // How many proxies are trusted and whether the old boolean
                 // is in force — not which addresses: this route is public.
-                'proxy' => ['trustedProxies' => is_array($trusted) ? count(Net::ranges($trusted)) : 0, 'legacyTrustProxy' => Config::get('trustProxy', false) === true],
+                'proxy' => ['trustedProxies' => is_array($trusted) ? count(Net::ranges($trusted)) : 0, 'legacyTrustProxy' => Config::get('trustProxy', false) === true, 'forwardedButUntrusted' => $forwardedUntrusted],
                 // This request's own catalogue timings: the boot above.
                 'timings' => Timings::snapshot(),
             ]);
@@ -264,7 +309,7 @@ function handle(string $handler, array $args, Request $req): Response
             $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent. Upload a .softn as the multipart field "bundle", as the raw request body, or as JSON {"bundleBase64": ...}.');
             $parent = $req->field('parent');
-            $parentSlug = is_string($parent) && $parent !== '' ? Apps::resolveSlug($parent) : null;
+            $parentSlug = is_string($parent) && $parent !== '' ? Apps::resolveParent($parent) : null;
             $result = Apps::create($file, [
                 'name' => $req->field('name'), 'description' => $req->field('description'), 'author' => $req->field('author'),
                 'category' => $req->field('category'), 'tags' => $req->field('tags'), 'notes' => $req->field('notes'),
@@ -350,9 +395,11 @@ function handle(string $handler, array $args, Request $req): Response
             return Apps::thumbnailResponse(Apps::resolveSlug($args[0]));
 
         case 'setThumbnail': {
+            // The upload is read before the catalogue is opened, as a new
+            // version's is: see addVersion.
+            $image = $req->imageUpload();
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireOwner($req, $slug);
-            $image = $req->imageUpload();
             if ($image === null) throw new ApiError(400, 'No image was sent: use the multipart field "thumbnail" or JSON {"thumbnailBase64"}.');
             Apps::setThumbnail($slug, $image);
             return Response::json(['ok' => true, 'app' => Apps::card(Apps::row($slug))]);
@@ -371,6 +418,14 @@ function handle(string $handler, array $args, Request $req): Response
         }
 
         case 'addVersion': {
+            // The upload is read before the catalogue is opened. Resolving
+            // the slug takes the catalogue lock, and the lock is held until
+            // the request ends; with the body read after it, one client
+            // trickling a bundle in held the whole directory, every read
+            // included, for as long as its upload took. The bytes are
+            // bounded the same way on the publish route, which needs no
+            // key at all, so reading them first costs nothing new.
+            $file = $req->bundleFile();
             $slug = Apps::resolveSlug($args[0]);
             Apps::requireOwner($req, $slug);
             // A linked app takes no bundle: remove play_url from its app.json first.
@@ -381,7 +436,6 @@ function handle(string $handler, array $args, Request $req): Response
             if (!Config::isAdmin($req->credential('x-admin-key', 'adminKey'))) {
                 Db::rateLimit('version', Config::visitorHash($req->ip));
             }
-            $file = $req->bundleFile();
             if ($file === null) throw new ApiError(400, 'No bundle was sent.');
             return Response::json(['ok' => true, 'app' => Apps::addVersion($slug, $file, $req->field('notes'))], 201);
         }
@@ -389,9 +443,10 @@ function handle(string $handler, array $args, Request $req): Response
         case 'remix': {
             if (($req->field('website') ?? '') !== '') throw new ApiError(400, 'The remix was not accepted.');
             Db::rateLimit('publish', Config::visitorHash($req->ip));
+            // Read before the catalogue is opened; see addVersion.
+            $file = $req->bundleFile();
             $parentSlug = Apps::resolveSlug($args[0]);
             $parent = Apps::requireBundle($parentSlug);
-            $file = $req->bundleFile();
             $copied = false;
             if ($file === null) {
                 // No bundle: the remix starts as an exact copy, to be edited later.

@@ -158,6 +158,64 @@ final class Limits
  * — a refusal that throws out of a handler, a fatal, a bundle that turned
  * out not to be one. A caller that is done with one sooner discards it.
  */
+/**
+ * Which origins may use which routes.
+ *
+ * Every route anyone may call answers any origin: the runtime under /web/,
+ * a page elsewhere revalidating a bundle, a script publishing from anywhere.
+ * The routes that take an edit key or the admin key do not: a page on
+ * another origin must not be able to drive them with a key a visitor pasted
+ * into it, nor read what they answer. Those routes answer the site's own
+ * origin — `siteOrigin` in data/config.json, or failing that the origin
+ * this request was addressed to, so a site with no configuration keeps
+ * working from its own pages — and the origins `allowedOrigins` lists.
+ */
+final class Cors
+{
+    /** The routes that take an edit key or the admin key. */
+    public static function restricted(string $method, string $path): bool
+    {
+        if (str_starts_with($path, '/admin/')) return true;
+        if ($method === 'PATCH' || $method === 'DELETE') return true;
+        return $method === 'POST' && (bool) preg_match('#^/apps/[^/]+/(versions|thumbnail)$#', $path);
+    }
+
+    /**
+     * Whether `$origin` may use a restricted route. `$requestOrigin` is the
+     * origin this request was addressed to (scheme and Host): a page of the
+     * site itself, whatever the site is called. A configuration that cannot
+     * be read allows the configured origins to be nobody; the request's own
+     * origin still counts, so the reply that explains the configuration
+     * problem can be read by the page that asked.
+     */
+    public static function allowed(string $origin, ?string $requestOrigin): bool
+    {
+        $origin = rtrim($origin, '/');
+        if ($origin === '' || $origin === 'null') return false;
+        if ($requestOrigin !== null && strcasecmp($origin, rtrim($requestOrigin, '/')) === 0) return true;
+        try {
+            $site = Config::get('siteOrigin');
+            if (is_string($site) && strcasecmp($origin, rtrim($site, '/')) === 0) return true;
+            $listed = Config::get('allowedOrigins', []);
+            foreach (is_array($listed) ? $listed : [] as $o) {
+                if (is_string($o) && strcasecmp($origin, rtrim($o, '/')) === 0) return true;
+            }
+        } catch (Throwable) {
+            // The configuration is the 503 the request is about to send.
+        }
+        return false;
+    }
+
+    /** The origin this request was addressed to, from its Host and scheme, or null when it has no Host. */
+    public static function requestOrigin(): ?string
+    {
+        $host = $_SERVER['HTTP_HOST'] ?? null;
+        if (!is_string($host) || $host === '' || !preg_match('/^[A-Za-z0-9.\-\[\]:]+$/', $host)) return null;
+        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
+        return ($https ? 'https' : 'http') . '://' . strtolower($host);
+    }
+}
+
 final class TempFiles
 {
     /** @var array<string, true> */

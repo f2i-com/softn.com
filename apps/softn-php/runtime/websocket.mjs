@@ -9,7 +9,7 @@ import {WebSocketServer} from './vendor/ws/wrapper.mjs';
 export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxClients=8,fetchImpl=fetch}) {
   const target=new URL(upstream);
   if(target.username||target.password||target.search||target.hash||target.pathname!=='/'||!(target.protocol==='https:'||target.protocol==='http:'&&['127.0.0.1','[::1]','localhost'].includes(target.hostname)))throw Error('Use an HTTPS origin or loopback HTTP upstream');
-  const allowed=new Set(origins),paths=new Set(routes.filter(r=>r.poll===true&&r.method==='GET'&&r.transaction==='read'&&/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path)).map(r=>r.path));
+  const allowed=new Set(origins),paths=new Set(routes.filter(r=>r.poll===true&&r.method==='GET'&&(r.transaction??'read')==='read'&&/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path)).map(r=>r.path));
   const server=http.createServer((req,res)=>{res.writeHead(404);res.end();});
   const sockets=new WebSocketServer({noServer:true,maxPayload:8192,perMessageDeflate:false});
   server.on('upgrade',(req,socket,head)=>{

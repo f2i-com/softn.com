@@ -45,11 +45,26 @@ final class Apps
     }
 
     /** A slug as a visitor typed it into a URL: the manifest name works too. */
+    /**
+     * The slug an address names: as given, or as the slug its spelling
+     * makes. Never an app's name: names are not unique and are the
+     * publisher's to choose, so a name match would let one app answer for
+     * another's address until that slug was taken. `resolveParent` is the
+     * one place a name is accepted, for the `parent` field at publish.
+     */
     public static function resolveSlug(string $given): string {
         $given=trim($given); $rows=Catalog::all();
         foreach ([$given,self::slugify($given)] as $slug) if (isset($rows[$slug])) return $slug;
-        uasort($rows,fn($a,$b)=>$a['created_at']<=>$b['created_at']);
-        foreach ($rows as $slug=>$r) if (!$r['hidden'] && mb_strtolower($r['name'])===mb_strtolower($given)) return $slug;
+        throw new ApiError(404,'No app is published under that name.');
+    }
+
+    /** The app a publish names as its parent: a slug, or a name exactly one visible app has. */
+    public static function resolveParent(string $given): string {
+        try { return self::resolveSlug($given); } catch (ApiError) { /* not a slug; a name, perhaps */ }
+        $given=mb_strtolower(trim($given)); $matches=[];
+        foreach (Catalog::all() as $slug=>$r) if (!$r['hidden'] && mb_strtolower($r['name'])===$given) $matches[]=$slug;
+        if (count($matches)===1) return $matches[0];
+        if (count($matches)>1) throw new ApiError(404,'More than one app is published under that name; name the parent by its slug.');
         throw new ApiError(404,'No app is published under that name.');
     }
 
