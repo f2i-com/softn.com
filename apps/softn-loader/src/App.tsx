@@ -22,10 +22,12 @@ import { isSoftnPath, resolveServerConfig, type BundleServerConfig } from './run
 import { createBundleImportResolver } from './remoteImport';
 import { computeBundleAppId, loadBundleXDBData, processBundleSource } from './bundleRuntime';
 import {
-  approveUpgrade,
+  beginUpgrade,
+  completeUpgrade,
   loadRegistry,
   recordNewInstallation,
   resolveInstallation,
+  rollbackUpgrade,
   saveRegistry,
   shortIdentity,
   type InstallationRecord,
@@ -33,11 +35,33 @@ import {
 
 /** The question a changed package asks before it touches any data (audit SN-03). */
 interface InstallationChoice {
+  kind: 'upgrade';
   bundleId: string;
   name: string;
   version?: string;
   candidates: InstallationRecord[];
   resolve: (decision: { kind: 'new' } | { kind: 'upgrade'; dataId: string } | { kind: 'cancel' }) => void;
+}
+
+/** The registry itself is unreadable: nothing about an unknown package can be decided (R2-SN-03). */
+interface RegistryDamagedChoice {
+  kind: 'registry-damaged';
+  quarantineKey: string | null;
+  reason: string;
+  resolve: (decision: { kind: 'discard' } | { kind: 'cancel' }) => void;
+}
+
+type LoaderChoice = InstallationChoice | RegistryDamagedChoice;
+
+/** What an upgrade left behind for the running session to finish (R2-SN-03). */
+interface UpgradeInProgress {
+  dataId: string;
+  bundleId: string;
+  backup: string;
+}
+
+export class UpgradeBlockedError extends Error {
+  constructor(message: string) { super(message); this.name = 'UpgradeBlockedError'; }
 }
 
 /** The runtime's own storage for the installation registry; never an app's records. */
@@ -51,59 +75,137 @@ function registryStorage(): { getItem(key: string): string | null; setItem(key: 
   return { getItem: key => memory.get(key) ?? null, setItem: (key, value) => { memory.set(key, value); } };
 }
 
+type IdentityDecision = { dataId: string; upgrade?: UpgradeInProgress };
+
 /**
  * Resolve the DATA identity for an opened bundle. The digest stays the
  * integrity identity; a mapped digest reuses its data namespace; an unmapped
  * digest that repeats an installed name asks the person before anything is
- * seeded or shown (open as new, or upgrade one installation with a
- * pre-upgrade backup). Nothing is ever inherited on a name alone.
+ * seeded or shown (open as new, or upgrade one installation). Nothing is
+ * ever inherited on a name alone.
+ *
+ * An upgrade is STAGED, not approved (R2-SN-03): it needs a verified backup
+ * and a durable registry write first, otherwise it stops with an actionable
+ * error; the digest is mapped only when the new package has started, and a
+ * failed start restores the snapshot and drops the staging.
  */
-async function resolveDataIdentity(
+export async function resolveDataIdentity(
   bundleId: string,
   manifest: { name?: string; version?: string },
-  ask: (choice: Omit<InstallationChoice, 'resolve'>) => Promise<{ kind: 'new' } | { kind: 'upgrade'; dataId: string } | { kind: 'cancel' }>,
-  backup: (dataId: string) => Promise<string | undefined>
-): Promise<string | null> {
-  const storage = registryStorage();
-  const registry = loadRegistry(storage);
-  const resolution = resolveInstallation(registry, bundleId, manifest.name);
-  if (resolution.kind === 'known') return resolution.dataId;
-  if (resolution.kind === 'new') {
-    recordNewInstallation(registry, bundleId, manifest.name, manifest.version);
-    saveRegistry(storage, registry);
-    return bundleId;
+  ask: (choice: Omit<InstallationChoice, 'resolve'> | Omit<RegistryDamagedChoice, 'resolve'>) => Promise<{ kind: 'new' } | { kind: 'upgrade'; dataId: string } | { kind: 'discard' } | { kind: 'cancel' }>,
+  backup: (dataId: string) => Promise<string>,
+  storage: RegistryStorageLike = registryStorage()
+): Promise<IdentityDecision | null> {
+  let registry = loadRegistry(storage);
+  let resolution = resolveInstallation(registry, bundleId, manifest.name);
+  if (resolution.kind === 'registry-damaged') {
+    const decision = await ask({ kind: 'registry-damaged', quarantineKey: resolution.quarantineKey, reason: resolution.reason });
+    if (decision.kind !== 'discard') return null;
+    // The quarantined copy stays; a fresh registry replaces the damaged key.
+    if (!saveRegistry(storage, registry, { acknowledgeDamage: true })) {
+      throw new UpgradeBlockedError('The installation records could not be rewritten. Nothing was opened.');
+    }
+    registry = loadRegistry(storage);
+    resolution = resolveInstallation(registry, bundleId, manifest.name);
+    if (resolution.kind === 'registry-damaged') throw new UpgradeBlockedError('The installation records are still unreadable after discarding them. Nothing was opened.');
   }
-  const decision = await ask({ bundleId, name: resolution.name, version: manifest.version, candidates: resolution.candidates });
-  if (decision.kind === 'cancel') return null;
-  if (decision.kind === 'new') {
-    recordNewInstallation(registry, bundleId, manifest.name, manifest.version);
-    saveRegistry(storage, registry);
-    return bundleId;
+  if (resolution.kind === 'recovery-required') {
+    const r = resolution.record.recoveryRequired!;
+    throw new UpgradeBlockedError(`This installation needs recovery before it can be opened: a failed upgrade could not be rolled back (${r.reason}). Its pre-upgrade backup is ${r.backup}.`);
   }
-  const backupPath = await backup(decision.dataId);
-  approveUpgrade(registry, bundleId, decision.dataId, { manifestName: manifest.name, version: manifest.version, backup: backupPath });
-  saveRegistry(storage, registry);
-  return decision.dataId;
+  if (resolution.kind === 'pending-upgrade') {
+    // The previous session approved this upgrade and never confirmed it
+    // started. Try again with the SAME backup; completion is recorded on load.
+    return { dataId: resolution.dataId, upgrade: { dataId: resolution.dataId, bundleId, backup: resolution.pending.backup } };
+  }
+  if (resolution.kind === 'known') return { dataId: resolution.dataId };
+  const persistNew = (): IdentityDecision => {
+    recordNewInstallation(registry, bundleId, manifest.name, manifest.version);
+    if (!saveRegistry(storage, registry)) {
+      throw new UpgradeBlockedError('The installation record could not be saved, so this app was not opened: its data would be lost after a restart. Free storage and try again.');
+    }
+    return { dataId: bundleId };
+  };
+  if (resolution.kind === 'new') return persistNew();
+  const choice = resolution;
+  const decision = await ask({ kind: 'upgrade', bundleId, name: choice.name, version: manifest.version, candidates: choice.candidates });
+  if (decision.kind === 'cancel' || decision.kind === 'discard') return null;
+  if (decision.kind === 'new') return persistNew();
+
+  // Upgrade: verified snapshot FIRST, then a durable staging record, then the
+  // package may touch the data. Either failure stops the upgrade unapplied.
+  let backupPath: string;
+  try {
+    backupPath = await backup(decision.dataId);
+  } catch (error) {
+    throw new UpgradeBlockedError(`The upgrade was not applied because a backup of the installed data could not be taken (${error instanceof Error ? error.message : String(error)}). Reopen the previous package, or free disk space and try again.`);
+  }
+  beginUpgrade(registry, bundleId, decision.dataId, { backup: backupPath, manifestName: manifest.name, version: manifest.version });
+  if (!saveRegistry(storage, registry)) {
+    throw new UpgradeBlockedError('The upgrade was not applied because its record could not be saved; without it the upgrade would be forgotten after a restart. Free storage and try again.');
+  }
+  return { dataId: decision.dataId, upgrade: { dataId: decision.dataId, bundleId, backup: backupPath } };
 }
 
-/** Consistent SQLite snapshot of the installation's data before an upgrade touches it. */
-async function backupBeforeUpgrade(dataId: string): Promise<string | undefined> {
+type RegistryStorageLike = { getItem(key: string): string | null; setItem(key: string, value: string): void };
+
+/** The new package started: map its digest durably. */
+export function finishUpgrade(upgrade: UpgradeInProgress, storage: RegistryStorageLike = registryStorage()): boolean {
+  const registry = loadRegistry(storage);
+  if (registry.damaged || !registry.installations[upgrade.dataId]?.pendingUpgrade) return false;
+  completeUpgrade(registry, upgrade.dataId);
+  return saveRegistry(storage, registry);
+}
+
+/**
+ * The new package failed to start: put the data snapshot back and drop the
+ * staged upgrade, or leave an explicit recovery-only state when the snapshot
+ * cannot be restored. Reopening the old package is never called a rollback.
+ */
+export async function abandonUpgrade(
+  upgrade: UpgradeInProgress,
+  restore: (dataId: string, backup: string) => Promise<void>,
+  storage: RegistryStorageLike = registryStorage()
+): Promise<{ restored: boolean; message: string }> {
+  const registry = loadRegistry(storage);
+  const record = registry.installations[upgrade.dataId];
+  if (registry.damaged || !record?.pendingUpgrade) return { restored: false, message: 'The upgrade record is missing; the installed data was not changed by this loader.' };
   try {
-    // @ts-expect-error - Tauri invoke
-    const invoke = window.__TAURI__?.core?.invoke as ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | undefined;
-    if (!invoke) return undefined;
-    const dbPath = String(await invoke('get_db_path', { appId: dataId }));
-    const separator = dbPath.includes('\\') ? '\\' : '/';
-    const directory = dbPath.slice(0, dbPath.lastIndexOf(separator));
-    const target = `${directory}${separator}pre-upgrade-${Date.now().toString(36)}.sqlite`;
-    await invoke('export_database', { appId: dataId, path: target });
-    return target;
+    await restore(upgrade.dataId, upgrade.backup);
+    rollbackUpgrade(registry, upgrade.dataId, { restored: true });
+    saveRegistry(storage, registry);
+    return { restored: true, message: 'The app failed to start, so its data was restored from the pre-upgrade backup and the upgrade was undone.' };
   } catch (error) {
-    // A backup failure is reported but does not block: the previous package
-    // still opens the same data (its digest stays mapped).
-    console.error('[SoftN Loader] Could not take a pre-upgrade backup:', error);
-    return undefined;
+    const reason = error instanceof Error ? error.message : String(error);
+    rollbackUpgrade(registry, upgrade.dataId, { restored: false, reason });
+    saveRegistry(storage, registry);
+    return { restored: false, message: `The app failed to start AND its data could not be restored from the pre-upgrade backup (${reason}). The installation is in a recovery-only state; the backup is at ${upgrade.backup}.` };
   }
+}
+
+function tauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | undefined {
+  // @ts-expect-error - Tauri invoke
+  return window.__TAURI__?.core?.invoke as ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | undefined;
+}
+
+/** Consistent SQLite snapshot of the installation's data; throws when it cannot be verified. */
+async function backupBeforeUpgrade(dataId: string): Promise<string> {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error('the native database is not available in this environment');
+  const dbPath = String(await invoke('get_db_path', { appId: dataId }));
+  const separator = dbPath.includes('\\') ? '\\' : '/';
+  const directory = dbPath.slice(0, dbPath.lastIndexOf(separator));
+  const target = `${directory}${separator}pre-upgrade-${Date.now().toString(36)}.sqlite`;
+  const written = await invoke('export_database', { appId: dataId, path: target });
+  if (written !== target) throw new Error('the backup was not written where expected');
+  return target;
+}
+
+/** Restore the data namespace from a pre-upgrade snapshot (local scope: this device only). */
+async function restoreFromBackup(dataId: string, backup: string): Promise<void> {
+  const invoke = tauriInvoke();
+  if (!invoke) throw new Error('the native database is not available in this environment');
+  await invoke('import_database', { appId: dataId, sourcePath: backup, scope: 'local' });
 }
 
 // Compile-time constant from Vite define
@@ -242,7 +344,9 @@ function App(): React.ReactElement {
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
   const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
   const [permissionConfig, setPermissionConfig] = useState<PermissionConfig | null>(null);
-  const [installationChoice, setInstallationChoice] = useState<InstallationChoice | null>(null);
+  const [installationChoice, setInstallationChoice] = useState<LoaderChoice | null>(null);
+  const upgradeInProgress = useRef<UpgradeInProgress | null>(null);
+  const [upgradeNotice, setUpgradeNotice] = useState<string | null>(null);
   const [assetResolver, setAssetResolver] = useState<AppAssetResolver>();
   const [serverConfig, setServerConfig] = useState(() => resolveServerConfig());
 
@@ -473,23 +577,27 @@ function App(): React.ReactElement {
 
         // Data identity (audit SN-03): the digest is the integrity identity;
         // the data namespace may be an installation this package upgrades.
-        const dataId = await resolveDataIdentity(
+        upgradeInProgress.current = null;
+        setUpgradeNotice(null);
+        const identity = await resolveDataIdentity(
           resolvedAppId,
           parsedManifest,
           choice => new Promise(resolve => {
             if (!active) { resolve({ kind: 'cancel' }); return; }
-            setInstallationChoice({ ...choice, resolve: decision => { setInstallationChoice(null); resolve(decision); } });
+            setInstallationChoice({ ...choice, resolve: (decision: { kind: 'new' } | { kind: 'upgrade'; dataId: string } | { kind: 'discard' } | { kind: 'cancel' }) => { setInstallationChoice(null); resolve(decision); } } as LoaderChoice);
           }),
           backupBeforeUpgrade
         );
         if (!active) return;
-        if (dataId === null) {
+        if (identity === null) {
           // The person cancelled: nothing was seeded or mapped.
           cleanup();
           setBundlePath(null);
           setLoading(false);
           return;
         }
+        const dataId = identity.dataId;
+        upgradeInProgress.current = identity.upgrade ?? null;
 
         // Lock screen orientation if configured (mobile only)
         if (isMobile && parsedManifest.config?.mobile?.orientation) {
@@ -591,7 +699,8 @@ function App(): React.ReactElement {
   };
 
   return <DesktopShell appName={bundlePath ? _manifest?.name : undefined} onHome={goHome} onOpen={openFilePicker} canOpen={isTauri || isMobile}>
-    {installationChoice && <InstallationChoiceDialog choice={installationChoice} />}
+    {installationChoice?.kind === 'upgrade' && <InstallationChoiceDialog choice={installationChoice} />}
+    {installationChoice?.kind === 'registry-damaged' && <RegistryDamagedDialog choice={installationChoice} />}
     {!bundlePath && !loading ? <DesktopWelcome onOpen={openFilePicker} canOpen={isTauri || isMobile} dragging={isDragOver} error={error} />
       : loading ? <div className="desktop-state" role="status"><Spinner size="lg" /><p>Opening {bundlePath?.split(/[/\\]/).pop() || 'your app'}…</p></div>
       : error ? <div className="desktop-state" role="alert"><h1>We couldn’t open this app</h1><p className="desktop-error">{error.message}</p><p>{bundlePath}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>
@@ -611,16 +720,60 @@ function App(): React.ReactElement {
           permissionConfig={permissionConfig ?? undefined}
           {...serverConfig}
           onLoad={() => {
+            // A staged upgrade is complete only now that the new package started (R2-SN-03).
+            const upgrade = upgradeInProgress.current;
+            if (upgrade) {
+              upgradeInProgress.current = null;
+              if (!finishUpgrade(upgrade)) setUpgradeNotice('The app started, but the upgrade record could not be saved. Until it can be, reopening this file will ask about the upgrade again; your data is intact.');
+            }
             if (isTauri && !isMobile) {
               void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => getCurrentWindow().setTitle(`${_manifest?.config?.window?.title || _manifest?.name || 'App'} — Softn`)).catch(() => {});
             }
           }}
           functions={{ asset: (path: unknown) => typeof path === 'string' ? assetResolver?.(path) || '' : '' }}
           loading={<div className="desktop-state" role="status"><Spinner size="lg" /><p>Starting your app…</p></div>}
-          error={(err) => <div className="desktop-state" role="alert"><h1>The app encountered a problem</h1><p className="desktop-error">{err.message}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>}
+          error={(err) => <UpgradeAwareError error={err} upgrade={upgradeInProgress} onHome={goHome} />}
         />
+        {upgradeNotice && <p role="status" className="desktop-error">{upgradeNotice}</p>}
       </ThemeProvider>}
   </DesktopShell>;
+}
+
+/**
+ * The app failed to start. If a staged upgrade was in progress, the data
+ * snapshot is restored and the staging dropped BEFORE the person is told
+ * what happened (R2-SN-03); the message states exactly what remains.
+ */
+function UpgradeAwareError({ error, upgrade, onHome }: { error: Error; upgrade: React.MutableRefObject<UpgradeInProgress | null>; onHome: () => void }) {
+  const [outcome, setOutcome] = useState<{ restored: boolean; message: string } | null>(upgrade.current ? null : { restored: false, message: '' });
+  useEffect(() => {
+    const pending = upgrade.current;
+    if (!pending) return;
+    upgrade.current = null;
+    let alive = true;
+    void abandonUpgrade(pending, restoreFromBackup).then(result => { if (alive) setOutcome(result); });
+    return () => { alive = false; };
+  }, [upgrade]);
+  return <div className="desktop-state" role="alert">
+    <h1>The app encountered a problem</h1>
+    <p className="desktop-error">{error.message}</p>
+    {outcome === null ? <p role="status">Restoring the data from the pre-upgrade backup…</p> : outcome.message ? <p className={outcome.restored ? undefined : 'desktop-error'}>{outcome.message}</p> : null}
+    <button className="desktop-button" disabled={outcome === null} onClick={onHome}>Back to runtime home</button>
+  </div>;
+}
+
+/** The installation registry could not be read: decide before anything is opened (R2-SN-03). */
+function RegistryDamagedDialog({ choice }: { choice: RegistryDamagedChoice }) {
+  return <div className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="registry-damaged-title" data-testid="registry-damaged">
+    <h1 id="registry-damaged-title">Installation records are damaged</h1>
+    <p>The record of which packages belong to which installed data could not be read ({choice.reason}). Until it is resolved, no package can be matched to existing data, so nothing was opened.</p>
+    <p>{choice.quarantineKey ? `The damaged record was kept under "${choice.quarantineKey}" in this runtime's storage for recovery.` : 'The damaged record could not be copied aside; it is still in place.'}</p>
+    <p><strong>Discard the damaged records</strong> starts a fresh registry: installed apps keep their data on disk, but each package will be matched again when it is next opened (it may ask whether it is a new app or an upgrade).</p>
+    <div className="desktop-actions">
+      <button className="desktop-button" onClick={() => choice.resolve({ kind: 'discard' })}>Discard damaged records</button>
+      <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
+    </div>
+  </div>;
 }
 
 /**
@@ -642,7 +795,7 @@ function InstallationChoiceDialog({ choice }: { choice: InstallationChoice }) {
           : <><code>{shortIdentity(target)}</code>{selected?.version ? ` · version ${selected.version}` : ''} · installed {selected ? new Date(selected.createdAt).toLocaleDateString() : ''}</>}
       </dd>
     </dl>
-    <p><strong>Upgrade this installation</strong> keeps its saved records: a backup of the database is taken first, the new package&apos;s starting data is only added for records that do not exist yet, and reopening the previous file still reaches the same records if you need to go back. Permissions are not carried over; this package&apos;s own permission list applies.</p>
+    <p><strong>Upgrade this installation</strong> keeps its saved records: a verified backup of the database is taken first (the upgrade stops if that fails), the new package&apos;s starting data is only added for records that do not exist yet, and if the new package fails to start the data is restored from that backup. Reopening the previous file reaches the same records, but that is not a rollback of changes the new package made. Permissions are not carried over; this package&apos;s own permission list applies.</p>
     <p><strong>Open as a new app</strong> starts with fresh data and leaves the installed app untouched. Choose this if you do not trust where this file came from: a package that merely repeats the name must not read the installed app&apos;s records.</p>
     <div className="desktop-actions">
       <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'new' })}>Open as a new app</button>

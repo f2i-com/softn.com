@@ -147,6 +147,16 @@ export class XDBStorageError extends Error {
 /** An import result whose durable completion has already been awaited. */
 export type XDBDurableImportResult = Omit<XDBImportResult, 'persisted'> & { persisted: XDBPersistResult };
 
+/** One collection of an immutable import plan (R2-SN-01). */
+interface ImportPlan {
+  collection: string;
+  replace: boolean;
+  /** Deduplicated accepted rows (last value per id wins). */
+  records: XDBRecord[];
+  /** Rows accepted before duplicate ids collapsed. */
+  accepted: number;
+}
+
 /** Durable-completion signal of an import (audit SN-01). */
 export interface XDBPersistResult {
   backend: 'native' | 'storage' | 'memory';
@@ -1788,89 +1798,151 @@ export class XDBService {
    * @param data - The exported data object
    * @param options - Import options
    */
+  /**
+   * Everything an import WILL do, computed without touching any state
+   * (R2-SN-01): the envelope, collection names, writability (corrupt or
+   * unhydrated collections) and every row are checked first, so a refusal
+   * leaves cache and storage exactly as they were and no native batch is
+   * sent. `skipped` counts rows and collections that would be dropped.
+   */
+  private planImport(
+    data: XDBExportData,
+    options: { merge?: boolean; clearFirst?: boolean }
+  ): { plans: ImportPlan[]; skipped: number; replace: boolean } {
+    const { merge = true, clearFirst = false } = options;
+    // Replacement intent is normalised ONCE: `merge: false` or `clearFirst`
+    // both mean "the collection afterwards holds exactly the accepted rows",
+    // on every backend (R2-SN-02).
+    const replace = !merge || clearFirst;
+    if (!data || typeof data !== 'object' || !data.collections || typeof data.collections !== 'object' || Array.isArray(data.collections)) {
+      throw new XDBStorageError('corrupt', 'The import has no collections object.');
+    }
+    const plans: ImportPlan[] = [];
+    let skipped = 0;
+    for (const [collection, incoming] of Object.entries(data.collections)) {
+      if (!Array.isArray(incoming)) {
+        skipped++;
+        continue;
+      }
+      if (!collection || collection.includes(':')) {
+        throw new XDBStorageError('corrupt', `"${collection}" is not a valid collection name.`, collection);
+      }
+      // A replacement of a collection this service has not loaded would drop
+      // records it never saw; any write to a corrupt one would destroy the
+      // only copy (audit SN-02). Checked for EVERY collection before ANY write.
+      this.assertWritable(collection, replace);
+      const index = new Map<string, XDBRecord>();
+      let accepted = 0;
+      for (const record of incoming as unknown[]) {
+        if (!this.isImportableRecord(record)) {
+          skipped++;
+          continue;
+        }
+        index.set(record.id, record);
+        accepted++;
+      }
+      plans.push({ collection, replace, records: [...index.values()], accepted });
+    }
+    return { plans, skipped, replace };
+  }
+
+  /** The records a collection holds after applying one plan to `existing`. */
+  private static mergePlan(existing: XDBRecord[], plan: ImportPlan): XDBRecord[] {
+    if (plan.replace) return plan.records;
+    const index = new Map<string, XDBRecord>();
+    for (const record of existing) index.set(record.id, record);
+    for (const record of plan.records) index.set(record.id, record);
+    return [...index.values()];
+  }
+
+  /**
+   * Apply an immutable plan. Browser storage: one atomic key replacement per
+   * collection, WITHOUT removing the old key first, so a failed write leaves
+   * the previous value in place; because several keys are not a transaction,
+   * a failure on a later collection restores the earlier ones to their prior
+   * contents and the error says exactly what state remains (R2-SN-02).
+   * Native: the cache is updated optimistically and ONE transaction carries
+   * every batch; on failure the cache is reloaded from disk (audit SN-01).
+   */
+  private executeImport(plans: ImportPlan[]): { imported: number; collections: string[]; persisted: Promise<XDBPersistResult> } {
+    const importedCollections: string[] = [];
+    const imported = plans.reduce((n, plan) => n + plan.accepted, 0);
+
+    if (!this.useTauri) {
+      const written: Array<{ collection: string; previous: string | null }> = [];
+      for (const plan of plans) {
+        const key = this.collectionKey(plan.collection);
+        const previous = this.storage.getItem(key);
+        const records = XDBService.mergePlan(this.getAllCollectionData(plan.collection), plan);
+        try {
+          this.setCollectionData(plan.collection, records);
+        } catch (error) {
+          // Put back what earlier collections held before this import.
+          const restored: string[] = [];
+          for (const entry of written.reverse()) {
+            try {
+              if (entry.previous === null) this.storage.removeItem(this.collectionKey(entry.collection));
+              else this.storage.setItem(this.collectionKey(entry.collection), entry.previous);
+              restored.push(entry.collection);
+              this.emit({ type: 'refresh', collection: entry.collection, records: this.getCollectionData(entry.collection) });
+            } catch {
+              // The rollback itself failed for this collection; reported below.
+            }
+          }
+          const message = error instanceof Error ? error.message : String(error);
+          const kept = restored.length ? ` Collections restored to their previous contents: ${restored.join(', ')}.` : '';
+          const stuck = written.filter(e => !restored.includes(e.collection)).map(e => e.collection);
+          const notRestored = stuck.length ? ` Could NOT restore: ${stuck.join(', ')} (they hold the imported rows).` : '';
+          throw new XDBStorageError(
+            error instanceof XDBStorageError ? error.kind : 'quota',
+            `Import stopped at "${plan.collection}" (${message}); its previous contents are unchanged.${kept}${notRestored}`,
+            plan.collection
+          );
+        }
+        written.push({ collection: plan.collection, previous });
+        importedCollections.push(plan.collection);
+        this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
+      }
+      return {
+        imported,
+        collections: importedCollections,
+        persisted: Promise.resolve({ backend: this.persistent ? 'storage' : 'memory', collections: importedCollections, imported, tombstoned: 0 }),
+      };
+    }
+
+    for (const plan of plans) {
+      this.setCollectionData(plan.collection, XDBService.mergePlan(this.getAllCollectionData(plan.collection), plan));
+      importedCollections.push(plan.collection);
+      this.emit({ type: 'refresh', collection: plan.collection, records: this.getCollectionData(plan.collection) });
+    }
+    const batches = plans.map(plan => ({ collection: plan.collection, replace: plan.replace, records: plan.records }));
+    const persisted: Promise<XDBPersistResult> = batches.length === 0
+      ? Promise.resolve({ backend: 'native', collections: [], imported: 0, tombstoned: 0 })
+      : this.native<{ imported: number; tombstoned: number; collections: Array<{ collection: string }> }>('import_records', { batches })
+        .then(summary => ({
+          backend: 'native' as const,
+          collections: summary.collections.map(c => c.collection),
+          imported: summary.imported,
+          tombstoned: summary.tombstoned,
+        }))
+        .catch(async (err: unknown) => {
+          console.error('[XDB] Native import was not committed; reloading the affected collections:', err);
+          for (const collection of importedCollections) {
+            try { await this.getAllAsync(collection); } catch { /* the hydration issue is already recorded */ }
+            this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
+          }
+          throw err instanceof Error ? err : new Error(String(err));
+        });
+    return { imported, collections: importedCollections, persisted };
+  }
+
   import(
     data: XDBExportData,
     options: { merge?: boolean; clearFirst?: boolean } = {}
   ): XDBImportResult {
-    const { merge = true, clearFirst = false } = options;
-    let importedCount = 0;
-    let skippedCount = 0;
-    const importedCollections: string[] = [];
-    const batches: Array<{ collection: string; replace: boolean; records: XDBRecord[] }> = [];
-    const replace = !merge || clearFirst;
-
-    for (const [collection, incoming] of Object.entries(data.collections)) {
-      if (!Array.isArray(incoming)) {
-        skippedCount++;
-        continue;
-      }
-      // A replacement of a collection this service has not loaded would drop
-      // records it never saw; a replacement of a corrupt one would destroy
-      // the only copy (audit SN-02).
-      this.assertWritable(collection, replace);
-
-      if (clearFirst && !this.useTauri) {
-        this.clear(collection);
-      }
-
-      const index = new Map<string, XDBRecord>();
-      if (merge) {
-        for (const existing of this.getAllCollectionData(collection)) {
-          index.set(existing.id, existing);
-        }
-      }
-      const accepted: XDBRecord[] = [];
-      for (const record of incoming as unknown[]) {
-        if (!this.isImportableRecord(record)) {
-          skippedCount++;
-          continue;
-        }
-        index.set(record.id, record);
-        accepted.push(record);
-        importedCount++;
-      }
-
-      // One write per collection: setCollectionData persists (localStorage
-      // or the memory cache) but does not notify — the refresh below does.
-      this.setCollectionData(collection, [...index.values()]);
-      importedCollections.push(collection);
-      batches.push({ collection, replace, records: replace ? [...index.values()] : accepted });
-      this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
-    }
-
-    // Durable completion (audit SN-01): ONE native transaction for the whole
-    // import, acknowledged only after SQLite committed it. The cache above is
-    // optimistic; on failure it is reloaded from the backend so cache and
-    // disk agree, and the promise rejects instead of logging.
-    let persisted: Promise<XDBPersistResult>;
-    if (this.useTauri) {
-      persisted = batches.length === 0
-        ? Promise.resolve({ backend: 'native', collections: [], imported: 0, tombstoned: 0 })
-        : this.native<{ imported: number; tombstoned: number; collections: Array<{ collection: string }> }>('import_records', { batches })
-          .then(summary => ({
-            backend: 'native' as const,
-            collections: summary.collections.map(c => c.collection),
-            imported: summary.imported,
-            tombstoned: summary.tombstoned,
-          }))
-          .catch(async (err: unknown) => {
-            console.error('[XDB] Native import was not committed; reloading the affected collections:', err);
-            for (const collection of importedCollections) {
-              try { await this.getAllAsync(collection); } catch { /* the hydration issue is already recorded */ }
-              this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
-            }
-            throw err instanceof Error ? err : new Error(String(err));
-          });
-    } else {
-      persisted = Promise.resolve({
-        backend: this.persistent ? 'storage' : 'memory',
-        collections: importedCollections,
-        imported: importedCount,
-        tombstoned: 0,
-      });
-    }
-
-    return { imported: importedCount, skipped: skippedCount, collections: importedCollections, persisted };
+    const { plans, skipped } = this.planImport(data, options);
+    const { imported, collections, persisted } = this.executeImport(plans);
+    return { imported, skipped, collections, persisted };
   }
 
   /**
@@ -1920,13 +1992,15 @@ export class XDBService {
    * accept a partial result explicitly.
    */
   async restoreAsync(backup: XDBExportData, options: { acceptPartial?: boolean } = {}): Promise<XDBDurableImportResult> {
-    const result = this.import(backup, { merge: false, clearFirst: true });
-    if (result.skipped > 0 && !options.acceptPartial) {
-      await result.persisted.catch(() => {});
-      throw new Error(`${result.skipped} row(s) or collection(s) in the backup were not importable; pass acceptPartial to restore the rest anyway.`);
+    // Decide BEFORE mutating anything (R2-SN-01): a refused restore leaves
+    // zero visible or persistent change and sends no native batch.
+    const { plans, skipped } = this.planImport(backup, { merge: false, clearFirst: true });
+    if (skipped > 0 && !options.acceptPartial) {
+      throw new Error(`${skipped} row(s) or collection(s) in the backup were not importable; nothing was changed. Pass acceptPartial to restore the rest anyway.`);
     }
-    const persisted = await result.persisted;
-    return { ...result, persisted };
+    const { imported, collections, persisted: pending } = this.executeImport(plans);
+    const persisted = await pending;
+    return { imported, skipped, collections, persisted };
   }
 }
 
