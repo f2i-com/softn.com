@@ -1,13 +1,17 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {pathToFileURL} from 'node:url';
 import {resolve,join} from 'node:path';
 const root=resolve(process.env.SOFTN_PHP_TEST_BACKEND||'');
-if(!process.env.SOFTN_PHP_TEST_BACKEND)throw new Error('Set SOFTN_PHP_TEST_BACKEND to an extracted backend directory');
-const {createWasmHost}=await import(pathToFileURL(join(root,'wasm-host.mjs')));
-const {applyMigration}=await import(pathToFileURL(join(root,'migrations.mjs')));
-const {parseZoned}=await import(pathToFileURL(join(root,'time.mjs')));
+const skip=process.env.SOFTN_PHP_TEST_BACKEND?false:'Set SOFTN_PHP_TEST_BACKEND to an extracted backend directory';
+// Without the backend fixture these tests are SKIPPED, visibly, not thrown
+// out of: the suite runs in every checkout and CI, and the fixture-bound
+// cases report why they did not run.
+const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
+const {createWasmHost}=skip?{}:await import(pathToFileURL(join(root,'wasm-host.mjs')));
+const {applyMigration}=skip?{}:await import(pathToFileURL(join(root,'migrations.mjs')));
+const {parseZoned}=skip?{}:await import(pathToFileURL(join(root,'time.mjs')));
 const key=Buffer.alloc(32,7),cryptoDomains={hmac:'test:hmac:v1',seal:'test:seal:v1'};
 function fixture(source,capabilities=['sql','crypto','time'],steps=100000) {
   const db=new DatabaseSync(':memory:');db.exec('CREATE TABLE counter(value INTEGER); INSERT INTO counter VALUES(0); CREATE TABLE _private(secret TEXT); INSERT INTO _private VALUES(\'host-only\')');

@@ -4600,6 +4600,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "yrs",
 ]
@@ -4799,7 +4800,7 @@ dependencies = [
 
 [[package]]
 name = "zipp-vm"
-version = "0.0.17"
+version = "0.0.18"
 dependencies = [
  "dynasm",
  "dynasmrt",

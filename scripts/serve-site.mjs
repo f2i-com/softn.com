@@ -48,6 +48,13 @@ function fallbackFor(pathname) {
   return 'index.html';
 }
 
+// The site's own pages, and only those: the front door, the directory, an
+// app's page and the publish form. The same allowlist the Apache rules, the
+// nginx map and the PHP router apply (scripts/package-site.test.mjs checks
+// those three agree); the preview must not be more generous than the hosts
+// it previews for, or a broken link looks fine here and 404s in production.
+const SITE_PAGE = /^\/(?:apps|app\/[^/]+|publish)?\/?$/;
+
 function mayUseSpaFallback(pathname) {
   // A missing static asset must stay a 404 even when a browser sends
   // `Accept: text/html` (for example, when an asset URL is pasted in a tab).
@@ -113,10 +120,25 @@ function handleRequest(req, res) {
     return;
   }
 
+  // A directory asked for without its trailing slash (a guide under /docs/,
+  // say) goes to its canonical URL, as Apache's DirectorySlash and the nginx
+  // rule do; relative links inside the page depend on it.
+  if (!pathname.endsWith('/') && fs.existsSync(candidate) && fs.statSync(candidate).isDirectory() && fs.existsSync(path.join(candidate, 'index.html'))) {
+    res.writeHead(301, { Location: `${pathname}/${url.search}` });
+    res.end();
+    return;
+  }
+
   let file = existingFile(candidate);
+  let status = 200;
   const acceptsHtml = String(req.headers.accept || '').includes('text/html');
   if (!file && acceptsHtml && mayUseSpaFallback(pathname)) {
-    file = existingFile(path.join(distDir, fallbackFor(pathname)));
+    const fallback = fallbackFor(pathname);
+    file = existingFile(path.join(distDir, fallback));
+    // A path the site has no page for is a 404 that carries the site as its
+    // body (ErrorDocument 404 /index.html in the shipped .htaccess): the
+    // visitor sees the not-found page and the status says not found.
+    if (fallback === 'index.html' && !SITE_PAGE.test(pathname)) status = 404;
   }
   if (!file) {
     send(res, 404, 'Not found\n', { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -124,7 +146,7 @@ function handleRequest(req, res) {
   }
 
   const stat = fs.statSync(file);
-  res.writeHead(200, {
+  res.writeHead(status, {
     'Cache-Control': 'no-cache',
     'Content-Length': stat.size,
     'Content-Type': MIME_TYPES.get(path.extname(file).toLowerCase()) || 'application/octet-stream',
