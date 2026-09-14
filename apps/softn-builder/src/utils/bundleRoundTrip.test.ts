@@ -210,7 +210,9 @@ describe('the allowlist of deliberate migrations', () => {
     for (const m of MIGRATIONS) {
       expect(m.reason.length, `${m.entry} has no reason`).toBeGreaterThan(20);
     }
-    expect(isAllowedMigration('ui/app.ui')).toBe(false);
+    // UI files may differ only by migrated legacy attributes; the fixture has
+    // none, so the byte comparison below still covers them in full.
+    expect(isAllowedMigration('ui/app.ui')).toBe(true);
     expect(isAllowedMigration('server/api.logic')).toBe(false);
     expect(isAllowedMigration('assets/icon.png')).toBe(false);
     expect(isAllowedMigration('README.md')).toBe(false);
@@ -221,6 +223,11 @@ describe('a no-edit round trip of the F06 fixture', () => {
   it('gives back the same archive inventory, byte for byte outside the allowlist', async () => {
     const out = await exported();
     expect(compareInventories(entries(), out)).toEqual([]);
+  });
+
+  it('writes the UI files back byte for byte: nothing in them needed migrating', async () => {
+    const out = await exported();
+    for (const path of ['ui/app.ui', 'ui/not-main.ui']) expect(decode(out.get(path)!)).toBe(decode(entries()[path]));
   });
 
   it('keeps the manifest: declared main, window and runtime settings, unknown fields, the server group', async () => {

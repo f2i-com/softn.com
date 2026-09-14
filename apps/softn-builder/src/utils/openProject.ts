@@ -40,6 +40,7 @@ import { inferRelationships, validRelationships } from './schemaRelationships';
 import { encodeAsset, decodeAsset, type SerializedAssetFile } from './sessionAssets';
 import { freshIdentity, type RecordIdentity, type XdbRecordEnvelope } from './xdbFormat';
 import { readLocalStorage, removeLocalStorage } from './safeStorage';
+import { describeMigrations, migrateElements } from './propMigrations';
 import type {
   AssetFile,
   CanvasElement,
@@ -323,11 +324,17 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
   if (typeof s.canvas.rootId !== 'string' || !elements.has(s.canvas.rootId)) {
     throw new Error('the saved canvas has no root element');
   }
+  // A session saved by an older Builder may hold props the components never
+  // read (propMigrations.ts); they become what the components take, and the
+  // rewrites are listed with the session's warnings.
+  const migrationWarnings = describeMigrations('canvas', migrateElements(elements.values()));
 
   const uiFiles = new Map<string, UIFileState>(
     pairs<SerializedUIFile>(s.files.uiFiles, 'files.uiFiles').map(([id, file]) => {
       if (!isObject(file) || typeof file.path !== 'string') throw new Error(`UI file ${id} in the saved session is malformed`);
-      return [id, { ...file, elements: new Map<string, CanvasElement>(pairs<CanvasElement>(file.elements, `files.uiFiles[${id}].elements`)) }];
+      const fileElements = new Map<string, CanvasElement>(pairs<CanvasElement>(file.elements, `files.uiFiles[${id}].elements`));
+      migrationWarnings.push(...describeMigrations(file.path, migrateElements(fileElements.values())));
+      return [id, { ...file, elements: fileElements }];
     })
   );
   const logicFiles = new Map<string, LogicFileState>(pairs<LogicFileState>(s.files.logicFiles, 'files.logicFiles'));
@@ -413,7 +420,7 @@ export function prepareSessionSnapshot(raw: string): ProjectSnapshot {
       openTabs: Array.isArray(s.files.openTabs) ? (s.files.openTabs as string[]) : [],
     },
     view,
-    warnings: [],
+    warnings: migrationWarnings,
     label: project.name || 'previous local session',
   };
 }
