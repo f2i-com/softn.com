@@ -468,7 +468,7 @@ name is a real 404. The bare `/play/` redirects to the directory.
 An app runs with every capability it declares withheld until the visitor
 allows it on the bar above the app. **Trusting** an app removes that bar:
 its play page is served with `"permissionMode": "preapproved"` — the same
-setting the [PHP single-app host](../../docs/SINGLE_APP_PHP_SERVE.md) has —
+setting the [PHP single-app host](../../docs/engineering/SINGLE_APP_PHP_SERVE.md) has —
 and the shell grants what its `permission.json` declares from the start.
 Trust is the operator's alone to give, and it is given on the server, by
 hand, in the `app` object of the app's own `app.json`:

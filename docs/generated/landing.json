@@ -1,0 +1,41 @@
+{
+  "eyebrow": "Learn SoftN",
+  "title": "An app you can understand, edit and keep.",
+  "description": "Start with a working example, learn the pieces as you need them, and choose where your app runs.",
+  "cta": {
+    "label": "Explore the documentation",
+    "href": "/docs/"
+  },
+  "cards": [
+    {
+      "label": "What is SoftN?",
+      "description": "An introduction to the editable app format, the tools around it, and the choices you keep after building an app.",
+      "href": "/docs/what-is-softn/"
+    },
+    {
+      "label": "Build your first SoftN app",
+      "description": "Make a small change to Fieldnotes, then explore a counter that connects interface, state and an event handler.",
+      "href": "/docs/first-app/"
+    },
+    {
+      "label": "SoftN Builder",
+      "description": "Shape the interface, inspect source, model data and preview a portable app in one editable workspace.",
+      "href": "/docs/builder/"
+    },
+    {
+      "label": "The .softn app format",
+      "description": "What a bundle contains, what an export leaves behind, and how to think about source, seeds and permissions.",
+      "href": "/docs/softn-app-format/"
+    },
+    {
+      "label": "How SoftN, ZIPP and XDB fit together",
+      "description": "A readable map of the interface, guest logic, data and hosting responsibilities.",
+      "href": "/docs/architecture/"
+    },
+    {
+      "label": "Hosting and deploying SoftN apps",
+      "description": "Choose between opening a bundle, publishing an app, hosting one website or connecting a private backend.",
+      "href": "/docs/hosting/"
+    }
+  ]
+}

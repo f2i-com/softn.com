@@ -28,7 +28,7 @@
  *
  * No dependencies beyond the workspace: Node's global WebSocket speaks the
  * protocol, fflate (a core dependency) zips the fixtures. Read
- * docs/PERFORMANCE_MEASUREMENT.md before quoting a number from here.
+ * docs/engineering/PERFORMANCE_MEASUREMENT.md before quoting a number from here.
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';

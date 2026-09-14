@@ -2,7 +2,7 @@ import React from 'react';
 import { Mark } from './Mark';
 import { ThemeToggle } from './ThemeToggle';
 
-/** The five places the bar can take you, plus where the source lives. */
+/** The six places the bar can take you, plus where the source lives. */
 export interface ProductUrls {
   home: string;
   apps: string;
@@ -10,6 +10,8 @@ export interface ProductUrls {
   studio: string;
   builder: string;
   publish: string;
+  /** The guides: static pages beside the site, generated from docs/. */
+  docs: string;
   repo: string;
 }
 
@@ -25,10 +27,11 @@ export const DEFAULT_URLS: ProductUrls = {
   studio: '/studio/',
   builder: '/builder/',
   publish: '/publish',
+  docs: '/docs/',
   repo: 'https://github.com/f2i-com/softn.com',
 };
 
-export type Product = 'home' | 'apps' | 'runtime' | 'studio' | 'builder' | 'publish';
+export type Product = 'home' | 'apps' | 'runtime' | 'studio' | 'builder' | 'publish' | 'docs';
 
 const PRODUCTS: Array<{ id: Exclude<Product, 'home'>; label: string }> = [
   { id: 'apps', label: 'Apps' },
@@ -36,6 +39,7 @@ const PRODUCTS: Array<{ id: Exclude<Product, 'home'>; label: string }> = [
   { id: 'studio', label: 'Studio' },
   { id: 'builder', label: 'Builder' },
   { id: 'publish', label: 'Publish' },
+  { id: 'docs', label: 'Docs' },
 ];
 
 export interface ProductBarProps {
@@ -52,7 +56,7 @@ export interface ProductBarProps {
 
 /**
  * The strip at the top of every SoftN surface. It is the same element in the
- * site, the runtime, Studio and Builder — the same mark, the same five
+ * site, the runtime, Studio and Builder — the same mark, the same six
  * destinations, the same theme switch — so that moving between them feels
  * like moving around one product rather than leaving it. It has one
  * geometry: the same inset from the window's edge on every surface, so the

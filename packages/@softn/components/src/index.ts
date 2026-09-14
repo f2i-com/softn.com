@@ -8,7 +8,7 @@
  * Builder, the desktop loader and the Vite plugin. A host that wants the
  * runtime's demand loading imports from the entries instead —
  * '@softn/components/lazy' for registration, '/minimal' and '/theme' for its
- * own chrome, a feature entry for a feature. See docs/COMPONENT_LOADING.md.
+ * own chrome, a feature entry for a feature. See docs/engineering/COMPONENT_LOADING.md.
  */
 
 // Layout components

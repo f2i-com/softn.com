@@ -2,7 +2,7 @@ import React, { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { SoftNWithXDB, inspectDeclaration, type Capability, type PermissionConfig } from '@softn/core';
 // The theme entry, not the root barrel: the barrel is the eager path, and
 // keeping Scene3D out of this shell would then rest on the bundler
-// tree-shaking it away (docs/COMPONENT_LOADING.md).
+// tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
 import { ThemeProvider } from '@softn/components/theme';
 import { createImportResolver, withheldPermissions } from '../../softn-web/src/lib/bundleProcessor';
 import type { AssetResolver } from '../../softn-web/src/lib/bundleProcessor';

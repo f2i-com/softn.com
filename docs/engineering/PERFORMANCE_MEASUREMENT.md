@@ -169,7 +169,7 @@ engine's 5,126 KB wasm and the bundle bytes are unchanged. The build-graph
 tests report an entry closure of 732,413 bytes (web) and 625,726 bytes
 (single), one chunk each, against 1,764,885 bytes for the 0.0.7 build.
 
-`docs/audit-2026-09-08-response.md` has the tables, the SW-bypassed
+`docs/engineering/audits/audit-2026-09-08-response.md` has the tables, the SW-bypassed
 comparison, and the list of what got worse; quote from there with its
 caveats. The two fixes the first run of this label prompted are its rows C05
 (`vendor-three` is Three's core; each addon is its own on-demand chunk) and

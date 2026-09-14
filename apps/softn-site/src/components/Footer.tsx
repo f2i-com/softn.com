@@ -52,6 +52,7 @@ export function Footer(): React.ReactElement {
               </a>
               <a href="/#language">The language</a>
               <a href="/#components">Components</a>
+              <a href="/docs/">Documentation</a>
             </div>
           </div>
         </div>

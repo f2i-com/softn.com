@@ -2,7 +2,7 @@ import React, { Component, useCallback, useEffect, useMemo, useRef, useState, ty
 import { SoftNWithXDB, type AppAssetResolver } from '@softn/core';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
-// bundler tree-shaking it away (docs/COMPONENT_LOADING.md).
+// bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
 import { Spinner, Box, Text, Card } from '@softn/components/minimal';
 import { ThemeProvider } from '@softn/components/theme';
 import { PermissionBar, type ConsentRequest } from './PermissionBar';

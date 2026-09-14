@@ -1498,6 +1498,77 @@ main:focus-visible {
   }
 }
 
+/* The documentation, on the front door: numbered like the "how" cards,
+   each one a guide. The number is mint because the guide is where the
+   machine is explained; the rest stays paper and dim. */
+.band-learn .band-head-row {
+  align-items: flex-end;
+}
+.learn-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+.learn-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--ink-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  padding: 1.5rem;
+  transition:
+    border-color 180ms var(--ease),
+    transform 180ms var(--ease),
+    background 180ms var(--ease);
+}
+.learn-card:hover {
+  background: var(--ink-3);
+  border-color: var(--line-strong);
+  transform: translateY(-2px);
+}
+.learn-n {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--mint);
+  letter-spacing: 0.1em;
+}
+.learn-title {
+  font-family: var(--display);
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.learn-desc {
+  font-size: 0.9rem;
+  color: var(--dim);
+  line-height: 1.55;
+  flex: 1;
+}
+.learn-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--dimmer);
+  transition: color 180ms var(--ease);
+}
+.learn-card:hover .learn-go {
+  color: var(--paper);
+}
+@media (max-width: 920px) {
+  .learn-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (max-width: 600px) {
+  .learn-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* The three inner pages share a frame. */
 .directory,
 .app-page,

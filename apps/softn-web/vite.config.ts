@@ -36,7 +36,7 @@ const onDemandRuntimeChunks = [
 
 // The Three addons Scene3D reaches through its own import() — the model
 // loaders, the controls, the room environment, the post-processing set,
-// SkeletonUtils and the Meshopt decoder (docs/SCENE3D_LOADING.md) — each a
+// SkeletonUtils and the Meshopt decoder (docs/engineering/SCENE3D_LOADING.md) — each a
 // chunk named after its module, plus the two modules the post-processing
 // chunks share between them (Pass, CopyShader), which Rolldown emits as
 // chunks of their own. They are separate from vendor-three because the
@@ -147,7 +147,7 @@ export default defineConfig({
         // when the app asked for it and the worker's files when its script
         // runs in one, and only then calls the app offline-ready. The AI
         // runtime stays online by design: its models are downloads.
-        // docs/COMPONENT_LOADING.md has the whole policy; the build-graph
+        // docs/engineering/COMPONENT_LOADING.md has the whole policy; the build-graph
         // test holds the precache to it.
         globIgnores: [
           '**/ort-*.wasm',
