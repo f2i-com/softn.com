@@ -1,71 +1,31 @@
+/**
+ * The palette offers exactly the components the library registers.
+ *
+ * The library's side is `packages/@softn/components/component-manifest.json`,
+ * generated from the component sources (its `registered` map says what each
+ * registry entry registers) and held current by that package's own test.
+ * This script used to re-parse the library's registry source with regular
+ * expressions; the manifest is the same fact, already extracted. Builder's
+ * side is still read from `componentRegistry.ts` by pattern, because this
+ * runs before the TypeScript build (`prebuild`, `check:components`); the
+ * prop-level checks, which need the registry evaluated, live in
+ * `src/utils/componentRegistry.manifest.test.ts`.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 
 const root = process.cwd();
-const componentsRegistryPath = path.resolve(root, '../../packages/@softn/components/src/registry.ts');
+const manifestPath = path.resolve(root, '../../packages/@softn/components/component-manifest.json');
 const builderRegistryPath = path.resolve(root, 'src/utils/componentRegistry.ts');
 
-/**
- * Names inside an object literal body: `  Name,` lines, `{ A, B, C }` on one
- * line, and `...spreadName` spreads. Spreads are resolved by looking the
- * spread identifier up among the `export const <name> = {...}` objects of the
- * file that exports it (the registry composes the per-feature entry objects
- * under src/entries/, so the check follows those imports).
- */
-function objectBody(source, name) {
-  const match = source.match(new RegExp(`export const ${name} = \\{([\\s\\S]*?)\\};?\\s*$`, 'm'));
-  return match ? match[1] : null;
-}
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+const registeredNames = [...new Set(Object.values(manifest.registered).flat())].sort();
 
-function importSourceFor(source, identifier) {
-  const match = source.match(new RegExp(`import \\{[^}]*\\b${identifier}\\b[^}]*\\} from '([^']+)'`));
-  return match ? match[1] : null;
-}
-
-function extractObjectNames(source, name, filePath, seen = new Set()) {
-  const body = objectBody(source, name);
-  if (body === null) return [];
-  const names = [];
-  const withoutComments = body.replace(/\/\/.*$/gm, '');
-  for (const entry of withoutComments.split(',')) {
-    const token = entry.trim();
-    if (!token) continue;
-    const spread = token.match(/^\.\.\.([A-Za-z0-9_]+)$/);
-    if (spread) {
-      const identifier = spread[1];
-      if (seen.has(identifier)) continue;
-      seen.add(identifier);
-      const importPath = importSourceFor(source, identifier);
-      const resolvedPath = importPath
-        ? path.resolve(path.dirname(filePath), importPath.endsWith('.ts') ? importPath : `${importPath}.ts`)
-        : filePath;
-      const resolvedSource = resolvedPath === filePath ? source : fs.readFileSync(resolvedPath, 'utf8');
-      names.push(...extractObjectNames(resolvedSource, identifier, resolvedPath, seen));
-      continue;
-    }
-    const plain = token.match(/^([A-Za-z0-9_]+)(?:\s*:\s*[A-Za-z0-9_.]+)?$/);
-    if (plain) names.push(plain[1]);
-  }
-  return names;
-}
-
-function extractBuiltinNames(source) {
-  return [...new Set(extractObjectNames(source, 'builtinComponents', componentsRegistryPath))].sort();
-}
-
-function extractBuilderNames(source) {
-  const names = [...source.matchAll(/comp\(\s*'([A-Za-z0-9_]+)'/g)].map((m) => m[1]);
-  return [...new Set(names)].sort();
-}
-
-const componentsSource = fs.readFileSync(componentsRegistryPath, 'utf8');
 const builderSource = fs.readFileSync(builderRegistryPath, 'utf8');
+const builderNames = [...new Set([...builderSource.matchAll(/comp\(\s*'([A-Za-z0-9_]+)'/g)].map((m) => m[1]))].sort();
 
-const builtinNames = extractBuiltinNames(componentsSource);
-const builderNames = extractBuilderNames(builderSource);
-
-const missingInBuilder = builtinNames.filter((name) => !builderNames.includes(name));
-const extraInBuilder = builderNames.filter((name) => !builtinNames.includes(name));
+const missingInBuilder = registeredNames.filter((name) => !builderNames.includes(name));
+const extraInBuilder = builderNames.filter((name) => !registeredNames.includes(name));
 
 if (missingInBuilder.length === 0 && extraInBuilder.length === 0) {
   console.log(`[component-registry] OK (${builderNames.length} components covered)`);
@@ -79,5 +39,5 @@ if (missingInBuilder.length > 0) {
 if (extraInBuilder.length > 0) {
   console.error('Unknown in builder metadata:', extraInBuilder.join(', '));
 }
-
+console.error('Regenerate the manifest with `npm run generate:manifest -w @softn/components` if the library changed; otherwise update src/utils/componentRegistry.ts.');
 process.exit(1);
