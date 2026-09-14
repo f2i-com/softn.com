@@ -20,6 +20,25 @@ The hosted shell explicitly uses main-thread script execution. Its restrictive C
 origin do not currently permit SoftN's additional URL-based sandbox workers; forwarding engine
 bytes does not grant permission to create those workers or enable additional host APIs.
 
+## Backend calls and errors
+
+`softn.backend.call` goes to the parent over the transferred port as
+`{type:'call', id, action, input}`; the parent answers `{id, result}`. The
+shell keeps four calls in flight and up to thirty-two waiting behind them
+(`src/backendQueue.ts`), sending each as a slot frees, with a twenty-second
+deadline from the moment a call is sent. A thirty-third waiting call, a
+deadline and a reply the port could not deserialise (`messageerror`) each
+resolve to `{error}` with a sentence that says which. The shell is a public
+URL: anyone may embed it and drive it with their own `formlogic:init`, and
+gets only their own files running in an opaque frame against a port they
+supplied; no FormLogic state is reachable from it.
+
+A load failure is reported to the parent as `{type:'error', reason}` and
+shown in the frame with the same one-line reason. `reason` is an addition;
+a parent that reads only `type` sees what it always did.
+
+Test the queue with `node --test apps/formlogic-host/test/backendQueue.test.mjs`.
+
 ## Updating
 
 Vendor the same complete ZIPP release (WASM, generated glue, declarations and SOURCE.json) in

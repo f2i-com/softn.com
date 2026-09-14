@@ -50,12 +50,16 @@ enum Commands {
         /// trusted bundles. Can also be set via SOFTN_ALLOW_ALL_CAPABILITIES=1.
         #[arg(long)]
         allow_all_capabilities: bool,
-        /// Trust X-Forwarded-For header from a reverse proxy for rate limiting
-        /// and client IP attribution. Enable this when running behind nginx,
-        /// Cloudflare, or similar. Without this, all clients behind a proxy
-        /// share the proxy's IP for rate limiting.
-        #[arg(long)]
-        trusted_proxy: bool,
+        /// Trust X-Forwarded-For from a reverse proxy for rate limiting and
+        /// client IP attribution. `--trusted-proxy=10.0.0.5,10.1.0.0/16,::1`
+        /// names the peers allowed to assert it (addresses or CIDR ranges,
+        /// IPv4 and IPv6); the header is walked from the right past every
+        /// listed hop to the first address that is not one. Bare
+        /// `--trusted-proxy` trusts whatever connects, as before: only for a
+        /// listener no client can reach directly. Without the flag every
+        /// client behind a proxy shares the proxy's address.
+        #[arg(long, alias = "trust-proxy", num_args = 0..=1, require_equals = true, default_missing_value = "any", value_name = "PEERS")]
+        trusted_proxy: Option<String>,
     },
     /// Run multiple .softn bundles (multi-tenant mode)
     ///
@@ -85,9 +89,10 @@ enum Commands {
         /// Can also be set via SOFTN_ALLOW_ALL_CAPABILITIES=1.
         #[arg(long)]
         allow_all_capabilities: bool,
-        /// Trust X-Forwarded-For header
-        #[arg(long)]
-        trusted_proxy: bool,
+        /// Trust X-Forwarded-For: bare, from any peer; `=<peers>` for a list
+        /// of addresses or CIDR ranges (see `run`).
+        #[arg(long, alias = "trust-proxy", num_args = 0..=1, require_equals = true, default_missing_value = "any", value_name = "PEERS")]
+        trusted_proxy: Option<String>,
     },
     /// Show bundle info
     Info {
@@ -106,6 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Run { path, port, host, data_dir, workers, dev, allow_all_capabilities, trusted_proxy } => {
+            let trusted_proxy = http::TrustedProxy::parse(trusted_proxy.as_deref())?;
             // Check both CLI flag and env var for allow-all-capabilities
             let allow_all = allow_all_capabilities || std::env::var("SOFTN_ALLOW_ALL_CAPABILITIES")
                 .ok()
@@ -115,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             http::serve(ctx, &host, port, dev, trusted_proxy).await?;
         }
         Commands::ServeMulti { bundles_dir, port, host, data_dir, workers_per_tenant, dev, allow_all_capabilities, trusted_proxy } => {
+            let trusted_proxy = http::TrustedProxy::parse(trusted_proxy.as_deref())?;
             let allow_all = allow_all_capabilities || std::env::var("SOFTN_ALLOW_ALL_CAPABILITIES")
                 .ok()
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))

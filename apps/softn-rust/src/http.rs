@@ -19,10 +19,8 @@ use tower_http::trace::TraceLayer;
 
 // ── Single-tenant serve (unchanged) ──
 
-pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool, trusted_proxy: bool) -> Result<(), String> {
-    if trusted_proxy {
-        tracing::info!("Trusted proxy mode: using X-Forwarded-For for client IP attribution");
-    }
+pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool, trusted_proxy: TrustedProxy) -> Result<(), String> {
+    trusted_proxy.announce();
     let shutdown_tx = ctx.shutdown.clone();
     // Start background ticket cleanup so expired tickets are pruned even when
     // no new issue/redeem requests arrive (prevents attacker lock-out via
@@ -61,10 +59,8 @@ pub async fn serve(ctx: Arc<AppContext>, host: &str, port: u16, dev_mode: bool, 
 
 // ── Multi-tenant serve ──
 
-pub async fn serve_multi(manager: Arc<TenantManager>, host: &str, port: u16, dev_mode: bool, trusted_proxy: bool) -> Result<(), String> {
-    if trusted_proxy {
-        tracing::info!("Trusted proxy mode: using X-Forwarded-For for client IP attribution");
-    }
+pub async fn serve_multi(manager: Arc<TenantManager>, host: &str, port: u16, dev_mode: bool, trusted_proxy: TrustedProxy) -> Result<(), String> {
+    trusted_proxy.announce();
 
     // Start ticket cleanup for each tenant
     for tenant in manager.tenants() {
@@ -107,7 +103,7 @@ pub async fn serve_multi(manager: Arc<TenantManager>, host: &str, port: u16, dev
 
 // ── Single-tenant router (original, renamed) ──
 
-fn build_single_tenant_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc::Sender<()>, trusted_proxy: bool) -> Router {
+fn build_single_tenant_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tokio::sync::mpsc::Sender<()>, trusted_proxy: TrustedProxy) -> Router {
     // CORS: restrict origins if config.server.allowedOrigins is set.
     let cors = build_cors(&ctx.manifest, dev_mode);
 
@@ -150,7 +146,7 @@ fn build_single_tenant_router(ctx: Arc<AppContext>, dev_mode: bool, conn_tx: tok
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .layer(axum::Extension(conn_tx))
-        .layer(axum::Extension(TrustedProxy(trusted_proxy)))
+        .layer(axum::Extension(trusted_proxy.clone()))
         .with_state(ctx)
 }
 
@@ -160,7 +156,7 @@ fn build_multi_tenant_router(
     manager: Arc<TenantManager>,
     dev_mode: bool,
     conn_tx: tokio::sync::mpsc::Sender<()>,
-    trusted_proxy: bool,
+    trusted_proxy: TrustedProxy,
 ) -> Router {
     // Global routes (not tenant-scoped).
     // Convert to Router<()> via .with_state() so we can merge with tenant
@@ -227,7 +223,7 @@ fn build_multi_tenant_router(
     app
         .layer(TraceLayer::new_for_http())
         .layer(axum::Extension(conn_tx))
-        .layer(axum::Extension(TrustedProxy(trusted_proxy)))
+        .layer(axum::Extension(trusted_proxy.clone()))
 }
 
 /// Register API routes from manifest onto a single-tenant router.
@@ -263,7 +259,7 @@ fn register_api_routes(mut router: Router<Arc<AppContext>>, routes: &[crate::bun
                 query: axum::extract::Query<HashMap<String, String>>,
                 body: axum::body::Bytes,
             | {
-                api_handler_single(ctx, name, is_public, options, extract_client_ip(&headers, info.0.ip(), proxy.0), method, uri, headers, query, body)
+                api_handler_single(ctx, name, is_public, options, extract_client_ip(&headers, info.0.ip(), &proxy), method, uri, headers, query, body)
             }
         };
         let is_public = route.public || matches!(route.authorization, Some(AuthorizationMode::Application | AuthorizationMode::Anonymous));
@@ -325,7 +321,7 @@ fn register_api_routes_tenant(mut router: Router<Arc<TenantContext>>, routes: &[
                 query: axum::extract::Query<HashMap<String, String>>,
                 body: axum::body::Bytes,
             | {
-                api_handler_tenant(tenant, name, is_public, options, extract_client_ip(&headers, info.0.ip(), proxy.0), method, uri, headers, query, body)
+                api_handler_tenant(tenant, name, is_public, options, extract_client_ip(&headers, info.0.ip(), &proxy), method, uri, headers, query, body)
             }
         };
         let is_public = route.public || matches!(route.authorization, Some(AuthorizationMode::Application | AuthorizationMode::Anonymous));
@@ -510,7 +506,7 @@ async fn issue_ticket(
     axum::Extension(proxy): axum::Extension<TrustedProxy>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    let client_ip = extract_client_ip(&headers, info.0.ip(), proxy.0);
+    let client_ip = extract_client_ip(&headers, info.0.ip(), &proxy);
     if ticket_rate_limiter().check(client_ip).is_err() {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -629,7 +625,7 @@ async fn tenant_issue_ticket(
     axum::Extension(proxy): axum::Extension<TrustedProxy>,
     headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
-    let client_ip = extract_client_ip(&headers, info.0.ip(), proxy.0);
+    let client_ip = extract_client_ip(&headers, info.0.ip(), &proxy);
     if ticket_rate_limiter().check(client_ip).is_err() {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -896,26 +892,204 @@ async fn execute_api_handler(
 /// Allowed client-facing directories for static file serving.
 const ALLOWED_STATIC_DIRS: &[&str] = &["ui", "assets", "styles", "fonts", "images", "icons"];
 
-#[derive(Clone, Copy)]
-struct TrustedProxy(bool);
+/// An address or CIDR range a reverse proxy may connect from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProxyPeer {
+    addr: std::net::IpAddr,
+    prefix: u8,
+}
 
+impl ProxyPeer {
+    fn parse(text: &str) -> Result<ProxyPeer, String> {
+        let text = text.trim();
+        let (addr, prefix) = match text.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (text, None),
+        };
+        let addr: std::net::IpAddr = addr
+            .parse()
+            .map_err(|_| format!("--trusted-proxy: '{}' is not an IP address or CIDR range", text))?;
+        let addr = canonical_ip(addr);
+        let bits = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            None => bits,
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= bits)
+                .ok_or_else(|| format!("--trusted-proxy: '{}' has a prefix length past /{}", text, bits))?,
+        };
+        Ok(ProxyPeer { addr, prefix })
+    }
+
+    fn contains(&self, ip: std::net::IpAddr) -> bool {
+        let ip = canonical_ip(ip);
+        match (self.addr, ip) {
+            (std::net::IpAddr::V4(net), std::net::IpAddr::V4(ip)) => {
+                let mask = if self.prefix == 0 { 0 } else { u32::MAX << (32 - u32::from(self.prefix)) };
+                (u32::from(net) & mask) == (u32::from(ip) & mask)
+            }
+            (std::net::IpAddr::V6(net), std::net::IpAddr::V6(ip)) => {
+                let mask = if self.prefix == 0 { 0 } else { u128::MAX << (128 - u32::from(self.prefix)) };
+                (u128::from(net) & mask) == (u128::from(ip) & mask)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// An IPv4 address that arrived as IPv4-mapped IPv6 (a dual-stack listener
+/// on `::`) is the IPv4 address for every comparison.
+fn canonical_ip(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => std::net::IpAddr::V4(v4),
+            None => ip,
+        },
+        v4 => v4,
+    }
+}
+
+/// Who may assert a client's address through `X-Forwarded-For`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrustedProxy {
+    /// The default: the socket peer is the client.
+    Nobody,
+    /// Bare `--trusted-proxy`: whatever connects is a proxy (the pre-CIDR
+    /// behaviour, for a listener no client can reach directly).
+    Anyone,
+    /// `--trusted-proxy=<peers>`: only these peers are proxies, and the
+    /// header is walked from the right past every listed hop.
+    Peers(Vec<ProxyPeer>),
+}
+
+impl TrustedProxy {
+    /// `None` is the flag absent; `Some("any")` the bare flag; anything else
+    /// a comma-separated list of addresses or CIDR ranges.
+    pub fn parse(value: Option<&str>) -> Result<TrustedProxy, String> {
+        match value {
+            None => Ok(TrustedProxy::Nobody),
+            Some("any") => Ok(TrustedProxy::Anyone),
+            Some(list) => {
+                let peers = list
+                    .split(',')
+                    .filter(|s| !s.trim().is_empty())
+                    .map(ProxyPeer::parse)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if peers.is_empty() {
+                    return Err("--trusted-proxy: name at least one address or CIDR range, or pass the bare flag to trust any peer".into());
+                }
+                Ok(TrustedProxy::Peers(peers))
+            }
+        }
+    }
+
+    fn is_proxy(&self, ip: std::net::IpAddr) -> bool {
+        match self {
+            TrustedProxy::Nobody => false,
+            TrustedProxy::Anyone => true,
+            TrustedProxy::Peers(peers) => peers.iter().any(|p| p.contains(ip)),
+        }
+    }
+
+    fn announce(&self) {
+        match self {
+            TrustedProxy::Nobody => {}
+            TrustedProxy::Anyone => tracing::info!("Trusted proxy mode: X-Forwarded-For from any peer names the client"),
+            TrustedProxy::Peers(peers) => tracing::info!("Trusted proxy mode: X-Forwarded-For honoured from {} listed peer range(s)", peers.len()),
+        }
+    }
+}
+
+/// The client's address: the socket peer, unless that peer is a trusted
+/// proxy, in which case `X-Forwarded-For` is walked from the right. With a
+/// peer list every hop that is itself a listed proxy is skipped and the
+/// first address that is not one is the client, so a client cannot choose
+/// its identity: whatever it prepends sits left of the entry the edge
+/// appended. With the bare flag the rightmost entry is the client, as it
+/// always was. An entry that is not an address stops the walk at the last
+/// good hop (the proxy itself when there is none).
 fn extract_client_ip(
     headers: &axum::http::HeaderMap,
     socket_ip: std::net::IpAddr,
-    trusted_proxy: bool,
+    trusted_proxy: &TrustedProxy,
 ) -> std::net::IpAddr {
-    if !trusted_proxy {
+    if !trusted_proxy.is_proxy(socket_ip) {
         return socket_ip;
     }
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|xff| {
-            xff.rsplit(',')
-                .next()
-                .and_then(|ip_str| ip_str.trim().parse::<std::net::IpAddr>().ok())
-        })
-        .unwrap_or(socket_ip)
+    let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) else {
+        return socket_ip;
+    };
+    let mut client = socket_ip;
+    for entry in xff.rsplit(',') {
+        let Ok(ip) = entry.trim().parse::<std::net::IpAddr>() else { break };
+        let ip = canonical_ip(ip);
+        client = ip;
+        if matches!(trusted_proxy, TrustedProxy::Anyone) || !trusted_proxy.is_proxy(ip) {
+            break;
+        }
+    }
+    client
+}
+
+#[cfg(test)]
+mod trusted_proxy_tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    fn headers(xff: &str) -> axum::http::HeaderMap {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("x-forwarded-for", xff.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn flag_absent_is_the_socket_peer_whatever_the_header_says() {
+        let policy = TrustedProxy::parse(None).unwrap();
+        assert_eq!(extract_client_ip(&headers("1.2.3.4"), ip("10.0.0.5"), &policy), ip("10.0.0.5"));
+    }
+
+    #[test]
+    fn bare_flag_keeps_the_old_rule_rightmost_entry_from_any_peer() {
+        let policy = TrustedProxy::parse(Some("any")).unwrap();
+        assert_eq!(policy, TrustedProxy::Anyone);
+        assert_eq!(extract_client_ip(&headers("9.9.9.9, 1.2.3.4"), ip("203.0.113.7"), &policy), ip("1.2.3.4"));
+        assert_eq!(extract_client_ip(&axum::http::HeaderMap::new(), ip("203.0.113.7"), &policy), ip("203.0.113.7"));
+    }
+
+    #[test]
+    fn a_peer_list_trusts_only_listed_peers_and_walks_past_listed_hops() {
+        let policy = TrustedProxy::parse(Some("10.0.0.5, 10.1.0.0/16,2001:db8::/32")).unwrap();
+        // An unlisted peer asserting a header is the client itself.
+        assert_eq!(extract_client_ip(&headers("1.2.3.4"), ip("203.0.113.7"), &policy), ip("203.0.113.7"));
+        // The edge appended the client; a hop inside the listed range is skipped.
+        assert_eq!(extract_client_ip(&headers("1.2.3.4, 10.1.2.3"), ip("10.0.0.5"), &policy), ip("1.2.3.4"));
+        // What the client prepended sits left of the edge's entry and is ignored.
+        assert_eq!(extract_client_ip(&headers("8.8.8.8, 1.2.3.4"), ip("10.0.0.5"), &policy), ip("1.2.3.4"));
+        // Every entry a proxy: the leftmost proxy is what is known.
+        assert_eq!(extract_client_ip(&headers("10.1.9.9"), ip("10.0.0.5"), &policy), ip("10.1.9.9"));
+        // A malformed entry stops the walk at the last good hop.
+        assert_eq!(extract_client_ip(&headers("unknown, 10.1.2.3"), ip("10.0.0.5"), &policy), ip("10.1.2.3"));
+        // IPv6 range and an IPv4-mapped IPv6 peer on a dual-stack listener.
+        assert_eq!(extract_client_ip(&headers("1.2.3.4"), ip("2001:db8:1::9"), &policy), ip("1.2.3.4"));
+        assert_eq!(extract_client_ip(&headers("1.2.3.4"), ip("::ffff:10.0.0.5"), &policy), ip("1.2.3.4"));
+    }
+
+    #[test]
+    fn peer_lists_are_validated() {
+        assert!(TrustedProxy::parse(Some("")).is_err());
+        assert!(TrustedProxy::parse(Some("10.0.0.0/33")).is_err());
+        assert!(TrustedProxy::parse(Some("not-an-address")).is_err());
+        assert!(TrustedProxy::parse(Some("::1/129")).is_err());
+        assert_eq!(TrustedProxy::parse(Some("0.0.0.0/0")).unwrap(), TrustedProxy::Peers(vec![ProxyPeer { addr: ip("0.0.0.0"), prefix: 0 }]));
+        assert!(ProxyPeer::parse("0.0.0.0/0").unwrap().contains(ip("198.51.100.1")));
+        assert!(!ProxyPeer::parse("10.0.0.0/8").unwrap().contains(ip("11.0.0.1")));
+        assert!(!ProxyPeer::parse("10.0.0.0/8").unwrap().contains(ip("2001:db8::1")));
+    }
 }
 
 async fn shutdown_signal_single(shutdown_tx: tokio::sync::watch::Sender<bool>) {

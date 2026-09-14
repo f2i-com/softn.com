@@ -4,6 +4,7 @@ import { SoftNWithXDB, composeBundleSource, configureZippWasmSource } from '@sof
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { installAppStorage } from './storage';
+import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
@@ -19,33 +20,43 @@ const root = createRoot(document.getElementById('root')!);
 root.render(<p style={{ padding: 24, fontFamily: 'system-ui' }}>Opening app…</p>);
 let started = false;
 let port: MessagePort | undefined;
-let sequence = 0;
-const pending = new Map<number, { resolve: (value: unknown) => void; timer: ReturnType<typeof setTimeout> }>();
+// Four calls at a time to the parent, thirty-two waiting behind them, twenty
+// seconds each once sent. The parent validates every call on its side.
+const calls = createBackendQueue({
+  post: message => port!.postMessage(message),
+  maxInFlight: 4, maxQueued: 32, timeoutMs: 20000,
+});
 function backendCall(action: string, input: Record<string, unknown>): Promise<unknown> {
-  if (!port || pending.size >= 4) return Promise.resolve({ error: 'Please wait for the current request.' });
-  return new Promise(resolve => {
-    const id = ++sequence;
-    const timer = setTimeout(() => { pending.delete(id); resolve({ error: 'The backend request timed out.' }); }, 20000);
-    pending.set(id, { resolve, timer });
-    port!.postMessage({ type: 'call', id, action, input });
-  });
+  if (!port) return Promise.resolve({ error: 'The app is not connected to its backend yet.' });
+  return calls.call(action, input);
 }
-class Boundary extends Component<{ children: React.ReactNode }, { failed: boolean }> {
-  state = { failed: false };
-  static getDerivedStateFromError() { return { failed: true }; }
-  render() { return this.state.failed ? <p role="alert">This app could not be loaded. Check the interface and logic files.</p> : this.props.children; }
+const LOAD_FAILED = 'This app could not be loaded. Check the interface and logic files.';
+/** One line the app author can act on; never the stack, never more than a sentence. */
+function reasonOf(error: unknown): string {
+  const text = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  return text.split('\n')[0].slice(0, 300);
+}
+function reportError(reason: string): void {
+  // `reason` is an addition to the protocol; a parent that reads only `type` is unaffected.
+  port?.postMessage({ type: 'error', reason });
+}
+class Boundary extends Component<{ children: React.ReactNode }, { failed: boolean; reason: string }> {
+  state = { failed: false, reason: '' };
+  static getDerivedStateFromError(error: unknown) { return { failed: true, reason: reasonOf(error) }; }
+  componentDidCatch(error: unknown) { reportError(reasonOf(error)); }
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return <p role="alert">{LOAD_FAILED}{this.state.reason ? ` (${this.state.reason})` : ''}</p>;
+  }
 }
 window.addEventListener('message', event => {
   if (started || event.source !== parent || event.data?.type !== 'formlogic:init' || !event.ports[0]) return;
   started = true;
   port = event.ports[0];
-  port.onmessage = event => {
-    const item = pending.get(event.data?.id);
-    if (!item) return;
-    clearTimeout(item.timer);
-    pending.delete(event.data.id);
-    item.resolve(event.data.result);
-  };
+  port.onmessage = event => { calls.settle(event.data?.id, event.data?.result); };
+  // A result the port could not deserialise names no id: nothing in flight
+  // can be told apart, so all of it answers now rather than at its deadline.
+  port.onmessageerror = () => { calls.failInFlight(BACKEND_UNREADABLE); };
   try {
     const engineBytes = event.data.zippWasm;
     if (!(engineBytes instanceof ArrayBuffer) || engineBytes.byteLength < 8 || engineBytes.byteLength > 32 * 1024 * 1024) {
@@ -85,11 +96,12 @@ softn.net.fetch = function(url, options, done) {
         permissionConfig={{ permissions: {} }} scriptExecutionMode="main"
         assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}
         backendCall={backendCall} importResolver={async path => files.get(path.replace(/^\//, '')) ?? null}
-        onError={() => port?.postMessage({ type: 'error' })} />
+        onError={error => reportError(reasonOf(error))} />
     </ThemeProvider></Boundary>);
-  } catch {
-    root.render(<p role="alert" style={{ padding: 24 }}>This app could not be loaded. Check the interface and logic files.</p>);
-    port.postMessage({ type: 'error' });
+  } catch (error) {
+    const reason = reasonOf(error);
+    root.render(<p role="alert" style={{ padding: 24 }}>{LOAD_FAILED}{reason ? ` (${reason})` : ''}</p>);
+    reportError(reason);
   }
 });
 parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: { version: zippSource.version, sha256: zippSource.sha256 } }, '*');
