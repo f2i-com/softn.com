@@ -19,3 +19,4 @@ export * from './zip';
 export * from './inspect';
 export * from './handoff';
 export * from './capabilities';
+export * from './url';

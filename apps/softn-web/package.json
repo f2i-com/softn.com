@@ -14,6 +14,7 @@
   "dependencies": {
     "@huggingface/transformers": "^4.0.0-next.5",
     "@softn/brand": "*",
+    "@softn/bundle-format": "*",
     "@softn/components": "*",
     "@softn/core": "*",
     "fflate": "^0.8.2",

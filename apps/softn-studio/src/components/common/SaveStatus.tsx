@@ -1,4 +1,4 @@
-import { isHostedEditor, requestHostedSave } from '../../../../shared/hostedEditor';
+import { isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
 import React, { useState, useSyncExternalStore } from 'react';
 import { Icon } from './Icon';
 import { getSaveStatus, subscribeSaveStatus, type SaveStatus } from '../../lib/projectSession';

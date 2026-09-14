@@ -46,7 +46,7 @@ import { useUnsavedChanges } from './hooks/useUnsavedChanges';
 import { useExclusiveAction } from './hooks/useExclusiveAction';
 import { useWorkspaceShortcuts } from './hooks/useWorkspaceShortcuts';
 import { flushCanvasToActiveFile, buildProjectBundle } from './utils/buildProjectBundle';
-import { connectHostedEditor, isHostedEditor, requestHostedSave } from '../../shared/hostedEditor';
+import { connectHostedEditor, isHostedEditor, requestHostedSave } from '@softn/editor-shared/hostedEditor';
 
 const styles: Record<string, React.CSSProperties> = {
   app: {

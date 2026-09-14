@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
-import { useModalFocus } from '../../hooks/useModalFocus';
+import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import type { EntityDef, RelationshipDraft } from '../../types/builder';
 
 export interface RelationshipDialogProps {

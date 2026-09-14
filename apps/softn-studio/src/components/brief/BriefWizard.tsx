@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useWorkspaceStore, useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
+import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 import type { ProjectBrief, RuntimeTarget, VisualStyle } from '../../types/studio';
 import { generateBlueprintFromBrief, generateTaskGraph, scaffoldProjectFiles } from '../../lib/studioProject';
 
@@ -169,6 +170,10 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
 
   const m = isMobile;
 
+  // The wizard covers the editor: it is a dialog, owns the keyboard while it
+  // is up (Tab stays inside, Escape is Home), and says so to assistive tech.
+  const dialogRef = useModalFocus(true, onBack, 'textarea, input[type="text"]');
+
   const renderCheck = (size = 18) => (
     <span style={{ ...s.selectedBadge, width: size, height: size }}>
       <Icon name="check" size={size - 7} color="var(--studio-bg)" />
@@ -176,7 +181,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
   );
 
   return (
-    <div style={s.root}>
+    <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="brief-wizard-title" tabIndex={-1} style={s.root}>
       {/* Header */}
       <div style={{ ...s.header, padding: m ? '0 12px' : '0 20px' }}>
         <button
@@ -191,7 +196,7 @@ export const BriefWizard: React.FC<BriefWizardProps> = ({ onBack, onSubmit }) =>
 
         <div style={s.headerCenter}>
           <Icon name="sparkles" size={14} color="var(--studio-accent)" />
-          <span style={s.headerTitle}>New App</span>
+          <span id="brief-wizard-title" style={s.headerTitle}>New App</span>
         </div>
 
         {/* Provider badge */}

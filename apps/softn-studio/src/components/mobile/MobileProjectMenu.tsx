@@ -1,4 +1,4 @@
-import { isHostedEditor } from '../../../../shared/hostedEditor';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Icon } from '../common/Icon';
 import { HandoffReady } from '../common/HandoffReady';

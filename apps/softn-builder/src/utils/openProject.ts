@@ -34,6 +34,7 @@ import { useHistoryStore } from '../stores/historyStore';
 import { useSchemaStore } from '../stores/schemaStore';
 import { ensureFieldIds } from './schemaFields';
 import { useFilesStore } from '../stores/filesStore';
+import { fetchSameOriginBundle, isAbort } from '@softn/editor-shared/remoteOpen';
 import { loadBundle, type LoadedBundle } from './bundleLoader';
 import { inferRelationships, validRelationships } from './schemaRelationships';
 import { encodeAsset, decodeAsset, type SerializedAssetFile } from './sessionAssets';
@@ -680,19 +681,17 @@ export interface RemoteOpenDeps {
  * signal. An abort — ours, from a superseding action or unmount — is quiet.
  */
 export async function openRemoteBundle(url: URL, signal: AbortSignal, deps: RemoteOpenDeps = {}): Promise<RemoteOpenOutcome> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
   const confirmReplace = deps.confirmReplace ?? ((message: string) => window.confirm(message));
   const load = deps.load ?? loadBundle;
   const generation = useProjectStore.getState().workspaceGeneration;
   const superseded = () => signal.aborted || useProjectStore.getState().workspaceGeneration !== generation;
 
   try {
-    const resp = await fetchImpl(url.href, { credentials: 'same-origin', signal });
-    if (superseded()) return { kind: 'superseded' };
-    if (!resp.ok) throw new Error(`${url.pathname} responded ${resp.status}`);
-    const bytes = new Uint8Array(await resp.arrayBuffer());
-    if (superseded()) return { kind: 'superseded' };
-    const snapshot = prepareProjectSnapshot(await load(bytes));
+    // Redirect-origin check, bounded read, body cancelled when superseded:
+    // the shared fetch (@softn/editor-shared) does what Studio's did too.
+    const fetched = await fetchSameOriginBundle(url, { fetch: deps.fetchImpl, signal, superseded });
+    if (fetched.kind === 'superseded') return { kind: 'superseded' };
+    const snapshot = prepareProjectSnapshot(await load(fetched.bytes));
     if (superseded()) return { kind: 'superseded' };
     if (useProjectStore.getState().isDirty) {
       if (!confirmReplace(`Open ${snapshot.label} from the link? The edits made here since the page opened will be lost.`)) {
@@ -704,7 +703,7 @@ export async function openRemoteBundle(url: URL, signal: AbortSignal, deps: Remo
     commitProjectSnapshot(snapshot);
     return { kind: 'opened', snapshot };
   } catch (e) {
-    if (signal.aborted || (e instanceof DOMException && e.name === 'AbortError')) return { kind: 'superseded' };
+    if (signal.aborted || isAbort(e)) return { kind: 'superseded' };
     return { kind: 'failed', error: e };
   }
 }

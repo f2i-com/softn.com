@@ -7,6 +7,8 @@
  */
 export { ProductBar, DEFAULT_URLS } from './ProductBar';
 export type { ProductBarProps, ProductUrls, Product } from './ProductBar';
+export { resolveSiteUrls } from './siteUrls';
+export type { SiteUrlInputs, SiteUrls } from './siteUrls';
 export { Mark } from './Mark';
 export { ThemeToggle } from './ThemeToggle';
 export {

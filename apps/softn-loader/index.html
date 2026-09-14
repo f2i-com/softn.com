@@ -4,6 +4,29 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#101317" />
+    <!--
+      Runs before the first paint so a reader never sees the wrong ground flash
+      first. The same script, with the same key, is in every SoftN app's
+      index.html; @softn/brand's theme.ts is the copy to check against.
+    -->
+    <script>
+      (function () {
+        var theme = 'dark';
+        try {
+          var stored = localStorage.getItem('softn.site.theme');
+          if (stored === 'light' || stored === 'dark') {
+            theme = stored;
+          } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+            theme = 'light';
+          }
+        } catch (e) {
+          /* Storage blocked; the dark default stands. */
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', theme === 'light' ? '#f4f6f9' : '#101317');
+      })();
+    </script>
     <title>Softn — Desktop runtime</title>
     <style>
       * {

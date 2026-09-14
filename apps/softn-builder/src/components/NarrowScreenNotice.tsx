@@ -1,4 +1,4 @@
-import { isHostedEditor } from '../../../shared/hostedEditor';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import React from 'react';
 
 /** Keep the document reachable on a phone while full editing uses the wider layout. */

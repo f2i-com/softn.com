@@ -11,45 +11,10 @@ export const MAX_REMOTE_BUNDLE_BYTES = 32 * 1024 * 1024;
 
 const MAX_MB = MAX_REMOTE_BUNDLE_BYTES / (1024 * 1024);
 
-/**
- * Turn an `?open=` value into a URL that is safe to fetch, or throw explaining
- * why it is not.
- */
-export function resolveBundleUrl(value: string, origin: string): URL {
-  let url: URL;
-  try {
-    url = new URL(value, origin);
-  } catch {
-    throw new Error(`Cannot open "${value}": it is not a valid path.`);
-  }
-
-  // The scheme is settled before the origin, because a blob: URL borrows the
-  // origin of the document that created it: "blob:https://softn.example/<uuid>"
-  // is same-origin by the test below and its pathname can be made to end in
-  // .softn, so the pair of checks would pass something that was never served
-  // from this site — or from any site.
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(
-      `Refusing to open a ${url.protocol} URL: only bundles served over http or https can be opened by URL.`
-    );
-  }
-
-  // Resolving first and comparing origins afterwards is the whole defence.
-  // "https://evil.example/x.softn" is the obvious case, but "//evil.example/
-  // x.softn" is the one a startsWith('/') test waves through — it looks like a
-  // path and resolves to somebody else's host.
-  if (url.origin !== origin) {
-    throw new Error(
-      `Refusing to open a bundle from ${url.origin}: only bundles served from this site can be opened by URL.`
-    );
-  }
-
-  if (!/\.softn$/i.test(url.pathname)) {
-    throw new Error(`Refusing to open "${url.pathname}": only .softn bundles can be opened by URL.`);
-  }
-
-  return url;
-}
+// The URL rule (http(s), this origin, no credentials, a .softn) and the name
+// a bundle takes from its address are the bundle contract's, shared with the
+// editors and the directory.
+export { resolveBundleUrl, bundleNameFromUrl } from '@softn/bundle-format/url';
 
 /** Download a bundle, giving up rather than growing without bound. */
 export async function fetchRemoteBundle(url: URL, signal?: AbortSignal): Promise<Uint8Array> {
@@ -117,14 +82,4 @@ export async function fetchRemoteBundle(url: URL, signal?: AbortSignal): Promise
     offset += chunk.byteLength;
   }
   return data;
-}
-
-/** The name to show while a bundle at this path is still downloading. */
-export function bundleNameFromUrl(url: URL): string {
-  const file = url.pathname.slice(url.pathname.lastIndexOf('/') + 1);
-  try {
-    return decodeURIComponent(file).replace(/\.softn$/i, '');
-  } catch {
-    return file.replace(/\.softn$/i, '');
-  }
 }

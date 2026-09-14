@@ -1,4 +1,4 @@
-import { requestHostedSave } from '../../../../shared/hostedEditor';
+import { requestHostedSave } from '@softn/editor-shared/hostedEditor';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspaceStore, useVFSStore } from '../../stores';
 import { exportAsBundle } from '../../lib/exportBundle';

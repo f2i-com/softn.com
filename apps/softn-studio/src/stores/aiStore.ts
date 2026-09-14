@@ -6,20 +6,15 @@ import type {
   ProviderConfig,
   ModelProfile,
 } from '../types/studio';
+import { DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS } from '../lib/aiProvider';
 
-/** How long one provider request may take before Studio gives up on it. */
-export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+// The request timeout and output cap are the provider adapter's defaults;
+// the store re-exports them so the settings panel and tests keep one import.
+export { DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS };
 export const DEFAULT_MAX_ITERATIONS = 15;
 export const DEFAULT_TOKEN_BUDGET = 50_000;
 export const MAX_ITERATIONS_BOUNDS = { min: 1, max: 100 } as const;
 export const TOKEN_BUDGET_BOUNDS = { min: 1_000, max: 1_000_000 } as const;
-/**
- * The output allowance reserved for each request, sent as the provider's
- * max_tokens. It is also what the budget check reserves before sending: a
- * reply cannot be longer than this, so a request the remaining budget
- * cannot cover at this size is refused before it costs anything.
- */
-export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 /** The bounds the setters clamp to; the settings panel shows the same numbers. */
 export const REQUEST_TIMEOUT_BOUNDS_MS = { min: 5_000, max: 600_000 } as const;
 /**

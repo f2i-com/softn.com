@@ -2,13 +2,13 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useModalFocus } from './useModalFocus';
+import { useModalFocus } from '../src/useModalFocus';
 
 let root: Root;
 let host: HTMLDivElement;
 const bubbled = vi.fn();
 beforeEach(() => {
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   bubbled.mockReset();
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   function Harness() {
