@@ -26,9 +26,20 @@ softn-server run <private-bundle-directory> --data-dir <private-data-directory> 
 ```
 
 Use the same-origin reverse proxy in the application's deployment examples to
-serve `softn-single` and forward `/api/*` to this listener. Enable
-`--trusted-proxy` only when direct access is restricted to a trusted reverse
-proxy that rewrites forwarded headers. The host uses the socket IP otherwise.
+serve `softn-single` and forward `/api/*` to this listener. The host keys rate
+limits on the client's address, so who may assert it matters:
+
+- Without the flag the address is the socket peer. Behind a proxy that is the
+  proxy, and every client shares one rate-limit bucket.
+- `--trusted-proxy=10.0.0.5,10.1.0.0/16,::1` names the peers allowed to speak
+  for a client (addresses or CIDR ranges, IPv4 and IPv6). When the peer is
+  listed, `X-Forwarded-For` is walked from the right past every listed hop
+  to the first address that is not one; a client cannot choose its identity,
+  because whatever it prepends sits to the left of the entry the edge
+  appended. This is the same rule as the directory API's `trustedProxies`.
+- Bare `--trusted-proxy` trusts whatever connects and takes the rightmost
+  entry, as earlier releases did. Use it only for a listener no client can
+  reach directly (a Unix socket, a loopback port behind the proxy).
 
 API v1 requires an explicit data directory. Its `backend.json` is operator-owned,
 outside both the private deployment artifact and the public web directory:

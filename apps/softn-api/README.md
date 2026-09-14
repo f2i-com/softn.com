@@ -170,6 +170,15 @@ development server takes `-d display_errors=0`). PHP refuses a POST body past
 into the response first, so the headers are already sent when the API answers 413 and the
 client sees a 200 with a warning in the body instead.
 
+Per-app storage queries are bounded rather than indexed on their fields: at
+most ten conditions, `in` lists of fifty, `offset` up to 10 000 and `limit`
+up to `maxQueryLimit`, on a `(collection, owner)` index with the JSON fields
+read by `json_extract`. A hostile app author can still make the server work
+for a query, but only that much of it. SQLite through PDO has no statement
+timeout: what bounds a runaway is the five-second busy timeout each database
+is opened with and PHP's own `max_execution_time` for the request, so keep
+that set (30 s is the usual default) on any host that runs the API.
+
 Every request body is read against a limit chosen from the route alone,
 before a byte of it is read, and refused with a `413` that names the limit
 (`{"ok": false, "error": …, "limit": <bytes>}`) the moment it is exceeded —
@@ -426,6 +435,12 @@ thumbnail or unpublish. The server stores only a hash of the key. The site
 keeps the keys it has been given in the browser's local storage, which is how
 "Your apps" on the publish page finds them again.
 
+The hash is a plain, unsalted SHA-256, compared in constant time, and that is
+deliberate: the key is 160 bits of `random_bytes`, so there is nothing for a
+dictionary or a rainbow table to find and no brute force to slow down. A
+password hash (bcrypt, Argon2) would add about 100 ms of CPU to every owner
+request for no gain; do not "upgrade" it.
+
 Moderation uses an **admin key**, generated into `data/config.json` on first
 run and sent as `X-Admin-Key`. Seeded demo apps have no edit key, so only the
 admin can change them.
@@ -501,7 +516,7 @@ name is a real 404. The bare `/play/` redirects to the directory.
 An app runs with every capability it declares withheld until the visitor
 allows it on the bar above the app. **Trusting** an app removes that bar:
 its play page is served with `"permissionMode": "preapproved"` — the same
-setting the [PHP single-app host](../../docs/engineering/SINGLE_APP_PHP_SERVE.md) has —
+setting the [PHP single-app host](../../docs/engineering/SINGLE_APP_PRIVATE.md) has —
 and the shell grants what its `permission.json` declares from the start.
 Trust is the operator's alone to give, and it is given on the server, by
 hand, in the `app` object of the app's own `app.json`:
