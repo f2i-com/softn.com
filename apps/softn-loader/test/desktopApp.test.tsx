@@ -28,7 +28,7 @@ beforeEach(async () => {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   vi.stubGlobal('__ANDROID__', false);
   Object.defineProperty(window, '__TAURI__', { value: { core: { invoke: bridge.invoke }, event: { listen: bridge.listen } }, configurable: true });
-  bridge.invoke.mockImplementation(async (command: string) => command === 'get_opened_file' ? null : [1]);
+  bridge.invoke.mockImplementation(async (command: string) => command === 'get_opened_file' ? null : command === 'pick_softn_bundle' ? bridge.open() : [1]);
   bridge.open.mockResolvedValue('C:\\Apps\\Fieldnotes.SOFTN');
   bridge.listen.mockResolvedValue(() => {});
   bridge.drag.mockResolvedValue(() => {});
@@ -74,7 +74,7 @@ it('reports a failed native picker without leaving a dead welcome screen', async
 
 it('does not replace a user selection with a late startup file', async () => {
   let finish!: (value: string) => void;
-  bridge.invoke.mockImplementation((command: string) => command === 'get_opened_file' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve([1]));
+  bridge.invoke.mockImplementation((command: string) => command === 'get_opened_file' ? new Promise(resolve => { finish = resolve; }) : command === 'pick_softn_bundle' ? bridge.open() : Promise.resolve([1]));
   await mount();
   await click('Open app');
   await act(async () => finish('C:\\Apps\\Old.softn'));

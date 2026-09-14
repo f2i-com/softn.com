@@ -49,24 +49,24 @@ function tauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promis
   return window.__TAURI__?.core?.invoke as ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | undefined;
 }
 
-/** Consistent SQLite snapshot of the installation's data; throws when it cannot be verified. */
+/**
+ * Consistent SQLite snapshot of the installation's data, written by the
+ * native side beside the database; throws when it cannot be verified. The
+ * page never learns or chooses a file system path.
+ */
 async function backupBeforeUpgrade(dataId: string): Promise<string> {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error('the native database is not available in this environment');
-  const dbPath = String(await invoke('get_db_path', { appId: dataId }));
-  const separator = dbPath.includes('\\') ? '\\' : '/';
-  const directory = dbPath.slice(0, dbPath.lastIndexOf(separator));
-  const target = `${directory}${separator}pre-upgrade-${Date.now().toString(36)}.sqlite`;
-  const written = await invoke('export_database', { appId: dataId, path: target });
-  if (written !== target) throw new Error('the backup was not written where expected');
-  return target;
+  const written = await invoke('backup_database', { appId: dataId });
+  if (typeof written !== 'string' || !written) throw new Error('the backup was not written');
+  return written;
 }
 
 /** Restore the data namespace from a pre-upgrade snapshot (local scope: this device only). */
 async function restoreFromBackup(dataId: string, backup: string): Promise<void> {
   const invoke = tauriInvoke();
   if (!invoke) throw new Error('the native database is not available in this environment');
-  await invoke('import_database', { appId: dataId, sourcePath: backup, scope: 'local' });
+  await invoke('restore_database', { appId: dataId, backup });
 }
 
 // Compile-time constant from Vite define
@@ -212,13 +212,23 @@ function App(): React.ReactElement {
   const [assetResolver, setAssetResolver] = useState<AppAssetResolver>();
   const [serverConfig, setServerConfig] = useState(() => resolveServerConfig());
 
-  // Open a file picker to choose a .softn file
+  // Open a file picker to choose a .softn file. On the desktop the native
+  // side opens the picker and records the choice, so only files the person
+  // chose can be read back (see read_softn_bundle in src-tauri); on Android
+  // the plugin's picker returns a content URI that plugin-fs reads.
   const openFilePicker = async () => {
     try {
+      if (!isMobile) {
+        const invoke = tauriInvoke();
+        if (!invoke) throw new Error('the native file picker is not available in this environment');
+        const selected = await invoke('pick_softn_bundle');
+        if (typeof selected === 'string' && selected) selectBundle(selected);
+        return;
+      }
       const { open } = await import('@tauri-apps/plugin-dialog');
       const selected = await open({
         // On Android, custom extensions may not be filterable, so accept all files
-        filters: isMobile ? [] : [{ name: 'SoftN Bundle', extensions: ['softn'] }],
+        filters: [],
         multiple: false,
       });
       if (selected) {

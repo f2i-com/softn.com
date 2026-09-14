@@ -113,7 +113,7 @@ export interface CancelSignal {
 const sessionRegistry = new Map<string, string>();
 
 /** The runtime's own storage for the installation registry; never an app's records. */
-export function registryStorage(): RegistryStorageLike {
+function registryStorage(): RegistryStorageLike {
   try {
     if (typeof localStorage !== 'undefined') return { getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value), durable: true };
   } catch {
@@ -132,7 +132,7 @@ export type IdentityDecision = { dataId: string; upgrade?: UpgradeOperation };
  * context. Returns null when the save failed (the caller decides what that
  * means for its claim).
  */
-export function commitRegistry<T>(
+function commitRegistry<T>(
   storage: RegistryStorageLike,
   mutate: (registry: InstallationRegistry) => T,
   options: { acknowledgeDamage?: boolean } = {}

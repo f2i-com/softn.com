@@ -38,7 +38,7 @@
  */
 
 export const REGISTRY_KEY = 'softn-loader:installations';
-export const REGISTRY_VERSION = 1;
+const REGISTRY_VERSION = 1;
 
 export interface InstallationLedgerEntry {
   /** Bundle digest the person upgraded FROM (the last known one) */
@@ -162,7 +162,7 @@ function stringOrDefault(value: unknown, fallback: string): string {
  * mapping, pending upgrade, recovery marker) must be exactly right; display
  * fields (name, version, timestamps, ledger) are normalised leniently.
  */
-export function validateRecord(dataId: string, record: unknown): { ok: true; record: InstallationRecord } | { ok: false; reason: string; bundleIds: string[] } {
+function validateRecord(dataId: string, record: unknown): { ok: true; record: InstallationRecord } | { ok: false; reason: string; bundleIds: string[] } {
   const named = (value: unknown): string[] => {
     const ids = (value as { bundleIds?: unknown } | null)?.bundleIds;
     return Array.isArray(ids) ? ids.filter(isString) : [];
@@ -283,7 +283,7 @@ export function saveRegistry(storage: RegistryStorage, registry: InstallationReg
   }
 }
 
-export function findByBundle(registry: InstallationRegistry, bundleId: string): InstallationRecord | undefined {
+function findByBundle(registry: InstallationRegistry, bundleId: string): InstallationRecord | undefined {
   return Object.values(registry.installations).find(record => record.bundleIds.includes(bundleId));
 }
 
