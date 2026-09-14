@@ -24,8 +24,8 @@ import { getFileByRef, registerFileRef } from './file-registry';
 import { pcmToWavDataUrl } from './wav';
 import { isRemoteUrl } from '../renderer/sanitize-html';
 import { buildSyncCacheKey } from './sync-cache-key';
-import { bindSyncOptions } from './host-bound-sync-options';
-import { describeNetDestination, filterSignalingUrls } from './egress-policy';
+import { createSyncControls } from './db-sync-controls';
+import { describeNetDestination } from './egress-policy';
 import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 import type {
   BundleFileProvider,
@@ -3659,102 +3659,22 @@ export function createDBNamespace(
       return xdb.get(collection, id);
     },
 
-    startSync: (room: string, options?: Record<string, unknown>) => {
-      const permissionConfig = getPermissionConfig?.();
-      // `permissionConfig?.permissions && !…sync?.enabled` short-circuited to
-      // false when the config was absent, so the one path that starts WebRTC
-      // replication of the whole database opened itself for exactly the bundles
-      // the rest of the model trusts least. checkPermission('sync') and the
-      // renderer's own xdb bridge both deny an absent config; this now agrees.
-      if (!permissionConfig?.permissions?.sync?.enabled) {
+    // The sync methods are one implementation shared with the renderer's xdb
+    // helpers (db-sync-controls.ts): same gate, same host-bound options, same
+    // signalling rules, same wire scope and key. A script cannot catch a host
+    // refusal, so this surface logs it and returns.
+    ...createSyncControls({
+      appId,
+      getPermissionConfig: () => getPermissionConfig?.() ?? null,
+      syncEncryptionKeyHex,
+      refuse: (reason) => {
         console.error(
-          permissionConfig?.consentPending
+          reason === 'pending'
             ? '[XDB Sync] Sync not allowed yet. Choose Allow in the permission bar to grant it.'
             : '[XDB Sync] Sync not permitted. Add sync.enabled to permission.json'
         );
-        return;
-      }
-      // The host's identity and the room the script named go on last: options
-      // may request behaviour, never say which app they are.
-      const syncOpts = bindSyncOptions(room, options, appId);
-      // A signalling server the script chose is a host it reaches: the same
-      // `net` rules as a fetch. Refused ones fall back to the host's defaults.
-      if (syncOpts.signaling !== undefined) {
-        const { allowed, refused } = filterSignalingUrls(syncOpts.signaling, permissionConfig);
-        for (const { url, reason } of refused) console.error(`[XDB Sync] Signalling server refused: ${url} — ${reason}`);
-        if (allowed.length > 0) syncOpts.signaling = allowed;
-        else delete syncOpts.signaling;
-      }
-      // The room label is what peers agree on; the app is who is agreeing. On
-      // the wire the two are joined, so two apps that both chose "lobby" are
-      // in two rooms — by the stable identity the bundle declares, so that
-      // compatible builds still meet, else by the host's identity for it.
-      syncOpts.roomScope = permissionConfig.app?.id || appId || undefined;
-      const sharedKey = appId ? `xdb-sync-shared:${appId}` : null;
-      // Shared room: sharedRoom flag, legacy noEncrypt, or persisted from prior session
-      let isShared = !!syncOpts.sharedRoom || !!syncOpts.noEncrypt;
-      if (!isShared && sharedKey) {
-        try {
-          isShared = localStorage.getItem(sharedKey) === 'true';
-        } catch {
-          /* noop */
-        }
-      }
-      if (isShared) {
-        // Derive encryption key from room name — all peers use the same key.
-        // y-webrtc runs PBKDF2(password, roomName) to produce AES-256-GCM.
-        syncOpts.password = 'softn-shared:' + room;
-        delete syncOpts.encryptionKey;
-      } else if (syncEncryptionKeyHex && !syncOpts.encryptionKey) {
-        syncOpts.encryptionKey = syncEncryptionKeyHex;
-      }
-      // Persist shared flag so auto-resume also uses room-key encryption
-      if (isShared && sharedKey) {
-        try {
-          localStorage.setItem(sharedKey, 'true');
-        } catch {
-          /* noop */
-        }
-      }
-      delete syncOpts.noEncrypt;
-      delete syncOpts.sharedRoom;
-      import('./xdb-sync')
-        .then((mod) => {
-          _syncModuleCache = mod;
-          mod.startSync(syncOpts as unknown as import('./xdb-sync').XDBSyncOptions);
-        })
-        .catch((err) => {
-          console.error('[XDB Sync] Failed to start sync:', err);
-        });
-    },
-
-    stopSync: (room?: string) => {
-      import('./xdb-sync')
-        .then(({ stopSync }) => {
-          stopSync(room, appId);
-        })
-        .catch((err) => {
-          console.error('[XDB Sync] Failed to stop sync:', err);
-        });
-    },
-
-    getSyncStatus: (room?: string) => {
-      if (_syncModuleCache) {
-        // This app's adapter, not whichever app happens to be in that room.
-        const adapter = _syncModuleCache.getSyncAdapter(room, appId);
-        return adapter ? adapter.getStatus() : { connected: false, peers: 0, room: '', peerId: '' };
-      }
-      return { connected: false, peers: 0, room: '', peerId: '' };
-    },
-
-    getSavedSyncRoom: () => {
-      const key = appId ? `xdb-sync-active-room:${appId}` : 'xdb-sync-active-room';
-      try {
-        return localStorage.getItem(key);
-      } catch {
-        return null;
-      }
-    },
+      },
+    }),
 
     prune: (collection: string, maxRecords: number) => {
       const xdb = getXDBSync();
@@ -3783,18 +3703,9 @@ export function createDBNamespace(
   };
 }
 
-// Shared sync module cache — used by both createDBNamespace (script-runtime) and
-// createXDBHelpers (SoftNRenderer) so getSyncStatus works regardless of which
-// code path started the sync.
-let _syncModuleCache: typeof import('./xdb-sync') | null = null;
-
-export function getSyncModuleCache() {
-  return _syncModuleCache;
-}
-
-export function setSyncModuleCache(mod: typeof import('./xdb-sync')) {
-  _syncModuleCache = mod;
-}
+// The sync module cache lives with the shared sync controls; re-exported here
+// because the renderer and the worker runtime import it from this module.
+export { getSyncModuleCache, setSyncModuleCache } from './db-sync-controls';
 
 /**
  * Create a mock XDB module (for testing without persistence)

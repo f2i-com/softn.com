@@ -41,12 +41,16 @@ describe('XDB Service (Tauri mode)', () => {
   let listeners: Map<string, (event: { payload: unknown }) => void>;
   let invokeMock: any;
   let failNextImport = false;
+  /** Commands the backend refuses, for the write-failure cases. */
+  let refuse: Set<string>;
 
   beforeEach(() => {
     backend = new Map();
     listeners = new Map();
     failNextImport = false;
+    refuse = new Set();
     invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+      if (refuse.has(cmd)) throw new Error('SQLITE_READONLY: attempt to write a readonly database');
       switch (cmd) {
         case 'get_collections':
           return Array.from(backend.keys());
@@ -402,5 +406,110 @@ describe('XDB Service (Tauri mode)', () => {
     const records = xdb.getAll('tasks');
     expect(records).toHaveLength(1);
     expect(records[0].data.title).toBe('Created');
+  });
+
+  /**
+   * The synchronous API answers before SQLite does (core audit 2.4). When
+   * SQLite then refuses, the caller already has its optimistic answer; the
+   * disagreement is reported through the storage status the host watches,
+   * and server sync is told about a create only once it has really landed.
+   */
+  describe('a refused native write', () => {
+    it('is reported in the storage status and cleared by the next acknowledged write', async () => {
+      const xdb = new XDBService(undefined, 'refused-create', 'refused-create-app');
+      await xdb.isReady;
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const onMutation = vi.fn();
+      const unsubscribe = xdb.onMutation(onMutation);
+      try {
+        refuse.add('create_record');
+        const optimistic = xdb.create('tasks', { title: 'lost' });
+        expect(optimistic.id).toBeTruthy();
+        await flushPromises();
+        const status = xdb.getStorageStatus();
+        expect(status.state).toBe('degraded');
+        expect(status.issues).toEqual([expect.objectContaining({ kind: 'write-failed', collection: 'tasks' })]);
+        expect(status.issues[0].message).toMatch(/could not be saved/);
+        // Rolled back locally, and never announced to server sync.
+        expect(xdb.getAll('tasks')).toEqual([]);
+        expect(onMutation).not.toHaveBeenCalled();
+
+        refuse.delete('create_record');
+        const record = xdb.create('tasks', { title: 'kept' });
+        await flushPromises();
+        expect(xdb.getStorageStatus().state).toBe('ready');
+        expect(xdb.getStorageStatus().issues).toEqual([]);
+        // Announced once, under the id SQLite gave it, not the optimistic one.
+        expect(onMutation).toHaveBeenCalledTimes(1);
+        const announced = onMutation.mock.calls[0][0];
+        expect(announced.type).toBe('create');
+        expect(announced.recordId).toBe(backend.get('tasks')![0].id);
+        expect(announced.recordId).not.toBe(record.id);
+      } finally {
+        unsubscribe();
+        errors.mockRestore();
+      }
+    });
+
+    it('is a failure for an update or delete of a record that exists, and not for one still being created', async () => {
+      backend.set('tasks', [makeRecord('stored', 'tasks', { title: 'before' })]);
+      const xdb = new XDBService(undefined, 'refused-update', 'refused-update-app');
+      await xdb.isReady;
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        // An update racing its own create is refused by SQLite ("Record not
+        // found": the optimistic id is not there yet); the create callback
+        // re-sends the merged data. Not a failure of the store.
+        const pending = xdb.create('tasks', { title: 'new' });
+        xdb.update(pending.id, { title: 'newer' });
+        await flushPromises();
+        await flushPromises();
+        expect(xdb.getStorageStatus().issues.filter(i => i.kind === 'write-failed')).toEqual([]);
+
+        refuse.add('update_record');
+        expect(xdb.update('stored', { title: 'after' })?.data.title).toBe('after');
+        await flushPromises();
+        expect(xdb.getStorageStatus().issues).toEqual([expect.objectContaining({ kind: 'write-failed', collection: 'tasks' })]);
+
+        refuse.delete('update_record');
+        refuse.add('delete_record');
+        xdb.update('stored', { title: 'again' });
+        await flushPromises();
+        expect(xdb.getStorageStatus().issues).toEqual([]);
+        expect(xdb.delete('stored')).toBe(true);
+        await flushPromises();
+        expect(xdb.getStorageStatus().issues).toEqual([expect.objectContaining({ kind: 'write-failed', collection: 'tasks' })]);
+        // A delete of something that never existed is not a failure of the store.
+        xdb.delete('never-existed');
+        await flushPromises();
+        expect(xdb.getStorageStatus().issues).toHaveLength(1);
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    it('covers clear, hard delete and raw writes', async () => {
+      backend.set('tasks', [makeRecord('one', 'tasks', { title: 'A' }), makeRecord('two', 'tasks', { title: 'B' })]);
+      const xdb = new XDBService(undefined, 'refused-clear', 'refused-clear-app');
+      await xdb.isReady;
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        refuse.add('delete_record');
+        expect(xdb.hardDelete('tasks', 'one')).toBe(true);
+        await flushPromises();
+        expect(xdb.getStorageStatus().issues).toEqual([expect.objectContaining({ kind: 'write-failed', collection: 'tasks' })]);
+        refuse.delete('delete_record');
+        refuse.add('clear_collection');
+        xdb.clear('tasks');
+        await flushPromises();
+        expect(xdb.getStorageStatus().issues).toEqual([expect.objectContaining({ kind: 'write-failed', collection: 'tasks' })]);
+        refuse.delete('clear_collection');
+        xdb.writeRecord('tasks', makeRecord('three', 'tasks', { title: 'C' }));
+        await flushPromises();
+        expect(xdb.getStorageStatus().state).toBe('ready');
+      } finally {
+        errors.mockRestore();
+      }
+    });
   });
 });

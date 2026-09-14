@@ -15,6 +15,8 @@ export type DBMutation =
   | { type: 'update'; id: string; data: Record<string, unknown> }
   | { type: 'delete'; id: string }
   | { type: 'hardDelete'; collection: string; id: string }
+  | { type: 'prune'; collection: string; maxRecords: number }
+  | { type: 'clearCollection'; collection: string }
   | { type: 'startSync'; room: string; options?: Record<string, unknown> }
   | { type: 'stopSync'; room?: string };
 
@@ -185,6 +187,29 @@ export class SnapshotDBBridge {
   get(collection: string, id: string): WorkerXDBRecord | null {
     const arr = this.collections.get(collection) || [];
     return arr.find(r => r.id === id) || null;
+  }
+
+  /**
+   * Keep at most `maxRecords` of a collection, oldest (by `created_at`) going
+   * first; the number removed is what the main thread will remove too, since
+   * it applies the same rule to the same records once the mutation lands.
+   */
+  prune(collection: string, maxRecords: number): number {
+    const arr = this.collections.get(collection) || [];
+    if (arr.length <= maxRecords) return 0;
+    const sorted = [...arr].sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+    const removed = sorted.slice(0, arr.length - maxRecords);
+    const gone = new Set(removed.map(r => r.id));
+    this.collections.set(collection, arr.filter(r => !gone.has(r.id)));
+    for (const id of gone) this.allRecords.delete(id);
+    this.mutations.push({ type: 'prune', collection, maxRecords });
+    return removed.length;
+  }
+
+  clearCollection(collection: string): void {
+    for (const r of this.collections.get(collection) || []) this.allRecords.delete(r.id);
+    this.collections.set(collection, []);
+    this.mutations.push({ type: 'clearCollection', collection });
   }
 
   startSync(room: string, options?: Record<string, unknown>): void {

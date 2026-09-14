@@ -84,4 +84,19 @@ describe('FormLogic schema handoff', () => {
     expect(a.id).not.toBe(b.id);
     expect(createFormlogicProject({ ...input, forms: [] }).fieldCount).toBe(2);
   });
+  it('declares its stable identity where the runtime scopes sync rooms', () => {
+    // Sync rooms are scoped by permission.json's app.id (sync-room-security.ts),
+    // not manifest.id; two exports of one FormLogic app must share it.
+    const a = createFormlogicProject(input);
+    const b = createFormlogicProject({ ...input, forms: [{ ...input.forms[0], fields: input.forms[0].fields.slice(0, 1) }] });
+    const permission = JSON.parse(a.files['permission.json']);
+    const manifest = JSON.parse(a.files['manifest.json']);
+    expect(permission.permissions).toEqual({});
+    expect(permission.app).toEqual({ id: manifest.id, name: manifest.name, version: manifest.version });
+    expect(manifest.id).toMatch(/^formlogic_/);
+    expect(JSON.parse(b.files['permission.json']).app.id).toBe(permission.app.id);
+    // A different app, or the same app on another origin, is another room scope.
+    expect(JSON.parse(createFormlogicProject({ ...input, app: { ...input.app, id: 'app-b' } }).files['permission.json']).app.id).not.toBe(permission.app.id);
+    expect(JSON.parse(createFormlogicProject({ ...input, origin: 'https://other.example' }).files['permission.json']).app.id).not.toBe(permission.app.id);
+  });
 });
