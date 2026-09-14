@@ -8,7 +8,10 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: bridge.open }));
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: bridge.drag }) }));
 vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: bridge.title }) }));
 vi.mock('@softn/components', () => ({ registerAllBuiltins() {}, ThemeProvider: ({ children }: { children: React.ReactNode }) => children, Spinner: () => <span>Loading</span> }));
-vi.mock('@softn/core', () => ({
+vi.mock('@softn/core', async (importOriginal) => ({
+  // The manifest and permission reads are core's real ones: the loader is
+  // what this test exercises, and those are what it reads through.
+  ...(({ readManifest, extractPermissions }) => ({ readManifest, extractPermissions }))(await importOriginal<typeof import('@softn/core')>()),
   SoftNWithXDB: (props: Record<string, unknown>) => { bridge.runner(props); return <p>Running the selected app</p>; },
   XDBStorageNotice: () => null,
   classifyAsset: () => ({ binary: false, mime: 'text/plain' }),

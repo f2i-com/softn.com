@@ -18,6 +18,12 @@ import {
 } from '@softn/core';
 import type { BundleArchive, PermissionConfig } from '@softn/core';
 
+// The permission read is core's now (audit-core 2.2), so the desktop loader,
+// the single-app hosts and this runtime map a legacy `manifest.permissions`
+// the same way; re-exported here because this module is where the hosts
+// import it from.
+export { extractPermissions } from '@softn/core';
+
 // ── Types ────────────────────────────────────────────────────────────
 
 export interface BundleManifest {
@@ -26,7 +32,12 @@ export interface BundleManifest {
   description?: string;
   main: string;
   icon?: string;
-  files: {
+  /**
+   * Absent in a manifest that names only its entry; `readManifest` in core
+   * fills every group in, and everything here reads the groups as optional
+   * so a manifest read any other way cannot crash the load.
+   */
+  files?: {
     ui?: string[];
     logic?: string[];
     xdb?: string[];
@@ -281,7 +292,7 @@ export async function loadXDBData(
   appId?: string
 ): Promise<void> {
   const xdb = getXDB(appId);
-  const xdbFiles = manifest.files.xdb || [];
+  const xdbFiles = manifest.files?.xdb ?? [];
   await xdb.isReady;
 
   for (const xdbFileName of xdbFiles) {
@@ -310,7 +321,7 @@ export function processBundle(
   textFiles: Map<string, string>,
   manifest: BundleManifest
 ): { source: string; logicBasePath?: string; preIncludedLogicPaths: string[] } {
-  const result = composeBundleSource(textFiles, manifest.main, manifest.files.logic);
+  const result = composeBundleSource(textFiles, manifest.main, manifest.files?.logic);
   console.log('[SoftN Web] Final source prepared with inlined components');
   return result;
 }
@@ -475,43 +486,6 @@ export function createImportResolver(
   };
 
   return resolve;
-}
-
-/**
- * Extract permission config from the bundle.
- * Checks for a dedicated permission.json first, then falls back to manifest.permissions.
- */
-export function extractPermissions(
-  textFiles: Map<string, string>,
-  manifest: BundleManifest
-): PermissionConfig | null {
-  // Check for permission.json in textFiles
-  const permJson = textFiles.get('permission.json');
-  if (permJson) {
-    try {
-      return JSON.parse(permJson) as PermissionConfig;
-    } catch (e) {
-      // A malformed permission.json must not be treated as an absent one.
-      // `checkPermission` allows everything when the config is null (documented
-      // backward compatibility for bundles predating the file), so falling
-      // through here meant a bundle whose permission.json had a trailing comma
-      // got strictly *more* privilege than the same bundle with valid JSON
-      // declaring nothing at all. An empty config denies every capability,
-      // which is the safe reading of "the author meant to declare something".
-      console.error('[SoftN] Invalid permission.json — denying all capabilities:', e);
-      return { permissions: {} } as PermissionConfig;
-    }
-  }
-  // Fall back to manifest.permissions (backward compat)
-  if (manifest?.permissions) {
-    return {
-      permissions: {
-        net: manifest.permissions.network ? { enabled: true } : undefined,
-        files: manifest.permissions.filesystem ? { enabled: true } : undefined,
-      },
-    };
-  }
-  return null;
 }
 
 /**

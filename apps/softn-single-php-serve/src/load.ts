@@ -4,6 +4,7 @@ import {
   extractPermissions,
   type BundleManifest,
 } from '../../softn-web/src/lib/bundleProcessor';
+import { ManifestError, normalizeManifest } from '@softn/core';
 import { digest, fetchBytes, localUrl, parsePermissions } from '../../softn-single/src/config';
 import type { RunnableApplication } from '../../softn-single/src/SingleApp';
 import { createServedAssetResolver } from './assets';
@@ -74,16 +75,15 @@ export function parsePack(input: unknown): SourcePack {
     throw Error('Invalid permission mode');
   if (typeof p.digest !== 'string' || !/^[a-f0-9]{64}$/.test(p.digest))
     throw Error('Invalid digest');
+  // Shape only; the read that decides whether it can run (`files` optional,
+  // entry present) is core's normalizeManifest, once the text is known.
   const manifest = p.manifest as BundleManifest | null;
   if (
     !manifest ||
     typeof manifest !== 'object' ||
     Array.isArray(manifest) ||
     typeof manifest.name !== 'string' ||
-    typeof manifest.main !== 'string' ||
-    !manifest.files ||
-    typeof manifest.files !== 'object' ||
-    Array.isArray(manifest.files)
+    typeof manifest.main !== 'string'
   )
     throw Error('Invalid application manifest');
   if (!p.text || typeof p.text !== 'object' || Array.isArray(p.text))
@@ -131,8 +131,12 @@ export async function loadServedApplication(
   const bytes = await fetchBytes(url.href + '?source', signal, MAX_PACK_BYTES);
   const pack = parsePack(JSON.parse(new TextDecoder().decode(bytes)));
   const textFiles = new Map(Object.entries(pack.text));
-  const raw = pack.manifest;
-  if (!textFiles.has(raw.main)) throw Error('Invalid application manifest');
+  let raw: BundleManifest;
+  try {
+    raw = normalizeManifest<BundleManifest>(pack.manifest, (path) => textFiles.has(path));
+  } catch (e) {
+    throw Error(`Invalid application manifest: ${e instanceof ManifestError ? e.message : String(e)}`);
+  }
 
   const declared =
     pack.declared !== null

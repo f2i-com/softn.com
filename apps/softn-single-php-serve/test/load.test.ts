@@ -135,6 +135,16 @@ it.each<[Record<string, unknown>, string]>([
   expect(() => parsePack(pack(override))).toThrow();
 });
 
+it('serves a pack whose manifest names only its entry (no files)', async () => {
+  // audit-apps H1: the pack parser refused any manifest without `files`.
+  const p = pack();
+  delete (p.manifest as Record<string, unknown>).files;
+  serve(p);
+  const app = await loadServedApplication('/games/index.php', base, new AbortController().signal);
+  expect(app.textFiles.has('ui/main.ui')).toBe(true);
+  app.assets.dispose();
+});
+
 it('refuses a pack whose main file is not in the text', async () => {
   serve(pack({ manifest: { ...pack().manifest, main: 'ui/missing.ui' } }));
   await expect(

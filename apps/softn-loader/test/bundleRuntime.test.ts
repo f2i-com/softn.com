@@ -1,8 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { getXDB } from '@softn/core';
+import { ManifestError, getXDB, readManifest } from '@softn/core';
 import { computeBundleAppId, loadBundleXDBData, processBundleSource } from '../src/bundleRuntime';
 
 describe('loader bundle runtime', () => {
+  it('composes and seeds a manifest that names only its entry (no files)', async () => {
+    // audit-apps H1: `manifest.files.logic` / `.xdb` were read unguarded.
+    const textFiles = new Map([['ui/main.ui', '<App><logic>let n = 1;</logic><Text>{n}</Text></App>']]);
+    const manifest = readManifest(new Map([...textFiles, ['manifest.json', JSON.stringify({ name: 'Bare', main: 'ui/main.ui' })]]));
+    expect(manifest.files).toEqual({ ui: [], logic: [], xdb: [], assets: [] });
+    expect(processBundleSource(textFiles, manifest).source).toContain('let n = 1;');
+    expect(processBundleSource(textFiles, { main: 'ui/main.ui' }).source).toContain('let n = 1;');
+    await expect(loadBundleXDBData(textFiles, { main: 'ui/main.ui' }, `bare-${Date.now()}`)).resolves.toBe(0);
+  });
+
+  it('refuses a manifest without an entry, or one that is not JSON, with the shared wording', () => {
+    // The desktop loader used to surface a raw SyntaxError, or a TypeError
+    // from the composer, for these; it reads through core's readManifest now.
+    const files = (manifest: string) => new Map([['manifest.json', manifest], ['ui/main.ui', '<App/>']]);
+    expect(() => readManifest(files(JSON.stringify({ name: 'No entry' })))).toThrow(ManifestError);
+    expect(() => readManifest(files(JSON.stringify({ name: 'No entry' })))).toThrow(/names no entry file/);
+    expect(() => readManifest(files('{ nope'))).toThrow(/not valid JSON/);
+    expect(() => readManifest(new Map([['ui/main.ui', '<App/>']]))).toThrow(/no manifest\.json/);
+  });
+
   it('uses deterministic content identity rather than a manifest display name', async () => {
     const first = await computeBundleAppId(new Uint8Array([1, 2, 3]));
     const same = await computeBundleAppId(new Uint8Array([1, 2, 3]));

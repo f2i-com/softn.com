@@ -189,6 +189,38 @@ describe('?open= pointing at bytes that are not a bundle', () => {
   });
 });
 
+describe('?open= pointing at a bundle whose manifest names only its entry', () => {
+  it('opens it, as core and the other hosts do', async () => {
+    const bundle = zipSync({
+      'manifest.json': ascii(JSON.stringify({ name: 'Bare Notes', version: '1.0.0', main: 'ui/main.softn' })),
+      'ui/main.softn': ascii('page Home {\n}\n'),
+    });
+    vi.stubGlobal('fetch', serve({ url: `${window.location.origin}/demos/Bare.softn`, bytes: bundle }));
+    window.history.replaceState({}, '', '/?open=/demos/Bare.softn');
+    mountApp();
+
+    await settle();
+
+    expect(tabNames()).toEqual(['Bare Notes']);
+    expect(container.querySelector('.softn-shell-error')).toBeNull();
+  });
+
+  it('refuses a manifest without an entry in the words the publish page uses', async () => {
+    const bundle = zipSync({
+      'manifest.json': ascii(JSON.stringify({ name: 'No Entry', version: '1.0.0' })),
+      'ui/main.softn': ascii('page Home {\n}\n'),
+    });
+    vi.stubGlobal('fetch', serve({ url: `${window.location.origin}/demos/NoEntry.softn`, bytes: bundle }));
+    window.history.replaceState({}, '', '/?open=/demos/NoEntry.softn');
+    mountApp();
+
+    await settle();
+
+    expect(tabNames()).toEqual([]);
+    expect(container.querySelector('.softn-shell-error')?.textContent).toContain('names no entry file');
+  });
+});
+
 describe('?open= pointing at a bundle that does open', () => {
   it('keeps the placeholder and fills it in', async () => {
     const manifest = {

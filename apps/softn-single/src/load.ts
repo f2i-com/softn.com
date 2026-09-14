@@ -9,6 +9,7 @@ import {
   type BundleManifest,
 } from '../../softn-web/src/lib/bundleProcessor';
 import { warmFirstScreen } from '../../softn-web/src/lib/zipWarmup';
+import { ManifestError, readManifest } from '@softn/core';
 import { digest, fetchBytes, parseConfig, parsePermissions } from './config';
 // Startup phase boundaries on the performance timeline, `softn:<phase>:start`
 // and `:end`, the names every host writes so one baseline covers them all. A
@@ -51,15 +52,15 @@ export async function loadApplication(from: string | ConfigSource, signal: Abort
   mark('softn:zip:start');
   const { textFiles, binaryFiles, archive } = readZip(bytes);
   mark('softn:zip:end');
-  const raw = JSON.parse(textFiles.get('manifest.json') ?? 'null') as BundleManifest | null;
-  if (
-    !raw ||
-    typeof raw.name !== 'string' ||
-    typeof raw.main !== 'string' ||
-    !raw.files ||
-    !textFiles.has(raw.main)
-  )
-    throw Error('Invalid application manifest');
+  // The one manifest read every host shares (core's readManifest): a manifest
+  // without `files` opens here as it does in the launcher, and what cannot
+  // run is refused in the inspector's words.
+  let raw: BundleManifest;
+  try {
+    raw = readManifest<BundleManifest>(textFiles);
+  } catch (e) {
+    throw Error(`Invalid application manifest: ${e instanceof ManifestError ? e.message : String(e)}`);
+  }
   const declared = config.permissions
     ? parsePermissions(decode(await fetchBytes(config.permissions, signal, 65536)))
     : textFiles.has('permission.json')

@@ -85,6 +85,47 @@ it.each(['https://example.test/icon.svg', '../icon.svg', 'missing.png', 'assets/
     app.assets.dispose();
   }
 );
+it('opens a manifest that names only its entry (no files), as the launcher does', async () => {
+  // audit-apps H1: this host refused any manifest without `files`; core and
+  // the launcher open it, and so does this host now, through core's read.
+  const bytes = zipSync({
+    'manifest.json': strToU8(JSON.stringify({ name: 'Bare', main: 'main.ui' })),
+    'main.ui': strToU8('<App><Text>Bare</Text></App>'),
+  });
+  vi.stubGlobal(
+    'fetch',
+    async (url: string) =>
+      new Response(
+        url === base
+          ? JSON.stringify({ version: 1, id: 'sample', title: 'Example', bundle: 'app.softn' })
+          : bytes
+      )
+  );
+  const app = await loadApplication(base, new AbortController().signal);
+  expect(app.source).toContain('Bare');
+  expect(app.declared).toEqual({ permissions: {} });
+  app.assets.dispose();
+});
+
+it('refuses a manifest whose entry is missing, in the words the publish page uses', async () => {
+  const bytes = zipSync({
+    'manifest.json': strToU8(JSON.stringify({ name: 'Lost', main: 'main.ui', files: {} })),
+    'other.ui': strToU8('<App/>'),
+  });
+  vi.stubGlobal(
+    'fetch',
+    async (url: string) =>
+      new Response(
+        url === base
+          ? JSON.stringify({ version: 1, id: 'sample', title: 'Example', bundle: 'app.softn' })
+          : bytes
+      )
+  );
+  await expect(loadApplication(base, new AbortController().signal)).rejects.toThrow(
+    /Invalid application manifest: The manifest's entry file is not in the bundle: main\.ui/
+  );
+});
+
 it('ships a sample whose event handler and state are included in the composed source', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'single-example-'));
   try {

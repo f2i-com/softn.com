@@ -8,7 +8,8 @@ import {
 
 export interface RuntimeBundleManifest {
   main: string;
-  files: {
+  /** Absent in a manifest that names only its entry; every group is optional. */
+  files?: {
     logic?: string[];
     xdb?: string[];
   };
@@ -37,7 +38,7 @@ export function processBundleSource(
   textFiles: ReadonlyMap<string, string>,
   manifest: RuntimeBundleManifest
 ): ComposedBundleSource {
-  return composeBundleSource(textFiles, manifest.main, manifest.files.logic);
+  return composeBundleSource(textFiles, manifest.main, manifest.files?.logic);
 }
 
 /**
@@ -59,7 +60,7 @@ export async function loadBundleXDBData(
   if (!isActive()) return 0;
 
   let insertedTotal = 0;
-  for (const xdbFileName of manifest.files.xdb ?? []) {
+  for (const xdbFileName of manifest.files?.xdb ?? []) {
     if (!isActive()) return insertedTotal;
     const content = textFiles.get(xdbFileName);
     if (content === undefined) continue;
