@@ -70,7 +70,3 @@ export function readPermissionJson(text: string): PermissionDeclaration {
   };
 }
 
-/** Whether a declaration asks for anything at all. */
-export function declaresAnything(decl: PermissionDeclaration): boolean {
-  return decl.capabilities.length > 0;
-}

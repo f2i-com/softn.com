@@ -47,7 +47,7 @@ export interface ReidentifyResult {
 }
 
 /** The fields of `entity` that reference `targetId`, by name. */
-export function referencingFields(entity: EntityDef, targetId: string): string[] {
+function referencingFields(entity: EntityDef, targetId: string): string[] {
   return entity.fields.filter((f) => f.refEntity === targetId).map((f) => f.name);
 }
 

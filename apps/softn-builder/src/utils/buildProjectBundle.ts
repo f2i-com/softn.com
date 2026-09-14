@@ -111,7 +111,7 @@ export function flushCanvasToActiveFile(): void {
  * file id; the declared path when that file is gone but another sits at the
  * path; `ui/main.ui` for a project made here. Never a guess from the names.
  */
-export function resolveMainPath(): string {
+function resolveMainPath(): string {
   const projectState = useProjectStore.getState();
   const filesState = useFilesStore.getState();
   const uiPaths = [...filesState.uiFiles.values()].map((f) => (f.path.startsWith('/') ? f.path.slice(1) : f.path));

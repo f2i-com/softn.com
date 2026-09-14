@@ -29,7 +29,7 @@
  * because the spelling is settled before the question is asked.
  */
 
-export const PRIVATE_PREFIX = 'builder/';
+const PRIVATE_PREFIX = 'builder/';
 
 export type PathVerdict =
   | { ok: true; path: string; key: string; private: boolean }
@@ -56,7 +56,7 @@ export function normalizeProjectPath(value: string): string | null {
 }
 
 /** Why `normalizeProjectPath` refused a value, in words for a report line. */
-export function describePathProblem(value: string): string {
+function describePathProblem(value: string): string {
   const path = value.replace(/\\/g, '/');
   if (!path) return 'the path is empty';
   if (path.includes('\0')) return 'the path contains a NUL character';

@@ -4,7 +4,6 @@
 
 import React, { memo, useEffect } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
-import type { Node } from '@xyflow/react';
 import type { EntityDef, SchemaField } from '../../types/builder';
 
 const styles: Record<string, React.CSSProperties> = {
@@ -106,7 +105,6 @@ interface EntityNodeData extends Record<string, unknown> {
   selected?: boolean;
 }
 
-export type EntityNodeType = Node<EntityNodeData>;
 
 interface EntityNodeProps {
   data: EntityNodeData;

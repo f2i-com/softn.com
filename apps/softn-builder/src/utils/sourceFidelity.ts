@@ -61,7 +61,7 @@ function safeTokenize(source: string): Token[] | null {
 }
 
 /** Reasons for every comment the parser would drop. */
-export function findDroppedComments(source: string): string[] {
+function findDroppedComments(source: string): string[] {
   const tokens = safeTokenize(source);
   if (!tokens) return ['the SoftN lexer could not read this file'];
   return tokens
@@ -123,7 +123,7 @@ function isWholeExpression(text: string): boolean {
 }
 
 /** Reasons for every `{…}` the parser would not read to the end. */
-export function findTruncatedExpressions(source: string): string[] {
+function findTruncatedExpressions(source: string): string[] {
   const tokens = safeTokenize(source);
   if (!tokens) return [];
   const reasons: string[] = [];
@@ -148,7 +148,7 @@ export function findTruncatedExpressions(source: string): string[] {
  * back. It keeps `<logic src>` or an inline `<logic>` (not both), every
  * `<import … />` tag, `<data>`, `<style>` and `<component>` blocks.
  */
-export function findUnpreservedHeader(source: string, doc: SoftNDocument): string[] {
+function findUnpreservedHeader(source: string, doc: SoftNDocument): string[] {
   const reasons: string[] = [];
   if (doc.script) {
     reasons.push('a <script> block (only <logic> is written back)');
@@ -172,7 +172,7 @@ export function findUnpreservedHeader(source: string, doc: SoftNDocument): strin
 // ---------------------------------------------------------------------------
 
 /** The template nodes that carry content — whitespace-only text is layout. */
-export function contentNodes(nodes: TemplateNode[]): TemplateNode[] {
+function contentNodes(nodes: TemplateNode[]): TemplateNode[] {
   return nodes.filter((n) => n.type !== 'Text' || n.content.trim() !== '');
 }
 
@@ -237,7 +237,7 @@ function shapeText(content: string): string {
  * positions, literal spellings, attribute order, whether a tag was written
  * self-closing, and whitespace at the edges of text.
  */
-export function shapeTemplate(nodes: TemplateNode[]): Shape[] {
+function shapeTemplate(nodes: TemplateNode[]): Shape[] {
   const out: Shape[] = [];
   for (const node of contentNodes(nodes)) {
     out.push(shapeNode(node));
@@ -324,7 +324,7 @@ function describe(value: unknown): string {
  * The first place two shaped trees differ, as a sentence, or null when they
  * are the same.
  */
-export function firstDifference(a: unknown, b: unknown, path = 'template'): string | null {
+function firstDifference(a: unknown, b: unknown, path = 'template'): string | null {
   if (a === b) return null;
   if (Array.isArray(a) && Array.isArray(b)) {
     const n = Math.min(a.length, b.length);
@@ -360,7 +360,7 @@ export function firstDifference(a: unknown, b: unknown, path = 'template'): stri
  * Compare the original template with the template the visual model would
  * write. Returns a reason when they differ.
  */
-export function templateDifference(
+function templateDifference(
   original: SoftNDocument,
   elements: Map<string, CanvasElement>,
   rootId: string,

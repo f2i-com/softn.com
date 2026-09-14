@@ -468,7 +468,7 @@ export function resolveManifest(files: Map<string, VFSFile>): Record<string, unk
   }
 }
 
-export function getPreviewablePaths(files: Map<string, VFSFile>): string[] {
+function getPreviewablePaths(files: Map<string, VFSFile>): string[] {
   return Array.from(files.keys()).filter((path) => /\.(html|htm|md|txt|json|svg|png|jpg|jpeg|gif|webp|ui)$/i.test(path));
 }
 

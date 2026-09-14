@@ -11,8 +11,8 @@ import { DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS } from '../lib/ai
 // The request timeout and output cap are the provider adapter's defaults;
 // the store re-exports them so the settings panel and tests keep one import.
 export { DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REQUEST_TIMEOUT_MS };
-export const DEFAULT_MAX_ITERATIONS = 15;
-export const DEFAULT_TOKEN_BUDGET = 50_000;
+const DEFAULT_MAX_ITERATIONS = 15;
+const DEFAULT_TOKEN_BUDGET = 50_000;
 export const MAX_ITERATIONS_BOUNDS = { min: 1, max: 100 } as const;
 export const TOKEN_BUDGET_BOUNDS = { min: 1_000, max: 1_000_000 } as const;
 /** The bounds the setters clamp to; the settings panel shows the same numbers. */

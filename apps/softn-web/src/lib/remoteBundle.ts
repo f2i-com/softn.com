@@ -7,7 +7,7 @@
  */
 
 /** Refuse anything larger than this. Promptly Unemployed is about 18 MB. */
-export const MAX_REMOTE_BUNDLE_BYTES = 32 * 1024 * 1024;
+const MAX_REMOTE_BUNDLE_BYTES = 32 * 1024 * 1024;
 
 const MAX_MB = MAX_REMOTE_BUNDLE_BYTES / (1024 * 1024);
 
