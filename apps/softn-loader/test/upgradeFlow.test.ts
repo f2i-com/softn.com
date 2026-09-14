@@ -6,7 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { REGISTRY_KEY, loadRegistry, resolveInstallation, saveRegistry } from '../src/installations';
-import { UpgradeBlockedError, abandonUpgrade, finishUpgrade, resolveDataIdentity, type LoaderDecision, type LoaderQuestion } from '../src/upgradeFlow';
+import { UpgradeBlockedError, abandonUpgrade, finishUpgrade, recoverInstallation, resolveDataIdentity, type LoaderDecision, type LoaderQuestion } from '../src/upgradeFlow';
 
 const v1 = 'bundle-' + 'a'.repeat(64);
 const v2 = 'bundle-' + 'b'.repeat(64);
@@ -221,5 +221,100 @@ describe('R3-SN-02: an unreadable or partly invalid registry is never an empty h
     expect(restoreCalled).toBe(false);
     expect(outcome).toMatchObject({ restored: false, finalized: false });
     expect(outcome.message).toMatch(/cannot be confirmed/);
+  });
+});
+
+describe('R4-SN-01: no registry snapshot survives an await; cancellation stops new side effects', () => {
+  const chooseUpgrade = async (): Promise<LoaderDecision> => ({ kind: 'upgrade', dataId: 'installation' });
+  const healthy = () => ({ version: 1, installations: { installation: { dataId: 'installation', name: 'Fixture', bundleIds: [v1], createdAt: at, updatedAt: at, ledger: [] } } });
+
+  it('stops before staging when the open was cancelled during the backup, leaving nothing recorded', async () => {
+    const storage = memory(healthy());
+    const cancelled = { aborted: false };
+    let backupTaken = false;
+    const result = await resolveDataIdentity(v2, { name: 'Fixture' }, chooseUpgrade, async () => { backupTaken = true; cancelled.aborted = true; return '/b'; }, never, storage, cancelled);
+    expect(result).toBeNull();
+    expect(backupTaken).toBe(true);
+    expect(storage.snapshot().installations.installation.pendingUpgrade).toBeUndefined();
+  });
+
+  it('still records a rollback whose restore already ran, even when the open was cancelled meanwhile', async () => {
+    const storage = memory(fixture());
+    const cancelled = { aborted: false };
+    const rollback = async (): Promise<LoaderDecision> => ({ kind: 'rollback' });
+    const result = await resolveDataIdentity(v1, { name: 'Fixture' }, rollback, never, async () => { cancelled.aborted = true; }, storage, cancelled);
+    expect(result).toBeNull();
+    expect(storage.snapshot().installations.installation.pendingUpgrade).toBeUndefined();
+    expect(resolveInstallation(loadRegistry(storage), v1, 'Fixture').kind).toBe('known');
+  });
+
+  it('refuses a staging whose installation changed while the person decided', async () => {
+    const storage = memory(healthy());
+    const decideThenChange = async (): Promise<LoaderDecision> => {
+      // Another context staged a different upgrade of the same installation meanwhile.
+      const other = healthy() as { installations: Record<string, Record<string, unknown>> };
+      other.installations.installation.pendingUpgrade = { from: v1, to: 'bundle-' + 'c'.repeat(64), backup: '/other', at };
+      storage.map.set(REGISTRY_KEY, JSON.stringify(other));
+      return { kind: 'upgrade', dataId: 'installation' };
+    };
+    await expect(resolveDataIdentity(v2, { name: 'Fixture' }, decideThenChange, async () => '/b', never, storage)).rejects.toThrow(/Another upgrade of this installation is already pending/);
+    expect(storage.snapshot().installations.installation.pendingUpgrade).toMatchObject({ to: 'bundle-' + 'c'.repeat(64) });
+  });
+
+  it('records a rollback only against the operation that is still pending', async () => {
+    const storage = memory(fixture());
+    const other = { ...upgrade, bundleId: 'bundle-' + 'c'.repeat(64), backup: '/backups/other.sqlite' };
+    const swapDuringRestore = async () => {
+      const changed = fixture();
+      changed.installations.installation.pendingUpgrade = { from: v1, to: other.bundleId, backup: other.backup, at };
+      storage.map.set(REGISTRY_KEY, JSON.stringify(changed));
+    };
+    const outcome = await abandonUpgrade(upgrade, swapDuringRestore, storage);
+    expect(outcome).toMatchObject({ restored: true, finalized: false });
+    expect(outcome.message).toMatch(/changed meanwhile/);
+    expect(storage.snapshot().installations.installation.pendingUpgrade).toMatchObject({ to: other.bundleId });
+  });
+});
+
+describe('R4-SN-02: recovery has a verified successful exit', () => {
+  const recovering = () => {
+    const f = fixture() as { installations: Record<string, Record<string, unknown>> };
+    f.installations.installation.recoveryRequired = { backup: '/backups/pre-upgrade.sqlite', reason: 'disk full', at };
+    return f;
+  };
+
+  it('offers a retry on open, clears both markers together after restore and save, then opens normally', async () => {
+    const storage = memory(recovering());
+    const asked: LoaderQuestion[] = [];
+    const retry = async (q: LoaderQuestion): Promise<LoaderDecision> => { asked.push(q); return q.kind === 'recovery-required' ? { kind: 'retry-restore' } : { kind: 'cancel' }; };
+    const restored: string[] = [];
+    const result = await resolveDataIdentity(v1, { name: 'Fixture' }, retry, never, async (dataId, backup) => { restored.push(`${dataId}:${backup}`); }, storage);
+    expect(asked[0]).toMatchObject({ kind: 'recovery-required', dataId: 'installation', recovery: { backup: '/backups/pre-upgrade.sqlite', reason: 'disk full' } });
+    expect(restored).toEqual(['installation:/backups/pre-upgrade.sqlite']);
+    expect(result).toEqual({ dataId: 'installation' });
+    const record = storage.snapshot().installations.installation;
+    expect(record.recoveryRequired).toBeUndefined();
+    expect(record.pendingUpgrade).toBeUndefined();
+    expect(resolveInstallation(loadRegistry(storage), v1, 'Fixture').kind).toBe('known');
+  });
+
+  it('keeps the block, visibly retryable, when the restore or the record save fails', async () => {
+    const retry = async (): Promise<LoaderDecision> => ({ kind: 'retry-restore' });
+    const failingRestore = memory(recovering());
+    await expect(resolveDataIdentity(v1, { name: 'Fixture' }, retry, never, async () => { throw new Error('still failing'); }, failingRestore)).rejects.toThrow(/could not be restored \(still failing\).*recovery-only state/);
+    expect(resolveInstallation(loadRegistry(failingRestore), v1, 'Fixture').kind).toBe('recovery-required');
+
+    const failingSave = memory(recovering(), { failWrite: true });
+    await expect(resolveDataIdentity(v1, { name: 'Fixture' }, retry, never, async () => {}, failingSave)).rejects.toThrow(/recovery could not be recorded/);
+    expect(resolveInstallation(loadRegistry(failingSave), v1, 'Fixture').kind).toBe('recovery-required');
+  });
+
+  it('a stale recovery request cannot clear a newer marker, and a cancel changes nothing', async () => {
+    const storage = memory(recovering());
+    await expect(recoverInstallation({ dataId: 'installation', backup: '/backups/older.sqlite' }, never, storage)).rejects.toThrow(/names a different backup/);
+    expect(resolveInstallation(loadRegistry(storage), v1, 'Fixture').kind).toBe('recovery-required');
+    const cancel = async (): Promise<LoaderDecision> => ({ kind: 'cancel' });
+    expect(await resolveDataIdentity(v1, { name: 'Fixture' }, cancel, never, never, storage)).toBeNull();
+    expect(storage.snapshot().installations.installation.recoveryRequired).toBeDefined();
   });
 });

@@ -407,8 +407,11 @@ export function completeUpgrade(registry: InstallationRegistry, dataId: string, 
 
 /**
  * The new package failed and the data snapshot was restored: forget the
- * pending digest. When the snapshot could NOT be restored, the installation
- * enters an explicit recovery-only state instead (`recoveryRequired`).
+ * pending digest, and the recovery marker of THIS operation if an earlier
+ * attempt had left one (R4-SN-02: a successful retry must not leave the
+ * installation blocked). When the snapshot could NOT be restored, the
+ * installation enters an explicit recovery-only state instead
+ * (`recoveryRequired`); the pending record stays so the gate holds.
  */
 export function rollbackUpgrade(registry: InstallationRegistry, dataId: string, outcome: { restored: true } | { restored: false; reason: string }, now = new Date()): InstallationRecord {
   const record = registry.installations[dataId];
@@ -416,6 +419,7 @@ export function rollbackUpgrade(registry: InstallationRegistry, dataId: string, 
   const pending = record.pendingUpgrade;
   if (outcome.restored) {
     delete record.pendingUpgrade;
+    if (record.recoveryRequired?.backup === pending.backup) delete record.recoveryRequired;
   } else {
     record.recoveryRequired = { backup: pending.backup, reason: outcome.reason, at: now.toISOString() };
   }
