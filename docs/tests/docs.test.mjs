@@ -52,6 +52,17 @@ test('each document has content, a unique canonical and one h1 without executing
   }
   assert.equal(canonicals.size,doc.pages.length);
 });
+test('every link into this repository names a file that exists in the checkout',async()=>{
+  const links=[...JSON.stringify(doc).matchAll(/https:\/\/github\.com\/f2i-com\/softn\.com\/(?:blob|tree)\/main\/([^"\\#?]+)/g)].map(m=>m[1]);
+  assert.ok(links.length>0);
+  for(const rel of new Set(links))await assert.doesNotReject(access(join(KIT_ROOT,'..',rel)),`${rel} is linked from the documentation but is not in the repository`);
+});
+test('no code block carries a stray trailing comma or joined command',()=>{
+  for(const page of doc.pages)for(const section of page.sections)for(const block of section.blocks){
+    if(block.type!=='code')continue;
+    assert.ok(!/localhost:\d+,\s*$/m.test(block.code),`${page.id}/${section.id}: stray comma`);
+  }
+});
 test('homepage cards are a compact derivative of the same content',()=>{
   const landing=landingData(doc);assert.equal(landing.cards.length,6);assert.equal(landing.cta.href,'/docs/');
   assert.ok(Buffer.byteLength(JSON.stringify(landing))<10000);
