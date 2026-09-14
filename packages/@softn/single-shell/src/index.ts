@@ -16,4 +16,4 @@ export {
   type SingleConfig,
 } from './config';
 export { installFavicon } from './favicon';
-export type { AssetResolver, BundleManifest } from '@softn/web/src/lib/bundleProcessor';
+export type { AssetResolver, BundleManifest } from '@softn/runtime-shell/bundleProcessor';

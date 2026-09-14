@@ -4,8 +4,8 @@ import {
   extractIconDataUrl,
   firstScreenAssets,
   type BundleManifest,
-} from '@softn/web/src/lib/bundleProcessor';
-import { warmFirstScreen } from '@softn/web/src/lib/zipWarmup';
+} from '@softn/runtime-shell/bundleProcessor';
+import { warmFirstScreen } from '@softn/runtime-shell/zipWarmup';
 import { readManifest } from '@softn/core';
 import { assembleApplication, mark } from './assemble';
 import { digest, fetchBytes, parseConfig } from './config';

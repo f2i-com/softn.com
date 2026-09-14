@@ -13,7 +13,7 @@ import {
   loadXDBData,
   processBundle,
   type BundleManifest,
-} from '@softn/web/src/lib/bundleProcessor';
+} from '@softn/runtime-shell/bundleProcessor';
 import { digest, parsePermissions } from './config';
 
 /**

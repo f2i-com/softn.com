@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
-vi.mock('@softn/web/src/lib/bundleProcessor', async (importOriginal) => ({
+vi.mock('@softn/runtime-shell/bundleProcessor', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   loadXDBData: vi.fn(async () => {}),
 }));

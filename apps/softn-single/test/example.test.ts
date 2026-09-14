@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-vi.mock('@softn/web/src/lib/bundleProcessor', async (importOriginal) => ({
+vi.mock('@softn/runtime-shell/bundleProcessor', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   loadXDBData: vi.fn(async () => {}),
 }));
