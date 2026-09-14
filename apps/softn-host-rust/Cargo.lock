@@ -4791,6 +4791,7 @@ dependencies = [
 [[package]]
 name = "zipp-regress"
 version = "0.11.1"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.18#fc474d15758827770f06d0dc2ebfe3055ebaa625"
 dependencies = [
  "dynasm",
  "dynasmrt",
@@ -4801,6 +4802,7 @@ dependencies = [
 [[package]]
 name = "zipp-vm"
 version = "0.0.18"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.18#fc474d15758827770f06d0dc2ebfe3055ebaa625"
 dependencies = [
  "dynasm",
  "dynasmrt",

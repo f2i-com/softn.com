@@ -5,10 +5,16 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-# The JavaScript engine `.logic` runs on. `instrument` is what gives the
-# server a step budget and a cooperative abort flag for untrusted scripts;
-# it switches the JIT off, which is the price of the budget being real.
-zipp-vm = { path = "../../../zipp.org/crates/zipp-vm", features = ["instrument"] }
+# The JavaScript engine `.logic` runs on, taken from ZIPP's release tag: the
+# same release the runtime's vendored engine (packages/@softn/core/wasm-zipp/
+# SOURCE.json) was built from, which scripts/engine-pin.test.mjs checks, so
+# the host and the browser run one engine version and nothing has to be
+# checked out beside this repository. To develop against a sibling checkout
+# instead: cargo test --config 'patch."https://github.com/f2i-com/zipp.org".zipp-vm.path="../../../zipp.org/crates/zipp-vm"'
+# `instrument` is what gives the server a step budget and a cooperative
+# abort flag for untrusted scripts; it switches the JIT off, which is the
+# price of the budget being real.
+zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.18", features = ["instrument"] }
 xdb = { path = "../../../xdb.org/crates/xdb", default-features = false }
 
 axum = { version = "0.8", features = ["ws"] }
