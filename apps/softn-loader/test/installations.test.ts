@@ -6,6 +6,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   REGISTRY_KEY,
   approveUpgrade,
+  beginUpgrade,
+  completeUpgrade,
+  rollbackUpgrade,
   emptyRegistry,
   loadRegistry,
   recordNewInstallation,
@@ -82,9 +85,18 @@ describe('installation identity', () => {
     expect(saveRegistry(store, registry)).toBe(true);
     expect(loadRegistry(store)).toEqual(registry);
 
+    // R2-SN-03: a damaged registry is quarantined, marked, and never silently replaced.
     const damaged = storage({ [REGISTRY_KEY]: '{"version":1,"installations":{"x":' });
-    expect(loadRegistry(damaged)).toEqual(emptyRegistry());
+    const loadedDamaged = loadRegistry(damaged);
+    expect(loadedDamaged.installations).toEqual({});
+    expect(loadedDamaged.damaged?.quarantineKey).toMatch(/^softn-loader:installations\.corrupt\./);
+    expect(damaged.store.get(loadedDamaged.damaged!.quarantineKey!)).toBe('{"version":1,"installations":{"x":');
     expect(damaged.store.get(REGISTRY_KEY)).toBe('{"version":1,"installations":{"x":');
+    expect(resolveInstallation(loadedDamaged, v2, 'Fieldnotes').kind).toBe('registry-damaged');
+    expect(saveRegistry(damaged, loadedDamaged)).toBe(false);
+    expect(damaged.store.get(REGISTRY_KEY)).toBe('{"version":1,"installations":{"x":');
+    expect(saveRegistry(damaged, loadedDamaged, { acknowledgeDamage: true })).toBe(true);
+    expect(loadRegistry(damaged)).toEqual(emptyRegistry());
 
     const wrongShape = storage({ [REGISTRY_KEY]: JSON.stringify({ version: 1, installations: { [v1]: { dataId: 'other', bundleIds: [v1] }, [v2]: { dataId: v2, bundleIds: 'nope' }, [impostor]: { dataId: impostor, bundleIds: [impostor, 5] } } }) });
     const loaded = loadRegistry(wrongShape);
@@ -95,6 +107,46 @@ describe('installation identity', () => {
     expect(loadRegistry(throwing)).toEqual(emptyRegistry());
     expect(saveRegistry(throwing, registry)).toBe(false);
     errors.mockRestore();
+  });
+
+  // ── R2-SN-03: an upgrade is staged, completed only after the new package starts, or rolled back ──
+
+  it('stages an upgrade with a verified backup, maps the digest only on completion, and rolls back otherwise', () => {
+    const registry = emptyRegistry();
+    recordNewInstallation(registry, v1, 'Fieldnotes', '1.0.0');
+    expect(() => beginUpgrade(registry, v2, v1, { backup: '' })).toThrow(/verified pre-upgrade backup/);
+    beginUpgrade(registry, v2, v1, { backup: '/data/pre-upgrade-1.sqlite', version: '2.0.0', manifestName: 'Fieldnotes' }, new Date('2026-09-14T00:00:00Z'));
+    // Staged, not mapped: the new digest resolves as pending, the old one still works.
+    expect(registry.installations[v1].bundleIds).toEqual([v1]);
+    expect(resolveInstallation(registry, v2, 'Fieldnotes')).toMatchObject({ kind: 'pending-upgrade', dataId: v1 });
+    expect(resolveInstallation(registry, v1, 'Fieldnotes')).toMatchObject({ kind: 'known', dataId: v1 });
+    expect(() => beginUpgrade(registry, impostor, v1, { backup: '/x' })).toThrow(/still pending/);
+    // The staging survives a save/load round trip (it is what a restart resumes from).
+    const store = storage();
+    expect(saveRegistry(store, registry)).toBe(true);
+    expect(resolveInstallation(loadRegistry(store), v2, 'Fieldnotes')).toMatchObject({ kind: 'pending-upgrade' });
+
+    // Rolled back after a failed start: the digest is forgotten, data identity untouched.
+    const failed = loadRegistry(store);
+    rollbackUpgrade(failed, v1, { restored: true });
+    expect(failed.installations[v1].pendingUpgrade).toBeUndefined();
+    expect(resolveInstallation(failed, v2, 'Fieldnotes').kind).toBe('choose');
+
+    // Completed after a successful start: mapped with a ledger entry carrying the backup.
+    const ok = loadRegistry(store);
+    completeUpgrade(ok, v1, new Date('2026-09-14T01:00:00Z'));
+    expect(ok.installations[v1].bundleIds).toEqual([v1, v2]);
+    expect(ok.installations[v1].pendingUpgrade).toBeUndefined();
+    expect(ok.installations[v1].ledger[1]).toMatchObject({ from: v1, to: v2, backup: '/data/pre-upgrade-1.sqlite', version: '2.0.0' });
+    expect(() => completeUpgrade(ok, v1)).toThrow(/No pending upgrade/);
+
+    // A rollback whose restore failed leaves an explicit recovery-only state that blocks opening.
+    const stuck = loadRegistry(store);
+    rollbackUpgrade(stuck, v1, { restored: false, reason: 'disk full' });
+    expect(stuck.installations[v1].recoveryRequired).toMatchObject({ backup: '/data/pre-upgrade-1.sqlite', reason: 'disk full' });
+    expect(resolveInstallation(stuck, v1, 'Fieldnotes').kind).toBe('recovery-required');
+    expect(resolveInstallation(stuck, v2, 'Fieldnotes').kind).toBe('recovery-required');
+    expect(() => beginUpgrade(stuck, impostor, v1, { backup: '/y' })).toThrow(/needs recovery/);
   });
 
   it('shortens identities for display without hiding their difference', () => {
