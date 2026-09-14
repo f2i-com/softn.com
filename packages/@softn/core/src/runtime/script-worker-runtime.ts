@@ -2,6 +2,7 @@ import type { AppPermissions } from '../bundle/types';
 import { extractEventProps } from './event-props';
 import { clearCapturedKeys, shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
+import { isWorkerPlaceholderId } from './script-worker-bridges';
 
 type ImportResolver = (path: string) => Promise<string | null>;
 import type {
@@ -421,10 +422,11 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       for (const m of mutations) {
         switch (m.type) {
           case 'create': {
-            const record = xdb.create(m.collection, m.data);
+            // The worker's own id is kept when it is a real one (the store
+            // verifies it is unused); a `_wk_` placeholder gets a stored id
+            // and is mapped so later worker mutations naming it resolve.
+            const record = xdb.create(m.collection, m.data, isWorkerPlaceholderId(m.tempId) ? {} : { id: m.tempId });
             if (this.dbDirtyCollections !== null) this.dbDirtyCollections.add(m.collection);
-            // Map the worker's temp ID to the real XDB ID so future
-            // update/delete mutations from the worker resolve correctly.
             if (m.tempId && record.id !== m.tempId) {
               this.tempIdMap.set(m.tempId, record.id);
             }

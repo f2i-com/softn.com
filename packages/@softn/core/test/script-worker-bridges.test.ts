@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { SnapshotDBBridge, type DBMutation } from '../src/runtime/script-worker-bridges';
+import { SnapshotDBBridge, isWorkerPlaceholderId, workerRecordId, type DBMutation } from '../src/runtime/script-worker-bridges';
 import { createDBNamespace } from '../src/runtime/script-runtime';
 
 function rec(id: string, collection: string, created_at: string) {
@@ -43,5 +43,30 @@ describe('SnapshotDBBridge', () => {
     expect(bridge.flushMutations()).toEqual<DBMutation[]>([{ type: 'clearCollection', collection: 'log' }]);
     // Flushed once; a fresh snapshot starts a fresh queue.
     expect(bridge.flushMutations()).toEqual([]);
+  });
+
+  describe('ids of records created in the worker', () => {
+    it('are real ids the main thread keeps, so a stored reference to one resolves', () => {
+      const bridge = new SnapshotDBBridge();
+      const task = bridge.create('tasks', { title: 'a' });
+      expect(task.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(isWorkerPlaceholderId(task.id)).toBe(false);
+      const note = bridge.create('notes', { taskId: task.id });
+      expect(bridge.get('notes', note.id)?.data.taskId).toBe(task.id);
+      const [created] = bridge.flushMutations();
+      expect(created).toEqual({ type: 'create', collection: 'tasks', data: { title: 'a' }, tempId: task.id });
+    });
+
+    it('fall back to a placeholder the main thread maps when the worker has no id generator', () => {
+      const original = Object.getOwnPropertyDescriptor(crypto, 'randomUUID') ?? Object.getOwnPropertyDescriptor(Object.getPrototypeOf(crypto), 'randomUUID');
+      Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true });
+      try {
+        const id = workerRecordId();
+        expect(id).toMatch(/^_wk_\d+$/);
+        expect(isWorkerPlaceholderId(id)).toBe(true);
+      } finally {
+        if (original) Object.defineProperty(crypto, 'randomUUID', original);
+      }
+    });
   });
 });

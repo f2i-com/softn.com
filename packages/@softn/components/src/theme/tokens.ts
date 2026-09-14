@@ -4,6 +4,8 @@
  * Design tokens for consistent theming across all components.
  */
 
+import { CHART_PALETTE_DARK, CHART_PALETTE_LIGHT } from './chart-palette';
+
 export interface ColorScale {
   50: string;
   100: string;
@@ -34,6 +36,13 @@ export interface ThemeColors {
   // Base colors
   white: string;
   black: string;
+
+  /**
+   * The series colours charts cycle through, published as
+   * `--color-chart-1` … `--color-chart-n`. Optional so a theme written
+   * before it existed still type-checks; the light palette is used then.
+   */
+  chart?: readonly string[];
 
   // Semantic aliases
   background: string;
@@ -282,6 +291,7 @@ export const lightTheme: Theme = {
   name: 'light',
   colors: {
     primary: primaryScale,
+    chart: CHART_PALETTE_LIGHT,
     secondary: secondaryScale,
     success: successScale,
     warning: warningScale,
@@ -437,5 +447,6 @@ export const darkTheme: Theme = {
     text: '#f8fafc',
     textMuted: '#94a3b8',
     textDisabled: '#64748b',
+    chart: CHART_PALETTE_DARK,
   },
 };

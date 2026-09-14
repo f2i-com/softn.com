@@ -3,6 +3,15 @@
  *
  * This hook loads .softn files from disk at runtime and watches for changes,
  * enabling hot reload without rebuilding the app.
+ *
+ * @deprecated No SoftN desktop app registers the Tauri commands this hook
+ * invokes (`read_softn_file`, `watch_softn_files`, `stop_watching`; the
+ * loader registers `read_softn_bundle`, `read_cached_bundle`,
+ * `get_opened_file`, `set_window_icon` and the XDB commands), and no app
+ * uses the hook. It now fails with a message that says so rather than with
+ * Tauri's "command not found", and is removed in the next minor release.
+ * Open a bundle through the loader (or `SoftNRenderer` with the bundle's
+ * files) instead.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -22,6 +31,23 @@ interface TauriEvent<T> {
 interface FileChangePayload {
   path: string;
   kind: 'create' | 'modify' | 'remove';
+}
+
+/** The message every failure of this hook carries on a host without the commands. */
+export const DYNAMIC_SOFTN_UNAVAILABLE =
+  'This host does not provide file loading or watching: no SoftN desktop app registers the read_softn_file, watch_softn_files and stop_watching commands. useDynamicSoftN is deprecated and is removed in the next minor release; open the bundle through the loader instead.';
+
+/**
+ * Tauri answers an unregistered command with "Command <name> not found"
+ * (or "not allowed" under a capability set); that is this hook's own
+ * failure, and it is reported as such.
+ */
+function describeHostFailure(err: unknown): Error {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/command\b.*\b(not found|not allowed|not registered)|unknown command/i.test(message)) {
+    return new Error(DYNAMIC_SOFTN_UNAVAILABLE);
+  }
+  return err instanceof Error ? err : new Error(message);
 }
 
 // Check if we're running in Tauri - cached result
@@ -49,6 +75,7 @@ function getTauriListen():
   return window.__TAURI__?.event?.listen;
 }
 
+/** @deprecated With {@link useDynamicSoftN}. */
 export interface UseDynamicSoftNOptions {
   /** Path to the .softn file */
   filePath: string;
@@ -64,6 +91,7 @@ export interface UseDynamicSoftNOptions {
   onLoadStart?: () => void;
 }
 
+/** @deprecated With {@link useDynamicSoftN}. */
 export interface UseDynamicSoftNResult {
   /** The parsed SoftN document */
   document: SoftNDocument | null;
@@ -85,6 +113,9 @@ export interface UseDynamicSoftNResult {
 
 /**
  * Hook to dynamically load and watch .softn files at runtime
+ *
+ * @deprecated See the module comment: no host registers the commands it
+ * needs; it is removed in the next minor release.
  */
 export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoftNResult {
   const { filePath, watch = true, debounceMs = 100, onChange, onError, onLoadStart } = options;
@@ -166,7 +197,7 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
       onChangeRef.current?.(doc);
     } catch (err) {
       if (!isCurrentRequest()) return;
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = describeHostFailure(err);
       setError(error);
       onErrorRef.current?.(error);
     } finally {
@@ -225,7 +256,7 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
 
     // Start watching - silently handle errors since bundled source works as fallback
     invoke('watch_softn_files', { dir }).catch((err) => {
-      console.warn('[SoftN] File watching not available:', err);
+      console.warn('[SoftN] File watching not available:', describeHostFailure(err).message);
     });
 
     let disposed = false;
@@ -272,7 +303,9 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
         clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;
       }
-      invoke('stop_watching').catch(console.error);
+      invoke('stop_watching').catch(() => {
+        // The host never started watching (see the module comment); nothing to stop.
+      });
     };
   }, [filePath, watch, isTauriApp, debouncedLoad, loadFile]);
 
@@ -290,6 +323,9 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
 
 /**
  * Hook to list all .softn files in a directory
+ *
+ * @deprecated With {@link useDynamicSoftN}: no host registers the command
+ * it needs; it is removed in the next minor release.
  */
 export function useSoftNFiles(directory: string): {
   files: string[];
@@ -330,8 +366,7 @@ export function useSoftNFiles(directory: string): {
       }
     } catch (err) {
       if (mountedRef.current) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        setError(error);
+        setError(describeHostFailure(err));
       }
     } finally {
       if (mountedRef.current) {

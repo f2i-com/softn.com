@@ -6,6 +6,7 @@
 
 import React, { createContext, useContext, useMemo, useEffect, useState, useCallback } from 'react';
 import { Theme, lightTheme, darkTheme, ColorScale } from './tokens';
+import { CHART_PALETTE_LIGHT, chartColorVariable } from './chart-palette';
 
 export interface ThemeContextValue {
   theme: Theme;
@@ -64,6 +65,11 @@ function themeToCssVariables(theme: Theme): Record<string, string> {
   vars['--color-text-disabled'] = theme.colors.textDisabled;
   vars['--color-white'] = theme.colors.white;
   vars['--color-black'] = theme.colors.black;
+
+  // Chart series colours (see chart-palette.ts)
+  (theme.colors.chart ?? CHART_PALETTE_LIGHT).forEach((color, index) => {
+    vars[chartColorVariable(index + 1)] = color;
+  });
 
   // Typography
   vars['--font-sans'] = theme.typography.fontFamily.sans;

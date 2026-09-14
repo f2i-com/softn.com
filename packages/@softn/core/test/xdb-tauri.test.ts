@@ -512,4 +512,97 @@ describe('XDB Service (Tauri mode)', () => {
       }
     });
   });
+
+  describe('writes that race their own create', () => {
+    it('applies a delete issued while the create is in flight after it lands, and never brings the record back', async () => {
+      const xdb = new XDBService(undefined, 'racing-delete', 'racing-delete-app');
+      await xdb.isReady;
+      const events: string[] = [];
+      xdb.subscribe('tasks', (e) => events.push(`${e.type}:${e.record?.id ?? ''}`));
+      const onMutation = vi.fn();
+      const unsubscribe = xdb.onMutation(onMutation);
+      try {
+        const pending = xdb.create('tasks', { title: 'short-lived' });
+        expect(xdb.delete(pending.id)).toBe(true);
+        // Only the create reached SQLite so far; the delete waits for it.
+        expect(invokeMock.mock.calls.map((c: unknown[]) => c[0])).not.toContain('delete_record');
+        await flushPromises();
+        await flushPromises();
+        const stored = backend.get('tasks')!;
+        expect(stored).toHaveLength(1);
+        expect(stored[0].deleted).toBe(true);
+        expect(xdb.getAll('tasks')).toEqual([]);
+        expect(xdb.get('tasks', pending.id)).toBeNull();
+        expect(xdb.get('tasks', stored[0].id)).toBeNull();
+        expect(xdb.getStorageStatus().issues).toEqual([]);
+        // The store never announced a create for it.
+        expect(events.filter((e) => e.startsWith('create:'))).toEqual([]);
+        expect(onMutation.mock.calls.map((c) => c[0].type)).toEqual(['delete']);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it('keeps a hard delete of a record still being created', async () => {
+      const xdb = new XDBService(undefined, 'racing-hard-delete', 'racing-hard-delete-app');
+      await xdb.isReady;
+      const pending = xdb.create('tasks', { title: 'gone' });
+      expect(xdb.hardDelete('tasks', pending.id)).toBe(true);
+      await flushPromises();
+      await flushPromises();
+      expect(backend.get('tasks')![0].deleted).toBe(true);
+      expect(xdb.getAll('tasks')).toEqual([]);
+      expect(xdb.getAllRaw('tasks')).toEqual([]);
+      expect(xdb.getStorageStatus().issues).toEqual([]);
+    });
+
+    it('applies an update and then a delete in order', async () => {
+      const xdb = new XDBService(undefined, 'racing-both', 'racing-both-app');
+      await xdb.isReady;
+      const pending = xdb.create('tasks', { title: 'draft' });
+      xdb.update(pending.id, { title: 'edited' });
+      xdb.deleteFromCollection('tasks', pending.id);
+      await flushPromises();
+      await flushPromises();
+      const commands = invokeMock.mock.calls.map((c: unknown[]) => c[0]);
+      // Nothing was sent that could only fail: the row is created, then deleted.
+      expect(commands.filter((c: string) => c === 'update_record')).toEqual([]);
+      expect(commands.filter((c: string) => c === 'delete_record')).toHaveLength(1);
+      expect(backend.get('tasks')![0].deleted).toBe(true);
+      expect(xdb.getAll('tasks')).toEqual([]);
+      expect(xdb.getStorageStatus().issues).toEqual([]);
+    });
+
+    it('still re-sends an update made while the create was in flight, under the stored id', async () => {
+      const xdb = new XDBService(undefined, 'racing-update', 'racing-update-app');
+      await xdb.isReady;
+      const pending = xdb.create('tasks', { title: 'draft' });
+      xdb.update(pending.id, { title: 'edited' });
+      await flushPromises();
+      await flushPromises();
+      const stored = backend.get('tasks')!;
+      expect(stored).toHaveLength(1);
+      expect(stored[0].deleted).toBe(false);
+      expect(stored[0].data.title).toBe('edited');
+      expect(xdb.get('tasks', stored[0].id)?.data.title).toBe('edited');
+    });
+
+    it('uses a caller-chosen id as the optimistic id and maps it to the stored one', async () => {
+      const xdb = new XDBService(undefined, 'chosen-id', 'chosen-id-app');
+      await xdb.isReady;
+      const record = xdb.create('tasks', { title: 'mine' }, { id: 'worker-chosen' });
+      expect(record.id).toBe('worker-chosen');
+      await flushPromises();
+      const stored = backend.get('tasks')![0];
+      expect(stored.id).not.toBe('worker-chosen');
+      // The old id keeps resolving, as any optimistic id does.
+      expect(xdb.get('tasks', 'worker-chosen')?.id).toBe(stored.id);
+      xdb.update('worker-chosen', { title: 'renamed' });
+      await flushPromises();
+      expect(backend.get('tasks')![0].data.title).toBe('renamed');
+      // An id already in use is not reused.
+      const again = xdb.create('tasks', { title: 'other' }, { id: stored.id });
+      expect(again.id).not.toBe(stored.id);
+    });
+  });
 });
