@@ -11,6 +11,7 @@
     "./inspect": "./src/inspect.ts",
     "./handoff": "./src/handoff.ts",
     "./capabilities": "./src/capabilities.ts",
+    "./url": "./src/url.ts",
     "./package.json": "./package.json"
   },
   "dependencies": {

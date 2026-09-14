@@ -1,5 +1,5 @@
 import React, { useEffect, useId, useState } from 'react';
-import { useModalFocus } from '../../hooks/useModalFocus';
+import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 
 export type StarterTemplate = 'blank' | 'landing' | 'dashboard';
 

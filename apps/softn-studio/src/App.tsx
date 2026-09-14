@@ -27,7 +27,7 @@ import { validateProject } from './lib/validator';
 import { openExampleInStores } from './examples';
 import { abortAgentTurn } from './lib/agentOrchestrator';
 import { exportAsBundle, buildBundle } from './lib/exportBundle';
-import { connectHostedEditor, isHostedEditor } from '../../shared/hostedEditor';
+import { connectHostedEditor, isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import {
   listProjectSummaries,
   loadProjectRecord,

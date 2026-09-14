@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useWorkspaceStore } from '../../stores';
 import { Icon } from '../common/Icon';
+import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 
 interface BlueprintReviewProps {
   onApprove: () => void;
@@ -33,6 +34,8 @@ const hover = (rest: string, over: string) => ({
   onMouseLeave: (event: React.MouseEvent<HTMLElement>) => { event.currentTarget.style.background = rest; },
 });
 
+const noop = () => {};
+
 export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onReviseBrief }) => {
   const {
     blueprint,
@@ -43,6 +46,9 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
     addConsoleOutput,
   } = useWorkspaceStore();
   const [revisionInput, setRevisionInput] = useState('');
+  // A modal over the editor: keyboard stays inside; Escape is "Revise brief"
+  // where that is offered (the only way out that is not approval).
+  const dialogRef = useModalFocus(true, onReviseBrief ?? noop);
 
   const summaryStats = useMemo(() => {
     if (!blueprint) return [];
@@ -79,11 +85,11 @@ export const BlueprintReview: React.FC<BlueprintReviewProps> = ({ onApprove, onR
 
   return (
     <div style={styles.overlay}>
-      <div style={styles.modal}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="blueprint-review-title" tabIndex={-1} style={styles.modal}>
         <div style={styles.header}>
           <div>
             <span style={styles.eyebrow}>Blueprint Review</span>
-            <h2 style={styles.title}>{blueprint.appName}</h2>
+            <h2 id="blueprint-review-title" style={styles.title}>{blueprint.appName}</h2>
             <p style={styles.subtitle}>Approve the AI plan before you continue deeper into the editor.</p>
           </div>
           <div style={styles.badge}>AI</div>

@@ -1,13 +1,13 @@
 /**
- * Where the rest of the site is, from Studio. In a deployment every app is a
- * path of one origin; in development each runs on its own port, so the
- * addresses can be given explicitly.
+ * Where the rest of the site is, from Studio. The rule (paths under one
+ * origin in production and under the integrated dev launcher, ports in
+ * standalone development) is @softn/brand's; this feeds it Studio's inputs.
  */
 
-// The integrated dev launcher serves Studio at /studio/ on the public site.
-// Its private Vite port is not a receiving site and cannot share staged bundles.
-const sharedOrigin = /^\/studio\/?$/.test(import.meta.env.BASE_URL);
-const standaloneDev = import.meta.env.DEV && !sharedOrigin;
-export const RUNTIME_URL = import.meta.env.VITE_WEB_URL || (standaloneDev ? 'http://localhost:1420' : '/web/');
-export const SITE_URL = import.meta.env.VITE_SITE_URL || (standaloneDev ? 'http://localhost:1421' : '/');
-export const PUBLISH_URL = `${SITE_URL.replace(/\/+$/, '')}/publish`;
+import { resolveSiteUrls } from '@softn/brand';
+
+export const { RUNTIME_URL, SITE_URL, PUBLISH_URL } = resolveSiteUrls({
+  dev: import.meta.env.DEV,
+  baseUrl: import.meta.env.BASE_URL,
+  env: import.meta.env,
+});

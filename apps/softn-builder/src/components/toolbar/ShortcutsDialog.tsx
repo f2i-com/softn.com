@@ -3,7 +3,7 @@
  */
 
 import React, { useId } from 'react';
-import { useModalFocus } from '../../hooks/useModalFocus';
+import { useModalFocus } from '@softn/editor-shared/useModalFocus';
 
 const styles: Record<string, React.CSSProperties> = {
   overlay: {

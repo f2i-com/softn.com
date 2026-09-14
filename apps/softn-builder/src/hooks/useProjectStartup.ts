@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { startupAction, SESSION_STORAGE_KEY, type StartupAction } from '../utils/openProject';
 import { readLocalStorage } from '../utils/safeStorage';
-import { isHostedEditor } from '../../../shared/hostedEditor';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 
 /** Consume a startup link once, but restart its request after effect cleanup.
  * React StrictMode replays effects in development. Re-reading the URL on that

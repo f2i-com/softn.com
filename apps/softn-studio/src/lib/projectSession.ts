@@ -1,5 +1,6 @@
 import { useAIStore, useVFSStore, useWorkspaceStore } from '../stores';
-import { readRemoteBundle } from './remoteBundle';
+import { bundleNameFromUrl, resolveBundleUrl } from '@softn/bundle-format/url';
+import { fetchSameOriginBundle } from '@softn/editor-shared/remoteOpen';
 import {
   clearLegacySnapshots,
   deleteProjectRecord,
@@ -603,29 +604,22 @@ export function readOpenLink(search: string, origin: string): { url: URL } | { e
   const params = new URLSearchParams(search);
   const open = params.get('open');
   if (!open) return null;
-  let url: URL;
   try {
-    url = new URL(open, origin);
+    new URL(open, origin);
   } catch {
     return { error: 'The open link is not a valid address.' };
   }
-  if (!/^https?:$/.test(url.protocol) || url.username || url.password || url.origin !== origin || !/\.softn$/i.test(url.pathname)) {
+  // The rule (http(s), this origin, no credentials, a .softn) is the bundle
+  // contract's; the runtime and the directory apply the same one.
+  try {
+    return { url: resolveBundleUrl(open, origin) };
+  } catch {
     return { error: 'Only a .softn served by this site can be opened from a link.' };
   }
-  return { url };
 }
 
-/** The bundle's name from its address: the directory serves every bundle as bundle.softn under the app's own segment. */
-export function bundleNameFromUrl(url: URL): string {
-  const segments = url.pathname.split('/').filter(Boolean);
-  const last = segments[segments.length - 1] ?? 'app.softn';
-  const name = segments.length >= 2 && /^bundle\.softn$/i.test(last) ? segments[segments.length - 2] : last.replace(/\.softn$/i, '');
-  try {
-    return decodeURIComponent(name) || 'app';
-  } catch {
-    return name || 'app';
-  }
-}
+/** The bundle's name from its address, from the bundle contract (the directory's `<slug>/bundle.softn` is understood). */
+export { bundleNameFromUrl };
 
 export interface RemoteOpenDeps {
   fetch?: typeof fetch;
@@ -648,26 +642,12 @@ export interface RemoteOpenDeps {
  */
 export async function openRemoteBundle(url: URL, deps: RemoteOpenDeps): Promise<void> {
   const claim = claimWorkspace();
-  const doFetch = deps.fetch ?? fetch;
   try {
-    const resp = await doFetch(url.href, { credentials: 'same-origin', mode: 'same-origin', signal: claim.signal });
-    if (!ownsWorkspace(claim.generation)) {
-      void resp.body?.cancel().catch(() => {});
-      return;
-    }
-    if (!resp.ok) {
-      void resp.body?.cancel().catch(() => {});
-      throw new Error(`${url.pathname} responded ${resp.status}`);
-    }
-    // Directory endpoints may redirect within this site, including to a path
-    // without an extension. The response must still belong to this origin.
-    if (resp.url && new URL(resp.url).origin !== url.origin) {
-      void resp.body?.cancel().catch(() => {});
-      throw new Error('The app download redirected away from this site.');
-    }
-    const bytes = await readRemoteBundle(resp, claim.signal);
-    if (!ownsWorkspace(claim.generation)) return;
-    await deps.importFile(new File([bytes], `${bundleNameFromUrl(url)}.softn`), claim.generation);
+    // Redirect-origin check, bounded read, body cancelled when superseded:
+    // the shared fetch (@softn/editor-shared) does what Builder's does too.
+    const fetched = await fetchSameOriginBundle(url, { fetch: deps.fetch, signal: claim.signal, superseded: () => !ownsWorkspace(claim.generation) });
+    if (fetched.kind === 'superseded') return;
+    await deps.importFile(new File([fetched.bytes], `${bundleNameFromUrl(url)}.softn`), claim.generation);
   } catch (error) {
     if (!ownsWorkspace(claim.generation)) return;
     deps.log(`Could not open ${url.pathname}: ${error instanceof Error ? error.message : String(error)}`);

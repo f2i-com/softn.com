@@ -28,9 +28,8 @@
           /* Storage blocked; the dark default stands. */
         }
         document.documentElement.setAttribute('data-theme', theme);
-        if (theme === 'light') {
-          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#f4f6f9');
-        }
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', theme === 'light' ? '#f4f6f9' : '#101317');
       })();
     </script>
     <title>Softn — create, refine and run your own apps</title>

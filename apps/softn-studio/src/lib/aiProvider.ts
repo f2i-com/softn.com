@@ -1,4 +1,4 @@
-import { isHostedEditor, requestHostedAI } from '../../../shared/hostedEditor';
+import { isHostedEditor, requestHostedAI } from '@softn/editor-shared/hostedEditor';
 import type { ProviderConfig, ChatMessage } from '../types/studio';
 
 export interface AIRequest {
@@ -13,7 +13,14 @@ export interface AIRequest {
   maxOutputTokens?: number;
 }
 
+/** How long one provider request may take before Studio gives up on it. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+/**
+ * The output allowance reserved for each request, sent as the provider's
+ * max_tokens. It is also what the budget check reserves before sending: a
+ * reply cannot be longer than this, so a request the remaining budget
+ * cannot cover at this size is refused before it costs anything.
+ */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 
 /**

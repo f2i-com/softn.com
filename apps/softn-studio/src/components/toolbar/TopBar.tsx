@@ -1,4 +1,4 @@
-import { isHostedEditor } from '../../../../shared/hostedEditor';
+import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import React from 'react';
 import { Icon } from '../common/Icon';
 import { Mark } from '../common/Mark';
