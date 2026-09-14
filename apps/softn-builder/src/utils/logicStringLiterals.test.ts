@@ -13,7 +13,6 @@ import { parseStringLiteralVariables } from './logicStringLiterals';
 /** Set by any payload below that manages to run. */
 let sideEffect: string | null = null;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).__markExecuted = () => {
   sideEffect = 'executed';
   return 'executed';

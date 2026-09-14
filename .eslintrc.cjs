@@ -58,4 +58,21 @@ module.exports = {
     'prefer-const': 'error',
     'no-var': 'error',
   },
+  overrides: [
+    {
+      // Tests narrate what they do and poke at shapes a type would only get
+      // in the way of; the two rules that make `lint` fail the tree were,
+      // by count, mostly here (about 120 of 223 warnings).
+      files: ['**/*.test.{ts,tsx,mjs}', '**/test/**', '**/tests/**', 'e2e/**'],
+      rules: {
+        'no-console': 'off',
+        '@typescript-eslint/no-explicit-any': 'off',
+      },
+    },
+    {
+      // A command-line tool talks through the console; that is its output.
+      files: ['packages/@softn/core/src/bundle/cli.ts'],
+      rules: { 'no-console': 'off' },
+    },
+  ],
 };

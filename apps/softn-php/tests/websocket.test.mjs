@@ -1,13 +1,17 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {once} from 'node:events';
 import {pathToFileURL} from 'node:url';
 import {join} from 'node:path';
 const root=process.env.SOFTN_PHP_TEST_BACKEND;
-if(!root)throw Error('Set SOFTN_PHP_TEST_BACKEND to an extracted backend');
-const {createLiveServer}=await import(pathToFileURL(join(root,'websocket.mjs')));
-const {default:WebSocket}=await import(pathToFileURL(join(root,'vendor/ws/wrapper.mjs')));
+const skip=root?false:'Set SOFTN_PHP_TEST_BACKEND to an extracted backend';
+// Without the backend fixture these tests are SKIPPED, visibly, not thrown
+// out of: the suite runs in every checkout and CI, and the fixture-bound
+// cases report why they did not run.
+const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
+const {createLiveServer}=skip?{}:await import(pathToFileURL(join(root,'websocket.mjs')));
+const {default:WebSocket}=skip?{}:await import(pathToFileURL(join(root,'vendor/ws/wrapper.mjs')));
 test('optional WebSocket bridge checks auth on every poll, delivers changes and closes revoked sessions',{timeout:10000},async t=>{
   let revoked=false,checks=0;
   const upstream=http.createServer((req,res)=>{

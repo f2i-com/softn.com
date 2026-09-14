@@ -1,0 +1,11 @@
+{
+  "name": "@softn/php-host",
+  "version": "0.0.12",
+  "private": true,
+  "description": "The PHP front and bundled Node worker that host a single app's backend on demand",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

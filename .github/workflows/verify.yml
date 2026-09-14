@@ -76,12 +76,21 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # `lint` is the stricter aspiration (--max-warnings 0); the tree carries
-      # several hundred deliberate `no-console` warnings, so CI gates on errors.
+      # A ratchet: `lint` allows exactly the warnings the tree carries today
+      # (see the root package.json), so a change can remove them but never add
+      # one. Tests and the CLI are exempt from the two rules that made up most
+      # of the count (.eslintrc.cjs overrides); the rest are real.
       - name: Lint
-        run: npm run lint:errors
+        run: npm run lint
 
       # Every workspace's suite, the directory API's among them: the runner
       # image ships PHP, so those run here rather than being skipped.
       - name: Test
         run: npm test
+
+      # The private backend host is Rust and lives outside the npm
+      # workspaces; nothing else runs its tests.
+      - name: Rust toolchain for the private backend host
+        uses: dtolnay/rust-toolchain@stable
+      - name: Test the private backend host
+        run: cargo test --manifest-path apps/softn-rust/Cargo.toml
