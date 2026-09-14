@@ -2,7 +2,7 @@
 //!
 //! This is the Rust backend for the SoftN application runtime.
 //! Handles file opening and .softn bundle loading.
-//! Integrates XDB for P2P database sync across local network.
+//! Integrates XDB for local persistence; peer sync across the local network is an explicit opt-in.
 
 use serde::Serialize;
 use std::fs;
@@ -166,7 +166,13 @@ pub fn run() {
                     xdb::tauri::clear_collection,
                     xdb::tauri::get_db_stats,
                     xdb::tauri::get_network_status,
+                    xdb::tauri::get_network_settings,
+                    xdb::tauri::set_network_enabled,
+                    xdb::tauri::resume_sync,
+                    xdb::tauri::reconcile_network,
                     xdb::tauri::request_sync,
+                    xdb::tauri::import_records,
+                    xdb::tauri::reset_collection,
                     xdb::tauri::export_database,
                     xdb::tauri::import_database,
                     xdb::tauri::get_db_path,
@@ -190,7 +196,13 @@ pub fn run() {
                     xdb::tauri::clear_collection,
                     xdb::tauri::get_db_stats,
                     xdb::tauri::get_network_status,
+                    xdb::tauri::get_network_settings,
+                    xdb::tauri::set_network_enabled,
+                    xdb::tauri::resume_sync,
+                    xdb::tauri::reconcile_network,
                     xdb::tauri::request_sync,
+                    xdb::tauri::import_records,
+                    xdb::tauri::reset_collection,
                     xdb::tauri::export_database,
                     xdb::tauri::import_database,
                     xdb::tauri::get_db_path,
@@ -199,8 +211,10 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // Initialize XDB P2P database
-            info!("Initializing XDB P2P database...");
+            // Initialize XDB local databases. Peer networking is OFF unless the
+            // user explicitly enabled it (persisted network-settings.json); see
+            // xdb.org docs/networking-and-restore-policy.md (audit XD-01).
+            info!("Initializing XDB local database (peer networking opt-in)...");
             xdb::tauri::setup_xdb(app)?;
             info!("XDB initialized successfully");
 

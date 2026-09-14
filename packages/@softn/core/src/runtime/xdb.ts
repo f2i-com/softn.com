@@ -98,6 +98,93 @@ export interface XDBServiceOptions {
   backend?: 'auto' | 'storage';
 }
 
+// ── Storage state (audit SN-02) ──────────────────────────────────────────
+//
+// Liveness and successful hydration are different facts. The service stays
+// responsive on every failure, but it says which of these it is in:
+//   loading      native hydration in progress
+//   ready        every collection hydrated / storage readable
+//   degraded     at least one collection is corrupt, failed to hydrate or a
+//                write hit a quota error; other collections keep working
+//   memory-only  browser storage is inaccessible; nothing survives a reload
+//   failed       native hydration failed as a whole (retryable)
+
+export type XDBStorageState = 'loading' | 'ready' | 'degraded' | 'memory-only' | 'failed';
+export type XDBStorageIssueKind = 'inaccessible' | 'corrupt' | 'quota' | 'hydration-failed' | 'migration-incomplete';
+
+export interface XDBStorageIssue {
+  kind: XDBStorageIssueKind;
+  collection?: string;
+  message: string;
+  /** Storage key holding the original (undamaged-by-us) bytes of a corrupt collection. */
+  quarantineKey?: string;
+  at: string;
+}
+
+export interface XDBStorageStatus {
+  state: XDBStorageState;
+  /** Whether writes reach durable storage (false for memory-only operation). */
+  persistent: boolean;
+  /** Whether every collection was read from the backend successfully. */
+  hydrated: boolean;
+  /** Native operations dispatched but not yet acknowledged by SQLite. */
+  pendingWrites: number;
+  issues: XDBStorageIssue[];
+}
+
+/** Thrown instead of silently replacing damaged or unloaded data. */
+export class XDBStorageError extends Error {
+  constructor(
+    public readonly kind: XDBStorageIssueKind | 'unhydrated',
+    message: string,
+    public readonly collection?: string
+  ) {
+    super(message);
+    this.name = 'XDBStorageError';
+  }
+}
+
+/** An import result whose durable completion has already been awaited. */
+export type XDBDurableImportResult = Omit<XDBImportResult, 'persisted'> & { persisted: XDBPersistResult };
+
+/** Durable-completion signal of an import (audit SN-01). */
+export interface XDBPersistResult {
+  backend: 'native' | 'storage' | 'memory';
+  collections: string[];
+  imported: number;
+  tombstoned: number;
+}
+
+/** Honest native network status (audit XD-01/XD-02); see xdb.org docs/networking-and-restore-policy.md. */
+export interface XDBNetworkStatus {
+  peer_id: string;
+  connected_peers: string[];
+  is_running: boolean;
+  mode?: 'local-only' | 'trusted-lan';
+  enabled?: boolean;
+  discovery?: boolean;
+  listening?: boolean;
+  sync_paused?: boolean;
+  stats?: {
+    publishes_sent: number;
+    publishes_without_peers: number;
+    publish_failures: number;
+    updates_applied: number;
+    updates_rejected_stale: number;
+    updates_skipped_paused: number;
+    resets_applied: number;
+    sync_requests_sent: number;
+    sync_responses_applied: number;
+    last_announce_at: string | null;
+    last_repair_at: string | null;
+    last_update_applied_at: string | null;
+  };
+}
+
+export interface XDBNetworkSettings { enabled: boolean; discovery: boolean; listen: boolean }
+
+const OFFLINE_NETWORK_STATUS: XDBNetworkStatus = { peer_id: '', connected_peers: [], is_running: false, mode: 'local-only', enabled: false, discovery: false, listening: false, sync_paused: false };
+
 // ============================================================================
 // XDB Service Class
 // ============================================================================
@@ -130,6 +217,22 @@ export class XDBService {
   /** App ID for per-app database isolation in Tauri */
   private appId: string | undefined;
 
+  // Storage state (audit SN-02)
+  private storageState: XDBStorageState = 'ready';
+  private persistent = true;
+  private hydrated = true;
+  private issues: XDBStorageIssue[] = [];
+  /** Collections whose stored bytes could not be read as records, with the original bytes. */
+  private corrupt: Map<string, { quarantineKey: string | null; raw: string }> = new Map();
+  /** Corrupt collections the user explicitly allowed to be overwritten. */
+  private acknowledged: Set<string> = new Set();
+  /** Native collections whose hydration failed (writes that could drop unknown records are blocked). */
+  private hydrationFailed: Set<string> = new Set();
+  private statusListeners: Set<(status: XDBStorageStatus) => void> = new Set();
+  /** Native operations in flight (audit SN-01): the truthful "unsaved work" count. */
+  private pendingNative: Set<Promise<unknown>> = new Set();
+  private unloadGuard: ((event: BeforeUnloadEvent) => void) | null = null;
+
   /**
    * Notification batching: when > 0, emit() defers notifications.
    * Collections with pending changes are tracked in _batchDirty.
@@ -148,11 +251,22 @@ export class XDBService {
   private _resolveReady!: () => void;
 
   constructor(storage?: XDBStorage, prefix = 'xdb', appId?: string, options: XDBServiceOptions = {}) {
+    // Memory-only is a STATE, not a silent substitution (audit SN-02): the
+    // service still works, but it must never advertise persistence it lacks.
+    let memoryOnly = false;
     try {
-      this.storage = storage || (typeof localStorage !== 'undefined' ? localStorage : createMemoryStorage());
+      if (storage) {
+        this.storage = storage;
+      } else if (typeof localStorage !== 'undefined') {
+        this.storage = localStorage;
+      } else {
+        this.storage = createMemoryStorage();
+        memoryOnly = true;
+      }
     } catch {
       // Accessing the property itself throws in an opaque-origin sandbox.
       this.storage = storage || createMemoryStorage();
+      memoryOnly = !storage;
     }
     this.prefix = prefix;
     this.appId = appId;
@@ -166,9 +280,16 @@ export class XDBService {
 
     // Setup Tauri event listeners for P2P sync
     if (this.useTauri) {
+      this.storageState = 'loading';
+      this.hydrated = false;
       this.setupTauriEventListeners();
       this.hydrateFromBackend();
     } else {
+      if (memoryOnly) {
+        this.persistent = false;
+        this.storageState = 'memory-only';
+        this.noteIssue({ kind: 'inaccessible', message: 'Browser storage is not available. Records are kept in memory only and are lost when this page closes.' });
+      }
       // Non-Tauri environments (localStorage) are ready immediately
       this._resolveReady();
     }
@@ -214,41 +335,231 @@ export class XDBService {
   private hydrateFromBackend(): void {
     if (!this.useTauri || this.hydrateStarted) return;
     this.hydrateStarted = true;
+    this.hydrationPromise = this.runHydration();
+  }
 
-    tauriInvoke<string[]>('get_collections', this.tauriArgs())
-      .then(async (collections) => {
-        for (const collection of collections) {
-          try {
-            const records = await tauriInvoke<XDBRecord[]>('get_collection', this.tauriArgs({ collection }));
-            // Merge instead of overwrite — preserve any optimistic records
-            // created between constructor and hydration completion
-            let coll = this.memoryStore.get(collection);
-            if (!coll) {
-              coll = new Map();
-              this.memoryStore.set(collection, coll);
-            }
-            for (const r of records) {
-              const existing = coll.get(r.id);
-              // Never revive locally deleted records
-              if (existing?.deleted) continue;
-              // Server record wins if local doesn't exist or is older
-              if (!existing || existing.updated_at <= r.updated_at) {
-                coll.set(r.id, r);
-              }
-            }
-            this.knownCollections.add(collection);
-            this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
-          } catch (err) {
-            console.error('[XDB] Failed to hydrate collection:', collection, err);
+  private hydrationPromise: Promise<void> = Promise.resolve();
+
+  /**
+   * Hydrate the in-memory cache. Liveness (`isReady`) always resolves so the
+   * app stays responsive, but a failed or partial hydration is RECORDED as
+   * such (audit SN-02): destructive writes to an unhydrated collection are
+   * refused until `retryHydration()` succeeds, and the status says why.
+   */
+  private async runHydration(): Promise<void> {
+    this.storageState = 'loading';
+    this.hydrated = false;
+    this.notifyStatus();
+    let collections: string[];
+    try {
+      collections = await tauriInvoke<string[]>('get_collections', this.tauriArgs());
+    } catch (err) {
+      console.error('[XDB] Failed to hydrate from Tauri backend:', err);
+      this.hydrationFailed.add('*');
+      this.storageState = 'failed';
+      this.noteIssue({ kind: 'hydration-failed', message: `The native database could not be read: ${err instanceof Error ? err.message : String(err)}. Nothing was loaded; retry before making changes.` });
+      // Resolve anyway to prevent the app from hanging permanently
+      this._resolveReady();
+      return;
+    }
+    this.hydrationFailed.delete('*');
+    for (const collection of collections) {
+      try {
+        const records = await tauriInvoke<XDBRecord[]>('get_collection', this.tauriArgs({ collection }));
+        // Merge instead of overwrite — preserve any optimistic records
+        // created between constructor and hydration completion
+        let coll = this.memoryStore.get(collection);
+        if (!coll) {
+          coll = new Map();
+          this.memoryStore.set(collection, coll);
+        }
+        for (const r of records) {
+          const existing = coll.get(r.id);
+          // Never revive locally deleted records
+          if (existing?.deleted) continue;
+          // Server record wins if local doesn't exist or is older
+          if (!existing || existing.updated_at <= r.updated_at) {
+            coll.set(r.id, r);
           }
         }
-        this._resolveReady();
-      })
-      .catch((err) => {
-        console.error('[XDB] Failed to hydrate from Tauri backend:', err);
-        // Resolve anyway to prevent the app from hanging permanently
-        this._resolveReady();
-      });
+        this.knownCollections.add(collection);
+        this.hydrationFailed.delete(collection);
+        this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
+      } catch (err) {
+        console.error('[XDB] Failed to hydrate collection:', collection, err);
+        this.hydrationFailed.add(collection);
+        this.noteIssue({ kind: 'hydration-failed', collection, message: `Collection "${collection}" could not be loaded from the native database: ${err instanceof Error ? err.message : String(err)}. Its records are not shown and cannot be cleared until it loads.` });
+      }
+    }
+    this.hydrated = this.hydrationFailed.size === 0;
+    this.storageState = this.hydrated ? (this.corrupt.size || this.issues.some(i => i.kind === 'quota') ? 'degraded' : 'ready') : 'degraded';
+    if (this.hydrated) this.issues = this.issues.filter(i => i.kind !== 'hydration-failed');
+    this.notifyStatus();
+    this._resolveReady();
+  }
+
+  /** Re-run native hydration after a failure; resolves when the attempt finished. */
+  async retryHydration(): Promise<XDBStorageStatus> {
+    if (this.useTauri) {
+      await this.hydrationPromise.catch(() => {});
+      this.hydrationPromise = this.runHydration();
+      await this.hydrationPromise;
+    }
+    return this.getStorageStatus();
+  }
+
+  /** Native operations dispatched from this service that SQLite has not acknowledged yet. */
+  hasPendingWrites(): boolean {
+    return this.pendingNative.size > 0;
+  }
+
+  /** Resolves once every in-flight native operation has settled (success or failure). */
+  async whenIdle(): Promise<void> {
+    while (this.pendingNative.size > 0) {
+      await Promise.allSettled([...this.pendingNative]);
+    }
+  }
+
+  /** Dispatch a native command and track it until SQLite answers (audit SN-01). */
+  private native<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+    const promise = tauriInvoke<T>(cmd, this.tauriArgs(args));
+    this.pendingNative.add(promise);
+    this.updateUnloadGuard();
+    const settle = () => { this.pendingNative.delete(promise); this.updateUnloadGuard(); };
+    promise.then(settle, settle);
+    return promise;
+  }
+
+  /**
+   * Warn before the page unloads while native work is unacknowledged or the
+   * store is memory-only (audit SN-01/SN-02). A browser unload prompt is not
+   * a persistence strategy; it is the last honest signal before data is lost.
+   */
+  private updateUnloadGuard(): void {
+    if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+    const needed = this.pendingNative.size > 0 || this.storageState === 'memory-only';
+    if (needed && !this.unloadGuard) {
+      this.unloadGuard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
+      window.addEventListener('beforeunload', this.unloadGuard);
+    } else if (!needed && this.unloadGuard) {
+      window.removeEventListener('beforeunload', this.unloadGuard);
+      this.unloadGuard = null;
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Storage status (audit SN-02)
+  // --------------------------------------------------------------------------
+
+  getStorageStatus(): XDBStorageStatus {
+    return {
+      state: this.storageState,
+      persistent: this.persistent,
+      hydrated: this.hydrated,
+      pendingWrites: this.pendingNative.size,
+      issues: [...this.issues],
+    };
+  }
+
+  subscribeStorage(listener: (status: XDBStorageStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => { this.statusListeners.delete(listener); };
+  }
+
+  private notifyStatus(): void {
+    this.updateUnloadGuard();
+    const status = this.getStorageStatus();
+    for (const listener of this.statusListeners) {
+      try { listener(status); } catch { /* listener errors never break storage */ }
+    }
+  }
+
+  private noteIssue(issue: Omit<XDBStorageIssue, 'at'>): void {
+    this.issues = this.issues.filter(i => !(i.kind === issue.kind && i.collection === issue.collection));
+    this.issues.push({ ...issue, at: new Date().toISOString() });
+    if (this.storageState === 'ready') this.storageState = 'degraded';
+    this.notifyStatus();
+  }
+
+  /** @internal Record an issue detected outside the service (legacy migration). */
+  _noteIssue(issue: Omit<XDBStorageIssue, 'at'>): void {
+    this.noteIssue(issue);
+  }
+
+  /** Whether the collection's stored bytes are readable (false = quarantined). */
+  isCollectionReadable(collection: string): boolean {
+    return !this.corrupt.has(collection);
+  }
+
+  /** Whether a native collection (or all of them) hydrated successfully. */
+  isHydrated(collection?: string): boolean {
+    if (!this.useTauri) return true;
+    if (this.hydrationFailed.has('*')) return false;
+    return collection ? !this.hydrationFailed.has(collection) : this.hydrated;
+  }
+
+  /** The original bytes of a corrupt collection, for export/recovery; null when readable. */
+  exportQuarantined(collection: string): string | null {
+    return this.corrupt.get(collection)?.raw ?? null;
+  }
+
+  /**
+   * Explicitly allow writes to replace a corrupt collection. The quarantined
+   * original bytes stay in storage; this only lifts the write block.
+   */
+  acknowledgeCorruption(collection: string): void {
+    if (!this.corrupt.has(collection)) return;
+    this.acknowledged.add(collection);
+    this.corrupt.delete(collection);
+    this.issues = this.issues.filter(i => !(i.kind === 'corrupt' && i.collection === collection));
+    if (this.storageState === 'degraded' && this.corrupt.size === 0 && this.issues.length === 0) this.storageState = 'ready';
+    this.notifyStatus();
+  }
+
+  /** Replace a corrupt collection with records from a backup (validated), lifting the block. */
+  restoreCollectionFromBackup(collection: string, records: unknown[]): number {
+    const valid = records.filter((r): r is XDBRecord => this.isImportableRecord(r));
+    if (valid.length !== records.length) {
+      throw new XDBStorageError('corrupt', `${records.length - valid.length} backup row(s) for "${collection}" are not records; nothing was restored.`, collection);
+    }
+    this.acknowledgeCorruption(collection);
+    this.setCollectionData(collection, valid);
+    this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
+    return valid.length;
+  }
+
+  /**
+   * Refuse a write that would replace data this service cannot vouch for:
+   * a quarantined browser collection, or a native collection that never
+   * hydrated (a replace/clear there would drop records it never saw).
+   */
+  private assertWritable(collection: string, destructive: boolean): void {
+    const corrupt = this.corrupt.get(collection);
+    if (corrupt && !this.acknowledged.has(collection)) {
+      throw new XDBStorageError('corrupt', `Collection "${collection}" is damaged in storage. Recover it (export the original, restore a backup, or acknowledge discarding it) before writing.`, collection);
+    }
+    if (destructive && this.useTauri && !this.isHydrated(collection)) {
+      throw new XDBStorageError('unhydrated', `Collection "${collection}" has not been loaded from the native database; a reset now could drop records that were never shown. Retry loading first.`, collection);
+    }
+  }
+
+  private recordCorruption(collection: string, raw: string, reason: string): void {
+    if (this.corrupt.has(collection)) return;
+    let quarantineKey: string | null = `${this.collectionKey(collection)}.corrupt.${Date.now().toString(36)}`;
+    try {
+      this.storage.setItem(quarantineKey, raw);
+    } catch {
+      quarantineKey = null;
+    }
+    this.corrupt.set(collection, { quarantineKey, raw });
+    this.acknowledged.delete(collection);
+    this.noteIssue({
+      kind: 'corrupt',
+      collection,
+      message: `Collection "${collection}" could not be read (${reason}). The original bytes were ${quarantineKey ? 'kept under a recovery key' : 'kept in memory only'}; writes are blocked until it is recovered.`,
+      quarantineKey: quarantineKey ?? undefined,
+    });
+    console.error(`[XDB] Collection "${collection}" is corrupt: ${reason}`);
   }
 
   /**
@@ -262,7 +573,12 @@ export class XDBService {
     this.listeners.clear();
     this.globalListeners.clear();
     this.mutationListeners.clear();
+    this.statusListeners.clear();
     this._batchDirty.clear();
+    if (this.unloadGuard && typeof window !== 'undefined') {
+      window.removeEventListener('beforeunload', this.unloadGuard);
+      this.unloadGuard = null;
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -301,18 +617,45 @@ export class XDBService {
       return coll ? [...coll.values()] : [];
     }
 
+    if (this.corrupt.has(collection)) return [];
     const key = this.collectionKey(collection);
     const data = this.storage.getItem(key);
     if (!data) return [];
+    // The user chose to discard a damaged collection: read it as empty until
+    // the next successful write replaces the bytes (the quarantine copy stays).
+    if (this.acknowledged.has(collection)) {
+      try {
+        const parsed: unknown = JSON.parse(data);
+        return Array.isArray(parsed) && parsed.every(r => this.isImportableRecord(r)) ? (parsed as XDBRecord[]) : [];
+      } catch {
+        return [];
+      }
+    }
 
+    // Malformed JSON and valid JSON with the wrong shape are both CORRUPTION,
+    // not an empty collection (audit SN-02): quarantine the bytes and refuse
+    // writes rather than letting the next save replace them.
+    let parsed: unknown;
     try {
-      return JSON.parse(data) as XDBRecord[];
-    } catch {
+      parsed = JSON.parse(data);
+    } catch (err) {
+      this.recordCorruption(collection, data, `invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
       return [];
     }
+    if (!Array.isArray(parsed)) {
+      this.recordCorruption(collection, data, 'stored value is not a list of records');
+      return [];
+    }
+    const invalid = parsed.findIndex(r => !this.isImportableRecord(r));
+    if (invalid !== -1) {
+      this.recordCorruption(collection, data, `row ${invalid} is not a record`);
+      return [];
+    }
+    return parsed as XDBRecord[];
   }
 
   private setCollectionData(collection: string, records: XDBRecord[]): void {
+    this.assertWritable(collection, false);
     if (this.useTauri) {
       const coll = new Map<string, XDBRecord>();
       for (const r of records) coll.set(r.id, r);
@@ -322,7 +665,16 @@ export class XDBService {
     }
 
     const key = this.collectionKey(collection);
-    this.storage.setItem(key, JSON.stringify(records));
+    try {
+      this.storage.setItem(key, JSON.stringify(records));
+      this.acknowledged.delete(collection);
+    } catch (err) {
+      // localStorage.setItem is atomic: the previous value is intact. Say so
+      // instead of pretending the write happened (audit SN-02).
+      const message = err instanceof Error ? err.message : String(err);
+      this.noteIssue({ kind: 'quota', collection, message: `Could not save "${collection}" (${message}). The previously saved records are unchanged; free storage or export your data.` });
+      throw new XDBStorageError('quota', `Could not save "${collection}": ${message}`, collection);
+    }
     this.knownCollections.add(collection);
   }
 
@@ -449,9 +801,9 @@ export class XDBService {
       this.notifyMutation('create', collection, optimisticRecord.id, data);
 
       // Create in backend asynchronously
-      tauriInvoke<XDBRecord>('create_record', this.tauriArgs({
+      this.native<XDBRecord>('create_record', {
         payload: { collection, data },
-      }))
+      })
         .then((serverRecord) => {
           this.pendingCreateIds.delete(optimisticRecord.id);
           const c = this.getOrCreateCollection(collection);
@@ -469,9 +821,9 @@ export class XDBService {
             const mergedData = { ...serverRecord.data, ...currentOptimistic.data };
             mergedRecord = { ...serverRecord, data: mergedData };
             // Push merged data to server so it's persisted
-            tauriInvoke('update_record', this.tauriArgs({
+            this.native('update_record', {
               payload: { id: serverRecord.id, data: mergedData },
-            })).catch(() => {});
+            }).catch(() => {});
           } else {
             mergedRecord = serverRecord;
           }
@@ -518,9 +870,9 @@ export class XDBService {
    */
   async createAsync(collection: string, data: Record<string, unknown>): Promise<XDBRecord> {
     if (this.useTauri) {
-      const record = await tauriInvoke<XDBRecord>('create_record', this.tauriArgs({
+      const record = await this.native<XDBRecord>('create_record', {
         payload: { collection, data },
-      }));
+      });
       this.getOrCreateCollection(collection).set(record.id, record);
       this.emit({ type: 'create', collection, record });
       this.notifyMutation('create', collection, record.id, record.data);
@@ -718,9 +1070,9 @@ export class XDBService {
       const resolvedId = this.optimisticIdMap.get(id) || id;
 
       // Async update via Tauri - fire and forget
-      tauriInvoke<XDBRecord>('update_record', this.tauriArgs({
+      this.native<XDBRecord>('update_record', {
         payload: { id: resolvedId, data },
-      }))
+      })
         .then((serverRecord) => {
           // Only apply server response if no newer local changes exist
           const c = this.getOrCreateCollection(serverRecord.collection);
@@ -788,9 +1140,9 @@ export class XDBService {
   async updateAsync(id: string, data: Partial<Record<string, unknown>>): Promise<XDBRecord | null> {
     if (this.useTauri) {
       try {
-        const record = await tauriInvoke<XDBRecord>('update_record', this.tauriArgs({
+        const record = await this.native<XDBRecord>('update_record', {
           payload: { id, data },
-        }));
+        });
         this.getOrCreateCollection(record.collection).set(record.id, record);
         this.emit({ type: 'update', collection: record.collection, record });
         this.notifyMutation('update', record.collection, record.id, record.data);
@@ -833,9 +1185,9 @@ export class XDBService {
 
       // A scoped edit is still a local mutation: persist it just like update(),
       // while keeping the optimistic cache change in the requested collection.
-      tauriInvoke<XDBRecord>('update_record', this.tauriArgs({
+      this.native<XDBRecord>('update_record', {
         payload: { id: record.id, data },
-      })).then((serverRecord) => {
+      }).then((serverRecord) => {
         if (serverRecord.collection !== collection || serverRecord.id !== record.id) return;
         // A newer edit/deletion wins even if the older request finishes last.
         if (coll.get(record.id) === updatedRecord) {
@@ -879,7 +1231,7 @@ export class XDBService {
       const resolvedId = this.optimisticIdMap.get(id) || id;
 
       // Async delete via Tauri - fire and forget
-      tauriInvoke<boolean>('delete_record', this.tauriArgs({ id: resolvedId }))
+      this.native<boolean>('delete_record', { id: resolvedId })
         .then(() => {
           for (const [collection, coll] of this.memoryStore) {
             const record = coll.get(resolvedId);
@@ -946,7 +1298,7 @@ export class XDBService {
   async deleteAsync(id: string): Promise<boolean> {
     if (this.useTauri) {
       try {
-        await tauriInvoke<boolean>('delete_record', this.tauriArgs({ id }));
+        await this.native<boolean>('delete_record', { id });
         for (const [collection, coll] of this.memoryStore) {
           const record = coll.get(id);
           if (record) {
@@ -980,7 +1332,7 @@ export class XDBService {
       coll!.set(record.id, deleted);
       this.emit({ type: 'delete', collection, record: deleted });
       this.notifyMutation('delete', collection, record.id);
-      tauriInvoke<boolean>('delete_record', this.tauriArgs({ id: record.id })).catch((err) => {
+      this.native<boolean>('delete_record', { id: record.id }).catch((err) => {
         console.error('[XDB] Failed to persist collection deletion in Tauri:', err);
       });
       return true;
@@ -1007,6 +1359,7 @@ export class XDBService {
    * Hard delete - permanently remove a record
    */
   hardDelete(collection: string, id: string): boolean {
+    this.assertWritable(collection, true);
     if (this.useTauri) {
       const coll = this.memoryStore.get(collection);
       const record = coll?.get(id);
@@ -1014,7 +1367,7 @@ export class XDBService {
       coll!.delete(id);
 
       if (this.useTauri) {
-        tauriInvoke<boolean>('delete_record', this.tauriArgs({ id })).catch((err) => {
+        this.native<boolean>('delete_record', { id }).catch((err) => {
           console.error('[XDB] Failed to hard delete record in Tauri:', err);
         });
       }
@@ -1034,7 +1387,7 @@ export class XDBService {
 
     // Persist to Tauri backend (soft delete — hard delete not supported at backend level)
     if (this.useTauri) {
-      tauriInvoke<boolean>('delete_record', this.tauriArgs({ id })).catch((err) => {
+      this.native<boolean>('delete_record', { id }).catch((err) => {
         console.error('[XDB] Failed to hard delete record in Tauri:', err);
       });
     }
@@ -1062,7 +1415,7 @@ export class XDBService {
       const coll = this.getOrCreateCollection(collection);
       const isUpdate = coll.has(record.id);
       coll.set(record.id, record);
-      tauriInvoke<XDBRecord>('upsert_record', this.tauriArgs({ record })).catch((err) => {
+      this.native<XDBRecord>('upsert_record', { record }).catch((err) => {
         console.error('[XDB] Failed to upsert record in Tauri:', err);
       });
       this.emit({ type: isUpdate ? 'update' : 'create', collection, record });
@@ -1081,6 +1434,7 @@ export class XDBService {
   }
 
   removeRecord(collection: string, id: string): void {
+    this.assertWritable(collection, true);
     if (this.useTauri) {
       const coll = this.memoryStore.get(collection);
       const removed = coll?.get(id);
@@ -1088,7 +1442,7 @@ export class XDBService {
         coll!.delete(id);
         this.emit({ type: 'delete', collection, record: removed });
       }
-      tauriInvoke<boolean>('delete_record', this.tauriArgs({ id })).catch((err) => {
+      this.native<boolean>('delete_record', { id }).catch((err) => {
         console.error('[XDB] Failed to delete record in Tauri:', err);
       });
       return;
@@ -1228,12 +1582,13 @@ export class XDBService {
    * Clear all data in a collection
    */
   clear(collection: string): void {
+    this.assertWritable(collection, true);
     if (this.useTauri) {
       this.memoryStore.delete(collection);
       this.knownCollections.delete(collection);
       this.emit({ type: 'refresh', collection, records: [] });
       // Persist to SQLite backend
-      tauriInvoke<boolean>('clear_collection', this.tauriArgs({ collection })).catch((err) => {
+      this.native<boolean>('clear_collection', { collection }).catch((err) => {
         console.error('[XDB] Failed to clear collection in Tauri:', err);
       });
       return;
@@ -1268,7 +1623,7 @@ export class XDBService {
       try {
         if (collection) {
           // Sync specific collection
-          await tauriInvoke<boolean>('request_sync', this.tauriArgs({ collection }));
+          await this.native<boolean>('request_sync', { collection });
           console.log(`[XDB] Requested P2P sync for collection: ${collection}`);
         } else {
           // Sync all collections in batches to avoid flooding IPC/network
@@ -1276,7 +1631,7 @@ export class XDBService {
           const BATCH_SIZE = 5;
           for (let i = 0; i < collections.length; i += BATCH_SIZE) {
             const batch = collections.slice(i, i + BATCH_SIZE);
-            await Promise.all(batch.map((col) => tauriInvoke<boolean>('request_sync', this.tauriArgs({ collection: col }))));
+            await Promise.all(batch.map((col) => this.native<boolean>('request_sync', { collection: col })));
           }
           console.log(`[XDB] Requested P2P sync for all ${collections.length} collections`);
         }
@@ -1297,22 +1652,39 @@ export class XDBService {
   /**
    * Get network status (connected peers, peer ID, etc.)
    */
-  async getNetworkStatus(): Promise<{
-    peer_id: string;
-    connected_peers: string[];
-    is_running: boolean;
-  }> {
+  async getNetworkStatus(): Promise<XDBNetworkStatus> {
     if (this.useTauri) {
       try {
-        return await tauriInvoke('get_network_status', this.tauriArgs());
+        return await this.native('get_network_status');
       } catch (err) {
         console.error('[XDB] Failed to get network status:', err);
-        return { peer_id: '', connected_peers: [], is_running: false };
+        return { ...OFFLINE_NETWORK_STATUS };
       }
     }
 
     // Not available in localStorage mode
-    return { peer_id: '', connected_peers: [], is_running: false };
+    return { ...OFFLINE_NETWORK_STATUS };
+  }
+
+  /** The persisted native networking choice; local-only when not native (audit XD-01). */
+  async getNetworkSettings(): Promise<XDBNetworkSettings> {
+    if (!this.useTauri) return { enabled: false, discovery: false, listen: false };
+    return tauriInvoke<XDBNetworkSettings>('get_network_settings');
+  }
+
+  /**
+   * Explicitly enable or disable native peer networking (persisted). Enabling
+   * is a trusted-LAN development feature; it never happens implicitly.
+   */
+  async setNetworkEnabled(enabled: boolean, options: { discovery?: boolean; listen?: boolean } = {}): Promise<XDBNetworkSettings> {
+    if (!this.useTauri) throw new Error('Native peer networking is only available in the desktop runtime.');
+    return tauriInvoke<XDBNetworkSettings>('set_network_enabled', { enabled, ...options });
+  }
+
+  /** Lift the pause a local-scope restore set, then reconcile (audit XD-03). */
+  async resumeSync(): Promise<boolean> {
+    if (!this.useTauri) return false;
+    return tauriInvoke<boolean>('resume_sync');
   }
 
   /**
@@ -1424,14 +1796,20 @@ export class XDBService {
     let importedCount = 0;
     let skippedCount = 0;
     const importedCollections: string[] = [];
+    const batches: Array<{ collection: string; replace: boolean; records: XDBRecord[] }> = [];
+    const replace = !merge || clearFirst;
 
     for (const [collection, incoming] of Object.entries(data.collections)) {
       if (!Array.isArray(incoming)) {
         skippedCount++;
         continue;
       }
+      // A replacement of a collection this service has not loaded would drop
+      // records it never saw; a replacement of a corrupt one would destroy
+      // the only copy (audit SN-02).
+      this.assertWritable(collection, replace);
 
-      if (clearFirst) {
+      if (clearFirst && !this.useTauri) {
         this.clear(collection);
       }
 
@@ -1441,12 +1819,14 @@ export class XDBService {
           index.set(existing.id, existing);
         }
       }
+      const accepted: XDBRecord[] = [];
       for (const record of incoming as unknown[]) {
         if (!this.isImportableRecord(record)) {
           skippedCount++;
           continue;
         }
         index.set(record.id, record);
+        accepted.push(record);
         importedCount++;
       }
 
@@ -1454,32 +1834,57 @@ export class XDBService {
       // or the memory cache) but does not notify — the refresh below does.
       this.setCollectionData(collection, [...index.values()]);
       importedCollections.push(collection);
-
-      // Persist imported records to Tauri backend
-      if (this.useTauri) {
-        // A replace has to reach SQLite as a delete: setCollectionData only
-        // swapped the memory Map, and upsert_record never removes a row, so
-        // without this every row the import left out came back on the next
-        // hydration. clearFirst has already been through clear(), which sends
-        // its own clear_collection. The invokes go out in order, clear before
-        // upserts, as restore() has always relied on.
-        if (!merge && !clearFirst) {
-          tauriInvoke<boolean>('clear_collection', this.tauriArgs({ collection })).catch((err) => {
-            console.error('[XDB] Failed to clear collection in Tauri:', err);
-          });
-        }
-        const allRecords = this.getAllCollectionData(collection);
-        for (const record of allRecords) {
-          tauriInvoke<XDBRecord>('upsert_record', this.tauriArgs({ record })).catch((err) => {
-            console.error('[XDB] Failed to persist imported record in Tauri:', err);
-          });
-        }
-      }
-
+      batches.push({ collection, replace, records: replace ? [...index.values()] : accepted });
       this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
     }
 
-    return { imported: importedCount, skipped: skippedCount, collections: importedCollections };
+    // Durable completion (audit SN-01): ONE native transaction for the whole
+    // import, acknowledged only after SQLite committed it. The cache above is
+    // optimistic; on failure it is reloaded from the backend so cache and
+    // disk agree, and the promise rejects instead of logging.
+    let persisted: Promise<XDBPersistResult>;
+    if (this.useTauri) {
+      persisted = batches.length === 0
+        ? Promise.resolve({ backend: 'native', collections: [], imported: 0, tombstoned: 0 })
+        : this.native<{ imported: number; tombstoned: number; collections: Array<{ collection: string }> }>('import_records', { batches })
+          .then(summary => ({
+            backend: 'native' as const,
+            collections: summary.collections.map(c => c.collection),
+            imported: summary.imported,
+            tombstoned: summary.tombstoned,
+          }))
+          .catch(async (err: unknown) => {
+            console.error('[XDB] Native import was not committed; reloading the affected collections:', err);
+            for (const collection of importedCollections) {
+              try { await this.getAllAsync(collection); } catch { /* the hydration issue is already recorded */ }
+              this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection) });
+            }
+            throw err instanceof Error ? err : new Error(String(err));
+          });
+    } else {
+      persisted = Promise.resolve({
+        backend: this.persistent ? 'storage' : 'memory',
+        collections: importedCollections,
+        imported: importedCount,
+        tombstoned: 0,
+      });
+    }
+
+    return { imported: importedCount, skipped: skippedCount, collections: importedCollections, persisted };
+  }
+
+  /**
+   * Import and wait for the durable completion signal. Rejects when the
+   * native transaction did not commit (the cache is reloaded first) or when a
+   * collection could not be written.
+   */
+  async importAsync(
+    data: XDBExportData,
+    options: { merge?: boolean; clearFirst?: boolean } = {}
+  ): Promise<XDBDurableImportResult> {
+    const result = this.import(data, options);
+    const persisted = await result.persisted;
+    return { ...result, persisted };
   }
 
   /**
@@ -1501,10 +1906,27 @@ export class XDBService {
   }
 
   /**
-   * Restore from a backup
+   * Restore from a backup (replacing every listed collection). The result of
+   * the durable write is available through `restoreAsync`; this form keeps
+   * the historical void signature for existing callers.
    */
   restore(backup: XDBExportData): void {
     this.import(backup, { merge: false, clearFirst: true });
+  }
+
+  /**
+   * Restore and wait for the durable completion signal. Skipped rows are
+   * reported prominently: a restore is not best-effort, so a caller must
+   * accept a partial result explicitly.
+   */
+  async restoreAsync(backup: XDBExportData, options: { acceptPartial?: boolean } = {}): Promise<XDBDurableImportResult> {
+    const result = this.import(backup, { merge: false, clearFirst: true });
+    if (result.skipped > 0 && !options.acceptPartial) {
+      await result.persisted.catch(() => {});
+      throw new Error(`${result.skipped} row(s) or collection(s) in the backup were not importable; pass acceptPartial to restore the rest anyway.`);
+    }
+    const persisted = await result.persisted;
+    return { ...result, persisted };
   }
 }
 
@@ -1526,6 +1948,12 @@ export interface XDBImportResult {
   imported: number;
   skipped: number;
   collections: string[];
+  /**
+   * Durable completion (audit SN-01): resolves once the import reached its
+   * backend (one native SQLite transaction, or browser storage), rejects when
+   * it did not. Callers that only need the optimistic result may ignore it.
+   */
+  persisted: Promise<XDBPersistResult>;
 }
 
 // ============================================================================
@@ -1564,6 +1992,21 @@ export function _setSyncModuleRef(mod: typeof _syncModuleRef): void {
 /** Get sync status of all active rooms. Returns empty array if sync module not loaded. */
 export function getSyncStatuses(): { connected: boolean; peers: number; room: string; peerId: string }[] {
   return _syncModuleRef?.getAllSyncStatus() ?? [];
+}
+
+/**
+ * Live storage status of an XDB instance (audit SN-02): lets an app say
+ * "memory only", "damaged collection" or "not loaded" instead of "saved".
+ */
+export function useXDBStorageStatus(xdb?: XDBService): XDBStorageStatus {
+  const scoped = useContext(AppScopeContext)?.xdb;
+  const service = xdb ?? scoped ?? getXDB();
+  const [status, setStatus] = useState<XDBStorageStatus>(() => service.getStorageStatus());
+  useEffect(() => {
+    setStatus(service.getStorageStatus());
+    return service.subscribeStorage(setStatus);
+  }, [service]);
+  return status;
 }
 
 // Per-app XDB instances
@@ -1666,8 +2109,11 @@ export function getXDB(appId?: string): XDBService {
     if (key.startsWith(EPHEMERAL_XDB_PREFIX)) {
       throw new Error('The preview database scope has been disposed.');
     }
-    if (resolved) migrateLegacyKeys(resolved);
+    const migration = resolved ? migrateLegacyKeys(resolved) : 'none';
     instance = new XDBService(undefined, prefixFor(resolved), resolved);
+    if (migration === 'incomplete') {
+      instance._noteIssue({ kind: 'migration-incomplete', message: 'Older records could not all be copied into this app\'s storage (out of space). The original records were kept; free storage and reopen the app to finish.' });
+    }
     xdbInstances.set(key, instance);
   }
   return instance;
@@ -1683,12 +2129,22 @@ export function getXDB(appId?: string): XDBService {
  * Copying preserves exactly the access each app already had while making all
  * subsequent writes private.
  */
-function migrateLegacyKeys(appId: string): void {
+/**
+ * The old keys are never deleted, the copy is VERIFIED before the namespace is
+ * marked migrated, and an interrupted run (quota) leaves no marker so the next
+ * open restarts it (audit SN-02).
+ *
+ * @returns 'none' (nothing to migrate), 'done' (verified) or 'incomplete'
+ */
+function migrateLegacyKeys(appId: string): 'none' | 'done' | 'incomplete' {
   let storage: Storage;
   try {
-    if (typeof localStorage === 'undefined') return;
+    if (typeof localStorage === 'undefined') return 'none';
     storage = localStorage;
-  } catch { return; }
+  } catch { return 'none'; }
+
+  const marker = `xdb-meta:${appId}:legacy-migration`;
+  if (storage.getItem(marker) === 'done') return 'done';
 
   const legacy: Array<[string, string]> = [];
   for (let i = 0; i < storage.length; i++) {
@@ -1699,19 +2155,28 @@ function migrateLegacyKeys(appId: string): void {
     const value = storage.getItem(key);
     if (value) legacy.push([key.slice(4), value]);
   }
-  if (legacy.length === 0) return;
+  if (legacy.length === 0) return 'none';
 
+  let complete = true;
   for (const [collection, value] of legacy) {
     const target = `xdb:${appId}:${collection}`;
     if (storage.getItem(target) === null) {
       try {
         storage.setItem(target, value);
       } catch {
-        // Out of quota. Better to start this app empty than to fail its load.
+        // Out of quota: stop, keep the legacy keys, and report it. The next
+        // open resumes from here because no marker was written.
+        complete = false;
         break;
       }
     }
+    if (storage.getItem(target) !== value && storage.getItem(target) === null) complete = false;
   }
+  if (complete) {
+    try { storage.setItem(marker, 'done'); } catch { /* the copy is verified; the marker only saves a re-check */ }
+    return 'done';
+  }
+  return 'incomplete';
 }
 
 /**

@@ -577,7 +577,20 @@ function App() {
   });
 
   const saveCurrentProject = useCallback(async () => {
-    if (requestHostedSave()) return;
+    // Hosted in FormLogic (audit SN-04): a save is only "handled" once the
+    // parent confirms it took the draft. A closed channel keeps the edits here
+    // and says so — it never silently falls back to a local file download.
+    const hosted = requestHostedSave();
+    if (hosted.handled) {
+      const result = await hosted.completion;
+      if (result.ok) toast.success('Returned to your FormLogic draft. Review and publish it there.');
+      else toast.error(result.error ?? 'FormLogic could not take the draft. Your changes are still here.');
+      return;
+    }
+    if (hosted.reason === 'disconnected') {
+      toast.error('FormLogic is not connected. Your changes stay in the editor; try again in a moment.');
+      return;
+    }
     const outcome = await saveProject({ view, existingHandle: fileHandleRef.current });
     if (outcome.kind === 'cancelled') return;
     if (outcome.kind === 'failed') {
@@ -850,7 +863,7 @@ function App() {
             <h1 style={{ fontSize: 24, marginBottom: 12 }}>Your app data lives in FormLogic</h1>
             <p>Use the app’s Data &amp; forms section to browse records. For native apps, open Native app hosting → Backend to change SQLite tables with a numbered migration.</p>
             <p style={{ marginTop: 12 }}>Builder’s standalone database designer creates local XDB collections. Those are separate from your hosted database, so edit the hosted schema in FormLogic.</p>
-            <button type="button" onClick={() => requestHostedSave()} style={{ ...styles.collapsedLogicBtn, minHeight: 44, marginTop: 24 }}>Review draft in FormLogic</button>
+            <button type="button" onClick={() => void saveCurrentProject()} style={{ ...styles.collapsedLogicBtn, minHeight: 44, marginTop: 24 }}>Review draft in FormLogic</button>
           </section>
         );
         return (

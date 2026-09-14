@@ -2,6 +2,31 @@
 export const isHostedEditor = () => typeof window !== 'undefined' && window.parent !== window && new URLSearchParams(window.location.search).get('formlogicEditor') === '1';
 let currentPort: MessagePort | null = null;
 const hostRequests = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
+const pendingSaves = new Map<string, { resolve(value: HostedSaveResult): void; timer: ReturnType<typeof setTimeout> }>();
+/** How long FormLogic gets to confirm that it took the draft (audit SN-04). */
+const SAVE_ACK_TIMEOUT_MS = 60000;
+
+/**
+ * What FormLogic did with a save request. `state: 'draft'` means the parent
+ * pulled the current project into the owner's DRAFT; publishing still happens
+ * in FormLogic through its version-checked hosting APIs, so this is never a
+ * claim that the app is live.
+ */
+export interface HostedSaveResult { ok: boolean; state: 'draft' | 'error'; error?: string }
+
+/**
+ * The truthful outcome of asking the host to save (audit SN-04):
+ *  - not hosted at all → the caller keeps its own local save path;
+ *  - hosted but the parent channel is not open (before the handshake, after
+ *    teardown or a parent reload) → NOT handled; the caller must keep the
+ *    unsaved edits and tell the user, never fall back to an unrelated export;
+ *  - handled → a request id plus a promise that settles only when FormLogic
+ *    acknowledges (or the acknowledgement times out).
+ */
+export type HostedSaveOutcome =
+  | { handled: false; reason: 'not-hosted' | 'disconnected' }
+  | { handled: true; id: string; completion: Promise<HostedSaveResult> };
+
 export function requestHostedAI(messages: { role: string; content: string }[], signal?: AbortSignal): Promise<string> {
   if (!currentPort) return Promise.reject(new Error('FormLogic is not connected.'));
   const id = crypto.randomUUID();
@@ -15,10 +40,29 @@ export function requestHostedAI(messages: { role: string; content: string }[], s
     currentPort!.postMessage({ kind: 'ai-request', id, messages });
   });
 }
-export function requestHostedSave(): boolean {
-  if (!isHostedEditor()) return false;
-  currentPort?.postMessage({ kind: 'save-requested' });
-  return true;
+
+export function requestHostedSave(): HostedSaveOutcome {
+  if (!isHostedEditor()) return { handled: false, reason: 'not-hosted' };
+  const port = currentPort;
+  if (!port) return { handled: false, reason: 'disconnected' };
+  const id = crypto.randomUUID();
+  const completion = new Promise<HostedSaveResult>(resolve => {
+    const timer = setTimeout(() => {
+      pendingSaves.delete(id);
+      resolve({ ok: false, state: 'error', error: 'FormLogic did not confirm the save. Your changes are still in the editor; try again.' });
+    }, SAVE_ACK_TIMEOUT_MS);
+    pendingSaves.set(id, { resolve, timer });
+  });
+  port.postMessage({ kind: 'save-requested', id });
+  return { handled: true, id, completion };
+}
+
+/** Number of saves FormLogic has not acknowledged yet (for teardown warnings). */
+export function pendingHostedSaves(): number { return pendingSaves.size; }
+
+function settlePendingSaves(result: HostedSaveResult): void {
+  for (const waiting of pendingSaves.values()) { clearTimeout(waiting.timer); waiting.resolve(result); }
+  pendingSaves.clear();
 }
 
 export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: string): Promise<void>; export(): Promise<Uint8Array> | Uint8Array }): () => void {
@@ -36,6 +80,15 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
       if (data.kind === 'ai-response') {
         const waiting = hostRequests.get(data.id);
         if (data.ok) waiting?.resolve(data.value); else waiting?.reject(new Error(data.error || 'FormLogic AI request failed.'));
+        return;
+      }
+      if (data.kind === 'save-result') {
+        const waiting = pendingSaves.get(data.id);
+        if (!waiting) return;
+        clearTimeout(waiting.timer); pendingSaves.delete(data.id);
+        waiting.resolve(data.ok === true
+          ? { ok: true, state: 'draft' }
+          : { ok: false, state: 'error', error: typeof data.error === 'string' && data.error ? data.error : 'FormLogic could not take the draft.' });
         return;
       }
       const reply = (value: unknown) => { if (!disposed) port?.postMessage({ id: data.id, ok: true, value }); };
@@ -64,5 +117,12 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
   window.addEventListener('message', receive);
   const timer = window.setInterval(ready, 500);
   ready();
-  return () => { disposed = true; window.clearInterval(timer); window.removeEventListener('message', receive); if (currentPort === port) currentPort = null; for (const request of hostRequests.values()) request.reject(new Error('Editor closed.')); hostRequests.clear(); port?.close(); };
+  return () => {
+    disposed = true; window.clearInterval(timer); window.removeEventListener('message', receive);
+    if (currentPort === port) currentPort = null;
+    for (const request of hostRequests.values()) request.reject(new Error('Editor closed.')); hostRequests.clear();
+    // A save the parent never confirmed is NOT saved: say so instead of leaving a promise hanging.
+    settlePendingSaves({ ok: false, state: 'error', error: 'The editor session ended before FormLogic confirmed the save.' });
+    port?.close();
+  };
 }

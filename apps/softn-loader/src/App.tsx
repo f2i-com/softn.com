@@ -9,6 +9,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { registerAllBuiltins, ThemeProvider } from '@softn/components';
 import {
   SoftNWithXDB,
+  XDBStorageNotice,
   readBundleEntries,
   classifyAsset,
   type PermissionConfig,
@@ -20,6 +21,90 @@ import { createBundleAssetResolver } from './bundleAssets';
 import { isSoftnPath, resolveServerConfig, type BundleServerConfig } from './runtimeConfig';
 import { createBundleImportResolver } from './remoteImport';
 import { computeBundleAppId, loadBundleXDBData, processBundleSource } from './bundleRuntime';
+import {
+  approveUpgrade,
+  loadRegistry,
+  recordNewInstallation,
+  resolveInstallation,
+  saveRegistry,
+  shortIdentity,
+  type InstallationRecord,
+} from './installations';
+
+/** The question a changed package asks before it touches any data (audit SN-03). */
+interface InstallationChoice {
+  bundleId: string;
+  name: string;
+  version?: string;
+  candidates: InstallationRecord[];
+  resolve: (decision: { kind: 'new' } | { kind: 'upgrade'; dataId: string } | { kind: 'cancel' }) => void;
+}
+
+/** The runtime's own storage for the installation registry; never an app's records. */
+function registryStorage(): { getItem(key: string): string | null; setItem(key: string, value: string): void } {
+  try {
+    if (typeof localStorage !== 'undefined') return localStorage;
+  } catch {
+    // Opaque origin: fall back to a per-session registry (every package opens as new).
+  }
+  const memory = new Map<string, string>();
+  return { getItem: key => memory.get(key) ?? null, setItem: (key, value) => { memory.set(key, value); } };
+}
+
+/**
+ * Resolve the DATA identity for an opened bundle. The digest stays the
+ * integrity identity; a mapped digest reuses its data namespace; an unmapped
+ * digest that repeats an installed name asks the person before anything is
+ * seeded or shown (open as new, or upgrade one installation with a
+ * pre-upgrade backup). Nothing is ever inherited on a name alone.
+ */
+async function resolveDataIdentity(
+  bundleId: string,
+  manifest: { name?: string; version?: string },
+  ask: (choice: Omit<InstallationChoice, 'resolve'>) => Promise<{ kind: 'new' } | { kind: 'upgrade'; dataId: string } | { kind: 'cancel' }>,
+  backup: (dataId: string) => Promise<string | undefined>
+): Promise<string | null> {
+  const storage = registryStorage();
+  const registry = loadRegistry(storage);
+  const resolution = resolveInstallation(registry, bundleId, manifest.name);
+  if (resolution.kind === 'known') return resolution.dataId;
+  if (resolution.kind === 'new') {
+    recordNewInstallation(registry, bundleId, manifest.name, manifest.version);
+    saveRegistry(storage, registry);
+    return bundleId;
+  }
+  const decision = await ask({ bundleId, name: resolution.name, version: manifest.version, candidates: resolution.candidates });
+  if (decision.kind === 'cancel') return null;
+  if (decision.kind === 'new') {
+    recordNewInstallation(registry, bundleId, manifest.name, manifest.version);
+    saveRegistry(storage, registry);
+    return bundleId;
+  }
+  const backupPath = await backup(decision.dataId);
+  approveUpgrade(registry, bundleId, decision.dataId, { manifestName: manifest.name, version: manifest.version, backup: backupPath });
+  saveRegistry(storage, registry);
+  return decision.dataId;
+}
+
+/** Consistent SQLite snapshot of the installation's data before an upgrade touches it. */
+async function backupBeforeUpgrade(dataId: string): Promise<string | undefined> {
+  try {
+    // @ts-expect-error - Tauri invoke
+    const invoke = window.__TAURI__?.core?.invoke as ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | undefined;
+    if (!invoke) return undefined;
+    const dbPath = String(await invoke('get_db_path', { appId: dataId }));
+    const separator = dbPath.includes('\\') ? '\\' : '/';
+    const directory = dbPath.slice(0, dbPath.lastIndexOf(separator));
+    const target = `${directory}${separator}pre-upgrade-${Date.now().toString(36)}.sqlite`;
+    await invoke('export_database', { appId: dataId, path: target });
+    return target;
+  } catch (error) {
+    // A backup failure is reported but does not block: the previous package
+    // still opens the same data (its digest stays mapped).
+    console.error('[SoftN Loader] Could not take a pre-upgrade backup:', error);
+    return undefined;
+  }
+}
 
 // Compile-time constant from Vite define
 declare const __ANDROID__: boolean;
@@ -157,6 +242,7 @@ function App(): React.ReactElement {
   const [logicBasePath, setLogicBasePath] = useState<string | undefined>();
   const [preIncludedLogicPaths, setPreIncludedLogicPaths] = useState<string[]>([]);
   const [permissionConfig, setPermissionConfig] = useState<PermissionConfig | null>(null);
+  const [installationChoice, setInstallationChoice] = useState<InstallationChoice | null>(null);
   const [assetResolver, setAssetResolver] = useState<AppAssetResolver>();
   const [serverConfig, setServerConfig] = useState(() => resolveServerConfig());
 
@@ -385,6 +471,26 @@ function App(): React.ReactElement {
         const resolvedServerConfig = resolveServerConfig(parsedManifest.config?.server);
         setManifest(parsedManifest);
 
+        // Data identity (audit SN-03): the digest is the integrity identity;
+        // the data namespace may be an installation this package upgrades.
+        const dataId = await resolveDataIdentity(
+          resolvedAppId,
+          parsedManifest,
+          choice => new Promise(resolve => {
+            if (!active) { resolve({ kind: 'cancel' }); return; }
+            setInstallationChoice({ ...choice, resolve: decision => { setInstallationChoice(null); resolve(decision); } });
+          }),
+          backupBeforeUpgrade
+        );
+        if (!active) return;
+        if (dataId === null) {
+          // The person cancelled: nothing was seeded or mapped.
+          cleanup();
+          setBundlePath(null);
+          setLoading(false);
+          return;
+        }
+
         // Lock screen orientation if configured (mobile only)
         if (isMobile && parsedManifest.config?.mobile?.orientation) {
           const orient = parsedManifest.config.mobile.orientation;
@@ -402,7 +508,7 @@ function App(): React.ReactElement {
         }
 
         // Load XDB data from bundle (await for Tauri backend)
-        await loadBundleXDBData(textFiles, parsedManifest, resolvedAppId, () => active);
+        await loadBundleXDBData(textFiles, parsedManifest, dataId, () => active);
         if (!active) return;
 
         // Set window icon from bundle (desktop only)
@@ -443,7 +549,7 @@ function App(): React.ReactElement {
         setImportResolver(() => resolver);
         setAssetResolver(() => loadedAssets);
         setServerConfig(resolvedServerConfig);
-        setRuntimeAppId(resolvedAppId);
+        setRuntimeAppId(dataId);
         setLogicBasePath(logicBasePath);
         setPreIncludedLogicPaths(preIncludedLogicPaths);
         setMainSource(source);
@@ -485,10 +591,12 @@ function App(): React.ReactElement {
   };
 
   return <DesktopShell appName={bundlePath ? _manifest?.name : undefined} onHome={goHome} onOpen={openFilePicker} canOpen={isTauri || isMobile}>
+    {installationChoice && <InstallationChoiceDialog choice={installationChoice} />}
     {!bundlePath && !loading ? <DesktopWelcome onOpen={openFilePicker} canOpen={isTauri || isMobile} dragging={isDragOver} error={error} />
       : loading ? <div className="desktop-state" role="status"><Spinner size="lg" /><p>Opening {bundlePath?.split(/[/\\]/).pop() || 'your app'}…</p></div>
       : error ? <div className="desktop-state" role="alert"><h1>We couldn’t open this app</h1><p className="desktop-error">{error.message}</p><p>{bundlePath}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>
       : <ThemeProvider followHost followSystem>
+        <XDBStorageNotice appId={runtimeAppId ?? undefined} />
         <SoftNWithXDB
           key={runtimeAppId ?? undefined}
           source={mainSource}
@@ -513,6 +621,35 @@ function App(): React.ReactElement {
         />
       </ThemeProvider>}
   </DesktopShell>;
+}
+
+/**
+ * "This package is not the one that was installed" (audit SN-03). Shows both
+ * identities and what each choice means, and never defaults to inheriting.
+ */
+function InstallationChoiceDialog({ choice }: { choice: InstallationChoice }) {
+  const [target, setTarget] = useState<string>(choice.candidates[0]?.dataId ?? '');
+  const selected = choice.candidates.find(c => c.dataId === target);
+  return <div className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="installation-choice-title" data-testid="installation-choice">
+    <h1 id="installation-choice-title">Is this a new version of {choice.name || 'this app'}?</h1>
+    <p>The file you opened is a different package from the one installed under this name. Its contents have not been checked by a publisher signature, so only you can say whether it belongs to the same app.</p>
+    <dl className="desktop-identity">
+      <dt>Package you opened</dt><dd><code>{shortIdentity(choice.bundleId)}</code>{choice.version ? ` · version ${choice.version}` : ''}</dd>
+      <dt>Installed data</dt>
+      <dd>
+        {choice.candidates.length > 1
+          ? <select value={target} onChange={event => setTarget(event.target.value)} aria-label="Installation to upgrade">{choice.candidates.map(c => <option key={c.dataId} value={c.dataId}>{c.name} · {shortIdentity(c.dataId)}{c.version ? ` · v${c.version}` : ''} · updated {new Date(c.updatedAt).toLocaleDateString()}</option>)}</select>
+          : <><code>{shortIdentity(target)}</code>{selected?.version ? ` · version ${selected.version}` : ''} · installed {selected ? new Date(selected.createdAt).toLocaleDateString() : ''}</>}
+      </dd>
+    </dl>
+    <p><strong>Upgrade this installation</strong> keeps its saved records: a backup of the database is taken first, the new package&apos;s starting data is only added for records that do not exist yet, and reopening the previous file still reaches the same records if you need to go back. Permissions are not carried over; this package&apos;s own permission list applies.</p>
+    <p><strong>Open as a new app</strong> starts with fresh data and leaves the installed app untouched. Choose this if you do not trust where this file came from: a package that merely repeats the name must not read the installed app&apos;s records.</p>
+    <div className="desktop-actions">
+      <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'new' })}>Open as a new app</button>
+      <button className="desktop-button" disabled={!selected} onClick={() => selected && choice.resolve({ kind: 'upgrade', dataId: selected.dataId })}>Upgrade this installation</button>
+      <button className="desktop-button" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
+    </div>
+  </div>;
 }
 
 export default App;

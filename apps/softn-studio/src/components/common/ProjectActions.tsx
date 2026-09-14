@@ -99,7 +99,20 @@ export function useProjectActions(): ProjectActions {
    */
   const handOff = useCallback(
     async (to: HandoffDestination) => {
-      if (requestHostedSave()) return;
+      // Hosted in FormLogic (audit SN-04): only an acknowledged draft counts as
+      // handled; a closed channel keeps the project here and is reported.
+      const hosted = requestHostedSave();
+      if (hosted.handled) {
+        const result = await hosted.completion;
+        useWorkspaceStore.getState().addConsoleOutput(result.ok
+          ? 'Returned to your FormLogic draft. Review and publish it there.'
+          : (result.error ?? 'FormLogic could not take the draft. Your project is still here.'));
+        return;
+      }
+      if (hosted.reason === 'disconnected') {
+        useWorkspaceStore.getState().addConsoleOutput('FormLogic is not connected. Your project stays in Studio; try again in a moment.');
+        return;
+      }
       if (!hasFiles || refused || pending.current || activeScope.current !== scope) return;
       const request = {};
       pending.current = request;
