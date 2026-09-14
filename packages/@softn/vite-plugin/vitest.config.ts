@@ -1,7 +1,7 @@
-import { defineConfig } from 'vitest/config';
+import { defineWorkspaceTest } from '../../../vitest.base.mjs';
 import { fileURLToPath } from 'node:url';
 
-export default defineConfig({
+export default defineWorkspaceTest({
   resolve: {
     // Exercise the parser source directly. Importing the workspace package's
     // dist output makes tests race `tsup --clean` during parallel builds.
@@ -9,8 +9,5 @@ export default defineConfig({
       '@softn/core': fileURLToPath(new URL('../core/src/parser/index.ts', import.meta.url)),
     },
   },
-  test: {
-    environment: 'node',
-    include: ['test/**/*.test.ts'],
-  },
+  test: { include: ['test/**/*.test.ts'] },
 });

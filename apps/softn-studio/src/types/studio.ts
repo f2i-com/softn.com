@@ -7,8 +7,6 @@ export type VisualStyle = 'clean' | 'bold' | 'minimal' | 'playful' | 'dark';
 /** BYOK provider IDs */
 export type ProviderType = 'anthropic' | 'openai' | 'custom';
 
-/** Agent roles */
-export type AgentRole = 'architect' | 'builder' | 'repair' | 'vision';
 
 /** Agent loop states */
 export type AgentState =

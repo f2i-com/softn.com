@@ -132,7 +132,7 @@ export function identityOf(record: XdbRecordEnvelope): RecordIdentity {
  * Whether two JSON values are the same value. Key order is not a difference:
  * the Data view rebuilds a row object on every keystroke.
  */
-export function sameJson(a: unknown, b: unknown): boolean {
+function sameJson(a: unknown, b: unknown): boolean {
   return canonical(a) === canonical(b);
 }
 

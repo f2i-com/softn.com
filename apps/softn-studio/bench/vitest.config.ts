@@ -1,16 +1,12 @@
-import { defineConfig } from 'vitest/config';
+import { defineWorkspaceTest } from '../../../vitest.base.mjs';
 
 /**
  * The benchmark's own runner config. The main config includes only
  * test/**, so `npm test` never runs this; `npm run bench` does.
  */
-export default defineConfig({
+export default defineWorkspaceTest({
   test: {
-    environment: 'node',
     include: ['bench/**/*.bench.ts'],
     testTimeout: 600_000,
-  },
-  resolve: {
-    dedupe: ['react', 'react-dom'],
   },
 });

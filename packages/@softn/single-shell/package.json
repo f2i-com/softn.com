@@ -1,0 +1,41 @@
+{
+  "name": "@softn/single-shell",
+  "version": "0.0.12",
+  "private": true,
+  "description": "The single-app shell both standalone hosts render: one bundle, its permission bar, the directory's frame, and the load pipeline the archive-served (apps/softn-single) and PHP-served (apps/softn-single-private) variants share.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./SingleApp": "./src/SingleApp.tsx",
+    "./assemble": "./src/assemble.ts",
+    "./config": "./src/config.ts",
+    "./favicon": "./src/favicon.ts",
+    "./load": "./src/load.ts",
+    "./style.css": "./src/style.css",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@softn/brand": "*",
+    "@softn/components": "*",
+    "@softn/core": "*",
+    "@softn/web": "*"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "fflate": "^0.8.2",
+    "jsdom": "^24.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.11"
+  }
+}

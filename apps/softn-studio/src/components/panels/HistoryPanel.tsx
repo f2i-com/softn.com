@@ -10,7 +10,7 @@ import type { VFSEvent } from '../../types/studio';
  * three files was three rows, and "Undo Last" — which already undid the
  * whole unit — looked as if it would undo one of them.
  */
-export interface HistoryUnit {
+interface HistoryUnit {
   /** The transaction id, or a synthetic key for an event recorded without one. */
   key: string;
   transactionId: string | undefined;

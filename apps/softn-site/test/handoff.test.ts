@@ -10,7 +10,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { installFakeIndexedDB, type FakeIndexedDB } from '../../../packages/@softn/core/test/helpers/fake-indexeddb';
+import { installFakeIndexedDB, type FakeIndexedDB } from '@softn/test-utils/fake-indexeddb';
 import { handoffUrl, stageBundleHandoff, HANDOFF_DB as CORE_DB, HANDOFF_STORE as CORE_STORE, HANDOFF_PARAM as CORE_PARAM, HANDOFF_TTL_MS as CORE_TTL } from '@softn/bundle-format/handoff';
 import { HANDOFF_DB, HANDOFF_PARAM, HANDOFF_STORE, HANDOFF_TTL_MS, handoffIdFrom, openedForHandoff, resetHandoffClaims, takeBundleHandoff } from '../src/lib/handoff';
 import { isOwnedPath } from '../src/lib/router';

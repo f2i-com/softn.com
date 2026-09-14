@@ -4,20 +4,21 @@ import { SoftNWithXDB, inspectDeclaration, type Capability, type PermissionConfi
 // keeping Scene3D out of this shell would then rest on the bundler
 // tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
 import { ThemeProvider } from '@softn/components/theme';
-import { createImportResolver, withheldPermissions } from '../../softn-web/src/lib/bundleProcessor';
-import type { AssetResolver } from '../../softn-web/src/lib/bundleProcessor';
+import { createImportResolver, withheldPermissions } from '@softn/web/src/lib/bundleProcessor';
+import type { AssetResolver } from '@softn/web/src/lib/bundleProcessor';
 import { loadApplication, type ConfigSource, type LoadedApplication } from './load';
 import type { DirectoryConfig } from './config';
 import { installFavicon } from './favicon';
 // The slim bar the runtime draws over every app, for the pages a directory
 // serves through this shell; drawn from the shared tokens, which come along.
-import { FrameBar } from '../../softn-web/src/components/FrameBar';
+import { FrameBar } from '@softn/web/src/components/FrameBar';
 import '@softn/brand/tokens.css';
 /**
  * What `Application` needs of a loaded app: the slice of `LoadedApplication`
  * it reads, so a host that produces its app some other way — the PHP-served
- * runtime in apps/softn-single-php-serve fetches entries instead of an
+ * runtime in apps/softn-single-private fetches entries instead of an
  * archive — can render the same shell without pretending to have an archive.
+ * Both hosts build it through `assembleApplication` (assemble.ts).
  */
 export interface RunnableApplication {
   config: {

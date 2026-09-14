@@ -63,7 +63,6 @@ export interface CanvasBlock {
 
 /** `componentType` values that are control-flow blocks rather than components. */
 export const BLOCK_COMPONENT_TYPES = ['#if', '#elseif', '#else', '#each', '#empty'] as const;
-export type BlockComponentType = (typeof BLOCK_COMPONENT_TYPES)[number];
 
 /**
  * Whether a .ui file's visual model can be written back without losing

@@ -13,13 +13,8 @@
  * block's header is, and what may be dropped where.
  */
 
-import { BLOCK_COMPONENT_TYPES, type CanvasBlock, type CanvasElement, type ComponentMeta } from '../types/builder';
+import type { CanvasBlock, CanvasElement, ComponentMeta } from '../types/builder';
 import { getComponentMeta } from './componentRegistry';
-
-/** Whether `componentType` is a control-flow block rather than a component. */
-export function isBlockType(componentType: string): boolean {
-  return (BLOCK_COMPONENT_TYPES as readonly string[]).includes(componentType);
-}
 
 /**
  * Whether `componentType` continues another block — `#elseif` and `#else`

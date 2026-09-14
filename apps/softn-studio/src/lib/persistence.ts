@@ -38,7 +38,7 @@ import { normalizeProjectPath } from './projectImport';
  * leaves the old snapshot exactly where it was for the next attempt.
  */
 
-export const STORAGE_KEYS = {
+const STORAGE_KEYS = {
   /** Legacy single-slot keys, read for migration and then removed. */
   workspace: 'softn.studio.workspace.v1',
   ai: 'softn.studio.ai.v1',
@@ -50,7 +50,7 @@ export const STORAGE_KEYS = {
 } as const;
 
 export const STUDIO_DB = 'softn-studio';
-export const STUDIO_DB_VERSION = 1;
+const STUDIO_DB_VERSION = 1;
 export const PROJECTS_STORE = 'projects';
 export const PROJECT_SCHEMA_VERSION = 1;
 
@@ -385,7 +385,7 @@ function isPersistedSession(value: unknown): value is PersistedSession {
   );
 }
 
-export function isProjectRecord(value: unknown): value is ProjectRecord {
+function isProjectRecord(value: unknown): value is ProjectRecord {
   return (
     isRecord(value) &&
     typeof value.projectId === 'string' &&
@@ -433,7 +433,7 @@ function readItem(key: string): string | null {
 }
 
 /** Why a storage operation failed, in the terms the UI uses. */
-export function describeStorageFailure(error: unknown): { reason: SaveFailureReason; message: string } {
+function describeStorageFailure(error: unknown): { reason: SaveFailureReason; message: string } {
   const name = error instanceof Error ? error.name : '';
   const text = error instanceof Error ? error.message : String(error);
   if (name === 'QuotaExceededError' || /quota/i.test(name + ' ' + text)) {

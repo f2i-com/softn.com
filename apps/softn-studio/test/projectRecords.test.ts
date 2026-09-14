@@ -19,7 +19,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { installFakeIndexedDB, type FakeIndexedDB } from '../../../packages/@softn/core/test/helpers/fake-indexeddb';
+import { installFakeIndexedDB, type FakeIndexedDB } from '@softn/test-utils/fake-indexeddb';
 import {
   deleteProjectRecord,
   listProjectSummaries,

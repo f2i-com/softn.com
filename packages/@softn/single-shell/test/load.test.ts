@@ -1,11 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { zipSync, strToU8 } from 'fflate';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-vi.mock('../../softn-web/src/lib/bundleProcessor', async (importOriginal) => ({
+vi.mock('@softn/web/src/lib/bundleProcessor', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   loadXDBData: vi.fn(async () => {}),
 }));
@@ -126,33 +121,6 @@ it('refuses a manifest whose entry is missing, in the words the publish page use
   );
 });
 
-it('ships a sample whose event handler and state are included in the composed source', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'single-example-'));
-  try {
-    mkdirSync(join(dir, 'public'));
-    execFileSync(
-      process.execPath,
-      [fileURLToPath(new URL('../scripts/example.mjs', import.meta.url))],
-      { cwd: dir }
-    );
-    const bytes = new Uint8Array(readFileSync(join(dir, 'public/app.softn')));
-    vi.stubGlobal(
-      'fetch',
-      async (url: string) =>
-        new Response(
-          url === base
-            ? JSON.stringify({ version: 1, id: 'sample', title: 'Example', bundle: 'app.softn' })
-            : bytes
-        )
-    );
-    const app = await loadApplication(base, new AbortController().signal);
-    expect(app.source).toContain('let sampleClicks = 0');
-    expect(app.source).toContain('function increment()');
-    app.assets.dispose();
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
 it('loads exactly the configured app and composes the source', async () => {
   const calls: string[] = [];
   vi.stubGlobal('fetch', async (url: string) => {

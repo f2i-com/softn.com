@@ -107,8 +107,8 @@ function buildFileTree(files: Map<string, VFSFile>): string {
   return paths.map((p) => `  ${p}`).join('\n');
 }
 
-export const MAX_CHARS_PER_FILE = 6000;
-export const CONTEXT_CHAR_BUDGET = 80000;
+const MAX_CHARS_PER_FILE = 6000;
+const CONTEXT_CHAR_BUDGET = 80000;
 
 /**
  * The project's text files for the prompt, within a per-file and an overall
@@ -157,10 +157,6 @@ export function buildFileContents(
   }
 
   return { text: parts.length > 0 ? parts.join('\n\n') : '(no text files)', supplied };
-}
-
-export function buildSystemPrompt(complete: ReadonlySet<string> = new Set()): string {
-  return buildSystemPromptWithRecord(complete).system;
 }
 
 /**
@@ -628,7 +624,7 @@ interface ActiveAgentTurn {
 let activeAgentTurn: ActiveAgentTurn | null = null;
 
 /** How many times one turn may answer a `<softn-read>` before it has to stop asking. */
-export const MAX_READ_ROUNDS = 3;
+const MAX_READ_ROUNDS = 3;
 
 export function abortAgentTurn(): void {
   const turn = activeAgentTurn;
@@ -639,7 +635,7 @@ export function abortAgentTurn(): void {
 }
 
 /** A rough token count for the budget check: four characters per token, rounded up. */
-export function estimateTokens(text: string): number {
+function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 

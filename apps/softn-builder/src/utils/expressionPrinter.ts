@@ -332,7 +332,7 @@ export interface PrintedExpression {
  * core parser itself substitutes this identifier for anything it cannot
  * read, so it is the one value that is never mistaken for an author's own.
  */
-export const UNSUPPORTED_EXPRESSION_PLACEHOLDER = 'undefined';
+const UNSUPPORTED_EXPRESSION_PLACEHOLDER = 'undefined';
 
 /**
  * Print without throwing. An unsupported node yields the placeholder and a

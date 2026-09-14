@@ -19,11 +19,11 @@ import { exportCurrentProject } from './ProjectActions';
  * Browser storage is not a backup, saved or not. The wording never says
  * "safe"; it says where the project is.
  */
-export function useSaveStatus(): SaveStatus {
+function useSaveStatus(): SaveStatus {
   return useSyncExternalStore(subscribeSaveStatus, getSaveStatus, getSaveStatus);
 }
 
-export function describeSaveStatus(status: SaveStatus): { label: string; detail: string | null; tone: 'idle' | 'live' | 'ok' | 'error' } {
+function describeSaveStatus(status: SaveStatus): { label: string; detail: string | null; tone: 'idle' | 'live' | 'ok' | 'error' } {
   switch (status.state) {
     case 'idle':
       return { label: 'Not saved yet', detail: 'Saves to this browser after the first change.', tone: 'idle' };

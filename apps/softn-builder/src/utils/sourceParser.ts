@@ -18,7 +18,6 @@ import type {
   SourceFidelity,
   UIImport,
 } from '../types/builder';
-import { BLOCK_COMPONENT_TYPES } from '../types/builder';
 import { debug } from './debug';
 import { parse as parseSoftN } from '@softn/core';
 import type {
@@ -68,11 +67,6 @@ let conversionReasons: string[] = [];
 
 function generateId(): string {
   return `elem_${Date.now()}_${idCounter++}`;
-}
-
-/** Whether `componentType` names a control-flow block rather than a component. */
-export function isBlockComponentType(componentType: string): boolean {
-  return (BLOCK_COMPONENT_TYPES as readonly string[]).includes(componentType);
 }
 
 /**

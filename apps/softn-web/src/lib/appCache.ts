@@ -566,13 +566,13 @@ function migrateAppStorage(fromAppId: string, toAppId: string): DataTransferResu
 // browser that dies part way, which the journal below is for. What must
 // never happen is a failed import quietly turning into an empty app.
 
-export const APP_DATA_FORMAT = 'softn-app-data';
+const APP_DATA_FORMAT = 'softn-app-data';
 /**
  * Format 1 carried the XDB records alone, as `entries`. Format 2 carries both
  * stores, each under its name in `stores`; a format-1 file is read as records
  * with no saved keys, which is exactly what it was.
  */
-export const APP_DATA_VERSION = 2;
+const APP_DATA_VERSION = 2;
 
 export interface AppDataSnapshot {
   format: typeof APP_DATA_FORMAT;
@@ -705,7 +705,7 @@ interface RestoreJournal {
  * here, the same is done at once. Only once every new key is in place does
  * the journal go, and with it the last way to see the old state.
  */
-export function replaceStorageRuns(runs: Array<{ prefix: string; entries: Record<string, string> }>): DataTransferResult {
+function replaceStorageRuns(runs: Array<{ prefix: string; entries: Record<string, string> }>): DataTransferResult {
   const result: DataTransferResult = {
     ok: false,
     copied: 0,
