@@ -40,6 +40,15 @@ export const MIGRATIONS: readonly DeliberateMigration[] = [
     verifiedBy: 'the parsed declaration deep-equals the input declaration',
   },
   {
+    entry: 'ui/*.ui',
+    reason:
+      'Attributes an older Builder wrote under names the components never read are rewritten to what the ' +
+      'components take (propMigrations.ts: Tag colorScheme → variant, LineChart data/xKey/yKey → series, ' +
+      'Table striped → variant="striped", a Loop repeater → a repeated Box, and so on). A file with none of ' +
+      'them is written back byte for byte; each rewrite is listed in the open warnings.',
+    verifiedBy: 'a file without legacy attributes round-trips unchanged, and propMigrations.test.ts pins every rewrite',
+  },
+  {
     entry: 'xdb/*.xdb',
     reason:
       'Re-serialized in the canonical form with two-space indentation: `{ collection, schema, records }`. ' +

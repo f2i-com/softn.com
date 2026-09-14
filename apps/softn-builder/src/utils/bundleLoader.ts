@@ -22,6 +22,7 @@ import { ensureFieldIds } from './schemaFields';
 import { readBuilderSchema } from './builderSchemaMetadata';
 import { parseBundle, type BundleManifest } from './bundleExporter';
 import { parseSource, parseLogicFile } from './sourceParser';
+import { describeMigrations, migrateElements } from './propMigrations';
 import { validateBundle as validateBundleIntegrity, resolveEntry, FILE_GROUPS, type FileGroup } from './bundleValidator';
 import { emptyDeclaration, readPermissionJson, type PermissionDeclaration } from './permissions';
 import { identityOf, parseXdb, type RecordIdentity, type XdbRecordEnvelope } from './xdbFormat';
@@ -140,6 +141,10 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   const loadUi = (found: NonNullable<ReturnType<typeof resolveEntry>>): void => {
     const source = decoder.decode(found.bytes);
     const parsed = parseSource(source);
+    // Props an older Builder wrote under names the components never read
+    // (propMigrations.ts) become what the components take; each rewrite is
+    // reported so the author sees what moved.
+    warnings.push(...describeMigrations(found.path, migrateElements(parsed.elements.values())));
 
     const fileId = generateFileId();
     if (found.path === mainEntry.path) mainFileId = fileId;
