@@ -2,17 +2,16 @@
  * The publish page's side of the hand-off, and its agreement with the
  * editors' side.
  *
- * The site carries its own copy of the protocol rather than depending on
- * the engine, so this test imports the core implementation by path — test
- * only — and checks the two read and write the same records and the same
- * addresses: a bundle staged by core's `stageBundleHandoff` is claimed by
- * the site's `takeBundleHandoff`, and the address core's `handoffUrl`
- * produces is the route the site's router shows the publish form at.
+ * The editors stage through @softn/core, which re-exports the contract in
+ * @softn/bundle-format; the site adapts the same contract for the publish
+ * destination. This checks the adapter reads what the contract writes and
+ * the address the contract produces is the route the site's router shows
+ * the publish form at.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { installFakeIndexedDB, type FakeIndexedDB } from '../../../packages/@softn/core/test/helpers/fake-indexeddb';
-import { handoffUrl, stageBundleHandoff, HANDOFF_DB as CORE_DB, HANDOFF_STORE as CORE_STORE, HANDOFF_PARAM as CORE_PARAM, HANDOFF_TTL_MS as CORE_TTL } from '../../../packages/@softn/core/src/bundle/handoff';
+import { handoffUrl, stageBundleHandoff, HANDOFF_DB as CORE_DB, HANDOFF_STORE as CORE_STORE, HANDOFF_PARAM as CORE_PARAM, HANDOFF_TTL_MS as CORE_TTL } from '@softn/bundle-format/handoff';
 import { HANDOFF_DB, HANDOFF_PARAM, HANDOFF_STORE, HANDOFF_TTL_MS, handoffIdFrom, openedForHandoff, resetHandoffClaims, takeBundleHandoff } from '../src/lib/handoff';
 import { isOwnedPath } from '../src/lib/router';
 

@@ -34,7 +34,9 @@ export default defineConfig({
     'src/bundle/zip.ts',
   ],
   format: ['esm'],
-  dts: true,
+  // The bundle contract (../bundle-format/src) is inlined through relative
+  // shims; the declaration build must be allowed to see one directory up.
+  dts: { compilerOptions: { rootDir: '..' } },
   clean: true,
   sourcemap: true,
   external: ['react', 'react-dom'],
