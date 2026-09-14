@@ -4,14 +4,14 @@ import { SoftNWithXDB, inspectDeclaration, type Capability, type PermissionConfi
 // keeping Scene3D out of this shell would then rest on the bundler
 // tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
 import { ThemeProvider } from '@softn/components/theme';
-import { createImportResolver, withheldPermissions } from '@softn/web/src/lib/bundleProcessor';
-import type { AssetResolver } from '@softn/web/src/lib/bundleProcessor';
+import { createImportResolver, withheldPermissions } from '@softn/runtime-shell/bundleProcessor';
+import type { AssetResolver } from '@softn/runtime-shell/bundleProcessor';
 import { loadApplication, type ConfigSource, type LoadedApplication } from './load';
 import type { DirectoryConfig } from './config';
 import { installFavicon } from './favicon';
 // The slim bar the runtime draws over every app, for the pages a directory
 // serves through this shell; drawn from the shared tokens, which come along.
-import { FrameBar } from '@softn/web/src/components/FrameBar';
+import { FrameBar } from '@softn/runtime-shell/FrameBar';
 import '@softn/brand/tokens.css';
 /**
  * What `Application` needs of a loaded app: the slice of `LoadedApplication`
