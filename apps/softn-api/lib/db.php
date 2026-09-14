@@ -141,13 +141,27 @@ final class Db
         $pdo->exec('PRAGMA busy_timeout=5000');
         return $pdo;
     }
+    /**
+     * Count one use of `$bucket` by `$key` and refuse it past the limit.
+     *
+     * The counters have a lock of their own, held for this read-modify-write
+     * alone. They used to be kept under the catalogue lock, which a request
+     * then held until it ended — through the upload that follows a publish
+     * or a new version. One client trickling a bundle in held every other
+     * request, including every read, for the duration of its upload. Nothing
+     * else touches ratelimits.json, so nothing else waits on it now.
+     */
     public static function rateLimit(string $bucket, string $key): void {
         $limit=Config::get("limits.$bucket");if(!is_array($limit)||count($limit)!==2)return;
-        [$max,$window]=array_map('intval',$limit);Catalog::boot();
-        $path=Config::dataDir().'/ratelimits.json';$rows=Catalog::readJson($path);$now=time();$id=hash('sha256',$bucket.'|'.$key);
-        foreach($rows as $k=>$r)if($now>=$r['expires'])unset($rows[$k]);
-        $r=$rows[$id]??['count'=>0,'expires'=>$now+$window];
-        if($r['count']>=$max)throw new ApiError(429,'Too many requests; try again in a little while.',['retryAfter'=>max(1,$r['expires']-$now)]);
-        $r['count']++;$rows[$id]=$r;Catalog::writeJson($path,$rows);
+        [$max,$window]=array_map('intval',$limit);
+        $dir=Config::dataDir();$lock=fopen("$dir/ratelimits.lock",'c');
+        if(!$lock||!flock($lock,LOCK_EX))throw new ApiError(503,'The directory is busy.');
+        try {
+            $path="$dir/ratelimits.json";$rows=Catalog::readJson($path);$now=time();$id=hash('sha256',$bucket.'|'.$key);
+            foreach($rows as $k=>$r)if($now>=$r['expires'])unset($rows[$k]);
+            $r=$rows[$id]??['count'=>0,'expires'=>$now+$window];
+            if($r['count']>=$max)throw new ApiError(429,'Too many requests; try again in a little while.',['retryAfter'=>max(1,$r['expires']-$now)]);
+            $r['count']++;$rows[$id]=$r;Catalog::writeJson($path,$rows);
+        } finally {flock($lock,LOCK_UN);fclose($lock);}
     }
 }

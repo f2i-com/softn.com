@@ -37,8 +37,12 @@ final class Pages
         $desc = (string) $row['description'];
         $playUrl = Apps::playUrl($row);
         if ($desc === '') $desc = $playUrl === null ? "$name, a SoftN app. Run it in the browser, read its source, remix it." : "$name, a SoftN app. Play it at " . (parse_url($playUrl, PHP_URL_HOST) ?: 'its own site') . '.';
-        $image = "$origin/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
-        $url = "$origin/app/$slug";
+        // With no configured origin the picture is named by its path, which
+        // a browser resolves and a scraper that cannot will ignore; the
+        // canonical address and og:url are left out rather than guessed
+        // from a Host header a request may carry anything in.
+        $image = ($origin ?? '') . "/api/apps/$slug/thumbnail?v=" . (int) ($row['updated_at'] ?? 0);
+        $url = $origin === null ? null : "$origin/app/$slug";
         $e = fn(string $s): string => htmlspecialchars($s, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $html = preg_replace('#<title>.*?</title>#s', '<title>' . $e($title) . '</title>', $html, 1) ?? $html;
         $replace = [
@@ -50,12 +54,18 @@ final class Pages
             'property="og:image:alt"' => "$name on SoftN",
         ];
         foreach ($replace as $attr => $value) {
+            if ($value === null) {
+                $html = preg_replace('#<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*>\s*#s', '', $html, 1) ?? $html;
+                continue;
+            }
             $html = preg_replace('#(<meta\s+[^>]*' . preg_quote($attr, '#') . '[^>]*content=")[^"]*(")#s', '${1}' . $e($value) . '${2}', $html, 1) ?? $html;
         }
         $html = preg_replace('#<meta\s+property="og:image:width"[^>]*>\s*#', '', $html) ?? $html;
         $html = preg_replace('#<meta\s+property="og:image:height"[^>]*>\s*#', '', $html) ?? $html;
         $html = preg_replace('#<meta\s+property="og:type"\s+content="[^"]*"#', '<meta property="og:type" content="article"', $html, 1) ?? $html;
-        $html = preg_replace('#<link\s+rel="canonical"\s+href="[^"]*"#', '<link rel="canonical" href="' . $e($url) . '"', $html, 1) ?? $html;
+        $html = $url === null
+            ? (preg_replace('#<link\s+rel="canonical"[^>]*>\s*#s', '', $html, 1) ?? $html)
+            : (preg_replace('#<link\s+rel="canonical"\s+href="[^"]*"#', '<link rel="canonical" href="' . $e($url) . '"', $html, 1) ?? $html);
         $html = str_replace('</head>', '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n  </head>", $html);
         return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
     }
@@ -133,20 +143,28 @@ final class Pages
         $html = preg_replace('#<title>.*?</title>#s', '<title>' . $e($name) . '</title>', $html, 1) ?? $html;
         // JSON_HEX_TAG has turned every < and > into \u003C and \u003E, so
         // nothing in a name or a description can close this element early.
+        $origin = self::origin();
         $inject = '<meta name="softn:app" content="' . $e($slug) . '" />' . "\n"
-            . '    <link rel="canonical" href="' . $e(self::origin() . "/app/$slug") . '" />' . "\n"
+            . ($origin === null ? '' : '    <link rel="canonical" href="' . $e("$origin/app/$slug") . '" />' . "\n")
             . '    <script type="application/json" id="softn-runtime-config">' . $config . '</script>' . "\n  </head>";
         $html = str_replace('</head>', $inject, $html);
         // The page names the latest version, which the next publish moves.
         return Response::html($html, 200, ['Cache-Control' => 'no-cache']);
     }
 
-    private static function origin(): string
+    /**
+     * The site's own address, from `siteOrigin` in data/config.json, or null
+     * when it is not set. It used to fall back to the request's Host header,
+     * and a request can carry anything in that: on a host that answers for
+     * every name, a forged Host produced share pages whose canonical and
+     * og:url named someone else's domain, which crawlers then cached. Now a
+     * page without a configured origin carries no absolute address at all,
+     * and GET /api/health says so.
+     */
+    public static function origin(): ?string
     {
         $configured = Config::get('siteOrigin');
         if (is_string($configured) && $configured !== '') return rtrim($configured, '/');
-        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
-        return ($https ? 'https' : 'http') . '://' . (is_string($host) ? $host : 'localhost');
+        return null;
     }
 }

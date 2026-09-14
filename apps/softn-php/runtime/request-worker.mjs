@@ -38,13 +38,37 @@ try {
   startupStage='crypto_domains';
   if(!config.cryptoDomains||!['hmac','seal'].every(k=>typeof config.cryptoDomains[k]==='string'&&/^[!-~]{1,128}$/.test(config.cryptoDomains[k]))||config.cryptoDomains.hmac===config.cryptoDomains.seal)throw new Error('Invalid crypto domains');
   startupStage='route_configuration';
-  const routes=manifest.server.routes;
-  if(!Array.isArray(routes)||routes.length>256||routes.some(r=>!/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path)||!['GET','POST','PUT','DELETE'].includes(r.method)||!/^[$A-Z_a-z][$\w]*$/.test(r.handler)||!['read','write'].includes(r.transaction)||!['application','anonymous'].includes(r.authorization)))throw new Error('Unsupported route declaration');
-  if(routes.some(r=>r.upload!==undefined&&(r.upload!=='photo'||!required.capabilities.includes('photos')||r.method!=='POST')))throw new Error('Unsupported upload capability');
-  if(new Set(routes.map(r=>r.method+' '+r.path)).size!==routes.length)throw new Error('Duplicate route');
+  const declared=manifest.server.routes;
+  if(!Array.isArray(declared)||declared.length>256)throw new Error('Unsupported route declaration');
+  // One route schema for every host (apps/softn-rust/src/bundle.rs is the other reader):
+  // `transaction` and `authorization` are optional there, so they are optional here.
+  // A route this host cannot serve — a path outside /api/ (Apache routes only those
+  // to api.php), a method PHP does not route, `hosttoken` authorization when this
+  // host holds no token — is set aside with its reason, answered as such and listed
+  // by /api/meta, rather than a reason to refuse the whole app. A route that says
+  // something this host does not understand is still refused, as before.
+  const unserved=[];
+  const routes=[];
+  for(const r of declared) {
+    if(!r||typeof r!=='object'||typeof r.path!=='string'||typeof r.method!=='string'||!/^[$A-Z_a-z][$\w]*$/.test(r.handler))throw new Error('Unsupported route declaration');
+    // No transaction declared (or the Rust host's `none`): a read for a GET,
+    // a write for anything else, so a handler written against that host's
+    // defaults keeps its writes.
+    const transaction=r.transaction===undefined||r.transaction==='none'?(r.method==='GET'?'read':'write'):r.transaction;
+    const authorization=r.authorization===undefined?'application':r.authorization;
+    if(!['read','write'].includes(transaction)||!['application','anonymous','hosttoken'].includes(authorization))throw new Error('Unsupported route declaration');
+    let reason=null;
+    if(!/^\/api\/[a-zA-Z0-9/_-]+$/.test(r.path))reason='path outside /api/ is not routed to this host';
+    else if(!['GET','POST','PUT','DELETE'].includes(r.method))reason='method not served by this host';
+    else if(authorization==='hosttoken')reason='hosttoken authorization: this host holds no token';
+    if(reason){unserved.push({method:r.method,path:r.path,reason});continue;}
+    routes.push({...r,transaction,authorization});
+  }
+  if(declared.some(r=>r.upload!==undefined&&(r.upload!=='photo'||!required.capabilities.includes('photos')||r.method!=='POST')))throw new Error('Unsupported upload capability');
+  if(new Set(declared.map(r=>r.method+' '+r.path)).size!==declared.length)throw new Error('Duplicate route');
   if(routes.some(r=>r.poll!==undefined&&(typeof r.poll!=='boolean'||r.poll&&(r.method!=='GET'||r.transaction!=='read'))))throw new Error('Invalid polling route');
   startupStage='application_source';
-  validateWasmSource(readFileSync(inside(manifest.server.entry),'utf8'),manifest.config?.app||{},config.development,routes);
+  validateWasmSource(readFileSync(inside(manifest.server.entry),'utf8'),manifest.config?.app||{},config.development,declared);
   startupStage='data_directory';
   const data=realpathSync(join(root,'private/data'));
   if(lstatSync(join(root,'private/data')).isSymbolicLink()||!contained(realpathSync(join(root,'private')),data))throw new Error('Invalid data path');
@@ -84,8 +108,12 @@ try {
   const host=createWasmHost(db,{authorizeRecordEvent,key:Buffer.from(config.keyHex,'hex'),cryptoDomains:config.cryptoDomains,development:config.development,capabilities:required.capabilities,appConfig:manifest.config?.app||{},source:readFileSync(inside(manifest.server.entry),'utf8')});
   let result;
   const route=routes.find(r=>r.path===request.path&&r.method===request.method);
-  if(request.path==='/api/meta'&&request.method==='GET')result={status:200,body:{development:config.development,photos:required.capabilities.includes('photos')&&request.photos===true,version:manifest.version,runtime:'zipp-wasm-on-demand',appId:manifest.id}};
-  else if(!route)result={status:404,body:{error:'Endpoint not found.'}};
+  if(request.path==='/api/meta'&&request.method==='GET')result={status:200,body:{development:config.development,photos:required.capabilities.includes('photos')&&request.photos===true,version:manifest.version,runtime:'zipp-wasm-on-demand',appId:manifest.id,...(unserved.length?{unservedRoutes:unserved}:{})}};
+  else if(!route) {
+    // A declared route that needs the host token is refused as the Rust host refuses it without one; anything else undeclared is not found.
+    const aside=unserved.find(u=>u.path===request.path&&u.method===request.method);
+    result=aside&&aside.reason.startsWith('hosttoken')?{status:401,body:{error:'Authorization required'}}:{status:404,body:{error:'Endpoint not found.'}};
+  }
   else {
     if(!required.capabilities.includes('trusted-client-ip'))delete request.client_ip;
     if(route.upload!=='photo')delete request.upload;

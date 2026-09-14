@@ -165,10 +165,12 @@ fn build_multi_tenant_router(
     // Global routes (not tenant-scoped).
     // Convert to Router<()> via .with_state() so we can merge with tenant
     // sub-routers that also have their own state baked in.
-    let mut app: Router<()> = Router::new()
-        .route("/health", get(health_multi))
-        .route("/tenants", get(list_tenants))
-        .with_state(manager.clone());
+    // The tenant listing names every bundle on the host. That is a convenience
+    // for a development box and nothing a public multi-tenant host should
+    // hand out unauthenticated, so it is served in --dev only.
+    let global: Router<Arc<TenantManager>> = Router::new().route("/health", get(health_multi));
+    let global = if dev_mode { global.route("/tenants", get(list_tenants)) } else { global };
+    let mut app: Router<()> = global.with_state(manager.clone());
 
     // Build a sub-router for each tenant, nested under /<tenant-id>/
     for tenant in manager.tenants() {

@@ -87,7 +87,7 @@ test('a direct client cannot choose its rate-limit identity, and an empty truste
   assert.equal(forged.status, 429, 'a different forwarded address is the same visitor: the socket peer');
   assert.equal((await comment(s, app.slug, null)).status, 429, 'and so is no header at all');
   const health = (await s.api('GET', '/api/health')).json;
-  assert.deepEqual(health.proxy, { trustedProxies: 0, legacyTrustProxy: false });
+  assert.deepEqual(health.proxy, { trustedProxies: 0, legacyTrustProxy: false, forwardedButUntrusted: false });
 });
 
 test('behind configured proxies the chain resolves the intended client, over several hops and IPv6', skip, async () => {
@@ -108,7 +108,7 @@ test('behind configured proxies the chain resolves the intended client, over sev
   assert.equal((await comment(s, app.slug, null)).status, 429, 'the peer, unforwarded, is the same identity');
   assert.equal((await comment(s, app.slug, 'more garbage')).status, 429, 'malformed again: still the peer, no fresh identity from junk');
   const health = (await s.api('GET', '/api/health')).json;
-  assert.deepEqual(health.proxy, { trustedProxies: 3, legacyTrustProxy: false });
+  assert.deepEqual(health.proxy, { trustedProxies: 3, legacyTrustProxy: false, forwardedButUntrusted: false });
 });
 
 test('the legacy trustProxy boolean still means "trust the immediate peer", and is reported as such', skip, async () => {
@@ -119,5 +119,5 @@ test('the legacy trustProxy boolean still means "trust the immediate peer", and 
   assert.equal((await comment(s, app.slug, 'y, 203.0.113.7')).status, 429, 'the rightmost entry is the client, as before');
   assert.equal((await comment(s, app.slug, 'z, 203.0.113.8')).status, 201);
   const health = (await s.api('GET', '/api/health')).json;
-  assert.deepEqual(health.proxy, { trustedProxies: 0, legacyTrustProxy: true });
+  assert.deepEqual(health.proxy, { trustedProxies: 0, legacyTrustProxy: true, forwardedButUntrusted: false });
 });

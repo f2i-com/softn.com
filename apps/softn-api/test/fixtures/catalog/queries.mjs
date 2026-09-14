@@ -30,7 +30,7 @@ foreach (Catalog::all() as $slug => $row) {
   $out['detail'][$slug] = Apps::detail(Apps::row($slug, true));
 }
 $out['all'] = Catalog::all();
-$out['resolve'] = [Apps::resolveSlug('Alpha Harbour'), Apps::resolveSlug('beta-lantern')];
+$out['resolve'] = [Apps::resolveParent('Alpha Harbour'), Apps::resolveSlug('beta-lantern')];
 $out['version'] = [Apps::version('alpha'), Apps::version('alpha', 1)];
 echo json_encode($out, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 `;

@@ -39,10 +39,19 @@ impl NativeFsBridge {
     /// *before* the kernel opens the file — which requires concurrent write
     /// access to the sandbox directory itself (not possible from scripts).
     fn resolve(&self, path: &str) -> Result<PathBuf, String> {
-        // Reject traversal patterns and absolute paths before any filesystem interaction.
-        // Absolute paths would cause join() to ignore the root entirely.
-        if path.contains("..") || std::path::Path::new(path).is_absolute() {
-            return Err("Path traversal or absolute path rejected".into());
+        // Reject traversal and absolute paths before any filesystem interaction.
+        // Absolute (and rooted, and drive-prefixed) paths would make join() ignore
+        // the root. The check is by path component, not by substring: `..` as a
+        // component is a traversal, `notes..v2.txt` is a file name, and the JS
+        // `fs` shim accepts the latter, so this bridge must too.
+        {
+            use std::path::Component;
+            let requested = std::path::Path::new(path);
+            if requested.is_absolute()
+                || requested.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+            {
+                return Err("Path traversal or absolute path rejected".into());
+            }
         }
 
         let joined = self.root_dir.join(path);
@@ -183,5 +192,35 @@ impl FsBridge for NativeFsBridge {
         let resolved = self.resolve(path)?;
         std::fs::create_dir_all(&resolved)
             .map_err(|e| format!("Mkdir error: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NativeFsBridge;
+    use crate::bridges::FsBridge;
+
+    fn sandbox(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("softn-fs-{}-{}-{}", tag, std::process::id(), nanos));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn dots_inside_a_name_are_a_name_and_traversal_is_a_component() {
+        let dir = sandbox("dots");
+        let mut fs = NativeFsBridge::new(dir.clone());
+        fs.write_file("notes..v2.txt", "kept").unwrap();
+        assert_eq!(fs.read_file("notes..v2.txt").unwrap(), "kept");
+        fs.write_file("drafts/..hidden", "also kept").unwrap();
+        assert_eq!(fs.read_file("drafts/..hidden").unwrap(), "also kept");
+        assert!(fs.exists("notes..v2.txt"));
+        for bad in ["../escape.txt", "drafts/../../escape.txt", "a/../b.txt", "..", "/rooted.txt"] {
+            assert!(fs.write_file(bad, "no").is_err(), "{bad} was accepted");
+            assert!(!fs.exists(bad), "{bad} exists");
+        }
+        assert!(!dir.parent().unwrap().join("escape.txt").exists());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

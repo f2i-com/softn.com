@@ -121,7 +121,6 @@ before(async () => {
   // A storage quota small enough to reach in a test. The server fills in the
   // rest of the configuration around it on first use.
   fs.mkdirSync(path.join(root, 'data'), { recursive: true });
-  fs.writeFileSync(path.join(root, 'data/config.json'), JSON.stringify({ storage: { maxDatabaseBytes: STORAGE_QUOTA_BYTES } }));
   // The play shell, as the site build lands it under /play/: the API writes
   // an app's configuration into this document. A chunk file beside it stands
   // for the shell's own scripts, which the router must serve as files.
@@ -150,6 +149,9 @@ before(async () => {
   );
   const port = 5600 + Math.floor(Math.random() * 300);
   base = `http://127.0.0.1:${port}`;
+  // siteOrigin is what a deployed site sets; the share and play pages carry
+  // no absolute address without it (hardening.test.mjs covers that case).
+  fs.writeFileSync(path.join(root, 'data/config.json'), JSON.stringify({ storage: { maxDatabaseBytes: STORAGE_QUOTA_BYTES }, siteOrigin: base }));
   server = spawn('php', ['-S', `127.0.0.1:${port}`, '-t', root, path.join(root, 'api/router.php')], {
     stdio: ['ignore', 'ignore', 'pipe'],
     env: { ...process.env },
@@ -732,10 +734,11 @@ test('the play page is the shell with the app written in; app.json is what makes
   assert.equal(linkedCard.urls.runtime, null);
   fs.rmSync(path.join(root, 'data/apps/linked-elsewhere'), { recursive: true, force: true });
 
-  // A name that is not a slug still finds the app; a name nobody published is a real 404.
+  // A name is not an address: names are not unique and are the publisher's
+  // to choose, so only a slug finds an app (a remix `parent` may name one;
+  // see hardening.test.mjs). A name nobody published is the same real 404.
   const byName = await fetch(`${base}/play/Snake`, { headers: { Accept: 'text/html' } });
-  assert.equal(byName.status, 200);
-  assert.match(await byName.text(), /content="snake-game"/);
+  assert.equal(byName.status, 404);
   const missing = await fetch(`${base}/play/no-such-app`, { headers: { Accept: 'text/html' } });
   assert.equal(missing.status, 404);
   assert.match(await missing.text(), /No app is published under that name/);

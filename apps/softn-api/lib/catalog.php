@@ -278,8 +278,16 @@ final class Catalog
     public static function retire(string $slug): void {
         $from = self::path($slug); $trash = Config::dataDir() . '/.retired-' . $slug . '-' . bin2hex(random_bytes(6));
         if (!rename($from, $trash)) throw new ApiError(503, 'Cannot retire app folder.');
-        foreach (scandir($trash) ?: [] as $name) if ($name !== '.' && $name !== '..' && !is_dir("$trash/$name")) @unlink("$trash/$name");
-        @rmdir($trash);
+        self::removeTree($trash);
+    }
+    /** Delete a retired folder and everything under it. A leftover is logged, not thrown over: the app is already gone from the catalogue. */
+    private static function removeTree(string $dir): void {
+        foreach (scandir($dir) ?: [] as $name) {
+            if ($name === '.' || $name === '..') continue;
+            $path = "$dir/$name";
+            if (is_dir($path) && !is_link($path)) self::removeTree($path); else @unlink($path);
+        }
+        if (!@rmdir($dir)) error_log("softn-api: retired folder $dir could not be removed");
     }
     public static function categories(): array { self::boot(); return self::readJson(Config::dataDir() . '/categories.json'); }
     public static function saveCategories(array $rows): void { self::boot(); self::writeJson(Config::dataDir() . '/categories.json', $rows); }

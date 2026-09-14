@@ -124,7 +124,11 @@ snapshot. Do not replace the whole app.json just to change a category.
 Independent PHP workers acquire an OS `flock` on the stable catalogue lock
 before reading the folder snapshot. The lock covers validation, version/slug
 allocation, and metadata updates. Read-modify-write operations are therefore
-serialized, including ratings, comments, plays and rate limits. A write uses
+serialized, including ratings, comments and plays. The rate limits have a
+lock of their own (`ratelimits.lock`), held for the counter update alone:
+a limit is checked before an upload is read, and the catalogue must not be
+held while a slow body arrives. The upload routes read their body before
+they open the catalogue for the same reason. A write uses
 a unique sibling temporary file, flush/fsync, and rename; it never truncates
 the live JSON file. Counter plus history updates for one app are in the same
 JSON replacement. The OS releases the lock if a worker exits or is killed.
@@ -257,6 +261,35 @@ it is kept as a compatibility alias and is deprecated in favour of naming
 the edge in `trustedProxies`. `GET /api/health` reports how many trusted
 ranges are configured and whether the alias is on (`proxy`), and not the
 addresses. Nothing logs a forwarded chain or a key.
+
+Until the edge is listed, every visitor behind it is the edge: the first
+publish in an hour locks all of them out, one rating is the site's, and the
+storage limits are shared by every user of every app. A health request that
+arrives with `X-Forwarded-For` while nothing is trusted reports
+`proxy.forwardedButUntrusted: true` and a line under `warnings` saying so;
+make the request through the proxy, not from the host itself.
+
+## The site's own address, and who may use the owner routes
+
+`siteOrigin` in `data/config.json` (`"https://softn.example"`) is the
+address the site is reached at. Two things depend on it:
+
+- The share page `/app/{slug}` and the play page carry the app's canonical
+  address and `og:url`, which a link unfurler needs absolute. Without
+  `siteOrigin` they carry none — not one guessed from the request's `Host`
+  header, which a request can carry anything in — and the picture is named
+  by its path. `GET /api/health` reports `siteOrigin` and a line under
+  `warnings` while it is unset.
+- The routes that take an edit key or the admin key — `PATCH` and `DELETE
+  /api/apps/{slug}`, `POST .../versions` and `.../thumbnail`, everything
+  under `/api/admin/` — answer a browser page on the site's own origin only:
+  `siteOrigin`, the origin the request was addressed to (so a site with no
+  configuration works from its own pages), and any origin listed in
+  `allowedOrigins` (`["https://studio.example"]`). A page elsewhere gets a
+  `403` from them, at the preflight or at the request itself, whichever the
+  browser sends first; a script with no `Origin` header is not a page and
+  is not restricted. Every other route still answers any origin, so apps,
+  the runtime and a page revalidating a bundle see no change.
 
 ## Timings, atomic commits and the benchmark
 
@@ -414,7 +447,7 @@ kept.
 | `GET /api/apps/{slug}/source` | The bundle's source files, for the app page's viewer |
 | `GET /api/apps/{slug}/comments`, `/rating` | Comments (paged) and the rating summary |
 | `GET /api/categories` | Categories with counts. The site-owned ones (Games, Examples, …) are refreshed on every request so renamed core categories reach existing directories |
-| `POST /api/apps` | Publish. The bundle goes as a multipart field named `bundle`, as the raw request body, or as `bundleBase64` in JSON; other fields are `name`, `description`, `author`, `category`, `tags`, `notes`, `primary`, `parent`, `thumbnail`. Answers with the listing and its `editKey` |
+| `POST /api/apps` | Publish. The bundle goes as a multipart field named `bundle`, as the raw request body, or as `bundleBase64` in JSON; other fields are `name`, `description`, `author`, `category`, `tags`, `notes`, `primary`, `parent`, `thumbnail`. `parent` is the slug of the app remixed, or its name when exactly one app has it. Answers with the listing and its `editKey` |
 | `POST /api/apps/{slug}/versions` | A new version of the bundle (`X-Edit-Key`) |
 | `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`) |
 | `POST /api/apps/{slug}/thumbnail` | Replace the picture (`X-Edit-Key`) |
@@ -427,7 +460,7 @@ kept.
 | `GET /api/apps/{slug}/storage`, `/storage/{collection}` | What an app has stored: collection names and counts, then a page of one collection |
 | `GET /api/README.md` | This file |
 | `POST /api/categories` | `{name, description, emoji}` (admin) |
-| `GET /api/health` | Folder catalogue/cache backend, ZIP support and whether `data/` is writable |
+| `GET /api/health` | Folder catalogue/cache backend, ZIP support, whether `data/` is writable, `siteOrigin`, the proxy settings and `warnings` an operator should read before the site is public |
 
 `/app/{slug}` (no `api`) is a share page: the listing rendered as HTML with
 Open Graph tags, for links pasted into chat. `/play/{slug}` is where the app
@@ -501,11 +534,12 @@ A bundle response carries `ETag: "<sha256 of the archive>"`. A request with
 repeats the `ETag` and `Cache-Control`, so a runtime or a cache that already
 holds the bytes never downloads them twice.
 
-That works from another origin too. Every response allows any origin, the
-preflight allows `If-None-Match` (which is not CORS-safelisted, so a browser
-would otherwise refuse to send it), and `ETag`, `Content-Disposition` and
-`Retry-After` are exposed, so a page elsewhere can read the tag, revalidate
-with it, name a download, and honour a rate limit.
+That works from another origin too. Every route anyone may call allows any
+origin (the owner routes are the exception; see "The site's own address"),
+the preflight allows `If-None-Match` (which is not CORS-safelisted, so a
+browser would otherwise refuse to send it), and `ETag`, `Content-Disposition`
+and `Retry-After` are exposed, so a page elsewhere can read the tag,
+revalidate with it, name a download, and honour a rate limit.
 
 The two shapes of URL cache differently. `bundle.softn` with no `v=` is the
 latest version, which the next publish moves: it is `no-cache, must-revalidate`,
