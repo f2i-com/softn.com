@@ -1,0 +1,4186 @@
+{
+  "$schema": "./softn-docs.schema.json",
+  "schemaVersion": "1.0.0",
+  "contentVersion": "1.0.0",
+  "site": {
+    "name": "SoftN",
+    "documentationTitle": "SoftN documentation",
+    "origin": "https://softn.com",
+    "basePath": "/docs/",
+    "language": "en-AU",
+    "tagline": "Build an app. Keep the source. Run it your way.",
+    "homeHref": "/",
+    "repositoryHref": "https://github.com/f2i-com/softn.com",
+    "footerText": "Friendly guides to editable apps, from a first change to the host you choose.",
+    "labels": {
+      "docs": "Documentation",
+      "home": "Home",
+      "navigation": "Documentation navigation",
+      "search": "Search these guides",
+      "searchPlaceholder": "Try “bundle”, “permissions” or “hosting”",
+      "searchHint": "Search is an optional enhancement. Every guide remains available in the navigation.",
+      "onThisPage": "On this page",
+      "related": "Keep exploring",
+      "sources": "Sources and further reading",
+      "updated": "Updated",
+      "previous": "Previous guide",
+      "next": "Next guide",
+      "skip": "Skip to article",
+      "menu": "Browse guides",
+      "noResults": "No matching guides. Try a different term.",
+      "allGuides": "All guides",
+      "sourceNote": "Source links describe the project documentation used for this guide. Examples have not been executed inside SoftN for this edition.",
+      "copy": "Copy code",
+      "copied": "Copied",
+      "copyFailed": "Copy unavailable; select the code manually.",
+      "docsShort": "Docs"
+    },
+    "wordmark": "softn",
+    "products": [
+      {
+        "label": "Apps",
+        "href": "/apps"
+      },
+      {
+        "label": "Runtime",
+        "href": "/web/"
+      },
+      {
+        "label": "Studio",
+        "href": "/studio/"
+      },
+      {
+        "label": "Builder",
+        "href": "/builder/"
+      },
+      {
+        "label": "Publish",
+        "href": "/publish"
+      }
+    ]
+  },
+  "review": {
+    "reviewedAt": "2026-09-15",
+    "status": "documentation-reviewed-not-runtime-verified",
+    "repositories": [
+      {
+        "url": "https://github.com/f2i-com/softn.com",
+        "ref": "main",
+        "commit": null
+      },
+      {
+        "url": "https://github.com/f2i-com/zipp.org",
+        "ref": "main",
+        "commit": null
+      }
+    ],
+    "limitations": [
+      "Git clone failed because the environment could not resolve github.com.",
+      "The SoftN README and root package.json were retrieved; deeper GitHub source and deployment-guide fetches failed.",
+      "ZIPP official website pages supplemented the repository overview. A full ZIPP source checkout was not inspected.",
+      "Exact repository commits could not be resolved; refs remain main and may move.",
+      "No SoftN application build, backend deployment or .ui/.logic execution was run.",
+      "The documentation generator and generated pages are tested separately; its tests do not verify product runtime behaviour."
+    ],
+    "editorialPolicy": [
+      "Describe observed public workflows without inventing undocumented signatures.",
+      "Keep JavaScript .logic distinct from experimental Python embedding.",
+      "Do not apply native JIT or benchmark claims to the browser runtime.",
+      "Do not promise automatic backend export, universal offline use, SEO rankings or AI-system recommendations."
+    ]
+  },
+  "navigation": [
+    {
+      "id": "start",
+      "title": "Start here",
+      "pageIds": [
+        "overview",
+        "what-is-softn",
+        "getting-started",
+        "first-app",
+        "examples"
+      ]
+    },
+    {
+      "id": "create",
+      "title": "Create and run",
+      "pageIds": [
+        "builder",
+        "studio",
+        "runtime",
+        "softn-app-format"
+      ]
+    },
+    {
+      "id": "language",
+      "title": "Language and data",
+      "pageIds": [
+        "ui-language",
+        "logic-zipp",
+        "state-events",
+        "components",
+        "forms-tables-dashboards",
+        "xdb-data",
+        "assets-themes-responsive",
+        "architecture"
+      ]
+    },
+    {
+      "id": "capabilities",
+      "title": "Capabilities",
+      "pageIds": [
+        "audio-media",
+        "threejs-games",
+        "permissions",
+        "offline-local-data",
+        "language-support"
+      ]
+    },
+    {
+      "id": "hosting",
+      "title": "Hosting and sharing",
+      "pageIds": [
+        "hosting",
+        "single-app-runtime",
+        "private-backend",
+        "formlogic",
+        "publishing"
+      ]
+    },
+    {
+      "id": "help",
+      "title": "Help and development",
+      "pageIds": [
+        "development",
+        "troubleshooting",
+        "faq"
+      ]
+    }
+  ],
+  "landing": {
+    "eyebrow": "Learn SoftN",
+    "title": "An app you can understand, edit and keep.",
+    "description": "Start with a working example, learn the pieces as you need them, and choose where your app runs.",
+    "cta": {
+      "label": "Explore the documentation",
+      "pageId": "overview"
+    },
+    "cards": [
+      {
+        "pageId": "what-is-softn",
+        "label": "What is SoftN?",
+        "description": "An introduction to the editable app format, the tools around it, and the choices you keep after building an app."
+      },
+      {
+        "pageId": "first-app",
+        "label": "Build your first SoftN app",
+        "description": "Make a small change to Fieldnotes, then explore a counter that connects interface, state and an event handler."
+      },
+      {
+        "pageId": "builder",
+        "label": "SoftN Builder",
+        "description": "Shape the interface, inspect source, model data and preview a portable app in one editable workspace."
+      },
+      {
+        "pageId": "softn-app-format",
+        "label": "The .softn app format",
+        "description": "What a bundle contains, what an export leaves behind, and how to think about source, seeds and permissions."
+      },
+      {
+        "pageId": "architecture",
+        "label": "How SoftN, ZIPP and XDB fit together",
+        "description": "A readable map of the interface, guest logic, data and hosting responsibilities."
+      },
+      {
+        "pageId": "hosting",
+        "label": "Hosting and deploying SoftN apps",
+        "description": "Choose between opening a bundle, publishing an app, hosting one website or connecting a private backend."
+      }
+    ]
+  },
+  "sources": [
+    {
+      "id": "softn-readme",
+      "title": "SoftN repository README",
+      "url": "https://github.com/f2i-com/softn.com",
+      "kind": "repository-documentation",
+      "reviewedAt": "2026-09-15",
+      "retrieval": "retrieved",
+      "notes": "Retrieved README text includes overview, tools, setup, hosting, language syntax, components, bundle format, ZIPP integration, XDB and audio playback. Deeper source files were not fetched successfully. Repository declares Apache-2.0."
+    },
+    {
+      "id": "softn-package",
+      "title": "SoftN root package.json",
+      "url": "https://raw.githubusercontent.com/f2i-com/softn.com/main/package.json",
+      "kind": "repository-source",
+      "reviewedAt": "2026-09-15",
+      "retrieval": "retrieved",
+      "notes": "Read root workspace names, scripts and Node engine requirement. Version in this file is 0.0.12; this is not the same as the bundled ZIPP version."
+    },
+    {
+      "id": "zipp-wasm",
+      "title": "ZIPP WebAssembly documentation",
+      "url": "https://www.zipp.org/wasm/",
+      "kind": "official-documentation",
+      "reviewedAt": "2026-09-15",
+      "retrieval": "retrieved",
+      "notes": "Published 14 September 2026. Used for the interpreter-only browser profile, host boundary and matching engine-artifact guidance. Not an independent runtime verification."
+    },
+    {
+      "id": "zipp-architecture",
+      "title": "ZIPP architecture documentation",
+      "url": "https://www.zipp.org/architecture/",
+      "kind": "official-documentation",
+      "reviewedAt": "2026-09-15",
+      "retrieval": "retrieved",
+      "notes": "Published 14 September 2026. Used for the register-bytecode architecture and the distinction between native JIT and browser execution."
+    },
+    {
+      "id": "zipp-python",
+      "title": "ZIPP Python documentation",
+      "url": "https://www.zipp.org/python/",
+      "kind": "official-documentation",
+      "reviewedAt": "2026-09-15",
+      "retrieval": "retrieved",
+      "notes": "Published 14 September 2026. Used for conservative experimental-Python framing, not a claim of SoftN Python UI integration."
+    }
+  ],
+  "pages": [
+    {
+      "id": "overview",
+      "slug": "",
+      "title": "SoftN documentation",
+      "summary": "Build an app, keep its source, and choose where it runs. Start with an example or follow a guide from first edit to deployment.",
+      "kind": "overview",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "start",
+      "seo": {
+        "title": "SoftN documentation | SoftN Docs",
+        "description": "Learn SoftN with friendly guides to portable .softn apps, Builder, Studio, Runtime, ZIPP scripting, XDB data, permissions and hosting."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "welcome",
+          "title": "A practical home for your next app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN brings an editable interface, application logic and local data together in a portable app. You can shape an app visually in Builder, use your own AI provider in Studio, or work directly with its source. Runtime opens the result so you can use it."
+            },
+            {
+              "type": "paragraph",
+              "text": "These guides follow the decisions you actually make: what to build, which tool to open, how to change the app, where its records live, and how to share it. You do not need to understand a virtual machine before changing a heading."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "New here?",
+              "text": "Start with What is SoftN, then open the Fieldnotes example and make one small change. A working app is a useful map of the whole platform."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "what-is-softn",
+                "getting-started",
+                "first-app"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "choose-your-route",
+          "title": "Choose your route",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Your goal",
+                "Start here"
+              ],
+              "rows": [
+                [
+                  "Try an existing app",
+                  "Runtime and the app directory"
+                ],
+                [
+                  "Build by editing visually",
+                  "Builder, then Your first app"
+                ],
+                [
+                  "Create from a written brief",
+                  "Studio, then review the generated source"
+                ],
+                [
+                  "Write the behaviour yourself",
+                  "UI language, JavaScript logic and XDB"
+                ],
+                [
+                  "Put one app on a website",
+                  "Hosting and the single-app runtime"
+                ],
+                [
+                  "Use authenticated server operations",
+                  "Private backends or FormLogic integration"
+                ]
+              ],
+              "caption": "Pick the tool that matches the job, rather than learning every part at once."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "builder",
+                "studio",
+                "runtime"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "learn-the-pieces",
+          "title": "Understand the pieces as you need them",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A .ui file describes the interface. JavaScript-compatible .logic supplies behaviour through the ZIPP engine. XDB supplies app-scoped records. The host is the browser, desktop application or hosting platform that runs the app and decides which capabilities it may use."
+            },
+            {
+              "type": "paragraph",
+              "text": "A .softn bundle carries editable client material. A private backend is a separate deployment concern. Keeping that distinction clear makes exports easier to understand and helps avoid shipping private server material by accident."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "softn-app-format",
+                "architecture",
+                "permissions"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "using-these-docs",
+          "title": "How to use these guides",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The guides explain the documented public workflow and include small examples. They are not an exhaustive specification of every component property. Follow the source links at the end of a page for the underlying project reference, and check the host you plan to deploy before relying on an optional capability."
+            },
+            {
+              "type": "paragraph",
+              "text": "Feature descriptions were reviewed against the accessible project documentation on 15 September 2026. Python and advanced host integrations have their own boundaries. Examples in this edition have been checked against the documented syntax, not executed inside a SoftN runtime during preparation."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "examples",
+        "faq"
+      ]
+    },
+    {
+      "id": "what-is-softn",
+      "slug": "what-is-softn",
+      "title": "What is SoftN?",
+      "summary": "An introduction to the editable app format, the tools around it, and the choices you keep after building an app.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "start",
+      "seo": {
+        "title": "What is SoftN? | SoftN Docs",
+        "description": "What is SoftN? Understand its open-source app platform, portable .softn files, visual tools, JavaScript logic and browser or desktop hosts."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "the-idea",
+          "title": "One app you can open, edit and run",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN is an open-source UI language, visual builder and runtime for editable apps on the web and desktop. Its portable .softn format packages the interface, client logic, data seeds and assets so an app can be reopened and changed rather than treated as a finished black box."
+            },
+            {
+              "type": "paragraph",
+              "text": "That gives you several ways to start. Explore an existing app, change a project in Builder, describe an idea in Studio using a configured AI provider, or write the source yourself. These are different routes into the same editable app, not separate product formats."
+            }
+          ]
+        },
+        {
+          "id": "the-tools",
+          "title": "Builder, Studio and Runtime",
+          "blocks": [
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": "Builder",
+                  "description": "The workspace for visual editing, source editing, data modelling and previewing an app."
+                },
+                {
+                  "term": "Studio",
+                  "description": "The AI-assisted creation workflow. Configure a provider, describe the app and review what it generates."
+                },
+                {
+                  "term": "Runtime",
+                  "description": "The host-facing app experience for opening and running bundles, including a browser library and desktop options."
+                },
+                {
+                  "term": ".softn",
+                  "description": "The ZIP-based app bundle you can export, share, reopen and customise."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "You do not need an AI account to open the Fieldnotes example or edit source manually. AI-assisted generation is an optional creation path."
+            }
+          ]
+        },
+        {
+          "id": "what-you-can-build",
+          "title": "From useful forms to interactive experiences",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The built-in component library covers layouts, forms, data displays, charts and dashboards. Audio, animation and Three.js scenes extend the format to games and richer interactive apps, subject to the relevant host support and permissions."
+            },
+            {
+              "type": "paragraph",
+              "text": "A small planner is a good first app because it exercises input, logic, records and presentation without adding external services. A connected business dashboard adds another layer: authenticated backend actions, a server database and an access policy."
+            }
+          ]
+        },
+        {
+          "id": "what-portable-means",
+          "title": "Portable does not mean every host is identical",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The bundle transports the editable client. It does not automatically transport a running backend, external credentials, another user’s records or permission grants. A browser host and a desktop host can expose different capabilities."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "Keep ownership practical",
+              "text": "Keep an exported bundle or source-controlled project you can restore. Local browser storage is useful working storage, but it should not be your only copy of something important."
+            },
+            {
+              "type": "paragraph",
+              "text": "SoftN, ZIPP and XDB have different responsibilities. SoftN renders the app and connects its parts; ZIPP executes client logic; XDB provides local records. FormLogic is an optional hosted integration, not a prerequisite for a standalone app."
+            }
+          ]
+        },
+        {
+          "id": "first-step",
+          "title": "A good first step",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Open Fieldnotes, change a heading in Builder, preview the result and export it. Reopen the export in Runtime. That short loop introduces the central promise of the format: the thing you run remains something you can edit."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "first-app",
+                "softn-app-format"
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "architecture",
+        "hosting",
+        "faq"
+      ]
+    },
+    {
+      "id": "getting-started",
+      "slug": "getting-started",
+      "title": "Getting started with SoftN",
+      "summary": "Choose the browser route or run the repository locally, then make your first editable app.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "start",
+      "seo": {
+        "title": "Getting started with SoftN | SoftN Docs",
+        "description": "Get started with SoftN in the browser or from source. Learn which tool to open, the documented setup commands and your first app workflow."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "softn-package"
+      ],
+      "sections": [
+        {
+          "id": "browser-first",
+          "title": "Start in the browser",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "For the shortest route, visit the SoftN homepage and open the Fieldnotes example in Builder. You can inspect the app, change a heading, preview it and export a bundle without configuring an AI provider."
+            },
+            {
+              "type": "links",
+              "items": [
+                {
+                  "label": "Explore apps",
+                  "href": "https://softn.com/apps",
+                  "description": "Browse the directory for an app to try."
+                },
+                {
+                  "label": "Open Builder",
+                  "href": "https://softn.com/builder/",
+                  "description": "Create a project or reopen an existing bundle."
+                },
+                {
+                  "label": "Open Studio",
+                  "href": "https://softn.com/studio/",
+                  "description": "Use a configured AI provider to help create an app."
+                },
+                {
+                  "label": "Open Runtime",
+                  "href": "https://softn.com/web/",
+                  "description": "Open and run .softn bundles."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "local-setup",
+          "title": "Run the project locally",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The repository specifies Node.js 20.19 or later on the 20.x line, or Node.js 22.12 or later, with npm. Use a supported Node release that satisfies that requirement. The browser apps use the checked-in WebAssembly engine; ordinary browser builds do not require rebuilding ZIPP with Rust."
+            },
+            {
+              "type": "code",
+              "language": "sh",
+              "code": "git clone https://github.com/f2i-com/softn.com.git\ncd softn.com\nnpm ci\nnpm run build:packages\nnpm run dev",
+              "caption": "Documented repository setup. Run these commands in a terminal."
+            },
+            {
+              "type": "paragraph",
+              "text": "Open the origin printed by the launcher. The documented default is http://localhost:1420, but the launcher can choose other ports. Treat its output as the source of truth rather than assuming a fixed port."
+            }
+          ]
+        },
+        {
+          "id": "pick-a-workspace",
+          "title": "Pick the workspace you need",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Path",
+                "Purpose"
+              ],
+              "rows": [
+                [
+                  "/",
+                  "Homepage and the editable Fieldnotes example"
+                ],
+                [
+                  "/apps",
+                  "Browse the app directory"
+                ],
+                [
+                  "/builder/",
+                  "Visual editing, source, schema and preview"
+                ],
+                [
+                  "/studio/",
+                  "AI-assisted creation"
+                ],
+                [
+                  "/web/",
+                  "Runtime, saved library and opening bundles"
+                ]
+              ],
+              "caption": "Local routes share the origin printed by the development launcher."
+            },
+            {
+              "type": "paragraph",
+              "text": "The launcher can start the directory API when PHP is available on PATH. Install PHP to exercise directory browsing, publishing and server storage locally. Demo fetching needs network access, so a failed example download is not necessarily a UI-language error."
+            }
+          ]
+        },
+        {
+          "id": "first-success",
+          "title": "Aim for a small first success",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Open a working example",
+                  "text": "Use Fieldnotes so you can compare your changes with an app that already demonstrates the workflow."
+                },
+                {
+                  "title": "Change one visible thing",
+                  "text": "Select a heading in Builder and change its Text Content. Preview before editing several other parts."
+                },
+                {
+                  "title": "Export and reopen",
+                  "text": "Export the .softn bundle, then open it again in Runtime or Builder to check what travelled with it."
+                }
+              ]
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "Working only on Builder?",
+              "text": "After building the shared packages, the repository also provides npm run dev:builder."
+            }
+          ]
+        },
+        {
+          "id": "next",
+          "title": "Then add behaviour or data",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Once the edit-export-reopen loop makes sense, add a simple input or change a small logic function. Save private integrations, permissions and deployment until the local flow is understandable."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "first-app",
+                "builder",
+                "development"
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "runtime",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "first-app",
+      "slug": "first-app",
+      "title": "Build your first SoftN app",
+      "summary": "Make a small change to Fieldnotes, then explore a counter that connects interface, state and an event handler.",
+      "kind": "tutorial",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "start",
+      "seo": {
+        "title": "Build your first SoftN app | SoftN Docs",
+        "description": "Build your first SoftN app with a guided Fieldnotes edit and a small counter example. Preview, export and reopen your editable .softn bundle."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "start-with-fieldnotes",
+          "title": "Begin with something that already works",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Fieldnotes is the repository’s introductory task planner. Its interface, .logic and XDB records demonstrate one complete app. Start there rather than inventing a bundle manifest before you have seen the editing workflow."
+            },
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Open Fieldnotes in Builder",
+                  "text": "Use the homepage’s example action. Identify the preview, the selected component’s properties and the source view."
+                },
+                {
+                  "title": "Change the heading",
+                  "text": "Select the heading and edit Text Content. Keep the change small enough that you can recognise it immediately."
+                },
+                {
+                  "title": "Preview the flow",
+                  "text": "Add a task and toggle its completion. Check that the list and totals still react as expected."
+                },
+                {
+                  "title": "Export a copy",
+                  "text": "Export the bundle under a name you recognise, then reopen it to verify your change."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "understand-a-small-app",
+          "title": "A small example you can read end to end",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The following .ui example adapts the counter shown in the repository README. It keeps its logic inline so the relationship between a variable, a button and the rendered text is visible in one place. Use the source editor for the example rather than assuming every construct is visually rewritable."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<logic>\n  let count = 0\n\n  function increment() {\n    count = count + 1\n  }\n</logic>\n\n<App theme=\"dark\">\n  <Stack direction=\"vertical\" gap=\"md\" padding=\"lg\">\n    <Heading level={1}>My first SoftN app</Heading>\n    <Text>Count: {count}</Text>\n    <Button variant=\"primary\" @click={increment}>Increment</Button>\n  </Stack>\n</App>",
+              "caption": "Illustrative counter adapted from the documented .ui syntax. This edition has not run it inside SoftN."
+            },
+            {
+              "type": "paragraph",
+              "text": "The count variable stores the current value. The Text expression displays it. The Button’s @click binding calls increment, which updates the variable. SoftN connects script state back to the interface."
+            }
+          ]
+        },
+        {
+          "id": "try-a-change",
+          "title": "Make one behaviour change",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Add a reset function that sets count to zero, then bind a second Button to that function. This is a useful first exercise because it uses the same state and event pattern without introducing persistence or networking."
+            },
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "function reset() {\n  count = 0\n}",
+              "caption": "Add this function inside the existing logic block."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<Button @click={reset}>Reset</Button>",
+              "caption": "Place this button beside the existing Increment button inside the Stack."
+            },
+            {
+              "type": "paragraph",
+              "text": "A variable in this example is live app state. It is not a durable database record. Closing and reopening the app is a separate test from rerendering its interface. Use the XDB guide when you are ready to keep records."
+            }
+          ]
+        },
+        {
+          "id": "check-your-export",
+          "title": "Check the exported result",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Reopen the bundle and confirm your heading and buttons are present.",
+                "Check phone and desktop preview sizes rather than assuming a layout will adapt.",
+                "Distinguish preview test records from the seed data included in an export.",
+                "Keep the original example unchanged or save a separate copy so you can compare behaviours."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "You have completed the important first loop when you can explain which source change produced which visible behaviour, and reproduce it from the exported bundle."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "ui-language",
+        "state-events",
+        "xdb-data"
+      ]
+    },
+    {
+      "id": "examples",
+      "slug": "examples",
+      "title": "Learn from SoftN examples",
+      "summary": "Use Fieldnotes as a source-level tour, then explore the wider catalogue with a focused question.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "start",
+      "seo": {
+        "title": "Learn from SoftN examples | SoftN Docs",
+        "description": "Explore SoftN examples, starting with Fieldnotes. Learn how to inspect UI, ZIPP logic, XDB seeds and exported bundles before customising an app."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "fieldnotes",
+          "title": "Fieldnotes: one complete small app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README introduces Fieldnotes as a working task planner whose form, .logic running on ZIPP and XDB records update one dashboard. You can add a task, toggle completion and see the list and totals change."
+            },
+            {
+              "type": "paragraph",
+              "text": "That makes it a useful teaching example: the interaction is small enough to follow from an input to a function to a saved record and back to a visible summary. No AI provider or account is required to try the example."
+            }
+          ]
+        },
+        {
+          "id": "read-the-flow",
+          "title": "Inspect the flow in order",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Interface",
+                  "text": "Find the input binding and the action that calls addTask."
+                },
+                {
+                  "title": "Logic",
+                  "text": "Read the validation and record creation, then the function that refreshes the dashboard."
+                },
+                {
+                  "title": "Data",
+                  "text": "Inspect the collection structure and the five sample tasks described by the README."
+                },
+                {
+                  "title": "Export",
+                  "text": "Change something small, export the bundle and reopen it."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "Builder preview uses its own test records. Use Data view for the seeds you intend to carry in the bundle so a fresh recipient gets the starting experience you expect."
+            }
+          ]
+        },
+        {
+          "id": "catalogue",
+          "title": "Use the wider catalogue to answer one question",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The main README links a separate softn-Examples repository for the wider demo catalogue. It also points to examples spanning games, emulators and connected workspaces. The catalogue can change independently of these guides."
+            },
+            {
+              "type": "links",
+              "items": [
+                {
+                  "label": "SoftN app directory",
+                  "href": "https://softn.com/apps",
+                  "description": "Try published apps in the browser."
+                },
+                {
+                  "label": "SoftN examples repository",
+                  "href": "https://github.com/f2i-com/softn-Examples",
+                  "description": "Explore the separately maintained example catalogue."
+                },
+                {
+                  "label": "Main repository example entry point",
+                  "href": "https://github.com/f2i-com/softn.com#see-an-app-powered-by-zipp",
+                  "description": "Follow the Fieldnotes source and bundle links in the README."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "customise",
+          "title": "Customise a copy, not a mystery",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Choose an example because it demonstrates a specific need: a form flow, responsive layout, audio feedback or scene interaction. Keep an unchanged copy and make one change at a time so you know which part caused a new behaviour."
+            },
+            {
+              "type": "paragraph",
+              "text": "Do not assume that an example’s backend or permissions are included with its client source. Read its requirements and confirm the host-specific setup. Connected workspace examples are particularly important to distinguish from standalone local apps."
+            }
+          ]
+        },
+        {
+          "id": "first-experiment",
+          "title": "A useful first experiment",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Change one Fieldnotes label, add one optional field to the data model and test the resulting flow in a fresh exported copy. That gives you a practical lesson in UI, records, seeds and portability without introducing an unrelated service."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "first-app",
+                "builder",
+                "xdb-data"
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "threejs-games",
+        "formlogic"
+      ]
+    },
+    {
+      "id": "builder",
+      "slug": "builder",
+      "title": "SoftN Builder",
+      "summary": "Shape the interface, inspect source, model data and preview a portable app in one editable workspace.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "create",
+      "seo": {
+        "title": "SoftN Builder | SoftN Docs",
+        "description": "Learn SoftN Builder for visual app editing, source changes, collection schemas, responsive previews and exporting portable .softn apps."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "where-builder-fits",
+          "title": "The editing workspace",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Builder is the place to shape an app you can inspect and keep editing. The documented workspace combines a visual canvas, properties, source editing, schema editing and previews for different screen sizes."
+            },
+            {
+              "type": "paragraph",
+              "text": "You can start a project, reopen a .softn bundle or use Fieldnotes as a working example. A visual change is a change to an editable app, not a commitment to abandoning its source."
+            }
+          ]
+        },
+        {
+          "id": "a-useful-workflow",
+          "title": "Work in small, reversible steps",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Open or create",
+                  "text": "Begin with a known bundle or a blank project. Keep a copy before making a large structural change."
+                },
+                {
+                  "title": "Edit the interface",
+                  "text": "Select a component and change a property such as the heading’s Text Content. Preview the actual interaction, not only the canvas layout."
+                },
+                {
+                  "title": "Inspect behaviour",
+                  "text": "Use Code view to understand the logic behind actions. Keep related changes small enough to test independently."
+                },
+                {
+                  "title": "Review the data",
+                  "text": "Use Data view for collection structure and the seeds the app will carry."
+                },
+                {
+                  "title": "Preview and export",
+                  "text": "Check the sizes you support, export the bundle and reopen that exported copy."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "visual-and-code",
+          "title": "Visual editing and Code view work together",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Not every source construct is safe for a canvas to rewrite. The README explicitly describes keeping such files editable in Code view. Treat that as protection for the source, not a reason to simplify a working app until the canvas accepts it."
+            },
+            {
+              "type": "paragraph",
+              "text": "Use visual editing where the tool exposes a clear control. Use source editing for complex behaviour and source structures that do not round-trip safely through the canvas. After either route, run the same user flow again."
+            }
+          ]
+        },
+        {
+          "id": "data-preview",
+          "title": "Preview data and exported seeds are different jobs",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Fieldnotes demonstrates that Builder preview has its own test records while Data view exposes the seeds carried by the bundle. An app that looks populated in preview may still need careful seed preparation for a first-time user."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "Test a fresh start",
+              "text": "Reopen the exported bundle in a clean test context and check empty lists, first records and initial settings. This is more informative than repeatedly testing only your populated workspace."
+            }
+          ]
+        },
+        {
+          "id": "responsive-preview",
+          "title": "Preview is a check, not an automatic redesign",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The preview runs the app at desktop, tablet and mobile sizes. Responsive behaviour still depends on the layout you authored. Check forms, navigation, long text and tables at the narrowest size you plan to support."
+            },
+            {
+              "type": "paragraph",
+              "text": "For a first project, stop when one core flow is reliable: create a record, display it, change it and reopen the export. Add visual polish after that path is dependable."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "first-app",
+        "xdb-data",
+        "assets-themes-responsive"
+      ]
+    },
+    {
+      "id": "studio",
+      "slug": "studio",
+      "title": "SoftN Studio",
+      "summary": "Use an AI provider to help create an app, then inspect, test and keep the result as editable source.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "create",
+      "seo": {
+        "title": "SoftN Studio | SoftN Docs",
+        "description": "Use SoftN Studio for AI-assisted app creation with your configured provider. Learn the brief, review, preview and export workflow."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "what-studio-does",
+          "title": "Turn a brief into an editable starting point",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Studio is SoftN’s AI-assisted creation workflow. The README describes configured OpenAI, Anthropic or custom providers. You bring the provider configuration, describe the app and review the generated result."
+            },
+            {
+              "type": "paragraph",
+              "text": "AI generation is one way to create an app, not a requirement for using SoftN. Existing bundles and manually written source can be opened and edited without asking an AI provider to generate anything."
+            }
+          ]
+        },
+        {
+          "id": "a-better-brief",
+          "title": "Describe a small complete workflow",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A useful brief names the people using the app, the records they manage, the screens they need and what each important button should do. Specify what stays local and which operations, if any, need a backend."
+            },
+            {
+              "type": "code",
+              "language": "text",
+              "code": "Create a local task planner for one person.\n\nScreens: task list and a small summary dashboard.\nEach task needs a title and completion status.\nLet me add a task, mark it complete and filter the list.\nUse local records. Do not add login, AI calls or a backend.\nMake empty states clear and keep the phone layout readable.",
+              "caption": "An example brief, not a special Studio command language."
+            },
+            {
+              "type": "paragraph",
+              "text": "Start with one complete loop instead of asking for every feature at once. It is easier to review a working task flow than a large collection of unfinished screens."
+            }
+          ]
+        },
+        {
+          "id": "review-the-result",
+          "title": "Review the app, not only the generated text",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Read the source and permissions",
+                  "text": "Check that the result matches the brief and does not request capabilities the app does not need."
+                },
+                {
+                  "title": "Exercise the main interaction",
+                  "text": "Create, change and display a record. Check invalid input and the empty state."
+                },
+                {
+                  "title": "Try narrow layouts",
+                  "text": "Check labels, controls and navigation on a phone-sized preview."
+                },
+                {
+                  "title": "Export and reopen",
+                  "text": "Verify that the generated project survives the same bundle handoff as a manually authored app."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "provider-and-privacy",
+          "title": "Keep provider use explicit",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Using an external AI provider can involve that provider’s credentials, service limits and charges. Review the configuration and the provider’s applicable terms before sending content. Do not place private access tokens in app source or a downloadable bundle."
+            },
+            {
+              "type": "callout",
+              "tone": "warning",
+              "title": "Generation is not validation",
+              "text": "Generated logic and UI still need review. A convincing explanation is not proof that a function exists, an export is complete or a permission is granted."
+            }
+          ]
+        },
+        {
+          "id": "continue-editing",
+          "title": "Keep editing after generation",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Use Builder and Code view to refine the result. The useful outcome is an app whose behaviour you understand and whose source you can change, not a single prompt you can never reproduce."
+            },
+            {
+              "type": "paragraph",
+              "text": "For a connected app, describe the client and backend responsibilities separately. A generated interface is not, by itself, a deployed authentication system or private API."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "builder",
+        "permissions",
+        "private-backend"
+      ]
+    },
+    {
+      "id": "runtime",
+      "slug": "runtime",
+      "title": "SoftN Runtime",
+      "summary": "Open bundles, switch between running apps and understand what the browser library does and does not keep.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "create",
+      "seo": {
+        "title": "SoftN Runtime | SoftN Docs",
+        "description": "Learn SoftN Runtime: open .softn bundles, browse apps, use the saved browser library, switch running apps and understand host support."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "opening-an-app",
+          "title": "The place to use an app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Runtime opens and runs .softn bundles. The web experience can open bundles, explore directory apps and return to a library saved in the current browser. The project also has a Tauri desktop loader."
+            },
+            {
+              "type": "paragraph",
+              "text": "Creation tools help you change an app; Runtime helps you use it. The same bundle can be reopened in an editor when you decide to customise its interface or behaviour."
+            }
+          ]
+        },
+        {
+          "id": "workspace-lifecycle",
+          "title": "Home is not the same as Close",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The documented web workspace keeps apps running when you return to its home view. That lets you browse or open another app without discarding an unfinished form. Use Home to switch between apps and Close to stop the current app."
+            },
+            {
+              "type": "paragraph",
+              "text": "This is a lifecycle distinction worth testing in your own app. Navigating within a running workspace, closing an app and reopening a saved bundle can involve different state and persistence behaviour."
+            }
+          ]
+        },
+        {
+          "id": "saved-library",
+          "title": "Understand the browser library",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Apps you open are kept in the current browser’s library, with offline readiness shown for saved apps. That does not make browser storage an account-wide cloud backup. Another device, another browser profile or cleared site storage can have different contents."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "Check offline readiness before relying on it",
+              "text": "A saved app may still use network services or remote resources. Test the actual workflow without a connection and keep a separate copy of important exports."
+            }
+          ]
+        },
+        {
+          "id": "permissions-and-hosts",
+          "title": "The host decides what the app can reach",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A capability needs support and permission from the host. A browser can also require its own consent for camera or microphone access. A desktop build may support native storage or other integrations that are unavailable in an ordinary browser."
+            },
+            {
+              "type": "paragraph",
+              "text": "The bundle’s manifest name is not a universal storage account. The general bundle loader, single-app deployments and FormLogic integration each have identity rules that affect records and grants."
+            }
+          ]
+        },
+        {
+          "id": "check-an-app",
+          "title": "A useful acceptance check",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Open the exported bundle, not only its editor preview.",
+                "Exercise the main flow and return Home without losing unfinished input.",
+                "Close and reopen, then check which state is intended to persist.",
+                "Review permission requests and test denial as well as approval.",
+                "Confirm the host and browser you actually plan to support."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "When something differs between preview and Runtime, first identify whether the difference is UI state, data seeds, persistent records, host capability support or deployment configuration."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "offline-local-data",
+        "permissions",
+        "hosting"
+      ]
+    },
+    {
+      "id": "softn-app-format",
+      "slug": "softn-app-format",
+      "title": "The .softn app format",
+      "summary": "What a bundle contains, what an export leaves behind, and how to think about source, seeds and permissions.",
+      "kind": "reference",
+      "audience": [
+        "developers"
+      ],
+      "groupId": "create",
+      "seo": {
+        "title": "The .softn app format | SoftN Docs",
+        "description": "Learn the .softn file format: a portable ZIP-based app bundle containing editable UI, client logic, metadata, data seeds, assets and permissions."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "what-is-the-file",
+          "title": "What is a .softn file?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A .softn file is a ZIP-based app bundle. It packages the editable client material that SoftN needs to load an app. This makes it a useful handoff between creation tools and runtimes: you can export an app, reopen it and change its source."
+            },
+            {
+              "type": "paragraph",
+              "text": "The format is not a promise that every external dependency lives inside the archive. A remote service, an AI provider or a private server database still has its own deployment and access requirements."
+            }
+          ]
+        },
+        {
+          "id": "inside-the-bundle",
+          "title": "A typical client bundle",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "text",
+              "code": "my-app.softn\n├── manifest.json\n├── permission.json\n├── ui/\n├── logic/\n├── xdb/\n└── assets/",
+              "caption": "Typical client layout documented by the project. Exact files depend on the app."
+            },
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": "manifest.json",
+                  "description": "App metadata, configuration and its entry point. Export from Builder or use a current example rather than guessing required fields."
+                },
+                {
+                  "term": "permission.json",
+                  "description": "The capabilities the app requests from its host. Declaring a capability is not the same as receiving a grant."
+                },
+                {
+                  "term": "ui/",
+                  "description": "The interface and reusable UI source."
+                },
+                {
+                  "term": "logic/",
+                  "description": "The client behaviour, normally JavaScript-compatible .logic files."
+                },
+                {
+                  "term": "xdb/",
+                  "description": "Optional collection seeds carried with the app."
+                },
+                {
+                  "term": "assets/",
+                  "description": "The images, styles and other distributable assets the app needs."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "seeds-and-live-data",
+          "title": "Seeds are not automatically a backup of live records",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Seed records provide starting content for a new app instance. The records someone creates while running an app belong to that host’s storage and identity rules. Do not assume that exporting a project also exports every user’s live database."
+            },
+            {
+              "type": "paragraph",
+              "text": "Builder’s preview uses test records. Use its Data view to review the seeds you intend to distribute, then test a fresh runtime instance. This prevents a demo from appearing complete only because it is using your existing local data."
+            }
+          ]
+        },
+        {
+          "id": "private-material",
+          "title": "Separate client downloads from private deployment",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The repository also describes server-side .logic resources for server hosts. Those resources are not executed by the browser. A backend deployment must decide how to keep private scripts, credentials and SQLite databases on the server."
+            },
+            {
+              "type": "callout",
+              "tone": "warning",
+              "title": "Assume a recipient can inspect the bundle",
+              "text": "Anything shipped in a downloadable client archive should be material you intend to share. Do not use an editable client bundle to hide a service secret or a private database."
+            }
+          ]
+        },
+        {
+          "id": "identity-and-compatibility",
+          "title": "Identity and compatibility belong to the host too",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The general bundle loader uses a digest to isolate bundles. Configured single-app and FormLogic hosts provide their own deployment identity. An app name by itself does not grant access to another app’s records or permission grants."
+            },
+            {
+              "type": "paragraph",
+              "text": "Test a bundle on the host you intend to use. A successful export confirms packaging, not browser microphone consent, backend authorisation or support for every optional capability."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "permissions",
+        "offline-local-data",
+        "private-backend"
+      ]
+    },
+    {
+      "id": "ui-language",
+      "slug": "ui-language",
+      "title": "The SoftN UI language",
+      "summary": "Read component tags, expressions, bindings and control flow without needing to learn every component at once.",
+      "kind": "reference",
+      "audience": [
+        "developers"
+      ],
+      "groupId": "language",
+      "seo": {
+        "title": "The SoftN UI language | SoftN Docs",
+        "description": "Learn SoftN .ui syntax: components, expression props, event handlers, two-way binding, conditional rendering and list rendering."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "the-shape",
+          "title": "A declarative interface",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A .ui file describes the interface using component tags, properties and expressions. SoftN parses the source and renders the result through React. The app source is SoftN syntax, not a React component that you must rewrite as JSX."
+            },
+            {
+              "type": "paragraph",
+              "text": "The README shows inline logic inside a logic block, along with separate .logic files in bundles. Use a current exported example to follow the project structure for external files instead of guessing an import convention."
+            }
+          ]
+        },
+        {
+          "id": "properties",
+          "title": "Strings and expressions",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<Button variant=\"primary\" size=\"md\">Save</Button>\n<Text>{message}</Text>\n<Text color={isDark ? \"white\" : \"black\"}>{message}</Text>",
+              "caption": "Examples of literal properties and brace-delimited expressions."
+            },
+            {
+              "type": "paragraph",
+              "text": "Quoted values are literal strings. Braces contain expressions whose values come from the app’s state and context. Start with simple expressions and move complicated decisions into named logic functions."
+            }
+          ]
+        },
+        {
+          "id": "bindings",
+          "title": "Events and two-way binding",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<Input :bind={username} placeholder=\"Enter your name\" />\n<Button @click={save}>Save</Button>",
+              "caption": "The username state and save function must be defined by the app."
+            },
+            {
+              "type": "paragraph",
+              "text": "The :bind form connects the input to state. The @click form binds an action to a function. Ordinary template DOM events are not passed through as raw browser event objects; see the state and events guide before relying on event.target or browser methods."
+            }
+          ]
+        },
+        {
+          "id": "control-flow",
+          "title": "Conditionals and lists",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "#if (isLoggedIn)\n  <Text>Welcome back</Text>\n#else\n  <Text>Please sign in</Text>\n#end\n\n#each (task in tasks)\n  <Text>{task.title}</Text>\n#empty\n  <Text>No tasks yet</Text>\n#end",
+              "caption": "Control-flow syntax using app-owned state. Here tasks is an ordinary array of objects with a title field, not a claim about XDB record shape."
+            },
+            {
+              "type": "paragraph",
+              "text": "An empty branch makes the first-run experience explicit. It is often more helpful than a blank area that leaves the user wondering whether the app has loaded."
+            }
+          ]
+        },
+        {
+          "id": "composition",
+          "title": "Build from clear pieces",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Use layout components for structure, display components for readable content and form components for actions and input. Reusable app components can keep repeated sections consistent, but their exact file wiring should follow a current bundle example."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "Keep the first screen readable",
+              "text": "A heading, a short explanation, one input and one action can be enough to test a complete interaction before you add navigation and dashboards."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "components",
+                "state-events"
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "logic-zipp",
+        "assets-themes-responsive"
+      ]
+    },
+    {
+      "id": "logic-zipp",
+      "slug": "logic-zipp",
+      "title": "JavaScript logic with ZIPP",
+      "summary": "Write app behaviour in .logic while understanding the difference between language support and host APIs.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "language",
+      "seo": {
+        "title": "JavaScript logic with ZIPP | SoftN Docs",
+        "description": "Understand SoftN .logic and ZIPP: JavaScript app behaviour, the Rust and WebAssembly engine, host bridges and browser runtime boundaries."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "zipp-wasm",
+        "zipp-architecture"
+      ],
+      "sections": [
+        {
+          "id": "what-runs",
+          "title": "JavaScript for your app’s behaviour",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN’s .logic files use JavaScript and run in the ZIPP engine, which is written in Rust and compiled to WebAssembly for the browser. The README documents classes, async/await, destructuring, closures and other familiar JavaScript features."
+            },
+            {
+              "type": "paragraph",
+              "text": "The engine executes the language. SoftN supplies the app integration: state, rendering and explicitly exposed host APIs. Knowing JavaScript does not imply that every browser global, Node.js module or npm package is available inside a script."
+            }
+          ]
+        },
+        {
+          "id": "state-and-actions",
+          "title": "Keep actions small and named",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "let clients = []\n\nfunction _init() {\n  clients = db.query('clients')\n}\n\nfunction addClient(name, email) {\n  db.create('clients', { name: name, email: email })\n  clients = db.query('clients')\n}",
+              "caption": "A small app-logic pattern from the documented database bridge. The host must provide the collection and database integration."
+            },
+            {
+              "type": "paragraph",
+              "text": "The initialisation function loads records. The action creates a record and refreshes the state used by the interface. This explicit pattern is easier to inspect than burying data changes inside a display expression."
+            }
+          ]
+        },
+        {
+          "id": "engine-host",
+          "title": "The engine and the host are separate layers",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "ZIPP’s browser build is an interpreter inside WebAssembly. The upstream project’s native JIT tiers are not the execution path used by that browser artifact. Native benchmark results should not be presented as SoftN browser performance."
+            },
+            {
+              "type": "paragraph",
+              "text": "The host decides what a script can call. The SoftN README describes bridges such as db and the softn APIs, with gated capabilities controlled by declarations and host grants. A bridge object’s existence is not a reason to assume unrestricted access."
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "Browser JavaScript is still outside the guest",
+              "text": "Treat .logic as guest code running in its provided environment, not as a script tag with ambient access to the whole page."
+            }
+          ]
+        },
+        {
+          "id": "version",
+          "title": "Use the bundled engine as your compatibility reference",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The retrieved README identifies the browser engine as ZIPP v0.0.18 and points to SOURCE.json for artifact provenance. It also describes a local combined JavaScript and experimental Python build. The exact bundled artifact matters more than an upstream release headline."
+            },
+            {
+              "type": "paragraph",
+              "text": "For ordinary SoftN development, use the checked-in runtime. Rebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling."
+            }
+          ]
+        },
+        {
+          "id": "next",
+          "title": "Learn the boundaries before adding integrations",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Start with app state and XDB. When you add networking, media, GPU work or backend actions, use the relevant host-facing guide and test both allowed and denied behaviour. A working JavaScript expression proves less than a complete user flow."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "state-events",
+                "xdb-data",
+                "language-support"
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "architecture",
+        "permissions"
+      ]
+    },
+    {
+      "id": "state-events",
+      "slug": "state-events",
+      "title": "State, events and app lifecycle",
+      "summary": "Connect user actions to state, understand event data, and distinguish a running screen from durable records.",
+      "kind": "reference",
+      "audience": [
+        "developers"
+      ],
+      "groupId": "language",
+      "seo": {
+        "title": "State, events and app lifecycle | SoftN Docs",
+        "description": "Learn SoftN state and events: action handlers, two-way binding, lifecycle checks, window input and the difference between state and saved records."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "state-round-trip",
+          "title": "State connects behaviour to the interface",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN’s documented state flow synchronises script globals with the React-side component state around script calls. Expressions in the interface read that state so changes made by an action can appear in the UI."
+            },
+            {
+              "type": "paragraph",
+              "text": "For a small app, keep important state obvious: a current filter, a form field, the records shown in a list or the selected item. Use named actions to change it. This makes it easier to trace a click from the template to the function and back to the screen."
+            }
+          ]
+        },
+        {
+          "id": "events",
+          "title": "Template events are not raw DOM events",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README states that an ordinary template binding such as @click={fn} calls the handler without passing the raw DOM event; the event is reduced to null. Do not assume a template handler can call event.preventDefault or read event.target."
+            },
+            {
+              "type": "paragraph",
+              "text": "Callbacks with meaningful component data are a different case. The documented examples include DPad @press and Slider @change passing their data through. Check the contract for the component you use rather than treating every callback identically."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<Input :bind={username} placeholder=\"Name\" />\n<Button @click={save}>Save</Button>",
+              "caption": "Read the bound username state inside save rather than expecting a DOM input event."
+            }
+          ]
+        },
+        {
+          "id": "pointer-keyboard",
+          "title": "Keyboard and pointer input",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README describes window.addEventListener as the route for scripts that need plain-data keyboard or pointer events. The host supplies selected fields such as clientX, clientY, key and targetTag rather than handing the guest an unrestricted browser object."
+            },
+            {
+              "type": "paragraph",
+              "text": "Box and Button forward pointerdown, pointerup, pointercancel and pointerleave, supporting controls that react while held. Account for cancellation and leaving the control, not only the initial press."
+            },
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "softn.input.captureKeys([\"ArrowUp\", \" \", \"F1\"])",
+              "caption": "Documented key-capture API. The host protects text fields, Ctrl combinations and the system modifier."
+            },
+            {
+              "type": "paragraph",
+              "text": "Use key capture only for keys your app genuinely needs. A game should not make it unnecessarily hard to type into its own settings form or use familiar browser shortcuts."
+            }
+          ]
+        },
+        {
+          "id": "lifecycle",
+          "title": "Check three different lifetimes",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Lifetime",
+                "What to test"
+              ],
+              "rows": [
+                [
+                  "Live app state",
+                  "Does the interface update after an action?"
+                ],
+                [
+                  "Running workspace",
+                  "Does unfinished input survive returning Home and switching apps?"
+                ],
+                [
+                  "Persisted records",
+                  "Does intended data survive closing and reopening the app?"
+                ]
+              ],
+              "caption": "These are separate acceptance checks, not interchangeable definitions of persistence."
+            },
+            {
+              "type": "paragraph",
+              "text": "Use XDB for record-oriented storage. A counter variable or selected tab is not automatically a database record. Decide which state should restart and which state should be restored."
+            }
+          ]
+        },
+        {
+          "id": "debugging",
+          "title": "Trace one interaction at a time",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Check the binding",
+                  "text": "Confirm the template refers to the function and state you intended."
+                },
+                {
+                  "title": "Check the function",
+                  "text": "Reduce it to one state change before adding database or network work."
+                },
+                {
+                  "title": "Check the host boundary",
+                  "text": "Permission, capability support and backend availability can fail independently of the UI."
+                },
+                {
+                  "title": "Check the lifecycle",
+                  "text": "Reproduce whether the issue appears after a rerender, app switch, close or fresh open."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "ui-language",
+        "logic-zipp",
+        "runtime"
+      ]
+    },
+    {
+      "id": "components",
+      "slug": "components",
+      "title": "SoftN component guide",
+      "summary": "Find a sensible starting component for layouts, forms, data, charts, media, animation and richer apps.",
+      "kind": "reference",
+      "audience": [
+        "developers"
+      ],
+      "groupId": "language",
+      "seo": {
+        "title": "SoftN component guide | SoftN Docs",
+        "description": "Explore SoftN components for layouts, forms, tables, dashboards, charts, media, animation, editors and Three.js scenes."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "choose-by-job",
+          "title": "Choose a component by the job it does",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README organises the built-in library into layout, form, display, feedback, data, navigation, utility, chart, animation, editor, 3D and smart components. Start with the role you need rather than a list of every property."
+            },
+            {
+              "type": "paragraph",
+              "text": "This is a component discovery guide, not a complete property reference. The names below are documented exports in the retrieved README; use a current example or implementation reference when you need exact property types and callback values."
+            }
+          ]
+        },
+        {
+          "id": "everyday-components",
+          "title": "The everyday toolkit",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Need",
+                "Documented components"
+              ],
+              "rows": [
+                [
+                  "Page structure",
+                  "App, Box, Stack, Grid, Card, Container, Layout, Header, Content, Section"
+                ],
+                [
+                  "Text and status",
+                  "Text, Heading, Badge, Tag, Progress, Spinner, Image, Icon"
+                ],
+                [
+                  "Input and actions",
+                  "Button, Input, TextArea, Select, Checkbox, Radio, Switch, Form, Slider"
+                ],
+                [
+                  "Dates, colours and files",
+                  "DatePicker, ColorPicker, FileChooser"
+                ],
+                [
+                  "Navigation",
+                  "Tabs, Breadcrumb, Menu, NavItem"
+                ],
+                [
+                  "Feedback",
+                  "Alert, Modal, Toast, Drawer, Popover, EmptyState"
+                ]
+              ],
+              "caption": "A starting selection from the documented component library."
+            },
+            {
+              "type": "paragraph",
+              "text": "Choose the simplest component that matches the interaction. A small settings screen may need only a Stack, Heading, Input and Button. More components do not necessarily make the workflow clearer."
+            }
+          ]
+        },
+        {
+          "id": "records-and-dashboards",
+          "title": "Records and dashboards",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Need",
+                "Documented components"
+              ],
+              "rows": [
+                [
+                  "Lists and tables",
+                  "List, ListItem, Table, DataGrid, TreeView, Pagination"
+                ],
+                [
+                  "Data-oriented forms and views",
+                  "SmartForm, SmartGrid, SmartView, SmartCards, SmartList"
+                ],
+                [
+                  "Summaries and timelines",
+                  "SmartStats, SmartTimeline"
+                ],
+                [
+                  "Charts",
+                  "LineChart, BarChart, PieChart, AreaChart, RadarChart, GaugeChart"
+                ]
+              ],
+              "caption": "Smart components offer data-driven configuration; ordinary components give you more direct presentation control."
+            },
+            {
+              "type": "paragraph",
+              "text": "Use a table when someone needs to inspect individual records. Use a chart for a question about a pattern or comparison. A chart is most useful when its labels, units and empty state make that question understandable."
+            }
+          ]
+        },
+        {
+          "id": "interactive-media",
+          "title": "Interactive and specialist components",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The documented library also includes PixelGrid, PixelCanvas, QRCode, QRReader, Camera, Microphone, AudioStream and DPad; animation components such as AnimatedBox, AnimatedNumber, Sprite and TileMap; editors such as CodeEditor, MarkdownEditor and RichTextEditor; and Scene3D for Three.js scenes."
+            },
+            {
+              "type": "paragraph",
+              "text": "Their presence in the library does not remove browser constraints or host permissions. Media input and advanced host integrations should be checked in the actual deployment, not only in a component catalogue."
+            }
+          ]
+        },
+        {
+          "id": "how-to-learn",
+          "title": "A practical way to learn a component",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Find a working example",
+                  "text": "Start with a bundle that already uses the component for the same kind of task."
+                },
+                {
+                  "title": "Change one property",
+                  "text": "Keep the behaviour understandable while you learn its configuration."
+                },
+                {
+                  "title": "Test the callback",
+                  "text": "Confirm what data an event supplies before writing logic around it."
+                },
+                {
+                  "title": "Test the awkward case",
+                  "text": "Try an empty collection, long label, narrow screen or denied permission."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "forms-tables-dashboards",
+        "audio-media",
+        "threejs-games"
+      ]
+    },
+    {
+      "id": "forms-tables-dashboards",
+      "slug": "forms-tables-dashboards",
+      "title": "Forms, tables and dashboards",
+      "summary": "Build a useful record workflow before adding extra screens, summaries and visual polish.",
+      "kind": "tutorial",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "language",
+      "seo": {
+        "title": "Forms, tables and dashboards | SoftN Docs",
+        "description": "Build SoftN forms, tables and dashboards with XDB, SmartForm, SmartGrid and clear record workflows, validation and empty states."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "one-record-flow",
+          "title": "Start with one record flow",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A record-oriented app usually needs a small loop: enter information, save it, show the result and update it later. Build that loop before adding several dashboards. It makes the relationship between the interface, logic and data easier to test."
+            },
+            {
+              "type": "paragraph",
+              "text": "SoftN documents both ordinary form and data components and smart components that use a collection-oriented configuration. Choose the route that makes your app’s behaviour easiest to explain."
+            }
+          ]
+        },
+        {
+          "id": "smart-form",
+          "title": "A collection-driven form",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<SmartForm\n  collection=\"clients\"\n  fields=\"name:text:required, email:email:required, phone:text\"\n  submitText=\"Add Client\"\n/>",
+              "caption": "A small configuration adapted from the README. The surrounding app must supply the collection and data context."
+            },
+            {
+              "type": "paragraph",
+              "text": "The example identifies the collection and fields, including required name and email inputs. Treat validation at the UI as help for the user, not a substitute for checks on a private backend that accepts submitted data."
+            },
+            {
+              "type": "paragraph",
+              "text": "Decide what happens after a save: clear the form, keep values for a similar next record, show a confirmation or return to a list. Test that the user can tell whether the operation succeeded."
+            }
+          ]
+        },
+        {
+          "id": "smart-grid",
+          "title": "A readable collection view",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<SmartGrid\n  collection=\"clients\"\n  columns=\"name, email, phone, visits\"\n  searchable sortable pageable\n/>",
+              "caption": "A read-oriented configuration adapted from the README. Add editing only after defining and testing the intended update flow."
+            },
+            {
+              "type": "paragraph",
+              "text": "Choose columns for the task, not merely because the fields exist. Long text and too many columns can make a phone layout difficult. A list or card layout may be a better small-screen view."
+            }
+          ]
+        },
+        {
+          "id": "summaries",
+          "title": "Add summaries that answer a question",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SmartStats, chart components and ordinary display components can turn records into a dashboard. Give each summary a clear meaning: open tasks, visits during a period or records needing follow-up. Label the time window and units where they matter."
+            },
+            {
+              "type": "paragraph",
+              "text": "Compute summaries from the same intended records as the list. A dashboard and table that disagree may be using different filters, stale state or preview data instead of the live collection."
+            }
+          ]
+        },
+        {
+          "id": "acceptance",
+          "title": "Test the whole flow",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Start with no records and confirm the next action is clear.",
+                "Submit incomplete or invalid values and check the explanation.",
+                "Create a record and confirm it appears in the view.",
+                "Update a record and verify totals and filters still agree.",
+                "Reopen the app and check the intended persistence.",
+                "Check phone-sized layouts and keyboard access."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "When the flow needs shared authenticated records, add a backend deliberately. Local XDB storage and server authorisation solve different problems."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "xdb-data",
+        "builder",
+        "formlogic"
+      ]
+    },
+    {
+      "id": "xdb-data",
+      "slug": "xdb-data",
+      "title": "Local app data with XDB",
+      "summary": "Understand collections, record operations, seeds, app identity and optional synchronization.",
+      "kind": "reference",
+      "audience": [
+        "developers"
+      ],
+      "groupId": "language",
+      "seo": {
+        "title": "Local app data with XDB | SoftN Docs",
+        "description": "Learn XDB in SoftN: local collections, synchronous record operations, bundle seeds, app-scoped storage and host-dependent synchronization."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "where-xdb-fits",
+          "title": "Records close to the app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "XDB is SoftN’s documented local-first data layer. It provides app-scoped records and a database bridge to app logic. The README describes synchronous CRUD operations backed by an in-memory cache, with persistence and native storage depending on the host."
+            },
+            {
+              "type": "paragraph",
+              "text": "Think of a collection as records of one kind, such as clients or tasks. Think separately about the collection’s schema, its starting seed records and the live records a person creates while using the app."
+            }
+          ]
+        },
+        {
+          "id": "operations",
+          "title": "The documented record operations",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "let client = db.create('clients', {\n  name: 'Avery',\n  email: 'avery@example.com'\n})\n\nlet allClients = db.query('clients')\ndb.update(client.id, { phone: '555-1234' })\ndb.delete(client.id)",
+              "caption": "CRUD call shapes shown in the README, with example data changed. Do not run the final delete when you intend to keep the example record."
+            },
+            {
+              "type": "paragraph",
+              "text": "Create and query name a collection. Update and delete use a record identifier in the documented examples. Do not invent a SQL query language or assume that a record’s field shape matches a plain application object without checking the current API."
+            },
+            {
+              "type": "paragraph",
+              "text": "For a reactive screen, make it clear when the state shown by the UI is refreshed. The README’s small logic example queries records at initialisation and queries again after creating a record."
+            }
+          ]
+        },
+        {
+          "id": "schema-and-seeds",
+          "title": "Model and seed deliberately",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Builder exposes collection structure and seed data. Use schemas to make field intent clear, and ship only seeds that are appropriate for recipients. Do not distribute a real customer dataset merely because it made a convincing local demo."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "Preview is not the exported database",
+              "text": "Builder preview has its own test records. Review the seeds in Data view and test a fresh app instance before assuming the export contains the intended starting data."
+            }
+          ]
+        },
+        {
+          "id": "identity",
+          "title": "App identity is not just a display name",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The general loader isolates bundles by digest, while configured single-app and FormLogic hosts provide their own identity. A display name alone is not an authority to read another app’s data."
+            },
+            {
+              "type": "paragraph",
+              "text": "Treat upgrades and moving between hosts as data-lifecycle decisions. Before changing an identity or deployment, test which records remain available and keep a recovery copy appropriate to that host."
+            }
+          ]
+        },
+        {
+          "id": "sync",
+          "title": "Synchronization is optional and host-dependent",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "await db.startSync('my-room-name')",
+              "caption": "The README’s synchronization entry point. The host must support and permit sync."
+            },
+            {
+              "type": "paragraph",
+              "text": "A room name is not an authentication or privacy policy. Decide who may participate, how access is controlled and what the host actually provides before using synchronization for sensitive or multi-user records."
+            },
+            {
+              "type": "paragraph",
+              "text": "Local persistence, peer-to-peer sync and a private server database are not interchangeable features. Choose the one that matches the app’s ownership, sharing and recovery needs."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "offline-local-data",
+        "permissions",
+        "formlogic"
+      ]
+    },
+    {
+      "id": "assets-themes-responsive",
+      "slug": "assets-themes-responsive",
+      "title": "Assets, themes and responsive layouts",
+      "summary": "Keep an app readable, portable and testable across sizes without relying on your own browser cache.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "language",
+      "seo": {
+        "title": "Assets, themes and responsive layouts | SoftN Docs",
+        "description": "Manage SoftN assets, light and dark themes, and responsive layouts. Test exported bundles, narrow screens and fresh app instances."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "portable-assets",
+          "title": "Keep distributable assets with the app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A typical bundle includes an assets directory for images, styles and other app resources. The README describes asset() for template asset resolution and the audio API resolving bundle paths in the same way."
+            },
+            {
+              "type": "paragraph",
+              "text": "A local file that exists only on your development machine is not automatically part of the exported app. Reopen the exported bundle in a fresh context to catch missing resources that your current preview or browser cache may hide."
+            },
+            {
+              "type": "code",
+              "language": "softn",
+              "code": "<Image src={asset(\"assets/cover.png\")} />",
+              "caption": "An illustrative use of the documented asset helper with an Image component. Include the referenced file in the app."
+            }
+          ]
+        },
+        {
+          "id": "themes",
+          "title": "Design for the theme you support",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README’s introductory app uses an App theme property and demonstrates Fieldnotes in light and dark presentations. It also describes switching the runtime theme without clearing unfinished input."
+            },
+            {
+              "type": "paragraph",
+              "text": "Test your own colours in each supported theme. A hard-coded text colour that works on one background can become unreadable on another. Use meaning, labels and shape as well as colour to communicate status."
+            }
+          ]
+        },
+        {
+          "id": "responsive",
+          "title": "A preview size is a test case",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Builder previews desktop, tablet and phone sizes, but responsive behaviour is still part of the authored layout. Switching preview size does not automatically redesign an overflowing table or a navigation bar with too many items."
+            },
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Check the narrowest screen you intend to support.",
+                "Try long headings, validation messages and realistic record values.",
+                "Keep important controls reachable without horizontal scrolling.",
+                "Check how charts and tables behave when their container shrinks.",
+                "Test the actual interaction after a theme or viewport change."
+              ]
+            }
+          ]
+        },
+        {
+          "id": "network-dependencies",
+          "title": "Be deliberate about remote assets",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A remote image, font, audio file or model makes the app depend on a network service even when its records are local. Decide whether the asset should be bundled, fetched when needed or treated as optional."
+            },
+            {
+              "type": "paragraph",
+              "text": "For an app that must work offline, test after the host reports the saved app ready, then disable the connection and exercise the real workflow. The word local-first does not automatically package a remote resource."
+            }
+          ]
+        },
+        {
+          "id": "finish",
+          "title": "A small release check",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Export",
+                  "text": "Build the bundle you actually intend to distribute."
+                },
+                {
+                  "title": "Open fresh",
+                  "text": "Avoid relying only on an existing populated preview."
+                },
+                {
+                  "title": "Check assets",
+                  "text": "Look for missing images, fonts, models or audio."
+                },
+                {
+                  "title": "Check layout",
+                  "text": "Use a phone-sized viewport and each supported theme."
+                },
+                {
+                  "title": "Check ownership",
+                  "text": "Include only assets you have permission to distribute."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "builder",
+        "offline-local-data",
+        "threejs-games"
+      ]
+    },
+    {
+      "id": "architecture",
+      "slug": "architecture",
+      "title": "How SoftN, ZIPP and XDB fit together",
+      "summary": "A readable map of the interface, guest logic, data and hosting responsibilities.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "language",
+      "seo": {
+        "title": "How SoftN, ZIPP and XDB fit together | SoftN Docs",
+        "description": "Understand SoftN architecture: .ui rendering through React, .logic in the ZIPP WebAssembly engine, XDB records and optional backend hosts."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "zipp-wasm",
+        "zipp-architecture"
+      ],
+      "sections": [
+        {
+          "id": "a-map",
+          "title": "A small map of the platform",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN connects an editable UI language, application behaviour and records. Its architecture is easier to understand when you keep the renderer, the script engine, the database and the host as separate responsibilities."
+            },
+            {
+              "type": "code",
+              "language": "text",
+              "code": "Editable .softn client bundle\n  |\n  +-- .ui source --> SoftN parser / renderer --> React interface\n  |\n  +-- .logic ----> ZIPP bytecode VM ----------> app behaviour\n  |\n  +-- XDB seeds and assets\n\nHost integration connects behaviour to app-scoped records\nand explicitly supported, granted capabilities.\n\nOptional private backend\n  authenticated actions --> server logic / server database",
+              "caption": "Conceptual responsibility map. A backend is separate from a public client download."
+            }
+          ]
+        },
+        {
+          "id": "ui",
+          "title": "The UI route",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README describes a lexer, parser and renderer turning .ui source into React elements through a component registry. Component properties and template expressions connect the visible interface to the app’s state."
+            },
+            {
+              "type": "paragraph",
+              "text": "The developer works with SoftN’s source format. React is part of the host’s rendering implementation, not a requirement that every app author maintain a separate React project."
+            }
+          ]
+        },
+        {
+          "id": "logic",
+          "title": "The logic route",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "ZIPP compiles guest source to register bytecode and executes it. In the browser, the published WebAssembly build uses its interpreter rather than the upstream native JIT tiers."
+            },
+            {
+              "type": "paragraph",
+              "text": "SoftN synchronises script globals and UI-side state around script calls and supplies host bridges. This is why a button handler can update a variable and change a rendered expression without receiving unrestricted access to the browser’s entire environment."
+            }
+          ]
+        },
+        {
+          "id": "data",
+          "title": "The data route",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "XDB supplies app-scoped local records. Bundle seeds can provide starting content, while the host controls persistence and identity. Optional synchronization and native storage depend on what the host supports and allows."
+            },
+            {
+              "type": "paragraph",
+              "text": "A private SQLite database on a server is a different resource with different access rules. A client can request named backend operations without receiving a copy of that database or its credentials."
+            }
+          ]
+        },
+        {
+          "id": "portability",
+          "title": "What portability connects",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Builder, Studio and Runtime can work with the same editable bundle, while a browser, desktop loader or configured website provides the execution environment. FormLogic is an optional connected host with its own authenticated backend path."
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "A shared engine is not shared authority",
+              "text": "The README describes hosts sharing verified engine bytes while each worker or app keeps its own instance, memory and permissions. Reusing an artifact does not mean sharing a running VM or granting access between apps."
+            }
+          ]
+        },
+        {
+          "id": "next",
+          "title": "Read the layer you are changing",
+          "blocks": [
+            {
+              "type": "cards",
+              "pageIds": [
+                "ui-language",
+                "logic-zipp",
+                "xdb-data",
+                "hosting"
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "softn-app-format",
+        "permissions",
+        "formlogic"
+      ]
+    },
+    {
+      "id": "audio-media",
+      "slug": "audio-media",
+      "title": "Audio, microphone and media",
+      "summary": "Add sound deliberately, understand autoplay, and distinguish playback from access to a person’s microphone or camera.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "capabilities",
+      "seo": {
+        "title": "Audio, microphone and media | SoftN Docs",
+        "description": "Use audio and media in SoftN. Learn documented sound playback, browser autoplay behaviour, microphone and camera permissions and testing."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "playback",
+          "title": "Play sound from app logic",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README documents softn.audio for playing sound from .logic. Asset paths are resolved inside the bundle. Playback is different from microphone capture: playing a bundled sound does not read microphone data."
+            },
+            {
+              "type": "code",
+              "language": "javascript",
+              "code": "softn.audio.play('assets/pickup.wav')\n\nsoftn.audio.play(\n  'assets/theme.mp3',\n  { volume: 0.4, loop: true },\n  function (result) {\n    themeHandle = result.handle\n  }\n)\n\nsoftn.audio.setVolume(0.5)\n// Later, after themeHandle has been assigned:\n// softn.audio.stop(themeHandle)\n// softn.audio.stopAll()",
+              "caption": "Documented playback calls. Declare themeHandle in your app state and include both audio files."
+            },
+            {
+              "type": "paragraph",
+              "text": "The documented setVolume operation scales current and subsequent playback. The runtime stops the audio an app started when that app closes."
+            }
+          ]
+        },
+        {
+          "id": "autoplay",
+          "title": "The first interaction matters",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Browsers can refuse playback before the user interacts with the page. SoftN’s documented one-shot result reports played: false and blocked: true in that situation. A looped soundtrack is deferred until a click or keystroke."
+            },
+            {
+              "type": "paragraph",
+              "text": "Design the first screen so sound is optional rather than the only explanation of what is happening. A visible Start action is easier to understand than an app that depends on immediate audio."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "Test on a fresh page",
+              "text": "A browser that has already received your clicks is not a useful test of the first-visit autoplay path."
+            }
+          ]
+        },
+        {
+          "id": "capture",
+          "title": "Microphone and camera are different permissions",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The documented component library includes Camera, Microphone and AudioStream. Capture requires host support and the relevant permissions, and the browser may also ask the person for consent."
+            },
+            {
+              "type": "paragraph",
+              "text": "The audio playback API is not permission-gated in the same way as microphone capture. Do not broaden an app’s requested capabilities merely to play a bundled sound effect."
+            },
+            {
+              "type": "callout",
+              "tone": "warning",
+              "title": "Ask only when the feature needs it",
+              "text": "Explain what capture is for and provide a useful denied-permission state. Do not silently upload captured material or embed private service credentials in the client."
+            }
+          ]
+        },
+        {
+          "id": "test-media",
+          "title": "Test the full media flow",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Try a fresh session before any interaction.",
+                "Try permission denial and a device without the requested input.",
+                "Check that playback and capture stop at the intended point.",
+                "Check volume, mute behaviour and visible feedback.",
+                "Try the browser and host you plan to support, not only the development preview."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "Exact capture callbacks and advanced speech APIs are outside this introductory guide. Use the project’s current media and local-speech references for the version you deploy."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "permissions",
+        "components",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "threejs-games",
+      "slug": "threejs-games",
+      "title": "3D apps and games with SoftN",
+      "summary": "Combine a readable interface with scenes, controls, animation and sound without confusing rendering with engine execution.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "capabilities",
+      "seo": {
+        "title": "3D apps and games with SoftN | SoftN Docs",
+        "description": "Explore 3D apps and games in SoftN with Scene3D, Three.js, animation, pixel components, input and sound, plus browser performance checks."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "zipp-wasm"
+      ],
+      "sections": [
+        {
+          "id": "the-pieces",
+          "title": "An app can be more than a form",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN’s documented component library includes Scene3D backed by Three.js, along with animation, sprite, tile and pixel-oriented components. Those building blocks make interactive scenes and games possible within the same editable app format."
+            },
+            {
+              "type": "paragraph",
+              "text": "Keep the game’s responsibilities clear. The scene displays the world; controls capture player intent; .logic updates the app’s state; and the host provides supported capabilities. A settings panel or task list can use ordinary UI components around the scene."
+            }
+          ]
+        },
+        {
+          "id": "choose-dimensions",
+          "title": "Choose the presentation the interaction needs",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Approach",
+                "Documented starting points"
+              ],
+              "rows": [
+                [
+                  "Readable 2D or grid-based play",
+                  "PixelGrid, PixelCanvas, Sprite, TileMap"
+                ],
+                [
+                  "Animated UI and movement",
+                  "AnimatedBox, Draggable, PanView, AnimatedNumber"
+                ],
+                [
+                  "3D scenes",
+                  "Scene3D and the Three.js integration"
+                ],
+                [
+                  "Directional controls",
+                  "DPad and supported pointer or keyboard input"
+                ],
+                [
+                  "Feedback",
+                  "Text, overlays and the softn.audio playback API"
+                ]
+              ],
+              "caption": "Select a small set of components, then test one playable interaction."
+            },
+            {
+              "type": "paragraph",
+              "text": "The README names GLTF, OBJ, FBX and STL in its Scene3D description. Follow a working example for the exact model-loading and scene configuration contract rather than guessing component properties."
+            }
+          ]
+        },
+        {
+          "id": "input",
+          "title": "Make input and interruption explicit",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The state and events guide explains the difference between template callbacks and the host’s plain-data keyboard and pointer events. For a held control, account for release, cancellation and leaving the control area."
+            },
+            {
+              "type": "paragraph",
+              "text": "Plan what happens when a player opens settings, switches apps or closes the game. A running workspace, an in-memory game state and a saved game are different lifetimes."
+            }
+          ]
+        },
+        {
+          "id": "performance",
+          "title": "Measure the actual browser build",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "ZIPP’s browser artifact is interpreter-only; native JIT performance is not a prediction of game performance in a SoftN browser host. Rendering, scene complexity, asset loading, script work and host-boundary traffic can all affect responsiveness."
+            },
+            {
+              "type": "paragraph",
+              "text": "Start with a small scene and one interaction. Measure frame time, startup time and memory while adding content, rather than trying to diagnose a fully populated world all at once."
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "Rendering and compute are separate",
+              "text": "A Three.js scene is not proof that the app can call every ZIPP GPU-compute API. Host support, integration and permission still determine access."
+            }
+          ]
+        },
+        {
+          "id": "release-check",
+          "title": "Check playability, not just a screenshot",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Make the first action obvious and provide a restart path.",
+                "Keep important text and controls readable on a small viewport.",
+                "Test missing audio permission or blocked autoplay where relevant.",
+                "Use bundled assets or document the required network resources.",
+                "Test the exported bundle for longer than a single successful frame."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "For your first game, one reliable loop with a clear outcome is a better test of the platform than a large map with unfinished controls."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "state-events",
+        "audio-media",
+        "assets-themes-responsive"
+      ]
+    },
+    {
+      "id": "permissions",
+      "slug": "permissions",
+      "title": "Permissions and sandboxing",
+      "summary": "Understand requested capabilities, host grants, browser consent and the limits of an editable client bundle.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "capabilities",
+      "seo": {
+        "title": "Permissions and sandboxing | SoftN Docs",
+        "description": "Understand SoftN permissions and sandboxing: permission.json, host grants, network allowlists, browser consent and private client-server boundaries."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "zipp-wasm"
+      ],
+      "sections": [
+        {
+          "id": "three-questions",
+          "title": "Three questions before an app uses a capability",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A useful way to reason about a host operation is to ask: does the app declare it, does this host support and grant it, and does the surrounding browser or service allow it? Those checks can fail independently."
+            },
+            {
+              "type": "paragraph",
+              "text": "The README describes gated capabilities including networking, camera, microphone, filesystem, AI, GPU, synchronization, server storage and host acceleration. A bundle without the relevant declarations can still run ordinary UI and logic, but cannot assume access to those host operations."
+            }
+          ]
+        },
+        {
+          "id": "declaration",
+          "title": "A small network declaration",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "json",
+              "code": "{\n  \"permissions\": {\n    \"net\": {\n      \"enabled\": true,\n      \"allowed_hosts\": [\"api.example.com\"]\n    }\n  }\n}",
+              "caption": "The network permission shape shown in the README. example.com is a placeholder, not a service supplied by SoftN."
+            },
+            {
+              "type": "paragraph",
+              "text": "A declaration requests a capability. It does not authenticate to that API, grant server-side access or prove that a destination is appropriate. Use the smallest set of destinations and operations the app needs."
+            },
+            {
+              "type": "paragraph",
+              "text": "Treat permission.json as part of the app’s public explanation. Someone opening the bundle should be able to understand why a task planner or media app needs each requested capability."
+            }
+          ]
+        },
+        {
+          "id": "sandbox",
+          "title": "The host boundary is part of the design",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The browser uses the ZIPP WebAssembly engine for guest logic and SoftN exposes the supported integration points. ZIPP’s published documentation describes default-deny host calls and distinguishes installing a bridge from granting authority."
+            },
+            {
+              "type": "paragraph",
+              "text": "Sandboxing is an implementation boundary, not a promise that every app or host is risk-free. Host code, app data handling, resource limits and private backend authorisation still need appropriate testing."
+            },
+            {
+              "type": "callout",
+              "tone": "warning",
+              "title": "No client-side hiding place for secrets",
+              "text": "A .softn bundle is editable, inspectable source. Keep service credentials and private server databases in a deployment designed to keep them on the server."
+            }
+          ]
+        },
+        {
+          "id": "identity",
+          "title": "Keep identity separate from labels",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A friendly app name is a label, not a storage credential. General bundle loading uses digest-based isolation; configured single-app and FormLogic hosts use their own deployment identity. Test what happens to data and grants when publishing an update."
+            }
+          ]
+        },
+        {
+          "id": "test-denial",
+          "title": "Test the denied path too",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Remove an unneeded capability",
+                  "text": "Confirm that the app’s core local flow still works."
+                },
+                {
+                  "title": "Deny a needed capability",
+                  "text": "Show a clear explanation and a way to continue or stop safely."
+                },
+                {
+                  "title": "Try an unsupported host",
+                  "text": "Distinguish not supported from not granted and from a service error."
+                },
+                {
+                  "title": "Review the download",
+                  "text": "Confirm that private material did not enter the client archive."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "scope",
+          "title": "What this guide does not certify",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "These pages describe the documented capability model. They do not certify a deployment’s security or assert that any particular host configuration is safe for sensitive records. Review the actual version, host policy and backend before making that decision."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "private-backend",
+        "runtime",
+        "language-support"
+      ]
+    },
+    {
+      "id": "offline-local-data",
+      "slug": "offline-local-data",
+      "title": "Offline use, local data and app identity",
+      "summary": "Know what your browser keeps, what an export carries and what needs a separate backup or server.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "capabilities",
+      "seo": {
+        "title": "Offline use, local data and app identity | SoftN Docs",
+        "description": "Understand offline SoftN apps, browser libraries, local records, bundle seeds, host identity and the limits of local-first persistence."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "local-first",
+          "title": "Local-first describes a data approach, not every dependency",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN’s README describes app-scoped XDB records and a browser library for opened apps. Saved apps show offline readiness. Those features help a local workflow, but they do not make a remote API or externally hosted asset available without a connection."
+            },
+            {
+              "type": "paragraph",
+              "text": "Test the actual app flow offline, not only whether its first screen opens. A form might be local while its submit action or background image still depends on a server."
+            }
+          ]
+        },
+        {
+          "id": "four-things",
+          "title": "Keep four kinds of state separate",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Thing",
+                "What it represents"
+              ],
+              "rows": [
+                [
+                  "Editable bundle",
+                  "The client source, configuration, seeds and distributable assets"
+                ],
+                [
+                  "Running state",
+                  "What is currently happening in a live app, such as unfinished input"
+                ],
+                [
+                  "Local records",
+                  "Data kept by the app’s storage integration and identity"
+                ],
+                [
+                  "Private backend data",
+                  "Server-side records governed by that deployment’s access rules"
+                ]
+              ],
+              "caption": "Exporting or closing one of these does not automatically transfer or preserve the others."
+            },
+            {
+              "type": "paragraph",
+              "text": "Builder preview data adds another testing context. Use Data view to inspect the seeds you plan to distribute, and check a fresh Runtime instance to see the recipient’s starting experience."
+            }
+          ]
+        },
+        {
+          "id": "browser",
+          "title": "Treat the browser library as this browser’s library",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The documented web library keeps apps opened in that browser. It is not a universal account-wide library merely because the app has a name. A different profile or host can have a different library and storage context."
+            },
+            {
+              "type": "paragraph",
+              "text": "Keep a separate exported copy of important app source. For important live records, use the backup or export facilities provided by the chosen host and confirm that you can restore them. Do not assume the project export button is a complete record backup."
+            }
+          ]
+        },
+        {
+          "id": "updates",
+          "title": "An update can involve identity decisions",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The general loader uses bundle digests for isolation. Configured single-app and FormLogic hosts provide their own deployment identity. Before shipping an update, test whether the host treats it as the same app for records and grants."
+            },
+            {
+              "type": "callout",
+              "tone": "tip",
+              "title": "Test upgrades before replacing a working app",
+              "text": "Use a non-production copy with representative records. Check loading, identity, schema changes and the recovery path."
+            }
+          ]
+        },
+        {
+          "id": "offline-check",
+          "title": "A practical offline check",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Prepare the app",
+                  "text": "Open the intended bundle and check the host’s offline-readiness indication."
+                },
+                {
+                  "title": "Create a test record",
+                  "text": "Use a disposable record whose presence you can recognise."
+                },
+                {
+                  "title": "Disable the connection",
+                  "text": "Exercise the real workflow, including assets and any submit action."
+                },
+                {
+                  "title": "Close and reopen",
+                  "text": "Check which local data survives and which network operations need to wait."
+                },
+                {
+                  "title": "Restore the connection",
+                  "text": "Confirm the app handles returning online without confusing duplicate or failed actions."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "xdb-data",
+        "runtime",
+        "hosting"
+      ]
+    },
+    {
+      "id": "language-support",
+      "slug": "language-support",
+      "title": "JavaScript, Python and compatibility",
+      "summary": "Use JavaScript for documented SoftN app logic and treat the experimental Python frontend as a separate integration concern.",
+      "kind": "experimental",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "capabilities",
+      "seo": {
+        "title": "JavaScript, Python and compatibility | SoftN Docs",
+        "description": "Understand SoftN language support: JavaScript .logic, the bundled ZIPP engine, experimental Python and why host integration matters."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "zipp-python",
+        "zipp-wasm"
+      ],
+      "sections": [
+        {
+          "id": "default",
+          "title": "JavaScript remains the documented app path",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The retrieved SoftN README says existing .logic screens continue to use JavaScript. It identifies the checked-in browser engine as ZIPP v0.0.18, built locally with JavaScript and experimental Python support."
+            },
+            {
+              "type": "paragraph",
+              "text": "Those statements describe two different layers: languages present in an engine artifact, and languages wired into an app’s normal UI, state and lifecycle. Do not assume that including a frontend automatically turns a .logic screen into a Python screen."
+            }
+          ]
+        },
+        {
+          "id": "python",
+          "title": "What ZIPP’s Python frontend means",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "ZIPP’s published Python guide describes a Python 3 frontend that parses source and lowers it to the same register bytecode VM. It is an implementation of Python semantics on that engine, not an embedded CPython process or a general pip environment."
+            },
+            {
+              "type": "paragraph",
+              "text": "The guide lists supported language features and documented gaps. Its Torch-related work is explicitly an experimental API subset, not native PyTorch or CUDA. Refer to that guide for the current compatibility scope instead of advertising unrestricted package compatibility."
+            },
+            {
+              "type": "callout",
+              "tone": "warning",
+              "title": "Experimental means test the exact workflow",
+              "text": "A successful standalone Python example is not proof of SoftN UI binding, database integration or support for a particular third-party package."
+            }
+          ]
+        },
+        {
+          "id": "host-api",
+          "title": "Engine entry points are not automatically app syntax",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The published ZIPP browser API includes initSource(source, language) and a Python-project entry point. Those are engine-embedding APIs for hosts. This documentation does not invent a SoftN manifest language flag, Python file binding syntax or Python UI lifecycle that has not been verified."
+            },
+            {
+              "type": "paragraph",
+              "text": "Before adopting Python in a SoftN app, consult the repository’s language-support guide and check the actual host integration. For the ordinary app workflow described here, use JavaScript-compatible .logic."
+            }
+          ]
+        },
+        {
+          "id": "compatibility",
+          "title": "Keep three compatibility questions separate",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Question",
+                "What to check"
+              ],
+              "rows": [
+                [
+                  "Does the language parse and run?",
+                  "The engine frontend and its documented language support"
+                ],
+                [
+                  "Does a required API exist?",
+                  "The libraries and bridges exposed by this artifact and host"
+                ],
+                [
+                  "Does the whole app work?",
+                  "UI state, events, permissions, assets, data and lifecycle on the target host"
+                ]
+              ],
+              "caption": "Language conformance, package compatibility and application compatibility are different checks."
+            },
+            {
+              "type": "paragraph",
+              "text": "Avoid treating an upstream JavaScript conformance result as proof of Node.js API compatibility, browser DOM access or Python package support. Each belongs to a different contract."
+            }
+          ]
+        },
+        {
+          "id": "learn-more",
+          "title": "Follow the dedicated references",
+          "blocks": [
+            {
+              "type": "links",
+              "items": [
+                {
+                  "label": "ZIPP Python guide",
+                  "href": "https://www.zipp.org/python/",
+                  "description": "Language scope, experimental features and browser embedding."
+                },
+                {
+                  "label": "ZIPP WebAssembly guide",
+                  "href": "https://www.zipp.org/wasm/",
+                  "description": "Published artifact variants and browser execution model."
+                },
+                {
+                  "label": "SoftN language integration notes",
+                  "href": "https://github.com/f2i-com/softn.com/blob/main/docs/ZIPP_LANGUAGES.md",
+                  "description": "Linked by the SoftN README; its full contents could not be fetched during preparation."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "logic-zipp",
+        "architecture",
+        "development"
+      ]
+    },
+    {
+      "id": "hosting",
+      "slug": "hosting",
+      "title": "Hosting and deploying SoftN apps",
+      "summary": "Choose between opening a bundle, publishing an app, hosting one website or connecting a private backend.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "hosting",
+      "seo": {
+        "title": "Hosting and deploying SoftN apps | SoftN Docs",
+        "description": "Compare SoftN deployment routes: browser and desktop bundles, the app directory, single-app websites, private backends and FormLogic hosting."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "softn-package"
+      ],
+      "sections": [
+        {
+          "id": "choose-first",
+          "title": "Choose the host before configuring everything",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN separates the editable client app from the environment that runs it. The README documents browser and desktop runtimes, app-directory publishing, single-app websites, private PHP serving, server logic with SQLite and FormLogic integration."
+            },
+            {
+              "type": "paragraph",
+              "text": "These are different deployment paths, not a checklist every app must complete. A local planner may need only a bundle and Runtime. An authenticated shared dashboard needs an explicit backend and access policy."
+            }
+          ]
+        },
+        {
+          "id": "routes",
+          "title": "The main deployment routes",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Route",
+                "A good fit",
+                "Remember"
+              ],
+              "rows": [
+                [
+                  "Browser or desktop Runtime",
+                  "Opening and using editable bundles",
+                  "Capabilities and storage depend on the host"
+                ],
+                [
+                  "App directory",
+                  "Publishing a discoverable app with a player page",
+                  "Review client downloads, metadata and publication requirements"
+                ],
+                [
+                  "Single-app runtime",
+                  "One app on its own website",
+                  "Configure app identity, paths and the intended public files"
+                ],
+                [
+                  "Private PHP serving",
+                  "Serving client material from a private deployment archive",
+                  "This does not make code delivered to a browser secret"
+                ],
+                [
+                  "Server logic and SQLite",
+                  "Private operations and server-owned data",
+                  "Keep credentials and database access server-side"
+                ],
+                [
+                  "FormLogic",
+                  "A connected hosted workspace",
+                  "The host owns authentication and named backend access"
+                ]
+              ],
+              "caption": "Deployment routes described in the project README."
+            },
+            {
+              "type": "cards",
+              "pageIds": [
+                "single-app-runtime",
+                "private-backend",
+                "formlogic"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "client-server",
+          "title": "Draw the client-server line early",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A downloadable .softn bundle contains material a recipient can inspect. A private server deployment contains resources that should remain on the server. Do not expect a client export to package, secure and migrate a live backend automatically."
+            },
+            {
+              "type": "paragraph",
+              "text": "If the app has no server requirement, keep it simple. If it does, name the operations the client needs and decide which identity and permissions the server uses to authorise each operation."
+            }
+          ]
+        },
+        {
+          "id": "before-release",
+          "title": "A deployment checklist",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Test the exported client",
+                  "text": "Run the bundle outside the editor preview and check assets, seeds and layout."
+                },
+                {
+                  "title": "Choose stable identity rules",
+                  "text": "Test records and grants across an update using the host’s documented identity model."
+                },
+                {
+                  "title": "Separate private resources",
+                  "text": "Review the client archive and public web directory for unintended material."
+                },
+                {
+                  "title": "Test capabilities",
+                  "text": "Check approved, denied and unsupported cases on the actual host."
+                },
+                {
+                  "title": "Test recovery",
+                  "text": "Keep a known-working release and a tested approach for recovering important records."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "build-commands",
+          "title": "Use the project’s documented build commands",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The root package scripts include build:site, build:single and packaging commands for single-app and private PHP routes. This guide does not guess their flags, archive layouts or required environment variables: follow the linked deployment guides for the version you are building."
+            },
+            {
+              "type": "code",
+              "language": "sh",
+              "code": "npm run build:site\n# For the separate single-app build route:\nnpm run build:single",
+              "caption": "Documented root script names. These build outputs; they are not automatic production deployments."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "publishing",
+        "permissions",
+        "offline-local-data"
+      ]
+    },
+    {
+      "id": "single-app-runtime",
+      "slug": "single-app-runtime",
+      "title": "Host one app on its own website",
+      "summary": "Use the dedicated single-app route while keeping bundle identity, static files and private services understandable.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "hosting",
+      "seo": {
+        "title": "Host one app on its own website | SoftN Docs",
+        "description": "Host a SoftN app on its own website with the single-app runtime. Understand the build route, deployment identity, assets and private backend boundaries."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "softn-package",
+        "zipp-wasm"
+      ],
+      "sections": [
+        {
+          "id": "what-it-is",
+          "title": "A website focused on one app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README describes an unbranded single-app runtime for deploying a SoftN app on its own website. This is the route for making one app the experience, rather than asking visitors to begin in a general-purpose app library."
+            },
+            {
+              "type": "paragraph",
+              "text": "The app remains a SoftN client. Its editable interface and logic are still distinct from any private service it calls. A custom domain does not change which material is delivered to the browser."
+            }
+          ]
+        },
+        {
+          "id": "build-route",
+          "title": "Start with the documented build route",
+          "blocks": [
+            {
+              "type": "code",
+              "language": "sh",
+              "code": "npm ci\nnpm run build:single",
+              "caption": "The root build:single script builds the shared packages and the @softn/single workspace."
+            },
+            {
+              "type": "paragraph",
+              "text": "The root package also provides package:single. Its arguments and app-selection configuration belong to the deployment guide. Do not infer a filename, environment variable or command-line flag from a different host’s instructions."
+            },
+            {
+              "type": "links",
+              "items": [
+                {
+                  "label": "Single-app runtime guide",
+                  "href": "https://github.com/f2i-com/softn.com/blob/main/docs/SINGLE_APP_RUNTIME.md",
+                  "description": "The repository guide linked by the README. Its full contents need review before deployment."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "identity",
+          "title": "Plan identity before shipping updates",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README distinguishes configured single-app identity from the digest-based identity used by the general bundle loader. That matters when an updated bundle should still see the intended records and permission state."
+            },
+            {
+              "type": "paragraph",
+              "text": "Test an update using disposable records before changing a live deployment. Confirm whether the new version opens the same data context and how schema or seed changes affect an existing user. Do not treat the visible app name as a guaranteed migration key."
+            }
+          ]
+        },
+        {
+          "id": "assets",
+          "title": "Check the served app, not only the build",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "After staging the output, open the actual deployed path and verify every needed asset. Missing bundles, incorrect base paths, stale caches and mismatched engine files can look like application failures."
+            },
+            {
+              "type": "paragraph",
+              "text": "For WebAssembly hosts, the engine glue and binary belong to the same artifact. Avoid deploying one without its matching counterpart. Check the actual bundled SoftN engine rather than substituting an upstream artifact based only on its version label."
+            }
+          ]
+        },
+        {
+          "id": "private-resources",
+          "title": "A private backend remains separate",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A single-app site can be the client for private backend operations, but credentials and a server database should remain in the server deployment. Delivering UI to a browser does not make its source confidential."
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "This is a deployment overview",
+              "text": "The source fetch for the detailed single-app guide failed during preparation. This page deliberately avoids claiming exact configuration fields or packaging flags. Review that guide in your checkout before publishing."
+            }
+          ]
+        },
+        {
+          "id": "acceptance",
+          "title": "Before moving the domain to the new build",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Open the deployed app in a fresh browser context.",
+                "Verify assets, engine files and the first-run seed experience.",
+                "Test a returning user with existing records.",
+                "Check denied capabilities and unavailable backend responses.",
+                "Keep a known-working release and a recovery path."
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "hosting",
+        "private-backend",
+        "offline-local-data"
+      ]
+    },
+    {
+      "id": "private-backend",
+      "slug": "private-backend",
+      "title": "Private backends and server-side logic",
+      "summary": "Keep private operations and SQLite data on the server, with a deliberate client-facing API.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "hosting",
+      "seo": {
+        "title": "Private backends and server-side logic | SoftN Docs",
+        "description": "Understand SoftN private backends, server-side .logic and SQLite. Keep client bundles separate from private scripts, credentials and databases."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "when-needed",
+          "title": "When an app needs a server",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A local app does not necessarily need a backend. A server becomes useful when records are shared under authentication, a private service credential is needed, or an operation must be controlled outside the editable client."
+            },
+            {
+              "type": "paragraph",
+              "text": "The README documents server-side .logic and SQLite deployment routes, including a Rust private backend and PHP backend packaging. It also describes FormLogic as a separate connected hosting path. Do not assume those hosts use identical configuration."
+            }
+          ]
+        },
+        {
+          "id": "split",
+          "title": "Separate the responsibilities",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Client app",
+                "Private deployment"
+              ],
+              "rows": [
+                [
+                  "Renders forms, lists and controls",
+                  "Authorises requests and enforces access rules"
+                ],
+                [
+                  "Collects and validates user input for usability",
+                  "Validates input before using private resources"
+                ],
+                [
+                  "Calls supported backend operations",
+                  "Owns private credentials and server database access"
+                ],
+                [
+                  "Displays success or failure",
+                  "Defines the operation’s durable result and error behaviour"
+                ]
+              ],
+              "caption": "Recommended responsibility split for a connected app, not a claim that a client export provisions a server."
+            },
+            {
+              "type": "paragraph",
+              "text": "A server resource packaged for deployment is not a script the browser should execute. The client should know what operation to request, not carry a private database or service secret."
+            }
+          ]
+        },
+        {
+          "id": "source-material",
+          "title": "Private serving is not secret client code",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README also links a private PHP serving route that serves an app from a private archive. Keeping an original archive outside a public directory can be useful deployment hygiene, but material sent to a browser remains inspectable."
+            },
+            {
+              "type": "callout",
+              "tone": "warning",
+              "title": "Review the public output",
+              "text": "Before deploying, inspect both the downloadable client bundle and the public web directory. Keep private server scripts, credentials and databases out of client downloads."
+            }
+          ]
+        },
+        {
+          "id": "contracts",
+          "title": "Define a small backend contract",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Start with a few named operations whose inputs, outputs and authorisation rules are understandable. For example, a planner might need a create-task operation and a list-visible-tasks operation, with the server deciding what the authenticated person can access."
+            },
+            {
+              "type": "paragraph",
+              "text": "Those names are design examples, not built-in SoftN APIs. The actual request wiring depends on the host. Use the relevant host documentation rather than inventing a shared protocol across every deployment route."
+            }
+          ]
+        },
+        {
+          "id": "test",
+          "title": "Test failure and repeat requests",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Check unauthenticated and unauthorised requests through the host’s supported test path.",
+                "Validate malformed and incomplete input server-side.",
+                "Make timeout and unavailable-service messages understandable to the user.",
+                "Decide what happens when a user submits twice or retries an uncertain result.",
+                "Test database recovery and an app-version upgrade before relying on important data."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "This guide is an introduction, not a certification of a deployment’s security. Review the actual host, version and backend implementation before using sensitive information."
+            }
+          ]
+        },
+        {
+          "id": "references",
+          "title": "Use the host-specific guides",
+          "blocks": [
+            {
+              "type": "links",
+              "items": [
+                {
+                  "label": "Rust private backend guide",
+                  "href": "https://github.com/f2i-com/softn.com/blob/main/apps/softn-rust/PRIVATE_BACKEND.md",
+                  "description": "The private-backend guide linked in the README; inspect the current checkout for exact setup."
+                },
+                {
+                  "label": "SoftN repository hosting section",
+                  "href": "https://github.com/f2i-com/softn.com#choose-where-it-runs",
+                  "description": "The project’s entry point to PHP serving, backend packaging and other host guides."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "formlogic",
+        "hosting",
+        "permissions"
+      ]
+    },
+    {
+      "id": "formlogic",
+      "slug": "formlogic",
+      "title": "SoftN and FormLogic",
+      "summary": "Understand the difference between exporting an editable starter and running an authenticated connected workspace.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "hosting",
+      "seo": {
+        "title": "SoftN and FormLogic | SoftN Docs",
+        "description": "Learn SoftN and FormLogic integration: editable starter exports, local XDB, connected iframe apps and named backend actions owned by the host."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "roles",
+          "title": "Two products with different jobs",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN supplies the editable app and runtime. The retrieved README describes FormLogic as the hosted workspace for forms, records, backend actions and app databases. Connecting them does not erase the client-server boundary."
+            },
+            {
+              "type": "paragraph",
+              "text": "There are two documented integration paths: converting a supported form into a local-first starter, and running an app as a connected workspace under a host. Choose the path before assuming what an export contains."
+            }
+          ]
+        },
+        {
+          "id": "starter",
+          "title": "Path one: an editable starter",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The canonical adapter converts supported FormLogic form schemas into editable .softn bundles. The README says the starter uses local XDB data with sync set to false and excludes responses, credentials and access grants."
+            },
+            {
+              "type": "paragraph",
+              "text": "That makes a starter a starting app structure, not a copy of a live account or an automatic connection to the original form’s private data. Inspect the result, customise it and test its local record workflow."
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "An export is not an access grant",
+              "text": "Downloading the client does not transfer permission to a live FormLogic backend."
+            }
+          ]
+        },
+        {
+          "id": "connected",
+          "title": "Path two: a connected workspace",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The connected host renders app source in an isolated iframe. Client logic calls named backend actions through softn.backend.call, while the parent host owns authentication and applies the selected app’s permissions."
+            },
+            {
+              "type": "paragraph",
+              "text": "This guide identifies the documented API family, not an unverified argument signature. Use the current connected-host source and workspace examples to confirm action names, input shapes and error handling for the version you deploy."
+            }
+          ]
+        },
+        {
+          "id": "examples",
+          "title": "Connected examples in the repository",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README points to editable FormLogic and Aokie workspace examples. Aokie’s workspace brings calls, appointments, messages, follow-ups and transcripts into an interface, while the communication services remain part of the host integration."
+            },
+            {
+              "type": "paragraph",
+              "text": "A workspace example demonstrates a client experience. It is not evidence that downloading that bundle also provisions telephony, authenticated records or every external service it displays."
+            }
+          ]
+        },
+        {
+          "id": "server",
+          "title": "Keep server resources on the hosting platform",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "For custom server .logic and SQLite, configure those resources on the hosting platform and expose the operations the client needs. Keep private scripts, credentials and databases server-side."
+            },
+            {
+              "type": "paragraph",
+              "text": "The README also describes FormLogic reusing verified ZIPP engine bytes while each worker or hosted app retains its own instance, memory and permissions. Shared engine delivery is not a shared app-data context."
+            }
+          ]
+        },
+        {
+          "id": "next",
+          "title": "Choose and test the intended path",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Choose starter or connected",
+                  "text": "Make it explicit whether the exported app is local or relies on an authenticated host."
+                },
+                {
+                  "title": "Review the client",
+                  "text": "Inspect seeds, permissions and source for unintended private material."
+                },
+                {
+                  "title": "Review the backend contract",
+                  "text": "For a connected app, verify the actual named actions and their access rules."
+                },
+                {
+                  "title": "Test independently",
+                  "text": "Open the app without the expected backend and confirm the failure is understandable."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "private-backend",
+        "xdb-data",
+        "softn-app-format"
+      ]
+    },
+    {
+      "id": "publishing",
+      "slug": "publishing",
+      "title": "Publish and share a SoftN app",
+      "summary": "Distinguish sharing an editable bundle, saving a project and publishing an app with a hosted page.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "hosting",
+      "seo": {
+        "title": "Publish and share a SoftN app | SoftN Docs",
+        "description": "Publish or share a SoftN app. Understand project saves, bundle exports, directory publishing, app descriptions and release checks."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "ways-to-share",
+          "title": "Choose what you are sharing",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Sharing can mean sending an editable .softn bundle, publishing in the app directory or deploying a single-app website. The README describes directory apps with their own page, browser player and server-storage route."
+            },
+            {
+              "type": "paragraph",
+              "text": "An exported bundle is an artifact someone can open and inspect. A published directory entry is a discovery and hosting workflow. A private backend is yet another deployment resource. Keep these outcomes distinct when explaining an app to a user."
+            }
+          ]
+        },
+        {
+          "id": "vocabulary",
+          "title": "Use clear action names",
+          "blocks": [
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": "Preview",
+                  "description": "Try the current app while editing it."
+                },
+                {
+                  "term": "Run",
+                  "description": "Use an app in its execution environment."
+                },
+                {
+                  "term": "Save project",
+                  "description": "Keep the editable work in the creation workflow; confirm the tool’s actual storage behaviour."
+                },
+                {
+                  "term": "Export bundle",
+                  "description": "Create the portable .softn file you can inspect and reopen."
+                },
+                {
+                  "term": "Publish",
+                  "description": "Use the selected host’s publication workflow to make an app available there."
+                }
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "This vocabulary helps users recognise what they have actually done. The exact controls and availability depend on the tool and host, so avoid presenting a local export as a completed public deployment."
+            }
+          ]
+        },
+        {
+          "id": "description",
+          "title": "Write the description for a person deciding to try it",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Explain what the app does in one sentence, who it is for and the first useful action. Mention any login, network, microphone, camera or backend requirement before the user discovers it through an error."
+            },
+            {
+              "type": "paragraph",
+              "text": "Use a screenshot from the app you are shipping. Show an understandable task or interaction rather than promising capabilities the bundle does not include. Explain whether the app’s data stays local or requires a connected service."
+            }
+          ]
+        },
+        {
+          "id": "before-publish",
+          "title": "Check the release artifact",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "Reopen the exact bundle you plan to publish.",
+                "Review the first-run seed data and empty states.",
+                "Check the client archive for secrets or private records.",
+                "Test permissions and the target host’s supported capabilities.",
+                "Test the published player on a small viewport.",
+                "Keep a source copy and record which release is deployed."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "When a directory workflow uses server storage or publishing APIs locally, the README notes that the development launcher needs PHP available on PATH to exercise those services."
+            }
+          ]
+        },
+        {
+          "id": "after-publish",
+          "title": "Verify the public result",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Open the resulting app page and player as a fresh visitor. Confirm the title, description, screenshot and requirements match the running release. Test the public path rather than assuming that a successful local preview confirms publishing."
+            },
+            {
+              "type": "paragraph",
+              "text": "For a custom website, follow the single-app route. For authenticated private operations, treat backend deployment and permission checks as separate release steps."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "hosting",
+        "single-app-runtime",
+        "examples"
+      ]
+    },
+    {
+      "id": "development",
+      "slug": "development",
+      "title": "Develop SoftN from source",
+      "summary": "Use the repository’s workspace commands and keep browser-app changes separate from rebuilding the engine.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "help",
+      "seo": {
+        "title": "Develop SoftN from source | SoftN Docs",
+        "description": "Develop SoftN from source with documented Node and npm setup, package builds, browser workspaces, tests and the bundled ZIPP WebAssembly artifact."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "softn-package"
+      ],
+      "sections": [
+        {
+          "id": "requirements",
+          "title": "Start with the repository’s requirements",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The root package declares npm workspaces for packages/@softn/*, apps/* and e2e. Its Node engine range is ^20.19.0 or >=22.12.0. Use a supported Node release that satisfies the repository rather than assuming any old Node installation will work."
+            },
+            {
+              "type": "code",
+              "language": "sh",
+              "code": "git clone https://github.com/f2i-com/softn.com.git\ncd softn.com\nnpm ci\nnpm run build:packages\nnpm run dev",
+              "caption": "Documented development setup."
+            },
+            {
+              "type": "paragraph",
+              "text": "The launcher prints the origin to open and can select alternate ports. PHP is needed locally for the documented directory API, publishing and server-storage routes. Demo fetching also needs network access."
+            }
+          ]
+        },
+        {
+          "id": "scripts",
+          "title": "Useful root scripts",
+          "blocks": [
+            {
+              "type": "table",
+              "columns": [
+                "Command",
+                "Purpose shown by the package scripts"
+              ],
+              "rows": [
+                [
+                  "npm run build:packages",
+                  "Build @softn/core, @softn/components and @softn/vite-plugin"
+                ],
+                [
+                  "npm run dev:builder",
+                  "Run the Builder development workspace"
+                ],
+                [
+                  "npm run dev:studio",
+                  "Run the Studio development workspace"
+                ],
+                [
+                  "npm run dev:web",
+                  "Fetch demos and start the web runtime workspace"
+                ],
+                [
+                  "npm run build:site",
+                  "Run scripts/build-site.mjs"
+                ],
+                [
+                  "npm run build:single",
+                  "Build shared packages and the single-app workspace"
+                ],
+                [
+                  "npm run typecheck",
+                  "Run the root TypeScript no-emit check"
+                ],
+                [
+                  "npm run e2e",
+                  "Run the configured Chromium end-to-end project"
+                ]
+              ],
+              "caption": "Script names read from the retrieved root package.json. Availability of services and dependencies still matters."
+            },
+            {
+              "type": "paragraph",
+              "text": "A successful docs build is not evidence that these app builds or tests passed. Run the relevant commands in your checkout when changing application code."
+            }
+          ]
+        },
+        {
+          "id": "engine",
+          "title": "The browser engine is checked in",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The README says the compiled engine is committed under packages/@softn/core/wasm-zipp, so an ordinary browser build does not require a Rust toolchain. SOURCE.json records the artifact’s provenance and checksum."
+            },
+            {
+              "type": "paragraph",
+              "text": "It also identifies vm-adapter.ts as the engine selection point and provides a separate build:zipp-wasm workspace command for engine maintainers. Rebuilding that artifact requires the matching Rust, wasm-bindgen and optimisation tooling described by the current project guide."
+            }
+          ]
+        },
+        {
+          "id": "tests",
+          "title": "Choose tests around the thing you changed",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "For a UI change, exercise rendering, state updates and export-reopen behaviour. For a data change, test empty seeds, existing records and identity across updates. For a host bridge, test unsupported and denied capabilities as well as the successful path."
+            },
+            {
+              "type": "paragraph",
+              "text": "The root scripts provide workspace tests, type checking and end-to-end routes. Read their current definitions before adding a CI command. Some commands fetch demos or need local browser and service dependencies."
+            }
+          ]
+        },
+        {
+          "id": "docs",
+          "title": "Keep documentation tied to observed behaviour",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "When a feature changes, update the relevant article and its source references. Keep a version-specific fact, such as the bundled engine release, tied to the actual artifact. Do not copy an upstream engine claim into the app docs without checking that the host exposes it."
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "This edition’s source-review boundary",
+              "text": "The README and root package scripts were retrieved. Deeper source-file fetches and repository cloning failed, so this kit is not a source audit and does not claim an application build was run."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "getting-started",
+        "architecture",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "troubleshooting",
+      "slug": "troubleshooting",
+      "title": "Troubleshooting SoftN apps",
+      "summary": "Identify whether a problem belongs to the interface, logic, data, permissions, assets or host before changing several layers.",
+      "kind": "guide",
+      "audience": [
+        "app creators",
+        "developers"
+      ],
+      "groupId": "help",
+      "seo": {
+        "title": "Troubleshooting SoftN apps | SoftN Docs",
+        "description": "Troubleshoot SoftN app loading, state updates, records, permissions, audio, offline use, responsive layouts and backend connections."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme"
+      ],
+      "sections": [
+        {
+          "id": "locate",
+          "title": "Find the layer before changing the app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A blank screen, missing record or failed request can come from different layers. Begin by identifying whether the problem is in the exported bundle, UI source, logic, local records, permission state, asset delivery or host configuration."
+            },
+            {
+              "type": "paragraph",
+              "text": "Reproduce with the smallest known app or interaction. Keep the original export so you can compare a failing change with a working copy."
+            }
+          ]
+        },
+        {
+          "id": "load",
+          "title": "The app does not open",
+          "blocks": [
+            {
+              "type": "steps",
+              "items": [
+                {
+                  "title": "Check the artifact",
+                  "text": "Open the exact exported .softn file you plan to share, not only the editor project."
+                },
+                {
+                  "title": "Check the host",
+                  "text": "Confirm the target supports the bundle and required capabilities."
+                },
+                {
+                  "title": "Check delivery",
+                  "text": "For a website, confirm the intended bundle, assets and matching engine files are being served."
+                },
+                {
+                  "title": "Check the error context",
+                  "text": "Record the host, browser, app version and visible error without exposing credentials or private records."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "state",
+          "title": "The button works but the screen does not change",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Check that the template binds the intended function, that the function changes the intended state and that the displayed expression reads that state. Reduce the action to a simple state change before adding database or network work."
+            },
+            {
+              "type": "paragraph",
+              "text": "Do not expect a raw DOM event in an ordinary @click template handler. Use bound state or the documented callback data for that component."
+            }
+          ]
+        },
+        {
+          "id": "records",
+          "title": "The records look missing or different",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Distinguish Builder preview test records, exported seeds and live Runtime records. Then check the host identity. A general bundle digest, a configured single-app identity and a FormLogic deployment are not automatically the same storage context."
+            },
+            {
+              "type": "paragraph",
+              "text": "Do not clear storage as a first step when it contains important records. Preserve a recoverable copy through the host’s supported facilities before testing destructive changes."
+            }
+          ]
+        },
+        {
+          "id": "permissions",
+          "title": "A host operation is denied",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Check declaration, host support, the host’s grant and any browser or service consent separately. A network allowlist does not authenticate to a server; a browser microphone approval does not prove that the app declared the capability correctly."
+            }
+          ]
+        },
+        {
+          "id": "media",
+          "title": "Sound does not play on first load",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The documented playback API handles blocked autoplay. A one-shot can report that playback was blocked, while a looped track waits for a user interaction. Try a clear Start action and check that the bundled path exists."
+            }
+          ]
+        },
+        {
+          "id": "layout-offline",
+          "title": "It works in preview but not elsewhere",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "For layout differences, test the exact viewport and theme rather than assuming responsive preview rewrites the app. For offline differences, check remote assets and backend calls as well as the host’s offline-readiness status."
+            },
+            {
+              "type": "paragraph",
+              "text": "For a connected app, confirm that the expected backend and authentication context exist in the target host. A client export does not carry a live backend session."
+            }
+          ]
+        },
+        {
+          "id": "report",
+          "title": "A useful issue report",
+          "blocks": [
+            {
+              "type": "list",
+              "ordered": false,
+              "items": [
+                "What you expected and what happened instead.",
+                "The smallest steps needed to reproduce it.",
+                "The app version, host, browser and operating environment.",
+                "Whether it fails in preview, the exported bundle, or both.",
+                "A minimal sanitised bundle or source excerpt when it is appropriate to share."
+              ]
+            },
+            {
+              "type": "paragraph",
+              "text": "Keep credentials, private records and personal capture data out of public issue reports."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "permissions",
+        "offline-local-data",
+        "development"
+      ]
+    },
+    {
+      "id": "faq",
+      "slug": "faq",
+      "title": "SoftN frequently asked questions",
+      "summary": "Straight answers about the app format, accounts, AI, local data, hosting, JavaScript and experimental Python.",
+      "kind": "reference",
+      "audience": [
+        "developers"
+      ],
+      "groupId": "help",
+      "seo": {
+        "title": "SoftN frequently asked questions | SoftN Docs",
+        "description": "Answers to common SoftN questions about .softn files, AI accounts, Builder, Runtime, local data, hosting, FormLogic and language support."
+      },
+      "updatedAt": "2026-09-15",
+      "sourceIds": [
+        "softn-readme",
+        "softn-package"
+      ],
+      "sections": [
+        {
+          "id": "what-is",
+          "title": "What is SoftN?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "SoftN is an open-source UI language, visual builder and runtime for editable web and desktop apps. A .softn bundle brings the client interface, logic, data seeds and assets together so the app can be reopened and customised."
+            }
+          ]
+        },
+        {
+          "id": "file",
+          "title": "What is a .softn file?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "It is a ZIP-based portable app bundle. Typical contents include manifest.json, permission.json, UI source, client logic, optional XDB seeds and distributable assets. Export from Builder or follow a current example instead of guessing the manifest structure."
+            }
+          ]
+        },
+        {
+          "id": "ai",
+          "title": "Do I need an AI account?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Not to try Fieldnotes or work directly with app source. Studio’s AI-assisted creation path uses your configured provider. That provider can have its own credentials, service limits and charges."
+            }
+          ]
+        },
+        {
+          "id": "coding",
+          "title": "Do I have to write code?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Builder offers visual editing, schema work and preview. Source remains available for behaviour and structures that need direct editing. It is more accurate to describe an editable visual-and-code workflow than to promise that every possible app needs no code."
+            }
+          ]
+        },
+        {
+          "id": "data",
+          "title": "Where does app data live?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "XDB provides app-scoped local records through the host. Persistence, native storage and synchronization depend on that host. A connected backend can keep separate server-owned records. Bundle seeds and a user’s live records are not the same thing."
+            }
+          ]
+        },
+        {
+          "id": "offline",
+          "title": "Can an app work offline?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The browser library shows offline readiness for saved apps. A particular app may still depend on remote assets or backend operations, so test its real workflow without a connection before relying on offline use."
+            }
+          ]
+        },
+        {
+          "id": "javascript",
+          "title": "Is .logic ordinary browser JavaScript?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "It uses JavaScript, but it runs inside ZIPP with the APIs the host exposes. Do not assume unrestricted DOM access, Node.js APIs or automatic support for arbitrary npm packages."
+            }
+          ]
+        },
+        {
+          "id": "python",
+          "title": "Can I replace .logic with Python?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The retrieved README says existing .logic screens continue to use JavaScript while the bundled engine includes experimental Python support. Language support inside an artifact is not the same as verified Python UI and data integration. Follow the dedicated language-support guide."
+            }
+          ]
+        },
+        {
+          "id": "hosting",
+          "title": "Can I put an app on its own domain?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Yes. The project documents a dedicated single-app runtime. Use its current configuration guide, check deployment identity and keep any private backend resources separate from the public client."
+            }
+          ]
+        },
+        {
+          "id": "formlogic",
+          "title": "Is FormLogic required?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "No. It is an optional connected hosting route. The README distinguishes local-first starter exports from authenticated hosted workspaces that call named backend actions."
+            }
+          ]
+        },
+        {
+          "id": "secrets",
+          "title": "Can I hide an API key in the bundle?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "Treat every client bundle as inspectable. Keep private service credentials on a server and expose only the authorised operations the client needs. A custom domain or private source archive does not make material sent to a browser secret."
+            }
+          ]
+        },
+        {
+          "id": "license",
+          "title": "Is SoftN open source?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "The retrieved repository declares Apache-2.0 licensing. When redistributing a complete app or deployment, also review its included assets, dependencies and any applicable notices rather than assuming every third-party resource has identical terms."
+            }
+          ]
+        },
+        {
+          "id": "complete",
+          "title": "Are these docs a complete API specification?",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "These pages provide friendly workflow and concept coverage based on the accessible documentation. They are not an exhaustive property reference or a completed source audit. Detailed host configuration and experimental integration should be checked against the exact version you deploy."
+            }
+          ]
+        }
+      ],
+      "relatedPageIds": [
+        "what-is-softn",
+        "getting-started",
+        "language-support"
+      ]
+    }
+  ]
+}

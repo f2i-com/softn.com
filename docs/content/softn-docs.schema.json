@@ -1,0 +1,924 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://softn.com/schemas/softn-docs.schema.json",
+  "title": "SoftN documentation content schema",
+  "description": "Typed content blocks for static pages. Cross-reference and output-safety constraints are also enforced by the generator.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "contentVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "site": {
+      "$ref": "#/$defs/site"
+    },
+    "review": {
+      "$ref": "#/$defs/review"
+    },
+    "navigation": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/navigation"
+      },
+      "minItems": 1
+    },
+    "landing": {
+      "$ref": "#/$defs/landing"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/source"
+      },
+      "minItems": 1
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/page"
+      },
+      "minItems": 1
+    }
+  },
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "contentVersion",
+    "site",
+    "review",
+    "navigation",
+    "landing",
+    "sources",
+    "pages"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "date": {
+      "type": "string",
+      "format": "date"
+    },
+    "paragraph": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "paragraph"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "code": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "code"
+        },
+        "language": {
+          "enum": [
+            "softn",
+            "javascript",
+            "json",
+            "sh",
+            "text",
+            "python",
+            "html",
+            "css"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "caption": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "language",
+        "code",
+        "caption"
+      ],
+      "additionalProperties": false
+    },
+    "list": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "list"
+        },
+        "ordered": {
+          "type": "boolean"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "type",
+        "ordered",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "table": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "table"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "minItems": 1
+        },
+        "caption": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "columns",
+        "rows",
+        "caption"
+      ],
+      "additionalProperties": false
+    },
+    "callout": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "callout"
+        },
+        "tone": {
+          "enum": [
+            "note",
+            "tip",
+            "warning"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "tone",
+        "title",
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "steps"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "title",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "type",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "cards": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "cards"
+        },
+        "pageIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "type",
+        "pageIds"
+      ],
+      "additionalProperties": false
+    },
+    "definitions": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "definitions"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "term": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "term",
+              "description"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "type",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "links": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "links"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "href": {
+                "type": "string",
+                "format": "uri"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "label",
+              "href",
+              "description"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "type",
+        "items"
+      ],
+      "additionalProperties": false
+    },
+    "block": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/paragraph"
+        },
+        {
+          "$ref": "#/$defs/code"
+        },
+        {
+          "$ref": "#/$defs/list"
+        },
+        {
+          "$ref": "#/$defs/table"
+        },
+        {
+          "$ref": "#/$defs/callout"
+        },
+        {
+          "$ref": "#/$defs/steps"
+        },
+        {
+          "$ref": "#/$defs/cards"
+        },
+        {
+          "$ref": "#/$defs/definitions"
+        },
+        {
+          "$ref": "#/$defs/links"
+        }
+      ]
+    },
+    "section": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/block"
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "blocks"
+      ],
+      "additionalProperties": false
+    },
+    "page": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^(?:[a-z][a-z0-9-]*)?$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "overview",
+            "guide",
+            "tutorial",
+            "reference",
+            "experimental"
+          ]
+        },
+        "audience": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "groupId": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "seo": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "minLength": 5,
+              "maxLength": 100
+            },
+            "description": {
+              "type": "string",
+              "minLength": 40,
+              "maxLength": 220
+            }
+          },
+          "required": [
+            "title",
+            "description"
+          ],
+          "additionalProperties": false
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date"
+        },
+        "sourceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/section"
+          },
+          "minItems": 1
+        },
+        "relatedPageIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "slug",
+        "title",
+        "summary",
+        "kind",
+        "audience",
+        "groupId",
+        "seo",
+        "updatedAt",
+        "sourceIds",
+        "sections",
+        "relatedPageIds"
+      ],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "kind": {
+          "enum": [
+            "repository-documentation",
+            "repository-source",
+            "official-documentation"
+          ]
+        },
+        "reviewedAt": {
+          "type": "string",
+          "format": "date"
+        },
+        "retrieval": {
+          "enum": [
+            "retrieved",
+            "linked-only"
+          ]
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "url",
+        "kind",
+        "reviewedAt",
+        "retrieval",
+        "notes"
+      ],
+      "additionalProperties": false
+    },
+    "navigation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pageIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/identifier"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "pageIds"
+      ],
+      "additionalProperties": false
+    },
+    "landing": {
+      "type": "object",
+      "properties": {
+        "eyebrow": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cta": {
+          "type": "object",
+          "properties": {
+            "label": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pageId": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*$"
+            }
+          },
+          "required": [
+            "label",
+            "pageId"
+          ],
+          "additionalProperties": false
+        },
+        "cards": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pageId": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "pageId",
+              "label",
+              "description"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "eyebrow",
+        "title",
+        "description",
+        "cta",
+        "cards"
+      ],
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "reviewedAt": {
+          "type": "string",
+          "format": "date"
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri"
+              },
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "commit": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "pattern": "^[0-9a-f]{40}$"
+              }
+            },
+            "required": [
+              "url",
+              "ref",
+              "commit"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "editorialPolicy": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "reviewedAt",
+        "status",
+        "repositories",
+        "limitations",
+        "editorialPolicy"
+      ],
+      "additionalProperties": false
+    },
+    "site": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "documentationTitle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "origin": {
+          "type": "string",
+          "format": "uri"
+        },
+        "basePath": {
+          "type": "string",
+          "pattern": "^/(?:[a-z][a-z0-9-]*/)+$"
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[a-z]{2}(?:-[A-Z]{2})?$"
+        },
+        "tagline": {
+          "type": "string",
+          "minLength": 1
+        },
+        "homeHref": {
+          "const": "/"
+        },
+        "repositoryHref": {
+          "type": "string",
+          "format": "uri"
+        },
+        "footerText": {
+          "type": "string",
+          "minLength": 1
+        },
+        "labels": {
+          "type": "object",
+          "properties": {
+            "docs": {
+              "type": "string",
+              "minLength": 1
+            },
+            "home": {
+              "type": "string",
+              "minLength": 1
+            },
+            "navigation": {
+              "type": "string",
+              "minLength": 1
+            },
+            "search": {
+              "type": "string",
+              "minLength": 1
+            },
+            "searchPlaceholder": {
+              "type": "string",
+              "minLength": 1
+            },
+            "searchHint": {
+              "type": "string",
+              "minLength": 1
+            },
+            "onThisPage": {
+              "type": "string",
+              "minLength": 1
+            },
+            "related": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sources": {
+              "type": "string",
+              "minLength": 1
+            },
+            "updated": {
+              "type": "string",
+              "minLength": 1
+            },
+            "previous": {
+              "type": "string",
+              "minLength": 1
+            },
+            "next": {
+              "type": "string",
+              "minLength": 1
+            },
+            "skip": {
+              "type": "string",
+              "minLength": 1
+            },
+            "menu": {
+              "type": "string",
+              "minLength": 1
+            },
+            "noResults": {
+              "type": "string",
+              "minLength": 1
+            },
+            "allGuides": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceNote": {
+              "type": "string",
+              "minLength": 1
+            },
+            "copy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "copied": {
+              "type": "string",
+              "minLength": 1
+            },
+            "copyFailed": {
+              "type": "string",
+              "minLength": 1
+            },
+            "docsShort": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "docs",
+            "home",
+            "navigation",
+            "search",
+            "searchPlaceholder",
+            "searchHint",
+            "onThisPage",
+            "related",
+            "sources",
+            "updated",
+            "previous",
+            "next",
+            "skip",
+            "menu",
+            "noResults",
+            "allGuides",
+            "sourceNote",
+            "copy",
+            "copied",
+            "copyFailed"
+          ],
+          "additionalProperties": false
+        },
+        "wordmark": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How the name is set in the product bar (the site writes it lower-case)."
+        },
+        "products": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "label",
+              "href"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "href": {
+                "type": "string",
+                "pattern": "^/"
+              }
+            }
+          },
+          "description": "The other SoftN surfaces the product bar links to, as site-relative paths."
+        }
+      },
+      "required": [
+        "name",
+        "documentationTitle",
+        "origin",
+        "basePath",
+        "language",
+        "tagline",
+        "homeHref",
+        "repositoryHref",
+        "footerText",
+        "labels"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

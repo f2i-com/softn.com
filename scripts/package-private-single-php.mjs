@@ -23,5 +23,5 @@ execFileSync(process.execPath,[join(root,'scripts/generate-third-party-notices.m
 for(const name of ['LICENSE','NOTICE'])fs.copyFileSync(join(root,name),join(staging,name));
 const {nodeDir,wasmDir,notices,websocketDir,version}=await prepareBackendInputs();
 packagePhp({runtime:staging,nodeDir,wasmDir,notices,template:true,templateClient:true,websocketDir,
-  htaccess:join(app,'htaccess-backend'),privateDir:join(dist,'private'),startHere:join(app,'PRIVATE_DEPLOYMENT.md'),serveGuide:join(root,'docs/SINGLE_APP_PHP_SERVE.md'),
+  htaccess:join(app,'htaccess-backend'),privateDir:join(dist,'private'),startHere:join(app,'PRIVATE_DEPLOYMENT.md'),serveGuide:join(root,'docs/engineering/SINGLE_APP_PHP_SERVE.md'),
   out:join(root,'release','softn-private-single-php-linux-x64-v'+version+'.zip')});

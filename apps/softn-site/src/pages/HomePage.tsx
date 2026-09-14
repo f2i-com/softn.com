@@ -7,6 +7,7 @@ import { Language } from '../components/Language';
 import { Pipeline } from '../components/Pipeline';
 import { ComponentIndex } from '../components/ComponentIndex';
 import { Reveal } from '../components/Reveal';
+import { LearnDocs } from '../components/LearnDocs';
 import { WorkspacePreview } from '../components/WorkspacePreview';
 import { ExampleWalkthrough } from '../components/ExampleWalkthrough';
 import { BUILDER_HREF, STUDIO_HREF } from '../lib/appUrls';
@@ -289,6 +290,8 @@ export function HomePage({
           </div>
         </div>
       </Reveal>
+
+      <LearnDocs />
 
       <Language />
       <Pipeline />

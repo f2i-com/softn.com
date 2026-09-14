@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { flushSync } from 'react-dom';
 // From the minimal and theme entries, not the root barrel: the barrel is the
 // eager path, and keeping Scene3D out of the shell would then rest on the
-// bundler tree-shaking it away (docs/COMPONENT_LOADING.md).
+// bundler tree-shaking it away (docs/engineering/COMPONENT_LOADING.md).
 import { Spinner, Box, Text } from '@softn/components/minimal';
 import { ThemeProvider } from '@softn/components/theme';
 import { DropZone } from './components/DropZone';

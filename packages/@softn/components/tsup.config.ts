@@ -4,7 +4,7 @@ export default defineConfig({
   // The object form pins the output names — dist/lazy.js, dist/scene3d.js —
   // which package.json's exports and the hosts' build-graph tests address.
   // `index` is the legacy barrel with everything in it; the rest are the
-  // entries described in docs/COMPONENT_LOADING.md. Code splitting keeps a
+  // entries described in docs/engineering/COMPONENT_LOADING.md. Code splitting keeps a
   // component that two entries share (the theme tokens, say) in one chunk
   // both import, and turns lazy.ts's import('./charts') into a reference to
   // dist/charts.js rather than a second copy of the charts.

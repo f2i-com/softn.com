@@ -13,6 +13,9 @@
  *   dist/play/       the single-app shell: /play/<slug> is an app's own page,
  *                    rendered by the API with the app's configuration written
  *                    in, so the page fetches the bundle and nothing else first
+ *   dist/docs/       the documentation: static pages generated from
+ *                    docs/content/softn-docs.json (docs/scripts/build-docs.mjs),
+ *                    with sitemap-docs.xml and robots.txt beside index.html
  *   dist/api/        the directory API (PHP), executed by the host, never served
  *   dist/data/       the directory's state; starts out holding only the rules
  *                    that keep it unserved
@@ -31,6 +34,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { precompressTree } from './precompress-assets.mjs';
+import { buildSite as buildDocs } from '../docs/scripts/build-docs.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.join(root, 'dist');
@@ -362,6 +366,10 @@ server {
         try_files $uri =404;
     }
 
+    # A guide asked for without its trailing slash goes to its canonical URL
+    # (Apache does this with DirectorySlash); the docs are real files, so
+    # the general rules below serve them and 404 what is not there.
+    location ~ ^/docs/[^/.]+$ { return 301 $uri/; }
     location /web/ { try_files $uri $uri/ @softn_web; }
     location /builder/ { try_files $uri $uri/ @softn_builder; }
     location /studio/ { try_files $uri $uri/ @softn_studio; }
@@ -513,7 +521,7 @@ Texas Hold'em's online table is a separate process — softn-server running
 the bundle's own server logic — which this static release does not include.
 Without it the app still plays solo, with bots, and over peer-to-peer sync.
 To offer online tables, run the process and proxy a path of the site to it;
-the recipe is \`docs/hosting-the-poker-authority.md\` in the repository.
+the recipe is \`docs/engineering/hosting-the-poker-authority.md\` in the repository.
 
 ## nginx
 
@@ -533,7 +541,8 @@ workers and browser permissions outside localhost.
 - \`/play/\` — the single-app shell; \`/play/<slug>\` is where an app plays
 - \`/builder/\` — visual builder
 - \`/studio/\` — AI studio
-${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — the same bundles, clearly separated, as `.softn` downloads\n' : ''}- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
+${withDemos ? '- `/demos/` — the example bundles the live site links to\n- `/softn-files/` — the same bundles, clearly separated, as `.softn` downloads\n' : ''}- \`/docs/\` — the documentation: static pages, readable without JavaScript, with \`sitemap-docs.xml\` and \`robots.txt\` at the root
+- \`/api/\` — the directory API (PHP + SQLite) and \`/data/\` — its state, never served
 
 \`BUILD-INFO.json\` records the exact SoftN revision, whether the source tree had
 uncommitted changes, and the Zipp revision/hash used by the browser runtime.
@@ -681,6 +690,23 @@ ${downloadLinks}
   return catalogue.length;
 }
 
+/**
+ * The guides under dist/docs/, the docs sitemap, and a robots.txt that names
+ * it. The generator owns only the files it wrote (its manifest sits beside
+ * index.html as .softn-docs-build.json) and refuses to touch anything else,
+ * so it never overwrites the site; the site had no robots.txt before, so
+ * this one is written whole and keeps the directory's state out of crawlers.
+ */
+async function writeDocumentation() {
+  const result = await buildDocs({ outDir, writeIntegration: false });
+  if (!fs.existsSync(path.join(outDir, 'docs', 'index.html'))) throw new Error('The documentation build produced no docs/index.html');
+  if (!fs.existsSync(path.join(outDir, 'sitemap-docs.xml'))) throw new Error('The documentation build produced no sitemap-docs.xml');
+  fs.writeFileSync(
+    path.join(outDir, 'robots.txt'),
+    `User-agent: *\nDisallow: /data/\nDisallow: /api/\n\nSitemap: ${result.origin}/sitemap-docs.xml\n`,
+  );
+  return result;
+}
 function writeDeploymentFiles() {
   fs.writeFileSync(path.join(outDir, '.htaccess'), APACHE_CONFIG);
   fs.writeFileSync(path.join(outDir, 'nginx.conf.example'), NGINX_CONFIG);
@@ -735,6 +761,14 @@ run(['run', 'build:components']);
 for (const app of [...APPS, PLAY]) {
   run(['run', 'build', '-w', app.workspace], { VITE_BASE: app.base });
 }
+
+// The documentation is generated twice: once here, so the card data the
+// site's front door imports (docs/generated/landing.json) is current before
+// the site build, and again below into dist/ once the site's own files are
+// in place. Both runs validate the content, so a broken guide fails the
+// build before anything is uploaded.
+console.log('\n> docs (validate, refresh landing data)');
+await buildDocs({ outDir: path.join(root, 'docs/dist') });
 
 // The site links to the apps by path, not by localhost port.
 run(['run', 'build', '-w', '@softn/site'], {
@@ -917,6 +951,9 @@ copyDirectoryApi();
 const bundleCount = withDemos ? copyCanonicalBundles(demos) : 0;
 writeDeepLinkFallbacks();
 writeDeploymentFiles();
+const docsResult = await writeDocumentation();
+console.log(`
+Documentation: ${docsResult.pages} guides, ${docsResult.files} files under ${docsResult.basePath}`);
 run(['run', 'licenses:site']);
 writeBuildInfo();
 precompressAssets();

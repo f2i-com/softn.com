@@ -28,7 +28,7 @@ execFileSync(
 );
 for (const name of ['LICENSE', 'NOTICE'])
   fs.copyFileSync(path.join(root, name), path.join(dist, name));
-fs.copyFileSync(path.join(root, 'docs/SINGLE_APP_PHP_SERVE.md'), path.join(dist, 'DEPLOYMENT.md'));
+fs.copyFileSync(path.join(root, 'docs/engineering/SINGLE_APP_PHP_SERVE.md'), path.join(dist, 'DEPLOYMENT.md'));
 const entries = {};
 function collect(dir, relative = '') {
   for (const item of fs.readdirSync(dir, { withFileTypes: true })) {

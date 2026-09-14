@@ -1,0 +1,15 @@
+<logic>
+  let count = 0
+
+  function increment() {
+    count = count + 1
+  }
+</logic>
+
+<App theme="dark">
+  <Stack direction="vertical" gap="md" padding="lg">
+    <Heading level={1}>My first SoftN app</Heading>
+    <Text>Count: {count}</Text>
+    <Button variant="primary" @click={increment}>Increment</Button>
+  </Stack>
+</App>

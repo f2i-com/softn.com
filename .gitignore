@@ -61,3 +61,10 @@ __pycache__/
 
 # Standalone regression tests of the vendored compatibility backport.
 vendor/glib/Cargo.lock
+
+# The documentation generator (docs/scripts/build-docs.mjs) writes its own
+# dist/ and derives a few files; only generated/landing.json is committed,
+# because the site imports it and a fresh checkout must typecheck.
+docs/dist/
+docs/generated/*
+!docs/generated/landing.json

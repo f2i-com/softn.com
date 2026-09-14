@@ -129,7 +129,7 @@ Use the editable [FormLogic workspace](examples/formlogic-workspace) and [Aokie 
 
 For an app with custom backend `.logic` and SQLite, configure those server resources in the hosting platform and expose the actions the client needs. Keep private scripts, credentials and databases on the server. Downloading the client bundle does not copy a live backend or grant access to it.
 
-The [starter conversion guide](docs/FORMLOGIC_INTEGRATION.md) explains schema mapping and export boundaries. The host source and workspace examples above show the connected runtime; [private backend deployment](apps/softn-rust/PRIVATE_BACKEND.md) covers SoftN's own server host.
+The [starter conversion guide](docs/engineering/FORMLOGIC_INTEGRATION.md) explains schema mapping and export boundaries. The host source and workspace examples above show the connected runtime; [private backend deployment](apps/softn-rust/PRIVATE_BACKEND.md) covers SoftN's own server host.
 
 ## Choose where it runs
 
@@ -137,8 +137,8 @@ The [starter conversion guide](docs/FORMLOGIC_INTEGRATION.md) explains schema ma
 | :-------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------- |
 | **Browser or desktop**      | Open a bundle in [SoftN Web](apps/softn-web) or the [Tauri loader](apps/softn-loader).                                                  |
 | **App directory**           | Publish a bundle with its own page, browser player and server storage. See the [directory guide](apps/softn-api/README.md).             |
-| **Your own website**        | Deploy the app in an unbranded [single-app runtime](docs/SINGLE_APP_RUNTIME.md).                                                        |
-| **Private PHP deployment**  | Serve a single app from a private archive using the [PHP deployment guide](docs/SINGLE_APP_PHP_SERVE.md).                               |
+| **Your own website**        | Deploy the app in an unbranded [single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md).                                                        |
+| **Private PHP deployment**  | Serve a single app from a private archive using the [PHP deployment guide](docs/engineering/SINGLE_APP_PHP_SERVE.md).                               |
 | **Server logic and SQLite** | Use the [Rust private backend](apps/softn-rust/PRIVATE_BACKEND.md) or [PHP backend packaging](apps/softn-php/SINGLE_APP_DEPLOYMENT.md). |
 | **FormLogic**               | Use the connected host and named backend actions described above.                                                                       |
 
@@ -160,12 +160,13 @@ Capabilities such as network, microphone and synchronization require support and
 
 | Topic                   | Read next                                                                                                                                                      |
 | :---------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The guides              | [softn.com/docs](https://softn.com/docs/): thirty pages from "What is SoftN?" to hosting, generated from [`docs/content/softn-docs.json`](docs/README.md)         |
 | Language and components | Expand the reference below for `.ui`, `.logic`, SmartForm, SmartGrid, audio and 3D examples.                                                                   |
-| Data modeling           | [Builder collections, ER relationships and record references](docs/BUILDER_DATA.md)                                                                         |
-| Loading and composition | [Bundle loading](docs/BUNDLE_LOADING.md) · [Component loading](docs/COMPONENT_LOADING.md) · [Reopening local apps](docs/LOCAL_APP_REOPEN.md)                   |
-| Hosting                 | [Single-app runtime](docs/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/SINGLE_APP_PHP_SERVE.md) · [Private backend](apps/softn-rust/PRIVATE_BACKEND.md) |
-| FormLogic               | [Starter adapter](docs/FORMLOGIC_INTEGRATION.md) · [Connected host](apps/formlogic-host/src/main.tsx) · [Workspace examples](examples)                         |
-| Local speech            | [Local speech guide](docs/LOCAL_SPEECH.md)                                                                                                                     |
+| Data modeling           | [Builder collections, ER relationships and record references](docs/engineering/BUILDER_DATA.md)                                                                         |
+| Loading and composition | [Bundle loading](docs/engineering/BUNDLE_LOADING.md) · [Component loading](docs/engineering/COMPONENT_LOADING.md) · [Reopening local apps](docs/engineering/LOCAL_APP_REOPEN.md)                   |
+| Hosting                 | [Single-app runtime](docs/engineering/SINGLE_APP_RUNTIME.md) · [Private PHP serving](docs/engineering/SINGLE_APP_PHP_SERVE.md) · [Private backend](apps/softn-rust/PRIVATE_BACKEND.md) |
+| FormLogic               | [Starter adapter](docs/engineering/FORMLOGIC_INTEGRATION.md) · [Connected host](apps/formlogic-host/src/main.tsx) · [Workspace examples](examples)                         |
+| Local speech            | [Local speech guide](docs/engineering/LOCAL_SPEECH.md)                                                                                                                     |
 | Development             | [Setup, tests and key source paths](#development)                                                                                                              |
 
 <details>
@@ -337,7 +338,7 @@ declares, so an app that ships without one can run but cannot reach the host:
 { "permissions": { "net": { "enabled": true, "allowed_hosts": ["api.example.com"] } } }
 ```
 
-Storage identity and permission grants are host-specific. The general bundle loader isolates bundles by digest; configured single-app and FormLogic hosts supply their own deployment identity. A manifest name alone does not grant access to another app's records. See the [single-app identity rules](docs/SINGLE_APP_RUNTIME.md#permissions-and-local-records).
+Storage identity and permission grants are host-specific. The general bundle loader isolates bundles by digest; configured single-app and FormLogic hosts supply their own deployment identity. A manifest name alone does not grant access to another app's records. See the [single-app identity rules](docs/engineering/SINGLE_APP_RUNTIME.md#permissions-and-local-records).
 
 ---
 
@@ -366,7 +367,7 @@ The compiled engine is committed at `packages/@softn/core/wasm-zipp/`, so buildi
 Rust toolchain. The current browser engine is **ZIPP v0.0.18**, built locally with JavaScript
 and experimental Python support. Its exact source commit, toolchain and SHA-256 checksum are
 recorded in [SOURCE.json](packages/@softn/core/wasm-zipp/SOURCE.json). Existing `.logic` screens
-continue to use JavaScript. See [language support](docs/ZIPP_LANGUAGES.md) for the Python host API
+continue to use JavaScript. See [language support](docs/engineering/ZIPP_LANGUAGES.md) for the Python host API
 and its current integration limits.
 
 To reproduce the combined artifact from a clean sibling `zipp.org` checkout, rebuild the packages
@@ -873,7 +874,7 @@ engine. The four browser apps — the landing page, the runtime, the builder and
 Studio — need Node alone.
 
 The desktop runtime and Builder use ports 1431 and 1432, separately from the
-unified website. See [desktop apps and the shared bundle workflow](docs/DESKTOP_APPS.md)
+unified website. See [desktop apps and the shared bundle workflow](docs/engineering/DESKTOP_APPS.md)
 for native file dialogs, app transfers, saved-data behavior and manual checks.
 
 The native loader and server use local path dependencies so they can be developed

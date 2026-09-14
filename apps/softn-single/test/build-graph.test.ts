@@ -37,7 +37,7 @@ const HEAVY = /three|scene3d|gltf|fbx|obj|stl|postprocessing/i;
 const FEATURES = ['scene3d', 'charts', 'editors', 'smart', 'media', 'animation'];
 // The Three addons Scene3D reaches through its own import() — the model
 // loaders, the controls, the room environment, the post-processing set,
-// SkeletonUtils and the Meshopt decoder, as docs/SCENE3D_LOADING.md lists
+// SkeletonUtils and the Meshopt decoder, as docs/engineering/SCENE3D_LOADING.md lists
 // them: "fetched on demand, once per page, the first time a scene asks for
 // it". Each is a chunk named after its module. The claim under test is that
 // none is in the scene3d chunk's STATIC closure — the manifest lists each

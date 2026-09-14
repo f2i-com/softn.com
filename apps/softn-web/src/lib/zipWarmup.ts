@@ -15,7 +15,7 @@
  *
  * What this does not do is reduce what was downloaded. The whole archive is
  * fetched and digested before any of this runs, because the bundle's identity
- * and its integrity are computed over all of its bytes; docs/BUNDLE_LOADING.md
+ * and its integrity are computed over all of its bytes; docs/engineering/BUNDLE_LOADING.md
  * says what a partial-fetch design would need instead.
  */
 
