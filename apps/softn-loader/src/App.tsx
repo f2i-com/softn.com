@@ -31,6 +31,7 @@ import {
   type InstallationChoice,
   type LoaderDecision,
   type LoaderQuestion,
+  type RecoveryRequiredChoice,
   type RegistryDamagedChoice,
   type UnresolvedUpgradeChoice,
   type UpgradeInProgress,
@@ -360,9 +361,19 @@ function App(): React.ReactElement {
     let loadedAssets: AppAssetResolver | undefined;
     const remoteControllers = new Set<AbortController>();
 
+    // The question the identity flow is waiting on, if any: a newer selection
+    // answers it with "cancel" so the old continuation stops before any new
+    // side effect (R4-SN-01), and the dialog disappears.
+    let pendingQuestion: ((decision: LoaderDecision) => void) | null = null;
     const cleanup = () => {
       for (const controller of remoteControllers) controller.abort();
       remoteControllers.clear();
+      if (pendingQuestion) {
+        const answer = pendingQuestion;
+        pendingQuestion = null;
+        setInstallationChoice(null);
+        answer({ kind: 'cancel' });
+      }
       try {
         (screen.orientation as { unlock?: () => void }).unlock?.();
       } catch {
@@ -442,10 +453,13 @@ function App(): React.ReactElement {
           parsedManifest,
           question => new Promise<LoaderDecision>(resolve => {
             if (!active) { resolve({ kind: 'cancel' }); return; }
-            setInstallationChoice({ ...question, resolve: decision => { setInstallationChoice(null); resolve(decision); } });
+            pendingQuestion = resolve;
+            setInstallationChoice({ ...question, resolve: decision => { pendingQuestion = null; setInstallationChoice(null); resolve(decision); } });
           }),
           backupBeforeUpgrade,
-          restoreFromBackup
+          restoreFromBackup,
+          undefined,
+          { get aborted() { return !active; } }
         );
         if (!active) return;
         if (identity === null) {
@@ -561,6 +575,7 @@ function App(): React.ReactElement {
     {installationChoice?.kind === 'upgrade' && <InstallationChoiceDialog choice={installationChoice} />}
     {installationChoice?.kind === 'registry-damaged' && <RegistryDamagedDialog choice={installationChoice} />}
     {installationChoice?.kind === 'upgrade-unresolved' && <UnresolvedUpgradeDialog choice={installationChoice} />}
+    {installationChoice?.kind === 'recovery-required' && <RecoveryRequiredDialog choice={installationChoice} />}
     {!bundlePath && !loading ? <DesktopWelcome onOpen={openFilePicker} canOpen={isTauri || isMobile} dragging={isDragOver} error={error} />
       : loading ? <div className="desktop-state" role="status"><Spinner size="lg" /><p>Opening {bundlePath?.split(/[/\\]/).pop() || 'your app'}…</p></div>
       : error ? <div className="desktop-state" role="alert"><h1>We couldn’t open this app</h1><p className="desktop-error">{error.message}</p><p>{bundlePath}</p><button className="desktop-button" onClick={goHome}>Back to runtime home</button></div>
@@ -656,6 +671,26 @@ function RegistryDamagedDialog({ choice }: { choice: RegistryDamagedChoice & { r
  * (R3-SN-01): the newer package may already have changed the data, so this
  * older package is not run against it until the person decides.
  */
+/**
+ * A failed upgrade could not be rolled back (R4-SN-02): the installation is
+ * blocked until the verified backup is restored AND that recovery is
+ * recorded. Retry here, or keep the backup file for a manual recovery.
+ */
+function RecoveryRequiredDialog({ choice }: { choice: RecoveryRequiredChoice & { resolve: (decision: LoaderDecision) => void } }) {
+  const { recovery } = choice;
+  return <div className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="recovery-required-title" data-testid="recovery-required">
+    <h1 id="recovery-required-title">{choice.name || 'This app'} needs recovery</h1>
+    <p>On {new Date(recovery.at).toLocaleString()} an upgrade of this installation failed and its data could not be put back from the pre-upgrade backup ({recovery.reason}). Until that backup is restored, no package is run against this data.</p>
+    <p><strong>Restore the backup and retry</strong> restores the verified pre-upgrade snapshot again. The installation is unblocked only when both the restore and its record succeed; otherwise it stays blocked and says why.</p>
+    <p><strong>Cancel</strong> leaves everything as it is. The backup file below is a complete SQLite copy of the pre-upgrade data and can be recovered from by hand.</p>
+    <p className="desktop-muted">Backup: <code>{recovery.backup}</code></p>
+    <div className="desktop-actions">
+      <button className="desktop-button" onClick={() => choice.resolve({ kind: 'retry-restore' })}>Restore the backup and retry</button>
+      <button className="desktop-button desktop-button-primary" onClick={() => choice.resolve({ kind: 'cancel' })}>Cancel</button>
+    </div>
+  </div>;
+}
+
 function UnresolvedUpgradeDialog({ choice }: { choice: UnresolvedUpgradeChoice & { resolve: (decision: LoaderDecision) => void } }) {
   const pending: PendingUpgrade = choice.pending;
   return <div className="desktop-state" role="dialog" aria-modal="true" aria-labelledby="upgrade-unresolved-title" data-testid="upgrade-unresolved">
