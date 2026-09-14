@@ -13,5 +13,10 @@ export function executeSandbox(source: string, input: unknown): unknown {
     const text = JSON.stringify(result);
     if (!text || text.length > 65536) throw Error('Sandbox result exceeds 64 KiB');
     return JSON.parse(text);
-  } finally { engine.free(); }
+  } finally {
+    // dispose() records the dynamic definitions this engine retained in the
+    // shared WASM instance (audit ZP-01); free() alone skips that account and
+    // made these engines invisible to zippInstanceUsage().
+    try { engine.dispose(); } finally { engine.free(); }
+  }
 }

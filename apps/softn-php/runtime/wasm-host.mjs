@@ -42,7 +42,7 @@ export function validateWasmSource(source, appConfig = {}, development = false, 
     for (const route of routes) {
       if (!/^[$A-Z_a-z][$\w]*$/.test(route.handler) || engine.evalInContext('typeof '+route.handler+' === "function"') !== true) throw new Error('Missing route handler');
     }
-  } finally { engine.free(); }
+  } finally { try { engine.dispose(); } finally { engine.free(); } }
 }
 
 export function createWasmHost(db,{key,cryptoDomains,development=false,source,steps=5_000_000,capabilities=[],appConfig={},authorizeRecordEvent=()=>false}={}) {
@@ -106,7 +106,7 @@ export function createWasmHost(db,{key,cryptoDomains,development=false,source,st
     } catch {
       if(transaction)try{db.exec('ROLLBACK');}catch{}
       return {status:transaction?500:503,body:{error:'The request could not be completed.',code:transaction?'host_error':'database_busy'}};
-    } finally {engine?.free();}
+    } finally { if (engine) { try { engine.dispose(); } finally { engine.free(); } } }
   }
   return {invoke,crypto:services.crypto};
 }
