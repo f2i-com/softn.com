@@ -56,7 +56,7 @@ describe('XDB import merge (browser storage)', () => {
     );
 
     expect(values(xdb.getAll('notes'))).toEqual([['record-a', 'second']]);
-    expect(result).toEqual({ imported: 2, skipped: 0, collections: ['notes'] });
+    expect(result).toMatchObject({ imported: 2, skipped: 0, collections: ['notes'] });
   });
 
   it('replaces an existing id in place and keeps the collection order', () => {
@@ -103,7 +103,7 @@ describe('XDB import merge (browser storage)', () => {
     );
 
     expect(values(xdb.getAll('notes'))).toEqual([['good', 'kept']]);
-    expect(result).toEqual({ imported: 1, skipped: 6, collections: ['notes'] });
+    expect(result).toMatchObject({ imported: 1, skipped: 6, collections: ['notes'] });
   });
 
   it('skips a collection whose value is not an array and goes on to the next', () => {
@@ -114,7 +114,7 @@ describe('XDB import merge (browser storage)', () => {
       })
     );
 
-    expect(result).toEqual({ imported: 1, skipped: 1, collections: ['notes'] });
+    expect(result).toMatchObject({ imported: 1, skipped: 1, collections: ['notes'] });
     expect(storage.keys()).toEqual(['test-xdb:notes']);
   });
 
@@ -129,7 +129,7 @@ describe('XDB import merge (browser storage)', () => {
     );
 
     expect(values(xdb.getAll('notes'))).toEqual([['a', 'second']]);
-    expect(result).toEqual({ imported: 2, skipped: 1, collections: ['notes'] });
+    expect(result).toMatchObject({ imported: 2, skipped: 1, collections: ['notes'] });
   });
 
   it('persists each collection once and notifies its subscribers exactly once', () => {
@@ -164,7 +164,7 @@ describe('XDB import merge (browser storage)', () => {
       exportOf({ notes: [row('a', 'notes', 1), row('a', 'notes', 2), { id: null }] })
     );
 
-    expect(xdb.importFromJSON(json)).toEqual({ imported: 2, skipped: 1, collections: ['notes'] });
+    expect(xdb.importFromJSON(json)).toMatchObject({ imported: 2, skipped: 1, collections: ['notes'] });
     expect(xdb.count('notes')).toBe(1);
   });
 });
@@ -208,6 +208,11 @@ describe('XDB import merge (Tauri backend)', () => {
           return args?.record;
         case 'clear_collection':
           return true;
+        case 'import_records': {
+          const batches = args?.batches as Array<{ collection: string; replace: boolean; records: XDBRecord[] }>;
+          for (const batch of batches) backend.set(batch.collection, batch.replace ? [...batch.records] : [...(backend.get(batch.collection) ?? []), ...batch.records]);
+          return { imported: batches.reduce((n, b) => n + b.records.length, 0), tombstoned: 0, collections: batches.map(b => ({ collection: b.collection, replaced: b.replace, imported: b.records.length, tombstoned: 0, epoch: 0 })) };
+        }
         default:
           throw new Error(`Unexpected command: ${cmd}`);
       }
@@ -238,7 +243,7 @@ describe('XDB import merge (Tauri backend)', () => {
       ['a', 'second'],
       ['b', 'keep'],
     ]);
-    expect(result).toEqual({ imported: 2, skipped: 1, collections: ['notes'] });
+    expect(result).toMatchObject({ imported: 2, skipped: 1, collections: ['notes'] });
   });
 
   it('persists the deduplicated rows, never the skipped ones', async () => {
@@ -252,8 +257,13 @@ describe('XDB import merge (Tauri backend)', () => {
       { merge: false }
     );
 
-    const upserts = invoke.mock.calls.filter(([cmd]) => cmd === 'upsert_record');
-    expect(upserts).toHaveLength(1);
-    expect((upserts[0][1] as { record: XDBRecord }).record.data.value).toBe('second');
+    // One bulk native transaction (audit SN-01) carrying only the deduplicated row.
+    const imports = invoke.mock.calls.filter(([cmd]) => cmd === 'import_records');
+    expect(imports).toHaveLength(1);
+    const batches = (imports[0][1] as { batches: Array<{ collection: string; replace: boolean; records: XDBRecord[] }> }).batches;
+    expect(batches).toHaveLength(1);
+    expect(batches[0].replace).toBe(true);
+    expect(batches[0].records.map(r => r.data.value)).toEqual(['second']);
+    expect(invoke.mock.calls.filter(([cmd]) => cmd === 'upsert_record')).toHaveLength(0);
   });
 });

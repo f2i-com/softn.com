@@ -40,10 +40,12 @@ describe('XDB Service (Tauri mode)', () => {
   let backend: Map<string, XDBRecord[]>;
   let listeners: Map<string, (event: { payload: unknown }) => void>;
   let invokeMock: any;
+  let failNextImport = false;
 
   beforeEach(() => {
     backend = new Map();
     listeners = new Map();
+    failNextImport = false;
     invokeMock = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
       switch (cmd) {
         case 'get_collections':
@@ -120,6 +122,29 @@ describe('XDB Service (Tauri mode)', () => {
         case 'clear_collection': {
           backend.delete(String(args?.collection ?? ''));
           return true;
+        }
+        case 'import_records': {
+          if (failNextImport) { failNextImport = false; throw new Error('SQLITE_FULL: database or disk is full'); }
+          const batches = args?.batches as Array<{ collection: string; replace: boolean; records: XDBRecord[] }>;
+          let imported = 0; let tombstoned = 0;
+          const collections: Array<{ collection: string; replaced: boolean; imported: number; tombstoned: number; epoch: number }> = [];
+          for (const batch of batches) {
+            const existing = backend.get(batch.collection) ?? [];
+            const incoming = new Set(batch.records.map((r) => r.id));
+            let batchTombstoned = 0;
+            const next = existing.map((r) => {
+              if (batch.replace && !incoming.has(r.id) && !r.deleted) { batchTombstoned++; return { ...r, deleted: true, updated_at: new Date().toISOString() }; }
+              return r;
+            });
+            for (const record of batch.records) {
+              const index = next.findIndex((r) => r.id === record.id);
+              if (index === -1) next.push(record); else next[index] = record;
+            }
+            backend.set(batch.collection, next);
+            imported += batch.records.length; tombstoned += batchTombstoned;
+            collections.push({ collection: batch.collection, replaced: batch.replace, imported: batch.records.length, tombstoned: batchTombstoned, epoch: 0 });
+          }
+          return { imported, tombstoned, collections };
         }
         default:
           throw new Error(`Unexpected command: ${cmd}`);
@@ -233,42 +258,135 @@ describe('XDB Service (Tauri mode)', () => {
     expect(invokeMock).toHaveBeenCalledWith('upsert_record', { record });
   });
 
-  it('clears the SQLite collection before a replacing import upserts', async () => {
+  // ── Audit SN-01: import/restore acknowledge committed data ──
+
+  it('replaces through ONE native transaction that tombstones absent rows, and only then reports durable', async () => {
     backend.set('tasks', [makeRecord('stale', 'tasks', { title: 'Stale' })]);
     const xdb = new XDBService(undefined, 'test-xdb');
-    await flushPromises();
-    await flushPromises();
+    await xdb.isReady;
     expect(xdb.getAll('tasks')).toHaveLength(1);
 
     invokeMock.mockClear();
     const fresh = makeRecord('fresh', 'tasks', { title: 'Fresh' });
-    xdb.import({ version: 1, exportedAt: '', collections: { tasks: [fresh] } }, { merge: false });
-    await flushPromises();
+    const result = xdb.import({ version: 1, exportedAt: '', collections: { tasks: [fresh] } }, { merge: false });
+    expect(xdb.hasPendingWrites()).toBe(true);
+    const persisted = await result.persisted;
+    expect(persisted).toEqual({ backend: 'native', collections: ['tasks'], imported: 1, tombstoned: 1 });
+    expect(xdb.hasPendingWrites()).toBe(false);
 
-    // Replacing used to swap the memory Map alone; upserts never delete, so
-    // the stale row came back on the next hydration.
+    // No per-record fire-and-forget, no local hard reset: one bulk command.
     const commands = invokeMock.mock.calls.map(([cmd]: [string]) => cmd);
-    expect(commands.indexOf('clear_collection')).toBeGreaterThanOrEqual(0);
-    expect(commands.indexOf('clear_collection')).toBeLessThan(commands.indexOf('upsert_record'));
-    expect(invokeMock).toHaveBeenCalledWith('clear_collection', { collection: 'tasks' });
-    expect(invokeMock).toHaveBeenCalledWith('upsert_record', { record: fresh });
-    expect(backend.get('tasks')?.map((r) => r.id)).toEqual(['fresh']);
+    expect(commands).toEqual(['import_records']);
+    expect(invokeMock).toHaveBeenCalledWith('import_records', { batches: [{ collection: 'tasks', replace: true, records: [fresh] }] });
+    expect(backend.get('tasks')?.filter((r) => !r.deleted).map((r) => r.id)).toEqual(['fresh']);
+    expect(backend.get('tasks')?.find((r) => r.id === 'stale')?.deleted).toBe(true);
     expect(xdb.getAll('tasks').map((r) => r.id)).toEqual(['fresh']);
   });
 
-  it('leaves the SQLite collection in place for a merging import', async () => {
+  it('merges through the same bulk command without tombstoning', async () => {
     backend.set('tasks', [makeRecord('kept', 'tasks', { title: 'Kept' })]);
     const xdb = new XDBService(undefined, 'test-xdb');
-    await flushPromises();
-    await flushPromises();
+    await xdb.isReady;
 
     invokeMock.mockClear();
     const fresh = makeRecord('fresh', 'tasks', { title: 'Fresh' });
-    xdb.import({ version: 1, exportedAt: '', collections: { tasks: [fresh] } });
-    await flushPromises();
-
+    const { persisted } = await xdb.importAsync({ version: 1, exportedAt: '', collections: { tasks: [fresh] } });
+    expect(persisted.tombstoned).toBe(0);
+    expect(invokeMock).toHaveBeenCalledWith('import_records', { batches: [{ collection: 'tasks', replace: false, records: [fresh] }] });
     expect(invokeMock).not.toHaveBeenCalledWith('clear_collection', expect.anything());
     expect(backend.get('tasks')?.map((r) => r.id)).toEqual(['kept', 'fresh']);
+  });
+
+  it('rejects the durable signal and reloads the cache when the native transaction fails', async () => {
+    backend.set('tasks', [makeRecord('kept', 'tasks', { title: 'Kept' })]);
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    failNextImport = true;
+    const fresh = makeRecord('fresh', 'tasks', { title: 'Fresh' });
+    const result = xdb.import({ version: 1, exportedAt: '', collections: { tasks: [fresh] } }, { merge: false });
+    // Optimistic cache first…
+    expect(xdb.getAll('tasks').map((r) => r.id)).toEqual(['fresh']);
+    // …but the caller is told the truth, and the cache goes back to disk.
+    await expect(result.persisted).rejects.toThrow(/SQLITE_FULL/);
+    expect(xdb.getAll('tasks').map((r) => r.id)).toEqual(['kept']);
+    expect(backend.get('tasks')?.map((r) => r.id)).toEqual(['kept']);
+    await expect(xdb.restoreAsync({ version: 1, exportedAt: '', collections: { tasks: [fresh] } })).resolves.toMatchObject({ persisted: { backend: 'native' } });
+    errors.mockRestore();
+  });
+
+  it('restoreAsync refuses a partial restore unless the caller accepts it', async () => {
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    const backup = { version: 1, exportedAt: '', collections: { tasks: [makeRecord('t1', 'tasks', {}), { broken: true } as unknown as XDBRecord], notAList: 'x' as unknown as XDBRecord[] } };
+    await expect(xdb.restoreAsync(backup)).rejects.toThrow(/2 row\(s\) or collection\(s\)/);
+    const accepted = await xdb.restoreAsync(backup, { acceptPartial: true });
+    expect(accepted.skipped).toBe(2);
+    expect(accepted.persisted.imported).toBe(1);
+  });
+
+  it('whenIdle waits for every tracked native write', async () => {
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    xdb.create('tasks', { title: 'a' });
+    xdb.create('tasks', { title: 'b' });
+    expect(xdb.getStorageStatus().pendingWrites).toBe(2);
+    await xdb.whenIdle();
+    expect(xdb.getStorageStatus().pendingWrites).toBe(0);
+    expect(backend.get('tasks')).toHaveLength(2);
+  });
+
+  // ── Audit SN-02: hydration failure is a state, not empty data ──
+
+  it('reports a failed native hydration and refuses resets until a retry succeeds', async () => {
+    backend.set('tasks', [makeRecord('t1', 'tasks', { title: 'Unknown to the cache' })]);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const original = invokeMock.getMockImplementation();
+    let failGetCollection = true;
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_collection' && failGetCollection) throw new Error('IPC failure');
+      return original(cmd, args);
+    });
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady; // liveness…
+    const status = xdb.getStorageStatus();
+    expect(status.state).toBe('degraded'); // …is not success
+    expect(status.hydrated).toBe(false);
+    expect(status.issues.map((i) => i.kind)).toContain('hydration-failed');
+    expect(xdb.isHydrated('tasks')).toBe(false);
+    expect(xdb.getAll('tasks')).toEqual([]);
+    // A reset now would drop the record the cache never saw.
+    expect(() => xdb.clear('tasks')).toThrow(/has not been loaded/);
+    expect(() => xdb.import({ version: 1, exportedAt: '', collections: { tasks: [] } }, { merge: false })).toThrow(/has not been loaded/);
+    expect(backend.get('tasks')).toHaveLength(1);
+    // Non-destructive writes still work: the app stays responsive.
+    xdb.create('tasks', { title: 'new while degraded' });
+    await xdb.whenIdle();
+
+    failGetCollection = false;
+    const recovered = await xdb.retryHydration();
+    expect(recovered.state).toBe('ready');
+    expect(recovered.hydrated).toBe(true);
+    expect(xdb.getAll('tasks').map((r) => r.data.title)).toEqual(expect.arrayContaining(['Unknown to the cache', 'new while degraded']));
+    xdb.clear('tasks');
+    await xdb.whenIdle();
+    errors.mockRestore();
+  });
+
+  it('marks the whole store failed when the collection list cannot be read', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const original = invokeMock.getMockImplementation();
+    invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'get_collections') throw new Error('database locked');
+      return original(cmd, args);
+    });
+    const xdb = new XDBService(undefined, 'test-xdb');
+    await xdb.isReady;
+    expect(xdb.getStorageStatus().state).toBe('failed');
+    expect(xdb.isHydrated()).toBe(false);
+    expect(() => xdb.removeRecord('tasks', 'x')).toThrow(/has not been loaded/);
+    errors.mockRestore();
   });
 
   it('createAsync uses Tauri backend and updates cache', async () => {

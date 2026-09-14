@@ -10,6 +10,7 @@ vi.mock('@tauri-apps/api/window', () => ({ getCurrentWindow: () => ({ setTitle: 
 vi.mock('@softn/components', () => ({ registerAllBuiltins() {}, ThemeProvider: ({ children }: { children: React.ReactNode }) => children, Spinner: () => <span>Loading</span> }));
 vi.mock('@softn/core', () => ({
   SoftNWithXDB: (props: Record<string, unknown>) => { bridge.runner(props); return <p>Running the selected app</p>; },
+  XDBStorageNotice: () => null,
   classifyAsset: () => ({ binary: false, mime: 'text/plain' }),
   readBundleEntries: () => new Map([['manifest.json', new TextEncoder().encode(JSON.stringify({ name: 'Fieldnotes', main: 'main.ui', files: {} }))], ['main.ui', new TextEncoder().encode('<Text>App</Text>')]]),
 }));

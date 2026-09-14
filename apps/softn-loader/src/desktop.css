@@ -29,3 +29,10 @@
 .desktop-state p { max-width: 46rem; color: var(--dim); overflow-wrap: anywhere; }
 .desktop-error { color: var(--danger) !important; }
 @media (max-width: 760px) { .desktop-welcome { grid-template-columns: 1fr; padding: 1.5rem; } .desktop-header { padding-inline: 1rem; gap: 0.75rem; } .desktop-title { display: none; } }
+
+/* Installation choice (audit SN-03): both identities side by side, actions in a row. */
+.desktop-identity { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 16px 0; text-align: left; max-width: 640px; }
+.desktop-identity dt { font-weight: 600; }
+.desktop-identity dd { margin: 0; word-break: break-all; }
+.desktop-identity code { font-size: 0.9em; }
+.desktop-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 16px; }

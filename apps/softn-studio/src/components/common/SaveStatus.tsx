@@ -1,5 +1,5 @@
 import { isHostedEditor, requestHostedSave } from '../../../../shared/hostedEditor';
-import React, { useSyncExternalStore } from 'react';
+import React, { useState, useSyncExternalStore } from 'react';
 import { Icon } from './Icon';
 import { getSaveStatus, subscribeSaveStatus, type SaveStatus } from '../../lib/projectSession';
 import { exportCurrentProject } from './ProjectActions';
@@ -36,10 +36,38 @@ export function describeSaveStatus(status: SaveStatus): { label: string; detail:
   }
 }
 
+/**
+ * Hosted in FormLogic (audit SN-04): the button reports what actually
+ * happened — sent and acknowledged, refused, or not connected — instead of
+ * silently returning after a click that reached nobody.
+ */
+function HostedDraftButton(): React.ReactElement {
+  const [state, setState] = useState<{ label: string; error?: string; busy: boolean }>({ label: 'FormLogic draft', busy: false });
+  const send = async () => {
+    if (state.busy) return;
+    const hosted = requestHostedSave();
+    if (!hosted.handled) {
+      setState({ label: 'FormLogic draft', error: hosted.reason === 'disconnected' ? 'FormLogic is not connected. Your project stays in Studio; try again in a moment.' : 'Not hosted in FormLogic.', busy: false });
+      return;
+    }
+    setState({ label: 'Sending to FormLogic…', busy: true });
+    const result = await hosted.completion;
+    setState(result.ok
+      ? { label: 'Returned to FormLogic draft', busy: false }
+      : { label: 'FormLogic draft', error: result.error ?? 'FormLogic could not take the draft. Your project is still here.', busy: false });
+  };
+  return (
+    <span role={state.error ? 'alert' : 'status'} aria-live={state.error ? 'assertive' : 'polite'} style={styles.box} title={state.error ?? 'Return this draft to FormLogic to review and publish'}>
+      <button type="button" onClick={() => void send()} disabled={state.busy} style={{ ...styles.exportBtn, cursor: state.busy ? 'progress' : 'pointer' }}>{state.label}</button>
+      {state.error && <span style={styles.detail}> — {state.error}</span>}
+    </span>
+  );
+}
+
 export function SaveStatusIndicator({ compact = false }: { compact?: boolean }): React.ReactElement {
   const status = useSaveStatus();
   const { label, detail, tone } = describeSaveStatus(status);
-  if (isHostedEditor()) return <button type="button" onClick={requestHostedSave} style={styles.box} title="Return this draft to FormLogic to review and publish">FormLogic draft</button>;
+  if (isHostedEditor()) return <HostedDraftButton />;
   const failed = status.state === 'failed';
   return (
     <div

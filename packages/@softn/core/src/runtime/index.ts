@@ -8,6 +8,7 @@ export * from './context';
 export * from './script-runtime';
 export * from './reactivity';
 export * from './xdb';
+export * from './xdb-storage-notice';
 export * from './xdb-server-sync';
 export * from './helpers';
 export * from './form-binding';
