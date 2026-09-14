@@ -107,7 +107,10 @@ export function validateBundle(
     } else if (isObject(groups) && Array.isArray(groups.ui)) {
       const listed = groups.ui.some((p) => typeof p === 'string' && resolveEntry(files, p, 'ui')?.path === main.path);
       if (!listed) {
-        error(`Entry file "${manifest.main}" is not listed in manifest.files.ui, so it would not be loaded. Add it to the ui group.`);
+        // Core, the launcher and Studio open such a bundle (the entry is
+        // read by `main`, not by its listing), so the Builder does too, and
+        // lists it: refusing here was the one place a valid bundle failed.
+        result.warnings.push(`Entry file "${manifest.main}" is not listed in manifest.files.ui; it is loaded anyway and the export will list it.`);
       }
     }
   }

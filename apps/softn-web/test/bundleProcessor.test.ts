@@ -30,6 +30,16 @@ function makeZip(files: Record<string, string | Uint8Array>, level = 6): Uint8Ar
 }
 
 describe('bundleProcessor', () => {
+  it('opens a manifest that names only its entry (no files), as core does', async () => {
+    // audit-apps H1: `manifest.files.xdb` and `.logic` were dereferenced
+    // unguarded, so a bundle core opens crashed this runtime with a TypeError.
+    const manifest = { name: 'Bare', version: '1.0.0', main: 'ui/main.ui' } as BundleManifest;
+    const textFiles = new Map([['ui/main.ui', '<App><logic>let n = 1;</logic><Text>{n}</Text></App>']]);
+    const composed = processBundle(textFiles, manifest);
+    expect(composed.source).toContain('let n = 1;');
+    await expect(loadXDBData(textFiles, manifest, `bare-${Date.now()}`)).resolves.toBeUndefined();
+  });
+
   it('adds missing flat XDB seeds without reviving a deleted seed', async () => {
     const appId = `bundle-processor-${Date.now()}-${Math.random()}`;
     const xdb = getXDB(appId);

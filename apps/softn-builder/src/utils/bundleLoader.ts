@@ -134,18 +134,10 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
   if (!mainEntry) throw new Error(`Invalid bundle: entry file "${manifest.main}" is not in the bundle`);
   let mainFileId: string | null = null;
 
-  // Load UI files
-  for (const uiPath of declaredPaths(manifest, 'ui')) {
-    const found = resolveEntry(files, uiPath, 'ui');
-    if (!found) {
-      // Validation refuses this; the guard is for a manifest edited in between.
-      warnings.push(`UI file not found: ${uiPath}`);
-      continue;
-    }
-    if (consumed.has(found.path)) continue;
-    consumed.add(found.path);
-    if (found.migrated) warnings.push(`UI file "${uiPath}" was found at "${found.path}"; the export will name it there.`);
-
+  // Load UI files. The entry is loaded whether or not `files.ui` lists it:
+  // the runtime reads it by `main`, so a bundle that names it only there is
+  // a valid bundle everywhere else and opens here too (listed on export).
+  const loadUi = (found: NonNullable<ReturnType<typeof resolveEntry>>): void => {
     const source = decoder.decode(found.bytes);
     const parsed = parseSource(source);
 
@@ -171,10 +163,30 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
         collections.push(col);
       }
     }
+  };
+  for (const uiPath of declaredPaths(manifest, 'ui')) {
+    const found = resolveEntry(files, uiPath, 'ui');
+    if (!found) {
+      // Validation refuses this; the guard is for a manifest edited in between.
+      warnings.push(`UI file not found: ${uiPath}`);
+      continue;
+    }
+    if (consumed.has(found.path)) continue;
+    consumed.add(found.path);
+    if (found.migrated) warnings.push(`UI file "${uiPath}" was found at "${found.path}"; the export will name it there.`);
+    loadUi(found);
   }
   if (!mainFileId) {
-    throw new Error(`Invalid bundle: entry file "${manifest.main}" is not listed in manifest.files.ui`);
+    if (consumed.has(mainEntry.path)) {
+      // Listed under another group: the runtime would still read it as the entry.
+      throw new Error(`Invalid bundle: entry file "${manifest.main}" is listed as something other than a UI file`);
+    }
+    consumed.add(mainEntry.path);
+    loadUi(mainEntry);
   }
+  // `loadUi` assigned it through the closure; the compiler cannot see that.
+  const entryFileId: string | null = mainFileId;
+  if (!entryFileId) throw new Error(`Invalid bundle: entry file "${manifest.main}" could not be loaded`);
 
   // Load logic files
   for (const logicPath of declaredPaths(manifest, 'logic')) {
@@ -375,7 +387,7 @@ export async function loadBundle(data: Uint8Array): Promise<LoadedBundle> {
     assets,
     extraEntries,
     mainPath: mainEntry.path,
-    mainFileId,
+    mainFileId: entryFileId,
     warnings,
     permissions,
     iconDataUrl,

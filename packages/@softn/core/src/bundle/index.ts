@@ -9,6 +9,7 @@ export * from './zip';
 export * from './asset-classification';
 export * from './bundle';
 export * from './source-composer';
+export * from './manifest';
 export { createBundleRuntime, SoftNBundleRenderer, useSoftNBundle } from './runtime';
 
 // Note: CLI (cli.ts) is Node.js only and should be run directly via ts-node or compiled separately

@@ -12,6 +12,8 @@ import {
   XDBStorageNotice,
   readBundleEntries,
   classifyAsset,
+  extractPermissions,
+  readManifest,
   type PermissionConfig,
   type AppAssetResolver,
 } from '@softn/core';
@@ -86,7 +88,8 @@ interface BundleManifest {
   description?: string;
   main: string;
   icon?: string;
-  files: {
+  /** Absent in a manifest that names only its entry; core's readManifest fills the groups in. */
+  files?: {
     ui?: string[];
     logic?: string[];
     xdb?: string[];
@@ -416,31 +419,23 @@ function App(): React.ReactElement {
         if (!active) return;
         const { textFiles, binaryFiles } = readZip(data);
 
+        // The one manifest read every host shares (core's readManifest): a
+        // manifest without `files` opens, and one that cannot run is refused
+        // in the inspector's words rather than as a raw SyntaxError.
+        const parsedManifest = readManifest<BundleManifest>(textFiles);
+
         // Keep this load's parsed config in the closure as well as state. React
         // state updates are asynchronous; reading `permissionConfig` below
         // would otherwise inspect the previously opened bundle's policy.
-        let bundlePermissionConfig: PermissionConfig | null = null;
-        const permJson = textFiles.get('permission.json');
-        if (permJson) {
-          try {
-            const parsed: unknown = JSON.parse(permJson);
-            bundlePermissionConfig =
-              parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-                ? (parsed as PermissionConfig)
-                : { permissions: {} };
-          } catch (e) {
-            console.error('[SoftN Loader] Invalid permission.json — denying all capabilities:', e);
-            bundlePermissionConfig = { permissions: {} };
-          }
-        }
+        //
+        // Core's read, shared with the browser runtime and the single-app
+        // hosts: permission.json when the bundle ships one, else the legacy
+        // `manifest.permissions` block, which this loader used to ignore, so
+        // a bundle published before permission.json existed ran with the
+        // network in the browser and was refused it here (audit-core 2.2).
+        const bundlePermissionConfig: PermissionConfig | null = extractPermissions(textFiles, parsedManifest);
         setPermissionConfig(bundlePermissionConfig);
 
-        const manifestContent = textFiles.get('manifest.json');
-        if (!manifestContent) {
-          throw new Error('Bundle missing manifest.json');
-        }
-
-        const parsedManifest: BundleManifest = JSON.parse(manifestContent);
         const resolvedServerConfig = resolveServerConfig(parsedManifest.config?.server);
         setManifest(parsedManifest);
 

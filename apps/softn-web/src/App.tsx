@@ -14,7 +14,7 @@ import { FrameBar } from './components/FrameBar';
 import { ProductBar } from '@softn/brand';
 import type { ConsentRequest } from './components/PermissionBar';
 import type { PermissionConfig } from '@softn/core';
-import { describeHandoffFailure, handoffIdFrom, takeBundleHandoff } from '@softn/core';
+import { ManifestError, describeHandoffFailure, handoffIdFrom, readManifest, takeBundleHandoff } from '@softn/core';
 
 const appShellStyles = `
   @keyframes softn-shell-fade-in {
@@ -673,24 +673,14 @@ function App(): React.ReactElement {
         }
         const { textFiles, binaryFiles, archive } = zip;
 
-        const manifestContent = textFiles.get('manifest.json');
-        if (!manifestContent) {
-          throw new Error('Bundle missing manifest.json');
-        }
-
+        // The one manifest read every host shares (core's readManifest): a
+        // manifest without `files` opens, as it always did in core, and what
+        // cannot run is refused in the inspector's words.
         let manifest: BundleManifest;
         try {
-          manifest = JSON.parse(manifestContent);
-        } catch {
-          throw new Error('Invalid manifest.json: not valid JSON');
-        }
-
-        // Validate required manifest fields
-        if (!manifest.name || typeof manifest.name !== 'string') {
-          throw new Error('Invalid manifest.json: missing or invalid "name"');
-        }
-        if (!manifest.main || typeof manifest.main !== 'string') {
-          throw new Error('Invalid manifest.json: missing or invalid "main"');
+          manifest = readManifest<BundleManifest>(textFiles);
+        } catch (err) {
+          throw err instanceof ManifestError ? new Error(`Invalid manifest.json: ${err.message}`) : err;
         }
         if (manifest.name.length > 255) {
           throw new Error('Invalid manifest.json: name exceeds 255 characters');
@@ -1053,6 +1043,16 @@ function App(): React.ReactElement {
             return null;
           }
           return processBundleData(result.handoff.bytes, `${result.handoff.name || 'app'}.softn`, undefined, initialPage, undefined, undefined, isForeground);
+        }).catch((err: unknown) => {
+          // The hand-off read itself can fail (IndexedDB refused, the store
+          // gone); it used to reject unobserved, and the launcher waited on a
+          // load that would never report. It is the error card now, like a
+          // bundle that will not open.
+          if (isForeground()) {
+            setError(err instanceof Error ? err : new Error(String(err)));
+            setActiveTabId(null);
+          }
+          return null;
         });
       }
 
@@ -1492,7 +1492,13 @@ function App(): React.ReactElement {
       // error on every refresh.
       // Canonicalize from committed selection state, not this older request's
       // result: the user may have returned Home or selected another tab by now.
-      openFromUrl(urlInit.openValue, isForeground).then(() => setUrlReady(true));
+      // Whatever the open does, the URL becomes one a reload can act on: a
+      // rejection here used to leave `urlReady` unset for the session.
+      openFromUrl(urlInit.openValue, isForeground)
+        .catch((err: unknown) => {
+          if (isForeground()) setError(err instanceof Error ? err : new Error(String(err)));
+        })
+        .finally(() => setUrlReady(true));
       return;
     }
 
@@ -1518,16 +1524,20 @@ function App(): React.ReactElement {
         (cached) => processBundleData(cached.bundleData, `${cached.name}.softn`, cached.id, urlInit.page || undefined, undefined, undefined, isForeground),
         fromRemote,
       );
-      attempt.then(async (appName) => {
-        if (!appName) {
-          // If server fetch failed (e.g. offline), fall back to cached version
-          const cachedApp = await getCachedAppByName(urlInit.appName!);
-          if (cachedApp) {
-            await processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined, cachedApp.directorySlug, undefined, isForeground);
+      attempt
+        .then(async (appName) => {
+          if (!appName) {
+            // If server fetch failed (e.g. offline), fall back to cached version
+            const cachedApp = await getCachedAppByName(urlInit.appName!);
+            if (cachedApp) {
+              await processBundleData(cachedApp.bundleData, `${cachedApp.name}.softn`, cachedApp.id, urlInit.page || undefined, cachedApp.directorySlug, undefined, isForeground);
+            }
           }
-        }
-        setUrlReady(true);
-      });
+        })
+        .catch((err: unknown) => {
+          if (isForeground()) setError(err instanceof Error ? err : new Error(String(err)));
+        })
+        .finally(() => setUrlReady(true));
     } else {
       setUrlReady(true);
     }
