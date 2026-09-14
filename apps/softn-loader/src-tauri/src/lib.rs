@@ -158,6 +158,7 @@ pub fn run() {
                     // XDB P2P Database commands
                     xdb::tauri::create_record,
                     xdb::tauri::update_record,
+                    xdb::tauri::update_records,
                     xdb::tauri::delete_record,
                     xdb::tauri::upsert_record,
                     xdb::tauri::get_record,
@@ -188,6 +189,7 @@ pub fn run() {
                     // XDB P2P Database commands
                     xdb::tauri::create_record,
                     xdb::tauri::update_record,
+                    xdb::tauri::update_records,
                     xdb::tauri::delete_record,
                     xdb::tauri::upsert_record,
                     xdb::tauri::get_record,
