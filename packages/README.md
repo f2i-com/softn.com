@@ -28,3 +28,5 @@ exactly as before and add a test that pins it.
 `core/wasm-zipp/` is the compiled engine with its `SOURCE.json` provenance;
 FormLogic vendors the same release and checks the digest, so update it in
 both places together (see `docs/engineering/FORMLOGIC_INTEGRATION.md`).
+
+What FormLogic embeds from these packages (the hosted frame built from `apps/formlogic-host`, Builder and Studio as hosted editors, the native runtime and core's starter adapter) ships already built as `softn-formlogic-runtime-<tag>.zip` on every release; FormLogic fetches that instead of building the packages itself.

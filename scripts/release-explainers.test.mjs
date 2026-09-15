@@ -9,7 +9,7 @@ import { CHANGELOG_MARKER, FRONT_DOOR, NOTES_MARKER, changelogSection, downloads
 const ctx = { tag: 'v9.9.9', engine: 'v0.0.18' };
 
 test('every release package is fully described, in plain words', () => {
-  assert.equal(PACKAGES.length, 5);
+  assert.equal(PACKAGES.length, 6);
   const ids = new Set();
   for (const pkg of PACKAGES) {
     assert.ok(!ids.has(pkg.id), `duplicate id ${pkg.id}`);
@@ -75,7 +75,7 @@ test('the README.md in every archive names its archive, its guide and the releas
   assert.throws(() => startHere('nope', ctx), /Unknown release package/);
 });
 
-test('RELEASE-GUIDE.md compares all five and the notes carry the same table and the tag\'s changelog', () => {
+test('RELEASE-GUIDE.md compares all six and the notes carry the same table and the tag\'s changelog', () => {
   const guide = releaseGuide(ctx);
   const table = downloadsTable(ctx);
   assert.ok(guide.startsWith(`# SoftN ${ctx.tag}: which download do I need?`));
@@ -130,8 +130,13 @@ test('every package script ships README.md first and the guide the explainer nam
   assert.ok(read('scripts/package-single-backend.mjs').includes("explainerFile('single-backend'"));
   assert.ok(read('scripts/package-private-single-php.mjs').includes("explainerFile('private-backend'"));
   assert.ok(read('scripts/test-single-backend.py').includes("'README.md','DEPLOYMENT.md'"), 'the backend archive check asserts the front door and the guide');
-  // All four archive writers go through the one shared writer.
-  for (const script of ['scripts/package-site.mjs', 'scripts/package-single.mjs', 'scripts/package-single-private.mjs', 'apps/softn-host-php/package.mjs']) {
+  // The FormLogic runtime archive: the explainer, the guide and softn-release.json.
+  const formlogic = read('scripts/package-formlogic-runtime.mjs');
+  assert.ok(formlogic.includes("startHere('formlogic-runtime'") && formlogic.includes('FRONT_DOOR'), 'the FormLogic runtime archive ships the explainer by its one name');
+  assert.ok(formlogic.includes("'INTEGRATION.md'") && formlogic.includes("'softn-release.json'"));
+  assert.equal(packageById('formlogic-runtime').guide, 'INTEGRATION.md');
+  // All five archive writers go through the one shared writer.
+  for (const script of ['scripts/package-site.mjs', 'scripts/package-single.mjs', 'scripts/package-single-private.mjs', 'apps/softn-host-php/package.mjs', 'scripts/package-formlogic-runtime.mjs']) {
     assert.ok(read(script).includes('writeArchive('), `${script} uses scripts/lib/archive.mjs`);
     assert.ok(!/(?<!un)zipSync\(/.test(read(script)), `${script} no longer has its own zip writer`);
   }

@@ -18,7 +18,7 @@ except `shared/`, which is one file kept for FormLogic.
 | [`softn-host-php/`](#softn-host-php) | The on-demand server host: PHP starts a bundled Node process per request to run an app's private `.logic` on the ZIPP engine | Apache/PHP on Linux x64 | The `backend/` folder of the two `…-php-linux-x64-…` archives |
 | [`softn-host-rust/`](#softn-host-rust) | `softn-server`: the native private backend with persistent connections and XDB sync | Anywhere Rust builds; behind a reverse proxy | Built from source (`cargo build --release`) |
 | [`softn-loader/`](#softn-loader) | The desktop runtime ("SoftN"): opens `.softn` files natively, stores records in SQLite | Windows, macOS, Linux and Android through Tauri | Installers from `npm run tauri build`; not attached to releases |
-| [`formlogic-host/`](#formlogic-host) | The trusted shell FormLogic embeds to run an app inside its own product | An opaque-origin iframe inside FormLogic | Built by FormLogic's own scripts from this folder |
+| [`formlogic-host/`](#formlogic-host) | The trusted shell FormLogic embeds to run an app inside its own product | An opaque-origin iframe inside FormLogic | `hosted-runtime/` in `softn-formlogic-runtime-<tag>.zip`, which FormLogic fetches from the release |
 | [`shared/`](#shared) | One re-export file kept at a path FormLogic checks | Build time only | Nothing |
 
 ## How they fit together
