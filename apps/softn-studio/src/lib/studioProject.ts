@@ -226,7 +226,7 @@ function buildMainUi(brief: ProjectBrief, blueprint: Blueprint, slugs: string[])
 ${buildDataBlock(blueprint)}<logic src="../logic/main.logic" />
 
 <App theme="${themeFor(brief.style)}" title={appName}>
-  <Container maxWidth="960px">
+  <Container size="lg">
     <Stack direction="vertical" gap="lg" padding="xl">
       <Stack direction="horizontal" gap="md" align="center" wrap>
         <Heading level={1} class="brand">{appName}</Heading>
@@ -235,7 +235,7 @@ ${buildDataBlock(blueprint)}<logic src="../logic/main.logic" />
           <Button variant={page === item.id ? "primary" : "ghost"} size="sm" @click={() => go(item.id)}>{item.label}</Button>
         #end
       </Stack>
-      <Text color="muted">{appDescription}</Text>
+      <Text variant="muted">{appDescription}</Text>
 ${switches}
     </Stack>
   </Container>
@@ -261,7 +261,7 @@ function buildPageUi(blueprint: Blueprint, page: BlueprintPage, index: number): 
   const parts: string[] = [];
   parts.push(`<Stack direction="vertical" gap="md">\n  <Heading level={2}>${label}</Heading>`);
   if (index === 0) {
-    parts.push(`  <Text color="muted">The first page of the app. Describe to the AI what belongs here and it will build it out.</Text>`);
+    parts.push(`  <Text variant="muted">The first page of the app. Describe to the AI what belongs here and it will build it out.</Text>`);
     for (const collection of blueprint.collections) {
       const key = collectionKey(collection.name);
       const fields = collection.fields.filter((f) => f.name !== 'id' && FIELD_IDENT.test(f.name)).slice(0, 4);
@@ -281,7 +281,7 @@ ${cells}
   </Card>`);
     }
   } else {
-    parts.push(`  <Text color="muted">A starting point. Describe to the AI what this page does and it will build it out.</Text>`);
+    parts.push(`  <Text variant="muted">A starting point. Describe to the AI what this page does and it will build it out.</Text>`);
     if (page.components.length > 0) {
       const items = page.components.map((c) => `      <ListItem>${uiText(c)}</ListItem>`).join('\n');
       parts.push(`  <Card title="Planned for this page">\n    <List>\n${items}\n    </List>\n  </Card>`);

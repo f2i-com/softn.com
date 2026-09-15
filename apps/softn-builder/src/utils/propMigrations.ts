@@ -23,6 +23,8 @@
  */
 
 import type { CanvasElement } from '../types/builder';
+import { getComponentMeta } from './componentRegistry';
+import { eventKeyFor } from './eventProps';
 
 export interface PropMigrationNote {
   elementId: string;
@@ -496,12 +498,38 @@ export const PROP_MIGRATIONS: Record<string, Rule> = {
   SortableList: { rename: { itemKey: 'renderKey' } },
 };
 
+/**
+ * A component callback written as a string prop (`onRemove="drop(item)"`, the
+ * old panel's doing) becomes the `@event` the runtime wires up
+ * (`@remove={drop(item)}`). Which props are callbacks is the registry's
+ * `event` type, so this covers every component the panel offers.
+ */
+function moveEventProps(el: CanvasElement, note: Note): void {
+  const meta = getComponentMeta(el.componentType);
+  if (!meta) return;
+  for (const prop of meta.propSchema) {
+    if (prop.type !== 'event' || !has(el, prop.name)) continue;
+    const taken = take(el, prop.name);
+    const handler = taken && typeof taken.value === 'string' ? taken.value.trim() : '';
+    if (!handler) continue;
+    const key = eventKeyFor(prop.name);
+    el.events = el.events ?? {};
+    if (el.events[key]) {
+      note(`${prop.name} was dropped: the element already has @${key}`);
+      continue;
+    }
+    el.events[key] = handler;
+    note(`${prop.name}=${JSON.stringify(handler)} is now @${key}={${handler}}`);
+  }
+}
+
 /** Apply the rules for one element, in place. Returns what changed. */
 export function migrateElementProps(el: CanvasElement): string[] {
-  const rule = PROP_MIGRATIONS[el.componentType];
-  if (!rule) return [];
   const notes: string[] = [];
   const note: Note = (message) => notes.push(message);
+  moveEventProps(el, note);
+  const rule = PROP_MIGRATIONS[el.componentType];
+  if (!rule) return notes;
 
   if (rule.rename) {
     for (const [from, to] of Object.entries(rule.rename)) {

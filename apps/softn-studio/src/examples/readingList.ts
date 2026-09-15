@@ -56,7 +56,7 @@ export const READING_LIST: ExampleProject = {
 <logic src="../logic/main.logic" />
 
 <App theme="light" title={appName}>
-  <Container maxWidth="960px">
+  <Container size="lg">
     <Stack direction="vertical" gap="lg" padding="xl">
       <Stack direction="horizontal" gap="md" align="center" wrap>
         <Heading level={1} class="brand">{appName}</Heading>
@@ -65,7 +65,7 @@ export const READING_LIST: ExampleProject = {
           <Button variant={page === item.id ? "primary" : "ghost"} size="sm" @click={() => go(item.id)}>{item.label}</Button>
         #end
       </Stack>
-      <Text color="muted">{appDescription}</Text>
+      <Text variant="muted">{appDescription}</Text>
       #if (page === "home")
         <HomePage />
       #end
@@ -85,7 +85,7 @@ export const READING_LIST: ExampleProject = {
       path: 'ui/pages/home.ui',
       content: `<Stack direction="vertical" gap="md">
   <Heading level={2}>Home</Heading>
-  <Text color="muted">Books to read, from the books collection. Change this text, then Run the app to see it.</Text>
+  <Text variant="muted">Books to read, from the books collection. Change this text, then Run the app to see it.</Text>
   <Card title="Books">
     #each (item in books)
       <Stack direction="horizontal" gap="md" align="center" wrap>
@@ -104,7 +104,7 @@ export const READING_LIST: ExampleProject = {
       path: 'ui/pages/about.ui',
       content: `<Stack direction="vertical" gap="md">
   <Heading level={2}>About</Heading>
-  <Text color="muted">This is the example project that ships with Studio. It is a complete .softn bundle: a manifest, a permission declaration, two pages, one logic file and one collection.</Text>
+  <Text variant="muted">This is the example project that ships with Studio. It is a complete .softn bundle: a manifest, a permission declaration, two pages, one logic file and one collection.</Text>
   <Card title="What to try">
     <List>
       <ListItem>Change a label on the Home page and watch the preview.</ListItem>

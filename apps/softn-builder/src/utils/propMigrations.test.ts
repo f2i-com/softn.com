@@ -9,6 +9,8 @@ import type { CanvasElement } from '../types/builder';
 import { PROP_MIGRATIONS, describeMigrations, migrateElementProps, migrateElements } from './propMigrations';
 import { componentRegistry } from './componentRegistry';
 import { loadBundle } from './bundleLoader';
+import { generateSource } from './sourceGenerator';
+import { eventKeyFor } from './eventProps';
 
 function element(componentType: string, props: Record<string, unknown>, extra: Partial<CanvasElement> = {}): CanvasElement {
   return { id: 'e1', componentType, props: { ...props }, children: [], parentId: null, expressionProps: [], events: {}, ...extra };
@@ -280,5 +282,60 @@ describe('opening a bundle', () => {
 
   it('describes a migration with the file and the component', () => {
     expect(describeMigrations('ui/x.ui', migrateElements([element('Image', { fit: 'contain' })]))).toEqual(['ui/x.ui: <Image> fit is now objectFit']);
+  });
+});
+
+describe('component callbacks written as string props become events', () => {
+  it('maps a callback prop name to its @event key the way the runtime maps it back', () => {
+    expect(eventKeyFor('onRemove')).toBe('remove');
+    expect(eventKeyFor('onPageChange')).toBe('pageChange');
+    expect(eventKeyFor('onKeyDown')).toBe('keyDown');
+    expect(eventKeyFor('onClick')).toBe('click');
+    expect(eventKeyFor('value')).toBe('value');
+  });
+
+  it('moves onRemove="drop(item)" into the event map and says so', () => {
+    const el = element('Tag', { removable: true, onRemove: 'drop(item)' });
+    expect(migrateElementProps(el)).toEqual(['onRemove="drop(item)" is now @remove={drop(item)}']);
+    expect(el.props).toEqual({ removable: true });
+    expect(el.events).toEqual({ remove: 'drop(item)' });
+  });
+
+  it('covers every event prop the registry offers, for every component', () => {
+    for (const meta of componentRegistry) {
+      for (const prop of meta.propSchema) {
+        if (prop.type !== 'event') continue;
+        const el = element(meta.name, { [prop.name]: 'handle()' });
+        migrateElementProps(el);
+        expect(el.props, `${meta.name}.${prop.name}`).not.toHaveProperty(prop.name);
+        expect(el.events?.[eventKeyFor(prop.name)], `${meta.name}.${prop.name}`).toBe('handle()');
+      }
+    }
+  });
+
+  it('never overwrites an @event the element already has, and ignores an empty string', () => {
+    const kept = element('Tag', { onRemove: 'old()' }, { events: { remove: 'keep()' } });
+    expect(migrateElementProps(kept)).toEqual(['onRemove was dropped: the element already has @remove']);
+    expect(kept.events).toEqual({ remove: 'keep()' });
+    const empty = element('Tag', { onRemove: '' });
+    expect(migrateElementProps(empty)).toEqual([]);
+    expect(empty.props).toEqual({});
+  });
+
+  it('opens a file with the string form migrated and exports it as an @event', async () => {
+    const loaded = await loadBundle(
+      zipSync({
+        'manifest.json': strToU8(JSON.stringify({ name: 'Legacy', version: '1.0.0', main: 'ui/main.ui', files: { ui: ['ui/main.ui'] } })),
+        'ui/main.ui': strToU8('<App><Tag removable onRemove="drop(item)">Old</Tag></App>'),
+      })
+    );
+    expect(loaded.warnings).toContain('ui/main.ui: <Tag> onRemove="drop(item)" is now @remove={drop(item)}');
+    const file = [...loaded.uiFiles.values()][0];
+    const tag = [...file.elements.values()].find((e) => e.componentType === 'Tag')!;
+    expect(tag.props).not.toHaveProperty('onRemove');
+    expect(tag.events).toEqual({ remove: 'drop(item)' });
+    const source = generateSource(file.elements, file.rootId, '');
+    expect(source).toContain('@remove={drop(item)}');
+    expect(source).not.toContain('onRemove');
   });
 });

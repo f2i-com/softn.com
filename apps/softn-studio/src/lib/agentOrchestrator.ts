@@ -407,20 +407,20 @@ Use \`<Scene3D>\` to build 3D scenes, dioramas, and games:
 \`\`\`xml
 <App theme="dark" title="My App">           <!-- App wrapper with theme -->
 <Stack direction="vertical" gap="md">        <!-- vertical | horizontal; gap: xs sm md lg xl -->
-<Box padding="lg" rounded shadow>            <!-- layout box -->
+<Box padding="lg" borderRadius="md" shadow="md"> <!-- layout box; borderRadius/shadow: none sm md lg xl -->
 <Grid columns={3} gap="md">                  <!-- CSS grid -->
 <Card title="Section" subtitle="Info">       <!-- card with header -->
 <Heading level={1}>Title</Heading>           <!-- h1-h6 -->
-<Text size="sm" color="muted">Note</Text>    <!-- text with sizing -->
+<Text size="sm" variant="muted">Note</Text>    <!-- text with sizing -->
 <Button variant="primary" size="lg">Go</Button>  <!-- primary | secondary | ghost | danger -->
 <Input label="Email" placeholder="you@example.com" type="email" />
 <Select label="Role" options={["Admin","User"]} />
 <Badge variant="success">Active</Badge>      <!-- success | warning | danger | info -->
-<Alert type="info" title="Note">Message</Alert>
+<Alert variant="info" title="Note">Message</Alert>   <!-- info | success | warning | error -->
 <Modal open={showModal} title="Confirm" @close={() => showModal = false}>Content</Modal>
-<Tabs items={["Tab 1","Tab 2"]} :activeIndex={activeTab} />
-<Table columns={["Name","Email"]} rows={users} />
-<EmptyState title="No data" description="Get started by adding items" icon="inbox" />
+<Tabs tabs={[{ key: "one", label: "Tab 1" }, { key: "two", label: "Tab 2" }]} :activeKey={activeTab} />  <!-- tabs: [{ key, label }]; @change gets the key -->
+<Table columns={[{ key: "name", header: "Name" }, { key: "email", header: "Email" }]} data={users} />  <!-- columns: [{ key, header }] -->
+<EmptyState title="No data" description="Get started by adding items" />
 <Progress value={75} max={100} />
 <Image src="photo.jpg" alt="Photo" width={200} />
 \`\`\`
@@ -550,7 +550,7 @@ Here is a minimal but complete todo app in .ui format:
 </logic>
 
 <App theme="dark" title="Tasks">
-  <Container maxWidth="600px">
+  <Container size="sm">
     <Stack direction="vertical" gap="lg" padding="xl">
       <Heading level={1}>Tasks</Heading>
 
@@ -559,7 +559,7 @@ Here is a minimal but complete todo app in .ui format:
         <Button @click={addTask} variant="primary">Add</Button>
       </Stack>
 
-      <Tabs items={["All", "Active", "Done"]} @change={(tab) => { filter = tab.toLowerCase() }} />
+      <Tabs tabs={[{ key: "all", label: "All" }, { key: "active", label: "Active" }, { key: "done", label: "Done" }]} defaultActiveKey="all" @change={(key) => { filter = key }} />
 
       #each (task in filtered())
         <Card>
@@ -573,7 +573,7 @@ Here is a minimal but complete todo app in .ui format:
         <EmptyState title="No tasks" description="Add a task to get started" />
       #end
 
-      <Text size="sm" color="muted">{tasks.filter((t) => !t.done).length} remaining</Text>
+      <Text size="sm" variant="muted">{tasks.filter((t) => !t.done).length} remaining</Text>
     </Stack>
   </Container>
 </App>
