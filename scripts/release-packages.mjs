@@ -36,7 +36,7 @@ export function engineLabel(zipp = {}) {
   return 'unknown';
 }
 
-/** The engine label of the vendored ZIPP build in this checkout. */
+/** The engine label of the ZIPP release installed in this checkout. */
 export function vendoredEngineLabel() {
   const source = path.join(root, 'packages/@softn/core/wasm-zipp/SOURCE.json');
   return engineLabel(JSON.parse(fs.readFileSync(source, 'utf8')));
@@ -297,8 +297,9 @@ export const PACKAGES = [
       { path: 'hosted-runtime/', what: 'The app frame FormLogic embeds (`index.html`, `assets/`), with `runtime-manifest.json` naming every file and its checksum.' },
       { path: 'app-editors/', what: '`builder/` and `studio/` built to run inside FormLogic, `manifest.json` (the editor bridge protocol) and a checksum manifest per editor.' },
       { path: 'native-runtime/', what: 'The runner FormLogic starts for native apps: the runtime modules, the ZIPP engine under `wasm/`, licences and `provenance.json`.' },
+      { path: 'zipp/', what: 'The ZIPP browser engine exactly as the ZIPP release ships it (`zipp_wasm.js`, its type declarations, `zipp_wasm_bg.wasm`, `BUILD-INFO.txt`, `PROFILE.json` and the bundle’s own `SHA256SUMS`), ZIPP’s release `SHA256SUMS` as `RELEASE-SHA256SUMS`, the licences, and `SOURCE.json` naming the release. FormLogic installs its browser engine from here.' },
       { path: 'adapter/', what: '`formlogic.ts`, the starter adapter FormLogic vendors, with its `provenance.json`.' },
-      { path: 'softn-release.json', what: 'The tag and commit this was built from, the ZIPP engine version and checksum, the protocol numbers, and a checksum of every other file.' },
+      { path: 'softn-release.json', what: 'The tag and commit this was built from, the ZIPP release the engine came from with its checksums, the protocol numbers, and a checksum of every other file.' },
       { path: 'README.md', what: 'This file.' },
       { path: 'INTEGRATION.md', what: 'The FormLogic integration guide: what the adapter generates, how the hosts embed the runtime, and how FormLogic takes a release.' },
     ],
@@ -306,16 +307,16 @@ export const PACKAGES = [
       'Nothing to deploy by hand: FormLogic\u2019s `prepare-hosted-runtime` fetches the latest release, checks the `.sha256` and every checksum in `softn-release.json`, and unpacks it into the places its build expects.',
       'To pin a release instead of the latest, set `SOFTN_RELEASE=<tag>` in FormLogic\u2019s environment.',
       'To use a downloaded copy (an offline build), set `SOFTN_RELEASE_ARCHIVE=<path to this zip>`; the `.sha256` file must sit beside it.',
-      'FormLogic refuses a release whose ZIPP engine differs from the one it vendors, or whose protocols it does not speak; the message names what to update.',
+      'FormLogic refuses a release whose engine copies do not all match `zipp/`, or whose protocols it does not speak; the message names what to update.',
       'If FormLogic\u2019s vendored adapter is older than `adapter/formlogic.ts`, run `node formlogic/ui/scripts/sync-softn.mjs` there and commit the result.',
     ],
     requirements: [
       'FormLogic at a version that fetches SoftN releases (its `scripts/fetch-softn-release.mjs`).',
-      'The ZIPP engine version FormLogic vendors (`formlogic/ui/vendor/zipp-wasm/SOURCE.json`) must be the one named in `softn-release.json`.',
+      'FormLogic installs the browser engine from `zipp/`. A FormLogic that still vendors its own copy of the engine refuses a release whose engine differs from that copy; pin an older SoftN release there with `SOFTN_RELEASE`.',
     ],
     guide: 'INTEGRATION.md',
     moreGuides: [],
-    sizeNote: 'Medium: three built web apps and one copy of the ZIPP engine.',
+    sizeNote: 'Medium: three built web apps, each with the ZIPP engine it runs, and the engine again under `zipp/` and `native-runtime/`.',
   },
 ];
 

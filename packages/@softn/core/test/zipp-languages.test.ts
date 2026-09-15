@@ -6,11 +6,15 @@ import { Engine, zippProfile } from '../wasm-zipp/zipp_wasm.js';
 import source from '../wasm-zipp/SOURCE.json';
 import { ZippWasmAdapter } from '../src/runtime/zipp-wasm-adapter';
 
-describe('vendored JavaScript and Python engine', () => {
-  it('matches the recorded artifact version, languages and checksum', () => {
+describe('installed JavaScript and Python engine', () => {
+  it('matches the recorded release version, commit, languages and checksum', () => {
     const profile = JSON.parse(zippProfile());
     expect(profile.version).toBe(source.version);
-    expect(profile.languages).toEqual(['javascript', 'python']);
+    expect(source.languages).toContain('python');
+    expect(profile.languages).toEqual(source.languages);
+    // A release build reports the commit it was built from. A local build
+    // (--install-local) reports none, so it fails here by design.
+    expect(profile.source.sha).toBe(source.revision);
     expect(profile.features).toContain('safe-sandbox');
     expect(createHash('sha256').update(new Uint8Array(readFileSync('wasm-zipp/zipp_wasm_bg.wasm'))).digest('hex')).toBe(source.sha256);
   });

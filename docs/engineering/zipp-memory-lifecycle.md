@@ -1,7 +1,8 @@
 # ZIPP memory lifecycle
 
 The original measurement below was checked on 12 September 2026 against ZIPP v0.0.17, revision
-`127477bd667eaf264a403ebd41c617b857574de2` (see `packages/@softn/core/wasm-zipp/SOURCE.json`).
+`127477bd667eaf264a403ebd41c617b857574de2`, the engine then committed to SoftN. The installed
+engine's own release and revision are in `packages/@softn/core/wasm-zipp/SOURCE.json`.
 
 The 110 MB / 200-engine figure in ZIPP's HANDOFF.md is the historical **B306**
 measurement. **B313** subsequently made the compiled Program owned and reclaimable

@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkZippProvenance } from './lib/zipp-provenance.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_FILE = path.join(ROOT, 'package-lock.json');
@@ -290,41 +291,23 @@ inventoryPackages.sort(
 );
 
 const zipp = readJson(ZIPP_SOURCE_FILE, 'the zipp source provenance');
-for (const field of ['repository', 'revision', 'license', 'artifact', 'sha256']) {
-  if (!zipp[field] || typeof zipp[field] !== 'string')
-    fail(`zipp SOURCE.json is missing ${field}.`);
-}
-if (!/^[0-9a-f]{40}$/i.test(zipp.revision))
-  fail('zipp SOURCE.json revision is not a full Git commit.');
-if (!/^[0-9a-f]{64}$/i.test(zipp.sha256)) fail('zipp SOURCE.json sha256 is invalid.');
-const zippArtifact = path.resolve(path.dirname(ZIPP_SOURCE_FILE), zipp.artifact);
-if (
-  !zippArtifact.startsWith(`${path.dirname(ZIPP_SOURCE_FILE)}${path.sep}`) ||
-  !fs.existsSync(zippArtifact)
-) {
-  fail(`zipp SOURCE.json names a missing or unsafe artifact: ${zipp.artifact}`);
-}
-const actualZippHash = sha256(fs.readFileSync(zippArtifact));
-if (actualZippHash !== zipp.sha256.toLowerCase()) {
-  fail(
-    `zipp provenance hash is stale: SOURCE.json has ${zipp.sha256}, artifact is ${actualZippHash}.`
-  );
-}
+// licenses:check is what the release runs: only a verified ZIPP release install
+// with its recorded notices passes it.
+const zippFiles = checkZippProvenance(zipp, path.dirname(ZIPP_SOURCE_FILE), { check });
 
 const zippKey = `zipp-wasm@${zipp.revision}`;
 const zippLicense = path.join(ROOT, 'LICENSE');
 const zippLicenseFile = addText(zippKey, zippLicense, false);
-const zippThirdParty = path.join(path.dirname(ZIPP_SOURCE_FILE), 'THIRD_PARTY_LICENSES.txt');
 const zippLicenseFiles = [zippLicenseFile];
-if (fs.existsSync(zippThirdParty)) zippLicenseFiles.push(addText(zippKey, zippThirdParty, false));
+if (zippFiles.notices) zippLicenseFiles.push(addText(zippKey, zippFiles.notices, false));
 const vendored = [
   {
     name: 'zipp-wasm',
     revision: zipp.revision,
     repository: zipp.repository,
     license: zipp.license,
-    artifact: relative(zippArtifact),
-    sha256: actualZippHash,
+    artifact: relative(zippFiles.artifact),
+    sha256: zippFiles.sha256,
     licenseFiles: zippLicenseFiles,
   },
 ];
@@ -343,7 +326,7 @@ const inventory = {
 const noticeLines = [
   'SOFTN THIRD-PARTY LICENCES AND NOTICES',
   '',
-  'Generated deterministically from package-lock.json and the vendored zipp provenance.',
+  'Generated deterministically from package-lock.json and the installed ZIPP release provenance.',
   `Lockfile SHA-256: ${lockfileHash}`,
   'SoftN itself is licensed under the Apache License 2.0 in ./LICENSE.',
   '',
@@ -382,6 +365,6 @@ if (!check) {
 
 console.log(
   `${check ? 'Validated' : 'Generated'} ${inventoryPackages.length} npm package records, ` +
-    `${vendored.length} vendored engine and ${textGroups.size} unique licence/notice texts.`
+    `${vendored.length} ZIPP engine and ${textGroups.size} unique licence/notice texts.`
 );
 if (!check) console.log(`Wrote deployment inventory to ${relative(outDir)}/`);

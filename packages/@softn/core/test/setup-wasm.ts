@@ -28,7 +28,7 @@ function findEngine(): string {
     dir = parent;
   }
   throw new Error(
-    `Could not find ${REL} from ${process.cwd()}. Run \`npm run build:zipp-wasm -w @softn/core\`.`
+    `Could not find ${REL} from ${process.cwd()}. Install the ZIPP release with \`npm run fetch:zipp\`.`
   );
 }
 

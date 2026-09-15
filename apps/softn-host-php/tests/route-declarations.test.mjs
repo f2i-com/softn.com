@@ -6,7 +6,7 @@
  * understand is still refused, with its static diagnostic.
  *
  * Runs against a backend assembled from this checkout: the runtime files,
- * the vendored ZIPP engine from packages/@softn/core/wasm-zipp, and the
+ * the ZIPP release installed in packages/@softn/core/wasm-zipp, and the
  * Node this test runs under (the packaged backend pins its own). Skipped,
  * visibly, when the engine or node:sqlite is not available.
  */
@@ -22,7 +22,7 @@ const here=dirname(fileURLToPath(import.meta.url));
 const runtime=join(here,'../runtime');
 const wasmDir=join(here,'../../../packages/@softn/core/wasm-zipp');
 const [major,minor]=process.versions.node.split('.').map(Number);
-const skip=!existsSync(join(wasmDir,'zipp_wasm_bg.wasm'))?'packages/@softn/core/wasm-zipp is not built':major<24||major===24&&minor<19?'Node 24.19 or newer (node:sqlite)':false;
+const skip=!existsSync(join(wasmDir,'zipp_wasm_bg.wasm'))?'packages/@softn/core/wasm-zipp is not installed (npm run fetch:zipp)':major<24||major===24&&minor<19?'Node 24.19 or newer (node:sqlite)':false;
 const test=(name,...rest)=>{const fn=rest.pop();return nodeTest(name,{...(rest[0]??{}),skip},fn);};
 
 const SOURCE=`

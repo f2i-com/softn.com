@@ -6,7 +6,7 @@ The parent retains authentication and connects named backend actions through a M
 ## Engine handoff
 
 The shell announces `formlogic:ready` with the ZIPP version and SHA-256 from the core package's
-`wasm-zipp/SOURCE.json`. FormLogic checks both values against its own vendored release before
+`wasm-zipp/SOURCE.json`. FormLogic checks both values against the engine it installed before
 initializing the app. The `formlogic:init` message supplies the bundle, app ID, theme, channel
 port and `zippWasm` ArrayBuffer. The shell configures that source before rendering SoftN.
 
@@ -41,8 +41,11 @@ Test the queue with `node --test apps/formlogic-host/test/backendQueue.test.mjs`
 
 ## Updating
 
-Vendor the same complete ZIPP release (WASM, generated glue, declarations and SOURCE.json) in
-SoftN and FormLogic. From FormLogic's `formlogic/ui` directory, run:
+SoftN installs the ZIPP release its `apps/softn-host-rust/Cargo.toml` names into the generated
+`wasm-zipp/` (`npm run fetch:zipp`; the build hooks do it too), and FormLogic takes that same
+install from the `zipp/` folder of `softn-formlogic-runtime-<tag>.zip`. `formlogic:ready` also names
+`zipp.release`; FormLogic still compares only the version and SHA-256. From FormLogic's
+`formlogic/ui` directory, run:
 
 ```sh
 npm run build:hosted-runtime

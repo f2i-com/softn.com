@@ -363,26 +363,50 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
   browser's default for them (scrolling, a page search) is cancelled before the handler runs,
   never in a text field and never for a Ctrl chord or the system modifier
 
-The compiled engine is committed at `packages/@softn/core/wasm-zipp/`, so building SoftN needs no
-Rust toolchain. The current browser engine is **ZIPP v0.0.18**, built locally with JavaScript
-and experimental Python support. Its exact source commit, toolchain and SHA-256 checksum are
-recorded in [SOURCE.json](packages/@softn/core/wasm-zipp/SOURCE.json). Existing `.logic` screens
-continue to use JavaScript. See [language support](docs/engineering/ZIPP_LANGUAGES.md) for the Python host API
-and its current integration limits.
+The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
+release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
+unchanged from that ZIPP release's official `zipp-wasm-<version>-web-python.zip` bundle:
+JavaScript and experimental Python in one module. The install's `SOURCE.json` records the
+release, its source commit, toolchain, the SHA-256 of the bundle and of the release's `SHA256SUMS`,
+and where the third-party notices came from. Existing `.logic` screens continue to use JavaScript.
+See [language support](docs/engineering/ZIPP_LANGUAGES.md) for the Python host API and its current
+integration limits.
 
-To reproduce the combined artifact from a clean sibling `zipp.org` checkout, rebuild the packages
-and whichever apps you ship:
+The release is the one the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` names, so a commit
+builds against the same ZIPP today and next year, and the Rust host and the browser run one engine.
+`npm run build`, `npm test`, `npm run typecheck` and `npm run licenses:check` install it when it is
+missing or not that release (`fetch-zipp-release.mjs --ensure`), so a fresh clone needs network
+access the first time, or `ZIPP_RELEASE_DIR=<folder>` holding the release's `SHA256SUMS` and
+`zipp-wasm-<version>-web-python.zip`. To install it by hand:
 
 ```bash
-npm run build:zipp-wasm -w @softn/core
-npm run build:packages
-npm test -w @softn/core
+npm run fetch:zipp                      # the release Cargo.toml declares
+npm run fetch:zipp -- --check           # verify the install offline
 ```
 
-The local build needs Rust with the `wasm32-unknown-unknown` target, wasm-bindgen 0.2.126
-and wasm-opt. It builds both languages by default; set `ZIPP_VARIANT=javascript` for a smaller
-JavaScript-only artifact. `vendor:zipp-release` remains available for importing the default
-JavaScript-only archive from a published release.
+`fetch:zipp` checks the bundle against the release's `SHA256SUMS`, every file against the bundle's
+own `SHA256SUMS`, and that `BUILD-INFO.txt` and the module itself describe the web-python build of
+that release; it refuses anything else, including the JavaScript-only `web` bundle.
+`--check --online` compares an install with the published release, and
+`ZIPP_RELEASE`/`ZIPP_SUMS_SHA256` name the release and the `SHA256SUMS` digest an install must have.
+`-- v0.0.19` or `-- --latest` installs another release once, but the next build, test, typecheck or
+licence script puts the declared release back (with a warning). To build and test against another
+release, set it for every command, for example `ZIPP_RELEASE=v0.0.19 npm test`; the engine-pin
+tests then fail until the Cargo tag and `Cargo.lock` agree.
+The release bundle carries no RustPython or Unicode notices, so SoftN ships a curated copy from
+[zipp-notices/](packages/@softn/core/zipp-notices/README.md).
+
+To move to a new ZIPP release, bump the `zipp-vm` tag and `Cargo.lock` together; the next build
+installs that release. A SoftN release asks ZIPP for its latest release and refuses to ship any
+other (an older one, or a newer pre-release) unless it is dispatched with `allow-older-zipp` (or
+`[allow-older-zipp]` in the tag message), which the release notes then record; every job of that
+run installs the one release the gate froze.
+
+To try an unreleased engine from a sibling `zipp.org` checkout, `npm run build:zipp-wasm -w @softn/core`
+builds into `packages/@softn/core/.cache/zipp-local/` (Rust with the `wasm32-unknown-unknown`
+target, wasm-bindgen 0.2.126 and wasm-opt), and
+`node packages/@softn/core/scripts/fetch-zipp-release.mjs --install-local packages/@softn/core/.cache/zipp-local`
+installs it as a `local` build, which no release step accepts.
 
 The engine is selected in one place -- `packages/@softn/core/src/runtime/vm-adapter.ts`.
 

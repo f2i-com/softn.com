@@ -6,7 +6,7 @@ is an application; each is imported by several.
 
 | Package | In one line | Used by |
 | --- | --- | --- |
-| [`core/`](@softn/core) | The engine: the `.ui` parser, the renderer, the `.logic` runtime on the vendored ZIPP WebAssembly engine (`wasm-zipp/`), XDB records and sync, bundle loading, the FormLogic starter adapter | Every runtime and editor |
+| [`core/`](@softn/core) | The engine: the `.ui` parser, the renderer, the `.logic` runtime on the ZIPP WebAssembly engine (`wasm-zipp/`, installed from a ZIPP release), XDB records and sync, bundle loading, the FormLogic starter adapter | Every runtime and editor |
 | [`components/`](@softn/components) | The built-in component library (layout, forms, data, charts, audio, 3D, smart components) registered into core's renderer | Every runtime and editor |
 | [`bundle-format/`](@softn/bundle-format) | The `.softn` contract without the engine: the archive reader, the inspector, `permission.json` declarations, the page-to-page hand-off and bundle URL rules | Core (re-exported), the site, the editors, the web runtime |
 | [`editor-shared/`](@softn/editor-shared) | What Builder and Studio share and neither owns: hand-off to the runtime and publish page, opening a bundle from a same-origin link, modal keyboard ownership, the FormLogic editor channel | Builder, Studio |
@@ -25,8 +25,11 @@ A change to `bundle-format` or to core's bundle loading is a change to the
 contract every existing `.softn` file relies on: keep old bundles opening
 exactly as before and add a test that pins it.
 
-`core/wasm-zipp/` is the compiled engine with its `SOURCE.json` provenance;
-FormLogic vendors the same release and checks the digest, so update it in
-both places together (see `docs/engineering/FORMLOGIC_INTEGRATION.md`).
+`core/wasm-zipp/` is the compiled engine, generated rather than committed: core's
+build and test hooks (or `npm run fetch:zipp`) install the ZIPP release that
+`apps/softn-host-rust/Cargo.toml`'s `zipp-vm` tag names and verify it against
+that release's `SHA256SUMS`, with its `SOURCE.json` provenance. FormLogic takes
+the same install from the release archive's `zipp/` folder (see
+`docs/engineering/FORMLOGIC_INTEGRATION.md`).
 
 What FormLogic embeds from these packages (the hosted frame built from `apps/formlogic-host`, Builder and Studio as hosted editors, the native runtime and core's starter adapter) ships already built as `softn-formlogic-runtime-<tag>.zip` on every release; FormLogic fetches that instead of building the packages itself.

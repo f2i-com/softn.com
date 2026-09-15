@@ -21,15 +21,28 @@
  *   native-runtime/    apps/softn-host-php/runtime/* byte for byte, the ZIPP
  *                      engine, licences and provenance.json, as
  *                      formlogic/scripts/prepare-native-runtime.mjs writes them.
+ *   zipp/              packages/@softn/core/wasm-zipp/ byte for byte: the
+ *                      verified ZIPP web-python release install FormLogic
+ *                      takes its browser engine from (fetch-zipp-release.mjs).
  *   adapter/           packages/@softn/core/src/integrations/formlogic.ts (LF)
  *                      with the provenance FormLogic's sync-softn.mjs records.
- *   softn-release.json the tag, the commit, the engine, the protocols, the
- *                      adapter digest and a digest of every other file.
+ *   softn-release.json the tag, the commit, the engine (the install's whole
+ *                      SOURCE.json), the protocols, the adapter digest and a
+ *                      digest of every other file.
  *   README.md          the plain-language explainer; INTEGRATION.md the guide.
  *
- * Deterministic apart from the two `builtAt` stamps: the same tree twice
- * gives the same file digests. Refuses a dirty tree unless --allow-dirty,
- * like package-site.mjs; the release workflow runs it from a clean tag.
+ * Every copy of the engine in the archive, found by its exports rather than
+ * its name, must be the installed release, and each place FormLogic takes a
+ * copy from must have one.
+ *
+ * Deterministic apart from the two `builtAt` stamps over one build of the
+ * packages: packaging it again (--no-build-packages) gives the same file
+ * digests. A fresh build of @softn/core now and then orders its cross-chunk
+ * imports differently and so names its chunks differently, which changes
+ * digests under hosted-runtime/ and app-editors/ (never zipp/,
+ * native-runtime/ or adapter/).
+ * Refuses a dirty tree unless --allow-dirty, like package-site.mjs; the
+ * release workflow runs it from a clean tag.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -37,7 +50,9 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeArchive } from './lib/archive.mjs';
+import { archiveEngineProblems } from './lib/zipp-engine-copy.mjs';
 import { archiveName, root } from './release-packages.mjs';
+import { ensureReleaseEngine, releaseOptions } from '../packages/@softn/core/scripts/fetch-zipp-release.mjs';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 
 const args = process.argv.slice(2);
@@ -71,10 +86,20 @@ const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
 // What the tree says: the engine, the protocols, the adapter
 // ---------------------------------------------------------------------------
 const wasmDir = path.join(root, 'packages/@softn/core/wasm-zipp');
-const zippSource = readJson(path.join(wasmDir, 'SOURCE.json'));
-const wasmBytes = fs.readFileSync(path.join(wasmDir, 'zipp_wasm_bg.wasm'));
-if (sha256(wasmBytes) !== zippSource.sha256) fail('wasm-zipp/SOURCE.json does not describe the zipp_wasm_bg.wasm beside it');
+// wasm-zipp/ is generated: install the declared release (or ZIPP_RELEASE /
+// ZIPP_SUMS_SHA256) before anything reads it; the package build comes later.
+// Only a verified release install ships: every file matches the release's
+// SHA256SUMS chain. A local build (--install-local) is refused here.
+let zippSource;
+try {
+  zippSource = await ensureReleaseEngine({ ...releaseOptions(), dir: wasmDir });
+} catch (error) {
+  fail(error.message);
+}
+const wasmBytes = fs.readFileSync(path.join(wasmDir, zippSource.artifact));
 const zipp = { version: zippSource.version, sha256: zippSource.sha256 };
+// runtime-manifest.json: FormLogic compares version and sha256; release and revision say which build.
+const manifestZipp = { ...zipp, release: zippSource.release, revision: zippSource.revision };
 
 const runtimeDir = path.join(root, 'apps/softn-host-php/runtime');
 const hostProtocol = readJson(path.join(runtimeDir, 'host-protocol.json'));
@@ -138,7 +163,7 @@ const runtimeManifest = (prefix) => {
     files[rel] = sha256(Buffer.isBuffer(value) ? value : value.data);
   }
   if (!files['index.html'] && !Object.keys(files).some((f) => f.endsWith('/index.html'))) fail(`${prefix}: no index.html was built`);
-  return JSON.stringify({ formatVersion: 1, zipp, files }, null, 2) + '\n';
+  return JSON.stringify({ formatVersion: 1, zipp: manifestZipp, files }, null, 2) + '\n';
 };
 
 try {
@@ -160,9 +185,6 @@ try {
     });
     if (!fs.existsSync(path.join(outDirKind, 'index.html'))) fail(`${kind} built no index.html`);
     addTree(outDirKind, `app-editors/${kind}`, { skip: (r) => r.endsWith('.map') });
-    const wasm = [...entries.keys()].filter((n) => n.startsWith(`app-editors/${kind}/`) && /zipp_wasm_bg(?:-[^/]+)?\.wasm$/.test(n));
-    if (!wasm.length) fail(`${kind}: the hosted editor carries no ZIPP engine`);
-    for (const n of wasm) if (sha256(entries.get(n)) !== zipp.sha256) fail(`${kind}: ${n} is not the vendored ZIPP engine`);
     add(`app-editors/${kind}/runtime-manifest.json`, Buffer.from(runtimeManifest(`app-editors/${kind}`)));
   }
   const builtAt = new Date().toISOString();
@@ -183,8 +205,12 @@ try {
   add('native-runtime/wasm/SOURCE.json', fs.readFileSync(path.join(wasmDir, 'SOURCE.json')));
   add('native-runtime/LICENSE', fs.readFileSync(path.join(root, 'LICENSE')));
   add('native-runtime/NOTICE', fs.readFileSync(path.join(root, 'NOTICE')));
-  add('native-runtime/ZIPP-THIRD-PARTY-LICENSES.txt', fs.readFileSync(path.join(wasmDir, 'THIRD_PARTY_LICENSES.txt')));
+  add('native-runtime/ZIPP-THIRD-PARTY-LICENSES.txt', fs.readFileSync(path.join(wasmDir, zippSource.notices.file)));
   add('native-runtime/provenance.json', Buffer.from(JSON.stringify({ source: 'softn.com/apps/softn-host-php/runtime', nativeProtocol: protocols.nativeProtocol, zipp: zippSource, modules }, null, 2) + '\n'));
+
+  // zipp/: the release install as it is, so FormLogic installs its browser
+  // engine from here and can check it against the SHA256SUMS it came with.
+  addTree(wasmDir, 'zipp');
 
   // adapter/: the FormLogic starter adapter FormLogic vendors.
   add('adapter/formlogic.ts', adapterBytes);
@@ -193,6 +219,10 @@ try {
   // The explainer and the guide.
   add(FRONT_DOOR, Buffer.from(startHere('formlogic-runtime', { tag })));
   add('INTEGRATION.md', fs.readFileSync(path.join(root, 'docs/engineering/FORMLOGIC_INTEGRATION.md')));
+
+  // Every engine in the archive, whatever Vite named it, is the installed release.
+  const { copies: engineCopies, problems: engineProblems } = archiveEngineProblems(entries, zippSource);
+  if (engineProblems.length) fail(`the archive's ZIPP engine:\n  - ${engineProblems.join('\n  - ')}`);
 
   // softn-release.json last: a digest of everything else.
   const files = {};
@@ -203,7 +233,8 @@ try {
     commit,
     version: tag.replace(/^v/, ''),
     builtAt,
-    zipp: { ...zipp, revision: zippSource.revision },
+    // The install's whole SOURCE.json, so zipp/SOURCE.json and this record are one identity.
+    zipp: zippSource,
     protocols,
     adapter,
     files,
@@ -214,7 +245,7 @@ try {
   const out = path.join(outDir, name);
   const result = writeArchive(entries, out, { stamp });
   console.log(`wrote ${result.path} (${result.entries.length} files, ${(result.size / 1024 / 1024).toFixed(1)} MB) and ${name}.sha256`);
-  console.log(`  softn ${commit.slice(0, 7)}${dirty ? ' (dirty)' : ''} ${tag}, zipp ${zipp.version}, protocols ${JSON.stringify(protocols)}`);
+  console.log(`  softn ${commit.slice(0, 7)}${dirty ? ' (dirty)' : ''} ${tag}, zipp ${zippSource.release} (${engineCopies.length} engine copies checked), protocols ${JSON.stringify(protocols)}`);
 } finally {
   fs.rmSync(stage, { recursive: true, force: true });
 }

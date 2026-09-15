@@ -1,9 +1,13 @@
 # JavaScript and Python in the ZIPP runtime
 
-Softn vendors a local **ZIPP 0.0.18** build with `--features python`. JavaScript
-remains available in the same binary. `packages/@softn/core/wasm-zipp/SOURCE.json`
-records the exact source revision, build tools, languages and checksum; this is
-a local source build, not a downloaded release archive.
+Softn ships ZIPP's official `web-python` release build, the variant compiled
+with `--features python`. JavaScript remains available in the same
+binary. It is not committed: `npm run fetch:zipp` (and the build and test
+hooks) installs the release the `zipp-vm` tag in
+`apps/softn-host-rust/Cargo.toml` names into `packages/@softn/core/wasm-zipp/`
+and verifies it against the release's `SHA256SUMS`. The install's `SOURCE.json`
+records the release, its source commit, build tools, languages, stack size and
+checksums.
 
 ## Existing apps
 
@@ -37,7 +41,11 @@ Run the real artifact checks with:
 npm run test -w @softn/core -- test/zipp-languages.test.ts test/zipp-lifecycle.test.ts
 ```
 
-When embedding Softn in FormLogic, copy this verified binary with FormLogic's
-`scripts/sync-zipp-from-softn.mjs`, then rebuild its hosted runtime, editors and
-native runtime. FormLogic continues to fetch matching WASM bytes once per page
-and provide copies to its isolated execution contexts.
+FormLogic takes this engine from the Softn release: `softn-formlogic-runtime-<tag>.zip`
+carries the install unchanged under `zipp/`, with both `SHA256SUMS` files, and
+every other copy of the engine in the archive is checked to be the same bytes.
+A Softn release ships ZIPP's latest release only; its gate refuses any other
+Cargo tag unless `allow-older-zipp` is given, and the whole release run
+installs that one release.
+FormLogic continues to fetch matching WASM bytes once per page and provide
+copies to its isolated execution contexts.
