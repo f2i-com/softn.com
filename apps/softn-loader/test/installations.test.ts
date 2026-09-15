@@ -96,7 +96,7 @@ describe('installation identity', () => {
     expect(saveRegistry(damaged, loadedDamaged)).toBe(false);
     expect(damaged.store.get(REGISTRY_KEY)).toBe('{"version":1,"installations":{"x":');
     expect(saveRegistry(damaged, loadedDamaged, { acknowledgeDamage: true })).toBe(true);
-    expect(loadRegistry(damaged)).toEqual(emptyRegistry());
+    expect(loadRegistry(damaged)).toEqual({ ...emptyRegistry(), revision: 1 });
 
     // R3-SN-02: identity-critical damage in individual records is kept as damaged
     // material (never dropped), gates the packages it names, and blocks ordinary saves.
