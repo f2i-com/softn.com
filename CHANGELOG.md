@@ -6,6 +6,12 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.14
+
+- Desktop runtime (loader): one owner per installation lifecycle. An upgrade, rollback or recovery holds an operation lease from its first precondition read to its last registry commit, a second operation on the same installation is refused, and finishing an upgrade is refused while a rollback or recovery holds the lease, so the registry can never describe a newer generation as active while an older snapshot is being written back. Registry writes carry a revision and a stale save is redone from a fresh read.
+- Documentation pages wear the site's own product bar.
+- Release workflow: a `skip-tests` option (dispatch input, or `[skip-tests]` in the tag message) ships a patch build without the verify and browser gates; the release notes say when it was used.
+
 ## v0.0.13
 
 - A sixth release archive, `softn-formlogic-runtime-<tag>.zip`: the hosted

@@ -35,15 +35,52 @@ on:
         description: Existing release tag (for example, v1.1.0)
         required: true
         type: string
+      skip-tests:
+        description: Ship the build without the verify and browser gates (for a patch whose commits already passed CI on main). The release notes say so.
+        required: false
+        type: boolean
+        default: false
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # Whether this run ships without the test gates: the `skip-tests` dispatch
+  # input, or `[skip-tests]` in the annotated tag's message for a tag push.
+  # Meant for a patch release whose commits already passed CI on main; the
+  # release notes record that the gates were skipped.
+  gate:
+    name: Decide whether the test gates run
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.decide.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 1
+          persist-credentials: false
+      - id: decide
+        env:
+          INPUT_SKIP: ${{ inputs.skip-tests }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          message="$(git tag -l --format='%(contents)' "$TAG" || true)"
+          if [[ "$INPUT_SKIP" == "true" || "$message" == *"[skip-tests]"* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Test gates skipped for $TAG (skip-tests requested)."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Test gates run for $TAG."
+          fi
+
   # The exact tagged commit, through the complete suite. `env` is not
   # available to a reusable-workflow call, so the tag is spelled out again.
   verify:
     name: Verify the tagged commit
+    needs: gate
+    if: needs.gate.outputs.skip != 'true'
     uses: ./.github/workflows/verify.yml
     with:
       ref: refs/tags/${{ inputs.tag || github.ref_name }}
@@ -60,7 +97,8 @@ jobs:
   # packaged archive. Nothing is attached until it passes.
   e2e:
     name: Browser gate on the tagged commit
-    needs: verify
+    needs: [gate, verify]
+    if: needs.gate.outputs.skip != 'true' && needs.verify.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,7 +133,9 @@ jobs:
 
   website:
     name: Package website and single-app runtime
-    needs: [verify, e2e]
+    needs: [gate, verify, e2e]
+    # Runs after the gates pass, or straight away when the gates were skipped.
+    if: always() && !cancelled() && (needs.gate.outputs.skip == 'true' || (needs.verify.result == 'success' && needs.e2e.result == 'success'))
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -179,6 +219,12 @@ jobs:
         run: |
           node scripts/release-explainers.mjs --tag "$RELEASE_TAG" --out release
           test -f release/RELEASE-GUIDE.md && test -f release/RELEASE-NOTES.md
+
+      - name: Record skipped gates in the release notes
+        if: needs.gate.outputs.skip == 'true'
+        run: |
+          set -euo pipefail
+          printf '\\n> Built with skip-tests: the verify and browser gates were not run for this tag. Its commits passed CI on main.\\n' >> release/RELEASE-NOTES.md
 
       # The vendored engine's SOURCE.json must name the artifact that is really
       # there, and every shipped dependency must have its licence text: both
