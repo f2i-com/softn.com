@@ -6,8 +6,13 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
-## v0.0.13 (next)
+## v0.0.13
 
+- A sixth release archive, `softn-formlogic-runtime-<tag>.zip`: the hosted
+  frame, Builder and Studio as hosted editors, the native runtime and the
+  starter adapter, already built, with a digest of every file in
+  `softn-release.json`. FormLogic fetches the latest release instead of
+  checking SoftN out and building it.
 - The release archives each carry a plain-language `README.md` first, then
   their detailed guide; `RELEASE-GUIDE.md` on the release compares them.
 - `@softn/bundle-format` and `@softn/editor-shared` share what the site, the
