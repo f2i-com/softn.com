@@ -17,7 +17,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { unzipSync, zipSync } from 'fflate';
-import { CURATED_NOTICES, INSTALLED_FILES, REPOSITORY, ZippReleaseError, checkEngine, checkEngineOnline, ensureEngine, ensureReleaseEngine, resolveRelease, sha256, verifyRelease, writeInstall } from './fetch-zipp-release.mjs';
+import { CURATED_NOTICES, INSTALLED_FILES, REPOSITORY, ZippReleaseError, checkEngine, checkEngineOnline, ensureEngine, ensureReleaseEngine, installLocal, installRelease, removeStaleLock, resolveRelease, sha256, verifyRelease, withInstallLock, writeInstall } from './fetch-zipp-release.mjs';
 
 const CORE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ENGINE = path.join(CORE, 'wasm-zipp');
@@ -95,16 +95,26 @@ const resum = (dir, name) => editText(dir, 'SHA256SUMS', (text) => text.replace(
 /** A module that describes itself as `profile`, standing in for the engine where what it reports is the point. */
 const standInGlue = (profile) => Buffer.from(`export function initSync() {}\nexport function zippProfile() { return ${JSON.stringify(JSON.stringify(profile))}; }\n`);
 
-function spawnCli(args, env) {
+function spawnCli(args, env, preload = []) {
   const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(ZIPP_|CI$)/i.test(key)));
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [SCRIPT, ...args], { env: { ...clean, ...env } });
+    const child = spawn(process.execPath, [...preload, SCRIPT, ...args], { env: { ...clean, ...env } });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => (stdout += chunk));
     child.stderr.on('data', (chunk) => (stderr += chunk));
     child.on('close', (status) => resolve({ status, stdout, stderr }));
   });
+}
+
+/** The pid of a process that has exited: what a killed install leaves in its lock. */
+const deadPid = () => spawnSync(process.execPath, ['-e', '']).pid;
+
+/** The pid of a process that runs until the test ends: an install still holding its lock. */
+function livePid(t) {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  t.after(() => child.kill());
+  return child.pid;
 }
 
 test('the fixture is built around a verified release install', () => {
@@ -480,20 +490,40 @@ test('installs into one folder take turns: hooks started together all succeed, a
   assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp'], 'no stage, previous install or lock is left');
 });
 
+// Ctrl+C during a first install leaves its lock; the hooks started after it must not each take it over.
+test('hooks started together on a lock a dead install left: one of them installs and every one succeeds', { timeout: 120_000 }, async (t) => {
+  const folder = releaseFolder(t);
+  // Holds every hook until the same instant, so all of them find the dead lock at once.
+  const gate = path.join(tempDir(t, 'zipp-gate-'), 'gate.mjs');
+  fs.writeFileSync(gate, 'const at = Number(process.env.LOCK_RACE_AT);\nconst wait = at - Date.now() - 20;\nif (wait > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);\nwhile (Date.now() < at);\n');
+  for (let round = 0; round < 5; round++) {
+    const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
+    fs.writeFileSync(path.join(path.dirname(out), '.wasm-zipp.lock'), String(deadPid()));
+    const at = String(Date.now() + 1500);
+    const runs = await Promise.all(Array.from({ length: 8 }, () => spawnCli(['--ensure'], { ZIPP_OUT: out, ZIPP_RELEASE_DIR: folder.dir, LOCK_RACE_AT: at }, ['--import', pathToFileURL(gate).href])));
+    for (const run of runs) assert.equal(run.status, 0, `round ${round}: ${run.stdout}\n${run.stderr}`);
+    assert.equal(runs.filter((run) => /Installed ZIPP/.test(run.stdout)).length, 1, `round ${round}: the others found the install done`);
+    assert.equal(checkEngine(out).release, TAG);
+    assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp'], `round ${round}: no lock, turn, stage or previous install is left`);
+  }
+});
+
 test('a lock whose process is gone is taken over with what it left; a live one is waited for', async (t) => {
   const folder = releaseFolder(t);
   const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
   const lock = path.join(path.dirname(out), '.wasm-zipp.lock');
-  const gone = spawnSync(process.execPath, ['-e', '']).pid;
+  const gone = deadPid();
   fs.writeFileSync(lock, String(gone));
   fs.mkdirSync(path.join(path.dirname(out), `.wasm-zipp.stage-${gone}-0badf00d`));
   const taken = cli(['--ensure'], { ZIPP_OUT: out, ZIPP_RELEASE_DIR: folder.dir });
   assert.equal(taken.status, 0, taken.stderr);
+  assert.doesNotMatch(taken.stderr, /Waiting for/, 'a dead holder is not waited on');
   assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp']);
 
-  // Held by a live process (this one): nothing happens until it lets go.
+  // Held by a live process: nothing happens until it lets go.
   fs.rmSync(out, { recursive: true });
-  fs.writeFileSync(lock, String(process.pid));
+  const holder = livePid(t);
+  fs.writeFileSync(lock, `${holder} 0123456789abcdef`);
   let released = false;
   const timer = setTimeout(() => {
     released = true;
@@ -504,8 +534,155 @@ test('a lock whose process is gone is taken over with what it left; a live one i
   clearTimeout(timer);
   assert.ok(released, 'the install did not go ahead while the lock was held');
   assert.equal(result.action, 'installed');
-  assert.match(warnings.join('\n'), new RegExp(`Waiting for the ZIPP install another process \\(${process.pid}\\) is making`));
+  assert.match(warnings.join('\n'), new RegExp(`Waiting for the ZIPP install another process \\(${holder}\\) is making`));
   assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp']);
+});
+
+// Without this a hook would sit out the whole wait behind a lock left by a killed install whose pid Windows gave to another process.
+test('a lock older than any install is taken over at once, even when its pid is alive again', { timeout: 30_000 }, async (t) => {
+  const folder = releaseFolder(t);
+  const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
+  const lock = path.join(path.dirname(out), '.wasm-zipp.lock');
+  // A live process stands in for the unrelated one that now has the dead holder's pid (a lock written by an earlier version: the pid alone).
+  fs.writeFileSync(lock, String(livePid(t)));
+  const eleven = new Date(Date.now() - 11 * 60_000);
+  fs.utimesSync(lock, eleven, eleven);
+  const warnings = [];
+  const result = await ensureEngine({ dir: out, releaseDir: folder.dir, log: quiet, warn: (line) => warnings.push(line) });
+  assert.equal(result.action, 'installed');
+  assert.deepEqual(warnings.filter((line) => /Waiting for/.test(line)), [], 'an expired lock is not waited on');
+  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp'], 'the expired lock is gone with the install');
+});
+
+test('a lock naming this process is an earlier install\'s that had its pid, unless this process holds it', { timeout: 60_000 }, async (t) => {
+  const folder = releaseFolder(t);
+  const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
+  fs.writeFileSync(path.join(path.dirname(out), '.wasm-zipp.lock'), String(process.pid));
+  const warnings = [];
+  const result = await ensureEngine({ dir: out, releaseDir: folder.dir, log: quiet, warn: (line) => warnings.push(line) });
+  assert.equal(result.action, 'installed');
+  assert.deepEqual(warnings.filter((line) => /Waiting for/.test(line)), [], 'this process does not wait for itself');
+  // Two installs in this process take turns like two processes do.
+  fs.rmSync(out, { recursive: true });
+  const both = await Promise.all([0, 1].map(() => ensureEngine({ dir: out, releaseDir: folder.dir, log: quiet, warn: quiet })));
+  assert.deepEqual(both.map((r) => r.action).sort(), ['installed', 'none']);
+  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp']);
+});
+
+test('an empty lock is one being written this instant, unless it has been empty a while', { timeout: 60_000 }, async (t) => {
+  const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
+  const lock = path.join(path.dirname(out), '.wasm-zipp.lock');
+  const warnings = [];
+  const held = () => withInstallLock(out, async () => 'held', { warn: (line) => warnings.push(line) });
+  fs.writeFileSync(lock, '');
+  const old = new Date(Date.now() - 31_000);
+  fs.utimesSync(lock, old, old);
+  assert.equal(await held(), 'held');
+  assert.deepEqual(warnings, [], 'empty for 31 s: its writer is gone');
+  fs.writeFileSync(lock, '');
+  const timer = setTimeout(() => fs.rmSync(lock), 600);
+  assert.equal(await held(), 'held');
+  clearTimeout(timer);
+  assert.match(warnings.join('\n'), /Waiting for the ZIPP install another process \(starting\) is making/);
+});
+
+// A lock another hook has just removed can refuse its successor for a moment on Windows (delete pending).
+test('a lock that cannot be created for a moment is tried again on Windows, and refused elsewhere', async (t) => {
+  const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
+  const lock = path.join(path.dirname(out), '.wasm-zipp.lock');
+  const { writeFileSync } = fs;
+  let refusals = 3;
+  t.mock.method(fs, 'writeFileSync', function (file, ...rest) {
+    if (refusals > 0 && path.resolve(String(file)) === lock) {
+      refusals--;
+      throw Object.assign(new Error(`EPERM: operation not permitted, open '${file}'`), { code: 'EPERM' });
+    }
+    return writeFileSync.call(this, file, ...rest);
+  });
+  const locked = withInstallLock(out, async () => 'held', { warn: quiet });
+  if (process.platform === 'win32') assert.equal(await locked, 'held');
+  else await assert.rejects(locked, (error) => error instanceof ZippReleaseError && /cannot lock .* for an install \(.*: EPERM\)/.test(error.message));
+});
+
+test('a dead lock is removed only while it is still that lock, and by one waiter at a time', { timeout: 60_000 }, async (t) => {
+  const dir = tempDir(t, 'zipp-lock-');
+  const lock = path.join(dir, '.wasm-zipp.lock');
+  const turn = `${lock}.break`;
+  const dead = `${deadPid()} 00000000deadbeef`;
+  const live = `${livePid(t)} 0000000011111111`;
+  const seen = { text: dead, pid: Number(dead.split(' ')[0]), age: 0 };
+  // Another waiter took it over and wrote its own lock since this one read the dead one: left alone.
+  fs.writeFileSync(lock, live);
+  assert.equal(await removeStaleLock(lock, seen), true);
+  assert.equal(fs.readFileSync(lock, 'utf8'), live);
+  // Still the dead lock: removed, and the turn given back.
+  fs.writeFileSync(lock, dead);
+  assert.equal(await removeStaleLock(lock, seen), true);
+  assert.deepEqual(fs.readdirSync(dir), []);
+  // Another waiter's turn: nothing is removed.
+  fs.writeFileSync(lock, dead);
+  fs.writeFileSync(turn, live);
+  assert.equal(await removeStaleLock(lock, seen), true);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['.wasm-zipp.lock', '.wasm-zipp.lock.break']);
+  assert.equal(fs.readFileSync(turn, 'utf8'), live);
+  // A turn whose waiter died is cleared, and the next one removes the dead lock.
+  fs.writeFileSync(turn, dead);
+  assert.equal(await removeStaleLock(lock, seen), true);
+  assert.deepEqual(fs.readdirSync(dir), ['.wasm-zipp.lock']);
+  assert.equal(await removeStaleLock(lock, seen), true);
+  assert.deepEqual(fs.readdirSync(dir), []);
+  // One that cannot be removed is looked at again after a pause, not in a spin, and the turn is given back.
+  fs.writeFileSync(lock, dead);
+  const { rmSync } = fs;
+  const rm = t.mock.method(fs, 'rmSync', function (file, ...rest) {
+    if (path.resolve(String(file)) === lock) throw Object.assign(new Error(`EPERM: operation not permitted, unlink '${file}'`), { code: 'EPERM' });
+    return rmSync.call(this, file, ...rest);
+  });
+  const began = Date.now();
+  assert.equal(await removeStaleLock(lock, seen), false);
+  assert.ok(Date.now() - began >= 15, 'a pause before the next look');
+  assert.deepEqual(fs.readdirSync(dir), ['.wasm-zipp.lock']);
+  // Never removable: refused in the end, not retried forever.
+  await assert.rejects(withInstallLock(path.join(dir, 'wasm-zipp'), async () => assert.fail('the lock was never free'), { warn: quiet }), (error) => error instanceof ZippReleaseError && new RegExp(`cannot remove the install lock .*, which process ${seen.pid} left; delete it`).test(error.message));
+  rm.mock.restore();
+  assert.deepEqual(fs.readdirSync(dir), ['.wasm-zipp.lock']);
+});
+
+test('an install whose lock is no longer its own writes nothing and leaves that lock alone', async (t) => {
+  const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
+  const lock = path.join(path.dirname(out), '.wasm-zipp.lock');
+  const other = `${livePid(t)} 00000000cafef00d`;
+  const takenOver = (error) => error instanceof ZippReleaseError && new RegExp(`install lock .* is no longer this install's \\(process ${other.split(' ')[0]} holds it\\); nothing was written, so run it again`).test(error.message);
+  await assert.rejects(withInstallLock(out, async (assertHeld) => {
+    assertHeld();
+    fs.writeFileSync(lock, other);
+    assertHeld();
+  }, { warn: quiet }), takenOver);
+  assert.equal(fs.readFileSync(lock, 'utf8'), other, 'the lock another install holds is not released');
+  // Taken over while the bundle downloads: refused before the folder is written.
+  fs.rmSync(lock);
+  const folder = releaseFolder(t);
+  const published = new Map([[`${REPOSITORY}/releases/download/${TAG}/SHA256SUMS`, folder.top], [`${REPOSITORY}/releases/download/${TAG}/${BUNDLE}.zip`, folder.zip]]);
+  const fetch = async (url) => {
+    if (url.endsWith('.zip')) fs.writeFileSync(lock, other);
+    return published.has(url) ? new Response(published.get(url)) : new Response('', { status: 404 });
+  };
+  await assert.rejects(installRelease({ dir: out, tag: TAG, cacheDir: tempDir(t, 'zipp-cache-'), fetch, log: quiet, warn: quiet }), takenOver);
+  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['.wasm-zipp.lock']);
+  assert.equal(fs.readFileSync(lock, 'utf8'), other);
+  // A local build likewise, taken over while it is read.
+  fs.rmSync(lock);
+  const from = tempDir(t, 'zipp-local-build-');
+  for (const name of ['zipp_wasm.js', 'zipp_wasm.d.ts', 'zipp_wasm_bg.wasm', 'zipp_wasm_bg.wasm.d.ts']) fs.copyFileSync(path.join(ENGINE, name), path.join(from, name));
+  fs.writeFileSync(path.join(from, 'SOURCE.json'), JSON.stringify({ build: 'local', revision: 'c'.repeat(40), sha256: source.sha256 }));
+  const { readFileSync } = fs;
+  t.mock.method(fs, 'readFileSync', function (file, ...rest) {
+    if (path.resolve(String(file)) === path.join(from, 'SOURCE.json')) fs.writeFileSync(lock, other);
+    return readFileSync.call(this, file, ...rest);
+  });
+  await assert.rejects(installLocal(from, out, { log: quiet, warn: quiet }), takenOver);
+  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['.wasm-zipp.lock']);
+  assert.equal(readFileSync(lock, 'utf8'), other);
 });
 
 test('an install that cannot be written is a refusal, not a stack trace', (t) => {

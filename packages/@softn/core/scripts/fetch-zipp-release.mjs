@@ -32,8 +32,9 @@
  * third-party notices came from. The bundle ships none, so the RustPython and
  * Unicode notices come from zipp-notices/ ('softn-curated') until it does.
  *
- * Installs into one folder take turns under `.wasm-zipp.lock` beside it, and
- * are staged there and swapped in whole.
+ * Installs into one folder take turns under `.wasm-zipp.lock` beside it (a
+ * dead install's lock is taken over by one waiter at a time, under
+ * `.wasm-zipp.lock.break`), and are staged there and swapped in whole.
  *
  * Node built-ins only at the top: fflate is imported where a bundle is
  * unzipped, so --check and --resolve-only run without node_modules.
@@ -381,14 +382,91 @@ const pidAlive = (pid) => {
   }
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// An install takes seconds; a lock this old outlived its holder even if its pid was reused.
+// An install takes seconds, and minutes at most (every request times out at
+// 120 s): a lock this old outlived its holder even if its pid was reused.
 const LOCK_STALE_MS = 10 * 60_000;
+// Windows refuses to create or open a file another process is deleting that
+// instant; under contention that passes in milliseconds. Elsewhere these are real.
+const lockBusy = (error) => process.platform === 'win32' && ['EPERM', 'EBUSY', 'EACCES'].includes(error.code);
+/** The locks this process holds: a lock naming this pid is live only if it is one of them. */
+const heldLocks = new Set();
+const lockToken = () => `${process.pid} ${randomBytes(8).toString('hex')}`;
+
+/** A lock file as {text, pid, age}, or null once it is gone. Its text is `<pid> <nonce>`. */
+function readLock(file) {
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    return { text, pid: Number(text.split(' ')[0]), age: Date.now() - fs.statSync(file).mtimeMs };
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** Whether the install a lock names may still be running. */
+function lockLive({ text, pid, age }) {
+  if (age > LOCK_STALE_MS) return false;
+  // An empty lock is one being written this instant, unless it has been empty a while.
+  if (!(Number.isInteger(pid) && pid > 0)) return age <= 30_000;
+  // This pid but not a lock this process holds: an install that had the pid before.
+  if (pid === process.pid) return heldLocks.has(text);
+  return pidAlive(pid);
+}
+
+/** Remove a lock this process wrote, only while it still holds `token`. */
+function releaseLock(file, token) {
+  try {
+    if (fs.readFileSync(file, 'utf8') === token) fs.rmSync(file, { force: true });
+  } catch {}
+}
 
 /**
- * Run `fn` holding `.<folder>.lock` beside the install. Hooks started together
- * (npm test and npm run typecheck in two terminals) would otherwise swap
- * folders under each other; the one that waits finds the install done. A lock
- * whose process is gone, or that is older than any install, is taken over.
+ * Remove the dead lock `stale` unless it has changed since it was read.
+ * Waiters take turns at this under `<lock>.break`: otherwise two could find
+ * the same dead lock, and the second remove the live one the first had just
+ * written, so both would install. A turn left by a waiter that died is cleared.
+ * False when something could not be removed or written (busy, or read-only).
+ */
+export async function removeStaleLock(lock, stale) {
+  const breaker = `${lock}.break`;
+  const token = lockToken();
+  let done = true;
+  try {
+    fs.writeFileSync(breaker, token, { flag: 'wx' });
+  } catch (error) {
+    // Another waiter's turn, or one whose waiter died, which is cleared for the next.
+    if (error.code !== 'EEXIST') done = false;
+    else {
+      try {
+        const other = readLock(breaker);
+        if (other && !lockLive(other) && fs.readFileSync(breaker, 'utf8') === other.text) fs.rmSync(breaker, { force: true });
+      } catch {
+        done = false;
+      }
+    }
+    await sleep(20);
+    return done;
+  }
+  try {
+    const now = readLock(lock);
+    if (now && now.text === stale.text && !lockLive(now)) fs.rmSync(lock, { force: true });
+  } catch {
+    done = false;
+  } finally {
+    releaseLock(breaker, token);
+  }
+  // The next look decides; a pause, not a spin.
+  if (!done) await sleep(20);
+  return done;
+}
+
+/**
+ * Run `fn(assertHeld)` holding `.<folder>.lock` beside the install. Hooks
+ * started together (npm test and npm run typecheck in two terminals) would
+ * otherwise swap folders under each other; the one that waits finds the
+ * install done. A lock whose process is gone, or that is older than any
+ * install, is taken over. `assertHeld()` refuses once the lock is not this
+ * install's, so nothing is written under another install's lock.
  */
 export async function withInstallLock(dir, fn, { warn = console.warn } = {}) {
   const lock = path.join(path.dirname(dir), `.${path.basename(dir)}.lock`);
@@ -397,42 +475,60 @@ export async function withInstallLock(dir, fn, { warn = console.warn } = {}) {
   } catch (error) {
     refuse(`cannot create ${rel(path.dirname(lock))} for a ZIPP install (${error.code ?? error.message})`);
   }
+  const token = lockToken();
   const started = Date.now();
   let told = false;
+  let busy = 0;
+  let stuck = 0;
   for (;;) {
     try {
-      fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+      fs.writeFileSync(lock, token, { flag: 'wx' });
       break;
     } catch (error) {
-      if (error.code !== 'EEXIST') refuse(`cannot lock ${rel(dir)} for an install (${rel(lock)}: ${error.code ?? error.message})`);
+      if (error.code !== 'EEXIST') {
+        if (lockBusy(error) && ++busy < 200) {
+          await sleep(20);
+          continue;
+        }
+        refuse(`cannot lock ${rel(dir)} for an install (${rel(lock)}: ${error.code ?? error.message})`);
+      }
     }
     let holder;
-    let age;
     try {
-      holder = fs.readFileSync(lock, 'utf8');
-      age = Date.now() - fs.statSync(lock).mtimeMs;
+      holder = readLock(lock);
     } catch (error) {
-      if (error.code === 'ENOENT') continue; // released while it was read
+      if (lockBusy(error) && ++busy < 200) {
+        await sleep(20);
+        continue;
+      }
       refuse(`cannot read the install lock ${rel(lock)} (${error.code ?? error.message}); if no install is running, delete it`);
     }
-    const pid = Number(holder);
-    // An empty lock is one being written this instant, unless it has been empty a while.
-    const stale = age > LOCK_STALE_MS || (Number.isInteger(pid) && pid > 0 ? !pidAlive(pid) : age > 30_000);
-    if (stale) {
-      try {
-        if (fs.readFileSync(lock, 'utf8') === holder) fs.rmSync(lock, { force: true });
-      } catch {}
+    if (!holder) continue; // released while it was read
+    busy = 0;
+    if (!lockLive(holder)) {
+      // A dead lock that can never be removed (read-only, say) is refused in the end, not retried forever.
+      if (!(await removeStaleLock(lock, holder)) && ++stuck >= 100) refuse(`cannot remove the install lock ${rel(lock)}, which process ${holder.pid || '(unknown)'} left; delete it`);
       continue;
     }
-    if (Date.now() - started > LOCK_STALE_MS) refuse(`${rel(lock)} has been held by process ${holder || '(unknown)'} for ${Math.round(age / 1000)} s; if no install is running, delete it`);
-    if (!told) warn(`Waiting for the ZIPP install another process (${holder || 'starting'}) is making into ${rel(dir)} ...`);
+    stuck = 0;
+    if (Date.now() - started > LOCK_STALE_MS) refuse(`${rel(lock)} has been held by process ${holder.pid || '(unknown)'} for ${Math.round(holder.age / 1000)} s; if no install is running, delete it`);
+    if (!told) warn(`Waiting for the ZIPP install another process (${holder.pid || 'starting'}) is making into ${rel(dir)} ...`);
     told = true;
     await sleep(250);
   }
+  heldLocks.add(token);
+  const assertHeld = () => {
+    let now = null;
+    try {
+      now = readLock(lock);
+    } catch {}
+    if (now?.text !== token) refuse(`the install lock ${rel(lock)} is no longer this install's (${now ? `process ${now.pid || '(unknown)'} holds it` : 'it is gone'}); nothing was written, so run it again`);
+  };
   try {
-    return await fn();
+    return await fn(assertHeld);
   } finally {
-    fs.rmSync(lock, { force: true });
+    heldLocks.delete(token);
+    releaseLock(lock, token);
   }
 }
 
@@ -475,12 +571,13 @@ export function writeInstall(dir, files) {
   }
 }
 
-async function installReleaseLocked({ dir, tag, latest, releaseDir, cargoToml, cacheDir, expectSumsSha256, fetch: fetchImpl = globalThis.fetch, curatedNotices, log = console.log }) {
+async function installReleaseLocked({ dir, tag, latest, releaseDir, cargoToml, cacheDir, expectSumsSha256, fetch: fetchImpl = globalThis.fetch, curatedNotices, log = console.log, assertHeld = () => {} }) {
   const { release, sums } = await resolveRelease({ tag, latest, releaseDir, cargoToml, cacheDir, fetch: fetchImpl });
   if (expectSumsSha256 && sha256(sums) !== expectSumsSha256.toLowerCase()) refuse(`the ${release} SHA256SUMS has sha256 ${sha256(sums)}; ZIPP_SUMS_SHA256 says ${expectSumsSha256}`);
   log(`Taking ${bundleName(release.slice(1))}.zip from ZIPP ${release}${releaseDir ? ` in ${releaseDir}` : ''} ...`);
   const zip = await loadBundle({ release, sums, releaseDir, cacheDir, fetch: fetchImpl });
   const { files, source } = await verifyRelease({ release, sums, zip, expectSumsSha256, curatedNotices });
+  assertHeld();
   writeInstall(dir, files);
   // What landed on disk, not what was meant to.
   checkEngine(dir, { curatedNotices });
@@ -490,7 +587,7 @@ async function installReleaseLocked({ dir, tag, latest, releaseDir, cargoToml, c
 
 /** Resolve, fetch (or read), verify and install a release. Returns its SOURCE.json. */
 export async function installRelease({ dir = ENGINE_DIR, warn, ...options } = {}) {
-  return withInstallLock(dir, () => installReleaseLocked({ dir, ...options }), { warn });
+  return withInstallLock(dir, (assertHeld) => installReleaseLocked({ dir, ...options, assertHeld }), { warn });
 }
 
 // ---------------------------------------------------------------------------
@@ -594,7 +691,7 @@ const isCI = (env) => /^(1|true)$/i.test(env.CI ?? '');
  */
 export async function ensureEngine({ dir = ENGINE_DIR, tag, expectSumsSha256, env = process.env, log = console.log, warn = console.warn, ...install } = {}) {
   // The lock covers the check as well: whoever waited finds the install done.
-  return withInstallLock(dir, async () => {
+  return withInstallLock(dir, async (assertHeld) => {
     let installed;
     try {
       installed = JSON.parse(fs.readFileSync(path.join(dir, 'SOURCE.json'), 'utf8'));
@@ -620,7 +717,7 @@ export async function ensureEngine({ dir = ENGINE_DIR, tag, expectSumsSha256, en
       reason = error.message;
     }
     log(`Installing ZIPP ${wanted}: ${reason}`);
-    return { action: 'installed', source: await installReleaseLocked({ dir, tag: wanted, expectSumsSha256, log, ...install }) };
+    return { action: 'installed', source: await installReleaseLocked({ dir, tag: wanted, expectSumsSha256, log, ...install, assertHeld }) };
   }, { warn });
 }
 
@@ -642,10 +739,10 @@ export function releaseOptions(env = process.env) {
 
 /** A build-zipp-wasm.mjs output, installed on purpose; it stays build 'local' and no release gate accepts it. */
 export async function installLocal(from, dir = ENGINE_DIR, { log = console.log, warn } = {}) {
-  return withInstallLock(dir, () => installLocalLocked(from, dir, log), { warn });
+  return withInstallLock(dir, (assertHeld) => installLocalLocked(from, dir, log, assertHeld), { warn });
 }
 
-function installLocalLocked(from, dir, log) {
+function installLocalLocked(from, dir, log, assertHeld) {
   let source;
   try {
     source = JSON.parse(fs.readFileSync(path.join(from, 'SOURCE.json'), 'utf8'));
@@ -660,6 +757,7 @@ function installLocalLocked(from, dir, log) {
     else if (!['LICENSE-APACHE', NOTICES].includes(name)) refuse(`${from} has no ${name}`);
   }
   if (sha256(files.get('zipp_wasm_bg.wasm')) !== source.sha256) refuse(`${from}/SOURCE.json does not describe the zipp_wasm_bg.wasm beside it`);
+  assertHeld();
   writeInstall(dir, files);
   log(`Installed the local ZIPP build ${String(source.revision).slice(0, 8)} into ${rel(dir)} (build 'local': not releasable; npm run fetch:zipp goes back to a release)`);
   return source;
