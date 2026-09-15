@@ -7,6 +7,7 @@ import { useCanvasStore } from '../../stores/canvasStore';
 import { useHistoryStore } from '../../stores/historyStore';
 import { useProjectStore } from '../../stores/projectStore';
 import { getComponentMeta } from '../../utils/componentRegistry';
+import { eventKeyFor } from '../../utils/eventProps';
 import { nativeElementMeta } from '../../utils/nativeHtmlMetadata';
 import { blockHeaderText } from '../../utils/sourceGenerator';
 import { blockDescription, isBlockHead } from '../../utils/blocks';
@@ -566,6 +567,27 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
         );
       }
 
+      // A component callback (`onRemove`) is an event, not a prop: it is
+      // read from and written to the element's event map under its `@` key,
+      // so the file says `@remove={drop(item)}` and the runtime wires the
+      // handler up. Written as a string prop it reached the component as
+      // text and did nothing.
+      if (prop.type === 'event') {
+        const key = eventKeyFor(prop.name);
+        const id = `property-${selectedElement.id}-${prop.name}`;
+        return (
+          <div key={prop.name} style={styles.field}>
+            <label htmlFor={id} style={styles.label}>@{key}</label>
+            <PropEditor
+              id={id}
+              propDef={prop}
+              value={selectedElement.events?.[key] ?? ''}
+              onChange={(value) => handleEventChange(key, String(value ?? ''))}
+            />
+          </div>
+        );
+      }
+
       return (
         <div key={prop.name} style={styles.field}>
           <label htmlFor={`property-${selectedElement.id}-${prop.name}`} style={styles.label}>{prop.name === 'children' ? 'Text Content' : prop.name}</label>
@@ -578,7 +600,7 @@ export function PropertyPanel({ onToggleDock }: PropertyPanelProps) {
         </div>
       );
     },
-    [selectedElement, imageAssetOptions, handlePropChange]
+    [selectedElement, imageAssetOptions, handlePropChange, handleEventChange]
   );
 
   const header = (
