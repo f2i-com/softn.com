@@ -40,6 +40,7 @@ jobs:
           npm run build -w @softn/single-private
           npm run package:single-private
           npm run package:private-single-php
+          npm run package:formlogic-runtime -- --tag "v$(node -p "require('./package.json').version")" --no-build-packages
 
       - name: Install Apache/PHP test dependencies
         run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
@@ -71,6 +72,8 @@ jobs:
             release/softn-app-private-v*.zip.sha256
             release/softn-app-private-with-backend-linux-x64-v*.zip
             release/softn-app-private-with-backend-linux-x64-v*.zip.sha256
+            release/softn-formlogic-runtime-v*.zip
+            release/softn-formlogic-runtime-v*.zip.sha256
           compression-level: 0
           if-no-files-found: error
           retention-days: 7

@@ -1,8 +1,9 @@
 /**
  * The one description of every archive a release ships.
  *
- * A `v*` tag builds five zips (see .github/workflows/release.yml). Each is a
- * different way to put SoftN, or one SoftN app, on a web host, and the
+ * A `v*` tag builds six zips (see .github/workflows/release.yml). Five are
+ * different ways to put SoftN, or one SoftN app, on a web host (the sixth is
+ * what FormLogic takes from a release instead of building SoftN), and the
  * difference is easy to get wrong from the file names alone. This module says,
  * for each one, what it is, who should pick it, what is inside, how it is
  * deployed and what the host must provide. `release-explainers.mjs` turns it
@@ -277,6 +278,45 @@ export const PACKAGES = [
     moreGuides: ['DEPLOYMENT-SERVE.md', 'README-RUNTIME.md', 'LIVE_UPDATES.md'],
     sizeNote: 'Larger: it carries a complete Node runtime for Linux x64.',
   },
+  {
+    id: 'formlogic-runtime',
+    previousName: '',
+    title: 'The SoftN runtime for FormLogic',
+    archive: (tag) => `softn-formlogic-runtime-${tag}.zip`,
+    pattern: 'softn-formlogic-runtime-<tag>.zip',
+    what: 'Everything FormLogic embeds from SoftN, already built: the sandboxed frame FormLogic runs an app in, Builder and Studio as editors inside FormLogic, the server-side runtime for native apps, and the starter adapter. FormLogic\u2019s build downloads this from the latest SoftN release instead of building SoftN from source.',
+    chooseIf: [
+      'You run FormLogic and its build cannot reach GitHub; download this and point `SOFTN_RELEASE_ARCHIVE` at it.',
+      'You are checking what a FormLogic release runs: the engine version, the protocols and the exact bytes are all named in `softn-release.json`.',
+    ],
+    notIf: [
+      'You want to host SoftN or a SoftN app yourself: every other archive on this release is for that; start with `RELEASE-GUIDE.md`.',
+      'You are developing SoftN against a FormLogic checkout: set `SOFTN_REPO` and FormLogic builds from your working tree as before.',
+    ],
+    inside: [
+      { path: 'hosted-runtime/', what: 'The app frame FormLogic embeds (`index.html`, `assets/`), with `runtime-manifest.json` naming every file and its checksum.' },
+      { path: 'app-editors/', what: '`builder/` and `studio/` built to run inside FormLogic, `manifest.json` (the editor bridge protocol) and a checksum manifest per editor.' },
+      { path: 'native-runtime/', what: 'The runner FormLogic starts for native apps: the runtime modules, the ZIPP engine under `wasm/`, licences and `provenance.json`.' },
+      { path: 'adapter/', what: '`formlogic.ts`, the starter adapter FormLogic vendors, with its `provenance.json`.' },
+      { path: 'softn-release.json', what: 'The tag and commit this was built from, the ZIPP engine version and checksum, the protocol numbers, and a checksum of every other file.' },
+      { path: 'README.md', what: 'This file.' },
+      { path: 'INTEGRATION.md', what: 'The FormLogic integration guide: what the adapter generates, how the hosts embed the runtime, and how FormLogic takes a release.' },
+    ],
+    steps: [
+      'Nothing to deploy by hand: FormLogic\u2019s `prepare-hosted-runtime` fetches the latest release, checks the `.sha256` and every checksum in `softn-release.json`, and unpacks it into the places its build expects.',
+      'To pin a release instead of the latest, set `SOFTN_RELEASE=<tag>` in FormLogic\u2019s environment.',
+      'To use a downloaded copy (an offline build), set `SOFTN_RELEASE_ARCHIVE=<path to this zip>`; the `.sha256` file must sit beside it.',
+      'FormLogic refuses a release whose ZIPP engine differs from the one it vendors, or whose protocols it does not speak; the message names what to update.',
+      'If FormLogic\u2019s vendored adapter is older than `adapter/formlogic.ts`, run `node formlogic/ui/scripts/sync-softn.mjs` there and commit the result.',
+    ],
+    requirements: [
+      'FormLogic at a version that fetches SoftN releases (its `scripts/fetch-softn-release.mjs`).',
+      'The ZIPP engine version FormLogic vendors (`formlogic/ui/vendor/zipp-wasm/SOURCE.json`) must be the one named in `softn-release.json`.',
+    ],
+    guide: 'INTEGRATION.md',
+    moreGuides: [],
+    sizeNote: 'Medium: three built web apps and one copy of the ZIPP engine.',
+  },
 ];
 
 export const DECISIONS = [
@@ -285,6 +325,7 @@ export const DECISIONS = [
   { question: 'One app, no server, but the `.softn` file must not be downloadable?', answer: 'private' },
   { question: 'One app with a private server part, on Apache/PHP (Linux x86-64)?', answer: 'single-backend' },
   { question: 'One app with a private server part, and the `.softn` file kept off every URL?', answer: 'private-backend' },
+  { question: 'Are you running FormLogic, and want what it embeds from SoftN already built?', answer: 'formlogic-runtime' },
 ];
 
 export const checksumInstructions = SHA_CHECK;

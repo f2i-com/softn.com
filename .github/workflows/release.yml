@@ -270,6 +270,21 @@ jobs:
           (cd release && sha256sum -c "softn-app-private-$RELEASE_TAG.zip.sha256" --strict)
           (cd release && sha256sum -c "softn-app-private-with-backend-linux-x64-$RELEASE_TAG.zip.sha256" --strict)
 
+      # What FormLogic takes from a release instead of building SoftN from
+      # source: the hosted frame, the two hosted editors, the native runtime
+      # and the adapter, with a digest of every file in softn-release.json.
+      - name: Build and package the SoftN runtime for FormLogic
+        run: |
+          set -euo pipefail
+          npm run package:formlogic-runtime -- --tag "$RELEASE_TAG"
+          zip="release/softn-formlogic-runtime-$RELEASE_TAG.zip"
+          unzip -tq "$zip"
+          for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm adapter/formlogic.ts; do
+            unzip -Z1 "$zip" | grep -qx "$entry"
+          done
+          test "$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).tag))')" = "$RELEASE_TAG"
+          (cd release && sha256sum -c "softn-formlogic-runtime-$RELEASE_TAG.zip.sha256" --strict)
+
       - name: Install Apache/PHP test dependencies
         run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
 
@@ -303,6 +318,16 @@ jobs:
             release/softn-app-private-${{ env.RELEASE_TAG }}.zip.sha256
             release/softn-app-private-with-backend-linux-x64-${{ env.RELEASE_TAG }}.zip
             release/softn-app-private-with-backend-linux-x64-${{ env.RELEASE_TAG }}.zip.sha256
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Keep the FormLogic runtime archive with the workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: formlogic-runtime-${{ env.RELEASE_TAG }}
+          path: |
+            release/softn-formlogic-runtime-${{ env.RELEASE_TAG }}.zip
+            release/softn-formlogic-runtime-${{ env.RELEASE_TAG }}.zip.sha256
           compression-level: 0
           if-no-files-found: error
 

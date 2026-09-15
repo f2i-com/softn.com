@@ -35,3 +35,26 @@ Private SQLite deployment is documented in [PRIVATE_BACKEND.md](../apps/softn-ho
 Generated multi-form projects now include labelled form navigation and preserve unfinished input when switching screens. They use FormLogic-facing names; attribution stays on the FormLogic landing page. The FormLogic preparation dialog supports selecting a subset of attached forms. Download contents and source mappings retain the existing format.
 
 Use the updated runtime parser (cache version 4) so hyphenated ARIA and data attributes survive parsing. This is required for accessible navigation names and active-button styling.
+
+## FormLogic takes the release, not the source
+
+Every SoftN release (`v*` tag) carries `softn-formlogic-runtime-<tag>.zip`,
+written by `scripts/package-formlogic-runtime.mjs`: `hosted-runtime/`
+(`apps/formlogic-host` built as FormLogic's `build-hosted-runtime.mjs` builds
+it), `app-editors/` (Builder and Studio built as hosted editors, with the
+editor bridge protocol in `manifest.json`), `native-runtime/`
+(`apps/softn-host-php/runtime/*` byte for byte, the ZIPP engine, licences,
+`provenance.json`), `adapter/` (`packages/@softn/core/src/integrations/formlogic.ts`
+with its provenance) and `softn-release.json` (tag, commit, engine, protocols,
+adapter digest, a digest of every other file). Each built folder carries the
+`runtime-manifest.json` FormLogic's `checkRuntimeArtifact` verifies.
+
+FormLogic's `prepare-hosted-runtime` fetches the latest release, checks the
+`.sha256` sidecar and every digest, requires the ZIPP engine and the
+protocol numbers it already vendors, and unpacks the folders where its build
+expects them; `SOFTN_RELEASE=<tag>` pins a release, `SOFTN_RELEASE_ARCHIVE`
+uses a downloaded copy, and `SOFTN_REPO` still builds from a working tree
+for development. A release whose engine or protocols differ fails there,
+before any FormLogic test or package step, with a message naming what to
+update. `npm run package:formlogic-runtime -- --tag vX.Y.Z` builds the
+archive locally (`--allow-dirty` for a trial from an uncommitted tree).
