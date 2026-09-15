@@ -26,6 +26,7 @@
     "apps:build": "node scripts/softn-apps/build.mjs",
     "apps:seed": "node scripts/softn-apps/seed.mjs",
     "package:site": "node scripts/package-site.mjs",
+    "package:docs": "node scripts/package-docs.mjs",
     "build:single": "npm run build:packages && npm run build -w @softn/single",
     "package:single": "node scripts/package-single.mjs",
     "build:single-private": "npm run build:packages && npm run build -w @softn/single-private",

@@ -80,127 +80,16 @@ main:focus-visible {
 }
 
 /* ---------------------------------------------------------------------------
- * The product bar, the same strip the site wears: one gutter in from the
- * window's edge, the mark first, the destinations, the switch and the source.
+ * The product bar is @softn/brand's own (bar.css, bundled ahead of this
+ * file by build-docs.mjs), so the docs wear exactly the strip the site,
+ * the runtime, Studio and Builder wear. Only the switch's pre-script
+ * state is ours: it stays hidden until docs.js can drive it.
  * ------------------------------------------------------------------------ */
-
-.site-header {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  height: var(--bar-height, 3rem);
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  padding-inline: var(--gutter);
-  background: var(--nav-bg);
-  backdrop-filter: blur(14px) saturate(140%);
-  border-bottom: 1px solid var(--line-soft);
-  font-size: 0.875rem;
-  line-height: 1.2;
-}
-
-.site-header > div {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  min-width: 0;
-}
-
-.wordmark {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.55rem;
-  font-family: var(--display);
-  font-weight: 700;
-  font-size: 1.0625rem;
-  letter-spacing: -0.02em;
-  white-space: nowrap;
-}
-
-.wordmark svg {
-  display: block;
-}
-
-.softn-mark-ground {
-  fill: var(--ink-3);
-}
-
-.softn-mark-bracket {
-  stroke: var(--coral);
-}
-
-.softn-mark-dot {
-  fill: var(--mint);
-}
-
-.product-links {
-  display: flex;
-  align-items: center;
-  gap: 0.125rem;
-}
-
-.product-links a,
-.docs-label {
-  padding: 0.375rem 0.625rem;
-  border-radius: 0.5rem;
-  color: var(--dim);
-  transition: color 0.15s ease, background-color 0.15s ease;
-}
-
-.product-links a:hover,
-.docs-label:hover {
-  color: var(--paper);
-  background: var(--inset);
-}
-
-.docs-label[aria-current='page'] {
-  color: var(--paper);
-  background: var(--inset);
-}
-
-.site-header > div:last-child {
-  margin-left: auto;
-  gap: 0.375rem;
-}
-
-.theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: 0.5rem;
-  border: none;
-  background: none;
-  color: var(--dim);
-  cursor: pointer;
-}
-
-.theme-toggle:hover {
-  color: var(--paper);
-  background: var(--inset);
-}
-
-.theme-toggle svg {
-  display: block;
-}
 
 .theme-toggle[hidden] {
   display: none;
 }
 
-.source-link {
-  padding: 0.375rem 0.625rem;
-  border-radius: 0.5rem;
-  color: var(--dim);
-  white-space: nowrap;
-}
-
-.source-link:hover {
-  color: var(--paper);
-  background: var(--inset);
-}
 
 /* ---------------------------------------------------------------------------
  * Layout: guide list, article, "on this page".
@@ -963,10 +852,6 @@ tbody tr:last-child td {
 }
 
 @media (max-width: 860px) {
-  .product-links {
-    display: none;
-  }
-
   .page-layout {
     display: block;
   }
@@ -1003,14 +888,6 @@ tbody tr:last-child td {
 }
 
 @media (max-width: 480px) {
-  .site-header {
-    gap: 0.75rem;
-  }
-
-  .source-link {
-    display: none;
-  }
-
   h1 {
     font-size: 1.875rem;
   }
@@ -1024,7 +901,7 @@ tbody tr:last-child td {
 }
 
 @media print {
-  .site-header,
+  .softn-bar,
   .sidebar,
   .toc-sidebar,
   .mobile-navigation,

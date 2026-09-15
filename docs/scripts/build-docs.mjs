@@ -114,6 +114,9 @@ export async function brandAssets() {
   const fonts=new Map();
   let css='';
   if(await exists(tokens)) css+=(await readFile(tokens,'utf8'))+'\n';
+  // The product bar's own stylesheet, so the docs wear the same strip as the site, pixel for pixel.
+  const bar=join(repo,'packages/@softn/brand/src/bar.css');
+  if(await exists(bar)) css+=(await readFile(bar,'utf8'))+'\n';
   for(const font of BRAND_FONTS) {
     const path=join(repo,'node_modules',font.file);
     if(!(await exists(path))) continue;
