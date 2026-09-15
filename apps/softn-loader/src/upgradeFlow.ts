@@ -18,9 +18,28 @@
  * stored registry, revalidates the operation against it and writes only the
  * records it owns; a stale operation is refused, never applied. Within one
  * JavaScript context a commit is synchronous (read, mutate, write), so two
- * flows cannot interleave inside it; across contexts sharing one storage the
- * window is the read-modify-write itself, which browsers serialise per
- * origin — this is documented, not claimed to be a distributed lock.
+ * flows cannot interleave inside it.
+ *
+ * Ownership (ECO-S01). An installation's DATA is changed by at most one
+ * operation at a time: an upgrade (backup, stage, start), a rollback or a
+ * recovery takes an in-process LEASE on the installation for its whole
+ * lifetime, every continuation after an await is bound to the lease it
+ * started under, and a second operation on the same installation is refused
+ * while the first holds it. Completing an upgrade (`finishUpgrade`) is
+ * refused while a rollback or recovery holds the lease, so a snapshot that is
+ * being written back can never be described by the registry as an active
+ * newer generation.
+ *
+ * The supported topology is ONE process owning the registry: the desktop
+ * runtime registers tauri-plugin-single-instance (a second launch hands its
+ * file to the first) and opens one webview, so the lease is the authority.
+ * Two contexts sharing one localStorage (not a supported product mode) are
+ * still guarded, best effort: the registry carries a revision that every
+ * save increments, a commit re-reads the stored copy right before writing
+ * and refuses when the revision it loaded is no longer the stored one, and
+ * the caller retries from a fresh read. localStorage has no compare-and-swap,
+ * so this narrows the window to the two adjacent synchronous calls; it is
+ * documented as that, not claimed to be a distributed lock.
  */
 import {
   type InstallationRecord,
@@ -125,21 +144,77 @@ function registryStorage(): RegistryStorageLike {
 export type IdentityDecision = { dataId: string; upgrade?: UpgradeOperation };
 
 /**
+ * The lease (ECO-S01): which operation currently owns an installation's
+ * data. One per data id per process; held from the first check to the last
+ * commit of an upgrade, rollback or recovery; bound to an operation id so a
+ * continuation that resumes after the lease moved on (it was released by a
+ * cancel, say) recognises itself as stale and refuses to commit.
+ */
+export type OperationKind = 'upgrade' | 'rollback' | 'recovery';
+interface OperationLease { id: number; kind: OperationKind }
+const leases = new Map<string, OperationLease>();
+let nextOperationId = 1;
+
+/** What, if anything, currently owns this installation's data in this process. */
+export function activeOperation(dataId: string): OperationKind | null {
+  return leases.get(dataId)?.kind ?? null;
+}
+
+/**
+ * Run `work` as the sole operation on `dataId`. Refused (throws
+ * UpgradeBlockedError) when another operation holds the lease; `owns()`
+ * tells a continuation whether its lease is still the current one.
+ */
+async function withOperation<T>(dataId: string, kind: OperationKind, work: (owns: () => boolean) => Promise<T>): Promise<T> {
+  const holder = leases.get(dataId);
+  if (holder) throw new UpgradeBlockedError(`Another operation (${describeOperation(holder.kind)}) is in progress on this installation; nothing was changed. Wait for it to finish, then try again.`);
+  const lease: OperationLease = { id: nextOperationId++, kind };
+  leases.set(dataId, lease);
+  try {
+    return await work(() => leases.get(dataId) === lease);
+  } finally {
+    if (leases.get(dataId) === lease) leases.delete(dataId);
+  }
+}
+
+function describeOperation(kind: OperationKind): string {
+  return kind === 'upgrade' ? 'an upgrade' : kind === 'rollback' ? 'a rollback' : 'a recovery';
+}
+
+/** Test seam: forget every lease (a fresh process). */
+export function resetOperationLeases(): void {
+  leases.clear();
+}
+
+/**
  * One registry commit (R4-SN-01): read the CURRENT stored registry, let
  * `mutate` validate the operation against it and change only what it owns,
  * then save. `mutate` throws to refuse; the registry is then left as it was.
  * Synchronous end to end, so nothing can interleave inside it in this
  * context. Returns null when the save failed (the caller decides what that
  * means for its claim).
+ *
+ * Against another context sharing the storage (ECO-S01, best effort): the
+ * stored revision is re-read right before the write, and a commit whose
+ * loaded revision is no longer the stored one is retried from a fresh read
+ * (`mutate` runs again on the current registry), a bounded number of times.
  */
 function commitRegistry<T>(
   storage: RegistryStorageLike,
   mutate: (registry: InstallationRegistry) => T,
   options: { acknowledgeDamage?: boolean } = {}
 ): { saved: true; result: T; registry: InstallationRegistry } | { saved: false; result: T; registry: InstallationRegistry } {
-  const registry = loadRegistry(storage);
-  const result = mutate(registry);
-  return saveRegistry(storage, registry, options) ? { saved: true, result, registry } : { saved: false, result, registry };
+  let registry = loadRegistry(storage);
+  let result = mutate(registry);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const saved = saveRegistry(storage, registry, { ...options, expectRevision: registry.revision });
+    if (saved !== 'stale') return saved ? { saved: true, result, registry } : { saved: false, result, registry };
+    // Somebody else wrote since this registry was read: decide again on what is stored now.
+    registry = loadRegistry(storage);
+    result = mutate(registry);
+  }
+  console.error('[SoftN Loader] The installation registry kept changing underneath a commit; giving up');
+  return { saved: false, result, registry };
 }
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -217,18 +292,24 @@ export async function resolveDataIdentity(
         const decision = await ask({ kind: 'upgrade-unresolved', dataId, name: record.name, pending });
         if (decision.kind !== 'rollback' || signal.aborted) return null;
         const operation: UpgradeOperation = { dataId, bundleId: pending.to, backup: pending.backup };
-        try {
-          await restore(dataId, pending.backup);
-        } catch (error) {
-          throw new UpgradeBlockedError(`The pre-upgrade backup could not be restored (${errorText(error)}). The installation stays blocked and its data was not changed by this attempt; the backup is at ${pending.backup}.`);
-        }
-        // The data changed: record it even if the open was cancelled meanwhile.
-        const commit = commitRegistry(storage, registry => {
-          const fresh = registry.installations[dataId];
-          if (!pendingMatches(fresh, operation)) throw new UpgradeBlockedError(`The data was restored from ${pending.backup}, but the upgrade record changed meanwhile (another operation on this installation), so nothing was recorded for it. Reopen the file to see the current state.`);
-          rollbackUpgrade(registry, dataId, { restored: true });
+        // The lease covers the restore AND its record: nothing else may
+        // touch this installation's data between the two (ECO-S01).
+        await withOperation(dataId, 'rollback', async owns => {
+          if (!pendingMatches(loadRegistry(storage).installations[dataId], operation)) throw new UpgradeBlockedError('The upgrade record changed while the question was open; reopen the file to see the current state. Nothing was changed.');
+          try {
+            await restore(dataId, pending.backup);
+          } catch (error) {
+            throw new UpgradeBlockedError(`The pre-upgrade backup could not be restored (${errorText(error)}). The installation stays blocked and its data was not changed by this attempt; the backup is at ${pending.backup}.`);
+          }
+          if (!owns()) throw new UpgradeBlockedError(`The data was restored from ${pending.backup}, but this operation no longer owns the installation, so nothing was recorded for it. Reopen the file to see the current state.`);
+          // The data changed: record it even if the open was cancelled meanwhile.
+          const commit = commitRegistry(storage, registry => {
+            const fresh = registry.installations[dataId];
+            if (!pendingMatches(fresh, operation)) throw new UpgradeBlockedError(`The data was restored from ${pending.backup}, but the upgrade record changed meanwhile (another operation on this installation), so nothing was recorded for it. Reopen the file to see the current state.`);
+            rollbackUpgrade(registry, dataId, { restored: true });
+          });
+          if (!commit.saved) throw new UpgradeBlockedError(`The data was restored from ${pending.backup}, but the upgrade record could not be cleared, so the installation stays blocked until the runtime's storage is writable. Nothing else was changed.`);
         });
-        if (!commit.saved) throw new UpgradeBlockedError(`The data was restored from ${pending.backup}, but the upgrade record could not be cleared, so the installation stays blocked until the runtime's storage is writable. Nothing else was changed.`);
         if (signal.aborted) return null;
         return { dataId };
       }
@@ -267,24 +348,30 @@ export async function resolveDataIdentity(
         if (storage.durable === false) {
           throw new UpgradeBlockedError('This runtime has no durable storage for installation records here (private browsing or an opaque origin), so an interrupted upgrade could never be recovered after a restart. The upgrade was not applied; open the previous package, or open this one as a new app.');
         }
-        // The installation must still be eligible BEFORE the (slow) backup, and
-        // again at commit; both checks read the stored registry, not a snapshot.
-        assertUpgradable(loadRegistry(storage), bundleId, decision.dataId);
-        let backupPath: string;
-        try {
-          backupPath = await backup(decision.dataId);
-        } catch (error) {
-          throw new UpgradeBlockedError(`The upgrade was not applied because a backup of the installed data could not be taken (${errorText(error)}). Reopen the previous package, or free disk space and try again.`);
-        }
-        if (signal.aborted) return null; // nothing staged: the backup file is an unused snapshot
-        // Upgrade: verified snapshot FIRST, then a durable staging record, then the
-        // package may touch the data. Either failure stops the upgrade unapplied.
-        const commit = commitRegistry(storage, registry => {
-          assertUpgradable(registry, bundleId, decision.dataId);
-          beginUpgrade(registry, bundleId, decision.dataId, { backup: backupPath, manifestName: manifest.name, version: manifest.version });
+        // From the eligibility check to the staging record the installation
+        // is this operation's alone (ECO-S01): a competing upgrade, rollback
+        // or recovery is refused rather than interleaved with the backup.
+        const staged = await withOperation(decision.dataId, 'upgrade', async owns => {
+          // The installation must still be eligible BEFORE the (slow) backup, and
+          // again at commit; both checks read the stored registry, not a snapshot.
+          assertUpgradable(loadRegistry(storage), bundleId, decision.dataId);
+          let backupPath: string;
+          try {
+            backupPath = await backup(decision.dataId);
+          } catch (error) {
+            throw new UpgradeBlockedError(`The upgrade was not applied because a backup of the installed data could not be taken (${errorText(error)}). Reopen the previous package, or free disk space and try again.`);
+          }
+          if (signal.aborted || !owns()) return null; // nothing staged: the backup file is an unused snapshot
+          // Upgrade: verified snapshot FIRST, then a durable staging record, then the
+          // package may touch the data. Either failure stops the upgrade unapplied.
+          const commit = commitRegistry(storage, registry => {
+            assertUpgradable(registry, bundleId, decision.dataId);
+            beginUpgrade(registry, bundleId, decision.dataId, { backup: backupPath, manifestName: manifest.name, version: manifest.version });
+          });
+          if (!commit.saved) throw new UpgradeBlockedError('The upgrade was not applied because its record could not be saved; without it the upgrade would be forgotten after a restart. Free storage and try again.');
+          return { dataId: decision.dataId, upgrade: { dataId: decision.dataId, bundleId, backup: backupPath } };
         });
-        if (!commit.saved) throw new UpgradeBlockedError('The upgrade was not applied because its record could not be saved; without it the upgrade would be forgotten after a restart. Free storage and try again.');
-        return { dataId: decision.dataId, upgrade: { dataId: decision.dataId, bundleId, backup: backupPath } };
+        return staged;
       }
     }
   }
@@ -312,6 +399,11 @@ export type FinishOutcome = { finalized: true } | { finalized: false; reason: st
  * was already recorded by an earlier attempt is reported as finalized.
  */
 export function finishUpgrade(upgrade: UpgradeOperation, storage: RegistryStorageLike = registryStorage()): FinishOutcome {
+  // A rollback or recovery in flight is writing an OLDER snapshot back
+  // (ECO-S01): the registry must not be made to say the newer generation is
+  // active while that happens. The pending record stays; try again after.
+  const holder = activeOperation(upgrade.dataId);
+  if (holder === 'rollback' || holder === 'recovery') return { finalized: false, reason: `${describeOperation(holder)} of this installation is in progress` };
   const registry = loadRegistry(storage);
   if (registry.unavailable) return { finalized: false, reason: `the installation records could not be read (${registry.unavailable.reason})` };
   if (registry.damaged) return { finalized: false, reason: `the installation records are damaged (${registry.damaged.reason})` };
@@ -324,7 +416,9 @@ export function finishUpgrade(upgrade: UpgradeOperation, storage: RegistryStorag
   }
   if (!pendingMatches(record, upgrade)) return { finalized: false, reason: 'the pending upgrade record belongs to a different operation' };
   completeUpgrade(registry, upgrade.dataId);
-  return saveRegistry(storage, registry) ? { finalized: true } : { finalized: false, reason: 'the completion could not be saved' };
+  const saved = saveRegistry(storage, registry, { expectRevision: registry.revision });
+  if (saved === 'stale') return { finalized: false, reason: 'the installation records changed meanwhile; the completion was not recorded, try again' };
+  return saved ? { finalized: true } : { finalized: false, reason: 'the completion could not be saved' };
 }
 
 export interface AbandonOutcome {
@@ -352,6 +446,22 @@ export async function abandonUpgrade(
   restore: (dataId: string, backup: string) => Promise<void>,
   storage: RegistryStorageLike = registryStorage()
 ): Promise<AbandonOutcome> {
+  // One operation at a time on this installation (ECO-S01); a refusal is an
+  // outcome, not a throw, because the caller has an app that failed to start.
+  try {
+    return await withOperation(upgrade.dataId, 'rollback', owns => abandonUpgradeOwned(upgrade, restore, storage, owns));
+  } catch (error) {
+    if (error instanceof UpgradeBlockedError) return { restored: false, finalized: false, message: `${error.message} The pre-upgrade backup is at ${upgrade.backup}.` };
+    throw error;
+  }
+}
+
+async function abandonUpgradeOwned(
+  upgrade: UpgradeOperation,
+  restore: (dataId: string, backup: string) => Promise<void>,
+  storage: RegistryStorageLike,
+  owns: () => boolean
+): Promise<AbandonOutcome> {
   const registry = loadRegistry(storage);
   if (registry.unavailable) return { restored: false, finalized: false, message: `The installation records could not be read (${registry.unavailable.reason}), so whether this upgrade changed the data cannot be confirmed here. Its pre-upgrade backup is at ${upgrade.backup}.` };
   const record = registry.installations[upgrade.dataId];
@@ -362,6 +472,7 @@ export async function abandonUpgrade(
     await restore(upgrade.dataId, upgrade.backup);
   } catch (error) {
     const reason = errorText(error);
+    if (!owns()) return { restored: false, finalized: false, message: `The app failed to start, its data could not be restored from the pre-upgrade backup (${reason}), and this operation no longer owns the installation, so nothing was recorded. The backup is at ${upgrade.backup}.` };
     const commit = commitRegistry(storage, fresh => {
       if (!pendingMatches(fresh.installations[upgrade.dataId], upgrade)) return false;
       rollbackUpgrade(fresh, upgrade.dataId, { restored: false, reason });
@@ -373,6 +484,7 @@ export async function abandonUpgrade(
     }
     return { restored: false, finalized: false, message: `The app failed to start, its data could not be restored from the pre-upgrade backup (${reason}), and that recovery state could not be recorded either. The upgrade stays recorded as pending, so this installation remains blocked for every package until the runtime's storage is writable; the backup is at ${upgrade.backup}.` };
   }
+  if (!owns()) return { restored: true, finalized: false, message: `The app failed to start and its data was restored from the pre-upgrade backup, but this operation no longer owns the installation, so nothing was recorded. Reopen the file to see the current state; the backup is at ${upgrade.backup}.` };
   const commit = commitRegistry(storage, fresh => {
     if (!pendingMatches(fresh.installations[upgrade.dataId], upgrade)) return false;
     rollbackUpgrade(fresh, upgrade.dataId, { restored: true });
@@ -399,24 +511,30 @@ export async function recoverInstallation(
   restore: (dataId: string, backup: string) => Promise<void>,
   storage: RegistryStorageLike = registryStorage()
 ): Promise<void> {
-  const before = loadRegistry(storage);
-  if (before.unavailable) throw new UpgradeBlockedError(`The installation records could not be read (${before.unavailable.reason}); recovery was not attempted.`);
-  const record = before.installations[operation.dataId];
-  if (!record?.recoveryRequired) throw new UpgradeBlockedError('This installation is not in the recovery-only state (it may have been recovered already); nothing was changed.');
-  if (record.recoveryRequired.backup !== operation.backup) throw new UpgradeBlockedError(`The recovery request names a different backup (${operation.backup}) than the installation's recovery marker (${record.recoveryRequired.backup}); nothing was changed.`);
-  try {
-    await restore(operation.dataId, operation.backup);
-  } catch (error) {
-    throw new UpgradeBlockedError(`The backup could not be restored (${errorText(error)}). The installation stays in the recovery-only state; the backup is still at ${operation.backup}. Retry when the cause is fixed, or recover from that file by hand.`);
-  }
-  const commit = commitRegistry(storage, fresh => {
-    const current = fresh.installations[operation.dataId];
-    if (!current?.recoveryRequired || current.recoveryRequired.backup !== operation.backup) {
-      throw new UpgradeBlockedError(`The data was restored from ${operation.backup}, but the installation's recovery marker changed meanwhile (another operation), so nothing was recorded for it. Reopen the file to see the current state.`);
+  // The lease is taken BEFORE the preconditions are read (ECO-S01): what is
+  // checked is what will be acted on, and no upgrade or rollback can start
+  // on this installation until the restore and its record are both done.
+  await withOperation(operation.dataId, 'recovery', async owns => {
+    const before = loadRegistry(storage);
+    if (before.unavailable) throw new UpgradeBlockedError(`The installation records could not be read (${before.unavailable.reason}); recovery was not attempted.`);
+    const record = before.installations[operation.dataId];
+    if (!record?.recoveryRequired) throw new UpgradeBlockedError('This installation is not in the recovery-only state (it may have been recovered already); nothing was changed.');
+    if (record.recoveryRequired.backup !== operation.backup) throw new UpgradeBlockedError(`The recovery request names a different backup (${operation.backup}) than the installation's recovery marker (${record.recoveryRequired.backup}); nothing was changed.`);
+    try {
+      await restore(operation.dataId, operation.backup);
+    } catch (error) {
+      throw new UpgradeBlockedError(`The backup could not be restored (${errorText(error)}). The installation stays in the recovery-only state; the backup is still at ${operation.backup}. Retry when the cause is fixed, or recover from that file by hand.`);
     }
-    delete current.recoveryRequired;
-    if (current.pendingUpgrade?.backup === operation.backup) delete current.pendingUpgrade;
-    current.updatedAt = new Date().toISOString();
+    if (!owns()) throw new UpgradeBlockedError(`The data was restored from ${operation.backup}, but this operation no longer owns the installation, so nothing was recorded for it. Reopen the file to see the current state.`);
+    const commit = commitRegistry(storage, fresh => {
+      const current = fresh.installations[operation.dataId];
+      if (!current?.recoveryRequired || current.recoveryRequired.backup !== operation.backup) {
+        throw new UpgradeBlockedError(`The data was restored from ${operation.backup}, but the installation's recovery marker changed meanwhile (another operation), so nothing was recorded for it. Reopen the file to see the current state.`);
+      }
+      delete current.recoveryRequired;
+      if (current.pendingUpgrade?.backup === operation.backup) delete current.pendingUpgrade;
+      current.updatedAt = new Date().toISOString();
+    });
+    if (!commit.saved) throw new UpgradeBlockedError(`The data was restored from ${operation.backup}, but the recovery could not be recorded, so the installation stays blocked. Free storage in this runtime and retry the recovery; the data will not be restored twice unnecessarily, but a second restore from the same verified backup is safe.`);
   });
-  if (!commit.saved) throw new UpgradeBlockedError(`The data was restored from ${operation.backup}, but the recovery could not be recorded, so the installation stays blocked. Free storage in this runtime and retry the recovery; the data will not be restored twice unnecessarily, but a second restore from the same verified backup is safe.`);
 }

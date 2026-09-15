@@ -99,6 +99,14 @@ export interface InstallationRegistry {
   version: typeof REGISTRY_VERSION;
   installations: Record<string, InstallationRecord>;
   /**
+   * How many times the stored registry has been saved (ECO-S01). Read with
+   * the registry, written back incremented by every save; a save that names
+   * the revision it loaded is refused as `stale` when the stored copy has
+   * moved on. Absent in registries written before this field existed, which
+   * read as revision 0.
+   */
+  revision?: number;
+  /**
    * Present when the stored registry, or part of it, could not be trusted
    * (R2-SN-03, R3-SN-02). The raw bytes were quarantined under
    * `quarantineKey`; `records` lists the individual records that failed
@@ -239,6 +247,7 @@ export function loadRegistry(storage: RegistryStorage): InstallationRegistry {
       return damaged('unknown shape');
     }
     const registry = emptyRegistry();
+    registry.revision = storedRevision(parsed);
     const invalid: DamagedRecord[] = [];
     for (const [dataId, record] of Object.entries((parsed as InstallationRegistry).installations)) {
       const checked = validateRecord(dataId, record);
@@ -256,14 +265,39 @@ export function loadRegistry(storage: RegistryStorage): InstallationRegistry {
   }
 }
 
+/** The revision a stored (parsed) registry carries; 0 for one written before revisions existed. */
+function storedRevision(parsed: unknown): number {
+  const value = (parsed as { revision?: unknown } | null)?.revision;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/** The revision of whatever is stored right now: 0 when nothing (or nothing parseable) is. */
+function currentStoredRevision(storage: RegistryStorage): number {
+  try {
+    const raw = storage.getItem(REGISTRY_KEY);
+    return raw ? storedRevision(JSON.parse(raw)) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Persist the registry. Returns false (and writes nothing) when the write
  * fails, when the stored copy could not be read (nothing may replace records
  * that were never inspected), or when the stored copy is damaged and the
  * caller did not explicitly acknowledge discarding it (the quarantined bytes
  * are kept either way; an acknowledged save keeps only the valid records).
+ *
+ * With `expectRevision` (ECO-S01) the save is conditional: it returns
+ * `'stale'` and writes nothing when the stored copy's revision is no longer
+ * the one the caller loaded, so a decision taken on an old read is never
+ * written over a newer one. Every save stores the revision incremented.
  */
-export function saveRegistry(storage: RegistryStorage, registry: InstallationRegistry, options: { acknowledgeDamage?: boolean } = {}): boolean {
+export function saveRegistry(
+  storage: RegistryStorage,
+  registry: InstallationRegistry,
+  options: { acknowledgeDamage?: boolean; expectRevision?: number } = {}
+): boolean | 'stale' {
   if (registry.unavailable) {
     console.error('[SoftN Loader] Refusing to overwrite an installation registry that could not be read');
     return false;
@@ -272,9 +306,16 @@ export function saveRegistry(storage: RegistryStorage, registry: InstallationReg
     console.error('[SoftN Loader] Refusing to overwrite a damaged installation registry without acknowledgement');
     return false;
   }
+  const stored = currentStoredRevision(storage);
+  if (options.expectRevision !== undefined && stored !== options.expectRevision) {
+    console.error(`[SoftN Loader] The installation registry changed underneath this operation (stored revision ${stored}, loaded ${options.expectRevision}); not saving`);
+    return 'stale';
+  }
   try {
     const { damaged: _damaged, unavailable: _unavailable, ...clean } = registry;
+    clean.revision = stored + 1;
     storage.setItem(REGISTRY_KEY, JSON.stringify(clean));
+    registry.revision = clean.revision;
     delete registry.damaged;
     return true;
   } catch (error) {

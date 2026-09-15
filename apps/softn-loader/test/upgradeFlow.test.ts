@@ -178,7 +178,7 @@ describe('R3-SN-02: an unreadable or partly invalid registry is never an empty h
     const quarantineKey = registry.damaged!.quarantineKey!;
     expect(saveRegistry(storage, registry, { acknowledgeDamage: true })).toBe(true);
     expect(storage.map.get(quarantineKey)).toBe(before);
-    expect(JSON.parse(storage.map.get(REGISTRY_KEY)!)).toEqual({ version: 1, installations: {} });
+    expect(JSON.parse(storage.map.get(REGISTRY_KEY)!)).toEqual({ version: 1, installations: {}, revision: 1 });
   });
 
   it('treats malformed pending or recovery metadata as damage instead of dropping the gate', () => {
