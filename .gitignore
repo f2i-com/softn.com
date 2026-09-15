@@ -56,6 +56,17 @@ apps/softn-single/public/app.softn
 # Verified binary inputs for optional single-app backend packaging
 .cache/
 
+# The ZIPP engine is generated, never committed: fetch-zipp-release.mjs installs
+# the release apps/softn-host-rust/Cargo.toml declares (the npm hooks run it),
+# staging beside the folder under a lock file; its downloads are cached per
+# tag, and a local engine build (build-zipp-wasm.mjs) goes to core's
+# .cache/zipp-local. Only the curated notices in
+# packages/@softn/core/zipp-notices/ are source.
+/packages/@softn/core/wasm-zipp/
+/packages/@softn/core/.wasm-zipp.*
+/packages/@softn/core/.cache/
+/.zipp-release/
+
 # Python bytecode from the verification scripts
 __pycache__/
 

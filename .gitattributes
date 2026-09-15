@@ -12,6 +12,12 @@
 packages/@softn/core/demo-bundle/**/*.json text eol=lf
 packages/@softn/core/demo-bundle/**/*.svg  text eol=lf
 
+# The ZIPP engine (packages/@softn/core/wasm-zipp/) is generated, not committed.
+# The curated notices it installs are copied byte for byte and their digest is
+# recorded in SOURCE.json and softn-release.json; LF on every platform keeps
+# that engine identity the same whichever OS built the release.
+packages/@softn/core/zipp-notices/THIRD_PARTY_LICENSES.txt text eol=lf
+
 # Packed binaries: never touched, and never diffed as text.
 *.wav      binary
 *.mp3      binary

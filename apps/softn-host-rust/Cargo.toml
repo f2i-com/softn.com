@@ -5,11 +5,14 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-# The JavaScript engine `.logic` runs on, taken from ZIPP's release tag: the
-# same release the runtime's vendored engine (packages/@softn/core/wasm-zipp/
-# SOURCE.json) was built from, which scripts/engine-pin.test.mjs checks, so
-# the host and the browser run one engine version and nothing has to be
-# checked out beside this repository. To develop against a sibling checkout
+# The JavaScript engine `.logic` runs on, taken from ZIPP's release tag. The
+# tag is the repository's declared ZIPP release: fetch-zipp-release.mjs installs
+# the browser engine (packages/@softn/core/wasm-zipp/, generated) from the same
+# release and scripts/engine-pin.test.mjs holds Cargo.lock to its commit, so
+# the host and the browser run one engine and nothing has to be checked out
+# beside this repository. When ZIPP releases, bump the tag and Cargo.lock
+# together; a SoftN release refuses an older one (scripts/zipp-release-gate.mjs)
+# unless told otherwise. To develop against a sibling checkout
 # instead: cargo test --config 'patch."https://github.com/f2i-com/zipp.org".zipp-vm.path="../../../zipp.org/crates/zipp-vm"'
 # `instrument` is what gives the server a step budget and a cooperative
 # abort flag for untrusted scripts; it switches the JIT off, which is the

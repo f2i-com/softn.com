@@ -104,4 +104,7 @@ softn.net.fetch = function(url, options, done) {
     reportError(reason);
   }
 });
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: { version: zippSource.version, sha256: zippSource.sha256 } }, '*');
+// release is an addition: FormLogic compares version and sha256. Typed as
+// optional because a local engine build (--install-local) records none.
+const zippRelease = (zippSource as { release?: string }).release;
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: { version: zippSource.version, sha256: zippSource.sha256, release: zippRelease } }, '*');

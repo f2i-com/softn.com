@@ -44,17 +44,23 @@ written by `scripts/package-formlogic-runtime.mjs`: `hosted-runtime/`
 it), `app-editors/` (Builder and Studio built as hosted editors, with the
 editor bridge protocol in `manifest.json`), `native-runtime/`
 (`apps/softn-host-php/runtime/*` byte for byte, the ZIPP engine, licences,
-`provenance.json`), `adapter/` (`packages/@softn/core/src/integrations/formlogic.ts`
-with its provenance) and `softn-release.json` (tag, commit, engine, protocols,
-adapter digest, a digest of every other file). Each built folder carries the
-`runtime-manifest.json` FormLogic's `checkRuntimeArtifact` verifies.
+`provenance.json`), `zipp/` (`packages/@softn/core/wasm-zipp/` byte for byte:
+ZIPP's web-python release files with the bundle's `SHA256SUMS`, ZIPP's release
+`SHA256SUMS` as `RELEASE-SHA256SUMS`, the notices and `SOURCE.json`), `adapter/`
+(`packages/@softn/core/src/integrations/formlogic.ts` with its provenance) and
+`softn-release.json` (tag, commit, the engine's whole `SOURCE.json` record,
+protocols, adapter digest, a digest of every other file). Each built folder
+carries the `runtime-manifest.json` FormLogic's `checkRuntimeArtifact`
+verifies. Every copy of the engine in the archive, recognised by its exports,
+is the one under `zipp/`.
 
 FormLogic's `prepare-hosted-runtime` fetches the latest release, checks the
-`.sha256` sidecar and every digest, requires the ZIPP engine and the
-protocol numbers it already vendors, and unpacks the folders where its build
+`.sha256` sidecar and every digest, requires the protocol numbers it speaks,
+takes its browser engine from `zipp/`, and unpacks the folders where its build
 expects them; `SOFTN_RELEASE=<tag>` pins a release, `SOFTN_RELEASE_ARCHIVE`
 uses a downloaded copy, and `SOFTN_REPO` still builds from a working tree
-for development. A release whose engine or protocols differ fails there,
-before any FormLogic test or package step, with a message naming what to
-update. `npm run package:formlogic-runtime -- --tag vX.Y.Z` builds the
+for development. A release whose engine copies disagree or whose protocols
+differ fails there, before any FormLogic test or package step, with a message
+naming what to update. (A FormLogic that still vendors its own engine refuses
+any release built with a different one; pin `SOFTN_RELEASE` there.) `npm run package:formlogic-runtime -- --tag vX.Y.Z` builds the
 archive locally (`--allow-dirty` for a trial from an uncommitted tree).

@@ -569,7 +569,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The repository specifies Node.js 20.19 or later on the 20.x line, or Node.js 22.12 or later, with npm. Use a supported Node release that satisfies that requirement. The browser apps use the checked-in WebAssembly engine; ordinary browser builds do not require rebuilding ZIPP with Rust."
+              "text": "The repository specifies Node.js 20.19 or later on the 20.x line, or Node.js 22.12 or later, with npm. Use a supported Node release that satisfies that requirement. The browser apps use a prebuilt WebAssembly engine that the build and test scripts install from a ZIPP release; ordinary browser builds do not require rebuilding ZIPP with Rust."
             },
             {
               "type": "code",
@@ -1590,11 +1590,11 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The retrieved README identifies the browser engine as ZIPP v0.0.18 and points to SOURCE.json for artifact provenance. It also describes a local combined JavaScript and experimental Python build. The exact bundled artifact matters more than an upstream release headline."
+              "text": "The retrieved README identifies the browser engine as ZIPP v0.0.18 and points to SOURCE.json for artifact provenance. It is ZIPP’s official web-python release build, combining JavaScript and experimental Python. The exact bundled artifact matters more than an upstream release headline."
             },
             {
               "type": "paragraph",
-              "text": "For ordinary SoftN development, use the checked-in runtime. Rebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling."
+              "text": "For ordinary SoftN development, use the engine the scripts install from the declared ZIPP release. Rebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling."
             }
           ]
         },
@@ -3020,7 +3020,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The retrieved SoftN README says existing .logic screens continue to use JavaScript. It identifies the checked-in browser engine as ZIPP v0.0.18, built locally with JavaScript and experimental Python support."
+              "text": "The retrieved SoftN README says existing .logic screens continue to use JavaScript. It identifies the browser engine as ZIPP v0.0.18, ZIPP’s web-python release build with JavaScript and experimental Python support."
             },
             {
               "type": "paragraph",
@@ -4010,15 +4010,15 @@
         },
         {
           "id": "engine",
-          "title": "The browser engine is checked in",
+          "title": "The browser engine comes from a ZIPP release",
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The README says the compiled engine is committed under packages/@softn/core/wasm-zipp, so an ordinary browser build does not require a Rust toolchain. SOURCE.json records the artifact’s provenance and checksum."
+              "text": "The README says the compiled engine is not committed: packages/@softn/core/wasm-zipp is installed from the ZIPP release that the zipp-vm tag in apps/softn-host-rust/Cargo.toml names and verified against that release’s SHA256SUMS, so an ordinary browser build does not require a Rust toolchain. The build, test, typecheck and licence scripts install it when it is missing; SOURCE.json records the artifact’s provenance and checksums."
             },
             {
               "type": "paragraph",
-              "text": "It also identifies vm-adapter.ts as the engine selection point and provides a separate build:zipp-wasm workspace command for engine maintainers. Rebuilding that artifact requires the matching Rust, wasm-bindgen and optimisation tooling described by the current project guide."
+              "text": "It also identifies vm-adapter.ts as the engine selection point and provides a separate build:zipp-wasm workspace command for trying an unreleased engine, which installs only as a local build that no release accepts. Rebuilding that artifact requires the matching Rust, wasm-bindgen and optimisation tooling described by the current project guide."
             }
           ]
         },

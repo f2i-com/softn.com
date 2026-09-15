@@ -13,6 +13,11 @@ name: Verify
 # `ref` is what to verify. Empty means the ref that triggered the caller,
 # which is what a push or pull request wants; a release passes its tag so the
 # exact tagged commit is what is checked out, built and tested.
+#
+# `zipp-release` and `zipp-sums-sha256` are the ZIPP release a release run's
+# gate froze, and the digest its SHA256SUMS must have. Empty means the release
+# apps/softn-host-rust/Cargo.toml declares, which is what every other caller
+# wants: a commit builds against the same ZIPP whenever it is verified.
 on:
   workflow_call:
     inputs:
@@ -21,11 +26,25 @@ on:
         required: false
         type: string
         default: ''
+      zipp-release:
+        description: The ZIPP release to install (vX.Y.Z); the Cargo.toml zipp-vm tag when empty
+        required: false
+        type: string
+        default: ''
+      zipp-sums-sha256:
+        description: The sha256 that release's SHA256SUMS must have; unchecked when empty
+        required: false
+        type: string
+        default: ''
 
 jobs:
   verify:
     name: Typecheck, lint and test
     runs-on: ubuntu-latest
+    # Read by every install of the engine in this job, the npm hooks' included.
+    env:
+      ZIPP_RELEASE: ${{ inputs.zipp-release }}
+      ZIPP_SUMS_SHA256: ${{ inputs.zipp-sums-sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,6 +64,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The scripting engine is not in this repository either: the ZIPP release
+      # the Cargo tag names (or the one a release froze) is installed into
+      # packages/@softn/core/wasm-zipp/ and verified against that release's
+      # SHA256SUMS. The build, test, typecheck and licence hooks would install
+      # it too; this step makes it visible and fails first if it cannot.
+      - name: Install the ZIPP release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
+
       # The demo bundles are not in this repository: their sources live in
       # f2i-com/softn-Examples, whose releases publish the archives, and
       # apps/softn-web/public/demos/index.json pins one by URL, size and digest.
@@ -60,8 +87,8 @@ jobs:
       - name: Audit dependency lockfile
         run: npm audit --audit-level=high
 
-      # The scripting engine is committed at packages/@softn/core/wasm-zipp/,
-      # so there is nothing to compile first and no Rust toolchain needed.
+      # The engine is fetched from the ZIPP release the Cargo tag names, already
+      # built, so there is nothing to compile first and no Rust toolchain.
       # build:packages builds core, then components, then vite-plugin — in that
       # order, because each needs the one before it to have emitted its types.
       - name: Build packages

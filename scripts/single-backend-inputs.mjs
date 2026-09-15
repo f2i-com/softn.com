@@ -1,6 +1,6 @@
 // The checksum-pinned inputs every PHP backend archive is built from: the
 // official Linux x64 Node, the ws package for the optional WebSocket bridge,
-// the vendored ZIPP WASM with its upstream licence, and the notices that go
+// the installed ZIPP WASM with its upstream licence, and the notices that go
 // beside them. Shared by package-single-backend.mjs (the static runtime with
 // a backend) and package-private-single-php.mjs (the PHP-served runtime with
 // a backend), so the two archives cannot disagree about a version or a hash.
@@ -29,12 +29,15 @@ async function download(url,file,digest) {
 /** Package local-build provenance without assuming an upstream release ZIP exists. */
 export async function prepareZippNotices(wasmDir, notices) {
   const source=JSON.parse(readFileSync(join(wasmDir,'SOURCE.json'),'utf8'));
-  if(source.artifact!=='zipp_wasm_bg.wasm'||!source.sha256||sha(readFileSync(join(wasmDir,source.artifact)))!==source.sha256)throw Error('Vendored WASM provenance mismatch');
+  if(source.artifact!=='zipp_wasm_bg.wasm'||!source.sha256||sha(readFileSync(join(wasmDir,source.artifact)))!==source.sha256)throw Error('ZIPP WASM provenance mismatch');
+  // A release install records its notices, file and digest; a local build may just carry THIRD_PARTY_LICENSES.txt.
+  const noticesFile=join(wasmDir,source.notices?.file??'THIRD_PARTY_LICENSES.txt');
+  if(source.notices&&!(existsSync(noticesFile)&&sha(readFileSync(noticesFile))===source.notices.sha256))throw Error('ZIPP notices provenance mismatch: '+source.notices.file+' is not the recorded '+source.notices.sha256);
   let license;
   if(existsSync(join(wasmDir,'LICENSE-APACHE'))) {
     license=readFileSync(join(wasmDir,'LICENSE-APACHE'));
   } else {
-    if(!source.release||!source.bundle||!source.bundleSha256)throw Error('Local ZIPP build is missing LICENSE-APACHE; rebuild the vendored engine.');
+    if(!source.release||!source.bundle||!source.bundleSha256)throw Error('Local ZIPP build is missing LICENSE-APACHE; rebuild the local engine.');
     const upstream=await download(source.repository+'/releases/download/'+source.release+'/'+source.bundle,join(cache,source.bundle),source.bundleSha256);
     const files=unzipSync(upstream),name=Object.keys(files).find(n=>n.endsWith('/LICENSE-APACHE'));
     if(!name)throw Error('Upstream WASM license missing');
@@ -43,7 +46,7 @@ export async function prepareZippNotices(wasmDir, notices) {
   mkdirSync(notices,{recursive:true});
   writeFileSync(join(notices,'ZIPP-LICENSE-APACHE'),license);
   copyFileSync(join(wasmDir,'SOURCE.json'),join(notices,'ZIPP-SOURCE.json'));
-  if(existsSync(join(wasmDir,'THIRD_PARTY_LICENSES.txt')))copyFileSync(join(wasmDir,'THIRD_PARTY_LICENSES.txt'),join(notices,'ZIPP-THIRD-PARTY-LICENSES.txt'));
+  if(existsSync(noticesFile))copyFileSync(noticesFile,join(notices,'ZIPP-THIRD-PARTY-LICENSES.txt'));
 }
 /** The README.md for a backend archive, written where packagePhp can read it. */
 export function explainerFile(id,version) {

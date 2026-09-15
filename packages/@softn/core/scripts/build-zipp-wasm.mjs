@@ -1,14 +1,19 @@
 #!/usr/bin/env node
 /**
- * Rebuild the vendored zipp engine in `wasm-zipp/` from a zipp.org checkout.
- *
- * The engine is a Rust crate that lives in its own repository, so its build
- * output is committed here rather than produced by `npm run build` — a SoftN
- * checkout must be buildable without a Rust toolchain. Run this only when
- * picking up a new engine revision.
+ * Build the zipp engine from a zipp.org checkout, for trying an unreleased
+ * engine revision. SoftN ships only ZIPP's own release build
+ * (`fetch-zipp-release.mjs`, checked against the release's SHA256SUMS), so
+ * this writes to the gitignored `.cache/zipp-local/`, never to `wasm-zipp/`:
  *
  *   node scripts/build-zipp-wasm.mjs
  *   ZIPP_REPO=../../../../zipp.org node scripts/build-zipp-wasm.mjs
+ *   node scripts/fetch-zipp-release.mjs --install-local .cache/zipp-local
+ *
+ * The install is stamped build 'local'. Most suites run on it, but the ones
+ * that pin release provenance fail by design: scripts/engine-pin.test.mjs
+ * (build 'release', the Cargo tag) and test/zipp-languages.test.ts (the
+ * commit the module reports). licenses:check, the FormLogic runtime packager
+ * and --ensure under CI refuse it, and `npm run fetch:zipp` puts a release back.
  *
  * Requires: rustup with the wasm32-unknown-unknown target, and the wasm-bindgen
  * CLI at the version zipp pins (`cargo install wasm-bindgen-cli --locked
@@ -29,9 +34,7 @@ import { fileURLToPath } from 'node:url';
 
 const CORE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ZIPP = resolve(CORE, process.env.ZIPP_REPO ?? '../../../../zipp.org');
-// ZIPP_OUT builds somewhere else, to test a recipe change without touching
-// the vendored engine.
-const OUT = process.env.ZIPP_OUT ? resolve(process.env.ZIPP_OUT) : join(CORE, 'wasm-zipp');
+const OUT = join(CORE, '.cache/zipp-local');
 const variant = process.env.ZIPP_VARIANT ?? 'all';
 if (!['all', 'javascript'].includes(variant)) throw new Error('ZIPP_VARIANT must be all or javascript.');
 
@@ -40,7 +43,7 @@ if (!existsSync(join(ZIPP, 'crates/zipp-wasm/Cargo.toml'))) {
   process.exit(1);
 }
 
-// A vendored binary without an exact source revision cannot be audited or
+// A binary without an exact source revision cannot be audited or
 // reproduced. Refuse to stamp a dirty checkout as a real commit: the caller can
 // commit/stash its zipp work first, then rebuild from that immutable revision.
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], {
@@ -98,7 +101,8 @@ run(
 // engine then failed to compile under the Node the CI test job runs — it only
 // showed on the runner, because Node 24 on the machine that built it accepted
 // them. zipp's own release (crates/zipp-wasm/README.md) ships without wasm-opt
-// at all; `vendor-zipp-release.mjs` takes that build as it is.
+// at all; `fetch-zipp-release.mjs` takes that build as it is, and that is
+// what SoftN ships.
 run('wasm-opt', ['-O3',
   join(PKG, 'zipp_wasm_bg.wasm'), '-o', join(PKG, 'zipp_wasm_bg.opt.wasm')], WASM);
 copyFileSync(join(PKG, 'zipp_wasm_bg.opt.wasm'), join(PKG, 'zipp_wasm_bg.wasm'));
@@ -109,7 +113,7 @@ run('node', ['tests/node/strip-target-features.cjs',
 copyFileSync(join(PKG, 'zipp_wasm_bg.stripped.wasm'), join(PKG, 'zipp_wasm_bg.wasm'));
 rmSync(join(PKG, 'zipp_wasm_bg.stripped.wasm'));
 // Verifies the post-processed artifact's linear-memory maximum and its host
-// import surface. Runs against the file that will actually be vendored.
+// import surface. Runs against the file that will actually be installed.
 run('node', ['tests/node/check-wasm-memory.cjs', join(PKG, 'zipp_wasm_bg.wasm')], WASM);
 
 mkdirSync(OUT, { recursive: true });
@@ -148,3 +152,4 @@ writeFileSync(
 );
 console.log(`Copied engine to ${OUT}`);
 console.log(`Source revision: ${revision}`);
+console.log('Install it with: node scripts/fetch-zipp-release.mjs --install-local .cache/zipp-local');

@@ -31,6 +31,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # packages/@softn/core/wasm-zipp/ is generated: the ZIPP release the
+      # apps/softn-host-rust/Cargo.toml zipp-vm tag names.
+      - name: Install the ZIPP release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
+
       - name: Build packages
         run: |
           npm run build:packages
@@ -137,6 +142,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install the ZIPP release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
 
       - name: Build shared packages
         run: npm run build:packages

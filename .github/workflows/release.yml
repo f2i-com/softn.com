@@ -1,8 +1,16 @@
 name: Release
 
 # A release is built from an existing version tag. The zipp WASM engine used
-# by `.logic` is vendored in packages/@softn/core/wasm-zipp/, so the release
-# builds the shared packages directly from the checked-in engine.
+# by `.logic` is not committed: each job installs a ZIPP web-python release
+# into packages/@softn/core/wasm-zipp/ and verifies it against that release's
+# SHA256SUMS (packages/@softn/core/scripts/fetch-zipp-release.mjs). Which
+# release is decided once, in the gate, for the whole run: the zipp-vm tag the
+# tagged apps/softn-host-rust/Cargo.toml declares, which has to be ZIPP's
+# latest release (scripts/zipp-release-gate.mjs) unless allow-older-zipp is
+# asked for. Every job installs that tag and requires the SHA256SUMS digest the
+# gate saw; the website job checks the install against the published release
+# again before packaging, and licenses:check and the FormLogic runtime
+# packager refuse anything but a verified release install.
 #
 # The hosting archives go on the release: the optional PHP/WASM server package, the single-app runtime, the PHP-served
 # single app (alone and with that backend) and the website — the complete static
@@ -19,7 +27,9 @@ name: Release
 # workflow with the tag in that case.) The dispatch entry stays for retrying an
 # infrastructure failure without moving a tag that has already been published,
 # and deliberately cannot release an arbitrary branch: both paths check out
-# refs/tags/<tag> and refuse if HEAD is not that tag's commit.
+# refs/tags/<tag> and refuse if HEAD is not that tag's commit. The jobs run
+# the tag's own scripts, so a retry works for tags from v0.0.15 on, the first
+# with scripts/zipp-release-gate.mjs; the gate refuses an older tag by name.
 #
 # Nothing is packaged until the tagged commit has passed the same
 # verification a push gets (verify.yml: install, audit, build, typecheck,
@@ -42,6 +52,11 @@ on:
         required: false
         type: boolean
         default: false
+      allow-older-zipp:
+        description: Ship the ZIPP release Cargo.toml declares even though it is not ZIPP's latest release (usually because a newer one is published). The release notes say so.
+        required: false
+        type: boolean
+        default: false
 
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
@@ -51,11 +66,22 @@ jobs:
   # input, or `[skip-tests]` in the annotated tag's message for a tag push.
   # Meant for a patch release whose commits already passed CI on main; the
   # release notes record that the gates were skipped.
+  #
+  # And which ZIPP release this run ships, frozen here for every job: the
+  # tagged Cargo.toml's zipp-vm tag, only while it is ZIPP's latest release.
+  # A newer ZIPP fails the release until that tag and Cargo.lock are bumped
+  # (a tag newer than the latest, such as a pre-release, fails it as well),
+  # or `allow-older-zipp` (input, or `[allow-older-zipp]` in the tag message)
+  # ships the older one and the release notes say so.
   gate:
-    name: Decide whether the test gates run
+    name: Decide the test gates and the ZIPP release
     runs-on: ubuntu-latest
     outputs:
       skip: ${{ steps.decide.outputs.skip }}
+      zipp-release: ${{ steps.zipp.outputs.zipp-release }}
+      zipp-sums-sha256: ${{ steps.zipp.outputs.zipp-sums-sha256 }}
+      zipp-latest: ${{ steps.zipp.outputs.zipp-latest }}
+      zipp-older-allowed: ${{ steps.zipp.outputs.zipp-older-allowed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,6 +91,7 @@ jobs:
       - id: decide
         env:
           INPUT_SKIP: ${{ inputs.skip-tests }}
+          INPUT_ALLOW_OLDER_ZIPP: ${{ inputs.allow-older-zipp }}
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
@@ -76,6 +103,28 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
             echo "Test gates run for $TAG."
           fi
+          if [[ "$INPUT_ALLOW_OLDER_ZIPP" == "true" || "$message" == *"[allow-older-zipp]"* ]]; then
+            echo "allow-older-zipp=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allow-older-zipp=false" >> "$GITHUB_OUTPUT"
+          fi
+      # Node built-ins only: no npm ci before the gate.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Freeze the ZIPP release
+        id: zipp
+        env:
+          ALLOW_OLDER_ZIPP: ${{ steps.decide.outputs.allow-older-zipp }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f scripts/zipp-release-gate.mjs ]]; then
+            echo "::error::$TAG predates the ZIPP release gate (scripts/zipp-release-gate.mjs, first in v0.0.15); this workflow cannot release it." >&2
+            exit 1
+          fi
+          node scripts/zipp-release-gate.mjs
 
   # The exact tagged commit, through the complete suite. `env` is not
   # available to a reusable-workflow call, so the tag is spelled out again.
@@ -86,6 +135,8 @@ jobs:
     uses: ./.github/workflows/verify.yml
     with:
       ref: refs/tags/${{ inputs.tag || github.ref_name }}
+      zipp-release: ${{ needs.gate.outputs.zipp-release }}
+      zipp-sums-sha256: ${{ needs.gate.outputs.zipp-sums-sha256 }}
 
   # `build:site` writes dist/; that directory is packaged in full as one
   # archive by scripts/package-site.mjs, which reads the archive back and
@@ -102,6 +153,9 @@ jobs:
     needs: [gate, verify]
     if: needs.gate.outputs.skip != 'true' && needs.verify.result == 'success'
     runs-on: ubuntu-latest
+    env:
+      ZIPP_RELEASE: ${{ needs.gate.outputs.zipp-release }}
+      ZIPP_SUMS_SHA256: ${{ needs.gate.outputs.zipp-sums-sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -113,6 +167,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Install the ZIPP release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
       - name: Build the site with the example bundles
         run: |
           npm run build:packages
@@ -136,11 +192,15 @@ jobs:
   website:
     name: Package website and single-app runtime
     needs: [gate, verify, e2e]
-    # Runs after the gates pass, or straight away when the gates were skipped.
-    if: always() && !cancelled() && (needs.gate.outputs.skip == 'true' || (needs.verify.result == 'success' && needs.e2e.result == 'success'))
+    # Runs after the gates pass, or straight away when the gates were skipped;
+    # never after a failed gate job (a ZIPP refusal leaves `skip` set).
+    if: always() && !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.skip == 'true' || (needs.verify.result == 'success' && needs.e2e.result == 'success'))
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    env:
+      ZIPP_RELEASE: ${{ needs.gate.outputs.zipp-release }}
+      ZIPP_SUMS_SHA256: ${{ needs.gate.outputs.zipp-sums-sha256 }}
     defaults:
       run:
         shell: bash
@@ -209,6 +269,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The engine this release ships: the ZIPP release the gate froze, with
+      # the SHA256SUMS digest the gate saw (job env). Everything below reads it,
+      # the release notes' archive names and licenses:check first.
+      - name: Install the ZIPP release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --ensure
+
       - name: Audit dependency lockfile
         run: npm audit --audit-level=high
 
@@ -228,7 +294,7 @@ jobs:
           set -euo pipefail
           printf '%s\n' '' '> Built with skip-tests: the verify and browser gates were not run for this tag. Its commits passed CI on main.' >> release/RELEASE-NOTES.md
 
-      # The vendored engine's SOURCE.json must name the artifact that is really
+      # The installed engine's SOURCE.json must name the artifact that is really
       # there, and every shipped dependency must have its licence text: both
       # end up inside the archive.
       - name: Check engine provenance and licence notices
@@ -318,20 +384,44 @@ jobs:
           (cd release && sha256sum -c "softn-app-private-$RELEASE_TAG.zip.sha256" --strict)
           (cd release && sha256sum -c "softn-app-private-with-backend-linux-x64-$RELEASE_TAG.zip.sha256" --strict)
 
+      # FormLogic installs its browser engine from the archive's zipp/, so the
+      # install is compared once more with what ZIPP publishes under the tag,
+      # every file byte for byte, right before it is packaged.
+      - name: Check the ZIPP install against the published release
+        run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --check --online
+
       # What FormLogic takes from a release instead of building SoftN from
-      # source: the hosted frame, the two hosted editors, the native runtime
-      # and the adapter, with a digest of every file in softn-release.json.
+      # source: the hosted frame, the two hosted editors, the native runtime,
+      # the ZIPP release install and the adapter, with a digest of every file
+      # in softn-release.json, whose zipp must be the release the gate froze.
       - name: Build and package the SoftN runtime for FormLogic
         run: |
           set -euo pipefail
           npm run package:formlogic-runtime -- --tag "$RELEASE_TAG"
           zip="release/softn-formlogic-runtime-$RELEASE_TAG.zip"
           unzip -tq "$zip"
-          for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm adapter/formlogic.ts; do
+          for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm zipp/SOURCE.json zipp/zipp_wasm.d.ts zipp/RELEASE-SHA256SUMS adapter/formlogic.ts; do
             unzip -Z1 "$zip" | grep -qx "$entry"
           done
           test "$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).tag))')" = "$RELEASE_TAG"
+          recorded="$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const z=JSON.parse(s).zipp;console.log(z.release+" "+z.sumsSha256)})')"
+          if [[ "$recorded" != "$ZIPP_RELEASE $ZIPP_SUMS_SHA256" ]]; then
+            echo "softn-release.json records ZIPP $recorded; the gate froze $ZIPP_RELEASE $ZIPP_SUMS_SHA256" >&2
+            exit 1
+          fi
           (cd release && sha256sum -c "softn-formlogic-runtime-$RELEASE_TAG.zip.sha256" --strict)
+
+      - name: Record the ZIPP release in the release notes
+        env:
+          ZIPP_LATEST: ${{ needs.gate.outputs.zipp-latest }}
+          ZIPP_OLDER_ALLOWED: ${{ needs.gate.outputs.zipp-older-allowed }}
+        run: |
+          set -euo pipefail
+          line="> Built with ZIPP $ZIPP_RELEASE (the web-python release; its SHA256SUMS has sha256 $ZIPP_SUMS_SHA256)."
+          if [[ "$ZIPP_OLDER_ALLOWED" == "true" ]]; then
+            line="$line Not ZIPP's latest release, $ZIPP_LATEST: shipped with allow-older-zipp."
+          fi
+          printf '%s\n' '' "$line" >> release/RELEASE-NOTES.md
 
       - name: Install Apache/PHP test dependencies
         run: sudo apt-get update && sudo apt-get install -y apache2 php-cli php-cgi php-gd
