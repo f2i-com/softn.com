@@ -6,8 +6,8 @@
  *
  *   node scripts/fetch-zipp-release.mjs [vX.Y.Z]         install a release (no tag: the declared one)
  *   node scripts/fetch-zipp-release.mjs --latest         install the latest release
- *   node scripts/fetch-zipp-release.mjs --check          verify the install, offline
- *   node scripts/fetch-zipp-release.mjs --check --online and against the published release
+ *   node scripts/fetch-zipp-release.mjs --check          verify the install offline: digests, recorded fields, import/export subset
+ *   node scripts/fetch-zipp-release.mjs --check --online and that it is what the release publishes now
  *   node scripts/fetch-zipp-release.mjs --resolve-only [vX.Y.Z | --latest]   print {release, sumsSha256}
  *   node scripts/fetch-zipp-release.mjs --ensure         install unless the declared release checks
  *   node scripts/fetch-zipp-release.mjs --install-local <dir>       a build-zipp-wasm.mjs output
@@ -35,7 +35,9 @@
  * same commit, asking the host for exactly the same imports, exporting nothing
  * the primary does not — so it can run under the primary's glue, which is the
  * only glue Softn ships — and, loaded under that glue, reporting exactly
- * ['javascript'] with its Python entry points refusing. Only its module,
+ * ['javascript'] with its Python entry points refusing. That load happens at
+ * install (verifyVariant); --check re-verifies digests, recorded fields and
+ * the import/export subset over the installed bytes and loads nothing. Only its module,
  * BUILD-INFO.txt, PROFILE.json and SHA256SUMS are installed, with a SOURCE.json
  * of its own; its glue is recorded by digest for provenance and not shipped.
  * The primary SOURCE.json gains `variants.web` naming it. An install without

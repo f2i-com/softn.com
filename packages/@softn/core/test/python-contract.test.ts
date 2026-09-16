@@ -9,8 +9,14 @@
  *   Python facade stops offering the same ones. A capability added for one
  *   language and forgotten for the other is a red test, not a support ticket.
  * - **Whose line is it.** A Python project carries files the author never
- *   wrote, and each of their own modules has a setter appended. An error that
- *   named one of those would be an error they could not act on.
+ *   wrote. An error that named one of those, or a line past the end of a file
+ *   they did write, would be an error they could not act on.
+ * - **One symbol table.** The entry the adapter calls resolves every read and
+ *   write of state through one owner lookup, writes with `setattr`, and
+ *   appends nothing to the author's modules. The engine-level proof is in
+ *   `python-state-write.test.ts`; what is pinned here is the shape of the
+ *   generated source, so a regression to a per-module setter or a textual
+ *   scan is a red test before it is a corrupted app.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -19,12 +25,12 @@ import {
   PYTHON_CAPABILITY_KINDS,
   PYTHON_NAMESPACES,
   SOFTN_PY,
+  SOFTN_PY_IMPORTS,
   mainSource,
-  scanTopLevelNames,
-  setterSource,
   snakeCase,
 } from '../src/runtime/python/python-runtime-source';
 import { authorMessage, lineCount } from '../src/runtime/python/python-errors';
+import { SOFTN_PY_STDLIB_IMPORTS, pythonModuleName } from '../src/bundle/source-composer';
 
 /** Every `host.call("<kind>"` the JavaScript guest's preamble can make. */
 function javascriptKinds(): string[] {
@@ -102,46 +108,65 @@ describe('one capability set, two languages', () => {
   });
 });
 
-describe('the generated setter', () => {
-  it('finds the names a module assigns at column 0', () => {
-    const names = scanTopLevelNames(
-      [
-        'count = 0',
-        'title: str = "hi"',
-        'total += 1',
-        'a, b = 1, 2',
-        '_private = 1',
-        '    indented = 1',
-        'def f():',
-        '    inner = 1',
-        'is_equal = x == y',
-      ].join('\n')
-    );
-    expect(names).toContain('count');
-    expect(names).toContain('title');
-    expect(names).toContain('total');
-    expect(names).toContain('is_equal');
-    // Underscore names are the module's own business; indented ones are not
-    // module globals.
-    expect(names).not.toContain('_private');
-    expect(names).not.toContain('indented');
-    expect(names).not.toContain('inner');
+describe('one symbol table for reads and writes', () => {
+  const main = mainSource(['helpers', 'app']);
+
+  it('resolves every read and write through the owner the symbols reported', () => {
+    // The three entry points share `_owner`; none has a lookup of its own.
+    expect(main).toContain('def _owner(k):');
+    expect(main).toContain('def _resolve():');
+    expect(main.match(/hit = _owner\(k\)/g)).toHaveLength(2);
+    expect(main).toContain('return [[k, kind, m.__name__] for k, (m, kind) in _OWNERS.items()]');
+    // The write is setattr on the owning module: on ZIPP a `vars(m)[k] = v`
+    // updates the dict the host reads and not the globals the module's own
+    // functions see, which is a silent corruption rather than a write.
+    expect(main).toContain('setattr(hit[0], k, v)');
+    expect(main).not.toMatch(/vars\([^)]*\)\[[^\]]*\]\s*=/);
+    // What did not land is answered by name, not folded into a count.
+    expect(main).toContain('refused.append(k)');
+    expect(main).toContain('return refused');
   });
 
-  it('is appended, so the author’s lines keep the numbers they wrote', () => {
-    const source = 'count = 0\n';
-    const setter = setterSource('app', scanTopLevelNames(source));
-    expect(setter.startsWith('\n')).toBe(true);
-    expect(setter).toContain('def __softn_set_app__(name, value):');
-    expect(setter).toContain('global count');
-    expect((source + setter).startsWith(source)).toBe(true);
+  it('reads each name under its own guard, so one bad value cannot take the rest', () => {
+    const read = main.slice(main.indexOf('def __softn_state__'), main.indexOf('def __softn_write__'));
+    expect(read).toContain('try:');
+    expect(read).toContain('result[k] = _softn._project(getattr(hit[0], k))');
+    expect(read).toContain('except Exception:');
+    expect(read).toContain('result[k] = None');
   });
 
-  it('answers False for a module that assigns nothing, rather than not existing', () => {
-    // `main.py` imports the setter from every module; one that had none would
-    // be an ImportError about a generated name.
-    expect(setterSource('helpers', [])).toContain('def __softn_set_helpers__(name, value):');
-    expect(setterSource('helpers', [])).toContain('return False');
+  it('adds nothing to the author’s modules and scans nothing textually', () => {
+    // No per-module setter is imported or generated, so no keyword inside a
+    // docstring can become a `global` list, and no assignment shape the scan
+    // did not know — `a, b = 0, 0`, `x = y = 0`, an indented one — can be
+    // offered as state and then not written.
+    expect(main).not.toContain('__softn_set_');
+    expect(main).not.toContain('_SETTERS');
+    expect(main).not.toContain('global ');
+    // The star-imports and the module handles are what remain.
+    expect(main).toContain('import helpers as _m_helpers');
+    expect(main).toContain('from helpers import *');
+    expect(main).toContain('_MODULES = [_m_helpers, _m_app]');
+  });
+
+  it('refuses a function as a write target, as the old setters did', () => {
+    expect(main).toContain('if hit is None or hit[1] != "variable":');
+  });
+});
+
+describe('the modules softn.py imports are the runtime’s, not the app’s', () => {
+  it('reads them out of the generated source', () => {
+    expect([...SOFTN_PY_IMPORTS].sort()).toEqual(['json', 'math']);
+  });
+
+  it('is exactly the list the composer reserves', () => {
+    // The composer is on the bundle side and does not import the runtime, so
+    // the list is written twice; this is what keeps the two copies one list.
+    expect([...SOFTN_PY_STDLIB_IMPORTS].sort()).toEqual([...SOFTN_PY_IMPORTS].sort());
+    for (const name of SOFTN_PY_IMPORTS) {
+      expect(() => pythonModuleName(`${name}.py`)).toThrow(/reserved module name/);
+      expect(() => pythonModuleName(`lib/${name}.py`)).toThrow(new RegExp(`standard library's ${name}`));
+    }
   });
 });
 
@@ -149,8 +174,8 @@ describe('an error in the author’s terms', () => {
   const lines = new Map([['app', 2]]);
 
   it('folds a location past the end of the file back onto their last line', () => {
-    // Python reports an unterminated bracket at the end of the file, and the
-    // file now ends with a generated setter.
+    // Python reports an unterminated bracket at the position after the last
+    // line, which is a line the author's editor does not have.
     expect(authorMessage('SyntaxError: unexpected EOF while parsing (app.py:14:1)', lines)).toBe(
       'SyntaxError: unexpected EOF while parsing (app.py:2:1)'
     );

@@ -189,6 +189,26 @@ test('a bundle’s logic languages come from its client file names, and nothing 
   assert.deepEqual(bundleLanguages(['manifest.json']), ['javascript']);
 });
 
+test('any client .py declares Python, referenced as logic or not — the same rule FormLogic’s server applies', () => {
+  // The composer would call this bundle JavaScript: its only logic is
+  // app.logic and example.py is an asset nothing references. This rule is
+  // broader on purpose, and the breadth is the point — FormLogic's
+  // `languagesOf` reads the same client file names the same way, so the engine
+  // chooser and the shell cannot disagree about what an app is. The cost is
+  // that this app is refused on the JavaScript-only engines rather than run;
+  // that is the conservative direction, and narrowing it here alone would
+  // reopen the disagreement the rule exists to close.
+  const javascriptAppWithAPythonAsset = ['manifest.json', 'app.softn', 'app.logic', 'assets/example.py'];
+  assert.deepEqual(bundleLanguages(javascriptAppWithAPythonAsset), ['javascript', 'python']);
+  for (const id of ['zipp-web', 'host-js']) {
+    assert.throws(
+      () => requireBundleLanguages(id, bundleLanguages(javascriptAppWithAPythonAsset)),
+      new RegExp(`written in python, and the ${id} engine does not run that language`)
+    );
+  }
+  requireBundleLanguages('zipp-web-python', bundleLanguages(javascriptAppWithAPythonAsset));
+});
+
 test('an engine that cannot run this app’s logic is refused by name, before anything is configured', () => {
   // The one engine that runs Python is the one hosted apps already run on.
   requireBundleLanguages('zipp-web-python', ['javascript', 'python']);

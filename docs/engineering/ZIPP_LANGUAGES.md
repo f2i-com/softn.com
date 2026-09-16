@@ -79,8 +79,18 @@ each is refused: the two run in separate engines and cannot share names.
   rather than failing the whole state read. Keep app state shallow; a deeply
   recursive structure is the VM's to hold, not the host's to mirror.
 - **Errors name the author's own file and line.** The runtime's generated files
-  are dropped from a traceback, and the setter it appends to each module never
-  moves a line number.
+  are dropped from a traceback, and nothing is added to the author's own
+  modules, so every line keeps the number they wrote it at.
+- **State is read and written through one symbol table.** The entry module
+  resolves each name to the module that owns it — the last one in import order
+  to define it, which is the definition the star-imports leave visible — and
+  writes with `setattr` on that module. A name the table does not offer is
+  refused by name, and the adapter throws rather than counting it: a write
+  that did not land and was not reported would be state the host believes and
+  the app does not have. `setattr` from another module being visible to the
+  module's own functions is a ZIPP 0.0.19 property (FormLogic's corpus case
+  `zipp-defect-cross-module-setattr`), asserted by name in
+  `test/python-state-write.test.ts`.
 
 ### What Python does not have
 
@@ -127,7 +137,13 @@ host for exactly the engine's imports and exports nothing the engine does not
 the web bundle's own `7622deb6…` in `glueSha256` for provenance only); and,
 really loaded under that glue, `zippProfile().languages` is exactly
 `["javascript"]` while `initSource(code, "python")` and `pythonHas` throw.
-`--check` repeats every offline part of this over the installed sibling.
+That last probe — loading the variant under the primary glue — runs at
+INSTALL, in `verifyVariant`. `--check` (offline) does not load anything: it
+re-verifies the installed sibling's digests against both `SHA256SUMS`, the
+`SOURCE.json`, `BUILD-INFO.txt` and `PROFILE.json` fields, and that the
+module's imports and exports are a subset of the primary's. An install that
+checks is one whose bytes are the ones the probe ran against, not one the
+probe has been run against again.
 
 Only `zipp_wasm_bg.wasm`, `BUILD-INFO.txt`, `PROFILE.json` and the bundle's
 `SHA256SUMS` are installed, with a `SOURCE.json` of the variant's own;

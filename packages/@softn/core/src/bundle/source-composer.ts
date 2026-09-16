@@ -29,15 +29,37 @@ export interface ComposedBundleSource {
 export const PYTHON_LOGIC_SUFFIX = '.py';
 
 /**
- * Module names the runtime generates, which an app may not also define.
+ * The standard-library modules the runtime's own `softn.py` imports.
  *
- * Only two, and deliberately so: `softn` is the module an app imports, and
- * every other generated name starts `__softn` so that an app's own
- * `main.py` — which is what the Builder's `logic/main.logic` becomes — is a
- * name it can still have.
+ * ZIPP resolves an import against the project's files before the built-in
+ * module, so an app file `json.py` would replace the encoder every capability
+ * argument goes through — silently, and for every call. Listed here by hand
+ * rather than imported from `runtime/python/`, so the bundle composer does
+ * not pull the runtime in; `test/python-contract.test.ts` reads the imports
+ * out of the generated `SOFTN_PY` and fails if the two lists differ.
  */
-const isReservedPythonModule = (name: string): boolean =>
-  name === 'softn' || name.startsWith('__softn');
+export const SOFTN_PY_STDLIB_IMPORTS: readonly string[] = ['json', 'math'];
+
+/**
+ * Why a module name is the runtime's and not the app's, or null when it is
+ * the app's to take.
+ *
+ * `softn` is the module an app imports; every other generated name starts
+ * `__softn`, so that an app's own `main.py` — which is what the Builder's
+ * `logic/main.logic` becomes — is a name it can still have; and the standard
+ * library modules `softn.py` itself imports are reserved because the project
+ * would shadow them.
+ */
+export function reservedPythonModuleReason(name: string): string | null {
+  if (name === 'softn') return 'it is the module an app imports';
+  if (name.startsWith('__softn')) return 'the runtime generates it';
+  if (SOFTN_PY_STDLIB_IMPORTS.includes(name)) {
+    return `the runtime's own softn.py imports the standard library's ${name}, and a project file of that name would replace it`;
+  }
+  return null;
+}
+
+const isReservedPythonModule = (name: string): boolean => reservedPythonModuleReason(name) !== null;
 
 const PYTHON_MODULE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -63,7 +85,9 @@ export function pythonModuleName(path: string): string {
     );
   }
   if (isReservedPythonModule(base)) {
-    throw new Error(`${path} uses the reserved module name ${base}.py; choose another name`);
+    throw new Error(
+      `${path} uses the reserved module name ${base}.py (${reservedPythonModuleReason(base)}); choose another name`
+    );
   }
   return base;
 }

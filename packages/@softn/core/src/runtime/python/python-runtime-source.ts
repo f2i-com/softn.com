@@ -13,12 +13,24 @@
  *   until the host drains it. Nothing here reaches the host directly; a call
  *   appends `[id, kind, args]` and the host answers later, exactly as a
  *   JavaScript guest's `host.call` does.
- * - `main.py`, the entry: the five functions the adapter calls by name to read
- *   symbols and state, drain the queue, deliver a callback and dispatch an
- *   event.
- * - one `__softn_set_<module>__` per author module: Python has no way for a
- *   host to write a module global by name, so the setter is generated from a
- *   scan of the module's own column-0 assignments.
+ * - `__softn_main__.py`, the entry: the `__softn_*__` functions the adapter
+ *   calls by name to read symbols and state, write state back, drain the
+ *   queue, deliver a callback and dispatch an event.
+ *
+ * Nothing is added to the author's own modules. The entry holds each of them
+ * as a module object, and reads and writes their globals through
+ * `getattr`/`setattr` on that object: ZIPP 0.0.19 makes a `setattr` on an
+ * imported module visible to that module's own functions (0.0.18 did not —
+ * FormLogic's corpus case `zipp-defect-cross-module-setattr` pinned the defect
+ * and now pins the fix, and `test/python-state-write.test.ts` asserts the
+ * primitive by name so an engine regression fails loudly rather than
+ * corrupting state). An earlier design appended a generated setter to each
+ * module from a textual scan of its column-0 assignments; it is gone because
+ * it could not be made right: the setter's own parameters collided with an
+ * app's `name`/`value` globals, a `count` in two modules was read from one and
+ * written to the other, a keyword inside a docstring became a `global` list
+ * that would not compile, and every name the scan missed was offered as state
+ * and then silently not written.
  *
  * The value normalizer is deliberately the same dialect as FormLogic's
  * committed `formlogic-python/1` contract (`formlogic.py`): non-finite floats
@@ -67,10 +79,10 @@ function cap(path: string, kind: string, args: readonly string[] = []): Capabili
  *
  * This is the same list `SOFTN_BRIDGE_PREAMBLE` builds for a JavaScript guest,
  * written once more because Python is a different language, not a different
- * capability set. `python-facade-parity.test.ts` reads every
- * `host.call("<kind>"` out of that preamble and fails if the two lists stop
- * naming the same kinds, so a capability added for one language cannot go
- * missing for the other without a red test.
+ * capability set. `test/python-contract.test.ts` (`one capability set, two
+ * languages`) reads every `host.call("<kind>"` out of that preamble and fails
+ * if the two lists stop naming the same kinds, so a capability added for one
+ * language cannot go missing for the other without a red test.
  *
  * `storage` is not here: its calls all share one kind and build a record out of
  * named parts, so it is generated separately below.
@@ -406,12 +418,26 @@ ${namespaceBindings()}
 `;
 
 /**
- * `main.py`: the five entry points the adapter calls, and nothing an app would
- * want to name.
+ * `main.py`: the entry points the adapter calls, and nothing an app would want
+ * to name.
  *
  * Every author module is star-imported so a template expression can call a
  * function by its bare name, and held as a module object as well so state can
  * be read and written where it actually lives.
+ *
+ * ONE SYMBOL TABLE. `__softn_symbols__`, `__softn_state__` and
+ * `__softn_write__` all go through `_owner`, which resolves a name to the one
+ * module that owns it — the LAST module in import order that defines it,
+ * which is also the definition the star-imports leave visible — so the
+ * template calling a function and the host mirroring a variable agree on whose
+ * name it is. Read and write cannot disagree, because neither has a lookup of
+ * its own.
+ *
+ * The write is `setattr(module, name, value)`. `vars(module)[name] = value` is
+ * NOT equivalent on ZIPP: it updates the dict the host reads and leaves the
+ * globals the module's functions see untouched, which is the silent
+ * corruption this replaces. A name the table does not offer is refused and
+ * reported back by name, never guessed at.
  */
 export function mainSource(modules: readonly string[]): string {
   const held = modules.map((m) => `_m_${m}`).join(', ');
@@ -420,13 +446,14 @@ export function mainSource(modules: readonly string[]): string {
     'import softn as _softn',
     ...modules.map((m) => `import ${m} as _m_${m}`),
     ...modules.map((m) => `from ${m} import *`),
-    ...modules.map((m) => `from ${m} import __softn_set_${m}__`),
     `_MODULES = [${held}]`,
-    `_SETTERS = [${modules.map((m) => `__softn_set_${m}__`).join(', ')}]`,
     '_PLAIN = (type(None), bool, int, float, str, list, dict, tuple)',
     '# Names the HOST calls by convention, which an underscore would otherwise',
     '# hide: the renderer runs _init() once after an app loads.',
     '_HOST_NAMES = ("_init",)',
+    '# name -> (module, kind), as __softn_symbols__ last reported it. The one',
+    '# table every read and write resolves through; see _owner.',
+    '_OWNERS = {}',
     '',
     '',
     'def _init():',
@@ -441,54 +468,87 @@ export function mainSource(modules: readonly string[]): string {
     '            fn()',
     '',
     '',
-    'def __softn_symbols__():',
-    '    """[name, "function" | "variable", module] for everything an app exposes.',
+    'def _offered(k, v):',
+    '    """"function", "variable", or None for a name the host is not shown.',
     '',
     '    A name starting with _ is the module\'s own business. A value that is not',
     '    plain data — a class instance, a module, a file handle — is not offered as',
     '    state, because the host could only ever mirror it as None."""',
-    '    result = []',
-    '    seen = {}',
+    '    if k == "softn" or type(v).__name__ == "module":',
+    '        return None',
+    '    if k.startswith("_") and k not in _HOST_NAMES:',
+    '        return None',
+    '    if callable(v):',
+    '        return "function"',
+    '    if isinstance(v, _PLAIN):',
+    '        return "variable"',
+    '    return None',
+    '',
+    '',
+    'def _resolve():',
+    '    """Rebuild _OWNERS from the modules as they are now.',
+    '',
+    '    A later module wins a name two of them define, which is the definition',
+    '    the star-imports leave visible. Assigning an existing key keeps its',
+    '    position, so the order the host numbers symbols in is first-seen."""',
+    '    _OWNERS.clear()',
     '    for m in _MODULES:',
     '        for k, v in vars(m).items():',
-    '            if k == "softn" or type(v).__name__ == "module":',
-    '                continue',
-    '            if k.startswith("_") and k not in _HOST_NAMES:',
-    '                continue',
-    '            if callable(v):',
-    '                kind = "function"',
-    '            elif isinstance(v, _PLAIN):',
-    '                kind = "variable"',
-    '            else:',
-    '                continue',
-    '            if k in seen:',
-    '                result[seen[k]] = [k, kind, m.__name__]',
-    '            else:',
-    '                seen[k] = len(result)',
-    '                result.append([k, kind, m.__name__])',
-    '    return result',
+    '            kind = _offered(k, v)',
+    '            if kind is not None:',
+    '                _OWNERS[k] = (m, kind)',
+    '',
+    '',
+    'def _owner(k):',
+    '    """(module, kind) for a name the host may touch, or None.',
+    '',
+    '    A miss re-resolves once: a name a function created with `global` after',
+    '    the symbols were read has an owner too, it is just newer than the table."""',
+    '    hit = _OWNERS.get(k)',
+    '    if hit is None:',
+    '        _resolve()',
+    '        hit = _OWNERS.get(k)',
+    '    return hit',
+    '',
+    '',
+    'def __softn_symbols__():',
+    '    """[name, "function" | "variable", module] for everything an app exposes."""',
+    '    _resolve()',
+    '    return [[k, kind, m.__name__] for k, (m, kind) in _OWNERS.items()]',
     '',
     '',
     'def __softn_state__(names):',
-    '    """The current value of each name, projected to what can cross."""',
+    '    """The current value of each name, projected to what can cross.',
+    '',
+    '    Reading state must not be able to fail, and one variable must not be',
+    '    able to take the others with it: a value whose projection raises — a',
+    '    dict subclass whose items() throws, say — reads as None and the rest',
+    '    read as themselves."""',
     '    result = {}',
-    '    for m in _MODULES:',
-    '        ns = vars(m)',
-    '        for k in names:',
-    '            if k in ns:',
-    '                result[k] = _softn._project(ns[k])',
+    '    for k in names:',
+    '        hit = _owner(k)',
+    '        if hit is None:',
+    '            continue',
+    '        try:',
+    '            result[k] = _softn._project(getattr(hit[0], k))',
+    '        except Exception:',
+    '            result[k] = None',
     '    return result',
     '',
     '',
     'def __softn_write__(values):',
-    '    """Write each name back where it lives; answers how many landed."""',
-    '    written = 0',
+    '    """Write each name back to the module that owns it.',
+    '',
+    '    Answers the names it refused: one the table does not offer, or one it',
+    '    offers as a function. Empty means every write landed."""',
+    '    refused = []',
     '    for k, v in values.items():',
-    '        for setter in _SETTERS:',
-    '            if setter(k, v):',
-    '                written = written + 1',
-    '                break',
-    '    return written',
+    '        hit = _owner(k)',
+    '        if hit is None or hit[1] != "variable":',
+    '            refused.append(k)',
+    '            continue',
+    '        setattr(hit[0], k, v)',
+    '    return refused',
     '',
     '',
     'def __softn_drain__():',
@@ -522,41 +582,15 @@ export function mainSource(modules: readonly string[]): string {
 }
 
 /**
- * The names a module assigns at column 0.
+ * The standard-library modules the generated `softn.py` imports.
  *
- * Python gives a host no way to write another module's global by name, so each
- * module carries a setter generated from this scan. Over-collecting is
- * harmless — a name the module does not really define simply never matches a
- * state variable — which is why a regex is enough and an AST is not needed:
- * the worst a line inside a triple-quoted string can do is add a branch
- * nothing ever takes.
+ * ZIPP resolves an `import json` against the project's own files before the
+ * built-in module, so an app file `json.py` would replace the encoder every
+ * capability argument goes through. The composer refuses these names for an
+ * app's modules (`isReservedPythonModule`), and `test/python-contract.test.ts`
+ * reads the imports back out of `SOFTN_PY` and fails if one is added here
+ * without being reserved there.
  */
-export function scanTopLevelNames(source: string): string[] {
-  const names = new Set<string>();
-  for (const line of source.split(/\r?\n/)) {
-    const match = line.match(
-      /^([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]*)?(?:[-+*/%&|^@]|\/\/|\*\*|<<|>>)?=(?!=)/
-    );
-    if (match && !match[1].startsWith('_')) names.add(match[1]);
-  }
-  return [...names];
-}
-
-/**
- * `__softn_set_<module>__`, appended to the author's module.
- *
- * Appended rather than prepended so every line of the author's file keeps the
- * number they wrote it at, and an error names the line they can look at.
- */
-export function setterSource(module: string, names: readonly string[]): string {
-  if (names.length === 0) {
-    return `\n\ndef __softn_set_${module}__(name, value):\n    return False\n`;
-  }
-  const branches = names
-    .map((n, i) => `    ${i ? 'elif' : 'if'} name == ${JSON.stringify(n)}:\n        ${n} = value`)
-    .join('\n');
-  return (
-    `\n\ndef __softn_set_${module}__(name, value):\n` +
-    `    global ${names.join(', ')}\n${branches}\n    else:\n        return False\n    return True\n`
-  );
-}
+export const SOFTN_PY_IMPORTS: readonly string[] = [
+  ...SOFTN_PY.matchAll(/^import ([A-Za-z_][A-Za-z0-9_]*)/gm),
+].map((m) => m[1]);

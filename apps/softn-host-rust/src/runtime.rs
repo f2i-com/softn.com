@@ -1122,13 +1122,30 @@ fn host_to_json(val: &HostValue, depth: usize) -> Result<serde_json::Value, Stri
         // ZIPP 0.0.19 marshals a Float32Array as its elements, where 0.0.18
         // read one as Opaque. JSON has no typed arrays: it crosses as an array
         // of numbers, each the f64 the element reads as in JavaScript and a
-        // non-finite one null as JSON.stringify spells it, bounded by its
-        // bytes like a string so a tensor cannot outgrow the response bound.
+        // non-finite one null as JSON.stringify spells it.
+        //
+        // What is bounded is the JSON the array becomes, held to the same
+        // 2 MiB a string is — not the elements' own bytes, which say little
+        // about the JSON: 600k zeros are 2.4 MiB of f32 and 1.2 MB of text,
+        // while 300k small-exponent values are 1.2 MiB of f32 and some 5 MB of
+        // text. The whole response is bounded again on its serialised bytes by
+        // `validate_private_response`; this is the early refusal that names
+        // the tensor rather than reporting an oversized response after every
+        // other field was built. The element-count check ahead of the
+        // serialisation is a floor — `[0,0,…,0]` is 2n+1 bytes, and no element
+        // spells shorter than one digit and a separator — so an array that
+        // cannot fit however it is spelled is refused before its text is
+        // allocated, and the serialisation below is bounded by that floor.
         HostValue::Float32Array(values) => {
-            if values.len().saturating_mul(4) > MAX_STRING_VALUE_LEN {
+            if values.len().saturating_mul(2).saturating_add(1) > MAX_STRING_VALUE_LEN {
                 return Err("Handler Float32Array result exceeds host limit".into());
             }
-            serde_json::Value::Array(values.iter().map(|v| number_to_json(f64::from(*v))).collect())
+            let array = serde_json::Value::Array(values.iter().map(|v| number_to_json(f64::from(*v))).collect());
+            let bounded = serde_json::to_vec(&array).is_ok_and(|bytes| bytes.len() <= MAX_STRING_VALUE_LEN);
+            if !bounded {
+                return Err("Handler Float32Array result exceeds host limit".into());
+            }
+            array
         }
     })
 }
@@ -1201,11 +1218,23 @@ mod host_json_tests {
     }
 
     #[test]
-    fn float32_array_json_enforces_the_byte_limit() {
-        let at_limit = HostValue::Float32Array(vec![1.0; MAX_STRING_VALUE_LEN / 4]);
-        assert_eq!(host_to_json(&at_limit, 0).unwrap().as_array().unwrap().len(), MAX_STRING_VALUE_LEN / 4);
-        let too_many = HostValue::Float32Array(vec![1.0; MAX_STRING_VALUE_LEN / 4 + 1]);
-        assert!(host_to_json(&too_many, 0).unwrap_err().contains("exceeds host limit"));
+    fn float32_array_json_enforces_the_serialised_byte_limit() {
+        // The bound is the JSON's length, like a string's. `[1,1,…,1]` is
+        // 2n+1 bytes: MAX/2 - 1 ones fit (MAX - 1 bytes) and one more does not.
+        // The old elements-times-four rule refused a tensor of ones at MAX/4,
+        // half this size, while a small exponent's fifteen-plus characters an
+        // element sailed through it.
+        let at_limit = HostValue::Float32Array(vec![1.0; MAX_STRING_VALUE_LEN / 2 - 1]);
+        let json = host_to_json(&at_limit, 0).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), MAX_STRING_VALUE_LEN / 2 - 1);
+        assert_eq!(serde_json::to_vec(&json).unwrap().len(), MAX_STRING_VALUE_LEN - 1);
+        let one_more = HostValue::Float32Array(vec![1.0; MAX_STRING_VALUE_LEN / 2]);
+        assert!(host_to_json(&one_more, 0).unwrap_err().contains("exceeds host limit"));
+        // A quarter of the elements the old rule admitted, past the floor, and
+        // still refused: by what they serialise to, not by their own bytes.
+        let wide = HostValue::Float32Array(vec![1.2345678e-38; MAX_STRING_VALUE_LEN / 8]);
+        assert!(serde_json::to_vec(&serde_json::json!(f64::from(1.2345678e-38f32))).unwrap().len() > 16);
+        assert!(host_to_json(&wide, 0).unwrap_err().contains("exceeds host limit"));
     }
 
     // A Float32Array global is not a primitive, so a script holding one at the

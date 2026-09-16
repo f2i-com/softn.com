@@ -45,6 +45,10 @@ export default defineWorkspaceTest({
       // of every case. So Python is still tested on the host engine; what is
       // excluded is only the part that needs an engine that can run it.
       'test/python-logic.test.tsx',
+      // How Python state is read and written, against the raw engine and the
+      // Python adapter — including the ZIPP 0.0.19 setattr primitive the
+      // design stands on. Same reason again: there is no Python here to write.
+      'test/python-state-write.test.ts',
       // Softn's value normalizer against FormLogic's, on the real engine. Same
       // reason: there is no Python here to normalize. The parts of that
       // contract that need no engine — the capability list, the generated

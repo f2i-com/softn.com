@@ -69,6 +69,11 @@ describe('a .py logic file is Python', () => {
     // and not to define; every other generated name starts `__softn`.
     expect(() => pythonModuleName('softn.py')).toThrow(/reserved module name softn\.py/);
     expect(() => pythonModuleName('__softn_main__.py')).toThrow(/reserved module name/);
+    // The standard-library modules softn.py itself imports: ZIPP resolves an
+    // import against the project first, so an app's `json.py` would replace
+    // the encoder every capability argument goes through.
+    expect(() => pythonModuleName('json.py')).toThrow(/reserved module name json\.py \(the runtime's own softn\.py imports the standard library's json/);
+    expect(() => pythonModuleName('lib/math.py')).toThrow(/reserved module name math\.py/);
     // `main.py` is NOT reserved: it is what the Builder's `logic/main.logic`
     // becomes, and taking the most natural file name away from an author to
     // make room for a generated one would be the wrong trade.
