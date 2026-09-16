@@ -17,7 +17,7 @@ license = "Apache-2.0"
 # `instrument` is what gives the server a step budget and a cooperative
 # abort flag for untrusted scripts; it switches the JIT off, which is the
 # price of the budget being real.
-zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.18", features = ["instrument"] }
+zipp-vm = { git = "https://github.com/f2i-com/zipp.org", tag = "v0.0.19", features = ["instrument"] }
 xdb = { path = "../../../xdb.org/crates/xdb", default-features = false }
 
 axum = { version = "0.8", features = ["ws"] }
