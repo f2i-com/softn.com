@@ -52,9 +52,10 @@ ZIPP's web-python release files with the bundle's `SHA256SUMS`, ZIPP's release
 protocols, adapter digest, a digest of every other file). Each built folder
 carries the `runtime-manifest.json` FormLogic's `checkRuntimeArtifact`
 verifies. `hosted-runtime/runtime-manifest.json` also names, in `engines`, the
-engine ids its shell will accept in `formlogic:init` (and `features` for later
-runtime capabilities), so a host can tell from what it INSTALLED which engines
-it may offer. Both are additions; `formatVersion` stays 1 and a reader that
+engine ids its shell will accept in `formlogic:init`, and in `features` the
+optional capabilities it has beyond them, so a host can tell from what it
+INSTALLED which engines it may offer and what else it may ask of them. Both are
+additions; `formatVersion` stays 1 and a reader that
 knows only the older keys is unaffected. Every copy of the engine in the
 archive, recognised by its exports, is the one under `zipp/`.
 
@@ -69,6 +70,21 @@ trust the app's author: the frame is the only thing containing their code.
 `softn-release.json` says so in `protocols.hostedEngines`, so a FormLogic that
 knows only one entry document refuses the archive instead of installing one
 whose manifest offers an engine it would never mount.
+
+A client logic file whose name ends `.py` is Python. The shell derives an app's
+languages from its client file names and nothing else — no part of the bundle
+declares them, so an app cannot be one thing to whoever chose the engine and
+another to the engine — and an engine that cannot run one of those languages is
+refused by name, before any engine is configured: `zipp-web` is ZIPP's
+JavaScript-only build and `host-js` is the document's own JavaScript, and
+neither can execute Python at all. `hosted-runtime/runtime-manifest.json` names
+that contract as `python-logic/1` in `features`, and `softn-release.json`
+carries it as `protocols.logicLanguages`, so a FormLogic that would hand a `.py`
+file to a JavaScript engine learns the rule before it installs the runtime that
+follows it. A host that answers a native app's network calls itself can supply
+the runtime's `netFetchHandler` instead of the `<logic>` bridge that rewrites
+`softn.net.fetch` inside a JavaScript guest; the two answer identically, and
+supplying a handler moves the capability's checks to the host with it.
 
 FormLogic's `prepare-hosted-runtime` fetches the latest release, checks the
 `.sha256` sidecar and every digest, requires the protocol numbers it speaks,

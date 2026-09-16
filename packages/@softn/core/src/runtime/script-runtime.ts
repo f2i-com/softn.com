@@ -16,7 +16,9 @@
 import {
   VM_BRIDGE_PREAMBLE,
   createLogicEngine,
+  createPythonLogicEngine,
   type LogicEngine,
+  type PythonProject,
   type SymbolScope,
 } from './vm-adapter';
 import { SandboxHost } from './sandbox-host';
@@ -193,6 +195,39 @@ export interface ScriptRuntimeOptions {
   /** Host-owned action bridge. No URLs or credentials are exposed to app scripts. */
   backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
   /**
+   * Where `softn.net.fetch` goes instead of the browser's `fetch`.
+   *
+   * Some hosts do not give an app the network at all: they route what it asks
+   * for through something of their own — a backend that owns the credentials,
+   * a proxy that owns the allowlist — and the app never holds a URL the
+   * browser would act on. Those hosts used to do this by rewriting
+   * `softn.net.fetch` inside the guest, which works only while the guest is
+   * JavaScript and only while the host is willing to edit the author's source.
+   * This is the same substitution made on the host's side of the VM, so it
+   * does not depend on either.
+   *
+   * Setting it MOVES the capability, checks included. `permission.json`'s
+   * `net` block and `allowed_hosts` describe what the app may reach with the
+   * browser's `fetch`, and there is no browser `fetch` here; the handler's
+   * owner decides what the call is allowed to become. That is the same
+   * arrangement as `backendCall`, which has never been permission-checked
+   * either, because the host names the actions it will answer.
+   *
+   * Absent — every host that has one today — `softn.net.fetch` is exactly what
+   * it was: the permission check, the host allowlist, and the browser's fetch.
+   */
+  netFetchHandler?: NetFetchHandler;
+  /**
+   * The app's logic, when it is written in Python rather than JavaScript.
+   *
+   * `composeBundleSource` sets it from the bundle's own file names: a logic
+   * file ending `.py` is Python. When it is present the script's `<logic>`
+   * block is empty by construction and these modules are what the engine
+   * compiles — there is no JavaScript to assemble, and an engine that cannot
+   * run Python is refused before any of the author's code is touched.
+   */
+  pythonProject?: PythonProject;
+  /**
    * The visitor identity sent with storage requests, for collections whose
    * policy records who added a record. Absent, the runtime uses the token
    * this browser keeps (see visitor-token.ts); null sends none.
@@ -206,6 +241,31 @@ export interface ScriptRuntimeOptions {
    */
   onPersistenceFailure?: (failure: PersistenceFailure) => void;
 }
+
+/**
+ * What `softn.net.fetch` answers a script with: the browser response reduced
+ * to what crosses into the VM. A handler returns this so a script cannot tell
+ * which side of the VM the request was made from.
+ */
+export interface NetFetchResult {
+  ok: boolean;
+  status: number;
+  statusText?: string;
+  body: string;
+  headers: Record<string, string>;
+}
+
+/**
+ * A host's stand-in for the browser's `fetch`, for `softn.net.fetch`.
+ *
+ * `options` is the object the script passed, already parsed — `method`,
+ * `headers`, `body`, `timeout` — and `url` is the URL it wrote, unjudged. See
+ * {@link ScriptRuntimeOptions.netFetchHandler} for what supplying one means.
+ */
+export type NetFetchHandler = (
+  url: string,
+  options: Record<string, unknown>
+) => Promise<NetFetchResult>;
 
 /** A write to the browser's storage that was not kept, as reported to the host. */
 export interface PersistenceFailure {
@@ -524,6 +584,10 @@ export class SoftNScriptRuntime {
   /** Identifiers the document can resolve; null means "assume all of them". */
   private observedStateNames: ReadonlySet<string> | null = null;
   private backendCall?: ScriptRuntimeOptions['backendCall'];
+  /** The host's stand-in for the browser's fetch, if it supplied one. */
+  private netFetchHandler?: NetFetchHandler;
+  /** The Python modules to compile, when the app's logic is Python. */
+  private pythonProject?: PythonProject;
   private storageEndpoint: string | null = null;
   private visitorToken: string | null | undefined = undefined;
   /** State variables held back from syncing, for diagnostics only. */
@@ -693,6 +757,8 @@ export class SoftNScriptRuntime {
     this.observedStateNames = options?.observedStateNames ?? null;
     this.storageEndpoint = options?.storageEndpoint ?? null;
     this.backendCall = options?.backendCall;
+    this.netFetchHandler = options?.netFetchHandler;
+    this.pythonProject = options?.pythonProject;
     this.visitorToken = options?.storageVisitorToken;
     this.onPersistenceFailure = options?.onPersistenceFailure ?? null;
     this.externalFunctions = externalFunctions ?? null;
@@ -836,8 +902,11 @@ export class SoftNScriptRuntime {
   async loadScript(script: CodeBlock): Promise<ScriptLoadResult> {
     const useHostBridges = this.runtimeMode === 'main';
 
-    // 0. Create the logic engine (the ZIPP adapter unless a host configured one)
-    this.vmEngine = await createLogicEngine();
+    // 0. Create the logic engine (the ZIPP adapter unless a host configured
+    // one). A Python app asks for one that can run Python, and an engine that
+    // cannot says so here — before any bridge is wired and before a line of
+    // the author's code is compiled.
+    this.vmEngine = this.pythonProject ? await createPythonLogicEngine() : await createLogicEngine();
     if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
 
     if (useHostBridges) {
@@ -858,105 +927,124 @@ export class SoftNScriptRuntime {
       this.installHostBridges();
     }
 
-    // 3. Resolve imports (inline imported .logic files before passing to WASM)
-    let resolvedCode = script.code;
-    if (this.importResolver) {
-      // The entry file is already in `script.code`, so it counts as included
-      // for dedupe as well as being the root of the cycle-detection chain.
-      if (this.logicBasePath) this.includedLogicPaths.add(this.logicBasePath);
-      resolvedCode = await this.resolveImports(
-        resolvedCode,
-        new Set(this.logicBasePath ? [this.logicBasePath] : []),
-        this.logicBasePath
-      );
-      // Import resolution fetches files, so this is the longest await of the
-      // three and the one most likely to still be pending at cleanup.
-      if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
-    }
+    let symbolMap: Map<string, { index: number; scope: SymbolScope }>;
+    let computedDecls: Array<{ name: string; expression: string }> = [];
+    let computedCompiled = false;
 
-    // 4. Generate preamble for external functions (e.g. wallet bridge).
-    // Wrappers read a mutable VM-side table so later host implementations can
-    // update without recompiling or re-running script initialization.
-    let extFnPreamble = '';
-    this.externalFunctionNames = [];
-    this.externalFunctionValues = [];
-    this.externalValuesGlobalIndex = -1;
-    if (this.externalFunctions) {
-      for (const name of Object.keys(this.externalFunctions)) {
-        // Skip names that cannot safely become VM declarations or are served
-        // by another bridge path.
-        if (!VALID_IDENTIFIER.test(name) || EXTERNAL_FUNCTION_RESERVED_NAMES.has(name)) continue;
-        if (name.startsWith('xdb_') || name === 'asset') continue;
-        const value = this.readExternalFunctionValue(name);
-        // Preserve the established bridge contract: only synchronous
-        // primitive-valued getters become globals in this compilation.
-        if (value === UNSUPPORTED_EXTERNAL_VALUE) continue;
-        this.externalFunctionNames.push(name);
-        this.externalFunctionValues.push(value);
+    if (this.pythonProject) {
+      // A Python app's logic is a set of modules, not one source string. There
+      // are no imports to inline (Python imports by module name), no `$:`
+      // declarations, and no preamble to prepend — a Python state has no
+      // globals for one to declare. The engine compiles the project and
+      // answers the same symbol map the JavaScript path builds below.
+      const engine = this.vmEngine;
+      if (typeof engine.initializePythonProject !== 'function') {
+        throw new Error(
+          'This app’s logic is written in Python, and this app runtime runs only JavaScript'
+        );
+      }
+      symbolMap = await engine.initializePythonProject(this.pythonProject);
+      if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
+    } else {
+      // 3. Resolve imports (inline imported .logic files before passing to WASM)
+      let resolvedCode = script.code;
+      if (this.importResolver) {
+        // The entry file is already in `script.code`, so it counts as included
+        // for dedupe as well as being the root of the cycle-detection chain.
+        if (this.logicBasePath) this.includedLogicPaths.add(this.logicBasePath);
+        resolvedCode = await this.resolveImports(
+          resolvedCode,
+          new Set(this.logicBasePath ? [this.logicBasePath] : []),
+          this.logicBasePath
+        );
+        // Import resolution fetches files, so this is the longest await of the
+        // three and the one most likely to still be pending at cleanup.
+        if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
       }
 
-      if (this.externalFunctionNames.length > 0) {
-        const serializedValues = this.externalFunctionValues
-          .map((value) => (value === undefined ? 'undefined' : JSON.stringify(value)))
-          .join(',');
-        extFnPreamble = `let ${EXTERNAL_VALUES_VAR} = [${serializedValues}];\n`;
-        for (let i = 0; i < this.externalFunctionNames.length; i++) {
-          extFnPreamble += `function ${this.externalFunctionNames[i]}() { return ${EXTERNAL_VALUES_VAR}[${i}]; }\n`;
+      // 4. Generate preamble for external functions (e.g. wallet bridge).
+      // Wrappers read a mutable VM-side table so later host implementations can
+      // update without recompiling or re-running script initialization.
+      let extFnPreamble = '';
+      this.externalFunctionNames = [];
+      this.externalFunctionValues = [];
+      this.externalValuesGlobalIndex = -1;
+      if (this.externalFunctions) {
+        for (const name of Object.keys(this.externalFunctions)) {
+          // Skip names that cannot safely become VM declarations or are served
+          // by another bridge path.
+          if (!VALID_IDENTIFIER.test(name) || EXTERNAL_FUNCTION_RESERVED_NAMES.has(name)) continue;
+          if (name.startsWith('xdb_') || name === 'asset') continue;
+          const value = this.readExternalFunctionValue(name);
+          // Preserve the established bridge contract: only synchronous
+          // primitive-valued getters become globals in this compilation.
+          if (value === UNSUPPORTED_EXTERNAL_VALUE) continue;
+          this.externalFunctionNames.push(name);
+          this.externalFunctionValues.push(value);
+        }
+
+        if (this.externalFunctionNames.length > 0) {
+          const serializedValues = this.externalFunctionValues
+            .map((value) => (value === undefined ? 'undefined' : JSON.stringify(value)))
+            .join(',');
+          extFnPreamble = `let ${EXTERNAL_VALUES_VAR} = [${serializedValues}];\n`;
+          for (let i = 0; i < this.externalFunctionNames.length; i++) {
+            extFnPreamble += `function ${this.externalFunctionNames[i]}() { return ${EXTERNAL_VALUES_VAR}[${i}]; }\n`;
+          }
         }
       }
-    }
 
-    // 4b. Compile each `$:` declaration into a real function.
-    //
-    // These are re-read on every render, and evaluating an expression *string*
-    // costs a fresh parse each time — the engine interns the result for the VM's
-    // lifetime, so a per-frame expression grows the heap until the tab dies.
-    // Compiled once alongside the script, each becomes an ordinary call.
-    // The expression is raw source and keeps whatever trailed it, including a
-    // `// comment`. Each piece therefore gets its own line: on one line a
-    // trailing comment would swallow the closing `);` and take the whole
-    // script's compilation down with it, not just this one value.
-    const computedDecls = extractComputedDeclarations(script.code).filter(
-      (d) => VALID_IDENTIFIER.test(d.name) && d.expression.trim() !== ''
-    );
-    const computedPreamble = computedDecls
-      .map((d) => `function ${COMPUTED_PREFIX}${d.name}() {\nreturn (\n${d.expression}\n);\n}`)
-      .join('\n');
-
-    // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
-    // window/navigator/db/localStorage/host itself) then SoftN's own.
-    const scriptCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode;
-    const fullCode = computedPreamble ? scriptCode + '\n' + computedPreamble : scriptCode;
-
-    // 5. Compile + run the full .logic code in the WASM VM.
-    //
-    // The generated `$:` bodies share the script's compilation unit, so a
-    // declaration the scanner mis-extracts — an expression broken across lines
-    // in a way it cannot follow, say — would fail the whole script rather than
-    // the one value it belongs to. On that failure, compile the script without
-    // them and evaluate those expressions one at a time instead.
-    let computedCompiled = computedPreamble !== '';
-    let symbolMap: Map<string, { index: number; scope: SymbolScope }>;
-    try {
-      symbolMap = await this.vmEngine.initializeScript(fullCode);
-    } catch (compileError) {
-      if (!computedCompiled) throw compileError;
-      console.warn(
-        '[SoftN] A `$:` declaration could not be compiled, so all of them fall back ' +
-          'to per-render evaluation. The script itself is unaffected. Cause:',
-        compileError
+      // 4b. Compile each `$:` declaration into a real function.
+      //
+      // These are re-read on every render, and evaluating an expression *string*
+      // costs a fresh parse each time — the engine interns the result for the VM's
+      // lifetime, so a per-frame expression grows the heap until the tab dies.
+      // Compiled once alongside the script, each becomes an ordinary call.
+      // The expression is raw source and keeps whatever trailed it, including a
+      // `// comment`. Each piece therefore gets its own line: on one line a
+      // trailing comment would swallow the closing `);` and take the whole
+      // script's compilation down with it, not just this one value.
+      computedDecls = extractComputedDeclarations(script.code).filter(
+        (d) => VALID_IDENTIFIER.test(d.name) && d.expression.trim() !== ''
       );
-      computedCompiled = false;
-      // The failed compile took the engine with it — v0.0.1 terminates an
-      // Engine whose `initScript` throws, wiping its bridges and its capability
-      // allowlist — so the retry cannot reuse it. Rebuilding also re-wires and
-      // re-grants; retrying in place would compile into a VM that denies every
-      // `db.*` call the fallback was supposed to rescue.
-      this.vmEngine.dispose();
-      this.vmEngine = await createLogicEngine();
-      if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
-      if (useHostBridges) this.installHostBridges();
-      symbolMap = await this.vmEngine.initializeScript(scriptCode);
+      const computedPreamble = computedDecls
+        .map((d) => `function ${COMPUTED_PREFIX}${d.name}() {\nreturn (\n${d.expression}\n);\n}`)
+        .join('\n');
+
+      // 5. Prepend the engine's bridge preamble (empty on zipp, which declares
+      // window/navigator/db/localStorage/host itself) then SoftN's own.
+      const scriptCode = VM_BRIDGE_PREAMBLE + SOFTN_BRIDGE_PREAMBLE + extFnPreamble + resolvedCode;
+      const fullCode = computedPreamble ? scriptCode + '\n' + computedPreamble : scriptCode;
+
+      // 5. Compile + run the full .logic code in the WASM VM.
+      //
+      // The generated `$:` bodies share the script's compilation unit, so a
+      // declaration the scanner mis-extracts — an expression broken across lines
+      // in a way it cannot follow, say — would fail the whole script rather than
+      // the one value it belongs to. On that failure, compile the script without
+      // them and evaluate those expressions one at a time instead.
+      computedCompiled = computedPreamble !== '';
+      try {
+        symbolMap = await this.vmEngine.initializeScript(fullCode);
+      } catch (compileError) {
+        if (!computedCompiled) throw compileError;
+        console.warn(
+          '[SoftN] A `$:` declaration could not be compiled, so all of them fall back ' +
+            'to per-render evaluation. The script itself is unaffected. Cause:',
+          compileError
+        );
+        computedCompiled = false;
+        // The failed compile took the engine with it — v0.0.1 terminates an
+        // Engine whose `initScript` throws, wiping its bridges and its capability
+        // allowlist — so the retry cannot reuse it. Rebuilding also re-wires and
+        // re-grants; retrying in place would compile into a VM that denies every
+        // `db.*` call the fallback was supposed to rescue.
+        this.vmEngine.dispose();
+        this.vmEngine = await createLogicEngine();
+        if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
+        if (useHostBridges) this.installHostBridges();
+        symbolMap = await this.vmEngine.initializeScript(scriptCode);
+      }
     }
     this.symbolMap = symbolMap;
     this.externalValuesGlobalIndex = symbolMap.get(EXTERNAL_VALUES_VAR)?.index ?? -1;
@@ -2085,8 +2173,17 @@ export class SoftNScriptRuntime {
           return { error: error instanceof Error ? error.message : 'Backend request failed.' };
         }
       }
-      case 'net.fetch':
-        return this.handleNetFetch(call);
+      case 'net.fetch': {
+        // A host that supplied a handler has taken this capability over: the
+        // request is its to make or refuse, and the permission check and host
+        // allowlist in `handleNetFetch` belong to the browser `fetch` the
+        // handler is standing in for. The script's options object is parsed
+        // here rather than passed on as text so the handler sees what the
+        // browser path sees.
+        if (!this.netFetchHandler) return this.handleNetFetch(call);
+        const [url, optionsJson] = call.args;
+        return this.netFetchHandler(url, optionsJson ? JSON.parse(optionsJson) : {});
+      }
       case 'qr.encode':
         return this.handleQrEncode(call);
       case 'qr.decode':

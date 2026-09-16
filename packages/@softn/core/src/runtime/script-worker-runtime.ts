@@ -10,6 +10,7 @@ import type {
   CodeBlock,
   DBNamespace,
   HostCallExecutor,
+  NetFetchHandler,
   PendingHostCall,
   PermissionConfig,
   ScriptContext,
@@ -58,6 +59,12 @@ export interface WorkerRuntimeOptions {
   /** Where `softn.storage.*` sends its operations; see ScriptRuntimeOptions. */
   storageEndpoint?: string;
   backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * Where `softn.net.fetch` goes instead of the browser's `fetch`; see
+   * ScriptRuntimeOptions.netFetchHandler. The worker's host calls are answered
+   * on this thread, so the handler stays here and is never posted across.
+   */
+  netFetchHandler?: NetFetchHandler;
   /**
    * Called once if the worker is terminated for missing its hard deadline —
    * see `HARD_DEADLINE_MS`. The runtime is dead after this; every function
@@ -260,7 +267,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       appId,
       importResolver,
       logicBasePath,
-      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall },
+      { mode: 'main', permissionConfig: options?.permissionConfig, storageEndpoint: options?.storageEndpoint, backendCall: options?.backendCall, netFetchHandler: options?.netFetchHandler },
       options?.bundleFileProvider,
       options?.externalFunctions
     );

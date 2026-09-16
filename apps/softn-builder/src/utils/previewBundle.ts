@@ -5,7 +5,16 @@ import type { AssetFile } from '../types/builder';
 export function composePreviewBundle(files: Map<string, string>, main: string, manifest: Record<string, unknown> | null) {
   const groups = manifest?.files as Record<string, unknown> | undefined;
   const declared = Array.isArray(groups?.logic) ? groups.logic.filter((path): path is string => typeof path === 'string') : [];
-  const logicPaths = [...new Set([...declared, ...[...files.keys()].filter((path) => path.endsWith('.logic'))])];
+  // `.py` counts as logic here for the same reason it does in the runtime: a
+  // logic file's name is what says which language it is in. A preview that
+  // collected only `.logic` would compose a Python app as if it had no logic
+  // at all and show a page with nothing behind it.
+  const logicPaths = [
+    ...new Set([
+      ...declared,
+      ...[...files.keys()].filter((path) => path.endsWith('.logic') || path.toLowerCase().endsWith('.py')),
+    ]),
+  ];
   const composition = composeBundleSource(files, main, logicPaths);
   return {
     ...composition,

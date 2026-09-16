@@ -6,6 +6,7 @@ import React from 'react';
 import { useProjectStore } from '../../stores/projectStore';
 import { useFilesStore } from '../../stores/filesStore';
 import { CodeEditor } from './CodeEditor';
+import { editorLanguageFor } from './logicLanguage';
 
 const styles: Record<string, React.CSSProperties> = {
   container: {
@@ -51,6 +52,13 @@ export function LogicEditor() {
     isActiveLogicFile && activeFileId ? logicFiles.get(activeFileId) : undefined;
   const editorValue = activeLogicFile?.content ?? logicSource;
   const editorTitle = activeLogicFile ? `Logic (${activeLogicFile.path})` : 'Logic';
+  // The file name is what says which language this is, exactly as it does for
+  // the runtime: a `.py` logic file is Python. The dock beneath the canvas has
+  // no file of its own and is always the project's `.logic`, so it is
+  // JavaScript. Getting this wrong is not cosmetic — the highlighter would
+  // mark correct Python as broken, and its auto-indent would fight code whose
+  // indentation is the program.
+  const editorLanguage = editorLanguageFor(activeLogicFile?.path);
 
   const handleChange = (next: string) => {
     if (activeLogicFile && activeFileId) {
@@ -84,7 +92,7 @@ export function LogicEditor() {
         <CodeEditor
           value={editorValue}
           onChange={handleChange}
-          language="javascript"
+          language={editorLanguage}
           height="100%"
         />
       </div>

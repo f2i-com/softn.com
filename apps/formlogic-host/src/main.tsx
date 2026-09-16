@@ -5,7 +5,8 @@ import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { installAppStorage } from './storage';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
-import { acceptEngine, acceptZippBytes, documentEngines, readyEngines, requireEngineLanguages } from './engineInit';
+import { acceptEngine, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages } from './engineInit';
+import { NATIVE_FETCH_BRIDGE, createNativeNetFetch, nativeFetchRoute } from './nativeFetch';
 import { framePolicy } from './framePolicy';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
@@ -69,6 +70,14 @@ window.addEventListener('message', async event => {
     // run, so a FormLogic that predates the choice is unaffected. One it does
     // not serve is refused by name, never quietly replaced.
     const engine = acceptEngine(event.data.engine, served);
+    const files = new Map<string, string>(Object.entries(event.data.client));
+    // What this app's logic is written in, from its client file names, and the
+    // engine held to it before anything is configured. Neither `zipp-web` nor
+    // `host-js` can execute Python at all, and configuring an engine is a
+    // one-way door — `configureLogicEngine` and `configureZippWasmSource` both
+    // freeze — so the refusal has to come first or it comes too late.
+    const languages = bundleLanguages(files.keys());
+    requireBundleLanguages(engine, languages);
     if (engine === 'host-js') {
       // Host JavaScript is this document's own engine, so there are no engine
       // bytes to accept and nothing to ask what it can run. The host entry —
@@ -86,24 +95,20 @@ window.addEventListener('message', async event => {
       // bytes it sent are only known to agree once the engine answers.
       requireEngineLanguages(engine, await zippLanguages());
     }
-    const files = new Map<string, string>(Object.entries(event.data.client));
     const manifest = JSON.parse(files.get('manifest.json') || '{}');
+    // Set for a native app whose logic the `<logic>` bridge below cannot be
+    // written in; undefined otherwise, which is every app that runs today.
+    let netFetchHandler: ReturnType<typeof createNativeNetFetch> | undefined;
     if (event.data.native === true) {
       installAppStorage(event.data.storage || {}, input => backendCall("nativeStorage", input));
       // Keep stored app source untouched. Its declared API origin is routed by
       // the trusted parent to this app's native backend, without direct egress.
-      const entry = String(manifest.main);
-      const bridge = `<logic>
-softn.net.fetch = function(url, options, done) {
-  softn.backend.call("nativeRequest", {url:url,options:options || {}}, function(response) {
-    if (response.error) { done({ok:false,status:503,body:JSON.stringify({error:response.error}),headers:{}}); return; }
-    const result = response.result;
-    done({ok:result.status >= 200 && result.status < 300,status:result.status,body:JSON.stringify(result.body),headers:{}});
-  });
-};
-</logic>
-`;
-      files.set(entry, bridge + (files.get(entry) || ''));
+      if (nativeFetchRoute(languages) === 'host-handler') {
+        netFetchHandler = createNativeNetFetch(backendCall);
+      } else {
+        const entry = String(manifest.main);
+        files.set(entry, NATIVE_FETCH_BRIDGE + (files.get(entry) || ''));
+      }
     }
     const media = new Map<string, string>();
     const types: Record<string,string> = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', webp:'image/webp', gif:'image/gif', svg:'image/svg+xml', wav:'audio/wav', mp3:'audio/mpeg', ogg:'audio/ogg', woff:'font/woff', woff2:'font/woff2' };
@@ -118,7 +123,8 @@ softn.net.fetch = function(url, options, done) {
       <SoftNWithXDB {...composed} appId={event.data.appId} resumeSavedSyncRoom={false}
         permissionConfig={{ permissions: {} }} scriptExecutionMode="main"
         assetResolver={resolveAsset} functions={{asset: (...args: unknown[]) => resolveAsset(String(args[0] ?? ""))}}
-        backendCall={backendCall} importResolver={async path => files.get(path.replace(/^\//, '')) ?? null}
+        backendCall={backendCall} netFetchHandler={netFetchHandler}
+        importResolver={async path => files.get(path.replace(/^\//, '')) ?? null}
         onError={error => reportError(reasonOf(error))} />
     </ThemeProvider></Boundary>);
   } catch (error) {

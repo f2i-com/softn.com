@@ -99,6 +99,28 @@ export interface LogicEngine {
    * Optional: it is an optimisation, and a host that loses it only reads more.
    */
   getGlobalsFingerprint?(indices: number[]): number[] | null;
+  /**
+   * Compile and run a Python project, answering the same symbol map
+   * {@link initializeScript} answers.
+   *
+   * Optional, and its absence is the point: an engine without it cannot run
+   * Python, and {@link createPythonLogicEngine} refuses by name rather than
+   * handing `.py` source to something that would read it as JavaScript.
+   */
+  initializePythonProject?(project: PythonProject): Promise<Map<string, SymbolInfo>>;
+}
+
+/**
+ * A Python app's logic, as the composer found it in the bundle.
+ *
+ * `files` is module name → the author's source, exactly as written; `modules`
+ * is the order they are imported in, helpers first and the entry last, which
+ * is the order the JavaScript composition concatenates fragments in. The
+ * runtime adds its own files around these and never edits one.
+ */
+export interface PythonProject {
+  readonly files: Readonly<Record<string, string>>;
+  readonly modules: readonly string[];
 }
 
 /**
@@ -117,6 +139,17 @@ export type LogicEngineThreads = 'any' | 'main-only';
  */
 export interface LogicEngineFactory {
   create(): Promise<LogicEngine>;
+  /**
+   * Make an engine for a Python app, or be absent because this engine cannot
+   * run one.
+   *
+   * A factory without it is a factory that runs JavaScript and only
+   * JavaScript. That is the whole refusal: ZIPP's JavaScript-only build and an
+   * engine built on the host document's own JavaScript could do nothing with a
+   * `.py` file except read it as JavaScript and fail somewhere confusing, and
+   * neither declares this method.
+   */
+  createPython?(): Promise<LogicEngine>;
   /** Defaults to `'any'` when a factory does not say. */
   readonly threads?: LogicEngineThreads;
 }
@@ -149,6 +182,29 @@ export function createLogicEngine(): Promise<LogicEngine> {
   // for the same reason `ensureZippWasm` does.
   engineCreated = true;
   return engineFactory.create();
+}
+
+/**
+ * Make an engine for a Python app, or refuse because the configured engine
+ * cannot run one.
+ *
+ * The refusal is by name and it happens before any of the author's source is
+ * compiled. An engine that cannot run Python would otherwise be handed `.py`
+ * text and read it as JavaScript, and the person would see a syntax error
+ * about their own correct code.
+ */
+export function createPythonLogicEngine(): Promise<LogicEngine> {
+  const make = engineFactory.createPython;
+  if (typeof make !== 'function') {
+    throw new Error('This app’s logic is written in Python, and this app runtime runs only JavaScript');
+  }
+  engineCreated = true;
+  return make.call(engineFactory);
+}
+
+/** Whether the configured engine can run a Python app at all. */
+export function logicEngineRunsPython(): boolean {
+  return typeof engineFactory.createPython === 'function';
 }
 
 /** Where the configured engine can run. See {@link LogicEngineThreads}. */

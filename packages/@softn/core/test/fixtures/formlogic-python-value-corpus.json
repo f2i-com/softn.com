@@ -1,0 +1,245 @@
+{
+  "what": [
+    "Value-conversion cases from FormLogic's committed Python contract, vendored so Softn can",
+    "hold its own normalizer to the same answers without depending on formlogic.com.",
+    "",
+    "Softn's softn.py and FormLogic's formlogic.py each carry a _plain(): the function that decides",
+    "what a Python value becomes when it leaves the guest. The two were written to be ONE dialect,",
+    "because the owner wants Python usable in a Softn app, in a FormLogic automation logic block and",
+    "on the Desktop, and that only means anything if a snippet means the same thing in all three. The",
+    "failure this guards against is silent: an author moves code between them and non-finite floats,",
+    "dict-key coercion or deep structures quietly convert differently, with nothing raising."
+  ],
+  "vendoredFrom": {
+    "repo": "formlogic.com (sibling checkout; Softn does not depend on it)",
+    "corpus": "docs/contracts/formlogic-python-logic-corpus.json",
+    "corpusBlob": "1cd7e00fa516b5dc9e23b2ad841395d67f78fbb8",
+    "normalizer": "formlogic/ui/src/lib/formlogic/python/formlogic.py",
+    "normalizerBlob": "d28e79ba0de2bbd0e071f25a51eabd304572c75b",
+    "commit": "bdf514541bcdd446987b83c0315df55df1b544ca",
+    "contract": "formlogic-python/1",
+    "takenOn": "2026-09-16"
+  },
+  "taken": [
+    "The 10 cases of FormLogic's 58 that are about VALUE CONVERSION rather than about how a flow",
+    "block is entered: flow-result-normalized, flow-plain-non-finite-in-guest, flow-result-safe-integer,",
+    "flow-result-big-integer, flow-result-set, flow-result-generator, flow-result-object,",
+    "flow-result-function, flow-result-nested-40, flow-result-nested-70.",
+    "",
+    "Each is rewritten from `result = <x>` into `value: <expression>` plus any `setup` it needs,",
+    "because Softn has no `result` and no flow entry. The VALUES and the outcomes are unchanged;",
+    "`formlogicSource` records the original so the rewrite can be checked by eye.",
+    "",
+    "Three cases marked addedBySoftn cover drift the FormLogic corpus happens not to pin but the",
+    "shared _plain decides: the negative safe-integer bound, a dict key of a type neither can coerce,",
+    "and a bytes value. They are additions to the shared dialect's test coverage, not to the dialect.",
+    "The two nesting cases build their value into an underscore-prefixed module name. A plain name would be app STATE, and the host reads state as the app loads — so the case would be observed on the way into the test rather than at the point the case is about.",
+    "A case may set raw:true, meaning its expression already calls softn._plain and the harness must not wrap it again. That is how FormLogic's flow-plain-non-finite-in-guest is kept verbatim: it is about what _plain ANSWERS, not about what crosses, and those differ."
+  ],
+  "leftOut": [
+    "The other 48 cases are about the flow/condition/applogic/syntax entry shapes, the bound context",
+    "names (inputs, event, app, nodes, upstream, kv), FormLogic's prelude helpers (validators,",
+    "compliance, finance, safety), author-line reporting and the instruction budget. None of those",
+    "has a Softn equivalent: a Softn app has modules, state and softn.* rather than a context and a",
+    "result. Softn's own author-line reporting is pinned by python-contract.test.ts, and its budget",
+    "by python-logic.test.tsx.",
+    "",
+    "Also left out: Softn's _project(), the LOSSY projection used for mirrored app state. FormLogic",
+    "has no counterpart because it has no mirrored state, so it is Softn's alone and not part of the",
+    "shared dialect. python-logic.test.tsx pins it."
+  ],
+  "whenTheyDiverge": [
+    "This test failing means Softn and FormLogic no longer convert a value the same way. Do NOT",
+    "'fix' it by editing whichever side the test points at:",
+    "1. Work out which behaviour is right. json.dumps/JSON.stringify is the tie-breaker the two were",
+    "   built around: non-finite floats become null, dict keys coerce the way json.dumps coerces them.",
+    "2. Change BOTH normalizers, or neither, in the same change-set across the two repositories.",
+    "3. Re-vendor this file from the FormLogic commit that carries the agreed behaviour and update",
+    "   vendoredFrom above.",
+    "The messages are deliberately NOT compared: FormLogic says 'the result holds a set' because its",
+    "value is a flow result, and Softn says 'a set cannot cross' because its value is a capability",
+    "argument. `names` is the part of the message both have to carry — the type or the limit — and",
+    "`raises` is the exception class, which is shared."
+  ],
+  "cases": [
+    {
+      "id": "normalized-dict-tuple-nonfinite-and-keys",
+      "formlogicId": "flow-result-normalized",
+      "formlogicSource": "result = {\"t\": (1, 2), \"nan\": float(\"nan\"), \"inf\": [float(\"inf\"), -float(\"inf\")], 1: \"one\", None: \"n\", True: \"t\", 2.5: \"f\"}",
+      "value": "{\"t\": (1, 2), \"nan\": float(\"nan\"), \"inf\": [float(\"inf\"), -float(\"inf\")], 1: \"one\", None: \"n\", True: \"t\", 2.5: \"f\"}",
+      "expect": {
+        "ok": {
+          "1": "t",
+          "t": [
+            1,
+            2
+          ],
+          "nan": null,
+          "inf": [
+            null,
+            null
+          ],
+          "null": "n",
+          "2.5": "f"
+        }
+      },
+      "pins": "A tuple becomes a list; NaN and both infinities become null; an int key and a bool key that collide keep the int spelling and the last value; None becomes \"null\"; a float key becomes its repr."
+    },
+    {
+      "id": "non-finite-floats",
+      "formlogicId": "flow-plain-non-finite-in-guest",
+      "formlogicSource": "result = [formlogic._plain(float(\"nan\")) is None, formlogic._plain(float(\"inf\")) is None, formlogic._plain(-float(\"inf\")) is None, formlogic._plain(1.5)]",
+      "value": "[softn._plain(float(\"nan\")) is None, softn._plain(float(\"inf\")) is None, softn._plain(-float(\"inf\")) is None, softn._plain(1.5)]",
+      "expect": {
+        "ok": [
+          true,
+          true,
+          true,
+          1.5
+        ]
+      },
+      "pins": "What _plain ANSWERS inside the guest, which is FormLogic's own case verbatim. Checking only the crossed value would not see this: the boundary turns a non-finite float into null on its own, so a _plain that passed one through would look identical from the host and be different to the app.",
+      "raw": true
+    },
+    {
+      "id": "safe-integer",
+      "formlogicId": "flow-result-safe-integer",
+      "formlogicSource": "2 ** 53 - 1",
+      "value": "2 ** 53 - 1",
+      "expect": {
+        "ok": 9007199254740991
+      },
+      "pins": "The largest integer that crosses as a number."
+    },
+    {
+      "id": "safe-integer-negative",
+      "addedBySoftn": "The corpus pins the positive bound only; the shared _plain accepts -(2**53 - 1) too, and a one-sided bound is exactly the kind of thing that drifts.",
+      "value": "-(2 ** 53 - 1)",
+      "expect": {
+        "ok": -9007199254740991
+      },
+      "pins": "The bound is symmetric."
+    },
+    {
+      "id": "big-integer",
+      "formlogicId": "flow-result-big-integer",
+      "formlogicSource": "result = 2 ** 64",
+      "value": "2 ** 64",
+      "expect": {
+        "raises": "ValueError",
+        "names": "integer outside"
+      },
+      "pins": "An integer past the safe range is refused rather than silently losing precision."
+    },
+    {
+      "id": "bool-dict-keys",
+      "addedBySoftn": "The corpus's key case has an int key and a bool key that COLLIDE, so the surviving key is the int and the bool branch is never reached. These keys do not collide.",
+      "value": "{True: \"y\", False: \"n\"}",
+      "expect": {
+        "ok": {
+          "true": "y",
+          "false": "n"
+        }
+      },
+      "pins": "A bool key coerces to \"true\"/\"false\", not to \"1\"/\"0\"."
+    },
+    {
+      "id": "big-negative-integer",
+      "addedBySoftn": "The corpus pins only a large POSITIVE integer, so a bound written as `value <= _SAFE_INTEGER` would pass every test. This is the other side.",
+      "value": "-(2 ** 64)",
+      "expect": {
+        "raises": "ValueError",
+        "names": "integer outside"
+      },
+      "pins": "The refusal is symmetric too."
+    },
+    {
+      "id": "set",
+      "formlogicId": "flow-result-set",
+      "formlogicSource": "result = {1, 2}",
+      "value": "{1, 2}",
+      "expect": {
+        "raises": "TypeError",
+        "names": "set"
+      },
+      "pins": "A set is refused and the message names the type."
+    },
+    {
+      "id": "generator",
+      "formlogicId": "flow-result-generator",
+      "formlogicSource": "(i for i in range(3))",
+      "value": "(i for i in range(3))",
+      "expect": {
+        "raises": "TypeError",
+        "names": "generator"
+      },
+      "pins": "A generator is refused rather than silently consumed or emptied."
+    },
+    {
+      "id": "object",
+      "formlogicId": "flow-result-object",
+      "formlogicSource": "class Point:\n    pass\nresult = Point()",
+      "setup": "class Point:\n    pass\n",
+      "value": "Point()",
+      "expect": {
+        "raises": "TypeError",
+        "names": "Point"
+      },
+      "pins": "A class instance is refused and the message names the author's own class."
+    },
+    {
+      "id": "function",
+      "formlogicId": "flow-result-function",
+      "formlogicSource": "lambda x: x",
+      "value": "lambda x: x",
+      "expect": {
+        "raises": "TypeError",
+        "names": "function"
+      },
+      "pins": "A function is refused rather than crossing as null."
+    },
+    {
+      "id": "bytes",
+      "addedBySoftn": "Neither normalizer has a branch for bytes, so both fall through to the same refusal; pinned because bytes are the value most likely to be given a branch later on one side only.",
+      "value": "b\"abc\"",
+      "expect": {
+        "raises": "TypeError",
+        "names": "bytes"
+      },
+      "pins": "Bytes are refused, not turned into a repr string."
+    },
+    {
+      "id": "dict-key-of-an-uncoercible-type",
+      "addedBySoftn": "The corpus pins the keys json.dumps CAN coerce; this pins the refusal for one it cannot, which is the other half of the same rule.",
+      "value": "{(1, 2): \"x\"}",
+      "expect": {
+        "raises": "TypeError",
+        "names": "dict key"
+      },
+      "pins": "A key json.dumps could not coerce is refused, naming the key's type."
+    },
+    {
+      "id": "nested-70",
+      "formlogicId": "flow-result-nested-70",
+      "formlogicSource": "v = 1\nfor i in range(70):\n    v = [v]\nresult = v",
+      "setup": "_v70 = 1\nfor _i in range(70):\n    _v70 = [_v70]\n",
+      "value": "_v70",
+      "expect": {
+        "raises": "ValueError",
+        "names": "nests deeper than 64"
+      },
+      "pins": "The depth cap is 64 and it is the normalizer's own, reached before the engine's."
+    },
+    {
+      "id": "nested-40",
+      "formlogicId": "flow-result-nested-40",
+      "formlogicSource": "v = 1\nfor i in range(40):\n    v = [v]\nresult = v",
+      "setup": "_v40 = 1\nfor _i in range(40):\n    _v40 = [_v40]\n",
+      "value": "_v40",
+      "expect": {
+        "refusedAtTheBoundary": "nesting limit"
+      },
+      "pins": "Under the cap the normalizer passes it, and the ENGINE then refuses it at its own boundary — which is where FormLogic sees this too. Not the normalizer's behaviour, but the pair's, and the reason the cap alone is not the whole story."
+    }
+  ]
+}

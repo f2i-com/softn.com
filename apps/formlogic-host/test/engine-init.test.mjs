@@ -2,17 +2,26 @@
 // (Node 24 runs the TypeScript module directly; it uses only erasable syntax.)
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_ENGINE,
   DOCUMENT_ENGINE_LISTS,
+  ENGINE_LANGUAGES,
   HOSTED_ENGINES_PROTOCOL,
   HOST_JS_DOCUMENT_ENGINES,
+  LOGIC_LANGUAGES_PROTOCOL,
+  PYTHON_LOGIC_SUFFIX,
   RUNTIME_ENGINES,
+  RUNTIME_FEATURES,
   ZIPP_DOCUMENT_ENGINES,
   acceptEngine,
   acceptZippBytes,
+  bundleLanguages,
   documentEngines,
   readyEngines,
+  requireBundleLanguages,
   requireEngineLanguages,
 } from '../src/engineInit.ts';
 
@@ -104,4 +113,97 @@ test('the runtime manifest list is the union of what the documents serve', () =>
   // which is what the protocol number in softn-release.json says.
   assert.equal(HOSTED_ENGINES_PROTOCOL, 1);
   assert.ok(Number.isInteger(HOSTED_ENGINES_PROTOCOL));
+});
+
+test('a bundle’s logic languages come from its client file names, and nothing else', () => {
+  assert.equal(PYTHON_LOGIC_SUFFIX, '.py');
+  // The app every hosted app has been until now: no .py, so JavaScript.
+  assert.deepEqual(bundleLanguages(['manifest.json', 'app.softn', 'app.logic']), ['javascript']);
+  assert.deepEqual(bundleLanguages([]), ['javascript']);
+  // One .py anywhere in the client files is the declaration, wherever it is
+  // and whether or not the manifest lists it. JavaScript stays in the list:
+  // the markup and its template expressions are evaluated on this side.
+  assert.deepEqual(bundleLanguages(['manifest.json', 'app.softn', 'app.py']), ['javascript', 'python']);
+  assert.deepEqual(bundleLanguages(['lib/helpers.py']), ['javascript', 'python']);
+  assert.deepEqual(bundleLanguages(['app.PY']), ['javascript', 'python'], 'the name is not case-sensitive');
+  assert.deepEqual(bundleLanguages(['a.logic', 'b.py', 'c.logic']), ['javascript', 'python']);
+  // A name that merely contains the letters is not a Python file.
+  assert.deepEqual(bundleLanguages(['pyramid.logic', 'py', 'app.python', 'a.py.logic']), ['javascript']);
+  // Nothing inside the bundle is consulted: a manifest that claims Python and
+  // a logic file that is Python are not the same claim, and only the second
+  // is one this reads.
+  assert.deepEqual(bundleLanguages(['manifest.json']), ['javascript']);
+});
+
+test('an engine that cannot run this app’s logic is refused by name, before anything is configured', () => {
+  // The one engine that runs Python is the one hosted apps already run on.
+  requireBundleLanguages('zipp-web-python', ['javascript', 'python']);
+  requireBundleLanguages('zipp-web-python', ['javascript']);
+  // Neither of the others can execute Python at all: zipp-web is ZIPP's
+  // JavaScript-only build and host-js is the document's own JavaScript.
+  assert.throws(
+    () => requireBundleLanguages('zipp-web', ['javascript', 'python']),
+    /written in python, and the zipp-web engine does not run that language/
+  );
+  assert.throws(
+    () => requireBundleLanguages('host-js', ['javascript', 'python']),
+    /written in python, and the host-js engine does not run that language/
+  );
+  // Both still run every JavaScript app they always did.
+  requireBundleLanguages('zipp-web', ['javascript']);
+  requireBundleLanguages('host-js', ['javascript']);
+  // The two maps say different things on purpose: what a loaded engine must
+  // REPORT before its bytes are believed, and what it can RUN. host-js has no
+  // profile to report and runs JavaScript; reading the first where the second
+  // is meant would let a Python app onto it.
+  assert.deepEqual([...ENGINE_LANGUAGES['host-js']], ['javascript']);
+  for (const id of RUNTIME_ENGINES) assert.ok(ENGINE_LANGUAGES[id], `${id} says what it runs`);
+  // Every engine the shell knows of, including one no document serves yet.
+  assert.deepEqual(Object.keys(ENGINE_LANGUAGES).sort(), ['host-js', 'zipp-web', 'zipp-web-python']);
+});
+
+test('the refusal happens for the languages the file names actually declare', () => {
+  // The two halves joined up: a .py in the client files, on each engine.
+  const python = bundleLanguages(['manifest.json', 'app.softn', 'app.py']);
+  const javascript = bundleLanguages(['manifest.json', 'app.softn', 'app.logic']);
+  for (const id of ['zipp-web', 'host-js']) {
+    assert.throws(() => requireBundleLanguages(id, python), new RegExp(`the ${id} engine does not run`));
+    requireBundleLanguages(id, javascript);
+  }
+  requireBundleLanguages('zipp-web-python', python);
+  requireBundleLanguages('zipp-web-python', javascript);
+});
+
+test('the shell refuses the engine before it configures one, and routes native fetch by the same list', () => {
+  const main = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '../src/main.tsx'),
+    'utf8'
+  );
+  const derived = main.indexOf('bundleLanguages(');
+  const refused = main.indexOf('requireBundleLanguages(');
+  assert.ok(derived > 0 && refused > derived, 'the languages are derived, then the engine is held to them');
+  // Configuring an engine is a one-way door: `configureLogicEngine` and
+  // `configureZippWasmSource` both freeze. A refusal after either of them
+  // would be a refusal that came too late to mean anything.
+  for (const configure of ['installHostJsEngine()', 'configureZippWasmSource(']) {
+    const at = main.indexOf(configure);
+    assert.ok(at > 0, configure);
+    assert.ok(refused < at, `${configure} is reached only after the refusal`);
+  }
+  // From the client file names the parent sent, not from the manifest inside
+  // the bundle — the manifest is the app talking about itself.
+  assert.match(main, /bundleLanguages\(files\.keys\(\)\)/);
+  assert.ok(main.indexOf('bundleLanguages(') < main.indexOf('JSON.parse(files.get(\'manifest.json\')'));
+  // The native network route is chosen from the same list, and a JavaScript
+  // app still has the bridge prepended to its entry file, exactly as before.
+  assert.match(main, /nativeFetchRoute\(languages\)/);
+  assert.match(main, /files\.set\(entry, NATIVE_FETCH_BRIDGE \+ \(files\.get\(entry\) \|\| ''\)\)/);
+});
+
+test('the runtime says which optional capabilities it has, and how to read an app’s languages', () => {
+  // The manifest's `features` is this list; the packager reads it from here.
+  assert.deepEqual([...RUNTIME_FEATURES], ['python-logic/1']);
+  assert.ok(RUNTIME_FEATURES.every((f) => /^[a-z][a-z0-9-]*\/\d+$/.test(f)), 'named and versioned');
+  assert.equal(LOGIC_LANGUAGES_PROTOCOL, 1);
+  assert.ok(Number.isInteger(LOGIC_LANGUAGES_PROTOCOL));
 });

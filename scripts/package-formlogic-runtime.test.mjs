@@ -18,7 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { readArchive } from './lib/archive.mjs';
 import { isZippEngineWasm } from './lib/zipp-engine-copy.mjs';
 import { PACKAGES, archiveName, packageById, root } from './release-packages.mjs';
-import { HOSTED_ENGINES_PROTOCOL, RUNTIME_ENGINES } from '../apps/formlogic-host/src/engineInit.ts';
+import { HOSTED_ENGINES_PROTOCOL, LOGIC_LANGUAGES_PROTOCOL, RUNTIME_ENGINES, RUNTIME_FEATURES } from '../apps/formlogic-host/src/engineInit.ts';
 
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -39,12 +39,39 @@ test('the FormLogic runtime package is described like the others and named for F
   assert.ok(PACKAGES.every((p) => p.id !== 'formlogic-runtime' || p.previousName === ''), 'it never had another name');
 });
 
-test('the hosted runtime manifest gets its engines from the shell, not a list of its own', () => {
+test('the hosted runtime manifest gets its engines and features from the shell, not a list of its own', () => {
   const packager = fs.readFileSync(path.join(root, 'scripts/package-formlogic-runtime.mjs'), 'utf8');
   assert.ok(packager.includes('apps/formlogic-host/src/engineInit.ts'), 'it reads the shell’s declaration');
   // A second list would be one the handshake could drift away from silently.
   for (const id of RUNTIME_ENGINES) assert.ok(!packager.includes(`'${id}'`), `${id} is not repeated in the packager`);
   assert.ok(RUNTIME_ENGINES.length > 0 && RUNTIME_ENGINES.every((id) => typeof id === 'string'));
+  // The same for the capabilities the manifest offers: a build that says it
+  // has `python-logic/1` says so because the shell's own declaration does.
+  for (const f of RUNTIME_FEATURES) assert.ok(!packager.includes(`'${f}'`), `${f} is not repeated in the packager`);
+  assert.ok(RUNTIME_FEATURES.length > 0 && RUNTIME_FEATURES.every((f) => typeof f === 'string'));
+  for (const name of ['RUNTIME_FEATURES', 'LOGIC_LANGUAGES_PROTOCOL']) {
+    assert.ok(packager.includes(name), `the packager reads ${name}`);
+  }
+});
+
+test('the packager refuses a shell that stopped declaring what it offers', () => {
+  // The one-source-of-truth idiom is only worth anything if the read is
+  // required: a rename that made the regex miss must stop the build, not
+  // quietly ship an archive that offers nothing.
+  const packager = fs.readFileSync(path.join(root, 'scripts/package-formlogic-runtime.mjs'), 'utf8');
+  for (const name of ['RUNTIME_ENGINES', 'HOSTED_ENGINES_PROTOCOL', 'RUNTIME_FEATURES', 'LOGIC_LANGUAGES_PROTOCOL']) {
+    // Each value is read out of the shell's source, and a read that found
+    // nothing stops the build rather than falling back to a number or a list
+    // the packager kept of its own.
+    assert.ok(
+      new RegExp(`engineInitSource\\.match\\(/export const ${name}`).test(packager),
+      `${name} is read from the shell's own declaration`
+    );
+    assert.ok(
+      new RegExp(`could not read ${name} from apps/formlogic-host/src/engineInit\\.ts`).test(packager),
+      `${name} is a failure, not a default`
+    );
+  }
 });
 
 test('the workflow builds, checks and attaches the archive', () => {
@@ -126,8 +153,12 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
       recordEvents: hostProtocol.recordEvents,
       editorBridge: 1,
       hostedEngines: HOSTED_ENGINES_PROTOCOL,
+      // And how an app's logic languages are read: from its client file names,
+      // with an engine that cannot run one of them refused by name.
+      logicLanguages: LOGIC_LANGUAGES_PROTOCOL,
     });
     assert.equal(release.protocols.hostedEngines, 1);
+    assert.equal(release.protocols.logicLanguages, 1);
     assert.equal(JSON.parse(bytes('app-editors/manifest.json').toString('utf8')).protocol, 1);
     assert.deepEqual(JSON.parse(bytes('app-editors/manifest.json').toString('utf8')).editors, ['builder', 'studio']);
 
@@ -159,11 +190,12 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     assert.ok('index.html' in hosted.files);
     // The hosted runtime says which engines it can be asked to run, read from
     // the shell's own declaration so the manifest and the `formlogic:ready`
-    // announcement cannot name different sets. `features` is there and empty so
-    // a reader never has to tell "none" from "older than the idea".
+    // announcement cannot name different sets. `features` is read the same way
+    // and says what else this build can be asked for.
     assert.deepEqual(hosted.engines, [...RUNTIME_ENGINES]);
     assert.deepEqual(hosted.engines, ['host-js', 'zipp-web-python']);
-    assert.deepEqual(hosted.features, []);
+    assert.deepEqual(hosted.features, [...RUNTIME_FEATURES]);
+    assert.deepEqual(hosted.features, ['python-logic/1']);
     for (const n of ['hosted-runtime/LICENSE', 'hosted-runtime/NOTICE', 'hosted-runtime/README.txt']) bytes(n);
 
     // The second entry document, and the one thing that differs between it and

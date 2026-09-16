@@ -29,6 +29,7 @@ import {
   type ScriptRuntimeHandle,
   type ScriptRuntimeMode,
   type BundleFileProvider,
+  type NetFetchHandler,
   type PermissionConfig,
   type PersistenceFailure,
 } from '../runtime/script-runtime';
@@ -36,7 +37,7 @@ import {
 // other path routes calls through the main-thread VM. See the note where
 // `forceWorker` is decided.
 import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
-import { logicEngineThreads } from '../runtime/vm-adapter';
+import { logicEngineThreads, type PythonProject } from '../runtime/vm-adapter';
 import { CapabilityProvider, type CapabilityState } from './consent-gate';
 import { AppScopeProvider, type AppAssetResolver, type AppScope } from './app-scope';
 import { createSyncControls, type SyncControls } from '../runtime/db-sync-controls';
@@ -293,6 +294,21 @@ export interface SoftNRendererProps {
   storageEndpoint?: string;
   /** Calls only the backend selected by the trusted host. */
   backendCall?: (action: string, input: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * Where `softn.net.fetch` goes instead of the browser's `fetch`. Forwarded
+   * to the script runtime; see `ScriptRuntimeOptions.netFetchHandler` for what
+   * supplying one means, including that it takes the capability's checks with
+   * it. Absent, the network behaves exactly as it always has.
+   */
+  netFetchHandler?: NetFetchHandler;
+  /**
+   * The app's logic when it is written in Python, as `composeBundleSource`
+   * found it. Spread in with the rest of the composed bundle; absent for every
+   * bundle whose logic is JavaScript, which is every bundle that has shipped.
+   *
+   * Its presence also decides the thread: see the note beside `effectiveMode`.
+   */
+  python?: PythonProject;
 
   /**
    * The bundle's parsed `permission.json`, forwarded to the script runtime so
@@ -576,6 +592,8 @@ export function SoftNRenderer({
   executionPreference,
   storageEndpoint,
   backendCall,
+  netFetchHandler,
+  python,
   permissionConfig,
   scriptExecutionMode = 'worker',
   resumeSavedSyncRoom = false,
@@ -587,6 +605,7 @@ export function SoftNRenderer({
 }: SoftNRendererProps): React.ReactElement | null {
   const runtimePermissions = useStructurallyStableValue(permissions);
   const runtimePermissionConfig = useStructurallyStableValue(permissionConfig);
+  const runtimePython = useStructurallyStableValue(python);
   const runtimePreIncludedLogicPaths = useStructurallyStableValue(preIncludedLogicPaths);
   const [resolvedSource, setResolvedSource] = useState<string | undefined>(source);
   const [state, setState] = useState<RendererState>({
@@ -1025,6 +1044,16 @@ export function SoftNRenderer({
             forceWorker = false;
           }
 
+          // A Python app runs on this thread, whatever the bundle or a harness
+          // asked for. The Worker runtime names the ZIPP JavaScript adapter
+          // itself; there is no Python path in it at all, so a worker would
+          // refuse the app's own source. Silent because this is not a
+          // downgrade a host chose — it is the only thread the app can run on.
+          if (runtimePython && effectiveMode !== 'main') {
+            effectiveMode = 'main';
+            forceWorker = false;
+          }
+
           // From here to the script's top level having run: engine creation,
           // compilation, and the first evaluation, on whichever thread.
           perfMark('softn:vm-init:start');
@@ -1050,6 +1079,8 @@ export function SoftNRenderer({
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
                 backendCall,
+                netFetchHandler,
+                pythonProject: runtimePython,
                 observedStateNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
@@ -1089,6 +1120,7 @@ export function SoftNRenderer({
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
                 backendCall,
+                netFetchHandler,
                 bundleFileProvider,
                 externalFunctions: runtimeFunctions,
                 // A worker that missed its hard deadline has been terminated;
@@ -1129,6 +1161,8 @@ export function SoftNRenderer({
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
                 backendCall,
+                netFetchHandler,
+                pythonProject: runtimePython,
                 observedStateNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
@@ -1162,6 +1196,8 @@ export function SoftNRenderer({
                 permissionConfig: runtimePermissionConfig,
                 storageEndpoint,
                 backendCall,
+                netFetchHandler,
+                pythonProject: runtimePython,
                 observedStateNames,
                 onPersistenceFailure: (failure) => {
                   if (stale || !mountedRef.current) return;
@@ -1352,6 +1388,8 @@ export function SoftNRenderer({
     runtimePermissionConfig,
     storageEndpoint,
     backendCall,
+    netFetchHandler,
+    runtimePython,
     runtimePermissions,
     runtimePreIncludedLogicPaths,
     runtimeFunctions,
