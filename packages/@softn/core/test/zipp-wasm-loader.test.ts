@@ -1,10 +1,11 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const glue = vi.hoisted(() => ({ initialize: vi.fn(), installPanicHook: vi.fn() }));
+const glue = vi.hoisted(() => ({ initialize: vi.fn(), installPanicHook: vi.fn(), profile: vi.fn() }));
 vi.mock('../wasm-zipp/zipp_wasm.js', () => ({
   default: glue.initialize,
   zipp_install_panic_hook: glue.installPanicHook,
+  zippProfile: glue.profile,
 }));
 
 const emptyModuleBytes = () => new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
@@ -13,6 +14,7 @@ beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   glue.initialize.mockReset();
+  glue.profile.mockReset();
 });
 
 describe('shared ZIPP initialization', () => {
@@ -73,5 +75,33 @@ describe('shared ZIPP initialization', () => {
     glue.initialize.mockResolvedValue({});
     await loader.ensureZippWasm();
     expect(glue.initialize).toHaveBeenCalledWith({ module_or_path: module });
+  });
+});
+
+/**
+ * ZIPP builds as a JavaScript-only engine and as a JavaScript-and-Python one,
+ * from the same glue and with the same exports. A host handed the wrong one
+ * cannot tell from its own records which it has, so it asks the engine.
+ */
+describe('the loaded engine’s languages', () => {
+  it('come from the engine itself, after it has been initialized', async () => {
+    const loader = await import('../src/runtime/zipp-wasm-loader');
+    glue.initialize.mockResolvedValue({});
+    glue.profile.mockReturnValue(JSON.stringify({ version: '0.0.18', languages: ['javascript', 'python'] }));
+    await expect(loader.zippLanguages()).resolves.toEqual(['javascript', 'python']);
+    expect(glue.initialize).toHaveBeenCalledOnce();
+    // Asking loaded the engine, so the source is frozen from here on.
+    expect(() => loader.configureZippWasmSource(emptyModuleBytes())).toThrow(/before initialization/);
+  });
+
+  it('are empty when the engine reports none it can be believed about', async () => {
+    const loader = await import('../src/runtime/zipp-wasm-loader');
+    glue.initialize.mockResolvedValue({});
+    glue.profile.mockReturnValueOnce('not json');
+    await expect(loader.zippLanguages()).resolves.toEqual([]);
+    glue.profile.mockReturnValueOnce(JSON.stringify({ version: '0.0.18' }));
+    await expect(loader.zippLanguages()).resolves.toEqual([]);
+    glue.profile.mockReturnValueOnce(JSON.stringify({ languages: ['javascript', 7, null] }));
+    await expect(loader.zippLanguages()).resolves.toEqual(['javascript']);
   });
 });

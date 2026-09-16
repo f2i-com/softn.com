@@ -2,13 +2,23 @@
  * SoftN Scripting Bridge
  *
  * Integrates the scripting VM with the SoftN runtime. The engine itself is
- * selected in `./vm-adapter` — currently zipp, a JavaScript engine written in
+ * selected in `./vm-adapter` — by default zipp, a JavaScript engine written in
  * Rust and compiled to WASM. All .logic code executes inside the WASM VM, so
  * the sandbox holds: no `eval`, no `new Function`, and no host object the
  * engine preamble did not hand over.
+ *
+ * The engine is reached through `createLogicEngine()` rather than named here,
+ * so a host can put a different one behind the same `LogicEngine` surface
+ * without this file knowing. Nothing does today; the default is the same ZIPP
+ * adapter this file used to construct directly.
  */
 
-import { VmAdapter, VM_BRIDGE_PREAMBLE, type SymbolScope } from './vm-adapter';
+import {
+  VM_BRIDGE_PREAMBLE,
+  createLogicEngine,
+  type LogicEngine,
+  type SymbolScope,
+} from './vm-adapter';
 import { SandboxHost } from './sandbox-host';
 import { readZipText } from './zip-text';
 import { SOFTN_BRIDGE_PREAMBLE } from './softn-preamble';
@@ -493,7 +503,7 @@ function extractComputedDeclarations(code: string): Array<{ name: string; expres
  * No `new Function()` calls are used — all user code runs in the VM.
  */
 export class SoftNScriptRuntime {
-  private vmEngine: VmAdapter | null = null;
+  private vmEngine: LogicEngine | null = null;
   private readonly onPersistenceFailure: ((failure: PersistenceFailure) => void) | null;
   private context: ScriptContext;
   private db: DBNamespace;
@@ -826,8 +836,8 @@ export class SoftNScriptRuntime {
   async loadScript(script: CodeBlock): Promise<ScriptLoadResult> {
     const useHostBridges = this.runtimeMode === 'main';
 
-    // 0. Create the WASM adapter
-    this.vmEngine = await VmAdapter.create();
+    // 0. Create the logic engine (the ZIPP adapter unless a host configured one)
+    this.vmEngine = await createLogicEngine();
     if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
 
     if (useHostBridges) {
@@ -943,7 +953,7 @@ export class SoftNScriptRuntime {
       // re-grants; retrying in place would compile into a VM that denies every
       // `db.*` call the fallback was supposed to rescue.
       this.vmEngine.dispose();
-      this.vmEngine = await VmAdapter.create();
+      this.vmEngine = await createLogicEngine();
       if (this.abandonIfDisposed()) return SoftNScriptRuntime.ABANDONED;
       if (useHostBridges) this.installHostBridges();
       symbolMap = await this.vmEngine.initializeScript(scriptCode);

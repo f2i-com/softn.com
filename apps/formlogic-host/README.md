@@ -10,6 +10,17 @@ The shell announces `formlogic:ready` with the ZIPP version and SHA-256 from the
 initializing the app. The `formlogic:init` message supplies the bundle, app ID, theme, channel
 port and `zippWasm` ArrayBuffer. The shell configures that source before rendering SoftN.
 
+`ready` also announces `engines`: the engine ids this document will accept, each with the bytes
+it wants (`{"zipp-web-python": {version, sha256, release}}`). `init` may name one in `engine`;
+absent means `zipp-web-python`, which is what hosted apps have always run, so a FormLogic that
+knows nothing of either field behaves exactly as before. An engine this document does not serve
+is refused by name rather than replaced, and the engine that loads must be able to run the
+languages its id promises — `zipp-web-python` is checked for Python against the engine's own
+profile, not against anyone's records. `hosted-runtime/runtime-manifest.json` names the same
+engine ids in `engines` (with `features` for later runtime capabilities), read straight from
+`src/engineInit.ts` so the manifest and this announcement cannot drift apart. The release
+protocol is unchanged: `softn-release.json` gains nothing.
+
 FormLogic performs one lazy, checksum-verified engine download per page. Its expression worker
 and every hosted app receive cloned bytes; they never share a mutable WASM instance, memory,
 guest engine or permission configuration. Bytes also work across an opaque iframe boundary,
@@ -37,7 +48,7 @@ A load failure is reported to the parent as `{type:'error', reason}` and
 shown in the frame with the same one-line reason. `reason` is an addition;
 a parent that reads only `type` sees what it always did.
 
-Test the queue with `node --test apps/formlogic-host/test/backendQueue.test.mjs`.
+Test the queue and the engine handshake with `node --test apps/formlogic-host/test/*.mjs`.
 
 ## Updating
 
