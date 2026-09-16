@@ -18,10 +18,17 @@ import { spawnSync } from 'node:child_process';
 import { readArchive } from './lib/archive.mjs';
 import { isZippEngineWasm } from './lib/zipp-engine-copy.mjs';
 import { PACKAGES, archiveName, packageById, root } from './release-packages.mjs';
-import { RUNTIME_ENGINES } from '../apps/formlogic-host/src/engineInit.ts';
+import { HOSTED_ENGINES_PROTOCOL, RUNTIME_ENGINES } from '../apps/formlogic-host/src/engineInit.ts';
 
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
+// Read rather than imported: the adapter imports acorn and the rest of core,
+// and this file only needs the one string it puts in a build. The scan below is
+// the whole reason the constant exists, so a rename here is a failure, not a
+// silently empty search.
+const HOST_JS_ENGINE_MARK = fs
+  .readFileSync(path.join(root, 'packages/@softn/core/src/runtime/host-js/host-js-adapter.ts'), 'utf8')
+  .match(/export const HOST_JS_ENGINE_MARK = '([^']+)'/)?.[1];
 const NATIVE_MODULES = ['runner.mjs', 'request-worker.mjs', 'request-hook.mjs', 'wasm-host.mjs', 'migrations.mjs', 'crypto.mjs', 'time.mjs', 'host-protocol.json', 'record-events.mjs'];
 
 test('the FormLogic runtime package is described like the others and named for FormLogic', () => {
@@ -43,7 +50,7 @@ test('the hosted runtime manifest gets its engines from the shell, not a list of
 test('the workflow builds, checks and attaches the archive', () => {
   const release = fs.readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8');
   assert.ok(release.includes('npm run package:formlogic-runtime -- --tag "$RELEASE_TAG"'));
-  for (const entry of ['softn-release.json', 'hosted-runtime/index.html', 'native-runtime/host-protocol.json', 'adapter/formlogic.ts']) assert.ok(release.includes(entry), entry);
+  for (const entry of ['softn-release.json', 'hosted-runtime/index.html', 'hosted-runtime/host.html', 'native-runtime/host-protocol.json', 'adapter/formlogic.ts']) assert.ok(release.includes(entry), entry);
   assert.ok(release.includes('softn-formlogic-runtime-${{ env.RELEASE_TAG }}.zip'));
   assert.ok(release.includes('sha256sum -c "softn-formlogic-runtime-$RELEASE_TAG.zip.sha256"'));
   assert.ok(fs.readFileSync(path.join(root, '.github/workflows/build.yml'), 'utf8').includes('release/softn-formlogic-runtime-v*.zip'));
@@ -108,9 +115,19 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     for (const pattern of known) assert.equal(copies.filter((n) => pattern.test(n)).length, 1, `one engine at ${pattern}`);
     assert.equal(copies.length, known.length, `no engine copy outside the known places: ${copies.join(', ')}`);
 
-    // The protocols: what the PHP host's runtime declares, and the editor bridge.
+    // The protocols: what the PHP host's runtime declares, the editor bridge,
+    // and how many hosted-runtime entry documents a reader has to understand.
+    // A FormLogic that knows only index.html refuses an archive that declares
+    // hostedEngines, rather than installing one whose manifest offers an engine
+    // it would never mount.
     const hostProtocol = readJson(path.join(root, 'apps/softn-host-php/runtime/host-protocol.json'));
-    assert.deepEqual(release.protocols, { nativeProtocol: hostProtocol.nativeProtocol, recordEvents: hostProtocol.recordEvents, editorBridge: 1 });
+    assert.deepEqual(release.protocols, {
+      nativeProtocol: hostProtocol.nativeProtocol,
+      recordEvents: hostProtocol.recordEvents,
+      editorBridge: 1,
+      hostedEngines: HOSTED_ENGINES_PROTOCOL,
+    });
+    assert.equal(release.protocols.hostedEngines, 1);
     assert.equal(JSON.parse(bytes('app-editors/manifest.json').toString('utf8')).protocol, 1);
     assert.deepEqual(JSON.parse(bytes('app-editors/manifest.json').toString('utf8')).editors, ['builder', 'studio']);
 
@@ -145,9 +162,58 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     // announcement cannot name different sets. `features` is there and empty so
     // a reader never has to tell "none" from "older than the idea".
     assert.deepEqual(hosted.engines, [...RUNTIME_ENGINES]);
-    assert.deepEqual(hosted.engines, ['zipp-web-python']);
+    assert.deepEqual(hosted.engines, ['host-js', 'zipp-web-python']);
     assert.deepEqual(hosted.features, []);
     for (const n of ['hosted-runtime/LICENSE', 'hosted-runtime/NOTICE', 'hosted-runtime/README.txt']) bytes(n);
+
+    // The second entry document, and the one thing that differs between it and
+    // the first. An engine in the manifest with no document to run it in is an
+    // offer FormLogic could only discover was empty at mount time.
+    assert.ok('host.html' in hosted.files, 'host.html is in the manifest');
+    const indexHtml = bytes('hosted-runtime/index.html').toString('utf8');
+    const hostHtml = bytes('hosted-runtime/host.html').toString('utf8');
+    assert.equal(
+      hostHtml.replace(' data-softn-logic-engine="host-js"', ''),
+      indexHtml,
+      'the built host.html is the built index.html with one attribute'
+    );
+
+    // Where the host-JavaScript engine is, and everywhere it is not. It runs the
+    // app author's code as the document's own JavaScript, so a build that was
+    // never meant to offer it must not carry it at all: not the editors, which
+    // stay on ZIPP, and not the chunks index.html loads.
+    assert.match(HOST_JS_ENGINE_MARK ?? '', /^softn\./, 'the adapter still declares its mark');
+    const carriers = [...entries.keys()].filter((n) => /\.js$/.test(n) && bytes(n).includes(HOST_JS_ENGINE_MARK));
+    assert.equal(carriers.length, 1, `exactly one chunk carries the host engine: ${carriers.join(', ')}`);
+    assert.ok(carriers[0].startsWith('hosted-runtime/assets/'), carriers[0]);
+    for (const n of [...entries.keys()]) {
+      if (!n.startsWith('app-editors/')) continue;
+      assert.ok(!bytes(n).includes(HOST_JS_ENGINE_MARK), `${n} is an editor and stays on ZIPP`);
+    }
+    // index.html loads its entry chunk and preloads the rest of its static
+    // graph; the host engine is in none of them, so the document without
+    // 'unsafe-eval' never even fetches it.
+    const staticGraph = [...indexHtml.matchAll(/(?:src|href)="\.\/([^"]+\.js)"/g)].map((m) => `hosted-runtime/${m[1]}`);
+    assert.ok(staticGraph.length > 0, 'index.html names the chunks it loads');
+    for (const n of staticGraph) assert.ok(!bytes(n).includes(HOST_JS_ENGINE_MARK), `${n} is in index.html's graph`);
+    assert.ok(!staticGraph.includes(carriers[0]), 'the host engine is loaded on demand, by host.html alone');
+
+    // Compiling code at runtime is the host engine's whole method, so the app
+    // runtime is worth a census: the only other place `new Function` or `eval`
+    // belongs there is the accelerator host, which compiles the numeric
+    // functions a bundle generates. (The editors are excluded deliberately:
+    // Monaco ships the TypeScript compiler, which compiles at runtime, and they
+    // are a same-origin document family of their own.)
+    const ACCEL_MARK = 'accel: remade function is not a function';
+    for (const n of [...entries.keys()]) {
+      if (!n.startsWith('hosted-runtime/') || !n.endsWith('.js')) continue;
+      const text = bytes(n).toString('utf8');
+      if (!/new Function\(|[^.\w]eval\(/.test(text)) continue;
+      assert.ok(
+        text.includes(HOST_JS_ENGINE_MARK) || text.includes(ACCEL_MARK),
+        `${n} compiles code at runtime and is neither the host engine nor the accelerator host`
+      );
+    }
     for (const kind of ['builder', 'studio']) {
       const m = manifestOf(`app-editors/${kind}`);
       assert.equal(m.engines, undefined, `${kind} is an editor, not an app runtime`);

@@ -25,6 +25,14 @@ A change to `bundle-format` or to core's bundle loading is a change to the
 contract every existing `.softn` file relies on: keep old bundles opening
 exactly as before and add a test that pins it.
 
+Core ships a second `.logic` engine, `@softn/core/host-js`, which runs an app
+author's code as the host document's own JavaScript with no VM around it, for a
+host that has verified the author (`apps/formlogic-host/host.html`). It has to
+behave like ZIPP for the same bundles, so `npm run test:host-js` runs core's
+whole suite again with that engine behind the seam — one excluded file, which
+asserts what the seam does with nothing configured. It is a release gate, and
+takes about as long as the ordinary run.
+
 `core/wasm-zipp/` is the compiled engine, generated rather than committed: core's
 build and test hooks (or `npm run fetch:zipp`) install the ZIPP release that
 `apps/softn-host-rust/Cargo.toml`'s `zipp-vm` tag names and verify it against

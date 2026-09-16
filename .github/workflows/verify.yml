@@ -115,6 +115,27 @@ jobs:
       - name: Test
         run: npm test
 
+      # Core's suite a second time, with @softn/core/host-js behind the engine
+      # seam instead of ZIPP. That engine runs an app author's code as the host
+      # document's own JavaScript, with no VM around it, for accounts a host has
+      # verified — so a divergence from what the runtime expects of the seam is
+      # not a wrong answer in a sandbox, it is a wrong answer in a frame that
+      # contains nothing. The targeted tests cannot find that class of fault;
+      # running the whole suite on the engine can, and does (removing the host
+      # adapter's value projection fails `state-sync-array-fidelity.test.ts`,
+      # which was written years before this engine existed).
+      #
+      # Here rather than in release.yml alone, deliberately: this file IS the
+      # release gate — release.yml calls it and will not package a tag until it
+      # passes — and putting the step here also covers the push/PR path, so a
+      # divergence is caught at the commit that introduced it instead of at the
+      # next release, after it has been built on. It costs about 5 seconds, the
+      # same as the ordinary core run that `npm test` already does, which is why
+      # a second full suite is affordable on both paths. To make it release-only
+      # after all, move this step into release.yml's packaging job.
+      - name: Test the host JavaScript engine against core's whole suite
+        run: npm run test:host-js
+
       # The private backend host is Rust and lives outside the npm
       # workspaces; nothing else runs its tests. It depends on XDB by sibling
       # path (../../../xdb.org), so the pinned checkout comes first; the ZIPP

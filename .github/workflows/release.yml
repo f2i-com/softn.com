@@ -400,7 +400,7 @@ jobs:
           npm run package:formlogic-runtime -- --tag "$RELEASE_TAG"
           zip="release/softn-formlogic-runtime-$RELEASE_TAG.zip"
           unzip -tq "$zip"
-          for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm zipp/SOURCE.json zipp/zipp_wasm.d.ts zipp/RELEASE-SHA256SUMS adapter/formlogic.ts; do
+          for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/host.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm zipp/SOURCE.json zipp/zipp_wasm.d.ts zipp/RELEASE-SHA256SUMS adapter/formlogic.ts; do
             unzip -Z1 "$zip" | grep -qx "$entry"
           done
           test "$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).tag))')" = "$RELEASE_TAG"

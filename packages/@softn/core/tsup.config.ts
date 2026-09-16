@@ -7,6 +7,11 @@ function copyDirRecursive(src: string, dest: string) {
   if (!existsSync(dest)) mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(src, { withFileTypes: true })) {
     if (entry.name === 'core-runtime') continue;
+    // The mirror exists for the script and speech Workers. The host-JavaScript
+    // engine is main-thread-only and no worker can reach it, and a copy here
+    // would end up in every app's assets/core-runtime/ — in the editors, which
+    // stay on ZIPP, and in the ZIPP entry document, which must not contain it.
+    if (entry.name === 'host-js') continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
@@ -32,6 +37,10 @@ export default defineConfig({
     // bundler cannot tree-shake past this build's side-effectful chunks —
     // where the reader and fflate are a few kilobytes.
     'src/bundle/zip.ts',
+    // The host-JavaScript engine on its own, reachable only as
+    // @softn/core/host-js: no other entry imports it, so a build that does not
+    // ask for it does not contain it.
+    'src/runtime/host-js/index.ts',
   ],
   format: ['esm'],
   // The bundle contract (../bundle-format/src) is inlined through relative
