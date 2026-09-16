@@ -376,8 +376,8 @@ The release is the one the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml` na
 builds against the same ZIPP today and next year, and the Rust host and the browser run one engine.
 `npm run build`, `npm test`, `npm run typecheck` and `npm run licenses:check` install it when it is
 missing or not that release (`fetch-zipp-release.mjs --ensure`), so a fresh clone needs network
-access the first time, or `ZIPP_RELEASE_DIR=<folder>` holding the release's `SHA256SUMS` and
-`zipp-wasm-<version>-web-python.zip`. To install it by hand:
+access the first time, or `ZIPP_RELEASE_DIR=<folder>` holding the release's `SHA256SUMS`,
+`zipp-wasm-<version>-web-python.zip` and `zipp-wasm-<version>-web.zip`. To install it by hand:
 
 ```bash
 npm run fetch:zipp                      # the release Cargo.toml declares
@@ -386,7 +386,14 @@ npm run fetch:zipp -- --check           # verify the install offline
 
 `fetch:zipp` checks the bundle against the release's `SHA256SUMS`, every file against the bundle's
 own `SHA256SUMS`, and that `BUILD-INFO.txt` and the module itself describe the web-python build of
-that release; it refuses anything else, including the JavaScript-only `web` bundle.
+that release; it refuses anything else as the engine. The same release's JavaScript-only
+`zipp-wasm-<version>-web.zip` (which `ZIPP_RELEASE_DIR` must also hold) is installed beside it, into
+`packages/@softn/core/wasm-zipp-web/`, as a verified *variant*: checked against the same
+`SHA256SUMS`, built from the same commit, importing exactly what the engine imports and exporting
+nothing it lacks, and, loaded under the engine's glue, reporting `["javascript"]` alone with its
+Python entry points refusing. Softn's own apps never use it; `wasm-zipp/SOURCE.json` names it under
+`variants.web` so the FormLogic runtime archive can carry it as `zipp-web/` for a FormLogic that
+offers the smaller engine. An install without it is refused.
 `--check --online` compares an install with the published release, and
 `ZIPP_RELEASE`/`ZIPP_SUMS_SHA256` name the release and the `SHA256SUMS` digest an install must have.
 `-- v0.0.19` or `-- --latest` installs another release once, but the next build, test, typecheck or

@@ -16,9 +16,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readArchive } from './lib/archive.mjs';
-import { isZippEngineWasm } from './lib/zipp-engine-copy.mjs';
+import { isZippEngineWasm, wasmExportNames, wasmImportNames } from './lib/zipp-engine-copy.mjs';
 import { PACKAGES, archiveName, packageById, root } from './release-packages.mjs';
 import { HOSTED_ENGINES_PROTOCOL, LOGIC_LANGUAGES_PROTOCOL, RUNTIME_ENGINES, RUNTIME_FEATURES } from '../apps/formlogic-host/src/engineInit.ts';
+import { INSTALLED_FILES, VARIANT_INSTALLED_FILES } from '../packages/@softn/core/scripts/fetch-zipp-release.mjs';
 
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -35,7 +36,7 @@ test('the FormLogic runtime package is described like the others and named for F
   const pkg = packageById('formlogic-runtime');
   assert.equal(archiveName('formlogic-runtime', { tag: 'v1.2.3' }), 'softn-formlogic-runtime-v1.2.3.zip');
   assert.ok(pkg.inside.some((i) => i.path === 'softn-release.json'));
-  for (const folder of ['hosted-runtime/', 'app-editors/', 'native-runtime/', 'zipp/', 'adapter/']) assert.ok(pkg.inside.some((i) => i.path === folder), folder);
+  for (const folder of ['hosted-runtime/', 'app-editors/', 'native-runtime/', 'zipp/', 'zipp-web/', 'adapter/']) assert.ok(pkg.inside.some((i) => i.path === folder), folder);
   assert.ok(PACKAGES.every((p) => p.id !== 'formlogic-runtime' || p.previousName === ''), 'it never had another name');
 });
 
@@ -77,7 +78,7 @@ test('the packager refuses a shell that stopped declaring what it offers', () =>
 test('the workflow builds, checks and attaches the archive', () => {
   const release = fs.readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8');
   assert.ok(release.includes('npm run package:formlogic-runtime -- --tag "$RELEASE_TAG"'));
-  for (const entry of ['softn-release.json', 'hosted-runtime/index.html', 'hosted-runtime/host.html', 'native-runtime/host-protocol.json', 'adapter/formlogic.ts']) assert.ok(release.includes(entry), entry);
+  for (const entry of ['softn-release.json', 'hosted-runtime/index.html', 'hosted-runtime/host.html', 'native-runtime/host-protocol.json', 'zipp/SOURCE.json', 'zipp-web/SOURCE.json', 'zipp-web/zipp_wasm_bg.wasm', 'adapter/formlogic.ts']) assert.ok(release.includes(entry), entry);
   assert.ok(release.includes('softn-formlogic-runtime-${{ env.RELEASE_TAG }}.zip'));
   assert.ok(release.includes('sha256sum -c "softn-formlogic-runtime-$RELEASE_TAG.zip.sha256"'));
   assert.ok(fs.readFileSync(path.join(root, '.github/workflows/build.yml'), 'utf8').includes('release/softn-formlogic-runtime-v*.zip'));
@@ -120,15 +121,50 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     assert.deepEqual(JSON.parse(bytes('native-runtime/wasm/SOURCE.json').toString('utf8')), source);
     assert.ok(bytes('native-runtime/ZIPP-THIRD-PARTY-LICENSES.txt').equals(fs.readFileSync(path.join(wasmZipp, source.notices.file))));
 
-    // zipp/: exactly the install, byte for byte; its glue is the native runtime's.
+    // zipp/: exactly the install, byte for byte — the eleven files an install
+    // has always been, so a reader that knows nothing of variants sees what it
+    // always saw; its glue is the native runtime's.
     const installed = fs.readdirSync(wasmZipp).sort();
+    assert.deepEqual(installed, [...INSTALLED_FILES].sort(), 'the install is exactly the primary set');
+    assert.equal(installed.length, 11);
     assert.deepEqual([...entries.keys()].filter((n) => n.startsWith('zipp/')).map((n) => n.slice('zipp/'.length)).sort(), installed);
     for (const n of installed) assert.equal(sha256(bytes(`zipp/${n}`)), sha256(fs.readFileSync(path.join(wasmZipp, n))), `zipp/${n}`);
     assert.ok(bytes('zipp/zipp_wasm.js').equals(bytes('native-runtime/wasm/zipp_wasm.mjs')));
 
-    // Every engine copy, found by its exports, is the installed release, and all eight known ones are there.
+    // zipp-web/: the web variant's install, byte for byte, a tree of its own
+    // at the top level. Its SOURCE.json is the record zipp/SOURCE.json names.
+    const wasmZippWeb = path.join(root, 'packages/@softn/core/wasm-zipp-web');
+    const variantInstalled = fs.readdirSync(wasmZippWeb).sort();
+    assert.deepEqual(variantInstalled, [...VARIANT_INSTALLED_FILES].sort());
+    assert.deepEqual([...entries.keys()].filter((n) => n.startsWith('zipp-web/')).map((n) => n.slice('zipp-web/'.length)).sort(), variantInstalled, 'the archive lists exactly the variant install');
+    for (const n of variantInstalled) assert.equal(sha256(bytes(`zipp-web/${n}`)), sha256(fs.readFileSync(path.join(wasmZippWeb, n))), `zipp-web/${n}`);
+    const web = source.variants.web;
+    assert.deepEqual(Object.keys(web).sort(), ['bundle', 'bundleSha256', 'commit', 'glueSha256', 'languages', 'sha256', 'stackBytes', 'variant'], 'the variants.web record FormLogic compares by key');
+    assert.deepEqual(release.zipp.variants.web, web, 'softn-release.json carries the variant record');
+    assert.equal(sha256(bytes('zipp-web/zipp_wasm_bg.wasm')), web.sha256);
+    assert.notEqual(web.sha256, source.sha256, 'the variant is another build');
+    assert.equal(web.commit, source.revision, 'of the same source');
+    assert.deepEqual(web.languages, ['javascript']);
+    assert.equal(web.variant, 'javascript');
+    assert.equal(web.stackBytes, 1048576);
+    const variantSource = JSON.parse(bytes('zipp-web/SOURCE.json').toString('utf8'));
+    for (const [k, v] of Object.entries(web)) assert.deepEqual(variantSource[k], v, `zipp-web/SOURCE.json ${k}`);
+    assert.deepEqual(variantSource.primary, { bundle: source.bundle, sha256: source.sha256, glueSha256: source.glueSha256 });
+    assert.ok(!('zipp-web/zipp_wasm.js' in Object.fromEntries(entries)), 'no second glue ships; the variant runs under zipp/zipp_wasm.js');
+    // The record's other keys are the ones an S1 install always had, unchanged in shape.
+    for (const field of ['version', 'sha256', 'revision', 'release', 'bundle', 'bundleSha256', 'sumsSha256', 'variant', 'languages', 'build', 'glueSha256', 'notices']) assert.ok(release.zipp[field] !== undefined, `release.zipp.${field}`);
+
+    // Every engine copy, found by its exports, is the installed release: the
+    // web variant at zipp-web/, the primary at all eight known places and
+    // nowhere else. The variant asks the host for what the primary asks and
+    // exports a subset, which is what lets one glue run both.
     const copies = [...entries.keys()].filter((n) => isZippEngineWasm(bytes(n))).sort();
-    for (const n of copies) assert.equal(sha256(bytes(n)), source.sha256, `${n} is the installed engine`);
+    const VARIANT_AT = 'zipp-web/zipp_wasm_bg.wasm';
+    for (const n of copies) assert.equal(sha256(bytes(n)), n === VARIANT_AT ? web.sha256 : source.sha256, `${n} is the installed ${n === VARIANT_AT ? 'variant' : 'engine'}`);
+    assert.equal(copies.filter((n) => sha256(bytes(n)) === web.sha256).length, 1, 'the variant digest appears once');
+    assert.equal(copies.filter((n) => sha256(bytes(n)) === source.sha256).length, 8, 'the primary digest appears eight times');
+    assert.deepEqual(wasmImportNames(bytes(VARIANT_AT)), wasmImportNames(bytes('zipp/zipp_wasm_bg.wasm')));
+    assert.deepEqual(wasmExportNames(bytes(VARIANT_AT)).filter((e) => !wasmExportNames(bytes('zipp/zipp_wasm_bg.wasm')).includes(e)), []);
     const known = [
       /^zipp\/zipp_wasm_bg\.wasm$/,
       /^native-runtime\/wasm\/zipp_wasm_bg\.wasm$/,
@@ -138,9 +174,16 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
       /^app-editors\/builder\/assets\/core-runtime\/zipp_wasm_bg\.wasm$/,
       /^app-editors\/studio\/assets\/zipp_wasm_bg-[^/]+\.wasm$/,
       /^app-editors\/studio\/assets\/core-runtime\/zipp_wasm_bg\.wasm$/,
+      /^zipp-web\/zipp_wasm_bg\.wasm$/,
     ];
     for (const pattern of known) assert.equal(copies.filter((n) => pattern.test(n)).length, 1, `one engine at ${pattern}`);
     assert.equal(copies.length, known.length, `no engine copy outside the known places: ${copies.join(', ')}`);
+    // Neither hosted document nor either editor carries the variant: the
+    // package build copies only the primary, and the PWA engine cap is about it.
+    for (const n of [...entries.keys()]) {
+      if (n.startsWith('zipp-web/')) continue;
+      if (n.endsWith('.wasm')) assert.notEqual(sha256(bytes(n)), web.sha256, `${n} is not the variant`);
+    }
 
     // The protocols: what the PHP host's runtime declares, the editor bridge,
     // and how many hosted-runtime entry documents a reader has to understand.
@@ -193,7 +236,7 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     // announcement cannot name different sets. `features` is read the same way
     // and says what else this build can be asked for.
     assert.deepEqual(hosted.engines, [...RUNTIME_ENGINES]);
-    assert.deepEqual(hosted.engines, ['host-js', 'zipp-web-python']);
+    assert.deepEqual(hosted.engines, ['host-js', 'zipp-web', 'zipp-web-python']);
     assert.deepEqual(hosted.features, [...RUNTIME_FEATURES]);
     assert.deepEqual(hosted.features, ['python-logic/1']);
     for (const n of ['hosted-runtime/LICENSE', 'hosted-runtime/NOTICE', 'hosted-runtime/README.txt']) bytes(n);

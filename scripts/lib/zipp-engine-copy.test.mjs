@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { KNOWN_ENGINE_COPIES, ZIPP_ENGINE_EXPORTS, archiveEngineProblems, isZippEngineWasm, wasmExportNames } from './zipp-engine-copy.mjs';
+import { KNOWN_ENGINE_COPIES, VARIANT_ENGINE_COPIES, ZIPP_ENGINE_EXPORTS, archiveEngineProblems, isZippEngineWasm, wasmExportNames, wasmImportNames } from './zipp-engine-copy.mjs';
 
 /** A valid module exporting one function under each name: (type () -> ()), one body, one export per name. */
 function moduleExporting(names) {
@@ -72,7 +72,8 @@ test('an archive whose every engine copy is the installed release, at every know
   const { copies, problems } = archiveEngineProblems(entries, source);
   assert.deepEqual(problems, []);
   assert.equal(copies.length, 8);
-  assert.equal(KNOWN_ENGINE_COPIES.length, 8);
+  assert.equal(KNOWN_ENGINE_COPIES.length, 8, 'the primary set: the variant is not one of them');
+  assert.deepEqual(VARIANT_ENGINE_COPIES, { web: 'zipp-web/zipp_wasm_bg.wasm' }, 'a top-level tree of its own, never inside zipp/');
   for (const pattern of KNOWN_ENGINE_COPIES) assert.equal(copies.filter((name) => pattern.test(name)).length, 1, `${pattern}`);
 });
 
@@ -111,4 +112,83 @@ test('the installed engine is recognised by its exports', { skip: !fs.existsSync
   assert.equal(isZippEngineWasm(bytes), true);
   const compiled = WebAssembly.Module.exports(new WebAssembly.Module(bytes)).map((e) => e.name);
   assert.deepEqual(wasmExportNames(bytes), compiled, 'the parser reads what the compiler reads');
+});
+
+/** The engine's import section as a compiled module reads it, in the same `module.name:kind` spelling. */
+const compiledImports = (bytes) => WebAssembly.Module.imports(new WebAssembly.Module(bytes)).map((i) => `${i.module}.${i.name}:${i.kind}`);
+
+/** A module importing `imports` ([module, name] pairs, all functions of type () -> ()) and exporting `names`. */
+function moduleImporting(imports, names = []) {
+  const u32 = (n) => {
+    const out = [];
+    do {
+      let byte = n & 0x7f;
+      n >>>= 7;
+      if (n) byte |= 0x80;
+      out.push(byte);
+    } while (n);
+    return out;
+  };
+  const section = (id, payload) => [id, ...u32(payload.length), ...payload];
+  const text = (s) => [...u32(Buffer.byteLength(s)), ...Buffer.from(s)];
+  return Buffer.from([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ...section(1, [1, 0x60, 0, 0]),
+    ...section(2, [...u32(imports.length), ...imports.flatMap(([module, name]) => [...text(module), ...text(name), 0x00, 0])]),
+    ...section(3, [1, 0]),
+    ...section(7, [...u32(names.length), ...names.flatMap((name) => [...text(name), 0x00, ...u32(imports.length)])]),
+    ...section(10, [1, 2, 0, 0x0b]),
+  ]);
+}
+
+test('the imports of a module are read as the compiler reads them, and anything else is not a module', () => {
+  const module = moduleImporting([['env', 'log'], ['wbg', '__wbg_new_abc123']], ['run']);
+  assert.ok(WebAssembly.validate(module), 'the fixture is a real module');
+  assert.deepEqual(wasmImportNames(module), ['env.log:function', 'wbg.__wbg_new_abc123:function']);
+  assert.deepEqual(wasmImportNames(module), compiledImports(module));
+  assert.deepEqual(wasmImportNames(moduleImporting([])), [], 'a module importing nothing');
+  assert.deepEqual(wasmImportNames(moduleExporting(['a'])), [], 'a module without an import section');
+  assert.equal(wasmImportNames(Buffer.from('not wasm')), null);
+  assert.equal(wasmImportNames(module.subarray(0, 24)), null, 'a truncated module is not read past its end');
+});
+
+test('a variant of the engine may carry its own digest at its one place, and nowhere else', () => {
+  const { engine, entries } = archive();
+  const web = moduleExporting(ZIPP_ENGINE_EXPORTS.slice().reverse());
+  assert.notEqual(createHash('sha256').update(web).digest('hex'), createHash('sha256').update(engine).digest('hex'));
+  const source = { release: 'v0.0.18', sha256: createHash('sha256').update(engine).digest('hex'), variants: { web: { sha256: createHash('sha256').update(web).digest('hex') } } };
+  // Recorded but absent: a problem naming the place.
+  assert.deepEqual(archiveEngineProblems(entries, source).problems, ['no ZIPP engine at zipp-web/zipp_wasm_bg.wasm; SOURCE.json records the web variant there']);
+  // At its place: accepted, and counted among the copies.
+  entries.set('zipp-web/zipp_wasm_bg.wasm', web);
+  const ok = archiveEngineProblems(entries, source);
+  assert.deepEqual(ok.problems, []);
+  assert.equal(ok.copies.length, 9);
+  // The primary at the variant's place is as wrong as the variant anywhere else.
+  entries.set('zipp-web/zipp_wasm_bg.wasm', engine);
+  assert.deepEqual(archiveEngineProblems(entries, source).problems, [`zipp-web/zipp_wasm_bg.wasm is a ZIPP engine, but not the web variant of ZIPP v0.0.18 (${source.variants.web.sha256.slice(0, 12)})`]);
+  entries.set('zipp-web/zipp_wasm_bg.wasm', web);
+  for (const elsewhere of ['zipp/zipp_wasm_bg.wasm', 'hosted-runtime/assets/zipp_wasm_bg-C4f3.wasm', 'zipp-web/other.wasm', 'app-editors/studio/assets/core-runtime/zipp_wasm_bg.wasm']) {
+    const copy = new Map(entries);
+    copy.set(elsewhere, web);
+    const { problems } = archiveEngineProblems(copy, source);
+    assert.ok(problems.some((p) => p.startsWith(`${elsewhere} is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`)), `${elsewhere}: ${problems.join(' | ')}`);
+  }
+  // No variant recorded: the web digest at zipp-web/ is just another engine the release does not ship.
+  const { variants, ...unrecorded } = source;
+  assert.deepEqual(archiveEngineProblems(entries, unrecorded).problems, [`zipp-web/zipp_wasm_bg.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`]);
+  // A variant the archive has no place for, or one without a digest, is refused rather than looked for.
+  assert.deepEqual(archiveEngineProblems(entries, { ...source, variants: { ...variants, wasi: { sha256: 'f'.repeat(64) } } }).problems, ['SOURCE.json records a wasi variant of the engine, and the archive has no place for one']);
+  assert.deepEqual(archiveEngineProblems(entries, { ...source, variants: { web: {} } }).problems, ['SOURCE.json records the web variant without a sha256', `zipp-web/zipp_wasm_bg.wasm is a ZIPP engine, but not ZIPP v0.0.18 (${source.sha256.slice(0, 12)})`]);
+});
+
+test('the installed web variant imports exactly what the engine imports and exports a subset', { skip: !fs.existsSync(new URL('../../packages/@softn/core/wasm-zipp-web/zipp_wasm_bg.wasm', import.meta.url)) && 'no web variant installed' }, () => {
+  const engine = fs.readFileSync(new URL('../../packages/@softn/core/wasm-zipp/zipp_wasm_bg.wasm', import.meta.url));
+  const web = fs.readFileSync(new URL('../../packages/@softn/core/wasm-zipp-web/zipp_wasm_bg.wasm', import.meta.url));
+  assert.equal(isZippEngineWasm(web), true, 'the variant is found by the content scan');
+  assert.deepEqual(wasmImportNames(web), wasmImportNames(engine));
+  assert.deepEqual(wasmImportNames(engine), compiledImports(engine), 'the parser reads what the compiler reads');
+  const [webExports, engineExports] = [wasmExportNames(web), wasmExportNames(engine)];
+  assert.deepEqual(webExports.filter((name) => !engineExports.includes(name)), []);
+  assert.deepEqual(engineExports.filter((name) => !webExports.includes(name)).sort(), ['engine_initPythonProject', 'engine_pythonCall', 'engine_pythonHas', 'engine_setPythonInput', 'engine_takeHostRequests', 'engine_takeUi'], 'the engine adds exactly its Python entry points');
 });

@@ -5,7 +5,7 @@ import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { installAppStorage } from './storage';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
-import { acceptEngine, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages } from './engineInit';
+import { acceptEngine, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
 import { NATIVE_FETCH_BRIDGE, createNativeNetFetch, nativeFetchRoute } from './nativeFetch';
 import { framePolicy } from './framePolicy';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
@@ -16,7 +16,14 @@ import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 // can be tightened afterwards but never relaxed, and the same list decides what
 // `init` is accepted and what `ready` announces. Nothing the parent sends is
 // read before this point.
-const served = documentEngines(document.documentElement.getAttribute('data-softn-logic-engine'));
+//
+// The ZIPP engines are named by the installed release: the web-python build
+// is the install itself, and the JavaScript-only web build is its
+// `variants.web`, verified against the same SHA256SUMS. A ZIPP id the install
+// cannot name (a local engine build has no variant) is neither accepted nor
+// announced, by the one filter, so the two lists cannot disagree.
+const identities = zippIdentities(zippSource);
+const served = servableEngines(documentEngines(document.documentElement.getAttribute('data-softn-logic-engine')), identities);
 // Pin all loading to this trusted runtime directory before accepting app source.
 const policy = document.createElement('meta');
 policy.httpEquiv = 'Content-Security-Policy';
@@ -92,7 +99,10 @@ window.addEventListener('message', async event => {
       configureZippWasmSource(acceptZippBytes(event.data.zippWasm));
       // Ask the engine that actually loaded what it can run, before any app code
       // does. ZIPP's builds share one glue, so the id the parent named and the
-      // bytes it sent are only known to agree once the engine answers.
+      // bytes it sent are only known to agree once the engine answers — and
+      // they must agree exactly: `zipp-web` is the build that runs JavaScript
+      // and nothing else, and the Python build posted under that name is
+      // refused as firmly as the reverse.
       requireEngineLanguages(engine, await zippLanguages());
     }
     const manifest = JSON.parse(files.get('manifest.json') || '{}');
@@ -133,12 +143,12 @@ window.addEventListener('message', async event => {
     reportError(reason);
   }
 });
-// release is an addition: FormLogic compares version and sha256. Typed as
-// optional because a local engine build (--install-local) records none.
-const zippRelease = (zippSource as { release?: string }).release;
-const zippIdentity = { version: zippSource.version, sha256: zippSource.sha256, release: zippRelease };
+// `zipp` is the primary engine's identity, exactly what it has always been:
+// FormLogic compares version and sha256; release is an addition, and optional
+// because a local engine build (--install-local) records none.
 // engines is an addition too: the engine ids this document will accept in
-// `init.engine`, each with the bytes it wants — `true` where it wants none. A
-// parent that reads only `zipp` and sends no `engine` sees what it always did,
-// which on this document's other entry is a refusal by name.
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: zippIdentity, engines: readyEngines(served, zippIdentity) }, '*');
+// `init.engine`, each with the bytes it wants — the same record with the
+// variant's digest for `zipp-web`, `true` where it wants none. A parent that
+// reads only `zipp` and sends no `engine` sees what it always did, which on
+// this document's other entry is a refusal by name.
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: identities['zipp-web-python'], engines: readyEngines(served, identities) }, '*');

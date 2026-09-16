@@ -106,6 +106,43 @@ and reading `.py` as JavaScript would show the author a syntax error about
 their own correct code. An engine declares that it can run Python by having a
 `createPython` factory method; that is the whole declaration.
 
+## The JavaScript-only web variant
+
+ZIPP publishes two wasm builds per release: `web-python` (above) and `web`, the
+same VM compiled without Python, about a third smaller, with a 1 MiB stack in
+place of 16 MiB. Softn's engine is always `web-python`. The `web` build is
+installed BESIDE it, into `packages/@softn/core/wasm-zipp-web/`, as a verified
+variant — not as an engine Softn's own apps, editors or PWAs ever load, but so
+the FormLogic runtime archive can carry it as a top-level `zipp-web/` tree for a
+FormLogic that lets an app's owner choose the smaller `zipp-web` engine.
+
+What makes it a variant rather than a second engine is provenance, and
+`fetch-zipp-release.mjs` refuses the whole install unless every part holds: the
+`zipp-wasm-<version>-web.zip` is listed in the SAME top-level `SHA256SUMS` as
+the engine's bundle and every file matches the bundle's own `SHA256SUMS`;
+`BUILD-INFO.txt` says `variant=javascript`, `languages=["javascript"]`,
+`stack-bytes=1048576` and the SAME commit as the engine; the module asks the
+host for exactly the engine's imports and exports nothing the engine does not
+(so the engine's glue binds it — Softn ships one glue, `ce779c2c…`, and records
+the web bundle's own `1a3deed1…` in `glueSha256` for provenance only); and,
+really loaded under that glue, `zippProfile().languages` is exactly
+`["javascript"]` while `initSource(code, "python")` and `pythonHas` throw.
+`--check` repeats every offline part of this over the installed sibling.
+
+Only `zipp_wasm_bg.wasm`, `BUILD-INFO.txt`, `PROFILE.json` and the bundle's
+`SHA256SUMS` are installed, with a `SOURCE.json` of the variant's own;
+`wasm-zipp/SOURCE.json` gains an additive `variants.web` record
+(`bundle`, `bundleSha256`, `sha256`, `glueSha256`, `variant`, `languages`,
+`stackBytes`, `commit`) and every key it had before is unchanged. `tsup` copies
+only the engine, so `@softn/core`'s `dist/` and the PWAs never carry the variant.
+
+In the hosted runtime, `index.html` accepts `init.engine: 'zipp-web'` and
+`formlogic:ready` announces it with the variant's digest; the parent posts the
+variant's bytes under the engine's glue, and the shell holds the loaded engine
+to exactly `["javascript"]` — the Python build posted under the `zipp-web`
+name is refused as firmly as the reverse. A Python bundle on `zipp-web` is
+refused before either.
+
 ## Python host integration
 
 The combined engine provides `initSource(code, "python")`,
@@ -133,8 +170,10 @@ npm run test -w @softn/core -- test/zipp-languages.test.ts test/zipp-lifecycle.t
 ```
 
 FormLogic takes this engine from the Softn release: `softn-formlogic-runtime-<tag>.zip`
-carries the install unchanged under `zipp/`, with both `SHA256SUMS` files, and
-every other copy of the engine in the archive is checked to be the same bytes.
+carries the install unchanged under `zipp/`, with both `SHA256SUMS` files, the
+web variant's install under `zipp-web/`, and every other copy of the engine in
+the archive is checked to be the engine's bytes — the one copy under `zipp-web/`
+the variant's.
 A Softn release ships ZIPP's latest release only; its gate refuses any other
 Cargo tag unless `allow-older-zipp` is given, and the whole release run
 installs that one release.

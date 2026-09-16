@@ -298,6 +298,7 @@ export const PACKAGES = [
       { path: 'app-editors/', what: '`builder/` and `studio/` built to run inside FormLogic, `manifest.json` (the editor bridge protocol) and a checksum manifest per editor.' },
       { path: 'native-runtime/', what: 'The runner FormLogic starts for native apps: the runtime modules, the ZIPP engine under `wasm/`, licences and `provenance.json`.' },
       { path: 'zipp/', what: 'The ZIPP browser engine exactly as the ZIPP release ships it (`zipp_wasm.js`, its type declarations, `zipp_wasm_bg.wasm`, `BUILD-INFO.txt`, `PROFILE.json` and the bundle’s own `SHA256SUMS`), ZIPP’s release `SHA256SUMS` as `RELEASE-SHA256SUMS`, the licences, and `SOURCE.json` naming the release. FormLogic installs its browser engine from here.' },
+      { path: 'zipp-web/', what: 'The same ZIPP release’s JavaScript-only build (`zipp_wasm_bg.wasm`, `BUILD-INFO.txt`, `PROFILE.json`, its bundle’s `SHA256SUMS` and a `SOURCE.json`), verified as a variant of `zipp/`: the same commit, the same imports, no export `zipp/` lacks, so it runs under `zipp/`’s glue. `zipp/SOURCE.json` names it under `variants.web`. A FormLogic that offers the `zipp-web` engine installs it from here; one that does not can ignore the folder.' },
       { path: 'adapter/', what: '`formlogic.ts`, the starter adapter FormLogic vendors, with its `provenance.json`.' },
       { path: 'softn-release.json', what: 'The tag and commit this was built from, the ZIPP release the engine came from with its checksums, the protocol numbers, and a checksum of every other file.' },
       { path: 'README.md', what: 'This file.' },
@@ -316,7 +317,7 @@ export const PACKAGES = [
     ],
     guide: 'INTEGRATION.md',
     moreGuides: [],
-    sizeNote: 'Medium: three built web apps, each with the ZIPP engine it runs, and the engine again under `zipp/` and `native-runtime/`.',
+    sizeNote: 'Medium: three built web apps, each with the ZIPP engine it runs, the engine again under `zipp/` and `native-runtime/`, and its smaller JavaScript-only build once under `zipp-web/`.',
   },
 ];
 

@@ -29,15 +29,22 @@
  *   zipp/              packages/@softn/core/wasm-zipp/ byte for byte: the
  *                      verified ZIPP web-python release install FormLogic
  *                      takes its browser engine from (fetch-zipp-release.mjs).
+ *   zipp-web/          packages/@softn/core/wasm-zipp-web/ byte for byte: the
+ *                      same release's JavaScript-only web build, verified as
+ *                      a variant of zipp/ (same commit, same imports, exports a
+ *                      subset, runs under zipp/'s glue), for a FormLogic that
+ *                      offers the `zipp-web` engine. A tree of its own at the
+ *                      top level, so zipp/ is exactly the install it always was.
  *   adapter/           packages/@softn/core/src/integrations/formlogic.ts (LF)
  *                      with the provenance FormLogic's sync-softn.mjs records.
  *   softn-release.json the tag, the commit, the engine (the install's whole
- *                      SOURCE.json), the protocols, the adapter digest and a
- *                      digest of every other file.
+ *                      SOURCE.json, `variants.web` included), the protocols,
+ *                      the adapter digest and a digest of every other file.
  *   README.md          the plain-language explainer; INTEGRATION.md the guide.
  *
  * Every copy of the engine in the archive, found by its exports rather than
- * its name, must be the installed release, and each place FormLogic takes a
+ * its name, must be the installed release — at zipp-web/zipp_wasm_bg.wasm the
+ * web variant, everywhere else the primary — and each place FormLogic takes a
  * copy from must have one.
  *
  * Deterministic apart from the two `builtAt` stamps over one build of the
@@ -55,9 +62,9 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeArchive } from './lib/archive.mjs';
-import { archiveEngineProblems } from './lib/zipp-engine-copy.mjs';
+import { VARIANT_ENGINE_COPIES, archiveEngineProblems } from './lib/zipp-engine-copy.mjs';
 import { archiveName, root } from './release-packages.mjs';
-import { ensureReleaseEngine, releaseOptions } from '../packages/@softn/core/scripts/fetch-zipp-release.mjs';
+import { WEB_VARIANT, ensureReleaseEngine, releaseOptions, variantDir } from '../packages/@softn/core/scripts/fetch-zipp-release.mjs';
 import { FRONT_DOOR, startHere } from './release-explainers.mjs';
 
 const args = process.argv.slice(2);
@@ -94,7 +101,14 @@ const wasmDir = path.join(root, 'packages/@softn/core/wasm-zipp');
 // wasm-zipp/ is generated: install the declared release (or ZIPP_RELEASE /
 // ZIPP_SUMS_SHA256) before anything reads it; the package build comes later.
 // Only a verified release install ships: every file matches the release's
-// SHA256SUMS chain. A local build (--install-local) is refused here.
+// SHA256SUMS chain, and the check covers the web variant beside it, so an
+// install that passes here has both trees. A local build (--install-local) is
+// refused here.
+const wasmWebDir = variantDir(wasmDir);
+// The variant's tree is the one place the content scan allows its digest, so
+// the tree is named from that declaration rather than spelt again here.
+const variantTree = path.posix.dirname(VARIANT_ENGINE_COPIES[WEB_VARIANT.id]);
+if (!variantTree || variantTree === '.') fail(`scripts/lib/zipp-engine-copy.mjs names no place for the ${WEB_VARIANT.id} variant`);
 let zippSource;
 try {
   zippSource = await ensureReleaseEngine({ ...releaseOptions(), dir: wasmDir });
@@ -265,6 +279,11 @@ try {
   // zipp/: the release install as it is, so FormLogic installs its browser
   // engine from here and can check it against the SHA256SUMS it came with.
   addTree(wasmDir, 'zipp');
+  // zipp-web/: the web variant's install as it is, beside zipp/ and never
+  // inside it. Its SOURCE.json is the record zipp/SOURCE.json's `variants.web`
+  // names, and its module is the one copy in the archive that may carry the
+  // variant's digest.
+  addTree(wasmWebDir, variantTree);
 
   // adapter/: the FormLogic starter adapter FormLogic vendors.
   add('adapter/formlogic.ts', adapterBytes);
@@ -274,7 +293,8 @@ try {
   add(FRONT_DOOR, Buffer.from(startHere('formlogic-runtime', { tag })));
   add('INTEGRATION.md', fs.readFileSync(path.join(root, 'docs/engineering/FORMLOGIC_INTEGRATION.md')));
 
-  // Every engine in the archive, whatever Vite named it, is the installed release.
+  // Every engine in the archive, whatever Vite named it, is the installed
+  // release: the web variant at its one place, the primary everywhere else.
   const { copies: engineCopies, problems: engineProblems } = archiveEngineProblems(entries, zippSource);
   if (engineProblems.length) fail(`the archive's ZIPP engine:\n  - ${engineProblems.join('\n  - ')}`);
 

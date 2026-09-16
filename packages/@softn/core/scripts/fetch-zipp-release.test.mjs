@@ -1,13 +1,18 @@
 /**
  * The ZIPP install takes a release only when every layer checks: the bundle
  * against ZIPP's SHA256SUMS, each file against the bundle's own, BUILD-INFO.txt
- * and the module itself against the web-python build of that release.
+ * and the module itself against the web-python build of that release — and
+ * the release's web bundle, installed beside it as a variant, against the
+ * same SHA256SUMS and then against the engine: the same commit, the same
+ * imports, no export the engine lacks, and exactly JavaScript once loaded
+ * under the engine's glue.
  *
- * The fixture release is built around the installed engine (a real glue and
- * module, so the install's zippProfile() check really runs), with the inner
- * and top-level SHA256SUMS rebuilt per case, so a case trips only the refusal
- * it is about. Releases come from a folder (ZIPP_RELEASE_DIR) through the
- * command line, or from a stubbed fetch in process.
+ * The fixture release is built around the installed engine and its installed
+ * variant (a real glue and two real modules, so the install's zippProfile()
+ * checks really run), with the inner and top-level SHA256SUMS rebuilt per case,
+ * so a case trips only the refusal it is about. Releases come from a folder
+ * (ZIPP_RELEASE_DIR) through the command line, or from a stubbed fetch in
+ * process.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,16 +22,23 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { unzipSync, zipSync } from 'fflate';
-import { CURATED_NOTICES, INSTALLED_FILES, REPOSITORY, ZippReleaseError, checkEngine, checkEngineOnline, ensureEngine, ensureReleaseEngine, installLocal, installRelease, removeStaleLock, resolveRelease, sha256, verifyRelease, withInstallLock, writeInstall } from './fetch-zipp-release.mjs';
+import { CURATED_NOTICES, INSTALLED_FILES, REPOSITORY, VARIANT_INSTALLED_FILES, WEB_VARIANT, ZippReleaseError, checkEngine, checkEngineOnline, ensureEngine, ensureReleaseEngine, installLocal, installRelease, removeStaleLock, resolveRelease, sha256, variantDir, variantModuleProblems, verifyRelease, verifyVariant, withInstallLock, writeInstall } from './fetch-zipp-release.mjs';
+import { wasmExportNames, wasmImportNames } from '../../../../scripts/lib/zipp-engine-copy.mjs';
 
 const CORE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ENGINE = path.join(CORE, 'wasm-zipp');
+const WEB_ENGINE = path.join(CORE, 'wasm-zipp-web');
 const SCRIPT = path.join(CORE, 'scripts/fetch-zipp-release.mjs');
+const ENGINE_COPY_LIB = path.resolve(CORE, '../../../scripts/lib/zipp-engine-copy.mjs');
 const installed = (name) => fs.readFileSync(path.join(ENGINE, name));
+const installedWeb = (name) => fs.readFileSync(path.join(WEB_ENGINE, name));
 const source = JSON.parse(installed('SOURCE.json'));
 const TAG = source.release;
 const VERSION = source.version;
 const BUNDLE = `zipp-wasm-${VERSION}-web-python`;
+const WEB_BUNDLE = `zipp-wasm-${VERSION}-web`;
+/** Both folders an install is: what a test looks for beside `out`. */
+const BOTH = ['wasm-zipp', 'wasm-zipp-web'];
 const quiet = () => {};
 
 function tempDir(t, prefix) {
@@ -38,13 +50,27 @@ function tempDir(t, prefix) {
 const escaped = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const setBuildInfo = (files, key, value) => files.set('BUILD-INFO.txt', Buffer.from(files.get('BUILD-INFO.txt').toString('utf8').replace(new RegExp(`^${key}=.*$`, 'm'), `${key}=${value}`)));
 
+/** A bundle's files zipped under `name/`, with its SHA256SUMS written over `files` unless `innerSums` rewrites it and `tamper` edits after. */
+function packBundle(name, files, { innerSums, tamper, level = 0 } = {}) {
+  let sums = `${[...files].map(([file, bytes]) => `${sha256(bytes)}  ${file}`).join('\n')}\n`;
+  if (innerSums) sums = innerSums(sums);
+  files.set('SHA256SUMS', Buffer.from(sums));
+  tamper?.(files);
+  const entries = Object.fromEntries([...files].map(([file, bytes]) => [`${name}/${file}`, new Uint8Array(bytes)]));
+  return { zip: Buffer.from(zipSync(entries, { level })), entries };
+}
+
 /**
- * A release folder holding SHA256SUMS and the web-python zip. `edit` changes
- * the bundle before its SHA256SUMS is written, `innerSums` that text, `tamper`
- * the bundle after it; `repack` packs the same files again after the top-level
- * sums are written, a valid zip whose bytes are not the ones listed.
+ * A release folder holding SHA256SUMS, the web-python zip and the web zip.
+ * `edit` changes the web-python bundle before its SHA256SUMS is written,
+ * `innerSums` that text, `tamper` the bundle after it; `editWeb`, `innerWebSums`
+ * and `tamperWeb` do the same to the web bundle; `repack` packs the web-python
+ * files again after the top-level sums are written, a valid zip whose bytes are
+ * not the ones listed. The web bundle carries the installed variant's files and
+ * the engine's glue as its own (a stand-in: the real web glue is not installed
+ * anywhere, and only its digest is recorded).
  */
-function releaseFolder(t, { edit, innerSums, tamper, repack = false } = {}) {
+function releaseFolder(t, { edit, innerSums, tamper, repack = false, editWeb, innerWebSums, tamperWeb, withWeb = true } = {}) {
   const files = new Map([
     ...['zipp_wasm.js', 'zipp_wasm.d.ts', 'zipp_wasm_bg.wasm', 'zipp_wasm_bg.wasm.d.ts', 'LICENSE-APACHE', 'BUILD-INFO.txt', 'PROFILE.json'].map((n) => [n, installed(n)]),
     // Listed by the bundle's SHA256SUMS, never installed.
@@ -54,19 +80,82 @@ function releaseFolder(t, { edit, innerSums, tamper, repack = false } = {}) {
     ['host-sdk/zipp-host.mjs', Buffer.from('export {};\n')],
   ]);
   edit?.(files);
-  let sums = `${[...files].map(([name, bytes]) => `${sha256(bytes)}  ${name}`).join('\n')}\n`;
-  if (innerSums) sums = innerSums(sums);
-  files.set('SHA256SUMS', Buffer.from(sums));
-  tamper?.(files);
-  const entries = Object.fromEntries([...files].map(([name, bytes]) => [`${BUNDLE}/${name}`, new Uint8Array(bytes)]));
-  let zip = Buffer.from(zipSync(entries, { level: 0 }));
-  const top = Buffer.from(`${'a'.repeat(64)}  zipp-wasm-${VERSION}-web.zip\n${sha256(zip)}  ${BUNDLE}.zip\n`);
-  if (repack) zip = Buffer.from(zipSync(entries, { level: 1 }));
+  const packed = packBundle(BUNDLE, files, { innerSums, tamper });
+  let zip = packed.zip;
+  const webFiles = new Map([
+    ...['zipp_wasm_bg.wasm', 'BUILD-INFO.txt', 'PROFILE.json'].map((n) => [n, installedWeb(n)]),
+    ['zipp_wasm.js', installed('zipp_wasm.js')],
+    ['zipp_wasm.d.ts', installed('zipp_wasm.d.ts')],
+    ['zipp_wasm_bg.wasm.d.ts', installed('zipp_wasm_bg.wasm.d.ts')],
+    ['LICENSE-APACHE', installed('LICENSE-APACHE')],
+    ['README.md', Buffer.from('# zipp-wasm (web)\n')],
+    ['host-sdk/zipp-host.mjs', Buffer.from('export {};\n')],
+  ]);
+  editWeb?.(webFiles);
+  const webZip = packBundle(WEB_BUNDLE, webFiles, { innerSums: innerWebSums, tamper: tamperWeb }).zip;
+  const top = Buffer.from(`${sha256(webZip)}  ${WEB_BUNDLE}.zip\n${sha256(zip)}  ${BUNDLE}.zip\n`);
+  if (repack) zip = Buffer.from(zipSync(packed.entries, { level: 1 }));
   const dir = tempDir(t, 'zipp-release-fixture-');
   fs.writeFileSync(path.join(dir, 'SHA256SUMS'), top);
   fs.writeFileSync(path.join(dir, `${BUNDLE}.zip`), zip);
-  return { dir, top, zip, files };
+  if (withWeb) fs.writeFileSync(path.join(dir, `${WEB_BUNDLE}.zip`), webZip);
+  return { dir, top, zip, webZip, files, webFiles };
 }
+
+/** The web bundle's SHA256SUMS, PROFILE.json and glue urls a stubbed GitHub serves for a folder. */
+const publishedUrls = (folder) => new Map([
+  [`${REPOSITORY}/releases/download/${TAG}/SHA256SUMS`, folder.top],
+  [`${REPOSITORY}/releases/download/${TAG}/${BUNDLE}.zip`, folder.zip],
+  [`${REPOSITORY}/releases/download/${TAG}/${WEB_BUNDLE}.zip`, folder.webZip],
+]);
+
+/**
+ * `bytes` with one more entry appended to section `id` (the import section 2
+ * or the export section 7): the vector count goes up by one, the section
+ * length with it. A spliced module may no longer instantiate — that is the
+ * point: it must be refused before anything tries.
+ */
+function appendToSection(bytes, id, entry) {
+  const b = new Uint8Array(bytes);
+  const readLeb = (at) => {
+    let value = 0;
+    let length = 0;
+    for (let shift = 0; ; shift += 7) {
+      const byte = b[at + length++];
+      value += (byte & 0x7f) * 2 ** shift;
+      if (!(byte & 0x80)) return { value, length };
+    }
+  };
+  const leb = (n) => {
+    const out = [];
+    do {
+      let byte = n & 0x7f;
+      n = Math.floor(n / 128);
+      if (n) byte |= 0x80;
+      out.push(byte);
+    } while (n);
+    return out;
+  };
+  let offset = 8;
+  while (offset < b.length) {
+    const section = b[offset];
+    const size = readLeb(offset + 1);
+    const start = offset + 1 + size.length;
+    const end = start + size.value;
+    if (section === id) {
+      const count = readLeb(start);
+      const body = [...leb(count.value + 1), ...b.subarray(start + count.length, end), ...entry];
+      return Buffer.concat([b.subarray(0, offset), Buffer.from([id, ...leb(body.length), ...body]), b.subarray(end)]);
+    }
+    offset = end;
+  }
+  throw new Error(`no section ${id}`);
+}
+const text = (s) => [Buffer.byteLength(s), ...Buffer.from(s)];
+/** The web module importing one function more than the engine does. */
+const withExtraImport = (bytes) => appendToSection(bytes, 2, [...text('./zipp_wasm_bg.js'), ...text('__wbg_extra_0000'), 0x00, 0x00]);
+/** The web module exporting one function the engine does not. */
+const withExtraExport = (bytes) => appendToSection(bytes, 7, [...text('engine_extra'), 0x00, 0x00]);
 
 function cli(args, env = {}) {
   const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(ZIPP_|CI$)/i.test(key)));
@@ -81,7 +170,10 @@ function refused({ run, out }, pattern) {
   assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
   assert.match(run.stderr, pattern);
   assert.doesNotMatch(run.stderr, /^\s+at /m, 'a refusal, not a stack trace');
-  if (out) assert.ok(!fs.existsSync(out), 'nothing is installed');
+  if (out) {
+    assert.ok(!fs.existsSync(out), 'nothing is installed');
+    assert.ok(!fs.existsSync(variantDir(out)), 'no variant is installed either');
+  }
 }
 
 const editText = (dir, name, change) => fs.writeFileSync(path.join(dir, name), change(fs.readFileSync(path.join(dir, name), 'utf8')));
@@ -92,8 +184,21 @@ const editSource = (dir, change) => editText(dir, 'SOURCE.json', (text) => {
 });
 /** Brings the install's own SHA256SUMS line for `name` in step with the file, so only the check a case is about can trip. */
 const resum = (dir, name) => editText(dir, 'SHA256SUMS', (text) => text.replace(new RegExp(`^[0-9a-f]{64}(  ${escaped(name)})$`, 'm'), `${sha256(fs.readFileSync(path.join(dir, name)))}$1`));
-/** A module that describes itself as `profile`, standing in for the engine where what it reports is the point. */
-const standInGlue = (profile) => Buffer.from(`export function initSync() {}\nexport function zippProfile() { return ${JSON.stringify(JSON.stringify(profile))}; }\n`);
+/**
+ * A module that describes itself as `profile`, standing in for the engine
+ * where what it reports is the point. Loaded over the web variant's bytes it
+ * answers `webProfile` (JavaScript only, by default) and its Python entry
+ * points throw, as the real glue's do over that module.
+ */
+const standInGlue = (profile, webProfile = { ...profile, languages: ['javascript'] }) => Buffer.from([
+  'import { createHash } from "node:crypto";',
+  `const WEB = "${sha256(installedWeb('zipp_wasm_bg.wasm')).slice(0, 16)}";`,
+  'let web = false;',
+  'export function initSync({ module }) { web = createHash("sha256").update(module).digest("hex").startsWith(WEB); }',
+  `export function zippProfile() { return web ? ${JSON.stringify(JSON.stringify(webProfile))} : ${JSON.stringify(JSON.stringify(profile))}; }`,
+  'export class Engine { initSource(_s, language) { if (language === "python" && web) throw new Error("Python support is not built"); } pythonHas() { if (web) throw new TypeError("not a function"); return false; } free() {} }',
+  '',
+].join('\n'));
 
 function spawnCli(args, env, preload = []) {
   const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(ZIPP_|CI$)/i.test(key)));
@@ -117,8 +222,10 @@ function livePid(t) {
   return child.pid;
 }
 
-test('the fixture is built around a verified release install', () => {
+test('the fixture is built around a verified release install, with its web variant beside it', () => {
   assert.equal(checkEngine(ENGINE).release, TAG, 'packages/@softn/core/wasm-zipp checks (npm run fetch:zipp)');
+  assert.deepEqual(fs.readdirSync(WEB_ENGINE).sort(), [...VARIANT_INSTALLED_FILES].sort(), 'packages/@softn/core/wasm-zipp-web is the variant install');
+  assert.equal(variantDir(ENGINE), WEB_ENGINE, 'a sibling folder, never inside the install');
 });
 
 test('a release that checks all the way down installs exactly the install set, and --check passes', (t) => {
@@ -140,7 +247,109 @@ test('a release that checks all the way down installs exactly the install set, a
   assert.equal(record.notices.sha256, sha256(fs.readFileSync(CURATED_NOTICES)));
   const check = cli(['--check'], { ZIPP_OUT: out });
   assert.equal(check.status, 0, `${check.stdout}\n${check.stderr}`);
-  assert.equal(fs.readdirSync(path.dirname(out)).length, 1, 'no staging folder is left behind');
+  assert.match(check.stdout, /checks, with its web variant \([0-9a-f]{12}\) in /);
+  assert.deepEqual(fs.readdirSync(path.dirname(out)).sort(), BOTH, 'the install and its variant, and no staging folder');
+  // Every key the record had before variants is what it was; `variants` is one more key, last.
+  const keys = Object.keys(record);
+  assert.equal(keys[keys.length - 1], 'variants');
+  assert.deepEqual(keys.slice(0, -1), ['repository', 'release', 'version', 'revision', 'build', 'bundle', 'bundleSha256', 'sumsSha256', 'variant', 'languages', 'stackBytes', 'rustc', 'wasmBindgen', 'license', 'artifact', 'sha256', 'glueSha256', 'notices']);
+});
+
+test('the web bundle installs beside the engine as a verified variant, recorded on both sides', (t) => {
+  const folder = releaseFolder(t);
+  const { out, run } = install(t, folder);
+  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+  assert.match(run.stdout, new RegExp(`Taking ${escaped(BUNDLE)}\\.zip and ${escaped(WEB_BUNDLE)}\\.zip from ZIPP`));
+  assert.match(run.stdout, /web variant sha256 [0-9a-f]{64} into /);
+  const web = variantDir(out);
+  assert.equal(web, path.join(path.dirname(out), 'wasm-zipp-web'), 'a sibling, never inside wasm-zipp/');
+  assert.deepEqual(fs.readdirSync(web).sort(), [...VARIANT_INSTALLED_FILES].sort(), 'the module, BUILD-INFO.txt, PROFILE.json, the bundle\'s SHA256SUMS and SOURCE.json; no glue');
+  for (const name of ['zipp_wasm_bg.wasm', 'BUILD-INFO.txt', 'PROFILE.json', 'SHA256SUMS']) assert.ok(fs.readFileSync(path.join(web, name)).equals(folder.webFiles.get(name)), `${name} byte for byte`);
+  const webSha = sha256(folder.webFiles.get('zipp_wasm_bg.wasm'));
+  assert.notEqual(webSha, source.sha256, 'another build');
+  // The primary record gains exactly the eight-key variants.web FormLogic compares by key.
+  const record = JSON.parse(fs.readFileSync(path.join(out, 'SOURCE.json'), 'utf8'));
+  assert.deepEqual(record.variants, {
+    web: { bundle: `${WEB_BUNDLE}.zip`, bundleSha256: sha256(folder.webZip), sha256: webSha, glueSha256: sha256(folder.webFiles.get('zipp_wasm.js')), variant: 'javascript', languages: ['javascript'], stackBytes: 1048576, commit: source.revision },
+  });
+  // The variant's own record: the same eight fields, and the release, the toolchain and the engine it runs under.
+  const variant = JSON.parse(fs.readFileSync(path.join(web, 'SOURCE.json'), 'utf8'));
+  for (const [k, v] of Object.entries(record.variants.web)) assert.deepEqual(variant[k], v, `variant SOURCE.json ${k}`);
+  assert.deepEqual(
+    { repository: variant.repository, release: variant.release, version: variant.version, revision: variant.revision, build: variant.build, sumsSha256: variant.sumsSha256, artifact: variant.artifact, license: variant.license, rustc: variant.rustc, wasmBindgen: variant.wasmBindgen, primary: variant.primary },
+    { repository: REPOSITORY, release: TAG, version: VERSION, revision: source.revision, build: 'release', sumsSha256: sha256(folder.top), artifact: 'zipp_wasm_bg.wasm', license: 'Apache-2.0', rustc: source.rustc, wasmBindgen: source.wasmBindgen, primary: { bundle: `${BUNDLE}.zip`, sha256: source.sha256, glueSha256: source.glueSha256 } },
+  );
+  assert.equal(WEB_VARIANT.id, 'web');
+});
+
+test('the web zip, and its line in the release\'s SHA256SUMS, are required: one release, both builds, or nothing', (t) => {
+  const folder = releaseFolder(t);
+  fs.rmSync(path.join(folder.dir, `${WEB_BUNDLE}.zip`));
+  refused(install(t, folder), new RegExp(`holds no ${WEB_BUNDLE}\\.zip`));
+  const unlisted = releaseFolder(t);
+  fs.writeFileSync(path.join(unlisted.dir, 'SHA256SUMS'), unlisted.top.toString('utf8').split('\n').filter((line) => !line.endsWith(`  ${WEB_BUNDLE}.zip`)).join('\n'));
+  refused(install(t, unlisted), new RegExp(`SHA256SUMS in .* does not list ${WEB_BUNDLE}\\.zip`));
+  // A web zip whose bytes are not the ones listed, however good its contents.
+  const other = releaseFolder(t, { editWeb: (files) => files.set('README.md', Buffer.from('# another web README\n')) });
+  fs.copyFileSync(path.join(other.dir, `${WEB_BUNDLE}.zip`), path.join(folder.dir, `${WEB_BUNDLE}.zip`));
+  refused(install(t, folder), new RegExp(`${WEB_BUNDLE}\\.zip has sha256 [0-9a-f]{64}; the ${escaped(TAG)} SHA256SUMS says [0-9a-f]{64}`));
+});
+
+test('the web bundle is a variant only when it is the same source built again: another commit is refused', (t) => {
+  // Refused for the commit itself, before the module is asked anything (the profile check would trip too, later).
+  refused(install(t, releaseFolder(t, { editWeb: (files) => setBuildInfo(files, 'commit', 'b'.repeat(40)) })), new RegExp(`${WEB_BUNDLE}\\.zip is built from commit b{40}, not ${source.revision} like ${escaped(BUNDLE)}\\.zip; a variant ships only from the release's own commit`));
+  // Its BUILD-INFO.txt must say the web build, each fact on its own.
+  refused(install(t, releaseFolder(t, { editWeb: (files) => setBuildInfo(files, 'variant', 'javascript-python') })), /is not the ZIPP v\d+\.\d+\.\d+ web build:\n {2}- BUILD-INFO\.txt variant is javascript-python, not javascript$/m);
+  refused(install(t, releaseFolder(t, { editWeb: (files) => setBuildInfo(files, 'languages', '["javascript","python"]') })), /BUILD-INFO\.txt languages are \["javascript","python"\], not \["javascript"\]/);
+  refused(install(t, releaseFolder(t, { editWeb: (files) => setBuildInfo(files, 'stack-bytes', '16777216') })), /BUILD-INFO\.txt stack-bytes is 16777216, not 1048576/);
+  refused(install(t, releaseFolder(t, { editWeb: (files) => setBuildInfo(files, 'version', '9.9.9') })), /BUILD-INFO\.txt says version 9\.9\.9, not /);
+  // The web-python module smuggled in as the web bundle, with the web bundle's
+  // own BUILD-INFO.txt and PROFILE.json around it: the same commit, the same
+  // imports, trivially its own export subset — and the same bytes, which is
+  // not a variant of anything. (Had it been another Python-carrying build, the
+  // real load under the glue refuses it: see the stand-in glue cases below.)
+  refused(install(t, releaseFolder(t, { editWeb: (files) => files.set('zipp_wasm_bg.wasm', installed('zipp_wasm_bg.wasm')) })), new RegExp(`${WEB_BUNDLE}\\.zip carries the ${escaped(BUNDLE)}\\.zip module itself \\(${source.sha256.slice(0, 12)}\\), not a variant of it`));
+});
+
+test('the web module must ask the host for exactly what the engine asks, and export nothing the engine lacks', async (t) => {
+  const engine = installed('zipp_wasm_bg.wasm');
+  const web = installedWeb('zipp_wasm_bg.wasm');
+  assert.deepEqual(variantModuleProblems(web, engine), [], 'the installed pair fits');
+  const extraImport = withExtraImport(web);
+  assert.deepEqual(wasmImportNames(extraImport), [...wasmImportNames(web), './zipp_wasm_bg.js.__wbg_extra_0000:function'], 'the splice added one import');
+  assert.deepEqual(variantModuleProblems(extraImport, engine, { bundle: 'web.zip', primary: 'wp.zip' }), ['web.zip does not import what wp.zip imports; it also imports ./zipp_wasm_bg.js.__wbg_extra_0000:function, so the web-python glue cannot be known to bind it']);
+  const extraExport = withExtraExport(web);
+  assert.deepEqual(wasmExportNames(extraExport), [...wasmExportNames(web), 'engine_extra'], 'the splice added one export');
+  assert.deepEqual(variantModuleProblems(extraExport, engine, { bundle: 'web.zip', primary: 'wp.zip' }), ['web.zip exports engine_extra, which wp.zip does not; a variant runs under the web-python glue and may export nothing that engine lacks']);
+  // The primary module as its own variant fits; a module that is not the engine at all does not.
+  assert.deepEqual(variantModuleProblems(engine, engine), []);
+  assert.match(variantModuleProblems(Buffer.from('not wasm'), engine)[0], /does not export what a ZIPP engine exports \(not a WebAssembly module\)/);
+  // Through the install, each refused before the module is ever loaded — a spliced module may not instantiate.
+  refused(install(t, releaseFolder(t, { editWeb: (files) => files.set('zipp_wasm_bg.wasm', extraImport) })), new RegExp(`cannot run under the web-python glue:\\n {2}- ${WEB_BUNDLE}\\.zip does not import what ${escaped(BUNDLE)}\\.zip imports; it also imports \\./zipp_wasm_bg\\.js\\.__wbg_extra_0000:function`));
+  refused(install(t, releaseFolder(t, { editWeb: (files) => files.set('zipp_wasm_bg.wasm', extraExport) })), new RegExp(`${WEB_BUNDLE}\\.zip exports engine_extra, which ${escaped(BUNDLE)}\\.zip does not`));
+  // verifyVariant holds the zip to the SHA256SUMS itself, whoever loaded it, and to the primary it is given.
+  const folder = releaseFolder(t);
+  const primary = await verifyRelease({ release: TAG, sums: folder.top, zip: folder.zip });
+  const variant = await verifyVariant({ release: TAG, sums: folder.top, zip: folder.webZip, primary });
+  assert.equal(variant.record.sha256, sha256(web));
+  assert.deepEqual([...variant.files.keys()].sort(), [...VARIANT_INSTALLED_FILES].sort());
+  await assert.rejects(verifyVariant({ release: TAG, sums: folder.top, zip: folder.zip, primary }), (error) => error instanceof ZippReleaseError && new RegExp(`^${WEB_BUNDLE}\\.zip does not match the ${escaped(TAG)} SHA256SUMS$`).test(error.message));
+  await assert.rejects(verifyVariant({ release: TAG, sums: folder.top, zip: folder.webZip, primary: { ...primary, source: { ...primary.source, revision: 'd'.repeat(40) } } }), /is built from commit [0-9a-f]{40}, not d{40}/);
+});
+
+test('loaded under the engine\'s glue, the web module must say JavaScript alone and refuse Python', (t) => {
+  const profile = { version: VERSION, features: ['safe-sandbox'], languages: ['javascript', 'python'], source: { sha: source.revision } };
+  const saying = (webProfile) => releaseFolder(t, { edit: (files) => files.set('zipp_wasm.js', standInGlue(profile, webProfile)) });
+  // The stand-in is taken when it says the right things of both modules.
+  const accepted = install(t, saying(undefined));
+  assert.equal(accepted.run.status, 0, accepted.run.stderr);
+  refused(install(t, saying({ ...profile })), new RegExp(`the ${WEB_BUNDLE}\\.zip engine does not describe itself as the ZIPP ${escaped(TAG)} web build:\\n {2}- zippProfile\\(\\) languages are \\["javascript","python"\\], not \\["javascript"\\]`));
+  refused(install(t, saying({ ...profile, languages: ['javascript'], version: '9.9.9' })), /zippProfile\(\) version is 9\.9\.9, not /);
+  refused(install(t, saying({ ...profile, languages: ['javascript'], features: [] })), /zippProfile\(\) lacks the safe-sandbox feature/);
+  refused(install(t, saying({ ...profile, languages: ['javascript'], source: { sha: 'e'.repeat(40) } })), /zippProfile\(\) source\.sha is e{40}, not the BUILD-INFO\.txt commit/);
+  // A glue whose Python entry points run over the web module: not the JavaScript-only build, whatever the profile says.
+  const permissive = Buffer.from(`${standInGlue(profile).toString('utf8').replace('if (language === "python" && web) throw new Error("Python support is not built");', '').replace('if (web) throw new TypeError("not a function");', '')}`);
+  refused(install(t, releaseFolder(t, { edit: (files) => files.set('zipp_wasm.js', permissive) })), new RegExp(`- initSource\\(source, "python"\\) runs on the ${WEB_BUNDLE}\\.zip engine, so it is not the JavaScript-only build\\n {2}- pythonHas\\(name\\) runs on the ${WEB_BUNDLE}\\.zip engine`));
 });
 
 test('notices the bundle ships itself are taken from it and recorded as the release\'s', (t) => {
@@ -222,15 +431,141 @@ test('a folder without the web-python bundle is refused', (t) => {
   refused(install(t, folder), new RegExp(`holds no ${BUNDLE}\\.zip`));
 });
 
-test('an install replaces the whole folder, so a stale file does not survive', (t) => {
+test('an install replaces the whole folder, and the variant\'s, so a stale file does not survive', (t) => {
   const out = path.join(tempDir(t, 'zipp-install-'), 'wasm-zipp');
   fs.mkdirSync(out);
   fs.writeFileSync(path.join(out, 'zipp_wasm_bg.wasm.old'), 'stale');
   fs.writeFileSync(path.join(out, 'SOURCE.json'), '{"build":"release"}');
+  fs.mkdirSync(variantDir(out));
+  fs.writeFileSync(path.join(variantDir(out), 'zipp_wasm.js'), 'a glue a variant never ships');
   const { run } = install(t, releaseFolder(t), { out });
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   assert.deepEqual(fs.readdirSync(out).sort(), [...INSTALLED_FILES].sort());
-  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp'], 'neither the stage nor the previous install is left behind');
+  assert.deepEqual(fs.readdirSync(variantDir(out)).sort(), [...VARIANT_INSTALLED_FILES].sort());
+  assert.deepEqual(fs.readdirSync(path.dirname(out)).sort(), BOTH, 'neither the stage nor the previous install is left behind');
+});
+
+test('--check holds the variant install to the primary\'s record, its own, the bundle\'s SHA256SUMS and the engine, one invariant at a time', (t) => {
+  const { out: pristine, run } = install(t, releaseFolder(t));
+  assert.equal(run.status, 0, run.stderr);
+  const E64 = 'e'.repeat(64);
+  const webOf = (dir) => variantDir(dir);
+  const editWebSource = (dir, change) => editSource(webOf(dir), change);
+  const webBuildInfo = (key, value) => (dir) => {
+    editText(webOf(dir), 'BUILD-INFO.txt', (text) => text.replace(new RegExp(`^${key}=.*$`, 'm'), `${key}=${value}`));
+    resum(webOf(dir), 'BUILD-INFO.txt');
+  };
+  const cases = [
+    ['a tampered variant module, listed as it was', (dir) => {
+      const file = path.join(webOf(dir), 'zipp_wasm_bg.wasm');
+      const bytes = fs.readFileSync(file);
+      bytes[bytes.length - 1] ^= 0x01;
+      fs.writeFileSync(file, bytes);
+    }, /^the ZIPP web variant install in .* does not check .*:\n {2}- zipp_wasm_bg\.wasm does not match the bundle's SHA256SUMS\n {2}- zipp_wasm_bg\.wasm is not the recorded [0-9a-f]{64}$/],
+    ['a tampered variant module, re-listed', (dir) => {
+      const file = path.join(webOf(dir), 'zipp_wasm_bg.wasm');
+      const bytes = fs.readFileSync(file);
+      bytes[bytes.length - 1] ^= 0x01;
+      fs.writeFileSync(file, bytes);
+      resum(webOf(dir), 'zipp_wasm_bg.wasm');
+    }, /zipp_wasm_bg\.wasm is not the recorded [0-9a-f]{64}/],
+    ['a tampered variant module, re-listed and re-recorded on its own side', (dir) => {
+      const file = path.join(webOf(dir), 'zipp_wasm_bg.wasm');
+      const bytes = fs.readFileSync(file);
+      bytes[bytes.length - 1] ^= 0x01;
+      fs.writeFileSync(file, bytes);
+      resum(webOf(dir), 'zipp_wasm_bg.wasm');
+      editWebSource(dir, (s) => void (s.sha256 = sha256(bytes)));
+    }, /SOURCE\.json sha256 is "[0-9a-f]{64}"; the primary install's variants\.web records "[0-9a-f]{64}"/],
+    // Every record agrees, and the check still refuses: a variant that IS the primary is not one.
+    ['the engine module in the variant\'s place, fully re-recorded on both sides', (dir) => {
+      fs.copyFileSync(path.join(dir, 'zipp_wasm_bg.wasm'), path.join(webOf(dir), 'zipp_wasm_bg.wasm'));
+      resum(webOf(dir), 'zipp_wasm_bg.wasm');
+      editWebSource(dir, (s) => void (s.sha256 = source.sha256));
+      editSource(dir, (s) => void (s.variants.web.sha256 = source.sha256));
+    }, new RegExp(`^the ZIPP web variant install in .* does not check .*:\\n {2}- zipp_wasm_bg\\.wasm is the primary install's module itself \\(${source.sha256.slice(0, 12)}\\), not a variant of it$`)],
+    ['a variant module exporting what the engine does not', (dir) => {
+      const spliced = withExtraExport(fs.readFileSync(path.join(webOf(dir), 'zipp_wasm_bg.wasm')));
+      fs.writeFileSync(path.join(webOf(dir), 'zipp_wasm_bg.wasm'), spliced);
+      resum(webOf(dir), 'zipp_wasm_bg.wasm');
+      editWebSource(dir, (s) => void (s.sha256 = sha256(spliced)));
+      editSource(dir, (s) => void (s.variants.web.sha256 = sha256(spliced)));
+    }, /exports engine_extra, which .* does not; a variant runs under the web-python glue/],
+    ['a variant module importing what the engine does not', (dir) => {
+      const spliced = withExtraImport(fs.readFileSync(path.join(webOf(dir), 'zipp_wasm_bg.wasm')));
+      fs.writeFileSync(path.join(webOf(dir), 'zipp_wasm_bg.wasm'), spliced);
+      resum(webOf(dir), 'zipp_wasm_bg.wasm');
+      editWebSource(dir, (s) => void (s.sha256 = sha256(spliced)));
+      editSource(dir, (s) => void (s.variants.web.sha256 = sha256(spliced)));
+    }, /does not import what .* imports; it also imports \.\/zipp_wasm_bg\.js\.__wbg_extra_0000:function/],
+    ['a primary record without the variant', (dir) => editSource(dir, (s) => void delete s.variants), /^the ZIPP install in .* does not check .*:\n {2}- SOURCE\.json records no web variant of the engine \(variants\.web\)/],
+    ['a primary record whose variant digest disagrees', (dir) => editSource(dir, (s) => void (s.variants.web.sha256 = E64)), /SOURCE\.json sha256 is "[0-9a-f]{64}"; the primary install's variants\.web records "e{64}"/],
+    ['a primary record whose variant commit disagrees', (dir) => editSource(dir, (s) => void (s.variants.web.commit = 'e'.repeat(40))), /SOURCE\.json commit is "[0-9a-f]{40}"; the primary install's variants\.web records "e{40}"/],
+    ['a variant record of another commit, agreed on both sides', (dir) => {
+      editSource(dir, (s) => void (s.variants.web.commit = 'e'.repeat(40)));
+      editWebSource(dir, (s) => void (s.commit = 'e'.repeat(40)));
+    }, /SOURCE\.json commit e{40} is not the primary install's revision [0-9a-f]{40}; a variant is the same source built again/],
+    ['a variant record from another SHA256SUMS', (dir) => editWebSource(dir, (s) => void (s.sumsSha256 = E64)), /SOURCE\.json sumsSha256 e{64} is not the primary install's/],
+    ['a variant record of another engine', (dir) => editWebSource(dir, (s) => void (s.primary.sha256 = E64)), /SOURCE\.json primary \{.*\} is not the primary install/],
+    ['a variant record recorded as a local build', (dir) => editWebSource(dir, (s) => void (s.build = 'local')), /SOURCE\.json build is 'local'/],
+    ['a variant record naming the web-python bundle', (dir) => {
+      editSource(dir, (s) => void (s.variants.web.bundle = `${BUNDLE}.zip`));
+      editWebSource(dir, (s) => void (s.bundle = `${BUNDLE}.zip`));
+    }, /SOURCE\.json bundle \S+-web-python\.zip is not the web bundle/],
+    ['a variant bundle digest the release\'s SHA256SUMS does not carry', (dir) => {
+      editSource(dir, (s) => void (s.variants.web.bundleSha256 = E64));
+      editWebSource(dir, (s) => void (s.bundleSha256 = E64));
+    }, new RegExp(`RELEASE-SHA256SUMS does not list ${WEB_BUNDLE}\\.zip with the recorded e{64}`)],
+    ['variant BUILD-INFO.txt of another commit', webBuildInfo('commit', 'e'.repeat(40)), /BUILD-INFO\.txt commit e{40} is not the recorded revision [0-9a-f]{40}/],
+    ['variant BUILD-INFO.txt of the web-python build', webBuildInfo('variant', 'javascript-python'), /BUILD-INFO\.txt variant is javascript-python, not javascript$/m],
+    ['variant BUILD-INFO.txt of both languages', webBuildInfo('languages', '["javascript","python"]'), /BUILD-INFO\.txt languages are \["javascript","python"\], not \["javascript"\]/],
+    ['variant BUILD-INFO.txt of the big stack', webBuildInfo('stack-bytes', '16777216'), /BUILD-INFO\.txt stack-bytes is 16777216, not 1048576/],
+    ['variant PROFILE.json of another version', (dir) => {
+      editText(webOf(dir), 'PROFILE.json', (text) => text.replace(`"version": "${VERSION}"`, '"version": "9.9.9"'));
+      resum(webOf(dir), 'PROFILE.json');
+    }, /PROFILE\.json says version 9\.9\.9, not /],
+    ['a glue in the variant folder', (dir) => fs.copyFileSync(path.join(dir, 'zipp_wasm.js'), path.join(webOf(dir), 'zipp_wasm.js')), /zipp_wasm\.js is not part of a variant install/],
+    ['a missing variant file', (dir) => fs.rmSync(path.join(webOf(dir), 'PROFILE.json')), /PROFILE\.json is missing/],
+    ['no variant folder at all', (dir) => fs.rmSync(webOf(dir), { recursive: true }), /holds no ZIPP web variant install \(no SOURCE\.json\); run npm run fetch:zipp/],
+  ];
+  for (const [what, tamper, pattern] of cases) {
+    const copy = path.join(tempDir(t, 'zipp-check-'), 'wasm-zipp');
+    fs.cpSync(pristine, copy, { recursive: true });
+    fs.cpSync(variantDir(pristine), variantDir(copy), { recursive: true });
+    tamper(copy);
+    assert.throws(() => checkEngine(copy), (error) => error instanceof ZippReleaseError && pattern.test(error.message), what);
+    const run = cli(['--check'], { ZIPP_OUT: copy });
+    assert.equal(run.status, 1, what);
+    assert.doesNotMatch(run.stderr, /^\s+at /m, `${what}: a refusal, not a stack trace`);
+  }
+  assert.equal(checkEngine(pristine).variants.web.sha256, sha256(installedWeb('zipp_wasm_bg.wasm')), 'the pristine copy still checks');
+});
+
+test('--ensure reinstalls when the variant is gone or tampered, and --install-local removes it', async (t) => {
+  const folder = releaseFolder(t);
+  const { out, run } = install(t, folder);
+  assert.equal(run.status, 0, run.stderr);
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(url);
+    throw new Error('no request expected');
+  };
+  fs.rmSync(variantDir(out), { recursive: true });
+  const restored = await ensureEngine({ dir: out, fetch, releaseDir: folder.dir, log: quiet });
+  assert.equal(restored.action, 'installed');
+  assert.deepEqual(fs.readdirSync(variantDir(out)).sort(), [...VARIANT_INSTALLED_FILES].sort());
+  fs.appendFileSync(path.join(variantDir(out), 'BUILD-INFO.txt'), ' ');
+  const logs = [];
+  assert.equal((await ensureEngine({ dir: out, fetch, releaseDir: folder.dir, log: (line) => logs.push(line) })).action, 'installed');
+  assert.match(logs.join('\n'), /web variant install .* does not check/);
+  assert.equal((await ensureEngine({ dir: out, fetch, log: quiet })).action, 'none');
+  assert.deepEqual(calls, [], 'the folder was the source');
+  // A local build has no variant: the release's does not stay beside it as if it were this build's.
+  const from = tempDir(t, 'zipp-local-build-');
+  for (const name of ['zipp_wasm.js', 'zipp_wasm.d.ts', 'zipp_wasm_bg.wasm', 'zipp_wasm_bg.wasm.d.ts', 'LICENSE-APACHE']) fs.copyFileSync(path.join(ENGINE, name), path.join(from, name));
+  fs.writeFileSync(path.join(from, 'SOURCE.json'), JSON.stringify({ repository: REPOSITORY, revision: 'c'.repeat(40), version: VERSION, build: 'local', variant: 'all', languages: ['javascript', 'python'], license: 'Apache-2.0', artifact: 'zipp_wasm_bg.wasm', sha256: source.sha256 }));
+  await installLocal(from, out, { log: quiet, warn: quiet });
+  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp'], 'the variant folder is gone with the release install');
 });
 
 test('--check fails after a one-byte edit, and on a file the bundle\'s SHA256SUMS does not list', (t) => {
@@ -326,8 +661,10 @@ test('with no tag the release is the one Cargo.toml declares, and resolving or c
   const tree = tempDir(t, 'zipp-script-copy-');
   const script = path.join(tree, 'packages/@softn/core/scripts/fetch-zipp-release.mjs');
   const cargo = path.join(tree, 'apps/softn-host-rust/Cargo.toml');
-  for (const dir of [path.dirname(script), path.dirname(cargo), path.join(tree, 'packages/@softn/core/zipp-notices')]) fs.mkdirSync(dir, { recursive: true });
+  for (const dir of [path.dirname(script), path.dirname(cargo), path.join(tree, 'packages/@softn/core/zipp-notices'), path.join(tree, 'scripts/lib')]) fs.mkdirSync(dir, { recursive: true });
   fs.copyFileSync(SCRIPT, script);
+  // The one repository file the script imports: the WebAssembly section reader the packager's content scan uses too.
+  fs.copyFileSync(ENGINE_COPY_LIB, path.join(tree, 'scripts/lib/zipp-engine-copy.mjs'));
   fs.copyFileSync(CURATED_NOTICES, path.join(tree, 'packages/@softn/core/zipp-notices/THIRD_PARTY_LICENSES.txt'));
   assert.notEqual(spawnSync(process.execPath, ['--input-type=module', '-e', "await import('fflate')"], { cwd: tree }).status, 0, 'no node_modules is reachable from the copy');
   const copy = (args, env = {}, preload = []) => spawnSync(process.execPath, [...preload, script, ...args], { cwd: tree, encoding: 'utf8', env: { PATH: process.env.PATH, SYSTEMROOT: process.env.SYSTEMROOT, ...env } });
@@ -345,14 +682,19 @@ test('with no tag the release is the one Cargo.toml declares, and resolving or c
 
   const check = copy(['--check'], { ZIPP_OUT: ENGINE });
   assert.equal(check.status, 0, `--check reads no Cargo.toml and no fflate:\n${check.stderr}`);
+  assert.match(check.stdout, /with its web variant/, '--check covers wasm-zipp-web/ too');
 
-  // --latest, with GitHub stubbed before the script loads.
-  const latestSums = Buffer.from(`${'3'.repeat(64)}  zipp-wasm-0.0.19-web-python.zip\n`);
+  // --latest, with GitHub stubbed before the script loads. The latest release's SHA256SUMS must list both bundles as well.
+  const latestSums = Buffer.from(`${'3'.repeat(64)}  zipp-wasm-0.0.19-web.zip\n${'3'.repeat(64)}  zipp-wasm-0.0.19-web-python.zip\n`);
   const stub = path.join(tree, 'stub-fetch.mjs');
   fs.writeFileSync(stub, `const sums = Buffer.from(${JSON.stringify(latestSums.toString('base64'))}, 'base64');\nconst served = new Set([${JSON.stringify(`${REPOSITORY}/releases/latest/download/SHA256SUMS`)}, ${JSON.stringify(`${REPOSITORY}/releases/download/v0.0.19/SHA256SUMS`)}]);\nglobalThis.fetch = async (url) => (served.has(url) ? new Response(sums) : new Response('', { status: 404 }));\n`);
   const latest = copy(['--resolve-only', '--latest'], {}, ['--import', pathToFileURL(stub).href]);
   assert.equal(latest.status, 0, latest.stderr);
   assert.deepEqual(JSON.parse(latest.stdout), { release: 'v0.0.19', sumsSha256: sha256(latestSums) });
+  // A latest release published without its web bundle is not one this can install.
+  const onlyPython = Buffer.from(`${'4'.repeat(64)}  zipp-wasm-0.0.19-web-python.zip\n`);
+  fs.writeFileSync(stub, fs.readFileSync(stub, 'utf8').replace(latestSums.toString('base64'), onlyPython.toString('base64')));
+  refused({ run: copy(['--resolve-only', '--latest'], {}, ['--import', pathToFileURL(stub).href]) }, /SHA256SUMS published under v0\.0\.19 does not list zipp-wasm-0\.0\.19-web\.zip/);
 });
 
 test('--ensure replaces an install of a release other than the declared one', async (t) => {
@@ -454,20 +796,34 @@ test('--check --online compares the install with what the release publishes now'
   const { out, run } = install(t, folder);
   assert.equal(run.status, 0, run.stderr);
   const sumsUrl = `${REPOSITORY}/releases/download/${TAG}/SHA256SUMS`;
-  const published = new Map([[sumsUrl, folder.top], [`${REPOSITORY}/releases/download/${TAG}/${BUNDLE}.zip`, folder.zip]]);
+  const published = publishedUrls(folder);
   const fetch = async (url) => (published.has(url) ? new Response(published.get(url)) : new Response('', { status: 404 }));
   assert.equal((await checkEngineOnline(out, { fetch })).release, TAG);
   published.set(sumsUrl, Buffer.concat([folder.top, Buffer.from('\n')]));
   await assert.rejects(checkEngineOnline(out, { fetch }), /RELEASE-SHA256SUMS is not the SHA256SUMS published under/);
 });
 
-test('--check --online compares every file taken with the published bundle, byte for byte', async (t) => {
+test('--check --online compares every file taken with the published bundles, byte for byte, the web bundle included', async (t) => {
   const folder = releaseFolder(t);
   const { out, run } = install(t, folder);
   assert.equal(run.status, 0, run.stderr);
   const zipUrl = `${REPOSITORY}/releases/download/${TAG}/${BUNDLE}.zip`;
-  const published = new Map([[`${REPOSITORY}/releases/download/${TAG}/SHA256SUMS`, folder.top], [zipUrl, folder.zip]]);
+  const webUrl = `${REPOSITORY}/releases/download/${TAG}/${WEB_BUNDLE}.zip`;
+  const published = publishedUrls(folder);
   const fetch = async (url) => (published.has(url) ? new Response(published.get(url)) : new Response('', { status: 404 }));
+  // The web bundle published again with other bytes: not the one recorded.
+  const republished = releaseFolder(t, { editWeb: (files) => files.set('README.md', Buffer.from('# web, again\n')) });
+  published.set(webUrl, republished.webZip);
+  await assert.rejects(checkEngineOnline(out, { fetch }), new RegExp(`the published ${WEB_BUNDLE}\\.zip is not the recorded [0-9a-f]{64}`));
+  published.set(webUrl, folder.webZip);
+  // A variant file edited and re-listed passes offline, and not against what is published.
+  fs.appendFileSync(path.join(variantDir(out), 'PROFILE.json'), ' ');
+  resum(variantDir(out), 'PROFILE.json');
+  assert.equal(checkEngine(out).release, TAG);
+  await assert.rejects(checkEngineOnline(out, { fetch }), (error) => new RegExp(`\\n {2}- .*wasm-zipp-web/PROFILE\\.json is not the file in the published ${WEB_BUNDLE}\\.zip`).test(error.message) && new RegExp(`\\n {2}- .*wasm-zipp-web/SHA256SUMS is not the file in the published`).test(error.message));
+  fs.rmSync(out, { recursive: true });
+  fs.rmSync(variantDir(out), { recursive: true });
+  assert.equal(install(t, folder, { out }).run.status, 0);
   // An edited file whose line in the install's own SHA256SUMS was rewritten to match passes offline ...
   fs.appendFileSync(path.join(out, 'zipp_wasm.d.ts'), '\n');
   resum(out, 'zipp_wasm.d.ts');
@@ -487,7 +843,7 @@ test('installs into one folder take turns: hooks started together all succeed, a
   for (const run of runs) assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   assert.equal(runs.filter((run) => /Installed ZIPP/.test(run.stdout)).length, 1, 'the others found the install done');
   assert.equal(checkEngine(out).release, TAG);
-  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp'], 'no stage, previous install or lock is left');
+  assert.deepEqual(fs.readdirSync(path.dirname(out)).sort(), BOTH, 'no stage, previous install or lock is left');
 });
 
 // Ctrl+C during a first install leaves its lock; the hooks started after it must not each take it over.
@@ -504,7 +860,7 @@ test('hooks started together on a lock a dead install left: one of them installs
     for (const run of runs) assert.equal(run.status, 0, `round ${round}: ${run.stdout}\n${run.stderr}`);
     assert.equal(runs.filter((run) => /Installed ZIPP/.test(run.stdout)).length, 1, `round ${round}: the others found the install done`);
     assert.equal(checkEngine(out).release, TAG);
-    assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp'], `round ${round}: no lock, turn, stage or previous install is left`);
+    assert.deepEqual(fs.readdirSync(path.dirname(out)).sort(), BOTH, `round ${round}: no lock, turn, stage or previous install is left`);
   }
 });
 
@@ -518,7 +874,7 @@ test('a lock whose process is gone is taken over with what it left; a live one i
   const taken = cli(['--ensure'], { ZIPP_OUT: out, ZIPP_RELEASE_DIR: folder.dir });
   assert.equal(taken.status, 0, taken.stderr);
   assert.doesNotMatch(taken.stderr, /Waiting for/, 'a dead holder is not waited on');
-  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp']);
+  assert.deepEqual(fs.readdirSync(path.dirname(out)).sort(), BOTH);
 
   // Held by a live process: nothing happens until it lets go.
   fs.rmSync(out, { recursive: true });
@@ -535,7 +891,7 @@ test('a lock whose process is gone is taken over with what it left; a live one i
   assert.ok(released, 'the install did not go ahead while the lock was held');
   assert.equal(result.action, 'installed');
   assert.match(warnings.join('\n'), new RegExp(`Waiting for the ZIPP install another process \\(${holder}\\) is making`));
-  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp']);
+  assert.deepEqual(fs.readdirSync(path.dirname(out)).sort(), BOTH);
 });
 
 // Without this a hook would sit out the whole wait behind a lock left by a killed install whose pid Windows gave to another process.
@@ -551,7 +907,7 @@ test('a lock older than any install is taken over at once, even when its pid is 
   const result = await ensureEngine({ dir: out, releaseDir: folder.dir, log: quiet, warn: (line) => warnings.push(line) });
   assert.equal(result.action, 'installed');
   assert.deepEqual(warnings.filter((line) => /Waiting for/.test(line)), [], 'an expired lock is not waited on');
-  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp'], 'the expired lock is gone with the install');
+  assert.deepEqual(fs.readdirSync(path.dirname(out)).sort(), BOTH, 'the expired lock is gone with the install');
 });
 
 test('a lock naming this process is an earlier install\'s that had its pid, unless this process holds it', { timeout: 60_000 }, async (t) => {
@@ -566,7 +922,7 @@ test('a lock naming this process is an earlier install\'s that had its pid, unle
   fs.rmSync(out, { recursive: true });
   const both = await Promise.all([0, 1].map(() => ensureEngine({ dir: out, releaseDir: folder.dir, log: quiet, warn: quiet })));
   assert.deepEqual(both.map((r) => r.action).sort(), ['installed', 'none']);
-  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['wasm-zipp']);
+  assert.deepEqual(fs.readdirSync(path.dirname(out)).sort(), BOTH);
 });
 
 test('an empty lock is one being written this instant, unless it has been empty a while', { timeout: 60_000 }, async (t) => {
@@ -659,16 +1015,16 @@ test('an install whose lock is no longer its own writes nothing and leaves that 
     assertHeld();
   }, { warn: quiet }), takenOver);
   assert.equal(fs.readFileSync(lock, 'utf8'), other, 'the lock another install holds is not released');
-  // Taken over while the bundle downloads: refused before the folder is written.
+  // Taken over while the bundles download: refused before either folder is written.
   fs.rmSync(lock);
   const folder = releaseFolder(t);
-  const published = new Map([[`${REPOSITORY}/releases/download/${TAG}/SHA256SUMS`, folder.top], [`${REPOSITORY}/releases/download/${TAG}/${BUNDLE}.zip`, folder.zip]]);
+  const published = publishedUrls(folder);
   const fetch = async (url) => {
     if (url.endsWith('.zip')) fs.writeFileSync(lock, other);
     return published.has(url) ? new Response(published.get(url)) : new Response('', { status: 404 });
   };
   await assert.rejects(installRelease({ dir: out, tag: TAG, cacheDir: tempDir(t, 'zipp-cache-'), fetch, log: quiet, warn: quiet }), takenOver);
-  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['.wasm-zipp.lock']);
+  assert.deepEqual(fs.readdirSync(path.dirname(out)), ['.wasm-zipp.lock'], 'neither wasm-zipp nor wasm-zipp-web was written');
   assert.equal(fs.readFileSync(lock, 'utf8'), other);
   // A local build likewise, taken over while it is read.
   fs.rmSync(lock);
@@ -702,6 +1058,9 @@ test('offline, a release downloaded before is named for ZIPP_RELEASE_DIR, never 
   const cached = path.join(cacheDir, TAG);
   fs.mkdirSync(cached);
   for (const name of ['SHA256SUMS', `${BUNDLE}.zip`]) fs.copyFileSync(path.join(folder.dir, name), path.join(cached, name));
+  // Half a release (no web zip) is not named: it could not be installed.
+  await assert.rejects(resolveRelease({ tag: TAG, cacheDir, fetch: offline }), (error) => /could not fetch .*: fetch failed$/.test(error.message));
+  fs.copyFileSync(path.join(folder.dir, `${WEB_BUNDLE}.zip`), path.join(cached, `${WEB_BUNDLE}.zip`));
   await assert.rejects(resolveRelease({ tag: TAG, cacheDir, fetch: offline }), new RegExp(`: fetch failed; to install the ${escaped(TAG)} downloaded earlier without the network, set ZIPP_RELEASE_DIR=${escaped(cached)}$`));
   // GitHub answering that there is no such release is not a network failure: no copy stands in for it.
   const missing = async () => new Response('', { status: 404 });
