@@ -21,5 +21,7 @@ export * from './event-coalescer';
 export { buildSyncCacheKey } from './sync-cache-key';
 export { bindSyncOptions } from './host-bound-sync-options';
 export { retryableSingleFlight } from './retryable-single-flight';
-export { configureZippWasmSource } from './zipp-wasm-loader';
+export { configureZippWasmSource, zippLanguages } from './zipp-wasm-loader';
+export { configureLogicEngine, createLogicEngine, logicEngineThreads } from './vm-adapter';
+export type { LogicEngine, LogicEngineFactory, LogicEngineThreads } from './vm-adapter';
 export { preloadSyncRuntime } from './xdb-sync-preload';

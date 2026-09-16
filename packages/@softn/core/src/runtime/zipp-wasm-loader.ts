@@ -1,4 +1,8 @@
-import initWasm, { zipp_install_panic_hook, type InitOutput } from '../../wasm-zipp/zipp_wasm.js';
+import initWasm, {
+  zipp_install_panic_hook,
+  zippProfile,
+  type InitOutput,
+} from '../../wasm-zipp/zipp_wasm.js';
 import { retryableSingleFlight } from './retryable-single-flight';
 
 let suppliedSource: BufferSource | WebAssembly.Module | undefined;
@@ -53,4 +57,31 @@ export function ensureZippWasm(): Promise<InitOutput> {
   // A failed load can retry, but cannot silently switch the configured engine.
   initializationStarted = true;
   return initialize();
+}
+
+/**
+ * The languages the engine that actually loaded can run, e.g.
+ * `['javascript', 'python']`.
+ *
+ * Read out of the engine's own profile rather than out of whatever the host
+ * believes it supplied. ZIPP ships as more than one build — a JavaScript-only
+ * one and a JavaScript-and-Python one — from the same glue, so a host handed
+ * the wrong bytes cannot tell them apart by looking at its own records. It can
+ * ask here, and refuse before a bundle runs instead of after a Python file
+ * fails to compile.
+ *
+ * Initializes ZIPP, so a host that also supplies the source must call
+ * {@link configureZippWasmSource} first. An engine whose profile cannot be read
+ * answers an empty list, which a caller checking for a language will refuse.
+ */
+export async function zippLanguages(): Promise<string[]> {
+  await ensureZippWasm();
+  try {
+    const profile = JSON.parse(zippProfile()) as { languages?: unknown };
+    return Array.isArray(profile.languages)
+      ? profile.languages.filter((name): name is string => typeof name === 'string')
+      : [];
+  } catch {
+    return [];
+  }
 }

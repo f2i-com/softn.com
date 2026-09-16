@@ -36,6 +36,7 @@ import {
 // other path routes calls through the main-thread VM. See the note where
 // `forceWorker` is decided.
 import { createWorkerScriptRuntime } from '../runtime/script-worker-runtime';
+import { logicEngineThreads } from '../runtime/vm-adapter';
 import { CapabilityProvider, type CapabilityState } from './consent-gate';
 import { AppScopeProvider, type AppAssetResolver, type AppScope } from './app-scope';
 import { createSyncControls, type SyncControls } from '../runtime/db-sync-controls';
@@ -1006,6 +1007,22 @@ export function SoftNRenderer({
                 `[SoftN] Worker execution ${execParam === 'worker' ? 'forced by ?exec=worker' : 'requested by the manifest'}`
               );
             }
+          }
+
+          // An engine that exists only on this thread overrides all of the
+          // above. The Worker runtime names the ZIPP adapter itself — a second
+          // engine is not reachable from it, and an engine built on the host
+          // document's own JavaScript could not run there anyway — so a bundle
+          // asking for a worker gets the main thread rather than the wrong
+          // engine. ZIPP says nothing, so this is inert for every host today.
+          if (logicEngineThreads() === 'main-only' && effectiveMode !== 'main') {
+            // Same family as the forceWorker advisory below: the script asked
+            // for a worker and is not getting one, and the host should know why.
+            console.warn(
+              '[SoftN] The configured logic engine runs on the main thread only, so worker execution was not used: no wall-clock interruption and no instance recycling.'
+            );
+            effectiveMode = 'main';
+            forceWorker = false;
           }
 
           // From here to the script's top level having run: engine creation,

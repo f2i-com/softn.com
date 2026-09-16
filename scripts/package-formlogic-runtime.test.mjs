@@ -18,6 +18,7 @@ import { spawnSync } from 'node:child_process';
 import { readArchive } from './lib/archive.mjs';
 import { isZippEngineWasm } from './lib/zipp-engine-copy.mjs';
 import { PACKAGES, archiveName, packageById, root } from './release-packages.mjs';
+import { RUNTIME_ENGINES } from '../apps/formlogic-host/src/engineInit.ts';
 
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 const readJson = (p) => JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -29,6 +30,14 @@ test('the FormLogic runtime package is described like the others and named for F
   assert.ok(pkg.inside.some((i) => i.path === 'softn-release.json'));
   for (const folder of ['hosted-runtime/', 'app-editors/', 'native-runtime/', 'zipp/', 'adapter/']) assert.ok(pkg.inside.some((i) => i.path === folder), folder);
   assert.ok(PACKAGES.every((p) => p.id !== 'formlogic-runtime' || p.previousName === ''), 'it never had another name');
+});
+
+test('the hosted runtime manifest gets its engines from the shell, not a list of its own', () => {
+  const packager = fs.readFileSync(path.join(root, 'scripts/package-formlogic-runtime.mjs'), 'utf8');
+  assert.ok(packager.includes('apps/formlogic-host/src/engineInit.ts'), 'it reads the shell’s declaration');
+  // A second list would be one the handshake could drift away from silently.
+  for (const id of RUNTIME_ENGINES) assert.ok(!packager.includes(`'${id}'`), `${id} is not repeated in the packager`);
+  assert.ok(RUNTIME_ENGINES.length > 0 && RUNTIME_ENGINES.every((id) => typeof id === 'string'));
 });
 
 test('the workflow builds, checks and attaches the archive', () => {
@@ -129,10 +138,19 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
       for (const [rel, digest] of Object.entries(m.files)) assert.equal(digest, sha256(bytes(`${prefix}/${rel}`)), `${prefix}/${rel}`);
       return m;
     };
-    assert.ok('index.html' in manifestOf('hosted-runtime').files);
+    const hosted = manifestOf('hosted-runtime');
+    assert.ok('index.html' in hosted.files);
+    // The hosted runtime says which engines it can be asked to run, read from
+    // the shell's own declaration so the manifest and the `formlogic:ready`
+    // announcement cannot name different sets. `features` is there and empty so
+    // a reader never has to tell "none" from "older than the idea".
+    assert.deepEqual(hosted.engines, [...RUNTIME_ENGINES]);
+    assert.deepEqual(hosted.engines, ['zipp-web-python']);
+    assert.deepEqual(hosted.features, []);
     for (const n of ['hosted-runtime/LICENSE', 'hosted-runtime/NOTICE', 'hosted-runtime/README.txt']) bytes(n);
     for (const kind of ['builder', 'studio']) {
       const m = manifestOf(`app-editors/${kind}`);
+      assert.equal(m.engines, undefined, `${kind} is an editor, not an app runtime`);
       assert.ok('index.html' in m.files, `${kind} index`);
       const wasm = Object.entries(m.files).filter(([p]) => /zipp_wasm_bg(?:-[^/]+)?\.wasm$/.test(p));
       assert.ok(wasm.length > 0 && wasm.every(([, h]) => h === source.sha256), `${kind} carries the installed engine`);

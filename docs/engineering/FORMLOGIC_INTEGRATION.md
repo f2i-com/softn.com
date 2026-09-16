@@ -51,8 +51,12 @@ ZIPP's web-python release files with the bundle's `SHA256SUMS`, ZIPP's release
 `softn-release.json` (tag, commit, the engine's whole `SOURCE.json` record,
 protocols, adapter digest, a digest of every other file). Each built folder
 carries the `runtime-manifest.json` FormLogic's `checkRuntimeArtifact`
-verifies. Every copy of the engine in the archive, recognised by its exports,
-is the one under `zipp/`.
+verifies. `hosted-runtime/runtime-manifest.json` also names, in `engines`, the
+engine ids its shell will accept in `formlogic:init` (and `features` for later
+runtime capabilities), so a host can tell from what it INSTALLED which engines
+it may offer. Both are additions; `formatVersion` stays 1 and a reader that
+knows only the older keys is unaffected. Every copy of the engine in the
+archive, recognised by its exports, is the one under `zipp/`.
 
 FormLogic's `prepare-hosted-runtime` fetches the latest release, checks the
 `.sha256` sidecar and every digest, requires the protocol numbers it speaks,

@@ -1,10 +1,11 @@
 import React, { Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SoftNWithXDB, composeBundleSource, configureZippWasmSource } from '@softn/core';
+import { SoftNWithXDB, composeBundleSource, configureZippWasmSource, zippLanguages } from '@softn/core';
 import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { installAppStorage } from './storage';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
+import { ZIPP_DOCUMENT_ENGINES, acceptEngine, acceptZippBytes, requireEngineLanguages, zippReadyEngines } from './engineInit';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
@@ -49,7 +50,7 @@ class Boundary extends Component<{ children: React.ReactNode }, { failed: boolea
     return <p role="alert">{LOAD_FAILED}{this.state.reason ? ` (${this.state.reason})` : ''}</p>;
   }
 }
-window.addEventListener('message', event => {
+window.addEventListener('message', async event => {
   if (started || event.source !== parent || event.data?.type !== 'formlogic:init' || !event.ports[0]) return;
   started = true;
   port = event.ports[0];
@@ -58,11 +59,16 @@ window.addEventListener('message', event => {
   // can be told apart, so all of it answers now rather than at its deadline.
   port.onmessageerror = () => { calls.failInFlight(BACKEND_UNREADABLE); };
   try {
-    const engineBytes = event.data.zippWasm;
-    if (!(engineBytes instanceof ArrayBuffer) || engineBytes.byteLength < 8 || engineBytes.byteLength > 32 * 1024 * 1024) {
-      throw new Error('The parent must supply the matching ZIPP engine bytes');
-    }
+    // `engine` is an addition: absent means the engine this document has always
+    // run, so a FormLogic that predates the choice is unaffected. One it does
+    // not serve is refused by name, never quietly replaced.
+    const engine = acceptEngine(event.data.engine, ZIPP_DOCUMENT_ENGINES);
+    const engineBytes = acceptZippBytes(event.data.zippWasm);
     configureZippWasmSource(engineBytes);
+    // Ask the engine that actually loaded what it can run, before any app code
+    // does. ZIPP's builds share one glue, so the id the parent named and the
+    // bytes it sent are only known to agree once the engine answers.
+    requireEngineLanguages(engine, await zippLanguages());
     const files = new Map<string, string>(Object.entries(event.data.client));
     const manifest = JSON.parse(files.get('manifest.json') || '{}');
     if (event.data.native === true) {
@@ -107,4 +113,8 @@ softn.net.fetch = function(url, options, done) {
 // release is an addition: FormLogic compares version and sha256. Typed as
 // optional because a local engine build (--install-local) records none.
 const zippRelease = (zippSource as { release?: string }).release;
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: { version: zippSource.version, sha256: zippSource.sha256, release: zippRelease } }, '*');
+const zippIdentity = { version: zippSource.version, sha256: zippSource.sha256, release: zippRelease };
+// engines is an addition too: the engine ids this document will accept in
+// `init.engine`, each with the bytes it wants. A parent that reads only `zipp`
+// and sends no `engine` sees what it always did.
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: zippIdentity, engines: zippReadyEngines(zippIdentity) }, '*');

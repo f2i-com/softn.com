@@ -5,8 +5,16 @@ import { readFileSync } from 'node:fs';
 import { Engine, zippProfile } from '../wasm-zipp/zipp_wasm.js';
 import source from '../wasm-zipp/SOURCE.json';
 import { ZippWasmAdapter } from '../src/runtime/zipp-wasm-adapter';
+import { zippLanguages } from '../src/runtime/zipp-wasm-loader';
 
 describe('installed JavaScript and Python engine', () => {
+  // What a host asks when it has to decide whether a bundle can run at all.
+  // The record in SOURCE.json says what was installed; this says what loaded.
+  it('tells a host which languages the engine that loaded can run', async () => {
+    await expect(zippLanguages()).resolves.toEqual(source.languages);
+    await expect(zippLanguages()).resolves.toContain('python');
+  });
+
   it('matches the recorded release version, commit, languages and checksum', () => {
     const profile = JSON.parse(zippProfile());
     expect(profile.version).toBe(source.version);
