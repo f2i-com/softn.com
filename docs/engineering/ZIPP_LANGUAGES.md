@@ -123,8 +123,8 @@ the engine's bundle and every file matches the bundle's own `SHA256SUMS`;
 `BUILD-INFO.txt` says `variant=javascript`, `languages=["javascript"]`,
 `stack-bytes=1048576` and the SAME commit as the engine; the module asks the
 host for exactly the engine's imports and exports nothing the engine does not
-(so the engine's glue binds it — Softn ships one glue, `ce779c2c…`, and records
-the web bundle's own `1a3deed1…` in `glueSha256` for provenance only); and,
+(so the engine's glue binds it — Softn ships one glue, `ae41ff7d…`, and records
+the web bundle's own `7622deb6…` in `glueSha256` for provenance only); and,
 really loaded under that glue, `zippProfile().languages` is exactly
 `["javascript"]` while `initSource(code, "python")` and `pythonHas` throw.
 `--check` repeats every offline part of this over the installed sibling.

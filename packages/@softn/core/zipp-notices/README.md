@@ -8,7 +8,7 @@ notices itself.
 `THIRD_PARTY_LICENSES.txt` is the file `scripts/build-zipp-wasm.mjs` writes
 (its `THIRD_PARTY_LICENSES.txt` step), generated from zipp.org's
 `crates/rustpython-parser-fork/LICENSE` and `LICENSE-UNICODE`. Both are present
-at tag `v0.0.18` (commit `fc474d15758827770f06d0dc2ebfe3055ebaa625`), and
+at tag `v0.0.19` (commit `2e6a39c38d3aed5b5c588193c094b313027617a4`), and
 regenerating the file from them there gives these bytes exactly.
 
 `scripts/fetch-zipp-release.mjs` installs this copy beside the engine when the

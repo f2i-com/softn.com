@@ -1590,7 +1590,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The retrieved README identifies the browser engine as ZIPP v0.0.18 and points to SOURCE.json for artifact provenance. It is ZIPP’s official web-python release build, combining JavaScript and experimental Python. The exact bundled artifact matters more than an upstream release headline."
+              "text": "The retrieved README identifies the browser engine as ZIPP v0.0.19 and points to SOURCE.json for artifact provenance. It is ZIPP’s official web-python release build, combining JavaScript and experimental Python. The exact bundled artifact matters more than an upstream release headline."
             },
             {
               "type": "paragraph",
@@ -3020,7 +3020,7 @@
           "blocks": [
             {
               "type": "paragraph",
-              "text": "The retrieved SoftN README says existing .logic screens continue to use JavaScript. It identifies the browser engine as ZIPP v0.0.18, ZIPP’s web-python release build with JavaScript and experimental Python support."
+              "text": "The retrieved SoftN README says existing .logic screens continue to use JavaScript. It identifies the browser engine as ZIPP v0.0.19, ZIPP’s web-python release build with JavaScript and experimental Python support."
             },
             {
               "type": "paragraph",

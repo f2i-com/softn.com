@@ -1119,6 +1119,17 @@ fn host_to_json(val: &HostValue, depth: usize) -> Result<serde_json::Value, Stri
             }
             serde_json::Value::Object(map)
         }
+        // ZIPP 0.0.19 marshals a Float32Array as its elements, where 0.0.18
+        // read one as Opaque. JSON has no typed arrays: it crosses as an array
+        // of numbers, each the f64 the element reads as in JavaScript and a
+        // non-finite one null as JSON.stringify spells it, bounded by its
+        // bytes like a string so a tensor cannot outgrow the response bound.
+        HostValue::Float32Array(values) => {
+            if values.len().saturating_mul(4) > MAX_STRING_VALUE_LEN {
+                return Err("Handler Float32Array result exceeds host limit".into());
+            }
+            serde_json::Value::Array(values.iter().map(|v| number_to_json(f64::from(*v))).collect())
+        }
     })
 }
 
@@ -1171,6 +1182,53 @@ mod host_json_tests {
         // would admit this string despite the existing 2 MiB response bound.
         let too_many_bytes = HostValue::Utf16(vec![0x20AC; MAX_STRING_VALUE_LEN / 3 + 1]);
         assert!(host_to_json(&too_many_bytes, 0).unwrap_err().contains("exceeds host limit"));
+    }
+
+    #[test]
+    fn float32_array_json_is_its_elements_as_javascript_reads_them() {
+        // A guest Float32Array crosses as HostValue::Float32Array (ZIPP 0.0.19),
+        // and the server serves it as a JSON array of numbers: a whole number
+        // as an integer, an f32 fraction as the f64 it reads as in JavaScript,
+        // NaN and Infinity as null like JSON.stringify.
+        let mut state = compile_script("var result = { body: new Float32Array([1.5, 2, 0.1, NaN, Infinity, -0]) };").unwrap();
+        state.run_init().unwrap();
+        let slot = state.symbols().into_iter().find(|symbol| symbol.name == "result").unwrap().index;
+        let result = state.get_slot(slot);
+        assert!(matches!(&result, HostValue::Object(pairs) if matches!(pairs[0].1, HostValue::Float32Array(_))), "{result:?}");
+        assert_eq!(host_to_json(&result, 0).unwrap(), serde_json::json!({
+            "body": [1.5, 2, f64::from(0.1f32), null, null, 0]
+        }));
+    }
+
+    #[test]
+    fn float32_array_json_enforces_the_byte_limit() {
+        let at_limit = HostValue::Float32Array(vec![1.0; MAX_STRING_VALUE_LEN / 4]);
+        assert_eq!(host_to_json(&at_limit, 0).unwrap().as_array().unwrap().len(), MAX_STRING_VALUE_LEN / 4);
+        let too_many = HostValue::Float32Array(vec![1.0; MAX_STRING_VALUE_LEN / 4 + 1]);
+        assert!(host_to_json(&too_many, 0).unwrap_err().contains("exceeds host limit"));
+    }
+
+    // A Float32Array global is not a primitive, so a script holding one at the
+    // top level rebuilds its VM between requests — as it did on ZIPP 0.0.18,
+    // where the same global read back as Opaque. Restore mode therefore never
+    // snapshots one (so `NaN != NaN` cannot make a snapshot disagree with
+    // itself), and a primitive slot a handler fills with one is either put back
+    // or refused, which the caller answers with a rebuild; never left as it was.
+    #[test]
+    fn a_float32_array_global_is_not_primitive_and_a_slot_filled_with_one_restores_or_refuses() {
+        let mut state = compile_script("var buf = new Float32Array(4); var n = 1; function h() { n = new Float32Array([2, 3]); return 0; }").unwrap();
+        state.run_init().unwrap();
+        let symbols = state.symbols();
+        let slot = |name: &str| symbols.iter().find(|symbol| symbol.name == name).unwrap().index;
+        let buf = state.get_slot(slot("buf"));
+        assert!(matches!(&buf, HostValue::Float32Array(values) if values.len() == 4), "{buf:?}");
+        assert!(!is_primitive(&buf), "a typed array cannot be restored through HostValue");
+        assert!(is_primitive(&state.get_slot(slot("n"))));
+
+        state.call_slot(slot("h"), &[]).unwrap();
+        assert_eq!(state.get_slot(slot("n")), HostValue::Float32Array(vec![2.0, 3.0]));
+        let restored = state.set_slot(slot("n"), &HostValue::Number(1.0));
+        assert_eq!(restored, state.get_slot(slot("n")) == HostValue::Number(1.0), "a refused write leaves the slot as the handler left it, and isolate() rebuilds");
     }
 }
 
