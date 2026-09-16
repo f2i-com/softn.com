@@ -27,7 +27,6 @@ export default defineWorkspaceTest({
     exclude: [
       '**/node_modules/**',
       '**/dist/**',
-      // The only file excluded, and the only one that fails when it is not.
       // `the default logic engine` asserts what the seam does when NOTHING is
       // configured: that `createLogicEngine()` answers a `VmAdapter` and that
       // `logicEngineThreads()` is `'any'`. This run configures an engine in its
@@ -38,6 +37,20 @@ export default defineWorkspaceTest({
       // are ZIPP's own contract and both run in the default suite. Nothing in
       // this file is weakened for the host engine's benefit.
       'test/logic-engine-seam.test.ts',
+      // Python app logic, run on the real web-python engine. The
+      // host-JavaScript engine cannot execute Python at all — that is not a
+      // gap this run should work around, it is the property the engine exists
+      // within, and `test/python-engine-choice.test.ts` asserts it HERE: it is
+      // in this run, and under this configuration it takes the refusing branch
+      // of every case. So Python is still tested on the host engine; what is
+      // excluded is only the part that needs an engine that can run it.
+      'test/python-logic.test.tsx',
+      // Softn's value normalizer against FormLogic's, on the real engine. Same
+      // reason: there is no Python here to normalize. The parts of that
+      // contract that need no engine — the capability list, the generated
+      // sources, the error rewriting — are in `python-contract.test.ts`, which
+      // does run here.
+      'test/python-formlogic-dialect.test.ts',
     ],
   },
 });

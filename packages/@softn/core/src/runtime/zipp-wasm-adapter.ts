@@ -20,8 +20,10 @@
 import { Engine, accelGuestCall } from '../../wasm-zipp/zipp_wasm.js';
 import { createAccelHost } from './accel-host';
 import { ensureZippWasm } from './zipp-wasm-loader';
+import { flushEngineOutput } from './engine-output';
 
 import type { DBNamespace } from './script-runtime';
+import type { LogicEngine } from './vm-adapter';
 import { sanitizeArgs } from './vm-args';
 
 // ============================================================================
@@ -193,22 +195,26 @@ export class ZippWasmAdapter {
   }
 
   /**
-   * Forward anything the script printed to the browser console.
+   * Make an engine for a Python app on this same ZIPP build.
    *
-   * zipp accumulates `console.log`/`info`/`debug`/`error` output inside the VM
-   * and hands it over on request, so this must run after every re-entry.
-   * `takeOutput` merges the out and error streams, so the original severity is
-   * not recoverable and everything is reported at log level.
+   * A Python state answers a different API from a JavaScript one — no
+   * preamble, no global slots, no host-call queue — so it gets its own adapter
+   * rather than a mode of this one. Its presence here is what says ZIPP can
+   * run Python at all; the factories that cannot (the host-JavaScript engine)
+   * simply do not have this method, and `createPythonLogicEngine` refuses.
+   *
+   * Imported on demand so a realm that only ever runs JavaScript never loads
+   * the Python runtime source.
    */
+  static async createPython(): Promise<LogicEngine> {
+    const { PythonLogicAdapter } = await import('./python/python-logic-adapter');
+    return PythonLogicAdapter.create();
+  }
+
+  /** Forward anything the script printed; see `engine-output.ts`. */
   private flushOutput(): void {
     if (this._disposed || this._terminated) return;
-    let lines: string[];
-    try {
-      lines = (this.wasm.takeOutput() as string[]) || [];
-    } catch {
-      return;
-    }
-    for (const line of lines) console.log(line);
+    flushEngineOutput(this.wasm);
   }
 
   /**

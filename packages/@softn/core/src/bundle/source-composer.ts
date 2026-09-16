@@ -12,6 +12,60 @@ export interface ComposedBundleSource {
   source: string;
   logicBasePath?: string;
   preIncludedLogicPaths: string[];
+  /**
+   * The languages this bundle's logic is written in, derived from its file
+   * names and nothing else. Always contains `javascript`: the markup and its
+   * template expressions are evaluated host-side whatever the `.logic` is.
+   */
+  languages: string[];
+  /**
+   * The Python modules, when the logic is Python. Absent for every bundle that
+   * has ever shipped, which keeps the JavaScript path exactly what it was.
+   */
+  python?: { files: Record<string, string>; modules: string[] };
+}
+
+/** A logic file ending in this is Python; everything else is JavaScript. */
+export const PYTHON_LOGIC_SUFFIX = '.py';
+
+/**
+ * Module names the runtime generates, which an app may not also define.
+ *
+ * Only two, and deliberately so: `softn` is the module an app imports, and
+ * every other generated name starts `__softn` so that an app's own
+ * `main.py` — which is what the Builder's `logic/main.logic` becomes — is a
+ * name it can still have.
+ */
+const isReservedPythonModule = (name: string): boolean =>
+  name === 'softn' || name.startsWith('__softn');
+
+const PYTHON_MODULE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Whether a bundle path names a Python logic file. */
+export function isPythonLogicPath(path: string): boolean {
+  return path.toLowerCase().endsWith(PYTHON_LOGIC_SUFFIX);
+}
+
+/**
+ * The Python module name a bundle path is imported as: its file name without
+ * the extension.
+ *
+ * Python imports by module name, not by path, so a `.py` file's name is also
+ * its identity inside the project. A name Python could not import, or one the
+ * runtime already uses, is refused here rather than becoming an import error
+ * about a file the author cannot see.
+ */
+export function pythonModuleName(path: string): string {
+  const base = path.slice(path.lastIndexOf('/') + 1, -PYTHON_LOGIC_SUFFIX.length);
+  if (!PYTHON_MODULE_NAME.test(base)) {
+    throw new Error(
+      `${path} cannot be a Python module: name it with letters, digits and underscores, starting with a letter`
+    );
+  }
+  if (isReservedPythonModule(base)) {
+    throw new Error(`${path} uses the reserved module name ${base}.py; choose another name`);
+  }
+  return base;
 }
 
 interface LogicFragment {
@@ -22,6 +76,8 @@ interface LogicFragment {
   externalPath?: string;
   /** Main-document logic runs after helpers/component logic. */
   main: boolean;
+  /** True for a fragment that came from a `.py` file. */
+  python?: boolean;
 }
 
 function normalizeRootPath(value: string): string {
@@ -132,11 +188,15 @@ export function composeBundleSource(
         if (externalSource === undefined) {
           throw new Error(`${externalPath} is referenced by ${uiPath} but is not in the bundle`);
         }
+        const python = isPythonLogicPath(externalPath);
         const fragment: LogicFragment = {
-          code: rewriteBundleLogicImports(externalSource, externalPath),
+          // Python has no `import "./x.logic"` line to rewrite, and rewriting
+          // one would edit the author's source: Python imports by module name.
+          code: python ? externalSource : rewriteBundleLogicImports(externalSource, externalPath),
           basePath: externalPath,
           externalPath,
           main,
+          python,
         };
         externalFragments.set(externalPath, fragment);
         rememberFragment(fragment);
@@ -146,6 +206,17 @@ export function composeBundleSource(
       // A self-closing <logic /> without src is malformed but harmless; retain
       // it so the parser can surface the author's input rather than invent code.
       if (inlineCode === undefined) return fullTag;
+      // Python is whitespace-significant and markup indentation is not
+      // reliable — an editor, a formatter or a component inliner can reindent
+      // a block and change what the code means. So Python lives in a file the
+      // bundle carries verbatim, and saying otherwise inline is refused rather
+      // than silently mis-indented.
+      const lang = attributes.match(/\blang(?:uage)?\s*=\s*(["'])([^"']*)\1/i)?.[2];
+      if (lang && lang.trim().toLowerCase() === 'python') {
+        throw new Error(
+          `${uiPath} has an inline <logic lang="python"> block: put Python in a .py file and reference it with <logic src="...">`
+        );
+      }
       const fragment: LogicFragment = {
         code: rewriteBundleLogicImports(inlineCode, uiPath),
         basePath: uiPath,
@@ -210,7 +281,7 @@ export function composeBundleSource(
 
   let source = inlineImports(mainUI, mainPath, new Set([mainPath]), new Map(), true);
   if (!firstFragment) {
-    return { source, preIncludedLogicPaths: [] };
+    return { source, preIncludedLogicPaths: [], languages: ['javascript'] };
   }
 
   // Main-document logic is the entry and runs after helpers/components. If the
@@ -242,11 +313,13 @@ export function composeBundleSource(
       }
       const manifestSource = textFiles.get(manifestPath);
       if (manifestSource === undefined) continue;
+      const python = isPythonLogicPath(manifestPath);
       const fragment: LogicFragment = {
-        code: rewriteBundleLogicImports(manifestSource, manifestPath),
+        code: python ? manifestSource : rewriteBundleLogicImports(manifestSource, manifestPath),
         basePath: manifestPath,
         externalPath: manifestPath,
         main: false,
+        python,
       };
       externalFragments.set(manifestPath, fragment);
       addOrdered(fragment);
@@ -263,6 +336,48 @@ export function composeBundleSource(
   const logicBasePath =
     entryFragments.find((fragment) => fragment.externalPath)?.externalPath ??
     entryFragments[0].basePath;
+
+  // Which language the logic is in, from the file names alone. A bundle whose
+  // logic is partly each is refused: the two run in separate engines with no
+  // shared scope, so concatenating them would silently drop one, and running
+  // both would need a message model between them that v1 does not have.
+  const pythonFragments = ordered.filter((fragment) => fragment.python);
+  const javascriptFragments = ordered.filter(
+    (fragment) => !fragment.python && fragment.code.trim() !== ''
+  );
+  if (pythonFragments.length > 0 && javascriptFragments.length > 0) {
+    throw new Error(
+      'This app mixes Python and JavaScript logic. They run in separate engines and cannot share names, so an app uses one language for all of its logic.'
+    );
+  }
+
+  if (pythonFragments.length > 0) {
+    // The logic block is left empty on purpose. The document still has one, so
+    // the renderer still builds a runtime and the template still calls named
+    // functions through it — but the code the runtime compiles is the Python
+    // project below, not anything inside the markup.
+    const files: Record<string, string> = {};
+    const modules: string[] = [];
+    for (const fragment of pythonFragments) {
+      const path = fragment.externalPath ?? fragment.basePath;
+      const module = pythonModuleName(path);
+      if (files[module] !== undefined) {
+        throw new Error(
+          `Two Python logic files are both named ${module}.py; Python imports by module name, so each needs its own`
+        );
+      }
+      files[module] = fragment.code;
+      modules.push(module);
+    }
+    return {
+      source: `${source}\n<logic>\n</logic>`,
+      logicBasePath,
+      preIncludedLogicPaths: [],
+      languages: ['javascript', 'python'],
+      python: { files, modules },
+    };
+  }
+
   const preIncluded = new Set<string>();
   for (const fragment of ordered) {
     if (fragment.externalPath && fragment.externalPath !== logicBasePath) {
@@ -275,5 +390,6 @@ export function composeBundleSource(
     source,
     logicBasePath,
     preIncludedLogicPaths: [...preIncluded],
+    languages: ['javascript'],
   };
 }

@@ -81,6 +81,37 @@ export const RUNTIME_ENGINES: readonly EngineId[] = ['host-js', 'zipp-web-python
  */
 export const HOSTED_ENGINES_PROTOCOL = 1;
 
+/**
+ * How a FormLogic has to read an app's logic languages before it installs this
+ * archive.
+ *
+ * `softn-release.json` carries this as `protocols.logicLanguages`, beside the
+ * native, editor-bridge and hosted-engine numbers, and the packager reads it
+ * from here rather than keeping a number of its own. An archive that declares
+ * it treats a client logic file's name as a language declaration, so a
+ * FormLogic that would hand a `.py` file to a JavaScript engine has to learn
+ * the rule before it can install the runtime that follows it.
+ */
+export const LOGIC_LANGUAGES_PROTOCOL = 1;
+
+/**
+ * Capabilities this runtime has beyond the engines it serves, for a FormLogic
+ * to switch on. `hosted-runtime/runtime-manifest.json` names exactly this
+ * list — the packager reads this declaration out of this file, the way it
+ * reads {@link RUNTIME_ENGINES} — so what an installed runtime can be asked
+ * for and what it says it can be asked for cannot drift apart.
+ *
+ * `python-logic/1` is the contract in {@link bundleLanguages} and
+ * {@link requireBundleLanguages}: a client logic file whose name ends `.py` is
+ * Python, an app's languages are derived from those names and nothing else,
+ * and an engine that cannot run one of them is refused by name rather than
+ * handed the file.
+ *
+ * Written out rather than computed for the same reason the engine list is: the
+ * packager reads it without running anything.
+ */
+export const RUNTIME_FEATURES: readonly string[] = ['python-logic/1'];
+
 /** Every document list, for the test that keeps {@link RUNTIME_ENGINES} honest. */
 export const DOCUMENT_ENGINE_LISTS: ReadonlyArray<readonly EngineId[]> = [
   ZIPP_DOCUMENT_ENGINES,
@@ -170,6 +201,67 @@ export function requireEngineLanguages(engine: EngineId, languages: readonly str
   if (missing.length > 0) {
     throw new Error(
       `The ${engine} engine must run ${missing.join(' and ')}, and the supplied engine does not`
+    );
+  }
+}
+
+/**
+ * What each engine can actually execute.
+ *
+ * Deliberately not {@link ENGINE_REQUIRED_LANGUAGES}, which is the other
+ * direction: that map says what a loaded engine's own profile has to REPORT
+ * before the shell will believe the parent sent the bytes it named, and
+ * `host-js` reports nothing because it has no profile to read. This map says
+ * what the engine RUNS, which for `host-js` is the document's own JavaScript.
+ * Merging them would make a Python bundle on `host-js` pass, because an empty
+ * requirement is satisfied by anything.
+ */
+export const ENGINE_LANGUAGES: Record<EngineId, readonly string[]> = {
+  'zipp-web-python': ['javascript', 'python'],
+  'zipp-web': ['javascript'],
+  'host-js': ['javascript'],
+};
+
+/** A client logic file with this name ending is Python. */
+export const PYTHON_LOGIC_SUFFIX = '.py';
+
+/**
+ * The languages an app's logic is written in, from its client file names.
+ *
+ * The name is the whole declaration. Nothing inside a bundle can claim a
+ * language its files do not, a manifest that says otherwise is not consulted,
+ * and FormLogic derives the same list from the same client files on its own
+ * side — so the shell's answer and the server's are the same answer, reached
+ * the same way, and an app cannot be one thing to the engine chooser and
+ * another to the engine.
+ *
+ * `javascript` is always there: an app's markup and its template expressions
+ * are evaluated on this side whatever its `.logic` files are written in.
+ */
+export function bundleLanguages(paths: Iterable<string>): readonly string[] {
+  for (const path of paths) {
+    if (typeof path === 'string' && path.toLowerCase().endsWith(PYTHON_LOGIC_SUFFIX)) {
+      return ['javascript', 'python'];
+    }
+  }
+  return ['javascript'];
+}
+
+/**
+ * Refuse an engine that cannot run the languages this app's logic is in.
+ *
+ * Neither `zipp-web` nor `host-js` can execute Python at all — one is ZIPP's
+ * JavaScript-only build, the other is this document's own JavaScript engine —
+ * so an app with a `.py` logic file arriving on either of them is a decision
+ * that was already wrong when it was made. It is refused by name, the way an
+ * engine a document does not serve is, rather than started on an engine that
+ * would fail somewhere later with a syntax error about the author's Python.
+ */
+export function requireBundleLanguages(engine: EngineId, languages: readonly string[]): void {
+  const missing = languages.filter((name) => !ENGINE_LANGUAGES[engine].includes(name));
+  if (missing.length > 0) {
+    throw new Error(
+      `This app's logic is written in ${missing.join(' and ')}, and the ${engine} engine does not run ${missing.length > 1 ? 'those languages' : 'that language'}`
     );
   }
 }

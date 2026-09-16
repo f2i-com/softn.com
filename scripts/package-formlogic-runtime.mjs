@@ -131,18 +131,29 @@ if (!hostedEngines.length) fail('apps/formlogic-host/src/engineInit.ts names no 
 // archive by protocol rather than by silently never offering the rest.
 const hostedProtocol = engineInitSource.match(/export const HOSTED_ENGINES_PROTOCOL\s*=\s*(\d+)/);
 if (!hostedProtocol) fail('could not read HOSTED_ENGINES_PROTOCOL from apps/formlogic-host/src/engineInit.ts');
+// And how a reader has to understand an app's logic languages, from the same
+// file. The shell derives them from client file names and refuses an engine
+// that cannot run them; an archive that declares this is one whose runtime
+// follows that rule, so a FormLogic learns the rule before it installs it.
+const languagesProtocol = engineInitSource.match(/export const LOGIC_LANGUAGES_PROTOCOL\s*=\s*(\d+)/);
+if (!languagesProtocol) fail('could not read LOGIC_LANGUAGES_PROTOCOL from apps/formlogic-host/src/engineInit.ts');
 
 const protocols = {
   nativeProtocol: hostProtocol.nativeProtocol,
   recordEvents: hostProtocol.recordEvents,
   editorBridge: Number(bridge[1]),
   hostedEngines: Number(hostedProtocol[1]),
+  logicLanguages: Number(languagesProtocol[1]),
 };
 for (const [k, v] of Object.entries(protocols)) if (!Number.isInteger(v)) fail(`protocol ${k} is not an integer`);
-// Optional runtime capabilities beyond the engines, for FormLogic to switch on
-// (`python-logic/1` and the like). None yet; the key exists so a reader never
-// has to tell "this build has none" from "this build is older than the idea".
-const hostedFeatures = [];
+// Optional runtime capabilities beyond the engines, for FormLogic to switch
+// on. Read from the shell's own RUNTIME_FEATURES, like the engine list above,
+// so what the manifest offers and what the shell implements are one
+// declaration. The key is always present, so a reader never has to tell "this
+// build has none" from "this build is older than the idea".
+const featuresDecl = engineInitSource.match(/export const RUNTIME_FEATURES[^=]*=\s*\[([^\]]*)\]/);
+if (!featuresDecl) fail('could not read RUNTIME_FEATURES from apps/formlogic-host/src/engineInit.ts');
+const hostedFeatures = [...featuresDecl[1].matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
 
 const adapterBytes = Buffer.from(fs.readFileSync(path.join(root, 'packages/@softn/core/src/integrations/formlogic.ts'), 'utf8').replace(/\r\n/g, '\n'), 'utf8');
 const adapter = { path: 'adapter/formlogic.ts', sha256: sha256(adapterBytes) };
