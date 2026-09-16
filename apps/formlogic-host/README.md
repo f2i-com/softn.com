@@ -11,15 +11,38 @@ initializing the app. The `formlogic:init` message supplies the bundle, app ID, 
 port and `zippWasm` ArrayBuffer. The shell configures that source before rendering SoftN.
 
 `ready` also announces `engines`: the engine ids this document will accept, each with the bytes
-it wants (`{"zipp-web-python": {version, sha256, release}}`). `init` may name one in `engine`;
-absent means `zipp-web-python`, which is what hosted apps have always run, so a FormLogic that
-knows nothing of either field behaves exactly as before. An engine this document does not serve
-is refused by name rather than replaced, and the engine that loads must be able to run the
-languages its id promises — `zipp-web-python` is checked for Python against the engine's own
-profile, not against anyone's records. `hosted-runtime/runtime-manifest.json` names the same
-engine ids in `engines` (with `features` for later runtime capabilities), read straight from
-`src/engineInit.ts` so the manifest and this announcement cannot drift apart. The release
-protocol is unchanged: `softn-release.json` gains nothing.
+it wants (`{"zipp-web-python": {version, sha256, release}}`), or `true` where it wants none.
+`init` may name one in `engine`; absent means `zipp-web-python`, which is what hosted apps have
+always run, so a FormLogic that knows nothing of either field behaves exactly as before. An
+engine this document does not serve is refused by name rather than replaced, and the engine that
+loads must be able to run the languages its id promises — `zipp-web-python` is checked for Python
+against the engine's own profile, not against anyone's records.
+`hosted-runtime/runtime-manifest.json` names every engine the build serves in `engines` (with
+`features` for later runtime capabilities), read straight from `src/engineInit.ts` so the
+manifest and these announcements cannot drift apart.
+
+## Two documents
+
+`index.html` serves the ZIPP engines. `host.html` is the same file with one attribute —
+`<html data-softn-logic-engine="host-js">` — and serves only `host-js`, which runs the app
+author's `.logic` as this document's own JavaScript with no VM around it.
+
+It is a second document rather than a flag because of the Content-Security-Policy. The shell
+writes its policy as a `<meta>` element before it accepts anything from the parent, and a meta
+policy can be tightened afterwards but never relaxed. `host-js` needs `'unsafe-eval'` in
+`script-src`; `index.html` must not have it and could not drop it later if it did. So the shell
+reads the attribute first, `src/framePolicy.ts` turns the engines that document serves into the
+policy, and the only difference between the two strings is that one token.
+
+Each document serves exactly what it announces: a `host-js` `init` on `index.html` and a ZIPP
+`init` on `host.html` are both refused by name. `host-js` needs no `zippWasm` bytes. The engine
+itself is `@softn/core/host-js`, imported by `src/hostEngine.ts` — the host entry, which refuses
+unless this really is the host document and the frame really has an opaque origin, and which
+`index.html` never loads. What contains host JavaScript is the frame, not the adapter: read the
+adapter's own header before turning it on.
+
+The release protocol grows one key: `softn-release.json` `protocols.hostedEngines`, which says
+how many hosted-runtime entry documents a reader has to understand.
 
 FormLogic performs one lazy, checksum-verified engine download per page. Its expression worker
 and every hosted app receive cloned bytes; they never share a mutable WASM instance, memory,

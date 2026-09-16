@@ -36,6 +36,10 @@
       "types": "./dist/runtime/index.d.ts",
       "default": "./dist/runtime/index.js"
     },
+    "./host-js": {
+      "types": "./dist/runtime/host-js/index.d.ts",
+      "default": "./dist/runtime/host-js/index.js"
+    },
     "./loader": {
       "types": "./dist/loader/index.d.ts",
       "default": "./dist/loader/index.js"
@@ -54,9 +58,12 @@
     "dev": "tsup --watch",
     "pretest": "node scripts/fetch-zipp-release.mjs --ensure",
     "test": "vitest run",
+    "pretest:host-js": "node scripts/fetch-zipp-release.mjs --ensure",
+    "test:host-js": "vitest run -c vitest.host-js.config.ts",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "acorn": "^8.16.0",
     "fflate": "^0.8.2",
     "yjs": "^13.6.0",
     "y-webrtc": "^10.3.0",

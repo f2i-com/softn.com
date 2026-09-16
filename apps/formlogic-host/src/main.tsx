@@ -5,16 +5,22 @@ import { registerRuntimeComponents } from '@softn/components/lazy';
 import { ThemeProvider } from '@softn/components/theme';
 import { installAppStorage } from './storage';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
-import { ZIPP_DOCUMENT_ENGINES, acceptEngine, acceptZippBytes, requireEngineLanguages, zippReadyEngines } from './engineInit';
+import { acceptEngine, acceptZippBytes, documentEngines, readyEngines, requireEngineLanguages } from './engineInit';
+import { framePolicy } from './framePolicy';
 import zippSource from '../../../packages/@softn/core/wasm-zipp/SOURCE.json';
 
 // This shell is trusted code, run in an opaque-origin iframe. The parent owns
 // authentication and accepts only named action calls for the selected app.
+// Which document this is comes first: the policy depends on it, a meta policy
+// can be tightened afterwards but never relaxed, and the same list decides what
+// `init` is accepted and what `ready` announces. Nothing the parent sends is
+// read before this point.
+const served = documentEngines(document.documentElement.getAttribute('data-softn-logic-engine'));
 // Pin all loading to this trusted runtime directory before accepting app source.
 const policy = document.createElement('meta');
 policy.httpEquiv = 'Content-Security-Policy';
 const assets = new URL('./', document.baseURI).href;
-policy.content = `default-src 'none'; script-src ${assets} 'wasm-unsafe-eval'; connect-src ${assets}; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; worker-src blob:; form-action 'none'; base-uri 'none'; frame-src 'none'`;
+policy.content = framePolicy(assets, served);
 document.head.appendChild(policy);
 registerRuntimeComponents();
 const root = createRoot(document.getElementById('root')!);
@@ -62,13 +68,24 @@ window.addEventListener('message', async event => {
     // `engine` is an addition: absent means the engine this document has always
     // run, so a FormLogic that predates the choice is unaffected. One it does
     // not serve is refused by name, never quietly replaced.
-    const engine = acceptEngine(event.data.engine, ZIPP_DOCUMENT_ENGINES);
-    const engineBytes = acceptZippBytes(event.data.zippWasm);
-    configureZippWasmSource(engineBytes);
-    // Ask the engine that actually loaded what it can run, before any app code
-    // does. ZIPP's builds share one glue, so the id the parent named and the
-    // bytes it sent are only known to agree once the engine answers.
-    requireEngineLanguages(engine, await zippLanguages());
+    const engine = acceptEngine(event.data.engine, served);
+    if (engine === 'host-js') {
+      // Host JavaScript is this document's own engine, so there are no engine
+      // bytes to accept and nothing to ask what it can run. The host entry —
+      // not this module — checks that the document really is the host one and
+      // that the frame really has the opaque origin the shell is only safe in,
+      // and configures the engine before anything renders. It is imported here
+      // rather than at the top so the adapter is in a chunk of its own that
+      // `index.html` never loads.
+      const { installHostJsEngine } = await import('./hostEngine');
+      installHostJsEngine();
+    } else {
+      configureZippWasmSource(acceptZippBytes(event.data.zippWasm));
+      // Ask the engine that actually loaded what it can run, before any app code
+      // does. ZIPP's builds share one glue, so the id the parent named and the
+      // bytes it sent are only known to agree once the engine answers.
+      requireEngineLanguages(engine, await zippLanguages());
+    }
     const files = new Map<string, string>(Object.entries(event.data.client));
     const manifest = JSON.parse(files.get('manifest.json') || '{}');
     if (event.data.native === true) {
@@ -115,6 +132,7 @@ softn.net.fetch = function(url, options, done) {
 const zippRelease = (zippSource as { release?: string }).release;
 const zippIdentity = { version: zippSource.version, sha256: zippSource.sha256, release: zippRelease };
 // engines is an addition too: the engine ids this document will accept in
-// `init.engine`, each with the bytes it wants. A parent that reads only `zipp`
-// and sends no `engine` sees what it always did.
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: zippIdentity, engines: zippReadyEngines(zippIdentity) }, '*');
+// `init.engine`, each with the bytes it wants — `true` where it wants none. A
+// parent that reads only `zipp` and sends no `engine` sees what it always did,
+// which on this document's other entry is a refusal by name.
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, zipp: zippIdentity, engines: readyEngines(served, zippIdentity) }, '*');

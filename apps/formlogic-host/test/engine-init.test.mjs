@@ -5,12 +5,15 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_ENGINE,
   DOCUMENT_ENGINE_LISTS,
+  HOSTED_ENGINES_PROTOCOL,
+  HOST_JS_DOCUMENT_ENGINES,
   RUNTIME_ENGINES,
   ZIPP_DOCUMENT_ENGINES,
   acceptEngine,
   acceptZippBytes,
+  documentEngines,
+  readyEngines,
   requireEngineLanguages,
-  zippReadyEngines,
 } from '../src/engineInit.ts';
 
 test('an init that names no engine gets the engine hosted apps have always run', () => {
@@ -56,16 +59,49 @@ test('an engine whose profile cannot run what its id promises is refused', () =>
 
 test('ready announces exactly the engines this document accepts in init', () => {
   const identity = { version: '0.0.18', sha256: 'a'.repeat(64), release: 'v0.0.18' };
-  const announced = zippReadyEngines(identity);
-  assert.deepEqual(Object.keys(announced), [...ZIPP_DOCUMENT_ENGINES]);
-  for (const id of ZIPP_DOCUMENT_ENGINES) {
-    assert.deepEqual(announced[id], identity, `${id} is described by the installed release`);
-    assert.equal(acceptEngine(id, ZIPP_DOCUMENT_ENGINES), id, `${id} is accepted in init`);
+  for (const served of DOCUMENT_ENGINE_LISTS) {
+    const announced = readyEngines(served, identity);
+    assert.deepEqual(Object.keys(announced), [...served]);
+    for (const id of served) assert.equal(acceptEngine(id, served), id, `${id} is accepted in init`);
+  }
+  // A ZIPP engine is announced with the bytes it wants; host JavaScript wants
+  // none, and says so rather than naming an engine it will not load.
+  assert.deepEqual(readyEngines(ZIPP_DOCUMENT_ENGINES, identity), { 'zipp-web-python': identity });
+  assert.deepEqual(readyEngines(HOST_JS_DOCUMENT_ENGINES, identity), { 'host-js': true });
+});
+
+test('each document refuses the other document’s engine, by name', () => {
+  assert.equal(acceptEngine('host-js', HOST_JS_DOCUMENT_ENGINES), 'host-js');
+  assert.throws(() => acceptEngine('host-js', ZIPP_DOCUMENT_ENGINES), /does not run the "host-js" engine/);
+  assert.throws(
+    () => acceptEngine('zipp-web-python', HOST_JS_DOCUMENT_ENGINES),
+    /does not run the "zipp-web-python" engine/
+  );
+  // The default is ZIPP, so a FormLogic that predates the choice and sends no
+  // engine at all cannot be given host JavaScript by the host document either.
+  assert.throws(() => acceptEngine(undefined, HOST_JS_DOCUMENT_ENGINES), /does not run/);
+  assert.throws(() => acceptEngine(null, HOST_JS_DOCUMENT_ENGINES), /does not run/);
+});
+
+test('the document attribute decides what the document serves, and fails closed', () => {
+  assert.deepEqual(documentEngines(null), ZIPP_DOCUMENT_ENGINES);
+  assert.deepEqual(documentEngines(undefined), ZIPP_DOCUMENT_ENGINES);
+  assert.deepEqual(documentEngines(''), ZIPP_DOCUMENT_ENGINES);
+  assert.deepEqual(documentEngines('host-js'), HOST_JS_DOCUMENT_ENGINES);
+  // An attribute this build does not know serves nothing at all: every init is
+  // refused rather than run on a guess.
+  for (const unknown of ['host-python', 'HOST-JS', 'zipp-web-python', ' host-js']) {
+    assert.deepEqual(documentEngines(unknown), [], unknown);
+    assert.throws(() => acceptEngine(undefined, documentEngines(unknown)), /does not run/);
   }
 });
 
 test('the runtime manifest list is the union of what the documents serve', () => {
   const union = [...new Set(DOCUMENT_ENGINE_LISTS.flat())].sort();
   assert.deepEqual([...RUNTIME_ENGINES], union);
-  assert.deepEqual([...RUNTIME_ENGINES], ['zipp-web-python']);
+  assert.deepEqual([...RUNTIME_ENGINES], ['host-js', 'zipp-web-python']);
+  // Every document a build serves is one FormLogic has to know how to mount,
+  // which is what the protocol number in softn-release.json says.
+  assert.equal(HOSTED_ENGINES_PROTOCOL, 1);
+  assert.ok(Number.isInteger(HOSTED_ENGINES_PROTOCOL));
 });

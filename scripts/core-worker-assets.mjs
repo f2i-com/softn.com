@@ -23,6 +23,12 @@ function copyDirectory(source, destination, skipRuntimeMirror = false) {
     // browser app is already copying that tree to assets/core-runtime, so a
     // second nested copy only duplicates engines, speech assets and chunks.
     if (skipRuntimeMirror && entry.name === 'core-runtime') continue;
+    // The host-JavaScript engine is the one part of core no worker can reach:
+    // it runs the app author's code as the document's own JavaScript, on the
+    // main thread only. Copying it here would put it in every consumer's
+    // assets — the editors and the ZIPP app runtime among them, which must be
+    // able to prove they do not contain it (scripts/host-js-isolation.test.mjs).
+    if (entry.name === 'host-js') continue;
     const from = path.join(source, entry.name);
     const to = path.join(destination, entry.name);
     if (entry.isDirectory()) copyDirectory(from, to);

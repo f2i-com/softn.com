@@ -58,6 +58,18 @@ it may offer. Both are additions; `formatVersion` stays 1 and a reader that
 knows only the older keys is unaffected. Every copy of the engine in the
 archive, recognised by its exports, is the one under `zipp/`.
 
+`hosted-runtime/` has two entry documents. `index.html` serves the ZIPP
+engines; `host.html` is the same document with one attribute and serves only
+`host-js`, which runs the app author's `.logic` as the document's own
+JavaScript. That needs `'unsafe-eval'` in the shell's Content-Security-Policy,
+and a meta policy can be tightened after it is written but never relaxed, so it
+has to be a separate document rather than a flag on the first. A host that
+offers `host-js` mounts `host.html`, sends no engine bytes, and is deciding to
+trust the app's author: the frame is the only thing containing their code.
+`softn-release.json` says so in `protocols.hostedEngines`, so a FormLogic that
+knows only one entry document refuses the archive instead of installing one
+whose manifest offers an engine it would never mount.
+
 FormLogic's `prepare-hosted-runtime` fetches the latest release, checks the
 `.sha256` sidecar and every digest, requires the protocol numbers it speaks,
 takes its browser engine from `zipp/`, and unpacks the folders where its build

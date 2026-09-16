@@ -29,9 +29,29 @@ export const DEFAULT_ENGINE: EngineId = 'zipp-web-python';
  * It is the document, not the build, that decides: the engine has to be known
  * before the shell writes its Content-Security-Policy, and a meta policy can
  * only ever be tightened afterwards. A second document with a different policy
- * is how another kind of engine will be served.
+ * is how another kind of engine is served — see
+ * {@link HOST_JS_DOCUMENT_ENGINES}.
  */
 export const ZIPP_DOCUMENT_ENGINES: readonly EngineId[] = ['zipp-web-python'];
+
+/**
+ * The engines the host-JavaScript entry document (`host.html`) serves.
+ *
+ * That document is byte for byte `index.html` with one attribute added, and
+ * the attribute is the whole reason it exists: `host-js` runs the author's
+ * `.logic` as this document's own JavaScript, which needs `'unsafe-eval'` in
+ * `script-src`, and a policy cannot be relaxed once written. So the relaxed
+ * policy gets its own document, this document serves nothing else, and
+ * `index.html` keeps the policy it has always had.
+ */
+export const HOST_JS_DOCUMENT_ENGINES: readonly EngineId[] = ['host-js'];
+
+/**
+ * The `<html data-softn-logic-engine>` value that selects the host-JavaScript
+ * document. It is the engine id, so the attribute and the announcement cannot
+ * drift apart.
+ */
+export const HOST_JS_DOCUMENT = 'host-js';
 
 /**
  * Every engine an archive built from this checkout can serve: the union of
@@ -47,10 +67,40 @@ export const ZIPP_DOCUMENT_ENGINES: readonly EngineId[] = ['zipp-web-python'];
  * anything; `engine-init.test.mjs` fails if it ever stops being the union of
  * the document lists above.
  */
-export const RUNTIME_ENGINES: readonly EngineId[] = ['zipp-web-python'];
+export const RUNTIME_ENGINES: readonly EngineId[] = ['host-js', 'zipp-web-python'];
+
+/**
+ * How many of the archive's engine documents a FormLogic must understand.
+ *
+ * `softn-release.json` carries this as `protocols.hostedEngines`, beside the
+ * native and editor-bridge protocol numbers, and the packager reads it from
+ * here rather than keeping a number of its own. An archive that declares it
+ * has more than one hosted-runtime entry document, so a FormLogic that mounts
+ * only `index.html` has to learn the second one before it can offer the
+ * engines the manifest lists.
+ */
+export const HOSTED_ENGINES_PROTOCOL = 1;
 
 /** Every document list, for the test that keeps {@link RUNTIME_ENGINES} honest. */
-export const DOCUMENT_ENGINE_LISTS: ReadonlyArray<readonly EngineId[]> = [ZIPP_DOCUMENT_ENGINES];
+export const DOCUMENT_ENGINE_LISTS: ReadonlyArray<readonly EngineId[]> = [
+  ZIPP_DOCUMENT_ENGINES,
+  HOST_JS_DOCUMENT_ENGINES,
+];
+
+/**
+ * Which engines the document carrying `attribute` serves.
+ *
+ * One value decides all three of the things that have to agree: the policy the
+ * shell writes, the `engine` it accepts in `init`, and the `engines` it
+ * announces in `ready`. An attribute this build does not know serves nothing —
+ * every init is refused and the policy is the strict one — because a document
+ * that cannot say what it is must not be the one that relaxes anything.
+ */
+export function documentEngines(attribute: string | null | undefined): readonly EngineId[] {
+  if (attribute === null || attribute === undefined || attribute === '') return ZIPP_DOCUMENT_ENGINES;
+  if (attribute === HOST_JS_DOCUMENT) return HOST_JS_DOCUMENT_ENGINES;
+  return [];
+}
 
 /**
  * Languages an engine id promises. ZIPP ships as more than one build from one
@@ -125,14 +175,17 @@ export function requireEngineLanguages(engine: EngineId, languages: readonly str
 }
 
 /**
- * The `engines` map this document announces in `formlogic:ready`, built from
- * {@link ZIPP_DOCUMENT_ENGINES} so the announcement and the runtime manifest
- * cannot name different sets. Every engine here is ZIPP, so each is described
- * by the installed release's identity; a parent reads it to learn both which
- * engines it may ask for and which bytes each one wants.
+ * The `engines` map a document announces in `formlogic:ready`, built from the
+ * same list it accepts in `init`, so a parent can never be invited to ask for
+ * something it would then be refused.
+ *
+ * A ZIPP engine is described by the installed release's identity, which is
+ * also the bytes the parent must send. `host-js` is described by `true`: it
+ * runs on this document's own JavaScript, so there are no engine bytes to
+ * name and nothing for the parent to fetch.
  */
-export function zippReadyEngines<T>(identity: T): Record<string, T> {
-  const engines: Record<string, T> = {};
-  for (const id of ZIPP_DOCUMENT_ENGINES) engines[id] = identity;
+export function readyEngines<T>(served: readonly EngineId[], zippIdentity: T): Record<string, T | true> {
+  const engines: Record<string, T | true> = {};
+  for (const id of served) engines[id] = id === HOST_JS_DOCUMENT ? true : zippIdentity;
   return engines;
 }
