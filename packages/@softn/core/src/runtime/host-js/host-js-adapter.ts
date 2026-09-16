@@ -104,9 +104,12 @@ const CLIPBOARD_SYNC_OPS = ['nav.clipboardWrite', 'nav.clipboardRead'] as const;
 
 /**
  * The preamble names, in the order the compiled closure takes them. A script
- * that declares one of these at the top level gets the facade, not its own
- * binding — which is what happens on ZIPP too, where the engine refuses the
- * redeclaration outright.
+ * that declares one of these at the top level is refused with the same
+ * `SyntaxError` ZIPP gives (`Identifier 'window' has already been declared`),
+ * for `var` and `function` as much as for `let`: a `var window = 1` would
+ * otherwise rebind the parameter and quietly give the script its own value
+ * where ZIPP gives none at all. Safe by construction — no bundle that runs on
+ * ZIPP can contain one.
  */
 const PREAMBLE_PARAMS = ['window', 'navigator', 'localStorage', 'db', 'host', 'accel'] as const;
 
@@ -241,10 +244,18 @@ interface Declared {
   constant: boolean;
 }
 
-/** What one parse answered: the script to compile, and its top-level bindings. */
+/** What one parse answered: the script to compile, its top-level bindings, and its directive prologue. */
 interface Scanned {
   code: string;
   declared: Declared[];
+  /**
+   * The leading directives (`'use strict'`), as the author spelled them. A
+   * directive is only one when it is the first thing in its function body,
+   * and the generated prologue is what comes first — so these are emitted
+   * again ahead of it, exactly as written: an escaped spelling is not a
+   * directive, which is why the raw source is kept and not the value.
+   */
+  directives: string[];
 }
 
 /**
@@ -305,6 +316,7 @@ function scanScript(code: string): Scanned {
     }
   };
   const constStarts: number[] = [];
+  const directives: string[] = [];
   for (const statement of ast.body) {
     if (statement.type === 'FunctionDeclaration' && statement.id) {
       add(statement.id.name, 'function', false);
@@ -321,13 +333,22 @@ function scanScript(code: string): Scanned {
       walkVar(statement);
     }
   }
+  for (const statement of ast.body) {
+    if (statement.type !== 'ExpressionStatement' || typeof statement.directive !== 'string') break;
+    directives.push(code.slice(statement.expression.start, statement.expression.end));
+  }
+  for (const { name } of declared) {
+    if ((PREAMBLE_PARAMS as readonly string[]).includes(name)) {
+      throw new SyntaxError(`Identifier '${name}' has already been declared`);
+    }
+  }
   let rewritten = code;
   for (const start of constStarts) {
     // `const` is five characters and so is `let` plus the two spaces that keep
     // every later offset exactly where the parser found it.
     rewritten = rewritten.slice(0, start) + 'let  ' + rewritten.slice(start + 5);
   }
-  return { code: rewritten, declared };
+  return { code: rewritten, declared, directives };
 }
 
 /** The pair the generated prologue hands back for one binding. */
@@ -688,7 +709,7 @@ export class HostJsAdapter implements LogicEngine {
     }
     const slots: Declared[] = [
       ...EXPOSED_PREAMBLE.map((name) => ({ name, scope: 'variable' as SymbolScope, constant: false })),
-      ...scanned.declared.filter((d) => !(PREAMBLE_PARAMS as readonly string[]).includes(d.name)),
+      ...scanned.declared,
     ];
     const exportName = `__hostJsExport_${++compileCounter}_${Math.random().toString(36).slice(2)}`;
     const table = slots
@@ -698,7 +719,20 @@ export class HostJsAdapter implements LogicEngine {
     // `let`/`const` are legal before the declaration is reached — the temporal
     // dead zone applies when one is CALLED, not when it is made — so the host
     // has its whole table however early the script returns.
-    const body = `${exportName}({ slots: {\n${table}\n}, evaluate: function (__expression) { return eval(__expression); } });\n${scanned.code}`;
+    //
+    // Prologue and script sit inside a function of their own, for two reasons
+    // that are both about what the author's first line sees. The author's
+    // directives are repeated ahead of the prologue, so a leading `'use strict'`
+    // is a directive of the function the script actually runs in — after the
+    // prologue call it would be an expression statement, `this` inside the
+    // script's functions would be the global object and an undeclared
+    // assignment would create a global rather than throw. And `arguments` is
+    // that inner function's, which takes none: without the wrapper it was the
+    // compiled closure's, and read as the six facades and the export callback.
+    // The wrapper is called with the outer `this`, so top-level `this` is the
+    // global object under either mode, as it is in a classic script.
+    const directives = scanned.directives.map((directive) => `${directive};`).join('\n');
+    const body = `return (function () {\n${directives}\n${exportName}({ slots: {\n${table}\n}, evaluate: function (__expression) { return eval(__expression); } });\n${scanned.code}\n}).call(this);`;
     let compiled: (...args: unknown[]) => unknown;
     try {
       compiled = new Function(...PREAMBLE_PARAMS, exportName, body) as typeof compiled;

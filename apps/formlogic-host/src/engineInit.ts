@@ -257,6 +257,19 @@ export const PYTHON_LOGIC_SUFFIX = '.py';
  *
  * `javascript` is always there: an app's markup and its template expressions
  * are evaluated on this side whatever its `.logic` files are written in.
+ *
+ * DELIBERATELY BROADER than the composer's rule. `composeBundleSource` marks a
+ * bundle Python only for a `.py` the markup or the manifest actually
+ * references as logic; this counts ANY client file ending `.py`, referenced or
+ * not. So a JavaScript app that ships an unreferenced `example.py` as an asset
+ * is refused on `zipp-web` and `host-js` although it would have run. That is
+ * the conservative side, and it is chosen on purpose: FormLogic's server-side
+ * `languagesOf` applies this same any-client-filename rule when it decides
+ * which engines to offer, and the one thing the two sides must never do is
+ * disagree — an app that is Python to the chooser and JavaScript to the shell,
+ * or the reverse, is an app whose engine was picked for a different app.
+ * Narrowing this to the composer's rule would need the server narrowed in the
+ * same commit; do not do one without the other.
  */
 export function bundleLanguages(paths: Iterable<string>): readonly string[] {
   for (const path of paths) {

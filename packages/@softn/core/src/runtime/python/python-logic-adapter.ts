@@ -34,7 +34,7 @@ import { flushEngineOutput } from '../engine-output';
 import type { DBNamespace } from '../script-runtime';
 import type { SymbolInfo, SymbolScope } from '../zipp-wasm-adapter';
 import type { LogicEngine, PythonProject } from '../vm-adapter';
-import { SOFTN_PY, mainSource, scanTopLevelNames, setterSource } from './python-runtime-source';
+import { SOFTN_PY, mainSource } from './python-runtime-source';
 import { authorMessage, lineCount, type AuthorLineCounts } from './python-errors';
 
 /** The entry module and the functions the adapter calls on it by name. */
@@ -204,9 +204,10 @@ export class PythonLogicAdapter implements LogicEngine {
    * Compile and run a Python project, answering the same symbol map
    * `initializeScript` answers for JavaScript.
    *
-   * The generated setter is APPENDED to each author module, so every line the
-   * author wrote keeps the number they wrote it at and an error names a line
-   * they can open.
+   * The author's modules go to the engine exactly as written — nothing is
+   * prepended or appended — so every line keeps the number they wrote it at
+   * and an error names a line they can open. What the runtime adds is two
+   * files of its own, `__softn_main__.py` and `softn.py`.
    */
   async initializePythonProject(project: PythonProject): Promise<Map<string, SymbolInfo>> {
     await ensureZippWasm();
@@ -221,7 +222,7 @@ export class PythonLogicAdapter implements LogicEngine {
         throw new Error(`The Python module ${module}.py is not in this app`);
       }
       authorLines.set(module, lineCount(source));
-      files[`${module}.py`] = source + setterSource(module, scanTopLevelNames(source));
+      files[`${module}.py`] = source;
     }
     this.authorLines = authorLines;
 
@@ -301,8 +302,34 @@ export class PythonLogicAdapter implements LogicEngine {
     return this.enter(STATE, [names]) ?? {};
   }
 
+  /**
+   * Write state back where it lives, or say which names did not land.
+   *
+   * `__softn_write__` resolves each name to the module that owns it from the
+   * same table `__softn_symbols__` reported, and answers the names it refused:
+   * one the table does not offer, or one it offers as a function. The runtime
+   * only ever writes names it got from that table, so a refusal is a
+   * contradiction between what the engine offered and what it will take — and
+   * it is THROWN rather than counted, because a write that did not happen and
+   * was not reported is state the host believes and the app does not have.
+   *
+   * A throw, not `onStorageFailure`: that hook is the localStorage
+   * persistence channel, installed only when the app is granted storage and
+   * declared never-called on this adapter. A failed engine entry is what every
+   * caller of `setGlobalsBatch` already handles — each sync site in
+   * `SoftNScriptRuntime` runs inside the try that reports an entry's failure —
+   * so the error reaches the console in the same words a raised exception in
+   * the author's code would, naming the variables.
+   */
   private writeState(values: Record<string, unknown>): void {
-    this.enter(WRITE, sanitizeArgs([values]));
+    const refused = this.enter(WRITE, sanitizeArgs([values]));
+    if (Array.isArray(refused) && refused.length > 0) {
+      throw new Error(
+        `The Python app offered ${refused.map((name) => `\`${String(name)}\``).join(', ')} as state but would not take ${
+          refused.length > 1 ? 'them' : 'it'
+        } back`
+      );
+    }
   }
 
   callFunction(name: string, args: unknown[]): unknown {

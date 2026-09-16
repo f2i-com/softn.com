@@ -381,7 +381,7 @@ access the first time, or `ZIPP_RELEASE_DIR=<folder>` holding the release's `SHA
 
 ```bash
 npm run fetch:zipp                      # the release Cargo.toml declares
-npm run fetch:zipp -- --check           # verify the install offline
+npm run fetch:zipp -- --check           # re-verify the install offline (digests, fields, import/export subset)
 ```
 
 `fetch:zipp` checks the bundle against the release's `SHA256SUMS`, every file against the bundle's
@@ -394,7 +394,9 @@ nothing it lacks, and, loaded under the engine's glue, reporting `["javascript"]
 Python entry points refusing. Softn's own apps never use it; `wasm-zipp/SOURCE.json` names it under
 `variants.web` so the FormLogic runtime archive can carry it as `zipp-web/` for a FormLogic that
 offers the smaller engine. An install without it is refused.
-`--check --online` compares an install with the published release, and
+The load-under-the-glue probe runs at install; `--check` (offline) re-verifies the installed
+bytes — every digest, the recorded fields, and that the variant's imports and exports are a subset
+of the engine's — and loads nothing. `--check --online` compares an install with the published release, and
 `ZIPP_RELEASE`/`ZIPP_SUMS_SHA256` name the release and the `SHA256SUMS` digest an install must have.
 `-- v0.0.19` or `-- --latest` installs another release once, but the next build, test, typecheck or
 licence script puts the declared release back (with a warning). To build and test against another

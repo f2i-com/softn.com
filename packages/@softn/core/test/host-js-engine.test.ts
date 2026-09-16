@@ -219,6 +219,78 @@ describe('the host JavaScript engine as a logic engine', () => {
     good.dispose();
   });
 
+  it("honours a leading 'use strict', which the prologue must not demote", async () => {
+    // The generated prologue runs before the author's first statement, so a
+    // directive left where the author wrote it would be an ordinary string
+    // expression. Repeated ahead of the prologue, it is a directive again.
+    const { engine, symbols } = await compile(
+      [
+        "'use strict';",
+        'function f() { return this === undefined; }',
+        'var fThis = f();',
+        'var topThis = this === globalThis;',
+        'var arity = arguments.length;',
+      ].join('\n')
+    );
+    expect(engine.getGlobal(slotOf(symbols, 'fThis'))).toBe(true);
+    // Top-level `this` is the global object under strict mode too, as it is in
+    // a classic script.
+    expect(engine.getGlobal(slotOf(symbols, 'topThis'))).toBe(true);
+    // `arguments` is the script's own function's, which takes none — not the
+    // compiled closure's six facades and export callback.
+    expect(engine.getGlobal(slotOf(symbols, 'arity'))).toBe(0);
+    engine.dispose();
+
+    // An undeclared assignment throws under strict mode and creates nothing.
+    const strict = await HostJsAdapter.create();
+    await expect(strict.initializeScript(["'use strict';", 'hostJsUndeclaredLeak = 42;'].join('\n'))).rejects.toThrow(
+      ReferenceError
+    );
+    expect((globalThis as Record<string, unknown>).hostJsUndeclaredLeak).toBeUndefined();
+
+    // The same spelling the author used, so an escaped string — which is not a
+    // directive by the language's own rule — is not turned into one.
+    const escaped = await HostJsAdapter.create();
+    const map = await escaped.initializeScript(
+      ['"use\\x20strict";', 'hostJsSloppyLeak = 1;', 'var leaked = typeof globalThis.hostJsSloppyLeak;'].join('\n')
+    );
+    expect(escaped.getGlobal(slotOf(map, 'leaked'))).toBe('number');
+    delete (globalThis as Record<string, unknown>).hostJsSloppyLeak;
+    escaped.dispose();
+  });
+
+  it('gives the script an empty arguments object, not the engine’s facades', async () => {
+    const { engine, symbols } = await compile(
+      'var n = arguments.length; var kinds = Array.from(arguments, (x) => typeof x);'
+    );
+    expect(engine.getGlobal(slotOf(symbols, 'n'))).toBe(0);
+    expect(engine.getGlobal(slotOf(symbols, 'kinds'))).toEqual([]);
+    engine.dispose();
+  });
+
+  it('refuses a script that declares a preamble name, as ZIPP does', async () => {
+    // A `var window = 1` would rebind the closure's parameter and give the
+    // script a value of its own where ZIPP refuses the redeclaration; the
+    // refusal here is the same sentence, for every declaration kind.
+    for (const code of [
+      'var window = 1;',
+      'function host() {}',
+      'let navigator = 1;',
+      'if (1) { var db = 2; }',
+      'const accel = 0;',
+      'var localStorage;',
+    ]) {
+      const engine = await HostJsAdapter.create();
+      await expect(engine.initializeScript(code), code).rejects.toThrow(/Identifier '\w+' has already been declared/);
+      expect(engine.terminated, code).toBe(true);
+    }
+    // Using one is what a script does, and is untouched.
+    const { engine, symbols } = await compile('var w = typeof window; var h = typeof host.call;');
+    expect(engine.getGlobal(slotOf(symbols, 'w'))).toBe('object');
+    expect(engine.getGlobal(slotOf(symbols, 'h'))).toBe('function');
+    engine.dispose();
+  });
+
   it('evaluates an expression in the script’s own scope', async () => {
     const { engine } = await compile('let a = 2;\nlet b = 3;\nfunction f() { return 1; }');
     expect(engine.evalSync('a * b')).toBe(6);
