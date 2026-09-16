@@ -46,10 +46,15 @@ editor bridge protocol in `manifest.json`), `native-runtime/`
 (`apps/softn-host-php/runtime/*` byte for byte, the ZIPP engine, licences,
 `provenance.json`), `zipp/` (`packages/@softn/core/wasm-zipp/` byte for byte:
 ZIPP's web-python release files with the bundle's `SHA256SUMS`, ZIPP's release
-`SHA256SUMS` as `RELEASE-SHA256SUMS`, the notices and `SOURCE.json`), `adapter/`
+`SHA256SUMS` as `RELEASE-SHA256SUMS`, the notices and `SOURCE.json`), `zipp-web/`
+(`packages/@softn/core/wasm-zipp-web/` byte for byte: the same ZIPP release's
+JavaScript-only build — its module, `BUILD-INFO.txt`, `PROFILE.json`, its
+bundle's `SHA256SUMS` and its own `SOURCE.json` — verified as a variant of
+`zipp/`: same commit, same imports, no export `zipp/` lacks, so it runs under
+`zipp/`'s glue; `zipp/SOURCE.json` names it under `variants.web`), `adapter/`
 (`packages/@softn/core/src/integrations/formlogic.ts` with its provenance) and
-`softn-release.json` (tag, commit, the engine's whole `SOURCE.json` record,
-protocols, adapter digest, a digest of every other file). Each built folder
+`softn-release.json` (tag, commit, the engine's whole `SOURCE.json` record with
+its `variants`, protocols, adapter digest, a digest of every other file). Each built folder
 carries the `runtime-manifest.json` FormLogic's `checkRuntimeArtifact`
 verifies. `hosted-runtime/runtime-manifest.json` also names, in `engines`, the
 engine ids its shell will accept in `formlogic:init`, and in `features` the
@@ -57,7 +62,12 @@ optional capabilities it has beyond them, so a host can tell from what it
 INSTALLED which engines it may offer and what else it may ask of them. Both are
 additions; `formatVersion` stays 1 and a reader that
 knows only the older keys is unaffected. Every copy of the engine in the
-archive, recognised by its exports, is the one under `zipp/`.
+archive, recognised by its exports, is the one under `zipp/` — except the one
+at `zipp-web/zipp_wasm_bg.wasm`, which is the web variant `variants.web`
+records, and which may carry that digest nowhere else. `zipp/` itself holds
+exactly the engine install, so a FormLogic that offers only `zipp-web-python`
+sees what it always saw; one that offers `zipp-web` takes the variant from
+`zipp-web/`, checks it against `variants.web`, and announces it under that id.
 
 `hosted-runtime/` has two entry documents. `index.html` serves the ZIPP
 engines; `host.html` is the same document with one attribute and serves only

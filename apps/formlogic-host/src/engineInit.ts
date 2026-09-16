@@ -23,8 +23,15 @@ export type EngineId = 'zipp-web-python' | 'zipp-web' | 'host-js';
  */
 export const DEFAULT_ENGINE: EngineId = 'zipp-web-python';
 
+/** The engines that are a build of ZIPP: the parent posts their bytes, and the shell asks them what they run. */
+export type ZippEngineId = Exclude<EngineId, 'host-js'>;
+
 /**
- * The engines the ZIPP entry document (`index.html`) serves.
+ * The engines the ZIPP entry document (`index.html`) serves: the
+ * JavaScript-and-Python build every hosted app has always run on, and the
+ * same release's JavaScript-only build beside it. Both run under this
+ * document's one glue and its one policy; they differ in the bytes the parent
+ * posts, and in what the loaded engine then says it can run.
  *
  * It is the document, not the build, that decides: the engine has to be known
  * before the shell writes its Content-Security-Policy, and a meta policy can
@@ -32,7 +39,7 @@ export const DEFAULT_ENGINE: EngineId = 'zipp-web-python';
  * is how another kind of engine is served — see
  * {@link HOST_JS_DOCUMENT_ENGINES}.
  */
-export const ZIPP_DOCUMENT_ENGINES: readonly EngineId[] = ['zipp-web-python'];
+export const ZIPP_DOCUMENT_ENGINES: readonly EngineId[] = ['zipp-web-python', 'zipp-web'];
 
 /**
  * The engines the host-JavaScript entry document (`host.html`) serves.
@@ -67,7 +74,7 @@ export const HOST_JS_DOCUMENT = 'host-js';
  * anything; `engine-init.test.mjs` fails if it ever stops being the union of
  * the document lists above.
  */
-export const RUNTIME_ENGINES: readonly EngineId[] = ['host-js', 'zipp-web-python'];
+export const RUNTIME_ENGINES: readonly EngineId[] = ['host-js', 'zipp-web', 'zipp-web-python'];
 
 /**
  * How many of the archive's engine documents a FormLogic must understand.
@@ -134,10 +141,13 @@ export function documentEngines(attribute: string | null | undefined): readonly 
 }
 
 /**
- * Languages an engine id promises. ZIPP ships as more than one build from one
- * glue, so the id the parent names and the bytes it sends can disagree; the
- * shell checks the engine's own profile against this rather than trusting
- * either side's records.
+ * Languages an engine id promises — exactly these, no more and no fewer.
+ * ZIPP ships as more than one build from one glue, so the id the parent names
+ * and the bytes it sends can disagree in either direction: the Python build
+ * posted under the JavaScript-only name is as wrong as the reverse, because
+ * the owner chose the smaller engine and a parent that quietly ran the larger
+ * one would make that choice a lie. The shell checks the engine's own profile
+ * against this rather than trusting either side's records.
  */
 export const ENGINE_REQUIRED_LANGUAGES: Record<EngineId, readonly string[]> = {
   'zipp-web-python': ['javascript', 'python'],
@@ -189,18 +199,28 @@ export function acceptZippBytes(value: unknown): ArrayBuffer {
 }
 
 /**
- * Refuse an engine whose loaded profile cannot run what its id promises.
+ * Refuse an engine whose loaded profile does not run exactly what its id
+ * promises.
  *
  * The check is the engine's own answer, taken after it has loaded, so a parent
  * that names `zipp-web-python` and posts the JavaScript-only build is caught
  * here rather than at the first Python file, and the reason names the language
- * that is missing.
+ * that is missing; and a parent that names `zipp-web` and posts the Python
+ * build is caught the same way, with the reason naming the language the
+ * smaller engine was chosen not to have.
  */
 export function requireEngineLanguages(engine: EngineId, languages: readonly string[]): void {
-  const missing = ENGINE_REQUIRED_LANGUAGES[engine].filter((name) => !languages.includes(name));
+  const required = ENGINE_REQUIRED_LANGUAGES[engine];
+  const missing = required.filter((name) => !languages.includes(name));
   if (missing.length > 0) {
     throw new Error(
       `The ${engine} engine must run ${missing.join(' and ')}, and the supplied engine does not`
+    );
+  }
+  const extra = languages.filter((name) => !required.includes(name));
+  if (extra.length > 0) {
+    throw new Error(
+      `The ${engine} engine runs ${required.join(' and ') || 'nothing'} only, and the supplied engine also runs ${extra.join(' and ')}`
     );
   }
 }
@@ -267,17 +287,76 @@ export function requireBundleLanguages(engine: EngineId, languages: readonly str
 }
 
 /**
+ * The identity a ZIPP engine is announced with: the bytes the parent must
+ * post, named by the release they came from. The primary engine's is the
+ * install's own record; a variant's is the same record with the variant's
+ * digest, because it is the same release built again.
+ */
+export interface ZippIdentity {
+  version: string;
+  sha256: string;
+  release?: string;
+}
+
+/** The shape of the install's SOURCE.json this module reads: the primary record and its variants. */
+export interface ZippInstallRecord {
+  version: string;
+  sha256: string;
+  release?: string;
+  variants?: { web?: { sha256: string } };
+}
+
+/**
+ * One identity per ZIPP engine id, from the installed release's SOURCE.json.
+ *
+ * `zipp-web-python` is the install itself. `zipp-web` is its `variants.web`
+ * record — the JavaScript-only build of the same release, verified against the
+ * same SHA256SUMS and installed beside it — and is absent when the install has
+ * none, which only a local engine build (`--install-local`) can be: a release
+ * install is refused without it.
+ */
+export type ZippIdentities = { 'zipp-web-python': ZippIdentity } & Partial<Record<ZippEngineId, ZippIdentity>>;
+
+export function zippIdentities(source: ZippInstallRecord): ZippIdentities {
+  const primary: ZippIdentity = { version: source.version, sha256: source.sha256, release: source.release };
+  const web = source.variants?.web;
+  return {
+    'zipp-web-python': primary,
+    ...(web && typeof web.sha256 === 'string' ? { 'zipp-web': { ...primary, sha256: web.sha256 } } : {}),
+  };
+}
+
+/**
+ * The engines of `served` this build can really serve: every non-ZIPP one,
+ * and every ZIPP one whose bytes the install can name. A ZIPP engine without
+ * an identity is dropped from what the document accepts AND announces, in one
+ * place, so a parent is never invited to ask for bytes nobody can vouch for
+ * and never refused something it was invited to ask for.
+ */
+export function servableEngines(served: readonly EngineId[], identities: Partial<Record<ZippEngineId, ZippIdentity>>): readonly EngineId[] {
+  return served.filter((id) => id === HOST_JS_DOCUMENT || identities[id as ZippEngineId] !== undefined);
+}
+
+/**
  * The `engines` map a document announces in `formlogic:ready`, built from the
  * same list it accepts in `init`, so a parent can never be invited to ask for
  * something it would then be refused.
  *
- * A ZIPP engine is described by the installed release's identity, which is
- * also the bytes the parent must send. `host-js` is described by `true`: it
- * runs on this document's own JavaScript, so there are no engine bytes to
- * name and nothing for the parent to fetch.
+ * A ZIPP engine is described by its identity — the release, and the digest of
+ * the bytes the parent must send for that id. `host-js` is described by
+ * `true`: it runs on this document's own JavaScript, so there are no engine
+ * bytes to name and nothing for the parent to fetch. A ZIPP id with no
+ * identity is not announced; callers pass a list {@link servableEngines} has
+ * already reduced, and the two agree by construction.
  */
-export function readyEngines<T>(served: readonly EngineId[], zippIdentity: T): Record<string, T | true> {
+export function readyEngines<T>(served: readonly EngineId[], identities: Partial<Record<ZippEngineId, T>>): Record<string, T | true> {
   const engines: Record<string, T | true> = {};
-  for (const id of served) engines[id] = id === HOST_JS_DOCUMENT ? true : zippIdentity;
+  for (const id of served) {
+    if (id === HOST_JS_DOCUMENT) engines[id] = true;
+    else {
+      const identity = identities[id as ZippEngineId];
+      if (identity !== undefined) engines[id] = identity;
+    }
+  }
   return engines;
 }

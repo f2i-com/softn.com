@@ -60,10 +60,13 @@ apps/softn-single/public/app.softn
 # the release apps/softn-host-rust/Cargo.toml declares (the npm hooks run it),
 # staging beside the folder under a lock file; its downloads are cached per
 # tag, and a local engine build (build-zipp-wasm.mjs) goes to core's
-# .cache/zipp-local. Only the curated notices in
-# packages/@softn/core/zipp-notices/ are source.
+# .cache/zipp-local. The same release's JavaScript-only web build is installed
+# beside it as a verified variant (wasm-zipp-web/), staged the same way. Only
+# the curated notices in packages/@softn/core/zipp-notices/ are source.
 /packages/@softn/core/wasm-zipp/
 /packages/@softn/core/.wasm-zipp.*
+/packages/@softn/core/wasm-zipp-web/
+/packages/@softn/core/.wasm-zipp-web.*
 /packages/@softn/core/.cache/
 /.zipp-release/
 

@@ -88,10 +88,12 @@ test('a Cargo.toml without a zipp-vm release tag is refused before GitHub is ask
 });
 
 test('the gate runs with no node_modules and writes GITHUB_OUTPUT and the step summary', (t) => {
-  // A copy of the two scripts in the layout they expect, far from node_modules,
-  // with fetch stubbed before the gate loads: the release gate job runs no npm ci.
+  // A copy of the two scripts, and the one repository file the fetch script
+  // imports (the WebAssembly section reader), in the layout they expect, far
+  // from node_modules, with fetch stubbed before the gate loads: the release
+  // gate job runs no npm ci.
   const tree = tempDir(t);
-  for (const rel of ['scripts/zipp-release-gate.mjs', 'packages/@softn/core/scripts/fetch-zipp-release.mjs']) {
+  for (const rel of ['scripts/zipp-release-gate.mjs', 'scripts/lib/zipp-engine-copy.mjs', 'packages/@softn/core/scripts/fetch-zipp-release.mjs']) {
     fs.mkdirSync(path.dirname(path.join(tree, rel)), { recursive: true });
     fs.copyFileSync(path.join(root, rel), path.join(tree, rel));
   }
