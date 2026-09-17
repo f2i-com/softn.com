@@ -1,6 +1,6 @@
 {
   "name": "@softn/test-utils",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "private": true,
   "description": "Test doubles more than one workspace needs. Nothing here ships; a workspace lists it under devDependencies and imports it by name instead of reaching into another workspace's test folder.",
   "license": "Apache-2.0",

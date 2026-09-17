@@ -1,8 +1,8 @@
 {
   "name": "@softn/site",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "private": true,
-  "description": "softn.com \u2014 the SoftN landing page",
+  "description": "softn.com — the SoftN landing page",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {

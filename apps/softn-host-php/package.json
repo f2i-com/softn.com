@@ -1,6 +1,6 @@
 {
   "name": "@softn/host-php",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "private": true,
   "description": "The PHP front and bundled Node worker that host a single app's backend on demand",
   "license": "Apache-2.0",
