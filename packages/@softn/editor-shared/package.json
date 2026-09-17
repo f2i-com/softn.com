@@ -1,6 +1,6 @@
 {
   "name": "@softn/editor-shared",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "private": true,
   "description": "What Builder and Studio share and neither owns: the hand-off to the runtime and publish page, opening a bundle from a same-origin link, modal keyboard ownership, and the private FormLogic editor channel.",
   "license": "Apache-2.0",

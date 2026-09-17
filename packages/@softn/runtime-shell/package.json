@@ -1,6 +1,6 @@
 {
   "name": "@softn/runtime-shell",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "private": true,
   "description": "What every host that runs one .softn bundle in a browser shares: reading and composing the bundle (bundleProcessor), warming its first screen off the main thread (zipWarmup + zipWorker) and the slim frame bar drawn over an app. The web runtime and the single-app shell both build on it; neither owns it.",
   "license": "Apache-2.0",
