@@ -22,6 +22,28 @@ export interface SingleConfig {
   sha256?: string;
   permissionMode?: 'prompt' | 'preapproved';
   directory?: DirectoryConfig;
+  /**
+   * A module the deployment supplies, whose default export returns the
+   * backend the app's `softn.backend.call` reaches -- for an app whose
+   * actions need something only the host should hold: a key, a connection,
+   * a person's consent. See `loadHost` in ./host.
+   *
+   * Same origin, like the bundle, and set only by whoever controls this
+   * configuration. That matters more here than for any other field: the
+   * module runs with the page's own authority, outside the sandbox the
+   * bundle runs in. The directory builds its configurations from a fixed set
+   * of server-chosen fields and never sets this one, so a publisher cannot
+   * reach it.
+   */
+  host?: string;
+  /**
+   * `app` (the default) pins the application to the viewport and lets it
+   * scroll inside -- right for an app that lays out its own screen. `page`
+   * lets it grow with its content and the document scroll instead -- right
+   * for one that reads as a long page, which under `app` gets a second
+   * scrollbar beside the document's and a header that scrolls away.
+   */
+  layout?: 'app' | 'page';
 }
 export function localUrl(value: unknown, base: string): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 2048)
@@ -65,6 +87,8 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     'sha256',
     'permissionMode',
     'directory',
+    'host',
+    'layout',
   ];
   if (
     Object.keys(c).some((k) => !keys.includes(k)) ||
@@ -88,6 +112,8 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     throw Error('Invalid permission mode');
   if (c.permissionMode === 'preapproved' && !c.sha256)
     throw Error('Preapproved deployments require a pinned bundle digest');
+  if (c.layout !== undefined && c.layout !== 'app' && c.layout !== 'page')
+    throw Error('Invalid layout');
   return {
     version: 1,
     id: c.id,
@@ -99,6 +125,8 @@ export function parseConfig(input: unknown, base: string): SingleConfig {
     sha256: c.sha256 as string | undefined,
     permissionMode: (c.permissionMode as SingleConfig['permissionMode']) ?? 'prompt',
     directory: parseDirectory(c.directory, base),
+    host: c.host === undefined ? undefined : localUrl(c.host, base),
+    layout: (c.layout as SingleConfig['layout']) ?? 'app',
   };
 }
 export function parsePermissions(value: unknown): PermissionConfig {

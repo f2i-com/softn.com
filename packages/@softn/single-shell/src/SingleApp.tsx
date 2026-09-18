@@ -9,6 +9,7 @@ import type { AssetResolver } from '@softn/runtime-shell/bundleProcessor';
 import { loadApplication, type ConfigSource, type LoadedApplication } from './load';
 import type { DirectoryConfig } from './config';
 import { installFavicon } from './favicon';
+import { loadHost, type HostBackendCall } from './host';
 // The slim bar the runtime draws over every app, for the pages a directory
 // serves through this shell; drawn from the shared tokens, which come along.
 import { FrameBar } from '@softn/runtime-shell/FrameBar';
@@ -111,7 +112,7 @@ function countRun(url: string) {
     keepalive: true,
   }).catch(() => {});
 }
-export type HostBackendCall = (action: string, input: Record<string, unknown>) => Promise<unknown>;
+export type { HostBackendCall } from './host';
 export function Application({ app, backendCall }: { app: RunnableApplication; backendCall?: HostBackendCall }) {
   const requested = inspectDeclaration(app.declared).requested;
   // Preapproved by the operator: granted from the start, with no bar and
@@ -284,9 +285,18 @@ export function Application({ app, backendCall }: { app: RunnableApplication; ba
     </ThemeProvider>
   );
 }
+/**
+ * One app, from its configuration. A `backendCall` passed here wins; without
+ * one, the configuration's `host` module supplies it (see ./host).
+ */
 export function SingleApp({ source, backendCall }: { source: ConfigSource; backendCall?: HostBackendCall }) {
   const [app, setApp] = useState<LoadedApplication | null>(null);
+  const [hosted, setHosted] = useState<HostBackendCall | undefined>(undefined);
   const [failed, setFailed] = useState(false);
+  // Read when the app loads rather than listed as a dependency: a parent that
+  // passes a fresh function on each render would otherwise reload the app.
+  const passed = useRef(backendCall);
+  passed.current = backendCall;
   useEffect(() => {
     const controller = new AbortController();
     let owned: LoadedApplication | null = null;
@@ -294,14 +304,19 @@ export function SingleApp({ source, backendCall }: { source: ConfigSource; backe
     let active = true;
     const timeout = setTimeout(() => controller.abort(), 60000);
     void loadApplication(source, controller.signal)
-      .then((result) => {
+      .then(async (result) => {
         owned = result;
+        // Before the app mounts, so its first action has somewhere to go. A
+        // host that is named and fails to load is a failure of the whole
+        // page, not an app left running without its backend.
+        const host = passed.current ? undefined : await loadHost(result.config);
         if (!active) {
           result.assets.dispose();
           return;
         }
         document.title = result.config.title;
         restoreFavicon = installFavicon(result.icon);
+        setHosted(() => host);
         setApp(result);
       })
       .catch(() => {
@@ -316,9 +331,23 @@ export function SingleApp({ source, backendCall }: { source: ConfigSource; backe
       restoreFavicon?.();
     };
   }, [source]);
+  // The page layout lets the document scroll, which means the root elements
+  // above this one have to stop being viewport-high too; see style.css.
+  const page = app?.config.layout === 'page';
+  useEffect(() => {
+    if (!page) return;
+    document.documentElement.classList.add('softn-layout-page');
+    return () => document.documentElement.classList.remove('softn-layout-page');
+  }, [page]);
   return (
-    <main className="single-app">
-      {failed ? <Failure /> : app ? <Application app={app} backendCall={backendCall} /> : <Loading />}
+    <main className={page ? 'single-app layout-page' : 'single-app'}>
+      {failed ? (
+        <Failure />
+      ) : app ? (
+        <Application app={app} backendCall={backendCall ?? hosted} />
+      ) : (
+        <Loading />
+      )}
     </main>
   );
 }
