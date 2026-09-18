@@ -9,7 +9,7 @@ import * as React from 'react';
 
 export interface SortableListProps {
   /** Array of items to render */
-  items: any[];
+  items: unknown[];
   /** Field name to use as React key (defaults to index) */
   renderKey?: string;
   /** Field name for primary text display */
@@ -21,7 +21,7 @@ export interface SortableListProps {
   /** Gap between items in pixels */
   gap?: number;
   /** Callback with the reordered items array */
-  onReorder?: (newItems: any[]) => void;
+  onReorder?: (newItems: unknown[]) => void;
   /** Additional CSS class */
   className?: string;
   /** Inline styles */
@@ -38,16 +38,16 @@ interface DragState {
   itemSize: number;
 }
 
-function getItemKey(item: any, index: number, renderKey?: string): string {
+function getItemKey(item: unknown, index: number, renderKey?: string): string {
   if (renderKey && item != null && typeof item === 'object' && renderKey in item) {
-    return String(item[renderKey]);
+    return String((item as Record<string, unknown>)[renderKey]);
   }
   return String(index);
 }
 
-function getItemText(item: any, field?: string): string {
+function getItemText(item: unknown, field?: string): string {
   if (field && item != null && typeof item === 'object' && field in item) {
-    return String(item[field]);
+    return String((item as Record<string, unknown>)[field]);
   }
   if (typeof item === 'string' || typeof item === 'number') {
     return String(item);

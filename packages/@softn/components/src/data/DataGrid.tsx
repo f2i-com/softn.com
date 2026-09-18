@@ -6,7 +6,15 @@
 
 import * as React from 'react';
 
-export interface DataGridColumn<T = any> {
+/**
+ * A row, when nothing more specific is known about it. The grid is usually fed
+ * a document's data at run time, so a cell's value is `unknown` until a
+ * column's `render` or `editor` says what it is.
+ */
+type Row = Record<string, unknown>;
+
+
+export interface DataGridColumn<T = Row> {
   key: string;
   header: React.ReactNode;
   width?: number | string;
@@ -18,22 +26,26 @@ export interface DataGridColumn<T = any> {
   editable?: boolean;
   frozen?: boolean;
   resizable?: boolean;
-  accessor?: keyof T | ((row: T) => any);
-  render?: (value: any, row: T, index: number) => React.ReactNode;
+  accessor?: keyof T | ((row: T) => unknown);
+  render?: (value: unknown, row: T, index: number) => React.ReactNode;
   editor?: (props: CellEditorProps<T>) => React.ReactNode;
   filterType?: 'text' | 'number' | 'select' | 'date';
-  filterOptions?: { label: string; value: any }[];
+  filterOptions?: { label: string; value: string | number }[];
 }
 
-export interface CellEditorProps<T = any> {
-  value: any;
+/** What a cell's box depends on. The selection column has no data column
+ * behind it, so its cells are styled from these alone. */
+type ColumnLayout = Pick<DataGridColumn, 'align' | 'width' | 'minWidth' | 'maxWidth' | 'frozen' | 'sortable'>;
+
+export interface CellEditorProps<T = Row> {
+  value: unknown;
   row: T;
   column: DataGridColumn<T>;
-  onSave: (value: any) => void;
+  onSave: (value: unknown) => void;
   onCancel: () => void;
 }
 
-export interface DataGridProps<T = any> {
+export interface DataGridProps<T = Row> {
   columns: DataGridColumn<T>[];
   data: T[];
   keyField?: keyof T | ((row: T) => string | number);
@@ -47,19 +59,20 @@ export interface DataGridProps<T = any> {
   sortKey?: string;
   sortDirection?: 'asc' | 'desc';
   onSort?: (key: string, direction: 'asc' | 'desc') => void;
-  filters?: Record<string, any>;
-  onFilterChange?: (filters: Record<string, any>) => void;
+  /** What was typed into each column's filter input, by column key. */
+  filters?: Record<string, string | number>;
+  onFilterChange?: (filters: Record<string, string | number>) => void;
   selectedKeys?: Set<string | number>;
   onSelectionChange?: (keys: Set<string | number>) => void;
   selectionMode?: 'none' | 'single' | 'multiple';
-  onCellEdit?: (key: string | number, columnKey: string, value: any) => void;
+  onCellEdit?: (key: string | number, columnKey: string, value: unknown) => void;
   loading?: boolean;
   emptyMessage?: React.ReactNode;
   className?: string;
   style?: React.CSSProperties;
 }
 
-export function DataGrid<T = any>({
+export function DataGrid<T = Row>({
   columns,
   data: rawData,
   keyField = 'id' as keyof T,
@@ -104,14 +117,17 @@ export function DataGrid<T = any>({
     return (row[keyField] as string | number) ?? index;
   };
 
-  const getCellValue = (row: T, column: DataGridColumn<T>): any => {
+  const getCellValue = (row: T, column: DataGridColumn<T>): unknown => {
     if (column.accessor) {
       if (typeof column.accessor === 'function') {
         return column.accessor(row);
       }
       return row[column.accessor];
     }
-    return (row as any)[column.key];
+    // A column's key is a string chosen at run time, so the row is read as the
+    // keyed record it is in practice rather than through `T`, which may be any
+    // shape at all.
+    return (row as unknown as Row)[column.key];
   };
 
   // Virtual scrolling calculations
@@ -164,7 +180,7 @@ export function DataGrid<T = any>({
     }
   };
 
-  const handleCellSave = (value: any) => {
+  const handleCellSave = (value: unknown) => {
     if (editingCell && onCellEdit) {
       onCellEdit(editingCell.rowKey, editingCell.columnKey, value);
       setEditingCell(null);
@@ -190,7 +206,7 @@ export function DataGrid<T = any>({
     minHeight: headerHeight,
   };
 
-  const headerCellStyle = (column: DataGridColumn<T>): React.CSSProperties => ({
+  const headerCellStyle = (column: ColumnLayout): React.CSSProperties => ({
     display: 'flex',
     alignItems: 'center',
     justifyContent:
@@ -223,7 +239,7 @@ export function DataGrid<T = any>({
     transition: 'background-color 180ms cubic-bezier(0.16, 1, 0.3, 1)',
   });
 
-  const cellStyle = (column: DataGridColumn<T>): React.CSSProperties => ({
+  const cellStyle = (column: ColumnLayout): React.CSSProperties => ({
     display: 'flex',
     alignItems: 'center',
     justifyContent:
@@ -265,7 +281,7 @@ export function DataGrid<T = any>({
       {/* Header */}
       <div style={headerStyle}>
         {selectionMode === 'multiple' && (
-          <div style={{ ...headerCellStyle({} as any), width: 40, minWidth: 40, flexGrow: 0 }}>
+          <div style={{ ...headerCellStyle({}), width: 40, minWidth: 40, flexGrow: 0 }}>
             <input
               type="checkbox"
               checked={data.length > 0 && selectedKeys.size === data.length}
@@ -318,7 +334,7 @@ export function DataGrid<T = any>({
       {showFilters && onFilterChange && (
         <div style={{ ...headerStyle, backgroundColor: 'var(--color-surface, #16161a)', borderBottom: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))' }}>
           {selectionMode === 'multiple' && (
-            <div style={{ ...cellStyle({} as any), width: 40, minWidth: 40, flexGrow: 0 }} />
+            <div style={{ ...cellStyle({}), width: 40, minWidth: 40, flexGrow: 0 }} />
           )}
           {columns.map((column) => (
             <div key={column.key} style={cellStyle(column)}>
@@ -373,7 +389,7 @@ export function DataGrid<T = any>({
                   }}
                 >
                   {selectionMode === 'multiple' && (
-                    <div style={{ ...cellStyle({} as any), width: 40, minWidth: 40, flexGrow: 0 }}>
+                    <div style={{ ...cellStyle({}), width: 40, minWidth: 40, flexGrow: 0 }}>
                       <input
                         type="checkbox"
                         checked={isSelected}

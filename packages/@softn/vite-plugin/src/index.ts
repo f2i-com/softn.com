@@ -264,6 +264,7 @@ export default function softnPlugin(options: SoftNPluginOptions = {}): Plugin {
     verbose = false,
   } = options;
 
+  // eslint-disable-next-line no-console -- build-time output, printed only when the plugin is given `verbose: true`
   const log = verbose ? console.log.bind(console, '[softn]') : () => {};
   // Cache per plugin instance: output depends on options such as HMR and source
   // maps, so a module-global cache let one Vite config poison another one.

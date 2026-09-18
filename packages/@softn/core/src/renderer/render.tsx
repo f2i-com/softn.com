@@ -114,6 +114,29 @@ class ComponentErrorBoundary extends React.Component<
   }
 }
 
+/** A handler a template wires to an event. What it is given depends on the
+ * component, so its arguments and result are whatever they turn out to be. */
+type EventHandler = (...args: unknown[]) => unknown;
+
+/**
+ * For a change or input event, what changed rather than the event: VM
+ * functions receive the field's value, not a React SyntheticEvent, which does
+ * not survive the trip into a script. Anything that is not such an event --
+ * a component that calls `@change` with its own data -- passes through.
+ */
+function changedValue(event: unknown): unknown {
+  const target = eventTarget(event);
+  return target && 'value' in target ? target.value : event;
+}
+
+/** The `target` of something shaped like a DOM event, or `undefined` when it
+ * is not one -- a custom component hands its handler plain data instead. */
+function eventTarget(event: unknown): Record<string, unknown> | undefined {
+  if (!event || typeof event !== 'object' || !('target' in event)) return undefined;
+  const target = (event as { target: unknown }).target;
+  return target && typeof target === 'object' ? (target as Record<string, unknown>) : undefined;
+}
+
 // Check if we're in development mode - works in both browser and Node.js
 const isDevelopment = (() => {
   try {
@@ -896,8 +919,7 @@ function renderElement(
         props.value = value ?? '';
       }
       // Handle both native elements (pass event) and custom components (pass value directly)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      props.onChange = (eventOrValue: any) => {
+      props.onChange = (eventOrValue: unknown) => {
         // Extract path from expression (supports complex paths)
         // The context carries the loop variables, so an index inside #each
         // resolves to the row actually being edited.
@@ -916,21 +938,12 @@ function renderElement(
             // Read `checked`, and as a boolean: `target.value` on a checkbox is
             // the constant "on", which would make the bound variable a string
             // that never compares false again.
-            newValue =
-              eventOrValue && typeof eventOrValue === 'object' && 'target' in eventOrValue
-                ? Boolean(eventOrValue.target.checked)
-                : Boolean(eventOrValue);
-          } else if (
-            eventOrValue &&
-            typeof eventOrValue === 'object' &&
-            'target' in eventOrValue &&
-            'value' in eventOrValue.target
-          ) {
-            // Native DOM event
-            newValue = eventOrValue.target.value;
+            const target = eventTarget(eventOrValue);
+            newValue = target ? Boolean(target.checked) : Boolean(eventOrValue);
           } else {
-            // Custom component passing value directly
-            newValue = eventOrValue;
+            // A native event's value, or the value a custom component such
+            // as Select passed directly.
+            newValue = changedValue(eventOrValue);
           }
 
           // Look for an external handler first (on[VarName]Change or onUpdate)
@@ -963,12 +976,9 @@ function renderElement(
   // Event handlers - use unified callback context
   // For change/input events, auto-extract target.value so VM functions
   // receive the string value instead of a React SyntheticEvent object.
-  const wrapEventHandler = (name: string, fn: (...args: any[]) => any) => {
+  const wrapEventHandler = (name: string, fn: EventHandler) => {
     if (name === 'change' || name === 'input') {
-      return (e: any) => {
-        const val = e && typeof e === 'object' && e.target && 'value' in e.target ? e.target.value : e;
-        return fn(val);
-      };
+      return (e: unknown) => fn(changedValue(e));
     }
     // Everything else gets its arguments forwarded.
     //
@@ -1008,12 +1018,12 @@ function renderElement(
     } else if (handlerExpr.type === 'ArrowFunctionExpression') {
       // Arrow functions are already deferred - evaluate to get the function
       const handler = evaluateExpression(handlerExpr, callbackContext);
-      props[reactEventProp(event.name)] = typeof handler === 'function' ? wrapEventHandler(event.name, handler as (...args: any[]) => any) : handler;
+      props[reactEventProp(event.name)] = typeof handler === 'function' ? wrapEventHandler(event.name, handler as EventHandler) : handler;
     } else if (handlerExpr.type === 'Identifier' || handlerExpr.type === 'MemberExpression') {
       // Function reference - evaluate to get the function, wrap to ensure it's callable
       const handler = evaluateExpression(handlerExpr, callbackContext);
       if (typeof handler === 'function') {
-        props[reactEventProp(event.name)] = wrapEventHandler(event.name, handler as (...args: any[]) => any);
+        props[reactEventProp(event.name)] = wrapEventHandler(event.name, handler as EventHandler);
       } else {
         // If not a function, wrap in a no-op to prevent errors.
         // Only warn if the script has finished loading — before that, functions

@@ -38,6 +38,7 @@ import {
   type UnresolvedUpgradeChoice,
   type UpgradeInProgress,
 } from './upgradeFlow';
+import { debug } from '@softn/core';
 
 export { UpgradeBlockedError } from './upgradeFlow';
 
@@ -164,7 +165,7 @@ async function setWindowIconFromBundle(
       lowerIconPath.endsWith('.jpeg')
     )
   ) {
-    console.log(`[SoftN Loader] Skipping unsupported icon format: ${manifest.icon}`);
+    debug(`[SoftN Loader] Skipping unsupported icon format: ${manifest.icon}`);
     return;
   }
 
@@ -179,7 +180,7 @@ async function setWindowIconFromBundle(
     await window.__TAURI__?.core?.invoke('set_window_icon', {
       iconData: Array.from(iconData),
     });
-    console.log(`[SoftN Loader] Window icon set from: ${manifest.icon}`);
+    debug(`[SoftN Loader] Window icon set from: ${manifest.icon}`);
   } catch (err) {
     console.error('[SoftN Loader] Failed to set window icon:', err);
   }
@@ -507,7 +508,7 @@ function App(): React.ReactElement {
           textFiles,
           parsedManifest
         );
-        console.log('[SoftN Loader] Final source prepared with inlined components');
+        debug('[SoftN Loader] Final source prepared with inlined components');
 
         const resolver = createBundleImportResolver(textFiles, {
           permissionConfig: bundlePermissionConfig,

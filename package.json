@@ -62,7 +62,7 @@
     "test:host-js": "npm run test:host-js -w @softn/core",
     "test:desktop": "npm run test:desktop -w @softn/builder",
     "test:dev-cache": "node --test scripts/dev-service-worker.test.mjs",
-    "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 100",
+    "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives --max-warnings 0",
     "lint:errors": "eslint . --ext .ts,.tsx --report-unused-disable-directives",
     "lint:fix": "eslint . --ext .ts,.tsx --fix",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",

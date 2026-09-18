@@ -8,6 +8,11 @@ section here. Write the section before tagging. Headings are the tag
 
 ## Unreleased
 
+- Single-app runtime: `runtime.config.json` takes two optional fields. `host` names a same-origin module whose default export supplies the backend an app's `softn.backend.call` reaches, for an app whose actions need something only its host should hold; it is loaded once before the app mounts and fails closed. `layout: "page"` lets an app grow with its content and the document scroll, instead of pinning it to the viewport. See `docs/engineering/SINGLE_APP_RUNTIME.md`.
+- The runtime no longer logs its own progress to every visitor's console (the files a bundle carried, a script's functions, its whole initial state). Those diagnostics go through `debug()` in `@softn/core`: on in a development build, and in any page after `localStorage['softn.debug'] = '1'` (or `globalThis.SOFTN_DEBUG = true` in a worker). Warnings and errors are unchanged, and so is an app's own `print` and console output.
+- Lint is at zero warnings again and the ceiling back at `--max-warnings 0`, where it began; it had been raised to 100. Typing the `any`s turned up one real fault: a GPU `writeBuffer` with a dtype outside `float32`/`int32`/`uint32`/`uint8` failed with "Ctor is not a constructor", and now says which dtype it was given. DataGrid's cell values are `unknown` and its filters `string | number`; the bind handlers read a changed value through one helper instead of three copies of the same guesswork.
+- `*.mjs` and `*.cjs` are checked out with LF everywhere. A `#!` line ending in CR broke two @softn/components suites on Windows while they passed on Linux.
+
 ## v0.0.15
 
 - ZIPP v0.0.19 (commit `2e6a39c3`): the browser engine (`npm run fetch:zipp`) and the Rust host's `zipp-vm` tag move together to the release. ZIPP's `web-python` engine has the same method set and Python API as v0.0.18; its glue (`zipp_wasm.js`) changed to carry a `Float32Array` across the host boundary, which the Rust host now serves as a JSON array of numbers where v0.0.18 read one as an opaque value (a top-level `Float32Array` handler result was an error, a nested one `null`). The curated RustPython and Unicode notices are unchanged at that tag.

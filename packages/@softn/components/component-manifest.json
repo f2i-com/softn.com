@@ -2717,8 +2717,9 @@
             "optional": true,
             "type": {
               "kind": "other",
-              "text": "Record<string, any>"
-            }
+              "text": "Record<string, string | number>"
+            },
+            "doc": "What was typed into each column's filter input, by column key."
           },
           {
             "name": "onFilterChange",
@@ -9003,7 +9004,7 @@
             "optional": false,
             "type": {
               "kind": "array",
-              "text": "any[]"
+              "text": "unknown[]"
             },
             "doc": "Array of items to render"
           },

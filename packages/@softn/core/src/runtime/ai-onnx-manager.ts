@@ -17,6 +17,7 @@ import type {
 } from './ai-manager';
 import { describeNetDestination, type NetPermission } from './egress-policy';
 import { isRemoteUrl } from '../renderer/sanitize-html';
+import { debug } from './debug';
 
 /** onnxruntime-web types (subset we use) */
 interface OrtModule {
@@ -248,14 +249,14 @@ export class OnnxManager {
     try {
       const cached = await this.readCache(cacheKey);
       if (cached) {
-        console.log(`[SoftN AI] Using cached model: ${modelId}`);
+        debug(`[SoftN AI] Using cached model: ${modelId}`);
         return cached;
       }
     } catch { /* cache miss */ }
 
     // Download from HuggingFace
     const url = `https://huggingface.co/${modelId}/resolve/main/model.onnx`;
-    console.log(`[SoftN AI] Downloading model: ${modelId}`);
+    debug(`[SoftN AI] Downloading model: ${modelId}`);
     // Capped while downloading — see downloadModel.
     const data = await this.downloadModel(url, modelId, maxBytes);
 
@@ -315,7 +316,7 @@ export class OnnxManager {
     }
 
     if (oldestId) {
-      console.log(`[SoftN AI] Evicting oldest ONNX session: ${oldestId}`);
+      debug(`[SoftN AI] Evicting oldest ONNX session: ${oldestId}`);
       const entry = this.sessions.get(oldestId)!;
       entry.session.release().catch(() => {});
       this.sessions.delete(oldestId);
@@ -345,7 +346,7 @@ export class OnnxManager {
 
     // Negotiate execution providers
     const eps = await this.negotiateEP(options?.executionProviders);
-    console.log(`[SoftN AI] Creating ONNX session with EPs: ${eps.join(', ')}`);
+    debug(`[SoftN AI] Creating ONNX session with EPs: ${eps.join(', ')}`);
 
     const session = await ort.InferenceSession.create(modelBuffer, {
       executionProviders: eps,
@@ -359,7 +360,7 @@ export class OnnxManager {
       modelSource: sourceLabel,
     });
 
-    console.log(`[SoftN AI] ONNX session created: ${sessionId} (${sizeMB.toFixed(1)}MB, ${sourceLabel})`);
+    debug(`[SoftN AI] ONNX session created: ${sessionId} (${sizeMB.toFixed(1)}MB, ${sourceLabel})`);
 
     return {
       sessionId,
@@ -405,7 +406,7 @@ export class OnnxManager {
     if (!entry) return;
     await entry.session.release();
     this.sessions.delete(sessionId);
-    console.log(`[SoftN AI] ONNX session released: ${sessionId}`);
+    debug(`[SoftN AI] ONNX session released: ${sessionId}`);
   }
 
   /** Release all sessions */
@@ -416,6 +417,6 @@ export class OnnxManager {
     }
     await Promise.all(promises);
     this.sessions.clear();
-    console.log('[SoftN AI] All ONNX sessions released');
+    debug('[SoftN AI] All ONNX sessions released');
   }
 }

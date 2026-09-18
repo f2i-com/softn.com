@@ -17,7 +17,17 @@ const DEFAULT_MAX_BUFFER_MEMORY_MB = 256;
 
 // ── Data types ──
 
-type DType = 'float32' | 'int32' | 'uint32' | 'uint8';
+export type DType = 'float32' | 'int32' | 'uint32' | 'uint8';
+
+const DTYPES: readonly DType[] = ['float32', 'int32', 'uint32', 'uint8'];
+
+/** Whether a value an app's script handed over names a type this manager can
+ * lay out. Checked rather than cast: the value comes from the script, and a
+ * name outside the set used to reach `getTypedArrayCtor`, find no case, and
+ * surface as "Ctor is not a constructor". */
+function isDType(value: unknown): value is DType {
+  return typeof value === 'string' && (DTYPES as readonly string[]).includes(value);
+}
 
 type TypedArrayCtor = Float32ArrayConstructor | Int32ArrayConstructor | Uint32ArrayConstructor | Uint8ArrayConstructor;
 
@@ -131,20 +141,23 @@ export class GpuComputeManager {
       };
     }
 
-    const nav = globalThis.navigator as any;
-    if (!nav?.gpu) {
+    // `navigator` is absent in Node and `gpu` in most browsers, so both are
+    // checked rather than assumed.
+    const gpu = (globalThis.navigator as Navigator | undefined)?.gpu;
+    if (!gpu) {
       throw new Error('WebGPU is not supported in this browser');
     }
 
-    const adapter = await nav.gpu.requestAdapter(options);
+    const adapter = await gpu.requestAdapter(options);
     if (!adapter) {
       throw new Error('Failed to get WebGPU adapter');
     }
 
-    this.device = await (adapter as any).requestDevice() as GPUDevice;
+    const device = await adapter.requestDevice();
+    this.device = device;
 
     // Listen for device loss
-    this.device!.lost.then((info: any) => {
+    device.lost.then((info) => {
       console.warn(`[GpuComputeManager] Device lost: ${info.message}`);
       this.device = null;
     });
@@ -157,7 +170,7 @@ export class GpuComputeManager {
 
   private extractLimits(): Record<string, number> {
     if (!this.device) return {};
-    const limits = (this.device as any).limits;
+    const limits = this.device.limits;
     return {
       maxBufferSize: limits?.maxBufferSize ?? 0,
       maxStorageBufferBindingSize: limits?.maxStorageBufferBindingSize ?? 0,
@@ -233,13 +246,20 @@ export class GpuComputeManager {
   async writeBuffer(
     bufferId: string,
     data: number[],
-    dtype?: DType
+    // A string, not a DType: this is where a script's argument arrives, so it
+    // is checked here rather than cast on the way in.
+    dtype?: string
   ): Promise<{ ok: boolean }> {
+    let type: DType | undefined;
+    if (dtype) {
+      if (!isDType(dtype)) throw new Error(`Unknown dtype "${dtype}": expected ${DTYPES.join(', ')}`);
+      type = dtype;
+    }
     const device = this.ensureDevice();
     const entry = this.buffers.get(bufferId);
     if (!entry) throw new Error(`Buffer not found: ${bufferId}`);
 
-    const Ctor = getTypedArrayCtor(dtype || entry.dtype);
+    const Ctor = getTypedArrayCtor(type || entry.dtype);
     const src = new Ctor(data);
     device.queue.writeBuffer(entry.buffer, 0, src);
     return { ok: true };
@@ -293,11 +313,11 @@ export class GpuComputeManager {
     const module = device.createShaderModule({ code: wgslCode });
 
     // Check for compilation errors
-    const info = await (module as any).getCompilationInfo();
+    const info = await module.getCompilationInfo();
     if (info?.messages) {
-      const errors = info.messages.filter((m: any) => m.type === 'error');
+      const errors = info.messages.filter((m) => m.type === 'error');
       if (errors.length > 0) {
-        const msg = errors.map((e: any) => `Line ${e.lineNum}: ${e.message}`).join('\n');
+        const msg = errors.map((e) => `Line ${e.lineNum}: ${e.message}`).join('\n');
         throw new Error(`WGSL compilation error:\n${msg}`);
       }
     }

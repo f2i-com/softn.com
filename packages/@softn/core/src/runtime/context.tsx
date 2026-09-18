@@ -7,6 +7,7 @@
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
 import type { SoftNRenderContext, RuntimeState, SoftNProps, XDBRecord } from '../types';
 import { parseStatePath } from './state-path';
+import { debug } from './debug';
 
 /**
  * Context type for SoftN runtime
@@ -80,7 +81,7 @@ export function SoftNProvider({
    */
   const refreshData = useCallback(() => {
     // This will be implemented when XDB integration is added
-    console.log('Refreshing data...');
+    debug('Refreshing data...');
   }, []);
 
   /**

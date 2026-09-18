@@ -70,7 +70,7 @@ const paddingValues: Record<string, string> = {
 };
 
 // Check if columns is a responsive object
-function isResponsiveColumns(columns: any): columns is ResponsiveColumns {
+function isResponsiveColumns(columns: unknown): columns is ResponsiveColumns {
   return (
     typeof columns === 'object' &&
     columns !== null &&

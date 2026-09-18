@@ -4,6 +4,7 @@
  */
 
 import { openDB, type IDBPDatabase, type IDBPObjectStore } from 'idb';
+import { debug } from '@softn/core';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -959,7 +960,7 @@ async function applyAdoption(store: AppStore, adoption: Adoption, origin: string
     console.warn(`[SoftN Web] "${current!.name}" keeps its earlier identity: ${moved.error}`);
     return null;
   }
-  console.info(
+  debug(
     `[SoftN Web] "${current!.name}" ${adoption.why}${moved.copied ? `, moving ${moved.copied} stored keys` : ''}.`
   );
   if (adoption.carryGrants) return { ...current!, origin };

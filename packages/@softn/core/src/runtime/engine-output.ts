@@ -30,5 +30,6 @@ export function flushEngineOutput(engine: EngineOutputSource): void {
   } catch {
     return;
   }
+  // eslint-disable-next-line no-console -- the app's own print() output: forwarding it to the console is this function's job
   for (const line of lines) console.log(line);
 }

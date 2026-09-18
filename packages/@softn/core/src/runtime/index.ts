@@ -25,3 +25,4 @@ export { configureZippWasmSource, zippLanguages } from './zipp-wasm-loader';
 export { configureLogicEngine, createLogicEngine, logicEngineThreads } from './vm-adapter';
 export type { LogicEngine, LogicEngineFactory, LogicEngineThreads } from './vm-adapter';
 export { preloadSyncRuntime } from './xdb-sync-preload';
+export { debug, debugEnabled } from './debug';

@@ -390,8 +390,11 @@ export class XDBServerSync {
   private getKnownCollections(): string[] {
     // If the XDB has a method to list collections, use it.
     // Otherwise return an empty array (user must specify in config).
-    if (typeof (this.xdb as any).getCollections === 'function') {
-      return (this.xdb as any).getCollections() as string[];
+    // Not every XDB implementation can list its collections, so this asks
+    // rather than assumes.
+    const listing = this.xdb as { getCollections?: () => string[] };
+    if (typeof listing.getCollections === 'function') {
+      return listing.getCollections();
     }
     return [];
   }
