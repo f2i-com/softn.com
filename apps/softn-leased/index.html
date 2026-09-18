@@ -1,0 +1,33 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LEASED · SoftN</title><link rel="stylesheet" href="/style.css"><style>
+/* One scrollbar, not two.
+
+   SoftN pins a mounted app to the viewport: `main.single-app` is a window-high
+   shell, `.application-content` scrolls inside it, and the app element itself
+   gets an inline `height: calc(100vh - tab bar); overflow: auto`. That is right
+   when the app is one pane of a larger product that owns the window.
+
+   Here the app *is* the page. The result was a viewport-high box holding 2120px
+   of content: an inner scrollbar beside the document's own, and a header that
+   scrolled away from the content it belongs to.
+
+   So the whole chain is allowed to grow and the document does the scrolling.
+   `min-height` keeps a short app filling the window so the background does not
+   stop halfway down. The app element's height is inline, which is why that one
+   needs `!important`; the rest are ordinary rules that simply come later. */
+html, body { height: auto; min-height: 100%; margin: 0; }
+/* `!important` throughout, not for emphasis: Vite injects the framework's
+   stylesheet after this block, so an ordinary rule here loses on order alone. */
+#root, main.single-app, .application-layout {
+  height: auto !important; min-height: 100vh !important;
+}
+.application-content {
+  height: auto !important; max-height: none !important;
+  overflow: visible !important; flex: none !important;
+}
+.application-content > div { height: auto !important; }
+.softn-app {
+  height: auto !important;
+  min-height: calc(100vh - var(--softn-tab-bar-height, 0px)) !important;
+  overflow: visible !important;
+}
+</style></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>

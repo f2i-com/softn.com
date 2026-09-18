@@ -111,7 +111,8 @@ function countRun(url: string) {
     keepalive: true,
   }).catch(() => {});
 }
-export function Application({ app }: { app: RunnableApplication }) {
+export type HostBackendCall = (action: string, input: Record<string, unknown>) => Promise<unknown>;
+export function Application({ app, backendCall }: { app: RunnableApplication; backendCall?: HostBackendCall }) {
   const requested = inspectDeclaration(app.declared).requested;
   // Preapproved by the operator: granted from the start, with no bar and
   // nothing written to storage — the host's setting, not a consent.
@@ -258,6 +259,7 @@ export function Application({ app }: { app: RunnableApplication }) {
           <Boundary>
             <SoftNWithXDB
               source={app.source}
+              backendCall={backendCall}
               appId={app.appId}
               functions={functions}
               importResolver={imports}
@@ -282,7 +284,7 @@ export function Application({ app }: { app: RunnableApplication }) {
     </ThemeProvider>
   );
 }
-export function SingleApp({ source }: { source: ConfigSource }) {
+export function SingleApp({ source, backendCall }: { source: ConfigSource; backendCall?: HostBackendCall }) {
   const [app, setApp] = useState<LoadedApplication | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -316,7 +318,7 @@ export function SingleApp({ source }: { source: ConfigSource }) {
   }, [source]);
   return (
     <main className="single-app">
-      {failed ? <Failure /> : app ? <Application app={app} /> : <Loading />}
+      {failed ? <Failure /> : app ? <Application app={app} backendCall={backendCall} /> : <Loading />}
     </main>
   );
 }
