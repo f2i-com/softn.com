@@ -17,6 +17,7 @@ import {
   inspectDeclaration,
 } from '@softn/core';
 import type { BundleArchive, PermissionConfig } from '@softn/core';
+import { debug } from '@softn/core';
 
 // The permission read is core's now (audit-core 2.2), so the desktop loader,
 // the single-app hosts and this runtime map a legacy `manifest.permissions`
@@ -198,7 +199,7 @@ export function readZip(data: Uint8Array): ZipResult {
     }
   }
 
-  console.log('[SoftN Web] Loaded files:', Array.from(textFiles.keys()));
+  debug('[SoftN Web] Loaded files:', Array.from(textFiles.keys()));
 
   return { textFiles, binaryFiles: createBinaryStore(archive, binaryNames), archive };
 }
@@ -302,7 +303,7 @@ export async function loadXDBData(
     try {
       const xdbData = parseXDBFile(xdbFileName, content);
       const inserted = seedXDBBundleData(xdb, xdbData);
-      console.log(
+      debug(
         `[SoftN Web] Loaded ${inserted}/${xdbData.records.length} records into ${xdbData.collection}`
       );
     } catch (err) {
@@ -322,7 +323,7 @@ export function processBundle(
   manifest: BundleManifest
 ): { source: string; logicBasePath?: string; preIncludedLogicPaths: string[] } {
   const result = composeBundleSource(textFiles, manifest.main, manifest.files?.logic);
-  console.log('[SoftN Web] Final source prepared with inlined components');
+  debug('[SoftN Web] Final source prepared with inlined components');
   return result;
 }
 

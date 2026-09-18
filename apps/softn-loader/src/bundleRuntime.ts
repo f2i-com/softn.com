@@ -5,6 +5,7 @@ import {
   seedXDBBundleData,
   type ComposedBundleSource,
 } from '@softn/core';
+import { debug } from '@softn/core';
 
 export interface RuntimeBundleManifest {
   main: string;
@@ -70,7 +71,7 @@ export async function loadBundleXDBData(
       if (!isActive()) return insertedTotal;
       const inserted = seedXDBBundleData(xdb, xdbData);
       insertedTotal += inserted;
-      console.log(
+      debug(
         `[SoftN Loader] Loaded ${inserted}/${xdbData.records.length} records into ${xdbData.collection}`
       );
     } catch (error) {

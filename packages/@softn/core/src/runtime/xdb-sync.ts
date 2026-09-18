@@ -36,6 +36,7 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { XDBService, getDefaultSignaling, _setSyncModuleRef, type XDBEvent } from './xdb';
 import type { XDBRecord } from '../types';
 import { deepEqual } from './vm-state';
+import { debug } from './debug';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -159,7 +160,7 @@ export class XDBSyncAdapter {
     const wireRoom = this.options.roomScope
       ? `${this.options.roomScope}/${this.options.room}`
       : this.options.room;
-    console.log('[XDB Sync] Connecting to room:', this.options.room,
+    debug('[XDB Sync] Connecting to room:', this.options.room,
       '| password:', effectivePassword ? '(encrypted)' : '(none)',
       '| signaling:', providerOptions.signaling);
     this.provider = new WebrtcProvider(wireRoom, this.ydoc, providerOptions);
@@ -268,8 +269,10 @@ export class XDBSyncAdapter {
     const awareness = this.provider?.awareness;
     const awarenessSize = awareness ? awareness.getStates().size : 0;
     const connected = this.provider?.connected ?? false;
-    const providerAny = this.provider as any;
-    const webrtcPeers = providerAny?.room?.webrtcConns?.size ?? 0;
+    // y-webrtc keeps its connection table on an internal `room`; read it
+    // defensively, because it is not part of the provider's typed surface.
+    const internals = this.provider as { room?: { webrtcConns?: { size?: number } } } | null | undefined;
+    const webrtcPeers = internals?.room?.webrtcConns?.size ?? 0;
     return {
       connected,
       peers: Math.max(awarenessSize - 1, webrtcPeers),

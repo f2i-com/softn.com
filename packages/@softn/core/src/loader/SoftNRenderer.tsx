@@ -49,6 +49,7 @@ import type { SoftNDocument } from '../parser/ast';
 import type { Expression, TemplateNode } from '../parser/ast';
 import type { SoftNRenderContext, SoftNProps } from '../types';
 import { parseStatePath } from '../runtime/state-path';
+import { debug } from '../runtime/debug';
 
 /**
  * Permission manifests and pre-included path lists are JSON data, but callers
@@ -977,13 +978,13 @@ export function SoftNRenderer({
             if (hardIncompat.length > 0) {
               hasHardIncompat = true;
               effectiveMode = 'main';
-              console.info(
+              debug(
                 '[SoftN] Worker mode fallback to main-thread runtime:',
                 hardIncompat.join('; ')
               );
             } else if (requiresSyncMain || hasHostBridgeIncompat) {
               effectiveMode = 'hybrid-worker';
-              console.info('[SoftN] Worker hybrid mode enabled:', incompat.join('; '));
+              debug('[SoftN] Worker hybrid mode enabled:', incompat.join('; '));
             }
           }
 
@@ -1016,13 +1017,13 @@ export function SoftNRenderer({
           let forceWorker = false;
           if (wantsWorker) {
             if (hasHardIncompat || requiresSyncMain) {
-              console.info(
+              debug(
                 '[SoftN] Worker execution requested but the script needs the main thread: synchronous evaluation'
               );
             } else {
               forceWorker = true;
               effectiveMode = 'worker';
-              console.info(
+              debug(
                 `[SoftN] Worker execution ${execParam === 'worker' ? 'forced by ?exec=worker' : 'requested by the manifest'}`
               );
             }
@@ -1219,13 +1220,13 @@ export function SoftNRenderer({
             .then((result) => {
               if (stale || !mountedRef.current) return;
 
-              console.log('[SoftNRenderer] Script loaded successfully (VM)');
-              console.log('[SoftNRenderer] Functions loaded:', Object.keys(result.functions));
-              console.log(
+              debug('[SoftNRenderer] Script loaded successfully (VM)');
+              debug('[SoftNRenderer] Functions loaded:', Object.keys(result.functions));
+              debug(
                 '[SoftNRenderer] Sync functions loaded:',
                 Object.keys(result.syncFunctions)
               );
-              console.log('[SoftNRenderer] Initial state:', result.state);
+              debug('[SoftNRenderer] Initial state:', result.state);
 
               // Populate the mutable context state for subsequent function calls
               Object.assign(scriptState, result.state);
@@ -1394,6 +1395,9 @@ export function SoftNRenderer({
     runtimePreIncludedLogicPaths,
     runtimeFunctions,
     scriptExecutionMode,
+    // Chooses worker or main thread alongside scriptExecutionMode, so a change
+    // to it has to rebuild the runtime the same way.
+    executionPreference,
   ]);
 
   // Keep resolved source in sync for direct source mode.
@@ -1511,7 +1515,7 @@ export function SoftNRenderer({
 
       // If the value changed from parent, apply it to componentState
       if (newValue !== prevValue && newValue !== undefined) {
-        console.log(`[SoftNRenderer] initialState change detected: ${key}`, {
+        debug(`[SoftNRenderer] initialState change detected: ${key}`, {
           old: prevValue,
           new: newValue,
         });
@@ -2273,7 +2277,7 @@ export function SoftNWithXDB({
   useEffect(() => {
     xdb.getDbPath().then((path) => {
       if (path) {
-        console.log(`[XDB] App "${xdb.getAppId() || '_default'}" database: ${path}`);
+        debug(`[XDB] App "${xdb.getAppId() || '_default'}" database: ${path}`);
       }
     });
   }, [xdb]);

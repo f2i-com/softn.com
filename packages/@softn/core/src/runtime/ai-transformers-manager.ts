@@ -16,6 +16,7 @@ import type {
 } from './ai-manager';
 import { describeNetDestination, type NetPermission } from './egress-policy';
 import { isRemoteUrl } from '../renderer/sanitize-html';
+import { debug } from './debug';
 
 /** @huggingface/transformers types (subset we use) */
 interface TransformersModule {
@@ -215,7 +216,7 @@ export class TransformersManager {
     const device = await this.resolveDevice(options?.device);
     const modelId = model || this.getDefaultModel(task);
 
-    console.log(`[SoftN AI] Creating pipeline: ${task} with ${modelId} on ${device}`);
+    debug(`[SoftN AI] Creating pipeline: ${task} with ${modelId} on ${device}`);
 
     const pipelineOpts: Record<string, unknown> = { device };
     if (options?.dtype) pipelineOpts.dtype = options.dtype;
@@ -245,7 +246,7 @@ export class TransformersManager {
       createdAt: Date.now(),
     });
 
-    console.log(`[SoftN AI] Pipeline created: ${pipelineId} (${task}, ${modelId})`);
+    debug(`[SoftN AI] Pipeline created: ${pipelineId} (${task}, ${modelId})`);
 
     return { pipelineId, task, model: modelId };
   }
@@ -338,7 +339,7 @@ export class TransformersManager {
     if (options?.dtype) modelOpts.dtype = options.dtype;
     if (options?.revision) modelOpts.revision = options.revision;
 
-    console.log(`[SoftN AI] Loading model: ${modelId} (class=${options?.modelClass || 'auto'}, device=${device})`);
+    debug(`[SoftN AI] Loading model: ${modelId} (class=${options?.modelClass || 'auto'}, device=${device})`);
 
     // Resolve model class
     const className = options?.modelClass;
@@ -385,7 +386,7 @@ export class TransformersManager {
       this.webgpuUsable = false;
       model = await build('wasm');
       loadedOn = 'wasm';
-      console.log(`[SoftN AI] Loaded ${modelId} on wasm after the WebGPU attempt failed`);
+      debug(`[SoftN AI] Loaded ${modelId} on wasm after the WebGPU attempt failed`);
     }
 
     // Load processor (handles chat template + tokenization for VLMs)
@@ -403,7 +404,7 @@ export class TransformersManager {
     const chosenByUs = !options?.device || options.device === 'auto';
     this.models.set(handle, { model, processor, tokenizer, modelId, createdAt: Date.now(), device: loadedOn, rebuild: chosenByUs && loadedOn === 'webgpu' ? () => build('wasm') : null });
 
-    console.log(`[SoftN AI] Model loaded: ${handle} (${modelId})`);
+    debug(`[SoftN AI] Model loaded: ${handle} (${modelId})`);
     return { modelHandle: handle, modelId };
   }
 
@@ -483,7 +484,7 @@ export class TransformersManager {
     if (options?.repetition_penalty != null) genOpts.repetition_penalty = options.repetition_penalty;
     if (options?.presence_penalty != null) genOpts.presence_penalty = options.presence_penalty;
 
-    console.log(`[SoftN AI] Generating from ${modelHandle}...`);
+    debug(`[SoftN AI] Generating from ${modelHandle}...`);
     let outputs: unknown;
     try {
       outputs = await model.generate(genOpts);
@@ -516,7 +517,7 @@ export class TransformersManager {
       decoded = String(outputs);
     }
 
-    console.log(`[SoftN AI] Generation complete: ${decoded.length} chars`);
+    debug(`[SoftN AI] Generation complete: ${decoded.length} chars`);
     return { text: decoded };
   }
 
@@ -528,7 +529,7 @@ export class TransformersManager {
       await entry.model.dispose();
     }
     this.models.delete(modelHandle);
-    console.log(`[SoftN AI] Model released: ${modelHandle}`);
+    debug(`[SoftN AI] Model released: ${modelHandle}`);
   }
 
   /** Release a pipeline */
@@ -539,7 +540,7 @@ export class TransformersManager {
       await entry.pipeline.dispose();
     }
     this.pipelines.delete(pipelineId);
-    console.log(`[SoftN AI] Pipeline released: ${pipelineId}`);
+    debug(`[SoftN AI] Pipeline released: ${pipelineId}`);
   }
 
   /** Release all pipelines and models */
@@ -558,6 +559,6 @@ export class TransformersManager {
     await Promise.all(promises);
     this.pipelines.clear();
     this.models.clear();
-    console.log('[SoftN AI] All pipelines and models released');
+    debug('[SoftN AI] All pipelines and models released');
   }
 }

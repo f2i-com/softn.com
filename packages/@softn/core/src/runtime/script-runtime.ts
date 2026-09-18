@@ -52,6 +52,7 @@ import type {
   DirectModelOptions,
   ChatMessage,
 } from './ai-manager';
+import { debug } from './debug';
 export type { BundleFileProvider } from './ai-manager';
 
 /**
@@ -1078,7 +1079,7 @@ export class SoftNScriptRuntime {
       }
     }
     this.partitionStateVars(stateVarNames, symbolMap);
-    console.log(
+    debug(
       `[SoftN] Script loaded: ${functionNames.length} functions, ${this.stateVarNames.length} state vars` +
         (this.vmOwnedStateNames.length
           ? ` (+${this.vmOwnedStateNames.length} VM-owned, not synced)`
@@ -1271,7 +1272,7 @@ export class SoftNScriptRuntime {
         const now = performance.now();
         if (now - this._perfLastReport > 5000) {
           const n = this._perfCallCount;
-          console.log(
+          debug(
             `[SoftN Perf] ${n} calls in 5s | avg=${(this._perfTotalMs / n).toFixed(1)}ms` +
               ` | wasm=${(this._perfWasmMs / n).toFixed(1)}ms` +
               ` | syncToVM=${(this._perfSyncToVMMs / n).toFixed(1)}ms` +
@@ -3433,7 +3434,7 @@ export class SoftNScriptRuntime {
     const [bufferId, dataJson, dtype] = call.args;
     const data = JSON.parse(dataJson);
     const mgr = await this.getGpuComputeManager();
-    return mgr.writeBuffer(bufferId, data, (dtype || undefined) as any);
+    return mgr.writeBuffer(bufferId, data, dtype || undefined);
   }
 
   private async handleGpuCreateShader(call: PendingHostCall): Promise<unknown> {
@@ -3886,7 +3887,7 @@ export function createMockXDBModule(): XDBModule {
     },
 
     sync: async () => {
-      console.log('Mock XDB sync (no-op)');
+      debug('Mock XDB sync (no-op)');
     },
   };
 }
@@ -3897,11 +3898,11 @@ export function createMockXDBModule(): XDBModule {
 export function createMockNavModule(onNavigate?: (page: string) => void): NavModule {
   return {
     goto: (page: string) => {
-      console.log('[SoftN Nav] goto:', page);
+      debug('[SoftN Nav] goto:', page);
       onNavigate?.(page);
     },
     back: () => {
-      console.log('[SoftN Nav] back');
+      debug('[SoftN Nav] back');
       if (typeof window !== 'undefined') {
         window.history.back();
       }
@@ -3915,6 +3916,7 @@ export function createMockNavModule(onNavigate?: (page: string) => void): NavMod
  */
 export function createConsoleModule(): ConsoleModule {
   return {
+    // eslint-disable-next-line no-console -- this is the console an app's scripts call: their log belongs in the console
     log: (...args: unknown[]) => console.log('[SoftN]', ...args),
     error: (...args: unknown[]) => console.error('[SoftN]', ...args),
     warn: (...args: unknown[]) => console.warn('[SoftN]', ...args),

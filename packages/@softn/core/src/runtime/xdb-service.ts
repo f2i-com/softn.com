@@ -29,6 +29,7 @@ import type {
   XDBExportData,
   XDBImportResult,
 } from './xdb-types';
+import { debug } from './debug';
 
 /** One collection of an immutable import plan (R2-SN-01). */
 interface ImportPlan {
@@ -204,7 +205,7 @@ export class XDBService {
     // Listen for peer connection events
     const unlistenPeer = tauriListen('xdb-peer-event', (payload) => {
       const event = payload as { type: string; peer_id: string };
-      console.log(`[XDB] Peer ${event.type}: ${event.peer_id}`);
+      debug(`[XDB] Peer ${event.type}: ${event.peer_id}`);
     });
     this.tauriUnlisteners.push(unlistenPeer);
   }
@@ -1584,7 +1585,7 @@ export class XDBService {
         if (collection) {
           // Sync specific collection
           await this.native<boolean>('request_sync', { collection });
-          console.log(`[XDB] Requested P2P sync for collection: ${collection}`);
+          debug(`[XDB] Requested P2P sync for collection: ${collection}`);
         } else {
           // Sync all collections in batches to avoid flooding IPC/network
           const collections = await tauriInvoke<string[]>('get_collections', this.tauriArgs());
@@ -1593,7 +1594,7 @@ export class XDBService {
             const batch = collections.slice(i, i + BATCH_SIZE);
             await Promise.all(batch.map((col) => this.native<boolean>('request_sync', { collection: col })));
           }
-          console.log(`[XDB] Requested P2P sync for all ${collections.length} collections`);
+          debug(`[XDB] Requested P2P sync for all ${collections.length} collections`);
         }
       } catch (err) {
         console.error('[XDB] Failed to request sync:', err);
@@ -1602,7 +1603,7 @@ export class XDBService {
     }
 
     // localStorage fallback - just emit events
-    console.log('[XDB] Sync requested (localStorage mode - no P2P)');
+    debug('[XDB] Sync requested (localStorage mode - no P2P)');
     const collections = this.getAllCollectionKeys();
     for (const col of collections) {
       this.emit({ type: 'sync', collection: col, records: this.getCollectionData(col) });

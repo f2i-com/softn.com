@@ -15,6 +15,7 @@ import { ProductBar } from '@softn/brand';
 import type { ConsentRequest } from './components/PermissionBar';
 import type { PermissionConfig } from '@softn/core';
 import { ManifestError, describeHandoffFailure, handoffIdFrom, readManifest, takeBundleHandoff } from '@softn/core';
+import { debug } from '@softn/core';
 
 const appShellStyles = `
   @keyframes softn-shell-fade-in {
@@ -1203,7 +1204,7 @@ function App(): React.ReactElement {
         setActiveTabId(null);
         return;
       }
-      console.info(
+      debug(
         `[SoftN Web] Copied ${result.copied} of ${result.total} stored keys from "${from.name}" v${from.version} to v${to.version}${result.skipped ? ` (${result.skipped} already there)` : ''}.`
       );
       handleOpenCached(to);
@@ -1316,7 +1317,7 @@ function App(): React.ReactElement {
     const dropped = removeAppData(going?.origin);
     await removeCachedApp(id);
     if (dropped > 0) {
-      console.info(`[SoftN Web] Removed "${going?.name}" v${going?.version} and its ${dropped} saved keys.`);
+      debug(`[SoftN Web] Removed "${going?.name}" v${going?.version} and its ${dropped} saved keys.`);
     }
     const updatedApps = await getCachedApps();
     setApps(updatedApps);

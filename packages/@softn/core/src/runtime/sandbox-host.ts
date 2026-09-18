@@ -13,11 +13,12 @@ export class SandboxHost {
     let input:unknown;try{input=JSON.parse(inputText);}catch{return Promise.resolve({error:'Invalid sandbox input'});}
     return new Promise(resolve=>{
       let settled=false;let timer:ReturnType<typeof setTimeout>;
-      const finish=(result:any)=>{
+      const finish=(result:unknown)=>{
         if(settled)return;settled=true;clearTimeout(timer);
         // Warm WASM across calls; guest Engines are always fresh. Recycle on
         // errors and periodically so a large guest heap is not held forever.
-        if(result?.error||++this.uses>=32){this.worker?.terminate();this.worker=null;this.uses=0;}
+        const failed=typeof result==='object'&&result!==null&&Boolean((result as {error?:unknown}).error);
+        if(failed||++this.uses>=32){this.worker?.terminate();this.worker=null;this.uses=0;}
         this.pending=null;resolve(result);
       };
       this.pending=()=>finish({error:'Sandbox cancelled'});

@@ -24,3 +24,11 @@ packages/@softn/core/zipp-notices/THIRD_PARTY_LICENSES.txt text eol=lf
 *.png      binary
 *.glb      binary
 *.softn    binary
+
+# Node scripts, LF everywhere. Many start with a `#!/usr/bin/env node` line,
+# and a shebang that ends in CR breaks twice on a Windows checkout: Vite's
+# transform cannot parse it (two @softn/components suites failed on Windows for
+# exactly this reason while passing on Linux), and `env` goes looking for a
+# program called "node".
+*.mjs      text eol=lf
+*.cjs      text eol=lf

@@ -1,20 +1,16 @@
 /**
- * Debug logging utility - only logs in development mode
+ * The builder's diagnostics.
  *
- * In production builds, Vite replaces `import.meta.env?.DEV` with `false`
- * and the bundler tree-shakes the logging functions to no-ops.
+ * `debug` is core's, so the whole product has one switch rather than one per
+ * app: on in a development build, off in a production one unless somebody sets
+ * `localStorage['softn.debug'] = '1'` in the page. `debugWarn` is for warnings
+ * that only mean something while the builder itself is being worked on; real
+ * warnings go to `console.warn` directly.
  */
+import { debug, debugEnabled } from '@softn/core';
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
+export { debug };
 
-// Use a type assertion to avoid needing vite/client types
-const meta = (import.meta as any);
-const isDev: boolean = meta.env ? meta.env.DEV : true;
-
-export const debug: (...args: any[]) => void = isDev
-  ? (...args: any[]) => console.log(...args)
-  : () => {};
-
-export const debugWarn: (...args: any[]) => void = isDev
-  ? (...args: any[]) => console.warn(...args)
-  : () => {};
+export function debugWarn(...args: unknown[]): void {
+  if (debugEnabled()) console.warn(...args);
+}

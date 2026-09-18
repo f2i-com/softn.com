@@ -12,7 +12,8 @@ export interface TreeNode {
   children?: TreeNode[];
   icon?: React.ReactNode;
   disabled?: boolean;
-  data?: any;
+  /** Whatever the app attaches to the node; the tree only carries it. */
+  data?: unknown;
 }
 
 export interface TreeViewProps {

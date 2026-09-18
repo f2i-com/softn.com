@@ -3,6 +3,7 @@ import { extractEventProps } from './event-props';
 import { clearCapturedKeys, shouldCaptureKey } from './key-capture';
 import type { DBMutation, LSMutation } from './script-worker-bridges';
 import { isWorkerPlaceholderId } from './script-worker-bridges';
+import { debug } from './debug';
 
 type ImportResolver = (path: string) => Promise<string | null>;
 import type {
@@ -713,7 +714,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       this.perfCallCount++;
       this.perfTotalMs += elapsed;
       if (t0 - this.perfLastReport > 5000) {
-        console.debug(`[Worker RPC] ${this.perfCallCount} calls, avg ${(this.perfTotalMs / Math.max(1, this.perfCallCount)).toFixed(1)}ms, total ${this.perfTotalMs.toFixed(0)}ms (last 5s)`);
+        debug(`[Worker RPC] ${this.perfCallCount} calls, avg ${(this.perfTotalMs / Math.max(1, this.perfCallCount)).toFixed(1)}ms, total ${this.perfTotalMs.toFixed(0)}ms (last 5s)`);
         this.perfCallCount = 0;
         this.perfTotalMs = 0;
         this.perfLastReport = t0;

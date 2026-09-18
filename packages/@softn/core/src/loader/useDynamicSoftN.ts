@@ -17,6 +17,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { parse } from '../parser';
 import type { SoftNDocument } from '../parser/ast';
+import { debug } from '../runtime/debug';
 
 interface TauriInvoke {
   (cmd: 'read_softn_file', args: { path: string }): Promise<string>;
@@ -276,7 +277,7 @@ export function useDynamicSoftN(options: UseDynamicSoftNOptions): UseDynamicSoft
 
       if (normalizedPath === normalizedFilePath || normalizedPath.endsWith(normalizedFilePath)) {
         if (kind === 'modify' || kind === 'create') {
-          console.log(`[SoftN] File changed: ${path}`);
+          debug(`[SoftN] File changed: ${path}`);
           debouncedLoad();
         }
       }
