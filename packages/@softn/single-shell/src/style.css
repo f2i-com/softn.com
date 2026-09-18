@@ -155,3 +155,43 @@ button:focus-visible {
 .softn-mark-dot {
   fill: var(--mint, #35e0c0);
 }
+
+/* `layout: "page"` in the configuration: the app grows with its content and
+   the document does the scrolling.
+
+   The default pins everything to the viewport -- `.application-layout` is
+   100dvh, `.application-content` scrolls inside it, and the app's own root
+   carries an inline `height: calc(100vh - tab bar); overflow: hidden` from
+   @softn/components -- which is right for an app that lays out a screen.
+   For one that reads as a long page it produces a viewport-high box holding
+   all of it: an inner scrollbar beside the document's, and a header that
+   scrolls away from the content it belongs to.
+
+   Every rule is scoped to the page layout, so nothing changes for an app that
+   did not ask. `!important` appears only where it overrides an inline style,
+   which a stylesheet can do no other way. `min-height` keeps a short page
+   filling the window, so the background does not stop halfway down. */
+html.softn-layout-page,
+html.softn-layout-page body,
+html.softn-layout-page #root,
+.single-app.layout-page {
+  height: auto;
+  min-height: 100dvh;
+}
+.single-app.layout-page .application-layout {
+  height: auto;
+  min-height: 100dvh;
+}
+.single-app.layout-page .application-content {
+  flex: none;
+  overflow: visible;
+  contain: none;
+}
+.single-app.layout-page .application-content > div {
+  height: auto !important;
+}
+.single-app.layout-page .softn-app {
+  height: auto !important;
+  min-height: calc(100dvh - var(--softn-tab-bar-height, 0px));
+  overflow: visible !important;
+}

@@ -11,6 +11,7 @@
     "./assemble": "./src/assemble.ts",
     "./config": "./src/config.ts",
     "./favicon": "./src/favicon.ts",
+    "./host": "./src/host.ts",
     "./load": "./src/load.ts",
     "./style.css": "./src/style.css",
     "./package.json": "./package.json"
